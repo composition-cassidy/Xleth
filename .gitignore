@@ -1,0 +1,49 @@
+# Build outputs
+build/
+dist/
+out/
+
+# Visual Studio
+.vs/
+*.obj
+*.o
+*.lib
+*.dll
+*.exe
+*.pdb
+*.ilk
+*.exp
+*.user
+*.suo
+
+# Compiled Python
+__pycache__/
+*.pyc
+
+# Node
+node_modules/
+
+# Environment
+.env
+
+# OS
+Thumbs.db
+thumbs.db
+
+# IDE
+.idea/
+.vscode/
+
+# Test/proxy media assets
+media/
+*.dnxhr.mov
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+CTestTestfile.cmake
+
+# vcpkg
+vcpkg_installed/
