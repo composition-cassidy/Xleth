@@ -19,6 +19,12 @@ lmms/
 # Scratch files
 WORK ON PROMPT 2C #7
 
+# Test scratch folders
+test/
+test 2/
+test 3/
+test-sampler-pertrack/
+
 # Visual Studio
 .vs/
 *.obj
