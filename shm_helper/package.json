@@ -1,0 +1,18 @@
+{
+  "name": "xleth-shm-helper",
+  "version": "0.0.1",
+  "main": "build/Release/shm_helper.node",
+  "scripts": {
+    "build":   "cmake-js compile --runtime=electron --runtime-version=41.1.1 --arch=x64",
+    "rebuild": "cmake-js rebuild --runtime=electron --runtime-version=41.1.1 --arch=x64"
+  },
+  "dependencies": {
+    "cmake-js": "^7.0.0",
+    "node-addon-api": "^8.0.0"
+  },
+  "cmake-js": {
+    "runtime": "electron",
+    "runtimeVersion": "41.1.1",
+    "arch": "x64"
+  }
+}

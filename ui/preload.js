@@ -1,0 +1,366 @@
+'use strict';
+
+const { ipcRenderer } = require('electron');
+const path = require('path');
+
+// Thin helper — keeps call sites concise
+const invoke = (ch, ...args) => ipcRenderer.invoke(ch, ...args);
+
+// Load the shared-memory helper addon. It has zero JUCE/FFmpeg deps and
+// loads reliably in the Electron renderer's preload Node context. It opens
+// a Windows file mapping by name and returns it as an external ArrayBuffer
+// pointing at the same physical pages the engine (in the forked worker)
+// writes to. With contextIsolation:false the returned buffer reaches the
+// renderer as a live reference — zero copy, zero IPC in the hot path.
+let shmHelper = null;
+let frameShm = null;  // { meta, bufA, bufB, readIndex, syncFrame }
+try {
+  const shmPath = path.resolve(__dirname, '../shm_helper/build/Release/shm_helper.node');
+  shmHelper = require(shmPath);
+} catch (e) {
+  console.warn('[preload] shm_helper load failed:', e.message);
+}
+
+function openFrameShm() {
+  if (frameShm) return frameShm;
+  if (!shmHelper) return null;
+  const meta = ipcRenderer.sendSync('xleth:video:getFrameShmSync');
+  if (!meta) return null;
+  try {
+    const handle = shmHelper.openSharedMemory(meta.name, meta.totalSize);
+    // Two renderer-owned destination buffers — one per half of the mapping.
+    // We memcpy the active half from native into one of these per swap.
+    const bufA = new Uint8Array(meta.bufferSize);
+    const bufB = new Uint8Array(meta.bufferSize);
+    frameShm = {
+      meta,
+      bufA, bufB,
+      readIndex: () => shmHelper.readInt32(handle, meta.indexOffset),
+      syncFrame: (idx) => {
+        const dst = (idx === 0) ? bufA : bufB;
+        const srcOff = (idx === 0) ? 0 : meta.bufferSize;
+        shmHelper.readBytes(handle, dst, srcOff, meta.bufferSize);
+      },
+    };
+    return frameShm;
+  } catch (e) {
+    console.error('[preload] openSharedMemory failed:', e.message);
+    return null;
+  }
+}
+
+window.xleth = ({
+
+  // ── Media server (for <video> elements) ────────────────────────────────────
+  getMediaPort: () => invoke('xleth:getMediaPort'),
+
+  // ── Legacy flat API (Phase 0 backward compat) ─────────────────────────────
+  play:               ()      => invoke('xleth:play'),
+  stop:               ()      => invoke('xleth:stop'),
+  pause:              ()      => invoke('xleth:pause'),
+  triggerSample:      (id)    => invoke('xleth:trigger', id),
+  getTransportState:  ()      => invoke('xleth:transportState'),
+  getCurrentFrame:    ()      => invoke('xleth:currentFrame'),
+  getFrameRGBA:       ()      => invoke('xleth:frameRGBA'),
+  getSyncStats:       ()      => invoke('xleth:syncStats'),
+  importVideo:        ()      => invoke('xleth:importVideo'),
+  readStartupLog:     ()      => invoke('xleth:readStartupLog'),
+  setVideoResolution: (w, h)  => invoke('xleth:setVideoResolution', w, h),
+
+  // ── Phase 1: project ──────────────────────────────────────────────────────
+  project: {
+    create:             (dir, name) => invoke('xleth:project:create', dir, name),
+    save:               ()          => invoke('xleth:project:save'),
+    saveAs:             (dir, name) => invoke('xleth:project:saveAs', dir, name),
+    hasProjectDir:      ()          => invoke('xleth:project:hasProjectDir'),
+    load:               (dir)       => invoke('xleth:project:load', dir),
+    importSource:       (filePath)  => invoke('xleth:project:importSource', filePath),
+    validateMedia:      ()          => invoke('xleth:project:validateMedia'),
+    getInfo:            ()          => invoke('xleth:project:getInfo'),
+    openNewProjectDialog: ()        => invoke('xleth:dialog:newProject'),
+    openProjectDialog:   ()         => invoke('xleth:dialog:openProject'),
+    openSaveAsDialog:    ()         => invoke('xleth:dialog:saveProjectAs'),
+    openImportDialog:   ()          => invoke('xleth:dialog:importSources'),
+    getSourceThumbnail: (filePath)  => invoke('xleth:project:getSourceThumbnail', filePath),
+  },
+
+  // ── Phase 1: timeline ─────────────────────────────────────────────────────
+  timeline: {
+    getBPM:           ()                    => invoke('xleth:timeline:getBPM'),
+    setBPM:           (bpm)                 => invoke('xleth:timeline:setBPM', bpm),
+    getDeclickMs:     ()                    => invoke('xleth:timeline:getDeclickMs'),
+    setDeclickMs:     (ms)                  => invoke('xleth:timeline:setDeclickMs', ms),
+    getSources:       ()                    => invoke('xleth:timeline:getSources'),
+    getRegions:       ()                    => invoke('xleth:timeline:getRegions'),
+    getRegionsByLabel:(label)               => invoke('xleth:timeline:getRegionsByLabel', label),
+    getTracks:        ()                    => invoke('xleth:timeline:getTracks'),
+    getClips:         ()                    => invoke('xleth:timeline:getClips'),
+    getClipsOnTrack:  (trackId)             => invoke('xleth:timeline:getClipsOnTrack', trackId),
+    getClipsInRange:  (startBeat, endBeat)  => invoke('xleth:timeline:getClipsInRange', startBeat, endBeat),
+    addTrack:         (info)                => invoke('xleth:timeline:addTrack', info),
+    removeTrack:      (id)                  => invoke('xleth:timeline:removeTrack', id),
+    setTrackMuted:    (trackId, muted)      => invoke('xleth:timeline:setTrackMuted', trackId, muted),
+    setTrackSolo:     (trackId, solo)       => invoke('xleth:timeline:setTrackSolo', trackId, solo),
+    setTrackName:     (trackId, name)       => invoke('xleth:timeline:setTrackName', trackId, name),
+    setPatternName:   (patternId, name)     => invoke('xleth:timeline:setPatternName', patternId, name),
+    setPatternRegion: (patternId, regionId) => invoke('xleth:timeline:setPatternRegion', patternId, regionId),
+    convertToPatternTrack: (trackId)        => invoke('xleth:timeline:convertToPatternTrack', trackId),
+    convertToClipTrack: (trackId)           => invoke('xleth:timeline:convertToClipTrack', trackId),
+    setVideoFlipMode: (trackId, mode)       => invoke('xleth:timeline:setVideoFlipMode', trackId, mode),
+    setVideoHoldLastFrame: (trackId, hold) => invoke('xleth:timeline:setVideoHoldLastFrame', trackId, hold),
+    addClip:          (clip)                => invoke('xleth:timeline:addClip', clip),
+    removeClip:       (id)                  => invoke('xleth:timeline:removeClip', id),
+    moveClip:         (id, trackId, pos)    => invoke('xleth:timeline:moveClip', id, trackId, pos),
+    resizeClip:       (id, dur)             => invoke('xleth:timeline:resizeClip', id, dur),
+    resizeClipLeft:   (id, pos, dur, offset) => invoke('xleth:timeline:resizeClipLeft', id, pos, dur, offset),
+    stretchClip:      (id, dur)             => invoke('xleth:timeline:stretchClip', id, dur),
+    stretchClipLeft:  (id, pos, dur)        => invoke('xleth:timeline:stretchClipLeft', id, pos, dur),
+    pitchShiftClip:   (id, semi, cents)     => invoke('xleth:timeline:pitchShiftClip', id, semi, cents),
+    reverseClip:      (id)                  => invoke('xleth:timeline:reverseClip', id),
+    autoTrimClip:     (id, thresholdDb=-54) => invoke('xleth:timeline:autoTrimClip', id, thresholdDb),
+    setClipParams:    (id, params)          => invoke('xleth:timeline:setClipParams', id, params),
+    addRegion:        (region)              => invoke('xleth:timeline:addRegion', region),
+    modifyRegion:     (id, region)          => invoke('xleth:timeline:modifyRegion', id, region),
+    setSyllables:     (id, syllables)       => invoke('xleth:timeline:setSyllables', id, syllables),
+    getSyllables:     (id)                  => invoke('xleth:timeline:getSyllables', id),
+    removeRegion:     (id)                  => invoke('xleth:timeline:removeRegion', id),
+    getGridLayout:       ()                              => invoke('xleth:timeline:getGridLayout'),
+    setGridLayout:       (layout)                        => invoke('xleth:timeline:setGridLayout', layout),
+    assignTrackToGrid:   (trackId, gx, gy, sx, sy)       => invoke('xleth:timeline:assignTrackToGrid', trackId, gx, gy, sx, sy),
+    removeTrackFromGrid: (trackId)                       => invoke('xleth:timeline:removeTrackFromGrid', trackId),
+    setChorusTrack:      (trackId)                       => invoke('xleth:timeline:setChorusTrack', trackId),
+    setCrashOverlay:     (enabled, trackId, opacity)     => invoke('xleth:timeline:setCrashOverlay', enabled, trackId, opacity),
+    setPreviewFps:       (fps)                           => invoke('xleth:timeline:setPreviewFps', fps),
+    // ── Patterns ─────────────────────────────────────────────────────────
+    addPattern:             (info)                              => invoke('xleth:timeline:addPattern', info),
+    getPattern:             (id)                                => invoke('xleth:timeline:getPattern', id),
+    getAllPatterns:         ()                                  => invoke('xleth:timeline:getAllPatterns'),
+    removePattern:          (id)                                => invoke('xleth:timeline:removePattern', id),
+    updateSamplerSettings:  (regionId, settings)                => invoke('xleth:timeline:updateSamplerSettings', regionId, settings),
+    getPatternAudioInfo:    (id)                                => invoke('xleth:timeline:getPatternAudioInfo', id),
+    getRegionAudioInfo:      (regionId)                          => invoke('xleth:timeline:getRegionAudioInfo', regionId),
+    // Pipeline B (getRegionWaveformPeaks) retired — use waveform.getRegionPeaks instead
+    addPatternBlock:        (block)                             => invoke('xleth:timeline:addPatternBlock', block),
+    getPatternBlocks:       ()                                  => invoke('xleth:timeline:getPatternBlocks'),
+    removePatternBlock:     (id)                                => invoke('xleth:timeline:removePatternBlock', id),
+    movePatternBlock:       (id, trackId, posTicks)             => invoke('xleth:timeline:movePatternBlock', id, trackId, posTicks),
+    resizePatternBlock:     (id, durTicks)                      => invoke('xleth:timeline:resizePatternBlock', id, durTicks),
+    resizePatternBlockLeft: (id, posTicks, durTicks, offTicks)  => invoke('xleth:timeline:resizePatternBlockLeft', id, posTicks, durTicks, offTicks),
+    setPatternBlockLoop:    (id, enabled)                       => invoke('xleth:timeline:setPatternBlockLoop', id, enabled),
+    addNote:                (patternId, note)                   => invoke('xleth:timeline:addNote', patternId, note),
+    removeNote:             (patternId, noteId)                 => invoke('xleth:timeline:removeNote', patternId, noteId),
+    moveNote:               (patternId, noteId, posTicks, pitch)=> invoke('xleth:timeline:moveNote', patternId, noteId, posTicks, pitch),
+    moveNotesBatch:         (patternId, moves)                  => invoke('xleth:timeline:moveNotesBatch', patternId, moves),
+    resizeNote:             (patternId, noteId, durTicks)       => invoke('xleth:timeline:resizeNote', patternId, noteId, durTicks),
+    setNoteVelocity:        (patternId, noteId, velocity)       => invoke('xleth:timeline:setNoteVelocity', patternId, noteId, velocity),
+    previewNote:            (patternId, pitch, velocity=0.8)    => invoke('xleth:timeline:previewNote', patternId, pitch, velocity),
+    previewNoteOff:         (patternId, pitch)                  => invoke('xleth:timeline:previewNoteOff', patternId, pitch),
+    previewAllNotesOff:     (regionId)                          => invoke('xleth:timeline:previewAllNotesOff', regionId),
+  },
+
+  // ── Phase 1: undo ─────────────────────────────────────────────────────────
+  undo: {
+    undo:               () => invoke('xleth:undo:undo'),
+    redo:               () => invoke('xleth:undo:redo'),
+    canUndo:            () => invoke('xleth:undo:canUndo'),
+    canRedo:            () => invoke('xleth:undo:canRedo'),
+    getUndoDescription: () => invoke('xleth:undo:getUndoDescription'),
+    getRedoDescription: () => invoke('xleth:undo:getRedoDescription'),
+  },
+
+  // ── Phase 1: transport ────────────────────────────────────────────────────
+  transport: {
+    play:     ()        => invoke('xleth:play'),
+    stop:     ()        => invoke('xleth:stop'),
+    pause:    ()        => invoke('xleth:pause'),
+    seek:     (beatPos) => invoke('xleth:transport:seek', beatPos),
+    getState: ()        => invoke('xleth:transportState'),
+  },
+
+  // ── Waveform mipmap (replaces Pipeline A FFmpeg extraction) ────────────────
+  waveform: {
+    getRegionPeaks: (regionId, startTime, endTime, targetPixels, channel) =>
+      invoke('xleth:waveform:getRegionPeaks', regionId, startTime, endTime, targetPixels, channel),
+    getRawSamples: (regionId, startSample, endSample, channel) =>
+      invoke('xleth:waveform:getRawSamples', regionId, startSample, endSample, channel),
+    getFilePeaks: (filePath, startTime, endTime, targetPixels, channel) =>
+      invoke('xleth:waveform:getFilePeaks', filePath, startTime, endTime, targetPixels, channel),
+    getClipPeaks: (clipId, startSec, endSec, numPeaks) =>
+      invoke('xleth:waveform:getClipPeaks', clipId, startSec, endSec, numPeaks),
+  },
+
+  // ── Phase 1: audio ────────────────────────────────────────────────────────
+  audio: {
+    loadSample:        (path)               => invoke('xleth:audio:loadSample', path),
+    triggerSample:     (id, vel)            => invoke('xleth:trigger', id, vel),
+    mapRegionToSample: (regionId, sampleId) => invoke('xleth:audio:mapRegionToSample', regionId, sampleId),
+    loadSourceRegion:  (filePath, startTime, endTime) => invoke('xleth:audio:loadSourceRegion', filePath, startTime, endTime),
+    getMasterPeak:     ()                   => invoke('xleth:audio:getMasterPeak'),
+    getTrackPeak:      (trackId)            => invoke('xleth:audio:getTrackPeak', trackId),
+    getAllPeaks:        ()                   => invoke('xleth:audio:getAllPeaks'),
+    setTrackVolume:    (trackId, vol)       => invoke('xleth:audio:setTrackVolume', trackId, vol),
+    setTrackPan:       (trackId, pan)       => invoke('xleth:audio:setTrackPan',    trackId, pan),
+    setTrackSpread:    (trackId, spread)    => invoke('xleth:audio:setTrackSpread', trackId, spread),
+    // Replaced by WaveformMipmap N-API bindings — see window.xleth.waveform
+    // getWaveformData / getWaveformRegion removed (Pipeline A)
+    // Sample Selector: detect root note from WAV smpl chunk
+    detectRootNote:    (filePath) => invoke('xleth:audio:detectRootNote', filePath),
+    // ── SourcePlayer (Sample Picker audio preview via C++ engine) ────────
+    loadSource:        (filePath) => invoke('xleth:audio:loadSource', filePath),
+    playSource:        (startTime) => invoke('xleth:audio:playSource', startTime),
+    pauseSource:       ()          => invoke('xleth:audio:pauseSource'),
+    resumeSource:      ()          => invoke('xleth:audio:resumeSource'),
+    seekSource:        (time)      => invoke('xleth:audio:seekSource', time),
+    stopSource:        ()          => invoke('xleth:audio:stopSource'),
+    getSourcePosition: ()          => invoke('xleth:audio:getSourcePosition'),
+    isSourcePlaying:   ()          => invoke('xleth:audio:isSourcePlaying'),
+    unloadSource:      ()          => invoke('xleth:audio:unloadSource'),
+    // ── Output device selection ───────────────────────────────────────────
+    getOutputDevices:       ()     => invoke('xleth:audio:getOutputDevices'),
+    getCurrentOutputDevice: ()     => invoke('xleth:audio:getCurrentOutputDevice'),
+    setOutputDevice:        (name) => invoke('xleth:audio:setOutputDevice', name),
+    // ── Audio Export ─────────────────────────────────────────────────────
+    exportStart:       (cfg)          => invoke('xleth:audio:exportStart', cfg),
+    exportGetProgress: ()             => invoke('xleth:audio:exportGetProgress'),
+    exportCancel:      ()             => invoke('xleth:audio:exportCancel'),
+    exportSaveAsDialog:(defName, fmt) => invoke('xleth:dialog:exportAudio', defName, fmt),
+    exportRegion:        (regionId)             => invoke('xleth:audio:exportRegion', regionId),
+    openSwapAudioDialog: ()                     => invoke('xleth:dialog:swapAudio'),
+    swapRegionAudio:     (regionId, processed)  => invoke('xleth:audio:swapRegionAudio', regionId, processed),
+    revertRegionAudio:   (regionId)             => invoke('xleth:audio:revertRegionAudio', regionId),
+    loadRegionAudio:     (regionId)             => invoke('xleth:audio:loadRegionAudio', regionId),
+    probeAudioDuration:  (filePath)             => invoke('xleth:audio:probeAudioDuration', filePath),
+    // ── P3: Effect Chain ────────────────────────────────────────────────
+    addEffect:            (trackId, pluginId, position) => invoke('xleth:audio:addEffect', trackId, pluginId, position),
+    removeEffect:         (trackId, nodeId)             => invoke('xleth:audio:removeEffect', trackId, nodeId),
+    moveEffect:           (trackId, nodeId, newPosition) => invoke('xleth:audio:moveEffect', trackId, nodeId, newPosition),
+    setEffectBypass:      (trackId, nodeId, bypassed)   => invoke('xleth:audio:setEffectBypass', trackId, nodeId, bypassed),
+    getEffectChain:       (trackId)                     => invoke('xleth:audio:getEffectChain', trackId),
+    addMasterEffect:      (pluginId, position)          => invoke('xleth:audio:addMasterEffect', pluginId, position),
+    removeMasterEffect:   (nodeId)                      => invoke('xleth:audio:removeMasterEffect', nodeId),
+    moveMasterEffect:     (nodeId, newPosition)         => invoke('xleth:audio:moveMasterEffect', nodeId, newPosition),
+    setMasterEffectBypass:(nodeId, bypassed)             => invoke('xleth:audio:setMasterEffectBypass', nodeId, bypassed),
+    getMasterEffectChain: ()                             => invoke('xleth:audio:getMasterEffectChain'),
+    // ── Generic effect parameter / meter access ──────────────────────
+    getEffectParameters: (trackId, nodeId)                    => invoke('xleth:audio:getEffectParameters', trackId, nodeId),
+    setEffectParameter:  (trackId, nodeId, paramId, value)    => invoke('xleth:audio:setEffectParameter',  trackId, nodeId, paramId, value),
+    getEffectMeter:      (trackId, nodeId)                    => invoke('xleth:audio:getEffectMeter',      trackId, nodeId),
+    // ── EQ-specific ─────────────────────────────────────────────────
+    eqAddBand:          (trackId, nodeId)                          => invoke('xleth:audio:eqAddBand', trackId, nodeId),
+    eqRemoveBand:       (trackId, nodeId, bandIndex)               => invoke('xleth:audio:eqRemoveBand', trackId, nodeId, bandIndex),
+    eqSetBandParam:     (trackId, nodeId, bandIndex, paramName, v) => invoke('xleth:audio:eqSetBandParam', trackId, nodeId, bandIndex, paramName, v),
+    eqGetResponseCurve: (trackId, nodeId)                          => invoke('xleth:audio:eqGetResponseCurve', trackId, nodeId),
+    eqGetSpectrumData:  (trackId, nodeId)                          => invoke('xleth:audio:eqGetSpectrumData', trackId, nodeId),
+    eqSetPreSpectrum:   (trackId, nodeId, enabled)                 => invoke('xleth:audio:eqSetPreSpectrum', trackId, nodeId, enabled),
+    eqGetBands:         (trackId, nodeId)                          => invoke('xleth:audio:eqGetBands', trackId, nodeId),
+    eqGetBandGR:        (trackId, nodeId)                          => invoke('xleth:audio:eqGetBandGR', trackId, nodeId),
+    eqSetGlobalParam:   (trackId, nodeId, paramName, value)        => invoke('xleth:audio:eqSetGlobalParam', trackId, nodeId, paramName, value),
+    eqGetGlobalParams:  (trackId, nodeId)                          => invoke('xleth:audio:eqGetGlobalParams', trackId, nodeId),
+    eqGetSampleRate:    (trackId, nodeId)                          => invoke('xleth:audio:eqGetSampleRate', trackId, nodeId),
+    // ── SmartBalance-specific ───────────────────────────────────────
+    smartBalanceGetDebug: (trackId, nodeId)                         => invoke('xleth:audio:smartBalanceGetDebug', trackId, nodeId),
+    // ── Waveshaper-specific ──────────────────────────────────────────
+    wsGetCurvePoints:   (trackId, nodeId)                          => invoke('xleth:audio:wsGetCurvePoints', trackId, nodeId),
+    wsSetCurvePoints:   (trackId, nodeId, pointsJSON)              => invoke('xleth:audio:wsSetCurvePoints', trackId, nodeId, pointsJSON),
+    wsSetPreset:        (trackId, nodeId, presetIndex)             => invoke('xleth:audio:wsSetPreset', trackId, nodeId, presetIndex),
+    // ── Graph-mode routing ────────────────────────────────────────────
+    addConnection:          (trackId, srcId, dstId)        => invoke('xleth:audio:addConnection', trackId, srcId, dstId),
+    removeConnection:       (trackId, srcId, dstId)        => invoke('xleth:audio:removeConnection', trackId, srcId, dstId),
+    setWireGain:            (trackId, srcId, dstId, gain)  => invoke('xleth:audio:setWireGain', trackId, srcId, dstId, gain),
+    setWireMute:            (trackId, srcId, dstId, muted) => invoke('xleth:audio:setWireMute', trackId, srcId, dstId, muted),
+    getGraphTopology:       (trackId)                      => invoke('xleth:audio:getGraphTopology', trackId),
+    setNodePosition:        (trackId, nodeId, x, y)        => invoke('xleth:audio:setNodePosition', trackId, nodeId, x, y),
+    isGraphLinear:          (trackId)                      => invoke('xleth:audio:isGraphLinear', trackId),
+    addMasterConnection:    (srcId, dstId)                 => invoke('xleth:audio:addMasterConnection', srcId, dstId),
+    removeMasterConnection: (srcId, dstId)                 => invoke('xleth:audio:removeMasterConnection', srcId, dstId),
+    setMasterWireGain:      (srcId, dstId, gain)           => invoke('xleth:audio:setMasterWireGain', srcId, dstId, gain),
+    setMasterWireMute:      (srcId, dstId, muted)          => invoke('xleth:audio:setMasterWireMute', srcId, dstId, muted),
+    getMasterGraphTopology: ()                             => invoke('xleth:audio:getMasterGraphTopology'),
+    setMasterNodePosition:  (nodeId, x, y)                => invoke('xleth:audio:setMasterNodePosition', nodeId, x, y),
+    isMasterGraphLinear:    ()                             => invoke('xleth:audio:isMasterGraphLinear'),
+    onExportProgress:  (cb) => {
+      const h = (_e, data) => cb(data);
+      ipcRenderer.on('export:progress', h);
+      return () => ipcRenderer.removeListener('export:progress', h);
+    },
+  },
+
+  // ── Phase 1: video ────────────────────────────────────────────────────────
+  video: {
+    setResolution:  (w, h)  => invoke('xleth:setVideoResolution', w, h),
+    getFrameBuffer: ()      => invoke('xleth:currentFrame'),
+    getFrameRGBA:   ()      => invoke('xleth:frameRGBA'),
+    // Open the Windows named-shared-memory region the engine writes frames
+    // into. Zero-copy: renderer reads pixels directly via typed-array views.
+    // Returns { buffer: ArrayBuffer, meta: {name, width, height, bufferSize, indexOffset, totalSize} }
+    // or null if the engine hasn't initialized the shm yet.
+    openFrameShm:   () => openFrameShm(),
+    // FrameServer: open/close a decoder for a source (fast native path)
+    openSource:     (id)    => invoke('xleth:video:openSource', id),
+    closeSource:    (id)    => invoke('xleth:video:closeSource', id),
+    // Get JPEG frame — pass sourceId (number) for native path, filePath (string) for legacy
+    getFrameAtTime: (idOrPath, t, maxW, maxH) =>
+        invoke('xleth:video:getFrameAtTime', idOrPath, t, maxW, maxH),
+  },
+
+  // ── Video Export ──────────────────────────────────────────────────────────
+  videoExport: {
+    exportStart:          (cfg)   => invoke('xleth:video:exportStart', cfg),
+    exportGetProgress:    ()      => invoke('xleth:video:exportGetProgress'),
+    exportCancel:         ()      => invoke('xleth:video:exportCancel'),
+    exportSaveAsDialog:   (name)  => invoke('xleth:dialog:exportVideo', name),
+    getAvailableEncoders: (codec) => invoke('xleth:video:getAvailableEncoders', codec),
+    getDefaultEncoder:    (codec) => invoke('xleth:video:getDefaultEncoder', codec),
+    onExportProgress: (cb) => {
+      const h = (_e, data) => cb(data);
+      ipcRenderer.on('video-export:progress', h);
+      return () => ipcRenderer.removeListener('video-export:progress', h);
+    },
+  },
+
+  // ── Phase 1: sync ─────────────────────────────────────────────────────────
+  sync: {
+    getStats: () => invoke('xleth:syncStats'),
+  },
+
+  // ── User settings (persisted to userData/xleth-settings.json) ───────────────
+  settings: {
+    get: (key)        => invoke('xleth:settings:get', key),
+    set: (key, value) => invoke('xleth:settings:set', key, value),
+  },
+
+  // ── Global engine defaults ─────────────────────────────────────────────────
+  engine: {
+    setGlobalStretchMethod:   (m) => invoke('xleth:engine:setGlobalStretchMethod', m),
+    getGlobalStretchMethod:   ()  => invoke('xleth:engine:getGlobalStretchMethod'),
+    setGlobalFormantPreserve: (v) => invoke('xleth:engine:setGlobalFormantPreserve', v),
+    getGlobalFormantPreserve: ()  => invoke('xleth:engine:getGlobalFormantPreserve'),
+  },
+
+  // ── Shell ──────────────────────────────────────────────────────────────────
+  shell: {
+    showItemInFolder: (path) => invoke('xleth:shell:showItemInFolder', path),
+  },
+
+  // ── Window controls (frameless title bar) ─────────────────────────────────
+  window: {
+    minimize: () => ipcRenderer.send('xleth:window:minimize'),
+    maximize: () => ipcRenderer.send('xleth:window:maximize'),
+    close:    () => ipcRenderer.send('xleth:window:close'),
+    openNodeEditor:  (key, pos) => ipcRenderer.send('xleth:window:openNodeEditor', key, pos),
+    closeNodeEditor: () => ipcRenderer.send('xleth:window:closeNodeEditor'),
+  },
+
+  // ── Cross-window graph change notifications ──────────────────────────────
+  onGraphChanged: (callback) => {
+    ipcRenderer.on('xleth:graph:changed', (_, key) => callback(key));
+  },
+
+  // ── Project load notification ─────────────────────────────────────────────
+  // Fired after project_load completes. All effect chain nodeIds have been
+  // reassigned by AudioGraph::fromJSON — cached nodeIds in UI stores are stale.
+  onProjectLoaded: (callback) => {
+    ipcRenderer.on('xleth:project-loaded', () => callback());
+  },
+});
+

@@ -1,0 +1,207 @@
+[2026-04-10T12:24:23.021Z] app ready — loading addon...
+[2026-04-10T12:24:23.025Z] Forking addon worker via node.exe: C:\Users\Krasen\Desktop\XLETH\ui\addon-worker.js
+[2026-04-10T12:24:23.165Z] [Worker] ready
+[2026-04-10T12:24:23.165Z] [IPC] → engine_setGlobalStretchMethod(1)
+[2026-04-10T12:24:23.166Z] [IPC] → engine_setGlobalFormantPreserve(true)
+[2026-04-10T12:24:23.166Z] [IPC] ← result: null
+[2026-04-10T12:24:23.167Z] [IPC] ← result: null
+[2026-04-10T12:24:23.215Z] [IPC] → initialize()
+[2026-04-10T12:24:23.335Z] [IPC] ← result: true
+[2026-04-10T12:24:23.335Z] initialize() OK
+[2026-04-10T12:24:23.335Z] [IPC] → initVideoSharedMemory(XlethFrameBuffer, 960, 540)
+[2026-04-10T12:24:23.337Z] [IPC] ← result: {"name":"XlethFrameBuffer","width":960,"height":540,"bufferSize":2073600,"indexO
+[2026-04-10T12:24:23.338Z] [IPC] ← shm ready: {"name":"XlethFrameBuffer","width":960,"height":540,"bufferSize":2073600,"indexOffset":4147200,"totalSize":4147264}
+[2026-04-10T12:24:23.338Z] [IPC] → loadSample(C:\Users\Krasen\Desktop\XLETH\media\KICK_ssedit.wav)
+[2026-04-10T12:24:23.339Z] [IPC] ← result: 0
+[2026-04-10T12:24:23.339Z] [IPC] → loadSample(C:\Users\Krasen\Desktop\XLETH\media\SNARE_ssedit.wav)
+[2026-04-10T12:24:23.339Z] [IPC] ← result: 1
+[2026-04-10T12:24:23.340Z] [IPC] → loadSample(C:\Users\Krasen\Desktop\XLETH\media\hihat 1.wav)
+[2026-04-10T12:24:23.340Z] [IPC] ← result: 2
+[2026-04-10T12:24:23.341Z] Samples loaded
+[2026-04-10T12:24:23.341Z] No video file — skipping loadVideo
+[2026-04-10T12:24:23.341Z] [IPC] → setBPM(140)
+[2026-04-10T12:24:23.341Z] [IPC] ← result: null
+[2026-04-10T12:24:23.341Z] [IPC] → addAudioEvent(0, 0, 1)
+[2026-04-10T12:24:23.342Z] [IPC] ← result: null
+[2026-04-10T12:24:23.342Z] [IPC] → addAudioEvent(1, 2, 1)
+[2026-04-10T12:24:23.342Z] [IPC] ← result: null
+[2026-04-10T12:24:23.342Z] [IPC] → addAudioEvent(1.25, 2, 1)
+[2026-04-10T12:24:23.343Z] [IPC] ← result: null
+[2026-04-10T12:24:23.343Z] [IPC] → addAudioEvent(2, 0, 1)
+[2026-04-10T12:24:23.343Z] [IPC] ← result: null
+[2026-04-10T12:24:23.343Z] [IPC] → addAudioEvent(2, 1, 1)
+[2026-04-10T12:24:23.343Z] [IPC] ← result: null
+[2026-04-10T12:24:23.343Z] [IPC] → addAudioEvent(3, 2, 1)
+[2026-04-10T12:24:23.344Z] [IPC] ← result: null
+[2026-04-10T12:24:23.344Z] [IPC] → addAudioEvent(3.25, 2, 1)
+[2026-04-10T12:24:23.344Z] [IPC] ← result: null
+[2026-04-10T12:24:23.344Z] [IPC] → addAudioEvent(4, 0, 1)
+[2026-04-10T12:24:23.344Z] [IPC] ← result: null
+[2026-04-10T12:24:23.344Z] [IPC] → addAudioEvent(5, 2, 1)
+[2026-04-10T12:24:23.345Z] [IPC] ← result: null
+[2026-04-10T12:24:23.345Z] [IPC] → addAudioEvent(5.25, 2, 1)
+[2026-04-10T12:24:23.345Z] [IPC] ← result: null
+[2026-04-10T12:24:23.345Z] [IPC] → addAudioEvent(6, 0, 1)
+[2026-04-10T12:24:23.345Z] [IPC] ← result: null
+[2026-04-10T12:24:23.346Z] [IPC] → addAudioEvent(6, 1, 1)
+[2026-04-10T12:24:23.346Z] [IPC] ← result: null
+[2026-04-10T12:24:23.346Z] [IPC] → addAudioEvent(7, 2, 1)
+[2026-04-10T12:24:23.346Z] [IPC] ← result: null
+[2026-04-10T12:24:23.346Z] [IPC] → addAudioEvent(7.25, 2, 1)
+[2026-04-10T12:24:23.346Z] [IPC] ← result: null
+[2026-04-10T12:24:23.346Z] [IPC] → addAudioEvent(8, 0, 1)
+[2026-04-10T12:24:23.347Z] [IPC] ← result: null
+[2026-04-10T12:24:23.347Z] [IPC] → addAudioEvent(9, 2, 1)
+[2026-04-10T12:24:23.347Z] [IPC] ← result: null
+[2026-04-10T12:24:23.347Z] [IPC] → addAudioEvent(9.25, 2, 1)
+[2026-04-10T12:24:23.347Z] [IPC] ← result: null
+[2026-04-10T12:24:23.347Z] [IPC] → addAudioEvent(10, 0, 1)
+[2026-04-10T12:24:23.347Z] [IPC] ← result: null
+[2026-04-10T12:24:23.348Z] [IPC] → addAudioEvent(10, 1, 1)
+[2026-04-10T12:24:23.348Z] [IPC] ← result: null
+[2026-04-10T12:24:23.348Z] [IPC] → addAudioEvent(11, 2, 1)
+[2026-04-10T12:24:23.348Z] [IPC] ← result: null
+[2026-04-10T12:24:23.348Z] [IPC] → addAudioEvent(11.25, 2, 1)
+[2026-04-10T12:24:23.348Z] [IPC] ← result: null
+[2026-04-10T12:24:23.349Z] [IPC] → addAudioEvent(12, 0, 1)
+[2026-04-10T12:24:23.349Z] [IPC] ← result: null
+[2026-04-10T12:24:23.349Z] [IPC] → addAudioEvent(13, 2, 1)
+[2026-04-10T12:24:23.349Z] [IPC] ← result: null
+[2026-04-10T12:24:23.349Z] [IPC] → addAudioEvent(13.25, 2, 1)
+[2026-04-10T12:24:23.350Z] [IPC] ← result: null
+[2026-04-10T12:24:23.350Z] [IPC] → addAudioEvent(14, 0, 1)
+[2026-04-10T12:24:23.350Z] [IPC] ← result: null
+[2026-04-10T12:24:23.351Z] [IPC] → addAudioEvent(14, 1, 1)
+[2026-04-10T12:24:23.351Z] [IPC] ← result: null
+[2026-04-10T12:24:23.351Z] [IPC] → addAudioEvent(15, 2, 1)
+[2026-04-10T12:24:23.351Z] [IPC] ← result: null
+[2026-04-10T12:24:23.351Z] [IPC] → addAudioEvent(15.25, 2, 1)
+[2026-04-10T12:24:23.351Z] [IPC] ← result: null
+[2026-04-10T12:24:23.352Z] [IPC] → addAudioEvent(16, 0, 1)
+[2026-04-10T12:24:23.352Z] [IPC] ← result: null
+[2026-04-10T12:24:23.352Z] [IPC] → addAudioEvent(17, 2, 1)
+[2026-04-10T12:24:23.352Z] [IPC] ← result: null
+[2026-04-10T12:24:23.353Z] [IPC] → addAudioEvent(17.25, 2, 1)
+[2026-04-10T12:24:23.353Z] [IPC] ← result: null
+[2026-04-10T12:24:23.353Z] [IPC] → addAudioEvent(18, 0, 1)
+[2026-04-10T12:24:23.353Z] [IPC] ← result: null
+[2026-04-10T12:24:23.354Z] [IPC] → addAudioEvent(18, 1, 1)
+[2026-04-10T12:24:23.354Z] [IPC] ← result: null
+[2026-04-10T12:24:23.354Z] [IPC] → addAudioEvent(19, 2, 1)
+[2026-04-10T12:24:23.354Z] [IPC] ← result: null
+[2026-04-10T12:24:23.354Z] [IPC] → addAudioEvent(19.25, 2, 1)
+[2026-04-10T12:24:23.355Z] [IPC] ← result: null
+[2026-04-10T12:24:23.355Z] [IPC] → addAudioEvent(20, 0, 1)
+[2026-04-10T12:24:23.356Z] [IPC] ← result: null
+[2026-04-10T12:24:23.356Z] [IPC] → addAudioEvent(21, 2, 1)
+[2026-04-10T12:24:23.356Z] [IPC] ← result: null
+[2026-04-10T12:24:23.356Z] [IPC] → addAudioEvent(21.25, 2, 1)
+[2026-04-10T12:24:23.356Z] [IPC] ← result: null
+[2026-04-10T12:24:23.357Z] [IPC] → addAudioEvent(22, 0, 1)
+[2026-04-10T12:24:23.357Z] [IPC] ← result: null
+[2026-04-10T12:24:23.357Z] [IPC] → addAudioEvent(22, 1, 1)
+[2026-04-10T12:24:23.357Z] [IPC] ← result: null
+[2026-04-10T12:24:23.357Z] [IPC] → addAudioEvent(23, 2, 1)
+[2026-04-10T12:24:23.358Z] [IPC] ← result: null
+[2026-04-10T12:24:23.358Z] [IPC] → addAudioEvent(23.25, 2, 1)
+[2026-04-10T12:24:23.358Z] [IPC] ← result: null
+[2026-04-10T12:24:23.358Z] [IPC] → addAudioEvent(24, 0, 1)
+[2026-04-10T12:24:23.358Z] [IPC] ← result: null
+[2026-04-10T12:24:23.359Z] [IPC] → addAudioEvent(25, 2, 1)
+[2026-04-10T12:24:23.359Z] [IPC] ← result: null
+[2026-04-10T12:24:23.359Z] [IPC] → addAudioEvent(25.25, 2, 1)
+[2026-04-10T12:24:23.359Z] [IPC] ← result: null
+[2026-04-10T12:24:23.359Z] [IPC] → addAudioEvent(26, 0, 1)
+[2026-04-10T12:24:23.360Z] [IPC] ← result: null
+[2026-04-10T12:24:23.360Z] [IPC] → addAudioEvent(26, 1, 1)
+[2026-04-10T12:24:23.360Z] [IPC] ← result: null
+[2026-04-10T12:24:23.360Z] [IPC] → addAudioEvent(27, 2, 1)
+[2026-04-10T12:24:23.360Z] [IPC] ← result: null
+[2026-04-10T12:24:23.361Z] [IPC] → addAudioEvent(27.25, 2, 1)
+[2026-04-10T12:24:23.361Z] [IPC] ← result: null
+[2026-04-10T12:24:23.361Z] [IPC] → addAudioEvent(28, 0, 1)
+[2026-04-10T12:24:23.361Z] [IPC] ← result: null
+[2026-04-10T12:24:23.361Z] [IPC] → addAudioEvent(29, 2, 1)
+[2026-04-10T12:24:23.362Z] [IPC] ← result: null
+[2026-04-10T12:24:23.362Z] [IPC] → addAudioEvent(29.25, 2, 1)
+[2026-04-10T12:24:23.362Z] [IPC] ← result: null
+[2026-04-10T12:24:23.362Z] [IPC] → addAudioEvent(30, 0, 1)
+[2026-04-10T12:24:23.362Z] [IPC] ← result: null
+[2026-04-10T12:24:23.363Z] [IPC] → addAudioEvent(30, 1, 1)
+[2026-04-10T12:24:23.363Z] [IPC] ← result: null
+[2026-04-10T12:24:23.363Z] [IPC] → addAudioEvent(31, 2, 1)
+[2026-04-10T12:24:23.363Z] [IPC] ← result: null
+[2026-04-10T12:24:23.363Z] [IPC] → addAudioEvent(31.25, 2, 1)
+[2026-04-10T12:24:23.364Z] [IPC] ← result: null
+[2026-04-10T12:24:23.364Z] Timeline populated (8 bars, kick|hh hh|kick+snare|hh hh at BPM=140)
+[2026-04-10T12:24:23.364Z] [Protocol] xleth-media registered
+[2026-04-10T12:24:23.409Z] [MediaServer] Listening on port 56858
+[2026-04-10T12:24:23.808Z] [RENDERER] [vite] connecting...  (http://localhost:5173/@vite/client:789)
+[2026-04-10T12:24:23.812Z] [RENDERER] [vite] connected.  (http://localhost:5173/@vite/client:912)
+[2026-04-10T12:24:23.852Z] [RENDERER] %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold  (http://localhost:5173/node_modules/.vite/deps/chunk-SVG7M4VJ.js?v=2f803ab2:21607)
+[2026-04-10T12:24:23.867Z] [RENDERER] [UI] App mounting   (http://localhost:5173/src/main.jsx:17)
+[2026-04-10T12:24:23.915Z] [IPC] → timeline_getSources()
+[2026-04-10T12:24:23.916Z] [IPC] ← result: []
+[2026-04-10T12:24:23.917Z] [RENDERER] [VideoPreview] shm ready: XlethFrameBuffer 960x540  (http://localhost:5173/src/components/VideoPreview.jsx:108)
+[2026-04-10T12:24:24.027Z] [IPC] → timeline_getDeclickMs()
+[2026-04-10T12:24:24.027Z] [IPC] → engine_getGlobalStretchMethod()
+[2026-04-10T12:24:24.027Z] [IPC] → timeline_getTracks()
+[2026-04-10T12:24:24.028Z] [IPC] → timeline_getClips()
+[2026-04-10T12:24:24.028Z] [IPC] → timeline_getRegions()
+[2026-04-10T12:24:24.028Z] [IPC] → timeline_getSources()
+[2026-04-10T12:24:24.028Z] [IPC] → timeline_getAllPatterns()
+[2026-04-10T12:24:24.028Z] [IPC] → timeline_getPatternBlocks()
+[2026-04-10T12:24:24.029Z] [IPC] ← result: 0.5
+[2026-04-10T12:24:24.029Z] [RENDERER] [Timeline] Zoom: 40.0px/beat, ~5.0 bars visible  (http://localhost:5173/src/components/TimelineView.jsx:664)
+[2026-04-10T12:24:24.030Z] [IPC] → audio_getOutputDevices()
+[2026-04-10T12:24:24.030Z] [IPC] → timeline_getAllPatterns()
+[2026-04-10T12:24:24.030Z] [RENDERER] [UI] App mounted  (http://localhost:5173/src/App.jsx:336)
+[2026-04-10T12:24:24.030Z] [IPC] → timeline_getSources()
+[2026-04-10T12:24:24.030Z] [RENDERER] [VideoPreview] shm ready: XlethFrameBuffer 960x540  (http://localhost:5173/src/components/VideoPreview.jsx:108)
+[2026-04-10T12:24:24.031Z] [IPC] ← result: 1
+[2026-04-10T12:24:24.031Z] [IPC] → timeline_getDeclickMs()
+[2026-04-10T12:24:24.031Z] [IPC] → engine_getGlobalStretchMethod()
+[2026-04-10T12:24:24.031Z] [IPC] → timeline_getTracks()
+[2026-04-10T12:24:24.032Z] [IPC] → timeline_getClips()
+[2026-04-10T12:24:24.032Z] [IPC] → timeline_getRegions()
+[2026-04-10T12:24:24.033Z] [IPC] → timeline_getSources()
+[2026-04-10T12:24:24.033Z] [IPC] → timeline_getAllPatterns()
+[2026-04-10T12:24:24.033Z] [IPC] → timeline_getPatternBlocks()
+[2026-04-10T12:24:24.034Z] [RENDERER] [Timeline] Zoom: 40.0px/beat, ~5.0 bars visible  (http://localhost:5173/src/components/TimelineView.jsx:664)
+[2026-04-10T12:24:24.034Z] [IPC] → audio_getOutputDevices()
+[2026-04-10T12:24:24.034Z] [IPC] → timeline_getAllPatterns()
+[2026-04-10T12:24:24.034Z] [RENDERER] [UI] App mounted  (http://localhost:5173/src/App.jsx:336)
+[2026-04-10T12:24:24.035Z] [IPC] ← result: []
+[2026-04-10T12:24:24.035Z] [IPC] ← result: []
+[2026-04-10T12:24:24.036Z] [IPC] ← result: []
+[2026-04-10T12:24:24.036Z] [IPC] ← result: []
+[2026-04-10T12:24:24.036Z] [IPC] ← result: []
+[2026-04-10T12:24:24.036Z] [IPC] ← result: []
+[2026-04-10T12:24:24.037Z] [IPC] ← result: ["Speakers (2- Focusrite USB Audio)","Speakers (Realtek(R) Audio)"]
+[2026-04-10T12:24:24.037Z] [IPC] ← result: []
+[2026-04-10T12:24:24.037Z] [IPC] ← result: []
+[2026-04-10T12:24:24.037Z] [IPC] ← result: 0.5
+[2026-04-10T12:24:24.038Z] [IPC] ← result: 1
+[2026-04-10T12:24:24.038Z] [IPC] ← result: []
+[2026-04-10T12:24:24.038Z] [IPC] ← result: []
+[2026-04-10T12:24:24.039Z] [IPC] ← result: []
+[2026-04-10T12:24:24.040Z] [IPC] ← result: []
+[2026-04-10T12:24:24.040Z] [IPC] ← result: []
+[2026-04-10T12:24:24.040Z] [IPC] ← result: []
+[2026-04-10T12:24:24.041Z] [IPC] ← result: ["Speakers (2- Focusrite USB Audio)","Speakers (Realtek(R) Audio)"]
+[2026-04-10T12:24:24.041Z] [IPC] ← result: []
+[2026-04-10T12:24:24.043Z] [RENDERER] [Timeline] Tracks loaded: 0  (http://localhost:5173/src/components/TimelineView.jsx:166)
+[2026-04-10T12:24:24.043Z] [RENDERER] [TimelineClips] Clips loaded: 0  (http://localhost:5173/src/components/TimelineView.jsx:177)
+[2026-04-10T12:24:24.043Z] [RENDERER] [TimelineClips] Regions loaded: 0  (http://localhost:5173/src/components/TimelineView.jsx:191)
+[2026-04-10T12:24:24.044Z] [IPC] → audio_getCurrentOutputDevice()
+[2026-04-10T12:24:24.044Z] [RENDERER] [Timeline] Tracks loaded: 0  (http://localhost:5173/src/components/TimelineView.jsx:166)
+[2026-04-10T12:24:24.044Z] [RENDERER] [TimelineClips] Clips loaded: 0  (http://localhost:5173/src/components/TimelineView.jsx:177)
+[2026-04-10T12:24:24.044Z] [RENDERER] [TimelineClips] Regions loaded: 0  (http://localhost:5173/src/components/TimelineView.jsx:191)
+[2026-04-10T12:24:24.045Z] [IPC] ← result: "Speakers (2- Focusrite USB Audio)"
+[2026-04-10T12:24:24.045Z] [IPC] → audio_getCurrentOutputDevice()
+[2026-04-10T12:24:24.045Z] [IPC] ← result: "Speakers (2- Focusrite USB Audio)"
+[2026-04-10T12:24:24.067Z] [IPC] transport changed: {"positionMs":0,"positionBeats":0,"positionBars":1,"isPlaying":false,"bpm":140}
+[2026-04-10T12:24:28.593Z] [RENDERER] [Keyboard] File menu shortcut → New Project  (http://localhost:5173/src/App.jsx:356)
+[2026-04-10T12:24:31.128Z] [RENDERER] [UI] Menu: Open Project  (http://localhost:5173/src/components/TitleBar.jsx:89)
+[2026-04-10T12:24:34.654Z] [IPC] window:close
+[2026-04-10T12:24:34.661Z] [IPC] → shutdown()

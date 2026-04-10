@@ -1,0 +1,1019 @@
+#include "Timeline.h"
+#include <algorithm>
+#include <iostream>
+#include <set>
+
+// ─── SourceMedia JSON (defined here; no separate SourceMedia.h/.cpp) ──────────
+
+static void sourceToJson(nlohmann::json& j, const SourceMedia& s) {
+    j = nlohmann::json{
+        {"id",          s.id},
+        {"filePath",    s.filePath},
+        {"proxyPath",   s.proxyPath},
+        {"fileName",    s.fileName},
+        {"width",       s.width},
+        {"height",      s.height},
+        {"fps",         s.fps},
+        {"duration",    s.duration},
+        {"totalFrames", s.totalFrames},
+        {"hasVideo",    s.hasVideo},
+        {"proxyReady",  s.proxyReady}
+    };
+}
+
+static void sourceFromJson(const nlohmann::json& j, SourceMedia& s) {
+    j.at("id").get_to(s.id);
+    j.at("filePath").get_to(s.filePath);
+    j.at("proxyPath").get_to(s.proxyPath);
+    j.at("fileName").get_to(s.fileName);
+    j.at("width").get_to(s.width);
+    j.at("height").get_to(s.height);
+    j.at("fps").get_to(s.fps);
+    j.at("duration").get_to(s.duration);
+    j.at("totalFrames").get_to(s.totalFrames);
+    j.at("hasVideo").get_to(s.hasVideo);
+    j.at("proxyReady").get_to(s.proxyReady);
+}
+
+// ─── Constructor ──────────────────────────────────────────────────────────────
+
+Timeline::Timeline(double bpm, double sampleRate, int timeSigNum, int timeSigDen)
+    : m_bpm(bpm), m_sampleRate(sampleRate),
+      m_timeSigNum(timeSigNum), m_timeSigDen(timeSigDen),
+      m_nextId(1)
+{
+    std::cout << "[Timeline] Created new timeline: BPM=" << bpm
+              << ", SR=" << sampleRate
+              << ", TimeSig=" << timeSigNum << "/" << timeSigDen << "\n";
+}
+
+int Timeline::getNextId() {
+    return m_nextId++;
+}
+
+// ─── Sources ──────────────────────────────────────────────────────────────────
+
+int Timeline::addSource(SourceMedia media) {
+    media.id = getNextId();
+    m_sources[media.id] = media;
+    std::cout << "[Timeline] Added source id=" << media.id
+              << " fileName=\"" << media.fileName << "\""
+              << " path=\"" << media.filePath << "\""
+              << " " << media.width << "x" << media.height
+              << " fps=" << media.fps << "\n";
+    return media.id;
+}
+
+const SourceMedia* Timeline::getSource(int id) const {
+    auto it = m_sources.find(id);
+    return (it != m_sources.end()) ? &it->second : nullptr;
+}
+
+SourceMedia* Timeline::getSourceMutable(int id) {
+    auto it = m_sources.find(id);
+    return (it != m_sources.end()) ? &it->second : nullptr;
+}
+
+std::vector<const SourceMedia*> Timeline::getAllSources() const {
+    std::vector<const SourceMedia*> out;
+    out.reserve(m_sources.size());
+    for (const auto& [id, src] : m_sources)
+        out.push_back(&src);
+    return out;
+}
+
+bool Timeline::removeSource(int id) {
+    auto it = m_sources.find(id);
+    if (it == m_sources.end()) {
+        std::cout << "[Timeline] ERROR removeSource: id=" << id << " not found\n";
+        return false;
+    }
+    std::cout << "[Timeline] Removed source id=" << id
+              << " fileName=\"" << it->second.fileName << "\"\n";
+    m_sources.erase(it);
+    return true;
+}
+
+// ─── Regions ──────────────────────────────────────────────────────────────────
+
+int Timeline::addRegion(SampleRegion region) {
+    region.id = getNextId();
+    m_regions[region.id] = region;
+    std::cout << "[Timeline] Added region id=" << region.id
+              << " name=\"" << region.name << "\""
+              << " label=" << sampleLabelToString(region.label)
+              << " sourceId=" << region.sourceId
+              << " audio=\"" << region.audioFilePath << "\""
+              << " syllables=" << region.syllables.size() << "\n";
+    return region.id;
+}
+
+const SampleRegion* Timeline::getRegion(int id) const {
+    auto it = m_regions.find(id);
+    return (it != m_regions.end()) ? &it->second : nullptr;
+}
+
+SampleRegion* Timeline::getRegionMutable(int id) {
+    auto it = m_regions.find(id);
+    return (it != m_regions.end()) ? &it->second : nullptr;
+}
+
+std::vector<const SampleRegion*> Timeline::getAllRegions() const {
+    std::vector<const SampleRegion*> out;
+    out.reserve(m_regions.size());
+    for (const auto& [id, r] : m_regions)
+        out.push_back(&r);
+    return out;
+}
+
+bool Timeline::removeRegion(int id) {
+    auto it = m_regions.find(id);
+    if (it == m_regions.end()) {
+        std::cout << "[Timeline] ERROR removeRegion: id=" << id << " not found\n";
+        return false;
+    }
+    std::cout << "[Timeline] Removed region id=" << id
+              << " name=\"" << it->second.name << "\"\n";
+    m_regions.erase(it);
+    return true;
+}
+
+std::vector<const SampleRegion*> Timeline::getRegionsByLabel(SampleLabel label) const {
+    std::vector<const SampleRegion*> out;
+    for (const auto& [id, r] : m_regions)
+        if (r.label == label)
+            out.push_back(&r);
+    return out;
+}
+
+// ─── Tracks ───────────────────────────────────────────────────────────────────
+
+int Timeline::addTrack(TrackInfo track) {
+    track.id = getNextId();
+    m_tracks[track.id] = track;
+    std::cout << "[Timeline] Added track id=" << track.id
+              << " name=\"" << track.name << "\""
+              << " order=" << track.order
+              << " vol=" << track.volume << " pan=" << track.pan << "\n";
+    return track.id;
+}
+
+const TrackInfo* Timeline::getTrack(int id) const {
+    auto it = m_tracks.find(id);
+    return (it != m_tracks.end()) ? &it->second : nullptr;
+}
+
+TrackInfo* Timeline::getTrackMutable(int id) {
+    auto it = m_tracks.find(id);
+    return (it != m_tracks.end()) ? &it->second : nullptr;
+}
+
+std::vector<const TrackInfo*> Timeline::getAllTracks() const {
+    std::vector<const TrackInfo*> out;
+    out.reserve(m_tracks.size());
+    for (const auto& [id, t] : m_tracks)
+        out.push_back(&t);
+    return out;
+}
+
+bool Timeline::removeTrack(int id) {
+    auto it = m_tracks.find(id);
+    if (it == m_tracks.end()) {
+        std::cout << "[Timeline] ERROR removeTrack: id=" << id << " not found\n";
+        return false;
+    }
+    std::cout << "[Timeline] Removed track id=" << id
+              << " name=\"" << it->second.name << "\"\n";
+    m_tracks.erase(it);
+    return true;
+}
+
+// ─── Clips ────────────────────────────────────────────────────────────────────
+
+int Timeline::addClip(Clip clip) {
+    if (m_tracks.find(clip.trackId) == m_tracks.end()) {
+        std::cout << "[Timeline] ERROR addClip: trackId=" << clip.trackId << " not found\n";
+        return -1;
+    }
+    if (m_regions.find(clip.regionId) == m_regions.end()) {
+        std::cout << "[Timeline] ERROR addClip: regionId=" << clip.regionId << " not found\n";
+        return -1;
+    }
+    clip.id = getNextId();
+    m_clips[clip.id] = clip;
+    std::cout << "[Timeline] Added clip id=" << clip.id
+              << " trackId=" << clip.trackId
+              << " regionId=" << clip.regionId
+              << " position=" << clip.position.ticks
+              << " duration=" << clip.duration.ticks
+              << " syllable=" << clip.syllableIndex
+              << " vel=" << clip.velocity << "\n";
+    return clip.id;
+}
+
+const Clip* Timeline::getClip(int id) const {
+    auto it = m_clips.find(id);
+    return (it != m_clips.end()) ? &it->second : nullptr;
+}
+
+Clip* Timeline::getClipMutable(int id) {
+    auto it = m_clips.find(id);
+    return (it != m_clips.end()) ? &it->second : nullptr;
+}
+
+std::vector<const Clip*> Timeline::getAllClips() const {
+    std::vector<const Clip*> out;
+    out.reserve(m_clips.size());
+    for (const auto& [id, c] : m_clips)
+        out.push_back(&c);
+    return out;
+}
+
+bool Timeline::removeClip(int id) {
+    auto it = m_clips.find(id);
+    if (it == m_clips.end()) {
+        std::cout << "[Timeline] ERROR removeClip: id=" << id << " not found\n";
+        return false;
+    }
+    std::cout << "[Timeline] Removed clip id=" << id
+              << " trackId=" << it->second.trackId
+              << " position=" << it->second.position.ticks << "\n";
+    m_clips.erase(it);
+    return true;
+}
+
+std::vector<const Clip*> Timeline::getClipsOnTrack(int trackId) const {
+    std::vector<const Clip*> out;
+    for (const auto& [id, c] : m_clips)
+        if (c.trackId == trackId)
+            out.push_back(&c);
+    return out;
+}
+
+std::vector<const Clip*> Timeline::getClipsInRange(TickTime start, TickTime end) const {
+    std::vector<const Clip*> out;
+    for (const auto& [id, c] : m_clips)
+        if (!(c.position < start) && c.position < end)  // position in [start, end)
+            out.push_back(&c);
+    return out;
+}
+
+bool Timeline::moveClip(int clipId, TickTime newPosition) {
+    auto it = m_clips.find(clipId);
+    if (it == m_clips.end()) {
+        std::cout << "[Timeline] ERROR moveClip: id=" << clipId << " not found\n";
+        return false;
+    }
+    TickTime oldPos = it->second.position;
+    it->second.position = newPosition;
+    std::cout << "[Timeline] Moved clip id=" << clipId
+              << " from=" << oldPos.ticks
+              << " to=" << newPosition.ticks << "\n";
+    return true;
+}
+
+bool Timeline::resizeClip(int clipId, TickTime newDuration) {
+    auto it = m_clips.find(clipId);
+    if (it == m_clips.end()) {
+        std::cout << "[Timeline] ERROR resizeClip: id=" << clipId << " not found\n";
+        return false;
+    }
+    TickTime oldDur = it->second.duration;
+    it->second.duration = newDuration;
+    std::cout << "[Timeline] Resized clip id=" << clipId
+              << " from=" << oldDur.ticks
+              << " to=" << newDuration.ticks << "\n";
+    return true;
+}
+
+bool Timeline::resizeClipLeft(int clipId, TickTime newPosition,
+                               TickTime newDuration, TickTime newRegionOffset) {
+    auto it = m_clips.find(clipId);
+    if (it == m_clips.end()) {
+        std::cout << "[Timeline] ERROR resizeClipLeft: id=" << clipId << " not found\n";
+        return false;
+    }
+    it->second.position     = newPosition;
+    it->second.duration     = newDuration;
+    it->second.regionOffset = newRegionOffset;
+    std::cout << "[Timeline] ResizeClipLeft id=" << clipId
+              << " pos=" << newPosition.ticks
+              << " dur=" << newDuration.ticks
+              << " offset=" << newRegionOffset.ticks << "\n";
+    return true;
+}
+
+// ─── Patterns ─────────────────────────────────────────────────────────────────
+
+int Timeline::addPattern(Pattern pattern) {
+    if (m_regions.find(pattern.regionId) == m_regions.end()) {
+        std::cout << "[Timeline] ERROR addPattern: regionId="
+                  << pattern.regionId << " not found\n";
+        return -1;
+    }
+    pattern.id = getNextId();
+    m_patterns[pattern.id] = pattern;
+    std::cout << "[Timeline] Added pattern id=" << pattern.id
+              << " name=\"" << pattern.name << "\""
+              << " regionId=" << pattern.regionId
+              << " length=" << pattern.length.ticks
+              << " notes=" << pattern.notes.size() << "\n";
+    return pattern.id;
+}
+
+const Pattern* Timeline::getPattern(int id) const {
+    auto it = m_patterns.find(id);
+    return (it != m_patterns.end()) ? &it->second : nullptr;
+}
+
+Pattern* Timeline::getPatternMutable(int id) {
+    auto it = m_patterns.find(id);
+    return (it != m_patterns.end()) ? &it->second : nullptr;
+}
+
+bool Timeline::removePattern(int id) {
+    auto it = m_patterns.find(id);
+    if (it == m_patterns.end()) {
+        std::cout << "[Timeline] ERROR removePattern: id=" << id << " not found\n";
+        return false;
+    }
+    std::cout << "[Timeline] Removed pattern id=" << id
+              << " name=\"" << it->second.name << "\"\n";
+    m_patterns.erase(it);
+    return true;
+}
+
+// ─── PatternBlocks ────────────────────────────────────────────────────────────
+
+int Timeline::addPatternBlock(PatternBlock block) {
+    if (m_tracks.find(block.trackId) == m_tracks.end()) {
+        std::cout << "[Timeline] ERROR addPatternBlock: trackId="
+                  << block.trackId << " not found\n";
+        return -1;
+    }
+    if (m_patterns.find(block.patternId) == m_patterns.end()) {
+        std::cout << "[Timeline] ERROR addPatternBlock: patternId="
+                  << block.patternId << " not found\n";
+        return -1;
+    }
+    block.id = getNextId();
+    m_patternBlocks[block.id] = block;
+    std::cout << "[Timeline] Added patternBlock id=" << block.id
+              << " trackId=" << block.trackId
+              << " patternId=" << block.patternId
+              << " position=" << block.position.ticks
+              << " duration=" << block.duration.ticks
+              << " offset=" << block.offset.ticks << "\n";
+    return block.id;
+}
+
+const PatternBlock* Timeline::getPatternBlock(int id) const {
+    auto it = m_patternBlocks.find(id);
+    return (it != m_patternBlocks.end()) ? &it->second : nullptr;
+}
+
+PatternBlock* Timeline::getPatternBlockMutable(int id) {
+    auto it = m_patternBlocks.find(id);
+    return (it != m_patternBlocks.end()) ? &it->second : nullptr;
+}
+
+std::vector<const PatternBlock*> Timeline::getAllPatternBlocks() const {
+    std::vector<const PatternBlock*> out;
+    out.reserve(m_patternBlocks.size());
+    for (const auto& [id, b] : m_patternBlocks)
+        out.push_back(&b);
+    return out;
+}
+
+std::vector<const PatternBlock*> Timeline::getPatternBlocksOnTrack(int trackId) const {
+    std::vector<const PatternBlock*> out;
+    for (const auto& [id, b] : m_patternBlocks)
+        if (b.trackId == trackId)
+            out.push_back(&b);
+    return out;
+}
+
+std::vector<const PatternBlock*> Timeline::getPatternBlocksInRange(TickTime start, TickTime end) const {
+    std::vector<const PatternBlock*> out;
+    for (const auto& [id, b] : m_patternBlocks)
+        if (!(b.position < start) && b.position < end)  // position in [start, end)
+            out.push_back(&b);
+    return out;
+}
+
+bool Timeline::removePatternBlock(int id) {
+    auto it = m_patternBlocks.find(id);
+    if (it == m_patternBlocks.end()) {
+        std::cout << "[Timeline] ERROR removePatternBlock: id=" << id << " not found\n";
+        return false;
+    }
+    std::cout << "[Timeline] Removed patternBlock id=" << id
+              << " trackId=" << it->second.trackId
+              << " position=" << it->second.position.ticks << "\n";
+    m_patternBlocks.erase(it);
+    return true;
+}
+
+bool Timeline::movePatternBlock(int id, int newTrackId, TickTime newPosition) {
+    auto it = m_patternBlocks.find(id);
+    if (it == m_patternBlocks.end()) {
+        std::cout << "[Timeline] ERROR movePatternBlock: id=" << id << " not found\n";
+        return false;
+    }
+    if (m_tracks.find(newTrackId) == m_tracks.end()) {
+        std::cout << "[Timeline] ERROR movePatternBlock: trackId="
+                  << newTrackId << " not found\n";
+        return false;
+    }
+    int oldTrackId = it->second.trackId;
+    TickTime oldPos = it->second.position;
+    it->second.trackId  = newTrackId;
+    it->second.position = newPosition;
+    std::cout << "[Timeline] Moved patternBlock id=" << id
+              << " track " << oldTrackId << "→" << newTrackId
+              << " pos " << oldPos.ticks << "→" << newPosition.ticks << "\n";
+    return true;
+}
+
+bool Timeline::resizePatternBlock(int id, TickTime newDuration) {
+    auto it = m_patternBlocks.find(id);
+    if (it == m_patternBlocks.end()) {
+        std::cout << "[Timeline] ERROR resizePatternBlock: id=" << id << " not found\n";
+        return false;
+    }
+    TickTime oldDur = it->second.duration;
+    it->second.duration = newDuration;
+    std::cout << "[Timeline] Resized patternBlock id=" << id
+              << " from=" << oldDur.ticks
+              << " to=" << newDuration.ticks << "\n";
+    return true;
+}
+
+bool Timeline::resizePatternBlockLeft(int id, TickTime newPosition, TickTime newDuration, TickTime newOffset) {
+    auto it = m_patternBlocks.find(id);
+    if (it == m_patternBlocks.end()) {
+        std::cout << "[Timeline] ERROR resizePatternBlockLeft: id=" << id << " not found\n";
+        return false;
+    }
+    it->second.position = newPosition;
+    it->second.duration = newDuration;
+    it->second.offset   = newOffset;
+    std::cout << "[Timeline] Left-resized patternBlock id=" << id
+              << " pos=" << newPosition.ticks
+              << " dur=" << newDuration.ticks
+              << " offset=" << newOffset.ticks << "\n";
+    return true;
+}
+
+bool Timeline::setPatternBlockLoopEnabled(int id, bool enabled) {
+    auto it = m_patternBlocks.find(id);
+    if (it == m_patternBlocks.end()) {
+        std::cout << "[Timeline] ERROR setPatternBlockLoopEnabled: id=" << id << " not found\n";
+        return false;
+    }
+    it->second.loopEnabled = enabled;
+    std::cout << "[Timeline] patternBlock id=" << id
+              << " loopEnabled=" << (enabled ? "true" : "false") << "\n";
+    return true;
+}
+
+// ─── Pattern notes ────────────────────────────────────────────────────────────
+
+// Derived state: pattern.length is the extent of the rightmost note end,
+// rounded up to the nearest whole bar (960 PPQ * 4 = 3840 ticks), min 1 bar.
+// Cascades the new length to any PatternBlocks whose duration was equal to
+// the old length (i.e. were in-sync / untrimmed by the user).
+void Timeline::recalcPatternLength(int patternId) {
+    auto it = m_patterns.find(patternId);
+    if (it == m_patterns.end()) return;
+    Pattern& pat = it->second;
+
+    constexpr int64_t BAR_TICKS = 3840; // 960 PPQ * 4 beats
+    int64_t rightmost = 0;
+    for (const auto& n : pat.notes) {
+        const int64_t end = n.position.ticks + n.duration.ticks;
+        if (end > rightmost) rightmost = end;
+    }
+    int64_t bars = (rightmost + BAR_TICKS - 1) / BAR_TICKS;
+    if (bars < 1) bars = 1;
+    const int64_t oldLength = pat.length.ticks;
+    const int64_t newLength = bars * BAR_TICKS;
+    if (newLength == oldLength) return;
+    pat.length.ticks = newLength;
+
+    std::cout << "[Timeline] recalcPatternLength pattern=" << patternId
+              << " old=" << oldLength << " new=" << newLength << "\n";
+
+    cascadeBlockDurations(patternId, oldLength, newLength);
+}
+
+void Timeline::cascadeBlockDurations(int patternId, int64_t oldLength, int64_t newLength) {
+    for (auto& [blockId, block] : m_patternBlocks) {
+        if (block.patternId != patternId) continue;
+        if (block.duration.ticks == oldLength) {
+            block.duration.ticks = newLength;
+            std::cout << "[Timeline] cascadeBlockDurations block=" << blockId
+                      << " dur " << oldLength << " -> " << newLength << "\n";
+        }
+    }
+}
+
+int Timeline::addNoteToPattern(int patternId, PatternNote note) {
+    auto it = m_patterns.find(patternId);
+    if (it == m_patterns.end()) {
+        std::cout << "[Timeline] ERROR addNoteToPattern: patternId="
+                  << patternId << " not found\n";
+        return -1;
+    }
+    note.id = it->second.nextNoteId++;
+    it->second.notes.push_back(note);
+    std::cout << "[Timeline] Added note id=" << note.id
+              << " to pattern=" << patternId
+              << " pitch=" << note.pitch
+              << " pos=" << note.position.ticks
+              << " dur=" << note.duration.ticks
+              << " vel=" << note.velocity << "\n";
+    recalcPatternLength(patternId);
+    return note.id;
+}
+
+bool Timeline::removeNoteFromPattern(int patternId, int noteId) {
+    auto it = m_patterns.find(patternId);
+    if (it == m_patterns.end()) {
+        std::cout << "[Timeline] ERROR removeNoteFromPattern: patternId="
+                  << patternId << " not found\n";
+        return false;
+    }
+    auto& notes = it->second.notes;
+    auto nit = std::find_if(notes.begin(), notes.end(),
+        [noteId](const PatternNote& n) { return n.id == noteId; });
+    if (nit == notes.end()) {
+        std::cout << "[Timeline] ERROR removeNoteFromPattern: noteId="
+                  << noteId << " not found in pattern=" << patternId << "\n";
+        return false;
+    }
+    notes.erase(nit);
+    std::cout << "[Timeline] Removed note id=" << noteId
+              << " from pattern=" << patternId << "\n";
+    recalcPatternLength(patternId);
+    return true;
+}
+
+bool Timeline::moveNote(int patternId, int noteId, TickTime newPosition, int newPitch) {
+    auto it = m_patterns.find(patternId);
+    if (it == m_patterns.end()) return false;
+    for (auto& n : it->second.notes) {
+        if (n.id == noteId) {
+            n.position = newPosition;
+            n.pitch    = newPitch;
+            std::cout << "[Timeline] Moved note id=" << noteId
+                      << " in pattern=" << patternId
+                      << " pos=" << newPosition.ticks
+                      << " pitch=" << newPitch << "\n";
+            recalcPatternLength(patternId);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Timeline::resizeNote(int patternId, int noteId, TickTime newDuration) {
+    auto it = m_patterns.find(patternId);
+    if (it == m_patterns.end()) return false;
+    for (auto& n : it->second.notes) {
+        if (n.id == noteId) {
+            n.duration = newDuration;
+            std::cout << "[Timeline] Resized note id=" << noteId
+                      << " in pattern=" << patternId
+                      << " dur=" << newDuration.ticks << "\n";
+            recalcPatternLength(patternId);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Timeline::setNoteVelocity(int patternId, int noteId, float velocity) {
+    auto it = m_patterns.find(patternId);
+    if (it == m_patterns.end()) return false;
+    for (auto& n : it->second.notes) {
+        if (n.id == noteId) {
+            n.velocity = velocity;
+            std::cout << "[Timeline] Set note id=" << noteId
+                      << " in pattern=" << patternId
+                      << " vel=" << velocity << "\n";
+            return true;
+        }
+    }
+    return false;
+}
+
+// ─── Track type / sampler ─────────────────────────────────────────────────────
+
+bool Timeline::convertToPatternTrack(int trackId) {
+    auto it = m_tracks.find(trackId);
+    if (it == m_tracks.end()) {
+        std::cout << "[Timeline] ERROR convertToPatternTrack: trackId="
+                  << trackId << " not found\n";
+        return false;
+    }
+    it->second.type = TrackInfo::Type::Pattern;
+    std::cout << "[Timeline] Converted track id=" << trackId << " to Pattern\n";
+    return true;
+}
+
+bool Timeline::convertToClipTrack(int trackId) {
+    auto it = m_tracks.find(trackId);
+    if (it == m_tracks.end()) {
+        std::cout << "[Timeline] ERROR convertToClipTrack: trackId="
+                  << trackId << " not found\n";
+        return false;
+    }
+    it->second.type = TrackInfo::Type::Clip;
+    std::cout << "[Timeline] Converted track id=" << trackId << " to Clip\n";
+    return true;
+}
+
+bool Timeline::setTrackVideoFlipMode(int trackId, VideoFlipMode mode) {
+    auto it = m_tracks.find(trackId);
+    if (it == m_tracks.end()) {
+        std::cout << "[Timeline] ERROR setTrackVideoFlipMode: trackId="
+                  << trackId << " not found\n";
+        return false;
+    }
+    it->second.videoFlipMode = mode;
+    std::cout << "[Timeline] Set track id=" << trackId
+              << " videoFlipMode=" << videoFlipModeToString(mode) << "\n";
+    return true;
+}
+
+bool Timeline::setTrackVideoHoldLastFrame(int trackId, bool hold) {
+    auto it = m_tracks.find(trackId);
+    if (it == m_tracks.end()) {
+        std::cout << "[Timeline] ERROR setTrackVideoHoldLastFrame: trackId="
+                  << trackId << " not found\n";
+        return false;
+    }
+    it->second.videoHoldLastFrame = hold;
+    std::cout << "[Timeline] Set track id=" << trackId
+              << " videoHoldLastFrame=" << (hold ? "true" : "false") << "\n";
+    return true;
+}
+
+// ─── Transport ────────────────────────────────────────────────────────────────
+
+void Timeline::setBPM(double bpm) {
+    m_bpm = bpm;
+    std::cout << "[Timeline] Set BPM=" << bpm << "\n";
+}
+
+void Timeline::setSampleRate(double sr) {
+    m_sampleRate = sr;
+    std::cout << "[Timeline] Set SampleRate=" << sr << "\n";
+}
+
+void Timeline::setTimeSignature(int numerator, int denominator) {
+    m_timeSigNum = numerator;
+    m_timeSigDen = denominator;
+    std::cout << "[Timeline] Set TimeSig=" << numerator << "/" << denominator << "\n";
+}
+
+void Timeline::setDeclickMs(double ms) {
+    m_declickMs = (ms < 0.0) ? 0.0 : (ms > 5.0) ? 5.0 : ms;
+}
+
+// ─── Grid Layout ──────────────────────────────────────────────────────────────
+
+void Timeline::setGridLayout(const GridLayout& layout) {
+    m_gridLayout = layout;
+    std::cout << "[Timeline] Set GridLayout " << layout.columns << "x" << layout.rows
+              << " slots=" << layout.slots.size()
+              << " chorus=" << layout.chorusTrackId
+              << " crash=" << (layout.crashEnabled ? "on" : "off")
+              << " fps=" << layout.previewFps << "\n";
+}
+
+void Timeline::assignTrackToGrid(int trackId, int gridX, int gridY, int spanX, int spanY) {
+    // Remove any existing slot for this track first (move semantics).
+    m_gridLayout.slots.erase(
+        std::remove_if(m_gridLayout.slots.begin(), m_gridLayout.slots.end(),
+                       [trackId](const GridSlot& s) { return s.trackId == trackId; }),
+        m_gridLayout.slots.end());
+
+    GridSlot s;
+    s.trackId = trackId;
+    s.gridX   = gridX;
+    s.gridY   = gridY;
+    s.spanX   = spanX;
+    s.spanY   = spanY;
+    s.opacity = 1.0f;
+    s.zOrder  = 0;
+    m_gridLayout.slots.push_back(s);
+    std::cout << "[Timeline] Grid assign track " << trackId
+              << " @ (" << gridX << "," << gridY << ") span "
+              << spanX << "x" << spanY << "\n";
+}
+
+void Timeline::removeTrackFromGrid(int trackId) {
+    auto before = m_gridLayout.slots.size();
+    m_gridLayout.slots.erase(
+        std::remove_if(m_gridLayout.slots.begin(), m_gridLayout.slots.end(),
+                       [trackId](const GridSlot& s) { return s.trackId == trackId; }),
+        m_gridLayout.slots.end());
+    std::cout << "[Timeline] Grid remove track " << trackId
+              << " (removed " << (before - m_gridLayout.slots.size()) << " slot(s))\n";
+}
+
+void Timeline::setChorusTrack(int trackId) {
+    m_gridLayout.chorusTrackId = trackId;
+    // Auto-enable hold-last-frame on the chorus track — every Sparta Remix
+    // expects the chorus background to persist through gaps.
+    if (trackId >= 0) {
+        auto it = m_tracks.find(trackId);
+        if (it != m_tracks.end())
+            it->second.videoHoldLastFrame = true;
+    }
+    std::cout << "[Timeline] Set chorus track=" << trackId << "\n";
+}
+
+void Timeline::setCrashOverlay(bool enabled, int trackId, float opacity) {
+    m_gridLayout.crashEnabled = enabled;
+    m_gridLayout.crashTrackId = trackId;
+    m_gridLayout.crashOpacity = opacity;
+    std::cout << "[Timeline] Set crash overlay enabled=" << (enabled ? "true" : "false")
+              << " track=" << trackId << " opacity=" << opacity << "\n";
+}
+
+void Timeline::setPreviewFps(int fps) {
+    if (fps < 1)   fps = 1;
+    if (fps > 120) fps = 120;
+    m_gridLayout.previewFps = fps;
+    std::cout << "[Timeline] Set preview FPS=" << fps << "\n";
+}
+
+// ─── Restore (undo/redo) ──────────────────────────────────────────────────────
+
+bool Timeline::restoreClip(const Clip& clip) {
+    m_clips[clip.id] = clip;
+    if (clip.id >= m_nextId) m_nextId = clip.id + 1;
+    std::cout << "[Timeline] Restored clip id=" << clip.id
+              << " trackId=" << clip.trackId
+              << " regionId=" << clip.regionId
+              << " position=" << clip.position.ticks << "\n";
+    return true;
+}
+
+bool Timeline::restoreTrack(const TrackInfo& track) {
+    m_tracks[track.id] = track;
+    if (track.id >= m_nextId) m_nextId = track.id + 1;
+    std::cout << "[Timeline] Restored track id=" << track.id
+              << " name=\"" << track.name << "\"\n";
+    return true;
+}
+
+bool Timeline::restoreRegion(const SampleRegion& region) {
+    m_regions[region.id] = region;
+    if (region.id >= m_nextId) m_nextId = region.id + 1;
+    std::cout << "[Timeline] Restored region id=" << region.id
+              << " name=\"" << region.name << "\"\n";
+    return true;
+}
+
+bool Timeline::restorePattern(const Pattern& pattern) {
+    m_patterns[pattern.id] = pattern;
+    if (pattern.id >= m_nextId) m_nextId = pattern.id + 1;
+    std::cout << "[Timeline] Restored pattern id=" << pattern.id
+              << " name=\"" << pattern.name << "\""
+              << " notes=" << pattern.notes.size() << "\n";
+    return true;
+}
+
+bool Timeline::restorePatternBlock(const PatternBlock& block) {
+    m_patternBlocks[block.id] = block;
+    if (block.id >= m_nextId) m_nextId = block.id + 1;
+    std::cout << "[Timeline] Restored patternBlock id=" << block.id
+              << " trackId=" << block.trackId
+              << " patternId=" << block.patternId << "\n";
+    return true;
+}
+
+bool Timeline::restoreNoteInPattern(int patternId, const PatternNote& note) {
+    auto it = m_patterns.find(patternId);
+    if (it == m_patterns.end()) {
+        std::cout << "[Timeline] ERROR restoreNoteInPattern: patternId="
+                  << patternId << " not found\n";
+        return false;
+    }
+    // Keep nextNoteId ahead of any restored note's id.
+    if (note.id >= it->second.nextNoteId) it->second.nextNoteId = note.id + 1;
+    it->second.notes.push_back(note);
+    std::cout << "[Timeline] Restored note id=" << note.id
+              << " in pattern=" << patternId << "\n";
+    recalcPatternLength(patternId);
+    return true;
+}
+
+// ─── Serialization ────────────────────────────────────────────────────────────
+
+nlohmann::json Timeline::toJSON() const {
+    nlohmann::json j;
+    j["bpm"]           = m_bpm;
+    j["sampleRate"]    = m_sampleRate;
+    j["timeSigNum"]    = m_timeSigNum;
+    j["timeSigDen"]    = m_timeSigDen;
+    j["declickMs"]     = m_declickMs;
+    j["nextId"]        = m_nextId;
+
+    j["sources"] = nlohmann::json::array();
+    for (const auto& [id, src] : m_sources) {
+        nlohmann::json s;
+        sourceToJson(s, src);
+        j["sources"].push_back(s);
+    }
+
+    j["regions"] = nlohmann::json::array();
+    for (const auto& [id, r] : m_regions) {
+        nlohmann::json rj = r;  // ADL calls to_json(j, const SampleRegion&)
+        j["regions"].push_back(rj);
+    }
+
+    j["tracks"] = nlohmann::json::array();
+    for (const auto& [id, t] : m_tracks) {
+        nlohmann::json tj = t;  // ADL calls to_json(j, const TrackInfo&)
+        j["tracks"].push_back(tj);
+    }
+
+    j["clips"] = nlohmann::json::array();
+    for (const auto& [id, c] : m_clips) {
+        nlohmann::json cj = c;  // ADL calls to_json(j, const Clip&)
+        j["clips"].push_back(cj);
+    }
+
+    j["patterns"] = nlohmann::json::array();
+    for (const auto& [id, p] : m_patterns) {
+        nlohmann::json pj = p;  // ADL calls to_json(j, const Pattern&)
+        j["patterns"].push_back(pj);
+    }
+
+    j["patternBlocks"] = nlohmann::json::array();
+    for (const auto& [id, b] : m_patternBlocks) {
+        nlohmann::json bj = b;  // ADL calls to_json(j, const PatternBlock&)
+        j["patternBlocks"].push_back(bj);
+    }
+
+    nlohmann::json gl;
+    gl["columns"]       = m_gridLayout.columns;
+    gl["rows"]          = m_gridLayout.rows;
+    gl["chorusTrackId"] = m_gridLayout.chorusTrackId;
+    gl["crashEnabled"]  = m_gridLayout.crashEnabled;
+    gl["crashTrackId"]  = m_gridLayout.crashTrackId;
+    gl["crashOpacity"]  = m_gridLayout.crashOpacity;
+    gl["previewFps"]    = m_gridLayout.previewFps;
+    gl["slots"] = nlohmann::json::array();
+    for (const auto& s : m_gridLayout.slots) {
+        nlohmann::json sj;
+        sj["trackId"] = s.trackId;
+        sj["gridX"]   = s.gridX;
+        sj["gridY"]   = s.gridY;
+        sj["spanX"]   = s.spanX;
+        sj["spanY"]   = s.spanY;
+        sj["opacity"] = s.opacity;
+        sj["zOrder"]  = s.zOrder;
+        gl["slots"].push_back(sj);
+    }
+    j["gridLayout"] = gl;
+
+    std::cout << "[Timeline] Serialized: "
+              << m_sources.size()       << " sources, "
+              << m_regions.size()       << " regions, "
+              << m_tracks.size()        << " tracks, "
+              << m_clips.size()         << " clips, "
+              << m_patterns.size()      << " patterns, "
+              << m_patternBlocks.size() << " patternBlocks\n";
+    return j;
+}
+
+bool Timeline::fromJSON(const nlohmann::json& j) {
+    try {
+        j.at("bpm").get_to(m_bpm);
+        j.at("sampleRate").get_to(m_sampleRate);
+        j.at("timeSigNum").get_to(m_timeSigNum);
+        j.at("timeSigDen").get_to(m_timeSigDen);
+        j.at("nextId").get_to(m_nextId);
+        if (j.contains("declickMs"))
+            j.at("declickMs").get_to(m_declickMs);
+        else
+            m_declickMs = 0.0; // old project: default disabled (backward-compat)
+
+        m_sources.clear();
+        for (const auto& s : j.at("sources")) {
+            SourceMedia src;
+            sourceFromJson(s, src);
+            m_sources[src.id] = src;
+        }
+
+        m_regions.clear();
+        for (const auto& r : j.at("regions")) {
+            SampleRegion region = r.get<SampleRegion>();  // ADL from_json
+            m_regions[region.id] = region;
+        }
+
+        m_tracks.clear();
+        for (const auto& t : j.at("tracks")) {
+            TrackInfo track = t.get<TrackInfo>();  // ADL from_json
+            m_tracks[track.id] = track;
+        }
+
+        m_clips.clear();
+        for (const auto& c : j.at("clips")) {
+            Clip clip = c.get<Clip>();  // ADL from_json
+            m_clips[clip.id] = clip;
+        }
+
+        m_patterns.clear();
+        // Track which regions we've already migrated to so a second pattern
+        // referencing the same region doesn't clobber values with possibly
+        // divergent legacy settings (first pattern wins; log if divergent).
+        std::set<int> migratedRegions;
+        if (j.contains("patterns")) {
+            for (const auto& pj : j.at("patterns")) {
+                Pattern p = pj.get<Pattern>();  // ADL from_json
+                m_patterns[p.id] = p;
+
+                // ── Legacy migration: sampler fields moved Pattern → SampleRegion.
+                // If this pattern JSON carries any of the old per-pattern sampler
+                // fields, copy them onto the matching region (first writer wins).
+                const bool legacy = pj.contains("rootNote") || pj.contains("attackMs")
+                                 || pj.contains("decayMs")  || pj.contains("sustain")
+                                 || pj.contains("releaseMs") || pj.contains("loopEnabled")
+                                 || pj.contains("loopStart") || pj.contains("loopEnd")
+                                 || pj.contains("crossfadeEnabled");
+                if (!legacy) continue;
+                auto rit = m_regions.find(p.regionId);
+                if (rit == m_regions.end()) continue;
+                SampleRegion& r = rit->second;
+                if (migratedRegions.count(p.regionId)) {
+                    std::cout << "[Timeline] WARN legacy sampler migration: pattern "
+                              << p.id << " has sampler fields but region " << p.regionId
+                              << " already migrated from another pattern; ignoring\n";
+                    continue;
+                }
+                migratedRegions.insert(p.regionId);
+                if (pj.contains("rootNote"))         pj.at("rootNote").get_to(r.rootNote);
+                if (pj.contains("attackMs"))         pj.at("attackMs").get_to(r.attackMs);
+                if (pj.contains("decayMs"))          pj.at("decayMs").get_to(r.decayMs);
+                if (pj.contains("sustain"))          pj.at("sustain").get_to(r.sustain);
+                if (pj.contains("releaseMs"))        pj.at("releaseMs").get_to(r.releaseMs);
+                if (pj.contains("loopEnabled"))      pj.at("loopEnabled").get_to(r.loopEnabled);
+                if (pj.contains("loopStart"))        pj.at("loopStart").get_to(r.loopStart);
+                if (pj.contains("loopEnd"))          pj.at("loopEnd").get_to(r.loopEnd);
+                if (pj.contains("crossfadeEnabled")) pj.at("crossfadeEnabled").get_to(r.crossfadeEnabled);
+            }
+        }
+
+        m_patternBlocks.clear();
+        if (j.contains("patternBlocks")) {
+            for (const auto& bj : j.at("patternBlocks")) {
+                PatternBlock b = bj.get<PatternBlock>();  // ADL from_json
+                m_patternBlocks[b.id] = b;
+            }
+        }
+
+        m_gridLayout = GridLayout{};  // reset to defaults
+        if (j.contains("gridLayout")) {
+            const auto& gl = j.at("gridLayout");
+            if (gl.contains("columns"))       gl.at("columns").get_to(m_gridLayout.columns);
+            if (gl.contains("rows"))          gl.at("rows").get_to(m_gridLayout.rows);
+            if (gl.contains("chorusTrackId")) gl.at("chorusTrackId").get_to(m_gridLayout.chorusTrackId);
+            if (gl.contains("crashEnabled"))  gl.at("crashEnabled").get_to(m_gridLayout.crashEnabled);
+            if (gl.contains("crashTrackId"))  gl.at("crashTrackId").get_to(m_gridLayout.crashTrackId);
+            if (gl.contains("crashOpacity"))  gl.at("crashOpacity").get_to(m_gridLayout.crashOpacity);
+            if (gl.contains("previewFps"))    gl.at("previewFps").get_to(m_gridLayout.previewFps);
+            if (gl.contains("slots")) {
+                for (const auto& sj : gl.at("slots")) {
+                    GridSlot s;
+                    if (sj.contains("trackId")) sj.at("trackId").get_to(s.trackId);
+                    if (sj.contains("gridX"))   sj.at("gridX").get_to(s.gridX);
+                    if (sj.contains("gridY"))   sj.at("gridY").get_to(s.gridY);
+                    if (sj.contains("spanX"))   sj.at("spanX").get_to(s.spanX);
+                    if (sj.contains("spanY"))   sj.at("spanY").get_to(s.spanY);
+                    if (sj.contains("opacity")) sj.at("opacity").get_to(s.opacity);
+                    if (sj.contains("zOrder"))  sj.at("zOrder").get_to(s.zOrder);
+                    m_gridLayout.slots.push_back(s);
+                }
+            }
+        }
+
+        std::cout << "[Timeline] Deserialized: "
+                  << m_sources.size()       << " sources, "
+                  << m_regions.size()       << " regions, "
+                  << m_tracks.size()        << " tracks, "
+                  << m_clips.size()         << " clips, "
+                  << m_patterns.size()      << " patterns, "
+                  << m_patternBlocks.size() << " patternBlocks\n";
+        return true;
+    } catch (const std::exception& e) {
+        std::cout << "[Timeline] ERROR fromJSON: " << e.what() << "\n";
+        return false;
+    }
+}

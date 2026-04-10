@@ -1,0 +1,14 @@
+{
+  "name": "xleth",
+  "version": "0.0.1",
+  "builtin-baseline": "4497409a47f19db373a410a0efb84eca4747adbf",
+  "dependencies": [
+    {
+      "name": "ffmpeg",
+      "features": ["avcodec", "avformat", "swscale"]
+    },
+    "glew",
+    "glfw3",
+    "nlohmann-json"
+  ]
+}

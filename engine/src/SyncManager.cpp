@@ -1,0 +1,267 @@
+#include "SyncManager.h"
+
+// GPU compositor calls are compiled-out when building XlethEngineCore
+// (the static lib used by the Node.js bridge). The bridge target defines
+// XLETH_CORE_ONLY so no GLFW/GLEW/OpenGL symbols appear in the .node DLL.
+// When building the full engine (XlethEngine executable) this block is active.
+#ifndef XLETH_CORE_ONLY
+#  include "VideoCompositor.h"   // brings in VideoLayer.h + GL/GLFW headers
+#endif
+
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <iostream>
+#include <numeric>
+
+SyncManager::SyncManager(Transport& transport,
+                         std::vector<VideoDecoder*>& decoders,
+                         FrameCache& cache,
+                         VideoCompositor* compositor)
+    : transport_(transport)
+    , decoders_(decoders)
+    , cache_(cache)
+    , compositor_(compositor)
+{
+}
+
+void SyncManager::addEvent(const VideoEvent& event)
+{
+    events_.push_back(event);
+    if (event.layerIndex > maxLayerIndex_)
+        maxLayerIndex_ = event.layerIndex;
+}
+
+void SyncManager::clearEvents()
+{
+    events_.clear();
+    lastDisplayedFrame_.clear();
+    maxLayerIndex_ = 0;
+
+    // Reset preview hold state (prevents stale holds across seek/stop/project switch)
+    previewLastChorusFrame    = -1;
+    previewLastChorusSourceId = -1;
+    previewLastGridCellKey.clear();
+}
+
+double SyncManager::videoTick()
+{
+    // 1. If transport is not playing, nothing to do
+    if (!transport_.isPlaying())
+    {
+#ifndef XLETH_CORE_ONLY
+        if (compositor_) compositor_->renderComposite();
+#endif
+        return -1.0;
+    }
+
+    // 2. Read audio position atomically
+    double audioTimeSec  = transport_.getPositionSeconds();
+    double audioTimeBeat = transport_.getPositionBeats();
+
+    // Track which layers are active this tick
+#ifndef XLETH_CORE_ONLY
+    std::vector<bool> layerActive(static_cast<size_t>(maxLayerIndex_ + 1), false);
+#endif
+
+    // 3 & 4. Find active events and process them
+    for (const auto& event : events_)
+    {
+        if (audioTimeBeat < event.startBeat ||
+            audioTimeBeat >= event.startBeat + event.durationBeats)
+            continue;
+
+#ifndef XLETH_CORE_ONLY
+        // This event is ACTIVE
+        if (compositor_ &&
+            event.layerIndex >= 0 &&
+            event.layerIndex < static_cast<int>(layerActive.size()))
+            layerActive[static_cast<size_t>(event.layerIndex)] = true;
+#endif
+
+        // 4a. Calculate source video time
+        // Video plays forward from sourceStartTime for the duration of the hit,
+        // then cuts out when the event ends.
+        double beatsSinceStart = audioTimeBeat - event.startBeat;
+        double bpm = transport_.getBPM();
+        double secsSinceStart  = beatsSinceStart * (60.0 / bpm);
+        double sourceTime      = event.sourceStartTime + secsSinceStart;
+
+        // Bounds-check sourceId against decoders
+        if (event.sourceId < 0 || event.sourceId >= static_cast<int>(decoders_.size()))
+            continue;
+
+        VideoDecoder* decoder = decoders_[static_cast<size_t>(event.sourceId)];
+        if (!decoder || !decoder->isOpen())
+            continue;
+
+        // 4b. Convert sourceTime to frame number
+        int targetFrame = decoder->timeToFrame(sourceTime);
+
+#ifndef XLETH_CORE_ONLY
+        // 4c. Check if this frame was already displayed on this layer (GPU path)
+        if (compositor_)
+        {
+            auto it = lastDisplayedFrame_.find(event.layerIndex);
+            if (it != lastDisplayedFrame_.end() && it->second == targetFrame)
+            {
+                // Frame already displayed — just refresh layer properties
+                VideoLayer layer = {};
+                layer.sourceTextureSet = event.sourceId;
+                layer.x       = event.x;
+                layer.y       = event.y;
+                layer.width   = event.width;
+                layer.height  = event.height;
+                layer.opacity = event.opacity;
+                layer.zOrder  = event.layerIndex;
+                layer.visible = true;
+                compositor_->setLayer(event.layerIndex, layer);
+                continue;
+            }
+        }
+#endif
+
+        // 4d. Try frame cache
+        FrameKey key = { event.sourceId, targetFrame };
+        const CachedFrame* cached = cache_.get(key);
+
+        // 4e. If cache miss — decode
+        if (!cached)
+        {
+            auto decodeStart = std::chrono::high_resolution_clock::now();
+
+            VideoDecoder::DecodedFrame decodedFrame;
+            bool ok = decoder->seekAndDecode(sourceTime, decodedFrame);
+
+            auto decodeEnd = std::chrono::high_resolution_clock::now();
+            double decodeMs = std::chrono::duration<double, std::milli>(decodeEnd - decodeStart).count();
+
+            decodeTimeSamples_.push_back(decodeMs);
+
+            if (!ok)
+                continue;
+
+            // Track slow decodes (>50ms) but always cache the frame.
+            // The old `continue` here caused black flicker at note boundaries
+            // where the first frame after a seek was consistently >50ms.
+            if (decodeMs > 50.0)
+            {
+                ++frameDrops_;
+                std::fprintf(stderr, "[SyncManager] Slow decode: %.1f ms (source %d, frame %d), caching anyway\n",
+                             decodeMs, event.sourceId, targetFrame);
+            }
+
+            // Create CachedFrame from decoded data
+            CachedFrame cf;
+            cf.yPlane  = std::move(decodedFrame.yPlane);
+            cf.uPlane  = std::move(decodedFrame.uPlane);
+            cf.vPlane  = std::move(decodedFrame.vPlane);
+            cf.width   = decodedFrame.width;
+            cf.height  = decodedFrame.height;
+            cf.yStride = decodedFrame.yStride;
+            cf.uStride = decodedFrame.uStride;
+            cf.vStride = decodedFrame.vStride;
+
+            cache_.put(key, std::move(cf));
+
+            // Re-fetch from cache (we just inserted it)
+            cached = cache_.get(key);
+            if (!cached)
+                continue;
+        }
+
+#ifndef XLETH_CORE_ONLY
+        if (compositor_)
+        {
+            // 4f. Upload frame to compositor
+            compositor_->uploadFrameToSet(event.sourceId,
+                                          cached->yPlane.data(),
+                                          cached->uPlane.data(),
+                                          cached->vPlane.data(),
+                                          cached->width, cached->height,
+                                          cached->yStride, cached->uStride, cached->vStride);
+
+            // 4g. Set layer properties
+            VideoLayer layer = {};
+            layer.sourceTextureSet = event.sourceId;
+            layer.x       = event.x;
+            layer.y       = event.y;
+            layer.width   = event.width;
+            layer.height  = event.height;
+            layer.opacity = event.opacity;
+            layer.zOrder  = event.layerIndex;
+            layer.visible = true;
+            compositor_->setLayer(event.layerIndex, layer);
+
+            // 4h. Update lastDisplayedFrame
+            lastDisplayedFrame_[event.layerIndex] = targetFrame;
+        }
+#endif
+    }
+
+#ifndef XLETH_CORE_ONLY
+    if (compositor_)
+    {
+        // 5. Set any non-active layers to visible = false
+        for (int i = 0; i <= maxLayerIndex_; ++i)
+        {
+            if (!layerActive[static_cast<size_t>(i)])
+            {
+                VideoLayer hidden = {};
+                hidden.visible = false;
+                compositor_->setLayer(i, hidden);
+            }
+        }
+
+        // 6. Render composite
+        compositor_->renderComposite();
+    }
+#endif
+
+    // 7. Measure drift
+    double renderTimeSec = transport_.getPositionSeconds();
+    double driftMs = std::abs((renderTimeSec - audioTimeSec) * 1000.0);
+
+    driftSamples_.push_back(driftMs);
+    if (driftMs > maxDrift_)
+        maxDrift_ = driftMs;
+
+    return audioTimeBeat;
+}
+
+// ── Performance stats ────────────────────────────────────────────────────────
+
+double SyncManager::getLastDriftMs() const
+{
+    if (driftSamples_.empty()) return 0.0;
+    return driftSamples_.back();
+}
+
+double SyncManager::getMaxDriftMs() const
+{
+    return maxDrift_;
+}
+
+double SyncManager::getAvgDriftMs() const
+{
+    if (driftSamples_.empty()) return 0.0;
+    double sum = std::accumulate(driftSamples_.begin(), driftSamples_.end(), 0.0);
+    return sum / static_cast<double>(driftSamples_.size());
+}
+
+double SyncManager::getAvgDecodeTimeMs() const
+{
+    if (decodeTimeSamples_.empty()) return 0.0;
+    double sum = std::accumulate(decodeTimeSamples_.begin(), decodeTimeSamples_.end(), 0.0);
+    return sum / static_cast<double>(decodeTimeSamples_.size());
+}
+
+int SyncManager::getFrameDropCount() const
+{
+    return frameDrops_;
+}
+
+double SyncManager::getCacheHitRate() const
+{
+    return cache_.hitRate();
+}

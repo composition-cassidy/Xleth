@@ -1,0 +1,30 @@
+{
+    "bpm": 140.0,
+    "clips": [],
+    "created_at": "2026-04-10T11:51:02Z",
+    "custom_labels": [],
+    "declickMs": 0.5,
+    "gridLayout": {
+        "chorusTrackId": -1,
+        "columns": 3,
+        "crashEnabled": false,
+        "crashOpacity": 0.699999988079071,
+        "crashTrackId": -1,
+        "previewFps": 30,
+        "rows": 3,
+        "slots": []
+    },
+    "modified_at": "2026-04-10T11:51:02Z",
+    "patternBlocks": [],
+    "patterns": [],
+    "project_name": "test 3",
+    "regions": [],
+    "sample_rate": 44100.0,
+    "sources": [],
+    "time_signature": [
+        4,
+        4
+    ],
+    "tracks": [],
+    "xleth_version": "0.1.0"
+}

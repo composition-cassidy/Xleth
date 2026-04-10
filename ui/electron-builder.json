@@ -1,0 +1,7 @@
+{
+  "appId": "com.xleth.app",
+  "productName": "XLETH",
+  "files": ["dist/**/*", "main.js", "preload.js"],
+  "directories": { "output": "release" },
+  "win": { "target": "nsis" }
+}

@@ -1,0 +1,184 @@
+{
+    "bpm": 120.0,
+    "clips": [],
+    "created_at": "2026-04-05T00:00:00Z",
+    "custom_labels": [],
+    "modified_at": "2026-04-05T00:00:00Z",
+    "patternBlocks": [
+        {
+            "durationTicks": 3840,
+            "id": 300,
+            "loopEnabled": false,
+            "offsetTicks": 0,
+            "patternId": 200,
+            "positionTicks": 0,
+            "trackId": 100
+        },
+        {
+            "durationTicks": 3840,
+            "id": 301,
+            "loopEnabled": false,
+            "offsetTicks": 0,
+            "patternId": 201,
+            "positionTicks": 0,
+            "trackId": 101
+        },
+        {
+            "durationTicks": 3840,
+            "id": 302,
+            "loopEnabled": false,
+            "offsetTicks": 0,
+            "patternId": 202,
+            "positionTicks": 0,
+            "trackId": 102
+        }
+    ],
+    "patterns": [
+        {
+            "id": 200,
+            "lengthTicks": 3840,
+            "name": "Arp Up",
+            "nextNoteId": 5,
+            "notes": [
+                { "durationTicks": 960, "id": 1, "pitch": 60, "positionTicks": 0,    "velocity": 1.0 },
+                { "durationTicks": 960, "id": 2, "pitch": 64, "positionTicks": 960,  "velocity": 1.0 },
+                { "durationTicks": 960, "id": 3, "pitch": 67, "positionTicks": 1920, "velocity": 1.0 },
+                { "durationTicks": 960, "id": 4, "pitch": 72, "positionTicks": 2880, "velocity": 1.0 }
+            ],
+            "regionId": 10
+        },
+        {
+            "id": 201,
+            "lengthTicks": 3840,
+            "name": "Arp Mid",
+            "nextNoteId": 5,
+            "notes": [
+                { "durationTicks": 960, "id": 1, "pitch": 55, "positionTicks": 0,    "velocity": 1.0 },
+                { "durationTicks": 960, "id": 2, "pitch": 59, "positionTicks": 960,  "velocity": 1.0 },
+                { "durationTicks": 960, "id": 3, "pitch": 62, "positionTicks": 1920, "velocity": 1.0 },
+                { "durationTicks": 960, "id": 4, "pitch": 67, "positionTicks": 2880, "velocity": 1.0 }
+            ],
+            "regionId": 10
+        },
+        {
+            "id": 202,
+            "lengthTicks": 3840,
+            "name": "Arp Low",
+            "nextNoteId": 5,
+            "notes": [
+                { "durationTicks": 960, "id": 1, "pitch": 48, "positionTicks": 0,    "velocity": 1.0 },
+                { "durationTicks": 960, "id": 2, "pitch": 52, "positionTicks": 960,  "velocity": 1.0 },
+                { "durationTicks": 960, "id": 3, "pitch": 55, "positionTicks": 1920, "velocity": 1.0 },
+                { "durationTicks": 960, "id": 4, "pitch": 60, "positionTicks": 2880, "velocity": 1.0 }
+            ],
+            "regionId": 10
+        }
+    ],
+    "project_name": "sampler-pertrack-test",
+    "regions": [
+        {
+            "attackMs": 5.0,
+            "audioFilePath": "",
+            "crossfadeEnabled": false,
+            "customLabelName": "",
+            "decayMs": 0.0,
+            "endFrame": 0,
+            "endTime": 0.6,
+            "hasSwappedAudio": false,
+            "id": 10,
+            "label": "Pitch",
+            "loopEnabled": false,
+            "loopEnd": 0,
+            "loopStart": 0,
+            "name": "Pitch Test",
+            "releaseMs": 80.0,
+            "rootNote": 60,
+            "sourceId": 1,
+            "startFrame": 0,
+            "startTime": 0.1,
+            "sustain": 1.0,
+            "swappedAudioPath": "",
+            "syllables": []
+        }
+    ],
+    "sample_rate": 48000.0,
+    "sources": [
+        {
+            "duration": 126.862229,
+            "fileName": "Sparta Extended Remix - HQ Edition.wav",
+            "filePath": "C:\\Users\\Krasen\\Desktop\\XLETH\\Sparta Extended Remix - HQ Edition.wav",
+            "fps": 0.0,
+            "hasVideo": false,
+            "height": 0,
+            "id": 1,
+            "proxyPath": "",
+            "proxyReady": true,
+            "totalFrames": 0,
+            "width": 0
+        }
+    ],
+    "time_signature": [
+        4,
+        4
+    ],
+    "tracks": [
+        {
+            "assignedPatternId": 200,
+            "assignedRegionId": 10,
+            "id": 100,
+            "muted": false,
+            "name": "Pitch A",
+            "order": 0,
+            "pan": 0.0,
+            "solo": false,
+            "type": "Pattern",
+            "videoFlipMode": "None",
+            "videoH": 1080.0,
+            "videoOpacity": 1.0,
+            "videoW": 1920.0,
+            "videoX": 0.0,
+            "videoY": 0.0,
+            "videoZOrder": 0,
+            "volume": 1.0
+        },
+        {
+            "assignedPatternId": 201,
+            "assignedRegionId": 10,
+            "id": 101,
+            "muted": false,
+            "name": "Pitch B",
+            "order": 0,
+            "pan": 0.0,
+            "solo": false,
+            "type": "Pattern",
+            "videoFlipMode": "None",
+            "videoH": 1080.0,
+            "videoOpacity": 1.0,
+            "videoW": 1920.0,
+            "videoX": 0.0,
+            "videoY": 0.0,
+            "videoZOrder": 0,
+            "volume": 1.0
+        },
+        {
+            "assignedPatternId": 202,
+            "assignedRegionId": 10,
+            "id": 102,
+            "muted": false,
+            "name": "Pitch C",
+            "order": 0,
+            "pan": 0.0,
+            "solo": false,
+            "type": "Pattern",
+            "videoFlipMode": "None",
+            "videoH": 1080.0,
+            "videoOpacity": 1.0,
+            "videoW": 1920.0,
+            "videoX": 0.0,
+            "videoY": 0.0,
+            "videoZOrder": 0,
+            "volume": 1.0
+        }
+    ],
+    "xleth_version": "0.1.0"
+}

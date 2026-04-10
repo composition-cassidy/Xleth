@@ -1,0 +1,107 @@
+/* ── XLETH Phase 1 Theme ─────────────────────────────────────────────────── */
+
+:root {
+  /* Backgrounds */
+  --bg-primary:    #0A0A0F;
+  --bg-secondary:  #111118;
+  --bg-tertiary:   #1A1A24;
+  --bg-elevated:   #222230;
+
+  /* Borders */
+  --border:         #2A2A38;
+  --border-focused: #33CED6;
+
+  /* Text */
+  --text-primary:   #E8E8ED;
+  --text-secondary: #8888A0;
+  --text-tertiary:  #555566;
+
+  /* Accent */
+  --accent:       #33CED6;
+  --accent-hover: #2BB8BF;
+  --accent-dim:   rgba(51, 206, 214, 0.15);
+
+  /* Status */
+  --danger:  #FF4757;
+  --warning: #FFAA33;
+  --success: #22C55E;
+
+  /* Sample label colors */
+  --label-kick:   #FF6B6B;
+  --label-snare:  #FFA94D;
+  --label-hihat:  #FFD93D;
+  --label-crash:  #FF6B9D;
+  --label-pitch:  #69DB7C;
+  --label-quote:  #748FFC;
+  --label-custom: #B197FC;
+
+  /* Sizing */
+  --titlebar-h:   32px;
+  --transport-h:  48px;
+  --panel-min-w: 250px;
+  --panel-max-w: 400px;
+  --divider-w:     4px;
+  --mixer-h:      400px;
+
+  /* Radius */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+
+  /* Transitions */
+  --transition-fast: 0.1s ease;
+  --transition:      0.15s ease;
+}
+
+/* ── Reset ───────────────────────────────────────────────────────────────── */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: 'Hanken Grotesk', system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────────────────── */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--text-tertiary);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-secondary);
+}
+
+/* ── Selection ───────────────────────────────────────────────────────────── */
+
+::selection {
+  background: var(--accent-dim);
+  color: var(--text-primary);
+}
+
+/* ── Focus ring ──────────────────────────────────────────────────────────── */
+
+:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}

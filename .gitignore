@@ -36,7 +36,10 @@ thumbs.db
 
 # Test/proxy media assets
 media/
+proxies/
 *.dnxhr.mov
+*.xlpeak
+*.rar
 
 # CMake
 CMakeCache.txt

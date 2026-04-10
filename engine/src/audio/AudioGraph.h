@@ -1,0 +1,251 @@
+#pragma once
+
+#include <juce_audio_processors/juce_audio_processors.h>
+#include <nlohmann/json.hpp>
+
+#include <atomic>
+#include <memory>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+class XlethEffectBase;
+class WireGainProcessor;
+class DelayCompensationProcessor;
+
+// ─── AudioGraph ─────────────────────────────────────────────────────────────
+// Owns a juce::AudioProcessorGraph and a topology data model (nodes,
+// connections, adjacency lists).  Provides:
+//
+//   - Arbitrary fan-in / fan-out audio wiring (stereo only, no MIDI)
+//   - Cycle rejection via DFS before addConnection
+//   - Kahn's BFS topological sort with level groupings
+//   - Plugin Delay Compensation (PDC) with DelayCompensationProcessor nodes
+//   - Per-wire gain (0-2.0, SmoothedValue 20 ms) and mute (gain→0 ramp)
+//   - 50 ms debounced APG rebuild for graph-mode mutations
+//   - Chain-mode compatibility (addEffect/removeEffect/moveEffect)
+//
+// Threading:
+//   Main thread  — all public methods except processBlock
+//   Audio thread — processBlock only (APG handles atomic RenderSequence swap)
+
+class AudioGraph : private juce::Timer
+{
+public:
+    AudioGraph();
+    ~AudioGraph() override;
+
+    // ── Lifecycle (main thread) ─────────────────────────────────────────
+    void init(double sampleRate, int blockSize);
+    void destroy();
+    bool isInitialized() const { return graph_ != nullptr; }
+    void reprepare(double sampleRate, int blockSize);
+    void setNonRealtime(bool nr) { if (graph_) graph_->setNonRealtime(nr); }
+
+    // ── Node management (main thread) ───────────────────────────────────
+
+    // Add a new effect node.  Returns APG NodeID uid, or -1 on failure.
+    int addNode(const std::string& pluginId);
+
+    // Remove a node and all its connections.  Returns false if not found.
+    bool removeNode(int nodeId);
+
+    // Store UI position (not used by engine, persisted for future UI).
+    void setNodePosition(int nodeId, float x, float y);
+
+    // Set bypass state on an effect node.
+    bool setBypass(int nodeId, bool bypassed);
+
+    // ── Connection management (main thread) ─────────────────────────────
+
+    // Add a connection. Returns false if would create cycle or invalid nodes.
+    // Uses 50 ms debounced rebuild.
+    bool addConnection(int sourceNodeId, int destNodeId);
+
+    // Remove a connection. Returns false if not found.
+    // Uses 50 ms debounced rebuild.
+    bool removeConnection(int sourceNodeId, int destNodeId);
+
+    // ── Wire properties (main thread) ───────────────────────────────────
+
+    // Set wire gain (0.0–2.0). Returns false if connection not found.
+    bool setWireGain(int sourceNodeId, int destNodeId, float gain);
+
+    // Set wire mute. Gain ramps to 0; connection stays alive.
+    bool setWireMute(int sourceNodeId, int destNodeId, bool muted);
+
+    // ── Chain-mode compatibility (main thread, immediate rebuild) ───────
+
+    // Add effect at position in linear chain. Returns APG NodeID uid or -1.
+    int addEffect(const std::string& pluginId, int position);
+
+    // Remove effect from chain. Returns false if not found.
+    bool removeEffect(int nodeId);
+
+    // Move effect to new position in chain. Returns false if not found.
+    bool moveEffect(int nodeId, int newPosition);
+
+    // Number of effect nodes (excludes I/O nodes).
+    int getEffectCount() const;
+
+    // ── Query (main thread) ─────────────────────────────────────────────
+
+    // Returns the old-format chain state: [{nodeId, pluginId, position, bypassed}]
+    nlohmann::json getChainState() const;
+
+    // Returns full graph topology JSON with nodes, connections, levels, latencies.
+    nlohmann::json getGraphTopology() const;
+
+    // True iff graph is a single linear path (every node has <=1 in, <=1 out).
+    bool isGraphLinear() const;
+
+    // ── Effect parameter / meter access (main-thread only) ─────────────
+    // Retrieve the XlethEffectBase for a node.  Returns nullptr if the nodeId
+    // is not in this graph or the node does not hold an XlethEffectBase.
+    XlethEffectBase* getEffect(int nodeId);
+
+    // Returns JSON param descriptor array ("[]" if nodeId invalid).
+    std::string getEffectParameters(int nodeId) const;
+
+    // Set a parameter by ID (denormalised).  Returns false if invalid.
+    bool setEffectParameter(int nodeId, const std::string& paramId, float value);
+
+    // Returns JSON meter array ("[0,0,0,0,0,0,0,0]" if nodeId invalid).
+    std::string getEffectMeter(int nodeId) const;
+
+    // ── Serialization ───────────────────────────────────────────────────
+
+    nlohmann::json toJSON() const;
+    bool fromJSON(const nlohmann::json& j);
+
+    // ── Audio thread ────────────────────────────────────────────────────
+    void processBlock(juce::AudioBuffer<float>& buffer, int numSamples,
+                      juce::MidiBuffer& midi);
+
+    // Returns the maximum getTailLengthSeconds() across all effect nodes.
+    // Lightweight (iterates effect nodes only, no alloc). Safe from audio thread.
+    double getMaxTailLengthSeconds() const;
+
+    // ── Input/output node IDs (for external wiring references) ──────────
+    int getInputNodeId()  const { return static_cast<int>(inputNode_.uid); }
+    int getOutputNodeId() const { return static_cast<int>(outputNode_.uid); }
+
+private:
+    // ── Node data ───────────────────────────────────────────────────────
+
+    struct GraphNode
+    {
+        juce::AudioProcessorGraph::NodeID apgNodeId;
+        std::string pluginId;
+        float x = 0.0f;
+        float y = 0.0f;
+        int   level = -1;                // Kahn's BFS level (computed)
+        int   cumulativeLatency = 0;     // PDC: computed
+    };
+
+    // ── Wire / connection data ──────────────────────────────────────────
+
+    struct WireId
+    {
+        int sourceNodeId;
+        int destNodeId;
+        bool operator==(const WireId& o) const noexcept
+        {
+            return sourceNodeId == o.sourceNodeId && destNodeId == o.destNodeId;
+        }
+    };
+
+    struct WireIdHash
+    {
+        size_t operator()(const WireId& w) const noexcept
+        {
+            auto h1 = static_cast<size_t>(static_cast<uint32_t>(w.sourceNodeId));
+            auto h2 = static_cast<size_t>(static_cast<uint32_t>(w.destNodeId));
+            return (h1 << 16) ^ h2;
+        }
+    };
+
+    struct WireProperties
+    {
+        float gain  = 1.0f;
+        bool  muted = false;
+
+        // Runtime APG NodeIDs for inserted processors (uid 0 = not present)
+        juce::AudioProcessorGraph::NodeID gainNodeId{};
+        juce::AudioProcessorGraph::NodeID delayNodeId{};
+    };
+
+    struct GraphConnection
+    {
+        int sourceNodeId;
+        int destNodeId;
+        WireProperties wire;
+    };
+
+    // ── Storage ─────────────────────────────────────────────────────────
+
+    std::unique_ptr<juce::AudioProcessorGraph> graph_;
+    juce::AudioProcessorGraph::NodeID inputNode_{};
+    juce::AudioProcessorGraph::NodeID outputNode_{};
+
+    // Effect nodes keyed by uid (excludes I/O nodes, gain nodes, delay nodes)
+    std::unordered_map<int, GraphNode> nodes_;
+
+    // Connections keyed by {source, dest} uid pair
+    std::unordered_map<WireId, GraphConnection, WireIdHash> connections_;
+
+    // Adjacency lists (effect + I/O node uids only, not gain/delay helper nodes)
+    std::unordered_map<int, std::vector<int>> adjForward_;   // source → [dest]
+    std::unordered_map<int, std::vector<int>> adjReverse_;   // dest → [source]
+
+    // Cached linear ordering (uids in chain order). Empty if non-linear.
+    std::vector<int> linearOrder_;
+
+    double sampleRate_ = 44100.0;
+    int    blockSize_  = 512;
+    juce::MidiBuffer emptyMidi_;
+
+    // ── Debounce state ──────────────────────────────────────────────────
+
+    std::atomic<bool> pendingRebuild_{false};
+
+    void timerCallback() override;
+    void markDirty();
+    void rebuildImmediate();   // chain-mode: bypass debounce
+
+    // ── Algorithms ──────────────────────────────────────────────────────
+
+    // Returns true if adding source→dest would create a cycle.
+    bool wouldCreateCycle(int sourceNodeId, int destNodeId) const;
+
+    // Kahn's BFS. Returns levels of node uids. Empty if graph has a cycle
+    // (should never happen — cycles are rejected at addConnection).
+    std::vector<std::vector<int>> topologicalSortWithLevels() const;
+
+    // Compute cumulative latencies and insert/remove delay nodes.
+    void computePDC();
+
+    // Rebuild all APG connections from topology data. Idempotent.
+    void rebuildAPGConnections();
+
+    // Recompute linearOrder_ from adjacency lists.
+    void updateLinearOrder();
+
+    // ── Adjacency helpers ───────────────────────────────────────────────
+
+    void addAdj(int src, int dst);
+    void removeAdj(int src, int dst);
+
+    // All node uids (I/O + effect nodes) for algorithm iteration.
+    std::vector<int> allNodeUids() const;
+
+    // ── Factory ─────────────────────────────────────────────────────────
+
+    static std::unique_ptr<XlethEffectBase> createEffect(const std::string& pluginId);
+
+    // ── Constants ───────────────────────────────────────────────────────
+
+    static constexpr int kMaxNodes = 256;
+    static constexpr int kDebounceMs = 50;
+};
