@@ -3,6 +3,22 @@ build/
 dist/
 out/
 
+# Build logs
+build_out.txt
+build_bridge_out.txt
+CWINDOWSsystem32cmd.exe.txt
+
+# Dev-only render scripts
+render-1080p.bat
+render-360p.bat
+render-test.bat
+
+# LMMS reference (not part of Xleth source)
+lmms/
+
+# Scratch files
+WORK ON PROMPT 2C #7
+
 # Visual Studio
 .vs/
 *.obj
@@ -33,6 +49,21 @@ thumbs.db
 # IDE
 .idea/
 .vscode/
+
+# Media / binary assets
+*.mp4
+*.wav
+*.sfk
+*.ai
+*.svg
+*.png
+*.lnk
+*.skill
+*.mp3
+*.mov
+
+# OS junk
+desktop.ini
 
 # Test/proxy media assets
 media/
