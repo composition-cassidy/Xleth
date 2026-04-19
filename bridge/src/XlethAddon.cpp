@@ -2102,7 +2102,7 @@ void Stop(const Napi::CallbackInfo& info)
     audioEngine->getTransport().stop();
     // Main-thread safety net: kill all sampler voices immediately so no
     // sustained note rings past the stop click.
-    audioEngine->getMixEngine().silenceAllSamplers("stop_handler");
+    audioEngine->getMixEngine().silenceAllSamplers();
 }
 
 void Pause(const Napi::CallbackInfo& info)
@@ -2115,7 +2115,7 @@ void Pause(const Napi::CallbackInfo& info)
     std::cout << "[Bridge] → transport.pause\n" << std::flush;
     audioEngine->getTransport().pause();
     // Main-thread safety net: kill all sampler voices on pause too.
-    audioEngine->getMixEngine().silenceAllSamplers("pause_handler");
+    audioEngine->getMixEngine().silenceAllSamplers();
 }
 
 // Legacy setBPM — sets transport BPM directly (no undo, for startup/audio-event use).
@@ -2609,7 +2609,7 @@ Napi::Value Project_NewBlank(const Napi::CallbackInfo& info)
     //    any sustained sampler voices so there is no audible carry-over.
     if (audioEngine) {
         audioEngine->getTransport().stop();
-        audioEngine->getMixEngine().silenceAllSamplers("new_project");
+        audioEngine->getMixEngine().silenceAllSamplers();
     }
 
     // 2. Tear down the ProxyManager pool. shutdown() is one-shot (sets an

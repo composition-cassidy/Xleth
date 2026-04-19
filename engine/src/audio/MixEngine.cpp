@@ -59,29 +59,12 @@ bool MixDebugLog::pop(MixDebugEntry& entry)
 
 // ─── MixEngine ───────────────────────────────────────────────────────────────
 
-#ifdef XLETH_DEBUG
-void MixEngine::logTelemetry(const char* fmt, ...)
-{
-    va_list args;
-    va_start(args, fmt);
-    FILE* dest = telemetryLog_ ? telemetryLog_ : stderr;
-    vfprintf(dest, fmt, args);
-    va_end(args);
-    if (telemetryLog_)
-        fflush(telemetryLog_);
-}
-#endif
 
 MixEngine::MixEngine()
 {
     trackBuffers_.resize(kMaxTracks);
     activeClips_.reserve(256);
     activeBlocks_.reserve(64);
-
-#ifdef XLETH_DEBUG
-    boundaryEventsA_.reserve(256);
-    boundaryEventsB_.reserve(256);
-#endif
 
     // Create plugin registry (registers VST3 format manager).
     pluginRegistry_ = std::make_unique<PluginRegistry>();
@@ -96,19 +79,6 @@ MixEngine::MixEngine()
     pluginRegistry_->loadScanResults(cacheFile);
 
     coordinatorReaperThread_ = std::thread([this]() { runCoordinatorReaper(); });
-
-#ifdef XLETH_DEBUG
-    {
-#pragma warning(suppress: 4996)
-        const char* logPath = getenv("XLETH_TELEMETRY_LOG");
-        if (logPath && logPath[0] != '\0')
-        {
-#pragma warning(suppress: 4996)
-            telemetryLog_ = fopen(logPath, "a");
-        }
-        telemetryStartMs_ = juce::Time::getMillisecondCounterHiRes();
-    }
-#endif
 }
 
 MixEngine::~MixEngine()
@@ -135,25 +105,6 @@ MixEngine::~MixEngine()
     // This ensures AudioProcessorEditor is released before AudioProcessor.
     if (editorHost_)
         editorHost_->closeAllEditors();
-
-#ifdef XLETH_DEBUG
-    {
-        uint64_t orphansAggregate = 0;
-        for (const auto& kv : samplers_)
-            if (kv.second) orphansAggregate += kv.second->orphanCandidatesEver();
-        logTelemetry("[FixSummary] (shutdown) dispatchBoundariesSeen=%llu orphanCandidatesEver=%llu "
-                     "maxHeldSimultaneous=%u maxHeldSimultaneousPerSampler=%u\n",
-                     (unsigned long long)dispatchBoundariesSeen_,
-                     (unsigned long long)orphansAggregate,
-                     maxHeldSimultaneous_, maxHeldSimultaneousPerSampler_);
-    }
-    if (telemetryLog_)
-    {
-        fflush(telemetryLog_);
-        fclose(telemetryLog_);
-        telemetryLog_ = nullptr;
-    }
-#endif
 }
 
 // ── Coordinator reaper ────────────────────────────────────────────────────────
@@ -590,10 +541,6 @@ void MixEngine::loadSamplerForTrackRegion(int trackId, int regionId)
                        : 48000.0;
 
     auto s = std::make_unique<Sampler>();
-#ifdef XLETH_DEBUG
-    s->setTelemetryLog(telemetryLog_);
-    s->setDebugKey(trackId, regionId);
-#endif
     s->setRootNote(region->rootNote);
     s->setEnvelope(region->delayMs, region->attackMs, region->holdMs,
                    region->decayMs, region->sustain, region->releaseMs,
@@ -632,101 +579,36 @@ void MixEngine::loadSamplerForTrackRegion(int trackId, int regionId)
     SampleProcessor::applyFlags(working, fx);
     s->loadSample(working, srcSR, region->rootNote);
 
-#ifdef XLETH_DEBUG
-    {
-        auto existing = samplers_.find({trackId, regionId});
-        if (existing != samplers_.end() && existing->second &&
-            existing->second->countActiveVoices() > 0)
-        {
-            FILE* d = telemetryLog_ ? telemetryLog_ : stderr;
-            fprintf(d, "[SamplerOrphan] removed samplerPtr=%p debugKey=%d:%d"
-                " activeVoices=%d heldVoices=%d reason=replace\n",
-                static_cast<void*>(existing->second.get()),
-                existing->first.trackId, existing->first.regionId,
-                existing->second->countActiveVoices(), existing->second->countHeldVoices());
-            fflush(d);
-        }
-    }
-#endif
     samplers_[{trackId, regionId}] = std::move(s);
 }
 
 void MixEngine::unloadSamplerForTrackRegion(int trackId, int regionId)
 {
-#ifdef XLETH_DEBUG
-    {
-        auto it = samplers_.find({trackId, regionId});
-        if (it != samplers_.end() && it->second && it->second->countActiveVoices() > 0) {
-            FILE* d = telemetryLog_ ? telemetryLog_ : stderr;
-            fprintf(d, "[SamplerOrphan] removed samplerPtr=%p debugKey=%d:%d"
-                " activeVoices=%d heldVoices=%d reason=erase\n",
-                static_cast<void*>(it->second.get()),
-                it->first.trackId, it->first.regionId,
-                it->second->countActiveVoices(), it->second->countHeldVoices());
-            fflush(d);
-        }
-    }
-#endif
     samplers_.erase({trackId, regionId});
 }
 
 void MixEngine::unloadSamplersForTrack(int trackId)
 {
     for (auto it = samplers_.begin(); it != samplers_.end(); ) {
-        if (it->first.trackId == trackId) {
-#ifdef XLETH_DEBUG
-            if (it->second && it->second->countActiveVoices() > 0) {
-                FILE* d = telemetryLog_ ? telemetryLog_ : stderr;
-                fprintf(d, "[SamplerOrphan] removed samplerPtr=%p debugKey=%d:%d"
-                    " activeVoices=%d heldVoices=%d reason=erase\n",
-                    static_cast<void*>(it->second.get()),
-                    it->first.trackId, it->first.regionId,
-                    it->second->countActiveVoices(), it->second->countHeldVoices());
-                fflush(d);
-            }
-#endif
+        if (it->first.trackId == trackId)
             it = samplers_.erase(it);
-        } else {
+        else
             ++it;
-        }
     }
 }
 
 void MixEngine::unloadSamplersForRegion(int regionId)
 {
     for (auto it = samplers_.begin(); it != samplers_.end(); ) {
-        if (it->first.regionId == regionId) {
-#ifdef XLETH_DEBUG
-            if (it->second && it->second->countActiveVoices() > 0) {
-                FILE* d = telemetryLog_ ? telemetryLog_ : stderr;
-                fprintf(d, "[SamplerOrphan] removed samplerPtr=%p debugKey=%d:%d"
-                    " activeVoices=%d heldVoices=%d reason=erase\n",
-                    static_cast<void*>(it->second.get()),
-                    it->first.trackId, it->first.regionId,
-                    it->second->countActiveVoices(), it->second->countHeldVoices());
-                fflush(d);
-            }
-#endif
+        if (it->first.regionId == regionId)
             it = samplers_.erase(it);
-        } else {
+        else
             ++it;
-        }
     }
 }
 
-void MixEngine::silenceAllSamplers(const char* reason)
+void MixEngine::silenceAllSamplers()
 {
-#ifdef XLETH_DEBUG
-    {
-        FILE* snapDest = telemetryLog_ ? telemetryLog_ : stderr;
-        for (auto& [key, sampler] : samplers_)
-            if (sampler) sampler->debugSnapshotActiveVoices(
-                snapDest, reason, key.trackId, key.regionId);
-        for (auto& [id, sampler] : previewSamplers_)
-            if (sampler) sampler->debugSnapshotActiveVoices(
-                snapDest, reason, -1, id);
-    }
-#endif
     for (auto& [key, sampler] : samplers_)
         if (sampler) sampler->allNotesOff();
     for (auto& [id, sampler] : previewSamplers_)
@@ -752,22 +634,10 @@ void MixEngine::rebuildAllSamplers()
 
     // 2. Prune samplers that are no longer referenced by any block.
     for (auto it = samplers_.begin(); it != samplers_.end(); ) {
-        if (needed.find(it->first) == needed.end()) {
-#ifdef XLETH_DEBUG
-            if (it->second && it->second->countActiveVoices() > 0) {
-                FILE* d = telemetryLog_ ? telemetryLog_ : stderr;
-                fprintf(d, "[SamplerOrphan] removed samplerPtr=%p debugKey=%d:%d"
-                    " activeVoices=%d heldVoices=%d reason=rebuild\n",
-                    static_cast<void*>(it->second.get()),
-                    it->first.trackId, it->first.regionId,
-                    it->second->countActiveVoices(), it->second->countHeldVoices());
-                fflush(d);
-            }
-#endif
+        if (needed.find(it->first) == needed.end())
             it = samplers_.erase(it);
-        } else {
+        else
             ++it;
-        }
     }
 
     // 3. Ensure every needed pair has a fresh sampler (reload to pick up any
@@ -1110,21 +980,6 @@ void MixEngine::ensurePreviewSampler(int regionId)
     if (sampleBank_ == nullptr || timeline_ == nullptr) return;
     const SampleRegion* r = timeline_->getRegion(regionId);
     if (r == nullptr) {
-#ifdef XLETH_DEBUG
-        {
-            auto it = previewSamplers_.find(regionId);
-            if (it != previewSamplers_.end() && it->second &&
-                it->second->countActiveVoices() > 0)
-            {
-                FILE* d = telemetryLog_ ? telemetryLog_ : stderr;
-                fprintf(d, "[SamplerOrphan] removed samplerPtr=%p debugKey=-1:%d"
-                    " activeVoices=%d heldVoices=%d reason=erase\n",
-                    static_cast<void*>(it->second.get()), regionId,
-                    it->second->countActiveVoices(), it->second->countHeldVoices());
-                fflush(d);
-            }
-        }
-#endif
         previewSamplers_.erase(regionId);
         return;
     }
@@ -1140,10 +995,6 @@ void MixEngine::ensurePreviewSampler(int regionId)
                        : 48000.0;
 
     auto s = std::make_unique<Sampler>();
-#ifdef XLETH_DEBUG
-    s->setTelemetryLog(telemetryLog_);
-    s->setDebugKey(-1, regionId);  // trackId=-1 distinguishes preview samplers
-#endif
     s->setRootNote(r->rootNote);
     s->setEnvelope(r->delayMs, r->attackMs, r->holdMs,
                    r->decayMs, r->sustain, r->releaseMs,
@@ -1182,41 +1033,11 @@ void MixEngine::ensurePreviewSampler(int regionId)
     SampleProcessor::applyFlags(working, fx);
     s->loadSample(working, srcSR, r->rootNote);
 
-#ifdef XLETH_DEBUG
-    {
-        auto existing = previewSamplers_.find(regionId);
-        if (existing != previewSamplers_.end() && existing->second &&
-            existing->second->countActiveVoices() > 0)
-        {
-            FILE* d = telemetryLog_ ? telemetryLog_ : stderr;
-            fprintf(d, "[SamplerOrphan] removed samplerPtr=%p debugKey=-1:%d"
-                " activeVoices=%d heldVoices=%d reason=replace\n",
-                static_cast<void*>(existing->second.get()), regionId,
-                existing->second->countActiveVoices(), existing->second->countHeldVoices());
-            fflush(d);
-        }
-    }
-#endif
     previewSamplers_[regionId] = std::move(s);
 }
 
 void MixEngine::unloadPreviewSampler(int regionId)
 {
-#ifdef XLETH_DEBUG
-    {
-        auto it = previewSamplers_.find(regionId);
-        if (it != previewSamplers_.end() && it->second &&
-            it->second->countActiveVoices() > 0)
-        {
-            FILE* d = telemetryLog_ ? telemetryLog_ : stderr;
-            fprintf(d, "[SamplerOrphan] removed samplerPtr=%p debugKey=-1:%d"
-                " activeVoices=%d heldVoices=%d reason=erase\n",
-                static_cast<void*>(it->second.get()), regionId,
-                it->second->countActiveVoices(), it->second->countHeldVoices());
-            fflush(d);
-        }
-    }
-#endif
     previewSamplers_.erase(regionId);
 }
 
@@ -1959,13 +1780,6 @@ void MixEngine::triggerPatternNotes(const ActivePatternBlock& apb,
                     sampleOffset);
 #endif
             apb.sampler->noteOn(events[i].pitch, events[i].velocity, sampleOffset);
-#ifdef XLETH_DEBUG
-            if (boundaryLogActive_ && (&apb == boundaryBlockA_ || &apb == boundaryBlockB_))
-            {
-                auto& vec = (&apb == boundaryBlockA_) ? boundaryEventsA_ : boundaryEventsB_;
-                vec.push_back({ events[i].tick, events[i].pitch, events[i].velocity, true });
-            }
-#endif
         } else {
             const int64_t absNoteOffSample =
                 TickTime{events[i].tick}.toSamples(bpm, sampleRate);
@@ -2000,22 +1814,6 @@ void MixEngine::triggerPatternNotes(const ActivePatternBlock& apb,
                     noteOffOffset);
 #endif
             apb.sampler->noteOff(events[i].pitch, noteOffOffset, /*force=*/true);
-#ifdef XLETH_DEBUG
-            // Fix A diagnostic probe — fires when the note-off lands on the
-            // last sample of the buffer, which is the boundary-coincidence
-            // case the filter flip admits. Remove once Fix A is verified on
-            // real material (see plan Step 5).
-            if (noteOffOffset == numSamples - 1) {
-                fprintf(stderr, "[BoundaryNoteOff] pitch=%d sampler=%p\n",
-                        events[i].pitch, (void*)apb.sampler);
-                fflush(stderr);
-            }
-            if (boundaryLogActive_ && (&apb == boundaryBlockA_ || &apb == boundaryBlockB_))
-            {
-                auto& vec = (&apb == boundaryBlockA_) ? boundaryEventsA_ : boundaryEventsB_;
-                vec.push_back({ events[i].tick, events[i].pitch, 0.0f, false });
-            }
-#endif
         }
     }
 }
@@ -2032,14 +1830,14 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         const uint64_t n = plCounter.fetch_add(1);
         if (n % 500 == 0)
         {
-            fprintf(stderr, "[ProofOfLife] processBlock n=%llu xlethDebug=%d telemetryLogSet=%d\n",
+            fprintf(stderr, "[ProofOfLife] processBlock n=%llu xlethDebug=%d\n",
                     (unsigned long long)n,
 #ifdef XLETH_DEBUG
-                    1,
+                    1
 #else
-                    0,
+                    0
 #endif
-                    telemetryLog_ != nullptr ? 1 : 0);
+            );
             fflush(stderr);
         }
     }
@@ -2062,17 +1860,6 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     // begin their release tail immediately instead of continuing to hold.
     if (wasPlaying_ && !isPlaying)
     {
-#ifdef XLETH_DEBUG
-        {
-            FILE* snapDest = telemetryLog_ ? telemetryLog_ : stderr;
-            for (auto& kv : samplers_)
-                if (kv.second) kv.second->debugSnapshotActiveVoices(
-                    snapDest, "audio_thread_stop_transition", kv.first.trackId, kv.first.regionId);
-            for (auto& kv : previewSamplers_)
-                if (kv.second) kv.second->debugSnapshotActiveVoices(
-                    snapDest, "audio_thread_stop_transition", -1, kv.first);
-        }
-#endif
         for (auto& kv : samplers_)
             if (kv.second) kv.second->allNotesOff();
         for (auto& kv : previewSamplers_)
@@ -2138,57 +1925,13 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     const int64_t bufStart  = position;
     const int64_t bufEnd    = position + numSamples;
 
-#ifdef XLETH_DEBUG
-    {
-        const int64_t inventoryInterval = static_cast<int64_t>(3.0 * sampleRate);
-        if (lastInventoryAbsSample_ < 0 ||
-            (bufStart - lastInventoryAbsSample_) >= inventoryInterval)
-        {
-            lastInventoryAbsSample_ = bufStart;
-            FILE* invDest = telemetryLog_ ? telemetryLog_ : stderr;
-            for (auto& [key, sampler] : samplers_) {
-                if (!sampler) continue;
-                fprintf(invDest,
-                    "[SamplerInventory] map=samplers this=%p debugKey=%d:%d"
-                    " voiceCount=%d heldCount=%d\n",
-                    static_cast<void*>(sampler.get()),
-                    key.trackId, key.regionId,
-                    sampler->countActiveVoices(), sampler->countHeldVoices());
-            }
-            for (auto& [id, sampler] : previewSamplers_) {
-                if (!sampler) continue;
-                fprintf(invDest,
-                    "[SamplerInventory] map=previewSamplers this=%p debugKey=-1:%d"
-                    " voiceCount=%d heldCount=%d\n",
-                    static_cast<void*>(sampler.get()),
-                    id,
-                    sampler->countActiveVoices(), sampler->countHeldVoices());
-            }
-            fflush(invDest);
-        }
-    }
-#endif
-
     // Seek detection: if buffer start doesn't continue from previous buffer
     // end, the playhead jumped. Release all held pattern notes so stale
     // voices from the old position don't ring indefinitely at the new one.
     if (lastBufferEnd_ >= 0 && bufStart != lastBufferEnd_) {
-#ifdef XLETH_DEBUG
-        {
-            FILE* snapDest = telemetryLog_ ? telemetryLog_ : stderr;
-            for (auto& kv : samplers_)
-                if (kv.second) kv.second->debugSnapshotActiveVoices(
-                    snapDest, "seek_detected", kv.first.trackId, kv.first.regionId);
-        }
-#endif
         for (auto& kv : samplers_)
             if (kv.second) kv.second->allNotesOff();
         std::fill(std::begin(tailEndSamples_), std::end(tailEndSamples_), int64_t(0));
-#ifdef XLETH_DEBUG
-        logTelemetry("[SeekDetected] lastBufferEnd=%lld newBufStart=%lld delta=%lld\n",
-                     (long long)lastBufferEnd_, (long long)bufStart,
-                     (long long)(bufStart - lastBufferEnd_));
-#endif
     }
     lastBufferEnd_ = bufEnd;
 
@@ -2426,39 +2169,10 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     // boundary tick, the earlier-starting block must dispatch first so noteOff binds
     // to the original voice before noteOn spawns a new one. stable_sort preserves
     // timeline storage order as the tiebreaker when blockStartSample collides.
-    // Defense-in-depth: findVoiceForNote now uses oldest-held-first tiebreaking on
-    // spawnCounter, so even if this sort were ever bypassed the noteOff still binds
-    // to the original held voice.
     std::stable_sort(activeBlocks_.begin(), activeBlocks_.end(),
         [](const ActivePatternBlock& a, const ActivePatternBlock& b) {
             return a.blockStartSample < b.blockStartSample;
         });
-
-#ifdef XLETH_DEBUG
-    // Dispatch-boundary detection: flag the first same-sampler adjacency so
-    // triggerPatternNotes below logs its dispatched events. First-pair-only —
-    // multiple boundaries per buffer are rare and would just spam the log.
-    boundaryLogActive_ = false;
-    boundaryBlockA_    = nullptr;
-    boundaryBlockB_    = nullptr;
-    boundaryEventsA_.clear();
-    boundaryEventsB_.clear();
-    {
-        const int totalBlocks = static_cast<int>(activeBlocks_.size());
-        for (int i = 0; i + 1 < totalBlocks; ++i)
-        {
-            if (activeBlocks_[i].sampler == activeBlocks_[i + 1].sampler
-                && std::abs(activeBlocks_[i].blockEndSample - activeBlocks_[i + 1].blockStartSample) <= 2)
-            {
-                boundaryLogActive_ = true;
-                boundaryBlockA_    = &activeBlocks_[i];
-                boundaryBlockB_    = &activeBlocks_[i + 1];
-                ++dispatchBoundariesSeen_;
-                break;
-            }
-        }
-    }
-#endif
 
     for (const auto& apb : activeBlocks_)
     {
@@ -2482,52 +2196,6 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         apb.sampler->processBlock(trackBuffers_[slot], numSamples, sampleRate);
     }
 
-#ifdef XLETH_DEBUG
-    if (boundaryLogActive_ && boundaryBlockA_ && boundaryBlockB_)
-    {
-        logTelemetry("[DispatchBoundary] buf=%lld..%lld samplerKey=%d:%d\n"
-                     "  blockA blockStartSample=%lld blockEndSample=%lld\n"
-                     "  blockB blockStartSample=%lld blockEndSample=%lld\n"
-                     "  boundary=%lld\n",
-                     (long long)bufStart, (long long)bufEnd,
-                     boundaryBlockA_->block->trackId, boundaryBlockA_->pattern->regionId,
-                     (long long)boundaryBlockA_->blockStartSample, (long long)boundaryBlockA_->blockEndSample,
-                     (long long)boundaryBlockB_->blockStartSample, (long long)boundaryBlockB_->blockEndSample,
-                     (long long)boundaryBlockA_->blockEndSample);
-        logTelemetry("  blockA_events=[");
-        for (size_t i = 0; i < boundaryEventsA_.size(); ++i)
-            logTelemetry("%s%lld:%s:%d:%.3f", i ? "," : "",
-                         (long long)boundaryEventsA_[i].tick,
-                         boundaryEventsA_[i].isNoteOn ? "on" : "off",
-                         boundaryEventsA_[i].pitch, (double)boundaryEventsA_[i].velocity);
-        logTelemetry("]\n  blockB_events=[");
-        for (size_t i = 0; i < boundaryEventsB_.size(); ++i)
-            logTelemetry("%s%lld:%s:%d:%.3f", i ? "," : "",
-                         (long long)boundaryEventsB_[i].tick,
-                         boundaryEventsB_[i].isNoteOn ? "on" : "off",
-                         boundaryEventsB_[i].pitch, (double)boundaryEventsB_[i].velocity);
-        logTelemetry("]\n");
-    }
-
-    // Stale-currentAbsSample_ detection: any sampler with active voices that was NOT
-    // updated via setCurrentSample(bufStart) this buffer may compute wrong spawnAbsSample
-    // or wrong orphan-detection deltas on its next noteOn.
-    ++staleCurrentSampleLogCounter_;
-    if (staleCurrentSampleLogCounter_ % 100 == 0) {
-        for (auto& [key, sampler] : samplers_) {
-            if (!sampler || !sampler->hasSample()) continue;
-            const int heldVoices     = sampler->countHeldVoices();
-            const int relVoices      = sampler->countReleasingVoices();
-            if (heldVoices + relVoices == 0) continue;
-            const int64_t samplerAbs = sampler->debugCurrentAbsSample();
-            if (samplerAbs == bufStart) continue;
-            logTelemetry("[StaleCurrentSample] samplerKey=%d:%d samplerCurrentAbs=%lld engineBufStart=%lld heldVoices=%d releasingVoices=%d\n",
-                         key.trackId, key.regionId,
-                         (long long)samplerAbs, (long long)bufStart,
-                         heldVoices, relVoices);
-        }
-    }
-#endif
 
     // ── Drain releasing sampler voices (block just ended) ───────────────────
     // After allNotesOff() fires in findActivePatternBlocks(), voices enter
@@ -2800,36 +2468,6 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
 
     // Debug logging (throttled to ~1 Hz)
     maybeLogDebug(numSamples, sampleRate);
-
-#ifdef XLETH_DEBUG
-    {
-        static uint64_t fixSummaryCounter = 0;
-        ++fixSummaryCounter;
-
-        uint32_t totalHeld         = 0;
-        uint32_t maxHeldOneSampler = 0;
-        uint64_t orphansAggregate  = 0;
-        for (const auto& kv : samplers_)
-        {
-            if (!kv.second) continue;
-            const uint32_t h = static_cast<uint32_t>(kv.second->countHeldVoices());
-            totalHeld += h;
-            if (h > maxHeldOneSampler) maxHeldOneSampler = h;
-            orphansAggregate += kv.second->orphanCandidatesEver();
-        }
-        if (totalHeld         > maxHeldSimultaneous_)          maxHeldSimultaneous_          = totalHeld;
-        if (maxHeldOneSampler > maxHeldSimultaneousPerSampler_) maxHeldSimultaneousPerSampler_ = maxHeldOneSampler;
-
-        if (fixSummaryCounter % 1000 == 0)
-        {
-            logTelemetry("[FixSummary] dispatchBoundariesSeen=%llu orphanCandidatesEver=%llu "
-                         "maxHeldSimultaneous=%u maxHeldSimultaneousPerSampler=%u\n",
-                         (unsigned long long)dispatchBoundariesSeen_,
-                         (unsigned long long)orphansAggregate,
-                         maxHeldSimultaneous_, maxHeldSimultaneousPerSampler_);
-        }
-    }
-#endif
 }
 
 // ── Debug logging ────────────────────────────────────────────────────────────

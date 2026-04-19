@@ -292,23 +292,10 @@ Sampler::Voice* Sampler::findFreeVoice()
 
 Sampler::Voice* Sampler::findVoiceForNote(int midiNote)
 {
-    // Oldest-held-first tiebreaker. When two held voices share a pitch (cross-block
-    // dispatch race, stealing edge case, or subset allNotesOff), bind the noteOff
-    // to the earliest spawn — prevents orphaning the original looped voice.
-    Voice*   oldest        = nullptr;
-    uint64_t oldestCounter = std::numeric_limits<uint64_t>::max();
     for (auto& v : voices_)
-    {
         if (v.active && v.noteHeld && v.midiNote == midiNote)
-        {
-            if (v.spawnCounter < oldestCounter)
-            {
-                oldestCounter = v.spawnCounter;
-                oldest        = &v;
-            }
-        }
-    }
-    return oldest;
+            return &v;
+    return nullptr;
 }
 
 Sampler::Voice* Sampler::findActiveMonoVoice()
@@ -382,9 +369,6 @@ void Sampler::noteOn(int midiNote, float velocity, int sampleOffset)
             active->spawnAbsSample = (currentAbsSample_ > 0)
                                      ? currentAbsSample_ + sampleOffset
                                      : -1;
-#ifdef XLETH_DEBUG
-            active->lastLoggedAbsSample = -1;
-#endif
         } else {
             // No active voice: start fresh
             fireNoteOn(midiNote, vel, sampleOffset);
@@ -492,25 +476,11 @@ void Sampler::fireNoteOn(int midiNote, float velocity, int sampleOffset)
     v->spawnCounter   = nextSpawnCounter_++;
     v->spawnAbsSample = (currentAbsSample_ > 0)
                         ? currentAbsSample_ + sampleOffset
-                        : -1;  // preview / pre-transport: skip orphan detection
-#ifdef XLETH_DEBUG
-    v->lastLoggedAbsSample = -1;  // reset throttle so new voice in this slot can log immediately
-    fprintf(stderr, "[FireNote] midi=%d vel=%.2f onset=%d\n",
-            midiNote, velocity, sampleOffset);
-#endif
+                        : -1;
 }
 
 void Sampler::fireNoteOff(int midiNote, int sampleOffset, bool force)
 {
-#ifdef XLETH_DEBUG
-    if (sampleOffset < 0 || sampleOffset > 32768) {
-        FILE* dest = telemetryLog_ ? telemetryLog_ : stderr;
-        fprintf(dest, "[NoteOffOffset] samplerKey=%d:%d midiNote=%d sampleOffset=%d force=%d currentAbsSample=%lld\n",
-                debugTrackId_, debugRegionId_, midiNote, sampleOffset, (int)force,
-                (long long)currentAbsSample_);
-        fflush(dest);
-    }
-#endif
     // One-shot mode: noteOff is ignored — sample plays to completion.
     // force=true bypasses this guard for pattern-sequencer noteOffs, which
     // must always honour their drawn duration regardless of playback mode.
@@ -524,17 +494,6 @@ void Sampler::fireNoteOff(int midiNote, int sampleOffset, bool force)
     // This makes the release boundary sample-accurate within the buffer.
     jassert(sampleOffset >= 0);
     v->releaseSample = sampleOffset;
-#ifdef XLETH_DEBUG
-    fprintf(stderr, "[ReleaseNote] midi=%d bufSample_at_release=%d\n",
-            midiNote, sampleOffset);
-    if (sampleOffset > 4096) {
-        FILE* dest = telemetryLog_ ? telemetryLog_ : stderr;
-        const int voiceIdx = static_cast<int>(v - voices_.data());
-        fprintf(dest, "[NoteOffOffsetSuspect] samplerKey=%d:%d midiNote=%d sampleOffset=%d voiceIdx=%d\n",
-                debugTrackId_, debugRegionId_, midiNote, sampleOffset, voiceIdx);
-        fflush(dest);
-    }
-#endif
 }
 
 // ─── Envelope ────────────────────────────────────────────────────────────────
@@ -1023,20 +982,6 @@ void Sampler::processVoice(Voice& v,
     v.onsetSample = 0;
 }
 
-#ifdef XLETH_DEBUG
-const char* Sampler::envStageName(Voice::EnvStage s) noexcept {
-    switch (s) {
-        case Voice::EnvStage::Delay:   return "Delay";
-        case Voice::EnvStage::Attack:  return "Attack";
-        case Voice::EnvStage::Hold:    return "Hold";
-        case Voice::EnvStage::Decay:   return "Decay";
-        case Voice::EnvStage::Sustain: return "Sustain";
-        case Voice::EnvStage::Release: return "Release";
-        case Voice::EnvStage::Off:     return "Off";
-        default:                       return "Unknown";
-    }
-}
-#endif
 
 void Sampler::processBlock(juce::AudioBuffer<float>& outputBuffer,
                            int numSamples, double engineSampleRate)
@@ -1060,140 +1005,4 @@ void Sampler::processBlock(juce::AudioBuffer<float>& outputBuffer,
         if (!v.active) continue;
         processVoice(v, outputBuffer, numSamples, engineSampleRate);
     }
-
-#ifdef XLETH_DEBUG
-    // Orphan-candidate detection. Any held voice older than kHeldWarnSeconds
-    // with noteHeld=true is a stuck-note suspect (tiebreaker failed, or some
-    // other dispatch bug). Throttled to one log per second per voice slot.
-    {
-        constexpr double kHeldWarnSeconds    = 3.0;
-        constexpr double kLogThrottleSeconds = 1.0;
-        const int64_t heldWarnThreshold = static_cast<int64_t>(kHeldWarnSeconds * engineSampleRate);
-        const int64_t throttleSamples   = static_cast<int64_t>(kLogThrottleSeconds * engineSampleRate);
-        for (size_t i = 0; i < voices_.size(); ++i)
-        {
-            Voice& v = voices_[i];
-            if (!(v.active && v.noteHeld)) continue;
-            if (v.spawnAbsSample < 0) continue;  // preview / pre-transport — skip
-            const int64_t heldSamples = currentAbsSample_ - v.spawnAbsSample;
-            if (heldSamples <= heldWarnThreshold) continue;
-            if (v.lastLoggedAbsSample >= 0
-                && currentAbsSample_ - v.lastLoggedAbsSample < throttleSamples) continue;
-            v.lastLoggedAbsSample = currentAbsSample_;
-            ++orphanCandidatesEver_;
-            FILE* dest = telemetryLog_ ? telemetryLog_ : stderr;
-            fprintf(dest, "[OrphanCandidate] samplerKey=%d:%d voiceIdx=%zu pitch=%d "
-                          "spawnCounter=%llu heldSamples=%lld\n",
-                    debugTrackId_, debugRegionId_, i, v.midiNote,
-                    (unsigned long long)v.spawnCounter, (long long)heldSamples);
-            fflush(dest);
-        }
-    }
-
-    // Zombie-voice detection: active voices with noteHeld=false but envStage not in
-    // {Release, Off}. These loop indefinitely when loopEnabled because the loop path
-    // wraps playPosition unconditionally regardless of envelope state.
-    {
-        constexpr double kZombieThrottleSeconds = 1.0;
-        const int64_t zombieThrottle = static_cast<int64_t>(kZombieThrottleSeconds * engineSampleRate);
-        const int nFrames = sampleData_.getNumSamples();
-        const int64_t effLoopEnd   = (loopEnd_ > 0)
-            ? std::min<int64_t>(loopEnd_, nFrames)
-            : static_cast<int64_t>(nFrames);
-        const int64_t effLoopStart = std::min<int64_t>(loopStart_, effLoopEnd);
-        FILE* dest = telemetryLog_ ? telemetryLog_ : stderr;
-        for (size_t i = 0; i < voices_.size(); ++i)
-        {
-            Voice& v = voices_[i];
-            if (!v.active) continue;
-            if (v.noteHeld) continue;
-            if (v.envStage == Voice::EnvStage::Release || v.envStage == Voice::EnvStage::Off) continue;
-            if (v.lastZombieLogAbsSample >= 0
-                && currentAbsSample_ - v.lastZombieLogAbsSample < zombieThrottle) continue;
-            v.lastZombieLogAbsSample = currentAbsSample_;
-            const char* stageName = "Unknown";
-            switch (v.envStage) {
-                case Voice::EnvStage::Delay:   stageName = "Delay";   break;
-                case Voice::EnvStage::Attack:  stageName = "Attack";  break;
-                case Voice::EnvStage::Hold:    stageName = "Hold";    break;
-                case Voice::EnvStage::Decay:   stageName = "Decay";   break;
-                case Voice::EnvStage::Sustain: stageName = "Sustain"; break;
-                default: break;
-            }
-            fprintf(dest, "[ZombieVoice] samplerKey=%d:%d voiceIdx=%zu\n"
-                          "  pitch=%d envStage=%s releaseSample=%d\n"
-                          "  playPosition=%f loopEnabled=%d\n"
-                          "  effLoopStart=%lld effLoopEnd=%lld\n"
-                          "  spawnCounter=%llu spawnAbsSample=%lld currentAbsSample=%lld\n",
-                    debugTrackId_, debugRegionId_, i,
-                    v.midiNote, stageName, v.releaseSample,
-                    v.playPosition, (int)loopEnabled_,
-                    (long long)effLoopStart, (long long)effLoopEnd,
-                    (unsigned long long)v.spawnCounter, (long long)v.spawnAbsSample,
-                    (long long)currentAbsSample_);
-            fflush(dest);
-        }
-    }
-
-    // [VoiceCensus]: unconditional 1Hz dump of every active voice (noteHeld-agnostic).
-    {
-        const int64_t censusPeriod = static_cast<int64_t>(1.0 * engineSampleRate);
-        if (lastCensusAbsSample_ < 0 || currentAbsSample_ - lastCensusAbsSample_ >= censusPeriod)
-        {
-            lastCensusAbsSample_ = currentAbsSample_;
-            FILE* dest = telemetryLog_ ? telemetryLog_ : stderr;
-            for (size_t i = 0; i < voices_.size(); ++i)
-            {
-                const Voice& v = voices_[i];
-                if (!v.active) continue;
-                fprintf(dest,
-                    "[VoiceCensus] samplerKey=%d:%d absSample=%lld\n"
-                    "  voiceIdx=%zu pitch=%d active=1 noteHeld=%d\n"
-                    "  envStage=%s envLevel=%f\n"
-                    "  playPosition=%f releaseSample=%d\n"
-                    "  spawnCounter=%llu ageSamples=%lld\n",
-                    debugTrackId_, debugRegionId_, (long long)currentAbsSample_,
-                    i, v.midiNote, (int)v.noteHeld,
-                    envStageName(v.envStage), (double)v.envLevel,
-                    v.playPosition, v.releaseSample,
-                    (unsigned long long)v.spawnCounter,
-                    (long long)(currentAbsSample_ - v.spawnAbsSample));
-            }
-            fflush(dest);
-        }
-    }
-#endif
 }
-
-#ifdef XLETH_DEBUG
-void Sampler::debugSnapshotActiveVoices(FILE* out, const char* reason,
-                                         int trackId, int regionId) const noexcept
-{
-    FILE* dest = out ? out : (telemetryLog_ ? telemetryLog_ : stderr);
-    int activeCount = 0;
-    for (size_t i = 0; i < voices_.size(); ++i)
-        if (voices_[i].active) ++activeCount;
-    // Always emit a header so the tag appears even when 0 voices are active.
-    fprintf(dest,
-        "[StopSnapshot] reason=%s samplerKey=%d:%d samplerPtr=%p activeVoices=%d\n",
-        reason, trackId, regionId,
-        static_cast<const void*>(this), activeCount);
-    for (size_t i = 0; i < voices_.size(); ++i)
-    {
-        const Voice& v = voices_[i];
-        if (!v.active) continue;
-        fprintf(dest,
-            "[StopSnapshot] reason=%s samplerKey=%d:%d samplerPtr=%p"
-            " voiceIdx=%zu pitch=%d held=%d stage=%s envLevel=%f"
-            " playPos=%f releaseSample=%d spawnCounter=%llu ageSamples=%lld\n",
-            reason, trackId, regionId,
-            static_cast<const void*>(this),
-            i, v.midiNote, (int)v.noteHeld,
-            envStageName(v.envStage), (double)v.envLevel,
-            v.playPosition, v.releaseSample,
-            (unsigned long long)v.spawnCounter,
-            (long long)(currentAbsSample_ - v.spawnAbsSample));
-    }
-    fflush(dest);
-}
-#endif

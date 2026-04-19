@@ -138,7 +138,7 @@ public:
     // per-track playback samplers and preview samplers). Used by bridge
     // Stop/Pause handlers as a main-thread safety net alongside the audio-
     // thread transition handler in processBlock.
-    void silenceAllSamplers(const char* reason = "unknown");
+    void silenceAllSamplers();
 
     // ── Preview samplers (main thread; piano roll / MiniKeyboard audition) ──
     // Separate from per-track playback samplers so auditioning a note in the
@@ -549,37 +549,6 @@ private:
     int64_t     debugSampleCounter_ = 0;
     double      debugSampleRate_    = 44100.0;
 
-#ifdef XLETH_DEBUG
-    // ── Telemetry file sink (XLETH_TELEMETRY_LOG) ─────────────────────────────
-    FILE*    telemetryLog_     = nullptr;
-    double   telemetryStartMs_ = 0.0;
-    void logTelemetry(const char* fmt, ...);
-
-    // Dispatch-boundary telemetry: logs cross-block event ordering when two
-    // same-sampler ActivePatternBlocks are adjacent. Set by the detection pass
-    // in processBlock, consumed by triggerPatternNotes for per-event logging.
-    struct LoggedEvent {
-        int64_t tick;
-        int     pitch;
-        float   velocity;
-        bool    isNoteOn;
-    };
-    bool                     boundaryLogActive_ = false;
-    const ActivePatternBlock* boundaryBlockA_   = nullptr;
-    const ActivePatternBlock* boundaryBlockB_   = nullptr;
-    std::vector<LoggedEvent> boundaryEventsA_;
-    std::vector<LoggedEvent> boundaryEventsB_;
-
-    // [FixSummary] lifetime counters
-    uint64_t dispatchBoundariesSeen_        = 0;
-    uint32_t maxHeldSimultaneous_           = 0;
-    uint32_t maxHeldSimultaneousPerSampler_ = 0;
-
-    // [StaleCurrentSample] throttle: fires once every 100 processBlock calls
-    int64_t staleCurrentSampleLogCounter_ = 0;
-    // [SamplerInventory] throttle: absolute transport sample of last inventory emit
-    int64_t lastInventoryAbsSample_ = -1;
-#endif
 
     void maybeLogDebug(int numSamples, double sampleRate);
 };
