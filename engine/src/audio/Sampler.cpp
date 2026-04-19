@@ -254,6 +254,30 @@ void Sampler::allNotesOff()
     monoHeldNotes_.clear();
 }
 
+void Sampler::releaseVoicesSpawnedInRange(int64_t startSample, int64_t endSample)
+{
+    // Fix C: additive safety net for the adjacent-block dropout case.
+    // Only release voices whose spawnAbsSample falls inside [startSample,
+    // endSample) — voices spawned in other live blocks using the same
+    // sampler are untouched. spawnAbsSample == -1 means preview/pre-
+    // transport and is skipped (those never belonged to a transport
+    // block).
+    for (auto& v : voices_)
+    {
+        if (!v.active) continue;
+        if (!v.noteHeld) continue;
+        if (v.spawnAbsSample < 0) continue;
+        if (v.spawnAbsSample < startSample) continue;
+        if (v.spawnAbsSample >= endSample)  continue;
+        v.noteHeld          = false;
+        v.releaseStartLevel = v.envLevel;
+        v.envStage          = Voice::EnvStage::Release;
+        v.envPosition       = 0.0;
+        v.pitchEnvStage     = Voice::EnvStage::Release;
+        v.pitchEnvPosition  = 0.0;
+    }
+}
+
 int Sampler::activeVoiceCount() const
 {
     int n = 0;
