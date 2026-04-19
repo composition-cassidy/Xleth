@@ -97,6 +97,7 @@ public:
         double  bpm,
         int     sourceId,
         int     trackId,
+        int     regionId,           // SampleRegion id (for per-region proxy routing)
         double  sourceStartTime,
         double  sourceEndTime,
         int&    counter);

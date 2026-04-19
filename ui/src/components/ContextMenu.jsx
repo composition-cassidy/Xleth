@@ -48,6 +48,11 @@ export default function ContextMenu({ x, y, items, onClose }) {
       {items.map((item, i) =>
         item.type === 'separator' ? (
           <div key={`sep-${i}`} className="context-menu-sep" />
+        ) : item.type === 'custom' ? (
+          <div key={item.key || `custom-${i}`} className="context-menu-custom"
+               onMouseDown={(e) => e.stopPropagation()}>
+            {item.content}
+          </div>
         ) : (
           <button
             key={item.label}

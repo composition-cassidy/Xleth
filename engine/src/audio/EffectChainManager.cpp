@@ -1,11 +1,17 @@
 #include "audio/EffectChainManager.h"
 #include "audio/AudioGraph.h"
+#include "audio/PluginRegistry.h"
 
 // ─── Lifecycle ──────────────────────────────────────────────────────────────
 
 EffectChainManager::EffectChainManager()
     : graph_(std::make_unique<AudioGraph>())
 {}
+
+void EffectChainManager::setPluginRegistry(PluginRegistry* registry)
+{
+    graph_->setPluginRegistry(registry);
+}
 
 EffectChainManager::~EffectChainManager() { destroy(); }
 
@@ -125,6 +131,50 @@ std::string EffectChainManager::getEffectMeter(int nodeId) const
 XlethEffectBase* EffectChainManager::getEffect(int nodeId)
 {
     return graph_->getEffect(nodeId);
+}
+
+juce::AudioProcessor* EffectChainManager::getProcessor(int nodeId)
+{
+    return graph_->getProcessor(nodeId);
+}
+
+juce::String EffectChainManager::getPluginFilePath(int nodeId) const
+{
+    return graph_->getPluginFilePath(nodeId);
+}
+
+// ─── Missing-plugin support ─────────────────────────────────────────────────
+
+bool EffectChainManager::isNodeMissing(int nodeId) const
+{
+    return graph_->isNodeMissing(nodeId);
+}
+
+bool EffectChainManager::tryResolvePlugin(int nodeId, PluginRegistry& registry)
+{
+    return graph_->tryResolvePlugin(nodeId, registry);
+}
+
+bool EffectChainManager::isNodeCrashed(int nodeId) const
+{
+    return graph_->isNodeCrashed(nodeId);
+}
+
+bool EffectChainManager::resetCrashedPlugin(int nodeId)
+{
+    return graph_->resetCrashedPlugin(nodeId);
+}
+
+nlohmann::json EffectChainManager::getMissingNodesJSON() const
+{
+    nlohmann::json arr = nlohmann::json::array();
+    const auto chainState = graph_->getChainState();
+    for (const auto& node : chainState)
+    {
+        if (node.value("missing", false))
+            arr.push_back(node);
+    }
+    return arr;
 }
 
 // ─── Serialization ──────────────────────────────────────────────────────────

@@ -1,4 +1,5 @@
 #include "audio/AudioGraph.h"
+#include "audio/PluginRegistry.h"
 #include "audio/XlethEffectBase.h"
 #include "audio/TestGainEffect.h"
 #include "audio/XlethCompressorEffect.h"
@@ -22,10 +23,82 @@
 #include "audio/SmartBalanceEffect.h"
 #include "audio/WireGainProcessor.h"
 #include "audio/DelayCompensationProcessor.h"
+#include "audio/GuardedPluginWrapper.h"
+#include "audio/PluginCrashGuard.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <queue>
 #include <stack>
+
+// ─── PassthroughProcessor ───────────────────────────────────────────────────
+//
+// Lightweight stand-in used when a VST3 plugin cannot be loaded at project open.
+// Audio passes through unchanged (stereo in → stereo out).
+// Stores the original PluginDescription and state blob so tryResolvePlugin can
+// swap in the real plugin once it becomes available.
+
+class PassthroughProcessor : public juce::AudioProcessor
+{
+public:
+    PassthroughProcessor(const juce::String&          originalName,
+                         const juce::PluginDescription& desc,
+                         const juce::MemoryBlock&       storedState)
+        : juce::AudioProcessor(
+              BusesProperties()
+                  .withInput ("Input",  juce::AudioChannelSet::stereo(), true)
+                  .withOutput("Output", juce::AudioChannelSet::stereo(), true))
+        , displayName_("[Missing: " + originalName + "]")
+        , storedDescription_(desc)
+        , storedState_(storedState)
+    {}
+
+    const juce::String getName() const override { return displayName_; }
+
+    void prepareToPlay(double, int) override {}
+    void releaseResources() override {}
+
+    void processBlock(juce::AudioBuffer<float>& buffer,
+                      juce::MidiBuffer&) override
+    {
+        // Copy input channels to output channels; zero any extra outputs.
+        const int nIn  = getTotalNumInputChannels();
+        const int nOut = getTotalNumOutputChannels();
+        const int nMin = juce::jmin(nIn, nOut);
+        const int nSamples = buffer.getNumSamples();
+
+        for (int ch = nMin; ch < nOut; ++ch)
+            buffer.clear(ch, 0, nSamples);
+        // channels 0..nMin-1 are already in place (input == output buffer)
+        (void)nIn;
+    }
+
+    bool  isMidiEffect()             const override { return false; }
+    double getTailLengthSeconds()    const override { return 0.0;   }
+    bool  acceptsMidi()              const override { return false; }
+    bool  producesMidi()             const override { return false; }
+    bool  hasEditor()                const override { return false; }
+    juce::AudioProcessorEditor* createEditor() override { return nullptr; }
+
+    int getNumPrograms()                               override { return 1;  }
+    int getCurrentProgram()                            override { return 0;  }
+    void setCurrentProgram(int)                        override {}
+    const juce::String getProgramName(int)             override { return {}; }
+    void changeProgramName(int, const juce::String&)   override {}
+
+    // getStateInformation returns empty — the real state is in storedState_.
+    void getStateInformation(juce::MemoryBlock&)           override {}
+    void setStateInformation(const void*, int)             override {}
+
+    // ── Accessor for tryResolvePlugin ────────────────────────────────────
+    const juce::PluginDescription& getStoredDescription() const { return storedDescription_; }
+    const juce::MemoryBlock&       getStoredState()        const { return storedState_;       }
+
+private:
+    juce::String            displayName_;
+    juce::PluginDescription storedDescription_;
+    juce::MemoryBlock       storedState_;
+};
 
 // ─── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -69,6 +142,8 @@ void AudioGraph::destroy()
     adjForward_.clear();
     adjReverse_.clear();
     linearOrder_.clear();
+    vstDescriptions_.clear();
+    missingNodes_.clear();
     graph_.reset();
     inputNode_  = {};
     outputNode_ = {};
@@ -86,18 +161,16 @@ void AudioGraph::reprepare(double sampleRate, int blockSize)
 
 // ─── Node management ────────────────────────────────────────────────────────
 
-int AudioGraph::addNode(const std::string& pluginId)
+int AudioGraph::addProcessorToGraph(const std::string& pluginId,
+                                     std::unique_ptr<juce::AudioProcessor> proc)
 {
-    if (!graph_) return -1;
+    if (!graph_ || !proc) return -1;
     if (static_cast<int>(nodes_.size()) >= kMaxNodes) return -1;
 
-    auto effect = createEffect(pluginId);
-    if (!effect) return -1;
+    proc->setPlayConfigDetails(2, 2, sampleRate_, blockSize_);
+    proc->prepareToPlay(sampleRate_, blockSize_);
 
-    effect->setPlayConfigDetails(2, 2, sampleRate_, blockSize_);
-    effect->prepareToPlay(sampleRate_, blockSize_);
-
-    auto nodePtr = graph_->addNode(std::move(effect));
+    auto nodePtr = graph_->addNode(std::move(proc));
     if (!nodePtr) return -1;
 
     const int uid = static_cast<int>(nodePtr->nodeID.uid);
@@ -106,9 +179,29 @@ int AudioGraph::addNode(const std::string& pluginId)
     gn.pluginId  = pluginId;
     nodes_[uid]  = std::move(gn);
 
-    // Ensure adjacency entries exist
     adjForward_[uid];
     adjReverse_[uid];
+    return uid;
+}
+
+int AudioGraph::addNode(const std::string& pluginId)
+{
+    if (!graph_) return -1;
+    if (static_cast<int>(nodes_.size()) >= kMaxNodes) return -1;
+
+    auto effect = createEffect(pluginId);
+    if (!effect) return -1;
+
+    const int uid = addProcessorToGraph(pluginId, std::move(effect));
+    if (uid < 0) return -1;
+
+    // If this is a VST node (not a stock effect), store its PluginDescription
+    // so toJSON can persist it for round-trip serialization.
+    if (pluginRegistry_) {
+        const auto desc = pluginRegistry_->findPluginByIdentifier(juce::String(pluginId));
+        if (!desc.name.isEmpty())
+            vstDescriptions_[uid] = desc;
+    }
 
     return uid;
 }
@@ -142,10 +235,20 @@ bool AudioGraph::removeNode(int nodeId)
     }
 
     // Remove the node itself from APG
+#ifdef XLETH_DEBUG
+    {
+        auto vit = vstDescriptions_.find(nodeId);
+        if (vit != vstDescriptions_.end())
+            std::fprintf(stderr, "[PluginHost] Unloaded: \"%s\" node %d\n",
+                         vit->second.name.toRawUTF8(), nodeId);
+    }
+#endif
     graph_->removeNode(it->second.apgNodeId);
     nodes_.erase(it);
     adjForward_.erase(nodeId);
     adjReverse_.erase(nodeId);
+    vstDescriptions_.erase(nodeId);
+    missingNodes_.erase(nodeId);
 
     updateLinearOrder();
     return true;
@@ -545,15 +648,37 @@ nlohmann::json AudioGraph::getChainState() const
         obj["pluginId"] = it->second.pluginId;
         obj["position"] = i;
         obj["bypassed"] = false;
+        obj["missing"]  = (missingNodes_.count(uid) > 0);
+        obj["crashed"]  = false;
 
         if (graph_)
         {
             auto* node = graph_->getNodeForId(it->second.apgNodeId);
             if (node)
             {
-                auto* effect = dynamic_cast<XlethEffectBase*>(node->getProcessor());
-                if (effect)
-                    obj["bypassed"] = effect->isBypassed();
+                auto* proc = node->getProcessor();
+                if (proc)
+                {
+                    auto* effect = dynamic_cast<XlethEffectBase*>(proc);
+                    if (effect)
+                    {
+                        obj["bypassed"] = effect->isBypassed();
+                    }
+                    else if (auto* guarded = dynamic_cast<GuardedPluginWrapper*>(proc))
+                    {
+                        // VST3 via GuardedPluginWrapper: bypass via inner parameter,
+                        // crashed flag reflects whether SEH fired in processBlock.
+                        if (auto* bp = proc->getBypassParameter())
+                            obj["bypassed"] = (bp->getValue() >= 0.5f);
+                        obj["crashed"] = guarded->isCrashed();
+                    }
+                    else if (!dynamic_cast<PassthroughProcessor*>(proc))
+                    {
+                        // Unwrapped VST3 (shouldn't happen post-VST-07) — fall back.
+                        if (auto* bp = proc->getBypassParameter())
+                            obj["bypassed"] = (bp->getValue() >= 0.5f);
+                    }
+                }
             }
         }
 
@@ -659,21 +784,96 @@ nlohmann::json AudioGraph::toJSON() const
         obj["y"] = gn.y;
         obj["bypassed"] = false;
 
-        // Plugin state as base64
-        if (graph_)
+        const bool isMissing = (missingNodes_.count(uid) > 0);
+
+        if (isMissing)
         {
-            auto* node = graph_->getNodeForId(gn.apgNodeId);
-            if (node)
+            // Missing node: persist original state and description from the
+            // PassthroughProcessor so the next load can try again.
+            obj["bypassed"] = false;
+            obj["missing"]  = true;
+
+            if (graph_)
             {
-                auto* effect = dynamic_cast<XlethEffectBase*>(node->getProcessor());
-                if (effect)
+                auto* node = graph_->getNodeForId(gn.apgNodeId);
+                if (node)
                 {
-                    obj["bypassed"] = effect->isBypassed();
-                    juce::MemoryBlock mb;
-                    effect->getStateInformation(mb);
-                    if (mb.getSize() > 0)
-                        obj["state"] = juce::Base64::toBase64(mb.getData(), mb.getSize()).toStdString();
+                    auto* passthru = dynamic_cast<PassthroughProcessor*>(node->getProcessor());
+                    if (passthru)
+                    {
+                        const auto& storedState = passthru->getStoredState();
+                        if (storedState.getSize() > 0)
+                            obj["state"] = juce::Base64::toBase64(
+                                storedState.getData(), storedState.getSize()).toStdString();
+                    }
                 }
+            }
+        }
+        else
+        {
+            // Plugin state as base64 — handles both stock XlethEffectBase and VST3.
+            if (graph_)
+            {
+                auto* node = graph_->getNodeForId(gn.apgNodeId);
+                if (node)
+                {
+                    auto* proc = node->getProcessor();
+                    if (proc)
+                    {
+                        // Bypass: XlethEffectBase exposes isBypassed(); VST3 plugins
+                        // use the standard bypass parameter (getBypassParameter).
+                        auto* effect = dynamic_cast<XlethEffectBase*>(proc);
+                        if (effect)
+                        {
+                            obj["bypassed"] = effect->isBypassed();
+                        }
+                        else
+                        {
+                            bool bypassed = false;
+                            if (auto* bp = proc->getBypassParameter())
+                                bypassed = (bp->getValue() >= 0.5f);
+                            obj["bypassed"] = bypassed;
+                        }
+
+                        // getStateInformation is guarded via the wrapper for
+                        // VST nodes; stock effects are trusted.  If a plugin
+                        // crashes while saving state, we simply persist no state
+                        // (the wrapper clears the MemoryBlock on fault).
+                        juce::MemoryBlock mb;
+                        proc->getStateInformation(mb);
+                        if (mb.getSize() > 0)
+                        {
+                            obj["state"] = juce::Base64::toBase64(
+                                mb.getData(), mb.getSize()).toStdString();
+#ifdef XLETH_DEBUG
+                            if (vstDescriptions_.count(uid))
+                                std::fprintf(stderr,
+                                             "[PluginHost] State saved: \"%s\" (%zu bytes)\n",
+                                             proc->getName().toRawUTF8(), mb.getSize());
+#endif
+                        }
+#ifdef XLETH_DEBUG
+                        else if (auto* gw = dynamic_cast<GuardedPluginWrapper*>(proc))
+                        {
+                            if (gw->isCrashed())
+                                std::fprintf(stderr,
+                                             "[PluginHost] State save failed: \"%s\" — crashed\n",
+                                             proc->getName().toRawUTF8());
+                        }
+#endif
+                    }
+                }
+            }
+        }
+
+        // VST nodes (including missing placeholders): persist the PluginDescription
+        // XML for round-trip fidelity and future resolution.
+        {
+            auto vit = vstDescriptions_.find(uid);
+            if (vit != vstDescriptions_.end())
+            {
+                if (auto xmlElem = vit->second.createXml())
+                    obj["pluginDescription"] = xmlElem->toString().toStdString();
             }
         }
 
@@ -722,34 +922,148 @@ bool AudioGraph::fromJSON(const nlohmann::json& j)
             const std::string plugId = nodeObj.value("pluginId", "");
             if (oldId < 0 || plugId.empty()) continue;
 
-            const int newId = addNode(plugId);
-            if (newId < 0) continue;
+            // Decode the stored state blob once (used on both success and failure paths).
+            juce::MemoryBlock storedState;
+            if (nodeObj.contains("state") && nodeObj["state"].is_string())
+            {
+                juce::MemoryOutputStream mos;
+                if (juce::Base64::convertFromBase64(mos, juce::String(nodeObj["state"].get<std::string>())))
+                    storedState.append(mos.getData(), mos.getDataSize());
+            }
 
+            int newId = -1;
+
+            // ── VST node path ──────────────────────────────────────────────
+            if (nodeObj.contains("pluginDescription") && nodeObj["pluginDescription"].is_string())
+            {
+                const auto xmlStr = juce::String(nodeObj["pluginDescription"].get<std::string>());
+                auto xmlElem = juce::XmlDocument::parse(xmlStr);
+
+                juce::PluginDescription desc;
+                const bool descOk = (xmlElem != nullptr && desc.loadFromXml(*xmlElem));
+
+                bool instantiated = false;
+                if (descOk && pluginRegistry_)
+                {
+                    juce::String errorMsg;
+                    std::unique_ptr<juce::AudioPluginInstance> instance;
+                    auto& fmtMgr = pluginRegistry_->getFormatManager();
+                    const auto sr = sampleRate_;
+                    const auto bs = blockSize_;
+#ifdef XLETH_DEBUG
+                    std::fprintf(stderr, "[PluginHost] Loading: \"%s\"\n",
+                                 desc.name.toRawUTF8());
+#endif
+                    const bool createOk = xleth::pluginGuardCall([&]
+                    {
+                        instance = fmtMgr.createPluginInstance(desc, sr, bs, errorMsg);
+                    });
+                    if (!createOk)
+                    {
+#ifdef XLETH_DEBUG
+                        std::fprintf(stderr,
+                                     "[PluginHost] CRASH: \"%s\" during createPluginInstance (fromJSON)\n",
+                                     desc.name.toRawUTF8());
+#endif
+                    }
+                    else if (instance)
+                    {
+                        auto wrapped = std::make_unique<GuardedPluginWrapper>(std::move(instance));
+                        newId = addProcessorToGraph(plugId, std::move(wrapped));
+                        if (newId >= 0)
+                        {
+                            vstDescriptions_[newId] = desc;
+                            // Restore state on the live plugin instance.  The wrapper's
+                            // setStateInformation is self-guarded — a crash there will
+                            // mark the node crashed and skip state restore.
+                            if (storedState.getSize() > 0)
+                            {
+                                auto* apgNode = graph_->getNodeForId(nodes_[newId].apgNodeId);
+                                if (apgNode)
+                                {
+                                    apgNode->getProcessor()->setStateInformation(
+                                        storedState.getData(), static_cast<int>(storedState.getSize()));
+#ifdef XLETH_DEBUG
+                                    auto* gw = dynamic_cast<GuardedPluginWrapper*>(apgNode->getProcessor());
+                                    if (gw && gw->isCrashed())
+                                        std::fprintf(stderr,
+                                                     "[PluginHost] State restore failed: \"%s\" — crashed\n",
+                                                     desc.name.toRawUTF8());
+                                    else
+                                        std::fprintf(stderr,
+                                                     "[PluginHost] State restored: \"%s\" (%zu bytes)\n",
+                                                     desc.name.toRawUTF8(), storedState.getSize());
+#endif
+                                }
+                            }
+#ifdef XLETH_DEBUG
+                            {
+                                auto* apgNode2 = graph_->getNodeForId(nodes_[newId].apgNodeId);
+                                if (apgNode2)
+                                    std::fprintf(stderr,
+                                                 "[PluginHost] Loaded: \"%s\" (latency: %d samples,"
+                                                 " channels: 2->2)\n",
+                                                 desc.name.toRawUTF8(),
+                                                 apgNode2->getProcessor()->getLatencySamples());
+                            }
+#endif
+                            instantiated = true;
+                        }
+                    }
+                    else
+                    {
+#ifdef XLETH_DEBUG
+                        std::fprintf(stderr, "[PluginHost] Load failed: \"%s\" — %s\n",
+                                     desc.name.toRawUTF8(),
+                                     errorMsg.isEmpty() ? "no instance returned"
+                                                        : errorMsg.toRawUTF8());
+#endif
+                    }
+                }
+
+                if (!instantiated)
+                {
+                    // Plugin unavailable — insert a passthrough placeholder.
+                    const juce::String origName = descOk ? desc.name : juce::String(plugId);
+#ifdef XLETH_DEBUG
+                    std::fprintf(stderr,
+                                 "[PluginHost] Missing on load: \"%s\" by %s — placeholder created\n",
+                                 origName.toRawUTF8(),
+                                 descOk ? desc.manufacturerName.toRawUTF8() : "");
+#endif
+                    auto passthru = std::make_unique<PassthroughProcessor>(origName, desc, storedState);
+                    newId = addProcessorToGraph(plugId, std::move(passthru));
+                    if (newId >= 0)
+                    {
+                        if (descOk)
+                            vstDescriptions_[newId] = desc;
+                        missingNodes_.insert(newId);
+                    }
+                }
+            }
+            else
+            {
+                // ── Stock effect path ──────────────────────────────────────
+                newId = addNode(plugId);
+                if (newId >= 0 && storedState.getSize() > 0)
+                {
+                    auto* apgNode = graph_->getNodeForId(nodes_[newId].apgNodeId);
+                    if (apgNode)
+                        apgNode->getProcessor()->setStateInformation(
+                            storedState.getData(), static_cast<int>(storedState.getSize()));
+                }
+            }
+
+            if (newId < 0) continue;
             oldToNew[oldId] = newId;
 
             // Restore position
             if (nodeObj.contains("x") && nodeObj.contains("y"))
                 setNodePosition(newId, nodeObj["x"].get<float>(), nodeObj["y"].get<float>());
 
-            // Restore bypass
+            // Restore bypass (passthrough ignores it, stock + VST honour it)
             if (nodeObj.value("bypassed", false))
                 setBypass(newId, true);
-
-            // Restore plugin state from base64
-            if (nodeObj.contains("state") && nodeObj["state"].is_string())
-            {
-                juce::MemoryOutputStream mos;
-                if (juce::Base64::convertFromBase64(mos, juce::String(nodeObj["state"].get<std::string>())))
-                {
-                    auto* node = graph_->getNodeForId(nodes_[newId].apgNodeId);
-                    if (node)
-                    {
-                        auto* effect = dynamic_cast<XlethEffectBase*>(node->getProcessor());
-                        if (effect)
-                            effect->setStateInformation(mos.getData(), static_cast<int>(mos.getDataSize()));
-                    }
-                }
-            }
         }
     }
 
@@ -822,6 +1136,149 @@ bool AudioGraph::fromJSON(const nlohmann::json& j)
     updateLinearOrder();
     rebuildImmediate();
     return true;
+}
+
+// ─── Missing-plugin support ──────────────────────────────────────────────────
+
+bool AudioGraph::isNodeMissing(int nodeId) const
+{
+    return missingNodes_.count(nodeId) > 0;
+}
+
+bool AudioGraph::tryResolvePlugin(int nodeId, PluginRegistry& registry)
+{
+    if (!graph_) return false;
+    if (missingNodes_.count(nodeId) == 0) return false;
+
+    auto nit = nodes_.find(nodeId);
+    if (nit == nodes_.end()) return false;
+
+    // Extract stored data from the PassthroughProcessor before removing the node.
+    auto* apgNode = graph_->getNodeForId(nit->second.apgNodeId);
+    if (!apgNode) return false;
+
+    auto* passthru = dynamic_cast<PassthroughProcessor*>(apgNode->getProcessor());
+    if (!passthru) return false;
+
+    const juce::PluginDescription desc         = passthru->getStoredDescription();
+    const juce::MemoryBlock       storedState  = passthru->getStoredState();
+    const std::string             pluginId     = nit->second.pluginId;
+    const float                   savedX       = nit->second.x;
+    const float                   savedY       = nit->second.y;
+
+    // Try to instantiate the real plugin.  createPluginInstance is guarded:
+    // a faulty plugin DLL must not take down the host while the user is merely
+    // attempting resolution.
+    juce::String errorMsg;
+    std::unique_ptr<juce::AudioPluginInstance> instance;
+    auto& fmtMgr = registry.getFormatManager();
+    const auto sr = sampleRate_;
+    const auto bs = blockSize_;
+    const bool createOk = xleth::pluginGuardCall([&]
+    {
+        instance = fmtMgr.createPluginInstance(desc, sr, bs, errorMsg);
+    });
+    if (!createOk)
+    {
+        std::fprintf(stderr,
+                     "[PluginHost] CRASH: \"%s\" during createPluginInstance (retry) — placeholder kept\n",
+                     desc.name.toRawUTF8());
+        return false;
+    }
+    if (!instance) return false;
+    auto wrapped = std::make_unique<GuardedPluginWrapper>(std::move(instance));
+
+    // Save connections before removing old node.
+    std::vector<int> inNeighbors(adjReverse_[nodeId]);
+    std::vector<int> outNeighbors(adjForward_[nodeId]);
+
+    struct SavedWire { int src; int dst; WireProperties props; };
+    std::vector<SavedWire> savedWires;
+    for (int src : inNeighbors)
+    {
+        WireId wid{src, nodeId};
+        auto wit = connections_.find(wid);
+        if (wit != connections_.end())
+            savedWires.push_back({src, nodeId, wit->second.wire});
+    }
+    for (int dst : outNeighbors)
+    {
+        WireId wid{nodeId, dst};
+        auto wit = connections_.find(wid);
+        if (wit != connections_.end())
+            savedWires.push_back({nodeId, dst, wit->second.wire});
+    }
+
+    // Find position in linear chain (for chain-mode round-trip).
+    int chainPos = 0;
+    for (int i = 0; i < static_cast<int>(linearOrder_.size()); ++i)
+        if (linearOrder_[i] == nodeId) { chainPos = i; break; }
+
+    // Remove the placeholder.
+    removeNode(nodeId);  // also erases missingNodes_[nodeId]
+
+    // Add the real plugin (wrapped for crash containment).
+    const int newId = addProcessorToGraph(pluginId, std::move(wrapped));
+    if (newId < 0) return false;
+
+    vstDescriptions_[newId] = desc;
+    setNodePosition(newId, savedX, savedY);
+
+    // Restore state.
+    if (storedState.getSize() > 0)
+    {
+        auto* newApgNode = graph_->getNodeForId(nodes_[newId].apgNodeId);
+        if (newApgNode)
+            newApgNode->getProcessor()->setStateInformation(
+                storedState.getData(), static_cast<int>(storedState.getSize()));
+    }
+
+    // Restore connections (remap old nodeId → newId).
+    for (auto& sw : savedWires)
+    {
+        const int mappedSrc = (sw.src == nodeId) ? newId : sw.src;
+        const int mappedDst = (sw.dst == nodeId) ? newId : sw.dst;
+        WireId wid{mappedSrc, mappedDst};
+        if (connections_.count(wid) || wouldCreateCycle(mappedSrc, mappedDst)) continue;
+        GraphConnection gc;
+        gc.sourceNodeId = mappedSrc;
+        gc.destNodeId   = mappedDst;
+        gc.wire         = sw.props;
+        gc.wire.gainNodeId  = {};
+        gc.wire.delayNodeId = {};
+        connections_[wid] = gc;
+        addAdj(mappedSrc, mappedDst);
+    }
+
+    updateLinearOrder();
+    rebuildImmediate();
+    (void)chainPos;  // position preserved via connection rebuild
+    return true;
+}
+
+// ─── Crash recovery ─────────────────────────────────────────────────────────
+
+bool AudioGraph::isNodeCrashed(int nodeId) const
+{
+    if (!graph_) return false;
+    auto it = nodes_.find(nodeId);
+    if (it == nodes_.end()) return false;
+    auto* apgNode = graph_->getNodeForId(it->second.apgNodeId);
+    if (!apgNode) return false;
+    auto* guarded = dynamic_cast<GuardedPluginWrapper*>(apgNode->getProcessor());
+    return guarded && guarded->isCrashed();
+}
+
+bool AudioGraph::resetCrashedPlugin(int nodeId)
+{
+    if (!graph_) return false;
+    auto it = nodes_.find(nodeId);
+    if (it == nodes_.end()) return false;
+    auto* apgNode = graph_->getNodeForId(it->second.apgNodeId);
+    if (!apgNode) return false;
+    auto* guarded = dynamic_cast<GuardedPluginWrapper*>(apgNode->getProcessor());
+    if (!guarded) return false;
+    return guarded->resetCrashed();
 }
 
 // ─── Audio thread ───────────────────────────────────────────────────────────
@@ -1327,6 +1784,14 @@ XlethEffectBase* AudioGraph::getEffect(int nodeId)
     return n ? dynamic_cast<XlethEffectBase*>(n->getProcessor()) : nullptr;
 }
 
+juce::AudioProcessor* AudioGraph::getProcessor(int nodeId)
+{
+    auto it = nodes_.find(nodeId);
+    if (it == nodes_.end() || !graph_) return nullptr;
+    auto* n = graph_->getNodeForId(it->second.apgNodeId);
+    return n ? n->getProcessor() : nullptr;
+}
+
 std::string AudioGraph::getEffectParameters(int nodeId) const
 {
     auto* effect = const_cast<AudioGraph*>(this)->getEffect(nodeId);
@@ -1345,9 +1810,16 @@ std::string AudioGraph::getEffectMeter(int nodeId) const
     return effect ? effect->getMeterAsJSON() : "[0,0,0,0,0,0,0,0]";
 }
 
+juce::String AudioGraph::getPluginFilePath(int nodeId) const
+{
+    auto it = vstDescriptions_.find(nodeId);
+    if (it == vstDescriptions_.end()) return {};
+    return it->second.fileOrIdentifier;
+}
+
 // ─── Factory ────────────────────────────────────────────────────────────────
 
-std::unique_ptr<XlethEffectBase> AudioGraph::createEffect(const std::string& pluginId)
+std::unique_ptr<juce::AudioProcessor> AudioGraph::createEffect(const std::string& pluginId)
 {
     if (pluginId == "testgain")      return std::make_unique<TestGainEffect>();
     if (pluginId == "compressor")    return std::make_unique<XlethCompressorEffect>();
@@ -1366,5 +1838,77 @@ std::unique_ptr<XlethEffectBase> AudioGraph::createEffect(const std::string& plu
     if (pluginId == "delay")         return std::make_unique<XlethDelayEffect>();
     if (pluginId == "reverb")        return std::make_unique<XlethReverbEffect>();
     if (pluginId == "smartbalance")  return std::make_unique<SmartBalanceEffect>();
+
+    // VST3 fallback — look up in the plugin registry and instantiate.
+    // The createPluginInstance call itself is guarded (some plugins fault on load).
+    if (pluginRegistry_)
+    {
+        // findPluginByIdentifier returns by value — no dangling pointer risk.
+        const auto desc = pluginRegistry_->findPluginByIdentifier(juce::String(pluginId));
+        if (!desc.name.isEmpty())
+        {
+            juce::String errorMsg;
+            std::unique_ptr<juce::AudioPluginInstance> instance;
+            auto& fmtMgr = pluginRegistry_->getFormatManager();
+            const auto sr = sampleRate_;
+            const auto bs = blockSize_;
+#ifdef XLETH_DEBUG
+            std::fprintf(stderr,
+                         "[PluginHost] Loading: pluginId='%s' desc.name='%s' desc.fileOrIdentifier='%s'\n",
+                         pluginId.c_str(),
+                         desc.name.toRawUTF8(),
+                         desc.fileOrIdentifier.toRawUTF8());
+#endif
+            const bool createOk = xleth::pluginGuardCall([&]
+            {
+                instance = fmtMgr.createPluginInstance(desc, sr, bs, errorMsg);
+            });
+            if (!createOk)
+            {
+#ifdef XLETH_DEBUG
+                std::fprintf(stderr,
+                             "[PluginHost] CRASH: \"%s\" during createPluginInstance — not loaded\n",
+                             desc.name.toRawUTF8());
+#endif
+                return nullptr;
+            }
+            if (instance)
+            {
+                // Explicitly set stereo bus layout before prepareToPlay.
+                // VST3 plugins may default to a non-stereo configuration; without
+                // this call the AudioProcessorGraph won't route audio correctly.
+                juce::AudioProcessor::BusesLayout layout;
+                layout.inputBuses.add(juce::AudioChannelSet::stereo());
+                layout.outputBuses.add(juce::AudioChannelSet::stereo());
+                if (!instance->setBusesLayout(layout))
+                {
+#ifdef XLETH_DEBUG
+                    std::fprintf(stderr,
+                                 "[PluginHost] setBusesLayout failed for \"%s\" — using plugin default\n",
+                                 desc.name.toRawUTF8());
+#endif
+                }
+                instance->setPlayConfigDetails(2, 2, sr, bs);
+                instance->prepareToPlay(sr, bs);
+#ifdef XLETH_DEBUG
+                std::fprintf(stderr,
+                             "[PluginHost] Loaded: \"%s\" (latency: %d samples,"
+                             " in=%d out=%d at %.0fHz/%d samples)\n",
+                             desc.name.toRawUTF8(),
+                             instance->getLatencySamples(),
+                             instance->getTotalNumInputChannels(),
+                             instance->getTotalNumOutputChannels(),
+                             sr, bs);
+#endif
+                return std::make_unique<GuardedPluginWrapper>(std::move(instance));
+            }
+#ifdef XLETH_DEBUG
+            std::fprintf(stderr, "[PluginHost] Load failed: \"%s\" — %s\n",
+                         desc.name.toRawUTF8(),
+                         errorMsg.isEmpty() ? "no instance returned" : errorMsg.toRawUTF8());
+#endif
+        }
+    }
+
     return nullptr;
 }

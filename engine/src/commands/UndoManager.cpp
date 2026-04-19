@@ -4,6 +4,14 @@
 UndoManager::UndoManager(int maxHistory) : maxHistory_(maxHistory) {}
 
 void UndoManager::execute(std::unique_ptr<Command> cmd, Timeline& timeline) {
+    // Branch detection (pre-push): if the savepoint lies in the redo history
+    // we're about to discard, the savepoint command is being destroyed.
+    // In the pop-on-undo model, that's the case when savepointIndex_ is
+    // greater than undoStack_.size() — i.e. the user undid past the save.
+    if (!savepointPoisoned_ && savepointIndex_ > undoStack_.size()) {
+        savepointPoisoned_ = true;
+    }
+
     // Clear redo stack — a new edit invalidates the forward history
     if (!redoStack_.empty()) {
         std::cout << "[Undo] Redo stack cleared ("
@@ -18,6 +26,13 @@ void UndoManager::execute(std::unique_ptr<Command> cmd, Timeline& timeline) {
     // Enforce history cap — drop the oldest entry if exceeded
     if ((int)undoStack_.size() > maxHistory_) {
         undoStack_.erase(undoStack_.begin());
+        // Stack shifted down by one — keep savepointIndex_ pointing at the
+        // same command. If the savepoint command itself was dropped, poison.
+        if (savepointIndex_ == 0) {
+            savepointPoisoned_ = true;
+        } else {
+            --savepointIndex_;
+        }
         std::cout << "[Undo] Stack overflow: dropped oldest entry"
                      " (max=" << maxHistory_ << ")\n";
     }
@@ -81,5 +96,17 @@ void UndoManager::clear() {
     const int u = getUndoCount(), r = getRedoCount();
     undoStack_.clear();
     redoStack_.clear();
+    savepointIndex_ = 0;
+    savepointPoisoned_ = false;
     std::cout << "[Undo] Cleared history (" << u << " undo, " << r << " redo)\n";
+}
+
+void UndoManager::markSavepoint() {
+    savepointIndex_ = undoStack_.size();
+    savepointPoisoned_ = false;
+    std::cout << "[Undo] Savepoint marked at depth " << savepointIndex_ << "\n";
+}
+
+bool UndoManager::isDirty() const {
+    return savepointPoisoned_ || undoStack_.size() != savepointIndex_;
 }

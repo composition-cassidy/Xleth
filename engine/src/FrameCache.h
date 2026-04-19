@@ -11,15 +11,24 @@
 struct FrameKey {
     int sourceId;
     int frameNumber;
+    // Which region's proxy this frame came from (-1 = original source decoder).
+    // A region proxy produces a different picture at the same (sourceId,
+    // frameNumber) than the original, so this must be part of the cache key
+    // to avoid cross-contamination.
+    int regionId = -1;
 
     bool operator==(const FrameKey& other) const {
-        return sourceId == other.sourceId && frameNumber == other.frameNumber;
+        return sourceId == other.sourceId
+            && frameNumber == other.frameNumber
+            && regionId == other.regionId;
     }
 };
 
 struct FrameKeyHash {
     size_t operator()(const FrameKey& k) const {
-        return std::hash<int>()(k.sourceId) ^ (std::hash<int>()(k.frameNumber) << 16);
+        return std::hash<int>()(k.sourceId)
+             ^ (std::hash<int>()(k.frameNumber) << 16)
+             ^ (std::hash<int>()(k.regionId)    << 8);
     }
 };
 

@@ -16,6 +16,20 @@ function nextLabelIndex(samples, label) {
   return samples.filter(s => s.label === label).length + 1
 }
 
+// Same idea, but for a project-wide region list (used at Add-time so the
+// counter is globally correct, not limited to the current source).
+function nextLabelIndexGlobal(allRegions, label) {
+  return (allRegions || []).filter(r => r.label === label).length + 1
+}
+
+// True if `allRegions` contains any region with matching label+name,
+// ignoring the optional excludeId (for rename checks).
+function nameCollides(allRegions, label, name, excludeId = null) {
+  return (allRegions || []).some(r =>
+    r.id !== excludeId && r.label === label && r.name === name
+  )
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 /**
@@ -46,8 +60,17 @@ export default function SamplePicker({ source, onClose }) {
   const [sampleName,   setSampleName]   = useState('Kick 1')
   const [customLabels, setCustomLabels] = useState(loadCustomLabels)
 
+  // Distinguishes a user-typed name (must be rejected on collision) from an
+  // auto-generated one (safely bumped to the next free index on collision).
+  const [sampleNameIsUserEdited, setSampleNameIsUserEdited] = useState(false)
+  const [addSampleError, setAddSampleError] = useState(null)
+
   // ── Position polling interval ref ──────────────────────────────────────────
   const pollRef = useRef(null)
+
+  // ── Add-sample concurrency guards ───────────────────────────────────────────
+  const isAddingRef     = useRef(false)  // blocks overlapping invocations
+  const pendingCountRef = useRef(0)      // offsets names for concurrent calls
 
   // ── Duration from waveform, engine, or source prop ─────────────────────────
   const duration = waveformData?.duration || sourceDuration || source.duration || 0
@@ -147,10 +170,28 @@ export default function SamplePicker({ source, onClose }) {
   }, [playing])
 
   // ── Auto-update sample name when label changes ─────────────────────────────
+  // Only regenerate the suggestion when the user has NOT manually typed a
+  // custom name. Display-only: the committed name in handleAddSample is
+  // re-derived from a fresh project-wide fetch.
   useEffect(() => {
-    setSampleName(`${label} ${nextLabelIndex(samples, label)}`)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [label])
+    if (!sampleNameIsUserEdited) {
+      setSampleName(`${label} ${nextLabelIndex(samples, label)}`)
+    }
+  }, [label, samples, sampleNameIsUserEdited])
+
+  // ── Name input: flip "user-edited" flag, clear any stale error ──────────────
+  const handleNameChange = useCallback((name) => {
+    setSampleName(name)
+    setSampleNameIsUserEdited(true)
+    setAddSampleError(null)
+  }, [])
+
+  // ── Label change: reset the flag so the suggestion regenerates cleanly ─────
+  const handleLabelChange = useCallback((newLabel) => {
+    setLabel(newLabel)
+    setSampleNameIsUserEdited(false)
+    setAddSampleError(null)
+  }, [])
 
   // ── Seek handler (from waveform click/drag) ────────────────────────────────
   // Sets audio position; the <video> element syncs via currentTime prop.
@@ -197,64 +238,114 @@ export default function SamplePicker({ source, onClose }) {
     setPlaying(true)
   }, [inPoint, duration])
 
+  // Stable ref so the keydown effect doesn't re-register on every inPoint/duration change
+  const handlePlaySelectionRef = useRef(handlePlaySelection)
+  useEffect(() => { handlePlaySelectionRef.current = handlePlaySelection }, [handlePlaySelection])
+
   // ── Add sample ─────────────────────────────────────────────────────────────
   const handleAddSample = useCallback(async () => {
+    if (isAddingRef.current) return          // block overlapping invocations
     if (inPoint === null || outPoint === null) return
     const start = Math.min(inPoint, outPoint)
     const end   = Math.max(inPoint, outPoint)
     if (end - start < 0.01) return  // degenerate selection
 
-    const name = sampleName || `${label} ${nextLabelIndex(samples, label)}`
-    const regionDef = {
-      sourceId:  source.id,
-      startTime: start,
-      endTime:   end,
-      label,
-      name,
-    }
+    isAddingRef.current = true
+    let didIncrementPending = false
 
-    console.log(`[SamplePicker] Adding sample: "${name}" (${label}) ${start.toFixed(3)}–${end.toFixed(3)}s`)
-
-    let regionId = null
     try {
-      regionId = await window.xleth?.timeline?.addRegion(regionDef)
-      timelineEvents.dispatchEvent(new Event('timeline-regions-changed'))
-    } catch (e) {
-      console.warn('[SamplePicker] addRegion failed (addon may not support it yet):', e.message)
-    }
-
-    // Load region audio into SampleBank and map it for MixEngine playback
-    if (regionId != null && source.filePath) {
+      // Fresh project-wide fetch: counter must account for regions on OTHER
+      // sources too (otherwise each source restarts at "Pitch 1" independently).
+      let allRegions = []
       try {
-        const sampleId = await window.xleth?.audio?.loadSourceRegion(source.filePath, start, end)
-        if (sampleId != null && sampleId >= 0) {
-          await window.xleth?.audio?.mapRegionToSample(regionId, sampleId)
-          // Notify TimelineView so it doesn't re-load this region's audio
-          timelineEvents.dispatchEvent(new CustomEvent('timeline-region-audio-loaded', { detail: { regionId } }))
-          console.log(`[SamplePicker] Audio loaded: region=${regionId} → sample=${sampleId}`)
-        } else {
-          console.warn(`[SamplePicker] loadSourceRegion returned ${sampleId}`)
+        const regs = await window.xleth?.timeline?.getRegions()
+        if (Array.isArray(regs)) allRegions = regs
+      } catch { /* empty list fallback */ }
+
+      let name
+      if (sampleNameIsUserEdited) {
+        // User-typed name: reject on collision, surface inline error.
+        const typed = (sampleName || '').trim()
+        if (!typed) {
+          setAddSampleError('Sample name cannot be empty.')
+          return
         }
+        if (nameCollides(allRegions, label, typed)) {
+          setAddSampleError(`A ${label} sample named "${typed}" already exists.`)
+          return
+        }
+        name = typed
+      } else {
+        // Auto-generated: compute from fresh global list. Concurrent-add safety
+        // net: bump the counter until we find an unused name (capped retries).
+        let idx = nextLabelIndexGlobal(allRegions, label) + pendingCountRef.current
+        let candidate = `${label} ${idx}`
+        let retries = 0
+        while (nameCollides(allRegions, label, candidate) && retries < 1000) {
+          idx++
+          candidate = `${label} ${idx}`
+          retries++
+        }
+        name = candidate
+        pendingCountRef.current += 1
+        didIncrementPending = true
+      }
+
+      setAddSampleError(null)
+
+      const regionDef = {
+        sourceId:  source.id,
+        startTime: start,
+        endTime:   end,
+        label,
+        name,
+      }
+
+      console.log(`[SamplePicker] Adding sample: "${name}" (${label}) ${start.toFixed(3)}–${end.toFixed(3)}s`)
+
+      let regionId = null
+      try {
+        regionId = await window.xleth?.timeline?.addRegion(regionDef)
+        timelineEvents.dispatchEvent(new Event('timeline-regions-changed'))
       } catch (e) {
-        console.warn('[SamplePicker] Audio load/map failed:', e.message)
+        console.warn('[SamplePicker] addRegion failed (addon may not support it yet):', e.message)
+      }
+
+      // Load region audio into SampleBank and map it for MixEngine playback
+      if (regionId != null && source.filePath) {
+        try {
+          const sampleId = await window.xleth?.audio?.loadSourceRegion(source.filePath, start, end)
+          if (sampleId != null && sampleId >= 0) {
+            await window.xleth?.audio?.mapRegionToSample(regionId, sampleId)
+            // Notify TimelineView so it doesn't re-load this region's audio
+            timelineEvents.dispatchEvent(new CustomEvent('timeline-region-audio-loaded', { detail: { regionId } }))
+            console.log(`[SamplePicker] Audio loaded: region=${regionId} → sample=${sampleId}`)
+          } else {
+            console.warn(`[SamplePicker] loadSourceRegion returned ${sampleId}`)
+          }
+        } catch (e) {
+          console.warn('[SamplePicker] Audio load/map failed:', e.message)
+        }
+      }
+
+      const newSample = { ...regionDef, id: regionId ?? `local-${Date.now()}` }
+      setSamples(prev => [...prev, newSample])
+      setSelectedId(newSample.id)
+      // Reset flag so the useEffect regenerates a fresh suggested name.
+      setSampleNameIsUserEdited(false)
+
+      // Reset in/out
+      setInPoint(null)
+      setOutPoint(null)
+
+      console.log(`[SamplePicker] Sample added: id=${newSample.id}`)
+    } finally {
+      isAddingRef.current = false
+      if (didIncrementPending) {
+        pendingCountRef.current = Math.max(0, pendingCountRef.current - 1)
       }
     }
-
-    const newSample = { ...regionDef, id: regionId ?? `local-${Date.now()}` }
-    setSamples(prev => {
-      const updated = [...prev, newSample]
-      // Advance name counter
-      setSampleName(`${label} ${updated.filter(s => s.label === label).length + 1}`)
-      return updated
-    })
-    setSelectedId(newSample.id)
-
-    // Reset in/out
-    setInPoint(null)
-    setOutPoint(null)
-
-    console.log(`[SamplePicker] Sample added: id=${newSample.id}`)
-  }, [inPoint, outPoint, label, sampleName, samples, source.id])
+  }, [inPoint, outPoint, label, sampleName, source.id, source.filePath, sampleNameIsUserEdited])
 
   // ── Delete sample ──────────────────────────────────────────────────────────
   const handleDeleteSample = useCallback(async (id) => {
@@ -308,6 +399,9 @@ export default function SamplePicker({ source, onClose }) {
   }, [selectedId])
 
   // ── Keyboard shortcuts (capture phase overrides TransportBar) ──────────────
+  // handlePlaySelectionRef used instead of handlePlaySelection directly so this
+  // effect re-registers only when handleSetIn/handleSetOut/onClose change (rare),
+  // not on every inPoint/duration change that recreates handlePlaySelection.
   useEffect(() => {
     const handler = (e) => {
       const tag = e.target?.tagName
@@ -322,7 +416,7 @@ export default function SamplePicker({ source, onClose }) {
       } else if (e.key === ' ') {
         e.preventDefault()
         e.stopImmediatePropagation()
-        handlePlaySelection()
+        handlePlaySelectionRef.current()
       } else if (e.key === 'Escape') {
         e.stopImmediatePropagation()
         onClose()
@@ -330,7 +424,7 @@ export default function SamplePicker({ source, onClose }) {
     }
     window.addEventListener('keydown', handler, { capture: true })
     return () => window.removeEventListener('keydown', handler, { capture: true })
-  }, [handleSetIn, handleSetOut, handlePlaySelection, onClose])
+  }, [handleSetIn, handleSetOut, onClose])
 
   // ── Render ─────────────────────────────────────────────────────────────────
   const allLabels = [...DEFAULT_LABELS, ...customLabels]
@@ -388,11 +482,29 @@ export default function SamplePicker({ source, onClose }) {
         onPlaySelection={handlePlaySelection}
         onSetIn={handleSetIn}
         onSetOut={handleSetOut}
-        onLabelChange={setLabel}
-        onNameChange={setSampleName}
+        onLabelChange={handleLabelChange}
+        onNameChange={handleNameChange}
         onAddSample={handleAddSample}
         onAddCustomLabel={handleAddCustomLabel}
       />
+
+      {/* ── Add-sample error (duplicate name) ─────────────────────────── */}
+      {addSampleError && (
+        <div
+          className="picker-name-error"
+          role="alert"
+          style={{
+            color: '#ff8a8a',
+            background: '#3a1e1e',
+            padding: '6px 12px',
+            margin: '4px 12px',
+            borderRadius: '4px',
+            fontSize: '12px',
+          }}
+        >
+          {addSampleError}
+        </div>
+      )}
 
       {/* ── Syllable splitter (only when a Quote is selected) ──────────── */}
       {selectedSample && selectedSample.label === 'Quote' && (

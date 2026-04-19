@@ -3,6 +3,7 @@
 #include "Transport.h"
 #include "VideoDecoder.h"
 #include "FrameCache.h"
+#include "model/TimelineTypes.h"
 
 #include <unordered_map>
 #include <vector>
@@ -34,7 +35,14 @@ struct VideoEvent {
     // detect when a note sustains past the sample's trimmed video length.
     // 0.0 = unset (no boundary check).
     double sourceEndTime = 0.0;
+
+    // Which SampleRegion this event was emitted for (-1 = unset / not region-backed).
+    // Used by SyncManager::videoTick and FrameCollector to route to a
+    // per-region proxy decoder when one is available.
+    int regionId = -1;
 };
+
+class Timeline; // fwd decl — only needed for getRegion() lookup in videoTick
 
 class SyncManager {
 public:
@@ -46,6 +54,20 @@ public:
                 FrameCache& cache,
                 VideoCompositor* compositor = nullptr);
 
+    // Wire in per-region proxy decoders and the Timeline used to resolve
+    // SampleRegion metadata during videoTick(). Both references are stored
+    // by pointer/ref and must remain valid for SyncManager's lifetime.
+    //
+    // regionDecoderPtrs: maps regionId -> VideoDecoder* for the region's proxy.
+    //                    Growth of this map during playback is visible through
+    //                    the reference. The owning map (unique_ptr) lives in
+    //                    XlethAddon; this is just a raw-pointer lookup surface.
+    // timeline:           used only for getRegion(regionId) to read
+    //                     proxyStartTime/proxyEndTime/proxyReady during videoTick.
+    void setRegionProxySources(
+        std::unordered_map<int, VideoDecoder*>* regionDecoderPtrs,
+        const Timeline*                         timeline);
+
     // Add video events to the timeline
     void addEvent(const VideoEvent& event);
     void clearEvents();
@@ -53,6 +75,11 @@ public:
     // Read-only access to current events (caller must hold external lock if
     // the event list is being mutated concurrently).
     const std::vector<VideoEvent>& getEvents() const { return events_; }
+
+    // Slide animation events — parallel list to video events, populated by
+    // pattern-track rebuild for notes flagged isSlide. Cleared by clearEvents().
+    void addSlideEvent(const SlideAnimationEvent& e) { slideEvents_.push_back(e); }
+    const std::vector<SlideAnimationEvent>& getSlideEvents() const { return slideEvents_; }
 
     // Called on a dedicated video thread at ~60Hz.
     // Reads transport position -> determines which events are active ->
@@ -73,7 +100,13 @@ private:
     FrameCache&                 cache_;
     VideoCompositor*            compositor_;  // nullable
 
-    std::vector<VideoEvent> events_;
+    // Region proxy lookup surfaces — both nullable; nullptr disables
+    // per-region proxy preference (videoTick falls back to the source decoder).
+    std::unordered_map<int, VideoDecoder*>* regionDecoderPtrs_ = nullptr;
+    const Timeline*                         timelineForRegions_ = nullptr;
+
+    std::vector<VideoEvent>          events_;
+    std::vector<SlideAnimationEvent> slideEvents_;
 
     // Drift tracking
     std::vector<double> driftSamples_;

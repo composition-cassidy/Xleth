@@ -11,6 +11,7 @@ export function createSplitTool(deps) {
   const {
     clipsRef, tracksRef,
     pixelsPerBeatRef, scrollOffsetRef,
+    snapGranularityRef,
     onSplitClip,
     redrawOverlay,
     // Pattern block deps
@@ -56,7 +57,7 @@ export function createSplitTool(deps) {
       const tracks = tracksRef.current
       const track = tracks?.[trackIndex]
       const modifiers = { alt: e.altKey, shift: e.shiftKey, ctrl: e.ctrlKey }
-      const snappedBeat = snapBeatToGrid(Math.max(0, beat), modifiers)
+      const snappedBeat = snapBeatToGrid(Math.max(0, beat), modifiers, snapGranularityRef?.current)
 
       // Pattern-track branch: split pattern block
       if (track?.type === 'Pattern') {
@@ -93,7 +94,7 @@ export function createSplitTool(deps) {
     onMouseMove(localX, localY, e) {
       const beat = pixelToBeat(localX, scrollOffsetRef.current, pixelsPerBeatRef.current)
       const modifiers = { alt: e.altKey, shift: e.shiftKey, ctrl: e.ctrlKey }
-      splitBeat = snapBeatToGrid(Math.max(0, beat), modifiers)
+      splitBeat = snapBeatToGrid(Math.max(0, beat), modifiers, snapGranularityRef?.current)
       redrawOverlay()
     },
 

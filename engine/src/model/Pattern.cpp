@@ -6,7 +6,10 @@ void to_json(nlohmann::json& j, const PatternNote& n) {
         {"positionTicks", n.position.ticks},
         {"durationTicks", n.duration.ticks},
         {"pitch",         n.pitch},
-        {"velocity",      n.velocity}
+        {"velocity",      n.velocity},
+        {"isSlide",       n.isSlide},
+        {"slideCurveCx",  n.slideCurveCx},
+        {"slideCurveCy",  n.slideCurveCy}
     };
 }
 
@@ -16,6 +19,9 @@ void from_json(const nlohmann::json& j, PatternNote& n) {
     n.duration.ticks = j.at("durationTicks").get<int64_t>();
     j.at("pitch").get_to(n.pitch);
     j.at("velocity").get_to(n.velocity);
+    n.isSlide      = j.value("isSlide", false);
+    n.slideCurveCx = j.value("slideCurveCx", 0.5f);
+    n.slideCurveCy = j.value("slideCurveCy", 0.5f);
 }
 
 void to_json(nlohmann::json& j, const Pattern& p) {

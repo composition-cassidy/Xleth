@@ -7,6 +7,7 @@
 
 #include <array>
 #include <cstdint>
+#include <cstdio>
 #include <vector>
 
 // ─── Sampler ─────────────────────────────────────────────────────────────────
@@ -70,9 +71,25 @@ public:
     bool hasSample() const { return sampleData_.getNumSamples() > 0; }
     void allNotesOff();
 
+    // ── Voice-identity plumbing (audio-thread-safe scalar stores) ────────────
+    // MixEngine calls setCurrentSample(bufStart) once per buffer before
+    // triggerPatternNotes so fireNoteOn can record absolute spawn positions.
+    // INVARIANT: absSample MUST be the BUFFER-START absolute sample (bufStart),
+    // not bufEnd or any per-sample running counter — spawnAbsSample is computed
+    // as (currentAbsSample_ + sampleOffset) where sampleOffset is BUFFER-RELATIVE.
+    void setCurrentSample(int64_t absSample) noexcept { currentAbsSample_ = absSample; }
+#ifdef XLETH_DEBUG
+    void     setTelemetryLog(FILE* f) noexcept { telemetryLog_ = f; }
+    void     setDebugKey(int trackId, int regionId) noexcept { debugTrackId_ = trackId; debugRegionId_ = regionId; }
+    uint64_t orphanCandidatesEver() const noexcept { return orphanCandidatesEver_; }
+    int64_t  debugCurrentAbsSample() const noexcept { return currentAbsSample_; }
+    void     debugSnapshotActiveVoices(FILE* out, const char* reason,
+                                        int trackId, int regionId) const noexcept;
+#endif
+
     // ── Audio-thread triggering ──────────────────────────────────────────────
-    void noteOn(int midiNote, float velocity);
-    void noteOff(int midiNote, bool force = false);
+    void noteOn(int midiNote, float velocity, int sampleOffset = 0);
+    void noteOff(int midiNote, int sampleOffset = 0, bool force = false);
 
     // Additive render into outputBuffer (stereo assumed). Caller clears if needed.
     void processBlock(juce::AudioBuffer<float>& outputBuffer,
@@ -80,6 +97,9 @@ public:
 
     // ── Introspection (main-thread) ──────────────────────────────────────────
     int  activeVoiceCount() const;
+    int  countActiveVoices() const;      // audio-thread-safe read-only scan; same as activeVoiceCount
+    int  countHeldVoices() const;        // voices where active && noteHeld
+    int  countReleasingVoices() const;   // voices where active && !noteHeld
 
 private:
     juce::AudioBuffer<float> sampleData_;
@@ -183,16 +203,44 @@ private:
         LfoState lfoVolState;
         LfoState lfoPanState;
         LfoState lfoPitchState;
+
+        int onsetSample   = 0;  // sub-buffer onset: processVoice skips output for [0, onsetSample), reset to 0 after first block
+        int releaseSample = -1; // sub-buffer sample at which to enter Release; -1 = none queued
+
+        // Voice identity (set at spawn time). spawnCounter drives oldest-held-first
+        // tiebreaking in findVoiceForNote; spawnAbsSample drives orphan-candidate
+        // detection. Both are reset on every true re-spawn (fireNoteOn, mono hard
+        // retrigger). Legato/portamento paths intentionally preserve identity.
+        uint64_t spawnCounter   = 0;   // monotonic per-sampler; 0 = never spawned
+        int64_t  spawnAbsSample = -1;  // absolute transport sample at spawn; -1 = preview/unknown
+#ifdef XLETH_DEBUG
+        int64_t  lastLoggedAbsSample = -1;      // per-voice throttle for [OrphanCandidate]
+        int64_t  lastZombieLogAbsSample = -1;   // per-voice throttle for [ZombieVoice]
+#endif
     };
 
     static constexpr int MAX_VOICES = 32;
     std::array<Voice, MAX_VOICES> voices_{};
 
+    // Voice identity / orphan-detection plumbing.
+    // currentAbsSample_ is set by MixEngine once per buffer via setCurrentSample().
+    // fireNoteOn captures (currentAbsSample_ + sampleOffset) into Voice::spawnAbsSample.
+    uint64_t nextSpawnCounter_ = 1;   // 0 reserved as "never spawned" sentinel
+    int64_t  currentAbsSample_ = 0;   // buffer-start absolute sample; 0 = preview/pre-transport
+#ifdef XLETH_DEBUG
+    uint64_t orphanCandidatesEver_ = 0;
+    FILE*    telemetryLog_         = nullptr;  // injected by MixEngine; nullptr → stderr
+    int      debugTrackId_         = -1;       // for [OrphanCandidate] samplerKey prefix
+    int      debugRegionId_        = -1;
+    int64_t  lastCensusAbsSample_  = -1;       // throttle for [VoiceCensus]
+    static const char* envStageName(Voice::EnvStage s) noexcept;
+#endif
+
     Voice* findFreeVoice();                // returns first inactive, else steals
     Voice* findVoiceForNote(int midiNote); // first active voice matching note
     Voice* findActiveMonoVoice();          // first active voice (for mono mode)
-    void   fireNoteOn(int midiNote, float velocity);  // actual voice allocation
-    void   fireNoteOff(int midiNote, bool force = false); // actual voice release
+    void   fireNoteOn(int midiNote, float velocity, int sampleOffset = 0);  // actual voice allocation
+    void   fireNoteOff(int midiNote, int sampleOffset = 0, bool force = false); // actual voice release
     void   processVoice(Voice& v,
                         juce::AudioBuffer<float>& out,
                         int numSamples,

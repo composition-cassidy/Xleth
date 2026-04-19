@@ -127,7 +127,9 @@ function drawNotes(ctx, w, h, notes, selectedNoteIds, pixelsPerBeat, pixelsPerSe
 
     const selected = selectedNoteIds?.has(note.id)
     const alpha = 0.4 + 0.6 * (note.velocity ?? 1.0)
-    const hex = '#69DB7C'
+    // Slide notes use a magenta accent so they're visually distinct from
+    // regular notes — they don't spawn cells, they trigger a per-track effect.
+    const hex = note.isSlide ? '#E64FE6' : '#69DB7C'
     ctx.fillStyle = hexToRgba(hex, alpha * (selected ? 1.0 : 0.85))
     ctx.fillRect(x, y + 1, wid, pixelsPerSemitone - 2)
     ctx.strokeStyle = selected ? '#fff' : hexToRgba(hex, 1.0)
@@ -249,6 +251,17 @@ export default function PianoRollCanvas({
     const { localX, localY } = pos
     const modifiers = { alt: e.altKey, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey }
     const hit = hitTestNote(notesRef.current, localX, localY, ppb, pps, sX, sY)
+
+    // Alt+click on existing note → toggle slide flag (visual animation trigger).
+    // Does not start a drag; reuses the same note id (no new cell spawned).
+    if (modifiers.alt && hit && patternId != null) {
+      const note = hit.note
+      const newIsSlide = !note.isSlide
+      const cx = note.slideCurveCx ?? 0.5
+      const cy = note.slideCurveCy ?? 0.5
+      window.xleth?.timeline?.setNoteSlide(patternId, note.id, newIsSlide, cx, cy)
+      return
+    }
 
     if (activeTool === 'delete') {
       if (hit) onRemoveNoteRef.current?.(hit.note.id)

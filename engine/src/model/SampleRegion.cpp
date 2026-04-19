@@ -75,7 +75,11 @@ void to_json(nlohmann::json& j, const SampleRegion& r) {
         {"arpGate",           r.arpGate},
         {"arpRange",          r.arpRange},
         {"arpDirection",      r.arpDirection},
-        {"syllables",        r.syllables}
+        {"syllables",        r.syllables},
+        {"proxyPath",        r.proxyPath},
+        {"proxyReady",       r.proxyReady},
+        {"proxyStartTime",   r.proxyStartTime},
+        {"proxyEndTime",     r.proxyEndTime}
     };
     // LFO waveform arrays (serialised separately since nlohmann::json
     // doesn't know about LfoBreakpoint).
@@ -213,4 +217,10 @@ void from_json(const nlohmann::json& j, SampleRegion& r) {
     if (j.contains("lfoPitchDelayMs"))       j.at("lfoPitchDelayMs").get_to(r.lfoPitchDelayMs);
     if (j.contains("lfoPitchWaveform"))      deserializeWaveform(j["lfoPitchWaveform"], r.lfoPitchWaveform);
     j.at("syllables").get_to(r.syllables);
+    // On-demand proxy fields (added in proxy redesign). Default values on
+    // legacy projects mean "no proxy yet" — will be generated on next grid-cell placement.
+    if (j.contains("proxyPath"))      j.at("proxyPath").get_to(r.proxyPath);
+    if (j.contains("proxyReady"))     j.at("proxyReady").get_to(r.proxyReady);
+    if (j.contains("proxyStartTime")) j.at("proxyStartTime").get_to(r.proxyStartTime);
+    if (j.contains("proxyEndTime"))   j.at("proxyEndTime").get_to(r.proxyEndTime);
 }

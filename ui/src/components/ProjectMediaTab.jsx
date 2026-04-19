@@ -34,7 +34,7 @@ export default function ProjectMediaTab({ onOpenPicker }) {
   const fetchThumbnail = useCallback(async (source) => {
     if (!source.filePath) return
     try {
-      const dataUrl = await window.xleth?.project?.getSourceThumbnail(source.filePath)
+      const dataUrl = await window.xleth?.project?.getSourceThumbnail(source.filePath, source.duration)
       if (dataUrl) {
         console.log(`[ProjectMedia] Thumbnail generated: id=${source.id}`)
         setThumbnails(prev => ({ ...prev, [source.id]: dataUrl }))

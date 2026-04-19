@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 // ─── Configuration (main thread) ─────────────────────────────────────────────
 
@@ -254,6 +255,27 @@ int Sampler::activeVoiceCount() const
     return n;
 }
 
+int Sampler::countActiveVoices() const
+{
+    int n = 0;
+    for (const auto& v : voices_) if (v.active) ++n;
+    return n;
+}
+
+int Sampler::countHeldVoices() const
+{
+    int n = 0;
+    for (const auto& v : voices_) if (v.active && v.noteHeld) ++n;
+    return n;
+}
+
+int Sampler::countReleasingVoices() const
+{
+    int n = 0;
+    for (const auto& v : voices_) if (v.active && !v.noteHeld) ++n;
+    return n;
+}
+
 // ─── Voice allocation ────────────────────────────────────────────────────────
 
 Sampler::Voice* Sampler::findFreeVoice()
@@ -270,9 +292,23 @@ Sampler::Voice* Sampler::findFreeVoice()
 
 Sampler::Voice* Sampler::findVoiceForNote(int midiNote)
 {
+    // Oldest-held-first tiebreaker. When two held voices share a pitch (cross-block
+    // dispatch race, stealing edge case, or subset allNotesOff), bind the noteOff
+    // to the earliest spawn — prevents orphaning the original looped voice.
+    Voice*   oldest        = nullptr;
+    uint64_t oldestCounter = std::numeric_limits<uint64_t>::max();
     for (auto& v : voices_)
-        if (v.active && v.noteHeld && v.midiNote == midiNote) return &v;
-    return nullptr;
+    {
+        if (v.active && v.noteHeld && v.midiNote == midiNote)
+        {
+            if (v.spawnCounter < oldestCounter)
+            {
+                oldestCounter = v.spawnCounter;
+                oldest        = &v;
+            }
+        }
+    }
+    return oldest;
 }
 
 Sampler::Voice* Sampler::findActiveMonoVoice()
@@ -284,7 +320,7 @@ Sampler::Voice* Sampler::findActiveMonoVoice()
 
 // ─── noteOn / noteOff (public — routing layer) ─────────────────────────────
 
-void Sampler::noteOn(int midiNote, float velocity)
+void Sampler::noteOn(int midiNote, float velocity, int sampleOffset)
 {
     if (sampleData_.getNumSamples() <= 0) return;
 
@@ -338,9 +374,20 @@ void Sampler::noteOn(int midiNote, float velocity)
             active->pitchEnvStage    = Voice::EnvStage::Delay;
             active->pitchEnvLevel    = 0.0f;
             active->pitchEnvPosition = 0.0;
+            active->onsetSample      = sampleOffset;
+            // Semantic re-spawn: envelope restarts from Delay, playPosition reset
+            // to smpStart_. Issue fresh identity so findVoiceForNote's
+            // oldest-held-first ranking treats this as a new voice.
+            active->spawnCounter   = nextSpawnCounter_++;
+            active->spawnAbsSample = (currentAbsSample_ > 0)
+                                     ? currentAbsSample_ + sampleOffset
+                                     : -1;
+#ifdef XLETH_DEBUG
+            active->lastLoggedAbsSample = -1;
+#endif
         } else {
             // No active voice: start fresh
-            fireNoteOn(midiNote, vel);
+            fireNoteOn(midiNote, vel, sampleOffset);
         }
         lastNotePitch_ = midiNote;
         return;
@@ -349,7 +396,7 @@ void Sampler::noteOn(int midiNote, float velocity)
     // Polyphonic mode
     if (portamentoEnabled_ && lastNotePitch_ >= 0) {
         // Poly + porta: new voice slides from last note's pitch
-        fireNoteOn(midiNote, vel);
+        fireNoteOn(midiNote, vel, sampleOffset);
         // Find the voice we just allocated and set up glide
         Voice* v = findVoiceForNote(midiNote);
         if (v) {
@@ -360,20 +407,21 @@ void Sampler::noteOn(int midiNote, float velocity)
             v->pitchRatio = std::pow(2.0, (v->currentPitchF - rootNote_) / 12.0);
         }
     } else {
-        fireNoteOn(midiNote, vel);
+        fireNoteOn(midiNote, vel, sampleOffset);
     }
     lastNotePitch_ = midiNote;
 }
 
-void Sampler::noteOff(int midiNote, bool force)
+void Sampler::noteOff(int midiNote, int sampleOffset, bool force)
 {
-    // Arpeggiator intercept
+    // Arpeggiator intercept — arp schedules releases per-sample in processSample;
+    // sampleOffset is not forwarded here (arp uses its own timing).
     if (arp_.enabled) {
         const int activePitch = arp_.getActivePitch();
         arp_.noteOff(midiNote);
         // If all notes released and arp had an active note, release it
         if (!arp_.hasHeldNotes() && activePitch >= 0)
-            fireNoteOff(activePitch, force);
+            fireNoteOff(activePitch, 0, force);
         return;
     }
 
@@ -403,18 +451,18 @@ void Sampler::noteOff(int midiNote, bool force)
         } else {
             // All notes released — find the voice by its current midiNote and release
             Voice* active = findActiveMonoVoice();
-            if (active) fireNoteOff(active->midiNote, force);
+            if (active) fireNoteOff(active->midiNote, sampleOffset, force);
             lastNotePitch_ = -1;
         }
         return;
     }
 
-    fireNoteOff(midiNote, force);
+    fireNoteOff(midiNote, sampleOffset, force);
 }
 
 // ─── fireNoteOn / fireNoteOff (private — actual voice allocation) ───────────
 
-void Sampler::fireNoteOn(int midiNote, float velocity)
+void Sampler::fireNoteOn(int midiNote, float velocity, int sampleOffset)
 {
     if (sampleData_.getNumSamples() <= 0) return;
 
@@ -439,10 +487,30 @@ void Sampler::fireNoteOn(int midiNote, float velocity)
     v->lfoVolState   = Voice::LfoState{};
     v->lfoPanState   = Voice::LfoState{};
     v->lfoPitchState = Voice::LfoState{};
+    v->onsetSample   = sampleOffset;
+    v->releaseSample = -1;
+    v->spawnCounter   = nextSpawnCounter_++;
+    v->spawnAbsSample = (currentAbsSample_ > 0)
+                        ? currentAbsSample_ + sampleOffset
+                        : -1;  // preview / pre-transport: skip orphan detection
+#ifdef XLETH_DEBUG
+    v->lastLoggedAbsSample = -1;  // reset throttle so new voice in this slot can log immediately
+    fprintf(stderr, "[FireNote] midi=%d vel=%.2f onset=%d\n",
+            midiNote, velocity, sampleOffset);
+#endif
 }
 
-void Sampler::fireNoteOff(int midiNote, bool force)
+void Sampler::fireNoteOff(int midiNote, int sampleOffset, bool force)
 {
+#ifdef XLETH_DEBUG
+    if (sampleOffset < 0 || sampleOffset > 32768) {
+        FILE* dest = telemetryLog_ ? telemetryLog_ : stderr;
+        fprintf(dest, "[NoteOffOffset] samplerKey=%d:%d midiNote=%d sampleOffset=%d force=%d currentAbsSample=%lld\n",
+                debugTrackId_, debugRegionId_, midiNote, sampleOffset, (int)force,
+                (long long)currentAbsSample_);
+        fflush(dest);
+    }
+#endif
     // One-shot mode: noteOff is ignored — sample plays to completion.
     // force=true bypasses this guard for pattern-sequencer noteOffs, which
     // must always honour their drawn duration regardless of playback mode.
@@ -451,11 +519,22 @@ void Sampler::fireNoteOff(int midiNote, bool force)
     Voice* v = findVoiceForNote(midiNote);
     if (v == nullptr) return;
 
-    v->noteHeld    = false;
-    v->envStage    = Voice::EnvStage::Release;
-    v->envPosition = 0.0;
-    v->pitchEnvStage    = Voice::EnvStage::Release;
-    v->pitchEnvPosition = 0.0;
+    v->noteHeld      = false;
+    // Defer the envStage → Release transition to processVoice at sample sampleOffset.
+    // This makes the release boundary sample-accurate within the buffer.
+    jassert(sampleOffset >= 0);
+    v->releaseSample = sampleOffset;
+#ifdef XLETH_DEBUG
+    fprintf(stderr, "[ReleaseNote] midi=%d bufSample_at_release=%d\n",
+            midiNote, sampleOffset);
+    if (sampleOffset > 4096) {
+        FILE* dest = telemetryLog_ ? telemetryLog_ : stderr;
+        const int voiceIdx = static_cast<int>(v - voices_.data());
+        fprintf(dest, "[NoteOffOffsetSuspect] samplerKey=%d:%d midiNote=%d sampleOffset=%d voiceIdx=%d\n",
+                debugTrackId_, debugRegionId_, midiNote, sampleOffset, voiceIdx);
+        fflush(dest);
+    }
+#endif
 }
 
 // ─── Envelope ────────────────────────────────────────────────────────────────
@@ -684,6 +763,11 @@ void Sampler::processVoice(Voice& v,
     const int nCh     = sampleData_.getNumChannels();
     const int nFrames = sampleData_.getNumSamples();
     if (nCh <= 0 || nFrames <= 0) { v.active = false; return; }
+#ifdef XLETH_DEBUG
+    if (v.onsetSample != 0)
+        fprintf(stderr, "[ProcVoice] entry onset=%d numSamples=%d\n",
+                v.onsetSample, numSamples);
+#endif
 
     const int outChannels = out.getNumChannels();
     if (outChannels <= 0) return;
@@ -750,8 +834,24 @@ void Sampler::processVoice(Voice& v,
         return ((c3 * f + c2) * f + c1) * f + c0;
     };
 
-    for (int s = 0; s < numSamples; ++s)
+    for (int s = v.onsetSample; s < numSamples; ++s)
     {
+#ifdef XLETH_DEBUG
+        if (v.onsetSample != 0 && s == v.onsetSample) {
+            fprintf(stderr, "[VoiceWrite] first_s=%d numSamples=%d playPos=%f\n",
+                    s, numSamples, v.playPosition);
+        }
+#endif
+        // Deferred release: transition to Release at the scheduled sub-buffer sample.
+        // Must run before advanceEnvelope so the Release stage takes effect on sample s.
+        if (v.releaseSample >= 0 && s >= v.releaseSample) {
+            v.envStage       = Voice::EnvStage::Release;
+            v.envPosition    = 0.0;
+            v.pitchEnvStage    = Voice::EnvStage::Release;
+            v.pitchEnvPosition = 0.0;
+            v.releaseSample  = -1;
+        }
+
         const float envGain = advanceEnvelope(v, engineSampleRate);
 
         // ── PORTAMENTO (updates currentPitchF only) ──────────────────
@@ -916,7 +1016,27 @@ void Sampler::processVoice(Voice& v,
 
         if (v.envStage == Voice::EnvStage::Off) { v.active = false; return; }
     }
+#ifdef XLETH_DEBUG
+    fprintf(stderr, "[VoiceExit] wrote_from=%d to=%d playPos=%f\n",
+            v.onsetSample, numSamples - 1, v.playPosition);
+#endif
+    v.onsetSample = 0;
 }
+
+#ifdef XLETH_DEBUG
+const char* Sampler::envStageName(Voice::EnvStage s) noexcept {
+    switch (s) {
+        case Voice::EnvStage::Delay:   return "Delay";
+        case Voice::EnvStage::Attack:  return "Attack";
+        case Voice::EnvStage::Hold:    return "Hold";
+        case Voice::EnvStage::Decay:   return "Decay";
+        case Voice::EnvStage::Sustain: return "Sustain";
+        case Voice::EnvStage::Release: return "Release";
+        case Voice::EnvStage::Off:     return "Off";
+        default:                       return "Unknown";
+    }
+}
+#endif
 
 void Sampler::processBlock(juce::AudioBuffer<float>& outputBuffer,
                            int numSamples, double engineSampleRate)
@@ -930,8 +1050,8 @@ void Sampler::processBlock(juce::AudioBuffer<float>& outputBuffer,
     if (arp_.enabled) {
         for (int s = 0; s < numSamples; ++s) {
             auto ev = arp_.processSample(engineSampleRate, bpm_);
-            if (ev.noteOff) fireNoteOff(ev.noteOffPitch);
-            if (ev.noteOn)  fireNoteOn(ev.pitch, ev.velocity);
+            if (ev.noteOff) fireNoteOff(ev.noteOffPitch, 0, /*force=*/true);
+            if (ev.noteOn)  fireNoteOn(ev.pitch, ev.velocity, s);
         }
     }
 
@@ -940,4 +1060,140 @@ void Sampler::processBlock(juce::AudioBuffer<float>& outputBuffer,
         if (!v.active) continue;
         processVoice(v, outputBuffer, numSamples, engineSampleRate);
     }
+
+#ifdef XLETH_DEBUG
+    // Orphan-candidate detection. Any held voice older than kHeldWarnSeconds
+    // with noteHeld=true is a stuck-note suspect (tiebreaker failed, or some
+    // other dispatch bug). Throttled to one log per second per voice slot.
+    {
+        constexpr double kHeldWarnSeconds    = 3.0;
+        constexpr double kLogThrottleSeconds = 1.0;
+        const int64_t heldWarnThreshold = static_cast<int64_t>(kHeldWarnSeconds * engineSampleRate);
+        const int64_t throttleSamples   = static_cast<int64_t>(kLogThrottleSeconds * engineSampleRate);
+        for (size_t i = 0; i < voices_.size(); ++i)
+        {
+            Voice& v = voices_[i];
+            if (!(v.active && v.noteHeld)) continue;
+            if (v.spawnAbsSample < 0) continue;  // preview / pre-transport — skip
+            const int64_t heldSamples = currentAbsSample_ - v.spawnAbsSample;
+            if (heldSamples <= heldWarnThreshold) continue;
+            if (v.lastLoggedAbsSample >= 0
+                && currentAbsSample_ - v.lastLoggedAbsSample < throttleSamples) continue;
+            v.lastLoggedAbsSample = currentAbsSample_;
+            ++orphanCandidatesEver_;
+            FILE* dest = telemetryLog_ ? telemetryLog_ : stderr;
+            fprintf(dest, "[OrphanCandidate] samplerKey=%d:%d voiceIdx=%zu pitch=%d "
+                          "spawnCounter=%llu heldSamples=%lld\n",
+                    debugTrackId_, debugRegionId_, i, v.midiNote,
+                    (unsigned long long)v.spawnCounter, (long long)heldSamples);
+            fflush(dest);
+        }
+    }
+
+    // Zombie-voice detection: active voices with noteHeld=false but envStage not in
+    // {Release, Off}. These loop indefinitely when loopEnabled because the loop path
+    // wraps playPosition unconditionally regardless of envelope state.
+    {
+        constexpr double kZombieThrottleSeconds = 1.0;
+        const int64_t zombieThrottle = static_cast<int64_t>(kZombieThrottleSeconds * engineSampleRate);
+        const int nFrames = sampleData_.getNumSamples();
+        const int64_t effLoopEnd   = (loopEnd_ > 0)
+            ? std::min<int64_t>(loopEnd_, nFrames)
+            : static_cast<int64_t>(nFrames);
+        const int64_t effLoopStart = std::min<int64_t>(loopStart_, effLoopEnd);
+        FILE* dest = telemetryLog_ ? telemetryLog_ : stderr;
+        for (size_t i = 0; i < voices_.size(); ++i)
+        {
+            Voice& v = voices_[i];
+            if (!v.active) continue;
+            if (v.noteHeld) continue;
+            if (v.envStage == Voice::EnvStage::Release || v.envStage == Voice::EnvStage::Off) continue;
+            if (v.lastZombieLogAbsSample >= 0
+                && currentAbsSample_ - v.lastZombieLogAbsSample < zombieThrottle) continue;
+            v.lastZombieLogAbsSample = currentAbsSample_;
+            const char* stageName = "Unknown";
+            switch (v.envStage) {
+                case Voice::EnvStage::Delay:   stageName = "Delay";   break;
+                case Voice::EnvStage::Attack:  stageName = "Attack";  break;
+                case Voice::EnvStage::Hold:    stageName = "Hold";    break;
+                case Voice::EnvStage::Decay:   stageName = "Decay";   break;
+                case Voice::EnvStage::Sustain: stageName = "Sustain"; break;
+                default: break;
+            }
+            fprintf(dest, "[ZombieVoice] samplerKey=%d:%d voiceIdx=%zu\n"
+                          "  pitch=%d envStage=%s releaseSample=%d\n"
+                          "  playPosition=%f loopEnabled=%d\n"
+                          "  effLoopStart=%lld effLoopEnd=%lld\n"
+                          "  spawnCounter=%llu spawnAbsSample=%lld currentAbsSample=%lld\n",
+                    debugTrackId_, debugRegionId_, i,
+                    v.midiNote, stageName, v.releaseSample,
+                    v.playPosition, (int)loopEnabled_,
+                    (long long)effLoopStart, (long long)effLoopEnd,
+                    (unsigned long long)v.spawnCounter, (long long)v.spawnAbsSample,
+                    (long long)currentAbsSample_);
+            fflush(dest);
+        }
+    }
+
+    // [VoiceCensus]: unconditional 1Hz dump of every active voice (noteHeld-agnostic).
+    {
+        const int64_t censusPeriod = static_cast<int64_t>(1.0 * engineSampleRate);
+        if (lastCensusAbsSample_ < 0 || currentAbsSample_ - lastCensusAbsSample_ >= censusPeriod)
+        {
+            lastCensusAbsSample_ = currentAbsSample_;
+            FILE* dest = telemetryLog_ ? telemetryLog_ : stderr;
+            for (size_t i = 0; i < voices_.size(); ++i)
+            {
+                const Voice& v = voices_[i];
+                if (!v.active) continue;
+                fprintf(dest,
+                    "[VoiceCensus] samplerKey=%d:%d absSample=%lld\n"
+                    "  voiceIdx=%zu pitch=%d active=1 noteHeld=%d\n"
+                    "  envStage=%s envLevel=%f\n"
+                    "  playPosition=%f releaseSample=%d\n"
+                    "  spawnCounter=%llu ageSamples=%lld\n",
+                    debugTrackId_, debugRegionId_, (long long)currentAbsSample_,
+                    i, v.midiNote, (int)v.noteHeld,
+                    envStageName(v.envStage), (double)v.envLevel,
+                    v.playPosition, v.releaseSample,
+                    (unsigned long long)v.spawnCounter,
+                    (long long)(currentAbsSample_ - v.spawnAbsSample));
+            }
+            fflush(dest);
+        }
+    }
+#endif
 }
+
+#ifdef XLETH_DEBUG
+void Sampler::debugSnapshotActiveVoices(FILE* out, const char* reason,
+                                         int trackId, int regionId) const noexcept
+{
+    FILE* dest = out ? out : (telemetryLog_ ? telemetryLog_ : stderr);
+    int activeCount = 0;
+    for (size_t i = 0; i < voices_.size(); ++i)
+        if (voices_[i].active) ++activeCount;
+    // Always emit a header so the tag appears even when 0 voices are active.
+    fprintf(dest,
+        "[StopSnapshot] reason=%s samplerKey=%d:%d samplerPtr=%p activeVoices=%d\n",
+        reason, trackId, regionId,
+        static_cast<const void*>(this), activeCount);
+    for (size_t i = 0; i < voices_.size(); ++i)
+    {
+        const Voice& v = voices_[i];
+        if (!v.active) continue;
+        fprintf(dest,
+            "[StopSnapshot] reason=%s samplerKey=%d:%d samplerPtr=%p"
+            " voiceIdx=%zu pitch=%d held=%d stage=%s envLevel=%f"
+            " playPos=%f releaseSample=%d spawnCounter=%llu ageSamples=%lld\n",
+            reason, trackId, regionId,
+            static_cast<const void*>(this),
+            i, v.midiNote, (int)v.noteHeld,
+            envStageName(v.envStage), (double)v.envLevel,
+            v.playPosition, v.releaseSample,
+            (unsigned long long)v.spawnCounter,
+            (long long)(currentAbsSample_ - v.spawnAbsSample));
+    }
+    fflush(dest);
+}
+#endif

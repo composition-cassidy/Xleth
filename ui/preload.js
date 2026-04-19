@@ -81,7 +81,10 @@ window.xleth = ({
     openProjectDialog:   ()         => invoke('xleth:dialog:openProject'),
     openSaveAsDialog:    ()         => invoke('xleth:dialog:saveProjectAs'),
     openImportDialog:   ()          => invoke('xleth:dialog:importSources'),
-    getSourceThumbnail: (filePath)  => invoke('xleth:project:getSourceThumbnail', filePath),
+    getSourceThumbnail: (filePath, duration) => invoke('xleth:project:getSourceThumbnail', filePath, duration),
+    isDirty:            ()          => invoke('xleth:project:isDirty'),
+    newBlank:           ()          => invoke('xleth:project:newBlank'),
+    isExportRunning:    ()          => invoke('xleth:project:isExportRunning'),
   },
 
   // ── Phase 1: timeline ─────────────────────────────────────────────────────
@@ -108,6 +111,24 @@ window.xleth = ({
     convertToClipTrack: (trackId)           => invoke('xleth:timeline:convertToClipTrack', trackId),
     setVideoFlipMode: (trackId, mode)       => invoke('xleth:timeline:setVideoFlipMode', trackId, mode),
     setVideoHoldLastFrame: (trackId, hold) => invoke('xleth:timeline:setVideoHoldLastFrame', trackId, hold),
+    setTrackCornerRadius:     (trackId, v) => invoke('xleth:timeline:setTrackCornerRadius', trackId, v),
+    setTrackGapScaleOverride: (trackId, v) => invoke('xleth:timeline:setTrackGapScaleOverride', trackId, v),
+    setTrackBounceSettings:        (trackId, bounce) => invoke('xleth:timeline:setTrackBounceSettings', trackId, bounce),
+    setTrackZoomPanRotSettings:    (trackId, zpr)   => invoke('xleth:timeline:setTrackZoomPanRotSettings', trackId, zpr),
+    setTrackPingPongSettings:      (trackId, pp)    => invoke('xleth:timeline:setTrackPingPongSettings', trackId, pp),
+    setTrackSlideNoteEffect:       (trackId, s)     => invoke('xleth:timeline:setTrackSlideNoteEffect', trackId, s),
+    getPreviewResolutionScale:     ()               => invoke('xleth:timeline:getPreviewResolutionScale'),
+    setPreviewResolutionScale:     (scale)          => invoke('xleth:timeline:setPreviewResolutionScale', scale),
+    getPreviewEffectsBypass:       ()               => invoke('xleth:timeline:getPreviewEffectsBypass'),
+    setPreviewEffectsBypass:       (bypass)         => invoke('xleth:timeline:setPreviewEffectsBypass', bypass),
+    setNoteSlide:                  (patternId, noteId, isSlide, cx, cy) =>
+        invoke('xleth:timeline:setNoteSlide', patternId, noteId, isSlide, cx, cy),
+    addVisualEffect:         (trackId, effectType) => invoke('xleth:timeline:addVisualEffect', trackId, effectType),
+    removeVisualEffect:      (trackId, idx)        => invoke('xleth:timeline:removeVisualEffect', trackId, idx),
+    reorderVisualEffect:     (trackId, from, to)   => invoke('xleth:timeline:reorderVisualEffect', trackId, from, to),
+    setVisualEffectParam:    (trackId, ei, pi, val) => invoke('xleth:timeline:setVisualEffectParam', trackId, ei, pi, val),
+    setVisualEffectBypassed: (trackId, ei, bp)     => invoke('xleth:timeline:setVisualEffectBypassed', trackId, ei, bp),
+    getVisualEffectChain:    (trackId)             => invoke('xleth:timeline:getVisualEffectChain', trackId),
     addClip:          (clip)                => invoke('xleth:timeline:addClip', clip),
     removeClip:       (id)                  => invoke('xleth:timeline:removeClip', id),
     moveClip:         (id, trackId, pos)    => invoke('xleth:timeline:moveClip', id, trackId, pos),
@@ -131,6 +152,18 @@ window.xleth = ({
     setChorusTrack:      (trackId)                       => invoke('xleth:timeline:setChorusTrack', trackId),
     setCrashOverlay:     (enabled, trackId, opacity)     => invoke('xleth:timeline:setCrashOverlay', enabled, trackId, opacity),
     setPreviewFps:       (fps)                           => invoke('xleth:timeline:setPreviewFps', fps),
+    // Convenience wrappers for grid-level gapScale (delegate to full grid layout
+    // round-trip — dedicated named endpoints for consistency with the rest of
+    // the four-layer bridge). Range is clamped engine-side in jsToGridLayout.
+    getGapScale:         async () => {
+      const l = await invoke('xleth:timeline:getGridLayout');
+      return l && typeof l.gapScale === 'number' ? l.gapScale : 0;
+    },
+    setGapScale:         async (v) => {
+      const l = await invoke('xleth:timeline:getGridLayout');
+      if (!l) return;
+      return invoke('xleth:timeline:setGridLayout', { ...l, gapScale: v });
+    },
     // ── Patterns ─────────────────────────────────────────────────────────
     addPattern:             (info)                              => invoke('xleth:timeline:addPattern', info),
     getPattern:             (id)                                => invoke('xleth:timeline:getPattern', id),
@@ -151,6 +184,7 @@ window.xleth = ({
     removeNote:             (patternId, noteId)                 => invoke('xleth:timeline:removeNote', patternId, noteId),
     moveNote:               (patternId, noteId, posTicks, pitch)=> invoke('xleth:timeline:moveNote', patternId, noteId, posTicks, pitch),
     moveNotesBatch:         (patternId, moves)                  => invoke('xleth:timeline:moveNotesBatch', patternId, moves),
+    quantizeClipsBatch:     (specs)                             => invoke('xleth:timeline:quantizeClipsBatch', specs),
     resizeNote:             (patternId, noteId, durTicks)       => invoke('xleth:timeline:resizeNote', patternId, noteId, durTicks),
     setNoteVelocity:        (patternId, noteId, velocity)       => invoke('xleth:timeline:setNoteVelocity', patternId, noteId, velocity),
     previewNote:            (patternId, pitch, velocity=0.8)    => invoke('xleth:timeline:previewNote', patternId, pitch, velocity),
@@ -283,6 +317,23 @@ window.xleth = ({
       ipcRenderer.on('export:progress', h);
       return () => ipcRenderer.removeListener('export:progress', h);
     },
+    // ── VST3 plugin scanner ──────────────────────────────────────────────
+    scanPlugins:          (paths)            => invoke('xleth:audio:scanPlugins', paths),
+    getScanProgress:      ()                 => invoke('xleth:audio:getScanProgress'),
+    getScannedPlugins:    ()                 => invoke('xleth:audio:getScannedPlugins'),
+    getFailedPlugins:     ()                 => invoke('xleth:audio:getFailedPlugins'),
+    // ── VST3 plugin editor windows ───────────────────────────────────────
+    openPluginEditor:     (trackId, nodeId)  => invoke('xleth:audio:openPluginEditor', trackId, nodeId),
+    closePluginEditor:    (trackId, nodeId)  => invoke('xleth:audio:closePluginEditor', trackId, nodeId),
+    closeAllPluginEditors: ()                => invoke('xleth:audio:closeAllPluginEditors'),
+    isPluginEditorOpen:   (trackId, nodeId)  => invoke('xleth:audio:isPluginEditorOpen', trackId, nodeId),
+    addVstSearchPath:     ()                 => invoke('xleth:dialog:addVstSearchPath'),
+    // ── Missing-plugin helpers ────────────────────────────────────────────
+    getMissingPlugins:    ()                 => invoke('xleth:audio:getMissingPlugins'),
+    retryMissingPlugin:   (trackId, nodeId)  => invoke('xleth:audio:retryMissingPlugin', trackId, nodeId),
+    removeAllMissing:     ()                 => invoke('xleth:audio:removeAllMissing'),
+    // ── VST3 crash recovery ───────────────────────────────────────────────
+    resetCrashedPlugin:   (trackId, nodeId)  => invoke('xleth:audio:resetCrashedPlugin', trackId, nodeId),
   },
 
   // ── Phase 1: video ────────────────────────────────────────────────────────
@@ -311,6 +362,10 @@ window.xleth = ({
     exportSaveAsDialog:   (name)  => invoke('xleth:dialog:exportVideo', name),
     getAvailableEncoders: (codec) => invoke('xleth:video:getAvailableEncoders', codec),
     getDefaultEncoder:    (codec) => invoke('xleth:video:getDefaultEncoder', codec),
+    computeDurationSeconds: (startBeat, endBeat) =>
+        invoke('xleth:video:computeDurationSeconds', startBeat, endBeat),
+    getExportPresets:     ()       => invoke('xleth:video:getExportPresets'),
+    saveExportPresets:    (p)      => invoke('xleth:video:saveExportPresets', p),
     onExportProgress: (cb) => {
       const h = (_e, data) => cb(data);
       ipcRenderer.on('video-export:progress', h);
@@ -340,6 +395,7 @@ window.xleth = ({
   // ── Shell ──────────────────────────────────────────────────────────────────
   shell: {
     showItemInFolder: (path) => invoke('xleth:shell:showItemInFolder', path),
+    openPath:         (path) => invoke('xleth:shell:openPath', path),
   },
 
   // ── Window controls (frameless title bar) ─────────────────────────────────

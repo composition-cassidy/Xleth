@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { GripVertical, Power } from 'lucide-react'
 import useEffectChainStore from '../../stores/effectChainStore.js'
+import useVstStore from '../../stores/vstStore.js'
 import useEqStore from '../../stores/eqStore.js'
 import useCompressorStore from '../../stores/compressorStore.js'
 import useLimiterStore from '../../stores/limiterStore.js'
@@ -84,9 +85,14 @@ export default function EffectModule({ effect, index, storeKey, onDragStart, onD
   const [deleteMenu, setDeleteMenu] = useState(null)
   const setBypass = useEffectChainStore(s => s.setBypass)
   const removeEffect = useEffectChainStore(s => s.removeEffect)
+  const vstPlugins = useVstStore(s => s.plugins)
 
-  const isPending = effect.nodeId === -1
-  const displayName = PLUGIN_NAMES[effect.pluginId] ?? effect.pluginId
+  const isPending   = effect.nodeId === -1
+  const isVst       = !(effect.pluginId in PLUGIN_NAMES)
+  const stockName   = PLUGIN_NAMES[effect.pluginId]
+  const vstMeta     = isVst ? vstPlugins.find(p => p.id === effect.pluginId) : null
+  const displayName = stockName ?? vstMeta?.name ?? effect.pluginId
+  const vendor      = vstMeta?.vendor ?? null
 
   const handleBypassClick = (e) => {
     e.stopPropagation()
@@ -107,6 +113,13 @@ export default function EffectModule({ effect, index, storeKey, onDragStart, onD
       const trackId = storeKey === 'master' ? -1 : Number(storeKey)
       opener(trackId, effect.nodeId, storeKey)
     }
+  }
+
+  const handleVstEdit = (e) => {
+    e.stopPropagation()
+    if (isPending) return
+    const trackId = storeKey === 'master' ? -1 : Number(storeKey)
+    window.xleth?.audio?.openPluginEditor?.(trackId, effect.nodeId)
   }
 
   const handleGripMouseDown = (e) => {
@@ -133,10 +146,26 @@ export default function EffectModule({ effect, index, storeKey, onDragStart, onD
         <GripVertical size={10} />
       </div>
 
-      <div className="effect-module-name" title={displayName} onClick={handleNameClick}
-        style={EFFECT_EDITORS[effect.pluginId] ? { cursor: 'pointer' } : undefined}>
-        {displayName}
+      <div
+        className="effect-module-name"
+        title={displayName + (vendor ? ' — ' + vendor : '')}
+        onClick={handleNameClick}
+        style={EFFECT_EDITORS[effect.pluginId] ? { cursor: 'pointer' } : undefined}
+      >
+        <span className="effect-module-name-text">{displayName}</span>
+        {vendor && <span className="effect-module-vendor">{vendor}</span>}
+        {effect.crashed && <span className="effect-module-crashed">CRASHED</span>}
       </div>
+
+      {isVst && !isPending && (
+        <button
+          className="effect-module-edit"
+          onClick={handleVstEdit}
+          title="Open plugin editor"
+        >
+          Edit
+        </button>
+      )}
 
       <button
         className={`effect-module-bypass${effect.bypassed ? ' bypassed' : ''}`}

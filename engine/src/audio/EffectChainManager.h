@@ -8,6 +8,7 @@
 #include <vector>
 
 class AudioGraph;
+class PluginRegistry;
 class XlethEffectBase;
 
 // ─── EffectChainManager ─────────────────────────────────────────────────────
@@ -27,6 +28,9 @@ public:
 
     EffectChainManager();
     ~EffectChainManager();
+
+    // ── Plugin registry (non-owning, set before init) ───────────────────
+    void setPluginRegistry(PluginRegistry* registry);
 
     // ── Lifecycle (main thread) ─────────────────────────────────────────
     void init(double sampleRate, int blockSize);
@@ -87,6 +91,26 @@ public:
 
     // Direct access to the effect processor (for subclass-specific APIs like EQ).
     XlethEffectBase* getEffect(int nodeId);
+
+    // Returns the raw AudioProcessor for any node (stock or VST3).
+    // Used by PluginEditorHost to obtain the processor for GUI creation.
+    juce::AudioProcessor* getProcessor(int nodeId);
+
+    // Returns the plugin file path (PluginDescription::fileOrIdentifier) for a
+    // VST node.  Returns empty string for stock effects or if nodeId not found.
+    juce::String getPluginFilePath(int nodeId) const;
+
+    // ── Missing-plugin support ──────────────────────────────────────────
+    bool isNodeMissing(int nodeId) const;
+    bool tryResolvePlugin(int nodeId, PluginRegistry& registry);
+
+    // ── Crash recovery (VST SEH wrapper) ────────────────────────────────
+    bool isNodeCrashed(int nodeId) const;
+    bool resetCrashedPlugin(int nodeId);
+
+    // Returns JSON array: [{nodeId, pluginId, pluginName, pluginVendor, filePath}, ...]
+    // for all nodes currently holding a placeholder (missing plugin).
+    nlohmann::json getMissingNodesJSON() const;
 
     // ── Serialization ───────────────────────────────────────────────────
     nlohmann::json graphToJSON() const;

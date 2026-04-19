@@ -21,7 +21,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     onCreatePatternBlock, onMovePatternBlock, onResizePatternBlock, onResizePatternBlockLeft, onDeletePatternBlock, onSplitPatternBlock,
     onOpenPianoRoll,
     // Tool system props
-    activeTool, stickyNoteLength, setStickyNoteLength, activeSampleId,
+    activeTool, stickyNoteLength, setStickyNoteLength, activeSampleId, snapGranularity,
     onCreateClip, onDeleteClip, onMoveClip, onResizeClip, onResizeClipLeft,
     onStretchClip, onStretchClipLeft,
     onSplitClip,
@@ -48,6 +48,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   const selectedRef = useRef(selectedClipIds)
   const activeSampleIdRef = useRef(activeSampleId)
   const stickyNoteLengthRef = useRef(stickyNoteLength)
+  const snapGranularityRef = useRef(snapGranularity)
   const patternBlocksRef = useRef(patternBlocks)
   const patternsRef = useRef(patterns)
   const selectedBlockIdsRef = useRef(selectedBlockIds)
@@ -59,6 +60,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   selectedRef.current = selectedClipIds
   activeSampleIdRef.current = activeSampleId
   stickyNoteLengthRef.current = stickyNoteLength
+  snapGranularityRef.current = snapGranularity
   patternBlocksRef.current = patternBlocks
   patternsRef.current = patterns
   selectedBlockIdsRef.current = selectedBlockIds
@@ -198,6 +200,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       clipsRef, tracksRef, regionsRef, selectedRef,
       pixelsPerBeatRef, scrollOffsetRef, bpmRef,
       activeSampleIdRef, stickyNoteLengthRef, pencilTemplateRef,
+      snapGranularityRef,
       onCreateClip, onDeleteClip, onMoveClip, onResizeClip, onResizeClipLeft,
       onStretchClip, onStretchClipLeft,
       onSplitClip,

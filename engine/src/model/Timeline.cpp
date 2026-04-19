@@ -208,6 +208,44 @@ int Timeline::addClip(Clip clip) {
               << " duration=" << clip.duration.ticks
               << " syllable=" << clip.syllableIndex
               << " vel=" << clip.velocity << "\n";
+#ifdef XLETH_DEBUG
+    // Log the clip AS STORED in m_clips — catches "bridge received it correctly
+    // but the copy-in clobbered/defaulted it" failures. Safe from this call site:
+    // Timeline::addClip is only invoked by AddClipCommand::execute on the Node
+    // main thread (via the bridge handler); the audio thread only reads clips.
+    const Clip& stored = m_clips[clip.id];
+    fprintf(stderr,
+        "[Timeline_ClipConstruct] stored id=%d trackId=%d regionId=%d "
+        "pos=%lld dur=%lld regionOffset=%lld syll=%d vel=%.3f "
+        "pitchOffset=%d pitchCents=%d reversed=%d stretchRatio=%.3f "
+        "stretchMethod=%d formantPreserve=%d "
+        "fadeIn=%.2f fadeOut=%.2f bezierIn=[%.2f,%.2f,%.2f,%.2f] "
+        "bezierOut=[%.2f,%.2f,%.2f,%.2f]\n",
+        stored.id, stored.trackId, stored.regionId,
+        (long long)stored.position.ticks, (long long)stored.duration.ticks,
+        (long long)stored.regionOffset.ticks, stored.syllableIndex, stored.velocity,
+        stored.pitchOffset, stored.pitchOffsetCents,
+        stored.reversed ? 1 : 0, stored.stretchRatio,
+        (int)stored.stretchMethod, stored.formantPreserve ? 1 : 0,
+        stored.fadeInTicks, stored.fadeOutTicks,
+        stored.fadeInX1, stored.fadeInY1, stored.fadeInX2, stored.fadeInY2,
+        stored.fadeOutX1, stored.fadeOutY1, stored.fadeOutX2, stored.fadeOutY2);
+#endif
+    // Contract: after addClip returns, the clip is stored AND its render
+    // state is queued. MixEngine::invalidateClipCache is async (ThreadPool)
+    // and short-circuits cheaply on identity clips, so this call is always
+    // safe to make unconditionally.
+    if (m_clipCacheInvalidator) {
+        m_clipCacheInvalidator(clip.id, "addClip");
+    }
+#ifdef XLETH_DEBUG
+    fprintf(stderr,
+        "[CacheQueue] addClip clip=%d enqueued "
+        "(stretch=%.3f reversed=%d pitch=%d cents=%d)\n",
+        clip.id, clip.stretchRatio, clip.reversed ? 1 : 0,
+        clip.pitchOffset, clip.pitchOffsetCents);
+    fflush(stderr);
+#endif
     return clip.id;
 }
 
@@ -660,6 +698,204 @@ bool Timeline::setTrackVideoHoldLastFrame(int trackId, bool hold) {
     return true;
 }
 
+bool Timeline::setTrackCornerRadius(int trackId, float radius) {
+    auto it = m_tracks.find(trackId);
+    if (it == m_tracks.end()) {
+        std::cout << "[Timeline] ERROR setTrackCornerRadius: trackId=" << trackId << " not found\n";
+        return false;
+    }
+    it->second.cornerRadius = radius;
+    std::cout << "[Timeline] Set track id=" << trackId << " cornerRadius=" << radius << "\n";
+    return true;
+}
+
+bool Timeline::setTrackGapScaleOverride(int trackId, float gapScale) {
+    auto it = m_tracks.find(trackId);
+    if (it == m_tracks.end()) {
+        std::cout << "[Timeline] ERROR setTrackGapScaleOverride: trackId=" << trackId << " not found\n";
+        return false;
+    }
+    it->second.gapScaleOverride = gapScale;
+    std::cout << "[Timeline] Set track id=" << trackId << " gapScaleOverride=" << gapScale << "\n";
+    return true;
+}
+
+bool Timeline::setTrackBounceSettings(int trackId, const BounceSettings& settings) {
+    auto it = m_tracks.find(trackId);
+    if (it == m_tracks.end()) {
+        std::cout << "[Timeline] ERROR setTrackBounceSettings: trackId=" << trackId << " not found\n";
+        return false;
+    }
+    it->second.bounce = settings;
+    std::cout << "[Timeline] Set track id=" << trackId
+              << " bounce.enabled=" << settings.enabled
+              << " dir=" << settings.directionDeg
+              << " dist=" << settings.distance << "\n";
+    return true;
+}
+
+bool Timeline::setTrackZoomPanRotSettings(int trackId, const ZoomPanRotSettings& settings) {
+    auto it = m_tracks.find(trackId);
+    if (it == m_tracks.end()) return false;
+    it->second.zoomPanRot = settings;
+    return true;
+}
+
+bool Timeline::setTrackPingPongSettings(int trackId, const PingPongSettings& settings) {
+    auto it = m_tracks.find(trackId);
+    if (it == m_tracks.end()) return false;
+    it->second.pingPong = settings;
+    return true;
+}
+
+bool Timeline::setTrackSlideNoteEffectSettings(int trackId, const SlideNoteEffectSettings& settings) {
+    auto it = m_tracks.find(trackId);
+    if (it == m_tracks.end()) return false;
+    it->second.slideNoteEffect = settings;
+    return true;
+}
+
+bool Timeline::setNoteSlide(int patternId, int noteId, bool isSlide, float curveCx, float curveCy) {
+    auto it = m_patterns.find(patternId);
+    if (it == m_patterns.end()) return false;
+    for (auto& n : it->second.notes) {
+        if (n.id == noteId) {
+            n.isSlide      = isSlide;
+            n.slideCurveCx = curveCx;
+            n.slideCurveCy = curveCy;
+            return true;
+        }
+    }
+    return false;
+}
+
+// ─── Visual Effect Chain ──────────────────────────────────────────────────────
+
+int Timeline::addVisualEffect(int trackId, VisualEffect::Type type)
+{
+    auto it = m_tracks.find(trackId);
+    if (it == m_tracks.end()) return -1;
+    auto& chain = it->second.visualEffectChain;
+    if (static_cast<int>(chain.size()) >= 16) return -1;  // enforce max chain length
+
+    VisualEffect fx;
+    fx.type     = type;
+    fx.bypassed = false;
+    // Initialize sensible defaults per effect type
+    std::fill(std::begin(fx.params), std::end(fx.params), 0.0f);
+    switch (type) {
+        case VisualEffect::Type::Desaturation:
+            fx.params[0] = 1.0f;   // full desaturation by default
+            break;
+        case VisualEffect::Type::Tint:
+            fx.params[0] = 1.0f;   // r (warm sepia)
+            fx.params[1] = 0.85f;  // g
+            fx.params[2] = 0.6f;   // b
+            fx.params[3] = 0.5f;   // strength
+            fx.params[4] = 0.15f;  // lightnessFloor (keeps blacks black)
+            fx.params[5] = 1.0f;   // lightnessCeiling (tints everything above floor)
+            break;
+        case VisualEffect::Type::BrightnessContrast:
+            fx.params[0] = 0.0f;   // brightness (neutral)
+            fx.params[1] = 0.0f;   // contrast (neutral)
+            break;
+        case VisualEffect::Type::TVSimulator:
+            fx.params[0] = 0.5f;    // intensity
+            fx.params[1] = 1.0f;    // rollSpeed
+            fx.params[2] = 0.3f;    // scanlineAlpha
+            fx.params[3] = 0.003f;  // chromaOffset
+            fx.params[4] = 0.0f;    // staticNoise (off by default)
+            fx.params[5] = 2.0f;    // jitterFreq
+            fx.params[6] = 0.0f;    // colorBleed (off by default)
+            break;
+        case VisualEffect::Type::ZoomPanRotation:
+            fx.params[0]  = 1.0f;       // startZoom
+            fx.params[1]  = 1.0f;       // targetZoom
+            fx.params[2]  = 0.0f;       // startPanX
+            fx.params[3]  = 0.0f;       // startPanY
+            fx.params[4]  = 0.0f;       // targetPanX
+            fx.params[5]  = 0.0f;       // targetPanY
+            fx.params[6]  = 0.0f;       // startRotation (degrees)
+            fx.params[7]  = 0.0f;       // targetRotation (degrees)
+            fx.params[8]  = 300.0f;     // durationMs
+            fx.params[9]  = 1.0f;       // zoomEasing (1=EaseOut)
+            fx.params[10] = 1.0f;       // panEasing
+            fx.params[11] = 1.0f;       // rotEasing
+            fx.params[12] = 1.70158f;   // overshoot
+            break;
+        default:
+            break;
+    }
+    chain.push_back(fx);
+    return static_cast<int>(chain.size()) - 1;
+}
+
+bool Timeline::removeVisualEffect(int trackId, int effectIndex)
+{
+    auto it = m_tracks.find(trackId);
+    if (it == m_tracks.end()) return false;
+    auto& chain = it->second.visualEffectChain;
+    if (effectIndex < 0 || effectIndex >= static_cast<int>(chain.size())) return false;
+    chain.erase(chain.begin() + effectIndex);
+    return true;
+}
+
+bool Timeline::reorderVisualEffect(int trackId, int fromIndex, int toIndex)
+{
+    auto it = m_tracks.find(trackId);
+    if (it == m_tracks.end()) return false;
+    auto& chain = it->second.visualEffectChain;
+    int sz = static_cast<int>(chain.size());
+    if (fromIndex < 0 || fromIndex >= sz) return false;
+    if (toIndex   < 0 || toIndex   >= sz) return false;
+    if (fromIndex == toIndex) return true;
+
+    VisualEffect moved = chain[fromIndex];
+    chain.erase(chain.begin() + fromIndex);
+    // Adjust toIndex if it shifted due to the erase
+    int insertAt = (toIndex > fromIndex) ? toIndex - 1 : toIndex;
+    chain.insert(chain.begin() + insertAt, moved);
+    return true;
+}
+
+bool Timeline::setVisualEffectParam(int trackId, int effectIndex, int paramIndex, float value)
+{
+    auto it = m_tracks.find(trackId);
+    if (it == m_tracks.end()) return false;
+    auto& chain = it->second.visualEffectChain;
+    if (effectIndex < 0 || effectIndex >= static_cast<int>(chain.size())) return false;
+    if (paramIndex  < 0 || paramIndex  >= 16) return false;
+    chain[effectIndex].params[paramIndex] = value;
+    return true;
+}
+
+bool Timeline::setVisualEffectBypassed(int trackId, int effectIndex, bool bypassed)
+{
+    auto it = m_tracks.find(trackId);
+    if (it == m_tracks.end()) return false;
+    auto& chain = it->second.visualEffectChain;
+    if (effectIndex < 0 || effectIndex >= static_cast<int>(chain.size())) return false;
+    chain[effectIndex].bypassed = bypassed;
+    return true;
+}
+
+bool Timeline::insertVisualEffectAt(int trackId, int index, const VisualEffect& fx)
+{
+    auto it = m_tracks.find(trackId);
+    if (it == m_tracks.end()) return false;
+    auto& chain = it->second.visualEffectChain;
+    if (index < 0 || index > static_cast<int>(chain.size())) return false;
+    chain.insert(chain.begin() + index, fx);
+    return true;
+}
+
+const std::vector<VisualEffect>* Timeline::getVisualEffectChain(int trackId) const
+{
+    auto it = m_tracks.find(trackId);
+    if (it == m_tracks.end()) return nullptr;
+    return &it->second.visualEffectChain;
+}
+
 // ─── Transport ────────────────────────────────────────────────────────────────
 
 void Timeline::setBPM(double bpm) {
@@ -760,6 +996,19 @@ bool Timeline::restoreClip(const Clip& clip) {
               << " trackId=" << clip.trackId
               << " regionId=" << clip.regionId
               << " position=" << clip.position.ticks << "\n";
+    // Same contract as addClip: undo/redo must re-queue the render cache, or
+    // a redone paste leaves the clip present but with stale/absent cache slot.
+    if (m_clipCacheInvalidator) {
+        m_clipCacheInvalidator(clip.id, "restoreClip");
+    }
+#ifdef XLETH_DEBUG
+    fprintf(stderr,
+        "[CacheQueue] restoreClip clip=%d enqueued "
+        "(stretch=%.3f reversed=%d pitch=%d cents=%d)\n",
+        clip.id, clip.stretchRatio, clip.reversed ? 1 : 0,
+        clip.pitchOffset, clip.pitchOffsetCents);
+    fflush(stderr);
+#endif
     return true;
 }
 
@@ -925,6 +1174,12 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
         }
 
         m_clips.clear();
+        // Project-load bulk insert: intentionally bypasses addClip/restoreClip
+        // (and therefore m_clipCacheInvalidator). Cache enqueue for loaded
+        // clips is handled in bulk by refreshAllClipCaches() which the bridge
+        // calls after deserialization completes. Going through the per-clip
+        // callback here would fire thousands of redundant invalidations before
+        // MixEngine's Timeline pointer and region audio are even in place.
         for (const auto& c : j.at("clips")) {
             Clip clip = c.get<Clip>();  // ADL from_json
             m_clips[clip.id] = clip;
@@ -1016,4 +1271,36 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
         std::cout << "[Timeline] ERROR fromJSON: " << e.what() << "\n";
         return false;
     }
+}
+
+// ─── Reset ────────────────────────────────────────────────────────────────────
+
+void Timeline::clear() {
+    const auto nSrc  = m_sources.size();
+    const auto nReg  = m_regions.size();
+    const auto nTrk  = m_tracks.size();
+    const auto nClp  = m_clips.size();
+    const auto nPat  = m_patterns.size();
+    const auto nBlk  = m_patternBlocks.size();
+
+    m_sources.clear();
+    m_regions.clear();
+    m_tracks.clear();
+    m_clips.clear();
+    m_patterns.clear();
+    m_patternBlocks.clear();
+
+    m_gridLayout = GridLayout{};
+
+    m_bpm        = 140.0;
+    m_sampleRate = 44100.0;
+    m_timeSigNum = 4;
+    m_timeSigDen = 4;
+    m_declickMs  = 0.5;
+    m_nextId     = 1;
+
+    std::cout << "[Timeline] Cleared ("
+              << nSrc << " sources, " << nReg << " regions, "
+              << nTrk << " tracks, "  << nClp << " clips, "
+              << nPat << " patterns, " << nBlk << " patternBlocks)\n";
 }

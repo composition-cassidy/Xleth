@@ -113,6 +113,7 @@ add_library(XlethEngineModel STATIC
     src/project/ProjectManager.cpp
     src/commands/UndoManager.cpp
     src/commands/TimelineCommands.cpp
+    src/commands/QuantizeClipsBatchCommand.cpp
 )
 
 target_include_directories(XlethEngineModel PUBLIC
@@ -121,6 +122,10 @@ target_include_directories(XlethEngineModel PUBLIC
 
 target_link_libraries(XlethEngineModel PUBLIC
     nlohmann_json::nlohmann_json
+)
+
+target_compile_definitions(XlethEngineModel PRIVATE
+    XLETH_DEBUG                       # enable structured debug logging to stderr
 )
 
 # ── XlethEngineCore ───────────────────────────────────────────────────────────
@@ -138,6 +143,9 @@ add_library(XlethEngineCore STATIC
     src/SampleBank.cpp
     src/VoiceManager.cpp
     src/audio/MixEngine.cpp
+    src/audio/PluginRegistry.cpp
+    src/audio/PluginEditorHost.cpp
+    src/audio/EditorProcessCoordinator.cpp
     src/audio/ClipRenderCache.cpp
     src/audio/TrackMixer.cpp
     src/audio/SourcePlayer.cpp
@@ -146,6 +154,8 @@ add_library(XlethEngineCore STATIC
     src/audio/SampleProcessor.cpp
     src/audio/EffectChainManager.cpp
     src/audio/AudioGraph.cpp
+    src/audio/GuardedPluginWrapper.cpp
+    src/audio/NamedAudioRing.cpp
     src/audio/WaveformMipmap.cpp
     src/dsp/TDPSOLA.cpp
     src/dsp/RubberBandWrapper.cpp
@@ -158,6 +168,7 @@ add_library(XlethEngineCore STATIC
     src/ProxyTranscoder.cpp
     src/SyncManager.cpp
     src/project/ProjectManager.cpp
+    src/project/ProxyManager.cpp
     src/export/AudioExporter.cpp
     src/export/FFmpegMuxer.cpp
     src/render/RenderClock.cpp
@@ -169,6 +180,7 @@ add_library(XlethEngineCore STATIC
     src/render/HwEncoderDetector.cpp
     src/render/OfflineRenderer.cpp
     src/render/ArpVideoExpander.cpp
+    src/render/AnimationManager.cpp
 )
 
 target_include_directories(XlethEngineCore PUBLIC
@@ -195,6 +207,7 @@ target_compile_definitions(XlethEngineCore PRIVATE
     # media pipeline when their DLLs are loaded into the same process.
     JUCE_DIRECTSOUND=0                # removes dsound.dll from import table
     JUCE_USE_WINDOWS_MEDIA_FORMAT=0   # removes wmvcore.dll from import table
+    JUCE_PLUGINHOST_VST3=1            # enable VST3 plugin hosting
     $<$<BOOL:${XLETH_ASIO}>:JUCE_ASIO=1>
 )
 
@@ -262,6 +275,7 @@ target_compile_definitions(XlethEngineHeaders INTERFACE
     JUCE_USE_CURL=0
     JUCE_WEB_BROWSER=0
     JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_PLUGINHOST_VST3=1
     $<$<BOOL:${XLETH_ASIO}>:JUCE_ASIO=1>
 )
 

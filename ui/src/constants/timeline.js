@@ -36,11 +36,29 @@ export const PPQ = 960
 export const CLIP_MIN_WIDTH_PX = 4
 export const MIN_DURATION_TICKS_FREE = 60  // ~1/64 note, minimum when alt (free mode) is held
 
-export function snapBeatToGrid(beat, modifiers = {}) {
+// Beat fraction per granularity key (e.g. '1/16' → 1/4 beat = 240 ticks at PPQ 960)
+export const GRANULARITY_BEATS = {
+  '1/64': 1 / 16,
+  '1/32': 1 / 8,
+  '1/16': 1 / 4,
+  '1/8':  1 / 2,
+  'Beat': 1,
+  'Half': 2,
+  'Bar':  4,
+}
+
+export function snapBeatToGrid(beat, modifiers = {}, granularity = '1/16') {
   if (modifiers.alt)   return beat                      // free (no snap)
-  if (modifiers.shift) return Math.round(beat * 8) / 8  // 32nd note
-  if (modifiers.ctrl)  return Math.round(beat * 2) / 2  // 8th note
-  return Math.round(beat * 4) / 4                       // 16th note (default)
+  if (modifiers.shift) return Math.round(beat * 8) / 8  // 32nd note override
+  if (modifiers.ctrl)  return Math.round(beat * 2) / 2  // 8th note override
+  const div = 1 / (GRANULARITY_BEATS[granularity] ?? GRANULARITY_BEATS['1/16'])
+  return Math.round(beat * div) / div
+}
+
+// Tick-domain snap — round-to-nearest semantics. Used by quantize operations.
+export function snapTickToGrid(tick, modifiers = {}, granularity = '1/16') {
+  if (modifiers.alt) return tick
+  return Math.round(snapBeatToGrid(tick / PPQ, modifiers, granularity) * PPQ)
 }
 
 export function ticksToBeats(ticks) { return ticks / PPQ }

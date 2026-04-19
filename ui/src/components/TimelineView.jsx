@@ -8,7 +8,10 @@ import TimelineScrollbar from './timeline/TimelineScrollbar.jsx'
 import TimelineToolbar from './timeline/TimelineToolbar.jsx'
 import ContextMenu from './ContextMenu.jsx'
 import TrackContextMenu from './timeline/TrackContextMenu.jsx'
+import FadeBezierEditor from './timeline/FadeBezierEditor.jsx'
 import ConfirmConvertDialog from './timeline/ConfirmConvertDialog.jsx'
+import QuantizeDialog from './timeline/QuantizeDialog.jsx'
+import { buildQuantizeSpecs } from '../utils/quantize.js'
 import useTimelineZoom from '../hooks/useTimelineZoom.js'
 import useTimelineScroll from '../hooks/useTimelineScroll.js'
 import { labelHexColor } from '../constants/labels.js'
@@ -19,8 +22,38 @@ import { timelineEvents } from '../timelineEvents.js'
 import {
   BEATS_PER_BAR, DEFAULT_LENGTH_BEATS, TRACK_HEIGHT, PPQ,
   pixelToBeat, snapBeatToGrid, beatsToTicks, regionDurationToTicks, findFreePosition,
+  GRANULARITY_BEATS,
 } from '../constants/timeline.js'
 import { getRegime } from '../utils/waveformRenderer.js'
+import useSnapStore from '../stores/snapStore.js'
+
+function ClipSliderRow({ label, value, min, max, step, onCommit, formatValue }) {
+  const [localVal, setLocalVal] = useState(value)
+  const dragging = useRef(false)
+
+  useEffect(() => {
+    if (!dragging.current) setLocalVal(value)
+  }, [value])
+
+  return (
+    <div style={{ padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 6 }}>
+      <span style={{ fontSize: 11, color: '#aaa', minWidth: 40 }}>{label}</span>
+      <input
+        type="range" min={min} max={max} step={step}
+        value={localVal}
+        onChange={(e) => { dragging.current = true; setLocalVal(Number(e.target.value)) }}
+        onPointerUp={(e) => {
+          const v = Number(e.target.value)
+          Promise.resolve(onCommit(v)).finally(() => { dragging.current = false })
+        }}
+        style={{ flex: 1, accentColor: '#33CED6' }}
+      />
+      <span style={{ fontSize: 10, color: '#888', minWidth: 40, textAlign: 'right' }}>
+        {formatValue(localVal)}
+      </span>
+    </div>
+  )
+}
 
 export default function TimelineView({
   activeSampleId,
@@ -31,6 +64,14 @@ export default function TimelineView({
   // ── Tool state ──────────────────────────────────────────────────────────────
   const [activeTool, setActiveTool] = useState('select')
   const [stickyNoteLength, setStickyNoteLength] = useState(240) // 1/16 = PPQ/4
+  const { snapGranularity, setSnapGranularity } = useSnapStore()
+
+  // Keep arranger clip length in sync with snap granularity
+  useEffect(() => {
+    const beats = GRANULARITY_BEATS[snapGranularity] ?? GRANULARITY_BEATS['1/16']
+    setStickyNoteLength(Math.round(beats * PPQ))
+  }, [snapGranularity])
+
   const [patternListCollapsed, setPatternListCollapsed] = useState(false)
   const lastSplitUndoCountRef = useRef(0)
   const timelineFocusedRef = useRef(false)
@@ -41,6 +82,7 @@ export default function TimelineView({
   const [contextMenu, setContextMenu] = useState(null)
   const [trackMenu, setTrackMenu] = useState(null)         // { track, x, y }
   const [confirmDialog, setConfirmDialog] = useState(null)  // { title, message, onConfirm }
+  const [quantizeOpen, setQuantizeOpen] = useState(false)
   const nextTrackNum = useRef(1)
 
   // ── Clip state ─────────────────────────────────────────────────────────────
@@ -255,6 +297,37 @@ export default function TimelineView({
       }
     }
   }, [])
+
+  // ── Quantize apply (per-edge batch) ────────────────────────────────────────
+  const handleQuantizeApply = useCallback(async ({ startAction, endAction }) => {
+    const clipSel  = clipsRef.current.filter(c => selectedClipIds.has(c.id))
+    const blockSel = patternBlocks.filter(b => selectedBlockIds.has(b.id))
+    if (clipSel.length === 0 && blockSel.length === 0) {
+      console.warn('[Quantize] nothing selected, closing dialog')
+      setQuantizeOpen(false)
+      return
+    }
+    const { specs, skipped } = buildQuantizeSpecs(
+      clipSel, blockSel, startAction, endAction, snapGranularity
+    )
+    console.log(`[Quantize] start=${startAction} end=${endAction} snap=${snapGranularity} `
+      + `→ ${specs.length} specs, ${skipped.length} skipped`)
+    if (skipped.length > 0) {
+      for (const s of skipped) console.log(`[Quantize] skip ${s.kind} id=${s.id}: ${s.reason}`)
+    }
+    if (specs.length === 0) {
+      setQuantizeOpen(false)
+      return
+    }
+    try {
+      await window.xleth?.timeline?.quantizeClipsBatch(specs)
+      await fetchClips()
+      timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
+    } catch (err) {
+      console.error('[Quantize] quantizeClipsBatch failed:', err)
+    }
+    setQuantizeOpen(false)
+  }, [selectedClipIds, selectedBlockIds, patternBlocks, snapGranularity, fetchClips])
 
   useEffect(() => {
     fetchTracks()
@@ -1176,6 +1249,17 @@ export default function TimelineView({
         syllableIndex: clip.syllableIndex ?? -1,
         velocity: clip.velocity ?? 1.0,
         pitchOffset: clip.pitchOffset ?? 0,
+        pitchOffsetCents: clip.pitchOffsetCents ?? 0,
+        reversed: clip.reversed ?? false,
+        stretchRatio: clip.stretchRatio ?? 1.0,
+        stretchMethod: clip.stretchMethod ?? 0,
+        formantPreserve: clip.formantPreserve ?? false,
+        fadeInTicks:  clip.fadeInTicks  ?? 0,
+        fadeOutTicks: clip.fadeOutTicks ?? 0,
+        fadeInX1:  clip.fadeInX1  ?? 0,  fadeInY1:  clip.fadeInY1  ?? 0,
+        fadeInX2:  clip.fadeInX2  ?? 1,  fadeInY2:  clip.fadeInY2  ?? 1,
+        fadeOutX1: clip.fadeOutX1 ?? 0,  fadeOutY1: clip.fadeOutY1 ?? 0,
+        fadeOutX2: clip.fadeOutX2 ?? 1,  fadeOutY2: clip.fadeOutY2 ?? 1,
       })
       await window.xleth?.timeline?.addClip({
         trackId: clip.trackId, regionId: clip.regionId,
@@ -1184,6 +1268,17 @@ export default function TimelineView({
         syllableIndex: clip.syllableIndex ?? -1,
         velocity: clip.velocity ?? 1.0,
         pitchOffset: clip.pitchOffset ?? 0,
+        pitchOffsetCents: clip.pitchOffsetCents ?? 0,
+        reversed: clip.reversed ?? false,
+        stretchRatio: clip.stretchRatio ?? 1.0,
+        stretchMethod: clip.stretchMethod ?? 0,
+        formantPreserve: clip.formantPreserve ?? false,
+        fadeInTicks:  clip.fadeInTicks  ?? 0,
+        fadeOutTicks: clip.fadeOutTicks ?? 0,
+        fadeInX1:  clip.fadeInX1  ?? 0,  fadeInY1:  clip.fadeInY1  ?? 0,
+        fadeInX2:  clip.fadeInX2  ?? 1,  fadeInY2:  clip.fadeInY2  ?? 1,
+        fadeOutX1: clip.fadeOutX1 ?? 0,  fadeOutY1: clip.fadeOutY1 ?? 0,
+        fadeOutX2: clip.fadeOutX2 ?? 1,  fadeOutY2: clip.fadeOutY2 ?? 1,
       })
       lastSplitUndoCountRef.current = 3
       setSelectedClipIds(new Set())
@@ -1332,7 +1427,7 @@ export default function TimelineView({
 
     const beat = pixelToBeat(localX, scrollOffsetRef.current, pixelsPerBeatRef.current)
     const modifiers = { alt: e.altKey, shift: e.shiftKey }
-    const snappedBeat = snapBeatToGrid(Math.max(0, beat), modifiers)
+    const snappedBeat = snapBeatToGrid(Math.max(0, beat), modifiers, snapGranularity)
 
     // Read drag payload from global (can't read dataTransfer during dragover)
     const dragData = isPattern
@@ -1394,7 +1489,7 @@ export default function TimelineView({
     }
 
     const modifiers = { alt: e.altKey, shift: e.shiftKey }
-    const snappedBeat = snapBeatToGrid(Math.max(0, beat), modifiers)
+    const snappedBeat = snapBeatToGrid(Math.max(0, beat), modifiers, snapGranularity)
     const track = tracks[trackIndex]
     const positionTicks = beatsToTicks(snappedBeat)
 
@@ -1651,8 +1746,29 @@ export default function TimelineView({
               syllableIndex: clip.syllableIndex ?? -1,
               relativePosition: clip.positionTicks - basePosition,
               relativeTrackIndex: trackOrder.indexOf(clip.trackId) - baseTrackIdx,
+              // Non-fade playback modifiers (defaults match engine Clip struct)
+              pitchOffsetCents: clip.pitchOffsetCents ?? 0,
+              reversed: clip.reversed ?? false,
+              stretchRatio: clip.stretchRatio ?? 1.0,
+              stretchMethod: clip.stretchMethod ?? 0,   // 0 == StretchMethod::Global
+              formantPreserve: clip.formantPreserve ?? false,
+              // Fade envelope (duration + cubic-bezier control points)
+              fadeInTicks:  clip.fadeInTicks  ?? 0,
+              fadeOutTicks: clip.fadeOutTicks ?? 0,
+              fadeInX1:  clip.fadeInX1  ?? 0,
+              fadeInY1:  clip.fadeInY1  ?? 0,
+              fadeInX2:  clip.fadeInX2  ?? 1,
+              fadeInY2:  clip.fadeInY2  ?? 1,
+              fadeOutX1: clip.fadeOutX1 ?? 0,
+              fadeOutY1: clip.fadeOutY1 ?? 0,
+              fadeOutX2: clip.fadeOutX2 ?? 1,
+              fadeOutY2: clip.fadeOutY2 ?? 1,
             }))
             console.log(`[Keyboard] Copied ${selectedClips.length} clip(s)`)
+            console.log('[ClipCopy] source clips (raw React state) =',
+              JSON.stringify(selectedClips, null, 2))
+            console.log('[ClipCopy] clipboardRef =',
+              JSON.stringify(clipboardRef.current, null, 2))
             patternBlockClipboardRef.current = null
           }
         }
@@ -1721,6 +1837,7 @@ export default function TimelineView({
           try {
             const newIds = []
             const virtualClips = [...clipsRef.current]  // includes in-batch placements
+            let pasteIdx = 0
             for (const item of cb) {
               const targetTrackIdx = Math.min(
                 Math.max(0, baseTrackIdx + item.relativeTrackIndex),
@@ -1729,7 +1846,7 @@ export default function TimelineView({
               const trackId = trackOrder[targetTrackIdx]
               const proposedTicks = baseTicks + item.relativePosition
               const safeTicks = findFreePosition(trackId, proposedTicks, item.durationTicks, virtualClips)
-              const newId = await window.xleth?.timeline?.addClip({
+              const payload = {
                 trackId,
                 regionId: item.regionId,
                 positionTicks: safeTicks,
@@ -1738,7 +1855,22 @@ export default function TimelineView({
                 syllableIndex: item.syllableIndex,
                 velocity: item.velocity,
                 pitchOffset: item.pitchOffset,
-              })
+                // Carry all playback modifiers from the clipboard snapshot
+                pitchOffsetCents: item.pitchOffsetCents,
+                reversed: item.reversed,
+                stretchRatio: item.stretchRatio,
+                stretchMethod: item.stretchMethod,
+                formantPreserve: item.formantPreserve,
+                fadeInTicks:  item.fadeInTicks,
+                fadeOutTicks: item.fadeOutTicks,
+                fadeInX1:  item.fadeInX1,  fadeInY1:  item.fadeInY1,
+                fadeInX2:  item.fadeInX2,  fadeInY2:  item.fadeInY2,
+                fadeOutX1: item.fadeOutX1, fadeOutY1: item.fadeOutY1,
+                fadeOutX2: item.fadeOutX2, fadeOutY2: item.fadeOutY2,
+              }
+              console.log('[ClipPaste] payload for clip', pasteIdx++, '=',
+                JSON.stringify(payload, null, 2))
+              const newId = await window.xleth?.timeline?.addClip(payload)
               if (newId != null) {
                 newIds.push(newId)
                 virtualClips.push({ trackId, positionTicks: safeTicks, durationTicks: item.durationTicks })
@@ -1821,7 +1953,7 @@ export default function TimelineView({
             const proposedTicks = clip.positionTicks + clip.durationTicks
             const newPositionTicks = findFreePosition(clip.trackId, proposedTicks, clip.durationTicks, clipsRef.current)
             try {
-              const newId = await window.xleth?.timeline?.addClip({
+              const payload = {
                 trackId: clip.trackId,
                 regionId: clip.regionId,
                 positionTicks: newPositionTicks,
@@ -1830,7 +1962,23 @@ export default function TimelineView({
                 syllableIndex: clip.syllableIndex ?? -1,
                 velocity: clip.velocity ?? 1.0,
                 pitchOffset: clip.pitchOffset ?? 0,
-              })
+                pitchOffsetCents: clip.pitchOffsetCents ?? 0,
+                reversed: clip.reversed ?? false,
+                stretchRatio: clip.stretchRatio ?? 1.0,
+                stretchMethod: clip.stretchMethod ?? 0,
+                formantPreserve: clip.formantPreserve ?? false,
+                fadeInTicks:  clip.fadeInTicks  ?? 0,
+                fadeOutTicks: clip.fadeOutTicks ?? 0,
+                fadeInX1:  clip.fadeInX1  ?? 0,  fadeInY1:  clip.fadeInY1  ?? 0,
+                fadeInX2:  clip.fadeInX2  ?? 1,  fadeInY2:  clip.fadeInY2  ?? 1,
+                fadeOutX1: clip.fadeOutX1 ?? 0,  fadeOutY1: clip.fadeOutY1 ?? 0,
+                fadeOutX2: clip.fadeOutX2 ?? 1,  fadeOutY2: clip.fadeOutY2 ?? 1,
+              }
+              console.log('[ClipDuplicate] source clip (raw React state) =',
+                JSON.stringify(clip, null, 2))
+              console.log('[ClipDuplicate] payload =',
+                JSON.stringify(payload, null, 2))
+              const newId = await window.xleth?.timeline?.addClip(payload)
               await fetchClips()
               if (newId != null) setSelectedClipIds(new Set([newId]))
               // Advance playhead + editCursor to end of duplicated clip
@@ -1977,6 +2125,24 @@ export default function TimelineView({
     }
   }, [fetchClips])
 
+  const handleSetClipVelocity = useCallback(async (clipId, velocity) => {
+    try {
+      await window.xleth.timeline.setClipParams(clipId, { velocity })
+      await fetchClips()
+    } catch (err) {
+      console.error('[Timeline] setClipVelocity error:', err)
+    }
+  }, [fetchClips])
+
+  const handleSetClipFade = useCallback(async (clipId, fadeParams) => {
+    try {
+      await window.xleth.timeline.setClipParams(clipId, fadeParams)
+      await fetchClips()
+    } catch (err) {
+      console.error('[Timeline] setClipFade error:', err)
+    }
+  }, [fetchClips])
+
   const contextMenuClip = contextMenu?.type === 'clip'
     ? clipsRef.current.find(c => c.id === contextMenu.clipId)
     : null
@@ -1995,6 +2161,71 @@ export default function TimelineView({
     ? (contextMenu.type === 'clip'
         ? [
             { label: 'Auto-Trim Silence (−54 dB)', onClick: () => handleAutoTrimClip(contextMenu.clipId) },
+            { type: 'separator' },
+            {
+              type: 'custom', key: 'volume-slider',
+              content: (
+                <ClipSliderRow
+                  label="Volume"
+                  value={Math.round((contextMenuClip?.velocity ?? 1.0) * 100)}
+                  min={0} max={200} step={1}
+                  onCommit={(v) => handleSetClipVelocity(contextMenu.clipId, v / 100)}
+                  formatValue={(v) => `${v}%`}
+                />
+              ),
+            },
+            {
+              type: 'custom', key: 'fade-in',
+              content: (
+                <div>
+                  <ClipSliderRow
+                    label="Fade In"
+                    value={contextMenuClip?.fadeInTicks ?? 0}
+                    min={0} max={3840} step={60}
+                    onCommit={(v) => handleSetClipFade(contextMenu.clipId, { fadeInTicks: v })}
+                    formatValue={(v) => `${(v / 960).toFixed(1)}b`}
+                  />
+                  {(contextMenuClip?.fadeInTicks ?? 0) > 0 && (
+                    <div style={{ padding: '0 8px 6px' }}>
+                      <FadeBezierEditor
+                        x1={contextMenuClip?.fadeInX1 ?? 0} y1={contextMenuClip?.fadeInY1 ?? 0}
+                        x2={contextMenuClip?.fadeInX2 ?? 1} y2={contextMenuClip?.fadeInY2 ?? 1}
+                        type="fadeIn" width={180} height={100}
+                        onChange={(fx1, fy1, fx2, fy2) => handleSetClipFade(contextMenu.clipId, {
+                          fadeInX1: fx1, fadeInY1: fy1, fadeInX2: fx2, fadeInY2: fy2,
+                        })}
+                      />
+                    </div>
+                  )}
+                </div>
+              ),
+            },
+            {
+              type: 'custom', key: 'fade-out',
+              content: (
+                <div>
+                  <ClipSliderRow
+                    label="Fade Out"
+                    value={contextMenuClip?.fadeOutTicks ?? 0}
+                    min={0} max={3840} step={60}
+                    onCommit={(v) => handleSetClipFade(contextMenu.clipId, { fadeOutTicks: v })}
+                    formatValue={(v) => `${(v / 960).toFixed(1)}b`}
+                  />
+                  {(contextMenuClip?.fadeOutTicks ?? 0) > 0 && (
+                    <div style={{ padding: '0 8px 6px' }}>
+                      <FadeBezierEditor
+                        x1={contextMenuClip?.fadeOutX1 ?? 0} y1={contextMenuClip?.fadeOutY1 ?? 0}
+                        x2={contextMenuClip?.fadeOutX2 ?? 1} y2={contextMenuClip?.fadeOutY2 ?? 1}
+                        type="fadeOut" width={180} height={100}
+                        onChange={(fx1, fy1, fx2, fy2) => handleSetClipFade(contextMenu.clipId, {
+                          fadeOutX1: fx1, fadeOutY1: fy1, fadeOutX2: fx2, fadeOutY2: fy2,
+                        })}
+                      />
+                    </div>
+                  )}
+                </div>
+              ),
+            },
             { type: 'separator' },
             {
               label: contextMenuClip?.reversed ? '✓ Reverse' : 'Reverse',
@@ -2059,13 +2290,16 @@ export default function TimelineView({
         setActiveTool={setActiveTool}
         activeSampleId={activeSampleId}
         regions={regions}
-        stickyNoteLength={stickyNoteLength}
+        snapGranularity={snapGranularity}
+        onSnapGranularityChange={setSnapGranularity}
         pixelsPerBeat={pixelsPerBeat}
         onAddTrack={handleAddTrack}
         pencilTemplate={pencilTemplate}
         onSelectSyllable={handleSelectSyllable}
         declickMs={declickMs}
         onDeclickChange={handleDeclick}
+        onOpenQuantize={() => setQuantizeOpen(true)}
+        quantizeSelectionCount={selectedClipIds.size + selectedBlockIds.size}
       />
 
       {/* ── Body ─────────────────────────────────────────────────────────── */}
@@ -2139,6 +2373,7 @@ export default function TimelineView({
                   stickyNoteLength={stickyNoteLength}
                   setStickyNoteLength={setStickyNoteLength}
                   activeSampleId={activeSampleId}
+                  snapGranularity={snapGranularity}
                   onCreateClip={handleCreateClip}
                   onDeleteClip={handleDeleteClip}
                   onMoveClip={handleMoveClip}
@@ -2217,6 +2452,17 @@ export default function TimelineView({
           onCancel={confirmDialog.onCancel}
         />
       )}
+
+      {/* ── Quantize dialog ──────────────────────────────────────────────── */}
+      <QuantizeDialog
+        isOpen={quantizeOpen}
+        onClose={() => setQuantizeOpen(false)}
+        onApply={handleQuantizeApply}
+        snapGranularity={snapGranularity}
+        selectionCount={selectedClipIds.size + selectedBlockIds.size}
+        hasPatternBlock={selectedBlockIds.size > 0}
+        hasClip={selectedClipIds.size > 0}
+      />
     </div>
   )
 }

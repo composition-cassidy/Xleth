@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import useMixerStore, { peaksSnapshot } from '../../stores/mixerStore.js'
+import useVstStore from '../../stores/vstStore.js'
 import { timelineEvents } from '../../timelineEvents.js'
 import MixerStrip from './MixerStrip.jsx'
 import MasterStrip from './MasterStrip.jsx'
@@ -16,6 +17,8 @@ import OTTPanel from './OTTPanel.jsx'
 import ReverbPanel from './ReverbPanel.jsx'
 import TransientProcPanel from './TransientProcPanel.jsx'
 import SmartBalancePanel from './SmartBalancePanel.jsx'
+import VstBrowser from './VstBrowser.jsx'
+import ScanProgressBar from './ScanProgressBar.jsx'
 
 function newPeakEntry() {
   return { peakL: 0, peakR: 0, holdL: 0, holdR: 0, holdTimeL: 0, holdTimeR: 0 }
@@ -26,6 +29,7 @@ export default function MixerPanel() {
   const trackOrder = useMixerStore(s => s.trackOrder)
   const init = useMixerStore(s => s.init)
   const syncFromTimeline = useMixerStore(s => s.syncFromTimeline)
+  const openVstBrowser = useVstStore(s => s.openBrowser)
 
   // Init on mount + when tracks change
   useEffect(() => {
@@ -84,7 +88,12 @@ export default function MixerPanel() {
             }
           }
         } catch {}
-        await new Promise(r => setTimeout(r, 33))
+        // 50 ms ≈ 20 Hz.  Previously 33 ms (30 Hz): getAllPeaks iterates every
+        // active track under a lock shared with the audio thread.  At 30 Hz with
+        // 10+ tracks each Napi::Object allocation adds up.  20 Hz is imperceptible
+        // to the eye for peak meters but meaningfully reduces JUCE message-thread
+        // starvation when a VST editor window is open.
+        await new Promise(r => setTimeout(r, 50))
       }
     })()
     return () => {
@@ -115,13 +124,26 @@ export default function MixerPanel() {
       <ReverbPanel />
       <TransientProcPanel />
       <SmartBalancePanel />
-      <div className="mixer-tracks-scroll">
-        {trackOrder.length === 0
-          ? <div className="mixer-empty-state">No tracks — add tracks in the timeline</div>
-          : trackOrder.map(id => <MixerStrip key={id} trackId={id} />)
-        }
+      <VstBrowser />
+      <div className="mixer-toolbar">
+        <button
+          className="mixer-toolbar-btn"
+          onClick={() => openVstBrowser(null)}
+          title="Open VST3 Browser — scan and manage plugins"
+        >
+          VST Browser
+        </button>
+        <ScanProgressBar />
       </div>
-      <MasterStrip />
+      <div className="mixer-strips-row">
+        <div className="mixer-tracks-scroll">
+          {trackOrder.length === 0
+            ? <div className="mixer-empty-state">No tracks — add tracks in the timeline</div>
+            : trackOrder.map(id => <MixerStrip key={id} trackId={id} />)
+          }
+        </div>
+        <MasterStrip />
+      </div>
     </div>
   )
 }

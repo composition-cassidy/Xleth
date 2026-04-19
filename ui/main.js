@@ -412,6 +412,26 @@ ipcMain.handle('xleth:project:validateMedia',
 ipcMain.handle('xleth:project:getInfo',
   safeHandler(() => callWorker('project_getInfo')));
 
+ipcMain.handle('xleth:project:isDirty',
+  safeHandler(() => callWorker('project_isDirty')));
+
+ipcMain.handle('xleth:project:newBlank',
+  safeHandler(async () => {
+    const result = await callWorker('project_newBlank');
+    // Broadcast so renderers drop any stale per-project state (plugin editor
+    // refs, piano roll / mixer selections, etc.) — same pattern as project:load.
+    if (result && result.ok) {
+      const { webContents } = require('electron');
+      for (const wc of webContents.getAllWebContents()) {
+        if (!wc.isDestroyed()) wc.send('xleth:project-loaded');
+      }
+    }
+    return result;
+  }));
+
+ipcMain.handle('xleth:project:isExportRunning',
+  safeHandler(() => callWorker('project_isExportRunning')));
+
 // ── Phase 1 handlers — Timeline queries ──────────────────────────────────────
 
 ipcMain.handle('xleth:timeline:getBPM',
@@ -481,6 +501,50 @@ ipcMain.handle('xleth:timeline:setVideoFlipMode',
 
 ipcMain.handle('xleth:timeline:setVideoHoldLastFrame',
   safeHandler((_, trackId, hold) => callWorker('timeline_setVideoHoldLastFrame', [trackId, hold])));
+
+ipcMain.handle('xleth:timeline:setTrackCornerRadius',
+  safeHandler((_, trackId, v) => callWorker('timeline_setTrackCornerRadius', [trackId, v])));
+
+ipcMain.handle('xleth:timeline:setTrackGapScaleOverride',
+  safeHandler((_, trackId, v) => callWorker('timeline_setTrackGapScaleOverride', [trackId, v])));
+
+ipcMain.handle('xleth:timeline:setTrackBounceSettings',
+  safeHandler((_, trackId, bounce) => callWorker('timeline_setTrackBounceSettings', [trackId, bounce])));
+
+ipcMain.handle('xleth:timeline:setTrackZoomPanRotSettings',
+  safeHandler((_, trackId, zpr) => callWorker('timeline_setTrackZoomPanRotSettings', [trackId, zpr])));
+
+ipcMain.handle('xleth:timeline:setTrackPingPongSettings',
+  safeHandler((_, trackId, pp) => callWorker('timeline_setTrackPingPongSettings', [trackId, pp])));
+
+ipcMain.handle('xleth:timeline:setTrackSlideNoteEffect',
+  safeHandler((_, trackId, s) => callWorker('timeline_setTrackSlideNoteEffect', [trackId, s])));
+
+ipcMain.handle('xleth:timeline:getPreviewResolutionScale',
+  safeHandler(() => callWorker('timeline_getPreviewResolutionScale', [])));
+ipcMain.handle('xleth:timeline:setPreviewResolutionScale',
+  safeHandler((_, scale) => callWorker('timeline_setPreviewResolutionScale', [scale])));
+ipcMain.handle('xleth:timeline:getPreviewEffectsBypass',
+  safeHandler(() => callWorker('timeline_getPreviewEffectsBypass', [])));
+ipcMain.handle('xleth:timeline:setPreviewEffectsBypass',
+  safeHandler((_, bypass) => callWorker('timeline_setPreviewEffectsBypass', [bypass])));
+
+ipcMain.handle('xleth:timeline:setNoteSlide',
+  safeHandler((_, patternId, noteId, isSlide, cx, cy) =>
+    callWorker('timeline_setNoteSlide', [patternId, noteId, isSlide, cx, cy])));
+
+ipcMain.handle('xleth:timeline:addVisualEffect',
+  safeHandler((_, trackId, effectType) => callWorker('timeline_addVisualEffect', [trackId, effectType])));
+ipcMain.handle('xleth:timeline:removeVisualEffect',
+  safeHandler((_, trackId, idx) => callWorker('timeline_removeVisualEffect', [trackId, idx])));
+ipcMain.handle('xleth:timeline:reorderVisualEffect',
+  safeHandler((_, trackId, from, to) => callWorker('timeline_reorderVisualEffect', [trackId, from, to])));
+ipcMain.handle('xleth:timeline:setVisualEffectParam',
+  safeHandler((_, trackId, ei, pi, val) => callWorker('timeline_setVisualEffectParam', [trackId, ei, pi, val])));
+ipcMain.handle('xleth:timeline:setVisualEffectBypassed',
+  safeHandler((_, trackId, ei, bypassed) => callWorker('timeline_setVisualEffectBypassed', [trackId, ei, bypassed])));
+ipcMain.handle('xleth:timeline:getVisualEffectChain',
+  safeHandler((_, trackId) => callWorker('timeline_getVisualEffectChain', [trackId])));
 
 ipcMain.handle('xleth:timeline:addClip',
   safeHandler((_, clip) => callWorker('timeline_addClip', [clip])));
@@ -624,6 +688,9 @@ ipcMain.handle('xleth:timeline:moveNote',
 
 ipcMain.handle('xleth:timeline:moveNotesBatch',
   safeHandler((_, patternId, moves) => callWorker('timeline_moveNotesBatch', [patternId, moves])));
+
+ipcMain.handle('xleth:timeline:quantizeClipsBatch',
+  safeHandler((_, specs) => callWorker('timeline_quantizeClipsBatch', [specs])));
 
 ipcMain.handle('xleth:timeline:resizeNote',
   safeHandler((_, patternId, noteId, durTicks) => callWorker('timeline_resizeNote', [patternId, noteId, durTicks])));
@@ -842,6 +909,55 @@ ipcMain.handle('xleth:audio:setMasterNodePosition',
 ipcMain.handle('xleth:audio:isMasterGraphLinear',
   safeHandler(() => callWorker('audio_isMasterGraphLinear')));
 
+// ── VST3 plugin scanner ───────────────────────────────────────────────────────
+
+ipcMain.handle('xleth:audio:scanPlugins',
+  safeHandler((_, paths) => callWorker('audio_scanPlugins', paths && paths.length ? [paths] : [])));
+
+ipcMain.handle('xleth:audio:getScanProgress',
+  safeHandler(() => callWorker('audio_getScanProgress', [])));
+
+ipcMain.handle('xleth:audio:getScannedPlugins',
+  safeHandler(() => callWorker('audio_getScannedPlugins', [])));
+
+ipcMain.handle('xleth:audio:getFailedPlugins',
+  safeHandler(() => callWorker('audio_getFailedPlugins', [])));
+
+// ── VST3 plugin editor windows ────────────────────────────────────────────────
+
+ipcMain.handle('xleth:audio:openPluginEditor',
+  safeHandler((_, trackId, nodeId) => callWorker('audio_openPluginEditor', [trackId, nodeId])));
+
+ipcMain.handle('xleth:audio:closePluginEditor',
+  safeHandler((_, trackId, nodeId) => callWorker('audio_closePluginEditor', [trackId, nodeId])));
+
+ipcMain.handle('xleth:audio:closeAllPluginEditors',
+  safeHandler(() => callWorker('audio_closeAllPluginEditors', [])));
+
+ipcMain.handle('xleth:audio:isPluginEditorOpen',
+  safeHandler((_, trackId, nodeId) => callWorker('audio_isPluginEditorOpen', [trackId, nodeId])));
+
+ipcMain.handle('xleth:audio:getMissingPlugins',
+  safeHandler(() => callWorker('audio_getMissingPlugins', [])));
+
+ipcMain.handle('xleth:audio:retryMissingPlugin',
+  safeHandler((_, trackId, nodeId) => callWorker('audio_retryMissingPlugin', [trackId, nodeId])));
+
+ipcMain.handle('xleth:audio:removeAllMissing',
+  safeHandler(() => callWorker('audio_removeAllMissing', [])));
+
+ipcMain.handle('xleth:audio:resetCrashedPlugin',
+  safeHandler((_, trackId, nodeId) => callWorker('audio_resetCrashedPlugin', [trackId, nodeId])));
+
+ipcMain.handle('xleth:dialog:addVstSearchPath', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+    title: 'Add VST3 Search Path',
+    properties: ['openDirectory'],
+  });
+  if (canceled || !filePaths.length) return null;
+  return filePaths[0];
+});
+
 // ── Audio Export ─────────────────────────────────────────────────────────────
 
 let exportProgressInterval = null;
@@ -909,6 +1025,51 @@ ipcMain.handle('xleth:video:getAvailableEncoders',
 
 ipcMain.handle('xleth:video:getDefaultEncoder',
   safeHandler((_, codec) => callWorker('hwenc_getDefaultEncoder', [codec])));
+
+ipcMain.handle('xleth:video:computeDurationSeconds',
+  safeHandler((_, startBeat, endBeat) =>
+    callWorker('video_computeDurationSeconds', [startBeat, endBeat])));
+
+// ── Export presets (persisted in xleth-settings.json under "exportPresets") ─
+// See ui/src/components/exportPresets/presets.js for the defaults / migrator.
+const CURRENT_EXPORT_PRESET_VERSION = 1;
+
+function defaultExportPresets() {
+  return {
+    version:  CURRENT_EXPORT_PRESET_VERSION,
+    lastTab:  'youtube',
+    youtube:  { resolution: '1080p', fps: 60, quality: 0.75, hwEncoder: null },
+    discord:  { tier: 'free', fps: 30, hwEncoder: null },
+    custom:   [],
+    migrated: false,
+  };
+}
+
+function migrateExportPresets(stored) {
+  if (!stored || typeof stored !== 'object' ||
+      typeof stored.version !== 'number' ||
+      stored.version < CURRENT_EXPORT_PRESET_VERSION) {
+    const d = defaultExportPresets();
+    d.migrated = true;  // renderer surfaces a one-time toast
+    return d;
+  }
+  return stored;
+}
+
+ipcMain.handle('xleth:video:getExportPresets', safeHandler(() => {
+  const s = loadSettings();
+  return migrateExportPresets(s.exportPresets);
+}));
+
+ipcMain.handle('xleth:video:saveExportPresets', safeHandler((_, presets) => {
+  if (!presets || typeof presets !== 'object') return false;
+  const s = loadSettings();
+  const clean = { ...presets, version: CURRENT_EXPORT_PRESET_VERSION };
+  delete clean.migrated;
+  s.exportPresets = clean;
+  saveSettings(s);
+  return true;
+}));
 
 // ── Sample Export / Swap ──────────────────────────────────────────────────────
 
@@ -1161,7 +1322,7 @@ ipcMain.handle('xleth:dialog:exportVideo', async (_, defaultName) => {
   return filePath;
 });
 
-ipcMain.handle('xleth:project:getSourceThumbnail', async (_, filePath) => {
+ipcMain.handle('xleth:project:getSourceThumbnail', async (_, filePath, duration) => {
   const { execFile } = require('child_process');
   const os = require('os');
   const base = path.join(os.tmpdir(), `xleth_${Date.now()}`);
@@ -1257,16 +1418,18 @@ if ($b -and $b.Length -gt 0) { [System.IO.File]::WriteAllBytes('${so}', $b) }
     return 'data:image/jpeg;base64,' + shellData.toString('base64');
   }
 
-  // ── Strategy 3: FFmpeg thumbnail filter — picks best representative frame ─
+  // ── Strategy 3: Single seeked frame at 10% of duration (fast keyframe seek) ─
   const thumbOut = base + '_thumb.jpg';
+  const seekSecs = (typeof duration === 'number' && duration > 1) ? duration * 0.1 : 3;
   const thumbData = await tryFfmpeg([
-    '-y', '-i', filePath,
-    '-vf', 'thumbnail=n=200,scale=320:180:force_original_aspect_ratio=decrease,pad=320:180:(ow-iw)/2:(oh-ih)/2',
+    '-y', '-ss', seekSecs.toFixed(3),
+    '-i', filePath,
+    '-vf', 'scale=320:180:force_original_aspect_ratio=decrease,pad=320:180:(ow-iw)/2:(oh-ih)/2',
     '-frames:v', '1', '-update', '1', '-q:v', '4',
     thumbOut,
   ], thumbOut);
   if (thumbData) {
-    log(`[ProjectMedia] Best-frame thumbnail: ${name} (${thumbData.length} bytes)`);
+    log(`[ProjectMedia] Seeked-frame thumbnail: ${name} seek=${seekSecs.toFixed(1)}s (${thumbData.length} bytes)`);
     return 'data:image/jpeg;base64,' + thumbData.toString('base64');
   }
 
@@ -1277,6 +1440,11 @@ if ($b -and $b.Length -gt 0) { [System.IO.File]::WriteAllBytes('${so}', $b) }
 ipcMain.handle('xleth:shell:showItemInFolder', (_, filePath) => {
   log(`[ProjectMedia] Reveal in folder: ${filePath}`);
   shell.showItemInFolder(filePath);
+});
+
+ipcMain.handle('xleth:shell:openPath', async (_, filePath) => {
+  log(`[Shell] Open path: ${filePath}`);
+  return shell.openPath(filePath);
 });
 
 // ── Media server port (for <video> elements) ──────────────────────────────────
@@ -1497,6 +1665,26 @@ app.whenReady().then(async () => {
   startMediaServer();
 
   createWindow();
+
+  // Pass the main-window native HWND to the worker so VST editor-host
+  // processes can call SetWindowLongPtrW(GWLP_HWNDPARENT) and be treated as
+  // owned popups: they minimize with the main window, don't get a separate
+  // taskbar button, and stay above the main window in Z-order.
+  if (win && workerReady) {
+    try {
+      const hwndBuf = win.getNativeWindowHandle();
+      // Buffer is little-endian; on 64-bit Windows it is 8 bytes.
+      const hwndBigInt = hwndBuf.length >= 8
+        ? hwndBuf.readBigUInt64LE(0)
+        : BigInt(hwndBuf.readUInt32LE(0));
+      const hwndHex = hwndBigInt.toString(16).toUpperCase();
+      log(`[HWND] Main window handle: 0x${hwndHex}`);
+      callWorker('audio_setMainWindowHandle', [hwndHex]).catch(e =>
+        log('[HWND] setMainWindowHandle failed: ' + e.message));
+    } catch (e) {
+      log('[HWND] Failed to read native window handle: ' + e.message);
+    }
+  }
 });
 
 app.on('window-all-closed', () => {

@@ -131,6 +131,7 @@ std::vector<VideoEvent> ArpVideoExpander::expandArpVideoEvents(
     double  bpm,
     int     sourceId,
     int     trackId,
+    int     regionId,
     double  sourceStartTime,
     double  sourceEndTime,
     int&    counter)
@@ -206,6 +207,7 @@ std::vector<VideoEvent> ArpVideoExpander::expandArpVideoEvents(
             ve.durationBeats   = std::min(gateDurationBeats, blockEndBeats - arpCursor);
             ve.sourceId        = sourceId;
             ve.trackId         = trackId;
+            ve.regionId        = regionId;   // route to per-region proxy
             ve.sourceStartTime = sourceStartTime;
             ve.sourceEndTime   = sourceEndTime;
             ve.layerIndex      = 0;

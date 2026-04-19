@@ -190,6 +190,17 @@ public:
         double        stretchRatio     = 1.0;
         StretchMethod stretchMethod    = StretchMethod::Global;
         bool          formantPreserve  = false;
+        float         velocity         = 1.0f;
+        float         fadeInTicks      = 0.0f;
+        float         fadeOutTicks     = 0.0f;
+        float         fadeInX1         = 0.0f;
+        float         fadeInY1         = 0.0f;
+        float         fadeInX2         = 1.0f;
+        float         fadeInY2         = 1.0f;
+        float         fadeOutX1        = 0.0f;
+        float         fadeOutY1        = 0.0f;
+        float         fadeOutX2        = 1.0f;
+        float         fadeOutY2        = 1.0f;
     };
     SetClipParamsCommand(int clipId, Params newParams, const Timeline& timeline);
     void execute(Timeline& timeline) override;
@@ -836,4 +847,187 @@ private:
     int  trackId_;
     bool oldHold_;
     bool newHold_;
+};
+
+// ─── SetTrackCornerRadiusCommand ──────────────────────────────────────────────
+
+class SetTrackCornerRadiusCommand : public Command {
+public:
+    SetTrackCornerRadiusCommand(int trackId, float newRadius, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int   trackId_;
+    float oldRadius_;
+    float newRadius_;
+};
+
+// ─── SetTrackGapScaleOverrideCommand ─────────────────────────────────────────
+
+class SetTrackGapScaleOverrideCommand : public Command {
+public:
+    SetTrackGapScaleOverrideCommand(int trackId, float newGapScale, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int   trackId_;
+    float oldGapScale_;
+    float newGapScale_;
+};
+
+// ─── SetTrackBounceSettingsCommand ───────────────────────────────────────────
+
+class SetTrackBounceSettingsCommand : public Command {
+public:
+    SetTrackBounceSettingsCommand(int trackId, const BounceSettings& newSettings, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int            trackId_;
+    BounceSettings oldSettings_;
+    BounceSettings newSettings_;
+};
+
+// ─── SetTrackZoomPanRotSettingsCommand ────────────────────────────────────────
+
+class SetTrackZoomPanRotSettingsCommand : public Command {
+public:
+    SetTrackZoomPanRotSettingsCommand(int trackId, const ZoomPanRotSettings& newSettings,
+                                      const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int                trackId_;
+    ZoomPanRotSettings oldSettings_;
+    ZoomPanRotSettings newSettings_;
+};
+
+// ─── SetTrackPingPongSettingsCommand ─────────────────────────────────────────
+
+class SetTrackPingPongSettingsCommand : public Command {
+public:
+    SetTrackPingPongSettingsCommand(int trackId, const PingPongSettings& newSettings,
+                                    const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int              trackId_;
+    PingPongSettings oldSettings_;
+    PingPongSettings newSettings_;
+};
+
+// ─── SetTrackSlideNoteEffectCommand ──────────────────────────────────────────
+
+class SetTrackSlideNoteEffectCommand : public Command {
+public:
+    SetTrackSlideNoteEffectCommand(int trackId, const SlideNoteEffectSettings& newSettings,
+                                   const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int                     trackId_;
+    SlideNoteEffectSettings oldSettings_;
+    SlideNoteEffectSettings newSettings_;
+};
+
+// ─── SetNoteSlideCommand ─────────────────────────────────────────────────────
+
+class SetNoteSlideCommand : public Command {
+public:
+    SetNoteSlideCommand(int patternId, int noteId, bool isSlide,
+                        float curveCx, float curveCy, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int   patternId_;
+    int   noteId_;
+    bool  newIsSlide_;
+    float newCx_;
+    float newCy_;
+    bool  oldIsSlide_  = false;
+    float oldCx_       = 0.5f;
+    float oldCy_       = 0.5f;
+};
+
+// ─── AddVisualEffectCommand ───────────────────────────────────────────────────
+
+class AddVisualEffectCommand : public Command {
+public:
+    AddVisualEffectCommand(int trackId, VisualEffect::Type type);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+    int getAddedIndex() const { return addedIndex_; }  // valid after execute()
+private:
+    int                trackId_;
+    VisualEffect::Type type_;
+    int                addedIndex_ = -1;
+};
+
+// ─── RemoveVisualEffectCommand ────────────────────────────────────────────────
+
+class RemoveVisualEffectCommand : public Command {
+public:
+    RemoveVisualEffectCommand(int trackId, int effectIndex, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int          trackId_;
+    int          effectIndex_;
+    VisualEffect savedEffect_;  // snapshot for undo re-insert
+};
+
+// ─── ReorderVisualEffectCommand ───────────────────────────────────────────────
+
+class ReorderVisualEffectCommand : public Command {
+public:
+    ReorderVisualEffectCommand(int trackId, int fromIndex, int toIndex);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int trackId_;
+    int fromIndex_;
+    int toIndex_;
+};
+
+// ─── SetVisualEffectParamCommand ──────────────────────────────────────────────
+
+class SetVisualEffectParamCommand : public Command {
+public:
+    SetVisualEffectParamCommand(int trackId, int effectIndex, int paramIndex,
+                                float newValue, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int   trackId_;
+    int   effectIndex_;
+    int   paramIndex_;
+    float oldValue_;
+    float newValue_;
+};
+
+// ─── SetVisualEffectBypassedCommand ──────────────────────────────────────────
+
+class SetVisualEffectBypassedCommand : public Command {
+public:
+    SetVisualEffectBypassedCommand(int trackId, int effectIndex,
+                                   bool newBypassed, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int  trackId_;
+    int  effectIndex_;
+    bool oldBypassed_;
+    bool newBypassed_;
 };

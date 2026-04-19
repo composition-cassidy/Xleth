@@ -49,6 +49,8 @@ public:
         juce::ScopedNoDenormals noDenormals;
 #ifdef XLETH_DEBUG
         const auto jobStart = std::chrono::steady_clock::now();
+        fprintf(stderr, "[CacheQueue] START clip=%d\n", clipId_);
+        fflush(stderr);
 #endif
 
         const CacheKey& key   = entry_->key;
@@ -182,6 +184,12 @@ public:
             const int outSamples = entry_->buffer ? entry_->buffer->getNumSamples() : 0;
             fprintf(stderr, "[ClipCache] complete: clip=%d rendered %lld→%d samples in %lldms\n",
                     clipId_, (long long)durSamp, outSamples, (long long)ms);
+            fprintf(stderr, "[CacheQueue] COMPLETE clip=%d inSamples=%lld outSamples=%d "
+                    "(ratio out/in=%.3f, expectedStretchRatio=%.3f)\n",
+                    clipId_, (long long)readLen, outSamples,
+                    readLen > 0 ? (double)outSamples / (double)readLen : 0.0,
+                    key.stretchRatio);
+            fflush(stderr);
         }
 #endif
 

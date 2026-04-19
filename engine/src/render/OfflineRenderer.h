@@ -35,9 +35,12 @@
 
 // Forward declarations (avoid pulling heavy headers)
 struct ExportSettings;
+struct SlideAnimationEvent;
 class  Timeline;
 class  MixEngine;
 class  GpuDeviceManager;
+
+#include <vector>
 
 // ---------------------------------------------------------------------------
 // RenderProgress — atomic struct for UI polling
@@ -117,7 +120,9 @@ public:
      * Build VideoEvent list from timeline clips and pattern blocks.
      * Produces the event list that FrameCollector::collectRequests expects.
      */
-    static std::vector<struct VideoEvent> buildVideoEvents(const Timeline& timeline);
+    static std::vector<struct VideoEvent> buildVideoEvents(
+        const Timeline& timeline,
+        std::vector<SlideAnimationEvent>* outSlideEvents = nullptr);
 
 private:
     // ── References to engine state ────────────────────────────────────────

@@ -59,6 +59,23 @@ add_subdirectory(
     ${CMAKE_CURRENT_BINARY_DIR}/engine
 )
 
+# ── Plugin scanner executable ─────────────────────────────────────────────────
+# Built here so xleth-plugin-scanner.exe lands in bridge/build/Release/
+# alongside xleth_native.node, where PluginRegistry locates it at runtime.
+add_subdirectory(
+    ${CMAKE_CURRENT_SOURCE_DIR}/../scanner
+    ${CMAKE_CURRENT_BINARY_DIR}/scanner
+)
+
+# ── Editor host executable ────────────────────────────────────────────────────
+# Out-of-process VST3 editor host. Each plugin editor opens in its own process
+# so its Win32 message pump is fully isolated from the worker's N-API traffic.
+# Built here so xleth-editor-host.exe lands next to xleth_native.node.
+add_subdirectory(
+    ${CMAKE_CURRENT_SOURCE_DIR}/../editor-host
+    ${CMAKE_CURRENT_BINARY_DIR}/editor-host
+)
+
 # ── node-addon-api include path ───────────────────────────────────────────────
 # node-addon-api is a peer dep installed via npm install in bridge/.
 # Its CMake-friendly include path is exposed via require('node-addon-api').include.
@@ -104,3 +121,8 @@ target_link_libraries(xleth_native PRIVATE
     XlethEngineHeaders  # JUCE/FFmpeg include paths only — no extra sources added
     ${CMAKE_JS_LIB}
 )
+
+# Ensure editor-host is always built alongside the bridge so the worker can
+# spawn it. Without this, a build that touches only XlethAddon.cpp would skip
+# the editor-host target.
+add_dependencies(xleth_native xleth-editor-host)

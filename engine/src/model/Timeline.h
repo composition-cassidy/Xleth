@@ -5,6 +5,7 @@
 #include "Clip.h"
 #include "Pattern.h"
 #include "PatternBlock.h"
+#include <functional>
 #include <map>
 #include <vector>
 #include <nlohmann/json.hpp>
@@ -110,6 +111,22 @@ public:
     bool convertToClipTrack(int trackId);
     bool setTrackVideoFlipMode(int trackId, VideoFlipMode mode);
     bool setTrackVideoHoldLastFrame(int trackId, bool hold);
+    bool setTrackCornerRadius(int trackId, float radius);
+    bool setTrackGapScaleOverride(int trackId, float gapScale);
+    bool setTrackBounceSettings(int trackId, const BounceSettings& settings);
+    bool setTrackZoomPanRotSettings(int trackId, const ZoomPanRotSettings& settings);
+    bool setTrackPingPongSettings(int trackId, const PingPongSettings& settings);
+    bool setTrackSlideNoteEffectSettings(int trackId, const SlideNoteEffectSettings& settings);
+    bool setNoteSlide(int patternId, int noteId, bool isSlide, float curveCx, float curveCy);
+
+    // ── Visual Effect Chain ───────────────────────────────────────────────────
+    int  addVisualEffect(int trackId, VisualEffect::Type type);          // returns index, -1 on fail
+    bool removeVisualEffect(int trackId, int effectIndex);
+    bool reorderVisualEffect(int trackId, int fromIndex, int toIndex);
+    bool setVisualEffectParam(int trackId, int effectIndex, int paramIndex, float value);
+    bool setVisualEffectBypassed(int trackId, int effectIndex, bool bypassed);
+    bool insertVisualEffectAt(int trackId, int index, const VisualEffect& fx); // for undo
+    const std::vector<VisualEffect>* getVisualEffectChain(int trackId) const;
 
     // ── Restore (undo/redo) ───────────────────────────────────────────────────
     // Insert with the original ID, skipping auto-increment. Used by commands to
@@ -124,6 +141,27 @@ public:
     // ── Serialization ─────────────────────────────────────────────────────────
     nlohmann::json toJSON() const;
     bool           fromJSON(const nlohmann::json& j);
+
+    // ── Cache-invalidation hook ───────────────────────────────────────────────
+    // Registered by the bridge once the MixEngine is attached. Invoked from
+    // addClip() and restoreClip() so any code path that inserts a clip also
+    // queues its render-cache rebuild. The contract: after addClip/restoreClip
+    // returns, the clip is fully stored AND (if a callback is registered) its
+    // render state has been queued via MixEngine::invalidateClipCache.
+    // Kept as an optional std::function to avoid a Timeline → MixEngine header
+    // dependency. The callback is invoked on the caller's thread; the bridge
+    // binds it to MixEngine::invalidateClipCache, which is message-thread safe
+    // and short-circuits cheaply on identity clips.
+    void setClipCacheInvalidator(std::function<void(int, const char*)> cb) {
+        m_clipCacheInvalidator = std::move(cb);
+    }
+
+    // ── Reset ─────────────────────────────────────────────────────────────────
+    // Wipes all project content (sources, regions, tracks, clips, patterns,
+    // pattern blocks, grid layout) and resets metadata (BPM, time signature,
+    // next-id counter) to defaults. Preserves Timeline object identity —
+    // callers hold stable references to this object.
+    void clear();
 
 private:
     int getNextId();
@@ -148,4 +186,6 @@ private:
 
     GridLayout                  m_gridLayout;
     double m_declickMs = 0.5; // global clip boundary fade duration in ms (0 = disabled)
+
+    std::function<void(int, const char*)> m_clipCacheInvalidator;
 };

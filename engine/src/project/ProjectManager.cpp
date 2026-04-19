@@ -94,7 +94,13 @@ bool ProjectManager::createProject(const std::string& projectDir,
 
 // ─── saveProject ──────────────────────────────────────────────────────────────
 
-bool ProjectManager::saveProject(const Timeline& timeline) {
+bool ProjectManager::saveProject(const Timeline& timeline,
+                                  const nlohmann::json& effectChains,
+                                  const nlohmann::json& masterEffectChain) {
+    // NOTE (Prompt 11): Preview performance settings (previewResolutionScale,
+    // previewEffectsBypass) are workstation-local by design and persisted via
+    // the Electron settings store (xleth-settings.json), NOT in project.json.
+    // This keeps project files portable across machines with different GPUs.
     if (projectDir_.empty()) {
         std::cerr << "[Project] ERROR saveProject: no project directory set"
                      " (call createProject or loadProject first)\n";
@@ -133,6 +139,14 @@ bool ProjectManager::saveProject(const Timeline& timeline) {
     j["declickMs"]      = tl.value("declickMs", 0.0);
     j["custom_labels"]  = customLabels;
 
+    // Effect chains — only written when non-empty (keeps project files clean)
+    if (effectChains.is_object() && !effectChains.empty())
+        j["effectChains"] = effectChains;
+    if (masterEffectChain.is_object() && !masterEffectChain.is_null()
+            && masterEffectChain.contains("nodes")
+            && !masterEffectChain["nodes"].empty())
+        j["masterEffectChain"] = masterEffectChain;
+
     const std::string path = projectFilePath();
     try {
         std::ofstream f(path);
@@ -159,7 +173,9 @@ bool ProjectManager::saveProject(const Timeline& timeline) {
 
 bool ProjectManager::saveProjectAs(const std::string& newProjectDir,
                                    const std::string& newProjectName,
-                                   const Timeline& timeline) {
+                                   const Timeline& timeline,
+                                   const nlohmann::json& effectChains,
+                                   const nlohmann::json& masterEffectChain) {
     if (newProjectDir.empty()) {
         std::cerr << "[Project] ERROR saveProjectAs: empty directory\n";
         return false;
@@ -181,11 +197,21 @@ bool ProjectManager::saveProjectAs(const std::string& newProjectDir,
         return false;
     }
 
-    return saveProject(timeline);
+    return saveProject(timeline, effectChains, masterEffectChain);
 }
 
 bool ProjectManager::hasProjectDir() const {
     return !projectDir_.empty();
+}
+
+void ProjectManager::resetToBlank() {
+    std::cout << "[Project] Reset to blank (was '"
+              << projectName_ << "' at '" << projectDir_ << "')\n";
+    projectDir_.clear();
+    projectName_.clear();
+    createdAt_.clear();
+    loadedEffectChains_      = nlohmann::json::object();
+    loadedMasterEffectChain_ = nlohmann::json();
 }
 
 // ─── loadProject ──────────────────────────────────────────────────────────────
@@ -193,7 +219,12 @@ bool ProjectManager::hasProjectDir() const {
 std::optional<Timeline> ProjectManager::loadProject(const std::string& projectDir) {
     std::cout << "[Project] Loading project from: " << projectDir << "\n";
 
+    // Reset so stale data from a previous load is never returned on failure.
+    loadedEffectChains_      = nlohmann::json::object();
+    loadedMasterEffectChain_ = nlohmann::json();
+
     projectDir_ = projectDir;
+    ensureDirectories();
     const std::string path = projectFilePath();
 
     if (!fs::exists(path)) {
@@ -260,6 +291,13 @@ std::optional<Timeline> ProjectManager::loadProject(const std::string& projectDi
         return std::nullopt;
     }
 
+    // Stash effect chain JSON for the caller (bridge) to apply after track routing
+    // is fully set up. Graceful no-op for older projects that lack these keys.
+    if (j.contains("effectChains") && j["effectChains"].is_object())
+        loadedEffectChains_ = j["effectChains"];
+    if (j.contains("masterEffectChain") && j["masterEffectChain"].is_object())
+        loadedMasterEffectChain_ = j["masterEffectChain"];
+
     std::cout << "[Project] Loaded '" << projectName_
               << "': BPM=" << timeline.getBPM()
               << ", SR=" << timeline.getSampleRate()
@@ -268,6 +306,16 @@ std::optional<Timeline> ProjectManager::loadProject(const std::string& projectDi
               << ", " << timeline.getAllTracks().size()  << " tracks"
               << ", " << timeline.getAllClips().size()   << " clips\n";
     return timeline;
+}
+
+// ─── Effect chain getters ─────────────────────────────────────────────────────
+
+const nlohmann::json& ProjectManager::getLoadedEffectChains() const {
+    return loadedEffectChains_;
+}
+
+const nlohmann::json& ProjectManager::getLoadedMasterEffectChain() const {
+    return loadedMasterEffectChain_;
 }
 
 // ─── validateMedia ────────────────────────────────────────────────────────────
@@ -328,6 +376,7 @@ int ProjectManager::importSource(Timeline& timeline,
                                  const std::string& filePath,
                                  std::function<void(float)> progressCallback) {
 #ifdef XLETH_HAS_DECODER
+    (void)progressCallback; // reserved for future on-demand proxy progress reporting
     std::cout << "[Project] Importing source: " << filePath << "\n";
 
     if (!fs::exists(filePath)) {
@@ -376,8 +425,8 @@ int ProjectManager::importSource(Timeline& timeline,
     media.duration    = decoder.getDuration();
     media.totalFrames = decoder.getTotalFrames();
     media.hasVideo    = (media.width > 0 && media.height > 0);
-    media.proxyPath   = ProxyTranscoder::getProxyPath(filePath, getProxiesDir());
-    media.proxyReady  = false;
+    media.proxyPath   = "";    // no proxy at import time; generated on-demand
+    media.proxyReady  = true;  // original file used directly — no transcode needed
     decoder.close();
 
     int srcId = timeline.addSource(media);
@@ -387,27 +436,6 @@ int ProjectManager::importSource(Timeline& timeline,
               << " fps=" << media.fps
               << " duration=" << media.duration << "s"
               << " hasVideo=" << media.hasVideo << "\n";
-
-    // Proxy transcode in background — caller must keep timeline alive until done
-    std::string proxiesDir = getProxiesDir();
-    std::thread([srcId, filePath, proxiesDir, progressCallback, &timeline]() {
-        std::cout << "[Project] Proxy transcode started for source id="
-                  << srcId << "\n";
-        std::string proxyPath =
-            ProxyTranscoder::transcode(filePath, proxiesDir, progressCallback);
-        if (proxyPath.empty()) {
-            std::cerr << "[Project] ERROR proxy transcode failed for source id="
-                      << srcId << "\n";
-            return;
-        }
-        SourceMedia* src = timeline.getSourceMutable(srcId);
-        if (src) {
-            src->proxyPath  = proxyPath;
-            src->proxyReady = true;
-            std::cout << "[Project] Proxy ready for source id=" << srcId
-                      << " → " << proxyPath << "\n";
-        }
-    }).detach();
 
     return srcId;
 #else

@@ -436,6 +436,17 @@ SetClipParamsCommand::SetClipParamsCommand(int clipId, Params newParams,
         oldParams_.stretchRatio     = c->stretchRatio;
         oldParams_.stretchMethod    = c->stretchMethod;
         oldParams_.formantPreserve  = c->formantPreserve;
+        oldParams_.velocity         = c->velocity;
+        oldParams_.fadeInTicks      = c->fadeInTicks;
+        oldParams_.fadeOutTicks     = c->fadeOutTicks;
+        oldParams_.fadeInX1         = c->fadeInX1;
+        oldParams_.fadeInY1         = c->fadeInY1;
+        oldParams_.fadeInX2         = c->fadeInX2;
+        oldParams_.fadeInY2         = c->fadeInY2;
+        oldParams_.fadeOutX1        = c->fadeOutX1;
+        oldParams_.fadeOutY1        = c->fadeOutY1;
+        oldParams_.fadeOutX2        = c->fadeOutX2;
+        oldParams_.fadeOutY2        = c->fadeOutY2;
     } else {
         std::cerr << "[Undo] ERROR SetClipParamsCommand: clip id=" << clipId
                   << " not found\n";
@@ -453,6 +464,17 @@ static void applyClipParams(Timeline& timeline, int clipId,
     c->stretchRatio     = p.stretchRatio;
     c->stretchMethod    = p.stretchMethod;
     c->formantPreserve  = p.formantPreserve;
+    c->velocity         = p.velocity;
+    c->fadeInTicks      = p.fadeInTicks;
+    c->fadeOutTicks     = p.fadeOutTicks;
+    c->fadeInX1         = p.fadeInX1;
+    c->fadeInY1         = p.fadeInY1;
+    c->fadeInX2         = p.fadeInX2;
+    c->fadeInY2         = p.fadeInY2;
+    c->fadeOutX1        = p.fadeOutX1;
+    c->fadeOutY1        = p.fadeOutY1;
+    c->fadeOutX2        = p.fadeOutX2;
+    c->fadeOutY2        = p.fadeOutY2;
 }
 
 void SetClipParamsCommand::execute(Timeline& timeline) {
@@ -1665,4 +1687,290 @@ void SetTrackVideoHoldLastFrameCommand::undo(Timeline& timeline) {
 std::string SetTrackVideoHoldLastFrameCommand::describe() const {
     return std::string(newHold_ ? "Enable" : "Disable")
          + " Hold Last Frame (track=" + std::to_string(trackId_) + ")";
+}
+
+// ─── SetTrackCornerRadiusCommand ──────────────────────────────────────────────
+
+SetTrackCornerRadiusCommand::SetTrackCornerRadiusCommand(
+    int trackId, float newRadius, const Timeline& timeline)
+    : trackId_(trackId), newRadius_(newRadius)
+{
+    const TrackInfo* t = timeline.getTrack(trackId);
+    oldRadius_ = t ? t->cornerRadius : 0.0f;
+}
+
+void SetTrackCornerRadiusCommand::execute(Timeline& timeline) {
+    timeline.setTrackCornerRadius(trackId_, newRadius_);
+}
+
+void SetTrackCornerRadiusCommand::undo(Timeline& timeline) {
+    timeline.setTrackCornerRadius(trackId_, oldRadius_);
+}
+
+std::string SetTrackCornerRadiusCommand::describe() const {
+    return "Set Corner Radius (track=" + std::to_string(trackId_)
+         + ") → " + std::to_string(newRadius_);
+}
+
+// ─── SetTrackGapScaleOverrideCommand ─────────────────────────────────────────
+
+SetTrackGapScaleOverrideCommand::SetTrackGapScaleOverrideCommand(
+    int trackId, float newGapScale, const Timeline& timeline)
+    : trackId_(trackId), newGapScale_(newGapScale)
+{
+    const TrackInfo* t = timeline.getTrack(trackId);
+    oldGapScale_ = t ? t->gapScaleOverride : -1.0f;
+}
+
+void SetTrackGapScaleOverrideCommand::execute(Timeline& timeline) {
+    timeline.setTrackGapScaleOverride(trackId_, newGapScale_);
+}
+
+void SetTrackGapScaleOverrideCommand::undo(Timeline& timeline) {
+    timeline.setTrackGapScaleOverride(trackId_, oldGapScale_);
+}
+
+std::string SetTrackGapScaleOverrideCommand::describe() const {
+    return "Set Gap Scale Override (track=" + std::to_string(trackId_)
+         + ") → " + std::to_string(newGapScale_);
+}
+
+// ─── SetTrackBounceSettingsCommand ───────────────────────────────────────────
+
+SetTrackBounceSettingsCommand::SetTrackBounceSettingsCommand(
+    int trackId, const BounceSettings& newSettings, const Timeline& timeline)
+    : trackId_(trackId), newSettings_(newSettings)
+{
+    const TrackInfo* t = timeline.getTrack(trackId);
+    oldSettings_ = t ? t->bounce : BounceSettings{};
+}
+
+void SetTrackBounceSettingsCommand::execute(Timeline& timeline) {
+    timeline.setTrackBounceSettings(trackId_, newSettings_);
+}
+
+void SetTrackBounceSettingsCommand::undo(Timeline& timeline) {
+    timeline.setTrackBounceSettings(trackId_, oldSettings_);
+}
+
+std::string SetTrackBounceSettingsCommand::describe() const {
+    return "Set Bounce Settings (track=" + std::to_string(trackId_) + ")";
+}
+
+// ─── SetTrackZoomPanRotSettingsCommand ────────────────────────────────────────
+
+SetTrackZoomPanRotSettingsCommand::SetTrackZoomPanRotSettingsCommand(
+    int trackId, const ZoomPanRotSettings& newSettings, const Timeline& timeline)
+    : trackId_(trackId), newSettings_(newSettings)
+{
+    const TrackInfo* t = timeline.getTrack(trackId);
+    oldSettings_ = t ? t->zoomPanRot : ZoomPanRotSettings{};
+}
+
+void SetTrackZoomPanRotSettingsCommand::execute(Timeline& timeline) {
+    timeline.setTrackZoomPanRotSettings(trackId_, newSettings_);
+}
+
+void SetTrackZoomPanRotSettingsCommand::undo(Timeline& timeline) {
+    timeline.setTrackZoomPanRotSettings(trackId_, oldSettings_);
+}
+
+std::string SetTrackZoomPanRotSettingsCommand::describe() const {
+    return "Set ZoomPanRot Settings (track=" + std::to_string(trackId_) + ")";
+}
+
+// ─── SetTrackPingPongSettingsCommand ─────────────────────────────────────────
+
+SetTrackPingPongSettingsCommand::SetTrackPingPongSettingsCommand(
+    int trackId, const PingPongSettings& newSettings, const Timeline& timeline)
+    : trackId_(trackId), newSettings_(newSettings)
+{
+    const TrackInfo* t = timeline.getTrack(trackId);
+    oldSettings_ = t ? t->pingPong : PingPongSettings{};
+}
+
+void SetTrackPingPongSettingsCommand::execute(Timeline& timeline) {
+    timeline.setTrackPingPongSettings(trackId_, newSettings_);
+}
+
+void SetTrackPingPongSettingsCommand::undo(Timeline& timeline) {
+    timeline.setTrackPingPongSettings(trackId_, oldSettings_);
+}
+
+std::string SetTrackPingPongSettingsCommand::describe() const {
+    return "Set PingPong Settings (track=" + std::to_string(trackId_) + ")";
+}
+
+// ─── SetTrackSlideNoteEffectCommand ──────────────────────────────────────────
+
+SetTrackSlideNoteEffectCommand::SetTrackSlideNoteEffectCommand(
+    int trackId, const SlideNoteEffectSettings& newSettings, const Timeline& timeline)
+    : trackId_(trackId), newSettings_(newSettings)
+{
+    const TrackInfo* t = timeline.getTrack(trackId);
+    oldSettings_ = t ? t->slideNoteEffect : SlideNoteEffectSettings{};
+}
+
+void SetTrackSlideNoteEffectCommand::execute(Timeline& timeline) {
+    timeline.setTrackSlideNoteEffectSettings(trackId_, newSettings_);
+}
+
+void SetTrackSlideNoteEffectCommand::undo(Timeline& timeline) {
+    timeline.setTrackSlideNoteEffectSettings(trackId_, oldSettings_);
+}
+
+std::string SetTrackSlideNoteEffectCommand::describe() const {
+    return "Set Slide Note Effect (track=" + std::to_string(trackId_) + ")";
+}
+
+// ─── SetNoteSlideCommand ─────────────────────────────────────────────────────
+
+SetNoteSlideCommand::SetNoteSlideCommand(int patternId, int noteId, bool isSlide,
+                                         float curveCx, float curveCy, const Timeline& timeline)
+    : patternId_(patternId), noteId_(noteId),
+      newIsSlide_(isSlide), newCx_(curveCx), newCy_(curveCy)
+{
+    const Pattern* p = timeline.getPattern(patternId);
+    if (p) {
+        for (const auto& n : p->notes) {
+            if (n.id == noteId) {
+                oldIsSlide_ = n.isSlide;
+                oldCx_      = n.slideCurveCx;
+                oldCy_      = n.slideCurveCy;
+                break;
+            }
+        }
+    }
+}
+
+void SetNoteSlideCommand::execute(Timeline& timeline) {
+    timeline.setNoteSlide(patternId_, noteId_, newIsSlide_, newCx_, newCy_);
+}
+
+void SetNoteSlideCommand::undo(Timeline& timeline) {
+    timeline.setNoteSlide(patternId_, noteId_, oldIsSlide_, oldCx_, oldCy_);
+}
+
+std::string SetNoteSlideCommand::describe() const {
+    return "Set Note Slide (pattern=" + std::to_string(patternId_)
+         + " note=" + std::to_string(noteId_) + ")";
+}
+
+// ─── AddVisualEffectCommand ───────────────────────────────────────────────────
+
+AddVisualEffectCommand::AddVisualEffectCommand(int trackId, VisualEffect::Type type)
+    : trackId_(trackId), type_(type)
+{}
+
+void AddVisualEffectCommand::execute(Timeline& timeline) {
+    addedIndex_ = timeline.addVisualEffect(trackId_, type_);
+}
+
+void AddVisualEffectCommand::undo(Timeline& timeline) {
+    if (addedIndex_ >= 0)
+        timeline.removeVisualEffect(trackId_, addedIndex_);
+}
+
+std::string AddVisualEffectCommand::describe() const {
+    return "Add Visual Effect (track=" + std::to_string(trackId_) + ")";
+}
+
+// ─── RemoveVisualEffectCommand ────────────────────────────────────────────────
+
+RemoveVisualEffectCommand::RemoveVisualEffectCommand(
+    int trackId, int effectIndex, const Timeline& timeline)
+    : trackId_(trackId), effectIndex_(effectIndex)
+{
+    const auto* chain = timeline.getVisualEffectChain(trackId);
+    if (chain && effectIndex >= 0 && effectIndex < static_cast<int>(chain->size()))
+        savedEffect_ = (*chain)[effectIndex];
+}
+
+void RemoveVisualEffectCommand::execute(Timeline& timeline) {
+    timeline.removeVisualEffect(trackId_, effectIndex_);
+}
+
+void RemoveVisualEffectCommand::undo(Timeline& timeline) {
+    timeline.insertVisualEffectAt(trackId_, effectIndex_, savedEffect_);
+}
+
+std::string RemoveVisualEffectCommand::describe() const {
+    return "Remove Visual Effect (track=" + std::to_string(trackId_)
+           + " index=" + std::to_string(effectIndex_) + ")";
+}
+
+// ─── ReorderVisualEffectCommand ───────────────────────────────────────────────
+
+ReorderVisualEffectCommand::ReorderVisualEffectCommand(
+    int trackId, int fromIndex, int toIndex)
+    : trackId_(trackId), fromIndex_(fromIndex), toIndex_(toIndex)
+{}
+
+void ReorderVisualEffectCommand::execute(Timeline& timeline) {
+    timeline.reorderVisualEffect(trackId_, fromIndex_, toIndex_);
+}
+
+void ReorderVisualEffectCommand::undo(Timeline& timeline) {
+    // Reverse: move from toIndex back to fromIndex
+    // After execute, the item is at an adjusted position; use reverse move
+    int insertAt = (toIndex_ > fromIndex_) ? toIndex_ - 1 : toIndex_;
+    timeline.reorderVisualEffect(trackId_, insertAt, fromIndex_);
+}
+
+std::string ReorderVisualEffectCommand::describe() const {
+    return "Reorder Visual Effect (track=" + std::to_string(trackId_)
+           + " from=" + std::to_string(fromIndex_)
+           + " to=" + std::to_string(toIndex_) + ")";
+}
+
+// ─── SetVisualEffectParamCommand ──────────────────────────────────────────────
+
+SetVisualEffectParamCommand::SetVisualEffectParamCommand(
+    int trackId, int effectIndex, int paramIndex, float newValue, const Timeline& timeline)
+    : trackId_(trackId), effectIndex_(effectIndex),
+      paramIndex_(paramIndex), newValue_(newValue), oldValue_(0.0f)
+{
+    const auto* chain = timeline.getVisualEffectChain(trackId);
+    if (chain && effectIndex >= 0 && effectIndex < static_cast<int>(chain->size())
+        && paramIndex >= 0 && paramIndex < 16)
+        oldValue_ = (*chain)[effectIndex].params[paramIndex];
+}
+
+void SetVisualEffectParamCommand::execute(Timeline& timeline) {
+    timeline.setVisualEffectParam(trackId_, effectIndex_, paramIndex_, newValue_);
+}
+
+void SetVisualEffectParamCommand::undo(Timeline& timeline) {
+    timeline.setVisualEffectParam(trackId_, effectIndex_, paramIndex_, oldValue_);
+}
+
+std::string SetVisualEffectParamCommand::describe() const {
+    return "Set Visual Effect Param (track=" + std::to_string(trackId_)
+           + " effect=" + std::to_string(effectIndex_)
+           + " param=" + std::to_string(paramIndex_) + ")";
+}
+
+// ─── SetVisualEffectBypassedCommand ──────────────────────────────────────────
+
+SetVisualEffectBypassedCommand::SetVisualEffectBypassedCommand(
+    int trackId, int effectIndex, bool newBypassed, const Timeline& timeline)
+    : trackId_(trackId), effectIndex_(effectIndex),
+      newBypassed_(newBypassed), oldBypassed_(false)
+{
+    const auto* chain = timeline.getVisualEffectChain(trackId);
+    if (chain && effectIndex >= 0 && effectIndex < static_cast<int>(chain->size()))
+        oldBypassed_ = (*chain)[effectIndex].bypassed;
+}
+
+void SetVisualEffectBypassedCommand::execute(Timeline& timeline) {
+    timeline.setVisualEffectBypassed(trackId_, effectIndex_, newBypassed_);
+}
+
+void SetVisualEffectBypassedCommand::undo(Timeline& timeline) {
+    timeline.setVisualEffectBypassed(trackId_, effectIndex_, oldBypassed_);
+}
+
+std::string SetVisualEffectBypassedCommand::describe() const {
+    return "Set Visual Effect Bypassed (track=" + std::to_string(trackId_)
+           + " effect=" + std::to_string(effectIndex_) + ")";
 }

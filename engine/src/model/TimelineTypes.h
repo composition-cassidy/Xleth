@@ -220,6 +220,18 @@ struct SampleRegion {
     };
     std::vector<Syllable> syllables;
 
+    // ── On-demand proxy state (per-region, quote-scoped) ─────────────────────
+    // Generated when this region is placed on a non-Chorus/non-Crash grid cell.
+    // The proxy is a half-resolution DNxHR LB transcode covering only the
+    // [proxyStartTime, proxyEndTime] range in the source file (seconds).
+    // When a VideoDecoder reads this proxy, time 0 in the proxy corresponds to
+    // proxyStartTime in the source, so callers subtract proxyStartTime from
+    // source-time before seeking.
+    std::string proxyPath;
+    bool        proxyReady     = false;
+    double      proxyStartTime = 0.0;
+    double      proxyEndTime   = 0.0;
+
     double getDuration()  const { return endTime - startTime; }
     int    getFrameCount() const { return endFrame - startFrame + 1; }
     bool   isQuote()       const { return label == SampleLabel::Quote; }
@@ -258,6 +270,18 @@ struct Clip {
     StretchMethod stretchMethod    = StretchMethod::Global;
     bool          formantPreserve  = false;
 
+    // Per-clip fade envelope (CSS cubic-bezier convention: P0=(0,0), P3=(1,1))
+    float fadeInTicks   = 0.0f;    // fade-in duration in ticks (0 = no fade)
+    float fadeOutTicks  = 0.0f;    // fade-out duration in ticks (0 = no fade)
+    float fadeInX1      = 0.0f;    // bezier P1.x for fade-in
+    float fadeInY1      = 0.0f;    // bezier P1.y for fade-in
+    float fadeInX2      = 1.0f;    // bezier P2.x for fade-in
+    float fadeInY2      = 1.0f;    // bezier P2.y for fade-in
+    float fadeOutX1     = 0.0f;    // bezier P1.x for fade-out
+    float fadeOutY1     = 0.0f;    // bezier P1.y for fade-out
+    float fadeOutX2     = 1.0f;    // bezier P2.x for fade-out
+    float fadeOutY2     = 1.0f;    // bezier P2.y for fade-out
+
     bool isSyllableClip() const { return syllableIndex >= 0; }
 };
 
@@ -288,6 +312,96 @@ inline VideoFlipMode stringToVideoFlipMode(const std::string& s) {
     return VideoFlipMode::None;
 }
 
+// ─── Visual Compositor Effect Settings ────────────────────────────────────────
+
+struct BounceSettings {
+    bool   enabled        = false;
+    float  directionDeg   = 270.0f;  // 0=right, 90=up, 180=left, 270=down
+    float  distance       = 0.15f;   // fraction of cell size (0.0–1.0)
+    float  durationMs     = 200.0f;
+    float  squashAmount   = 0.0f;    // 0.0–1.0
+    float  overshoot      = 1.70158f;// ease-out-back c1 constant
+    int    repeatCount    = 1;       // 1 = single, 2+ = repeat with decay
+    int    easingType     = 0;       // 0=EaseOutBack, 1=Elastic, 2=Spring
+};
+
+struct PingPongSettings {
+    bool   enabled          = false;
+    float  regionStartPct   = 0.8f;  // 0.0–1.0
+    float  regionEndPct     = 1.0f;  // 0.0–1.0
+    int    crossfadeFrames  = 3;
+    float  reverseSpeed     = 1.0f;  // speed multiplier for reverse section
+    int    maxLoops         = 0;     // 0 = infinite
+};
+
+struct ZoomPanRotSettings {
+    bool   enabled          = false;
+    float  startZoom        = 1.0f;
+    float  targetZoom       = 1.0f;
+    float  startPanX        = 0.0f;
+    float  startPanY        = 0.0f;
+    float  targetPanX       = 0.0f;
+    float  targetPanY       = 0.0f;
+    float  startRotation    = 0.0f;  // degrees
+    float  targetRotation   = 0.0f;  // degrees
+    float  durationMs       = 300.0f;
+    int    zoomEasing       = 1;     // 0=Linear, 1=EaseOut, 2=EaseInOut, 3=EaseOutBack
+    int    panEasing        = 1;
+    int    rotEasing        = 1;
+    float  overshoot        = 1.70158f;
+};
+
+struct SlideNoteEffectSettings {
+    enum class EffectType { None = 0, ZoomPanRot = 1, Bounce = 2, TVSimulator = 3 };
+    EffectType type         = EffectType::None;
+    enum class DurationMode { FollowSlide = 0, Fixed = 1 };
+    DurationMode durationMode = DurationMode::FollowSlide;
+    float fixedDurationMs   = 300.0f;
+
+    // Delta fields (Prompt 11) — additive deltas applied at slide fire time.
+    // Consumed by AnimationManager::triggerSlide in a later prompt; currently
+    // present for project serialization forward-compatibility.
+    float slideZoomDelta      = 1.0f;  // multiplicative (1 = no change)
+    float slidePanXDelta      = 0.0f;
+    float slidePanYDelta      = 0.0f;
+    float slideRotationDelta  = 0.0f;  // degrees
+    float slideBounceDistance = 0.0f;
+    float slideBounceDirDeg   = 0.0f;
+    float slideTVIntensity    = 0.0f;
+};
+
+struct SlideAnimationEvent {
+    double   startBeat      = 0.0;
+    double   durationBeats  = 0.0;
+    int      trackId        = -1;
+    float    slideVelocity  = 0.0f;
+    float    slideCurveCx   = 0.5f;  // bezier control point from PatternNote
+    float    slideCurveCy   = 0.5f;
+};
+
+struct VisualEffect {
+    enum class Type {
+        Desaturation       = 0,
+        Tint               = 1,
+        BrightnessContrast = 2,
+        TVSimulator        = 3,
+        ZoomPanRotation    = 4
+    };
+    Type type   = Type::Desaturation;
+    bool bypassed = false;
+
+    // Flat float array for GPU CB, interpreted per-type.
+    // Desaturation:       [0]=amount
+    // Tint:               [0]=r [1]=g [2]=b [3]=strength [4]=lightnessFloor [5]=lightnessCeiling
+    // BrightnessContrast: [0]=brightness [1]=contrast
+    // TVSimulator:        [0]=intensity [1]=rollSpeed [2]=scanlineAlpha [3]=chromaOffset
+    //                     [4]=staticNoise [5]=jitterFreq [6]=colorBleed
+    // ZoomPanRotation:    [0]=startZoom [1]=targetZoom [2]=startPanX [3]=startPanY
+    //                     [4]=targetPanX [5]=targetPanY [6]=startRotation [7]=targetRotation
+    //                     [8]=durationMs [9]=zoomEasing [10]=panEasing [11]=rotEasing [12]=overshoot
+    float params[16] = {};
+};
+
 // ─── PatternNote ──────────────────────────────────────────────────────────────
 // A single MIDI-like note within a Pattern.
 
@@ -297,6 +411,15 @@ struct PatternNote {
     TickTime duration;
     int      pitch    = 60;         // MIDI note (0-127, 60 = C4)
     float    velocity = 1.0f;       // 0..1 ; also maps to video opacity
+
+    // ── Slide note (visual animation trigger) ─────────────────────────────
+    // When isSlide=true, this note does NOT spawn a video cell. Instead, on
+    // the beat-crossing of its startBeat, the per-track SlideNoteEffectSettings
+    // fires (ZPR/Bounce/TVSimulator) on the existing cell. Audio portamento is
+    // independent of this flag.
+    bool     isSlide      = false;
+    float    slideCurveCx = 0.5f;   // bezier control point (cubic 0,0 → cx,cy → 1-cx,1-cy → 1,1)
+    float    slideCurveCy = 0.5f;
 };
 
 // ─── Pattern ──────────────────────────────────────────────────────────────────
@@ -357,6 +480,15 @@ struct TrackInfo {
     // (default): cell goes transparent (gap). Auto-enabled when a track is
     // assigned as the chorus track.
     bool videoHoldLastFrame = false;
+
+    // ── Visual compositor effect settings ────────────────────────────────
+    float                           gapScaleOverride = -1.0f; // -1 = use global, >=0 = override
+    float                           cornerRadius     = 0.0f;  // 0.0–1.0
+    BounceSettings                  bounce;
+    PingPongSettings                pingPong;
+    ZoomPanRotSettings              zoomPanRot;
+    SlideNoteEffectSettings         slideNoteEffect;
+    std::vector<VisualEffect>       visualEffectChain;
 };
 
 inline std::string trackTypeToString(TrackInfo::Type t) {
@@ -396,4 +528,5 @@ struct GridLayout {
     int   crashTrackId  = -1;
     float crashOpacity  = 0.7f;
     int   previewFps    = 30;      // 1-120
+    float gapScale      = 0.0f;   // 0.0–0.5
 };

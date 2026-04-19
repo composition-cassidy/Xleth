@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import useEffectChainStore from '../../stores/effectChainStore.js'
 import useMixerStore from '../../stores/mixerStore.js'
+import useVstStore from '../../stores/vstStore.js'
 import EffectModule from './EffectModule.jsx'
 import TrackContextMenu from '../timeline/TrackContextMenu.jsx'
 
@@ -64,6 +65,9 @@ export default function EffectChainPanel({ trackId, master }) {
   const moveEffect = useEffectChainStore(s => s.moveEffect)
   const trackOrder = useMixerStore(s => s.trackOrder)
 
+  const vstPlugins  = useVstStore(s => s.plugins)
+  const fetchVst    = useVstStore(s => s.fetchPlugins)
+
   // Local drag state
   const [dragOrder, setDragOrder] = useState(null)
   const [addMenuPos, setAddMenuPos] = useState(null)
@@ -75,7 +79,8 @@ export default function EffectChainPanel({ trackId, master }) {
   // Fetch chain on mount / when key changes
   useEffect(() => {
     fetchChain(key)
-  }, [key, fetchChain])
+    fetchVst()
+  }, [key, fetchChain, fetchVst])
 
   // Global mouseup to commit drag
   useEffect(() => {
@@ -121,16 +126,26 @@ export default function EffectChainPanel({ trackId, master }) {
     setAddMenuPos({ x: rect.left, y: rect.top })
   }, [])
 
-  // Build add menu items
+  // Build add menu items — stock categories + dynamic VST3 category
   const menuItems = useMemo(() => {
-    return EFFECT_CATEGORIES.map(cat => ({
-      label: cat.label,
-      submenu: cat.submenu.map(fx => ({
-        label: fx.label,
-        onClick: () => addEffect(key, fx.id),
+    const vstSubmenu = vstPlugins.length === 0
+      ? [{ label: 'No plugins scanned — open VST Browser to scan', disabled: true }]
+      : vstPlugins.map(p => ({
+          label: p.name + (p.vendor ? ' \u2014 ' + p.vendor : ''),
+          onClick: () => addEffect(key, p.id),
+        }))
+
+    return [
+      ...EFFECT_CATEGORIES.map(cat => ({
+        label: cat.label,
+        submenu: cat.submenu.map(fx => ({
+          label: fx.label,
+          onClick: () => addEffect(key, fx.id),
+        })),
       })),
-    }))
-  }, [key, addEffect])
+      { label: 'VST3 Plugins', submenu: vstSubmenu },
+    ]
+  }, [key, addEffect, vstPlugins])
 
   // Open node editor in separate window
   const handleNodeMode = useCallback(() => {

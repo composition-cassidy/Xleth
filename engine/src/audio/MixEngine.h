@@ -12,16 +12,25 @@
 #include "audio/ClipRenderCache.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
+#include <cstdio>
+#include <deque>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 class EffectChainManager;
+class EditorProcessCoordinator;
+class PluginEditorHost;
+class PluginRegistry;
 class XlethEffectBase;
 
 // ─── Debug log queue (lock-free, single-producer / single-consumer) ──────────
@@ -129,7 +138,7 @@ public:
     // per-track playback samplers and preview samplers). Used by bridge
     // Stop/Pause handlers as a main-thread safety net alongside the audio-
     // thread transition handler in processBlock.
-    void silenceAllSamplers();
+    void silenceAllSamplers(const char* reason = "unknown");
 
     // ── Preview samplers (main thread; piano roll / MiniKeyboard audition) ──
     // Separate from per-track playback samplers so auditioning a note in the
@@ -194,7 +203,9 @@ public:
     // Evict the cached render for clipId and re-submit a background job if the
     // clip has non-identity pitch/stretch/reverse params.
     // Call from message thread whenever clip playback params change.
-    void invalidateClipCache(int clipId);
+    // `trigger` is a diagnostic label identifying the caller (e.g. "setClipParams",
+    // "stretchClip", "addClip"). Defaulted so existing callers compile unchanged.
+    void invalidateClipCache(int clipId, const char* trigger = "unknown");
 
     // Returns the cached processed buffer for clipId (message-thread safe via
     // atomic reads). Builds the CacheKey from the clip's current params.
@@ -221,6 +232,11 @@ public:
     void initEffectChain(int trackId);
     void destroyEffectChain(int trackId);
 
+    // Tear down ALL per-track effect chains and the master chain. Used by
+    // New Project to wipe plugin state between sessions. Closes plugin
+    // editors first (caller responsibility). Main thread only.
+    void destroyAllEffectChains();
+
     // Returns APG NodeID uid as int, or -1 on failure.
     int  addEffect(int trackId, const std::string& pluginId, int position);
     bool removeEffect(int trackId, int nodeId);
@@ -237,11 +253,63 @@ public:
     bool setMasterEffectBypass(int nodeId, bool bypassed);
     std::string getMasterEffectChainState() const;
 
+    // ── Plugin registry ──────────────────────────────────────────────────────
+    // Owns the AudioPluginFormatManager (VST3 registered) and KnownPluginList.
+    // AudioGraph uses this to instantiate VST3 plugins by identifier.
+    PluginRegistry& getPluginRegistry();
+
+    // ── Plugin editor windows (main thread only) ─────────────────────────────
+    // Opens a floating native window hosting the VST3 plugin's GUI editor.
+    // trackId = -1 selects the master chain.
+    // Returns true if the editor window was opened, false if:
+    //   • the node is not found, or
+    //   • the plugin has no GUI editor (createEditorIfNeeded returns nullptr).
+    // If the editor is already open, brings its window to front and returns true.
+    bool openPluginEditor(int trackId, int nodeId);
+
+    // Close the editor window for {trackId, nodeId}. No-op if not open.
+    void closePluginEditor(int trackId, int nodeId);
+
+    // Close all editor windows for a given track (track deleted / converted).
+    void closePluginEditorsForTrack(int trackId);
+
+    // Close every open editor window (project load / app quit).
+    void closeAllPluginEditors();
+
+    // Returns true if an editor is currently open for {trackId, nodeId}.
+    bool isPluginEditorOpen(int trackId, int nodeId) const;
+
+    // Set the path to xleth-editor-host.exe. Call once after engine init.
+    // Must be called before any openPluginEditor() on a VST node.
+    void setEditorHostExe(const std::string& exePath);
+
+    // Store the main Xleth window HWND so VST editor-host windows can be
+    // parented to it (minimize together, no separate taskbar button, etc.).
+    // Called from Audio_SetMainWindowHandle in XlethAddon.cpp after the
+    // BrowserWindow is created.
+    void setMainWindowHandle(uintptr_t hwnd);
+
     // Full graph serialization (includes APVTS state, connections, wire gains)
     nlohmann::json getEffectChainJSON(int trackId) const;
     nlohmann::json getMasterEffectChainJSON() const;
     bool loadEffectChainFromJSON(int trackId, const nlohmann::json& j);
     bool loadMasterEffectChainFromJSON(const nlohmann::json& j);
+
+    // ── Missing-plugin support ────────────────────────────────────────────────
+    // JSON array: [{ trackId, nodeId, pluginId, pluginName, pluginVendor, filePath }, ...]
+    // trackId = -1 means the master chain.
+    std::string getMissingPluginsJSON() const;
+
+    // Replace the placeholder at {trackId, nodeId} with the real plugin (if now available).
+    bool tryResolvePlugin(int trackId, int nodeId);
+
+    // Remove every placeholder node from every chain.
+    void removeAllMissingPlugins();
+
+    // ── Crash recovery ────────────────────────────────────────────────────────
+    // Attempt to recover a VST node that crashed inside processBlock.
+    // trackId == -1 selects the master chain.  Returns true on success.
+    bool resetCrashedPlugin(int trackId, int nodeId);
 
     // ── Graph-mode routing (main thread only) ───────────────────────
     // Per-track graph APIs (keyed by trackId, same mutex as effect chains)
@@ -349,6 +417,34 @@ private:
     mutable std::shared_mutex slotMutex_;
     std::unordered_map<int, int> trackIdToSlot_;
 
+    // ── Plugin registry ──────────────────────────────────────────────────────
+    std::unique_ptr<PluginRegistry> pluginRegistry_;
+
+    // ── Plugin editor host (stock effects — in-process DocumentWindow) ──────────
+    std::unique_ptr<PluginEditorHost> editorHost_;
+
+    // ── VST out-of-process editor coordinators ────────────────────────────────
+    // Key: {trackId, nodeId}.  One coordinator per open VST editor process.
+    std::string                                                         editorHostExePath_;
+    std::atomic<uintptr_t>                                              mainWindowHwnd_{0};
+    std::map<std::pair<int,int>, std::unique_ptr<EditorProcessCoordinator>> vstEditorCoordinators_;
+    mutable std::mutex                                                  vstEditorCoordinatorsMutex_;
+
+    // ── Coordinator reaper thread ─────────────────────────────────────────────
+    // Dying coordinators are pushed here from the IPC poll thread (onClosed_)
+    // or from explicit closePluginEditor calls. A single long-lived thread pops
+    // and destroys them, avoiding self-join deadlock: the coordinator being
+    // destroyed owns the poll thread that produced the onClosed_ event, so we
+    // must destroy it from a thread other than that poll thread.
+    std::thread                                                         coordinatorReaperThread_;
+    std::mutex                                                          reaperMutex_;
+    std::condition_variable                                             reaperCv_;
+    std::deque<std::unique_ptr<EditorProcessCoordinator>>               reaperQueue_;
+    std::atomic<bool>                                                   reaperStop_{false};
+
+    void runCoordinatorReaper();
+    void reapCoordinator(std::unique_ptr<EditorProcessCoordinator> dying);
+
     // ── Effect chains (main-thread owned, audio-thread reads via tryLock) ──
     // Map key = trackId.  mutex protects both the map and masterEffectChain_.
     mutable std::mutex chainsMutex_;
@@ -452,6 +548,38 @@ private:
     MixDebugLog debugLog_;
     int64_t     debugSampleCounter_ = 0;
     double      debugSampleRate_    = 44100.0;
+
+#ifdef XLETH_DEBUG
+    // ── Telemetry file sink (XLETH_TELEMETRY_LOG) ─────────────────────────────
+    FILE*    telemetryLog_     = nullptr;
+    double   telemetryStartMs_ = 0.0;
+    void logTelemetry(const char* fmt, ...);
+
+    // Dispatch-boundary telemetry: logs cross-block event ordering when two
+    // same-sampler ActivePatternBlocks are adjacent. Set by the detection pass
+    // in processBlock, consumed by triggerPatternNotes for per-event logging.
+    struct LoggedEvent {
+        int64_t tick;
+        int     pitch;
+        float   velocity;
+        bool    isNoteOn;
+    };
+    bool                     boundaryLogActive_ = false;
+    const ActivePatternBlock* boundaryBlockA_   = nullptr;
+    const ActivePatternBlock* boundaryBlockB_   = nullptr;
+    std::vector<LoggedEvent> boundaryEventsA_;
+    std::vector<LoggedEvent> boundaryEventsB_;
+
+    // [FixSummary] lifetime counters
+    uint64_t dispatchBoundariesSeen_        = 0;
+    uint32_t maxHeldSimultaneous_           = 0;
+    uint32_t maxHeldSimultaneousPerSampler_ = 0;
+
+    // [StaleCurrentSample] throttle: fires once every 100 processBlock calls
+    int64_t staleCurrentSampleLogCounter_ = 0;
+    // [SamplerInventory] throttle: absolute transport sample of last inventory emit
+    int64_t lastInventoryAbsSample_ = -1;
+#endif
 
     void maybeLogDebug(int numSamples, double sampleRate);
 };

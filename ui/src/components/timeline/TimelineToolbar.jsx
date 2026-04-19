@@ -1,6 +1,5 @@
-import { MousePointer2, Pencil, Scissors, Trash2, Plus } from 'lucide-react'
+import { MousePointer2, Pencil, Scissors, Trash2, Plus, AlignJustify } from 'lucide-react'
 import { labelHexColor } from '../../constants/labels.js'
-import { PPQ } from '../../constants/timeline.js'
 
 const TOOLS = [
   { id: 'select', label: 'Select', shortcut: 'S', icon: MousePointer2 },
@@ -9,27 +8,21 @@ const TOOLS = [
   { id: 'delete', label: 'Delete', shortcut: 'D', icon: Trash2 },
 ]
 
-function formatStickyLength(ticks) {
-  const beats = ticks / PPQ
-  if (beats === 0.25)  return '1/16'
-  if (beats === 0.125) return '1/32'
-  if (beats === 0.5)   return '1/8'
-  if (beats === 1)     return '1/4'
-  if (beats === 2)     return '1/2'
-  if (beats === 4)     return '1/1'
-  return `${ticks}t`
-}
+const SNAP_OPTIONS = ['1/64', '1/32', '1/16', '1/8', 'Beat', 'Half', 'Bar']
 
 export default function TimelineToolbar({
   activeTool, setActiveTool,
   activeSampleId, regions,
-  stickyNoteLength,
+  snapGranularity,
+  onSnapGranularityChange,
   pixelsPerBeat,
   onAddTrack,
   pencilTemplate,
   onSelectSyllable,
   declickMs,
   onDeclickChange,
+  onOpenQuantize,
+  quantizeSelectionCount = 0,
 }) {
   const activeRegion = activeSampleId ? regions[activeSampleId] : null
   const sampleColor = activeRegion ? labelHexColor(activeRegion.label) : null
@@ -125,10 +118,19 @@ export default function TimelineToolbar({
       {/* ── Separator ────────────────────────────────────────── */}
       <div className="timeline-toolbar-sep" />
 
-      {/* ── Snap + Sticky length ─────────────────────────────── */}
+      {/* ── Snap granularity dropdown ────────────────────────── */}
       <div className="timeline-toolbar-info">
-        <span className="timeline-toolbar-tag">Snap: 1/16</span>
-        <span className="timeline-toolbar-tag">Len: {formatStickyLength(stickyNoteLength)}</span>
+        <span className="timeline-toolbar-tag">Snap</span>
+        <select
+          className="timeline-snap-select"
+          value={snapGranularity}
+          onChange={e => onSnapGranularityChange?.(e.target.value)}
+          title="Snap granularity"
+        >
+          {SNAP_OPTIONS.map(opt => (
+            <option key={opt} value={opt}>{opt}</option>
+          ))}
+        </select>
       </div>
 
       {/* ── Declick ──────────────────────────────────────────── */}
@@ -149,6 +151,19 @@ export default function TimelineToolbar({
         />
         <span className="timeline-toolbar-tag">ms</span>
       </div>
+
+      {/* ── Quantize ─────────────────────────────────────────── */}
+      <div className="timeline-toolbar-sep" />
+      <button
+        className="timeline-tool-btn"
+        onClick={onOpenQuantize}
+        disabled={quantizeSelectionCount === 0}
+        title={quantizeSelectionCount === 0
+          ? 'Quantize (select clips first)'
+          : `Quantize ${quantizeSelectionCount} selected`}
+      >
+        <AlignJustify size={14} />
+      </button>
 
       {/* ── Right side: zoom + add track ─────────────────────── */}
       <div className="timeline-toolbar-actions">

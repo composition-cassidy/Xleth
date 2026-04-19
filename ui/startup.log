@@ -1,207 +1,755 @@
-[2026-04-10T12:24:23.021Z] app ready — loading addon...
-[2026-04-10T12:24:23.025Z] Forking addon worker via node.exe: C:\Users\Krasen\Desktop\XLETH\ui\addon-worker.js
-[2026-04-10T12:24:23.165Z] [Worker] ready
-[2026-04-10T12:24:23.165Z] [IPC] → engine_setGlobalStretchMethod(1)
-[2026-04-10T12:24:23.166Z] [IPC] → engine_setGlobalFormantPreserve(true)
-[2026-04-10T12:24:23.166Z] [IPC] ← result: null
-[2026-04-10T12:24:23.167Z] [IPC] ← result: null
-[2026-04-10T12:24:23.215Z] [IPC] → initialize()
-[2026-04-10T12:24:23.335Z] [IPC] ← result: true
-[2026-04-10T12:24:23.335Z] initialize() OK
-[2026-04-10T12:24:23.335Z] [IPC] → initVideoSharedMemory(XlethFrameBuffer, 960, 540)
-[2026-04-10T12:24:23.337Z] [IPC] ← result: {"name":"XlethFrameBuffer","width":960,"height":540,"bufferSize":2073600,"indexO
-[2026-04-10T12:24:23.338Z] [IPC] ← shm ready: {"name":"XlethFrameBuffer","width":960,"height":540,"bufferSize":2073600,"indexOffset":4147200,"totalSize":4147264}
-[2026-04-10T12:24:23.338Z] [IPC] → loadSample(C:\Users\Krasen\Desktop\XLETH\media\KICK_ssedit.wav)
-[2026-04-10T12:24:23.339Z] [IPC] ← result: 0
-[2026-04-10T12:24:23.339Z] [IPC] → loadSample(C:\Users\Krasen\Desktop\XLETH\media\SNARE_ssedit.wav)
-[2026-04-10T12:24:23.339Z] [IPC] ← result: 1
-[2026-04-10T12:24:23.340Z] [IPC] → loadSample(C:\Users\Krasen\Desktop\XLETH\media\hihat 1.wav)
-[2026-04-10T12:24:23.340Z] [IPC] ← result: 2
-[2026-04-10T12:24:23.341Z] Samples loaded
-[2026-04-10T12:24:23.341Z] No video file — skipping loadVideo
-[2026-04-10T12:24:23.341Z] [IPC] → setBPM(140)
-[2026-04-10T12:24:23.341Z] [IPC] ← result: null
-[2026-04-10T12:24:23.341Z] [IPC] → addAudioEvent(0, 0, 1)
-[2026-04-10T12:24:23.342Z] [IPC] ← result: null
-[2026-04-10T12:24:23.342Z] [IPC] → addAudioEvent(1, 2, 1)
-[2026-04-10T12:24:23.342Z] [IPC] ← result: null
-[2026-04-10T12:24:23.342Z] [IPC] → addAudioEvent(1.25, 2, 1)
-[2026-04-10T12:24:23.343Z] [IPC] ← result: null
-[2026-04-10T12:24:23.343Z] [IPC] → addAudioEvent(2, 0, 1)
-[2026-04-10T12:24:23.343Z] [IPC] ← result: null
-[2026-04-10T12:24:23.343Z] [IPC] → addAudioEvent(2, 1, 1)
-[2026-04-10T12:24:23.343Z] [IPC] ← result: null
-[2026-04-10T12:24:23.343Z] [IPC] → addAudioEvent(3, 2, 1)
-[2026-04-10T12:24:23.344Z] [IPC] ← result: null
-[2026-04-10T12:24:23.344Z] [IPC] → addAudioEvent(3.25, 2, 1)
-[2026-04-10T12:24:23.344Z] [IPC] ← result: null
-[2026-04-10T12:24:23.344Z] [IPC] → addAudioEvent(4, 0, 1)
-[2026-04-10T12:24:23.344Z] [IPC] ← result: null
-[2026-04-10T12:24:23.344Z] [IPC] → addAudioEvent(5, 2, 1)
-[2026-04-10T12:24:23.345Z] [IPC] ← result: null
-[2026-04-10T12:24:23.345Z] [IPC] → addAudioEvent(5.25, 2, 1)
-[2026-04-10T12:24:23.345Z] [IPC] ← result: null
-[2026-04-10T12:24:23.345Z] [IPC] → addAudioEvent(6, 0, 1)
-[2026-04-10T12:24:23.345Z] [IPC] ← result: null
-[2026-04-10T12:24:23.346Z] [IPC] → addAudioEvent(6, 1, 1)
-[2026-04-10T12:24:23.346Z] [IPC] ← result: null
-[2026-04-10T12:24:23.346Z] [IPC] → addAudioEvent(7, 2, 1)
-[2026-04-10T12:24:23.346Z] [IPC] ← result: null
-[2026-04-10T12:24:23.346Z] [IPC] → addAudioEvent(7.25, 2, 1)
-[2026-04-10T12:24:23.346Z] [IPC] ← result: null
-[2026-04-10T12:24:23.346Z] [IPC] → addAudioEvent(8, 0, 1)
-[2026-04-10T12:24:23.347Z] [IPC] ← result: null
-[2026-04-10T12:24:23.347Z] [IPC] → addAudioEvent(9, 2, 1)
-[2026-04-10T12:24:23.347Z] [IPC] ← result: null
-[2026-04-10T12:24:23.347Z] [IPC] → addAudioEvent(9.25, 2, 1)
-[2026-04-10T12:24:23.347Z] [IPC] ← result: null
-[2026-04-10T12:24:23.347Z] [IPC] → addAudioEvent(10, 0, 1)
-[2026-04-10T12:24:23.347Z] [IPC] ← result: null
-[2026-04-10T12:24:23.348Z] [IPC] → addAudioEvent(10, 1, 1)
-[2026-04-10T12:24:23.348Z] [IPC] ← result: null
-[2026-04-10T12:24:23.348Z] [IPC] → addAudioEvent(11, 2, 1)
-[2026-04-10T12:24:23.348Z] [IPC] ← result: null
-[2026-04-10T12:24:23.348Z] [IPC] → addAudioEvent(11.25, 2, 1)
-[2026-04-10T12:24:23.348Z] [IPC] ← result: null
-[2026-04-10T12:24:23.349Z] [IPC] → addAudioEvent(12, 0, 1)
-[2026-04-10T12:24:23.349Z] [IPC] ← result: null
-[2026-04-10T12:24:23.349Z] [IPC] → addAudioEvent(13, 2, 1)
-[2026-04-10T12:24:23.349Z] [IPC] ← result: null
-[2026-04-10T12:24:23.349Z] [IPC] → addAudioEvent(13.25, 2, 1)
-[2026-04-10T12:24:23.350Z] [IPC] ← result: null
-[2026-04-10T12:24:23.350Z] [IPC] → addAudioEvent(14, 0, 1)
-[2026-04-10T12:24:23.350Z] [IPC] ← result: null
-[2026-04-10T12:24:23.351Z] [IPC] → addAudioEvent(14, 1, 1)
-[2026-04-10T12:24:23.351Z] [IPC] ← result: null
-[2026-04-10T12:24:23.351Z] [IPC] → addAudioEvent(15, 2, 1)
-[2026-04-10T12:24:23.351Z] [IPC] ← result: null
-[2026-04-10T12:24:23.351Z] [IPC] → addAudioEvent(15.25, 2, 1)
-[2026-04-10T12:24:23.351Z] [IPC] ← result: null
-[2026-04-10T12:24:23.352Z] [IPC] → addAudioEvent(16, 0, 1)
-[2026-04-10T12:24:23.352Z] [IPC] ← result: null
-[2026-04-10T12:24:23.352Z] [IPC] → addAudioEvent(17, 2, 1)
-[2026-04-10T12:24:23.352Z] [IPC] ← result: null
-[2026-04-10T12:24:23.353Z] [IPC] → addAudioEvent(17.25, 2, 1)
-[2026-04-10T12:24:23.353Z] [IPC] ← result: null
-[2026-04-10T12:24:23.353Z] [IPC] → addAudioEvent(18, 0, 1)
-[2026-04-10T12:24:23.353Z] [IPC] ← result: null
-[2026-04-10T12:24:23.354Z] [IPC] → addAudioEvent(18, 1, 1)
-[2026-04-10T12:24:23.354Z] [IPC] ← result: null
-[2026-04-10T12:24:23.354Z] [IPC] → addAudioEvent(19, 2, 1)
-[2026-04-10T12:24:23.354Z] [IPC] ← result: null
-[2026-04-10T12:24:23.354Z] [IPC] → addAudioEvent(19.25, 2, 1)
-[2026-04-10T12:24:23.355Z] [IPC] ← result: null
-[2026-04-10T12:24:23.355Z] [IPC] → addAudioEvent(20, 0, 1)
-[2026-04-10T12:24:23.356Z] [IPC] ← result: null
-[2026-04-10T12:24:23.356Z] [IPC] → addAudioEvent(21, 2, 1)
-[2026-04-10T12:24:23.356Z] [IPC] ← result: null
-[2026-04-10T12:24:23.356Z] [IPC] → addAudioEvent(21.25, 2, 1)
-[2026-04-10T12:24:23.356Z] [IPC] ← result: null
-[2026-04-10T12:24:23.357Z] [IPC] → addAudioEvent(22, 0, 1)
-[2026-04-10T12:24:23.357Z] [IPC] ← result: null
-[2026-04-10T12:24:23.357Z] [IPC] → addAudioEvent(22, 1, 1)
-[2026-04-10T12:24:23.357Z] [IPC] ← result: null
-[2026-04-10T12:24:23.357Z] [IPC] → addAudioEvent(23, 2, 1)
-[2026-04-10T12:24:23.358Z] [IPC] ← result: null
-[2026-04-10T12:24:23.358Z] [IPC] → addAudioEvent(23.25, 2, 1)
-[2026-04-10T12:24:23.358Z] [IPC] ← result: null
-[2026-04-10T12:24:23.358Z] [IPC] → addAudioEvent(24, 0, 1)
-[2026-04-10T12:24:23.358Z] [IPC] ← result: null
-[2026-04-10T12:24:23.359Z] [IPC] → addAudioEvent(25, 2, 1)
-[2026-04-10T12:24:23.359Z] [IPC] ← result: null
-[2026-04-10T12:24:23.359Z] [IPC] → addAudioEvent(25.25, 2, 1)
-[2026-04-10T12:24:23.359Z] [IPC] ← result: null
-[2026-04-10T12:24:23.359Z] [IPC] → addAudioEvent(26, 0, 1)
-[2026-04-10T12:24:23.360Z] [IPC] ← result: null
-[2026-04-10T12:24:23.360Z] [IPC] → addAudioEvent(26, 1, 1)
-[2026-04-10T12:24:23.360Z] [IPC] ← result: null
-[2026-04-10T12:24:23.360Z] [IPC] → addAudioEvent(27, 2, 1)
-[2026-04-10T12:24:23.360Z] [IPC] ← result: null
-[2026-04-10T12:24:23.361Z] [IPC] → addAudioEvent(27.25, 2, 1)
-[2026-04-10T12:24:23.361Z] [IPC] ← result: null
-[2026-04-10T12:24:23.361Z] [IPC] → addAudioEvent(28, 0, 1)
-[2026-04-10T12:24:23.361Z] [IPC] ← result: null
-[2026-04-10T12:24:23.361Z] [IPC] → addAudioEvent(29, 2, 1)
-[2026-04-10T12:24:23.362Z] [IPC] ← result: null
-[2026-04-10T12:24:23.362Z] [IPC] → addAudioEvent(29.25, 2, 1)
-[2026-04-10T12:24:23.362Z] [IPC] ← result: null
-[2026-04-10T12:24:23.362Z] [IPC] → addAudioEvent(30, 0, 1)
-[2026-04-10T12:24:23.362Z] [IPC] ← result: null
-[2026-04-10T12:24:23.363Z] [IPC] → addAudioEvent(30, 1, 1)
-[2026-04-10T12:24:23.363Z] [IPC] ← result: null
-[2026-04-10T12:24:23.363Z] [IPC] → addAudioEvent(31, 2, 1)
-[2026-04-10T12:24:23.363Z] [IPC] ← result: null
-[2026-04-10T12:24:23.363Z] [IPC] → addAudioEvent(31.25, 2, 1)
-[2026-04-10T12:24:23.364Z] [IPC] ← result: null
-[2026-04-10T12:24:23.364Z] Timeline populated (8 bars, kick|hh hh|kick+snare|hh hh at BPM=140)
-[2026-04-10T12:24:23.364Z] [Protocol] xleth-media registered
-[2026-04-10T12:24:23.409Z] [MediaServer] Listening on port 56858
-[2026-04-10T12:24:23.808Z] [RENDERER] [vite] connecting...  (http://localhost:5173/@vite/client:789)
-[2026-04-10T12:24:23.812Z] [RENDERER] [vite] connected.  (http://localhost:5173/@vite/client:912)
-[2026-04-10T12:24:23.852Z] [RENDERER] %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold  (http://localhost:5173/node_modules/.vite/deps/chunk-SVG7M4VJ.js?v=2f803ab2:21607)
-[2026-04-10T12:24:23.867Z] [RENDERER] [UI] App mounting   (http://localhost:5173/src/main.jsx:17)
-[2026-04-10T12:24:23.915Z] [IPC] → timeline_getSources()
-[2026-04-10T12:24:23.916Z] [IPC] ← result: []
-[2026-04-10T12:24:23.917Z] [RENDERER] [VideoPreview] shm ready: XlethFrameBuffer 960x540  (http://localhost:5173/src/components/VideoPreview.jsx:108)
-[2026-04-10T12:24:24.027Z] [IPC] → timeline_getDeclickMs()
-[2026-04-10T12:24:24.027Z] [IPC] → engine_getGlobalStretchMethod()
-[2026-04-10T12:24:24.027Z] [IPC] → timeline_getTracks()
-[2026-04-10T12:24:24.028Z] [IPC] → timeline_getClips()
-[2026-04-10T12:24:24.028Z] [IPC] → timeline_getRegions()
-[2026-04-10T12:24:24.028Z] [IPC] → timeline_getSources()
-[2026-04-10T12:24:24.028Z] [IPC] → timeline_getAllPatterns()
-[2026-04-10T12:24:24.028Z] [IPC] → timeline_getPatternBlocks()
-[2026-04-10T12:24:24.029Z] [IPC] ← result: 0.5
-[2026-04-10T12:24:24.029Z] [RENDERER] [Timeline] Zoom: 40.0px/beat, ~5.0 bars visible  (http://localhost:5173/src/components/TimelineView.jsx:664)
-[2026-04-10T12:24:24.030Z] [IPC] → audio_getOutputDevices()
-[2026-04-10T12:24:24.030Z] [IPC] → timeline_getAllPatterns()
-[2026-04-10T12:24:24.030Z] [RENDERER] [UI] App mounted  (http://localhost:5173/src/App.jsx:336)
-[2026-04-10T12:24:24.030Z] [IPC] → timeline_getSources()
-[2026-04-10T12:24:24.030Z] [RENDERER] [VideoPreview] shm ready: XlethFrameBuffer 960x540  (http://localhost:5173/src/components/VideoPreview.jsx:108)
-[2026-04-10T12:24:24.031Z] [IPC] ← result: 1
-[2026-04-10T12:24:24.031Z] [IPC] → timeline_getDeclickMs()
-[2026-04-10T12:24:24.031Z] [IPC] → engine_getGlobalStretchMethod()
-[2026-04-10T12:24:24.031Z] [IPC] → timeline_getTracks()
-[2026-04-10T12:24:24.032Z] [IPC] → timeline_getClips()
-[2026-04-10T12:24:24.032Z] [IPC] → timeline_getRegions()
-[2026-04-10T12:24:24.033Z] [IPC] → timeline_getSources()
-[2026-04-10T12:24:24.033Z] [IPC] → timeline_getAllPatterns()
-[2026-04-10T12:24:24.033Z] [IPC] → timeline_getPatternBlocks()
-[2026-04-10T12:24:24.034Z] [RENDERER] [Timeline] Zoom: 40.0px/beat, ~5.0 bars visible  (http://localhost:5173/src/components/TimelineView.jsx:664)
-[2026-04-10T12:24:24.034Z] [IPC] → audio_getOutputDevices()
-[2026-04-10T12:24:24.034Z] [IPC] → timeline_getAllPatterns()
-[2026-04-10T12:24:24.034Z] [RENDERER] [UI] App mounted  (http://localhost:5173/src/App.jsx:336)
-[2026-04-10T12:24:24.035Z] [IPC] ← result: []
-[2026-04-10T12:24:24.035Z] [IPC] ← result: []
-[2026-04-10T12:24:24.036Z] [IPC] ← result: []
-[2026-04-10T12:24:24.036Z] [IPC] ← result: []
-[2026-04-10T12:24:24.036Z] [IPC] ← result: []
-[2026-04-10T12:24:24.036Z] [IPC] ← result: []
-[2026-04-10T12:24:24.037Z] [IPC] ← result: ["Speakers (2- Focusrite USB Audio)","Speakers (Realtek(R) Audio)"]
-[2026-04-10T12:24:24.037Z] [IPC] ← result: []
-[2026-04-10T12:24:24.037Z] [IPC] ← result: []
-[2026-04-10T12:24:24.037Z] [IPC] ← result: 0.5
-[2026-04-10T12:24:24.038Z] [IPC] ← result: 1
-[2026-04-10T12:24:24.038Z] [IPC] ← result: []
-[2026-04-10T12:24:24.038Z] [IPC] ← result: []
-[2026-04-10T12:24:24.039Z] [IPC] ← result: []
-[2026-04-10T12:24:24.040Z] [IPC] ← result: []
-[2026-04-10T12:24:24.040Z] [IPC] ← result: []
-[2026-04-10T12:24:24.040Z] [IPC] ← result: []
-[2026-04-10T12:24:24.041Z] [IPC] ← result: ["Speakers (2- Focusrite USB Audio)","Speakers (Realtek(R) Audio)"]
-[2026-04-10T12:24:24.041Z] [IPC] ← result: []
-[2026-04-10T12:24:24.043Z] [RENDERER] [Timeline] Tracks loaded: 0  (http://localhost:5173/src/components/TimelineView.jsx:166)
-[2026-04-10T12:24:24.043Z] [RENDERER] [TimelineClips] Clips loaded: 0  (http://localhost:5173/src/components/TimelineView.jsx:177)
-[2026-04-10T12:24:24.043Z] [RENDERER] [TimelineClips] Regions loaded: 0  (http://localhost:5173/src/components/TimelineView.jsx:191)
-[2026-04-10T12:24:24.044Z] [IPC] → audio_getCurrentOutputDevice()
-[2026-04-10T12:24:24.044Z] [RENDERER] [Timeline] Tracks loaded: 0  (http://localhost:5173/src/components/TimelineView.jsx:166)
-[2026-04-10T12:24:24.044Z] [RENDERER] [TimelineClips] Clips loaded: 0  (http://localhost:5173/src/components/TimelineView.jsx:177)
-[2026-04-10T12:24:24.044Z] [RENDERER] [TimelineClips] Regions loaded: 0  (http://localhost:5173/src/components/TimelineView.jsx:191)
-[2026-04-10T12:24:24.045Z] [IPC] ← result: "Speakers (2- Focusrite USB Audio)"
-[2026-04-10T12:24:24.045Z] [IPC] → audio_getCurrentOutputDevice()
-[2026-04-10T12:24:24.045Z] [IPC] ← result: "Speakers (2- Focusrite USB Audio)"
-[2026-04-10T12:24:24.067Z] [IPC] transport changed: {"positionMs":0,"positionBeats":0,"positionBars":1,"isPlaying":false,"bpm":140}
-[2026-04-10T12:24:28.593Z] [RENDERER] [Keyboard] File menu shortcut → New Project  (http://localhost:5173/src/App.jsx:356)
-[2026-04-10T12:24:31.128Z] [RENDERER] [UI] Menu: Open Project  (http://localhost:5173/src/components/TitleBar.jsx:89)
-[2026-04-10T12:24:34.654Z] [IPC] window:close
-[2026-04-10T12:24:34.661Z] [IPC] → shutdown()
+[2026-04-19T09:51:24.602Z] app ready — loading addon...
+[2026-04-19T09:51:24.612Z] Forking addon worker via node.exe: C:\Users\Krasen\Desktop\XLETH\ui\addon-worker.js
+[2026-04-19T09:51:24.849Z] [Worker] ready
+[2026-04-19T09:51:24.855Z] [IPC] → engine_setGlobalStretchMethod(2)
+[2026-04-19T09:51:24.856Z] [IPC] → engine_setGlobalFormantPreserve(true)
+[2026-04-19T09:51:24.857Z] [IPC] → initialize()
+[2026-04-19T09:51:24.858Z] [IPC] ← result: null
+[2026-04-19T09:51:24.858Z] [IPC] ← result: null
+[2026-04-19T09:51:25.214Z] [IPC] ← result: true
+[2026-04-19T09:51:25.214Z] initialize() OK
+[2026-04-19T09:51:25.214Z] [IPC] → initVideoSharedMemory(XlethFrameBuffer, 960, 540)
+[2026-04-19T09:51:25.251Z] [IPC] ← result: {"name":"XlethFrameBuffer","width":960,"height":540,"bufferSize":2073600,"indexO
+[2026-04-19T09:51:25.251Z] [IPC] ← shm ready: {"name":"XlethFrameBuffer","width":960,"height":540,"bufferSize":2073600,"indexOffset":4147200,"totalSize":4147264}
+[2026-04-19T09:51:25.251Z] [IPC] → loadSample(C:\Users\Krasen\Desktop\XLETH\media\KICK_ssedit.wav)
+[2026-04-19T09:51:25.252Z] [IPC] ← result: 0
+[2026-04-19T09:51:25.252Z] [IPC] → loadSample(C:\Users\Krasen\Desktop\XLETH\media\SNARE_ssedit.wav)
+[2026-04-19T09:51:25.253Z] [IPC] ← result: 1
+[2026-04-19T09:51:25.253Z] [IPC] → loadSample(C:\Users\Krasen\Desktop\XLETH\media\hihat 1.wav)
+[2026-04-19T09:51:25.254Z] [IPC] ← result: 2
+[2026-04-19T09:51:25.254Z] Samples loaded
+[2026-04-19T09:51:25.254Z] No video file — skipping loadVideo
+[2026-04-19T09:51:25.254Z] [IPC] → setBPM(140)
+[2026-04-19T09:51:25.255Z] [IPC] ← result: null
+[2026-04-19T09:51:25.255Z] [IPC] → addAudioEvent(0, 0, 1)
+[2026-04-19T09:51:25.256Z] [IPC] ← result: null
+[2026-04-19T09:51:25.256Z] [IPC] → addAudioEvent(1, 2, 1)
+[2026-04-19T09:51:25.256Z] [IPC] ← result: null
+[2026-04-19T09:51:25.256Z] [IPC] → addAudioEvent(1.25, 2, 1)
+[2026-04-19T09:51:25.256Z] [IPC] ← result: null
+[2026-04-19T09:51:25.257Z] [IPC] → addAudioEvent(2, 0, 1)
+[2026-04-19T09:51:25.257Z] [IPC] ← result: null
+[2026-04-19T09:51:25.257Z] [IPC] → addAudioEvent(2, 1, 1)
+[2026-04-19T09:51:25.258Z] [IPC] ← result: null
+[2026-04-19T09:51:25.258Z] [IPC] → addAudioEvent(3, 2, 1)
+[2026-04-19T09:51:25.259Z] [IPC] ← result: null
+[2026-04-19T09:51:25.259Z] [IPC] → addAudioEvent(3.25, 2, 1)
+[2026-04-19T09:51:25.259Z] [IPC] ← result: null
+[2026-04-19T09:51:25.259Z] [IPC] → addAudioEvent(4, 0, 1)
+[2026-04-19T09:51:25.260Z] [IPC] ← result: null
+[2026-04-19T09:51:25.260Z] [IPC] → addAudioEvent(5, 2, 1)
+[2026-04-19T09:51:25.260Z] [IPC] ← result: null
+[2026-04-19T09:51:25.260Z] [IPC] → addAudioEvent(5.25, 2, 1)
+[2026-04-19T09:51:25.261Z] [IPC] ← result: null
+[2026-04-19T09:51:25.261Z] [IPC] → addAudioEvent(6, 0, 1)
+[2026-04-19T09:51:25.261Z] [IPC] ← result: null
+[2026-04-19T09:51:25.261Z] [IPC] → addAudioEvent(6, 1, 1)
+[2026-04-19T09:51:25.261Z] [IPC] ← result: null
+[2026-04-19T09:51:25.261Z] [IPC] → addAudioEvent(7, 2, 1)
+[2026-04-19T09:51:25.262Z] [IPC] ← result: null
+[2026-04-19T09:51:25.262Z] [IPC] → addAudioEvent(7.25, 2, 1)
+[2026-04-19T09:51:25.262Z] [IPC] ← result: null
+[2026-04-19T09:51:25.262Z] [IPC] → addAudioEvent(8, 0, 1)
+[2026-04-19T09:51:25.262Z] [IPC] ← result: null
+[2026-04-19T09:51:25.263Z] [IPC] → addAudioEvent(9, 2, 1)
+[2026-04-19T09:51:25.263Z] [IPC] ← result: null
+[2026-04-19T09:51:25.263Z] [IPC] → addAudioEvent(9.25, 2, 1)
+[2026-04-19T09:51:25.263Z] [IPC] ← result: null
+[2026-04-19T09:51:25.263Z] [IPC] → addAudioEvent(10, 0, 1)
+[2026-04-19T09:51:25.263Z] [IPC] ← result: null
+[2026-04-19T09:51:25.264Z] [IPC] → addAudioEvent(10, 1, 1)
+[2026-04-19T09:51:25.264Z] [IPC] ← result: null
+[2026-04-19T09:51:25.264Z] [IPC] → addAudioEvent(11, 2, 1)
+[2026-04-19T09:51:25.264Z] [IPC] ← result: null
+[2026-04-19T09:51:25.264Z] [IPC] → addAudioEvent(11.25, 2, 1)
+[2026-04-19T09:51:25.265Z] [IPC] ← result: null
+[2026-04-19T09:51:25.265Z] [IPC] → addAudioEvent(12, 0, 1)
+[2026-04-19T09:51:25.265Z] [IPC] ← result: null
+[2026-04-19T09:51:25.265Z] [IPC] → addAudioEvent(13, 2, 1)
+[2026-04-19T09:51:25.265Z] [IPC] ← result: null
+[2026-04-19T09:51:25.266Z] [IPC] → addAudioEvent(13.25, 2, 1)
+[2026-04-19T09:51:25.266Z] [IPC] ← result: null
+[2026-04-19T09:51:25.266Z] [IPC] → addAudioEvent(14, 0, 1)
+[2026-04-19T09:51:25.266Z] [IPC] ← result: null
+[2026-04-19T09:51:25.266Z] [IPC] → addAudioEvent(14, 1, 1)
+[2026-04-19T09:51:25.267Z] [IPC] ← result: null
+[2026-04-19T09:51:25.267Z] [IPC] → addAudioEvent(15, 2, 1)
+[2026-04-19T09:51:25.267Z] [IPC] ← result: null
+[2026-04-19T09:51:25.267Z] [IPC] → addAudioEvent(15.25, 2, 1)
+[2026-04-19T09:51:25.267Z] [IPC] ← result: null
+[2026-04-19T09:51:25.267Z] [IPC] → addAudioEvent(16, 0, 1)
+[2026-04-19T09:51:25.268Z] [IPC] ← result: null
+[2026-04-19T09:51:25.268Z] [IPC] → addAudioEvent(17, 2, 1)
+[2026-04-19T09:51:25.268Z] [IPC] ← result: null
+[2026-04-19T09:51:25.269Z] [IPC] → addAudioEvent(17.25, 2, 1)
+[2026-04-19T09:51:25.269Z] [IPC] ← result: null
+[2026-04-19T09:51:25.269Z] [IPC] → addAudioEvent(18, 0, 1)
+[2026-04-19T09:51:25.269Z] [IPC] ← result: null
+[2026-04-19T09:51:25.269Z] [IPC] → addAudioEvent(18, 1, 1)
+[2026-04-19T09:51:25.270Z] [IPC] ← result: null
+[2026-04-19T09:51:25.270Z] [IPC] → addAudioEvent(19, 2, 1)
+[2026-04-19T09:51:25.270Z] [IPC] ← result: null
+[2026-04-19T09:51:25.270Z] [IPC] → addAudioEvent(19.25, 2, 1)
+[2026-04-19T09:51:25.270Z] [IPC] ← result: null
+[2026-04-19T09:51:25.270Z] [IPC] → addAudioEvent(20, 0, 1)
+[2026-04-19T09:51:25.271Z] [IPC] ← result: null
+[2026-04-19T09:51:25.271Z] [IPC] → addAudioEvent(21, 2, 1)
+[2026-04-19T09:51:25.271Z] [IPC] ← result: null
+[2026-04-19T09:51:25.272Z] [IPC] → addAudioEvent(21.25, 2, 1)
+[2026-04-19T09:51:25.272Z] [IPC] ← result: null
+[2026-04-19T09:51:25.272Z] [IPC] → addAudioEvent(22, 0, 1)
+[2026-04-19T09:51:25.272Z] [IPC] ← result: null
+[2026-04-19T09:51:25.272Z] [IPC] → addAudioEvent(22, 1, 1)
+[2026-04-19T09:51:25.273Z] [IPC] ← result: null
+[2026-04-19T09:51:25.273Z] [IPC] → addAudioEvent(23, 2, 1)
+[2026-04-19T09:51:25.274Z] [IPC] ← result: null
+[2026-04-19T09:51:25.274Z] [IPC] → addAudioEvent(23.25, 2, 1)
+[2026-04-19T09:51:25.274Z] [IPC] ← result: null
+[2026-04-19T09:51:25.274Z] [IPC] → addAudioEvent(24, 0, 1)
+[2026-04-19T09:51:25.275Z] [IPC] ← result: null
+[2026-04-19T09:51:25.275Z] [IPC] → addAudioEvent(25, 2, 1)
+[2026-04-19T09:51:25.276Z] [IPC] ← result: null
+[2026-04-19T09:51:25.276Z] [IPC] → addAudioEvent(25.25, 2, 1)
+[2026-04-19T09:51:25.276Z] [IPC] ← result: null
+[2026-04-19T09:51:25.276Z] [IPC] → addAudioEvent(26, 0, 1)
+[2026-04-19T09:51:25.277Z] [IPC] ← result: null
+[2026-04-19T09:51:25.277Z] [IPC] → addAudioEvent(26, 1, 1)
+[2026-04-19T09:51:25.277Z] [IPC] ← result: null
+[2026-04-19T09:51:25.278Z] [IPC] → addAudioEvent(27, 2, 1)
+[2026-04-19T09:51:25.278Z] [IPC] ← result: null
+[2026-04-19T09:51:25.278Z] [IPC] → addAudioEvent(27.25, 2, 1)
+[2026-04-19T09:51:25.278Z] [IPC] ← result: null
+[2026-04-19T09:51:25.279Z] [IPC] → addAudioEvent(28, 0, 1)
+[2026-04-19T09:51:25.279Z] [IPC] ← result: null
+[2026-04-19T09:51:25.279Z] [IPC] → addAudioEvent(29, 2, 1)
+[2026-04-19T09:51:25.279Z] [IPC] ← result: null
+[2026-04-19T09:51:25.279Z] [IPC] → addAudioEvent(29.25, 2, 1)
+[2026-04-19T09:51:25.280Z] [IPC] ← result: null
+[2026-04-19T09:51:25.280Z] [IPC] → addAudioEvent(30, 0, 1)
+[2026-04-19T09:51:25.280Z] [IPC] ← result: null
+[2026-04-19T09:51:25.281Z] [IPC] → addAudioEvent(30, 1, 1)
+[2026-04-19T09:51:25.281Z] [IPC] ← result: null
+[2026-04-19T09:51:25.281Z] [IPC] → addAudioEvent(31, 2, 1)
+[2026-04-19T09:51:25.281Z] [IPC] ← result: null
+[2026-04-19T09:51:25.281Z] [IPC] → addAudioEvent(31.25, 2, 1)
+[2026-04-19T09:51:25.282Z] [IPC] ← result: null
+[2026-04-19T09:51:25.282Z] Timeline populated (8 bars, kick|hh hh|kick+snare|hh hh at BPM=140)
+[2026-04-19T09:51:25.282Z] [Protocol] xleth-media registered
+[2026-04-19T09:51:25.394Z] [HWND] Main window handle: 0x12288
+[2026-04-19T09:51:25.394Z] [IPC] → audio_setMainWindowHandle(12288)
+[2026-04-19T09:51:25.399Z] [MediaServer] Listening on port 63741
+[2026-04-19T09:51:25.465Z] [IPC] ← result: null
+[2026-04-19T09:51:25.643Z] [RENDERER] [vite] connecting...  (http://localhost:5173/@vite/client:789)
+[2026-04-19T09:51:25.647Z] [RENDERER] [vite] connected.  (http://localhost:5173/@vite/client:912)
+[2026-04-19T09:51:27.026Z] [RENDERER] %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold  (http://localhost:5173/node_modules/.vite/deps/chunk-SVG7M4VJ.js?v=5da86050:21607)
+[2026-04-19T09:51:27.042Z] [RENDERER] [UI] App mounting   (http://localhost:5173/src/main.jsx:17)
+[2026-04-19T09:51:27.045Z] [RENDERER] [SnapPref] Loaded snapGranularity: 1/16  (http://localhost:5173/src/stores/snapStore.js:35)
+[2026-04-19T09:51:27.098Z] [IPC] → timeline_getSources()
+[2026-04-19T09:51:27.099Z] [IPC] ← result: []
+[2026-04-19T09:51:27.100Z] [RENDERER] [VideoPreview] shm ready: XlethFrameBuffer 960x540  (http://localhost:5173/src/components/VideoPreview.jsx:141)
+[2026-04-19T09:51:27.210Z] [IPC] → timeline_getDeclickMs()
+[2026-04-19T09:51:27.211Z] [IPC] → engine_getGlobalStretchMethod()
+[2026-04-19T09:51:27.211Z] [IPC] → timeline_getTracks()
+[2026-04-19T09:51:27.211Z] [IPC] → timeline_getClips()
+[2026-04-19T09:51:27.212Z] [IPC] → timeline_getRegions()
+[2026-04-19T09:51:27.212Z] [IPC] → timeline_getSources()
+[2026-04-19T09:51:27.212Z] [IPC] → timeline_getAllPatterns()
+[2026-04-19T09:51:27.212Z] [IPC] → timeline_getPatternBlocks()
+[2026-04-19T09:51:27.213Z] [IPC] ← result: 0.5
+[2026-04-19T09:51:27.213Z] [RENDERER] [Timeline] Zoom: 40.0px/beat, ~5.0 bars visible  (http://localhost:5173/src/components/TimelineView.jsx:762)
+[2026-04-19T09:51:27.213Z] [IPC] → audio_getOutputDevices()
+[2026-04-19T09:51:27.213Z] [IPC] → timeline_getAllPatterns()
+[2026-04-19T09:51:27.214Z] [RENDERER] [UI] App mounted  (http://localhost:5173/src/App.jsx:404)
+[2026-04-19T09:51:27.214Z] [IPC] → timeline_getSources()
+[2026-04-19T09:51:27.214Z] [RENDERER] [VideoPreview] shm ready: XlethFrameBuffer 960x540  (http://localhost:5173/src/components/VideoPreview.jsx:141)
+[2026-04-19T09:51:27.214Z] [IPC] ← result: 1
+[2026-04-19T09:51:27.215Z] [IPC] → timeline_getDeclickMs()
+[2026-04-19T09:51:27.215Z] [IPC] → engine_getGlobalStretchMethod()
+[2026-04-19T09:51:27.215Z] [IPC] → timeline_getTracks()
+[2026-04-19T09:51:27.215Z] [IPC] → timeline_getClips()
+[2026-04-19T09:51:27.215Z] [IPC] → timeline_getRegions()
+[2026-04-19T09:51:27.215Z] [IPC] → timeline_getSources()
+[2026-04-19T09:51:27.216Z] [IPC] → timeline_getAllPatterns()
+[2026-04-19T09:51:27.216Z] [IPC] → timeline_getPatternBlocks()
+[2026-04-19T09:51:27.216Z] [RENDERER] [Timeline] Zoom: 40.0px/beat, ~5.0 bars visible  (http://localhost:5173/src/components/TimelineView.jsx:762)
+[2026-04-19T09:51:27.216Z] [IPC] → audio_getOutputDevices()
+[2026-04-19T09:51:27.217Z] [IPC] → timeline_getAllPatterns()
+[2026-04-19T09:51:27.217Z] [RENDERER] [UI] App mounted  (http://localhost:5173/src/App.jsx:404)
+[2026-04-19T09:51:27.217Z] [IPC] ← result: []
+[2026-04-19T09:51:27.218Z] [IPC] ← result: []
+[2026-04-19T09:51:27.218Z] [IPC] ← result: []
+[2026-04-19T09:51:27.218Z] [IPC] ← result: []
+[2026-04-19T09:51:27.219Z] [IPC] ← result: []
+[2026-04-19T09:51:27.220Z] [IPC] ← result: []
+[2026-04-19T09:51:27.220Z] [IPC] ← result: ["Speakers (2- Focusrite USB Audio)","Speakers (Realtek(R) Audio)"]
+[2026-04-19T09:51:27.221Z] [IPC] ← result: []
+[2026-04-19T09:51:27.221Z] [IPC] ← result: []
+[2026-04-19T09:51:27.222Z] [IPC] ← result: 0.5
+[2026-04-19T09:51:27.223Z] [IPC] ← result: 1
+[2026-04-19T09:51:27.223Z] [IPC] ← result: []
+[2026-04-19T09:51:27.223Z] [IPC] ← result: []
+[2026-04-19T09:51:27.224Z] [IPC] ← result: []
+[2026-04-19T09:51:27.224Z] [IPC] ← result: []
+[2026-04-19T09:51:27.224Z] [IPC] ← result: []
+[2026-04-19T09:51:27.226Z] [IPC] ← result: []
+[2026-04-19T09:51:27.228Z] [IPC] ← result: ["Speakers (2- Focusrite USB Audio)","Speakers (Realtek(R) Audio)"]
+[2026-04-19T09:51:27.229Z] [RENDERER] [Timeline] Tracks loaded: 0  (http://localhost:5173/src/components/TimelineView.jsx:232)
+[2026-04-19T09:51:27.229Z] [RENDERER] [TimelineClips] Clips loaded: 0  (http://localhost:5173/src/components/TimelineView.jsx:243)
+[2026-04-19T09:51:27.229Z] [RENDERER] [TimelineClips] Regions loaded: 0  (http://localhost:5173/src/components/TimelineView.jsx:257)
+[2026-04-19T09:51:27.229Z] [IPC] → audio_getCurrentOutputDevice()
+[2026-04-19T09:51:27.230Z] [RENDERER] [Timeline] Tracks loaded: 0  (http://localhost:5173/src/components/TimelineView.jsx:232)
+[2026-04-19T09:51:27.230Z] [IPC] ← result: []
+[2026-04-19T09:51:27.230Z] [RENDERER] [TimelineClips] Clips loaded: 0  (http://localhost:5173/src/components/TimelineView.jsx:243)
+[2026-04-19T09:51:27.231Z] [RENDERER] [TimelineClips] Regions loaded: 0  (http://localhost:5173/src/components/TimelineView.jsx:257)
+[2026-04-19T09:51:27.231Z] [IPC] → timeline_setPreviewResolutionScale(1)
+[2026-04-19T09:51:27.231Z] [IPC] → timeline_setPreviewResolutionScale(1)
+[2026-04-19T09:51:27.231Z] [IPC] ← result: "Speakers (2- Focusrite USB Audio)"
+[2026-04-19T09:51:27.231Z] [IPC] ← result: null
+[2026-04-19T09:51:27.232Z] [IPC] ← result: null
+[2026-04-19T09:51:27.237Z] [IPC] → audio_getCurrentOutputDevice()
+[2026-04-19T09:51:27.238Z] [IPC] → timeline_setPreviewEffectsBypass(true)
+[2026-04-19T09:51:27.239Z] [IPC] → timeline_setPreviewEffectsBypass(true)
+[2026-04-19T09:51:27.239Z] [IPC] ← result: "Speakers (2- Focusrite USB Audio)"
+[2026-04-19T09:51:27.240Z] [IPC] ← result: null
+[2026-04-19T09:51:27.240Z] [IPC] ← result: null
+[2026-04-19T09:51:27.249Z] [IPC] transport changed: {"positionMs":0,"positionBeats":0,"positionBars":1,"isPlaying":false,"bpm":140}
+[2026-04-19T09:51:28.834Z] [RENDERER] [UI] Menu: Open Project  (http://localhost:5173/src/components/TitleBar.jsx:89)
+[2026-04-19T09:51:30.587Z] [ProjectMedia] Open project folder: C:\Users\Krasen\Desktop\clean\SR\CARYKH\test
+[2026-04-19T09:51:30.588Z] [RENDERER] [Project] Loading project from: C:\Users\Krasen\Desktop\clean\SR\CARYKH\test  (http://localhost:5173/src/App.jsx:332)
+[2026-04-19T09:51:30.588Z] [IPC] → project_load(C:\Users\Krasen\Desktop\clean\SR\CARYKH\test)
+[2026-04-19T09:51:30.910Z] [IPC] ← result: true
+[2026-04-19T09:51:30.911Z] [RENDERER] [effectChainStore] project-loaded — closing panels, refreshing all chains  (http://localhost:5173/src/stores/effectChainStore.js:126)
+[2026-04-19T09:51:30.912Z] [IPC] → project_getInfo()
+[2026-04-19T09:51:30.912Z] [IPC] ← result: {"projectDir":"C:\\Users\\Krasen\\Desktop\\clean\\SR\\CARYKH\\test","proxiesDir"
+[2026-04-19T09:51:30.913Z] [IPC] → timeline_getTracks()
+[2026-04-19T09:51:30.913Z] [IPC] → timeline_getRegions()
+[2026-04-19T09:51:30.913Z] [IPC] → timeline_getSources()
+[2026-04-19T09:51:30.913Z] [IPC] → timeline_getTracks()
+[2026-04-19T09:51:30.914Z] [IPC] → timeline_getClips()
+[2026-04-19T09:51:30.914Z] [IPC] → timeline_getAllPatterns()
+[2026-04-19T09:51:30.914Z] [IPC] → timeline_getAllPatterns()
+[2026-04-19T09:51:30.914Z] [IPC] → timeline_getPatternBlocks()
+[2026-04-19T09:51:30.914Z] [IPC] → audio_getMissingPlugins()
+[2026-04-19T09:51:30.915Z] [IPC] ← result: [{"id":13,"name":"Track 1","volume":0.9989448189735413,"pan":0,"stereoSpread":2,
+[2026-04-19T09:51:30.915Z] [IPC] ← result: [{"id":14,"sourceId":9,"name":"Quote 1","label":"Quote","startTime":48.013548002
+[2026-04-19T09:51:30.915Z] [RENDERER] [Timeline] Tracks loaded: 8  (http://localhost:5173/src/components/TimelineView.jsx:232)
+[2026-04-19T09:51:30.916Z] [IPC] ← result: [{"id":1,"filePath":"C:\\Users\\Krasen\\Videos\\Carykh\\AI evolves to compose 3 
+[2026-04-19T09:51:30.916Z] [IPC] ← result: [{"id":13,"name":"Track 1","volume":0.9989448189735413,"pan":0,"stereoSpread":2,
+[2026-04-19T09:51:30.917Z] [IPC] ← result: [{"id":17,"trackId":13,"regionId":14,"positionTicks":522,"durationTicks":1398,"r
+[2026-04-19T09:51:30.917Z] [IPC] ← result: [{"id":177,"name":"Pattern 1","regionId":175,"lengthTicks":7680,"nextNoteId":40,
+[2026-04-19T09:51:30.919Z] [IPC] ← result: [{"id":177,"name":"Pattern 1","regionId":175,"lengthTicks":7680,"nextNoteId":40,
+[2026-04-19T09:51:30.919Z] [IPC] ← result: [{"id":198,"trackId":176,"patternId":177,"positionTicks":7680,"durationTicks":76
+[2026-04-19T09:51:30.920Z] [IPC] ← result: "[]"
+[2026-04-19T09:51:30.921Z] [RENDERER] [TimelineClips] Regions loaded: 9  (http://localhost:5173/src/components/TimelineView.jsx:257)
+[2026-04-19T09:51:30.921Z] [RENDERER] [Timeline] Tracks loaded: 8  (http://localhost:5173/src/components/TimelineView.jsx:232)
+[2026-04-19T09:51:30.921Z] [RENDERER] [TimelineClips] Clips loaded: 293  (http://localhost:5173/src/components/TimelineView.jsx:243)
+[2026-04-19T09:51:30.926Z] [RENDERER] [Toolbar] Tool switched → select  (http://localhost:5173/src/components/timeline/TimelineCanvas.jsx:274)
+[2026-04-19T09:51:30.927Z] [RENDERER] [Timeline] Canvas init 550×480 (DPR 1.75)  (http://localhost:5173/src/components/timeline/TimelineCanvas.jsx:284)
+[2026-04-19T09:51:30.928Z] [RENDERER] [Toolbar] Tool switched → select  (http://localhost:5173/src/components/timeline/TimelineCanvas.jsx:274)
+[2026-04-19T09:51:30.935Z] [IPC] → timeline_getSources()
+[2026-04-19T09:51:30.936Z] [IPC] → waveform_getRegionPeaks(14, 0, 2.693775851917742, 800, -1)
+[2026-04-19T09:51:30.936Z] [IPC] → waveform_getClipPeaks(24, 0, 0.375, 800)
+[2026-04-19T09:51:30.936Z] [IPC] ← result: [{"id":1,"filePath":"C:\\Users\\Krasen\\Videos\\Carykh\\AI evolves to compose 3 
+[2026-04-19T09:51:30.937Z] [IPC] ← result: {"peaks":[],"needsRawSamples":false,"ready":false,"sampleRate":0,"totalSamples":
+[2026-04-19T09:51:30.937Z] [IPC] ← result: {"peaks":[0.2627549171447754,0.730807900428772,0.4693412780761719,0.084855742752
+[2026-04-19T09:51:30.938Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:30.939Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:30.940Z] [IPC] → audio_loadRegionAudio(14)
+[2026-04-19T09:51:30.940Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:30.941Z] [IPC] → waveform_getClipPeaks(26, 0, 0.3214285714285714, 800)
+[2026-04-19T09:51:30.985Z] [IPC] ← result: 12
+[2026-04-19T09:51:30.986Z] [IPC] ← result: {"peaks":[],"ready":false,"sampleRate":0,"totalSamples":0}
+[2026-04-19T09:51:30.986Z] [RENDERER] [Timeline] Audio mapped: region=14 → sample=12  (http://localhost:5173/src/components/TimelineView.jsx:319)
+[2026-04-19T09:51:30.986Z] [IPC] → audio_loadRegionAudio(175)
+[2026-04-19T09:51:31.001Z] [IPC] ← result: 13
+[2026-04-19T09:51:31.001Z] [RENDERER] [Timeline] Audio mapped: region=175 → sample=13  (http://localhost:5173/src/components/TimelineView.jsx:319)
+[2026-04-19T09:51:31.002Z] [IPC] → audio_loadRegionAudio(216)
+[2026-04-19T09:51:31.009Z] [IPC] ← result: 14
+[2026-04-19T09:51:31.010Z] [RENDERER] [Timeline] Audio mapped: region=216 → sample=14  (http://localhost:5173/src/components/TimelineView.jsx:319)
+[2026-04-19T09:51:31.010Z] [IPC] → audio_loadRegionAudio(223)
+[2026-04-19T09:51:31.017Z] [IPC] ← result: 15
+[2026-04-19T09:51:31.018Z] [RENDERER] [Timeline] Audio mapped: region=223 → sample=15  (http://localhost:5173/src/components/TimelineView.jsx:319)
+[2026-04-19T09:51:31.018Z] [IPC] → audio_loadRegionAudio(234)
+[2026-04-19T09:51:31.020Z] [IPC] ← result: 16
+[2026-04-19T09:51:31.021Z] [RENDERER] [Timeline] Audio mapped: region=234 → sample=16  (http://localhost:5173/src/components/TimelineView.jsx:319)
+[2026-04-19T09:51:31.021Z] [IPC] → audio_loadRegionAudio(235)
+[2026-04-19T09:51:31.045Z] [IPC] ← result: 17
+[2026-04-19T09:51:31.046Z] [RENDERER] [Timeline] Audio mapped: region=235 → sample=17  (http://localhost:5173/src/components/TimelineView.jsx:319)
+[2026-04-19T09:51:31.046Z] [IPC] → audio_loadRegionAudio(236)
+[2026-04-19T09:51:31.079Z] [IPC] ← result: 18
+[2026-04-19T09:51:31.080Z] [RENDERER] [Timeline] Audio mapped: region=236 → sample=18  (http://localhost:5173/src/components/TimelineView.jsx:319)
+[2026-04-19T09:51:31.080Z] [IPC] → audio_loadRegionAudio(237)
+[2026-04-19T09:51:31.082Z] [IPC] ← result: 19
+[2026-04-19T09:51:31.082Z] [RENDERER] [Timeline] Audio mapped: region=237 → sample=19  (http://localhost:5173/src/components/TimelineView.jsx:319)
+[2026-04-19T09:51:31.082Z] [IPC] → audio_loadRegionAudio(369)
+[2026-04-19T09:51:31.091Z] [IPC] → waveform_getRegionPeaks(14, 0, 2.693775851917742, 800, -1)
+[2026-04-19T09:51:31.095Z] [IPC] ← result: 20
+[2026-04-19T09:51:31.096Z] [IPC] ← result: {"peaks":[-0.0067484998144209385,0.008282892405986786,0.0022201277315616608,-0.0
+[2026-04-19T09:51:31.096Z] [RENDERER] [Timeline] Audio mapped: region=369 → sample=20  (http://localhost:5173/src/components/TimelineView.jsx:319)
+[2026-04-19T09:51:31.098Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.098Z] [IPC] → waveform_getRegionPeaks(175, 0, 0.4405491705257063, 800, -1)
+[2026-04-19T09:51:31.099Z] [IPC] ← result: {"peaks":[-0.1065647304058075,0.14976808428764343,0.08515140414237976,-0.3405998
+[2026-04-19T09:51:31.100Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.100Z] [IPC] → waveform_getRegionPeaks(216, 0, 0.3637455888732326, 800, -1)
+[2026-04-19T09:51:31.101Z] [IPC] ← result: {"peaks":[-0.0021844017319381237,0,0.0012454831739887595,-0.0034565215464681387,
+[2026-04-19T09:51:31.102Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.102Z] [IPC] → waveform_getRegionPeaks(223, 0, 0.25783466242529585, 800, -1)
+[2026-04-19T09:51:31.103Z] [IPC] ← result: {"peaks":[-0.000785471114795655,0,0.00045753532322123647,-0.0016932915896177292,
+[2026-04-19T09:51:31.105Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.105Z] [IPC] → waveform_getRegionPeaks(234, 0, 0.41048876267447554, 800, -1)
+[2026-04-19T09:51:31.106Z] [IPC] ← result: {"peaks":[-0.002147277817130089,0.13012303411960602,0.05306297540664673,-0.01586
+[2026-04-19T09:51:31.133Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.134Z] [IPC] → waveform_getRegionPeaks(235, 0, 1.3763081758481803, 800, -1)
+[2026-04-19T09:51:31.135Z] [IPC] ← result: {"peaks":[-0.06638624519109726,0.1311156004667282,0.03933818265795708,-0.2893549
+[2026-04-19T09:51:31.136Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.137Z] [IPC] → waveform_getRegionPeaks(236, 0, 0.31936959988013314, 800, -1)
+[2026-04-19T09:51:31.138Z] [IPC] → waveform_getClipPeaks(26, 0, 0.3214285714285714, 800)
+[2026-04-19T09:51:31.138Z] [IPC] ← result: {"peaks":[0,0.014819256961345673,0.005954422522336245,-0.006262786220759153,0.01
+[2026-04-19T09:51:31.139Z] [IPC] ← result: {"peaks":[-0.033571548759937286,0.10483354330062866,0.050210993736982346,-0.1710
+[2026-04-19T09:51:31.141Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.142Z] [IPC] → waveform_getRegionPeaks(237, 0, 0.21874016104067096, 800, -1)
+[2026-04-19T09:51:31.143Z] [IPC] ← result: {"peaks":[0,0.04898006469011307,0.03220125660300255,0.02608668990433216,0.069309
+[2026-04-19T09:51:31.143Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.144Z] [IPC] → waveform_getClipPeaks(28, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.145Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.150Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.151Z] [IPC] → waveform_getRegionPeaks(369, 0, 0.15595505961688616, 800, -1)
+[2026-04-19T09:51:31.152Z] [IPC] ← result: {"peaks":[-0.0006621548673138022,0.001210725517012179,0.0004783464828506112,-0.0
+[2026-04-19T09:51:31.154Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.154Z] [IPC] → waveform_getClipPeaks(29, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.155Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.156Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.160Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.160Z] [IPC] → waveform_getClipPeaks(30, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.161Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.169Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.170Z] [IPC] → waveform_getClipPeaks(31, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.171Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.173Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.173Z] [IPC] → waveform_getClipPeaks(32, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.174Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.176Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.176Z] [IPC] → waveform_getClipPeaks(33, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.178Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.185Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.185Z] [IPC] → waveform_getClipPeaks(34, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.186Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.188Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.188Z] [IPC] → waveform_getClipPeaks(35, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.189Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.191Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.192Z] [IPC] → waveform_getClipPeaks(36, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.192Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.201Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.201Z] [IPC] → waveform_getClipPeaks(37, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.202Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.204Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.205Z] [IPC] → waveform_getClipPeaks(38, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.206Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.208Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.208Z] [IPC] → waveform_getClipPeaks(39, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.209Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.211Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.211Z] [IPC] → waveform_getClipPeaks(40, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.212Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.220Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.221Z] [IPC] → waveform_getClipPeaks(41, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.222Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.225Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.225Z] [IPC] → waveform_getClipPeaks(42, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.226Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.228Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.228Z] [IPC] → waveform_getClipPeaks(54, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.229Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.237Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.237Z] [IPC] → waveform_getClipPeaks(55, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.238Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.241Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.241Z] [IPC] → waveform_getClipPeaks(56, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.242Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.244Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.244Z] [IPC] → waveform_getClipPeaks(57, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.245Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.253Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.254Z] [IPC] → waveform_getClipPeaks(58, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.255Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.257Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.257Z] [IPC] → waveform_getClipPeaks(59, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.258Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.260Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.260Z] [IPC] → waveform_getClipPeaks(60, 0, 0.21428571428571427, 800)
+[2026-04-19T09:51:31.261Z] [IPC] ← result: {"peaks":[0.2411670684814453,0.45949220657348633,0.33273786306381226,0.112170100
+[2026-04-19T09:51:31.270Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.270Z] [IPC] → waveform_getClipPeaks(63, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.271Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.273Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.274Z] [IPC] → waveform_getClipPeaks(64, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.275Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.276Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.277Z] [IPC] → waveform_getClipPeaks(71, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.277Z] [IPC] ← result: {"peaks":[-0.03820048272609711,0.014348447322845459,0.015345511958003044,-0.1108
+[2026-04-19T09:51:31.286Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.286Z] [IPC] → waveform_getClipPeaks(73, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.287Z] [IPC] ← result: {"peaks":[-0.03820048272609711,0.014348447322845459,0.015345511958003044,-0.1108
+[2026-04-19T09:51:31.289Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.290Z] [IPC] → waveform_getClipPeaks(76, 0, 0.05357142857142857, 800)
+[2026-04-19T09:51:31.290Z] [IPC] ← result: {"peaks":[0.3449324071407318,0.3735576570034027,0.35781389474868774,0.3100017905
+[2026-04-19T09:51:31.292Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.292Z] [IPC] → waveform_getClipPeaks(77, 0, 0.05357142857142857, 800)
+[2026-04-19T09:51:31.293Z] [IPC] ← result: {"peaks":[0.29086560010910034,0.3052137792110443,0.29627734422683716,0.262916088
+[2026-04-19T09:51:31.301Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.301Z] [IPC] → waveform_getClipPeaks(84, 0, 0.05357142857142857, 800)
+[2026-04-19T09:51:31.302Z] [IPC] ← result: {"peaks":[-0.09875179082155228,-0.06553702056407928,0.08333972096443176,-0.12453
+[2026-04-19T09:51:31.304Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.305Z] [IPC] → waveform_getClipPeaks(87, 0, 0.375, 800)
+[2026-04-19T09:51:31.306Z] [IPC] ← result: {"peaks":[0.2627549171447754,0.730807900428772,0.4693412780761719,0.084855742752
+[2026-04-19T09:51:31.309Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.311Z] [IPC] → waveform_getClipPeaks(88, 0, 0.3214285714285714, 800)
+[2026-04-19T09:51:31.312Z] [IPC] ← result: {"peaks":[-0.033571548759937286,0.10483354330062866,0.050210993736982346,-0.1710
+[2026-04-19T09:51:31.316Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.317Z] [IPC] → waveform_getClipPeaks(90, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.318Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.322Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.323Z] [IPC] → waveform_getClipPeaks(91, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.324Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.327Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.327Z] [IPC] → waveform_getClipPeaks(92, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.328Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.345Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.346Z] [IPC] → waveform_getClipPeaks(93, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.347Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.351Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.352Z] [IPC] → waveform_getClipPeaks(95, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.353Z] [IPC] ← result: {"peaks":[-0.033571548759937286,0.02185753732919693,0.017414111644029617,0.00570
+[2026-04-19T09:51:31.358Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.359Z] [IPC] → waveform_getClipPeaks(97, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.361Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.365Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.365Z] [IPC] → waveform_getClipPeaks(98, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.367Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.373Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.373Z] [IPC] → waveform_getClipPeaks(99, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.374Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.378Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.378Z] [IPC] → waveform_getClipPeaks(100, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.379Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.394Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.395Z] [IPC] → waveform_getClipPeaks(101, 0, 0.061607142857142846, 800)
+[2026-04-19T09:51:31.396Z] [IPC] ← result: {"peaks":[0,0.3735576570034027,0.2964496612548828,0.25080427527427673,0.32421123
+[2026-04-19T09:51:31.399Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.399Z] [IPC] → waveform_getClipPeaks(103, 0, 0.06294642857142857, 800)
+[2026-04-19T09:51:31.400Z] [IPC] ← result: {"peaks":[0,0.3162182569503784,0.24682463705539703,0.33944371342658997,0.4090834
+[2026-04-19T09:51:31.404Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.404Z] [IPC] → waveform_getClipPeaks(104, 0, 0.21428571428571427, 800)
+[2026-04-19T09:51:31.406Z] [IPC] ← result: {"peaks":[0,0.27141353487968445,0.21805793046951294,0.20671233534812927,0.287141
+[2026-04-19T09:51:31.410Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.410Z] [IPC] → waveform_getClipPeaks(105, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.411Z] [IPC] ← result: {"peaks":[-0.033571548759937286,0.02185753732919693,0.017414111644029617,0.00570
+[2026-04-19T09:51:31.427Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.428Z] [IPC] → waveform_getClipPeaks(106, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.429Z] [IPC] ← result: {"peaks":[-0.033571548759937286,0.02185753732919693,0.017414111644029617,0.00570
+[2026-04-19T09:51:31.432Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.432Z] [IPC] → waveform_getClipPeaks(110, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.433Z] [IPC] ← result: {"peaks":[0,0.3691018521785736,0.29128730297088623,0.26368850469589233,0.5357330
+[2026-04-19T09:51:31.436Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.437Z] [IPC] → waveform_getClipPeaks(114, 0, 0.061607142857142846, 800)
+[2026-04-19T09:51:31.438Z] [IPC] ← result: {"peaks":[0,0.3735576570034027,0.2964496612548828,0.25080427527427673,0.32421123
+[2026-04-19T09:51:31.441Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.442Z] [IPC] → waveform_getClipPeaks(115, 0, 0.06294642857142857, 800)
+[2026-04-19T09:51:31.443Z] [IPC] ← result: {"peaks":[0,0.3162182569503784,0.24682463705539703,0.33944371342658997,0.4090834
+[2026-04-19T09:51:31.453Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.454Z] [IPC] → waveform_getClipPeaks(116, 0, 0.21428571428571427, 800)
+[2026-04-19T09:51:31.455Z] [IPC] ← result: {"peaks":[0,0.27141353487968445,0.21805793046951294,0.20671233534812927,0.287141
+[2026-04-19T09:51:31.459Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.459Z] [IPC] → waveform_getClipPeaks(117, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.460Z] [IPC] ← result: {"peaks":[-0.033571548759937286,0.02185753732919693,0.017414111644029617,0.00570
+[2026-04-19T09:51:31.463Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.464Z] [IPC] → waveform_getClipPeaks(118, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.465Z] [IPC] ← result: {"peaks":[-0.033571548759937286,0.02185753732919693,0.017414111644029617,0.00570
+[2026-04-19T09:51:31.468Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.469Z] [IPC] → waveform_getClipPeaks(119, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.470Z] [IPC] ← result: {"peaks":[-0.033571548759937286,0.02185753732919693,0.017414111644029617,0.00570
+[2026-04-19T09:51:31.473Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.474Z] [IPC] → waveform_getClipPeaks(121, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.476Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.490Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.491Z] [IPC] → waveform_getClipPeaks(122, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.492Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.495Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.496Z] [IPC] → waveform_getClipPeaks(125, 0, 0.09285714285714286, 800)
+[2026-04-19T09:51:31.497Z] [IPC] ← result: {"peaks":[0,0.3714609742164612,0.30298948287963867,0.24373017251491547,0.4687879
+[2026-04-19T09:51:31.500Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.501Z] [IPC] → waveform_getClipPeaks(127, 0, 0.21428571428571427, 800)
+[2026-04-19T09:51:31.502Z] [IPC] ← result: {"peaks":[0,0.4480421245098114,0.3748185336589813,0.31198760867118835,0.45310750
+[2026-04-19T09:51:31.505Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.506Z] [IPC] → waveform_getClipPeaks(129, 0, 0.21428571428571427, 800)
+[2026-04-19T09:51:31.507Z] [IPC] ← result: {"peaks":[-0.359407901763916,0,0.3014567196369171,-0.26571232080459595,0.2494545
+[2026-04-19T09:51:31.510Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.511Z] [IPC] → waveform_getClipPeaks(131, 0, 0.08616071428571428, 800)
+[2026-04-19T09:51:31.512Z] [IPC] ← result: {"peaks":[0.027527708560228348,0.0672583132982254,0.049051668494939804,0.0211527
+[2026-04-19T09:51:31.528Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.528Z] [IPC] → waveform_getClipPeaks(133, 0, 0.08526785714285713, 800)
+[2026-04-19T09:51:31.529Z] [IPC] ← result: {"peaks":[-0.3919251561164856,-0.33325496315956116,0.3631855845451355,-0.3186816
+[2026-04-19T09:51:31.532Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.533Z] [IPC] → waveform_getClipPeaks(134, 0, 0.08124999999999999, 800)
+[2026-04-19T09:51:31.534Z] [IPC] ← result: {"peaks":[-0.1421680599451065,-0.12198975682258606,0.1322927623987198,-0.1152639
+[2026-04-19T09:51:31.537Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.538Z] [IPC] → waveform_getClipPeaks(142, 0, 0.061607142857142846, 800)
+[2026-04-19T09:51:31.539Z] [IPC] ← result: {"peaks":[0,0.3735576570034027,0.2964496612548828,0.25080427527427673,0.32421123
+[2026-04-19T09:51:31.542Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.543Z] [IPC] → waveform_getClipPeaks(143, 0, 0.06294642857142857, 800)
+[2026-04-19T09:51:31.544Z] [IPC] ← result: {"peaks":[0,0.3162182569503784,0.24682463705539703,0.33944371342658997,0.4090834
+[2026-04-19T09:51:31.560Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.561Z] [IPC] → waveform_getClipPeaks(144, 0, 0.21428571428571427, 800)
+[2026-04-19T09:51:31.562Z] [IPC] ← result: {"peaks":[0,0.27141353487968445,0.21805793046951294,0.20671233534812927,0.287141
+[2026-04-19T09:51:31.565Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.566Z] [IPC] → waveform_getClipPeaks(145, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.567Z] [IPC] ← result: {"peaks":[-0.033571548759937286,0.02185753732919693,0.017414111644029617,0.00570
+[2026-04-19T09:51:31.570Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.570Z] [IPC] → waveform_getClipPeaks(146, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.571Z] [IPC] ← result: {"peaks":[-0.033571548759937286,0.02185753732919693,0.017414111644029617,0.00570
+[2026-04-19T09:51:31.573Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.574Z] [IPC] → waveform_getClipPeaks(147, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.575Z] [IPC] ← result: {"peaks":[-0.033571548759937286,0.02185753732919693,0.017414111644029617,0.00570
+[2026-04-19T09:51:31.587Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.588Z] [IPC] → waveform_getClipPeaks(149, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.589Z] [IPC] ← result: {"peaks":[0.31000179052352905,0.3735576570034027,0.3383055329322815,0.2411670684
+[2026-04-19T09:51:31.592Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.593Z] [IPC] → waveform_getClipPeaks(155, 0, 0.375, 800)
+[2026-04-19T09:51:31.594Z] [IPC] ← result: {"peaks":[-0.3510715067386627,0.30169785022735596,0.24203266203403473,0.08564887
+[2026-04-19T09:51:31.597Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.597Z] [IPC] → waveform_getClipPeaks(157, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.598Z] [IPC] ← result: {"peaks":[0,0.37031254172325134,0.2941317558288574,0.24664130806922913,0.5177786
+[2026-04-19T09:51:31.602Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.602Z] [IPC] → waveform_getClipPeaks(158, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.603Z] [IPC] ← result: {"peaks":[0,0.3714570701122284,0.29859545826911926,0.24371692538261414,0.5083011
+[2026-04-19T09:51:31.606Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.607Z] [IPC] → waveform_getClipPeaks(159, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.608Z] [IPC] ← result: {"peaks":[0,0.3725399672985077,0.302969366312027,0.247370645403862,0.48841366171
+[2026-04-19T09:51:31.623Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.624Z] [IPC] → waveform_getClipPeaks(160, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.625Z] [IPC] ← result: {"peaks":[0,0.3714570701122284,0.29859545826911926,0.24371692538261414,0.5083011
+[2026-04-19T09:51:31.628Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.629Z] [IPC] → waveform_getClipPeaks(161, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.630Z] [IPC] ← result: {"peaks":[0,0.3725399672985077,0.302969366312027,0.247370645403862,0.48841366171
+[2026-04-19T09:51:31.633Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.633Z] [IPC] → waveform_getClipPeaks(162, 0, 0.061607142857142846, 800)
+[2026-04-19T09:51:31.634Z] [IPC] ← result: {"peaks":[0,0.3735576570034027,0.2964496612548828,0.25080427527427673,0.32421123
+[2026-04-19T09:51:31.640Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.640Z] [IPC] → waveform_getClipPeaks(163, 0, 0.06294642857142857, 800)
+[2026-04-19T09:51:31.641Z] [IPC] ← result: {"peaks":[0,0.3162182569503784,0.24682463705539703,0.33944371342658997,0.4090834
+[2026-04-19T09:51:31.645Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.645Z] [IPC] → waveform_getClipPeaks(164, 0, 0.21428571428571427, 800)
+[2026-04-19T09:51:31.646Z] [IPC] ← result: {"peaks":[0,0.27141353487968445,0.21805793046951294,0.20671233534812927,0.287141
+[2026-04-19T09:51:31.661Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.662Z] [IPC] → waveform_getClipPeaks(165, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.663Z] [IPC] ← result: {"peaks":[-0.033571548759937286,0.02185753732919693,0.017414111644029617,0.00570
+[2026-04-19T09:51:31.666Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.667Z] [IPC] → waveform_getClipPeaks(166, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.668Z] [IPC] ← result: {"peaks":[-0.033571548759937286,0.02185753732919693,0.017414111644029617,0.00570
+[2026-04-19T09:51:31.671Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.671Z] [IPC] → waveform_getClipPeaks(168, 0, 0.06294642857142857, 800)
+[2026-04-19T09:51:31.672Z] [IPC] ← result: {"peaks":[0,0.3162182569503784,0.24682463705539703,0.33944371342658997,0.4090834
+[2026-04-19T09:51:31.675Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.676Z] [IPC] → waveform_getClipPeaks(169, 0, 0.21428571428571427, 800)
+[2026-04-19T09:51:31.678Z] [IPC] ← result: {"peaks":[0,0.27141353487968445,0.21805793046951294,0.20671233534812927,0.287141
+[2026-04-19T09:51:31.693Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.694Z] [IPC] → waveform_getClipPeaks(170, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.695Z] [IPC] ← result: {"peaks":[-0.033571548759937286,0.02185753732919693,0.017414111644029617,0.00570
+[2026-04-19T09:51:31.698Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.698Z] [IPC] → waveform_getClipPeaks(171, 0, 0.08482142857142856, 800)
+[2026-04-19T09:51:31.699Z] [IPC] ← result: {"peaks":[-0.031992245465517044,0.02185753732919693,0.015534903854131699,-0.0335
+[2026-04-19T09:51:31.702Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.703Z] [IPC] → waveform_getClipPeaks(172, 0, 0.08482142857142856, 800)
+[2026-04-19T09:51:31.705Z] [IPC] ← result: {"peaks":[-0.028650926426053047,0.021586578339338303,0.013959506526589394,-0.020
+[2026-04-19T09:51:31.708Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.708Z] [IPC] → waveform_getClipPeaks(173, 0, 0.08482142857142856, 800)
+[2026-04-19T09:51:31.709Z] [IPC] ← result: {"peaks":[-0.02514522895216942,0.021302277222275734,0.013431553728878498,-0.0066
+[2026-04-19T09:51:31.723Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.724Z] [IPC] → waveform_getClipPeaks(174, 0, 0.08482142857142856, 800)
+[2026-04-19T09:51:31.725Z] [IPC] ← result: {"peaks":[-0.029714256525039673,0.02100595459342003,0.014237402006983757,0.00714
+[2026-04-19T09:51:31.728Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.729Z] [IPC] → waveform_getClipPeaks(287, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.730Z] [IPC] ← result: {"peaks":[0.00045324771781452,0.03929348289966583,0.025462469086050987,0.0041269
+[2026-04-19T09:51:31.733Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.733Z] [IPC] → waveform_getClipPeaks(288, 0, 0.10714285714285714, 800)
+[2026-04-19T09:51:31.734Z] [IPC] ← result: {"peaks":[0.0020746730733662844,0.018059348687529564,0.012668057344853878,0.0030
+[2026-04-19T09:51:31.738Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.738Z] [IPC] → waveform_getClipPeaks(438, 0, 0.05357142857142857, 800)
+[2026-04-19T09:51:31.740Z] [IPC] ← result: {"peaks":[-0.09875179082155228,-0.06553702056407928,0.08333972096443176,-0.12453
+[2026-04-19T09:51:31.744Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.745Z] [IPC] → waveform_getClipPeaks(439, 0, 0.05357142857142857, 800)
+[2026-04-19T09:51:31.746Z] [IPC] ← result: {"peaks":[-0.09875179082155228,-0.06553702056407928,0.08333972096443176,-0.12453
+[2026-04-19T09:51:31.759Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.760Z] [IPC] → waveform_getClipPeaks(440, 0, 0.05357142857142857, 800)
+[2026-04-19T09:51:31.761Z] [IPC] ← result: {"peaks":[-0.09875179082155228,-0.06553702056407928,0.08333972096443176,-0.12453
+[2026-04-19T09:51:31.764Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.764Z] [IPC] → waveform_getClipPeaks(447, 0, 0.3214285714285714, 800)
+[2026-04-19T09:51:31.765Z] [IPC] ← result: {"peaks":[0.2627549171447754,0.730807900428772,0.49226370453834534,0.27036225795
+[2026-04-19T09:51:31.768Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.769Z] [IPC] → waveform_getClipPeaks(449, 0, 0.3214285714285714, 800)
+[2026-04-19T09:51:31.770Z] [IPC] ← result: {"peaks":[-0.4693431258201599,0.3957800567150116,0.3137269914150238,-0.424650996
+[2026-04-19T09:51:31.773Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:31.773Z] [IPC] → waveform_getClipPeaks(450, 0, 0.75, 800)
+[2026-04-19T09:51:31.774Z] [IPC] ← result: {"peaks":[0.007443159818649292,0.29840967059135437,0.19370120763778687,-0.258519
+[2026-04-19T09:51:31.790Z] [RENDERER] [TimelineClips] Rendering 293 clips (85 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:32.796Z] [IPC] → play()
+[2026-04-19T09:51:32.797Z] [IPC] ← result: null
+[2026-04-19T09:51:32.826Z] [IPC] transport changed: {"positionMs":30,"positionBeats":0.06999999999999999,"positionBars":1,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:33.029Z] [IPC] transport changed: {"positionMs":240,"positionBeats":0.5599999999999999,"positionBars":1,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:33.229Z] [IPC] transport changed: {"positionMs":430,"positionBeats":1.0033333333333332,"positionBars":1,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:33.428Z] [IPC] transport changed: {"positionMs":640,"positionBeats":1.4933333333333332,"positionBars":1,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:33.629Z] [IPC] transport changed: {"positionMs":840,"positionBeats":1.96,"positionBars":1,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:33.829Z] [IPC] transport changed: {"positionMs":1040,"positionBeats":2.4266666666666667,"positionBars":1,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:34.028Z] [IPC] transport changed: {"positionMs":1240,"positionBeats":2.893333333333333,"positionBars":1,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:34.130Z] [IPC] window:maximize
+[2026-04-19T09:51:34.146Z] [RENDERER] [Timeline] Canvas init 1466×480 (DPR 1.75)  (http://localhost:5173/src/components/timeline/TimelineCanvas.jsx:284)
+[2026-04-19T09:51:34.158Z] [RENDERER] [TimelineClips] Rendering 293 clips (236 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:34.228Z] [IPC] transport changed: {"positionMs":1440,"positionBeats":3.36,"positionBars":1,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:34.429Z] [IPC] transport changed: {"positionMs":1640,"positionBeats":3.8266666666666667,"positionBars":1,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:34.629Z] [IPC] transport changed: {"positionMs":1840,"positionBeats":4.293333333333333,"positionBars":2,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:34.766Z] [RENDERER] [TimelineClips] Rendering 293 clips (263 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:34.767Z] [RENDERER] [Timeline] Zoom: 34.8px/beat, ~10.6 bars visible  (http://localhost:5173/src/components/TimelineView.jsx:762)
+[2026-04-19T09:51:34.816Z] [RENDERER] [TimelineClips] Rendering 293 clips (292 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:34.817Z] [RENDERER] [Timeline] Zoom: 30.2px/beat, ~12.2 bars visible  (http://localhost:5173/src/components/TimelineView.jsx:762)
+[2026-04-19T09:51:34.829Z] [IPC] transport changed: {"positionMs":2040,"positionBeats":4.76,"positionBars":2,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:34.832Z] [RENDERER] [TimelineClips] Rendering 293 clips (293 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:34.833Z] [RENDERER] [Timeline] Zoom: 26.3px/beat, ~14.0 bars visible  (http://localhost:5173/src/components/TimelineView.jsx:762)
+[2026-04-19T09:51:34.865Z] [RENDERER] [TimelineClips] Rendering 293 clips (293 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:34.866Z] [RENDERER] [Timeline] Zoom: 22.9px/beat, ~16.1 bars visible  (http://localhost:5173/src/components/TimelineView.jsx:762)
+[2026-04-19T09:51:35.029Z] [IPC] transport changed: {"positionMs":2240,"positionBeats":5.226666666666667,"positionBars":2,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:35.081Z] [RENDERER] [TimelineClips] Rendering 293 clips (293 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:35.081Z] [RENDERER] [Timeline] Zoom: 19.9px/beat, ~18.5 bars visible  (http://localhost:5173/src/components/TimelineView.jsx:762)
+[2026-04-19T09:51:35.097Z] [RENDERER] [TimelineClips] Rendering 293 clips (293 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:35.098Z] [RENDERER] [Timeline] Zoom: 17.3px/beat, ~21.3 bars visible  (http://localhost:5173/src/components/TimelineView.jsx:762)
+[2026-04-19T09:51:35.114Z] [RENDERER] [TimelineClips] Rendering 293 clips (293 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:35.115Z] [RENDERER] [Timeline] Zoom: 15.0px/beat, ~24.5 bars visible  (http://localhost:5173/src/components/TimelineView.jsx:762)
+[2026-04-19T09:51:35.131Z] [RENDERER] [TimelineClips] Rendering 293 clips (293 visible in viewport)  (http://localhost:5173/src/components/timeline/timelineDrawing.js:554)
+[2026-04-19T09:51:35.132Z] [RENDERER] [Timeline] Zoom: 13.1px/beat, ~28.1 bars visible  (http://localhost:5173/src/components/TimelineView.jsx:762)
+[2026-04-19T09:51:35.228Z] [IPC] transport changed: {"positionMs":2440,"positionBeats":5.693333333333333,"positionBars":2,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:35.428Z] [IPC] transport changed: {"positionMs":2640,"positionBeats":6.159999999999999,"positionBars":2,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:35.628Z] [IPC] transport changed: {"positionMs":2830,"positionBeats":6.603333333333333,"positionBars":2,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:35.828Z] [IPC] transport changed: {"positionMs":3040,"positionBeats":7.093333333333333,"positionBars":2,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:36.028Z] [IPC] transport changed: {"positionMs":3230,"positionBeats":7.536666666666666,"positionBars":2,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:36.228Z] [IPC] transport changed: {"positionMs":3440,"positionBeats":8.026666666666666,"positionBars":3,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:36.429Z] [IPC] transport changed: {"positionMs":3640,"positionBeats":8.493333333333332,"positionBars":3,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:36.628Z] [IPC] transport changed: {"positionMs":3840,"positionBeats":8.959999999999999,"positionBars":3,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:36.828Z] [IPC] transport changed: {"positionMs":4040,"positionBeats":9.426666666666666,"positionBars":3,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:37.028Z] [IPC] transport changed: {"positionMs":4240,"positionBeats":9.893333333333333,"positionBars":3,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:37.228Z] [IPC] transport changed: {"positionMs":4430,"positionBeats":10.336666666666666,"positionBars":3,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:37.429Z] [IPC] transport changed: {"positionMs":4640,"positionBeats":10.826666666666666,"positionBars":3,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:37.628Z] [IPC] transport changed: {"positionMs":4840,"positionBeats":11.293333333333333,"positionBars":3,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:37.829Z] [IPC] transport changed: {"positionMs":5040,"positionBeats":11.76,"positionBars":3,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:38.028Z] [IPC] transport changed: {"positionMs":5230,"positionBeats":12.203333333333333,"positionBars":4,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:38.228Z] [IPC] transport changed: {"positionMs":5430,"positionBeats":12.67,"positionBars":4,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:38.428Z] [IPC] transport changed: {"positionMs":5640,"positionBeats":13.16,"positionBars":4,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:38.628Z] [IPC] transport changed: {"positionMs":5840,"positionBeats":13.626666666666665,"positionBars":4,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:38.828Z] [IPC] transport changed: {"positionMs":6030,"positionBeats":14.069999999999999,"positionBars":4,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:39.028Z] [IPC] transport changed: {"positionMs":6230,"positionBeats":14.536666666666665,"positionBars":4,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:39.229Z] [IPC] transport changed: {"positionMs":6440,"positionBeats":15.026666666666666,"positionBars":4,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:39.428Z] [IPC] transport changed: {"positionMs":6640,"positionBeats":15.493333333333332,"positionBars":4,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:39.629Z] [IPC] transport changed: {"positionMs":6840,"positionBeats":15.959999999999999,"positionBars":4,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:39.828Z] [IPC] transport changed: {"positionMs":7030,"positionBeats":16.403333333333332,"positionBars":5,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:40.028Z] [IPC] transport changed: {"positionMs":7240,"positionBeats":16.89333333333333,"positionBars":5,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:40.229Z] [IPC] transport changed: {"positionMs":7440,"positionBeats":17.36,"positionBars":5,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:40.428Z] [IPC] transport changed: {"positionMs":7640,"positionBeats":17.826666666666664,"positionBars":5,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:40.628Z] [IPC] transport changed: {"positionMs":7840,"positionBeats":18.293333333333333,"positionBars":5,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:40.828Z] [IPC] transport changed: {"positionMs":8039.999999999999,"positionBeats":18.759999999999998,"positionBars":5,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:41.028Z] [IPC] transport changed: {"positionMs":8230,"positionBeats":19.203333333333333,"positionBars":5,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:41.228Z] [IPC] transport changed: {"positionMs":8440,"positionBeats":19.69333333333333,"positionBars":5,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:41.428Z] [IPC] transport changed: {"positionMs":8630,"positionBeats":20.136666666666667,"positionBars":6,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:41.628Z] [IPC] transport changed: {"positionMs":8840,"positionBeats":20.626666666666665,"positionBars":6,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:41.828Z] [IPC] transport changed: {"positionMs":9040,"positionBeats":21.093333333333334,"positionBars":6,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:42.029Z] [IPC] transport changed: {"positionMs":9240,"positionBeats":21.56,"positionBars":6,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:42.229Z] [IPC] transport changed: {"positionMs":9440,"positionBeats":22.026666666666667,"positionBars":6,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:42.428Z] [IPC] transport changed: {"positionMs":9630,"positionBeats":22.47,"positionBars":6,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:42.628Z] [IPC] transport changed: {"positionMs":9840,"positionBeats":22.959999999999997,"positionBars":6,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:42.829Z] [IPC] transport changed: {"positionMs":10040,"positionBeats":23.426666666666666,"positionBars":6,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:43.028Z] [IPC] transport changed: {"positionMs":10240,"positionBeats":23.89333333333333,"positionBars":6,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:43.228Z] [IPC] transport changed: {"positionMs":10430,"positionBeats":24.336666666666666,"positionBars":7,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:43.428Z] [IPC] transport changed: {"positionMs":10630,"positionBeats":24.80333333333333,"positionBars":7,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:43.628Z] [IPC] transport changed: {"positionMs":10840,"positionBeats":25.293333333333333,"positionBars":7,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:43.828Z] [IPC] transport changed: {"positionMs":11030,"positionBeats":25.736666666666665,"positionBars":7,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:44.028Z] [IPC] transport changed: {"positionMs":11240,"positionBeats":26.226666666666667,"positionBars":7,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:44.229Z] [IPC] transport changed: {"positionMs":11440,"positionBeats":26.69333333333333,"positionBars":7,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:44.429Z] [IPC] transport changed: {"positionMs":11640,"positionBeats":27.16,"positionBars":7,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:44.628Z] [IPC] transport changed: {"positionMs":11830,"positionBeats":27.60333333333333,"positionBars":7,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:44.828Z] [IPC] transport changed: {"positionMs":12040,"positionBeats":28.09333333333333,"positionBars":8,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:45.028Z] [IPC] transport changed: {"positionMs":12240,"positionBeats":28.56,"positionBars":8,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:45.228Z] [IPC] transport changed: {"positionMs":12440,"positionBeats":29.026666666666664,"positionBars":8,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:45.429Z] [IPC] transport changed: {"positionMs":12640,"positionBeats":29.493333333333332,"positionBars":8,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:45.628Z] [IPC] transport changed: {"positionMs":12830,"positionBeats":29.936666666666664,"positionBars":8,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:45.828Z] [IPC] transport changed: {"positionMs":13030,"positionBeats":30.403333333333332,"positionBars":8,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:46.028Z] [IPC] transport changed: {"positionMs":13240,"positionBeats":30.89333333333333,"positionBars":8,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:46.228Z] [IPC] transport changed: {"positionMs":13430,"positionBeats":31.336666666666666,"positionBars":8,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:46.428Z] [IPC] transport changed: {"positionMs":13630,"positionBeats":31.80333333333333,"positionBars":8,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:46.628Z] [IPC] transport changed: {"positionMs":13840,"positionBeats":32.29333333333333,"positionBars":9,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:46.829Z] [IPC] transport changed: {"positionMs":14040,"positionBeats":32.76,"positionBars":9,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:47.028Z] [IPC] transport changed: {"positionMs":14240,"positionBeats":33.22666666666667,"positionBars":9,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:47.228Z] [IPC] transport changed: {"positionMs":14440,"positionBeats":33.693333333333335,"positionBars":9,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:47.428Z] [IPC] transport changed: {"positionMs":14640,"positionBeats":34.16,"positionBars":9,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:47.628Z] [IPC] transport changed: {"positionMs":14830,"positionBeats":34.60333333333333,"positionBars":9,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:47.828Z] [IPC] transport changed: {"positionMs":15040,"positionBeats":35.093333333333334,"positionBars":9,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:48.028Z] [IPC] transport changed: {"positionMs":15240,"positionBeats":35.559999999999995,"positionBars":9,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:48.229Z] [IPC] transport changed: {"positionMs":15440,"positionBeats":36.026666666666664,"positionBars":10,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:48.428Z] [IPC] transport changed: {"positionMs":15640,"positionBeats":36.49333333333333,"positionBars":10,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:48.629Z] [IPC] transport changed: {"positionMs":15840,"positionBeats":36.96,"positionBars":10,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:48.829Z] [IPC] transport changed: {"positionMs":16040,"positionBeats":37.42666666666666,"positionBars":10,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:49.028Z] [IPC] transport changed: {"positionMs":16239.999999999998,"positionBeats":37.89333333333333,"positionBars":10,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:49.230Z] [IPC] transport changed: {"positionMs":16440,"positionBeats":38.36,"positionBars":10,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:49.429Z] [IPC] transport changed: {"positionMs":16640,"positionBeats":38.82666666666667,"positionBars":10,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:49.629Z] [IPC] transport changed: {"positionMs":16840,"positionBeats":39.29333333333333,"positionBars":10,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:49.828Z] [IPC] transport changed: {"positionMs":17040,"positionBeats":39.76,"positionBars":10,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:50.029Z] [IPC] transport changed: {"positionMs":17240,"positionBeats":40.22666666666667,"positionBars":11,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:50.228Z] [IPC] transport changed: {"positionMs":17440,"positionBeats":40.69333333333333,"positionBars":11,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:50.429Z] [IPC] transport changed: {"positionMs":17640,"positionBeats":41.16,"positionBars":11,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:50.628Z] [IPC] transport changed: {"positionMs":17830,"positionBeats":41.60333333333333,"positionBars":11,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:50.828Z] [IPC] transport changed: {"positionMs":18030,"positionBeats":42.07,"positionBars":11,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:51.028Z] [IPC] transport changed: {"positionMs":18240,"positionBeats":42.559999999999995,"positionBars":11,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:51.228Z] [IPC] transport changed: {"positionMs":18430,"positionBeats":43.00333333333333,"positionBars":11,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:51.428Z] [IPC] transport changed: {"positionMs":18640,"positionBeats":43.49333333333333,"positionBars":11,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:51.628Z] [IPC] transport changed: {"positionMs":18840,"positionBeats":43.96,"positionBars":11,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:51.829Z] [IPC] transport changed: {"positionMs":19040,"positionBeats":44.42666666666666,"positionBars":12,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:52.028Z] [IPC] transport changed: {"positionMs":19240,"positionBeats":44.89333333333333,"positionBars":12,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:52.228Z] [IPC] transport changed: {"positionMs":19440,"positionBeats":45.36,"positionBars":12,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:52.429Z] [IPC] transport changed: {"positionMs":19640,"positionBeats":45.82666666666666,"positionBars":12,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:52.629Z] [IPC] transport changed: {"positionMs":19840,"positionBeats":46.29333333333333,"positionBars":12,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:52.828Z] [IPC] transport changed: {"positionMs":20030,"positionBeats":46.736666666666665,"positionBars":12,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:53.029Z] [IPC] transport changed: {"positionMs":20240,"positionBeats":47.22666666666667,"positionBars":12,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:53.228Z] [IPC] transport changed: {"positionMs":20440,"positionBeats":47.69333333333333,"positionBars":12,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:53.428Z] [IPC] transport changed: {"positionMs":20640,"positionBeats":48.16,"positionBars":13,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:53.628Z] [IPC] transport changed: {"positionMs":20830,"positionBeats":48.60333333333333,"positionBars":13,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:53.828Z] [IPC] transport changed: {"positionMs":21040,"positionBeats":49.093333333333334,"positionBars":13,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:54.028Z] [IPC] transport changed: {"positionMs":21230,"positionBeats":49.53666666666666,"positionBars":13,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:54.228Z] [IPC] transport changed: {"positionMs":21440,"positionBeats":50.026666666666664,"positionBars":13,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:54.428Z] [IPC] transport changed: {"positionMs":21640,"positionBeats":50.49333333333333,"positionBars":13,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:54.629Z] [IPC] transport changed: {"positionMs":21840,"positionBeats":50.96,"positionBars":13,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:54.830Z] [IPC] transport changed: {"positionMs":22040,"positionBeats":51.42666666666666,"positionBars":13,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:55.029Z] [IPC] transport changed: {"positionMs":22240,"positionBeats":51.89333333333333,"positionBars":13,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:55.229Z] [IPC] transport changed: {"positionMs":22440,"positionBeats":52.36,"positionBars":14,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:55.429Z] [IPC] transport changed: {"positionMs":22640,"positionBeats":52.82666666666666,"positionBars":14,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:55.629Z] [IPC] transport changed: {"positionMs":22840,"positionBeats":53.29333333333333,"positionBars":14,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:55.828Z] [IPC] transport changed: {"positionMs":23030,"positionBeats":53.736666666666665,"positionBars":14,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:56.030Z] [IPC] transport changed: {"positionMs":23240,"positionBeats":54.22666666666667,"positionBars":14,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:56.228Z] [IPC] transport changed: {"positionMs":23440,"positionBeats":54.69333333333333,"positionBars":14,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:56.428Z] [IPC] transport changed: {"positionMs":23640,"positionBeats":55.16,"positionBars":14,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:56.629Z] [IPC] transport changed: {"positionMs":23840,"positionBeats":55.626666666666665,"positionBars":14,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:56.828Z] [IPC] transport changed: {"positionMs":24030,"positionBeats":56.07,"positionBars":15,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:57.028Z] [IPC] transport changed: {"positionMs":24230,"positionBeats":56.53666666666666,"positionBars":15,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:57.228Z] [IPC] transport changed: {"positionMs":24430,"positionBeats":57.00333333333333,"positionBars":15,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:57.428Z] [IPC] transport changed: {"positionMs":24630,"positionBeats":57.47,"positionBars":15,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:57.628Z] [IPC] transport changed: {"positionMs":24830,"positionBeats":57.93666666666666,"positionBars":15,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:57.829Z] [IPC] transport changed: {"positionMs":25040,"positionBeats":58.42666666666666,"positionBars":15,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:58.028Z] [IPC] transport changed: {"positionMs":25240,"positionBeats":58.89333333333333,"positionBars":15,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:58.228Z] [IPC] transport changed: {"positionMs":25440,"positionBeats":59.36,"positionBars":15,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:58.428Z] [IPC] transport changed: {"positionMs":25630,"positionBeats":59.80333333333333,"positionBars":15,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:58.628Z] [IPC] transport changed: {"positionMs":25830,"positionBeats":60.269999999999996,"positionBars":16,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:58.828Z] [IPC] transport changed: {"positionMs":26030,"positionBeats":60.736666666666665,"positionBars":16,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:59.028Z] [IPC] transport changed: {"positionMs":26230,"positionBeats":61.20333333333333,"positionBars":16,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:59.231Z] [IPC] transport changed: {"positionMs":26440,"positionBeats":61.69333333333333,"positionBars":16,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:59.428Z] [IPC] transport changed: {"positionMs":26630,"positionBeats":62.13666666666666,"positionBars":16,"isPlaying":true,"bpm":140}
+[2026-04-19T09:51:59.518Z] [IPC] → pause()
+[2026-04-19T09:51:59.519Z] [IPC] ← result: null
+[2026-04-19T09:51:59.628Z] [IPC] transport changed: {"positionMs":26730,"positionBeats":62.37,"positionBars":16,"isPlaying":false,"bpm":140}
+[2026-04-19T09:52:00.139Z] [IPC] window:close
+[2026-04-19T09:52:00.154Z] [IPC] → shutdown()

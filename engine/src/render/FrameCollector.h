@@ -29,8 +29,12 @@
 class Timeline;
 struct GridLayout;
 struct GridSlot;
+struct PingPongSettings;
 struct TrackInfo;
 struct VideoEvent;
+struct VisualEffect;
+
+class AnimationManager;
 
 // ---------------------------------------------------------------------------
 // CellFrameRequest — what one grid cell needs for this output frame
@@ -50,6 +54,26 @@ struct CellFrameRequest {
     bool        isChorus         = false;
     bool        isCrash          = false;
     int         zOrder           = 0;   // from GridSlot
+    float       gapScaleOverride = -1.0f; // -1 = use global, >=0 = per-track override
+
+    // Animation state snapshot (set by FrameCollector from AnimationManager)
+    float cornerRadius    = 0.0f;
+    float currentZoom     = 1.0f;   // MUST default to 1.0 (0 = black frame)
+    float currentPanX     = 0.0f;
+    float currentPanY     = 0.0f;
+    float currentRotDeg   = 0.0f;
+    float bounceOffsetX   = 0.0f;
+    float bounceOffsetY   = 0.0f;
+    float bounceScaleX    = 1.0f;   // MUST default to 1.0
+    float bounceScaleY    = 1.0f;   // MUST default to 1.0
+    float tvRampIntensity = 0.0f;
+
+    // Ping-pong crossfade: secondary frame to blend with primary (-1 = no blend)
+    int64_t pingPongSecondaryFrame = -1;
+    float   pingPongBlendFactor    = 0.0f;  // 0.0 = full primary, 1.0 = full secondary
+
+    // Pointer to track's visual effect chain (owned by TrackInfo, valid for frame lifetime)
+    const std::vector<VisualEffect>* visualChain = nullptr;
 };
 
 // ---------------------------------------------------------------------------
@@ -59,6 +83,8 @@ class FrameCollector
 {
 public:
     FrameCollector() = default;
+
+    void setAnimationManager(AnimationManager* mgr) { animationMgr_ = mgr; }
 
     // ── Step 1: Collect ─────────────────────────────────────────────────────
 
@@ -125,8 +151,23 @@ private:
     // Used for hold-last-frame clamping when the note sustains past trim end.
     static int64_t computeSourceFrameFromTime(double sourceTimeSec, double sourceFps);
 
+    // Compute ping-pong frame index (and optional secondary crossfade frame).
+    // Returns primary frame; sets outSecondaryFrame / outBlendFactor if crossfading.
+    static int64_t computePingPongFrame(
+        const VideoEvent&       ev,
+        double                  beatPos,
+        double                  bpm,
+        double                  sourceFps,
+        const PingPongSettings& pp,
+        int64_t&                outSecondaryFrame,
+        float&                  outBlendFactor);
+
     // Chorus hold-frame state: when the chorus clip has a gap, we redraw
     // the last known chorus frame so the background never goes black.
     int64_t     lastChorusSourceFrame_ = -1;
     std::string lastChorusSourcePath_;
+    int         lastChorusFlipMode_    = 0;
+    int         lastChorusNoteIndex_   = 0;
+
+    AnimationManager* animationMgr_ = nullptr;
 };

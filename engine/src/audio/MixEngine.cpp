@@ -2,14 +2,22 @@
 #include "audio/TrackMixer.h"
 #include "audio/SampleProcessor.h"
 #include "audio/EffectChainManager.h"
+#include "audio/EditorProcessCoordinator.h"
+#include "audio/GuardedPluginWrapper.h"
+#include "audio/PluginRegistry.h"
+#include "audio/PluginEditorHost.h"
 #include "audio/XlethEffectBase.h"
+#include "audio/ClipFade.h"
 #include "XlethDebug.h"
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstring>
+#include <cstdarg>
 #include <cstdio>
+#include <thread>
 
 // ─── MixDebugLog ─────────────────────────────────────────────────────────────
 
@@ -51,14 +59,483 @@ bool MixDebugLog::pop(MixDebugEntry& entry)
 
 // ─── MixEngine ───────────────────────────────────────────────────────────────
 
+#ifdef XLETH_DEBUG
+void MixEngine::logTelemetry(const char* fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    FILE* dest = telemetryLog_ ? telemetryLog_ : stderr;
+    vfprintf(dest, fmt, args);
+    va_end(args);
+    if (telemetryLog_)
+        fflush(telemetryLog_);
+}
+#endif
+
 MixEngine::MixEngine()
 {
     trackBuffers_.resize(kMaxTracks);
     activeClips_.reserve(256);
     activeBlocks_.reserve(64);
+
+#ifdef XLETH_DEBUG
+    boundaryEventsA_.reserve(256);
+    boundaryEventsB_.reserve(256);
+#endif
+
+    // Create plugin registry (registers VST3 format manager).
+    pluginRegistry_ = std::make_unique<PluginRegistry>();
+    editorHost_     = std::make_unique<PluginEditorHost>();
+
+    // Attempt to warm the known-plugin list from the on-disk cache.
+    // %APPDATA%\Xleth\plugin-cache.xml — silently skipped if absent.
+    juce::File cacheFile = juce::File::getSpecialLocation(
+                               juce::File::userApplicationDataDirectory)
+                           .getChildFile("Xleth")
+                           .getChildFile("plugin-cache.xml");
+    pluginRegistry_->loadScanResults(cacheFile);
+
+    coordinatorReaperThread_ = std::thread([this]() { runCoordinatorReaper(); });
+
+#ifdef XLETH_DEBUG
+    {
+#pragma warning(suppress: 4996)
+        const char* logPath = getenv("XLETH_TELEMETRY_LOG");
+        if (logPath && logPath[0] != '\0')
+        {
+#pragma warning(suppress: 4996)
+            telemetryLog_ = fopen(logPath, "a");
+        }
+        telemetryStartMs_ = juce::Time::getMillisecondCounterHiRes();
+    }
+#endif
 }
 
-MixEngine::~MixEngine() = default;
+MixEngine::~MixEngine()
+{
+    // Stop and join the reaper thread first. The loop drains any queued
+    // coordinators before exiting (reaperStop_ && empty → return).
+    {
+        std::lock_guard<std::mutex> lock(reaperMutex_);
+        reaperStop_.store(true);
+    }
+    reaperCv_.notify_all();
+    if (coordinatorReaperThread_.joinable())
+        coordinatorReaperThread_.join();
+
+    // Close all out-of-process VST editors. Any coordinators still in the map
+    // (editors open at shutdown) are destroyed here from the destructor thread —
+    // safe because no poll thread will self-join (they're joining the reaper, now gone).
+    {
+        std::lock_guard<std::mutex> lk(vstEditorCoordinatorsMutex_);
+        vstEditorCoordinators_.clear();
+    }
+
+    // Close all in-process editor windows (stock effects).
+    // This ensures AudioProcessorEditor is released before AudioProcessor.
+    if (editorHost_)
+        editorHost_->closeAllEditors();
+
+#ifdef XLETH_DEBUG
+    {
+        uint64_t orphansAggregate = 0;
+        for (const auto& kv : samplers_)
+            if (kv.second) orphansAggregate += kv.second->orphanCandidatesEver();
+        logTelemetry("[FixSummary] (shutdown) dispatchBoundariesSeen=%llu orphanCandidatesEver=%llu "
+                     "maxHeldSimultaneous=%u maxHeldSimultaneousPerSampler=%u\n",
+                     (unsigned long long)dispatchBoundariesSeen_,
+                     (unsigned long long)orphansAggregate,
+                     maxHeldSimultaneous_, maxHeldSimultaneousPerSampler_);
+    }
+    if (telemetryLog_)
+    {
+        fflush(telemetryLog_);
+        fclose(telemetryLog_);
+        telemetryLog_ = nullptr;
+    }
+#endif
+}
+
+// ── Coordinator reaper ────────────────────────────────────────────────────────
+
+void MixEngine::runCoordinatorReaper()
+{
+    while (true)
+    {
+        std::unique_ptr<EditorProcessCoordinator> toDestroy;
+        {
+            std::unique_lock<std::mutex> lock(reaperMutex_);
+            reaperCv_.wait(lock, [this] {
+                return reaperStop_.load() || !reaperQueue_.empty();
+            });
+            if (reaperStop_.load() && reaperQueue_.empty())
+                return;
+            toDestroy = std::move(reaperQueue_.front());
+            reaperQueue_.pop_front();
+        }
+        auto t0 = std::chrono::high_resolution_clock::now();
+        toDestroy.reset(); // synchronous destruction — may block 8-10 s on dead IPC pipe
+        double ms = std::chrono::duration<double, std::milli>(
+            std::chrono::high_resolution_clock::now() - t0).count();
+        std::fprintf(stderr,
+            "[CloseProfile] reaper destroyed coordinator in %.0fms\n", ms);
+        std::fflush(stderr);
+    }
+}
+
+void MixEngine::reapCoordinator(std::unique_ptr<EditorProcessCoordinator> dying)
+{
+    if (!dying) return;
+    {
+        std::lock_guard<std::mutex> lock(reaperMutex_);
+        reaperQueue_.push_back(std::move(dying));
+    }
+    reaperCv_.notify_one();
+}
+
+// ── Plugin registry ───────────────────────────────────────────────────────────
+
+PluginRegistry& MixEngine::getPluginRegistry()
+{
+    return *pluginRegistry_;
+}
+
+// ── Plugin editor host ────────────────────────────────────────────────────────
+
+void MixEngine::setEditorHostExe(const std::string& exePath)
+{
+    editorHostExePath_ = exePath;
+}
+
+void MixEngine::setMainWindowHandle(uintptr_t hwnd)
+{
+    mainWindowHwnd_.store(hwnd);
+    std::fprintf(stderr, "[EditorFlow] Main window handle stored: 0x%llX\n",
+                 (unsigned long long)hwnd);
+}
+
+bool MixEngine::openPluginEditor(int trackId, int nodeId)
+{
+    // Close-path profiling: measure how long after CLSD_received the next open
+    // arrives. Only logged when a close actually happened (flag set in CLSD handler).
+    if (g_closeProfileActive)
+    {
+        CPLOG("new_open_arrived");
+        g_closeProfileActive = false;
+
+        // Check whether the old coordinator is still in the map.
+        // If it is, onClosed_ has not fired yet — cleanup is still pending,
+        // and the new open will race with the deferred teardown.
+        const auto probeKey = std::make_pair(trackId, nodeId);
+        std::lock_guard<std::mutex> lk(vstEditorCoordinatorsMutex_);
+        auto it = vstEditorCoordinators_.find(probeKey);
+        if (it != vstEditorCoordinators_.end())
+        {
+            std::fprintf(stderr,
+                "[CloseProfile] WARNING old coordinator STILL IN MAP for "
+                "track=%d node=%d isEditorClosed=%d — onClosed_ not yet fired\n",
+                trackId, nodeId, (int)it->second->isEditorClosed());
+        }
+        else
+        {
+            std::fprintf(stderr,
+                "[CloseProfile] map.find() = end — old coordinator already "
+                "removed (onClosed_ fired before new open)\n");
+        }
+    }
+
+    // Fetch the processor and plugin file path under lock, then release before
+    // touching the GUI. Holding chainsMutex_ while creating a window is forbidden.
+    juce::AudioProcessor* proc = nullptr;
+    juce::String          pluginFilePath;
+    {
+        std::lock_guard<std::mutex> lock(chainsMutex_);
+        EffectChainManager* chain = nullptr;
+        if (trackId == -1)
+        {
+            chain = masterEffectChain_.get();
+        }
+        else
+        {
+            auto it = effectChains_.find(trackId);
+            if (it != effectChains_.end()) chain = it->second.get();
+        }
+        if (chain)
+        {
+            proc           = chain->getProcessor(nodeId);
+            pluginFilePath = chain->getPluginFilePath(nodeId);
+        }
+    }
+
+    if (!proc) return false;
+
+    // ── Route: VST node → out-of-process editor ──────────────────────────────
+    auto* wrapper = dynamic_cast<GuardedPluginWrapper*>(proc);
+    if (wrapper && pluginFilePath.isNotEmpty())
+    {
+        const auto key = std::make_pair(trackId, nodeId);
+
+        // Already open and alive — nothing to do.
+        {
+            std::lock_guard<std::mutex> lk(vstEditorCoordinatorsMutex_);
+            auto it = vstEditorCoordinators_.find(key);
+            if (it != vstEditorCoordinators_.end() && !it->second->isEditorClosed())
+            {
+                std::fprintf(stderr,
+                    "[EditorFlow] VST editor already open: track=%d node=%d\n",
+                    trackId, nodeId);
+                return true;
+            }
+            vstEditorCoordinators_.erase(key);  // remove stale closed entry if any
+        }
+
+        // Validate editor-host exe.
+        const juce::File editorHostExe{juce::String(editorHostExePath_)};
+        if (!editorHostExe.existsAsFile())
+        {
+            std::fprintf(stderr,
+                "[EditorFlow] xleth-editor-host.exe not found at: %s\n",
+                editorHostExe.getFullPathName().toRawUTF8());
+            return false;
+        }
+
+        // Serialize current plugin state for the editor process.
+        juce::MemoryBlock stateBlock;
+        proc->getStateInformation(stateBlock);
+        juce::String stateBase64;
+        if (stateBlock.getSize() > 0)
+        {
+            juce::MemoryOutputStream mos;
+            juce::Base64::convertToBase64(mos, stateBlock.getData(), stateBlock.getSize());
+            stateBase64 = mos.toString();
+        }
+
+        // Extract the inner AudioPluginInstance for bidirectional param sync.
+        // The coordinator will attach a listener to it. nullptr disables sync.
+        auto* pluginInstance =
+            dynamic_cast<juce::AudioPluginInstance*>(wrapper->getInner());
+
+        // Create coordinator and wire close callback.
+        auto coord = std::make_unique<EditorProcessCoordinator>(pluginInstance);
+
+        coord->onClosed_ = [this, key, wrapper]()
+        {
+            // This lambda was dispatched via callAsync. The elapsed shown here
+            // vs. before_onClosed_callback_invoked reveals Win32 message-queue
+            // latency in the addon-worker process (prime suspect for 6 s gap).
+            CPLOG("on_closed_callback_start");
+            std::fprintf(stderr,
+                "[EditorFlow] VST editor closed (CLSD/ERR_): track=%d node=%d\n",
+                key.first, key.second);
+
+            // Tear down the worker-side audio ring first (editor-host is gone).
+            CPLOG("before_disable_ring");
+            if (wrapper) wrapper->disableAudioStream();
+            CPLOG("after_disable_ring");
+
+            // Extract the coordinator from the map without destroying it yet,
+            // so the destructor (which may block in stopThread) runs OUTSIDE
+            // the mutex and can be timed independently.
+            std::unique_ptr<EditorProcessCoordinator> dying;
+            CPLOG("before_erase_from_coordinator_map");
+            {
+                std::lock_guard<std::mutex> lk(vstEditorCoordinatorsMutex_);
+                auto it = vstEditorCoordinators_.find(key);
+                if (it != vstEditorCoordinators_.end())
+                {
+                    dying = std::move(it->second);   // take ownership; map entry now null
+                    vstEditorCoordinators_.erase(it); // remove the (now-empty) entry
+                    std::fprintf(stderr,
+                        "[CloseProfile] map_erased trackId=%d nodeId=%d\n",
+                        key.first, key.second);
+                    std::fflush(stderr);
+                }
+            } // vstEditorCoordinatorsMutex_ released here
+            CPLOG("after_erase_from_coordinator_map");
+
+            // Hand destruction to the reaper thread. We are currently executing on
+            // the coordinator's own IPC poll thread — destroying the coordinator
+            // here would self-join (killWorkerProcess → stopThread → join self → deadlock).
+            // The reaper is a distinct long-lived thread guaranteed never to be any
+            // coordinator's poll thread.
+            reapCoordinator(std::move(dying));
+        };
+
+        // Build parent HWND hex string for editor window parenting.
+        juce::String parentHwndHex;
+        const uintptr_t hwnd = mainWindowHwnd_.load();
+        if (hwnd != 0)
+        {
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "%llX", (unsigned long long)hwnd);
+            parentHwndHex = juce::String(buf);
+        }
+        else
+        {
+            std::fprintf(stderr,
+                "[EditorFlow] Warning: main window HWND not set — editor will be unparented\n");
+        }
+
+        // Launch editor-host process.
+        std::fprintf(stderr,
+            "[EditorFlow] Opening VST editor: track=%d node=%d plugin=%s parent=0x%s\n",
+            trackId, nodeId, pluginFilePath.toRawUTF8(),
+            parentHwndHex.isEmpty() ? "0" : parentHwndHex.toRawUTF8());
+
+        if (!coord->start(editorHostExe, pluginFilePath, stateBase64, parentHwndHex))
+        {
+            std::fprintf(stderr,
+                "[EditorFlow] Failed to start editor process: track=%d node=%d\n",
+                trackId, nodeId);
+            return false;
+        }
+
+        // Poll for REDY (up to 5 s). The IPC poll thread sets editorReady_
+        // directly (not via callAsync), so we can read it here safely.
+        constexpr int kMaxWaitMs = 5000;
+        constexpr int kPollMs    = 50;
+        int waited = 0;
+        while (!coord->isEditorReady() && !coord->isEditorClosed() && waited < kMaxWaitMs)
+        {
+            juce::Thread::sleep(kPollMs);
+            waited += kPollMs;
+        }
+
+        if (!coord->isEditorReady())
+        {
+            std::fprintf(stderr,
+                "[EditorFlow] Timed out waiting for editor ready: track=%d node=%d"
+                " error='%s'\n",
+                trackId, nodeId, coord->getErrorMessage().c_str());
+            return false;
+        }
+
+        std::fprintf(stderr,
+            "[EditorFlow] VST editor ready: track=%d node=%d WxH=%dx%d\n",
+            trackId, nodeId,
+            coord->getEditorWidth(), coord->getEditorHeight());
+
+        // ── Audio streaming: enable worker-side ring, then tell editor-host ──
+        // Ordering: ring must exist before the editor-host tries to open it.
+        // Construct name: "Xleth_AudioStream_T{trackId}_N{nodeId}".
+        char shmBuf[96];
+        std::snprintf(shmBuf, sizeof(shmBuf),
+                      "Xleth_AudioStream_T%d_N%d", trackId, nodeId);
+        const std::string shmName = shmBuf;
+        const int streamSr = (int)(preparedSampleRate_ > 0 ? preparedSampleRate_ : 44100);
+        const int streamBs =  preparedBlockSize_ > 0 ? preparedBlockSize_ : 512;
+
+        wrapper->enableAudioStream(shmName, streamSr, streamBs);
+        coord->sendStreamStart(shmName, streamSr, streamBs);
+
+        {
+            std::lock_guard<std::mutex> lk(vstEditorCoordinatorsMutex_);
+            vstEditorCoordinators_[key] = std::move(coord);
+        }
+        return true;
+    }
+
+    // ── Route: stock effect → in-process DocumentWindow ─────────────────────
+    return editorHost_->openEditor(proc, trackId, nodeId);
+}
+
+void MixEngine::closePluginEditor(int trackId, int nodeId)
+{
+    const auto key = std::make_pair(trackId, nodeId);
+
+    // Step 1: ask the editor-host to stop its pump + releaseResources, BEFORE
+    // destroying the worker-side ring (the editor-host is still reading it).
+    // We hold a raw observer of the coordinator only under the map mutex; the
+    // STOP send itself is OK from any thread (IPC pipe is thread-safe).
+    EditorProcessCoordinator* observedCoord = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(vstEditorCoordinatorsMutex_);
+        auto it = vstEditorCoordinators_.find(key);
+        if (it != vstEditorCoordinators_.end())
+            observedCoord = it->second.get();
+    }
+    if (observedCoord) observedCoord->sendStreamStop();
+
+    // Step 2: find the VST wrapper so we can tear down the worker-side ring.
+    GuardedPluginWrapper* wrapper = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(chainsMutex_);
+        EffectChainManager* chain = nullptr;
+        if (trackId == -1)
+        {
+            chain = masterEffectChain_.get();
+        }
+        else
+        {
+            auto it = effectChains_.find(trackId);
+            if (it != effectChains_.end()) chain = it->second.get();
+        }
+        if (chain)
+            wrapper = dynamic_cast<GuardedPluginWrapper*>(chain->getProcessor(nodeId));
+    }
+    if (wrapper) wrapper->disableAudioStream();
+
+    // Step 3: destroy the coordinator (closes IPC → editor-host quits).
+    // Move out under the mutex, then destruct on a background thread to avoid
+    // blocking the message thread if killWorkerProcess() stalls on a dead pipe.
+    std::unique_ptr<EditorProcessCoordinator> dyingExplicit;
+    {
+        std::lock_guard<std::mutex> lk(vstEditorCoordinatorsMutex_);
+        auto it = vstEditorCoordinators_.find(key);
+        if (it != vstEditorCoordinators_.end())
+        {
+            dyingExplicit = std::move(it->second);
+            vstEditorCoordinators_.erase(it);
+        }
+    }
+    reapCoordinator(std::move(dyingExplicit));
+
+    // Also close any in-process editor (stock effects).
+    editorHost_->closeEditor(trackId, nodeId);
+}
+
+void MixEngine::closePluginEditorsForTrack(int trackId)
+{
+    // Collect nodeIds for this track under the map mutex, then tear down each
+    // one individually via closePluginEditor so stream-stop ordering holds.
+    std::vector<int> nodesToClose;
+    {
+        std::lock_guard<std::mutex> lk(vstEditorCoordinatorsMutex_);
+        for (auto& kv : vstEditorCoordinators_)
+            if (kv.first.first == trackId)
+                nodesToClose.push_back(kv.first.second);
+    }
+    for (int nodeId : nodesToClose)
+        closePluginEditor(trackId, nodeId);
+
+    editorHost_->closeEditorsForTrack(trackId);
+}
+
+void MixEngine::closeAllPluginEditors()
+{
+    // Collect keys first, then tear down each one via the normal path so the
+    // STOP → disable → destroy-coordinator ordering is preserved.
+    std::vector<std::pair<int,int>> all;
+    {
+        std::lock_guard<std::mutex> lk(vstEditorCoordinatorsMutex_);
+        all.reserve(vstEditorCoordinators_.size());
+        for (auto& kv : vstEditorCoordinators_) all.push_back(kv.first);
+    }
+    for (auto& key : all) closePluginEditor(key.first, key.second);
+
+    editorHost_->closeAllEditors();
+}
+
+bool MixEngine::isPluginEditorOpen(int trackId, int nodeId) const
+{
+    {
+        std::lock_guard<std::mutex> lk(vstEditorCoordinatorsMutex_);
+        auto it = vstEditorCoordinators_.find(std::make_pair(trackId, nodeId));
+        if (it != vstEditorCoordinators_.end() && !it->second->isEditorClosed())
+            return true;
+    }
+    return editorHost_->isEditorOpen(trackId, nodeId);
+}
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -113,6 +590,10 @@ void MixEngine::loadSamplerForTrackRegion(int trackId, int regionId)
                        : 48000.0;
 
     auto s = std::make_unique<Sampler>();
+#ifdef XLETH_DEBUG
+    s->setTelemetryLog(telemetryLog_);
+    s->setDebugKey(trackId, regionId);
+#endif
     s->setRootNote(region->rootNote);
     s->setEnvelope(region->delayMs, region->attackMs, region->holdMs,
                    region->decayMs, region->sustain, region->releaseMs,
@@ -151,32 +632,101 @@ void MixEngine::loadSamplerForTrackRegion(int trackId, int regionId)
     SampleProcessor::applyFlags(working, fx);
     s->loadSample(working, srcSR, region->rootNote);
 
+#ifdef XLETH_DEBUG
+    {
+        auto existing = samplers_.find({trackId, regionId});
+        if (existing != samplers_.end() && existing->second &&
+            existing->second->countActiveVoices() > 0)
+        {
+            FILE* d = telemetryLog_ ? telemetryLog_ : stderr;
+            fprintf(d, "[SamplerOrphan] removed samplerPtr=%p debugKey=%d:%d"
+                " activeVoices=%d heldVoices=%d reason=replace\n",
+                static_cast<void*>(existing->second.get()),
+                existing->first.trackId, existing->first.regionId,
+                existing->second->countActiveVoices(), existing->second->countHeldVoices());
+            fflush(d);
+        }
+    }
+#endif
     samplers_[{trackId, regionId}] = std::move(s);
 }
 
 void MixEngine::unloadSamplerForTrackRegion(int trackId, int regionId)
 {
+#ifdef XLETH_DEBUG
+    {
+        auto it = samplers_.find({trackId, regionId});
+        if (it != samplers_.end() && it->second && it->second->countActiveVoices() > 0) {
+            FILE* d = telemetryLog_ ? telemetryLog_ : stderr;
+            fprintf(d, "[SamplerOrphan] removed samplerPtr=%p debugKey=%d:%d"
+                " activeVoices=%d heldVoices=%d reason=erase\n",
+                static_cast<void*>(it->second.get()),
+                it->first.trackId, it->first.regionId,
+                it->second->countActiveVoices(), it->second->countHeldVoices());
+            fflush(d);
+        }
+    }
+#endif
     samplers_.erase({trackId, regionId});
 }
 
 void MixEngine::unloadSamplersForTrack(int trackId)
 {
     for (auto it = samplers_.begin(); it != samplers_.end(); ) {
-        if (it->first.trackId == trackId) it = samplers_.erase(it);
-        else                              ++it;
+        if (it->first.trackId == trackId) {
+#ifdef XLETH_DEBUG
+            if (it->second && it->second->countActiveVoices() > 0) {
+                FILE* d = telemetryLog_ ? telemetryLog_ : stderr;
+                fprintf(d, "[SamplerOrphan] removed samplerPtr=%p debugKey=%d:%d"
+                    " activeVoices=%d heldVoices=%d reason=erase\n",
+                    static_cast<void*>(it->second.get()),
+                    it->first.trackId, it->first.regionId,
+                    it->second->countActiveVoices(), it->second->countHeldVoices());
+                fflush(d);
+            }
+#endif
+            it = samplers_.erase(it);
+        } else {
+            ++it;
+        }
     }
 }
 
 void MixEngine::unloadSamplersForRegion(int regionId)
 {
     for (auto it = samplers_.begin(); it != samplers_.end(); ) {
-        if (it->first.regionId == regionId) it = samplers_.erase(it);
-        else                                ++it;
+        if (it->first.regionId == regionId) {
+#ifdef XLETH_DEBUG
+            if (it->second && it->second->countActiveVoices() > 0) {
+                FILE* d = telemetryLog_ ? telemetryLog_ : stderr;
+                fprintf(d, "[SamplerOrphan] removed samplerPtr=%p debugKey=%d:%d"
+                    " activeVoices=%d heldVoices=%d reason=erase\n",
+                    static_cast<void*>(it->second.get()),
+                    it->first.trackId, it->first.regionId,
+                    it->second->countActiveVoices(), it->second->countHeldVoices());
+                fflush(d);
+            }
+#endif
+            it = samplers_.erase(it);
+        } else {
+            ++it;
+        }
     }
 }
 
-void MixEngine::silenceAllSamplers()
+void MixEngine::silenceAllSamplers(const char* reason)
 {
+#ifdef XLETH_DEBUG
+    {
+        FILE* snapDest = telemetryLog_ ? telemetryLog_ : stderr;
+        for (auto& [key, sampler] : samplers_)
+            if (sampler) sampler->debugSnapshotActiveVoices(
+                snapDest, reason, key.trackId, key.regionId);
+        for (auto& [id, sampler] : previewSamplers_)
+            if (sampler) sampler->debugSnapshotActiveVoices(
+                snapDest, reason, -1, id);
+    }
+#endif
     for (auto& [key, sampler] : samplers_)
         if (sampler) sampler->allNotesOff();
     for (auto& [id, sampler] : previewSamplers_)
@@ -202,8 +752,22 @@ void MixEngine::rebuildAllSamplers()
 
     // 2. Prune samplers that are no longer referenced by any block.
     for (auto it = samplers_.begin(); it != samplers_.end(); ) {
-        if (needed.find(it->first) == needed.end()) it = samplers_.erase(it);
-        else                                        ++it;
+        if (needed.find(it->first) == needed.end()) {
+#ifdef XLETH_DEBUG
+            if (it->second && it->second->countActiveVoices() > 0) {
+                FILE* d = telemetryLog_ ? telemetryLog_ : stderr;
+                fprintf(d, "[SamplerOrphan] removed samplerPtr=%p debugKey=%d:%d"
+                    " activeVoices=%d heldVoices=%d reason=rebuild\n",
+                    static_cast<void*>(it->second.get()),
+                    it->first.trackId, it->first.regionId,
+                    it->second->countActiveVoices(), it->second->countHeldVoices());
+                fflush(d);
+            }
+#endif
+            it = samplers_.erase(it);
+        } else {
+            ++it;
+        }
     }
 
     // 3. Ensure every needed pair has a fresh sampler (reload to pick up any
@@ -328,7 +892,7 @@ void MixEngine::invalidateAllGlobalMethodClips() {
         if (!c || c->stretchMethod != StretchMethod::Global) continue;
         const bool needs = (c->pitchOffset != 0 || c->pitchOffsetCents != 0
                          || c->reversed || c->stretchRatio != 1.0);
-        if (needs) { invalidateClipCache(c->id); ++count; }
+        if (needs) { invalidateClipCache(c->id, "invalidateAllGlobalMethodClips"); ++count; }
     }
 #ifdef XLETH_DEBUG
     fprintf(stderr, "[EngineConfig] mass markDirty: %d clips invalidated\n", count);
@@ -337,27 +901,70 @@ void MixEngine::invalidateAllGlobalMethodClips() {
 
 // ── Clip render cache (message thread) ──────────────────────────────────────
 
-void MixEngine::invalidateClipCache(int clipId)
+void MixEngine::invalidateClipCache(int clipId, const char* trigger)
 {
+#ifdef XLETH_DEBUG
+    fprintf(stderr, "[CacheQueue] invalidateClipCache entry: clip=%d trigger=%s\n",
+            clipId, trigger ? trigger : "null");
+    fflush(stderr);
+#endif
     clipRenderCache_.markDirty(clipId);
 
-    if (!timeline_ || !sampleBank_) return;
+    if (!timeline_ || !sampleBank_) {
+#ifdef XLETH_DEBUG
+        fprintf(stderr, "[CacheQueue] SKIP clip=%d reason=no_timeline_or_sampleBank trigger=%s\n",
+                clipId, trigger ? trigger : "null");
+        fflush(stderr);
+#endif
+        return;
+    }
 
     const Clip* clip = timeline_->getClip(clipId);
-    if (!clip) return;
+    if (!clip) {
+#ifdef XLETH_DEBUG
+        fprintf(stderr, "[CacheQueue] SKIP clip=%d reason=clip_not_in_timeline trigger=%s\n",
+                clipId, trigger ? trigger : "null");
+        fflush(stderr);
+#endif
+        return;
+    }
 
     // Only submit a render job if the clip actually needs processing
     const bool needsProcessing = (clip->pitchOffset != 0
                                || clip->pitchOffsetCents != 0
                                || clip->reversed
                                || clip->stretchRatio != 1.0);
-    if (!needsProcessing) return;
+    if (!needsProcessing) {
+#ifdef XLETH_DEBUG
+        fprintf(stderr, "[CacheQueue] SKIP clip=%d reason=identity_params "
+                "(pitchSemi=%d cents=%d reversed=%d stretch=%.3f) trigger=%s\n",
+                clipId, clip->pitchOffset, clip->pitchOffsetCents,
+                clip->reversed ? 1 : 0, clip->stretchRatio,
+                trigger ? trigger : "null");
+        fflush(stderr);
+#endif
+        return;
+    }
 
     auto it = regionToSampleMap_.find(clip->regionId);
-    if (it == regionToSampleMap_.end()) return;
+    if (it == regionToSampleMap_.end()) {
+#ifdef XLETH_DEBUG
+        fprintf(stderr, "[CacheQueue] SKIP clip=%d reason=region_%d_not_in_sampleMap trigger=%s\n",
+                clipId, clip->regionId, trigger ? trigger : "null");
+        fflush(stderr);
+#endif
+        return;
+    }
 
     const juce::AudioBuffer<float>* srcBuf = sampleBank_->getSample(it->second);
-    if (!srcBuf) return;
+    if (!srcBuf) {
+#ifdef XLETH_DEBUG
+        fprintf(stderr, "[CacheQueue] SKIP clip=%d reason=sampleBank_no_buffer trigger=%s\n",
+                clipId, trigger ? trigger : "null");
+        fflush(stderr);
+#endif
+        return;
+    }
 
     const double bpm = timeline_->getBPM();
     const double sr  = preparedSampleRate_;
@@ -397,6 +1004,15 @@ void MixEngine::invalidateClipCache(int clipId)
                                        : clip->formantPreserve;
     }
 
+#ifdef XLETH_DEBUG
+    fprintf(stderr, "[CacheQueue] ENQUEUE clip=%d regionId=%d stretchRatio=%.3f reversed=%d "
+            "stretchMethod=%d (resolved=%d) pitch=%dst+%dc trigger=%s\n",
+            clipId, clip->regionId, clip->stretchRatio, clip->reversed ? 1 : 0,
+            (int)clip->stretchMethod, key.stretchMethod,
+            clip->pitchOffset, clip->pitchOffsetCents,
+            trigger ? trigger : "null");
+    fflush(stderr);
+#endif
     clipRenderCache_.submitJob(clipId, key, *srcBuf, sr);
 }
 
@@ -493,7 +1109,25 @@ void MixEngine::ensurePreviewSampler(int regionId)
 {
     if (sampleBank_ == nullptr || timeline_ == nullptr) return;
     const SampleRegion* r = timeline_->getRegion(regionId);
-    if (r == nullptr) { previewSamplers_.erase(regionId); return; }
+    if (r == nullptr) {
+#ifdef XLETH_DEBUG
+        {
+            auto it = previewSamplers_.find(regionId);
+            if (it != previewSamplers_.end() && it->second &&
+                it->second->countActiveVoices() > 0)
+            {
+                FILE* d = telemetryLog_ ? telemetryLog_ : stderr;
+                fprintf(d, "[SamplerOrphan] removed samplerPtr=%p debugKey=-1:%d"
+                    " activeVoices=%d heldVoices=%d reason=erase\n",
+                    static_cast<void*>(it->second.get()), regionId,
+                    it->second->countActiveVoices(), it->second->countHeldVoices());
+                fflush(d);
+            }
+        }
+#endif
+        previewSamplers_.erase(regionId);
+        return;
+    }
 
     const int sampleBankId = getSampleIdForRegion(regionId);
     if (sampleBankId < 0) return;
@@ -506,6 +1140,10 @@ void MixEngine::ensurePreviewSampler(int regionId)
                        : 48000.0;
 
     auto s = std::make_unique<Sampler>();
+#ifdef XLETH_DEBUG
+    s->setTelemetryLog(telemetryLog_);
+    s->setDebugKey(-1, regionId);  // trackId=-1 distinguishes preview samplers
+#endif
     s->setRootNote(r->rootNote);
     s->setEnvelope(r->delayMs, r->attackMs, r->holdMs,
                    r->decayMs, r->sustain, r->releaseMs,
@@ -544,11 +1182,41 @@ void MixEngine::ensurePreviewSampler(int regionId)
     SampleProcessor::applyFlags(working, fx);
     s->loadSample(working, srcSR, r->rootNote);
 
+#ifdef XLETH_DEBUG
+    {
+        auto existing = previewSamplers_.find(regionId);
+        if (existing != previewSamplers_.end() && existing->second &&
+            existing->second->countActiveVoices() > 0)
+        {
+            FILE* d = telemetryLog_ ? telemetryLog_ : stderr;
+            fprintf(d, "[SamplerOrphan] removed samplerPtr=%p debugKey=-1:%d"
+                " activeVoices=%d heldVoices=%d reason=replace\n",
+                static_cast<void*>(existing->second.get()), regionId,
+                existing->second->countActiveVoices(), existing->second->countHeldVoices());
+            fflush(d);
+        }
+    }
+#endif
     previewSamplers_[regionId] = std::move(s);
 }
 
 void MixEngine::unloadPreviewSampler(int regionId)
 {
+#ifdef XLETH_DEBUG
+    {
+        auto it = previewSamplers_.find(regionId);
+        if (it != previewSamplers_.end() && it->second &&
+            it->second->countActiveVoices() > 0)
+        {
+            FILE* d = telemetryLog_ ? telemetryLog_ : stderr;
+            fprintf(d, "[SamplerOrphan] removed samplerPtr=%p debugKey=-1:%d"
+                " activeVoices=%d heldVoices=%d reason=erase\n",
+                static_cast<void*>(it->second.get()), regionId,
+                it->second->countActiveVoices(), it->second->countHeldVoices());
+            fflush(d);
+        }
+    }
+#endif
     previewSamplers_.erase(regionId);
 }
 
@@ -576,6 +1244,7 @@ void MixEngine::initEffectChain(int trackId)
     std::lock_guard<std::mutex> lock(chainsMutex_);
     if (effectChains_.count(trackId)) return;
     auto chain = std::make_unique<EffectChainManager>();
+    chain->setPluginRegistry(pluginRegistry_.get());
     chain->init(preparedSampleRate_, preparedBlockSize_);
     effectChains_[trackId] = std::move(chain);
 }
@@ -586,6 +1255,18 @@ void MixEngine::destroyEffectChain(int trackId)
     effectChains_.erase(trackId);
 }
 
+void MixEngine::destroyAllEffectChains()
+{
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+    const size_t nTrack = effectChains_.size();
+    effectChains_.clear();
+    const bool hadMaster = (bool)masterEffectChain_;
+    masterEffectChain_.reset();
+    std::fprintf(stderr,
+                 "[MixEngine] destroyAllEffectChains: cleared %zu track chain(s)%s\n",
+                 nTrack, hadMaster ? ", destroyed master chain" : "");
+}
+
 int MixEngine::addEffect(int trackId, const std::string& pluginId, int position)
 {
     std::lock_guard<std::mutex> lock(chainsMutex_);
@@ -594,6 +1275,7 @@ int MixEngine::addEffect(int trackId, const std::string& pluginId, int position)
     if (!chain)
     {
         chain = std::make_unique<EffectChainManager>();
+        chain->setPluginRegistry(pluginRegistry_.get());
         chain->init(preparedSampleRate_, preparedBlockSize_);
     }
     return chain->addEffect(pluginId, position);
@@ -601,6 +1283,11 @@ int MixEngine::addEffect(int trackId, const std::string& pluginId, int position)
 
 bool MixEngine::removeEffect(int trackId, int nodeId)
 {
+    // Close any open editor (in-process or out-of-process) BEFORE removing the
+    // AudioProcessor node. This avoids dangling AudioProcessor* references in
+    // PluginEditorWindow and EditorProcessCoordinator::ParamSyncListener.
+    closePluginEditor(trackId, nodeId);
+
     std::lock_guard<std::mutex> lock(chainsMutex_);
     auto it = effectChains_.find(trackId);
     if (it == effectChains_.end() || !it->second) return false;
@@ -638,6 +1325,7 @@ void MixEngine::initMasterEffectChain()
     std::lock_guard<std::mutex> lock(chainsMutex_);
     if (masterEffectChain_) return;
     masterEffectChain_ = std::make_unique<EffectChainManager>();
+    masterEffectChain_->setPluginRegistry(pluginRegistry_.get());
     masterEffectChain_->init(preparedSampleRate_, preparedBlockSize_);
 }
 
@@ -653,6 +1341,7 @@ int MixEngine::addMasterEffect(const std::string& pluginId, int position)
     if (!masterEffectChain_)
     {
         masterEffectChain_ = std::make_unique<EffectChainManager>();
+        masterEffectChain_->setPluginRegistry(pluginRegistry_.get());
         masterEffectChain_->init(preparedSampleRate_, preparedBlockSize_);
     }
     return masterEffectChain_->addEffect(pluginId, position);
@@ -660,6 +1349,9 @@ int MixEngine::addMasterEffect(const std::string& pluginId, int position)
 
 bool MixEngine::removeMasterEffect(int nodeId)
 {
+    // Close editor before destroying the node (trackId = -1 = master chain).
+    editorHost_->closeEditor(-1, nodeId);
+
     std::lock_guard<std::mutex> lock(chainsMutex_);
     if (!masterEffectChain_) return false;
     return masterEffectChain_->removeEffect(nodeId);
@@ -709,6 +1401,7 @@ bool MixEngine::loadEffectChainFromJSON(int trackId, const nlohmann::json& j)
     auto& chain = effectChains_[trackId];
     if (!chain) {
         chain = std::make_unique<EffectChainManager>();
+        chain->setPluginRegistry(pluginRegistry_.get());
         chain->init(preparedSampleRate_, preparedBlockSize_);
     }
     return chain->graphFromJSON(j);
@@ -719,9 +1412,108 @@ bool MixEngine::loadMasterEffectChainFromJSON(const nlohmann::json& j)
     std::lock_guard<std::mutex> lock(chainsMutex_);
     if (!masterEffectChain_) {
         masterEffectChain_ = std::make_unique<EffectChainManager>();
+        masterEffectChain_->setPluginRegistry(pluginRegistry_.get());
         masterEffectChain_->init(preparedSampleRate_, preparedBlockSize_);
     }
     return masterEffectChain_->graphFromJSON(j);
+}
+
+// ── Missing-plugin support ──────────────────────────────────────────────────
+
+std::string MixEngine::getMissingPluginsJSON() const
+{
+    nlohmann::json arr = nlohmann::json::array();
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+
+    auto appendMissing = [&](int trackId, const EffectChainManager* chain)
+    {
+        if (!chain) return;
+        for (const auto& node : chain->getMissingNodesJSON())
+        {
+            nlohmann::json entry = node;
+            entry["trackId"] = trackId;
+
+            // Enrich with human-readable name by reading the processor's display name.
+            // PassthroughProcessor::getName() returns "[Missing: OriginalName]" — strip the wrapper.
+            const int nid = node.value("nodeId", -1);
+            juce::AudioProcessor* proc = nid >= 0
+                ? const_cast<EffectChainManager*>(chain)->getProcessor(nid)
+                : nullptr;
+
+            std::string displayName = node.value("pluginId", "Unknown");
+            if (proc)
+            {
+                const std::string raw = proc->getName().toStdString();
+                constexpr auto prefix = "[Missing: ";
+                constexpr auto prefixLen = 10; // strlen("[Missing: ")
+                if (raw.size() > prefixLen + 1
+                        && raw.substr(0, prefixLen) == prefix
+                        && raw.back() == ']')
+                    displayName = raw.substr(prefixLen, raw.size() - prefixLen - 1);
+                else
+                    displayName = raw;
+            }
+            entry["pluginName"]   = displayName;
+            entry["pluginVendor"] = "";
+            entry["filePath"]     = "";
+
+            arr.push_back(entry);
+        }
+    };
+
+    for (const auto& [tid, chain] : effectChains_)
+        appendMissing(tid, chain.get());
+    appendMissing(-1, masterEffectChain_.get());
+
+    return arr.dump();
+}
+
+bool MixEngine::tryResolvePlugin(int trackId, int nodeId)
+{
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+    if (!pluginRegistry_) return false;
+
+    if (trackId == -1)
+    {
+        if (!masterEffectChain_) return false;
+        return masterEffectChain_->tryResolvePlugin(nodeId, *pluginRegistry_);
+    }
+    auto it = effectChains_.find(trackId);
+    if (it == effectChains_.end() || !it->second) return false;
+    return it->second->tryResolvePlugin(nodeId, *pluginRegistry_);
+}
+
+void MixEngine::removeAllMissingPlugins()
+{
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+
+    auto removeFromChain = [&](EffectChainManager* chain)
+    {
+        if (!chain) return;
+        const auto missingJson = chain->getMissingNodesJSON();
+        for (const auto& node : missingJson)
+        {
+            const int nid = node.value("nodeId", -1);
+            if (nid >= 0) chain->removeEffect(nid);
+        }
+    };
+
+    for (auto& [tid, chain] : effectChains_)
+        removeFromChain(chain.get());
+    removeFromChain(masterEffectChain_.get());
+}
+
+bool MixEngine::resetCrashedPlugin(int trackId, int nodeId)
+{
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+    if (trackId == -1)
+    {
+        if (!masterEffectChain_) return false;
+        return masterEffectChain_->resetCrashedPlugin(nodeId);
+    }
+    auto it = effectChains_.find(trackId);
+    if (it == effectChains_.end() || !it->second) return false;
+    return it->second->resetCrashedPlugin(nodeId);
 }
 
 // ── Graph-mode routing (per-track) ──────────────────────────────────────────
@@ -1048,8 +1840,14 @@ void MixEngine::triggerPatternNotes(const ActivePatternBlock& apb,
         return static_cast<int64_t>(seconds * (bpm / 60.0) * 960.0);
     };
 
-    const int64_t bufStartTick = sampleToTick(bufferStart);
-    const int64_t bufEndTick   = sampleToTick(bufferEnd);
+    const int64_t bufStartTick       = sampleToTick(bufferStart);
+    const int64_t bufEndTick         = sampleToTick(bufferEnd);
+    // Widen search by ±2 ticks to catch notes whose tick-domain position
+    // rounds to just outside the narrow window but whose true sample position
+    // falls within this buffer.  Sample-domain membership is the authoritative
+    // filter applied in the dispatch loop below.
+    const int64_t bufStartTickSearch = bufStartTick - 2;
+    const int64_t bufEndTickSearch   = bufEndTick   + 2;
 
     const int64_t blockPosTicks    = apb.block->position.ticks;
     const int64_t blockOffsetTicks = apb.block->offset.ticks;
@@ -1058,8 +1856,8 @@ void MixEngine::triggerPatternNotes(const ActivePatternBlock& apb,
 
     const int64_t blockEndTicks = blockPosTicks + apb.block->duration.ticks;
 
-    const int64_t windowStart = std::max<int64_t>(bufStartTick, blockPosTicks);
-    const int64_t windowEnd   = std::min<int64_t>(bufEndTick, blockEndTicks);
+    const int64_t windowStart = std::max<int64_t>(bufStartTickSearch, blockPosTicks);
+    const int64_t windowEnd   = std::min<int64_t>(bufEndTickSearch, blockEndTicks);
     if (windowEnd <= windowStart) return;
 
     // Loop iteration range for the (pattern-local) time axis. Clamp first to 0
@@ -1104,8 +1902,20 @@ void MixEngine::triggerPatternNotes(const ActivePatternBlock& apb,
             const int64_t absNoteOff = std::min<int64_t>(rawNoteOff, blockEndTicks);
 
             if (absNoteOn >= windowStart && absNoteOn < windowEnd
-                && eventCount < kMaxNoteEvents)
+                && eventCount < kMaxNoteEvents) {
                 events[eventCount++] = { absNoteOn, note.pitch, note.velocity, true };
+#ifdef XLETH_DEBUG
+                // Log where the noteOff for this note would land relative to the window.
+                // offInWin=YES means both events fire in the same buffer (very short note).
+                // offInWin=NO means the noteOff must be picked up in a later buffer.
+                fprintf(stderr, "[NoteOffDiag] noteOnTick=%lld noteOffTick=%lld dur=%lld "
+                        "blockEnd=%lld windowStart=%lld windowEnd=%lld offInWin=%s\n",
+                        (long long)absNoteOn, (long long)absNoteOff,
+                        (long long)note.duration.ticks, (long long)blockEndTicks,
+                        (long long)windowStart, (long long)windowEnd,
+                        (absNoteOff > windowStart && absNoteOff <= windowEnd) ? "YES" : "NO");
+#endif
+            }
 
             // Half-open on the start side, inclusive on the end side so an
             // off-event that lands exactly on windowEnd (common: note ends at
@@ -1129,11 +1939,60 @@ void MixEngine::triggerPatternNotes(const ActivePatternBlock& apb,
             return !a.isNoteOn && b.isNoteOn; // off before on
         });
 
+    const int numSamples = static_cast<int>(bufferEnd - bufferStart);
+
     for (int i = 0; i < eventCount; ++i) {
-        if (events[i].isNoteOn)
-            apb.sampler->noteOn(events[i].pitch, events[i].velocity);
-        else
-            apb.sampler->noteOff(events[i].pitch, /*force=*/true);
+        if (events[i].isNoteOn) {
+            const int64_t absNoteOnSample = TickTime{events[i].tick}.toSamples(bpm, sampleRate);
+            // Sample-domain membership is the authoritative filter.
+            // The widened tick window may have admitted candidates from adjacent
+            // buffers; discard them here before computing the offset.
+            if (absNoteOnSample <  bufferStart) continue;
+            if (absNoteOnSample >= bufferEnd)   continue;
+            const int sampleOffset = static_cast<int>(absNoteOnSample - bufferStart);
+            jassert(sampleOffset >= 0 && sampleOffset < numSamples);
+#ifdef XLETH_DEBUG
+            fprintf(stderr, "[PatternTrig] absTick=%lld absSample=%lld "
+                    "bufStart=%lld bufEnd=%lld numSamples=%d offset=%d\n",
+                    (long long)events[i].tick, (long long)absNoteOnSample,
+                    (long long)bufferStart, (long long)bufferEnd, numSamples,
+                    sampleOffset);
+#endif
+            apb.sampler->noteOn(events[i].pitch, events[i].velocity, sampleOffset);
+#ifdef XLETH_DEBUG
+            if (boundaryLogActive_ && (&apb == boundaryBlockA_ || &apb == boundaryBlockB_))
+            {
+                auto& vec = (&apb == boundaryBlockA_) ? boundaryEventsA_ : boundaryEventsB_;
+                vec.push_back({ events[i].tick, events[i].pitch, events[i].velocity, true });
+            }
+#endif
+        } else {
+            const int64_t absNoteOffSample =
+                TickTime{events[i].tick}.toSamples(bpm, sampleRate);
+            // Sample-domain membership is the authoritative filter — same
+            // pattern as the noteOn branch above. The widened tick search
+            // admits candidates from adjacent buffers; this filter discards
+            // them so they fire in the correct buffer instead.
+            if (absNoteOffSample <  bufferStart) continue;
+            if (absNoteOffSample >= bufferEnd)   continue;
+            const int noteOffOffset = static_cast<int>(absNoteOffSample - bufferStart);
+            jassert(noteOffOffset >= 0 && noteOffOffset < numSamples);
+#ifdef XLETH_DEBUG
+            fprintf(stderr, "[PatternOff] absTick=%lld absSample=%lld "
+                    "bufStart=%lld bufEnd=%lld numSamples=%d offset=%d\n",
+                    (long long)events[i].tick, (long long)absNoteOffSample,
+                    (long long)bufferStart, (long long)bufferEnd, numSamples,
+                    noteOffOffset);
+#endif
+            apb.sampler->noteOff(events[i].pitch, noteOffOffset, /*force=*/true);
+#ifdef XLETH_DEBUG
+            if (boundaryLogActive_ && (&apb == boundaryBlockA_ || &apb == boundaryBlockB_))
+            {
+                auto& vec = (&apb == boundaryBlockA_) ? boundaryEventsA_ : boundaryEventsB_;
+                vec.push_back({ events[i].tick, events[i].pitch, 0.0f, false });
+            }
+#endif
+        }
     }
 }
 
@@ -1144,6 +2003,23 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                              int                       numSamples,
                              const Transport&          transport)
 {
+    {
+        static std::atomic<uint64_t> plCounter{0};
+        const uint64_t n = plCounter.fetch_add(1);
+        if (n % 500 == 0)
+        {
+            fprintf(stderr, "[ProofOfLife] processBlock n=%llu xlethDebug=%d telemetryLogSet=%d\n",
+                    (unsigned long long)n,
+#ifdef XLETH_DEBUG
+                    1,
+#else
+                    0,
+#endif
+                    telemetryLog_ != nullptr ? 1 : 0);
+            fflush(stderr);
+        }
+    }
+
     // Early out: no timeline
     if (timeline_ == nullptr)
     {
@@ -1162,6 +2038,17 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     // begin their release tail immediately instead of continuing to hold.
     if (wasPlaying_ && !isPlaying)
     {
+#ifdef XLETH_DEBUG
+        {
+            FILE* snapDest = telemetryLog_ ? telemetryLog_ : stderr;
+            for (auto& kv : samplers_)
+                if (kv.second) kv.second->debugSnapshotActiveVoices(
+                    snapDest, "audio_thread_stop_transition", kv.first.trackId, kv.first.regionId);
+            for (auto& kv : previewSamplers_)
+                if (kv.second) kv.second->debugSnapshotActiveVoices(
+                    snapDest, "audio_thread_stop_transition", -1, kv.first);
+        }
+#endif
         for (auto& kv : samplers_)
             if (kv.second) kv.second->allNotesOff();
         for (auto& kv : previewSamplers_)
@@ -1227,13 +2114,57 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     const int64_t bufStart  = position;
     const int64_t bufEnd    = position + numSamples;
 
+#ifdef XLETH_DEBUG
+    {
+        const int64_t inventoryInterval = static_cast<int64_t>(3.0 * sampleRate);
+        if (lastInventoryAbsSample_ < 0 ||
+            (bufStart - lastInventoryAbsSample_) >= inventoryInterval)
+        {
+            lastInventoryAbsSample_ = bufStart;
+            FILE* invDest = telemetryLog_ ? telemetryLog_ : stderr;
+            for (auto& [key, sampler] : samplers_) {
+                if (!sampler) continue;
+                fprintf(invDest,
+                    "[SamplerInventory] map=samplers this=%p debugKey=%d:%d"
+                    " voiceCount=%d heldCount=%d\n",
+                    static_cast<void*>(sampler.get()),
+                    key.trackId, key.regionId,
+                    sampler->countActiveVoices(), sampler->countHeldVoices());
+            }
+            for (auto& [id, sampler] : previewSamplers_) {
+                if (!sampler) continue;
+                fprintf(invDest,
+                    "[SamplerInventory] map=previewSamplers this=%p debugKey=-1:%d"
+                    " voiceCount=%d heldCount=%d\n",
+                    static_cast<void*>(sampler.get()),
+                    id,
+                    sampler->countActiveVoices(), sampler->countHeldVoices());
+            }
+            fflush(invDest);
+        }
+    }
+#endif
+
     // Seek detection: if buffer start doesn't continue from previous buffer
     // end, the playhead jumped. Release all held pattern notes so stale
     // voices from the old position don't ring indefinitely at the new one.
     if (lastBufferEnd_ >= 0 && bufStart != lastBufferEnd_) {
+#ifdef XLETH_DEBUG
+        {
+            FILE* snapDest = telemetryLog_ ? telemetryLog_ : stderr;
+            for (auto& kv : samplers_)
+                if (kv.second) kv.second->debugSnapshotActiveVoices(
+                    snapDest, "seek_detected", kv.first.trackId, kv.first.regionId);
+        }
+#endif
         for (auto& kv : samplers_)
             if (kv.second) kv.second->allNotesOff();
         std::fill(std::begin(tailEndSamples_), std::end(tailEndSamples_), int64_t(0));
+#ifdef XLETH_DEBUG
+        logTelemetry("[SeekDetected] lastBufferEnd=%lld newBufStart=%lld delta=%lld\n",
+                     (long long)lastBufferEnd_, (long long)bufStart,
+                     (long long)(bufStart - lastBufferEnd_));
+#endif
     }
     lastBufferEnd_ = bufEnd;
 
@@ -1351,6 +2282,27 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         }
 #endif
 
+        // ── Per-clip bezier fade LUTs (stack-allocated, built once per clip) ──
+        const int64_t clipLen = ac.clipEndSample - ac.clipStartSample;
+        const double ticksToSec = 1.0 / (960.0 * bpm / 60.0);
+
+        const int64_t fadeInSamples  = (ac.clip->fadeInTicks > 0.0f)
+            ? static_cast<int64_t>(ac.clip->fadeInTicks * ticksToSec * sampleRate)
+            : 0;
+        const int64_t fadeOutSamples = (ac.clip->fadeOutTicks > 0.0f)
+            ? static_cast<int64_t>(ac.clip->fadeOutTicks * ticksToSec * sampleRate)
+            : 0;
+
+        ClipFadeLUT fadeInLUT, fadeOutLUT;
+        if (fadeInSamples > 0)
+            fadeInLUT.build(ac.clip->fadeInX1, ac.clip->fadeInY1,
+                           ac.clip->fadeInX2, ac.clip->fadeInY2);
+        if (fadeOutSamples > 0)
+            fadeOutLUT.build(ac.clip->fadeOutX1, ac.clip->fadeOutY1,
+                            ac.clip->fadeOutX2, ac.clip->fadeOutY2);
+
+        const bool hasPerClipFade = (fadeInSamples > 0 || fadeOutSamples > 0);
+
         // For each sample in this buffer, calculate what to read from the source
         for (int s = 0; s < numSamples; ++s)
         {
@@ -1362,12 +2314,31 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
 
             const int64_t posInClip = absPos - ac.clipStartSample;
 
-            // Velocity × optional clip boundary declick fade (linear ramp at start/end).
-            // fade = 0 at both boundaries → no DC-step click when clip audio is non-zero.
+            // Velocity × per-clip bezier fade (or global declick fallback).
             float gain = ac.clip->velocity;
-            if (clipFadeN > 0)
+
+            if (hasPerClipFade)
             {
-                const int64_t clipLen = ac.clipEndSample - ac.clipStartSample;
+                // Per-clip fade-in
+                if (fadeInSamples > 0 && posInClip < fadeInSamples)
+                {
+                    const float t = static_cast<float>(posInClip) / static_cast<float>(fadeInSamples);
+                    gain *= fadeInLUT.sample(t);
+                }
+                // Per-clip fade-out
+                if (fadeOutSamples > 0)
+                {
+                    const int64_t fromEnd = clipLen - 1 - posInClip;
+                    if (fromEnd < fadeOutSamples)
+                    {
+                        const float t = static_cast<float>(fromEnd) / static_cast<float>(fadeOutSamples);
+                        gain *= fadeOutLUT.sample(t);
+                    }
+                }
+            }
+            else if (clipFadeN > 0)
+            {
+                // Global clip boundary declick fade (linear ramp at start/end)
                 const int64_t fromEnd = clipLen - 1 - posInClip;
                 float fade = 1.0f;
                 if (posInClip < static_cast<int64_t>(clipFadeN))
@@ -1425,6 +2396,46 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
 
     // ── Render pattern blocks into track buffers ─────────────────────────────
     findActivePatternBlocks(bufStart, bufEnd, bpm, sampleRate);
+
+    // Deterministic cross-block event dispatch order at shared-sampler boundaries.
+    // When two ActivePatternBlocks share the same Sampler and events collide at a
+    // boundary tick, the earlier-starting block must dispatch first so noteOff binds
+    // to the original voice before noteOn spawns a new one. stable_sort preserves
+    // timeline storage order as the tiebreaker when blockStartSample collides.
+    // Defense-in-depth: findVoiceForNote now uses oldest-held-first tiebreaking on
+    // spawnCounter, so even if this sort were ever bypassed the noteOff still binds
+    // to the original held voice.
+    std::stable_sort(activeBlocks_.begin(), activeBlocks_.end(),
+        [](const ActivePatternBlock& a, const ActivePatternBlock& b) {
+            return a.blockStartSample < b.blockStartSample;
+        });
+
+#ifdef XLETH_DEBUG
+    // Dispatch-boundary detection: flag the first same-sampler adjacency so
+    // triggerPatternNotes below logs its dispatched events. First-pair-only —
+    // multiple boundaries per buffer are rare and would just spam the log.
+    boundaryLogActive_ = false;
+    boundaryBlockA_    = nullptr;
+    boundaryBlockB_    = nullptr;
+    boundaryEventsA_.clear();
+    boundaryEventsB_.clear();
+    {
+        const int totalBlocks = static_cast<int>(activeBlocks_.size());
+        for (int i = 0; i + 1 < totalBlocks; ++i)
+        {
+            if (activeBlocks_[i].sampler == activeBlocks_[i + 1].sampler
+                && std::abs(activeBlocks_[i].blockEndSample - activeBlocks_[i + 1].blockStartSample) <= 2)
+            {
+                boundaryLogActive_ = true;
+                boundaryBlockA_    = &activeBlocks_[i];
+                boundaryBlockB_    = &activeBlocks_[i + 1];
+                ++dispatchBoundariesSeen_;
+                break;
+            }
+        }
+    }
+#endif
+
     for (const auto& apb : activeBlocks_)
     {
         auto slotIt = trackIdToSlot.find(apb.block->trackId);
@@ -1435,12 +2446,64 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         // Pass BPM for arpeggiator tempo sync.
         apb.sampler->setBPM(bpm);
 
+        // INVARIANT: pass bufStart (buffer-start absolute sample) — not bufEnd or a
+        // per-sample counter. fireNoteOn computes spawnAbsSample as
+        // (currentAbsSample_ + sampleOffset), where sampleOffset is BUFFER-RELATIVE.
+        apb.sampler->setCurrentSample(bufStart);
+
         // Sample-accurate (block-granular) note triggering.
         triggerPatternNotes(apb, bufStart, bufEnd, bpm, sampleRate);
 
         // Additively render sampler voices into the track buffer.
         apb.sampler->processBlock(trackBuffers_[slot], numSamples, sampleRate);
     }
+
+#ifdef XLETH_DEBUG
+    if (boundaryLogActive_ && boundaryBlockA_ && boundaryBlockB_)
+    {
+        logTelemetry("[DispatchBoundary] buf=%lld..%lld samplerKey=%d:%d\n"
+                     "  blockA blockStartSample=%lld blockEndSample=%lld\n"
+                     "  blockB blockStartSample=%lld blockEndSample=%lld\n"
+                     "  boundary=%lld\n",
+                     (long long)bufStart, (long long)bufEnd,
+                     boundaryBlockA_->block->trackId, boundaryBlockA_->pattern->regionId,
+                     (long long)boundaryBlockA_->blockStartSample, (long long)boundaryBlockA_->blockEndSample,
+                     (long long)boundaryBlockB_->blockStartSample, (long long)boundaryBlockB_->blockEndSample,
+                     (long long)boundaryBlockA_->blockEndSample);
+        logTelemetry("  blockA_events=[");
+        for (size_t i = 0; i < boundaryEventsA_.size(); ++i)
+            logTelemetry("%s%lld:%s:%d:%.3f", i ? "," : "",
+                         (long long)boundaryEventsA_[i].tick,
+                         boundaryEventsA_[i].isNoteOn ? "on" : "off",
+                         boundaryEventsA_[i].pitch, (double)boundaryEventsA_[i].velocity);
+        logTelemetry("]\n  blockB_events=[");
+        for (size_t i = 0; i < boundaryEventsB_.size(); ++i)
+            logTelemetry("%s%lld:%s:%d:%.3f", i ? "," : "",
+                         (long long)boundaryEventsB_[i].tick,
+                         boundaryEventsB_[i].isNoteOn ? "on" : "off",
+                         boundaryEventsB_[i].pitch, (double)boundaryEventsB_[i].velocity);
+        logTelemetry("]\n");
+    }
+
+    // Stale-currentAbsSample_ detection: any sampler with active voices that was NOT
+    // updated via setCurrentSample(bufStart) this buffer may compute wrong spawnAbsSample
+    // or wrong orphan-detection deltas on its next noteOn.
+    ++staleCurrentSampleLogCounter_;
+    if (staleCurrentSampleLogCounter_ % 100 == 0) {
+        for (auto& [key, sampler] : samplers_) {
+            if (!sampler || !sampler->hasSample()) continue;
+            const int heldVoices     = sampler->countHeldVoices();
+            const int relVoices      = sampler->countReleasingVoices();
+            if (heldVoices + relVoices == 0) continue;
+            const int64_t samplerAbs = sampler->debugCurrentAbsSample();
+            if (samplerAbs == bufStart) continue;
+            logTelemetry("[StaleCurrentSample] samplerKey=%d:%d samplerCurrentAbs=%lld engineBufStart=%lld heldVoices=%d releasingVoices=%d\n",
+                         key.trackId, key.regionId,
+                         (long long)samplerAbs, (long long)bufStart,
+                         heldVoices, relVoices);
+        }
+    }
+#endif
 
     // ── Drain releasing sampler voices (block just ended) ───────────────────
     // After allNotesOff() fires in findActivePatternBlocks(), voices enter
@@ -1713,6 +2776,36 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
 
     // Debug logging (throttled to ~1 Hz)
     maybeLogDebug(numSamples, sampleRate);
+
+#ifdef XLETH_DEBUG
+    {
+        static uint64_t fixSummaryCounter = 0;
+        ++fixSummaryCounter;
+
+        uint32_t totalHeld         = 0;
+        uint32_t maxHeldOneSampler = 0;
+        uint64_t orphansAggregate  = 0;
+        for (const auto& kv : samplers_)
+        {
+            if (!kv.second) continue;
+            const uint32_t h = static_cast<uint32_t>(kv.second->countHeldVoices());
+            totalHeld += h;
+            if (h > maxHeldOneSampler) maxHeldOneSampler = h;
+            orphansAggregate += kv.second->orphanCandidatesEver();
+        }
+        if (totalHeld         > maxHeldSimultaneous_)          maxHeldSimultaneous_          = totalHeld;
+        if (maxHeldOneSampler > maxHeldSimultaneousPerSampler_) maxHeldSimultaneousPerSampler_ = maxHeldOneSampler;
+
+        if (fixSummaryCounter % 1000 == 0)
+        {
+            logTelemetry("[FixSummary] dispatchBoundariesSeen=%llu orphanCandidatesEver=%llu "
+                         "maxHeldSimultaneous=%u maxHeldSimultaneousPerSampler=%u\n",
+                         (unsigned long long)dispatchBoundariesSeen_,
+                         (unsigned long long)orphansAggregate,
+                         maxHeldSimultaneous_, maxHeldSimultaneousPerSampler_);
+        }
+    }
+#endif
 }
 
 // ── Debug logging ────────────────────────────────────────────────────────────

@@ -119,9 +119,11 @@ public:
         setParamDirect(count, "dyn_ratio",   4.0f);
         setParamDirect(count, "dyn_attack",  10.0f);
         setParamDirect(count, "dyn_release", 100.0f);
-        setParamDirect(count, "spec_sens",   0.5f);
-        setParamDirect(count, "spec_depth",  0.0f);
-        setParamDirect(count, "spec_sel",    5.0f);
+        setParamDirect(count, "spec_sens",    0.5f);
+        setParamDirect(count, "spec_depth",   0.0f);
+        setParamDirect(count, "spec_sel",     5.0f);
+        setParamDirect(count, "spec_attack",  10.0f);
+        setParamDirect(count, "spec_release", 100.0f);
 
         // Clear biquad state for the new band
         bands_[count].clearState();
@@ -188,8 +190,18 @@ public:
             float gainDb = bs.gainPtr ? bs.gainPtr->load(std::memory_order_relaxed)  : 0.0f;
             float q      = bs.qPtr    ? bs.qPtr->load(std::memory_order_relaxed)     : 0.707f;
             int   type   = bs.typePtr ? static_cast<int>(bs.typePtr->load(std::memory_order_relaxed)) : 0;
+            int   mode   = bs.modePtr ? static_cast<int>(bs.modePtr->load(std::memory_order_relaxed)) : 0;
             freq = std::max(freq, 20.0f);
             q    = std::max(q, 0.1f);
+
+            // Model B: Dynamic bands are visually "off" (0 dB) when inactive,
+            // and animate toward target gain as activation grows. Snapshot the
+            // activation once per call — audio thread stores atomically.
+            if (mode == 1)
+            {
+                const float act = bs.dynActivation.load(std::memory_order_relaxed);
+                gainDb *= act;
+            }
 
             // Compute biquad coefficients (same formulas as computeCoefficients)
             BandState tmp;
@@ -278,9 +290,11 @@ public:
             b["dyn_ratio"]   = readParam(i, "dyn_ratio");
             b["dyn_attack"]  = readParam(i, "dyn_attack");
             b["dyn_release"] = readParam(i, "dyn_release");
-            b["spec_sens"]   = readParam(i, "spec_sens");
-            b["spec_depth"]  = readParam(i, "spec_depth");
-            b["spec_sel"]    = readParam(i, "spec_sel");
+            b["spec_sens"]    = readParam(i, "spec_sens");
+            b["spec_depth"]   = readParam(i, "spec_depth");
+            b["spec_sel"]     = readParam(i, "spec_sel");
+            b["spec_attack"]  = readParam(i, "spec_attack");
+            b["spec_release"] = readParam(i, "spec_release");
             arr.push_back(std::move(b));
         }
         return arr.dump();
@@ -344,9 +358,14 @@ public:
             bs.dynRatioPtr   = apvts_.getRawParameterValue(paramId(i, "dyn_ratio"));
             bs.dynAttackPtr  = apvts_.getRawParameterValue(paramId(i, "dyn_attack"));
             bs.dynReleasePtr = apvts_.getRawParameterValue(paramId(i, "dyn_release"));
-            bs.specSensPtr   = apvts_.getRawParameterValue(paramId(i, "spec_sens"));
-            bs.specDepthPtr  = apvts_.getRawParameterValue(paramId(i, "spec_depth"));
-            bs.specSelPtr    = apvts_.getRawParameterValue(paramId(i, "spec_sel"));
+            bs.specSensPtr    = apvts_.getRawParameterValue(paramId(i, "spec_sens"));
+            bs.specDepthPtr   = apvts_.getRawParameterValue(paramId(i, "spec_depth"));
+            bs.specSelPtr     = apvts_.getRawParameterValue(paramId(i, "spec_sel"));
+            bs.specAttackPtr  = apvts_.getRawParameterValue(paramId(i, "spec_attack"));
+            bs.specReleasePtr = apvts_.getRawParameterValue(paramId(i, "spec_release"));
+
+            // Per-bin spectral envelope buffer (audio-thread read/write; sized once here)
+            bs.specBinEnv.assign(kSTFTSize / 2, 1.0f);
 
             // Initialise smoothers
             float f = bs.freqPtr ? bs.freqPtr->load(std::memory_order_relaxed) : 1000.0f;
@@ -408,6 +427,8 @@ public:
         // STFT scratch buffers
         stftTempRe_.resize(kSTFTSize, 0.0f);
         stftTempIm_.resize(kSTFTSize, 0.0f);
+        stftMag_.resize(kSTFTSize / 2, 0.0f);
+        stftLogMag_.resize(kSTFTSize / 2, 0.0f);
 
         // ── Spectrum Analyzer initialisation ────────────────────────────────
         stopAnalysisThread(); // stop any existing thread from previous prepare
@@ -493,10 +514,10 @@ public:
         // Effective sample rate for coefficient computation
         const double effectiveSR = sr * static_cast<double>(1 << currentOSFactor_);
 
-        // ── Dynamic EQ sidechain analysis ───────────────────────────────────
+        // ── Dynamic EQ sidechain analysis (Model B, FabFilter-style) ────────
         // Skipped when linPhase is active (all bands treated as Normal).
-        // Uses PREVIOUS block's coefficients as bandpass sidechain on input.
-        // GR is applied to band gain before coefficient recomputation below.
+        // Detector: dedicated constant-skirt BPF (independent of band gain).
+        // Output: activation in [0,1]; 0 = band off, 1 = at user target gain.
         if (!linPhaseActive_ && hasDynamic)
         {
             for (int b = 0; b < count; ++b)
@@ -504,6 +525,7 @@ public:
                 auto& bs = bands_[b];
                 if (bs.mode != 1 || !bs.enabled)
                 {
+                    bs.dynActivation.store(0.0f, std::memory_order_relaxed);
                     bandGR_[b].store(0.0f, std::memory_order_relaxed);
                     continue;
                 }
@@ -516,8 +538,17 @@ public:
 
                 float thresh = bs.dynThreshPtr ? bs.dynThreshPtr->load(std::memory_order_relaxed) : -20.0f;
                 float ratio  = bs.dynRatioPtr  ? bs.dynRatioPtr->load(std::memory_order_relaxed)  : 4.0f;
+                ratio = std::max(ratio, 1.0f);
 
-                // Run sidechain bandpass filter on input, compute RMS
+                // Recompute sidechain BPF from end-of-block smoothed freq/Q
+                // (read before skip() advances — using current value is fine
+                // since block-to-block drift is small and smoothers advance
+                // again in the main coeff loop below).
+                float scFreq = std::max(bs.freqSmooth.getCurrentValue(), 20.0f);
+                float scQ    = std::max(bs.qSmooth.getCurrentValue(), 0.1f);
+                computeSidechainBPF(bs, scFreq, scQ, sr);
+
+                // Run sidechain BPF on input, compute RMS of detector output.
                 double sumSq = 0.0;
                 for (int ch = 0; ch < numCh; ++ch)
                 {
@@ -525,9 +556,9 @@ public:
                     for (int s = 0; s < numSamples; ++s)
                     {
                         float x = data[s];
-                        float y  = bs.b0 * x + bs.sc_z1[ch];
-                        bs.sc_z1[ch] = bs.b1 * x - bs.a1 * y + bs.sc_z2[ch];
-                        bs.sc_z2[ch] = bs.b2 * x - bs.a2 * y;
+                        float y  = bs.sc_b0 * x + bs.sc_z1[ch];
+                        bs.sc_z1[ch] = bs.sc_b1 * x - bs.sc_a1 * y + bs.sc_z2[ch];
+                        bs.sc_z2[ch] = bs.sc_b2 * x - bs.sc_a2 * y;
                         sumSq += static_cast<double>(y * y);
                     }
                 }
@@ -535,23 +566,43 @@ public:
                 float rmsDb = 10.0f * std::log10(std::max(
                     static_cast<float>(sumSq / (numSamples * numCh)), 1e-30f));
 
-                // Compute target gain reduction
-                float grDb = 0.0f;
-                if (rmsDb > thresh)
-                    grDb = -(rmsDb - thresh) * (1.0f - 1.0f / ratio);
+                // Map overshoot → activation target in [0,1].
+                // 0 dB over → 0; grows asymptotically toward 1 with more overshoot.
+                // Ratio controls curve steepness (higher ratio = steeper).
+                float overshoot = std::max(0.0f, rmsDb - thresh);
+                float k = (1.0f - 1.0f / ratio) * 0.23f; // 0.23 ≈ 1/ln(10) scaling
+                float activationTarget = 1.0f - std::exp(-overshoot * k);
+                if (activationTarget < 0.0f) activationTarget = 0.0f;
+                if (activationTarget > 1.0f) activationTarget = 1.0f;
 
-                // Apply attack/release envelope
-                float coeff = (grDb < bs.dynEnvelopeDb) ? bs.dynAttackCoeff : bs.dynReleaseCoeff;
-                bs.dynEnvelopeDb = coeff * grDb + (1.0f - coeff) * bs.dynEnvelopeDb;
+                // One-pole attack/release on activation (attack = growing toward 1).
+                float cur = bs.dynActivation.load(std::memory_order_relaxed);
+                float coeff = (activationTarget > cur) ? bs.dynAttackCoeff : bs.dynReleaseCoeff;
+                float newAct = coeff * activationTarget + (1.0f - coeff) * cur;
+                bs.dynActivation.store(newAct, std::memory_order_relaxed);
 
-                // Store for metering
-                bandGR_[b].store(bs.dynEnvelopeDb, std::memory_order_relaxed);
+                // Meter: signed dB the band is currently contributing.
+                float targetGainDb = bs.gainPtr ? bs.gainPtr->load(std::memory_order_relaxed) : 0.0f;
+                bandGR_[b].store(newAct * targetGainDb, std::memory_order_relaxed);
+
+#ifdef XLETH_DEBUG
+                bs.dynLogCounter += numSamples;
+                if (bs.dynLogCounter >= static_cast<int>(sr))
+                {
+                    bs.dynLogCounter = 0;
+                    std::fprintf(stderr, "[EQ-Dyn] band=%d act=%.3f rms=%.1fdB thr=%.1fdB\n",
+                                 b, newAct, rmsDb, thresh);
+                }
+#endif
             }
         }
         else
         {
             for (int b = 0; b < count; ++b)
+            {
+                bands_[b].dynActivation.store(0.0f, std::memory_order_relaxed);
                 bandGR_[b].store(0.0f, std::memory_order_relaxed);
+            }
         }
 
         // ── Update smoother targets + recompute coefficients once per block ──
@@ -574,9 +625,10 @@ public:
             float smoothGain = bs.gainSmooth.skip(numSamples);
             float smoothQ    = bs.qSmooth.skip(numSamples);
 
-            // Apply Dynamic EQ gain reduction
+            // Apply Dynamic EQ activation (Model B): band is off at 0 dB
+            // when untriggered, moves toward user target gain as activation → 1.
             if (bs.mode == 1)
-                smoothGain += bs.dynEnvelopeDb;
+                smoothGain = bs.dynActivation.load(std::memory_order_relaxed) * smoothGain;
 
             if (bs.enabled)
                 computeCoefficients(bs, static_cast<BandType>(type),
@@ -609,6 +661,11 @@ public:
                     break;
                 }
             }
+
+            // Auto-enable pre-EQ spectrum when any Spectral band is active.
+            // Do NOT auto-disable; user may want pre-spectrum with other modes too.
+            if (hasSpectralBands_ && !specPreEnabled_.load(std::memory_order_relaxed))
+                specPreEnabled_.store(true, std::memory_order_release);
 
             if (hasSpectralBands_)
             {
@@ -836,16 +893,32 @@ private:
         std::atomic<float>* dynAttackPtr  = nullptr;
         std::atomic<float>* dynReleasePtr = nullptr;
 
+        // Dedicated sidechain BPF coefficients (constant-skirt, peak 0 dB).
+        // Recomputed once per block from smoothed freq/Q; independent of band gain.
+        float sc_b0 = 1.0f, sc_b1 = 0.0f, sc_b2 = 0.0f;
+        float sc_a1 = 0.0f, sc_a2 = 0.0f;
+
         // Dynamic EQ runtime state (audio thread)
         float sc_z1[2]{}, sc_z2[2]{};   // sidechain bandpass DFII state
-        float dynEnvelopeDb = 0.0f;      // smoothed GR envelope (dB, ≤0)
+        std::atomic<float> dynActivation{0.0f}; // activation [0,1]: 0 = band off, 1 = at target
         float dynAttackCoeff = 0.0f;     // one-pole attack coefficient
         float dynReleaseCoeff = 0.0f;    // one-pole release coefficient
+#ifdef XLETH_DEBUG
+        int dynLogCounter = 0;
+        int specLogCounter = 0;
+#endif
 
         // ── Spectral Dynamics APVTS pointers ────────────────────────────────
-        std::atomic<float>* specSensPtr  = nullptr;
-        std::atomic<float>* specDepthPtr = nullptr;
-        std::atomic<float>* specSelPtr   = nullptr;
+        std::atomic<float>* specSensPtr    = nullptr;
+        std::atomic<float>* specDepthPtr   = nullptr;
+        std::atomic<float>* specSelPtr     = nullptr;
+        std::atomic<float>* specAttackPtr  = nullptr;
+        std::atomic<float>* specReleasePtr = nullptr;
+
+        // Per-bin spectral reduction envelope, smoothed across STFT frames.
+        // Value in [0, 1+]: 1 = no change, <1 = attenuation toward depthLin,
+        // >1 = boost (upward spectral). Sized kSTFTSize/2 in prepareEffect.
+        std::vector<float> specBinEnv;
 
         void clearState()
         {
@@ -853,7 +926,8 @@ private:
             z2[0] = z2[1] = 0.0f;
             sc_z1[0] = sc_z1[1] = 0.0f;
             sc_z2[0] = sc_z2[1] = 0.0f;
-            dynEnvelopeDb = 0.0f;
+            dynActivation.store(0.0f, std::memory_order_relaxed);
+            std::fill(specBinEnv.begin(), specBinEnv.end(), 1.0f);
         }
     };
 
@@ -925,6 +999,29 @@ private:
     // ── STFT scratch buffers (audio thread only, avoid per-frame allocation) ─
     std::vector<float> stftTempRe_;
     std::vector<float> stftTempIm_;
+    std::vector<float> stftMag_;      // per-bin magnitude (positive freqs, size kSTFTSize/2)
+    std::vector<float> stftLogMag_;   // per-bin log magnitude for local-env rolling sum
+
+    // ── Sidechain BPF (constant-skirt-gain, peak 0 dB) ──────────────────────
+    // Bristow-Johnson "BPF (constant 0 dB peak gain)" form. Independent of
+    // band gain — used as the Dynamic-EQ detector so its selectivity does
+    // not collapse when the band sits near 0 dB target.
+    static void computeSidechainBPF(BandState& bs, float freq, float Q, double sr)
+    {
+        const double pi   = juce::MathConstants<double>::pi;
+        const double w0   = 2.0 * pi * static_cast<double>(freq) / sr;
+        const double cosw = std::cos(w0);
+        const double sinw = std::sin(w0);
+        const double alpha = sinw / (2.0 * std::max(static_cast<double>(Q), 1e-6));
+
+        const double a0 = 1.0 + alpha;
+        const double inv = 1.0 / a0;
+        bs.sc_b0 = static_cast<float>( alpha * inv);
+        bs.sc_b1 = 0.0f;
+        bs.sc_b2 = static_cast<float>(-alpha * inv);
+        bs.sc_a1 = static_cast<float>(-2.0 * cosw * inv);
+        bs.sc_a2 = static_cast<float>((1.0 - alpha) * inv);
+    }
 
     // ── Bristow-Johnson coefficient computation ─────────────────────────────
 
@@ -1106,6 +1203,11 @@ private:
     {
         const int ringSize = kSTFTSize * 2;
         const int count = bandCount_.load(std::memory_order_relaxed);
+        const int binsN = kSTFTSize / 2;
+
+        // Envelope coefficients derived from STFT frame period (hopSize / sr),
+        // not per-sample period, because the envelope updates once per frame.
+        const float framePeriodSec = static_cast<float>(kSTFTHop) / static_cast<float>(sr);
 
         for (int ch = 0; ch < numCh; ++ch)
         {
@@ -1123,52 +1225,144 @@ private:
             // Forward FFT
             fftCompute(stftTempRe_.data(), stftTempIm_.data(), kSTFTSize);
 
-            // Compute average magnitude across positive-frequency bins
-            float avgMag = 0.0f;
-            for (int i = 1; i < kSTFTSize / 2; ++i)
+            // Per-bin magnitude + log-magnitude (used by local-envelope rolling sum).
+            // Only channel 0 detects/updates envelope; channel 1 applies the same env
+            // so per-bin state stays once-per-frame (not once-per-channel).
+            if (ch == 0)
             {
-                float mag = std::sqrt(stftTempRe_[i] * stftTempRe_[i]
-                                    + stftTempIm_[i] * stftTempIm_[i]);
-                avgMag += mag;
+                const float eps = 1e-20f;
+                for (int i = 0; i < binsN; ++i)
+                {
+                    float re = stftTempRe_[i];
+                    float im = stftTempIm_[i];
+                    float m  = std::sqrt(re * re + im * im);
+                    stftMag_[i]    = m;
+                    stftLogMag_[i] = std::log(m + eps);
+                }
             }
-            avgMag /= static_cast<float>(kSTFTSize / 2 - 1);
 
             // Apply spectral dynamics for each Spectral-mode band
             for (int b = 0; b < count; ++b)
             {
                 auto& bs = bands_[b];
                 if (bs.mode != 2 || !bs.enabled) continue;
+                if (static_cast<int>(bs.specBinEnv.size()) < binsN) continue;
 
                 float bandFreq = bs.freqSmooth.getCurrentValue();
                 float bandQ    = bs.qSmooth.getCurrentValue();
-                float sens  = bs.specSensPtr ? bs.specSensPtr->load(std::memory_order_relaxed) : 0.5f;
-                float depth = bs.specDepthPtr ? bs.specDepthPtr->load(std::memory_order_relaxed) : 0.0f;
-                float sel   = bs.specSelPtr  ? bs.specSelPtr->load(std::memory_order_relaxed)  : 5.0f;
+                float sens  = bs.specSensPtr    ? bs.specSensPtr->load(std::memory_order_relaxed)    : 0.5f;
+                float depth = bs.specDepthPtr   ? bs.specDepthPtr->load(std::memory_order_relaxed)   : 0.0f;
+                float sel   = bs.specSelPtr     ? bs.specSelPtr->load(std::memory_order_relaxed)     : 5.0f;
+                float atkMs = bs.specAttackPtr  ? bs.specAttackPtr->load(std::memory_order_relaxed)  : 10.0f;
+                float relMs = bs.specReleasePtr ? bs.specReleasePtr->load(std::memory_order_relaxed) : 100.0f;
 
-                float depthLin = std::pow(10.0f, depth / 20.0f);
+                const float depthLin = std::pow(10.0f, depth / 20.0f);
+                const float attackCoeff  = 1.0f - std::exp(-framePeriodSec / (atkMs * 0.001f));
+                const float releaseCoeff = 1.0f - std::exp(-framePeriodSec / (relMs * 0.001f));
 
-                // Influence zone: freq ± bandwidth, width ~ freq/Q
-                float bwHz  = bandFreq / std::max(bandQ, 0.1f);
-                float loFreq = std::max(bandFreq - bwHz, 0.0f);
-                float hiFreq = bandFreq + bwHz;
-                float threshold = avgMag * sel * std::max(sens, 0.01f);
+                // Influence zone: freq ± (freq / Q)
+                const float bwHz   = bandFreq / std::max(bandQ, 0.1f);
+                const float loFreq = std::max(bandFreq - bwHz, 0.0f);
+                const float hiFreq = bandFreq + bwHz;
+                const float binHz  = static_cast<float>(sr) / static_cast<float>(kSTFTSize);
 
-                for (int i = 1; i < kSTFTSize / 2; ++i)
+                // Envelope update only on ch=0 to preserve per-frame semantics.
+                if (ch == 0)
                 {
-                    float binFreq = static_cast<float>(i) * static_cast<float>(sr)
-                                  / static_cast<float>(kSTFTSize);
-                    if (binFreq < loFreq || binFreq > hiFreq) continue;
+                    // Local envelope: arithmetic mean of logMag in ±half octave
+                    // around each bin [i/sqrt(2), i*sqrt(2)]. Rolling sum = O(N).
+                    const float loFactor = 0.70710678f; // 1 / sqrt(2)
+                    const float hiFactor = 1.41421356f; // sqrt(2)
 
-                    float mag = std::sqrt(stftTempRe_[i] * stftTempRe_[i]
-                                        + stftTempIm_[i] * stftTempIm_[i]);
-                    if (mag > threshold)
+                    int runLo = 1, runHi = 0;
+                    float runSum = 0.0f;
+                    int   runCnt = 0;
+
+                    int activeBins = 0;
+                    float maxReductionDb = 0.0f;
+
+                    for (int i = 1; i < binsN; ++i)
                     {
-                        stftTempRe_[i] *= depthLin;
-                        stftTempIm_[i] *= depthLin;
-                        // Mirror negative frequency bin
-                        int mi = kSTFTSize - i;
-                        stftTempRe_[mi] *= depthLin;
-                        stftTempIm_[mi] *= depthLin;
+                        int loBin = static_cast<int>(static_cast<float>(i) * loFactor);
+                        int hiBin = static_cast<int>(static_cast<float>(i) * hiFactor);
+                        if (loBin < 1)      loBin = 1;
+                        if (hiBin >= binsN) hiBin = binsN - 1;
+
+                        while (runHi < hiBin)
+                        {
+                            ++runHi;
+                            runSum += stftLogMag_[runHi];
+                            ++runCnt;
+                        }
+                        while (runLo < loBin)
+                        {
+                            runSum -= stftLogMag_[runLo];
+                            --runCnt;
+                            ++runLo;
+                        }
+
+                        const float binFreq = static_cast<float>(i) * binHz;
+                        const bool  inZone  = (binFreq >= loFreq && binFreq <= hiFreq);
+
+                        float target = 1.0f;
+                        if (inZone && runCnt > 0)
+                        {
+                            const float localLog = runSum / static_cast<float>(runCnt);
+                            const float localEnv = std::exp(localLog);
+                            const float thresh   = localEnv * (1.0f + sens * sel);
+                            if (stftMag_[i] > thresh)
+                                target = depthLin;
+                        }
+                        // Outside zone: relax toward 1.0 via releaseCoeff (set target=1).
+
+                        const float cur = bs.specBinEnv[i];
+                        // Attack = envelope moving toward a stronger reduction
+                        // (away from 1.0). Release = envelope returning to 1.0.
+                        const bool intensifying =
+                            (target < 1.0f && target < cur) ||
+                            (target > 1.0f && target > cur);
+                        const float coeff = intensifying ? attackCoeff : releaseCoeff;
+                        bs.specBinEnv[i] = coeff * target + (1.0f - coeff) * cur;
+
+                        if (bs.specBinEnv[i] < 0.99f || bs.specBinEnv[i] > 1.01f)
+                        {
+                            ++activeBins;
+                            const float redDb = 20.0f * std::log10(std::max(bs.specBinEnv[i], 1e-6f));
+                            if (std::abs(redDb) > std::abs(maxReductionDb))
+                                maxReductionDb = redDb;
+                        }
+                    }
+
+#ifdef XLETH_DEBUG
+                    bs.specLogCounter += kSTFTHop;
+                    if (bs.specLogCounter >= static_cast<int>(sr))
+                    {
+                        bs.specLogCounter = 0;
+                        std::fprintf(stderr, "[EQ-Spec] band=%d activeBins=%d maxRed=%.1fdB\n",
+                                     b, activeBins, maxReductionDb);
+                    }
+#else
+                    (void)activeBins;
+                    (void)maxReductionDb;
+#endif
+                }
+
+                // Apply the smoothed per-bin envelope to this channel's spectrum.
+                // Only bins within the influence zone are touched.
+                const int loBinZ = std::max(1,
+                    static_cast<int>(std::floor(loFreq / binHz)));
+                const int hiBinZ = std::min(binsN - 1,
+                    static_cast<int>(std::ceil(hiFreq / binHz)));
+                for (int i = loBinZ; i <= hiBinZ; ++i)
+                {
+                    const float g = bs.specBinEnv[i];
+                    stftTempRe_[i] *= g;
+                    stftTempIm_[i] *= g;
+                    int mi = kSTFTSize - i;
+                    if (mi > 0 && mi < kSTFTSize)
+                    {
+                        stftTempRe_[mi] *= g;
+                        stftTempIm_[mi] *= g;
                     }
                 }
             }
@@ -1368,7 +1562,8 @@ private:
     {
         static const char* names[] = { "freq", "gain", "q", "type", "enabled",
             "mode", "dyn_thresh", "dyn_ratio", "dyn_attack", "dyn_release",
-            "spec_sens", "spec_depth", "spec_sel" };
+            "spec_sens", "spec_depth", "spec_sel",
+            "spec_attack", "spec_release" };
         for (const char* n : names)
             setParamDirect(dstBand, n, readParam(srcBand, n));
     }
@@ -1477,6 +1672,20 @@ private:
                 label + "Spec Sel",
                 juce::NormalisableRange<float>(1.0f, 20.0f),
                 5.0f));
+
+            params.push_back(std::make_unique<juce::AudioParameterFloat>(
+                juce::ParameterID{ prefix + "spec_attack", 1 },
+                label + "Spec Attack",
+                juce::NormalisableRange<float>(0.1f, 100.0f),
+                10.0f,
+                juce::AudioParameterFloatAttributes().withLabel("ms")));
+
+            params.push_back(std::make_unique<juce::AudioParameterFloat>(
+                juce::ParameterID{ prefix + "spec_release", 1 },
+                label + "Spec Release",
+                juce::NormalisableRange<float>(10.0f, 1000.0f),
+                100.0f,
+                juce::AudioParameterFloatAttributes().withLabel("ms")));
         }
 
         // ── Global params ───────────────────────────────────────────────────

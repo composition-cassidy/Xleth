@@ -23,6 +23,7 @@ export function createSelectTool(deps) {
     onRequestClipContextMenu,
     redrawOverlay,
     containerRef,
+    snapGranularityRef,
     // Pattern block deps
     patternBlocksRef, patternsRef, selectedBlockIdsRef,
     setSelectedBlockIds,
@@ -325,7 +326,7 @@ export function createSelectTool(deps) {
         setDragClass(lastModifiers.shift ? 'stretching-right' : 'resizing-right')
         if (!lastModifiers.shift) {
           const currentBeat = pixelToBeat(dragCurrentX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-          const snappedEnd = snapBeatToGrid(Math.max(0, currentBeat), lastModifiers)
+          const snappedEnd = snapBeatToGrid(Math.max(0, currentBeat), lastModifiers, snapGranularityRef?.current)
           const clipStartBeat = dragClip.positionTicks / PPQ
           let newDurationTicks = beatsToTicks(Math.max(snappedEnd - clipStartBeat, 0))
           const minDur = lastModifiers.alt ? MIN_DURATION_TICKS_FREE : MIN_DURATION_TICKS
@@ -344,7 +345,7 @@ export function createSelectTool(deps) {
         setDragClass(lastModifiers.shift ? 'stretching-left' : 'resizing-left')
         if (!lastModifiers.shift) {
           const currentBeat = pixelToBeat(dragCurrentX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-          const snappedStart = snapBeatToGrid(Math.max(0, currentBeat), lastModifiers)
+          const snappedStart = snapBeatToGrid(Math.max(0, currentBeat), lastModifiers, snapGranularityRef?.current)
           const clipEndBeat = (dragClip.positionTicks + dragClip.durationTicks) / PPQ
           const minDur = lastModifiers.alt ? MIN_DURATION_TICKS_FREE : MIN_DURATION_TICKS
           const minStartTicks = dragClip.positionTicks - dragClipOrigOffset
@@ -436,7 +437,7 @@ export function createSelectTool(deps) {
           : [{ block: dragBlock, origBeat: dragBlockOrigBeat, origTrackIdx: dragBlockOrigTrackIdx }]
 
         for (const { block, origBeat, origTrackIdx } of blocksToMove) {
-          const newBeat = snapBeatToGrid(Math.max(0, origBeat + beatDelta), modifiers)
+          const newBeat = snapBeatToGrid(Math.max(0, origBeat + beatDelta), modifiers, snapGranularityRef?.current)
           const newTrkIdx = Math.max(0, Math.min(origTrackIdx + trackDelta, tracks.length - 1))
           const tgtTrack = tracks[newTrkIdx]
           const finalTrackId = tgtTrack?.type === 'Pattern' ? tgtTrack.id : block.trackId
@@ -450,7 +451,7 @@ export function createSelectTool(deps) {
 
       if (dragMode === 'resize' && dragBlock) {
         const currentBeat = pixelToBeat(dragCurrentX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-        const snappedEnd = snapBeatToGrid(Math.max(0, currentBeat), modifiers)
+        const snappedEnd = snapBeatToGrid(Math.max(0, currentBeat), modifiers, snapGranularityRef?.current)
         const blockStartBeat = dragBlock.positionTicks / PPQ
         let newDurationTicks = beatsToTicks(Math.max(snappedEnd - blockStartBeat, 0))
         const minDur = modifiers.alt ? MIN_DURATION_TICKS_FREE : MIN_DURATION_TICKS
@@ -463,7 +464,7 @@ export function createSelectTool(deps) {
 
       if (dragMode === 'resize-left' && dragBlock) {
         const currentBeat = pixelToBeat(dragCurrentX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-        const snappedStart = snapBeatToGrid(Math.max(0, currentBeat), modifiers)
+        const snappedStart = snapBeatToGrid(Math.max(0, currentBeat), modifiers, snapGranularityRef?.current)
         const blockEndBeat = (dragBlock.positionTicks + dragBlock.durationTicks) / PPQ
         const minDur = modifiers.alt ? MIN_DURATION_TICKS_FREE : MIN_DURATION_TICKS
         // Can't drag left further than the original block start minus its current offset
@@ -494,7 +495,7 @@ export function createSelectTool(deps) {
           : [{ clip: dragClip, origBeat: dragClipOrigBeat, origTrackIdx: dragClipOrigTrackIdx }]
 
         for (const { clip, origBeat, origTrackIdx } of clipsToMove) {
-          const newBeat = snapBeatToGrid(Math.max(0, origBeat + beatDelta), modifiers)
+          const newBeat = snapBeatToGrid(Math.max(0, origBeat + beatDelta), modifiers, snapGranularityRef?.current)
           const newTrkIdx = Math.max(0, Math.min(origTrackIdx + trackDelta, tracks.length - 1))
           const tgtTrack = tracks[newTrkIdx]
           // Refuse cross-move onto a Pattern track
@@ -510,7 +511,7 @@ export function createSelectTool(deps) {
       // ── Clip stretch commit (Shift+drag mouseup only) ──────────────────────
       if (dragMode === 'resize' && dragClip && modifiers.shift) {
         const currentBeat = pixelToBeat(dragCurrentX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-        const snappedEnd = snapBeatToGrid(Math.max(0, currentBeat), modifiers)
+        const snappedEnd = snapBeatToGrid(Math.max(0, currentBeat), modifiers, snapGranularityRef?.current)
         const clipStartBeat = dragClip.positionTicks / PPQ
         const minDur = modifiers.alt ? MIN_DURATION_TICKS_FREE : MIN_DURATION_TICKS
         let newDurationTicks = beatsToTicks(Math.max(snappedEnd - clipStartBeat, 0))
@@ -523,7 +524,7 @@ export function createSelectTool(deps) {
 
       if (dragMode === 'resize-left' && dragClip && modifiers.shift) {
         const currentBeat = pixelToBeat(dragCurrentX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-        const snappedStart = snapBeatToGrid(Math.max(0, currentBeat), modifiers)
+        const snappedStart = snapBeatToGrid(Math.max(0, currentBeat), modifiers, snapGranularityRef?.current)
         const clipEndBeat = (dragClip.positionTicks + dragClip.durationTicks) / PPQ
         const minDur = modifiers.alt ? MIN_DURATION_TICKS_FREE : MIN_DURATION_TICKS
         let newStartBeat = Math.min(snappedStart, clipEndBeat - minDur / PPQ)
@@ -631,7 +632,7 @@ export function createSelectTool(deps) {
           : [{ block: dragBlock, origBeat: dragBlockOrigBeat, origTrackIdx: dragBlockOrigTrackIdx }]
 
         for (const { block, origBeat, origTrackIdx } of items) {
-          const newBeat = snapBeatToGrid(Math.max(0, origBeat + beatDelta), lastModifiers)
+          const newBeat = snapBeatToGrid(Math.max(0, origBeat + beatDelta), lastModifiers, snapGranularityRef?.current)
           const newTrkIdx = Math.max(0, Math.min(origTrackIdx + trackDelta, (tracks?.length || 1) - 1))
           const tgtTrack = tracks?.[newTrkIdx]
           const previewTrackIdx = tgtTrack?.type === 'Pattern' ? newTrkIdx : origTrackIdx
@@ -648,7 +649,7 @@ export function createSelectTool(deps) {
 
       if (dragMode === 'resize' && dragBlock) {
         const currentBeat = pixelToBeat(dragCurrentX, scrollOffset, ppb)
-        const snappedEnd = snapBeatToGrid(Math.max(0, currentBeat), lastModifiers)
+        const snappedEnd = snapBeatToGrid(Math.max(0, currentBeat), lastModifiers, snapGranularityRef?.current)
         const blockStartBeat = dragBlock.positionTicks / PPQ
         let newDurationBeats = Math.max(snappedEnd - blockStartBeat, MIN_DURATION_TICKS / PPQ)
         const tracks = tracksRef.current
@@ -665,7 +666,7 @@ export function createSelectTool(deps) {
 
       if (dragMode === 'resize-left' && dragBlock) {
         const currentBeat = pixelToBeat(dragCurrentX, scrollOffset, ppb)
-        const snappedStart = snapBeatToGrid(Math.max(0, currentBeat), lastModifiers)
+        const snappedStart = snapBeatToGrid(Math.max(0, currentBeat), lastModifiers, snapGranularityRef?.current)
         const blockEndBeat = (dragBlock.positionTicks + dragBlock.durationTicks) / PPQ
         const minDur = (lastModifiers.alt ? MIN_DURATION_TICKS_FREE : MIN_DURATION_TICKS) / PPQ
         const minStartBeat = Math.max(0, (dragBlock.positionTicks - dragBlockOrigOffset) / PPQ)
@@ -697,7 +698,7 @@ export function createSelectTool(deps) {
           : [{ clip: dragClip, origBeat: dragClipOrigBeat, origTrackIdx: dragClipOrigTrackIdx }]
 
         for (const { clip, origBeat, origTrackIdx } of items) {
-          const newBeat = snapBeatToGrid(Math.max(0, origBeat + beatDelta), lastModifiers)
+          const newBeat = snapBeatToGrid(Math.max(0, origBeat + beatDelta), lastModifiers, snapGranularityRef?.current)
           const newTrkIdx = Math.max(0, Math.min(origTrackIdx + trackDelta, (tracks?.length || 1) - 1))
           const region = regionsRef.current?.[clip.regionId]
           drawMovePreview(ctx, w, h, scrollOffset, ppb, {
@@ -711,7 +712,7 @@ export function createSelectTool(deps) {
 
       if (dragMode === 'resize' && dragClip) {
         const currentBeat = pixelToBeat(dragCurrentX, scrollOffset, ppb)
-        const snappedEnd = snapBeatToGrid(Math.max(0, currentBeat), lastModifiers)
+        const snappedEnd = snapBeatToGrid(Math.max(0, currentBeat), lastModifiers, snapGranularityRef?.current)
         const clipStartBeat = dragClip.positionTicks / PPQ
         const minDurBeats = MIN_DURATION_TICKS / PPQ
         const region = regionsRef.current?.[dragClip.regionId]
@@ -742,7 +743,7 @@ export function createSelectTool(deps) {
 
       if (dragMode === 'resize-left' && dragClip) {
         const currentBeat = pixelToBeat(dragCurrentX, scrollOffset, ppb)
-        const snappedStart = snapBeatToGrid(Math.max(0, currentBeat), lastModifiers)
+        const snappedStart = snapBeatToGrid(Math.max(0, currentBeat), lastModifiers, snapGranularityRef?.current)
         const clipEndBeat = (dragClip.positionTicks + dragClip.durationTicks) / PPQ
         const minDur = (lastModifiers.alt ? MIN_DURATION_TICKS_FREE : MIN_DURATION_TICKS) / PPQ
         const region = regionsRef.current?.[dragClip.regionId]

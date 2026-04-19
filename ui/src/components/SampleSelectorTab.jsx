@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Music, Search, Pencil, Type, Download, ArrowLeftRight, RotateCcw, Trash2, Scissors, Sliders } from 'lucide-react'
 import { timelineEvents } from '../timelineEvents.js'
 import { DEFAULT_LABELS, loadCustomLabels, labelColor } from '../constants/labels.js'
@@ -23,6 +23,10 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
   const [editingNameValue, setEditingNameValue] = useState('')
   const [searchQuery,      setSearchQuery]      = useState('')
   const [rootNotes,        setRootNotes]        = useState({})  // { [sourceId]: midiNote }
+  const [renameError,      setRenameError]      = useState(null)
+
+  // Dedup pass runs once per mount even if regions-changed fires repeatedly.
+  const dedupRanRef = useRef(false)
 
   // ── Fetch helpers ─────────────────────────────────────────────────────────
   const fetchRegions = useCallback(async () => {
@@ -47,10 +51,70 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
     }
   }, [])
 
+  // ── One-pass deduplication of stored duplicate names ───────────────────────
+  // Projects saved before the uniqueness fix may contain two regions with the
+  // same label+name. Within each label group, suffix the 2nd, 3rd, ... duplicate
+  // with "(2)", "(3)", ... so every displayed name is unique. Only persists
+  // renames via modifyRegion; never deletes or reorders.
+  const deduplicateRegions = useCallback(async (regs) => {
+    if (!Array.isArray(regs) || regs.length === 0) return 0
+    const byLabel = new Map()
+    for (const r of regs) {
+      const key = r.label || 'Custom'
+      if (!byLabel.has(key)) byLabel.set(key, [])
+      byLabel.get(key).push(r)
+    }
+    const renames = []
+    for (const [, group] of byLabel) {
+      const seen = new Set()
+      for (const region of group) {
+        const n = region.name || ''
+        if (!seen.has(n)) { seen.add(n); continue }
+        let suffix = 2
+        let candidate = `${n} (${suffix})`
+        while (seen.has(candidate) && suffix < 100000) {
+          suffix++
+          candidate = `${n} (${suffix})`
+        }
+        seen.add(candidate)
+        renames.push({ region, oldName: n, newName: candidate })
+      }
+    }
+    if (renames.length === 0) return 0
+    for (const r of renames) {
+      try {
+        await window.xleth?.timeline?.modifyRegion(r.region.id, { ...r.region, name: r.newName })
+        console.warn(`[SampleDedup] Renamed "${r.oldName}" → "${r.newName}" (id=${r.region.id}, label=${r.region.label})`)
+      } catch (e) {
+        console.error(`[SampleDedup] modifyRegion failed for id=${r.region.id}:`, e.message)
+      }
+    }
+    console.warn(`[SampleDedup] Renamed ${renames.length} duplicate sample name(s).`)
+    return renames.length
+  }, [])
+
   // ── Initial load + event-driven refresh ──────────────────────────────────
   useEffect(() => {
-    fetchRegions()
-    fetchSources()
+    const init = async () => {
+      await fetchSources()
+      try {
+        const regs = await window.xleth?.timeline?.getRegions()
+        if (!Array.isArray(regs)) return
+        if (!dedupRanRef.current) {
+          dedupRanRef.current = true
+          const renamedCount = await deduplicateRegions(regs)
+          if (renamedCount > 0) {
+            const updated = await window.xleth?.timeline?.getRegions()
+            setRegions(Array.isArray(updated) ? updated : regs)
+            return
+          }
+        }
+        setRegions(regs)
+      } catch (e) {
+        console.error('[SampleSelector] Initial load error:', e)
+      }
+    }
+    init()
     console.log('[SampleSelector] Loaded')
 
     const onRegionsChanged = () => fetchRegions()
@@ -62,7 +126,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
       timelineEvents.removeEventListener('timeline-regions-changed', onRegionsChanged)
       timelineEvents.removeEventListener('timeline-sources-changed', onSourcesChanged)
     }
-  }, [fetchRegions, fetchSources])
+  }, [fetchRegions, fetchSources, deduplicateRegions])
 
   // ── Grouping by label ──────────────────────────────────────────────────────
   const customLabels = useMemo(() => loadCustomLabels(), [regions]) // re-check when regions change
@@ -118,25 +182,46 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
   const commitRename = useCallback(async () => {
     if (!editingNameId) return
     const region = regions.find(r => r.id === editingNameId)
-    if (!region) { setEditingNameId(null); return }
+    if (!region) { setEditingNameId(null); setRenameError(null); return }
 
     const newName = editingNameValue.trim() || region.name
-    if (newName !== region.name) {
-      console.log(`[SampleSelector] Renamed: "${region.name}" → "${newName}"`)
-      try {
-        await window.xleth?.timeline?.modifyRegion(editingNameId, { ...region, name: newName })
-      } catch (e) {
-        console.warn('[SampleSelector] modifyRegion failed:', e.message)
-      }
-      // Optimistic update
-      setRegions(prev => prev.map(r => r.id === editingNameId ? { ...r, name: newName } : r))
+    if (newName === region.name) {
+      setEditingNameId(null)
+      setRenameError(null)
+      return
     }
+
+    // Fresh project-wide fetch: the `regions` state may lag the event bus.
+    let allRegions = regions
+    try {
+      const regs = await window.xleth?.timeline?.getRegions()
+      if (Array.isArray(regs)) allRegions = regs
+    } catch { /* fall back to component state */ }
+
+    const collision = allRegions.some(r =>
+      r.id !== editingNameId && r.label === region.label && r.name === newName
+    )
+    if (collision) {
+      setRenameError(`A ${region.label} sample named "${newName}" already exists.`)
+      return  // keep edit mode open so the user can correct and retry
+    }
+
+    console.log(`[SampleSelector] Renamed: "${region.name}" → "${newName}"`)
+    try {
+      await window.xleth?.timeline?.modifyRegion(editingNameId, { ...region, name: newName })
+    } catch (e) {
+      console.warn('[SampleSelector] modifyRegion failed:', e.message)
+    }
+    // Optimistic update
+    setRegions(prev => prev.map(r => r.id === editingNameId ? { ...r, name: newName } : r))
     setEditingNameId(null)
+    setRenameError(null)
   }, [editingNameId, editingNameValue, regions])
 
   const cancelRename = useCallback(() => {
     setEditingNameId(null)
     setEditingNameValue('')
+    setRenameError(null)
   }, [])
 
   // ── Change label ───────────────────────────────────────────────────────────
@@ -324,6 +409,43 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
         <span className="tab-section-label">Samples</span>
         <span className="tab-item-count">{regions.length}</span>
       </div>
+
+      {/* ── Rename collision error banner ──────────────────────────── */}
+      {renameError && (
+        <div
+          className="sample-selector-error-banner"
+          role="alert"
+          style={{
+            background: '#3a1e1e',
+            color: '#ff8a8a',
+            padding: '6px 10px',
+            fontSize: '12px',
+            margin: '4px 8px',
+            borderRadius: '4px',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: '8px',
+          }}
+        >
+          <span>{renameError}</span>
+          <button
+            onClick={() => setRenameError(null)}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: '#ff8a8a',
+              cursor: 'pointer',
+              fontSize: '14px',
+              padding: '0 4px',
+              lineHeight: 1,
+            }}
+            title="Dismiss"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {/* ── Groups or empty state ──────────────────────────────────── */}
       {regions.length === 0 && !searchQuery ? (

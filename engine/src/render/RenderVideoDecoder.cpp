@@ -452,79 +452,34 @@ FrameCacheEntry RenderVideoDecoder::decode(const std::string& sourcePath,
 // Path A: D3D11VA hardware frame extraction
 // ===========================================================================
 
-FrameCacheEntry RenderVideoDecoder::extractHwFrame(DecoderContext& /*ctx*/, AVFrame* frame,
+FrameCacheEntry RenderVideoDecoder::extractHwFrame(DecoderContext& ctx, AVFrame* frame,
                                                     ID3D11Device* device,
                                                     ID3D11DeviceContext* deviceCtx)
 {
-    FrameCacheEntry empty;
-
-    // D3D11VA decoded frames: data[0] = ID3D11Texture2D*, data[1] = array index
-    auto* srcTexture = reinterpret_cast<ID3D11Texture2D*>(frame->data[0]);
-    UINT  srcIndex   = static_cast<UINT>(reinterpret_cast<intptr_t>(frame->data[1]));
-
-    if (!srcTexture) {
-        std::fprintf(stderr, "[RenderDecoder] HW frame has null texture\n");
-        return empty;
+    // D3D11VA produces NV12 texture arrays. Creating an SRV directly on NV12
+    // requires dual-plane views (R8_UNORM for Y, R8G8_UNORM for UV) plus
+    // YUV→BGR shader support — not yet implemented.
+    //
+    // Interim path: transfer the HW frame to CPU via av_hwframe_transfer_data,
+    // then go through uploadSwFrame which converts NV12→BGRA via sws_scale and
+    // uploads a standard D3D11 BGRA texture the compositor already handles.
+    //
+    // D3D11VA decode still runs on the GPU video engine (faster than SW decode
+    // for 1080p H.264) — only the texture format conversion takes a GPU→CPU→GPU
+    // detour. Zero-copy NV12 SRV + YUV shader is a future optimization.
+    AVFrame* swFrame = av_frame_alloc();
+    if (!swFrame) {
+        std::fprintf(stderr, "[RenderDecoder] Failed to alloc SW frame for HW transfer\n");
+        return {};
     }
-
-    // Get source texture description
-    D3D11_TEXTURE2D_DESC srcDesc;
-    srcTexture->GetDesc(&srcDesc);
-
-    // Create a standalone default-usage texture for the cache
-    D3D11_TEXTURE2D_DESC dstDesc = {};
-    dstDesc.Width              = srcDesc.Width;
-    dstDesc.Height             = srcDesc.Height;
-    dstDesc.MipLevels          = 1;
-    dstDesc.ArraySize          = 1;
-    dstDesc.Format             = srcDesc.Format;
-    dstDesc.SampleDesc.Count   = 1;
-    dstDesc.SampleDesc.Quality = 0;
-    dstDesc.Usage              = D3D11_USAGE_DEFAULT;
-    dstDesc.BindFlags          = D3D11_BIND_SHADER_RESOURCE;
-    dstDesc.CPUAccessFlags     = 0;
-    dstDesc.MiscFlags          = 0;
-
-    Microsoft::WRL::ComPtr<ID3D11Texture2D> dstTexture;
-    HRESULT hr = device->CreateTexture2D(&dstDesc, nullptr, &dstTexture);
-    if (FAILED(hr)) {
-        std::fprintf(stderr, "[RenderDecoder] Failed to create dst texture for HW frame, HR=0x%08X\n",
-                     static_cast<unsigned int>(hr));
-        return empty;
+    if (av_hwframe_transfer_data(swFrame, frame, 0) < 0) {
+        std::fprintf(stderr, "[RenderDecoder] av_hwframe_transfer_data failed\n");
+        av_frame_free(&swFrame);
+        return {};
     }
-
-    // Copy from array texture slice to standalone texture
-    deviceCtx->CopySubresourceRegion(
-        dstTexture.Get(), 0,           // dst subresource 0
-        0, 0, 0,                       // dst x, y, z
-        srcTexture, srcIndex,           // src texture, array slice
-        nullptr                         // entire subresource
-    );
-
-    // Create SRV
-    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-    srvDesc.Format                    = dstDesc.Format;
-    srvDesc.ViewDimension             = D3D11_SRV_DIMENSION_TEXTURE2D;
-    srvDesc.Texture2D.MostDetailedMip = 0;
-    srvDesc.Texture2D.MipLevels       = 1;
-
-    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
-    hr = device->CreateShaderResourceView(dstTexture.Get(), &srvDesc, &srv);
-    if (FAILED(hr)) {
-        std::fprintf(stderr, "[RenderDecoder] Failed to create SRV for HW frame, HR=0x%08X\n",
-                     static_cast<unsigned int>(hr));
-        return empty;
-    }
-
-    FrameCacheEntry entry;
-    entry.texture        = dstTexture;
-    entry.srv            = srv;
-    entry.width          = static_cast<int>(dstDesc.Width);
-    entry.height         = static_cast<int>(dstDesc.Height);
-    entry.memorySizeBytes = static_cast<size_t>(dstDesc.Width) * dstDesc.Height * 4;
-
-    std::fprintf(stderr, "[RenderDecoder] HW frame extracted: %dx%d\n", entry.width, entry.height);
-    return entry;
+    auto result = uploadSwFrame(ctx, swFrame, device, deviceCtx);
+    av_frame_free(&swFrame);
+    return result;
 }
 
 // ===========================================================================

@@ -1,5 +1,29 @@
 'use strict';
 
+// ── Diagnostic A: worker exit reason ─────────────────────────────────────────
+// These handlers must be registered before require(addonPath) so they catch
+// failures during module load as well as runtime exits.
+//   beforeExit fires   → event loop drained naturally (IPC handle unref'd)
+//   exit fires only    → process.exit() or C++ exit() bypassed event loop
+//   disconnect fires   → parent closed IPC pipe unexpectedly
+process.on('beforeExit', (code) => {
+    console.error('[Worker] beforeExit code=' + code);
+    console.error('[Worker] beforeExit stack:', new Error().stack);
+});
+process.on('exit', (code) => {
+    console.error('[Worker] exit code=' + code);
+});
+process.on('uncaughtException', (err) => {
+    console.error('[Worker] uncaughtException:', err.message);
+    console.error('[Worker] stack:', err.stack);
+});
+process.on('unhandledRejection', (reason) => {
+    console.error('[Worker] unhandledRejection:', reason);
+});
+process.on('disconnect', () => {
+    console.error('[Worker] disconnect event fired — parent closed IPC pipe');
+});
+
 // This script runs as a standalone Node.js child process (child_process.fork)
 // for DLL/ABI isolation from Electron's Chromium runtime. The native addon
 // links JUCE/FFmpeg/GLEW which crash in-process under Electron.

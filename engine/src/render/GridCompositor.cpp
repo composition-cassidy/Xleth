@@ -9,6 +9,15 @@
 #include "shaders/GridCompositeVS.h"
 #include "shaders/GridCompositePS.h"
 
+// Effect shader bytecode (placeholders — actual implementations in later prompts)
+#include "shaders/FX_DesaturationPS.h"
+#include "shaders/FX_TintPS.h"
+#include "shaders/FX_BrightnessContrastPS.h"
+#include "shaders/FX_TVSimulatorPS.h"
+#include "shaders/FX_ZoomPanRotationPS.h"
+
+#include "model/TimelineTypes.h"  // VisualEffect
+
 // ---------------------------------------------------------------------------
 // Vertex layout for the fullscreen quad
 // ---------------------------------------------------------------------------
@@ -49,6 +58,12 @@ bool GridCompositor::init(ID3D11Device* device, ID3D11DeviceContext* deviceCtx,
     if (!createGeometry())       return false;
     if (!createPipelineState())  return false;
 
+    // Initialize effect shader cache (placeholder shaders for now)
+    if (!effectShaders_.init(device_)) {
+        std::fprintf(stderr, "[Compositor] WARNING: Effect shaders failed to init — chain processing disabled\n");
+        // Non-fatal: compositor works without effects
+    }
+
     initialized_ = true;
     std::fprintf(stderr, "[Compositor] Init: %dx%d render target, BGRA, blend=SRC_ALPHA/INV_SRC_ALPHA\n",
                  width_, height_);
@@ -57,6 +72,9 @@ bool GridCompositor::init(ID3D11Device* device, ID3D11DeviceContext* deviceCtx,
 
 void GridCompositor::shutdown()
 {
+    effectShaders_.shutdown();
+    rtPool_.clear();
+
     renderTarget_.Reset();
     renderTargetRTV_.Reset();
     renderTargetSRV_.Reset();
@@ -69,6 +87,7 @@ void GridCompositor::shutdown()
     blendState_.Reset();
     samplerState_.Reset();
     constantBuffer_.Reset();
+    globalConstantBuffer_.Reset();
     rasterizerState_.Reset();
     depthStencilState_.Reset();
 
@@ -278,6 +297,20 @@ bool GridCompositor::createPipelineState()
         return false;
     }
 
+    // Global constant buffer (GlobalConstants, 16 bytes) — updated once per frame
+    D3D11_BUFFER_DESC gcbDesc = {};
+    gcbDesc.Usage          = D3D11_USAGE_DYNAMIC;
+    gcbDesc.ByteWidth      = sizeof(GlobalConstants);
+    gcbDesc.BindFlags      = D3D11_BIND_CONSTANT_BUFFER;
+    gcbDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+
+    hr = device_->CreateBuffer(&gcbDesc, nullptr, &globalConstantBuffer_);
+    if (FAILED(hr)) {
+        std::fprintf(stderr, "[Compositor] Failed to create global constant buffer, HR=0x%08X\n",
+                     static_cast<unsigned int>(hr));
+        return false;
+    }
+
     // Rasterizer state — no culling, solid fill
     D3D11_RASTERIZER_DESC rsDesc = {};
     rsDesc.FillMode = D3D11_FILL_SOLID;
@@ -310,7 +343,9 @@ bool GridCompositor::createPipelineState()
 
 void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& requests,
                                      RenderFrameCache& cache,
-                                     int gridCols, int gridRows)
+                                     int gridCols, int gridRows,
+                                     float time,
+                                     float gapScale)
 {
     if (!initialized_) return;
 
@@ -364,6 +399,23 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
     deviceCtx_->PSSetSamplers(0, 1, samplerState_.GetAddressOf());
     deviceCtx_->PSSetConstantBuffers(0, 1, constantBuffer_.GetAddressOf());
 
+    // Bind and update GlobalConstants at b1 (once per frame)
+    deviceCtx_->VSSetConstantBuffers(1, 1, globalConstantBuffer_.GetAddressOf());
+    deviceCtx_->PSSetConstantBuffers(1, 1, globalConstantBuffer_.GetAddressOf());
+    {
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        HRESULT hr = deviceCtx_->Map(globalConstantBuffer_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        if (SUCCEEDED(hr)) {
+            GlobalConstants gc;
+            gc.time         = time;
+            gc.outputWidth  = static_cast<float>(width_);
+            gc.outputHeight = static_cast<float>(height_);
+            gc.padding      = 0.0f;
+            std::memcpy(mapped.pData, &gc, sizeof(gc));
+            deviceCtx_->Unmap(globalConstantBuffer_.Get(), 0);
+        }
+    }
+
     float blendFactor[4] = { 0, 0, 0, 0 };
     deviceCtx_->OMSetBlendState(blendState_.Get(), blendFactor, 0xFFFFFFFF);
     deviceCtx_->RSSetState(rasterizerState_.Get());
@@ -387,7 +439,7 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
                      req.sourcePath.c_str(), (long long)req.sourceFrameIndex, req.opacity);
 
         drawCell(entry->srv.Get(), 0.0f, 0.0f, 1.0f, 1.0f,
-                 req.opacity, req.flipMode, req.globalNoteIndex);
+                 req.opacity, req.flipMode, req.globalNoteIndex, 0.0f);
     }
 
     // ── Pass 2: Grid cells (each at its grid position) ───────────────────────
@@ -409,13 +461,186 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
         gridCellToUV(req.cellCol, req.cellRow, req.spanX, req.spanY,
                      gridCols, gridRows, rx, ry, rw, rh);
 
+        // Apply gap scale: shrink rect symmetrically, creating inter-cell padding
+        float effectiveGap = (req.gapScaleOverride >= 0.0f) ? req.gapScaleOverride : gapScale;
+        if (effectiveGap > 0.0f && !req.isChorus && !req.isCrash) {
+            float sx = rw * effectiveGap * 0.5f;
+            float sy = rh * effectiveGap * 0.5f;
+            rx += sx;  ry += sy;
+            rw -= sx * 2.0f;  rh -= sy * 2.0f;
+        }
+
+        // Apply bounce: offset (fraction of post-gap cell size) then scale-from-center
+        if (!req.isChorus && !req.isCrash) {
+            rx += req.bounceOffsetX * rw;
+            ry += req.bounceOffsetY * rh;
+            if (req.bounceScaleX != 1.0f || req.bounceScaleY != 1.0f) {
+                float cx = rx + rw * 0.5f;
+                float cy = ry + rh * 0.5f;
+                rw *= req.bounceScaleX;
+                rh *= req.bounceScaleY;
+                rx = cx - rw * 0.5f;
+                ry = cy - rh * 0.5f;
+            }
+        }
+
         std::fprintf(stderr, "[Compositor] Cell [%d,%d]: '%s' frame=%lld opacity=%.2f flip=%d\n",
                      req.cellCol, req.cellRow,
                      req.sourcePath.c_str(), (long long)req.sourceFrameIndex,
                      req.opacity, req.flipMode);
 
-        drawCell(entry->srv.Get(), rx, ry, rw, rh,
-                 req.opacity, req.flipMode, req.globalNoteIndex);
+        // Process visual effect chain (if any)
+        ID3D11ShaderResourceView* cellSRV = entry->srv.Get();
+        int finalFlipMode = req.flipMode;
+
+        // Visual effect chain — skipped entirely when effectsBypass_ is set
+        // (fast preview mode). Gap, bounce, corner-radius and opacity are
+        // handled outside this block and are never bypassed.
+        if (!effectsBypass_ && req.visualChain && !req.visualChain->empty()) {
+            // Compute cell pixel dimensions from UV rect and output resolution
+            int cellPixelW = std::max(1, static_cast<int>(rw * width_));
+            int cellPixelH = std::max(1, static_cast<int>(rh * height_));
+
+            ID3D11ShaderResourceView* processedSRV = processEffectChain(
+                cellSRV, cellPixelW, cellPixelH,
+                *req.visualChain, req, time, /*rtSlot=*/0);
+
+            if (processedSRV != cellSRV) {
+                // Chain was used — flip will be applied by drawCell at final composite
+                cellSRV = processedSRV;
+                // finalFlipMode stays as req.flipMode — drawCell applies flip at the final composite
+
+                // Restore main pipeline state after effect chain processing
+                D3D11_VIEWPORT mainVP = {};
+                mainVP.Width    = static_cast<float>(width_);
+                mainVP.Height   = static_cast<float>(height_);
+                mainVP.MinDepth = 0.0f;
+                mainVP.MaxDepth = 1.0f;
+                deviceCtx_->RSSetViewports(1, &mainVP);
+                deviceCtx_->OMSetRenderTargets(1, renderTargetRTV_.GetAddressOf(), nullptr);
+                deviceCtx_->PSSetShader(pixelShader_.Get(), nullptr, 0);
+                deviceCtx_->PSSetConstantBuffers(0, 1, constantBuffer_.GetAddressOf());
+                deviceCtx_->PSSetSamplers(0, 1, samplerState_.GetAddressOf());
+            }
+        }
+
+        // Standalone ZPR pass — also skipped when effectsBypass_ is set.
+        // Fires when animation has non-default values but ZPR is NOT already
+        // in the visual effect chain (chainHadZpr prevents double-apply).
+        // Uses rtSlot=1 to avoid aliasing with the main chain's slot-0 render targets.
+        if (!effectsBypass_) {
+            bool chainHadZpr = false;
+            if (req.visualChain) {
+                for (const auto& cfx : *req.visualChain) {
+                    if (!cfx.bypassed && cfx.type == VisualEffect::Type::ZoomPanRotation)
+                        { chainHadZpr = true; break; }
+                }
+            }
+            bool zprNonDefault = (req.currentZoom != 1.0f || req.currentPanX != 0.0f ||
+                                  req.currentPanY != 0.0f || req.currentRotDeg != 0.0f);
+            if (zprNonDefault && !chainHadZpr) {
+                int zpW = std::max(1, static_cast<int>(rw * width_));
+                int zpH = std::max(1, static_cast<int>(rh * height_));
+                VisualEffect standaloneZpr;
+                standaloneZpr.type     = VisualEffect::Type::ZoomPanRotation;
+                standaloneZpr.bypassed = false;
+                std::vector<VisualEffect> zprChain = { standaloneZpr };
+                ID3D11ShaderResourceView* zprSRV = processEffectChain(
+                    cellSRV, zpW, zpH, zprChain, req, time, /*rtSlot=*/1);
+                if (zprSRV != cellSRV) {
+                    cellSRV = zprSRV;
+                    // finalFlipMode stays as req.flipMode — drawCell applies flip at the final composite
+                    D3D11_VIEWPORT mainVP{};
+                    mainVP.Width    = static_cast<float>(width_);
+                    mainVP.Height   = static_cast<float>(height_);
+                    mainVP.MaxDepth = 1.0f;
+                    deviceCtx_->RSSetViewports(1, &mainVP);
+                    deviceCtx_->OMSetRenderTargets(1, renderTargetRTV_.GetAddressOf(), nullptr);
+                    deviceCtx_->PSSetShader(pixelShader_.Get(), nullptr, 0);
+                    deviceCtx_->PSSetConstantBuffers(0, 1, constantBuffer_.GetAddressOf());
+                    deviceCtx_->PSSetSamplers(0, 1, samplerState_.GetAddressOf());
+                }
+            }
+        }
+
+        // Ping-pong crossfade — also skipped when effectsBypass_ is set.
+        // Blends primary cellSRV with secondary frame texture.
+        // Uses rtSlot=2 to avoid aliasing with slot 0 (main chain) and slot 1 (ZPR).
+        if (!effectsBypass_ && !req.isChorus && !req.isCrash && req.pingPongSecondaryFrame >= 0) {
+            FrameCacheKey key2;
+            key2.sourcePath = req.sourcePath;
+            key2.frameIndex = req.pingPongSecondaryFrame;
+            FrameCacheEntry* entry2 = cache.get(key2);
+            if (entry2 && entry2->srv) {
+                int ppW = std::max(1, static_cast<int>(rw * width_));
+                int ppH = std::max(1, static_cast<int>(rh * height_));
+                RTPool::RTPair& ppRTP = rtPool_.acquire(device_, ppW, ppH, /*rtSlot=*/2);
+                if (ppRTP.rtvA && ppRTP.srvA) {
+                    const float clear[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+                    deviceCtx_->ClearRenderTargetView(ppRTP.rtvA.Get(), clear);
+
+                    D3D11_VIEWPORT ppVP{};
+                    ppVP.Width    = static_cast<float>(ppW);
+                    ppVP.Height   = static_cast<float>(ppH);
+                    ppVP.MaxDepth = 1.0f;
+                    deviceCtx_->RSSetViewports(1, &ppVP);
+                    deviceCtx_->OMSetRenderTargets(1, ppRTP.rtvA.GetAddressOf(), nullptr);
+                    deviceCtx_->PSSetShader(pixelShader_.Get(), nullptr, 0);
+                    deviceCtx_->PSSetConstantBuffers(0, 1, constantBuffer_.GetAddressOf());
+                    deviceCtx_->PSSetSamplers(0, 1, samplerState_.GetAddressOf());
+
+                    // Blit primary frame at full opacity
+                    {
+                        D3D11_MAPPED_SUBRESOURCE mapped{};
+                        if (SUCCEEDED(deviceCtx_->Map(constantBuffer_.Get(), 0,
+                                                      D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+                            CellConstants cb{};
+                            cb.cellRect[2] = 1.0f; cb.cellRect[3] = 1.0f;
+                            cb.opacity = 1.0f; cb.flipMode = 0;
+                            cb.globalNoteIndex = 0; cb.cornerRadius = 0.0f;
+                            std::memcpy(mapped.pData, &cb, sizeof(cb));
+                            deviceCtx_->Unmap(constantBuffer_.Get(), 0);
+                        }
+                    }
+                    drawEffectPass(cellSRV);
+
+                    // Blit secondary frame at blend opacity on top (alpha blending overlays it)
+                    {
+                        D3D11_MAPPED_SUBRESOURCE mapped{};
+                        if (SUCCEEDED(deviceCtx_->Map(constantBuffer_.Get(), 0,
+                                                      D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+                            CellConstants cb{};
+                            cb.cellRect[2] = 1.0f; cb.cellRect[3] = 1.0f;
+                            cb.opacity = req.pingPongBlendFactor; cb.flipMode = 0;
+                            cb.globalNoteIndex = 0; cb.cornerRadius = 0.0f;
+                            std::memcpy(mapped.pData, &cb, sizeof(cb));
+                            deviceCtx_->Unmap(constantBuffer_.Get(), 0);
+                        }
+                    }
+                    drawEffectPass(entry2->srv.Get());
+
+                    // Unbind RT before reading as SRV
+                    ID3D11RenderTargetView* nullRTV2 = nullptr;
+                    deviceCtx_->OMSetRenderTargets(1, &nullRTV2, nullptr);
+                    cellSRV = ppRTP.srvA.Get();
+                    // finalFlipMode stays as req.flipMode — drawCell applies flip at the final composite
+
+                    // Restore main pipeline state
+                    D3D11_VIEWPORT mainVP2{};
+                    mainVP2.Width    = static_cast<float>(width_);
+                    mainVP2.Height   = static_cast<float>(height_);
+                    mainVP2.MaxDepth = 1.0f;
+                    deviceCtx_->RSSetViewports(1, &mainVP2);
+                    deviceCtx_->OMSetRenderTargets(1, renderTargetRTV_.GetAddressOf(), nullptr);
+                    deviceCtx_->PSSetShader(pixelShader_.Get(), nullptr, 0);
+                    deviceCtx_->PSSetConstantBuffers(0, 1, constantBuffer_.GetAddressOf());
+                    deviceCtx_->PSSetSamplers(0, 1, samplerState_.GetAddressOf());
+                }
+            }
+        }
+
+        drawCell(cellSRV, rx, ry, rw, rh,
+                 req.opacity, finalFlipMode, req.globalNoteIndex, req.cornerRadius);
     }
 
     // ── Pass 3: Crash overlay (full-screen, on top) ──────────────────────────
@@ -436,7 +661,7 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
                      req.sourcePath.c_str(), (long long)req.sourceFrameIndex, req.opacity);
 
         drawCell(entry->srv.Get(), 0.0f, 0.0f, 1.0f, 1.0f,
-                 req.opacity, req.flipMode, req.globalNoteIndex);
+                 req.opacity, req.flipMode, req.globalNoteIndex, 0.0f);
     }
 
     // Unbind render target to allow subsequent SRV reads
@@ -454,7 +679,8 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
 
 void GridCompositor::drawCell(ID3D11ShaderResourceView* srv,
                                float rectX, float rectY, float rectW, float rectH,
-                               float opacity, int flipMode, int globalNoteIndex)
+                               float opacity, int flipMode, int globalNoteIndex,
+                               float cornerRadius)
 {
     // Update constant buffer
     D3D11_MAPPED_SUBRESOURCE mapped;
@@ -469,7 +695,7 @@ void GridCompositor::drawCell(ID3D11ShaderResourceView* srv,
     cb.opacity         = opacity;
     cb.flipMode        = flipMode;
     cb.globalNoteIndex = globalNoteIndex;
-    cb.padding         = 0.0f;
+    cb.cornerRadius    = cornerRadius;
 
     std::memcpy(mapped.pData, &cb, sizeof(cb));
     deviceCtx_->Unmap(constantBuffer_.Get(), 0);
@@ -546,4 +772,363 @@ void GridCompositor::gridCellToUV(int cellCol, int cellRow, int spanX, int spanY
     outY = cellRow * halfCellH;
     outW = spanX * halfCellW;
     outH = spanY * halfCellH;
+}
+
+// ===========================================================================
+// RTPool — render target pairs for ping-pong effect processing
+// ===========================================================================
+
+RTPool::RTPair& RTPool::acquire(ID3D11Device* device, int width, int height, int slot)
+{
+    // Key encodes slot, width, height to prevent aliasing between independent passes
+    uint64_t key = (static_cast<uint64_t>(slot) << 48)
+                 | (static_cast<uint64_t>(width & 0xFFFF) << 32)
+                 | static_cast<uint64_t>(height & 0xFFFFFFFF);
+
+    auto it = pairs.find(key);
+    if (it != pairs.end() && it->second.width == width && it->second.height == height) {
+        return it->second;
+    }
+
+    // Create a new pair
+    RTPair pair;
+    pair.width  = width;
+    pair.height = height;
+
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width            = static_cast<UINT>(width);
+    desc.Height           = static_cast<UINT>(height);
+    desc.MipLevels        = 1;
+    desc.ArraySize        = 1;
+    desc.Format           = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage            = D3D11_USAGE_DEFAULT;
+    desc.BindFlags        = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+
+    HRESULT hr = device->CreateTexture2D(&desc, nullptr, &pair.texA);
+    if (FAILED(hr)) {
+        std::fprintf(stderr, "[RTPool] Failed to create texA %dx%d slot=%d, HR=0x%08X\n",
+                     width, height, slot, static_cast<unsigned int>(hr));
+    }
+    hr = device->CreateTexture2D(&desc, nullptr, &pair.texB);
+    if (FAILED(hr)) {
+        std::fprintf(stderr, "[RTPool] Failed to create texB %dx%d slot=%d, HR=0x%08X\n",
+                     width, height, slot, static_cast<unsigned int>(hr));
+    }
+
+    device->CreateRenderTargetView(pair.texA.Get(), nullptr, &pair.rtvA);
+    device->CreateRenderTargetView(pair.texB.Get(), nullptr, &pair.rtvB);
+    device->CreateShaderResourceView(pair.texA.Get(), nullptr, &pair.srvA);
+    device->CreateShaderResourceView(pair.texB.Get(), nullptr, &pair.srvB);
+
+    std::fprintf(stderr, "[RTPool] Created RT pair %dx%d slot=%d\n", width, height, slot);
+
+    pairs[key] = std::move(pair);
+    return pairs[key];
+}
+
+void RTPool::clear()
+{
+    pairs.clear();
+}
+
+// ===========================================================================
+// EffectShaderCache — compiled effect pixel shaders
+// ===========================================================================
+
+static bool createEffectCB(ID3D11Device* device, UINT sizeBytes,
+                           Microsoft::WRL::ComPtr<ID3D11Buffer>& outBuf,
+                           const char* name)
+{
+    // Round up to 16-byte alignment (D3D11 requirement)
+    UINT aligned = (sizeBytes + 15) & ~15u;
+
+    D3D11_BUFFER_DESC desc = {};
+    desc.Usage          = D3D11_USAGE_DYNAMIC;
+    desc.ByteWidth      = aligned;
+    desc.BindFlags      = D3D11_BIND_CONSTANT_BUFFER;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+
+    HRESULT hr = device->CreateBuffer(&desc, nullptr, &outBuf);
+    if (FAILED(hr)) {
+        std::fprintf(stderr, "[EffectShaders] Failed to create CB '%s' (%u bytes), HR=0x%08X\n",
+                     name, aligned, static_cast<unsigned int>(hr));
+        return false;
+    }
+    return true;
+}
+
+bool EffectShaderCache::init(ID3D11Device* device)
+{
+    if (!device) return false;
+
+    HRESULT hr;
+
+    // Create pixel shaders from precompiled bytecode
+    hr = device->CreatePixelShader(g_FX_DesaturationPS, sizeof(g_FX_DesaturationPS),
+                                   nullptr, &desaturationPS);
+    if (FAILED(hr)) {
+        std::fprintf(stderr, "[EffectShaders] Failed: Desaturation PS\n");
+        return false;
+    }
+
+    hr = device->CreatePixelShader(g_FX_TintPS, sizeof(g_FX_TintPS),
+                                   nullptr, &tintPS);
+    if (FAILED(hr)) {
+        std::fprintf(stderr, "[EffectShaders] Failed: Tint PS\n");
+        return false;
+    }
+
+    hr = device->CreatePixelShader(g_FX_BrightnessContrastPS, sizeof(g_FX_BrightnessContrastPS),
+                                   nullptr, &brightnessContrastPS);
+    if (FAILED(hr)) {
+        std::fprintf(stderr, "[EffectShaders] Failed: BrightnessContrast PS\n");
+        return false;
+    }
+
+    hr = device->CreatePixelShader(g_FX_TVSimulatorPS, sizeof(g_FX_TVSimulatorPS),
+                                   nullptr, &tvSimulatorPS);
+    if (FAILED(hr)) {
+        std::fprintf(stderr, "[EffectShaders] Failed: TVSimulator PS\n");
+        return false;
+    }
+
+    hr = device->CreatePixelShader(g_FX_ZoomPanRotationPS, sizeof(g_FX_ZoomPanRotationPS),
+                                   nullptr, &zoomPanRotPS);
+    if (FAILED(hr)) {
+        std::fprintf(stderr, "[EffectShaders] Failed: ZoomPanRotation PS\n");
+        return false;
+    }
+
+    // Create per-effect constant buffers at b2
+    if (!createEffectCB(device, 16, desatCB,      "Desaturation"))    return false;
+    if (!createEffectCB(device, 32, tintCB,        "Tint"))            return false;
+    if (!createEffectCB(device, 16, brightContCB,  "BrightnessContrast")) return false;
+    if (!createEffectCB(device, 32, tvSimCB,       "TVSimulator"))     return false;
+    if (!createEffectCB(device, 16, zoomPanRotCB,  "ZoomPanRotation")) return false;
+
+    initialized = true;
+    std::fprintf(stderr, "[EffectShaders] All 5 effect shaders + CBs created (placeholders)\n");
+    return true;
+}
+
+void EffectShaderCache::shutdown()
+{
+    desaturationPS.Reset();
+    tintPS.Reset();
+    brightnessContrastPS.Reset();
+    tvSimulatorPS.Reset();
+    zoomPanRotPS.Reset();
+    desatCB.Reset();
+    tintCB.Reset();
+    brightContCB.Reset();
+    tvSimCB.Reset();
+    zoomPanRotCB.Reset();
+    initialized = false;
+}
+
+// ===========================================================================
+// blitFullscreen — blit source texture into current RT with flip mode
+// ===========================================================================
+
+void GridCompositor::blitFullscreen(ID3D11ShaderResourceView* srv,
+                                    int flipMode, int globalNoteIndex)
+{
+    // Use the main GridComposite pixel shader with cellRect covering full UV [0,1]
+    deviceCtx_->PSSetShader(pixelShader_.Get(), nullptr, 0);
+    drawCell(srv, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, flipMode, globalNoteIndex, 0.0f);
+}
+
+// ===========================================================================
+// drawEffectPass — draw a fullscreen pass with the currently set PS
+// ===========================================================================
+
+void GridCompositor::drawEffectPass(ID3D11ShaderResourceView* srv)
+{
+    // Bind texture
+    deviceCtx_->PSSetShaderResources(0, 1, &srv);
+
+    // Draw the fullscreen quad
+    deviceCtx_->DrawIndexed(6, 0, 0);
+}
+
+// ===========================================================================
+// processEffectChain — apply visual effect chain via ping-pong RTs
+// ===========================================================================
+
+ID3D11ShaderResourceView* GridCompositor::processEffectChain(
+    ID3D11ShaderResourceView* sourceSRV,
+    int cellWidth, int cellHeight,
+    const std::vector<VisualEffect>& chain,
+    const CellFrameRequest& req,
+    float time,
+    int rtSlot)
+{
+    if (!initialized_ || !effectShaders_.initialized) return sourceSRV;
+
+    // Fast path: empty chain or all bypassed → zero GPU cost
+    bool anyActive = false;
+    for (const auto& fx : chain) {
+        if (!fx.bypassed) { anyActive = true; break; }
+    }
+    if (!anyActive) return sourceSRV;
+
+    if (cellWidth <= 0 || cellHeight <= 0) return sourceSRV;
+
+#ifdef XLETH_DEBUG
+    std::fprintf(stderr, "[VisualFX] Cell track=%d: chain has %zu effects, processing at %dx%d, slot=%d\n",
+                 req.trackId, chain.size(), cellWidth, cellHeight, rtSlot);
+#endif
+
+    // Get RT pair for this cell size + slot
+    RTPool::RTPair& rtp = rtPool_.acquire(device_, cellWidth, cellHeight, rtSlot);
+    if (!rtp.rtvA || !rtp.rtvB || !rtp.srvA || !rtp.srvB) return sourceSRV;
+
+    // Save the main output render target — we'll restore it after processing
+    // (compositeFrame re-binds before drawCell anyway, but be safe)
+
+    // Set up viewport for cell-sized RT
+    D3D11_VIEWPORT cellVP = {};
+    cellVP.Width    = static_cast<float>(cellWidth);
+    cellVP.Height   = static_cast<float>(cellHeight);
+    cellVP.MinDepth = 0.0f;
+    cellVP.MaxDepth = 1.0f;
+    deviceCtx_->RSSetViewports(1, &cellVP);
+
+    // Step 1: Blit sourceSRV into RT_A (plain copy — flip is applied at final drawCell)
+    const float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    deviceCtx_->ClearRenderTargetView(rtp.rtvA.Get(), clearColor);
+    deviceCtx_->OMSetRenderTargets(1, rtp.rtvA.GetAddressOf(), nullptr);
+
+    // Use the main GridComposite PS for the blit
+    deviceCtx_->PSSetShader(pixelShader_.Get(), nullptr, 0);
+    deviceCtx_->PSSetConstantBuffers(0, 1, constantBuffer_.GetAddressOf());
+
+    // Set up CellConstants for a fullscreen blit with flip mode
+    {
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        HRESULT hr = deviceCtx_->Map(constantBuffer_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        if (SUCCEEDED(hr)) {
+            CellConstants cb;
+            cb.cellRect[0]     = 0.0f;
+            cb.cellRect[1]     = 0.0f;
+            cb.cellRect[2]     = 1.0f;
+            cb.cellRect[3]     = 1.0f;
+            cb.opacity         = 1.0f;
+            cb.flipMode        = 0;  // plain copy — flip applied by drawCell at final composite
+            cb.globalNoteIndex = 0;
+            cb.cornerRadius    = 0.0f;
+            std::memcpy(mapped.pData, &cb, sizeof(cb));
+            deviceCtx_->Unmap(constantBuffer_.Get(), 0);
+        }
+    }
+    drawEffectPass(sourceSRV);
+
+    // Unbind RT_A from output before we read from it
+    ID3D11RenderTargetView* nullRTV = nullptr;
+    deviceCtx_->OMSetRenderTargets(1, &nullRTV, nullptr);
+
+    // Step 2: Ping-pong through effect chain
+    // After blit: RT_A has the flipped source. Start reading from srvA.
+    ID3D11ShaderResourceView*  currentSrc = rtp.srvA.Get();
+    ID3D11RenderTargetView*    currentDst = rtp.rtvB.Get();
+    ID3D11ShaderResourceView*  nextSrc    = rtp.srvB.Get();
+    ID3D11RenderTargetView*    nextDst    = rtp.rtvA.Get();
+
+    for (const auto& fx : chain) {
+        if (fx.bypassed) continue;
+
+        // Select the effect's pixel shader and CB
+        ID3D11PixelShader* fxPS = nullptr;
+        ID3D11Buffer*      fxCB = nullptr;
+
+        switch (fx.type) {
+            case VisualEffect::Type::Desaturation:
+                fxPS = effectShaders_.desaturationPS.Get();
+                fxCB = effectShaders_.desatCB.Get();
+                break;
+            case VisualEffect::Type::Tint:
+                fxPS = effectShaders_.tintPS.Get();
+                fxCB = effectShaders_.tintCB.Get();
+                break;
+            case VisualEffect::Type::BrightnessContrast:
+                fxPS = effectShaders_.brightnessContrastPS.Get();
+                fxCB = effectShaders_.brightContCB.Get();
+                break;
+            case VisualEffect::Type::TVSimulator:
+                fxPS = effectShaders_.tvSimulatorPS.Get();
+                fxCB = effectShaders_.tvSimCB.Get();
+                break;
+            case VisualEffect::Type::ZoomPanRotation: {
+                // Upload animated values from req (or static params[] fallback).
+                // Uses b0 (not b2), so handle CB explicitly and set fxCB=nullptr
+                // to skip the generic memcpy/PSSetConstantBuffers(2,...) path.
+                bool animActive = (req.currentZoom   != 1.0f || req.currentPanX != 0.0f ||
+                                   req.currentPanY   != 0.0f || req.currentRotDeg != 0.0f);
+                struct { float zoom, panX, panY, rotRad; } zprCBData;
+                if (animActive) {
+                    zprCBData.zoom   = req.currentZoom;
+                    zprCBData.panX   = req.currentPanX;
+                    zprCBData.panY   = req.currentPanY;
+                    zprCBData.rotRad = req.currentRotDeg * (3.14159265f / 180.0f);
+                } else {
+                    zprCBData.zoom   = (fx.params[1] > 0.001f) ? fx.params[1] : 1.0f; // targetZoom
+                    zprCBData.panX   = fx.params[4];                                   // targetPanX
+                    zprCBData.panY   = fx.params[5];                                   // targetPanY
+                    zprCBData.rotRad = fx.params[7] * (3.14159265f / 180.0f);         // targetRotDeg→rad
+                }
+                D3D11_MAPPED_SUBRESOURCE zprMapped{};
+                if (SUCCEEDED(deviceCtx_->Map(effectShaders_.zoomPanRotCB.Get(), 0,
+                                              D3D11_MAP_WRITE_DISCARD, 0, &zprMapped))) {
+                    std::memcpy(zprMapped.pData, &zprCBData, sizeof(zprCBData));
+                    deviceCtx_->Unmap(effectShaders_.zoomPanRotCB.Get(), 0);
+                }
+                auto* zprCBRaw = effectShaders_.zoomPanRotCB.Get();
+                deviceCtx_->PSSetConstantBuffers(0, 1, &zprCBRaw);
+                fxPS = effectShaders_.zoomPanRotPS.Get();
+                fxCB = nullptr;  // skip generic memcpy / PSSetConstantBuffers(2,...) path
+                break;
+            }
+        }
+
+        if (!fxPS) continue;
+
+        // Update the effect's CB with params from VisualEffect::params[]
+        // (Placeholder shaders ignore the CB — actual param passing comes in later prompts)
+        if (fxCB) {
+            D3D11_MAPPED_SUBRESOURCE mapped;
+            HRESULT hr = deviceCtx_->Map(fxCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+            if (SUCCEEDED(hr)) {
+                // Copy params (up to 16 floats = 64 bytes, but CB may be smaller)
+                // The CB size was set at creation; just copy what fits
+                D3D11_BUFFER_DESC cbDesc;
+                fxCB->GetDesc(&cbDesc);
+                UINT copySize = std::min(static_cast<UINT>(sizeof(fx.params)), cbDesc.ByteWidth);
+                std::memcpy(mapped.pData, fx.params, copySize);
+                deviceCtx_->Unmap(fxCB, 0);
+            }
+            deviceCtx_->PSSetConstantBuffers(2, 1, &fxCB);
+        }
+
+        // Set effect PS and draw into currentDst
+        deviceCtx_->PSSetShader(fxPS, nullptr, 0);
+        deviceCtx_->ClearRenderTargetView(currentDst, clearColor);
+        deviceCtx_->OMSetRenderTargets(1, &currentDst, nullptr);
+        drawEffectPass(currentSrc);
+
+        // Unbind RTV before next pass reads from it
+        deviceCtx_->OMSetRenderTargets(1, &nullRTV, nullptr);
+
+        // Swap src/dst for next pass
+        std::swap(currentSrc, nextSrc);
+        std::swap(currentDst, nextDst);
+    }
+
+    // Self-clean: unbind SRV at t0 and RTV to prevent hazards
+    ID3D11ShaderResourceView* nullSRV = nullptr;
+    deviceCtx_->PSSetShaderResources(0, 1, &nullSRV);
+    deviceCtx_->OMSetRenderTargets(1, &nullRTV, nullptr);
+
+    // currentSrc now points to the SRV of whichever RT has the final output
+    return currentSrc;
 }

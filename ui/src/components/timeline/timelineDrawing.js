@@ -17,6 +17,22 @@ const DEFAULT_SR = 48000
 // Neutral tint for pattern track lanes (sample-agnostic containers now).
 const PATTERN_LANE_TINT = 'rgba(106,169,255,0.04)'
 
+// Cubic bezier gain helper (CSS convention: P0=(0,0) P3=(1,1)).
+// Returns gain [0,1] for a normalized position xNorm [0,1] within the fade region.
+function _bezierGain(xNorm, x1, y1, x2, y2) {
+  let t = xNorm
+  for (let i = 0; i < 5; i++) {
+    const omt = 1 - t
+    const bx = 3 * omt * omt * t * x1 + 3 * omt * t * t * x2 + t * t * t
+    const dbx = 3 * omt * omt * x1 + 6 * omt * t * (x2 - x1) + 3 * t * t * (1 - x2)
+    if (Math.abs(dbx) < 1e-6) break
+    t -= (bx - xNorm) / dbx
+    t = Math.max(0, Math.min(1, t))
+  }
+  const omt = 1 - t
+  return 3 * omt * omt * t * y1 + 3 * omt * t * t * y2 + t * t * t
+}
+
 // ── Grid (background layer) ──────────────────────────────────────────────────
 
 export function drawGrid(ctx, w, h, scrollOffset, ppb, trackCount, tracks = null) {
@@ -412,6 +428,57 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
       } // regionDurSec > 0 && visR > visL
     }
 
+    // ── Fade overlay ──────────────────────────────────────────────────────
+    const fadeInTicks  = clip.fadeInTicks  ?? 0
+    const fadeOutTicks = clip.fadeOutTicks ?? 0
+
+    if ((fadeInTicks > 0 || fadeOutTicks > 0) && clipW > 4) {
+      ctx.save()
+      ctx.beginPath()
+      ctx.rect(x, y, clipW, clipH)
+      ctx.clip()
+
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.35)'
+
+      // Fade-in overlay
+      if (fadeInTicks > 0) {
+        const fadeInPx = (fadeInTicks / PPQ) * ppb
+        const steps = Math.min(Math.max(Math.ceil(fadeInPx / 2), 8), 64)
+        const x1 = clip.fadeInX1 ?? 0, y1 = clip.fadeInY1 ?? 0
+        const x2 = clip.fadeInX2 ?? 1, y2 = clip.fadeInY2 ?? 1
+        ctx.beginPath()
+        ctx.moveTo(x, y)
+        for (let i = 0; i <= steps; i++) {
+          const frac = i / steps
+          const g = _bezierGain(frac, x1, y1, x2, y2)
+          ctx.lineTo(x + frac * fadeInPx, y + clipH * (1 - g))
+        }
+        ctx.lineTo(x + fadeInPx, y)
+        ctx.closePath()
+        ctx.fill()
+      }
+
+      // Fade-out overlay
+      if (fadeOutTicks > 0) {
+        const fadeOutPx = (fadeOutTicks / PPQ) * ppb
+        const steps = Math.min(Math.max(Math.ceil(fadeOutPx / 2), 8), 64)
+        const x1 = clip.fadeOutX1 ?? 0, y1 = clip.fadeOutY1 ?? 0
+        const x2 = clip.fadeOutX2 ?? 1, y2 = clip.fadeOutY2 ?? 1
+        ctx.beginPath()
+        ctx.moveTo(x + clipW, y)
+        for (let i = 0; i <= steps; i++) {
+          const frac = i / steps
+          const g = _bezierGain(frac, x1, y1, x2, y2)
+          ctx.lineTo(x + clipW - frac * fadeOutPx, y + clipH * (1 - g))
+        }
+        ctx.lineTo(x + clipW - fadeOutPx, y)
+        ctx.closePath()
+        ctx.fill()
+      }
+
+      ctx.restore()
+    }
+
     // ── Resize handles (selected only) ────────────────────────────────────
     if (selected && clipW > HANDLE_W * 3) {
       ctx.fillStyle = hexToRgba(hex, 1.0)
@@ -461,6 +528,10 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
       }
       if (rev) parts.push('REV')
       if (Math.abs(ratio - 1.0) > 0.001) parts.push(`${ratio.toFixed(2)}×`)
+      if (Math.abs((clip.velocity ?? 1.0) - 1.0) > 0.001) {
+        const db = 20 * Math.log10(clip.velocity)
+        parts.push(`${db > 0 ? '+' : ''}${db.toFixed(1)}dB`)
+      }
 
       if (parts.length > 0 && clipW > 30) {
         const overlayText = parts.join(' ')
@@ -556,6 +627,10 @@ export function drawPatternBlocks(ctx, w, h, scrollOffset, ppb, blocks, trackIdT
       // preview visually matches what will actually play (MixEngine + video events).
       const blockLoopEnabled = block.loopEnabled !== false
       if (!blockLoopEnabled) lastLoop = Math.min(lastLoop, 0)
+      ctx.save()
+      ctx.beginPath()
+      ctx.rect(x, y, blockW, clipH)
+      ctx.clip()
       for (let L = firstLoop; L <= lastLoop; L++) {
         for (let n = 0; n < pattern.notes.length; n++) {
           const note = pattern.notes[n]
@@ -569,6 +644,7 @@ export function drawPatternBlocks(ctx, w, h, scrollOffset, ppb, blocks, trackIdT
           ctx.fillRect(nx, ny, nw, noteH)
         }
       }
+      ctx.restore()
     }
 
     // ── Resize handles ────────────────────────────────────────────────────

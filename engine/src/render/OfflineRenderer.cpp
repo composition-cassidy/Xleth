@@ -10,6 +10,7 @@
 #include "render/FrameCollector.h"
 #include "render/RenderVideoDecoder.h"
 #include "render/GridCompositor.h"
+#include "render/AnimationManager.h"
 #include "export/FFmpegMuxer.h"
 #include "SyncManager.h"          // VideoEvent
 #include "render/ArpVideoExpander.h"
@@ -106,9 +107,12 @@ void OfflineRenderer::requestCancel()
 // buildVideoEvents — convert timeline clips+patterns into VideoEvent list
 // ===========================================================================
 
-std::vector<VideoEvent> OfflineRenderer::buildVideoEvents(const Timeline& timeline)
+std::vector<VideoEvent> OfflineRenderer::buildVideoEvents(
+    const Timeline& timeline,
+    std::vector<SlideAnimationEvent>* outSlideEvents)
 {
     std::vector<VideoEvent> events;
+    if (outSlideEvents) outSlideEvents->clear();
     const double bpm = timeline.getBPM();
 
     // ── Clip tracks: each clip → one VideoEvent ──────────────────────────
@@ -147,6 +151,7 @@ std::vector<VideoEvent> OfflineRenderer::buildVideoEvents(const Timeline& timeli
         ev.durationBeats   = clip->duration.toBeats();
         ev.sourceId        = region->sourceId;
         ev.trackId         = clip->trackId;
+        ev.regionId        = clip->regionId;
         // regionOffset: how many beats into the source to start playback
         ev.sourceStartTime = clip->regionOffset.toBeats() * (60.0 / bpm) + region->startTime;
         ev.sourceEndTime   = region->endTime;
@@ -225,6 +230,7 @@ std::vector<VideoEvent> OfflineRenderer::buildVideoEvents(const Timeline& timeli
                 region->arpFreeTimeMs, region->arpGate,
                 region->arpRange, region->arpDirection,
                 bpm, region->sourceId, block->trackId,
+                pattern->regionId,
                 region->startTime, region->endTime,
                 noteCounterPerTrack_pat);
 
@@ -255,11 +261,30 @@ std::vector<VideoEvent> OfflineRenderer::buildVideoEvents(const Timeline& timeli
                     double evDur = std::min(noteDurBeats, blockDurBeats - evStartInBlock);
                     if (evDur <= 0.0) { loopOffset += patLenBeats; continue; }
 
+                    // Slide notes don't emit a VideoEvent — they fire a
+                    // per-track visual effect on the existing cell.
+                    if (note.isSlide) {
+                        if (outSlideEvents) {
+                            SlideAnimationEvent se;
+                            se.startBeat     = blockStartBeats + evStartInBlock;
+                            se.durationBeats = evDur;
+                            se.trackId       = block->trackId;
+                            se.slideVelocity = note.velocity;
+                            se.slideCurveCx  = note.slideCurveCx;
+                            se.slideCurveCy  = note.slideCurveCy;
+                            outSlideEvents->push_back(se);
+                        }
+                        if (!block->loopEnabled) break;
+                        loopOffset += patLenBeats;
+                        continue;
+                    }
+
                     VideoEvent ev;
                     ev.startBeat       = blockStartBeats + evStartInBlock;
                     ev.durationBeats   = evDur;
                     ev.sourceId        = region->sourceId;
                     ev.trackId         = block->trackId;
+                    ev.regionId        = pattern->regionId;
                     ev.sourceStartTime = region->startTime;
                     ev.sourceEndTime   = region->endTime;
                     ev.layerIndex      = 0;
@@ -352,7 +377,8 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
                  (long long)renderStart);
 
     // ── Build video events from timeline ─────────────────────────────────
-    auto videoEvents = buildVideoEvents(timeline_);
+    std::vector<SlideAnimationEvent> slideEvents;
+    auto videoEvents = buildVideoEvents(timeline_, &slideEvents);
 
     // ── Initialize pipeline components ───────────────────────────────────
     // Use fragmented MP4 for crash safety — remux to standard at the end
@@ -373,6 +399,8 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
     // Frame cache + collector (no GPU thread binding needed for offline)
     RenderFrameCache cache;
     FrameCollector collector;
+    AnimationManager animMgr;
+    collector.setAnimationManager(&animMgr);
 
     // Video decoder
     RenderVideoDecoder decoder;
@@ -419,6 +447,7 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
     int64_t audioSamplesWritten = 0;
     int64_t lastVideoFrame = -1;
     int     iterationCount = 0;
+    double  prevBeat = -1.0;  // for slide-event beat-crossing dispatch
 
     const auto renderStartTime = std::chrono::steady_clock::now();
     const GridLayout& grid = timeline_.getGridLayout();
@@ -479,6 +508,46 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
             }
 
             for (int64_t f = firstFrame; f <= lastFrame; ++f) {
+                // Advance animation state before collecting
+                const float frameDurationMs = 1000.0f * static_cast<float>(fps.den)
+                                            / static_cast<float>(fps.num);
+                animMgr.advanceAll(frameDurationMs);
+
+                // ── Slide-note beat-crossing dispatch ───────────────────
+                // Compute current beat from the output frame index and fire
+                // any SlideAnimationEvents whose startBeat falls in the
+                // (prevBeat, currentBeat] window. Reset on first iteration.
+                {
+                    const double currentBeat = (fps.num > 0)
+                        ? (static_cast<double>(f) * fps.den * bpm) / (60.0 * fps.num)
+                        : 0.0;
+                    if (prevBeat < 0.0 || currentBeat + 1e-6 < prevBeat)
+                        prevBeat = currentBeat - 1e-6;
+                    for (const auto& se : slideEvents) {
+                        if (se.startBeat > prevBeat && se.startBeat <= currentBeat) {
+                            const TrackInfo* tr = timeline_.getTrack(se.trackId);
+                            if (!tr) continue;
+                            const auto& cfg = tr->slideNoteEffect;
+                            if (cfg.type == SlideNoteEffectSettings::EffectType::None)
+                                continue;
+                            double durationMs;
+                            if (cfg.durationMode
+                                == SlideNoteEffectSettings::DurationMode::FollowSlide) {
+                                durationMs = se.durationBeats * (60000.0 / bpm);
+                            } else {
+                                durationMs = cfg.fixedDurationMs;
+                            }
+                            animMgr.onSlideEvent(
+                                se.trackId,
+                                static_cast<float>(durationMs),
+                                static_cast<int>(cfg.type),
+                                tr->zoomPanRot, tr->bounce,
+                                se.slideCurveCx, se.slideCurveCy);
+                        }
+                    }
+                    prevBeat = currentBeat;
+                }
+
                 // Collect what each grid cell needs for this output frame
                 auto requests = collector.collectRequests(
                     f, timeline_, sampleRate, fps, videoEvents);
@@ -502,8 +571,12 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
 
                 // Composite
                 if (compositor.isInitialized()) {
+                    const float currentTime = static_cast<float>(f)
+                                            * static_cast<float>(fps.den)
+                                            / static_cast<float>(fps.num);
                     compositor.compositeFrame(requests, cache,
-                                              grid.columns, grid.rows);
+                                              grid.columns, grid.rows,
+                                              currentTime, grid.gapScale);
 
                     // Readback composited pixels from GPU
                     auto readback = compositor.readback();

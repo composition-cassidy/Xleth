@@ -13,12 +13,62 @@ import VideoExportDialog from './components/VideoExportDialog.jsx'
 import SamplerPanel from './components/sampler/SamplerPanel.jsx'
 import MixerPanel from './components/mixer/MixerPanel.jsx'
 import SettingsPanel from './components/SettingsPanel.jsx'
+import MissingPluginsDialog from './components/MissingPluginsDialog.jsx'
+import { ToastProvider, useToast } from './components/Toast.jsx'
+import { showUnsavedChangesDialog } from './components/UnsavedChangesDialog.jsx'
 
 const FLOATING_DEFAULT_POS = { x: 120, y: 80 }
 const FLOATING_DEFAULT_SIZE = { w: 900, h: 500 }
 const FLOATING_MIN_SIZE = { w: 600, h: 400 }
 
+/**
+ * Save the current project via Save / Save-As flow.
+ * Returns:
+ *   true         on successful save
+ *   'cancelled'  when the user cancels the Save-As folder picker
+ *   false        on any other failure (disk / permission / write error)
+ *
+ * showToast is passed in so this helper can surface failures from outside
+ * the component scope.
+ */
+async function saveCurrentProject(showToast, setProjectName) {
+  const xl = window.xleth
+  try {
+    const hasDir = await xl.project.hasProjectDir()
+    if (!hasDir) {
+      const dir = await xl.project.openSaveAsDialog()
+      if (!dir) return 'cancelled'
+      const name = dir.split(/[\\/]/).pop() || 'Untitled'
+      const ok = await xl.project.saveAs(dir, name)
+      if (ok) {
+        setProjectName(name)
+        return true
+      }
+      showToast?.('Save failed — could not write to the chosen folder.', 'error')
+      return false
+    }
+    const ok = await xl.project.save()
+    if (!ok) {
+      showToast?.('Save failed. Check that the project folder is writable.', 'error')
+      return false
+    }
+    return true
+  } catch (e) {
+    showToast?.(`Save failed: ${e.message || e}`, 'error')
+    return false
+  }
+}
+
 export default function App() {
+  return (
+    <ToastProvider>
+      <AppInner />
+    </ToastProvider>
+  )
+}
+
+function AppInner() {
+  const { showToast } = useToast()
   const [pickerSource, setPickerSource] = useState(null)
   const [activeSampleId, setActiveSampleId] = useState(null)
   const [projectName, setProjectName] = useState('Untitled Project')
@@ -27,6 +77,7 @@ export default function App() {
   const [videoExportDialogOpen, setVideoExportDialogOpen] = useState(false)
   const [pianoRollPatternId, setPianoRollPatternId] = useState(null)
   const [samplerPanelRegionId, setSamplerPanelRegionId] = useState(null)
+  const [missingPlugins, setMissingPlugins] = useState(null) // null = closed, [] or array = open
 
   // Tab + detach state
   const [showSettings, setShowSettings] = useState(false)
@@ -258,14 +309,49 @@ export default function App() {
     const xl = window.xleth
     switch (label) {
       case 'New Project': {
-        const dir = await xl.project.openNewProjectDialog()
-        if (!dir) return
-        const name = dir.split(/[\\/]/).pop() || 'Untitled'
-        console.log(`[Project] Creating new project: ${name} in ${dir}`)
-        await xl.project.create(dir, name)
-        setProjectName(name)
-        // Notify panels to refresh
+        // Guard: can't reset while an export is running.
+        try {
+          if (await xl.project.isExportRunning?.()) {
+            showToast('Cannot start a new project while exporting.', 'error')
+            return
+          }
+        } catch {}
+
+        // Unsaved-changes prompt.
+        let dirty = false
+        try { dirty = !!(await xl.project.isDirty?.()) } catch {}
+        if (dirty) {
+          const choice = await showUnsavedChangesDialog()
+          if (choice === 'cancel') return
+          if (choice === 'save') {
+            const result = await saveCurrentProject(showToast, setProjectName)
+            if (result === 'cancelled') return
+            if (result !== true) return  // save failed — toast already shown
+          }
+          // 'discard' → fall through and wipe.
+        }
+
+        const res = await xl.project.newBlank?.()
+        if (!res || !res.ok) {
+          showToast(`New Project failed: ${res?.error || 'unknown error'}`, 'error')
+          return
+        }
+
+        setProjectName('Untitled Project')
+        // Close any panels that might hold stale IDs from the cleared project.
+        setPianoRollPatternId(null)
+        setSamplerPanelRegionId(null)
+        setActiveSampleId(null)
+        setPickerSource(null)
+        setCurrentPatternIdByTrack({})
+        setAllPatterns({})
+
+        // Notify panels to refresh — same events as project load.
         timelineEvents.dispatchEvent(new Event('timeline-sources-changed'))
+        timelineEvents.dispatchEvent(new Event('timeline-regions-changed'))
+        timelineEvents.dispatchEvent(new Event('timeline-clips-changed'))
+        timelineEvents.dispatchEvent(new Event('timeline-patterns-changed'))
+        timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
         break
       }
       case 'Open Project': {
@@ -281,41 +367,34 @@ export default function App() {
         timelineEvents.dispatchEvent(new Event('timeline-clips-changed'))
         timelineEvents.dispatchEvent(new Event('timeline-patterns-changed'))
         timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
+        // Show missing-plugins dialog if any plugins could not be loaded
+        try {
+          const rawMissing = await xl.audio?.getMissingPlugins?.()
+          if (rawMissing) {
+            const parsed = JSON.parse(rawMissing)
+            if (Array.isArray(parsed) && parsed.length > 0)
+              setMissingPlugins(parsed)
+          }
+        } catch (e) {
+          console.warn('[Project] getMissingPlugins error:', e)
+        }
         break
       }
       case 'Save': {
-        const hasDir = await xl.project.hasProjectDir()
-        if (!hasDir) {
-          // No project directory yet — fall through to Save As
-          console.log('[Project] No project dir set — opening Save As dialog')
-          const dir = await xl.project.openSaveAsDialog()
-          if (!dir) return
-          const name = dir.split(/[\\/]/).pop() || 'Untitled'
-          const ok = await xl.project.saveAs(dir, name)
-          if (ok) {
-            setProjectName(name)
-            console.log(`[Project] Saved to new location: ${dir}`)
-          } else {
-            console.error('[Project] Save As failed')
-          }
-          break
-        }
-        console.log('[Project] Saving project...')
-        const ok = await xl.project.save()
-        console.log(ok ? '[Project] Saved' : '[Project] Save FAILED')
+        const result = await saveCurrentProject(showToast, setProjectName)
+        if (result === true) showToast('Project saved.', 'success')
         break
       }
       case 'Save As...': {
         const dir = await xl.project.openSaveAsDialog()
         if (!dir) return
         const name = dir.split(/[\\/]/).pop() || 'Untitled'
-        console.log(`[Project] Saving project as: ${name} in ${dir}`)
         const ok = await xl.project.saveAs(dir, name)
         if (ok) {
           setProjectName(name)
-          console.log('[Project] Saved As')
+          showToast('Project saved.', 'success')
         } else {
-          console.error('[Project] Save As FAILED')
+          showToast('Save As failed — could not write to the chosen folder.', 'error')
         }
         break
       }
@@ -411,72 +490,74 @@ export default function App() {
       <div className="app-body" style={{ position: 'relative' }}>
         <ResizablePanel left={<LeftPanel onOpenPicker={handleOpenPicker} activeSampleId={activeSampleId} setActiveSampleId={setActiveSampleId} gridEditMode={gridEditMode} setGridEditMode={setGridEditMode} />}>
           <div className="center-area">
-            {pickerSource ? (
+            {/* SamplePicker: conditionally mounted (unmounts on close) */}
+            {pickerSource && (
               <SamplePicker source={pickerSource} onClose={handleClosePicker} />
-            ) : (
-              <>
-                <VideoPreview gridEditMode={gridEditMode} setGridEditMode={setGridEditMode} />
-                {/* Center tabs */}
-                <div className="center-tabs">
+            )}
+
+            {/* Timeline subtree: always mounted, hidden while picker is open */}
+            <div style={{ display: pickerSource ? 'none' : 'contents' }}>
+              <VideoPreview gridEditMode={gridEditMode} setGridEditMode={setGridEditMode} />
+              {/* Center tabs */}
+              <div className="center-tabs">
+                <button
+                  className={`center-tab ${activeCenterTab === 'timeline' ? 'active' : ''}`}
+                  onClick={() => setActiveCenterTab('timeline')}
+                >
+                  Timeline
+                </button>
+                {pianoRollPatternId != null && (
                   <button
-                    className={`center-tab ${activeCenterTab === 'timeline' ? 'active' : ''}`}
-                    onClick={() => setActiveCenterTab('timeline')}
+                    className={`center-tab ${activeCenterTab === 'piano-roll' ? 'active' : ''} ${pianoRollDetached ? 'center-tab--detached' : ''}`}
+                    onClick={() => {
+                      if (pianoRollDetached) handleDockPianoRoll()
+                      else setActiveCenterTab('piano-roll')
+                    }}
+                    title={pianoRollDetached ? 'Click to dock' : ''}
                   >
-                    Timeline
-                  </button>
-                  {pianoRollPatternId != null && (
-                    <button
-                      className={`center-tab ${activeCenterTab === 'piano-roll' ? 'active' : ''} ${pianoRollDetached ? 'center-tab--detached' : ''}`}
-                      onClick={() => {
-                        if (pianoRollDetached) handleDockPianoRoll()
-                        else setActiveCenterTab('piano-roll')
+                    <span>{tabLabel}</span>
+                    <span
+                      className="center-tab-close"
+                      title="Close pattern"
+                      onClick={(ev) => {
+                        ev.stopPropagation()
+                        handleFullyClosePianoRoll()
                       }}
-                      title={pianoRollDetached ? 'Click to dock' : ''}
-                    >
-                      <span>{tabLabel}</span>
-                      <span
-                        className="center-tab-close"
-                        title="Close pattern"
-                        onClick={(ev) => {
-                          ev.stopPropagation()
-                          handleFullyClosePianoRoll()
-                        }}
-                      >✕</span>
-                    </button>
-                  )}
+                    >✕</span>
+                  </button>
+                )}
+              </div>
+              <div className="center-area-body">
+                <div
+                  className="center-panel-slot"
+                  style={{ display: activeCenterTab === 'timeline' ? 'flex' : 'none' }}
+                >
+                  <TimelineView
+                    activeSampleId={activeSampleId}
+                    currentPatternIdByTrack={currentPatternIdByTrack}
+                    setCurrentPatternIdByTrack={setCurrentPatternIdByTrack}
+                    activeCenterTab={activeCenterTab}
+                  />
                 </div>
-                <div className="center-area-body">
+                {showPianoRollInTab && (
                   <div
                     className="center-panel-slot"
-                    style={{ display: activeCenterTab === 'timeline' ? 'flex' : 'none' }}
+                    style={{ display: activeCenterTab === 'piano-roll' ? 'flex' : 'none' }}
                   >
-                    <TimelineView
-                      activeSampleId={activeSampleId}
-                      currentPatternIdByTrack={currentPatternIdByTrack}
-                      setCurrentPatternIdByTrack={setCurrentPatternIdByTrack}
+                    <PianoRoll
+                      patternId={pianoRollPatternId}
+                      onClose={handleBackToTimeline}
+                      onDetach={handleDetachPianoRoll}
+                      availablePatterns={availablePatterns}
+                      currentPatternId={pianoRollPatternId}
+                      onSwitchPattern={handleSwitchPattern}
+                      onNewPattern={handleNewPatternFromPianoRoll}
                       activeCenterTab={activeCenterTab}
                     />
                   </div>
-                  {showPianoRollInTab && (
-                    <div
-                      className="center-panel-slot"
-                      style={{ display: activeCenterTab === 'piano-roll' ? 'flex' : 'none' }}
-                    >
-                      <PianoRoll
-                        patternId={pianoRollPatternId}
-                        onClose={handleBackToTimeline}
-                        onDetach={handleDetachPianoRoll}
-                        availablePatterns={availablePatterns}
-                        currentPatternId={pianoRollPatternId}
-                        onSwitchPattern={handleSwitchPattern}
-                        onNewPattern={handleNewPatternFromPianoRoll}
-                        activeCenterTab={activeCenterTab}
-                      />
-                    </div>
-                  )}
-                </div>
-              </>
-            )}
+                )}
+              </div>
+            </div>
           </div>
         </ResizablePanel>
 
@@ -524,6 +605,12 @@ export default function App() {
 
       <ExportDialog isOpen={exportDialogOpen} onClose={() => setExportDialogOpen(false)} />
       <VideoExportDialog isOpen={videoExportDialogOpen} onClose={() => setVideoExportDialogOpen(false)} />
+      {missingPlugins && missingPlugins.length > 0 && (
+        <MissingPluginsDialog
+          plugins={missingPlugins}
+          onClose={() => setMissingPlugins(null)}
+        />
+      )}
       {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
     </div>
   )

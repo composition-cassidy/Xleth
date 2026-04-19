@@ -58,6 +58,46 @@ export default function VideoPreview({ gridEditMode, setGridEditMode }) {
   const [importing, setImporting] = useState(false)
   const [fps, setFps] = useState(0)
   const [mode, setMode] = useState('init')
+  const [outputDims, setOutputDims] = useState({ w: 0, h: 0 })
+
+  // ── Preview performance controls ─────────────────────────────────────────
+  const [resolutionScale, setResolutionScale] = useState(1.0)
+  const [effectsBypass, setEffectsBypass] = useState(false)
+
+  // Restore persisted settings on mount
+  useEffect(() => {
+    async function restorePreviewSettings() {
+      try {
+        // Read from settings store (workstation-local, not project)
+        const scale  = await window.xleth?.settings?.get('previewResolutionScale')
+        const bypass = await window.xleth?.settings?.get('previewEffectsBypass')
+        const resolvedScale  = (typeof scale  === 'number') ? scale  : 1.0
+        const resolvedBypass = (typeof bypass === 'boolean') ? bypass : false
+        setResolutionScale(resolvedScale)
+        setEffectsBypass(resolvedBypass)
+        // Apply to engine
+        await window.xleth?.timeline?.setPreviewResolutionScale(resolvedScale)
+        await window.xleth?.timeline?.setPreviewEffectsBypass(resolvedBypass)
+      } catch (e) {
+        console.error('[VideoPreview] Failed to restore preview settings:', e)
+      }
+    }
+    restorePreviewSettings()
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleResolutionChange = useCallback(async (e) => {
+    const scale = parseFloat(e.target.value)
+    setResolutionScale(scale)
+    await window.xleth?.timeline?.setPreviewResolutionScale(scale)
+    await window.xleth?.settings?.set('previewResolutionScale', scale)
+  }, [])
+
+  const handleEffectsBypassToggle = useCallback(async () => {
+    const next = !effectsBypass
+    setEffectsBypass(next)
+    await window.xleth?.timeline?.setPreviewEffectsBypass(next)
+    await window.xleth?.settings?.set('previewEffectsBypass', next)
+  }, [effectsBypass])
 
   const handleImport = useCallback(async () => {
     setImporting(true)
@@ -102,6 +142,7 @@ export default function VideoPreview({ gridEditMode, setGridEditMode }) {
         bufferSize = shm.meta.bufferSize
         canvas.width  = sabWidth
         canvas.height = sabHeight
+        setOutputDims({ w: sabWidth, h: sabHeight })
         console.log(`[VideoPreview] shm ready: ${shm.meta.name} ${sabWidth}x${sabHeight}`)
       }
     } catch (e) {
@@ -236,6 +277,39 @@ export default function VideoPreview({ gridEditMode, setGridEditMode }) {
         <div className="video-header-right">
           <span className="video-fps">{fps} FPS</span>
           <span className="video-mode">{mode}</span>
+
+          {/* Current preview output resolution. Shows scale qualifier when
+              not at 100% so the user always knows whether the preview is
+              running at native resolution or downsampled. */}
+          {outputDims.w > 0 && (
+            <span className="video-resolution" title="Current preview output resolution">
+              {outputDims.w}×{outputDims.h}
+              {resolutionScale < 0.999 && ` (${Math.round(resolutionScale * 100)}%)`}
+            </span>
+          )}
+
+          {/* Resolution scale dropdown */}
+          <select
+            className="preview-resolution-select"
+            value={resolutionScale}
+            onChange={handleResolutionChange}
+            title="Preview resolution (lower = faster)"
+          >
+            <option value="1.0">100%</option>
+            <option value="0.75">75%</option>
+            <option value="0.5">50%</option>
+            <option value="0.25">25%</option>
+          </select>
+
+          {/* Effects bypass toggle */}
+          <button
+            className={`preview-fx-btn ${effectsBypass ? 'bypassed' : 'active'}`}
+            onClick={handleEffectsBypassToggle}
+            title={effectsBypass ? 'Effects bypassed (click to enable)' : 'Effects active (click to bypass)'}
+          >
+            FX
+          </button>
+
           <button
             className={`video-import-btn ${gridEditMode ? 'active' : ''}`}
             onClick={() => setGridEditMode && setGridEditMode(!gridEditMode)}

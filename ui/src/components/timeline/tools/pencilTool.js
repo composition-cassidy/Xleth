@@ -11,6 +11,7 @@ export function createPencilTool(deps) {
     clipsRef, tracksRef, regionsRef, selectedRef,
     pixelsPerBeatRef, scrollOffsetRef,
     activeSampleIdRef, stickyNoteLengthRef, pencilTemplateRef,
+    snapGranularityRef,
     onCreateClip, onDeleteClip, setSelectedClipIds, setStickyNoteLength,
     redrawOverlay,
     // Pattern block deps
@@ -62,7 +63,7 @@ export function createPencilTool(deps) {
       if (!tracks || trackIndex < 0 || trackIndex >= tracks.length) return
 
       const modifiers = { alt: e.altKey, shift: e.shiftKey, ctrl: e.ctrlKey }
-      const snappedBeat = snapBeatToGrid(Math.max(0, beat), modifiers)
+      const snappedBeat = snapBeatToGrid(Math.max(0, beat), modifiers, snapGranularityRef?.current)
       const track = tracks[trackIndex]
 
       // ── Pattern track branch ────────────────────────────────────────────
@@ -137,7 +138,7 @@ export function createPencilTool(deps) {
       }
 
       const modifiers = { alt: e.altKey, shift: e.shiftKey, ctrl: e.ctrlKey }
-      const snappedBeat = snapBeatToGrid(Math.max(0, beat), modifiers)
+      const snappedBeat = snapBeatToGrid(Math.max(0, beat), modifiers, snapGranularityRef?.current)
       const template = pencilTemplateRef?.current
       const region = template
         ? regionsRef.current?.[template.regionId]

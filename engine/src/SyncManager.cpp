@@ -1,4 +1,5 @@
 #include "SyncManager.h"
+#include "model/Timeline.h"
 
 // GPU compositor calls are compiled-out when building XlethEngineCore
 // (the static lib used by the Node.js bridge). The bridge target defines
@@ -25,6 +26,14 @@ SyncManager::SyncManager(Transport& transport,
 {
 }
 
+void SyncManager::setRegionProxySources(
+    std::unordered_map<int, VideoDecoder*>* regionDecoderPtrs,
+    const Timeline*                         timeline)
+{
+    regionDecoderPtrs_   = regionDecoderPtrs;
+    timelineForRegions_  = timeline;
+}
+
 void SyncManager::addEvent(const VideoEvent& event)
 {
     events_.push_back(event);
@@ -35,6 +44,7 @@ void SyncManager::addEvent(const VideoEvent& event)
 void SyncManager::clearEvents()
 {
     events_.clear();
+    slideEvents_.clear();
     lastDisplayedFrame_.clear();
     maxLayerIndex_ = 0;
 
@@ -87,16 +97,44 @@ double SyncManager::videoTick()
         double secsSinceStart  = beatsSinceStart * (60.0 / bpm);
         double sourceTime      = event.sourceStartTime + secsSinceStart;
 
-        // Bounds-check sourceId against decoders
-        if (event.sourceId < 0 || event.sourceId >= static_cast<int>(decoders_.size()))
-            continue;
+        // Pick the best decoder for this event:
+        //   1. If a per-region proxy is available and the current sourceTime
+        //      lands inside the proxy's covered range, use it — seek time
+        //      must be relative to the proxy's time 0.
+        //   2. Otherwise fall back to the original source decoder.
+        VideoDecoder* decoder       = nullptr;
+        double        seekTime      = sourceTime;
+        int           cacheRegionId = -1;
 
-        VideoDecoder* decoder = decoders_[static_cast<size_t>(event.sourceId)];
-        if (!decoder || !decoder->isOpen())
-            continue;
+        if (event.regionId > 0 && regionDecoderPtrs_ && timelineForRegions_)
+        {
+            auto it = regionDecoderPtrs_->find(event.regionId);
+            if (it != regionDecoderPtrs_->end() && it->second && it->second->isOpen())
+            {
+                const SampleRegion* r = timelineForRegions_->getRegion(event.regionId);
+                if (r && r->proxyReady &&
+                    sourceTime >= r->proxyStartTime &&
+                    sourceTime <  r->proxyEndTime)
+                {
+                    decoder       = it->second;
+                    seekTime      = sourceTime - r->proxyStartTime;
+                    cacheRegionId = event.regionId;
+                }
+            }
+        }
 
-        // 4b. Convert sourceTime to frame number
-        int targetFrame = decoder->timeToFrame(sourceTime);
+        if (!decoder)
+        {
+            // Bounds-check sourceId against decoders
+            if (event.sourceId < 0 || event.sourceId >= static_cast<int>(decoders_.size()))
+                continue;
+            decoder = decoders_[static_cast<size_t>(event.sourceId)];
+            if (!decoder || !decoder->isOpen())
+                continue;
+        }
+
+        // 4b. Convert seekTime to frame number (on whichever decoder we picked)
+        int targetFrame = decoder->timeToFrame(seekTime);
 
 #ifndef XLETH_CORE_ONLY
         // 4c. Check if this frame was already displayed on this layer (GPU path)
@@ -121,8 +159,10 @@ double SyncManager::videoTick()
         }
 #endif
 
-        // 4d. Try frame cache
-        FrameKey key = { event.sourceId, targetFrame };
+        // 4d. Try frame cache — regionId is part of the key because a region
+        // proxy produces a different picture than the original at the same
+        // (sourceId, targetFrame) pair.
+        FrameKey key = { event.sourceId, targetFrame, cacheRegionId };
         const CachedFrame* cached = cache_.get(key);
 
         // 4e. If cache miss — decode
@@ -131,7 +171,7 @@ double SyncManager::videoTick()
             auto decodeStart = std::chrono::high_resolution_clock::now();
 
             VideoDecoder::DecodedFrame decodedFrame;
-            bool ok = decoder->seekAndDecode(sourceTime, decodedFrame);
+            bool ok = decoder->seekAndDecode(seekTime, decodedFrame);
 
             auto decodeEnd = std::chrono::high_resolution_clock::now();
             double decodeMs = std::chrono::duration<double, std::milli>(decodeEnd - decodeStart).count();

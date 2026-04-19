@@ -107,6 +107,153 @@ std::string ProxyTranscoder::buildCommand(const std::string& input,
     return ss.str();
 }
 
+// ── buildRangeCommand ────────────────────────────────────────────────────────
+// -ss before -i  : fast keyframe-level input-side seek (no full decode)
+// -to after -i   : exclusive end cutoff (measured from source time 0)
+// -vf scale=W:H  : downscale to target resolution
+std::string ProxyTranscoder::buildRangeCommand(const std::string& input,
+                                               const std::string& output,
+                                               double startTimeSec,
+                                               double endTimeSec,
+                                               int targetWidth,
+                                               int targetHeight)
+{
+    std::ostringstream ss;
+    ss.setf(std::ios::fixed);
+    ss.precision(3);
+    ss << "ffmpeg -y "
+       << "-ss " << startTimeSec << " "
+       << "-to " << endTimeSec   << " "
+       << "-i \"" << input << "\" "
+       << "-vf scale=" << targetWidth << ":" << targetHeight << " "
+       << "-c:v dnxhd -profile:v dnxhr_lb -pix_fmt yuv422p -an "
+       << "\"" << output << "\"";
+    return ss.str();
+}
+
+// ── runFFmpegAndWait ─────────────────────────────────────────────────────────
+// Shared subprocess runner used by both transcode() and transcodeRange().
+// Returns FFmpeg's exit code (0 = success). Streams stderr, parses the
+// `time=HH:MM:SS.xx` tokens, and feeds progressCallback with the fraction of
+// expectedDurationSec (>0 required for progress — 0 disables callback).
+int ProxyTranscoder::runFFmpegAndWait(const std::string& cmd,
+                                      double expectedDurationSec,
+                                      std::function<void(float)> progressCallback)
+{
+#if defined(_WIN32) || defined(_WIN64)
+
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength              = sizeof(sa);
+    sa.bInheritHandle       = TRUE;
+    sa.lpSecurityDescriptor = nullptr;
+
+    HANDLE hReadPipe  = nullptr;
+    HANDLE hWritePipe = nullptr;
+    if (!CreatePipe(&hReadPipe, &hWritePipe, &sa, 0))
+    {
+        std::cerr << "[ProxyTranscoder] CreatePipe failed\n";
+        return -1;
+    }
+    SetHandleInformation(hReadPipe, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOA si{};
+    si.cb          = sizeof(si);
+    si.dwFlags     = STARTF_USESTDHANDLES;
+    si.hStdInput   = GetStdHandle(STD_INPUT_HANDLE);
+    si.hStdOutput  = GetStdHandle(STD_OUTPUT_HANDLE);
+    si.hStdError   = hWritePipe;
+
+    PROCESS_INFORMATION pi{};
+    std::string mutableCmd = cmd;
+
+    BOOL ok = CreateProcessA(
+        nullptr,
+        mutableCmd.data(),
+        nullptr, nullptr,
+        TRUE,
+        CREATE_NO_WINDOW,
+        nullptr, nullptr,
+        &si, &pi);
+
+    CloseHandle(hWritePipe);
+
+    if (!ok)
+    {
+        std::cerr << "[ProxyTranscoder] CreateProcess failed (error "
+                  << GetLastError() << ")\n";
+        CloseHandle(hReadPipe);
+        return -1;
+    }
+
+    std::regex timeRegex(R"(time=(\d+:\d+:\d+\.\d+))");
+    char readBuf[4096];
+    std::string residual;
+    DWORD bytesRead = 0;
+
+    while (ReadFile(hReadPipe, readBuf, sizeof(readBuf) - 1, &bytesRead, nullptr)
+           && bytesRead > 0)
+    {
+        readBuf[bytesRead] = '\0';
+        residual += readBuf;
+
+        std::string::size_type pos;
+        while ((pos = residual.find('\r')) != std::string::npos ||
+               (pos = residual.find('\n')) != std::string::npos)
+        {
+            std::string line = residual.substr(0, pos);
+            residual.erase(0, pos + 1);
+
+            std::smatch match;
+            if (std::regex_search(line, match, timeRegex) && expectedDurationSec > 0.0)
+            {
+                double t = parseTimeString(match[1].str());
+                float  p = static_cast<float>(std::clamp(t / expectedDurationSec, 0.0, 1.0));
+                if (progressCallback) progressCallback(p);
+            }
+        }
+    }
+
+    WaitForSingleObject(pi.hProcess, INFINITE);
+
+    DWORD exitCode = 1;
+    GetExitCodeProcess(pi.hProcess, &exitCode);
+
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    CloseHandle(hReadPipe);
+
+    return static_cast<int>(exitCode);
+
+#else
+
+    std::string pipeCmd = cmd + " 2>&1";
+    FILE* pipe = popen(pipeCmd.c_str(), "r");
+    if (!pipe)
+    {
+        std::cerr << "[ProxyTranscoder] popen failed\n";
+        return -1;
+    }
+
+    std::regex timeRegex(R"(time=(\d+:\d+:\d+\.\d+))");
+    char readBuf[4096];
+
+    while (fgets(readBuf, sizeof(readBuf), pipe))
+    {
+        std::string line(readBuf);
+        std::smatch match;
+        if (std::regex_search(line, match, timeRegex) && expectedDurationSec > 0.0)
+        {
+            double t = parseTimeString(match[1].str());
+            float  p = static_cast<float>(std::clamp(t / expectedDurationSec, 0.0, 1.0));
+            if (progressCallback) progressCallback(p);
+        }
+    }
+
+    return pclose(pipe);
+
+#endif
+}
+
 // ── transcode ────────────────────────────────────────────────────────────────
 
 std::string ProxyTranscoder::transcode(
@@ -136,136 +283,12 @@ std::string ProxyTranscoder::transcode(
 
     if (progressCallback) progressCallback(0.0f);
 
-    // ── Windows: CreateProcess with stderr pipe ──────────────────────────────
-#if defined(_WIN32) || defined(_WIN64)
-
-    SECURITY_ATTRIBUTES sa{};
-    sa.nLength              = sizeof(sa);
-    sa.bInheritHandle       = TRUE;
-    sa.lpSecurityDescriptor = nullptr;
-
-    HANDLE hReadPipe  = nullptr;
-    HANDLE hWritePipe = nullptr;
-    if (!CreatePipe(&hReadPipe, &hWritePipe, &sa, 0))
-    {
-        std::cerr << "[ProxyTranscoder] CreatePipe failed\n";
-        return {};
-    }
-    // Don't let the read end be inherited
-    SetHandleInformation(hReadPipe, HANDLE_FLAG_INHERIT, 0);
-
-    STARTUPINFOA si{};
-    si.cb          = sizeof(si);
-    si.dwFlags     = STARTF_USESTDHANDLES;
-    si.hStdInput   = GetStdHandle(STD_INPUT_HANDLE);
-    si.hStdOutput  = GetStdHandle(STD_OUTPUT_HANDLE);
-    si.hStdError   = hWritePipe;  // FFmpeg writes progress to stderr
-
-    PROCESS_INFORMATION pi{};
-
-    // CreateProcessA needs a mutable command buffer
-    std::string mutableCmd = cmd;
-
-    BOOL ok = CreateProcessA(
-        nullptr,
-        mutableCmd.data(),
-        nullptr, nullptr,
-        TRUE,                       // inherit handles
-        CREATE_NO_WINDOW,           // no console window
-        nullptr, nullptr,
-        &si, &pi);
-
-    // Close write end in parent so ReadFile will eventually return 0
-    CloseHandle(hWritePipe);
-
-    if (!ok)
-    {
-        std::cerr << "[ProxyTranscoder] CreateProcess failed (error "
-                  << GetLastError() << ")\n";
-        CloseHandle(hReadPipe);
-        return {};
-    }
-
-    // Read stderr for progress
-    std::regex timeRegex(R"(time=(\d+:\d+:\d+\.\d+))");
-    char readBuf[4096];
-    std::string residual;
-    DWORD bytesRead = 0;
-
-    while (ReadFile(hReadPipe, readBuf, sizeof(readBuf) - 1, &bytesRead, nullptr)
-           && bytesRead > 0)
-    {
-        readBuf[bytesRead] = '\0';
-        residual += readBuf;
-
-        // Process complete lines
-        std::string::size_type pos;
-        while ((pos = residual.find('\r')) != std::string::npos ||
-               (pos = residual.find('\n')) != std::string::npos)
-        {
-            std::string line = residual.substr(0, pos);
-            residual.erase(0, pos + 1);
-
-            std::smatch match;
-            if (std::regex_search(line, match, timeRegex) && srcDuration > 0.0)
-            {
-                double t = parseTimeString(match[1].str());
-                float  p = static_cast<float>(std::clamp(t / srcDuration, 0.0, 1.0));
-                if (progressCallback) progressCallback(p);
-            }
-        }
-    }
-
-    // Wait for FFmpeg to exit
-    WaitForSingleObject(pi.hProcess, INFINITE);
-
-    DWORD exitCode = 1;
-    GetExitCodeProcess(pi.hProcess, &exitCode);
-
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-    CloseHandle(hReadPipe);
-
+    int exitCode = runFFmpegAndWait(cmd, srcDuration, progressCallback);
     if (exitCode != 0)
     {
         std::cerr << "[ProxyTranscoder] FFmpeg exited with code " << exitCode << "\n";
         return {};
     }
-
-    // ── Non-Windows: popen fallback ──────────────────────────────────────────
-#else
-
-    std::string pipeCmd = cmd + " 2>&1";
-    FILE* pipe = popen(pipeCmd.c_str(), "r");
-    if (!pipe)
-    {
-        std::cerr << "[ProxyTranscoder] popen failed\n";
-        return {};
-    }
-
-    std::regex timeRegex(R"(time=(\d+:\d+:\d+\.\d+))");
-    char readBuf[4096];
-
-    while (fgets(readBuf, sizeof(readBuf), pipe))
-    {
-        std::string line(readBuf);
-        std::smatch match;
-        if (std::regex_search(line, match, timeRegex) && srcDuration > 0.0)
-        {
-            double t = parseTimeString(match[1].str());
-            float  p = static_cast<float>(std::clamp(t / srcDuration, 0.0, 1.0));
-            if (progressCallback) progressCallback(p);
-        }
-    }
-
-    int ret = pclose(pipe);
-    if (ret != 0)
-    {
-        std::cerr << "[ProxyTranscoder] FFmpeg exited with code " << ret << "\n";
-        return {};
-    }
-
-#endif
 
     if (progressCallback) progressCallback(1.0f);
 
@@ -281,4 +304,90 @@ std::string ProxyTranscoder::transcode(
                 srcSize, proxySize, proxySize / (srcSize > 0 ? srcSize : 1.0));
 
     return outputPath;
+}
+
+// ── transcodeRange ───────────────────────────────────────────────────────────
+
+bool ProxyTranscoder::transcodeRange(
+    const std::string& inputPath,
+    const std::string& outputPath,
+    double             startTimeSec,
+    double             endTimeSec,
+    int                targetWidth,
+    int                targetHeight,
+    std::function<void(float progress)> progressCallback)
+{
+    if (!fs::exists(inputPath))
+    {
+        std::cerr << "[ProxyTranscoder] Source not found: " << inputPath << "\n";
+        return false;
+    }
+    if (endTimeSec <= startTimeSec)
+    {
+        std::cerr << "[ProxyTranscoder] Invalid range: start=" << startTimeSec
+                  << " end=" << endTimeSec << "\n";
+        return false;
+    }
+    if (targetWidth <= 0 || targetHeight <= 0)
+    {
+        std::cerr << "[ProxyTranscoder] Invalid target size: "
+                  << targetWidth << "x" << targetHeight << "\n";
+        return false;
+    }
+
+    // Create parent directory for outputPath
+    try {
+        fs::path out(outputPath);
+        if (out.has_parent_path())
+            fs::create_directories(out.parent_path());
+    } catch (const std::exception& e) {
+        std::cerr << "[ProxyTranscoder] create_directories failed: " << e.what() << "\n";
+        return false;
+    }
+
+    std::string cmd = buildRangeCommand(inputPath, outputPath,
+                                        startTimeSec, endTimeSec,
+                                        targetWidth, targetHeight);
+
+    double rangeDuration = endTimeSec - startTimeSec;
+
+    std::cout << "[ProxyTranscoder] Range Input : " << inputPath  << "\n"
+              << "[ProxyTranscoder] Range Output: " << outputPath << "\n"
+              << "[ProxyTranscoder] Range: [" << startTimeSec << ", "
+                                              << endTimeSec << ") ("
+                                              << rangeDuration << " s)\n"
+              << "[ProxyTranscoder] Target size: " << targetWidth << "x"
+                                                  << targetHeight << "\n"
+              << "[ProxyTranscoder] Command: " << cmd << "\n";
+
+    auto t0 = std::chrono::high_resolution_clock::now();
+
+    if (progressCallback) progressCallback(0.0f);
+
+    int exitCode = runFFmpegAndWait(cmd, rangeDuration, progressCallback);
+    if (exitCode != 0)
+    {
+        std::cerr << "[ProxyTranscoder] Range FFmpeg exited with code "
+                  << exitCode << "\n";
+        // Clean up any partial output so isFilePresent checks stay correct
+        std::error_code ec;
+        fs::remove(outputPath, ec);
+        return false;
+    }
+
+    if (progressCallback) progressCallback(1.0f);
+
+    auto t1 = std::chrono::high_resolution_clock::now();
+    double elapsedSec = std::chrono::duration<double>(t1 - t0).count();
+
+    // Log results (guard in case file didn't actually get written)
+    double proxySizeMB = 0.0;
+    std::error_code ec;
+    auto sz = fs::file_size(outputPath, ec);
+    if (!ec) proxySizeMB = static_cast<double>(sz) / (1024.0 * 1024.0);
+
+    std::printf("[ProxyTranscoder] Range done in %.1f s — %.1f MB\n",
+                elapsedSec, proxySizeMB);
+
+    return true;
 }

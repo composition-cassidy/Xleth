@@ -13,6 +13,7 @@
 class XlethEffectBase;
 class WireGainProcessor;
 class DelayCompensationProcessor;
+class PluginRegistry;
 
 // ─── AudioGraph ─────────────────────────────────────────────────────────────
 // Owns a juce::AudioProcessorGraph and a topology data model (nodes,
@@ -35,6 +36,9 @@ class AudioGraph : private juce::Timer
 public:
     AudioGraph();
     ~AudioGraph() override;
+
+    // ── Plugin registry (non-owning, set before init) ───────────────────
+    void setPluginRegistry(PluginRegistry* registry) noexcept { pluginRegistry_ = registry; }
 
     // ── Lifecycle (main thread) ─────────────────────────────────────────
     void init(double sampleRate, int blockSize);
@@ -105,6 +109,14 @@ public:
     // is not in this graph or the node does not hold an XlethEffectBase.
     XlethEffectBase* getEffect(int nodeId);
 
+    // Returns the raw AudioProcessor for any node (stock XlethEffectBase OR
+    // VST3 AudioPluginInstance).  Returns nullptr if nodeId is not found.
+    juce::AudioProcessor* getProcessor(int nodeId);
+
+    // Returns the plugin file path (PluginDescription::fileOrIdentifier) for a
+    // VST node.  Returns empty string for stock effects or missing nodeId.
+    juce::String getPluginFilePath(int nodeId) const;
+
     // Returns JSON param descriptor array ("[]" if nodeId invalid).
     std::string getEffectParameters(int nodeId) const;
 
@@ -113,6 +125,25 @@ public:
 
     // Returns JSON meter array ("[0,0,0,0,0,0,0,0]" if nodeId invalid).
     std::string getEffectMeter(int nodeId) const;
+
+    // ── Missing-plugin support ──────────────────────────────────────────
+
+    // True iff nodeId holds a PassthroughProcessor (plugin was not found at load time).
+    bool isNodeMissing(int nodeId) const;
+
+    // Attempt to replace the placeholder at nodeId with the real plugin from
+    // registry.  Preserves connections and chain position.
+    // Returns true on success (placeholder is gone); false if plugin still unavailable.
+    bool tryResolvePlugin(int nodeId, PluginRegistry& registry);
+
+    // ── Crash recovery ──────────────────────────────────────────────────
+    // Returns true if nodeId's GuardedPluginWrapper reports crashed_ == true.
+    bool isNodeCrashed(int nodeId) const;
+
+    // Attempt to recover a crashed VST node (releaseResources → prepare → reset,
+    // all inside SEH).  Returns true if recovery succeeded; false if the reset
+    // itself faulted or nodeId does not hold a GuardedPluginWrapper.
+    bool resetCrashedPlugin(int nodeId);
 
     // ── Serialization ───────────────────────────────────────────────────
 
@@ -189,6 +220,16 @@ private:
     juce::AudioProcessorGraph::NodeID inputNode_{};
     juce::AudioProcessorGraph::NodeID outputNode_{};
 
+    // Non-owning pointer to the shared PluginRegistry (set via setPluginRegistry).
+    PluginRegistry* pluginRegistry_ = nullptr;
+
+    // For each VST node (keyed by uid), stores the PluginDescription used
+    // to instantiate it so toJSON can persist it for round-trip fidelity.
+    std::unordered_map<int, juce::PluginDescription> vstDescriptions_;
+
+    // UIDs of nodes currently holding a PassthroughProcessor (plugin missing at load).
+    std::unordered_set<int> missingNodes_;
+
     // Effect nodes keyed by uid (excludes I/O nodes, gain nodes, delay nodes)
     std::unordered_map<int, GraphNode> nodes_;
 
@@ -242,7 +283,14 @@ private:
 
     // ── Factory ─────────────────────────────────────────────────────────
 
-    static std::unique_ptr<XlethEffectBase> createEffect(const std::string& pluginId);
+    // Returns a stock XlethEffectBase or a VST3 AudioPluginInstance.
+    // Falls back to VST registry when pluginId is not a known stock effect.
+    std::unique_ptr<juce::AudioProcessor> createEffect(const std::string& pluginId);
+
+    // Add a pre-created processor to the APG and node tables.
+    // Does NOT store vstDescriptions_ — caller must do that if needed.
+    int addProcessorToGraph(const std::string& pluginId,
+                            std::unique_ptr<juce::AudioProcessor> proc);
 
     // ── Constants ───────────────────────────────────────────────────────
 
