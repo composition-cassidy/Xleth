@@ -1973,9 +1973,24 @@ void MixEngine::triggerPatternNotes(const ActivePatternBlock& apb,
             // pattern as the noteOn branch above. The widened tick search
             // admits candidates from adjacent buffers; this filter discards
             // them so they fire in the correct buffer instead.
+            //
+            // Fix A: filter end is INCLUSIVE (> not >=). A note-off whose
+            // sample equals bufferEnd MUST dispatch in this buffer — in the
+            // next buffer the owning PatternBlock will be absent from
+            // activeBlocks_ (findActivePatternBlocks uses a half-open
+            // [blockStart, blockEnd) filter) and there is no pending-off
+            // state that would re-emit it. Admitting it here is the last
+            // chance.
             if (absNoteOffSample <  bufferStart) continue;
-            if (absNoteOffSample >= bufferEnd)   continue;
-            const int noteOffOffset = static_cast<int>(absNoteOffSample - bufferStart);
+            if (absNoteOffSample >  bufferEnd)   continue;   // was >=
+            int noteOffOffset = static_cast<int>(absNoteOffSample - bufferStart);
+            // Clamp for the deferred-release scheduler in Sampler::processVoice:
+            // fireNoteOff stores sampleOffset in Voice::releaseSample; the
+            // sample-loop gate `s >= v.releaseSample` is never true when
+            // releaseSample == numSamples (the loop exits at s == numSamples),
+            // which would strand the voice permanently. Firing one sample
+            // early at the buffer edge is inaudible; stranding is not.
+            if (noteOffOffset >= numSamples) noteOffOffset = numSamples - 1;
             jassert(noteOffOffset >= 0 && noteOffOffset < numSamples);
 #ifdef XLETH_DEBUG
             fprintf(stderr, "[PatternOff] absTick=%lld absSample=%lld "
@@ -1986,6 +2001,15 @@ void MixEngine::triggerPatternNotes(const ActivePatternBlock& apb,
 #endif
             apb.sampler->noteOff(events[i].pitch, noteOffOffset, /*force=*/true);
 #ifdef XLETH_DEBUG
+            // Fix A diagnostic probe — fires when the note-off lands on the
+            // last sample of the buffer, which is the boundary-coincidence
+            // case the filter flip admits. Remove once Fix A is verified on
+            // real material (see plan Step 5).
+            if (noteOffOffset == numSamples - 1) {
+                fprintf(stderr, "[BoundaryNoteOff] pitch=%d sampler=%p\n",
+                        events[i].pitch, (void*)apb.sampler);
+                fflush(stderr);
+            }
             if (boundaryLogActive_ && (&apb == boundaryBlockA_ || &apb == boundaryBlockB_))
             {
                 auto& vec = (&apb == boundaryBlockA_) ? boundaryEventsA_ : boundaryEventsB_;
