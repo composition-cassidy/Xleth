@@ -224,10 +224,10 @@ function createWindow() {
   if (addonError) {
     const msg = encodeURIComponent(addonError);
     win.loadURL(`data:text/html,<pre style="color:red;background:%230A0A0F;padding:20px">Addon error:\n${msg}</pre>`);
-  } else if (!app.isPackaged) {
-    win.loadURL('http://localhost:5173');
-  } else {
+  } else if (process.env.XLETH_PLAYWRIGHT === '1' || app.isPackaged) {
     win.loadFile(path.join(__dirname, 'dist/index.html'));
+  } else {
+    win.loadURL('http://localhost:5173');
   }
 
   // Pipe all renderer console output to startup.log so we can read it externally
@@ -583,6 +583,46 @@ ipcMain.handle('xleth:timeline:setClipParams',
 ipcMain.handle('xleth:settings:get',    (_, key) => loadSettings()[key])
 ipcMain.handle('xleth:settings:set',    (_, key, value) => {
   const s = loadSettings(); s[key] = value; saveSettings(s)
+})
+
+// ── Themes (persisted to userData/themes/<slug>.json) ─────────────────────────
+// User-authored theme files. Shipped themes are bundled with the renderer and
+// don't hit disk — they're imported directly from ui/src/theming/shipped/.
+const themesDir = path.join(app.getPath('userData'), 'themes')
+function ensureThemesDir() {
+  try { fs.mkdirSync(themesDir, { recursive: true }) } catch {}
+}
+function themeSlugSafe(slug) {
+  // Defence-in-depth: slugs come from the renderer and become filesystem
+  // paths. Permit letters, digits, dash, underscore only.
+  return typeof slug === 'string' && /^[A-Za-z0-9_-]+$/.test(slug) && slug.length <= 64
+}
+function themePath(slug) { return path.join(themesDir, `${slug}.json`) }
+
+ipcMain.handle('xleth:theme:loadUser', (_, slug) => {
+  if (!themeSlugSafe(slug)) throw new Error('invalid theme slug')
+  try { return JSON.parse(fs.readFileSync(themePath(slug), 'utf8')) }
+  catch { return null }
+})
+ipcMain.handle('xleth:theme:saveUser', (_, slug, theme) => {
+  if (!themeSlugSafe(slug)) throw new Error('invalid theme slug')
+  if (!theme || typeof theme !== 'object') throw new Error('theme must be an object')
+  ensureThemesDir()
+  fs.writeFileSync(themePath(slug), JSON.stringify(theme, null, 2), 'utf8')
+  return true
+})
+ipcMain.handle('xleth:theme:listUser', () => {
+  ensureThemesDir()
+  let entries = []
+  try { entries = fs.readdirSync(themesDir) } catch { return [] }
+  return entries
+    .filter(f => f.endsWith('.json'))
+    .map(f => f.slice(0, -5))
+    .filter(themeSlugSafe)
+})
+ipcMain.handle('xleth:theme:deleteUser', (_, slug) => {
+  if (!themeSlugSafe(slug)) throw new Error('invalid theme slug')
+  try { fs.unlinkSync(themePath(slug)); return true } catch { return false }
 })
 ipcMain.handle('xleth:engine:setGlobalStretchMethod',
   safeHandler((_, m) => callWorker('engine_setGlobalStretchMethod', [m])))

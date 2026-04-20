@@ -6,7 +6,13 @@
   "scripts": {
     "dev": "concurrently --kill-others \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "build": "vite build",
-    "start": "npm run build && electron ."
+    "start": "npm run build && electron .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "baseline:build": "vite build",
+    "baseline:capture": "playwright test --update-snapshots --config playwright.config.ts",
+    "baseline:check": "playwright test --config playwright.config.ts",
+    "baseline": "npm run baseline:build && npm run baseline:capture && npm run baseline:check"
   },
   "dependencies": {
     "@fontsource/hanken-grotesk": "^5.2.8",
@@ -17,10 +23,12 @@
     "zustand": "^5.0.12"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.0.0",
     "electron": "^41.0.0",
     "vite": "^6.0.0",
+    "vitest": "^2.0.0",
     "wait-on": "^8.0.0"
   }
 }
