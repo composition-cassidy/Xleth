@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { PPQ } from '../../constants/timeline.js'
+import { tokenValue } from '../../theming/tokenValue.ts'
 
 const BAR_WIDTH = 8
 
@@ -28,11 +29,11 @@ export default function VelocityLane({
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
     // Background
-    ctx.fillStyle = '#0a0a10'
+    ctx.fillStyle = tokenValue('--theme-pianoroll-key-black-bg')
     ctx.fillRect(0, 0, width, height)
 
     // Zero line
-    ctx.strokeStyle = 'rgba(255,255,255,0.08)'
+    ctx.strokeStyle = tokenValue('--theme-pianoroll-bar-line')
     ctx.lineWidth = 1
     ctx.beginPath()
     ctx.moveTo(0, height - 0.5)
@@ -51,7 +52,7 @@ export default function VelocityLane({
         : (note.velocity ?? 1.0)
       const barH = Math.max(2, effectiveVel * (height - 4))
       const selected = selectedNoteIds?.has(note.id)
-      ctx.fillStyle = selected ? '#33CED6' : '#69DB7C'
+      ctx.fillStyle = selected ? tokenValue('--theme-pianoroll-velocity-bar-fill') : tokenValue('--theme-label-pitch')
       ctx.fillRect(x, height - barH, BAR_WIDTH, barH)
     }
   }, [notes, selectedNoteIds, pixelsPerBeat, scrollX, width, height, dragTick])
@@ -125,8 +126,8 @@ export default function VelocityLane({
         position: 'relative',
         width,
         height,
-        background: '#0a0a10',
-        borderTop: '1px solid #2A2A38',
+        background: 'var(--theme-pianoroll-key-black-bg)',
+        borderTop: '1px solid var(--theme-border-subtle)',
         cursor: 'ns-resize',
         flexShrink: 0,
       }}

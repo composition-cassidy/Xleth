@@ -419,7 +419,7 @@ export default function PianoRoll({
   return (
     <div
       className="piano-roll"
-      style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%', background: '#0d0d14' }}
+      style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%', background: 'var(--theme-bg-inset)' }}
     >
       {floating && (
         <div
@@ -505,7 +505,7 @@ export default function PianoRoll({
           />
         </div>
         <div style={{ display: 'flex' }}>
-          <div style={{ width: KEYBOARD_WIDTH, background: '#15151c', borderRight: '1px solid #2A2A38', borderTop: '1px solid #2A2A38' }} />
+          <div style={{ width: KEYBOARD_WIDTH, background: 'var(--theme-pianoroll-key-white-bg)', borderRight: '1px solid var(--theme-border-subtle)', borderTop: '1px solid var(--theme-border-subtle)' }} />
           <PianoRollScrollbarH
             contentWidth={contentWidth}
             viewportWidth={canvasWidth}
@@ -513,10 +513,10 @@ export default function PianoRoll({
             setScrollX={setScrollX}
             onZoomDelta={handleZoomDelta}
           />
-          <div style={{ width: SCROLLBAR_V_WIDTH, background: '#15151c', borderTop: '1px solid #2A2A38' }} />
+          <div style={{ width: SCROLLBAR_V_WIDTH, background: 'var(--theme-pianoroll-key-white-bg)', borderTop: '1px solid var(--theme-border-subtle)' }} />
         </div>
         <div style={{ display: 'flex' }}>
-          <div style={{ width: KEYBOARD_WIDTH, background: '#15151c', borderRight: '1px solid #2A2A38', borderTop: '1px solid #2A2A38' }} />
+          <div style={{ width: KEYBOARD_WIDTH, background: 'var(--theme-pianoroll-key-white-bg)', borderRight: '1px solid var(--theme-border-subtle)', borderTop: '1px solid var(--theme-border-subtle)' }} />
           <VelocityLane
             notes={notes}
             selectedNoteIds={selectedNoteIds}
@@ -526,7 +526,7 @@ export default function PianoRoll({
             height={VELOCITY_HEIGHT}
             onSetVelocity={handleSetVelocity}
           />
-          <div style={{ width: SCROLLBAR_V_WIDTH, background: '#15151c', borderTop: '1px solid #2A2A38' }} />
+          <div style={{ width: SCROLLBAR_V_WIDTH, background: 'var(--theme-pianoroll-key-white-bg)', borderTop: '1px solid var(--theme-border-subtle)' }} />
         </div>
       </div>
     </div>

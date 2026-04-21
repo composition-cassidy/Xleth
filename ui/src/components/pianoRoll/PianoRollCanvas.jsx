@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
+import { tokenValue } from '../../theming/tokenValue.ts'
 import { PPQ, snapBeatToGrid, beatsToTicks, beatToPixel, pixelToBeat } from '../../constants/timeline.js'
 import { PITCH_MIN, PITCH_MAX, isBlackKey } from './PianoRollKeyboard.jsx'
 
@@ -37,7 +38,7 @@ function hitTestNote(notes, localX, localY, pixelsPerBeat, pixelsPerSemitone, sc
 
 function drawBackground(ctx, w, h, pixelsPerBeat, pixelsPerSemitone, scrollX, scrollY, patternLenBeats) {
   ctx.clearRect(0, 0, w, h)
-  ctx.fillStyle = '#0d0d14'
+  ctx.fillStyle = tokenValue('--theme-bg-inset')
   ctx.fillRect(0, 0, w, h)
 
   // Horizontal row striping: black keys slightly darker
@@ -45,12 +46,12 @@ function drawBackground(ctx, w, h, pixelsPerBeat, pixelsPerSemitone, scrollX, sc
     const y = (PITCH_MAX - p) * pixelsPerSemitone - scrollY
     if (y + pixelsPerSemitone < 0 || y > h) continue
     if (isBlackKey(p)) {
-      ctx.fillStyle = '#111118'
+      ctx.fillStyle = tokenValue('--theme-pianoroll-grid-bg')
       ctx.fillRect(0, y, w, pixelsPerSemitone)
     }
     if ((p % 12) === 0) {
       // Octave boundary line (C)
-      ctx.strokeStyle = 'rgba(255,255,255,0.08)'
+      ctx.strokeStyle = tokenValue('--theme-pianoroll-bar-line')
       ctx.lineWidth = 1
       ctx.beginPath()
       ctx.moveTo(0, Math.round(y + pixelsPerSemitone) + 0.5)
@@ -60,7 +61,7 @@ function drawBackground(ctx, w, h, pixelsPerBeat, pixelsPerSemitone, scrollX, sc
   }
 
   // Horizontal grid for each semitone row
-  ctx.strokeStyle = 'rgba(255,255,255,0.02)'
+  ctx.strokeStyle = tokenValue('--theme-pianoroll-subdivision-line')
   ctx.lineWidth = 0.5
   ctx.beginPath()
   for (let p = PITCH_MAX; p >= PITCH_MIN; p--) {
@@ -75,7 +76,7 @@ function drawBackground(ctx, w, h, pixelsPerBeat, pixelsPerSemitone, scrollX, sc
   const startBeat = Math.floor(scrollX / pixelsPerBeat)
   const endBeat = Math.ceil((scrollX + w) / pixelsPerBeat) + 1
 
-  ctx.strokeStyle = 'rgba(255,255,255,0.03)'
+  ctx.strokeStyle = tokenValue('--theme-pianoroll-beat-line')
   ctx.lineWidth = 0.5
   ctx.beginPath()
   for (let b = startBeat; b <= endBeat; b++) {
@@ -88,7 +89,7 @@ function drawBackground(ctx, w, h, pixelsPerBeat, pixelsPerSemitone, scrollX, sc
   }
   ctx.stroke()
 
-  ctx.strokeStyle = 'rgba(255,255,255,0.08)'
+  ctx.strokeStyle = tokenValue('--theme-pianoroll-bar-line')
   ctx.lineWidth = 1
   ctx.beginPath()
   for (let b = startBeat; b <= endBeat; b++) {
@@ -105,7 +106,7 @@ function drawBackground(ctx, w, h, pixelsPerBeat, pixelsPerSemitone, scrollX, sc
     if (endX < w) {
       ctx.fillStyle = 'rgba(0,0,0,0.4)'
       ctx.fillRect(Math.max(0, endX), 0, w - endX, h)
-      ctx.strokeStyle = '#33CED6'
+      ctx.strokeStyle = tokenValue('--theme-border-focus')
       ctx.lineWidth = 1
       ctx.beginPath()
       ctx.moveTo(endX + 0.5, 0)
@@ -129,10 +130,10 @@ function drawNotes(ctx, w, h, notes, selectedNoteIds, pixelsPerBeat, pixelsPerSe
     const alpha = 0.4 + 0.6 * (note.velocity ?? 1.0)
     // Slide notes use a magenta accent so they're visually distinct from
     // regular notes — they don't spawn cells, they trigger a per-track effect.
-    const hex = note.isSlide ? '#E64FE6' : '#69DB7C'
+    const hex = note.isSlide ? '#E64FE6' : tokenValue('--theme-label-pitch')
     ctx.fillStyle = hexToRgba(hex, alpha * (selected ? 1.0 : 0.85))
     ctx.fillRect(x, y + 1, wid, pixelsPerSemitone - 2)
-    ctx.strokeStyle = selected ? '#fff' : hexToRgba(hex, 1.0)
+    ctx.strokeStyle = selected ? tokenValue('--theme-fg-inverse') : hexToRgba(hex, 1.0)
     ctx.lineWidth = selected ? 2 : 1
     ctx.strokeRect(x + 0.5, y + 1.5, wid - 1, pixelsPerSemitone - 3)
   }
@@ -529,11 +530,11 @@ export default function PianoRollCanvas({
     ov.clearRect(0, 0, width, height)
     const ds = dragStateRef.current
     if (!ds) return
-    const hex = '#69DB7C'
+    const hex = tokenValue('--theme-label-pitch')
 
     if (ds.action === ACTION.MOVE_NOTES) {
       ov.fillStyle = hexToRgba(hex, 0.55)
-      ov.strokeStyle = '#ffffff'
+      ov.strokeStyle = tokenValue('--theme-fg-inverse')
       ov.lineWidth = 1.5
       ov.setLineDash([4, 3])
       for (const [, orig] of ds.originals) {
@@ -559,7 +560,7 @@ export default function PianoRollCanvas({
       const y = (PITCH_MAX - orig.pitch) * pixelsPerSemitone - scrollY
       ov.fillStyle = hexToRgba(hex, 0.55)
       ov.fillRect(x, y + 1, wid, pixelsPerSemitone - 2)
-      ov.strokeStyle = '#ffffff'
+      ov.strokeStyle = tokenValue('--theme-fg-inverse')
       ov.lineWidth = 1.5
       ov.setLineDash([4, 3])
       ov.strokeRect(x + 0.5, y + 1.5, wid - 1, pixelsPerSemitone - 3)
@@ -574,9 +575,9 @@ export default function PianoRollCanvas({
       const x1 = Math.max(sx0, sx1)
       const y0 = Math.min(sy0, sy1)
       const y1 = Math.max(sy0, sy1)
-      ov.fillStyle = 'rgba(51, 206, 214, 0.12)'
+      ov.fillStyle = tokenValue('--theme-pianoroll-note-slide-stroke')
       ov.fillRect(x0, y0, x1 - x0, y1 - y0)
-      ov.strokeStyle = '#33CED6'
+      ov.strokeStyle = tokenValue('--theme-border-focus')
       ov.lineWidth = 1
       ov.setLineDash([4, 3])
       ov.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0 - 1, y1 - y0 - 1)

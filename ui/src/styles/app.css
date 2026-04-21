@@ -3789,7 +3789,7 @@
 }
 
 .piano-roll-floating-titlebar-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--theme-pianoroll-bar-line);
 }
 
 .piano-roll-floating-resize-grip {
@@ -3803,12 +3803,12 @@
     linear-gradient(135deg,
       transparent 0%,
       transparent 45%,
-      rgba(255,255,255,0.25) 45%,
-      rgba(255,255,255,0.25) 55%,
+      var(--theme-pianoroll-resize-handle-stripe) 45%,
+      var(--theme-pianoroll-resize-handle-stripe) 55%,
       transparent 55%,
       transparent 70%,
-      rgba(255,255,255,0.25) 70%,
-      rgba(255,255,255,0.25) 80%,
+      var(--theme-pianoroll-resize-handle-stripe) 70%,
+      var(--theme-pianoroll-resize-handle-stripe) 80%,
       transparent 80%);
   z-index: 9;
 }
@@ -3816,8 +3816,8 @@
 /* Piano Roll scrollbars */
 .piano-roll-scrollbar-v {
   position: relative;
-  background: #15151c;
-  border-left: 1px solid #2A2A38;
+  background: var(--theme-pianoroll-key-white-bg);
+  border-left: 1px solid var(--theme-border-subtle);
   cursor: default;
   flex-shrink: 0;
 }
@@ -3830,8 +3830,8 @@
 
 .piano-roll-scrollbar-h {
   position: relative;
-  background: #15151c;
-  border-top: 1px solid #2A2A38;
+  background: var(--theme-pianoroll-key-white-bg);
+  border-top: 1px solid var(--theme-border-subtle);
   cursor: default;
 }
 
@@ -3860,7 +3860,7 @@
 
 .piano-roll-zoom-gutter {
   background: #08080c;
-  border-top: 1px solid #2A2A38;
+  border-top: 1px solid var(--theme-border-subtle);
   cursor: ns-resize;
 }
 

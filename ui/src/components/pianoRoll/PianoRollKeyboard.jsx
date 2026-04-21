@@ -44,10 +44,10 @@ export default function PianoRollKeyboard({
           left: 0,
           right: isBlack ? '35%' : 0,
           background: isBlack
-            ? (highlighted ? '#4a3a58' : '#1a1a24')
+            ? (highlighted ? '#4a3a58' : 'var(--theme-bg-surface)')
             : (highlighted ? '#3a3a4a' : '#2a2a34'),
-          borderBottom: '1px solid #0a0a10',
-          borderRight: isBlack ? '1px solid #0a0a10' : 'none',
+          borderBottom: '1px solid var(--theme-pianoroll-key-black-bg)',
+          borderRight: isBlack ? '1px solid var(--theme-pianoroll-key-black-bg)' : 'none',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'flex-end',
@@ -73,8 +73,8 @@ export default function PianoRollKeyboard({
         width: 60,
         height: height,
         overflow: 'hidden',
-        background: '#15151c',
-        borderRight: '1px solid #2A2A38',
+        background: 'var(--theme-pianoroll-key-white-bg)',
+        borderRight: '1px solid var(--theme-border-subtle)',
         flexShrink: 0,
       }}
     >
