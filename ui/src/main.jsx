@@ -2,6 +2,7 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App.jsx'
 import NodeEditorWindow from './NodeEditorWindow.jsx'
+import { ThemeProvider } from './theming/runtime/ThemeProvider'
 
 // Hanken Grotesk font weights
 import '@fontsource/hanken-grotesk/300.css'
@@ -22,8 +23,10 @@ console.log('[UI] App mounting', view ? `(view=${view}, key=${storeKey})` : '')
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    {view === 'node-editor' && storeKey
-      ? <NodeEditorWindow storeKey={storeKey} trackPos={trackPos ? Number(trackPos) : null} />
-      : <App />}
+    <ThemeProvider>
+      {view === 'node-editor' && storeKey
+        ? <NodeEditorWindow storeKey={storeKey} trackPos={trackPos ? Number(trackPos) : null} />
+        : <App />}
+    </ThemeProvider>
   </React.StrictMode>
 )
