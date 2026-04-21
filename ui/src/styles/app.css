@@ -7429,7 +7429,7 @@
   color: var(--text-primary);
   font-size: 13px;
   font-weight: 500;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--theme-toast-shadow);
   display: flex;
   align-items: center;
   gap: 10px;
