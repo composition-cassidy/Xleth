@@ -6766,7 +6766,7 @@
 
 .chorus-panel-close:hover {
   color: var(--text-primary);
-  background: rgba(255,255,255,0.05);
+  background: var(--theme-fx-surface-tint-subtle);
 }
 
 .chorus-knob-grid {
@@ -6830,7 +6830,7 @@
 
 .flanger-panel-close:hover {
   color: var(--text-primary);
-  background: rgba(255,255,255,0.05);
+  background: var(--theme-fx-surface-tint-subtle);
 }
 
 .flanger-knob-grid {
@@ -6894,7 +6894,7 @@
 
 .phaser-panel-close:hover {
   color: var(--text-primary);
-  background: rgba(255,255,255,0.05);
+  background: var(--theme-fx-surface-tint-subtle);
 }
 
 .phaser-knob-grid {
