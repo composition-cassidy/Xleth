@@ -1,5 +1,6 @@
 import { useRef, useEffect } from 'react'
 import { peaksSnapshot } from '../../stores/mixerStore.js'
+import { tokenValue } from '../../theming/tokenValue.ts'
 
 // dB conversion for meter height mapping
 function linearToDB(gain) {
@@ -61,12 +62,12 @@ export default function PeakMeter({ trackId, master }) {
         // Bottom (low) to top (high)
         const redStart = dbToPos(-3)
         const yellowStart = dbToPos(-12)
-        g.addColorStop(0, '#22C55E')
-        g.addColorStop(yellowStart, '#22C55E')
-        g.addColorStop(yellowStart, '#FFAA33')
-        g.addColorStop(redStart, '#FFAA33')
-        g.addColorStop(redStart, '#FF4757')
-        g.addColorStop(1, '#FF4757')
+        g.addColorStop(0, tokenValue('--theme-success'))
+        g.addColorStop(yellowStart, tokenValue('--theme-success'))
+        g.addColorStop(yellowStart, tokenValue('--theme-warning'))
+        g.addColorStop(redStart, tokenValue('--theme-warning'))
+        g.addColorStop(redStart, tokenValue('--theme-danger'))
+        g.addColorStop(1, tokenValue('--theme-danger'))
         gradientRef.current = g
       }
 
@@ -96,7 +97,7 @@ export default function PeakMeter({ trackId, master }) {
       // Peak hold lines
       const holdPosL = peakToPos(holdL)
       const holdPosR = peakToPos(holdR)
-      ctx.fillStyle = '#E8E8ED'
+      ctx.fillStyle = tokenValue('--theme-mixer-meter-peak-hold')
       if (holdPosL > 0.01) {
         const hy = h - holdPosL * h
         ctx.fillRect(0, hy, BAR_W, 2)

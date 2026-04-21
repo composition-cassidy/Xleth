@@ -4615,7 +4615,7 @@
   font-size: 7px;
   font-weight: 700;
   letter-spacing: 0.04em;
-  color: #fff;
+  color: var(--theme-fg-inverse);
   background: #c0392b;
   border-radius: 2px;
   padding: 0 2px;
