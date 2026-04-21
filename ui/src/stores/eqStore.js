@@ -4,10 +4,10 @@ export const BAND_TYPES = ['Bell', 'Low Shelf', 'High Shelf', 'Low Pass', 'High 
 export const BAND_MODES = ['Static', 'Dynamic', 'Spectral']
 
 export const BAND_COLORS = [
-  '#33CED6', '#FF6B6B', '#69DB7C', '#FFA94D',
-  '#748FFC', '#B197FC', '#FFD93D', '#FF6B9D',
-  '#4ECDC4', '#FC5C65', '#45AAF2', '#FED330',
-  '#A55EEA', '#26DE81', '#FD9644', '#2BCBBA',
+  'var(--theme-eq-band-1)',  'var(--theme-eq-band-2)',  'var(--theme-eq-band-3)',  'var(--theme-eq-band-4)',
+  'var(--theme-eq-band-5)',  'var(--theme-eq-band-6)',  'var(--theme-eq-band-7)',  'var(--theme-eq-band-8)',
+  'var(--theme-eq-band-9)',  'var(--theme-eq-band-10)', 'var(--theme-eq-band-11)', 'var(--theme-eq-band-12)',
+  'var(--theme-eq-band-13)', 'var(--theme-eq-band-14)', 'var(--theme-eq-band-15)', 'var(--theme-eq-band-16)',
 ]
 
 const useEqStore = create((set, get) => ({

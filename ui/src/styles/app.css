@@ -5072,7 +5072,7 @@
 
 .eq-global-btn.active {
   background: var(--xleth-eq-accent);
-  color: #fff;
+  color: var(--theme-fg-inverse);
   border-color: var(--xleth-eq-accent);
 }
 
@@ -5092,7 +5092,7 @@
 
 .eq-panel-close:hover {
   color: var(--xleth-eq-text-primary);
-  background: rgba(255,255,255,0.05);
+  background: var(--theme-fx-surface-tint-subtle);
 }
 
 /* SVG display */
@@ -5369,7 +5369,7 @@
 }
 
 .eq-band-enable:hover {
-  background: rgba(255,255,255,0.05);
+  background: var(--theme-fx-surface-tint-subtle);
 }
 
 /* Overflow (⋯) button replacing Trash */
@@ -5392,7 +5392,7 @@
 
 .eq-band-overflow-btn:hover {
   color: var(--xleth-eq-text-secondary);
-  background: rgba(255,255,255,0.05);
+  background: var(--theme-fx-surface-tint-subtle);
 }
 
 .eq-band-overflow-menu {
@@ -5424,7 +5424,7 @@
 }
 
 .eq-band-overflow-menu button:hover {
-  background: rgba(255,255,255,0.05);
+  background: var(--theme-fx-surface-tint-subtle);
   color: var(--xleth-eq-text-primary);
 }
 
@@ -5578,7 +5578,7 @@
 
 .eq-theme-btn:hover {
   color: var(--xleth-eq-text-secondary);
-  background: rgba(255,255,255,0.05);
+  background: var(--theme-fx-surface-tint-subtle);
 }
 
 .eq-theme-popover {
