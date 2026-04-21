@@ -78,7 +78,7 @@ function getBandXRanges(width) {
 function drawBackground(ctx, w, h, bandRanges) {
   ctx.clearRect(0, 0, w, h)
   // Overall dark fill
-  ctx.fillStyle = '#0d0d14'
+  ctx.fillStyle = tokenValue('--theme-bg-inset')
   ctx.fillRect(0, 0, w, h)
   // Band columns
   for (const band of bandRanges) {
@@ -103,7 +103,7 @@ function drawYAxis(ctx, w, h) {
   for (const db of gridDbs) {
     const y = dbToY(db, h)
     // Grid line
-    ctx.strokeStyle = db === 0 ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.05)'
+    ctx.strokeStyle = db === 0 ? tokenValue('--theme-dyn-sb-boundary') : tokenValue('--theme-fx-surface-tint-subtle')
     ctx.lineWidth = db === 0 ? 1 : 0.5
     ctx.setLineDash([])
     ctx.beginPath()
@@ -164,7 +164,7 @@ function drawTargetLines(ctx, w, h, bandRanges, targets, dragBandIndex) {
 
     // Small handle triangles at edges when dragging
     if (isDragging) {
-      ctx.fillStyle = '#ffffff'
+      ctx.fillStyle = tokenValue('--theme-fg-inverse')
       // Left triangle
       ctx.beginPath()
       ctx.moveTo(band.x1 + 2, y)
@@ -199,7 +199,7 @@ function drawLabelsAndReadouts(ctx, w, h, bandRanges, vizData) {
     const gainDb = vizData.gainDb[i]
     const sign = gainDb >= 0 ? '+' : ''
     ctx.font = '11px "JetBrains Mono", "Fira Code", monospace'
-    ctx.fillStyle = gainDb > 0.5 ? '#6BCB77' : gainDb < -0.5 ? '#FF6B6B' : 'rgba(255,255,255,0.4)'
+    ctx.fillStyle = gainDb > 0.5 ? '#6BCB77' : gainDb < -0.5 ? tokenValue('--theme-label-kick') : 'rgba(255,255,255,0.4)'
     ctx.textBaseline = 'middle'
     ctx.fillText(`${sign}${gainDb.toFixed(1)}`, cx, h / 2)
   }

@@ -6037,7 +6037,7 @@
 .compressor-gr-bar {
   width: 100%;
   height: 0%;
-  background: linear-gradient(to bottom, #ff6b6b, #ffa94d);
+  background: linear-gradient(to bottom, var(--theme-label-kick), var(--theme-label-snare));
   transition: height 0.05s linear;
   border-radius: 2px 2px 0 0;
 }
@@ -6083,7 +6083,7 @@
 
 .compressor-detect-btn.active {
   background: var(--accent);
-  color: #fff;
+  color: var(--theme-fg-inverse);
   border-color: var(--accent);
 }
 
@@ -6195,7 +6195,7 @@
 
 .limiter-style-btn.active {
   background: var(--accent);
-  color: #fff;
+  color: var(--theme-fg-inverse);
   border-color: var(--accent);
 }
 
@@ -6225,7 +6225,7 @@
 .limiter-gr-bar {
   width: 100%;
   height: 0%;
-  background: linear-gradient(to bottom, #ff6b6b, #ffa94d);
+  background: linear-gradient(to bottom, var(--theme-label-kick), var(--theme-label-snare));
   transition: height 0.05s linear;
   border-radius: 2px 2px 0 0;
 }
@@ -7063,11 +7063,11 @@
 }
 
 .ott-gr-bar--mid {
-  background: linear-gradient(to top, #ff8c00, #ffa94d);
+  background: linear-gradient(to top, #ff8c00, var(--theme-label-snare));
 }
 
 .ott-gr-bar--high {
-  background: linear-gradient(to top, #ff4040, #ff6b6b);
+  background: linear-gradient(to top, #ff4040, var(--theme-label-kick));
 }
 
 .ott-gr-label {
@@ -7122,7 +7122,7 @@
   color: var(--text-tertiary); cursor: pointer;
   border-radius: var(--radius-sm);
 }
-.sb-panel-close:hover { color: var(--text-primary); background: rgba(255,255,255,0.05); }
+.sb-panel-close:hover { color: var(--text-primary); background: var(--theme-fx-surface-tint-subtle); }
 .sb-panel-body { padding: 4px 12px 12px; display: flex; flex-direction: column; gap: 8px; }
 
 /* Global knobs */
@@ -7217,7 +7217,7 @@
 
 .transientproc-panel-close:hover {
   color: var(--text-primary);
-  background: rgba(255,255,255,0.05);
+  background: var(--theme-fx-surface-tint-subtle);
 }
 
 .transientproc-mode-row {
@@ -7247,7 +7247,7 @@
 .transientproc-mode-btn--active {
   background: var(--accent, #4a9eff);
   border-color: var(--accent, #4a9eff);
-  color: #fff;
+  color: var(--theme-fg-inverse);
 }
 
 .transientproc-gain-meter {
@@ -7278,7 +7278,7 @@
 }
 
 .transientproc-gain-bar--cut {
-  background: linear-gradient(to right, #ff8c00, #ffa94d);
+  background: linear-gradient(to right, #ff8c00, var(--theme-label-snare));
 }
 
 .transientproc-gain-label {
