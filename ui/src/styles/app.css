@@ -1631,7 +1631,7 @@
 .export-dialog-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--theme-dialog-backdrop);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1644,7 +1644,7 @@
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+  box-shadow: var(--theme-modal-shadow);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1825,7 +1825,7 @@
 .export-dialog-footer .export-btn-primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #0D0D14;
+  color: var(--theme-text-on-accent);
 }
 
 .export-dialog-footer .export-btn-primary:hover:not(:disabled) {
@@ -1836,7 +1836,7 @@
 .export-dialog-footer .export-btn-danger {
   background: var(--danger);
   border-color: var(--danger);
-  color: #0D0D14;
+  color: var(--theme-bg-inset);
 }
 
 .export-dialog-footer .export-btn-danger:hover:not(:disabled) {
@@ -4049,7 +4049,7 @@
   background: #141420;
   border: 1px solid var(--border);
   border-radius: var(--radius-md, 8px);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+  box-shadow: var(--theme-modal-shadow);
   padding: 20px;
   min-width: 380px;
   max-width: 520px;
@@ -4102,7 +4102,7 @@
 
 .confirm-dialog-btn.primary:hover {
   background: var(--accent);
-  color: #0d0d14;
+  color: var(--theme-text-on-accent);
 }
 
 .confirm-dialog-btn.danger {
@@ -4113,7 +4113,7 @@
 
 .confirm-dialog-btn.danger:hover {
   background: var(--danger);
-  color: #fff;
+  color: var(--theme-fg-inverse);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -7317,7 +7317,7 @@
 .settings-panel-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--theme-dialog-backdrop);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -7330,7 +7330,7 @@
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+  box-shadow: var(--theme-modal-shadow);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -7486,7 +7486,7 @@
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+  box-shadow: var(--theme-modal-shadow);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -7536,7 +7536,7 @@
 .unsaved-dialog-btn.primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #0D0D14;
+  color: var(--theme-text-on-accent);
 }
 .unsaved-dialog-btn.primary:hover {
   background: var(--accent-hover);
@@ -7545,7 +7545,7 @@
 .unsaved-dialog-btn.danger {
   background: var(--danger);
   border-color: var(--danger);
-  color: #0D0D14;
+  color: var(--theme-bg-inset);
 }
 .unsaved-dialog-btn.danger:hover { filter: brightness(1.1); }
 
@@ -7804,7 +7804,7 @@
 .export-progress-actions .export-btn-primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #0D0D14;
+  color: var(--theme-text-on-accent);
 }
 
 .export-progress-actions .export-btn-primary:hover:not(:disabled) {
@@ -7815,7 +7815,7 @@
 .export-progress-actions .export-btn-danger {
   background: var(--danger);
   border-color: var(--danger);
-  color: #0D0D14;
+  color: var(--theme-bg-inset);
 }
 
 .export-progress-actions .export-btn-danger:hover:not(:disabled) { filter: brightness(1.1); }
@@ -7825,7 +7825,7 @@
 .quantize-dialog-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--theme-dialog-backdrop);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -7838,7 +7838,7 @@
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+  box-shadow: var(--theme-modal-shadow);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -7954,7 +7954,7 @@
 .quantize-dialog-footer .quantize-btn-primary {
   background: var(--accent, #33CED6);
   border-color: var(--accent, #33CED6);
-  color: #0D0D14;
+  color: var(--theme-text-on-accent);
   font-weight: 600;
 }
 .quantize-dialog-footer .quantize-btn-primary:hover:not(:disabled) { filter: brightness(1.1); }
