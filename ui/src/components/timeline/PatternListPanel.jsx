@@ -15,7 +15,7 @@ import { timelineEvents } from '../../timelineEvents.js'
 //   }))
 //   window.__xlethDragPattern = payload   // readable during dragover
 
-const PATTERN_ACCENT = '#6aa9ff'
+const PATTERN_ACCENT = 'var(--theme-drag-preview-default)'
 
 export default function PatternListPanel({
   patterns = {},          // { id: Pattern }

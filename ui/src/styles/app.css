@@ -810,8 +810,8 @@
 .pattern-list-row:hover,
 .pattern-list-row.is-hover {
   background: #1d1f28;
-  border-left-color: #6aa9ff;
-  color: #fff;
+  border-left-color: var(--theme-drag-preview-default);
+  color: var(--theme-fg-inverse);
 }
 
 .pattern-list-row:active {
@@ -884,7 +884,7 @@
 
 .pattern-list-new-btn:hover {
   background: #252833;
-  color: #fff;
+  color: var(--theme-fg-inverse);
 }
 
 /* ── Track header column (left, fixed width) ───────────────────────── */
