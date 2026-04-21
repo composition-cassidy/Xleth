@@ -129,7 +129,7 @@ const TimelineRuler = forwardRef(function TimelineRuler(
           left: 0,
           width: '2px',
           height: '100%',
-          backgroundColor: '#33CED6',
+          backgroundColor: 'var(--theme-border-focus)',
           pointerEvents: 'none',
           zIndex: 10,
           willChange: 'transform',

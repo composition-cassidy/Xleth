@@ -3,6 +3,7 @@ import {
   MIN_DURATION_TICKS_FREE,
 } from '../../../constants/timeline.js'
 import { labelHexColor } from '../../../constants/labels.js'
+import { tokenValue } from '../../../theming/tokenValue.ts'
 import { drawRubberBand, drawMovePreview } from '../timelineDrawing.js'
 
 const HANDLE_W = 6   // Resize handle hit-test width (slightly wider than visual 4px)
@@ -734,7 +735,7 @@ export function createSelectTool(deps) {
           const edgePx = beatToPixel(clipStartBeat + newDurationBeats, scrollOffset, ppb)
           ctx.save()
           ctx.font = '11px system-ui, sans-serif'
-          ctx.fillStyle = '#fff'
+          ctx.fillStyle = tokenValue('--theme-fg-inverse')
           ctx.textAlign = 'right'
           ctx.fillText(ratioText, edgePx - 4, (trackIdx + 0.5) * TRACK_HEIGHT - 2)
           ctx.restore()
@@ -769,7 +770,7 @@ export function createSelectTool(deps) {
           const edgePx = beatToPixel(newStartBeat, scrollOffset, ppb)
           ctx.save()
           ctx.font = '11px system-ui, sans-serif'
-          ctx.fillStyle = '#fff'
+          ctx.fillStyle = tokenValue('--theme-fg-inverse')
           ctx.textAlign = 'left'
           ctx.fillText(ratioText, edgePx + 4, (trackIdx + 0.5) * TRACK_HEIGHT - 2)
           ctx.restore()

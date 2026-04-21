@@ -10,12 +10,10 @@ import {
 } from '../../constants/timeline.js'
 import { labelHexColor } from '../../constants/labels.js'
 import { drawEnvelope, drawTrace, drawWaveformLine, drawSamplePoints, getRegime } from '../../utils/waveformRenderer.js'
+import { tokenValue } from '../../theming/tokenValue.ts'
 
 // Default engine sample rate (used for spp computation when no per-region rate is known)
 const DEFAULT_SR = 48000
-
-// Neutral tint for pattern track lanes (sample-agnostic containers now).
-const PATTERN_LANE_TINT = 'rgba(106,169,255,0.04)'
 
 // Cubic bezier gain helper (CSS convention: P0=(0,0) P3=(1,1)).
 // Returns gain [0,1] for a normalized position xNorm [0,1] within the fade region.
@@ -43,7 +41,7 @@ export function drawGrid(ctx, w, h, scrollOffset, ppb, trackCount, tracks = null
 
   // Pattern-track row tint (neutral — pattern tracks no longer bind to a region)
   if (tracks) {
-    ctx.fillStyle = PATTERN_LANE_TINT
+    ctx.fillStyle = tokenValue('--theme-timeline-pattern-lane-tint')
     for (let i = 0; i < tracks.length; i++) {
       const t = tracks[i]
       if (t?.type !== 'Pattern') continue
@@ -54,7 +52,7 @@ export function drawGrid(ctx, w, h, scrollOffset, ppb, trackCount, tracks = null
   }
 
   // Track separator lines (horizontal)
-  ctx.strokeStyle = '#2A2A38'
+  ctx.strokeStyle = tokenValue('--theme-border-subtle')
   ctx.lineWidth = 1
   ctx.beginPath()
   for (let i = 0; i <= trackCount; i++) {
@@ -94,7 +92,7 @@ export function drawGrid(ctx, w, h, scrollOffset, ppb, trackCount, tracks = null
   }
 
   // Beat lines (vertical, minor)
-  ctx.strokeStyle = 'rgba(255,255,255,0.06)'
+  ctx.strokeStyle = tokenValue('--theme-timeline-beat-line')
   ctx.lineWidth = 0.5
   ctx.beginPath()
   for (let beat = startBeat; beat <= endBeat; beat++) {
@@ -126,14 +124,14 @@ export function drawGrid(ctx, w, h, scrollOffset, ppb, trackCount, tracks = null
 
 export function drawRuler(ctx, w, h, scrollOffset, ppb) {
   // Background
-  ctx.fillStyle = '#111118'
+  ctx.fillStyle = tokenValue('--theme-bg-secondary')
   ctx.fillRect(0, 0, w, h)
 
   const startBeat = Math.floor(scrollOffset)
   const endBeat = Math.ceil(scrollOffset + w / ppb) + 1
 
   // Beat tick marks
-  ctx.strokeStyle = '#2A2A38'
+  ctx.strokeStyle = tokenValue('--theme-border-subtle')
   ctx.lineWidth = 1
   ctx.beginPath()
   for (let beat = startBeat; beat <= endBeat; beat++) {
@@ -177,7 +175,7 @@ export function drawRuler(ctx, w, h, scrollOffset, ppb) {
   }
 
   // Bar numbers
-  ctx.fillStyle = '#555566'
+  ctx.fillStyle = tokenValue('--theme-text-placeholder')
   ctx.font = '600 9px "Hanken Grotesk", system-ui, sans-serif'
   ctx.textBaseline = 'top'
   const firstBar = Math.floor(startBeat / BEATS_PER_BAR) * BEATS_PER_BAR
@@ -190,7 +188,7 @@ export function drawRuler(ctx, w, h, scrollOffset, ppb) {
   }
 
   // Bottom border
-  ctx.strokeStyle = '#2A2A38'
+  ctx.strokeStyle = tokenValue('--theme-border-subtle')
   ctx.lineWidth = 1
   ctx.beginPath()
   ctx.moveTo(0, h - 0.5)
@@ -211,7 +209,7 @@ export function drawOverlay(ctx, w, h, scrollOffset, ppb, playheadBeat) {
   if (x < -1 || x > w + 1) return
 
   // Playhead line
-  ctx.strokeStyle = '#33CED6'
+  ctx.strokeStyle = tokenValue('--theme-timeline-playhead-line')
   ctx.lineWidth = 1
   ctx.beginPath()
   ctx.moveTo(x, 0)
@@ -219,7 +217,7 @@ export function drawOverlay(ctx, w, h, scrollOffset, ppb, playheadBeat) {
   ctx.stroke()
 
   // Small triangle at top
-  ctx.fillStyle = '#33CED6'
+  ctx.fillStyle = tokenValue('--theme-border-focus')
   ctx.beginPath()
   ctx.moveTo(x, 0)
   ctx.lineTo(x - 4, -0) // flat top edge
@@ -325,8 +323,8 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
 
       const envAlpha = selected ? 0.45 : 0.25
       const rmsAlpha = selected ? 0.30 : 0.15
-      const lineColor = selected ? 'rgba(255,255,255,0.65)' : 'rgba(255,255,255,0.45)'
-      const traceFill = selected ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.10)'
+      const lineColor = selected ? tokenValue('--theme-timeline-clip-waveform-fg') : 'rgba(255,255,255,0.45)'
+      const traceFill = selected ? tokenValue('--theme-timeline-clip-waveform-bg') : 'rgba(255,255,255,0.10)'
 
       let drawn = false
 
@@ -540,7 +538,7 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
         const tw = ctx.measureText(overlayText).width
         const ox = x + clipW - CLIP_TEXT_PAD
         const oy = y + clipH - 3
-        ctx.fillStyle = 'rgba(0,0,0,0.45)'
+        ctx.fillStyle = tokenValue('--theme-timeline-fade-curve-fill')
         ctx.fillRect(ox - tw - 3, oy - 9, tw + 5, 11)
         ctx.fillStyle = 'rgba(255,255,255,0.9)'
         ctx.fillText(overlayText, ox - tw, oy)
@@ -709,7 +707,7 @@ export function drawDropPreview(ctx, w, h, scrollOffset, ppb, preview) {
     ctx.beginPath()
     ctx.rect(x + CLIP_TEXT_PAD, y, clipW - CLIP_TEXT_PAD * 2, clipH)
     ctx.clip()
-    ctx.fillStyle = '#fff'
+    ctx.fillStyle = tokenValue('--theme-fg-inverse')
     ctx.font = '600 10px "Hanken Grotesk", system-ui, sans-serif'
     ctx.textBaseline = 'middle'
     ctx.fillText(name || '', x + CLIP_TEXT_PAD, y + clipH / 2)
@@ -746,7 +744,7 @@ export function drawGhostPreview(ctx, w, h, scrollOffset, ppb, ghost) {
     ctx.beginPath()
     ctx.rect(x + CLIP_TEXT_PAD, y, clipW - CLIP_TEXT_PAD * 2, clipH)
     ctx.clip()
-    ctx.fillStyle = '#fff'
+    ctx.fillStyle = tokenValue('--theme-fg-inverse')
     ctx.font = '600 10px "Hanken Grotesk", system-ui, sans-serif'
     ctx.textBaseline = 'middle'
     ctx.fillText(name, x + CLIP_TEXT_PAD, y + clipH / 2)
@@ -773,7 +771,7 @@ export function drawSplitLine(ctx, w, h, scrollOffset, ppb, beat) {
   const x = Math.round(beatToPixel(beat, scrollOffset, ppb)) + 0.5
   if (x < -1 || x > w + 1) return
 
-  ctx.strokeStyle = 'rgba(255,217,61,0.6)'
+  ctx.strokeStyle = tokenValue('--theme-timeline-loop-brace')
   ctx.lineWidth = 1
   ctx.setLineDash([6, 4])
   ctx.beginPath()
@@ -827,7 +825,7 @@ export function drawRulerOverlay(ctx, w, h, scrollOffset, ppb, playheadBeat) {
   if (x < -1 || x > w + 1) return
 
   // Playhead line on ruler
-  ctx.strokeStyle = '#33CED6'
+  ctx.strokeStyle = tokenValue('--theme-timeline-playhead-line')
   ctx.lineWidth = 1
   ctx.beginPath()
   ctx.moveTo(x, 0)
@@ -835,7 +833,7 @@ export function drawRulerOverlay(ctx, w, h, scrollOffset, ppb, playheadBeat) {
   ctx.stroke()
 
   // Downward triangle
-  ctx.fillStyle = '#33CED6'
+  ctx.fillStyle = tokenValue('--theme-border-focus')
   ctx.beginPath()
   ctx.moveTo(x, h)
   ctx.lineTo(x - 4, h - 6)

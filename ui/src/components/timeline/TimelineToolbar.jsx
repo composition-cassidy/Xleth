@@ -69,7 +69,7 @@ export default function TimelineToolbar({
               className="timeline-active-sample-dot"
               style={{
                 backgroundColor: labelHexColor(pencilTemplate.label),
-                outline: '1.5px solid #33CED6',
+                outline: '1.5px solid var(--theme-border-focus)',
                 outlineOffset: '1px',
               }}
             />

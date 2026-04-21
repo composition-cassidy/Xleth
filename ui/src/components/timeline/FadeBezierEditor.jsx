@@ -1,4 +1,5 @@
 import { useRef, useEffect, useCallback, useState } from 'react'
+import { tokenValue } from '../../theming/tokenValue.ts'
 
 /**
  * Cubic bezier fade curve editor.
@@ -82,7 +83,7 @@ export default function FadeBezierEditor({
     ctx.beginPath()
     ctx.moveTo(p0.cx, p0.cy)
     ctx.bezierCurveTo(cp1.cx, cp1.cy, cp2.cx, cp2.cy, p3.cx, p3.cy)
-    ctx.strokeStyle = '#33CED6'
+    ctx.strokeStyle = tokenValue('--theme-border-focus')
     ctx.lineWidth = 2
     ctx.stroke()
 
@@ -100,13 +101,13 @@ export default function FadeBezierEditor({
     ctx.beginPath()
     ctx.moveTo(p0.cx, p0.cy)
     ctx.lineTo(cp1.cx, cp1.cy)
-    ctx.strokeStyle = '#f59e0b'
+    ctx.strokeStyle = tokenValue('--theme-timeline-bezier-handle-cp1')
     ctx.lineWidth = 1
     ctx.stroke()
     ctx.beginPath()
     ctx.moveTo(p3.cx, p3.cy)
     ctx.lineTo(cp2.cx, cp2.cy)
-    ctx.strokeStyle = '#3b82f6'
+    ctx.strokeStyle = tokenValue('--theme-timeline-bezier-handle-cp2')
     ctx.stroke()
     ctx.setLineDash([])
 
@@ -116,12 +117,12 @@ export default function FadeBezierEditor({
       ctx.arc(cx, cy, HANDLE_R, 0, Math.PI * 2)
       ctx.fillStyle = color
       ctx.fill()
-      ctx.strokeStyle = '#fff'
+      ctx.strokeStyle = tokenValue('--theme-fg-inverse')
       ctx.lineWidth = 1.5
       ctx.stroke()
     }
-    drawHandle(cp1.cx, cp1.cy, '#f59e0b')
-    drawHandle(cp2.cx, cp2.cy, '#3b82f6')
+    drawHandle(cp1.cx, cp1.cy, tokenValue('--theme-timeline-bezier-handle-cp1'))
+    drawHandle(cp2.cx, cp2.cy, tokenValue('--theme-timeline-bezier-handle-cp2'))
   }, [p1, p2, width, height, toCanvas])
 
   // Hit test

@@ -603,7 +603,7 @@
   padding: 0;
 }
 .timeline-tool-btn:hover {
-  background: rgba(255,255,255,0.06);
+  background: var(--theme-timeline-beat-line);
   color: var(--text-primary);
 }
 .timeline-tool-btn.active {
@@ -833,7 +833,7 @@
 }
 
 .timeline-pattern-rename-input {
-  background: #fff;
+  background: var(--theme-fg-inverse);
   color: #000;
   border: 1px solid var(--accent);
   border-radius: 2px;
@@ -1611,7 +1611,7 @@
 
 .timeline-copied-tooltip {
   background: rgba(51, 206, 214, 0.9);
-  color: #0D0D14;
+  color: var(--theme-bg-inset);
   font-size: 11px;
   font-weight: 600;
   padding: 2px 8px;
@@ -2530,7 +2530,7 @@
 
 .marked-sample-item.selected {
   background: var(--accent-dim);
-  border-bottom-color: rgba(51, 206, 214, 0.15);
+  border-bottom-color: var(--theme-focus-ring);
 }
 
 .marked-sample-dot {
@@ -3566,11 +3566,11 @@
   cursor: pointer;
 }
 .timeline-syllable-btn:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--theme-timeline-beat-line);
   color: var(--text-primary);
 }
 .timeline-syllable-btn.active {
-  background: rgba(51, 206, 214, 0.18);
+  background: var(--theme-timeline-selection-rect);
   border-color: var(--accent);
   color: var(--text-primary);
 }
@@ -3954,7 +3954,7 @@
   padding: 0;
 }
 .timeline-toolbar-button:hover {
-  background: rgba(255,255,255,0.06);
+  background: var(--theme-timeline-beat-line);
   color: var(--text-primary);
 }
 .timeline-toolbar-button.active {

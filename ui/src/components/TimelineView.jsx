@@ -3,6 +3,7 @@ import { Layers, Plus } from 'lucide-react'
 import TrackHeaderList from './timeline/TrackHeaderList.jsx'
 import PatternListPanel from './timeline/PatternListPanel.jsx'
 import TimelineCanvas from './timeline/TimelineCanvas.jsx'
+import { tokenValue } from '../theming/tokenValue.ts'
 import TimelineRuler from './timeline/TimelineRuler.jsx'
 import TimelineScrollbar from './timeline/TimelineScrollbar.jsx'
 import TimelineToolbar from './timeline/TimelineToolbar.jsx'
@@ -46,7 +47,7 @@ function ClipSliderRow({ label, value, min, max, step, onCommit, formatValue }) 
           const v = Number(e.target.value)
           Promise.resolve(onCommit(v)).finally(() => { dragging.current = false })
         }}
-        style={{ flex: 1, accentColor: '#33CED6' }}
+        style={{ flex: 1, accentColor: 'var(--theme-border-focus)' }}
       />
       <span style={{ fontSize: 10, color: '#888', minWidth: 40, textAlign: 'right' }}>
         {formatValue(localVal)}
@@ -1443,7 +1444,7 @@ export default function TimelineView({
     if (isPattern) {
       durationBeats = (dragData.lengthTicks || PPQ * 4) / PPQ
       const region  = regions[dragData.regionId]
-      color = region ? labelHexColor(region.label || 'Custom') : '#6aa9ff'
+      color = region ? labelHexColor(region.label || 'Custom') : tokenValue('--theme-drag-preview-default')
       name  = dragData.name
     } else if (isSource) {
       durationBeats = (dragData.duration || 0) * (bpmRef.current / 60)
