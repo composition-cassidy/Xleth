@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
 import { Import, Grid3x3 } from 'lucide-react'
 import GridEditorOverlay from './GridEditorOverlay.jsx'
+import { tokenValue } from '../theming/tokenValue.ts'
 
 // ── WebGL shaders ────────────────────────────────────────────────────────────
 const VERT_SRC = `
@@ -205,9 +206,9 @@ export default function VideoPreview({ gridEditMode, setGridEditMode }) {
         gl.clearColor(0.067, 0.067, 0.094, 1.0)
         gl.clear(gl.COLOR_BUFFER_BIT)
       } else if (ctx2d) {
-        ctx2d.fillStyle = '#111118'
+        ctx2d.fillStyle = tokenValue('--theme-preview-loaded-bg')
         ctx2d.fillRect(0, 0, canvas.width, canvas.height)
-        ctx2d.fillStyle = '#555566'
+        ctx2d.fillStyle = tokenValue('--theme-text-placeholder')
         ctx2d.font = '500 14px "Hanken Grotesk", system-ui'
         ctx2d.textAlign = 'center'
         ctx2d.textBaseline = 'middle'

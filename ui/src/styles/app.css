@@ -548,7 +548,7 @@
   /* 16:9 aspect ratio */
   aspect-ratio: 16 / 9;
   max-height: 45vh;
-  background: #111118;
+  background: var(--theme-preview-loaded-bg);
   overflow: hidden;
 }
 
