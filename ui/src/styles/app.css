@@ -1467,7 +1467,7 @@
   flex-shrink: 0;
   border-radius: 3px;
   overflow: hidden;
-  background: #111118;
+  background: var(--theme-bg-secondary);
 }
 
 .source-card-thumbnail img {
