@@ -6562,7 +6562,7 @@
 
 .delay-panel-close:hover {
   color: var(--text-primary);
-  background: rgba(255,255,255,0.05);
+  background: var(--theme-fx-surface-tint-subtle);
 }
 
 /* Sync row */
@@ -6692,7 +6692,7 @@
 
 .reverb-panel-close:hover {
   color: var(--text-primary);
-  background: rgba(255,255,255,0.05);
+  background: var(--theme-fx-surface-tint-subtle);
 }
 
 .reverb-knob-grid {
