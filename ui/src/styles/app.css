@@ -168,7 +168,7 @@
 
 .titlebar-btn-close:hover {
   background: var(--danger);
-  color: #fff;
+  color: var(--theme-fg-inverse);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -3585,7 +3585,7 @@
   gap: 6px;
   padding: 10px;
   background: #15151c;
-  border: 1px solid #2A2A38;
+  border: 1px solid var(--theme-border-subtle);
   border-radius: 6px;
 }
 
@@ -3732,7 +3732,7 @@
   background: #111118;
   border: 1px solid var(--border);
   border-radius: var(--radius-md, 8px);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+  box-shadow: var(--theme-chrome-shadow);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -7625,7 +7625,7 @@
 .quality-stop.active {
   background: var(--accent);
   border-color: var(--accent);
-  color: #0D0D14;
+  color: var(--theme-text-on-accent);
 }
 
 .quality-stop:disabled { opacity: 0.4; cursor: not-allowed; }
