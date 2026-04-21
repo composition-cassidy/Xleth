@@ -5991,7 +5991,7 @@
 
 .compressor-panel-close:hover {
   color: var(--text-primary);
-  background: rgba(255,255,255,0.05);
+  background: var(--theme-fx-surface-tint-subtle);
 }
 
 .compressor-panel-body {
@@ -6136,7 +6136,7 @@
 
 .limiter-panel-close:hover {
   color: var(--text-primary);
-  background: rgba(255,255,255,0.05);
+  background: var(--theme-fx-surface-tint-subtle);
 }
 
 .limiter-panel-body {
@@ -6455,7 +6455,7 @@
 
 .ws-panel-close:hover {
   color: var(--text-primary);
-  background: rgba(255,255,255,0.05);
+  background: var(--theme-fx-surface-tint-subtle);
 }
 
 /* Curve editor container */
@@ -6491,12 +6491,12 @@
 
 .ws-preset-btn:hover {
   color: var(--text-primary);
-  background: rgba(255,255,255,0.05);
+  background: var(--theme-fx-surface-tint-subtle);
 }
 
 .ws-preset-btn.active {
   background: var(--accent);
-  color: #fff;
+  color: var(--theme-fg-inverse);
   border-color: var(--accent);
 }
 
@@ -6952,7 +6952,7 @@
   background: var(--bg-primary);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  box-shadow: var(--theme-fx-plugin-shadow);
   z-index: 1200;
   width: 460px;
   user-select: none;
@@ -6991,7 +6991,7 @@
 
 .ott-panel-close:hover {
   color: var(--text-primary);
-  background: rgba(255,255,255,0.05);
+  background: var(--theme-fx-surface-tint-subtle);
 }
 
 .ott-panel-body {

@@ -1,4 +1,5 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
+import { tokenValue } from '../../theming/tokenValue.ts'
 
 // Circular knob — FL-style vertical drag.
 // Drag up = increase, drag down = decrease. Double-click to type a value.
@@ -14,11 +15,6 @@ import { useRef, useEffect, useState, useCallback } from 'react'
 //   onCommit         (v) => void  — called on drag-end / blur of text input
 //   size             pixel diameter (default 52)
 //   dragRange        pixels of vertical travel = full min→max sweep (default 180)
-
-const KNOB_COLOR = '#33CED6'
-const TRACK_COLOR = 'rgba(255,255,255,0.08)'
-const BG_COLOR = '#1A1A24'
-const BORDER_COLOR = '#2A2A38'
 
 export default function Knob({
   value,
@@ -67,16 +63,16 @@ export default function Knob({
     const totalSweep = endAngle - startAngle
 
     // Background disc
-    ctx.fillStyle = BG_COLOR
+    ctx.fillStyle = tokenValue('--theme-fx-knob-lg-bg')
     ctx.beginPath()
     ctx.arc(cx, cy, outerR, 0, Math.PI * 2)
     ctx.fill()
-    ctx.strokeStyle = BORDER_COLOR
+    ctx.strokeStyle = tokenValue('--theme-fx-knob-lg-border')
     ctx.lineWidth = 1
     ctx.stroke()
 
     // Track (full arc)
-    ctx.strokeStyle = TRACK_COLOR
+    ctx.strokeStyle = tokenValue('--theme-fx-knob-lg-track')
     ctx.lineWidth = 2.5
     ctx.beginPath()
     ctx.arc(cx, cy, trackR, startAngle, endAngle)
@@ -84,7 +80,7 @@ export default function Knob({
 
     // Value arc
     const valueAngle = startAngle + totalSweep * fraction
-    ctx.strokeStyle = KNOB_COLOR
+    ctx.strokeStyle = tokenValue('--theme-border-focus')
     ctx.lineWidth = 2.5
     ctx.beginPath()
     ctx.arc(cx, cy, trackR, startAngle, valueAngle)
@@ -93,7 +89,7 @@ export default function Knob({
     // Pointer line from centre toward current angle
     const px = cx + Math.cos(valueAngle) * knobR
     const py = cy + Math.sin(valueAngle) * knobR
-    ctx.strokeStyle = KNOB_COLOR
+    ctx.strokeStyle = tokenValue('--theme-border-focus')
     ctx.lineWidth = 2
     ctx.lineCap = 'round'
     ctx.beginPath()
@@ -207,8 +203,8 @@ export default function Knob({
           }}
           style={{
             width: size, fontSize: 10, textAlign: 'center',
-            background: '#0a0a10', color: '#E8E8ED',
-            border: `1px solid ${KNOB_COLOR}`, borderRadius: 3,
+            background: '#0a0a10', color: 'var(--theme-fx-knob-lg-indicator)',
+            border: '1px solid var(--theme-border-focus)', borderRadius: 3,
             padding: '1px 2px',
           }}
         />
@@ -226,7 +222,7 @@ export default function Knob({
       )}
       {label && (
         <div style={{
-          fontSize: 9, color: '#8888A0', textTransform: 'uppercase',
+          fontSize: 9, color: 'var(--theme-fx-axis-label)', textTransform: 'uppercase',
           letterSpacing: 0.5, fontWeight: 500,
         }}>
           {label}

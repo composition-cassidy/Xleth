@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { X } from 'lucide-react'
+import { tokenValue } from '../../theming/tokenValue.ts'
 import useSmartBalanceStore from '../../stores/smartBalanceStore.js'
 import Knob from '../sampler/Knob.jsx'
 
@@ -153,7 +154,7 @@ function drawTargetLines(ctx, w, h, bandRanges, targets, dragBandIndex) {
     const y = dbToY(tDb, h)
     const isDragging = dragBandIndex === i
 
-    ctx.strokeStyle = isDragging ? '#ffffff' : (band.color + 'aa')
+    ctx.strokeStyle = isDragging ? tokenValue('--theme-fx-drag-indicator') : (band.color + 'aa')
     ctx.setLineDash(isDragging ? [] : [4, 3])
     ctx.lineWidth = isDragging ? 2 : 1
     ctx.beginPath()
