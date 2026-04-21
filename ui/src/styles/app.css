@@ -6321,7 +6321,7 @@
 
 .distortion-panel-close:hover {
   color: var(--text-primary);
-  background: rgba(255,255,255,0.05);
+  background: var(--theme-fx-surface-tint-subtle);
 }
 
 /* Mode selector */
@@ -6346,12 +6346,12 @@
 
 .distortion-mode-btn:hover {
   color: var(--text-primary);
-  background: rgba(255,255,255,0.05);
+  background: var(--theme-fx-surface-tint-subtle);
 }
 
 .distortion-mode-btn.active {
   background: var(--accent);
-  color: #fff;
+  color: var(--theme-fg-inverse);
   border-color: var(--accent);
 }
 
@@ -6397,12 +6397,12 @@
 
 .distortion-filter-btn:hover {
   color: var(--text-primary);
-  background: rgba(255,255,255,0.05);
+  background: var(--theme-fx-surface-tint-subtle);
 }
 
 .distortion-filter-btn.active {
   background: var(--accent);
-  color: #fff;
+  color: var(--theme-fg-inverse);
   border-color: var(--accent);
 }
 
