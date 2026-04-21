@@ -4688,7 +4688,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   z-index: 300;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--theme-projectmedia-shadow);
   overflow: hidden;
 }
 
