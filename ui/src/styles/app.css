@@ -2650,7 +2650,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #fff;
+  color: var(--theme-fg-inverse);
   cursor: pointer;
   font: 600 13px "Hanken Grotesk", system-ui;
   overflow: visible;
@@ -2663,14 +2663,14 @@
 }
 
 .grid-editor-cell.empty:hover {
-  background: rgba(51, 206, 214, 0.18);
+  background: var(--theme-grid-chorus-overlay);
   opacity: 1.0;
   border-color: var(--accent);
 }
 
 .grid-editor-cell.assigned {
   border-color: var(--accent);
-  background: rgba(51, 206, 214, 0.15);
+  background: var(--theme-focus-ring);
 }
 
 .grid-editor-cell-label {
@@ -2697,7 +2697,7 @@
   height: 20px;
   border-radius: 3px;
   background: rgba(0, 0, 0, 0.7);
-  color: #fff;
+  color: var(--theme-fg-inverse);
   border: 0;
   cursor: pointer;
   display: flex;
@@ -2717,8 +2717,8 @@
   pointer-events: none;
   z-index: 1;
   background-image:
-    linear-gradient(to right, transparent calc(50% - 0.5px), rgba(255, 255, 255, 0.15) calc(50% - 0.5px) calc(50% + 0.5px), transparent calc(50% + 0.5px)),
-    linear-gradient(to bottom, transparent calc(50% - 0.5px), rgba(255, 255, 255, 0.15) calc(50% - 0.5px) calc(50% + 0.5px), transparent calc(50% + 0.5px));
+    linear-gradient(to right, transparent calc(50% - 0.5px), var(--theme-grid-editor-crosshair) calc(50% - 0.5px) calc(50% + 0.5px), transparent calc(50% + 0.5px)),
+    linear-gradient(to bottom, transparent calc(50% - 0.5px), var(--theme-grid-editor-crosshair) calc(50% - 0.5px) calc(50% + 0.5px), transparent calc(50% + 0.5px));
 }
 
 .grid-editor-picker {
@@ -2790,7 +2790,7 @@
   text-transform: uppercase;
   letter-spacing: 0.5px;
   background: rgba(0, 0, 0, 0.75);
-  color: #fff;
+  color: var(--theme-fg-inverse);
 }
 
 .grid-editor-badge-chorus {
