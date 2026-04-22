@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback } from 'react'
 import { Play, Square, ArrowLeftRight } from 'lucide-react'
 import { labelColor, buildAudioUrl, formatDuration, midiToNoteName } from '../constants/labels.js'
+import { tokenValue } from '../theming/tokenValue.ts'
 
 // ── Singleton audio element for preview (only one preview plays at a time) ───
 let previewAudio = null
@@ -214,16 +215,14 @@ export default function SampleRow({
 // ── Helper: resolve CSS variable to a concrete color for inline styles ───────
 function getComputedLabelColor(label) {
   const varRef = labelColor(label)
-  // labelColor returns "var(--label-kick)" etc.
-  // For inline styles (box-shadow, drag image), we need the actual hex color
   const map = {
-    'var(--label-kick)':   '#FF6B6B',
-    'var(--label-snare)':  '#FFA94D',
-    'var(--label-hihat)':  '#FFD93D',
-    'var(--label-crash)':  '#FF6B9D',
-    'var(--label-pitch)':  '#69DB7C',
-    'var(--label-quote)':  '#748FFC',
-    'var(--label-custom)': '#B197FC',
+    'var(--label-kick)':   tokenValue('--theme-label-kick'),
+    'var(--label-snare)':  tokenValue('--theme-label-snare'),
+    'var(--label-hihat)':  tokenValue('--theme-label-hihat'),
+    'var(--label-crash)':  tokenValue('--theme-label-crash'),
+    'var(--label-pitch)':  tokenValue('--theme-label-pitch'),
+    'var(--label-quote)':  tokenValue('--theme-label-quote'),
+    'var(--label-custom)': tokenValue('--theme-label-custom'),
   }
-  return map[varRef] || '#B197FC'
+  return map[varRef] || tokenValue('--theme-label-custom')
 }

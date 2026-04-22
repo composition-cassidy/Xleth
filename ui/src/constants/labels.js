@@ -1,3 +1,5 @@
+import { tokenValue } from '../theming/tokenValue.ts'
+
 // ── Shared label constants & utilities ────────────────────────────────────────
 // Used by SamplePicker, SampleSelectorTab, MarkedSamplesList, ProjectMediaTab
 
@@ -18,19 +20,20 @@ export function labelColor(label) {
   return LABEL_COLORS[label?.toLowerCase()] || 'var(--label-custom)'
 }
 
-// Concrete hex values for canvas drawing (CSS vars don't work in canvas context)
-export const LABEL_HEX_COLORS = {
-  kick:   '#FF6B6B',
-  snare:  '#FFA94D',
-  hihat:  '#FFD93D',
-  crash:  '#FF6B9D',
-  pitch:  '#69DB7C',
-  quote:  '#748FFC',
-  custom: '#B197FC',
+// Token names for canvas drawing (resolved at draw time via tokenValue())
+const LABEL_TOKEN_MAP = {
+  kick:   '--theme-label-kick',
+  snare:  '--theme-label-snare',
+  hihat:  '--theme-label-hihat',
+  crash:  '--theme-label-crash',
+  pitch:  '--theme-label-pitch',
+  quote:  '--theme-label-quote',
+  custom: '--theme-label-custom',
 }
 
 export function labelHexColor(label) {
-  return LABEL_HEX_COLORS[label?.toLowerCase()] || '#B197FC'
+  const token = LABEL_TOKEN_MAP[label?.toLowerCase()] || '--theme-label-custom'
+  return tokenValue(token)
 }
 
 export function loadCustomLabels() {

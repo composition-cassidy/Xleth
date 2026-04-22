@@ -3,10 +3,13 @@ import { Trash2, Music, Sliders } from 'lucide-react'
 import { TRACK_HEIGHT } from '../../constants/timeline.js'
 import { hexToRgba } from './timelineDrawing.js'
 import { timelineEvents } from '../../timelineEvents.js'
+import { tokenValue } from '../../theming/tokenValue.ts'
 
-const LABEL_COLORS = [
-  '#FF6B6B', '#FFA94D', '#FFD93D', '#FF6B9D',
-  '#69DB7C', '#748FFC', '#B197FC', '#33CED6',
+const LABEL_TOKENS = [
+  '--theme-label-kick',   '--theme-label-snare',
+  '--theme-label-hihat',  '--theme-label-crash',
+  '--theme-label-pitch',  '--theme-label-quote',
+  '--theme-label-custom', '--theme-border-focus',
 ]
 
 export default function TrackHeader({
@@ -21,7 +24,7 @@ export default function TrackHeader({
   const isPatternTrack = track.type === 'Pattern'
   // Pattern tracks are sample-agnostic — pick a stable accent by slot index
   // like Clip tracks, not from a bound region.
-  const color = LABEL_COLORS[index % LABEL_COLORS.length]
+  const color = tokenValue(LABEL_TOKENS[index % LABEL_TOKENS.length])
 
   const startEdit = useCallback(() => {
     setEditing(true)
