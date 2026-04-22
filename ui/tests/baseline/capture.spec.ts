@@ -320,7 +320,11 @@ test('11-piano-roll', async () => {
   // a pattern row in the PatternListPanel instead — that triggers
   // onOpenPianoRoll and switches the center area to the piano roll tab.
   const patternRow = page.locator('.pattern-list-row').first();
-  if (await patternRow.isVisible()) {
+  // Guard: the mixer panel can intercept pointer events over the pattern list.
+  // Only attempt the click if the mixer is NOT open (otherwise the test will
+  // timeout waiting for the click to land).
+  const mixerIsOpen = await page.locator('.mixer-panel').first().isVisible().catch(() => false);
+  if ((await patternRow.isVisible()) && !mixerIsOpen) {
     await patternRow.click();
     await page.waitForTimeout(600);
   }
@@ -329,6 +333,12 @@ test('11-piano-roll', async () => {
     await prTab.click();
     await waitForCanvasStable();
     await expect(page.locator('.center-area-body').first()).toHaveScreenshot('11-piano-roll.png');
+    // Teardown: switch back to Timeline tab so later tests find normal state.
+    const timelineTab = page.locator('button:has-text("Timeline"), .center-tab:has-text("Timeline")').first();
+    if (await timelineTab.isVisible()) {
+      await timelineTab.click();
+      await page.waitForTimeout(200);
+    }
   } else {
     // Fall back to a double-click on the first pattern block in the timeline.
     const block = page.locator('.pattern-block, [class*="pattern-block"]').first();
@@ -337,6 +347,12 @@ test('11-piano-roll', async () => {
       await page.waitForTimeout(500);
       await waitForCanvasStable();
       await expect(page.locator('.center-area-body').first()).toHaveScreenshot('11-piano-roll.png');
+      // Teardown: switch back to Timeline tab.
+      const timelineTab = page.locator('button:has-text("Timeline"), .center-tab:has-text("Timeline")').first();
+      if (await timelineTab.isVisible()) {
+        await timelineTab.click();
+        await page.waitForTimeout(200);
+      }
     } else {
       test.skip();
     }
@@ -348,6 +364,16 @@ test('11-piano-roll', async () => {
 test('12-sampler-panel', async () => {
   // loadFixture() is guarded — already executed at test 08; this is a no-op.
   await loadFixture();
+
+  // Close the mixer if open — it can intercept right-click events on track headers.
+  const mixerPanelForClose = page.locator('.mixer-panel').first();
+  if (await mixerPanelForClose.isVisible().catch(() => false)) {
+    const mixerToggleBtn = page.locator('button[title="Toggle Mixer (M)"]').first();
+    if (await mixerToggleBtn.isVisible()) {
+      await mixerToggleBtn.click();
+      await page.waitForTimeout(300);
+    }
+  }
 
   // Ensure the Timeline tab is active so track headers are rendered.
   const timelineTab = page.locator('button:has-text("Timeline")');
@@ -400,6 +426,9 @@ test('12-sampler-panel', async () => {
   if (await sampler.isVisible()) {
     await waitForCanvasStable();
     await expect(sampler).toHaveScreenshot('12-sampler-panel.png');
+    // Teardown: close the sampler so tests 13+ find an unobstructed mixer.
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(200);
   } else {
     test.skip(); // sampler panel did not mount
   }
@@ -415,6 +444,9 @@ test('13-eq-panel', async () => {
   const eq = page.locator('.eq-panel').first();
   if (await eq.isVisible()) {
     await expect(eq).toHaveScreenshot('13-eq-panel.png');
+    // Teardown: close the panel so it doesn't bleed into later tests.
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(200);
   } else {
     test.skip();
   }
@@ -425,6 +457,9 @@ test('14-compressor-panel', async () => {
   const el = page.locator('.compressor-panel, [class*="compressor-panel"]').first();
   if (await el.isVisible()) {
     await expect(el).toHaveScreenshot('14-compressor-panel.png');
+    // Teardown: close the panel so it doesn't bleed into later tests.
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(200);
   } else {
     test.skip();
   }
@@ -490,6 +525,12 @@ test('20-sample-picker', async () => {
   if (await el.isVisible()) {
     await waitForCanvasStable();
     await expect(el).toHaveScreenshot('20-sample-picker.png');
+    // Teardown: navigate back to Timeline so the SamplePicker doesn't affect later tests.
+    const timelineTabClose = page.locator('button:has-text("Timeline"), .center-tab:has-text("Timeline")').first();
+    if (await timelineTabClose.isVisible()) {
+      await timelineTabClose.click();
+      await page.waitForTimeout(200);
+    }
   } else {
     test.skip();
   }
@@ -533,24 +574,14 @@ test('21-settings-panel', async () => {
 // ── 11. Dialogs ───────────────────────────────────────────────────────────────
 
 test('22-export-dialog', async () => {
-  // Close the mixer if open — the export-dialog-backdrop is full-screen but
-  // semi-transparent, so an open mixer changes the background vs cold-state baseline.
-  const mixerPanel = page.locator('.mixer-panel').first();
-  if (await mixerPanel.isVisible().catch(() => false)) {
-    const mixerBtn = page.locator('button[title="Toggle Mixer (M)"]').first();
-    if (await mixerBtn.isVisible()) {
-      await mixerBtn.click();
-      await page.waitForTimeout(300);
-    }
-  }
-  // Trigger via the title bar File → Export Audio menu if possible.
-  // We use page.evaluate to fire the custom event that App.jsx listens for.
-  // Since we can't rely on the native menu in headless Electron, simulate via
-  // the public handleMenuAction by dispatching a custom event that TitleBar emits.
-  // Simplest: look for an existing dialog or trigger via keyboard shortcut.
+  // Use Ctrl+E to open the export dialog.
+  // Capture the inner dialog box only — NOT the full-screen backdrop — so that
+  // background state differences (mixer open, panels visible, etc.) don't affect
+  // the baseline comparison.
   await page.keyboard.press('Control+e');
   await page.waitForTimeout(500);
-  const dialog = page.locator('.export-dialog, [class*="export-dialog"]').first();
+  // Target the inner dialog div, not the full-screen backdrop.
+  const dialog = page.locator('.export-dialog-backdrop .export-dialog').first();
   if (await dialog.isVisible()) {
     await expect(dialog).toHaveScreenshot('22-export-dialog.png');
     await page.keyboard.press('Escape');
@@ -620,6 +651,13 @@ test('26-waveform-scrubber', async () => {
   if (await el.isVisible()) {
     await waitForCanvasStable();
     await expect(el).toHaveScreenshot('26-waveform-scrubber.png');
+    // Teardown: navigate back to Timeline so the SamplePicker doesn't affect
+    // the video-preview (test 27) which captures the default center-area state.
+    const timelineTabClose = page.locator('button:has-text("Timeline"), .center-tab:has-text("Timeline")').first();
+    if (await timelineTabClose.isVisible()) {
+      await timelineTabClose.click();
+      await page.waitForTimeout(200);
+    }
   } else {
     test.skip();
   }
@@ -673,6 +711,12 @@ test('29-full-app-bottom-dock', async () => {
   await dismissMenus();
   // Return to default state: timeline tab, no dialogs.
   await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+  // Reset transport position to 0 so the time display is deterministic.
+  // The video-preview test may have caused auto-play which advances the playhead.
+  await page.keyboard.press('Space'); // stop if playing
+  await page.waitForTimeout(100);
+  await page.keyboard.press('Home'); // seek to start
   await page.waitForTimeout(200);
   const bottom = page.locator('.bottom-dock, .transport-bar, [class*="bottom"]').first();
   if (await bottom.isVisible()) {
