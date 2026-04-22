@@ -1,20 +1,12 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from 'react'
 import { Play, Square, Trash2 } from 'lucide-react'
 import { downsamplePeaks3 } from '../../utils/waveformRenderer.js'
+import { tokenValue } from '../../theming/tokenValue.ts'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const CANVAS_H   = 90    // waveform canvas height
 const HANDLE_HIT = 8     // hit-test radius around marker (px)
 const DELETE_EDGE = 6    // drag this close to left/right edge → delete marker
-const COLOR = {
-  bg:       '#1b1b24',
-  wave:     '#555566',
-  waveDim:  '#3a3a4a',
-  marker:   '#33CED6',
-  markerHi: '#7ce9ef',
-  sectionAlt: 'rgba(51, 206, 214, 0.06)',
-  text:     '#d0d0d8',
-}
 
 // Slice the source-wide stride-3 peaks array down to the region's time range
 function sliceRegionPeaks(peaks, stride, sourceDuration, regionStart, regionEnd) {
@@ -130,7 +122,7 @@ export default function SyllableSplitter({
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
     // Background
-    ctx.fillStyle = COLOR.bg
+    ctx.fillStyle = tokenValue('--theme-syllable-splitter-bg')
     ctx.fillRect(0, 0, w, h)
 
     // Section tints (alternate) — visual aid for where each syllable lives
@@ -139,13 +131,13 @@ export default function SyllableSplitter({
       if (i % 2 === 0) continue
       const x0 = (edges[i]     / regionDur) * w
       const x1 = (edges[i + 1] / regionDur) * w
-      ctx.fillStyle = COLOR.sectionAlt
+      ctx.fillStyle = tokenValue('--theme-syllable-section-alt')
       ctx.fillRect(x0, 0, x1 - x0, h)
     }
 
     // Centerline
     const mid = h / 2
-    ctx.strokeStyle = COLOR.waveDim
+    ctx.strokeStyle = tokenValue('--theme-syllable-splitter-wave-dim')
     ctx.lineWidth = 1
     ctx.beginPath()
     ctx.moveTo(0, mid)
@@ -156,7 +148,7 @@ export default function SyllableSplitter({
     if (regionPeaks && regionPeaks.length >= 3) {
       const peaks = downsamplePeaks3(regionPeaks, w)
       const cols = Math.floor(peaks.length / 3)
-      ctx.fillStyle = COLOR.wave
+      ctx.fillStyle = tokenValue('--theme-text-placeholder')
       for (let i = 0; i < cols; i++) {
         const min = peaks[i * 3]
         const max = peaks[i * 3 + 1]
@@ -165,14 +157,14 @@ export default function SyllableSplitter({
         ctx.fillRect(i, y0, 1, Math.max(1, y1 - y0))
       }
     } else {
-      ctx.fillStyle = COLOR.text
+      ctx.fillStyle = tokenValue('--theme-syllable-splitter-label-fg')
       ctx.font = '11px "Hanken Grotesk", system-ui, sans-serif'
       ctx.textBaseline = 'middle'
       ctx.fillText('No waveform', 8, mid)
     }
 
     // Section number labels (top-left of each section)
-    ctx.fillStyle = COLOR.markerHi
+    ctx.fillStyle = tokenValue('--theme-syllable-accent-light')
     ctx.font = '600 11px "Hanken Grotesk", system-ui, sans-serif'
     ctx.textBaseline = 'top'
     for (let i = 0; i < edges.length - 1; i++) {
@@ -182,7 +174,7 @@ export default function SyllableSplitter({
     }
 
     // Marker lines
-    ctx.strokeStyle = COLOR.marker
+    ctx.strokeStyle = tokenValue('--theme-syllable-marker')
     ctx.lineWidth = 2
     for (let i = 0; i < markers.length; i++) {
       const x = (markers[i] / regionDur) * w
@@ -191,7 +183,7 @@ export default function SyllableSplitter({
       ctx.lineTo(x, h)
       ctx.stroke()
       // Handle knobs at top and bottom
-      ctx.fillStyle = COLOR.marker
+      ctx.fillStyle = tokenValue('--theme-syllable-marker')
       ctx.fillRect(x - 4, 0, 8, 4)
       ctx.fillRect(x - 4, h - 4, 8, 4)
     }
