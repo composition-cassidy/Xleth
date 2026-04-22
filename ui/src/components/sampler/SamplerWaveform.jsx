@@ -1,9 +1,8 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
 import { timelineEvents } from '../../timelineEvents.js'
 import { drawEnvelope, downsamplePeaks3 } from '../../utils/waveformRenderer.js'
+import { tokenValue } from '../../theming/tokenValue.ts'
 
-const WAVE_COLOR = '#33CED6'
-const LOOP_COLOR = '#69DB7C'
 const HANDLE_HIT = 8
 
 export default function SamplerWaveform({
@@ -91,7 +90,7 @@ export default function SamplerWaveform({
     ctx.fillRect(0, 0, width, height)
 
     if (!peaks) {
-      ctx.fillStyle = '#555566'
+      ctx.fillStyle = tokenValue('--theme-text-placeholder')
       ctx.font = '11px sans-serif'
       ctx.textAlign = 'center'
       ctx.fillText(loadError ? 'Waveform unavailable' : 'Loading…', width / 2, height / 2)
@@ -107,8 +106,8 @@ export default function SamplerWaveform({
       ctx, ds,
       0, 0, width, height,
       0, cols,
-      'rgba(51, 206, 214, 0.35)',  // envelope fill
-      'rgba(51, 206, 214, 0.55)',  // RMS body (brighter)
+      tokenValue('--theme-sampler-envelope-fill'),  // envelope fill
+      tokenValue('--theme-waveform-rms-body'),      // RMS body (brighter)
     )
 
     // Center line
@@ -178,7 +177,7 @@ export default function SamplerWaveform({
       }
 
       // Trim START line
-      ctx.strokeStyle = WAVE_COLOR
+      ctx.strokeStyle = tokenValue('--theme-sampler-waveform-playhead')
       ctx.lineWidth = 2
       ctx.beginPath()
       ctx.moveTo(Math.round(xTrimStart) + 0.5, 0)
@@ -192,7 +191,7 @@ export default function SamplerWaveform({
       ctx.stroke()
 
       // Small top-caps to identify start vs end
-      ctx.fillStyle = WAVE_COLOR
+      ctx.fillStyle = tokenValue('--theme-sampler-waveform-playhead')
       ctx.fillRect(Math.round(xTrimStart) - 3, 0, 7, 5)
       ctx.fillRect(Math.round(xTrimEnd)   - 3, 0, 7, 5)
     }
@@ -205,11 +204,11 @@ export default function SamplerWaveform({
       const xEnd   = (leSamples / numSamples) * width
 
       // Translucent band
-      ctx.fillStyle = 'rgba(105, 219, 124, 0.12)'
+      ctx.fillStyle = tokenValue('--theme-sampler-loop-crossfade-fill')
       ctx.fillRect(xStart, 0, Math.max(0, xEnd - xStart), height)
 
       // Start marker
-      ctx.strokeStyle = LOOP_COLOR
+      ctx.strokeStyle = tokenValue('--theme-label-pitch')
       ctx.lineWidth = 2
       ctx.beginPath()
       ctx.moveTo(Math.round(xStart) + 0.5, 0)
@@ -248,7 +247,7 @@ export default function SamplerWaveform({
           ctx.moveTo(aStartX, height);  ctx.lineTo(aStartX + xfPx, 0)
           ctx.stroke()
           // Effective wrap-point marker (dashed line at loopStart + N)
-          ctx.strokeStyle = 'rgba(255,160,60,0.85)'
+          ctx.strokeStyle = tokenValue('--theme-sampler-trim-handle')
           ctx.lineWidth = 1
           ctx.setLineDash([3, 3])
           ctx.beginPath()
@@ -396,7 +395,7 @@ export default function SamplerWaveform({
   return (
     <canvas
       ref={canvasRef}
-      style={{ cursor, display: 'block', borderRadius: 4, border: '1px solid #2A2A38' }}
+      style={{ cursor, display: 'block', borderRadius: 4, border: '1px solid var(--theme-sampler-key-border)' }}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
     />

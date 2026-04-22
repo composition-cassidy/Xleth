@@ -57,6 +57,27 @@ static array.
 
 ---
 
+## EX-006 — sampler-lfo-color tokens used in EnvelopeEditor
+
+**Subsystem:** sampler
+**Files:**
+- `ui/src/components/sampler/EnvelopeEditor.jsx:30`
+- `ui/src/components/sampler/SamplerPanel.jsx:684`
+
+**Tokens:** `--theme-sampler-lfo-color-volume`, `--theme-sampler-lfo-color-pitch`
+
+**Issue:** Token names carry `lfo` prefix but callsites are in
+`EnvelopeEditor` (ADSR renderer), not the LFO section. The hex values
+(`#33CED6`, `#E8A020`) are shared across both LFO and envelope renderers
+as a modulation-destination color palette. Values are semantically
+correct; naming is imprecise.
+
+**Disposition:** Accepted. Phase 1 action — rename token family from
+`--theme-sampler-lfo-color-*` to `--theme-sampler-mod-color-*` and
+update all callsites.
+
+---
+
 ## Phase 0 closure adjustment
 
 Target in spec §11: 337 replacements (185H + 113M + 39L).  

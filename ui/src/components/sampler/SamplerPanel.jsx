@@ -7,6 +7,7 @@ import EnvelopeEditor from './EnvelopeEditor.jsx'
 import MiniKeyboard from './MiniKeyboard.jsx'
 import Knob from './Knob.jsx'
 import LfoSection from './LfoSection.jsx'
+import { tokenValue } from '../../theming/tokenValue.ts'
 
 const WAVE_WIDTH = 520
 const WAVE_HEIGHT = 100
@@ -302,30 +303,30 @@ export default function SamplerPanel({ regionId, onClose }) {
           transform: 'translate(-50%, -50%)',
           width: 560,
           maxHeight: '90vh',
-          background: '#111118',
-          border: '1px solid #2A2A38',
+          background: 'var(--theme-bg-secondary)',
+          border: '1px solid var(--theme-sampler-key-border)',
           borderRadius: 8,
           boxShadow: '0 12px 40px rgba(0,0,0,0.6)',
           zIndex: 11,
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
-          color: '#E8E8ED',
+          color: 'var(--theme-text)',
         }}
       >
         {/* Header */}
         <div style={{
           display: 'flex', alignItems: 'center',
           padding: '8px 12px',
-          borderBottom: '1px solid #2A2A38',
-          background: '#1A1A24',
+          borderBottom: '1px solid var(--theme-sampler-key-border)',
+          background: 'var(--theme-bg-surface)',
         }}>
           <span style={{ fontSize: 12, fontWeight: 600, flex: 1 }}>Sampler — {displayName}</span>
           <button
             onClick={onClose}
             title="Close (Esc)"
             style={{
-              background: 'transparent', border: 'none', color: '#8888A0',
+              background: 'transparent', border: 'none', color: 'var(--theme-text-muted)',
               cursor: 'pointer', padding: 4, borderRadius: 4,
               display: 'flex', alignItems: 'center',
             }}
@@ -457,7 +458,7 @@ export default function SamplerPanel({ regionId, onClose }) {
                     onBlur={() => commit({ rootNote: settings.rootNote })}
                     style={{ width: 56 }}
                   />
-                  <span style={{ fontSize: 11, color: '#8888A0', minWidth: 32 }}>{pitchLabel(settings.rootNote)}</span>
+                  <span style={{ fontSize: 11, color: 'var(--theme-text-muted)', minWidth: 32 }}>{pitchLabel(settings.rootNote)}</span>
                 </div>
               </label>
               <label className="sampler-panel-field" style={{ flex: 1 }}>
@@ -511,9 +512,9 @@ export default function SamplerPanel({ regionId, onClose }) {
                       padding: '6px 10px',
                       fontSize: 11,
                       borderRadius: 4,
-                      border: '1px solid ' + (active ? '#4AA8C8' : '#2A2A38'),
-                      background: active ? '#1E4A5C' : '#1A1A24',
-                      color: active ? '#9BDBF0' : '#8888A0',
+                      border: '1px solid ' + (active ? '#4AA8C8' : 'var(--theme-sampler-key-border)'),
+                      background: active ? '#1E4A5C' : 'var(--theme-bg-surface)',
+                      color: active ? '#9BDBF0' : 'var(--theme-text-muted)',
                       cursor: 'pointer',
                     }}
                   >
@@ -530,12 +531,12 @@ export default function SamplerPanel({ regionId, onClose }) {
 
             {/* Mono + Portamento row */}
             <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#E8E8ED' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--theme-text)' }}>
                 <input type="checkbox" checked={settings.monoEnabled}
                   onChange={(e) => commitField('monoEnabled', e.target.checked)} />
                 Mono
               </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#E8E8ED' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--theme-text)' }}>
                 <input type="checkbox" checked={settings.portamentoEnabled}
                   onChange={(e) => commitField('portamentoEnabled', e.target.checked)} />
                 Portamento
@@ -550,8 +551,8 @@ export default function SamplerPanel({ regionId, onClose }) {
             </div>
 
             {/* Arpeggiator */}
-            <div style={{ borderTop: '1px solid #2A2A38', marginTop: 8, paddingTop: 8 }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#E8E8ED', marginBottom: 6 }}>
+            <div style={{ borderTop: '1px solid var(--theme-sampler-key-border)', marginTop: 8, paddingTop: 8 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--theme-text)', marginBottom: 6 }}>
                 <input type="checkbox" checked={settings.arpEnabled}
                   onChange={(e) => commitField('arpEnabled', e.target.checked)} />
                 Arpeggiator
@@ -566,11 +567,11 @@ export default function SamplerPanel({ regionId, onClose }) {
                     onCommit={(v) => commit({ arpGate: Math.round(v) / 100 })} />
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    <span style={{ fontSize: 9, color: '#8888A0', textTransform: 'uppercase' }}>Range</span>
+                    <span style={{ fontSize: 9, color: 'var(--theme-text-muted)', textTransform: 'uppercase' }}>Range</span>
                     <select value={settings.arpRange}
                       onChange={(e) => commitField('arpRange', Number(e.target.value))}
                       style={{
-                        background: '#1A1A24', color: '#E8E8ED', border: '1px solid #2A2A38',
+                        background: 'var(--theme-bg-surface)', color: 'var(--theme-text)', border: '1px solid var(--theme-sampler-key-border)',
                         borderRadius: 4, padding: '4px 6px', fontSize: 11,
                       }}>
                       <option value={1}>1 oct</option>
@@ -581,11 +582,11 @@ export default function SamplerPanel({ regionId, onClose }) {
                   </div>
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    <span style={{ fontSize: 9, color: '#8888A0', textTransform: 'uppercase' }}>Direction</span>
+                    <span style={{ fontSize: 9, color: 'var(--theme-text-muted)', textTransform: 'uppercase' }}>Direction</span>
                     <select value={settings.arpDirection}
                       onChange={(e) => commitField('arpDirection', Number(e.target.value))}
                       style={{
-                        background: '#1A1A24', color: '#E8E8ED', border: '1px solid #2A2A38',
+                        background: 'var(--theme-bg-surface)', color: 'var(--theme-text)', border: '1px solid var(--theme-sampler-key-border)',
                         borderRadius: 4, padding: '4px 6px', fontSize: 11,
                       }}>
                       <option value={0}>Up</option>
@@ -597,7 +598,7 @@ export default function SamplerPanel({ regionId, onClose }) {
                 </div>
 
                 <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 6, flexWrap: 'wrap' }}>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#E8E8ED' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--theme-text)' }}>
                     <input type="checkbox" checked={settings.arpTempoSync}
                       onChange={(e) => commitField('arpTempoSync', e.target.checked)} />
                     Tempo sync
@@ -605,11 +606,11 @@ export default function SamplerPanel({ regionId, onClose }) {
 
                   {settings.arpTempoSync ? (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                      <span style={{ fontSize: 9, color: '#8888A0', textTransform: 'uppercase' }}>Division</span>
+                      <span style={{ fontSize: 9, color: 'var(--theme-text-muted)', textTransform: 'uppercase' }}>Division</span>
                       <select value={settings.arpDivision}
                         onChange={(e) => commitField('arpDivision', Number(e.target.value))}
                         style={{
-                          background: '#1A1A24', color: '#E8E8ED', border: '1px solid #2A2A38',
+                          background: 'var(--theme-bg-surface)', color: 'var(--theme-text)', border: '1px solid var(--theme-sampler-key-border)',
                           borderRadius: 4, padding: '4px 6px', fontSize: 11,
                         }}>
                         <option value={4}>1/4</option>
@@ -637,17 +638,17 @@ export default function SamplerPanel({ regionId, onClose }) {
               <button onClick={() => setEnvTab('volume')}
                 style={{
                   flex: 1, padding: '5px 0', fontSize: 11, fontWeight: 600,
-                  border: '1px solid #2A2A38', borderRadius: '4px 0 0 4px',
-                  background: envTab === 'volume' ? '#1E3A3C' : '#1A1A24',
-                  color: envTab === 'volume' ? '#33CED6' : '#8888A0',
+                  border: '1px solid var(--theme-sampler-key-border)', borderRadius: '4px 0 0 4px',
+                  background: envTab === 'volume' ? 'var(--theme-sampler-lfo-bg-volume)' : 'var(--theme-bg-surface)',
+                  color: envTab === 'volume' ? 'var(--theme-sampler-lfo-color-volume)' : 'var(--theme-text-muted)',
                   cursor: 'pointer',
                 }}>Volume</button>
               <button onClick={() => setEnvTab('pitch')}
                 style={{
                   flex: 1, padding: '5px 0', fontSize: 11, fontWeight: 600,
-                  border: '1px solid #2A2A38', borderRadius: '0 4px 4px 0',
-                  background: envTab === 'pitch' ? '#3C2E1A' : '#1A1A24',
-                  color: envTab === 'pitch' ? '#E8A020' : '#8888A0',
+                  border: '1px solid var(--theme-sampler-key-border)', borderRadius: '0 4px 4px 0',
+                  background: envTab === 'pitch' ? 'var(--theme-sampler-lfo-bg-pitch)' : 'var(--theme-bg-surface)',
+                  color: envTab === 'pitch' ? 'var(--theme-sampler-lfo-color-pitch)' : 'var(--theme-text-muted)',
                   cursor: 'pointer',
                 }}>Pitch</button>
             </div>
@@ -655,7 +656,7 @@ export default function SamplerPanel({ regionId, onClose }) {
             {/* Pitch-only: Enable toggle + Amount knob */}
             {envTab === 'pitch' && (
               <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 4 }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#E8E8ED' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--theme-text)' }}>
                   <input type="checkbox" checked={settings.pitchEnvEnabled}
                     onChange={(e) => commitField('pitchEnvEnabled', e.target.checked)} />
                   Enable
@@ -681,7 +682,7 @@ export default function SamplerPanel({ regionId, onClose }) {
                 attackTension={envTab === 'volume' ? settings.attackTension : settings.pitchEnvAttackTension}
                 decayTension={envTab === 'volume' ? settings.decayTension : settings.pitchEnvDecayTension}
                 releaseTension={envTab === 'volume' ? settings.releaseTension : settings.pitchEnvReleaseTension}
-                color={envTab === 'volume' ? '#33CED6' : '#E8A020'}
+                color={envTab === 'volume' ? tokenValue('--theme-sampler-lfo-color-volume') : tokenValue('--theme-sampler-lfo-color-pitch')}
                 onLiveChange={(partial) => {
                   if (envTab === 'pitch') {
                     const mapped = {}

@@ -1,9 +1,10 @@
 import { useState, useCallback } from 'react'
 import Knob from './Knob.jsx'
 import LfoWaveformCanvas from './LfoWaveformCanvas.jsx'
+import { tokenValue } from '../../theming/tokenValue.ts'
 
-const LFO_COLORS = { vol: '#33CED6', pan: '#9B59B6', pitch: '#E8A020' }
-const LFO_BG     = { vol: '#1E3A3C', pan: '#2A1E3A', pitch: '#3C2E1A' }
+const LFO_COLOR_TOKENS = { vol: '--theme-sampler-lfo-color-volume', pan: '--theme-sampler-lfo-color-pan', pitch: '--theme-sampler-lfo-color-pitch' }
+const LFO_BG_TOKENS    = { vol: '--theme-sampler-lfo-bg-volume',    pan: '--theme-sampler-lfo-bg-pan',    pitch: '--theme-sampler-lfo-bg-pitch' }
 
 // Field prefix per tab
 const PREFIX = { vol: 'lfoVol', pan: 'lfoPan', pitch: 'lfoPitch' }
@@ -45,7 +46,7 @@ const DIVISIONS = [
 export default function LfoSection({ settings, setField, setFields, commit }) {
   const [lfoTab, setLfoTab] = useState('vol')
   const p = PREFIX[lfoTab]
-  const color = LFO_COLORS[lfoTab]
+  const color = tokenValue(LFO_COLOR_TOKENS[lfoTab])
 
   const f = useCallback((name) => `${p}${name[0].toUpperCase()}${name.slice(1)}`, [p])
 
@@ -66,10 +67,10 @@ export default function LfoSection({ settings, setField, setFields, commit }) {
           <button key={tab} onClick={() => setLfoTab(tab)}
             style={{
               flex: 1, padding: '5px 0', fontSize: 11, fontWeight: 600,
-              border: '1px solid #2A2A38',
+              border: '1px solid var(--theme-sampler-key-border)',
               borderRadius: i === 0 ? '4px 0 0 4px' : i === 2 ? '0 4px 4px 0' : '0',
-              background: lfoTab === tab ? LFO_BG[tab] : '#1A1A24',
-              color: lfoTab === tab ? LFO_COLORS[tab] : '#8888A0',
+              background: lfoTab === tab ? `var(${LFO_BG_TOKENS[tab]})` : 'var(--theme-bg-surface)',
+              color: lfoTab === tab ? `var(${LFO_COLOR_TOKENS[tab]})` : 'var(--theme-text-muted)',
               cursor: 'pointer',
             }}>
             {tab === 'vol' ? 'Vol LFO' : tab === 'pan' ? 'Pan LFO' : 'Pitch LFO'}
@@ -79,7 +80,7 @@ export default function LfoSection({ settings, setField, setFields, commit }) {
 
       {/* Enable toggle */}
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 4 }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#E8E8ED' }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--theme-text)' }}>
           <input type="checkbox" checked={enabled}
             onChange={(e) => {
               setField(f('enabled'), e.target.checked)
@@ -113,8 +114,8 @@ export default function LfoSection({ settings, setField, setFields, commit }) {
             <button key={title} onClick={() => applyPreset(gen)} title={title}
               style={{
                 padding: '3px 8px', fontSize: 11, borderRadius: 3,
-                border: '1px solid #2A2A38', background: '#1A1A24',
-                color: '#8888A0', cursor: 'pointer', minWidth: 28,
+                border: '1px solid var(--theme-sampler-key-border)', background: 'var(--theme-bg-surface)',
+                color: 'var(--theme-text-muted)', cursor: 'pointer', minWidth: 28,
               }}>
               {label}
             </button>
@@ -147,7 +148,7 @@ export default function LfoSection({ settings, setField, setFields, commit }) {
 
         {/* Tempo sync row */}
         <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 8, justifyContent: 'center' }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#E8E8ED' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--theme-text)' }}>
             <input type="checkbox" checked={settings[f('tempoSync')]}
               onChange={(e) => {
                 setField(f('tempoSync'), e.target.checked)
@@ -163,7 +164,7 @@ export default function LfoSection({ settings, setField, setFields, commit }) {
               commit({ [f('tempoDivision')]: v })
             }}
             style={{
-              background: '#0a0a10', border: '1px solid #2A2A38', color: '#E8E8ED',
+              background: '#0a0a10', border: '1px solid var(--theme-sampler-key-border)', color: 'var(--theme-text)',
               fontSize: 11, padding: '2px 6px', borderRadius: 3,
             }}>
             {DIVISIONS.map(({ value, label }) => (

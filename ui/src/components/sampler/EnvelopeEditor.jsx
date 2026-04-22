@@ -1,4 +1,5 @@
 import { useRef, useEffect, useCallback, useState } from 'react'
+import { tokenValue } from '../../theming/tokenValue.ts'
 
 const HANDLE_R = 5
 const HANDLE_HIT = 10
@@ -27,7 +28,7 @@ export default function EnvelopeEditor({
   attackTension = 0, decayTension = 0, releaseTension = 0,
   onLiveChange, onCommit,
   width = 520, height = 120,
-  color = '#33CED6',
+  color = tokenValue('--theme-sampler-lfo-color-volume'),
 }) {
   const canvasRef = useRef(null)
   const dragRef = useRef(null)
@@ -140,7 +141,7 @@ export default function EnvelopeEditor({
 
     // Draggable handles
     const drawHandle = (p, active) => {
-      ctx.fillStyle = active ? '#fff' : color
+      ctx.fillStyle = active ? tokenValue('--theme-fg-inverse') : color
       ctx.strokeStyle = '#0a0a10'
       ctx.lineWidth = 2
       ctx.beginPath()
@@ -252,7 +253,7 @@ export default function EnvelopeEditor({
         cursor: hoverHandle || dragRef.current ? 'grab' : 'default',
         display: 'block',
         borderRadius: 4,
-        border: '1px solid #2A2A38',
+        border: '1px solid var(--theme-sampler-key-border)',
       }}
       onMouseDown={handleMouseDown}
     />

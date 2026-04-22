@@ -1,11 +1,12 @@
 import { useRef, useEffect, useCallback } from 'react'
+import { tokenValue } from '../../theming/tokenValue.ts'
 
 const HANDLE_R = 4
 const HANDLE_HIT = 10
 const MAX_POINTS = 64
 
 export default function LfoWaveformCanvas({
-  waveform = [], color = '#33CED6', width = 200, height = 80,
+  waveform = [], color = tokenValue('--theme-sampler-lfo-color-volume'), width = 200, height = 80,
   onLiveChange, onCommit,
 }) {
   const canvasRef = useRef(null)
@@ -80,7 +81,7 @@ export default function LfoWaveformCanvas({
         const isDragging = dragRef.current && dragRef.current.idx === i
         ctx.beginPath()
         ctx.arc(px[i].x, px[i].y, isDragging ? HANDLE_R + 1 : HANDLE_R, 0, Math.PI * 2)
-        ctx.fillStyle = isDragging ? '#fff' : color
+        ctx.fillStyle = isDragging ? tokenValue('--theme-fg-inverse') : color
         ctx.fill()
         ctx.strokeStyle = '#0a0a10'
         ctx.lineWidth = 1
@@ -190,7 +191,7 @@ export default function LfoWaveformCanvas({
       onContextMenu={onContextMenu}
       style={{
         borderRadius: 4,
-        border: '1px solid #2A2A38',
+        border: '1px solid var(--theme-sampler-key-border)',
         cursor: 'crosshair',
         display: 'block',
       }}
