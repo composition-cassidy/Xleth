@@ -1,15 +1,9 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
 import { drawEnvelope, downsamplePeaks3 } from '../../utils/waveformRenderer.js'
+import { tokenValue } from '../../theming/tokenValue.ts'
 
-// ── CSS variables mirrored as JS constants (must match app.css) ───────────────
 const COLOR = {
-  selection:  'rgba(51, 206, 214, 0.15)',
-  selEdge:    '#33CED6',
-  handle:     '#33CED6',
-  playhead:   '#33CED6',
   playheadBg: 'rgba(51, 206, 214, 0.08)',
-  text:       '#555566',
-  error:      '#555566',
 }
 
 const HANDLE_W   = 2    // handle line width (px)
@@ -151,7 +145,7 @@ export default function WaveformScrubber({
     ctx.clearRect(0, 0, W, H)
 
     if (!waveformData || duration <= 0) {
-      ctx.fillStyle    = COLOR.error
+      ctx.fillStyle    = tokenValue('--theme-text-placeholder')
       ctx.font         = '500 12px "Hanken Grotesk", system-ui'
       ctx.textAlign    = 'center'
       ctx.textBaseline = 'middle'
@@ -193,13 +187,13 @@ export default function WaveformScrubber({
       const x1 = Math.max(0, timeToX(Math.min(inPoint, outPoint)))
       const x2 = Math.min(W, timeToX(Math.max(inPoint, outPoint)))
       if (x2 > x1) {
-        ctx.fillStyle = COLOR.selection
+        ctx.fillStyle = tokenValue('--theme-lipsync-selection-fill')
         ctx.fillRect(x1, 0, x2 - x1, drawH)
       }
       // Edge lines (skip if fully off-screen)
       const ip = timeToX(Math.min(inPoint, outPoint))
       const op = timeToX(Math.max(inPoint, outPoint))
-      ctx.strokeStyle = COLOR.selEdge
+      ctx.strokeStyle = tokenValue('--theme-lipsync-waveform-playhead')
       ctx.lineWidth   = 1
       if (ip >= -1 && ip <= W + 1) {
         ctx.beginPath(); ctx.moveTo(ip, 0); ctx.lineTo(ip, drawH); ctx.stroke()
@@ -210,13 +204,13 @@ export default function WaveformScrubber({
     } else if (inPoint !== null) {
       const x = timeToX(inPoint)
       if (x >= -1 && x <= W + 1) {
-        ctx.strokeStyle = COLOR.selEdge; ctx.lineWidth = 1
+        ctx.strokeStyle = tokenValue('--theme-lipsync-waveform-playhead'); ctx.lineWidth = 1
         ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, drawH); ctx.stroke()
       }
     } else if (outPoint !== null) {
       const x = timeToX(outPoint)
       if (x >= -1 && x <= W + 1) {
-        ctx.strokeStyle = COLOR.selEdge; ctx.lineWidth = 1
+        ctx.strokeStyle = tokenValue('--theme-lipsync-waveform-playhead'); ctx.lineWidth = 1
         ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, drawH); ctx.stroke()
       }
     }
@@ -228,12 +222,12 @@ export default function WaveformScrubber({
         ctx, peaks,
         0, 0, W, drawH,
         0, cols,
-        'rgba(51, 206, 214, 0.35)',   // envelope fill
-        'rgba(51, 206, 214, 0.55)',   // RMS body (brighter)
+        tokenValue('--theme-waveform-envelope-fill'),   // envelope fill
+        tokenValue('--theme-waveform-rms-body'),   // RMS body (brighter)
       )
 
       // Thin center line
-      ctx.strokeStyle = 'rgba(51, 206, 214, 0.15)'
+      ctx.strokeStyle = tokenValue('--theme-lipsync-selection-fill')
       ctx.lineWidth = 1
       ctx.beginPath()
       ctx.moveTo(0, mid)
@@ -246,7 +240,7 @@ export default function WaveformScrubber({
     if (px >= 0 && px <= W) {
       ctx.fillStyle = COLOR.playheadBg
       ctx.fillRect(px - 1, 0, 3, drawH)
-      ctx.strokeStyle = COLOR.playhead
+      ctx.strokeStyle = tokenValue('--theme-lipsync-waveform-playhead')
       ctx.lineWidth   = 2
       ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, drawH); ctx.stroke()
     }
@@ -266,12 +260,12 @@ export default function WaveformScrubber({
       ctx.moveTo(x - 6, drawH); ctx.lineTo(x + 6, drawH); ctx.lineTo(x, drawH - 10)
       ctx.closePath(); ctx.fill()
     }
-    if (inPoint  !== null) drawHandle(inPoint,  '#33CED6')
-    if (outPoint !== null) drawHandle(outPoint, '#33CED6')
+    if (inPoint  !== null) drawHandle(inPoint,  tokenValue('--theme-border-focus'))
+    if (outPoint !== null) drawHandle(outPoint, tokenValue('--theme-border-focus'))
 
     // ── Time labels ───────────────────────────────────────────────────────
     ctx.font         = '500 10px "Hanken Grotesk", system-ui'
-    ctx.fillStyle    = COLOR.text
+    ctx.fillStyle    = tokenValue('--theme-text-placeholder')
     ctx.textBaseline = 'alphabetic'
     ctx.textAlign    = 'left'
 
@@ -295,7 +289,7 @@ export default function WaveformScrubber({
     if (zoomed) {
       const factor = duration / vD
       ctx.font         = '500 10px "Hanken Grotesk", system-ui'
-      ctx.fillStyle    = COLOR.handle
+      ctx.fillStyle    = tokenValue('--theme-lipsync-waveform-playhead')
       ctx.textAlign    = 'right'
       ctx.textBaseline = 'top'
       ctx.fillText(`${factor.toFixed(1)}×`, W - 4, 4)
