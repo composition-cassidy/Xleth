@@ -10,6 +10,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import useNodeGraphStore from '../../stores/nodeGraphStore.js'
+import { tokenValue } from '../../theming/tokenValue.ts'
 import TrackContextMenu from '../timeline/TrackContextMenu.jsx'
 import ContextMenu from '../ContextMenu.jsx'
 
@@ -169,9 +170,9 @@ export default function NodeEditor({ storeKey }) {
       target: String(c.dest),
       data: { gain: c.gain, muted: c.muted, srcId: c.source, dstId: c.dest },
       style: c.muted
-        ? { stroke: '#555566', strokeWidth: 2, strokeDasharray: '6 4' }
-        : { stroke: '#FFAA33', strokeWidth: 2 },
-      markerEnd: { type: MarkerType.ArrowClosed, color: c.muted ? '#555566' : '#FFAA33', width: 12, height: 12 },
+        ? { stroke: tokenValue('--theme-nodeeditor-port-default'), strokeWidth: 2, strokeDasharray: '6 4' }
+        : { stroke: tokenValue('--theme-nodeeditor-connection-cv'), strokeWidth: 2 },
+      markerEnd: { type: MarkerType.ArrowClosed, color: c.muted ? tokenValue('--theme-nodeeditor-port-default') : tokenValue('--theme-nodeeditor-connection-cv'), width: 12, height: 12 },
       interactionWidth: 20,
     }))
 
@@ -298,11 +299,11 @@ export default function NodeEditor({ storeKey }) {
         deleteKeyCode={null}
         proOptions={{ hideAttribution: true }}
         defaultEdgeOptions={{
-          style: { stroke: '#FFAA33', strokeWidth: 2 },
-          markerEnd: { type: MarkerType.ArrowClosed, color: '#FFAA33', width: 12, height: 12 },
+          style: { stroke: tokenValue('--theme-nodeeditor-connection-cv'), strokeWidth: 2 },
+          markerEnd: { type: MarkerType.ArrowClosed, color: tokenValue('--theme-nodeeditor-connection-cv'), width: 12, height: 12 },
         }}
       >
-        <Background color="#2A2A38" gap={20} size={1} />
+        <Background color={tokenValue('--theme-border-subtle')} gap={20} size={1} />
       </ReactFlow>
 
       {/* Toast */}
