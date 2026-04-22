@@ -49,7 +49,7 @@ export default function TrackHeader({
       console.warn('[TrackHeader] No active pattern block on track — cannot open sampler')
       return
     }
-    timelineEvents.dispatchEvent(new CustomEvent('open-sampler-settings', { detail: { patternId: currentPattern.id } }))
+    timelineEvents.dispatchEvent(new CustomEvent('open-sampler-settings', { detail: { patternId: currentPattern.id, regionId: currentPattern.regionId } }))
   }, [currentPattern, hasActivePattern])
 
   return (
