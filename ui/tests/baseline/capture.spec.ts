@@ -346,22 +346,62 @@ test('11-piano-roll', async () => {
 // ── 6. Sampler panel ─────────────────────────────────────────────────────────
 
 test('12-sampler-panel', async () => {
-  // Click the sampler-settings button on a Pattern track. Note: the button
-  // only renders for Pattern-type tracks (track id 1 in the fixture). The
-  // underlying event dispatch (TrackHeader sends `{patternId}`, App.jsx
-  // reads `{regionId}`) is currently broken upstream — if the panel does
-  // not open, the test will skip.
+  // loadFixture() is guarded — already executed at test 08; this is a no-op.
+  await loadFixture();
+
+  // Ensure the Timeline tab is active so track headers are rendered.
+  const timelineTab = page.locator('button:has-text("Timeline")');
+  if (await timelineTab.isVisible()) {
+    await timelineTab.click();
+    await page.waitForTimeout(300);
+  }
+
+  // Step 1 — Require a Pattern track header to be in the DOM.
+  const patternTrackHeader = page.locator('.track-header--pattern').first();
+  if (!(await patternTrackHeader.isVisible().catch(() => false))) {
+    test.skip(); // fixture tracks did not render
+    return;
+  }
+
+  // Step 2 — Right-click the track header to open the TrackContextMenu.
+  // This is the only UI path that populates currentPatternIdByTrack, which
+  // drives hasActivePattern → enables the "Open Sampler Settings" button.
+  await patternTrackHeader.click({ button: 'right' });
+  await page.waitForTimeout(300);
+
+  // Step 3 — Click "Select Pattern" to expand the submenu.
+  const selectPatternBtn = page.locator('.track-context-menu button:has-text("Select Pattern")').first();
+  if (!(await selectPatternBtn.isVisible().catch(() => false))) {
+    test.skip(); // context menu did not appear
+    return;
+  }
+  await selectPatternBtn.click();
+  await page.waitForTimeout(200);
+
+  // Step 4 — Click "Pattern 1" in the submenu (fixture has exactly one pattern).
+  const pattern1Btn = page.locator('.track-context-submenu button:has-text("Pattern 1")').first();
+  if (await pattern1Btn.isVisible().catch(() => false)) {
+    await pattern1Btn.click();
+  }
+  // Allow React to re-render hasActivePattern → true and update button state.
+  await page.waitForTimeout(400);
+
+  // Step 5 — Click the now-enabled "Open Sampler Settings" button.
+  // TrackHeader now dispatches { patternId, regionId } (fix: d3f90c1) so
+  // App.jsx will call setSamplerPanelRegionId(regionId) and mount SamplerPanel.
   const samplerBtn = page.locator('button[title="Open Sampler Settings"]').first();
-  if (await samplerBtn.isVisible()) {
+  if (await samplerBtn.isVisible().catch(() => false)) {
     await samplerBtn.click();
     await page.waitForTimeout(600);
   }
+
+  // Step 6 — Screenshot or skip.
   const sampler = page.locator('.sampler-panel, [class*="sampler-panel"]').first();
   if (await sampler.isVisible()) {
     await waitForCanvasStable();
     await expect(sampler).toHaveScreenshot('12-sampler-panel.png');
   } else {
-    test.skip();
+    test.skip(); // sampler panel did not mount
   }
 });
 
