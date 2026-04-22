@@ -513,7 +513,18 @@ test('21-settings-panel', async () => {
   const el = page.locator('.settings-panel').first();
   if (await el.isVisible()) {
     await expect(el).toHaveScreenshot('21-settings-panel.png');
+    // Teardown: close any nested sub-dialog first, then the top-level panel.
+    // The SettingsPanel has nested sub-dialogs (e.g. CLIP PROCESSING) that
+    // Escape does not dismiss with a single press — two presses required.
     await page.keyboard.press('Escape');
+    await page.waitForTimeout(200);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(200);
+    // Verify fully closed; fall back to an outside click if still visible.
+    if (await el.isVisible().catch(() => false)) {
+      await page.click('body', { position: { x: 10, y: 10 } });
+      await page.waitForTimeout(200);
+    }
   } else {
     test.skip();
   }
@@ -522,6 +533,16 @@ test('21-settings-panel', async () => {
 // ── 11. Dialogs ───────────────────────────────────────────────────────────────
 
 test('22-export-dialog', async () => {
+  // Close the mixer if open — the export-dialog-backdrop is full-screen but
+  // semi-transparent, so an open mixer changes the background vs cold-state baseline.
+  const mixerPanel = page.locator('.mixer-panel').first();
+  if (await mixerPanel.isVisible().catch(() => false)) {
+    const mixerBtn = page.locator('button[title="Toggle Mixer (M)"]').first();
+    if (await mixerBtn.isVisible()) {
+      await mixerBtn.click();
+      await page.waitForTimeout(300);
+    }
+  }
   // Trigger via the title bar File → Export Audio menu if possible.
   // We use page.evaluate to fire the custom event that App.jsx listens for.
   // Since we can't rely on the native menu in headless Electron, simulate via
