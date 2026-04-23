@@ -216,13 +216,13 @@ export default function SampleRow({
 function getComputedLabelColor(label) {
   const varRef = labelColor(label)
   const map = {
-    'var(--label-kick)':   tokenValue('--theme-label-kick'),
-    'var(--label-snare)':  tokenValue('--theme-label-snare'),
-    'var(--label-hihat)':  tokenValue('--theme-label-hihat'),
-    'var(--label-crash)':  tokenValue('--theme-label-crash'),
-    'var(--label-pitch)':  tokenValue('--theme-label-pitch'),
-    'var(--label-quote)':  tokenValue('--theme-label-quote'),
-    'var(--label-custom)': tokenValue('--theme-label-custom'),
+    'var(--theme-label-kick)':   tokenValue('--theme-label-kick'),
+    'var(--theme-label-snare)':  tokenValue('--theme-label-snare'),
+    'var(--theme-label-hihat)':  tokenValue('--theme-label-hihat'),
+    'var(--theme-label-crash)':  tokenValue('--theme-label-crash'),
+    'var(--theme-label-pitch)':  tokenValue('--theme-label-pitch'),
+    'var(--theme-label-quote)':  tokenValue('--theme-label-quote'),
+    'var(--theme-label-custom)': tokenValue('--theme-label-custom'),
   }
   return map[varRef] || tokenValue('--theme-label-custom')
 }

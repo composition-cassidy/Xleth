@@ -189,7 +189,7 @@ export default function CustomTab({
         </div>
       )}
 
-      <div style={{ borderTop: '1px solid var(--border)', margin: '4px 0', opacity: 0.3 }} />
+      <div style={{ borderTop: '1px solid var(--theme-border-subtle)', margin: '4px 0', opacity: 0.3 }} />
 
       <div className="export-row">
         <label>Audio Codec</label>

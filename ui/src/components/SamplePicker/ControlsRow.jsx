@@ -150,7 +150,7 @@ export default function ControlsRow({
             className="picker-label-select"
             value={label}
             onChange={handleSelectChange}
-            style={{ '--label-color': `var(--label-${label.toLowerCase()}, var(--label-custom))` }}
+            style={{ '--label-color': `var(--theme-label-${label.toLowerCase()}, var(--theme-label-custom))` }}
           >
             {allLabels.map(l => (
               <option key={l} value={l}>{l}</option>

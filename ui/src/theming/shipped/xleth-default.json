@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "name": "Xleth Default",
+  "author": "Xleth",
+  "description": "The shipped default palette. Matches the pre-theming hardcoded values in ui/src/styles/theme.css exactly (spec §7.1). Class A/B derived tokens are now produced by deriveTheme() byte-identically; warning and success ship as catalog explicit defaults (spec §3.3).",
+  "locked": true,
+
+  "_comment_detach": "Post-Track-B formula tuning, every §3.2 derived token is emitted correctly by deriveTheme(), so no derivationDetached entries are required for the shipped default.",
+
+  "derivationDetached": [],
+
+  "tokens": {
+    "--theme-bg-primary": "#0A0A0F",
+    "--theme-bg-surface": "#1A1A24",
+    "--theme-accent":     "#33CED6",
+    "--theme-text":       "#E8E8ED",
+    "--theme-danger":     "#FF4757",
+
+    "--theme-chrome-shadow":                "0 12px 40px rgba(0, 0, 0, 0.6)",
+    "--theme-modal-shadow":                 "0 12px 40px rgba(0, 0, 0, 0.6)",
+    "--theme-projectmedia-shadow":          "0 8px 32px rgba(0, 0, 0, 0.5)",
+    "--theme-fx-plugin-shadow":             "0 8px 32px rgba(0, 0, 0, 0.5)",
+    "--theme-fx-drag-indicator":            "#FFFFFF",
+    "--theme-sampler-key-border":           "#2A2A38",
+    "--theme-sampler-key-black":            "#000000",
+    "--theme-pianoroll-resize-handle-stripe": "rgba(255, 255, 255, 0.25)",
+    "--theme-grid-editor-text-shadow":      "rgba(0, 0, 0, 0.8)",
+    "--theme-grid-editor-crosshair":        "rgba(255, 255, 255, 0.15)",
+    "--theme-timeline-bezier-handle-cp1":   "#f59e0b",
+    "--theme-timeline-bezier-handle-cp2":   "#3b82f6",
+    "--theme-syllable-accent-light":        "#7ce9ef",
+    "--theme-lipsync-selection-fill":       "rgba(51, 206, 214, 0.15)",
+    "--theme-lipsync-handle":               "#33CED6",
+    "--theme-waveform-envelope-fill":       "rgba(51, 206, 214, 0.35)",
+    "--theme-waveform-rms-body":            "rgba(51, 206, 214, 0.55)",
+    "--theme-syllable-splitter-wave-dim":   "#3a3a4a",
+    "--theme-syllable-splitter-label-fg":   "#d0d0d8",
+    "--theme-syllable-splitter-bg":         "#1b1b24",
+    "--theme-syllable-section-alt":         "rgba(51, 206, 214, 0.06)",
+    "--theme-drag-preview-default":         "#6aa9ff",
+    "--theme-fg-inverse":                   "#ffffff",
+    "--theme-bg-inset":                     "#0d0d14",
+    "--theme-text-on-accent":               "#0d0d14",
+    "--theme-fx-surface-tint-subtle":       "rgba(255, 255, 255, 0.05)",
+    "--theme-sampler-lfo-color-pitch":      "#E8A020",
+    "--theme-sampler-lfo-color-pan":        "#9B59B6",
+    "--theme-sampler-lfo-color-volume":     "#33CED6",
+    "--theme-sampler-lfo-bg-pitch":         "#3C2E1A",
+    "--theme-sampler-lfo-bg-pan":           "#2A1E3A",
+    "--theme-sampler-lfo-bg-volume":        "#1E3A3C",
+    "--theme-toast-shadow":                 "0 6px 20px rgba(0, 0, 0, 0.5)"
+  }
+}

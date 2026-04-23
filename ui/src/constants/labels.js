@@ -8,16 +8,16 @@ export const DEFAULT_LABELS = ['Kick', 'Snare', 'HiHat', 'Crash', 'Pitch', 'Quot
 export const CUSTOM_LABELS_KEY = 'xleth-custom-labels'
 
 export const LABEL_COLORS = {
-  kick:   'var(--label-kick)',
-  snare:  'var(--label-snare)',
-  hihat:  'var(--label-hihat)',
-  crash:  'var(--label-crash)',
-  pitch:  'var(--label-pitch)',
-  quote:  'var(--label-quote)',
+  kick:   'var(--theme-label-kick)',
+  snare:  'var(--theme-label-snare)',
+  hihat:  'var(--theme-label-hihat)',
+  crash:  'var(--theme-label-crash)',
+  pitch:  'var(--theme-label-pitch)',
+  quote:  'var(--theme-label-quote)',
 }
 
 export function labelColor(label) {
-  return LABEL_COLORS[label?.toLowerCase()] || 'var(--label-custom)'
+  return LABEL_COLORS[label?.toLowerCase()] || 'var(--theme-label-custom)'
 }
 
 // Token names for canvas drawing (resolved at draw time via tokenValue())

@@ -259,17 +259,17 @@ export default function WaveshaperPanel() {
         >
           {/* Grid */}
           <rect x={SVG_PAD} y={SVG_PAD} width={PLOT_SIZE} height={PLOT_SIZE}
-            fill="rgba(0,0,0,0.3)" stroke="var(--border)" strokeWidth={1} />
+            fill="rgba(0,0,0,0.3)" stroke="var(--theme-border-subtle)" strokeWidth={1} />
           {/* Center cross */}
           <line x1={toSvgX(0)} y1={SVG_PAD} x2={toSvgX(0)} y2={SVG_PAD + PLOT_SIZE}
-            stroke="var(--border)" strokeWidth={0.5} strokeDasharray="4 2" />
+            stroke="var(--theme-border-subtle)" strokeWidth={0.5} strokeDasharray="4 2" />
           <line x1={SVG_PAD} y1={toSvgY(0)} x2={SVG_PAD + PLOT_SIZE} y2={toSvgY(0)}
-            stroke="var(--border)" strokeWidth={0.5} strokeDasharray="4 2" />
+            stroke="var(--theme-border-subtle)" strokeWidth={0.5} strokeDasharray="4 2" />
           {/* Diagonal (linear = no effect) */}
           <line x1={toSvgX(-1)} y1={toSvgY(-1)} x2={toSvgX(1)} y2={toSvgY(1)}
             stroke="rgba(255,255,255,0.1)" strokeWidth={1} />
           {/* Curve path */}
-          <path d={curvePath} fill="none" stroke="var(--accent)" strokeWidth={2} />
+          <path d={curvePath} fill="none" stroke="var(--theme-accent)" strokeWidth={2} />
           {/* Control points */}
           {points.map(([x, y], i) => (
             <circle
@@ -277,19 +277,19 @@ export default function WaveshaperPanel() {
               cx={toSvgX(x)}
               cy={toSvgY(y)}
               r={5}
-              fill={dragIdx === i ? 'var(--accent)' : 'var(--bg-primary)'}
-              stroke="var(--accent)"
+              fill={dragIdx === i ? 'var(--theme-accent)' : 'var(--theme-bg-primary)'}
+              stroke="var(--theme-accent)"
               strokeWidth={2}
               style={{ cursor: 'pointer' }}
               onMouseDown={e => handlePointMouseDown(e, i)}
             />
           ))}
           {/* Axis labels */}
-          <text x={SVG_PAD - 2} y={SVG_PAD - 4} fill="var(--text-tertiary)" fontSize={9} textAnchor="start">+1</text>
-          <text x={SVG_PAD - 2} y={SVG_PAD + PLOT_SIZE + 12} fill="var(--text-tertiary)" fontSize={9} textAnchor="start">-1</text>
-          <text x={SVG_PAD + PLOT_SIZE + 2} y={SVG_PAD + PLOT_SIZE + 12} fill="var(--text-tertiary)" fontSize={9} textAnchor="end">+1</text>
-          <text x={SVG_SIZE / 2} y={SVG_PAD + PLOT_SIZE + 16} fill="var(--text-tertiary)" fontSize={9} textAnchor="middle">INPUT</text>
-          <text x={4} y={SVG_SIZE / 2} fill="var(--text-tertiary)" fontSize={9} textAnchor="middle"
+          <text x={SVG_PAD - 2} y={SVG_PAD - 4} fill="var(--theme-text-subtle)" fontSize={9} textAnchor="start">+1</text>
+          <text x={SVG_PAD - 2} y={SVG_PAD + PLOT_SIZE + 12} fill="var(--theme-text-subtle)" fontSize={9} textAnchor="start">-1</text>
+          <text x={SVG_PAD + PLOT_SIZE + 2} y={SVG_PAD + PLOT_SIZE + 12} fill="var(--theme-text-subtle)" fontSize={9} textAnchor="end">+1</text>
+          <text x={SVG_SIZE / 2} y={SVG_PAD + PLOT_SIZE + 16} fill="var(--theme-text-subtle)" fontSize={9} textAnchor="middle">INPUT</text>
+          <text x={4} y={SVG_SIZE / 2} fill="var(--theme-text-subtle)" fontSize={9} textAnchor="middle"
             transform={`rotate(-90, 4, ${SVG_SIZE / 2})`}>OUTPUT</text>
         </svg>
       </div>
