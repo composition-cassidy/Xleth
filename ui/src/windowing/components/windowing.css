@@ -1,0 +1,165 @@
+.xleth-windowing-shell {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 520px;
+  overflow: hidden;
+  background: var(--theme-bg-primary);
+  color: var(--theme-text);
+}
+
+.xleth-floating-work-area {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: var(--theme-bg-primary);
+}
+
+.xleth-panel-frame {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  min-width: 180px;
+  min-height: var(--theme-chrome-titlebar-height);
+  overflow: hidden;
+  background: var(--theme-bg-surface);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--theme-chrome-border-radius);
+  box-shadow: var(--theme-chrome-shadow);
+}
+
+.xleth-panel-frame.is-focused {
+  border-color: var(--theme-border-focus);
+}
+
+.xleth-windowing-titlebar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: var(--theme-chrome-titlebar-height);
+  min-height: var(--theme-chrome-titlebar-height);
+  overflow: hidden;
+  background: var(--theme-chrome-titlebar-bg);
+  color: var(--theme-text-muted);
+  user-select: none;
+}
+
+.xleth-windowing-accent-bar {
+  align-self: stretch;
+  width: var(--theme-chrome-accent-bar-width);
+  flex: 0 0 var(--theme-chrome-accent-bar-width);
+  background: var(--xleth-windowing-panel-color);
+  opacity: var(--theme-chrome-unfocused-opacity);
+}
+
+.xleth-windowing-titlebar[data-focused="true"] .xleth-windowing-accent-bar {
+  opacity: 1;
+}
+
+.xleth-windowing-focus-underline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--theme-chrome-underline-thickness);
+  background: var(--theme-accent);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.xleth-windowing-focus-underline[data-focused="true"] {
+  opacity: 1;
+}
+
+.xleth-windowing-panel-icon {
+  width: 14px;
+  height: 14px;
+  margin-left: 8px;
+  margin-right: 6px;
+  color: var(--xleth-windowing-panel-color);
+  flex: 0 0 auto;
+}
+
+.xleth-windowing-panel-name {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--theme-text-muted);
+  white-space: nowrap;
+}
+
+.xleth-windowing-titlebar[data-focused="true"] .xleth-windowing-panel-name {
+  color: var(--theme-chrome-titlebar-fg);
+}
+
+.xleth-windowing-drag-zone {
+  flex: 1 1 auto;
+  align-self: stretch;
+}
+
+.xleth-windowing-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 4px;
+  flex: 0 0 auto;
+}
+
+.xleth-windowing-control-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--theme-chrome-radius-sm);
+  background: none;
+  color: var(--theme-text-muted);
+  cursor: pointer;
+}
+
+.xleth-windowing-control-button:hover {
+  background: var(--theme-bg-hover);
+  color: var(--theme-chrome-titlebar-fg);
+}
+
+.xleth-windowing-control-button:focus-visible {
+  outline: var(--theme-chrome-underline-thickness) solid var(--theme-border-focus);
+  outline-offset: 0;
+}
+
+.xleth-windowing-control-button svg {
+  width: 12px;
+  height: 12px;
+}
+
+.xleth-panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--theme-bg-primary);
+  color: var(--theme-text);
+}
+
+.xleth-windowing-test-panel {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: 100%;
+  background: var(--theme-bg-primary);
+}
+
+.xleth-windowing-test-panel__header {
+  padding: 12px;
+  border-bottom: 1px solid var(--theme-border-subtle);
+  color: var(--theme-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.xleth-windowing-test-panel__body {
+  display: grid;
+  place-items: center;
+  color: var(--theme-text-muted);
+  font-size: 12px;
+}
