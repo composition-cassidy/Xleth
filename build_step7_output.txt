@@ -1,0 +1,272 @@
+
+[build.bat] target = all
+
+[build.bat] configuring + building engine...
+-- Running vcpkg install
+Detecting compiler hash for triplet x64-windows...
+Compiler found: C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe
+The following packages are already installed:
+  * egl-registry:x64-windows@2025-05-27
+    ffmpeg[core,swscale,swresample,avformat,avfilter,avdevice,avcodec]:x64-windows@8.1#2
+  * ffmpeg-bin2c:x64-windows@8.1
+    glew:x64-windows@2.3.1
+    glfw3:x64-windows@3.4#1
+    nlohmann-json:x64-windows@3.12.0#2
+  * opengl:x64-windows@2022-12-04#3
+  * opengl-registry:x64-windows@2026-01-26
+  * pkgconf:x64-windows@2.5.1#4
+  * vcpkg-cmake:x64-windows@2024-04-23
+  * vcpkg-cmake-config:x64-windows@2024-05-23
+  * vcpkg-cmake-get-vars:x64-windows@2025-05-29
+  * vcpkg-pkgconfig-get-modules:x64-windows@2024-04-03
+  * vcpkg-tool-meson:x64-windows@1.9.0#4
+ffmpeg provides CMake integration:
+
+  find_package(FFMPEG REQUIRED)
+  target_include_directories(main PRIVATE ${FFMPEG_INCLUDE_DIRS})
+  target_link_directories(main PRIVATE ${FFMPEG_LIBRARY_DIRS})
+  target_link_libraries(main PRIVATE ${FFMPEG_LIBRARIES})
+
+ffmpeg provides pkg-config modules:
+
+  # FFmpeg codec library
+  libavcodec
+
+  # FFmpeg device handling library
+  libavdevice
+
+  # FFmpeg audio/video filtering library
+  libavfilter
+
+  # FFmpeg container format library
+  libavformat
+
+  # FFmpeg utility library
+  libavutil
+
+  # FFmpeg audio resampling library
+  libswresample
+
+  # FFmpeg image rescaling library
+  libswscale
+
+glew provides CMake targets:
+
+  # Legacy CMake find module
+  find_package(GLEW REQUIRED)
+  target_link_libraries(main PRIVATE GLEW::GLEW)
+
+  # Modern CMake config package
+  find_package(GLEW CONFIG REQUIRED)
+  target_link_libraries(main PRIVATE GLEW::GLEW)
+
+glew provides pkg-config modules:
+
+  # The OpenGL Extension Wrangler library
+  glew
+
+glfw3 provides CMake targets:
+
+  # this is heuristically generated, and may not be correct
+  find_package(glfw3 CONFIG REQUIRED)
+  target_link_libraries(main PRIVATE glfw)
+
+glfw3 provides pkg-config modules:
+
+  # A multi-platform library for OpenGL, window and input
+  glfw3
+
+The package nlohmann-json provides CMake targets:
+
+    find_package(nlohmann_json CONFIG REQUIRED)
+    target_link_libraries(main PRIVATE nlohmann_json::nlohmann_json)
+
+The package nlohmann-json can be configured to not provide implicit conversions via a custom triplet file:
+
+    set(nlohmann-json_IMPLICIT_CONVERSIONS OFF)
+
+For more information, see the docs here:
+    
+    https://json.nlohmann.me/api/macros/json_use_implicit_conversions/
+
+All requested installations completed successfully in: 332 us
+-- Running vcpkg install - done
+-- Selecting Windows SDK version 10.0.26100.0 to target Windows 10.0.26200.
+-- Configuring juceaide
+-- Building juceaide
+-- Exporting juceaide
+-- Testing juceaide
+-- Finished setting up juceaide
+CMake Warning (dev) at C:/Program Files/CMake/share/cmake-4.3/Modules/FetchContent.cmake:1966 (message):
+  Calling FetchContent_Populate(rubberband_src) is deprecated, call
+  FetchContent_MakeAvailable(rubberband_src) instead.  Policy CMP0169 can be
+  set to OLD to allow FetchContent_Populate(rubberband_src) to be called
+  directly for now, but the ability to call it with declared details will be
+  removed completely in a future version.
+Call Stack (most recent call first):
+  engine/CMakeLists.txt:40 (FetchContent_Populate)
+This warning is for project developers.  Use -Wno-dev to suppress it.
+
+-- Configuring done (8.9s)
+-- Generating done (1.4s)
+-- Build files have been written to: C:/Users/Krasen/Desktop/XLETH/build
+MSBuild version 17.14.19+164abd434 for .NET Framework
+
+  Checking File Globs
+  XlethEngine_rc_lib.vcxproj -> C:\Users\Krasen\Desktop\XLETH\build\engine\XlethEngine_rc_lib.dir\Release\XlethEngine_rc_lib.lib
+  xleth-editor-host_rc_lib.vcxproj -> C:\Users\Krasen\Desktop\XLETH\build\editor-host\xleth-editor-host_rc_lib.dir\Release\xleth-editor-host_rc_lib.lib
+  Scanning sources for module dependencies...
+  XlethEngineModel.vcxproj -> C:\Users\Krasen\Desktop\XLETH\build\engine\Release\XlethEngineModel.lib
+  Scanning sources for module dependencies...
+  Scanning sources for module dependencies...
+  Scanning sources for module dependencies...
+  Scanning sources for module dependencies...
+  Scanning sources for module dependencies...
+  Scanning sources for module dependencies...
+  test_project.vcxproj -> C:\Users\Krasen\Desktop\XLETH\build\engine\Release\test_project.exe
+  test_undo.vcxproj -> C:\Users\Krasen\Desktop\XLETH\build\engine\Release\test_undo.exe
+  test_timeline.vcxproj -> C:\Users\Krasen\Desktop\XLETH\build\engine\Release\test_timeline.exe
+  rubberband_static.vcxproj -> C:\Users\Krasen\Desktop\XLETH\build\engine\Release\rubberband_static.lib
+  Scanning sources for module dependencies...
+  xleth-plugin-scanner.vcxproj -> C:\Users\Krasen\Desktop\XLETH\build\Release\xleth-plugin-scanner.exe
+  xleth-editor-host.vcxproj -> C:\Users\Krasen\Desktop\XLETH\build\Release\xleth-editor-host.exe
+  XlethEngineCore.vcxproj -> C:\Users\Krasen\Desktop\XLETH\build\engine\Release\XlethEngineCore.lib
+  Scanning sources for module dependencies...
+  Scanning sources for module dependencies...
+  Scanning sources for module dependencies...
+  Scanning sources for module dependencies...
+  Scanning sources for module dependencies...
+  Scanning sources for module dependencies...
+  Scanning sources for module dependencies...
+  Scanning sources for module dependencies...
+  Scanning sources for module dependencies...
+  Scanning sources for module dependencies...
+  Scanning sources for module dependencies...
+  Scanning sources for module dependencies...
+  test_muxer.vcxproj -> C:\Users\Krasen\Desktop\XLETH\build\engine\Release\test_muxer.exe
+  test_render_decoder.vcxproj -> C:\Users\Krasen\Desktop\XLETH\build\engine\Release\test_render_decoder.exe
+  test_frame_cache.vcxproj -> C:\Users\Krasen\Desktop\XLETH\build\engine\Release\test_frame_cache.exe
+  test_compositor.vcxproj -> C:\Users\Krasen\Desktop\XLETH\build\engine\Release\test_compositor.exe
+  XlethEngine.vcxproj -> C:\Users\Krasen\Desktop\XLETH\build\engine\XlethEngine_artefacts\Release\XlethEngine.exe
+  test_hw_detect.vcxproj -> C:\Users\Krasen\Desktop\XLETH\build\engine\Release\test_hw_detect.exe
+  test_real_render.vcxproj -> C:\Users\Krasen\Desktop\XLETH\build\engine\Release\test_real_render.exe
+  test_offline_render.vcxproj -> C:\Users\Krasen\Desktop\XLETH\build\engine\Release\test_offline_render.exe
+  test_effects.vcxproj -> C:\Users\Krasen\Desktop\XLETH\build\engine\Release\test_effects.exe
+  test_mix.vcxproj -> C:\Users\Krasen\Desktop\XLETH\build\engine\Release\test_mix.exe
+  test_sampler.vcxproj -> C:\Users\Krasen\Desktop\XLETH\build\engine\Release\test_sampler.exe
+  test_frame_collector.vcxproj -> C:\Users\Krasen\Desktop\XLETH\build\engine\Release\test_frame_collector.exe
+[build.bat] engine OK
+[build.bat] rebuilding native addon...
+info find VS using VS2022 (17.14.36414.22) found at:
+info find VS "C:\Program Files\Microsoft Visual Studio\2022\Community"
+info find VS run with --verbose for detailed information
+info TOOL Using Visual Studio 17 2022 generator.
+info CMD BUILD
+info RUN [
+info RUN   'cmake',
+info RUN   '--build',
+info RUN   'C:\\Users\\Krasen\\Desktop\\XLETH\\bridge\\build',
+info RUN   '--config',
+info RUN   'Release'
+info RUN ]
+MSBuild version 17.14.19+164abd434 for .NET Framework
+
+  Checking File Globs
+  XlethEngine_rc_lib.vcxproj -> C:\Users\Krasen\Desktop\XLETH\bridge\build\engine\XlethEngine_rc_lib.dir\Release\XlethEngine_rc_lib.lib
+  xleth-editor-host_rc_lib.vcxproj -> C:\Users\Krasen\Desktop\XLETH\bridge\build\editor-host\xleth-editor-host_rc_lib.dir\Release\xleth-editor-host_rc_lib.lib
+  Scanning sources for module dependencies...
+  XlethEngineModel.vcxproj -> C:\Users\Krasen\Desktop\XLETH\bridge\build\engine\Release\XlethEngineModel.lib
+  Scanning sources for module dependencies...
+  rubberband_static.vcxproj -> C:\Users\Krasen\Desktop\XLETH\bridge\build\engine\Release\rubberband_static.lib
+  Scanning sources for module dependencies...
+  XlethEngineCore.vcxproj -> C:\Users\Krasen\Desktop\XLETH\bridge\build\engine\Release\XlethEngineCore.lib
+  xleth-editor-host.vcxproj -> C:\Users\Krasen\Desktop\XLETH\bridge\build\Release\xleth-editor-host.exe
+  Scanning sources for module dependencies...
+  xleth_native.vcxproj -> C:\Users\Krasen\Desktop\XLETH\bridge\build\Release\xleth_native.node
+  XlethEngine.vcxproj -> C:\Users\Krasen\Desktop\XLETH\bridge\build\engine\XlethEngine_artefacts\Release\XlethEngine.exe
+  Scanning sources for module dependencies...
+  test_compositor.vcxproj -> C:\Users\Krasen\Desktop\XLETH\bridge\build\Release\test_compositor.exe
+  Scanning sources for module dependencies...
+  test_effects.vcxproj -> C:\Users\Krasen\Desktop\XLETH\bridge\build\Release\test_effects.exe
+  Scanning sources for module dependencies...
+  test_frame_cache.vcxproj -> C:\Users\Krasen\Desktop\XLETH\bridge\build\Release\test_frame_cache.exe
+  Scanning sources for module dependencies...
+  test_frame_collector.vcxproj -> C:\Users\Krasen\Desktop\XLETH\bridge\build\Release\test_frame_collector.exe
+  Scanning sources for module dependencies...
+  test_hw_detect.vcxproj -> C:\Users\Krasen\Desktop\XLETH\bridge\build\Release\test_hw_detect.exe
+  Scanning sources for module dependencies...
+  test_mix.vcxproj -> C:\Users\Krasen\Desktop\XLETH\bridge\build\Release\test_mix.exe
+  Scanning sources for module dependencies...
+  test_muxer.vcxproj -> C:\Users\Krasen\Desktop\XLETH\bridge\build\Release\test_muxer.exe
+  Scanning sources for module dependencies...
+  test_offline_render.vcxproj -> C:\Users\Krasen\Desktop\XLETH\bridge\build\Release\test_offline_render.exe
+  Scanning sources for module dependencies...
+  test_project.vcxproj -> C:\Users\Krasen\Desktop\XLETH\bridge\build\Release\test_project.exe
+  Scanning sources for module dependencies...
+  test_real_render.vcxproj -> C:\Users\Krasen\Desktop\XLETH\bridge\build\Release\test_real_render.exe
+  Scanning sources for module dependencies...
+  test_render_decoder.vcxproj -> C:\Users\Krasen\Desktop\XLETH\bridge\build\Release\test_render_decoder.exe
+  Scanning sources for module dependencies...
+  test_sampler.vcxproj -> C:\Users\Krasen\Desktop\XLETH\bridge\build\Release\test_sampler.exe
+  Scanning sources for module dependencies...
+  test_timeline.vcxproj -> C:\Users\Krasen\Desktop\XLETH\bridge\build\Release\test_timeline.exe
+  Scanning sources for module dependencies...
+  test_undo.vcxproj -> C:\Users\Krasen\Desktop\XLETH\bridge\build\Release\test_undo.exe
+  Scanning sources for module dependencies...
+  xleth-plugin-scanner.vcxproj -> C:\Users\Krasen\Desktop\XLETH\bridge\build\Release\xleth-plugin-scanner.exe
+[build.bat] bridge OK
+[build.bat] vite build...
+
+> xleth-ui@0.0.1 build
+> vite build
+
+[36mvite v6.4.1 [32mbuilding for production...[36m[39m
+transforming...
+[32m✓[39m 2021 modules transformed.
+[33m[plugin vite:reporter] 
+(!)  C:/Users/Krasen/Desktop/XLETH/ui/node_modules/react-dom/client.js?commonjs-es-import is dynamically imported by C:/Users/Krasen/Desktop/XLETH/ui/src/components/UnsavedChangesDialog.jsx but also statically imported by C:/Users/Krasen/Desktop/XLETH/ui/src/main.jsx, dynamic import will not move module into another chunk.
+[39m
+rendering chunks...
+computing gzip size...
+[2mdist/[22m[32mindex.html                                                  [39m[1m[2m  0.55 kB[22m[1m[22m[2m │ gzip:   0.36 kB[22m
+[2mdist/[22m[32massets/hanken-grotesk-vietnamese-400-normal-BLrFBAHj.woff2  [39m[1m[2m  4.65 kB[22m[1m[22m
+[2mdist/[22m[32massets/hanken-grotesk-vietnamese-700-normal-C4RNfQp6.woff2  [39m[1m[2m  4.67 kB[22m[1m[22m
+[2mdist/[22m[32massets/hanken-grotesk-vietnamese-500-normal-DxwlvJEc.woff2  [39m[1m[2m  4.74 kB[22m[1m[22m
+[2mdist/[22m[32massets/hanken-grotesk-vietnamese-600-normal-Cp8QQjQf.woff2  [39m[1m[2m  4.74 kB[22m[1m[22m
+[2mdist/[22m[32massets/hanken-grotesk-vietnamese-300-normal-DuGzRrc6.woff2  [39m[1m[2m  4.80 kB[22m[1m[22m
+[2mdist/[22m[32massets/hanken-grotesk-vietnamese-700-normal-CslVg6dq.woff   [39m[1m[2m  6.46 kB[22m[1m[22m
+[2mdist/[22m[32massets/hanken-grotesk-vietnamese-400-normal-C-iWyKLC.woff   [39m[1m[2m  6.50 kB[22m[1m[22m
+[2mdist/[22m[32massets/hanken-grotesk-vietnamese-600-normal-DHaFH8q1.woff   [39m[1m[2m  6.51 kB[22m[1m[22m
+[2mdist/[22m[32massets/hanken-grotesk-vietnamese-500-normal-DkDHNoXI.woff   [39m[1m[2m  6.54 kB[22m[1m[22m
+[2mdist/[22m[32massets/hanken-grotesk-vietnamese-300-normal-DZsP3ZPe.woff   [39m[1m[2m  6.60 kB[22m[1m[22m
+[2mdist/[22m[32massets/hanken-grotesk-latin-ext-400-normal-DR7lHpW4.woff2   [39m[1m[2m  9.05 kB[22m[1m[22m
+[2mdist/[22m[32massets/hanken-grotesk-latin-ext-700-normal-CK2OfQqO.woff2   [39m[1m[2m  9.15 kB[22m[1m[22m
+[2mdist/[22m[32massets/hanken-grotesk-latin-ext-600-normal-FY8kSObK.woff2   [39m[1m[2m  9.23 kB[22m[1m[22m
+[2mdist/[22m[32massets/hanken-grotesk-latin-ext-500-normal-DLb9JDK8.woff2   [39m[1m[2m  9.25 kB[22m[1m[22m
+[2mdist/[22m[32massets/hanken-grotesk-latin-ext-300-normal-DaPXwqZ3.woff2   [39m[1m[2m  9.54 kB[22m[1m[22m
+[2mdist/[22m[32massets/hanken-grotesk-latin-ext-700-normal-BXHnjv6S.woff    [39m[1m[2m 12.48 kB[22m[1m[22m
+[2mdist/[22m[32massets/hanken-grotesk-latin-ext-600-normal-DHIm05DD.woff    [39m[1m[2m 12.50 kB[22m[1m[22m
+[2mdist/[22m[32massets/hanken-grotesk-latin-ext-400-normal-DI-aIsWt.woff    [39m[1m[2m 12.55 kB[22m[1m[22m
+[2mdist/[22m[32massets/hanken-grotesk-latin-ext-500-normal-BNvrJ0Ju.woff    [39m[1m[2m 12.60 kB[22m[1m[22m
+[2mdist/[22m[32massets/hanken-grotesk-latin-ext-300-normal-DlLOb3W0.woff    [39m[1m[2m 12.93 kB[22m[1m[22m
+[2mdist/[22m[32massets/hanken-grotesk-latin-400-normal-BG6hkEXj.woff2       [39m[1m[2m 13.46 kB[22m[1m[22m
+[2mdist/[22m[32massets/hanken-grotesk-latin-600-normal-CIXX6EOa.woff2       [39m[1m[2m 13.78 kB[22m[1m[22m
+[2mdist/[22m[32massets/hanken-grotesk-latin-500-normal-DrDcrrxK.woff2       [39m[1m[2m 13.80 kB[22m[1m[22m
+[2mdist/[22m[32massets/hanken-grotesk-latin-700-normal-CeQ8H3UY.woff2       [39m[1m[2m 13.84 kB[22m[1m[22m
+[2mdist/[22m[32massets/hanken-grotesk-latin-300-normal-7Inw_u-u.woff2       [39m[1m[2m 14.52 kB[22m[1m[22m
+[2mdist/[22m[32massets/hanken-grotesk-latin-400-normal-CjyVwvJV.woff        [39m[1m[2m 17.24 kB[22m[1m[22m
+[2mdist/[22m[32massets/hanken-grotesk-latin-600-normal-NEn2C4Q3.woff        [39m[1m[2m 17.51 kB[22m[1m[22m
+[2mdist/[22m[32massets/hanken-grotesk-latin-500-normal-Bo-NxEKf.woff        [39m[1m[2m 17.52 kB[22m[1m[22m
+[2mdist/[22m[32massets/hanken-grotesk-latin-700-normal-6IGCzoPh.woff        [39m[1m[2m 17.54 kB[22m[1m[22m
+[2mdist/[22m[32massets/hanken-grotesk-latin-300-normal-D6QX6NIr.woff        [39m[1m[2m 18.40 kB[22m[1m[22m
+[2mdist/[22m[35massets/index-Cjv1Ie-I.css                                   [39m[1m[2m164.38 kB[22m[1m[22m[2m │ gzip:  32.00 kB[22m
+[2mdist/[22m[36massets/index-CWvUrJdr.js                                    [39m[1m[33m825.17 kB[39m[22m[2m │ gzip: 237.98 kB[22m
+[33m
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.[39m
+[32m✓ built in 2.31s[39m
+[build.bat] ui OK
+
+[build.bat] all OK (engine + bridge + ui)

@@ -1,0 +1,544 @@
+Total MEDIUM: 335
+Sample size: 30
+Allocation: sampler=3, stock-effects.dynamics=3, piano-roll=2, timeline=2, dialogs-modals=2, pattern-list=2, node-editor=2, grid-editor=2, mixer=2, stock-effects.distortion=1, stock-effects.eq=1, sample-selector=1, preview-player=1, lip-sync-picker=1, syllable-splitter=1, project-media=1, stock-effects.shared=1, stock-effects.time=1, panel-chrome=1
+
+
+========================================================================
+ MED #1  ui/src/components/sampler/MiniKeyboard.jsx:58
+========================================================================
+  matchedText       : '#EAEAF0'
+  proposedToken     : --theme-sampler-envelope-bg
+  tokenResolvesTo   : #0A0A0F
+  subsystem         : sampler
+  elementHint       : bg
+  rationale         : jsx-inline bg in sampler; strongest keyword overlap (score 3).
+  surroundingContext:
+        55:             top: 0,
+        56:             width: WHITE_KEY_W - 1,
+        57:             height: KEY_H,
+    >   58:             background: isRoot ? '#69DB7C' : '#EAEAF0',
+        59:             color: isRoot ? '#0a0a10' : '#333',
+        60:             borderRadius: '0 0 3px 3px',
+        61:             borderRight: '1px solid #2A2A38',
+
+========================================================================
+ MED #2  ui/src/components/sampler/LfoSection.jsx:71
+========================================================================
+  matchedText       : '#1A1A24'
+  proposedToken     : --theme-sampler-lfo-bg
+  tokenResolvesTo   : #0A0A0F
+  subsystem         : sampler
+  elementHint       : bg
+  rationale         : jsx-inline bg in sampler; strongest keyword overlap (score 5).
+  surroundingContext:
+        68:               flex: 1, padding: '5px 0', fontSize: 11, fontWeight: 600,
+        69:               border: '1px solid #2A2A38',
+        70:               borderRadius: i === 0 ? '4px 0 0 4px' : i === 2 ? '0 4px 4px 0' : '0',
+    >   71:               background: lfoTab === tab ? LFO_BG[tab] : '#1A1A24',
+        72:               color: lfoTab === tab ? LFO_COLORS[tab] : '#8888A0',
+        73:               cursor: 'pointer',
+        74:             }}>
+
+========================================================================
+ MED #3  ui/src/components/sampler/SamplerPanel.jsx:516
+========================================================================
+  matchedText       : '#8888A0'
+  proposedToken     : --theme-sampler-envelope-bg
+  tokenResolvesTo   : #0A0A0F
+  subsystem         : sampler
+  elementHint       : fg
+  rationale         : jsx-inline bg in sampler; weaker keyword overlap (score 1).
+  surroundingContext:
+       513:                       borderRadius: 4,
+       514:                       border: '1px solid ' + (active ? '#4AA8C8' : '#2A2A38'),
+       515:                       background: active ? '#1E4A5C' : '#1A1A24',
+    >  516:                       color: active ? '#9BDBF0' : '#8888A0',
+       517:                       cursor: 'pointer',
+       518:                     }}
+       519:                   >
+
+========================================================================
+ MED #4  ui/src/styles/app.css:6040
+========================================================================
+  matchedText       : '#ff6b6b'
+  proposedToken     : --theme-dyn-gr-meter-fg
+  tokenResolvesTo   : #FF4757
+  subsystem         : stock-effects.dynamics
+  elementHint       : bg
+  rationale         : CSS property bg in stock-effects.dynamics; strongest keyword overlap with token (score 3).
+  surroundingContext:
+      6037: .compressor-gr-bar {
+      6038:   width: 100%;
+      6039:   height: 0%;
+    > 6040:   background: linear-gradient(to bottom, #ff6b6b, #ffa94d);
+      6041:   transition: height 0.05s linear;
+      6042:   border-radius: 2px 2px 0 0;
+      6043: }
+
+========================================================================
+ MED #5  ui/src/styles/app.css:6040
+========================================================================
+  matchedText       : 'linear-gradient(to bottom,#ff6b6b,#ffa94d)'
+  proposedToken     : --theme-dyn-gr-meter-fg
+  tokenResolvesTo   : #FF4757
+  subsystem         : stock-effects.dynamics
+  elementHint       : bg
+  rationale         : Gradient in stock-effects.dynamics; matched gradient-capable token via keyword overlap (score 2).
+  surroundingContext:
+      6037: .compressor-gr-bar {
+      6038:   width: 100%;
+      6039:   height: 0%;
+    > 6040:   background: linear-gradient(to bottom, #ff6b6b, #ffa94d);
+      6041:   transition: height 0.05s linear;
+      6042:   border-radius: 2px 2px 0 0;
+      6043: }
+
+========================================================================
+ MED #6  ui/src/components/mixer/SmartBalancePanel.jsx:201
+========================================================================
+  matchedText       : '#6BCB77'
+  proposedToken     : --theme-dyn-transfer-fill
+  tokenResolvesTo   : rgba(51, 206, 214, 0.12)
+  subsystem         : stock-effects.dynamics
+  elementHint       : canvas-fill
+  rationale         : canvas-svg fill in stock-effects.dynamics; strongest keyword overlap (score 4).
+  surroundingContext:
+       198:     const gainDb = vizData.gainDb[i]
+       199:     const sign = gainDb >= 0 ? '+' : ''
+       200:     ctx.font = '11px "JetBrains Mono", "Fira Code", monospace'
+    >  201:     ctx.fillStyle = gainDb > 0.5 ? '#6BCB77' : gainDb < -0.5 ? '#FF6B6B' : 'rgba(255,255,255,0.4)'
+       202:     ctx.textBaseline = 'middle'
+       203:     ctx.fillText(`${sign}${gainDb.toFixed(1)}`, cx, h / 2)
+       204:   }
+
+========================================================================
+ MED #7  ui/src/components/pianoRoll/PianoRoll.jsx:519
+========================================================================
+  matchedText       : '#15151c'
+  proposedToken     : --theme-pianoroll-grid-bg
+  tokenResolvesTo   : #111118
+  subsystem         : piano-roll
+  elementHint       : bg
+  rationale         : jsx-inline bg in piano-roll; strongest keyword overlap (score 6).
+  surroundingContext:
+       516:           <div style={{ width: SCROLLBAR_V_WIDTH, background: '#15151c', borderTop: '1px solid #2A2A38' }} />
+       517:         </div>
+       518:         <div style={{ display: 'flex' }}>
+    >  519:           <div style={{ width: KEYBOARD_WIDTH, background: '#15151c', borderRight: '1px solid #2A2A38', borderTop: '1px solid #2A2A38' }} />
+       520:           <VelocityLane
+       521:             notes={notes}
+       522:             selectedNoteIds={selectedNoteIds}
+
+========================================================================
+ MED #8  ui/src/styles/app.css:3863
+========================================================================
+  matchedText       : '#2A2A38'
+  proposedToken     : --theme-pianoroll-grid-bg
+  tokenResolvesTo   : #111118
+  subsystem         : piano-roll
+  elementHint       : border
+  rationale         : CSS property border in piano-roll; weaker keyword overlap (score 2).
+  surroundingContext:
+      3860: 
+      3861: .piano-roll-zoom-gutter {
+      3862:   background: #08080c;
+    > 3863:   border-top: 1px solid #2A2A38;
+      3864:   cursor: ns-resize;
+      3865: }
+      3866: 
+
+========================================================================
+ MED #9  ui/src/styles/app.css:1614
+========================================================================
+  matchedText       : '#0D0D14'
+  proposedToken     : --theme-timeline-ruler-fg
+  tokenResolvesTo   : #E8E8ED
+  subsystem         : timeline
+  elementHint       : fg
+  rationale         : CSS property fg in timeline; strongest keyword overlap with token (score 6).
+  surroundingContext:
+      1611: 
+      1612: .timeline-copied-tooltip {
+      1613:   background: rgba(51, 206, 214, 0.9);
+    > 1614:   color: #0D0D14;
+      1615:   font-size: 11px;
+      1616:   font-weight: 600;
+      1617:   padding: 2px 8px;
+
+========================================================================
+ MED #10  ui/src/components/timeline/FadeBezierEditor.jsx:109
+========================================================================
+  matchedText       : '#3b82f6'
+  proposedToken     : --theme-timeline-fade-curve-fill
+  tokenResolvesTo   : rgba(0, 0, 0, 0.45)
+  subsystem         : timeline
+  elementHint       : canvas-stroke
+  rationale         : canvas-svg stroke in timeline; weaker keyword overlap (score 1).
+  surroundingContext:
+       106:     ctx.beginPath()
+       107:     ctx.moveTo(p3.cx, p3.cy)
+       108:     ctx.lineTo(cp2.cx, cp2.cy)
+    >  109:     ctx.strokeStyle = '#3b82f6'
+       110:     ctx.stroke()
+       111:     ctx.setLineDash([])
+       112: 
+
+========================================================================
+ MED #11  ui/src/styles/app.css:7807
+========================================================================
+  matchedText       : '#0D0D14'
+  proposedToken     : --theme-modal-title-fg
+  tokenResolvesTo   : #E8E8ED
+  subsystem         : dialogs-modals
+  elementHint       : fg
+  rationale         : CSS property fg in dialogs-modals; strongest keyword overlap with token (score 3).
+  surroundingContext:
+      7804: .export-progress-actions .export-btn-primary {
+      7805:   background: var(--accent);
+      7806:   border-color: var(--accent);
+    > 7807:   color: #0D0D14;
+      7808: }
+      7809: 
+      7810: .export-progress-actions .export-btn-primary:hover:not(:disabled) {
+
+========================================================================
+ MED #12  ui/src/styles/app.css:7686
+========================================================================
+  matchedText       : '#d8a23a'
+  proposedToken     : --theme-modal-bg
+  tokenResolvesTo   : #222230
+  subsystem         : dialogs-modals
+  elementHint       : bg
+  rationale         : CSS property bg in dialogs-modals; strongest keyword overlap with token (score 3).
+  surroundingContext:
+      7683: }
+      7684: 
+      7685: .export-banner.warn {
+    > 7686:   background: color-mix(in srgb, #d8a23a 20%, var(--bg-elevated));
+      7687:   border-color: #d8a23a;
+      7688:   color: #f2d079;
+      7689: }
+
+========================================================================
+ MED #13  ui/src/styles/app.css:709
+========================================================================
+  matchedText       : '#111218'
+  proposedToken     : --theme-patternlist-bg
+  tokenResolvesTo   : #1A1A24
+  subsystem         : pattern-list
+  elementHint       : bg
+  rationale         : CSS property bg in pattern-list; strongest keyword overlap with token (score 5).
+  surroundingContext:
+       706:   width: 140px;
+       707:   display: flex;
+       708:   flex-direction: column;
+    >  709:   background: #111218;
+       710:   border-right: 1px solid var(--border);
+       711:   overflow: hidden;
+       712: }
+
+========================================================================
+ MED #14  ui/src/components/timeline/PatternListPanel.jsx:18
+========================================================================
+  matchedText       : '#6aa9ff'
+  proposedToken     : --theme-patternlist-bg
+  tokenResolvesTo   : #1A1A24
+  subsystem         : pattern-list
+  elementHint       : None
+  rationale         : const-def constant in pattern-list; weaker keyword overlap (score 1).
+  surroundingContext:
+        15: //   }))
+        16: //   window.__xlethDragPattern = payload   // readable during dragover
+        17: 
+    >   18: const PATTERN_ACCENT = '#6aa9ff'
+        19: 
+        20: export default function PatternListPanel({
+        21:   patterns = {},          // { id: Pattern }
+
+========================================================================
+ MED #15  ui/src/components/mixer/NodeEditor.jsx:174
+========================================================================
+  matchedText       : '#555566'
+  proposedToken     : --theme-nodeeditor-node-titlebar-fg
+  tokenResolvesTo   : #E8E8ED
+  subsystem         : node-editor
+  elementHint       : fg
+  rationale         : jsx-inline stroke in node-editor; strongest keyword overlap (score 6).
+  surroundingContext:
+       171:       style: c.muted
+       172:         ? { stroke: '#555566', strokeWidth: 2, strokeDasharray: '6 4' }
+       173:         : { stroke: '#FFAA33', strokeWidth: 2 },
+    >  174:       markerEnd: { type: MarkerType.ArrowClosed, color: c.muted ? '#555566' : '#FFAA33', width: 12, height: 12 },
+       175:       interactionWidth: 20,
+       176:     }))
+       177: 
+
+========================================================================
+ MED #16  ui/src/styles/app.css:5704
+========================================================================
+  matchedText       : '#FFAA33'
+  proposedToken     : --theme-nodeeditor-connection
+  tokenResolvesTo   : #8888A0
+  subsystem         : node-editor
+  elementHint       : stroke
+  rationale         : CSS property stroke in node-editor; strongest keyword overlap with token (score 4).
+  surroundingContext:
+      5701: }
+      5702: 
+      5703: .ne-container .react-flow__connection-line {
+    > 5704:   stroke: #FFAA33;
+      5705:   stroke-width: 2;
+      5706: }
+      5707: 
+
+========================================================================
+ MED #17  ui/src/styles/app.css:2721
+========================================================================
+  matchedText       : 'linear-gradient(to bottom,transparent calc(50% - 0.5px),rgba(255,255,255,0.15) calc(50% - 0.5px) calc(50% + 0.5px),transparent calc(50% + 0.5px))'
+  proposedToken     : --theme-grid-canvas-bg
+  tokenResolvesTo   : #0A0A0F
+  subsystem         : grid-editor
+  elementHint       : None
+  rationale         : Gradient in grid-editor; matched gradient-capable token via keyword overlap (score 2).
+  surroundingContext:
+      2718:   z-index: 1;
+      2719:   background-image:
+      2720:     linear-gradient(to right, transparent calc(50% - 0.5px), rgba(255, 255, 255, 0.15) calc(50% - 0.5px) calc(50% + 0.5px), transparent calc(50% + 0.5px)),
+    > 2721:     linear-gradient(to bottom, transparent calc(50% - 0.5px), rgba(255, 255, 255, 0.15) calc(50% - 0.5px) calc(50% + 0.5px), transparent calc(50% + 0.5px));
+      2722: }
+      2723: 
+      2724: .grid-editor-picker {
+
+========================================================================
+ MED #18  ui/src/styles/app.css:2735
+========================================================================
+  matchedText       : 'rgba(0,0,0,0.6)'
+  proposedToken     : --theme-grid-canvas-bg
+  tokenResolvesTo   : #0A0A0F
+  subsystem         : grid-editor
+  elementHint       : shadow
+  rationale         : CSS property shadow in grid-editor; strongest keyword overlap with token (score 3).
+  surroundingContext:
+      2732:   background: var(--bg-elevated);
+      2733:   border: 1px solid var(--border);
+      2734:   border-radius: var(--radius-md);
+    > 2735:   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+      2736:   z-index: 20;
+      2737:   padding: 4px 0;
+      2738:   font-size: 12px;
+
+========================================================================
+ MED #19  ui/src/styles/app.css:4427
+========================================================================
+  matchedText       : 'rgba(51,206,214,0.1)'
+  proposedToken     : --theme-mixer-chain-toggle-bg
+  tokenResolvesTo   : #1A1A24
+  subsystem         : mixer
+  elementHint       : bg
+  rationale         : CSS property bg in mixer; strongest keyword overlap with token (score 6).
+  surroundingContext:
+      4424: }
+      4425: 
+      4426: .effect-chain-mode-btn.active {
+    > 4427:   background: rgba(51, 206, 214, 0.1);
+      4428:   color: var(--accent);
+      4429:   border-color: var(--accent);
+      4430:   cursor: default;
+
+========================================================================
+ MED #20  ui/src/components/mixer/PeakMeter.jsx:64
+========================================================================
+  matchedText       : '#22C55E'
+  proposedToken     : --theme-mixer-meter-fill
+  tokenResolvesTo   : linear-gradient(0deg, #22C55E 0%, #22C55E 40%, #FFAA33 75%, #FFAA33 88%, #FF4757 88%, #FF4757 100%)
+  subsystem         : mixer
+  elementHint       : gradient-stop
+  rationale         : canvas-svg fill in mixer; weaker keyword overlap (score 1).
+  surroundingContext:
+        61:         // Bottom (low) to top (high)
+        62:         const redStart = dbToPos(-3)
+        63:         const yellowStart = dbToPos(-12)
+    >   64:         g.addColorStop(0, '#22C55E')
+        65:         g.addColorStop(yellowStart, '#22C55E')
+        66:         g.addColorStop(yellowStart, '#FFAA33')
+        67:         g.addColorStop(redStart, '#FFAA33')
+
+========================================================================
+ MED #21  ui/src/styles/app.css:6324
+========================================================================
+  matchedText       : 'rgba(255,255,255,0.05)'
+  proposedToken     : --theme-dist-waveshape-curve
+  tokenResolvesTo   : #33CED6
+  subsystem         : stock-effects.distortion
+  elementHint       : bg
+  rationale         : CSS property bg in stock-effects.distortion; weaker keyword overlap (score 1).
+  surroundingContext:
+      6321: 
+      6322: .distortion-panel-close:hover {
+      6323:   color: var(--text-primary);
+    > 6324:   background: rgba(255,255,255,0.05);
+      6325: }
+      6326: 
+      6327: /* Mode selector */
+
+========================================================================
+ MED #22  ui/src/styles/app.css:5559
+========================================================================
+  matchedText       : 'rgba(0,0,0,0.6)'
+  proposedToken     : --theme-eq-octave-grid
+  tokenResolvesTo   : #2A2A38
+  subsystem         : stock-effects.eq
+  elementHint       : shadow
+  rationale         : CSS property fg in stock-effects.eq; strongest keyword overlap with token (score 4).
+  surroundingContext:
+      5556:   font-size: 7px;
+      5557:   font-weight: 600;
+      5558:   color: #fff;
+    > 5559:   text-shadow: 0 0 2px rgba(0,0,0,0.6);
+      5560:   z-index: 1;
+      5561: }
+      5562: 
+
+========================================================================
+ MED #23  ui/src/styles/app.css:2243
+========================================================================
+  matchedText       : 'black'
+  proposedToken     : --theme-sampleselector-list-bg
+  tokenResolvesTo   : #1A1A24
+  subsystem         : sample-selector
+  elementHint       : bg
+  rationale         : CSS property bg in sample-selector; strongest keyword overlap with token (score 3).
+  surroundingContext:
+      2240:   object-fit: contain;
+      2241:   display: block;
+      2242:   max-height: 32vh;
+    > 2243:   background: black;
+      2244: }
+      2245: 
+      2246: .picker-video-placeholder {
+
+========================================================================
+ MED #24  ui/src/styles/app.css:530
+========================================================================
+  matchedText       : '#49cd7a'
+  proposedToken     : --theme-preview-fps-fg
+  tokenResolvesTo   : #8888A0
+  subsystem         : preview-player
+  elementHint       : border
+  rationale         : CSS property fg in preview-player; strongest keyword overlap with token (score 3).
+  surroundingContext:
+       527: .preview-fx-btn.active {
+       528:   background: rgba(73, 205, 122, 0.18);
+       529:   color: #49cd7a;
+    >  530:   border-color: #49cd7a;
+       531: }
+       532: 
+       533: /* Effects bypassed — dim gray */
+
+========================================================================
+ MED #25  ui/src/components/SamplePicker/WaveformScrubber.jsx:236
+========================================================================
+  matchedText       : 'rgba(51, 206, 214, 0.15)'
+  proposedToken     : --theme-lipsync-in-marker
+  tokenResolvesTo   : #33CED6
+  subsystem         : lip-sync-picker
+  elementHint       : canvas-stroke
+  rationale         : canvas-svg stroke in lip-sync-picker; weaker keyword overlap (score 2).
+  surroundingContext:
+       233:       )
+       234: 
+       235:       // Thin center line
+    >  236:       ctx.strokeStyle = 'rgba(51, 206, 214, 0.15)'
+       237:       ctx.lineWidth = 1
+       238:       ctx.beginPath()
+       239:       ctx.moveTo(0, mid)
+
+========================================================================
+ MED #26  ui/src/styles/app.css:3541
+========================================================================
+  matchedText       : '#ff7070'
+  proposedToken     : --theme-syllable-waveform-fg
+  tokenResolvesTo   : #8888A0
+  subsystem         : syllable-splitter
+  elementHint       : fg
+  rationale         : CSS property fg in syllable-splitter; strongest keyword overlap with token (score 6).
+  surroundingContext:
+      3538:   color: var(--text-secondary);
+      3539: }
+      3540: .syllable-splitter-error {
+    > 3541:   color: #ff7070;
+      3542: }
+      3543: 
+      3544: /* ── Toolbar syllable picker (pencil + Quote) ───────────────────────────────── */
+
+========================================================================
+ MED #27  ui/src/styles/app.css:4945
+========================================================================
+  matchedText       : 'rgba(51,206,214,0.1)'
+  proposedToken     : --theme-projectmedia-panel-bg
+  tokenResolvesTo   : #1A1A24
+  subsystem         : project-media
+  elementHint       : bg
+  rationale         : CSS property bg in project-media; strongest keyword overlap with token (score 3).
+  surroundingContext:
+      4942: }
+      4943: 
+      4944: .vst-browser-btn--primary:hover {
+    > 4945:   background: rgba(51, 206, 214, 0.1);
+      4946:   border-color: var(--accent);
+      4947:   color: var(--accent);
+      4948: }
+
+========================================================================
+ MED #28  ui/src/components/sampler/Knob.jsx:229
+========================================================================
+  matchedText       : '#8888A0'
+  proposedToken     : --theme-fx-knob-lg-label
+  tokenResolvesTo   : #8888A0
+  subsystem         : stock-effects.shared
+  elementHint       : fg
+  rationale         : jsx-inline fg in stock-effects.shared; strongest keyword overlap (score 6).
+  surroundingContext:
+       226:       )}
+       227:       {label && (
+       228:         <div style={{
+    >  229:           fontSize: 9, color: '#8888A0', textTransform: 'uppercase',
+       230:           letterSpacing: 0.5, fontWeight: 500,
+       231:         }}>
+       232:           {label}
+
+========================================================================
+ MED #29  ui/src/styles/app.css:6565
+========================================================================
+  matchedText       : 'rgba(255,255,255,0.05)'
+  proposedToken     : --theme-time-delay-tap
+  tokenResolvesTo   : #33CED6
+  subsystem         : stock-effects.time
+  elementHint       : bg
+  rationale         : CSS property bg in stock-effects.time; strongest keyword overlap with token (score 3).
+  surroundingContext:
+      6562: 
+      6563: .delay-panel-close:hover {
+      6564:   color: var(--text-primary);
+    > 6565:   background: rgba(255,255,255,0.05);
+      6566: }
+      6567: 
+      6568: /* Sync row */
+
+========================================================================
+ MED #30  ui/src/styles/app.css:92
+========================================================================
+  matchedText       : 'rgba(0,0,0,0.5)'
+  proposedToken     : --theme-chrome-titlebar-bg
+  tokenResolvesTo   : #1A1A24
+  subsystem         : panel-chrome
+  elementHint       : shadow
+  rationale         : CSS property shadow in panel-chrome; strongest keyword overlap with token (score 3).
+  surroundingContext:
+        89:   border: 1px solid var(--border);
+        90:   border-radius: var(--radius-md);
+        91:   padding: 4px 0;
+    >   92:   box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+        93:   z-index: 200;
+        94:   -webkit-app-region: no-drag;
+        95: }

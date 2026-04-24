@@ -1,0 +1,838 @@
+# Step 1.2 (corrected) — 39 LOW-confidence entries pending approval
+
+Source: scripts/theming-audit-enriched-v2-corrected.json
+(post-corrective-pass; original v2 had 37 LOWs, +2 demoted from MEDIUM = 39)
+
+Distribution by subsystem:
+  node-editor                  10
+  timeline                     9
+  stock-effects.shared         4
+  lip-sync-picker              4
+  piano-roll                   3
+  dialogs-modals               3
+  sampler                      2
+  stock-effects.dynamics       1
+  labels                       1
+  syllable-splitter            1
+  preview-player               1
+
+Total: 39
+
+Categories:
+  NEW (demoted MEDIUM → LOW by corrective pass): 2
+  OVERRIDDEN (corrective pass changed assignment, still LOW): 11
+  HARDCODED (perc-label override, visual-changing): 1
+  UNCHANGED (original LOW, untouched): 25
+
+════════════════════════════════════════════════════════════════════════
+
+
+## HARDCODED — visual-changing override (Krasen pre-decision) (1)
+
+---
+### [1/39] subsystem: labels
+
+**File:** ui/src/components/timeline/TrackHeader.jsx:9  (col 36)
+**Matched text:** `#33CED6` (hex, element-hint: LABEL_COLORS)
+**Proposed token:** `--theme-label-perc`
+**Prior assignment (pre-corrective):** `--theme-border-focus`
+**⚠️  VISUAL-CHANGING OVERRIDE** (intentional bug fix)
+**Surrounding context:**
+```
+     6: 
+     7: const LABEL_COLORS = [
+     8:   '#FF6B6B', '#FFA94D', '#FFD93D', '#FF6B9D',
+>    9:   '#69DB7C', '#748FFC', '#B197FC', '#33CED6',
+    10: ]
+    11: 
+    12: export default function TrackHeader({
+```
+**Rationale:** Hardcoded override (perc label Option A pre-decision): 8th LABEL_COLORS slot changed from #33CED6 to --theme-label-perc (#E67E51). Visual change is intentional bug fix; was stale accent leftover.
+**Assignment rule:** hardcoded-override-perc-label
+**Gates passed:** value, capability, subsystem:universal
+
+
+## NEW — demoted from MEDIUM by corrective pass (2)
+
+---
+### [2/39] subsystem: stock-effects.shared
+
+**File:** ui/src/components/sampler/Knob.jsx:18  (col 20)
+**Matched text:** `#33CED6` (hex, element-hint: KNOB_COLOR)
+**Proposed token:** `--theme-border-focus`
+**Surrounding context:**
+```
+    15: //   size             pixel diameter (default 52)
+    16: //   dragRange        pixels of vertical travel = full min→max sweep (default 180)
+    17: 
+>   18: const KNOB_COLOR = '#33CED6'
+    19: const TRACK_COLOR = 'rgba(255,255,255,0.08)'
+    20: const BG_COLOR = '#1A1A24'
+    21: const BORDER_COLOR = '#2A2A38'
+```
+**Rationale:** Corrective pass: assigned --theme-border-focus resolves to a universal base (--theme-accent). Tail [focus] absent from context but elementHint='KNOB_COLOR' is subsystem-coupled — ambiguous, needs human review.
+**Assignment rule:** corrective-pass-demote-base-vs-subsystem
+**Gates passed:** value, capability, subsystem:same
+
+---
+### [3/39] subsystem: sampler
+
+**File:** ui/src/components/sampler/SamplerWaveform.jsx:5  (col 20)
+**Matched text:** `#33CED6` (hex, element-hint: WAVE_COLOR)
+**Proposed token:** `--theme-sampler-lfo-color-volume`
+**Surrounding context:**
+```
+     2: import { timelineEvents } from '../../timelineEvents.js'
+     3: import { drawEnvelope, downsamplePeaks3 } from '../../utils/waveformRenderer.js'
+     4: 
+>    5: const WAVE_COLOR = '#33CED6'
+     6: const LOOP_COLOR = '#69DB7C'
+     7: const HANDLE_HIT = 8
+     8: 
+```
+**Rationale:** Corrective pass: assigned --theme-sampler-lfo-color-volume resolves to a universal base (--theme-accent). Tail [lfo, volume] absent from context but elementHint='WAVE_COLOR' is subsystem-coupled — ambiguous, needs human review.
+**Assignment rule:** corrective-pass-demote-base-vs-subsystem
+**Gates passed:** value, capability, subsystem:same
+
+
+## OVERRIDDEN — corrective pass reassigned (still LOW) (11)
+
+---
+### [4/39] subsystem: piano-roll
+
+**File:** ui/src/components/pianoRoll/PianoRollCanvas.jsx:108  (col 25)
+**Matched text:** `#33CED6` (hex, element-hint: canvas-stroke)
+**Proposed token:** `--theme-accent`
+**Prior assignment (pre-corrective):** `--theme-border-focus`
+**Surrounding context:**
+```
+   105:     if (endX < w) {
+   106:       ctx.fillStyle = 'rgba(0,0,0,0.4)'
+   107:       ctx.fillRect(Math.max(0, endX), 0, w - endX, h)
+>  108:       ctx.strokeStyle = '#33CED6'
+   109:       ctx.lineWidth = 1
+   110:       ctx.beginPath()
+   111:       ctx.moveTo(endX + 0.5, 0)
+```
+**Rationale:** Corrective pass: assigned --theme-border-focus (resolves to #33ced6) overridden to --theme-accent (universal base, same value). Tail [focus] absent from context and elementHint='canvas-stroke' is generic — semantic intent is the universal base.
+**Assignment rule:** corrective-pass-override-base
+**Gates passed:** value, capability, subsystem:same
+
+---
+### [5/39] subsystem: piano-roll
+
+**File:** ui/src/components/pianoRoll/PianoRollCanvas.jsx:579  (col 24)
+**Matched text:** `#33CED6` (hex, element-hint: canvas-stroke)
+**Proposed token:** `--theme-accent`
+**Prior assignment (pre-corrective):** `--theme-border-focus`
+**Surrounding context:**
+```
+   576:       const y1 = Math.max(sy0, sy1)
+   577:       ov.fillStyle = 'rgba(51, 206, 214, 0.12)'
+   578:       ov.fillRect(x0, y0, x1 - x0, y1 - y0)
+>  579:       ov.strokeStyle = '#33CED6'
+   580:       ov.lineWidth = 1
+   581:       ov.setLineDash([4, 3])
+   582:       ov.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0 - 1, y1 - y0 - 1)
+```
+**Rationale:** Corrective pass: assigned --theme-border-focus (resolves to #33ced6) overridden to --theme-accent (universal base, same value). Tail [focus] absent from context and elementHint='canvas-stroke' is generic — semantic intent is the universal base.
+**Assignment rule:** corrective-pass-override-base
+**Gates passed:** value, capability, subsystem:same
+
+---
+### [6/39] subsystem: timeline
+
+**File:** ui/src/components/TimelineView.jsx:49  (col 40)
+**Matched text:** `#33CED6` (hex, element-hint: accentColor)
+**Proposed token:** `--theme-accent`
+**Prior assignment (pre-corrective):** `--theme-border-focus`
+**Surrounding context:**
+```
+    46:           const v = Number(e.target.value)
+    47:           Promise.resolve(onCommit(v)).finally(() => { dragging.current = false })
+    48:         }}
+>   49:         style={{ flex: 1, accentColor: '#33CED6' }}
+    50:       />
+    51:       <span style={{ fontSize: 10, color: '#888', minWidth: 40, textAlign: 'right' }}>
+    52:         {formatValue(localVal)}
+```
+**Rationale:** Corrective pass: assigned --theme-border-focus (resolves to #33ced6) overridden to --theme-accent (universal base, same value). Tail [focus] absent from context and elementHint='accentColor' is generic — semantic intent is the universal base.
+**Assignment rule:** corrective-pass-override-base
+**Gates passed:** value, capability, subsystem:same
+
+---
+### [7/39] subsystem: timeline
+
+**File:** ui/src/components/timeline/FadeBezierEditor.jsx:85  (col 23)
+**Matched text:** `#33CED6` (hex, element-hint: canvas-stroke)
+**Proposed token:** `--theme-accent`
+**Prior assignment (pre-corrective):** `--theme-border-focus`
+**Surrounding context:**
+```
+    82:     ctx.beginPath()
+    83:     ctx.moveTo(p0.cx, p0.cy)
+    84:     ctx.bezierCurveTo(cp1.cx, cp1.cy, cp2.cx, cp2.cy, p3.cx, p3.cy)
+>   85:     ctx.strokeStyle = '#33CED6'
+    86:     ctx.lineWidth = 2
+    87:     ctx.stroke()
+    88: 
+```
+**Rationale:** Corrective pass: assigned --theme-border-focus (resolves to #33ced6) overridden to --theme-accent (universal base, same value). Tail [focus] absent from context and elementHint='canvas-stroke' is generic — semantic intent is the universal base.
+**Assignment rule:** corrective-pass-override-base
+**Gates passed:** value, capability, subsystem:same
+
+---
+### [8/39] subsystem: timeline
+
+**File:** ui/src/components/timeline/TimelineCanvas.jsx:467  (col 28)
+**Matched text:** `#33CED6` (hex, element-hint: bg)
+**Proposed token:** `--theme-accent`
+**Prior assignment (pre-corrective):** `--theme-border-focus`
+**Surrounding context:**
+```
+   464:           left: 0,
+   465:           width: '2px',
+   466:           height: '100%',
+>  467:           backgroundColor: '#33CED6',
+   468:           pointerEvents: 'none',
+   469:           zIndex: 10,
+   470:           willChange: 'transform',
+```
+**Rationale:** Corrective pass: assigned --theme-border-focus (resolves to #33ced6) overridden to --theme-accent (universal base, same value). Tail [focus] absent from context and elementHint='bg' is generic — semantic intent is the universal base.
+**Assignment rule:** corrective-pass-override-base
+**Gates passed:** value, capability, subsystem:same
+
+---
+### [9/39] subsystem: timeline
+
+**File:** ui/src/components/timeline/TimelineRuler.jsx:132  (col 28)
+**Matched text:** `#33CED6` (hex, element-hint: bg)
+**Proposed token:** `--theme-accent`
+**Prior assignment (pre-corrective):** `--theme-border-focus`
+**Surrounding context:**
+```
+   129:           left: 0,
+   130:           width: '2px',
+   131:           height: '100%',
+>  132:           backgroundColor: '#33CED6',
+   133:           pointerEvents: 'none',
+   134:           zIndex: 10,
+   135:           willChange: 'transform',
+```
+**Rationale:** Corrective pass: assigned --theme-border-focus (resolves to #33ced6) overridden to --theme-accent (universal base, same value). Tail [focus] absent from context and elementHint='bg' is generic — semantic intent is the universal base.
+**Assignment rule:** corrective-pass-override-base
+**Gates passed:** value, capability, subsystem:same
+
+---
+### [10/39] subsystem: timeline
+
+**File:** ui/src/components/timeline/TimelineToolbar.jsx:72  (col 38)
+**Matched text:** `#33CED6` (hex, element-hint: outline)
+**Proposed token:** `--theme-accent`
+**Prior assignment (pre-corrective):** `--theme-border-focus`
+**Surrounding context:**
+```
+    69:               className="timeline-active-sample-dot"
+    70:               style={{
+    71:                 backgroundColor: labelHexColor(pencilTemplate.label),
+>   72:                 outline: '1.5px solid #33CED6',
+    73:                 outlineOffset: '1px',
+    74:               }}
+    75:             />
+```
+**Rationale:** Corrective pass: assigned --theme-border-focus (resolves to #33ced6) overridden to --theme-accent (universal base, same value). Tail [focus] absent from context and elementHint='outline' is generic — semantic intent is the universal base.
+**Assignment rule:** corrective-pass-override-base
+**Gates passed:** value, capability, subsystem:same
+
+---
+### [11/39] subsystem: timeline
+
+**File:** ui/src/components/timeline/timelineDrawing.js:222  (col 19)
+**Matched text:** `#33CED6` (hex, element-hint: canvas-fill)
+**Proposed token:** `--theme-accent`
+**Prior assignment (pre-corrective):** `--theme-border-focus`
+**Surrounding context:**
+```
+   219:   ctx.stroke()
+   220: 
+   221:   // Small triangle at top
+>  222:   ctx.fillStyle = '#33CED6'
+   223:   ctx.beginPath()
+   224:   ctx.moveTo(x, 0)
+   225:   ctx.lineTo(x - 4, -0) // flat top edge
+```
+**Rationale:** Corrective pass: assigned --theme-border-focus (resolves to #33ced6) overridden to --theme-accent (universal base, same value). Tail [focus] absent from context and elementHint='canvas-fill' is generic — semantic intent is the universal base.
+**Assignment rule:** corrective-pass-override-base
+**Gates passed:** value, capability, subsystem:same
+
+---
+### [12/39] subsystem: timeline
+
+**File:** ui/src/components/timeline/timelineDrawing.js:838  (col 19)
+**Matched text:** `#33CED6` (hex, element-hint: canvas-fill)
+**Proposed token:** `--theme-accent`
+**Prior assignment (pre-corrective):** `--theme-border-focus`
+**Surrounding context:**
+```
+   835:   ctx.stroke()
+   836: 
+   837:   // Downward triangle
+>  838:   ctx.fillStyle = '#33CED6'
+   839:   ctx.beginPath()
+   840:   ctx.moveTo(x, h)
+   841:   ctx.lineTo(x - 4, h - 6)
+```
+**Rationale:** Corrective pass: assigned --theme-border-focus (resolves to #33ced6) overridden to --theme-accent (universal base, same value). Tail [focus] absent from context and elementHint='canvas-fill' is generic — semantic intent is the universal base.
+**Assignment rule:** corrective-pass-override-base
+**Gates passed:** value, capability, subsystem:same
+
+---
+### [13/39] subsystem: lip-sync-picker
+
+**File:** ui/src/components/SamplePicker/WaveformScrubber.jsx:269  (col 49)
+**Matched text:** `#33CED6` (hex, element-hint: n/a)
+**Proposed token:** `--theme-accent`
+**Prior assignment (pre-corrective):** `--theme-border-focus`
+**Surrounding context:**
+```
+   266:       ctx.moveTo(x - 6, drawH); ctx.lineTo(x + 6, drawH); ctx.lineTo(x, drawH - 10)
+   267:       ctx.closePath(); ctx.fill()
+   268:     }
+>  269:     if (inPoint  !== null) drawHandle(inPoint,  '#33CED6')
+   270:     if (outPoint !== null) drawHandle(outPoint, '#33CED6')
+   271: 
+   272:     // ── Time labels ───────────────────────────────────────────────────────
+```
+**Rationale:** Corrective pass: assigned --theme-border-focus (resolves to #33ced6) overridden to --theme-accent (universal base, same value). Tail [focus] absent from context and elementHint='null' is generic — semantic intent is the universal base.
+**Assignment rule:** corrective-pass-override-base
+**Ambiguous:** String not in obvious styling context — element role unknown
+**Gates passed:** value, capability, subsystem:same
+
+---
+### [14/39] subsystem: lip-sync-picker
+
+**File:** ui/src/components/SamplePicker/WaveformScrubber.jsx:270  (col 49)
+**Matched text:** `#33CED6` (hex, element-hint: n/a)
+**Proposed token:** `--theme-accent`
+**Prior assignment (pre-corrective):** `--theme-border-focus`
+**Surrounding context:**
+```
+   267:       ctx.closePath(); ctx.fill()
+   268:     }
+   269:     if (inPoint  !== null) drawHandle(inPoint,  '#33CED6')
+>  270:     if (outPoint !== null) drawHandle(outPoint, '#33CED6')
+   271: 
+   272:     // ── Time labels ───────────────────────────────────────────────────────
+   273:     ctx.font         = '500 10px "Hanken Grotesk", system-ui'
+```
+**Rationale:** Corrective pass: assigned --theme-border-focus (resolves to #33ced6) overridden to --theme-accent (universal base, same value). Tail [focus] absent from context and elementHint='null' is generic — semantic intent is the universal base.
+**Assignment rule:** corrective-pass-override-base
+**Ambiguous:** String not in obvious styling context — element role unknown
+**Gates passed:** value, capability, subsystem:same
+
+
+## UNCHANGED — original LOW, not touched by corrective pass (25)
+
+---
+### [15/39] subsystem: stock-effects.shared
+
+**File:** ui/src/components/sampler/Knob.jsx:19  (col 21)
+**Matched text:** `rgba(255,255,255,0.08)` (rgba, element-hint: TRACK_COLOR)
+**Proposed token:** `--theme-fx-knob-lg-track`
+**Surrounding context:**
+```
+    16: //   dragRange        pixels of vertical travel = full min→max sweep (default 180)
+    17: 
+    18: const KNOB_COLOR = '#33CED6'
+>   19: const TRACK_COLOR = 'rgba(255,255,255,0.08)'
+    20: const BG_COLOR = '#1A1A24'
+    21: const BORDER_COLOR = '#2A2A38'
+    22: 
+```
+**Rationale:** Unresolved tie after subsystem/hint/derivation gates; alphabetical fallback. Tied candidates: --theme-fx-knob-lg-track, --theme-fx-knob-sm-track
+**Assignment rule:** v2-gate-tiebreak-alphabetical
+**Gates passed:** value, capability, subsystem:same
+
+---
+### [16/39] subsystem: stock-effects.shared
+
+**File:** ui/src/components/sampler/Knob.jsx:210  (col 43)
+**Matched text:** `#E8E8ED` (hex, element-hint: fg)
+**Proposed token:** `--theme-fx-knob-lg-indicator`
+**Surrounding context:**
+```
+   207:           }}
+   208:           style={{
+   209:             width: size, fontSize: 10, textAlign: 'center',
+>  210:             background: '#0a0a10', color: '#E8E8ED',
+   211:             border: `1px solid ${KNOB_COLOR}`, borderRadius: 3,
+   212:             padding: '1px 2px',
+   213:           }}
+```
+**Rationale:** Unresolved tie after subsystem/hint/derivation gates; alphabetical fallback. Tied candidates: --theme-fx-knob-lg-indicator, --theme-fx-knob-lg-value, --theme-fx-knob-sm-value
+**Assignment rule:** v2-gate-tiebreak-alphabetical
+**Gates passed:** value, capability, subsystem:same
+
+---
+### [17/39] subsystem: stock-effects.shared
+
+**File:** ui/src/components/sampler/Knob.jsx:229  (col 31)
+**Matched text:** `#8888A0` (hex, element-hint: fg)
+**Proposed token:** `--theme-fx-axis-label`
+**Surrounding context:**
+```
+   226:       )}
+   227:       {label && (
+   228:         <div style={{
+>  229:           fontSize: 9, color: '#8888A0', textTransform: 'uppercase',
+   230:           letterSpacing: 0.5, fontWeight: 500,
+   231:         }}>
+   232:           {label}
+```
+**Rationale:** Unresolved tie after subsystem/hint/derivation gates; alphabetical fallback. Tied candidates: --theme-fx-axis-label, --theme-fx-slider-label
+**Assignment rule:** v2-gate-tiebreak-alphabetical
+**Gates passed:** value, capability, subsystem:same
+
+---
+### [18/39] subsystem: stock-effects.dynamics
+
+**File:** ui/src/components/mixer/SmartBalancePanel.jsx:80  (col 19)
+**Matched text:** `#0d0d14` (hex, element-hint: canvas-fill)
+**Proposed token:** `--theme-bg-inset`
+**Surrounding context:**
+```
+    77: function drawBackground(ctx, w, h, bandRanges) {
+    78:   ctx.clearRect(0, 0, w, h)
+    79:   // Overall dark fill
+>   80:   ctx.fillStyle = '#0d0d14'
+    81:   ctx.fillRect(0, 0, w, h)
+    82:   // Band columns
+    83:   for (const band of bandRanges) {
+```
+**Rationale:** Unresolved tie after subsystem/hint/derivation gates; alphabetical fallback. Tied candidates: --theme-bg-inset, --theme-text-on-accent
+**Assignment rule:** v2-gate-tiebreak-alphabetical
+**Gates passed:** value, capability, subsystem:universal
+
+---
+### [19/39] subsystem: piano-roll
+
+**File:** ui/src/components/pianoRoll/PianoRollCanvas.jsx:40  (col 19)
+**Matched text:** `#0d0d14` (hex, element-hint: canvas-fill)
+**Proposed token:** `--theme-bg-inset`
+**Surrounding context:**
+```
+    37: 
+    38: function drawBackground(ctx, w, h, pixelsPerBeat, pixelsPerSemitone, scrollX, scrollY, patternLenBeats) {
+    39:   ctx.clearRect(0, 0, w, h)
+>   40:   ctx.fillStyle = '#0d0d14'
+    41:   ctx.fillRect(0, 0, w, h)
+    42: 
+    43:   // Horizontal row striping: black keys slightly darker
+```
+**Rationale:** Unresolved tie after subsystem/hint/derivation gates; alphabetical fallback. Tied candidates: --theme-bg-inset, --theme-text-on-accent
+**Assignment rule:** v2-gate-tiebreak-alphabetical
+**Gates passed:** value, capability, subsystem:universal
+
+---
+### [20/39] subsystem: sampler
+
+**File:** ui/src/components/sampler/SamplerWaveform.jsx:94  (col 23)
+**Matched text:** `#555566` (hex, element-hint: canvas-fill)
+**Proposed token:** `--theme-text-placeholder`
+**Surrounding context:**
+```
+    91:     ctx.fillRect(0, 0, width, height)
+    92: 
+    93:     if (!peaks) {
+>   94:       ctx.fillStyle = '#555566'
+    95:       ctx.font = '11px sans-serif'
+    96:       ctx.textAlign = 'center'
+    97:       ctx.fillText(loadError ? 'Waveform unavailable' : 'Loading…', width / 2, height / 2)
+```
+**Rationale:** Unresolved tie after subsystem/hint/derivation gates; alphabetical fallback. Tied candidates: --theme-text-placeholder, --theme-text-subtle
+**Assignment rule:** v2-gate-tiebreak-alphabetical
+**Gates passed:** value, capability, subsystem:universal
+
+---
+### [21/39] subsystem: timeline
+
+**File:** ui/src/components/timeline/timelineDrawing.js:180  (col 19)
+**Matched text:** `#555566` (hex, element-hint: canvas-fill)
+**Proposed token:** `--theme-text-placeholder`
+**Surrounding context:**
+```
+   177:   }
+   178: 
+   179:   // Bar numbers
+>  180:   ctx.fillStyle = '#555566'
+   181:   ctx.font = '600 9px "Hanken Grotesk", system-ui, sans-serif'
+   182:   ctx.textBaseline = 'top'
+   183:   const firstBar = Math.floor(startBeat / BEATS_PER_BAR) * BEATS_PER_BAR
+```
+**Rationale:** Unresolved tie after subsystem/hint/derivation gates; alphabetical fallback. Tied candidates: --theme-text-placeholder, --theme-text-subtle
+**Assignment rule:** v2-gate-tiebreak-alphabetical
+**Gates passed:** value, capability, subsystem:universal
+
+---
+### [22/39] subsystem: node-editor
+
+**File:** ui/src/components/mixer/NodeEditor.jsx:172  (col 21)
+**Matched text:** `#555566` (hex, element-hint: stroke)
+**Proposed token:** `--theme-nodeeditor-port-default`
+**Surrounding context:**
+```
+   169:       target: String(c.dest),
+   170:       data: { gain: c.gain, muted: c.muted, srcId: c.source, dstId: c.dest },
+   171:       style: c.muted
+>  172:         ? { stroke: '#555566', strokeWidth: 2, strokeDasharray: '6 4' }
+   173:         : { stroke: '#FFAA33', strokeWidth: 2 },
+   174:       markerEnd: { type: MarkerType.ArrowClosed, color: c.muted ? '#555566' : '#FFAA33', width: 12, height: 12 },
+   175:       interactionWidth: 20,
+```
+**Rationale:** Subsystem-only match: --theme-nodeeditor-port-default is value-equal but its semantic tail [nodeeditor, port] is absent from the context. Other-subsystem value-equivalents: 2. Likely a catalog gap, not a true MEDIUM.
+**Assignment rule:** v2-gate-tiebreak-subsystem-unanchored
+**Gates passed:** value, capability, subsystem:same
+
+---
+### [23/39] subsystem: node-editor
+
+**File:** ui/src/components/mixer/NodeEditor.jsx:173  (col 21)
+**Matched text:** `#FFAA33` (hex, element-hint: stroke)
+**Proposed token:** `--theme-nodeeditor-connection-cv`
+**Surrounding context:**
+```
+   170:       data: { gain: c.gain, muted: c.muted, srcId: c.source, dstId: c.dest },
+   171:       style: c.muted
+   172:         ? { stroke: '#555566', strokeWidth: 2, strokeDasharray: '6 4' }
+>  173:         : { stroke: '#FFAA33', strokeWidth: 2 },
+   174:       markerEnd: { type: MarkerType.ArrowClosed, color: c.muted ? '#555566' : '#FFAA33', width: 12, height: 12 },
+   175:       interactionWidth: 20,
+   176:     }))
+```
+**Rationale:** Unresolved tie after subsystem/hint/derivation gates; alphabetical fallback. Tied candidates: --theme-nodeeditor-connection-cv, --theme-nodeeditor-port-connected
+**Assignment rule:** v2-gate-tiebreak-alphabetical
+**Gates passed:** value, capability, subsystem:same
+
+---
+### [24/39] subsystem: node-editor
+
+**File:** ui/src/components/mixer/NodeEditor.jsx:174  (col 67)
+**Matched text:** `#555566` (hex, element-hint: fg)
+**Proposed token:** `--theme-nodeeditor-port-default`
+**Surrounding context:**
+```
+   171:       style: c.muted
+   172:         ? { stroke: '#555566', strokeWidth: 2, strokeDasharray: '6 4' }
+   173:         : { stroke: '#FFAA33', strokeWidth: 2 },
+>  174:       markerEnd: { type: MarkerType.ArrowClosed, color: c.muted ? '#555566' : '#FFAA33', width: 12, height: 12 },
+   175:       interactionWidth: 20,
+   176:     }))
+   177: 
+```
+**Rationale:** Subsystem-only match: --theme-nodeeditor-port-default is value-equal but its semantic tail [nodeeditor, port] is absent from the context. Other-subsystem value-equivalents: 2. Likely a catalog gap, not a true MEDIUM.
+**Assignment rule:** v2-gate-tiebreak-subsystem-unanchored
+**Gates passed:** value, capability, subsystem:same
+
+---
+### [25/39] subsystem: node-editor
+
+**File:** ui/src/components/mixer/NodeEditor.jsx:174  (col 79)
+**Matched text:** `#FFAA33` (hex, element-hint: fg)
+**Proposed token:** `--theme-nodeeditor-connection-cv`
+**Surrounding context:**
+```
+   171:       style: c.muted
+   172:         ? { stroke: '#555566', strokeWidth: 2, strokeDasharray: '6 4' }
+   173:         : { stroke: '#FFAA33', strokeWidth: 2 },
+>  174:       markerEnd: { type: MarkerType.ArrowClosed, color: c.muted ? '#555566' : '#FFAA33', width: 12, height: 12 },
+   175:       interactionWidth: 20,
+   176:     }))
+   177: 
+```
+**Rationale:** Unresolved tie after subsystem/hint/derivation gates; alphabetical fallback. Tied candidates: --theme-nodeeditor-connection-cv, --theme-nodeeditor-port-connected
+**Assignment rule:** v2-gate-tiebreak-alphabetical
+**Gates passed:** value, capability, subsystem:same
+
+---
+### [26/39] subsystem: node-editor
+
+**File:** ui/src/components/mixer/NodeEditor.jsx:301  (col 28)
+**Matched text:** `#FFAA33` (hex, element-hint: stroke)
+**Proposed token:** `--theme-nodeeditor-connection-cv`
+**Surrounding context:**
+```
+   298:         deleteKeyCode={null}
+   299:         proOptions={{ hideAttribution: true }}
+   300:         defaultEdgeOptions={{
+>  301:           style: { stroke: '#FFAA33', strokeWidth: 2 },
+   302:           markerEnd: { type: MarkerType.ArrowClosed, color: '#FFAA33', width: 12, height: 12 },
+   303:         }}
+   304:       >
+```
+**Rationale:** Unresolved tie after subsystem/hint/derivation gates; alphabetical fallback. Tied candidates: --theme-nodeeditor-connection-cv, --theme-nodeeditor-port-connected
+**Assignment rule:** v2-gate-tiebreak-alphabetical
+**Gates passed:** value, capability, subsystem:same
+
+---
+### [27/39] subsystem: node-editor
+
+**File:** ui/src/components/mixer/NodeEditor.jsx:302  (col 61)
+**Matched text:** `#FFAA33` (hex, element-hint: fg)
+**Proposed token:** `--theme-nodeeditor-connection-cv`
+**Surrounding context:**
+```
+   299:         proOptions={{ hideAttribution: true }}
+   300:         defaultEdgeOptions={{
+   301:           style: { stroke: '#FFAA33', strokeWidth: 2 },
+>  302:           markerEnd: { type: MarkerType.ArrowClosed, color: '#FFAA33', width: 12, height: 12 },
+   303:         }}
+   304:       >
+   305:         <Background color="#2A2A38" gap={20} size={1} />
+```
+**Rationale:** Unresolved tie after subsystem/hint/derivation gates; alphabetical fallback. Tied candidates: --theme-nodeeditor-connection-cv, --theme-nodeeditor-port-connected
+**Assignment rule:** v2-gate-tiebreak-alphabetical
+**Gates passed:** value, capability, subsystem:same
+
+---
+### [28/39] subsystem: syllable-splitter
+
+**File:** ui/src/components/SyllableSplitter/SyllableSplitter.jsx:11  (col 13)
+**Matched text:** `#555566` (hex, element-hint: COLOR)
+**Proposed token:** `--theme-text-placeholder`
+**Surrounding context:**
+```
+     8: const DELETE_EDGE = 6    // drag this close to left/right edge → delete marker
+     9: const COLOR = {
+    10:   bg:       '#1b1b24',
+>   11:   wave:     '#555566',
+    12:   waveDim:  '#3a3a4a',
+    13:   marker:   '#33CED6',
+    14:   markerHi: '#7ce9ef',
+```
+**Rationale:** Unresolved tie after subsystem/hint/derivation gates; alphabetical fallback. Tied candidates: --theme-text-placeholder, --theme-text-subtle
+**Assignment rule:** v2-gate-tiebreak-alphabetical
+**Gates passed:** value, capability, subsystem:same
+
+---
+### [29/39] subsystem: lip-sync-picker
+
+**File:** ui/src/components/SamplePicker/WaveformScrubber.jsx:11  (col 15)
+**Matched text:** `#555566` (hex, element-hint: COLOR)
+**Proposed token:** `--theme-text-placeholder`
+**Surrounding context:**
+```
+     8:   handle:     '#33CED6',
+     9:   playhead:   '#33CED6',
+    10:   playheadBg: 'rgba(51, 206, 214, 0.08)',
+>   11:   text:       '#555566',
+    12:   error:      '#555566',
+    13: }
+    14: 
+```
+**Rationale:** Unresolved tie after subsystem/hint/derivation gates; alphabetical fallback. Tied candidates: --theme-text-placeholder, --theme-text-subtle
+**Assignment rule:** v2-gate-tiebreak-alphabetical
+**Gates passed:** value, capability, subsystem:universal
+
+---
+### [30/39] subsystem: lip-sync-picker
+
+**File:** ui/src/components/SamplePicker/WaveformScrubber.jsx:12  (col 15)
+**Matched text:** `#555566` (hex, element-hint: COLOR)
+**Proposed token:** `--theme-text-placeholder`
+**Surrounding context:**
+```
+     9:   playhead:   '#33CED6',
+    10:   playheadBg: 'rgba(51, 206, 214, 0.08)',
+    11:   text:       '#555566',
+>   12:   error:      '#555566',
+    13: }
+    14: 
+    15: const HANDLE_W   = 2    // handle line width (px)
+```
+**Rationale:** Unresolved tie after subsystem/hint/derivation gates; alphabetical fallback. Tied candidates: --theme-text-placeholder, --theme-text-subtle
+**Assignment rule:** v2-gate-tiebreak-alphabetical
+**Gates passed:** value, capability, subsystem:universal
+
+---
+### [31/39] subsystem: preview-player
+
+**File:** ui/src/components/VideoPreview.jsx:210  (col 27)
+**Matched text:** `#555566` (hex, element-hint: canvas-fill)
+**Proposed token:** `--theme-text-placeholder`
+**Surrounding context:**
+```
+   207:       } else if (ctx2d) {
+   208:         ctx2d.fillStyle = '#111118'
+   209:         ctx2d.fillRect(0, 0, canvas.width, canvas.height)
+>  210:         ctx2d.fillStyle = '#555566'
+   211:         ctx2d.font = '500 14px "Hanken Grotesk", system-ui'
+   212:         ctx2d.textAlign = 'center'
+   213:         ctx2d.textBaseline = 'middle'
+```
+**Rationale:** Unresolved tie after subsystem/hint/derivation gates; alphabetical fallback. Tied candidates: --theme-text-placeholder, --theme-text-subtle
+**Assignment rule:** v2-gate-tiebreak-alphabetical
+**Gates passed:** value, capability, subsystem:universal
+
+---
+### [32/39] subsystem: timeline
+
+**File:** ui/src/styles/app.css:1614  (col 10)
+**Matched text:** `#0D0D14` (hex, element-hint: fg)
+**Proposed token:** `--theme-bg-inset`
+**Surrounding context:**
+```
+  1611: 
+  1612: .timeline-copied-tooltip {
+  1613:   background: rgba(51, 206, 214, 0.9);
+> 1614:   color: #0D0D14;
+  1615:   font-size: 11px;
+  1616:   font-weight: 600;
+  1617:   padding: 2px 8px;
+```
+**Rationale:** Unresolved tie after subsystem/hint/derivation gates; alphabetical fallback. Tied candidates: --theme-bg-inset, --theme-text-on-accent
+**Assignment rule:** v2-gate-tiebreak-alphabetical
+**Gates passed:** value, capability, subsystem:universal
+
+---
+### [33/39] subsystem: dialogs-modals
+
+**File:** ui/src/styles/app.css:1839  (col 10)
+**Matched text:** `#0D0D14` (hex, element-hint: fg)
+**Proposed token:** `--theme-bg-inset`
+**Surrounding context:**
+```
+  1836: .export-dialog-footer .export-btn-danger {
+  1837:   background: var(--danger);
+  1838:   border-color: var(--danger);
+> 1839:   color: #0D0D14;
+  1840: }
+  1841: 
+  1842: .export-dialog-footer .export-btn-danger:hover:not(:disabled) {
+```
+**Rationale:** Unresolved tie after subsystem/hint/derivation gates; alphabetical fallback. Tied candidates: --theme-bg-inset, --theme-text-on-accent
+**Assignment rule:** v2-gate-tiebreak-alphabetical
+**Gates passed:** value, capability, subsystem:universal
+
+---
+### [34/39] subsystem: node-editor
+
+**File:** ui/src/styles/app.css:5725  (col 26)
+**Matched text:** `#FFAA33` (hex, element-hint: border)
+**Proposed token:** `--theme-nodeeditor-connection-cv`
+**Surrounding context:**
+```
+  5722: }
+  5723: 
+  5724: .ne-node--input {
+> 5725:   border-left: 3px solid #FFAA33;
+  5726: }
+  5727: 
+  5728: .ne-node--output {
+```
+**Rationale:** Unresolved tie after subsystem/hint/derivation gates; alphabetical fallback. Tied candidates: --theme-nodeeditor-connection-cv, --theme-nodeeditor-port-connected
+**Assignment rule:** v2-gate-tiebreak-alphabetical
+**Gates passed:** value, capability, subsystem:same
+
+---
+### [35/39] subsystem: node-editor
+
+**File:** ui/src/styles/app.css:5729  (col 27)
+**Matched text:** `#FFAA33` (hex, element-hint: border)
+**Proposed token:** `--theme-nodeeditor-connection-cv`
+**Surrounding context:**
+```
+  5726: }
+  5727: 
+  5728: .ne-node--output {
+> 5729:   border-right: 3px solid #FFAA33;
+  5730: }
+  5731: 
+  5732: .ne-node-label {
+```
+**Rationale:** Unresolved tie after subsystem/hint/derivation gates; alphabetical fallback. Tied candidates: --theme-nodeeditor-connection-cv, --theme-nodeeditor-port-connected
+**Assignment rule:** v2-gate-tiebreak-alphabetical
+**Gates passed:** value, capability, subsystem:same
+
+---
+### [36/39] subsystem: node-editor
+
+**File:** ui/src/styles/app.css:5797  (col 15)
+**Matched text:** `#FFAA33` (hex, element-hint: bg)
+**Proposed token:** `--theme-nodeeditor-connection-cv`
+**Surrounding context:**
+```
+  5794: .ne-handle {
+  5795:   width: 8px !important;
+  5796:   height: 8px !important;
+> 5797:   background: #FFAA33 !important;
+  5798:   border: 1px solid var(--bg-primary) !important;
+  5799:   border-radius: 50% !important;
+  5800: }
+```
+**Rationale:** Unresolved tie after subsystem/hint/derivation gates; alphabetical fallback. Tied candidates: --theme-nodeeditor-connection-cv, --theme-nodeeditor-port-connected
+**Assignment rule:** v2-gate-tiebreak-alphabetical
+**Gates passed:** value, capability, subsystem:same
+
+---
+### [37/39] subsystem: node-editor
+
+**File:** ui/src/styles/app.css:5875  (col 15)
+**Matched text:** `#FFAA33` (hex, element-hint: bg)
+**Proposed token:** `--theme-nodeeditor-connection-cv`
+**Surrounding context:**
+```
+  5872:   width: 12px;
+  5873:   height: 12px;
+  5874:   border-radius: 50%;
+> 5875:   background: #FFAA33;
+  5876:   cursor: pointer;
+  5877:   border: 1px solid var(--bg-primary);
+  5878: }
+```
+**Rationale:** Unresolved tie after subsystem/hint/derivation gates; alphabetical fallback. Tied candidates: --theme-nodeeditor-connection-cv, --theme-nodeeditor-port-connected
+**Assignment rule:** v2-gate-tiebreak-alphabetical
+**Gates passed:** value, capability, subsystem:same
+
+---
+### [38/39] subsystem: dialogs-modals
+
+**File:** ui/src/styles/app.css:7548  (col 10)
+**Matched text:** `#0D0D14` (hex, element-hint: fg)
+**Proposed token:** `--theme-bg-inset`
+**Surrounding context:**
+```
+  7545: .unsaved-dialog-btn.danger {
+  7546:   background: var(--danger);
+  7547:   border-color: var(--danger);
+> 7548:   color: #0D0D14;
+  7549: }
+  7550: .unsaved-dialog-btn.danger:hover { filter: brightness(1.1); }
+  7551: 
+```
+**Rationale:** Unresolved tie after subsystem/hint/derivation gates; alphabetical fallback. Tied candidates: --theme-bg-inset, --theme-text-on-accent
+**Assignment rule:** v2-gate-tiebreak-alphabetical
+**Gates passed:** value, capability, subsystem:universal
+
+---
+### [39/39] subsystem: dialogs-modals
+
+**File:** ui/src/styles/app.css:7818  (col 10)
+**Matched text:** `#0D0D14` (hex, element-hint: fg)
+**Proposed token:** `--theme-bg-inset`
+**Surrounding context:**
+```
+  7815: .export-progress-actions .export-btn-danger {
+  7816:   background: var(--danger);
+  7817:   border-color: var(--danger);
+> 7818:   color: #0D0D14;
+  7819: }
+  7820: 
+  7821: .export-progress-actions .export-btn-danger:hover:not(:disabled) { filter: brightness(1.1); }
+```
+**Rationale:** Unresolved tie after subsystem/hint/derivation gates; alphabetical fallback. Tied candidates: --theme-bg-inset, --theme-text-on-accent
+**Assignment rule:** v2-gate-tiebreak-alphabetical
+**Gates passed:** value, capability, subsystem:universal
+
+════════════════════════════════════════════════════════════════════════
+
+Awaiting comprehensive LOW approval pass (39 entries).

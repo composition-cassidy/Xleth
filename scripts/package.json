@@ -1,0 +1,13 @@
+{
+  "name": "xleth-scripts",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Build and audit tooling for the Xleth repo. Not shipped.",
+  "scripts": {
+    "audit:theming": "node theming-audit.js"
+  },
+  "dependencies": {
+    "css-tree": "^3.1.0",
+    "fast-glob": "^3.3.2"
+  }
+}

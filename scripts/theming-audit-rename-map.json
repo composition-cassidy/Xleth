@@ -1,0 +1,1681 @@
+{
+  "generatedAt": "2026-04-22T20:23:58.692Z",
+  "note": "Precursor `var(--xxx)` references found in the codebase. needsReview=true means the var is used in only one §3.4 subsystem, making it a candidate for promotion to a subsystem-scoped --theme-<subsystem>-* token rather than a blind rename to --theme-<name>. Multi-subsystem vars stay as base tokens.",
+  "varCount": 133,
+  "needsReviewCount": 50,
+  "vars": {
+    "--label-": {
+      "totalRefs": 1,
+      "subsystems": [
+        "lip-sync-picker"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/components/SamplePicker/ControlsRow.jsx"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'lip-sync-picker' — candidate for promotion to --theme-lip-sync-picker-* token"
+    },
+    "--label-custom": {
+      "totalRefs": 3,
+      "subsystems": [
+        "lip-sync-picker",
+        "sample-selector"
+      ],
+      "fileCount": 3,
+      "sampleFiles": [
+        "ui/src/components/SamplePicker/ControlsRow.jsx",
+        "ui/src/components/SampleRow.jsx",
+        "ui/src/constants/labels.js"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used across multiple subsystems — keep as base token"
+    },
+    "--label-kick": {
+      "totalRefs": 2,
+      "subsystems": [
+        "sample-selector"
+      ],
+      "fileCount": 2,
+      "sampleFiles": [
+        "ui/src/components/SampleRow.jsx",
+        "ui/src/constants/labels.js"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'sample-selector' — candidate for promotion to --theme-sample-selector-* token"
+    },
+    "--label-snare": {
+      "totalRefs": 2,
+      "subsystems": [
+        "sample-selector"
+      ],
+      "fileCount": 2,
+      "sampleFiles": [
+        "ui/src/components/SampleRow.jsx",
+        "ui/src/constants/labels.js"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'sample-selector' — candidate for promotion to --theme-sample-selector-* token"
+    },
+    "--label-hihat": {
+      "totalRefs": 2,
+      "subsystems": [
+        "sample-selector"
+      ],
+      "fileCount": 2,
+      "sampleFiles": [
+        "ui/src/components/SampleRow.jsx",
+        "ui/src/constants/labels.js"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'sample-selector' — candidate for promotion to --theme-sample-selector-* token"
+    },
+    "--label-crash": {
+      "totalRefs": 2,
+      "subsystems": [
+        "sample-selector"
+      ],
+      "fileCount": 2,
+      "sampleFiles": [
+        "ui/src/components/SampleRow.jsx",
+        "ui/src/constants/labels.js"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'sample-selector' — candidate for promotion to --theme-sample-selector-* token"
+    },
+    "--label-pitch": {
+      "totalRefs": 5,
+      "subsystems": [
+        "chrome-layout",
+        "sample-selector"
+      ],
+      "fileCount": 3,
+      "sampleFiles": [
+        "ui/src/components/SampleRow.jsx",
+        "ui/src/constants/labels.js",
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'sample-selector' — candidate for promotion to --theme-sample-selector-* token"
+    },
+    "--label-quote": {
+      "totalRefs": 3,
+      "subsystems": [
+        "chrome-layout",
+        "sample-selector"
+      ],
+      "fileCount": 3,
+      "sampleFiles": [
+        "ui/src/components/SampleRow.jsx",
+        "ui/src/constants/labels.js",
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'sample-selector' — candidate for promotion to --theme-sample-selector-* token"
+    },
+    "--theme-border-focus": {
+      "totalRefs": 6,
+      "subsystems": [
+        "chrome-layout",
+        "stock-effects.shared",
+        "timeline"
+      ],
+      "fileCount": 6,
+      "sampleFiles": [
+        "ui/src/components/TimelineView.jsx",
+        "ui/src/components/sampler/Knob.jsx",
+        "ui/src/components/timeline/TimelineCanvas.jsx",
+        "ui/src/components/timeline/TimelineRuler.jsx",
+        "ui/src/components/timeline/TimelineToolbar.jsx"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used across multiple subsystems — keep as base token"
+    },
+    "--border": {
+      "totalRefs": 168,
+      "subsystems": [
+        "chrome-layout",
+        "dialogs-modals",
+        "stock-effects.distortion"
+      ],
+      "fileCount": 4,
+      "sampleFiles": [
+        "ui/src/components/VideoExportDialog.jsx",
+        "ui/src/components/exportPresets/CustomTab.jsx",
+        "ui/src/components/mixer/WaveshaperPanel.jsx",
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used across multiple subsystems — keep as base token"
+    },
+    "--xleth-eq-gr-boost": {
+      "totalRefs": 2,
+      "subsystems": [
+        "stock-effects.eq"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/components/mixer/EqPanel.jsx"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'stock-effects.eq' — candidate for promotion to --theme-stock-effects.eq-* token"
+    },
+    "--xleth-eq-gr-cut": {
+      "totalRefs": 5,
+      "subsystems": [
+        "chrome-layout",
+        "stock-effects.eq"
+      ],
+      "fileCount": 2,
+      "sampleFiles": [
+        "ui/src/components/mixer/EqPanel.jsx",
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'stock-effects.eq' — candidate for promotion to --theme-stock-effects.eq-* token"
+    },
+    "--xleth-eq-mode-static": {
+      "totalRefs": 1,
+      "subsystems": [
+        "stock-effects.eq"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/components/mixer/EqPanel.jsx"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'stock-effects.eq' — candidate for promotion to --theme-stock-effects.eq-* token"
+    },
+    "--xleth-eq-mode-dynamic": {
+      "totalRefs": 3,
+      "subsystems": [
+        "chrome-layout",
+        "stock-effects.eq"
+      ],
+      "fileCount": 2,
+      "sampleFiles": [
+        "ui/src/components/mixer/EqPanel.jsx",
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'stock-effects.eq' — candidate for promotion to --theme-stock-effects.eq-* token"
+    },
+    "--xleth-eq-mode-spectral": {
+      "totalRefs": 3,
+      "subsystems": [
+        "chrome-layout",
+        "stock-effects.eq"
+      ],
+      "fileCount": 2,
+      "sampleFiles": [
+        "ui/src/components/mixer/EqPanel.jsx",
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'stock-effects.eq' — candidate for promotion to --theme-stock-effects.eq-* token"
+    },
+    "--xleth-eq-accent": {
+      "totalRefs": 18,
+      "subsystems": [
+        "chrome-layout",
+        "stock-effects.eq"
+      ],
+      "fileCount": 2,
+      "sampleFiles": [
+        "ui/src/components/mixer/EqPanel.jsx",
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'stock-effects.eq' — candidate for promotion to --theme-stock-effects.eq-* token"
+    },
+    "--xleth-eq-bg-plot": {
+      "totalRefs": 3,
+      "subsystems": [
+        "chrome-layout",
+        "stock-effects.eq"
+      ],
+      "fileCount": 2,
+      "sampleFiles": [
+        "ui/src/components/mixer/EqPanel.jsx",
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'stock-effects.eq' — candidate for promotion to --theme-stock-effects.eq-* token"
+    },
+    "--accent": {
+      "totalRefs": 132,
+      "subsystems": [
+        "chrome-layout",
+        "stock-effects.distortion"
+      ],
+      "fileCount": 3,
+      "sampleFiles": [
+        "ui/src/components/mixer/WaveshaperPanel.jsx",
+        "ui/src/styles/app.css",
+        "ui/src/styles/theme.css"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'stock-effects.distortion' — candidate for promotion to --theme-stock-effects.distortion-* token"
+    },
+    "--bg-primary": {
+      "totalRefs": 36,
+      "subsystems": [
+        "chrome-layout",
+        "stock-effects.distortion"
+      ],
+      "fileCount": 3,
+      "sampleFiles": [
+        "ui/src/components/mixer/WaveshaperPanel.jsx",
+        "ui/src/styles/app.css",
+        "ui/src/styles/theme.css"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'stock-effects.distortion' — candidate for promotion to --theme-stock-effects.distortion-* token"
+    },
+    "--text-tertiary": {
+      "totalRefs": 100,
+      "subsystems": [
+        "chrome-layout",
+        "stock-effects.distortion"
+      ],
+      "fileCount": 3,
+      "sampleFiles": [
+        "ui/src/components/mixer/WaveshaperPanel.jsx",
+        "ui/src/styles/app.css",
+        "ui/src/styles/theme.css"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'stock-effects.distortion' — candidate for promotion to --theme-stock-effects.distortion-* token"
+    },
+    "--theme-bg-inset": {
+      "totalRefs": 5,
+      "subsystems": [
+        "chrome-layout",
+        "piano-roll"
+      ],
+      "fileCount": 2,
+      "sampleFiles": [
+        "ui/src/components/pianoRoll/PianoRoll.jsx",
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'piano-roll' — candidate for promotion to --theme-piano-roll-* token"
+    },
+    "--theme-pianoroll-key-white-bg": {
+      "totalRefs": 7,
+      "subsystems": [
+        "chrome-layout",
+        "piano-roll"
+      ],
+      "fileCount": 3,
+      "sampleFiles": [
+        "ui/src/components/pianoRoll/PianoRoll.jsx",
+        "ui/src/components/pianoRoll/PianoRollKeyboard.jsx",
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'piano-roll' — candidate for promotion to --theme-piano-roll-* token"
+    },
+    "--theme-border-subtle": {
+      "totalRefs": 12,
+      "subsystems": [
+        "chrome-layout",
+        "piano-roll"
+      ],
+      "fileCount": 4,
+      "sampleFiles": [
+        "ui/src/components/pianoRoll/PianoRoll.jsx",
+        "ui/src/components/pianoRoll/PianoRollKeyboard.jsx",
+        "ui/src/components/pianoRoll/VelocityLane.jsx",
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'piano-roll' — candidate for promotion to --theme-piano-roll-* token"
+    },
+    "--theme-bg-surface": {
+      "totalRefs": 11,
+      "subsystems": [
+        "piano-roll",
+        "sampler"
+      ],
+      "fileCount": 4,
+      "sampleFiles": [
+        "ui/src/components/pianoRoll/PianoRollKeyboard.jsx",
+        "ui/src/components/sampler/LfoSection.jsx",
+        "ui/src/components/sampler/MiniKeyboard.jsx",
+        "ui/src/components/sampler/SamplerPanel.jsx"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used across multiple subsystems — keep as base token"
+    },
+    "--theme-pianoroll-key-black-bg": {
+      "totalRefs": 3,
+      "subsystems": [
+        "piano-roll"
+      ],
+      "fileCount": 2,
+      "sampleFiles": [
+        "ui/src/components/pianoRoll/PianoRollKeyboard.jsx",
+        "ui/src/components/pianoRoll/VelocityLane.jsx"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'piano-roll' — candidate for promotion to --theme-piano-roll-* token"
+    },
+    "--theme-sampler-key-border": {
+      "totalRefs": 18,
+      "subsystems": [
+        "chrome-layout",
+        "sampler"
+      ],
+      "fileCount": 7,
+      "sampleFiles": [
+        "ui/src/components/sampler/EnvelopeEditor.jsx",
+        "ui/src/components/sampler/LfoSection.jsx",
+        "ui/src/components/sampler/LfoWaveformCanvas.jsx",
+        "ui/src/components/sampler/MiniKeyboard.jsx",
+        "ui/src/components/sampler/SamplerPanel.jsx"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'sampler' — candidate for promotion to --theme-sampler-* token"
+    },
+    "--theme-fx-knob-lg-indicator": {
+      "totalRefs": 1,
+      "subsystems": [
+        "stock-effects.shared"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/components/sampler/Knob.jsx"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'stock-effects.shared' — candidate for promotion to --theme-stock-effects.shared-* token"
+    },
+    "--theme-fx-axis-label": {
+      "totalRefs": 1,
+      "subsystems": [
+        "stock-effects.shared"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/components/sampler/Knob.jsx"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'stock-effects.shared' — candidate for promotion to --theme-stock-effects.shared-* token"
+    },
+    "--theme-text-muted": {
+      "totalRefs": 12,
+      "subsystems": [
+        "chrome-layout",
+        "sampler"
+      ],
+      "fileCount": 3,
+      "sampleFiles": [
+        "ui/src/components/sampler/LfoSection.jsx",
+        "ui/src/components/sampler/SamplerPanel.jsx",
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'sampler' — candidate for promotion to --theme-sampler-* token"
+    },
+    "--theme-text": {
+      "totalRefs": 13,
+      "subsystems": [
+        "chrome-layout",
+        "sampler"
+      ],
+      "fileCount": 3,
+      "sampleFiles": [
+        "ui/src/components/sampler/LfoSection.jsx",
+        "ui/src/components/sampler/SamplerPanel.jsx",
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'sampler' — candidate for promotion to --theme-sampler-* token"
+    },
+    "--theme-label-pitch": {
+      "totalRefs": 2,
+      "subsystems": [
+        "sampler"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/components/sampler/MiniKeyboard.jsx"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'sampler' — candidate for promotion to --theme-sampler-* token"
+    },
+    "--theme-sampler-key-black": {
+      "totalRefs": 1,
+      "subsystems": [
+        "sampler"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/components/sampler/MiniKeyboard.jsx"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'sampler' — candidate for promotion to --theme-sampler-* token"
+    },
+    "--theme-bg-secondary": {
+      "totalRefs": 2,
+      "subsystems": [
+        "chrome-layout",
+        "sampler"
+      ],
+      "fileCount": 2,
+      "sampleFiles": [
+        "ui/src/components/sampler/SamplerPanel.jsx",
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'sampler' — candidate for promotion to --theme-sampler-* token"
+    },
+    "--theme-sampler-lfo-bg-volume": {
+      "totalRefs": 1,
+      "subsystems": [
+        "sampler"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/components/sampler/SamplerPanel.jsx"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'sampler' — candidate for promotion to --theme-sampler-* token"
+    },
+    "--theme-sampler-lfo-color-volume": {
+      "totalRefs": 1,
+      "subsystems": [
+        "sampler"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/components/sampler/SamplerPanel.jsx"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'sampler' — candidate for promotion to --theme-sampler-* token"
+    },
+    "--theme-sampler-lfo-bg-pitch": {
+      "totalRefs": 1,
+      "subsystems": [
+        "sampler"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/components/sampler/SamplerPanel.jsx"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'sampler' — candidate for promotion to --theme-sampler-* token"
+    },
+    "--theme-sampler-lfo-color-pitch": {
+      "totalRefs": 1,
+      "subsystems": [
+        "sampler"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/components/sampler/SamplerPanel.jsx"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'sampler' — candidate for promotion to --theme-sampler-* token"
+    },
+    "--theme-drag-preview-default": {
+      "totalRefs": 2,
+      "subsystems": [
+        "chrome-layout",
+        "pattern-list"
+      ],
+      "fileCount": 2,
+      "sampleFiles": [
+        "ui/src/components/timeline/PatternListPanel.jsx",
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'pattern-list' — candidate for promotion to --theme-pattern-list-* token"
+    },
+    "--theme-eq-band-1": {
+      "totalRefs": 1,
+      "subsystems": [
+        "stock-effects.eq"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/stores/eqStore.js"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'stock-effects.eq' — candidate for promotion to --theme-stock-effects.eq-* token"
+    },
+    "--theme-eq-band-2": {
+      "totalRefs": 1,
+      "subsystems": [
+        "stock-effects.eq"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/stores/eqStore.js"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'stock-effects.eq' — candidate for promotion to --theme-stock-effects.eq-* token"
+    },
+    "--theme-eq-band-3": {
+      "totalRefs": 1,
+      "subsystems": [
+        "stock-effects.eq"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/stores/eqStore.js"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'stock-effects.eq' — candidate for promotion to --theme-stock-effects.eq-* token"
+    },
+    "--theme-eq-band-4": {
+      "totalRefs": 1,
+      "subsystems": [
+        "stock-effects.eq"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/stores/eqStore.js"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'stock-effects.eq' — candidate for promotion to --theme-stock-effects.eq-* token"
+    },
+    "--theme-eq-band-5": {
+      "totalRefs": 1,
+      "subsystems": [
+        "stock-effects.eq"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/stores/eqStore.js"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'stock-effects.eq' — candidate for promotion to --theme-stock-effects.eq-* token"
+    },
+    "--theme-eq-band-6": {
+      "totalRefs": 1,
+      "subsystems": [
+        "stock-effects.eq"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/stores/eqStore.js"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'stock-effects.eq' — candidate for promotion to --theme-stock-effects.eq-* token"
+    },
+    "--theme-eq-band-7": {
+      "totalRefs": 1,
+      "subsystems": [
+        "stock-effects.eq"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/stores/eqStore.js"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'stock-effects.eq' — candidate for promotion to --theme-stock-effects.eq-* token"
+    },
+    "--theme-eq-band-8": {
+      "totalRefs": 1,
+      "subsystems": [
+        "stock-effects.eq"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/stores/eqStore.js"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'stock-effects.eq' — candidate for promotion to --theme-stock-effects.eq-* token"
+    },
+    "--theme-eq-band-9": {
+      "totalRefs": 1,
+      "subsystems": [
+        "stock-effects.eq"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/stores/eqStore.js"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'stock-effects.eq' — candidate for promotion to --theme-stock-effects.eq-* token"
+    },
+    "--theme-eq-band-10": {
+      "totalRefs": 1,
+      "subsystems": [
+        "stock-effects.eq"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/stores/eqStore.js"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'stock-effects.eq' — candidate for promotion to --theme-stock-effects.eq-* token"
+    },
+    "--theme-eq-band-11": {
+      "totalRefs": 1,
+      "subsystems": [
+        "stock-effects.eq"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/stores/eqStore.js"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'stock-effects.eq' — candidate for promotion to --theme-stock-effects.eq-* token"
+    },
+    "--theme-eq-band-12": {
+      "totalRefs": 1,
+      "subsystems": [
+        "stock-effects.eq"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/stores/eqStore.js"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'stock-effects.eq' — candidate for promotion to --theme-stock-effects.eq-* token"
+    },
+    "--theme-eq-band-13": {
+      "totalRefs": 1,
+      "subsystems": [
+        "stock-effects.eq"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/stores/eqStore.js"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'stock-effects.eq' — candidate for promotion to --theme-stock-effects.eq-* token"
+    },
+    "--theme-eq-band-14": {
+      "totalRefs": 1,
+      "subsystems": [
+        "stock-effects.eq"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/stores/eqStore.js"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'stock-effects.eq' — candidate for promotion to --theme-stock-effects.eq-* token"
+    },
+    "--theme-eq-band-15": {
+      "totalRefs": 1,
+      "subsystems": [
+        "stock-effects.eq"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/stores/eqStore.js"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'stock-effects.eq' — candidate for promotion to --theme-stock-effects.eq-* token"
+    },
+    "--theme-eq-band-16": {
+      "totalRefs": 1,
+      "subsystems": [
+        "stock-effects.eq"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/stores/eqStore.js"
+      ],
+      "needsReview": true,
+      "reviewHint": "Used only in subsystem 'stock-effects.eq' — candidate for promotion to --theme-stock-effects.eq-* token"
+    },
+    "--titlebar-h": {
+      "totalRefs": 2,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--bg-secondary": {
+      "totalRefs": 51,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--text-secondary": {
+      "totalRefs": 101,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 2,
+      "sampleFiles": [
+        "ui/src/styles/app.css",
+        "ui/src/styles/theme.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--radius-sm": {
+      "totalRefs": 80,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--transition-fast": {
+      "totalRefs": 98,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--bg-tertiary": {
+      "totalRefs": 60,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--text-primary": {
+      "totalRefs": 119,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 2,
+      "sampleFiles": [
+        "ui/src/styles/app.css",
+        "ui/src/styles/theme.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--bg-elevated": {
+      "totalRefs": 25,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--radius-md": {
+      "totalRefs": 25,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--accent-dim": {
+      "totalRefs": 10,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 2,
+      "sampleFiles": [
+        "ui/src/styles/app.css",
+        "ui/src/styles/theme.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--danger": {
+      "totalRefs": 33,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--theme-fg-inverse": {
+      "totalRefs": 18,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--divider-w": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--transition": {
+      "totalRefs": 4,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--border-focused": {
+      "totalRefs": 14,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--text-muted": {
+      "totalRefs": 2,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--theme-preview-loaded-bg": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--theme-timeline-beat-line": {
+      "totalRefs": 3,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--transport-h": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--border-subtle": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--border-default": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--success": {
+      "totalRefs": 2,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--theme-dialog-backdrop": {
+      "totalRefs": 3,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--radius-lg": {
+      "totalRefs": 6,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--theme-modal-shadow": {
+      "totalRefs": 5,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--theme-text-on-accent": {
+      "totalRefs": 6,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--accent-hover": {
+      "totalRefs": 8,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--bg-surface": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--bg-hover": {
+      "totalRefs": 2,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--label-color": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--theme-focus-ring": {
+      "totalRefs": 2,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--theme-grid-chorus-overlay": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--theme-grid-editor-crosshair": {
+      "totalRefs": 2,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--theme-timeline-selection-rect": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--theme-accent": {
+      "totalRefs": 2,
+      "subsystems": [
+        "chrome-layout",
+        "unknown"
+      ],
+      "fileCount": 2,
+      "sampleFiles": [
+        "ui/src/styles/app.css",
+        "ui/src/theming/runtime/applyTheme.ts"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--text-disabled": {
+      "totalRefs": 2,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--theme-chrome-shadow": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--theme-pianoroll-bar-line": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--theme-pianoroll-resize-handle-stripe": {
+      "totalRefs": 4,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--mixer-h": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--warning": {
+      "totalRefs": 6,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--theme-projectmedia-shadow": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--xleth-global-bg-panel": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--xleth-global-border": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--xleth-global-text-primary": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--xleth-global-accent": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--xleth-global-font-family": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--xleth-global-radius-md": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--xleth-eq-bg-panel": {
+      "totalRefs": 2,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--xleth-eq-border": {
+      "totalRefs": 14,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--xleth-eq-radius-md": {
+      "totalRefs": 3,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--xleth-eq-font-family": {
+      "totalRefs": 7,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--xleth-eq-font-size-base": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--xleth-eq-font-size-scale": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--xleth-eq-text-primary": {
+      "totalRefs": 5,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--xleth-eq-radius-sm": {
+      "totalRefs": 13,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--xleth-eq-text-tertiary": {
+      "totalRefs": 12,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--xleth-eq-text-secondary": {
+      "totalRefs": 12,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--theme-fx-surface-tint-subtle": {
+      "totalRefs": 20,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--xleth-eq-grid-zero": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--xleth-eq-grid": {
+      "totalRefs": 2,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--xleth-eq-font-mono": {
+      "totalRefs": 6,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--xleth-eq-spec-post-fill": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--xleth-eq-spec-post-stroke": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--xleth-eq-spec-pre-fill": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--xleth-eq-spec-pre-stroke": {
+      "totalRefs": 2,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--xleth-eq-spec-maxhold": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--xleth-eq-bg-header": {
+      "totalRefs": 2,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--xleth-eq-bg-row-alt": {
+      "totalRefs": 4,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--xleth-eq-border-strong": {
+      "totalRefs": 2,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--xleth-eq-text-muted": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--theme-nodeeditor-connection-cv": {
+      "totalRefs": 5,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--theme-label-hihat": {
+      "totalRefs": 2,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--theme-label-kick": {
+      "totalRefs": 3,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--theme-label-snare": {
+      "totalRefs": 4,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--theme-fx-plugin-shadow": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--bg-control": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--theme-toast-shadow": {
+      "totalRefs": 1,
+      "subsystems": [
+        "chrome-layout"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/styles/app.css"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    },
+    "--ref": {
+      "totalRefs": 1,
+      "subsystems": [
+        "unknown"
+      ],
+      "fileCount": 1,
+      "sampleFiles": [
+        "ui/src/theming/tokens/catalog.ts"
+      ],
+      "needsReview": false,
+      "reviewHint": "Used only in chrome/layout or unknown — keep as base token"
+    }
+  }
+}

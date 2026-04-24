@@ -71,7 +71,8 @@
       "Bash(python3 -c ' *)",
       "Bash(python3 -c \"import zipfile; [print\\(f'{i.filename:<55} {i.file_size:>8,} bytes'\\) for i in zipfile.ZipFile\\('C:/Users/Krasen/Desktop/xleth_eq_export.zip'\\).infolist\\(\\)]\")",
       "Bash(cmd /c \"build.bat\")",
-      "Bash(cmd.exe /c build.bat)"
+      "Bash(cmd.exe /c build.bat)",
+      "PowerShell(cmd /c \"dir /s /b \"\"C:\\\\Users\\\\Krasen\\\\Desktop\\\\XLETH\\\\ui\\\\tests\\\\baseline\\\\.output\\\\\"\" 2>&1\")"
     ]
   }
 }

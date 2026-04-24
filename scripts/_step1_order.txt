@@ -1,0 +1,58 @@
+Step  Subsystem                  Total   HIGH    MED    LOW    FP
+----------------------------------------------------------------------
+
+[Foundations]
+  1.  base                           0      0      0      0     0  (SKIP — 0 matches)
+  2.  borders                        0      0      0      0     0  (SKIP — 0 matches)
+  3.  text                           0      0      0      0     0  (SKIP — 0 matches)
+  4.  semantic                       0      0      0      0     0  (SKIP — 0 matches)
+
+[Global UI]
+  5.  buttons                        0      0      0      0     0  (SKIP — 0 matches)
+  6.  dialogs-modals                28      5     23      0     0
+  7.  context-menus                  2      2      0      0     0
+  8.  menu-bar-toolbar               0      0      0      0     0  (SKIP — 0 matches)
+  9.  transport-bar                  0      0      0      0     0  (SKIP — 0 matches)
+ 10.  top-toolbar                    0      0      0      0     0  (SKIP — 0 matches)
+ 11.  toast                          1      1      0      0     0
+
+[Panel chrome]
+ 12.  panel-chrome                  13     12      1      0     0
+ 13.  dock-snap                      0      0      0      0     0  (SKIP — 0 matches)
+ 14.  panel-types                    0      0      0      0     0  (SKIP — 0 matches)
+
+[Workspace low]
+ 15.  sample-selector                5      0      5      0     0
+ 16.  project-media                  4      1      3      0     0
+ 17.  pattern-list                  19      0     19      0     0
+ 18.  preview-player                 6      1      5      0     0
+
+[Workspace medium]
+ 19.  timeline                      86     37     41      1     7
+ 20.  mixer                         15      3     12      0     0
+
+[Stock effects shared]
+ 21.  stock-effects.shared          19     17      2      0     0
+
+[Stock effects each]
+ 22.  stock-effects.eq              29     22      7      0     0
+ 23.  stock-effects.dynamics        55      5     50      0     0
+ 24.  stock-effects.filter           0      0      0      0     0  (SKIP — 0 matches)
+ 25.  stock-effects.modulation       6      6      0      0     0
+ 26.  stock-effects.time             5      3      2      0     0
+ 27.  stock-effects.distortion       8      0      8      0     0
+
+[Workspace high]
+ 28.  piano-roll                    63     17     45      0     1
+ 29.  sampler                      120     44     71      4     1
+ 30.  grid-editor                   27     11     16      0     0
+
+[Specialized editors]
+ 31.  node-editor                   21      4     17      0     0
+ 32.  syllable-splitter             12      4      4      4     0
+ 33.  lip-sync-picker               16      9      4      3     0
+
+[Labels]
+ 34.  labels                        24     24      0      0     0
+----------------------------------------------------------------------
+TOTAL                            584    228    335     12     9

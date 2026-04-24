@@ -1,0 +1,57 @@
+# Legacy CSS custom properties enumerated from ui/src/styles/theme.css :root
+# Source-of-truth driver for Step 4.4 grep (find surviving var() references in
+# JSX/CSS/JS source and migrate to --theme-<name>). 32 entries total.
+#
+# Format: one variable name per line (without var() wrapper, without value).
+# Group headers are comments preserved from theme.css.
+
+# Backgrounds
+--bg-primary
+--bg-secondary
+--bg-tertiary
+--bg-elevated
+
+# Borders
+--border
+--border-focused
+
+# Text
+--text-primary
+--text-secondary
+--text-tertiary
+
+# Accent
+--accent
+--accent-hover
+--accent-dim
+
+# Status
+--danger
+--warning
+--success
+
+# Sample label colors
+--label-kick
+--label-snare
+--label-hihat
+--label-crash
+--label-pitch
+--label-quote
+--label-custom
+
+# Sizing (out-of-scope for Phase 0 color migration; listed for completeness)
+--titlebar-h
+--transport-h
+--panel-min-w
+--panel-max-w
+--divider-w
+--mixer-h
+
+# Radius (out-of-scope)
+--radius-sm
+--radius-md
+--radius-lg
+
+# Transitions (out-of-scope)
+--transition-fast
+--transition

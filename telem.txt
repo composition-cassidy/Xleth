@@ -1,0 +1,3 @@
+[FixSummary] dispatchBoundariesSeen=0 orphanCandidatesEver=0 maxHeldSimultaneous=7 maxHeldSimultaneousPerSampler=5
+[FixSummary] dispatchBoundariesSeen=0 orphanCandidatesEver=0 maxHeldSimultaneous=7 maxHeldSimultaneousPerSampler=5
+[FixSummary] (shutdown) dispatchBoundariesSeen=0 orphanCandidatesEver=0 maxHeldSimultaneous=12 maxHeldSimultaneousPerSampler=8

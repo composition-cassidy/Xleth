@@ -1,0 +1,206 @@
+Total LOW: 12
+
+
+======================================================================
+ LOW #1  ui/src/components/sampler/SamplerPanel.jsx:684
+======================================================================
+  matchedText       : '#33CED6'
+  proposedToken     : --theme-sampler-lfo-color-volume
+  subsystem         : sampler
+  elementHint       : None
+  rationale         : Matched via keyword scoring (score 2); element unclear — reviewer should confirm.
+  surroundingContext:
+       681:                 attackTension={envTab === 'volume' ? settings.attackTension : settings.pitchEnvAttackTension}
+       682:                 decayTension={envTab === 'volume' ? settings.decayTension : settings.pitchEnvDecayTension}
+       683:                 releaseTension={envTab === 'volume' ? settings.releaseTension : settings.pitchEnvReleaseTension}
+    >  684:                 color={envTab === 'volume' ? '#33CED6' : '#E8A020'}
+       685:                 onLiveChange={(partial) => {
+       686:                   if (envTab === 'pitch') {
+       687:                     const mapped = {}
+
+======================================================================
+ LOW #2  ui/src/components/sampler/SamplerPanel.jsx:684
+======================================================================
+  matchedText       : '#E8A020'
+  proposedToken     : --theme-sampler-lfo-color-volume
+  subsystem         : sampler
+  elementHint       : None
+  rationale         : Matched via keyword scoring (score 2); element unclear — reviewer should confirm.
+  surroundingContext:
+       681:                 attackTension={envTab === 'volume' ? settings.attackTension : settings.pitchEnvAttackTension}
+       682:                 decayTension={envTab === 'volume' ? settings.decayTension : settings.pitchEnvDecayTension}
+       683:                 releaseTension={envTab === 'volume' ? settings.releaseTension : settings.pitchEnvReleaseTension}
+    >  684:                 color={envTab === 'volume' ? '#33CED6' : '#E8A020'}
+       685:                 onLiveChange={(partial) => {
+       686:                   if (envTab === 'pitch') {
+       687:                     const mapped = {}
+
+======================================================================
+ LOW #3  ui/src/components/sampler/SamplerWaveform.jsx:110
+======================================================================
+  matchedText       : 'rgba(51, 206, 214, 0.35)'
+  proposedToken     : --theme-sampler-envelope-bg
+  subsystem         : sampler
+  elementHint       : None
+  rationale         : Matched via keyword scoring (score 2); element unclear — reviewer should confirm.
+  surroundingContext:
+       107:       ctx, ds,
+       108:       0, 0, width, height,
+       109:       0, cols,
+    >  110:       'rgba(51, 206, 214, 0.35)',  // envelope fill
+       111:       'rgba(51, 206, 214, 0.55)',  // RMS body (brighter)
+       112:     )
+       113: 
+
+======================================================================
+ LOW #4  ui/src/components/sampler/SamplerWaveform.jsx:111
+======================================================================
+  matchedText       : 'rgba(51, 206, 214, 0.55)'
+  proposedToken     : --theme-sampler-envelope-bg
+  subsystem         : sampler
+  elementHint       : None
+  rationale         : Matched via keyword scoring (score 2); element unclear — reviewer should confirm.
+  surroundingContext:
+       108:       0, 0, width, height,
+       109:       0, cols,
+       110:       'rgba(51, 206, 214, 0.35)',  // envelope fill
+    >  111:       'rgba(51, 206, 214, 0.55)',  // RMS body (brighter)
+       112:     )
+       113: 
+       114:     // Center line
+
+======================================================================
+ LOW #5  ui/src/components/TimelineView.jsx:1446
+======================================================================
+  matchedText       : '#6aa9ff'
+  proposedToken     : --theme-timeline-empty-region-bg
+  subsystem         : timeline
+  elementHint       : None
+  rationale         : Matched via keyword scoring (score 2); element unclear — reviewer should confirm.
+  surroundingContext:
+      1443:     if (isPattern) {
+      1444:       durationBeats = (dragData.lengthTicks || PPQ * 4) / PPQ
+      1445:       const region  = regions[dragData.regionId]
+    > 1446:       color = region ? labelHexColor(region.label || 'Custom') : '#6aa9ff'
+      1447:       name  = dragData.name
+      1448:     } else if (isSource) {
+      1449:       durationBeats = (dragData.duration || 0) * (bpmRef.current / 60)
+
+======================================================================
+ LOW #6  ui/src/components/SyllableSplitter/SyllableSplitter.jsx:10
+======================================================================
+  matchedText       : '#1b1b24'
+  proposedToken     : --theme-syllable-marker-dragging
+  subsystem         : syllable-splitter
+  elementHint       : COLOR
+  rationale         : Matched via keyword scoring (score 3); element unclear — reviewer should confirm.
+  surroundingContext:
+         7: const HANDLE_HIT = 8     // hit-test radius around marker (px)
+         8: const DELETE_EDGE = 6    // drag this close to left/right edge → delete marker
+         9: const COLOR = {
+    >   10:   bg:       '#1b1b24',
+        11:   wave:     '#555566',
+        12:   waveDim:  '#3a3a4a',
+        13:   marker:   '#33CED6',
+
+======================================================================
+ LOW #7  ui/src/components/SyllableSplitter/SyllableSplitter.jsx:13
+======================================================================
+  matchedText       : '#33CED6'
+  proposedToken     : --theme-syllable-marker
+  subsystem         : syllable-splitter
+  elementHint       : COLOR
+  rationale         : Matched via keyword scoring (score 2); element unclear — reviewer should confirm.
+  surroundingContext:
+        10:   bg:       '#1b1b24',
+        11:   wave:     '#555566',
+        12:   waveDim:  '#3a3a4a',
+    >   13:   marker:   '#33CED6',
+        14:   markerHi: '#7ce9ef',
+        15:   sectionAlt: 'rgba(51, 206, 214, 0.06)',
+        16:   text:     '#d0d0d8',
+
+======================================================================
+ LOW #8  ui/src/components/SyllableSplitter/SyllableSplitter.jsx:14
+======================================================================
+  matchedText       : '#7ce9ef'
+  proposedToken     : --theme-syllable-marker
+  subsystem         : syllable-splitter
+  elementHint       : COLOR
+  rationale         : Matched via keyword scoring (score 2); element unclear — reviewer should confirm.
+  surroundingContext:
+        11:   wave:     '#555566',
+        12:   waveDim:  '#3a3a4a',
+        13:   marker:   '#33CED6',
+    >   14:   markerHi: '#7ce9ef',
+        15:   sectionAlt: 'rgba(51, 206, 214, 0.06)',
+        16:   text:     '#d0d0d8',
+        17: }
+
+======================================================================
+ LOW #9  ui/src/components/SyllableSplitter/SyllableSplitter.jsx:15
+======================================================================
+  matchedText       : 'rgba(51, 206, 214, 0.06)'
+  proposedToken     : --theme-syllable-marker
+  subsystem         : syllable-splitter
+  elementHint       : COLOR
+  rationale         : Matched via keyword scoring (score 2); element unclear — reviewer should confirm.
+  surroundingContext:
+        12:   waveDim:  '#3a3a4a',
+        13:   marker:   '#33CED6',
+        14:   markerHi: '#7ce9ef',
+    >   15:   sectionAlt: 'rgba(51, 206, 214, 0.06)',
+        16:   text:     '#d0d0d8',
+        17: }
+        18: 
+
+======================================================================
+ LOW #10  ui/src/components/SamplePicker/WaveformScrubber.jsx:9
+======================================================================
+  matchedText       : '#33CED6'
+  proposedToken     : --theme-lipsync-waveform-playhead
+  subsystem         : lip-sync-picker
+  elementHint       : COLOR
+  rationale         : Matched via keyword scoring (score 2); element unclear — reviewer should confirm.
+  surroundingContext:
+         6:   selection:  'rgba(51, 206, 214, 0.15)',
+         7:   selEdge:    '#33CED6',
+         8:   handle:     '#33CED6',
+    >    9:   playhead:   '#33CED6',
+        10:   playheadBg: 'rgba(51, 206, 214, 0.08)',
+        11:   text:       '#555566',
+        12:   error:      '#555566',
+
+======================================================================
+ LOW #11  ui/src/components/SamplePicker/WaveformScrubber.jsx:10
+======================================================================
+  matchedText       : 'rgba(51, 206, 214, 0.08)'
+  proposedToken     : --theme-lipsync-waveform-playhead
+  subsystem         : lip-sync-picker
+  elementHint       : COLOR
+  rationale         : Matched via keyword scoring (score 2); element unclear — reviewer should confirm.
+  surroundingContext:
+         7:   selEdge:    '#33CED6',
+         8:   handle:     '#33CED6',
+         9:   playhead:   '#33CED6',
+    >   10:   playheadBg: 'rgba(51, 206, 214, 0.08)',
+        11:   text:       '#555566',
+        12:   error:      '#555566',
+        13: }
+
+======================================================================
+ LOW #12  ui/src/components/SamplePicker/WaveformScrubber.jsx:11
+======================================================================
+  matchedText       : '#555566'
+  proposedToken     : --theme-lipsync-waveform-playhead
+  subsystem         : lip-sync-picker
+  elementHint       : COLOR
+  rationale         : Matched via keyword scoring (score 2); element unclear — reviewer should confirm.
+  surroundingContext:
+         8:   handle:     '#33CED6',
+         9:   playhead:   '#33CED6',
+        10:   playheadBg: 'rgba(51, 206, 214, 0.08)',
+    >   11:   text:       '#555566',
+        12:   error:      '#555566',
+        13: }
+        14: 
