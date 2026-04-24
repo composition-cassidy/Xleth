@@ -1,7 +1,10 @@
 import React from 'react';
 import type { CSSProperties, ReactNode } from 'react';
+import { useDragOffset } from '../managers/DragManager';
+import { useResizePreview } from '../managers/ResizeManager';
 import { panelTypeColorVar, type PanelId } from '../registry/panelCatalog';
 import { usePanelRegistry, type PanelState } from '../registry/PanelRegistry';
+import { ResizeHandles } from './ResizeHandles';
 import { Titlebar } from './Titlebar';
 import './windowing.css';
 
@@ -18,20 +21,34 @@ export function getPanelFrameRenderPath(panel: PanelState | null | undefined): P
 }
 
 export function PanelFrame({ id, children }: PanelFrameProps) {
-  const panel = usePanelRegistry((state) => state.panels[id]);
+  const reactivePanel = usePanelRegistry((state) => state.panels[id]);
+  const panel = typeof window === 'undefined'
+    ? usePanelRegistry.getState().panels[id]
+    : reactivePanel;
   const focusPanel = usePanelRegistry((state) => state.focusPanel);
+  const dragOffset = useDragOffset(id);
+  const resizePreview = useResizePreview(id);
   const renderPath = getPanelFrameRenderPath(panel);
 
   if (renderPath === 'hidden') return null;
   if (renderPath === 'docked') return null;
-  if (renderPath === 'maximized') return null;
 
-  const frameStyle = {
+  const baseFrameStyle = {
     '--xleth-windowing-panel-color': panelTypeColorVar(id),
-    transform: `translate3d(${panel.floating.x}px, ${panel.floating.y}px, 0)`,
-    width: `${panel.floating.width}px`,
-    height: `${panel.floating.height}px`,
     zIndex: panel.zIndex,
+  } as CSSProperties;
+
+  const floatingBounds = resizePreview ?? {
+    ...panel.floating,
+    x: panel.floating.x + (dragOffset?.dx ?? 0),
+    y: panel.floating.y + (dragOffset?.dy ?? 0),
+  };
+
+  const frameStyle = renderPath === 'maximized' ? baseFrameStyle : {
+    ...baseFrameStyle,
+    transform: `translate3d(${floatingBounds.x}px, ${floatingBounds.y}px, 0)`,
+    width: `${floatingBounds.width}px`,
+    height: `${floatingBounds.height}px`,
   } as CSSProperties;
 
   return (
@@ -45,6 +62,7 @@ export function PanelFrame({ id, children }: PanelFrameProps) {
     >
       <Titlebar id={id} focused={panel.focused} />
       <div className="xleth-panel-body">{children}</div>
+      {renderPath === 'floating' ? <ResizeHandles id={id} /> : null}
     </section>
   );
 }

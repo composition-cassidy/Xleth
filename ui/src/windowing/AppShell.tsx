@@ -1,11 +1,12 @@
 import React from 'react';
 import { useEffect } from 'react';
 import { PanelFrame } from './components/PanelFrame';
+import { useEscRestoreMaximized } from './hooks/useEscRestoreMaximized';
 import { usePanelRegistry } from './registry/PanelRegistry';
-import type { PanelId } from './registry/panelCatalog';
+import { PANEL_CATALOG, type PanelId } from './registry/panelCatalog';
 import './components/windowing.css';
 
-type DevShellMode = 'single' | 'focus-demo';
+type DevShellMode = 'single' | 'focus-demo' | 'phase-2-demo';
 
 export interface WindowingAppShellProps {
   mode?: DevShellMode;
@@ -26,29 +27,44 @@ function configurePanel(id: PanelId, x: number, y: number, width: number, height
   registry.resizeFloatingPanel(id, x, y, width, height);
 }
 
+export function configurePhase2DemoPanels() {
+  configurePanel('timeline', 96, 72, 620, 340);
+  configurePanel('mixer', 420, 176, 540, 300);
+  configurePanel('pianoRoll', 256, 256, 680, 360);
+  usePanelRegistry.getState().focusPanel('timeline');
+}
+
+const SHELL_PANEL_IDS: Record<DevShellMode, PanelId[]> = {
+  single: ['timeline'],
+  'focus-demo': ['timeline', 'mixer'],
+  'phase-2-demo': ['timeline', 'mixer', 'pianoRoll'],
+};
+
 export function AppShell({ mode = 'single' }: WindowingAppShellProps) {
+  useEscRestoreMaximized();
+
   useEffect(() => {
     configurePanel('timeline', 96, 72, 560, 320);
 
-    if (mode === 'focus-demo') {
+    if (mode === 'phase-2-demo') {
+      configurePhase2DemoPanels();
+    } else if (mode === 'focus-demo') {
       configurePanel('mixer', 704, 136, 460, 280);
       usePanelRegistry.getState().focusPanel('timeline');
     } else {
       usePanelRegistry.getState().closePanel('mixer');
+      usePanelRegistry.getState().closePanel('pianoRoll');
     }
   }, [mode]);
 
   return (
     <div className="xleth-windowing-shell" data-testid="xleth-windowing-shell">
       <div className="xleth-floating-work-area">
-        <PanelFrame id="timeline">
-          <TestPanelBody label="Timeline Test Panel" />
-        </PanelFrame>
-        {mode === 'focus-demo' ? (
-          <PanelFrame id="mixer">
-            <TestPanelBody label="Mixer Test Panel" />
+        {SHELL_PANEL_IDS[mode].map((panelId) => (
+          <PanelFrame key={panelId} id={panelId}>
+            <TestPanelBody label={`${PANEL_CATALOG[panelId].title} Test Panel`} />
           </PanelFrame>
-        ) : null}
+        ))}
       </div>
     </div>
   );
@@ -56,6 +72,10 @@ export function AppShell({ mode = 'single' }: WindowingAppShellProps) {
 
 export function WindowingFocusDemoShell() {
   return <AppShell mode="focus-demo" />;
+}
+
+export function WindowingPhase2DemoShell() {
+  return <AppShell mode="phase-2-demo" />;
 }
 
 export default AppShell;

@@ -1,6 +1,7 @@
 import React from 'react';
 import type { CSSProperties, MouseEvent } from 'react';
 import { Maximize2, Minus, Square, X } from 'lucide-react';
+import { beginDrag } from '../managers/DragManager';
 import { PANEL_CATALOG, panelTypeColorVar, type PanelId } from '../registry/panelCatalog';
 import { usePanelRegistry } from '../registry/PanelRegistry';
 import './windowing.css';
@@ -13,7 +14,10 @@ export interface TitlebarProps {
 export function Titlebar({ id, focused }: TitlebarProps) {
   const entry = PANEL_CATALOG[id];
   const Icon = entry.icon;
-  const mode = usePanelRegistry((state) => state.panels[id].mode);
+  const reactivePanel = usePanelRegistry((state) => state.panels[id]);
+  const panel = typeof window === 'undefined'
+    ? usePanelRegistry.getState().panels[id]
+    : reactivePanel;
   const closePanel = usePanelRegistry((state) => state.closePanel);
   const maximizePanel = usePanelRegistry((state) => state.maximizePanel);
   const restorePanel = usePanelRegistry((state) => state.restorePanel);
@@ -29,8 +33,20 @@ export function Titlebar({ id, focused }: TitlebarProps) {
 
   const toggleMaximize = (event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
-    if (mode === 'maximized') restorePanel(id);
+    if (panel.mode === 'maximized') restorePanel(id);
     else maximizePanel(id);
+  };
+
+  const startTitlebarDrag = (event: MouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || panel.mode !== 'floating') return;
+    event.preventDefault();
+    beginDrag(id, event.clientX, event.clientY, panel.floating.x, panel.floating.y);
+  };
+
+  const toggleTitlebarMaximize = (event: MouseEvent<HTMLDivElement>) => {
+    if (event.target instanceof HTMLElement && event.target.closest('button')) return;
+    if (panel.mode === 'maximized') restorePanel(id);
+    else if (panel.mode === 'floating') maximizePanel(id);
   };
 
   return (
@@ -39,6 +55,8 @@ export function Titlebar({ id, focused }: TitlebarProps) {
       data-panel-id={id}
       data-focused={focused}
       style={{ '--xleth-windowing-panel-color': panelTypeColorVar(id) } as CSSProperties}
+      onMouseDown={startTitlebarDrag}
+      onDoubleClick={toggleTitlebarMaximize}
     >
       <span className="xleth-windowing-accent-bar" aria-hidden="true" />
       <span
@@ -64,12 +82,12 @@ export function Titlebar({ id, focused }: TitlebarProps) {
         <button
           type="button"
           className="xleth-windowing-control-button"
-          aria-label={mode === 'maximized' ? `Restore ${entry.title}` : `Maximize ${entry.title}`}
-          title={mode === 'maximized' ? `Restore ${entry.title}` : `Maximize ${entry.title}`}
+          aria-label={panel.mode === 'maximized' ? `Restore ${entry.title}` : `Maximize ${entry.title}`}
+          title={panel.mode === 'maximized' ? `Restore ${entry.title}` : `Maximize ${entry.title}`}
           onMouseDown={stopControlMouseDown}
           onClick={toggleMaximize}
         >
-          {mode === 'maximized'
+          {panel.mode === 'maximized'
             ? <Square aria-hidden="true" strokeWidth={2} />
             : <Maximize2 aria-hidden="true" strokeWidth={2} />}
         </button>

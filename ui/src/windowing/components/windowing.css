@@ -32,6 +32,14 @@
   border-color: var(--theme-border-focus);
 }
 
+.xleth-panel-frame[data-panel-mode="maximized"] {
+  position: absolute;
+  inset: 0;
+  width: auto !important;
+  height: auto !important;
+  transform: none !important;
+}
+
 .xleth-windowing-titlebar {
   position: relative;
   display: flex;
@@ -41,7 +49,12 @@
   overflow: hidden;
   background: var(--theme-chrome-titlebar-bg);
   color: var(--theme-text-muted);
+  cursor: grab;
   user-select: none;
+}
+
+.xleth-windowing-titlebar:active {
+  cursor: grabbing;
 }
 
 .xleth-windowing-accent-bar {
@@ -140,6 +153,78 @@
   overflow: hidden;
   background: var(--theme-bg-primary);
   color: var(--theme-text);
+}
+
+.xleth-resize-handle {
+  position: absolute;
+  z-index: 2;
+  background: transparent;
+}
+
+.xleth-resize-handle-n {
+  top: -2px;
+  left: 8px;
+  right: 8px;
+  height: 4px;
+  cursor: ns-resize;
+}
+
+.xleth-resize-handle-s {
+  bottom: -2px;
+  left: 8px;
+  right: 8px;
+  height: 4px;
+  cursor: ns-resize;
+}
+
+.xleth-resize-handle-e {
+  top: 8px;
+  right: -2px;
+  bottom: 8px;
+  width: 4px;
+  cursor: ew-resize;
+}
+
+.xleth-resize-handle-w {
+  top: 8px;
+  left: -2px;
+  bottom: 8px;
+  width: 4px;
+  cursor: ew-resize;
+}
+
+.xleth-resize-handle-ne,
+.xleth-resize-handle-sw {
+  width: 8px;
+  height: 8px;
+  cursor: nesw-resize;
+}
+
+.xleth-resize-handle-nw,
+.xleth-resize-handle-se {
+  width: 8px;
+  height: 8px;
+  cursor: nwse-resize;
+}
+
+.xleth-resize-handle-ne {
+  top: -2px;
+  right: -2px;
+}
+
+.xleth-resize-handle-nw {
+  top: -2px;
+  left: -2px;
+}
+
+.xleth-resize-handle-se {
+  right: -2px;
+  bottom: -2px;
+}
+
+.xleth-resize-handle-sw {
+  bottom: -2px;
+  left: -2px;
 }
 
 .xleth-windowing-test-panel {
