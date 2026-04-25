@@ -195,6 +195,8 @@ export function endDrag(): void {
   const activeDrag = dragState;
   const finalX = activeDrag.startPanelX + (activeDrag.currentMouseX - activeDrag.startMouseX);
   const finalY = activeDrag.startPanelY + (activeDrag.currentMouseY - activeDrag.startMouseY);
+  const clampedX = Math.max(0, finalX);
+  const clampedY = Math.max(0, finalY);
 
   unbindWindowListeners();
   dragState = idleDragState;
@@ -204,7 +206,7 @@ export function endDrag(): void {
   if (currentSnapTarget !== null && Date.now() - snapDwellStart >= 150) {
     registry.dockPanel(activeDrag.panelId, currentSnapTarget);
   } else {
-    registry.moveFloatingPanel(activeDrag.panelId, finalX, finalY);
+    registry.moveFloatingPanel(activeDrag.panelId, clampedX, clampedY);
   }
 
   currentSnapTarget = null;
