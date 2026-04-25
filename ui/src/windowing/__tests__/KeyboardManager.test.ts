@@ -99,4 +99,60 @@ describe('KeyboardManager', () => {
     handleKeyEvent(keyEvent('F5'));
     expect(usePanelRegistry.getState().panels.timeline.hidden).toBe(true);
   });
+
+  describe('Ctrl+Shift preset bindings', () => {
+    beforeEach(resetRegistry);
+
+    it('Ctrl+Shift+1 applies fl-compose preset', () => {
+      handleKeyEvent({
+        key: '1',
+        type: 'keydown',
+        ctrlKey: true,
+        shiftKey: true,
+      } as KeyboardEvent);
+
+      const panels = usePanelRegistry.getState().panels;
+      expect(panels.timeline.hidden).toBe(false);
+      expect(panels.timeline.mode).toBe('floating');
+      expect(panels.mixer.mode).toBe('docked');
+      expect(panels.sampleSelector.mode).toBe('docked');
+      expect(panels.preview.hidden).toBe(true);
+    });
+
+    it('Ctrl+Shift+2 applies vegas-arrange preset', () => {
+      handleKeyEvent({
+        key: '2',
+        type: 'keydown',
+        ctrlKey: true,
+        shiftKey: true,
+      } as KeyboardEvent);
+
+      const panels = usePanelRegistry.getState().panels;
+      expect(panels.preview.hidden).toBe(false);
+      expect(panels.preview.mode).toBe('floating');
+      expect(panels.timeline.mode).toBe('floating');
+      expect(panels.mixer.hidden).toBe(true);
+    });
+
+    it('Ctrl+Shift+3 applies grid-edit preset', () => {
+      handleKeyEvent({
+        key: '3',
+        type: 'keydown',
+        ctrlKey: true,
+        shiftKey: true,
+      } as KeyboardEvent);
+
+      const panels = usePanelRegistry.getState().panels;
+      expect(panels.gridSettings.hidden).toBe(false);
+      expect(panels.gridSettings.mode).toBe('floating');
+      expect(panels.preview.mode).toBe('floating');
+      expect(panels.mixer.hidden).toBe(true);
+    });
+
+    it('plain 1 without modifiers does not trigger preset', () => {
+      handleKeyEvent({ key: '1', type: 'keydown' } as KeyboardEvent);
+
+      expect(usePanelRegistry.getState().panels.mixer.mode).not.toBe('docked');
+    });
+  });
 });

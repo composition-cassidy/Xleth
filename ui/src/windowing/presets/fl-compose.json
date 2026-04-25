@@ -1,0 +1,72 @@
+{
+  "timeline": {
+    "id": "timeline",
+    "hidden": false,
+    "focused": true,
+    "zIndex": 10,
+    "mode": "floating",
+    "floating": { "x": 260, "y": 60, "width": 1200, "height": 480 },
+    "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 280 },
+    "preMaximizeState": null
+  },
+  "sampleSelector": {
+    "id": "sampleSelector",
+    "hidden": false,
+    "focused": false,
+    "zIndex": 0,
+    "mode": "docked",
+    "floating": { "x": 24, "y": 72, "width": 300, "height": 640 },
+    "docked": { "region": "left", "orderInRegion": 0, "sizeInRegion": 240 },
+    "preMaximizeState": null
+  },
+  "pianoRoll": {
+    "id": "pianoRoll",
+    "hidden": true,
+    "focused": false,
+    "zIndex": 0,
+    "mode": "floating",
+    "floating": { "x": 320, "y": 140, "width": 960, "height": 540 },
+    "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 280 },
+    "preMaximizeState": null
+  },
+  "preview": {
+    "id": "preview",
+    "hidden": true,
+    "focused": false,
+    "zIndex": 0,
+    "mode": "floating",
+    "floating": { "x": 400, "y": 100, "width": 640, "height": 360 },
+    "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 280 },
+    "preMaximizeState": null
+  },
+  "mixer": {
+    "id": "mixer",
+    "hidden": false,
+    "focused": false,
+    "zIndex": 0,
+    "mode": "docked",
+    "floating": { "x": 220, "y": 420, "width": 1040, "height": 320 },
+    "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 240 },
+    "preMaximizeState": null
+  },
+  "gridSettings": {
+    "id": "gridSettings",
+    "hidden": true,
+    "focused": false,
+    "zIndex": 0,
+    "mode": "floating",
+    "floating": { "x": 300, "y": 120, "width": 520, "height": 720 },
+    "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 280 },
+    "preMaximizeState": null
+  },
+  "nodeEditor": {
+    "id": "nodeEditor",
+    "hidden": true,
+    "focused": false,
+    "zIndex": 0,
+    "mode": "floating",
+    "floating": { "x": 400, "y": 160, "width": 900, "height": 600 },
+    "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 280 },
+    "preMaximizeState": null
+  }
+}

@@ -13,6 +13,16 @@ function normalizeKey(key: string): string {
   return key;
 }
 
+function normalizeEvent(event: KeyboardEvent): string {
+  const parts: string[] = [];
+  if (event.metaKey) parts.push('Meta');
+  if (event.ctrlKey) parts.push('Ctrl');
+  if (event.shiftKey) parts.push('Shift');
+  if (event.altKey) parts.push('Alt');
+  parts.push(event.key);
+  return parts.join('+');
+}
+
 function registerDefaultBindings(): void {
   registerBinding('F5', () => usePanelRegistry.getState().togglePanel('timeline'));
   registerBinding('F6', () => usePanelRegistry.getState().togglePanel('sampleSelector'));
@@ -28,12 +38,15 @@ function registerDefaultBindings(): void {
       reg.restorePanel(focusedId);
     }
   });
+  registerBinding('Ctrl+Shift+1', () => usePanelRegistry.getState().applyPreset('fl-compose'));
+  registerBinding('Ctrl+Shift+2', () => usePanelRegistry.getState().applyPreset('vegas-arrange'));
+  registerBinding('Ctrl+Shift+3', () => usePanelRegistry.getState().applyPreset('grid-edit'));
 }
 
 export function handleKeyEvent(event: KeyboardEvent): void {
   if (typeof document !== 'undefined' && isTextEntryElement(document.activeElement)) return;
 
-  const action = bindings.get(normalizeKey(event.key));
+  const action = bindings.get(normalizeEvent(event));
   action?.();
 }
 

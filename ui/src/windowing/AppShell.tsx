@@ -6,11 +6,19 @@ import { SnapGhost } from './components/SnapGhost';
 import { TopBarToggles } from './components/TopBarToggles';
 import { registerWorkAreaRect } from './managers/DragManager';
 import * as KeyboardManager from './managers/KeyboardManager';
+import { MemoryAdapter } from './managers/StatePersistence';
+import * as StatePersistence from './managers/StatePersistence';
 import { usePanelRegistry } from './registry/PanelRegistry';
 import { PANEL_CATALOG, type PanelId } from './registry/panelCatalog';
 import './components/windowing.css';
 
-type DevShellMode = 'single' | 'focus-demo' | 'phase-2-demo' | 'phase-3-demo' | 'phase-4-demo';
+type DevShellMode =
+  | 'single'
+  | 'focus-demo'
+  | 'phase-2-demo'
+  | 'phase-3-demo'
+  | 'phase-4-demo'
+  | 'phase-5-demo';
 
 export interface WindowingAppShellProps {
   mode?: DevShellMode;
@@ -49,12 +57,25 @@ export function configurePhase3DemoPanels() {
   registry.focusPanel('timeline');
 }
 
+export function configurePhase5DemoPanels() {
+  usePanelRegistry.getState().applyPreset('fl-compose');
+}
+
 const SHELL_PANEL_IDS: Record<DevShellMode, PanelId[]> = {
   single: ['timeline'],
   'focus-demo': ['timeline', 'mixer'],
   'phase-2-demo': ['timeline', 'mixer', 'pianoRoll'],
   'phase-3-demo': ['timeline', 'mixer', 'pianoRoll', 'sampleSelector'],
   'phase-4-demo': ['timeline', 'mixer', 'pianoRoll', 'sampleSelector'],
+  'phase-5-demo': [
+    'timeline',
+    'mixer',
+    'pianoRoll',
+    'sampleSelector',
+    'preview',
+    'gridSettings',
+    'nodeEditor',
+  ],
 };
 
 export function AppShell({ mode = 'single' }: WindowingAppShellProps) {
@@ -70,6 +91,16 @@ export function AppShell({ mode = 'single' }: WindowingAppShellProps) {
   }, []);
 
   useEffect(() => {
+    const adapter = new MemoryAdapter();
+    StatePersistence.setPersistenceAdapter(adapter);
+    void (async () => {
+      await StatePersistence.loadPersistedState();
+      StatePersistence.init();
+    })();
+    return StatePersistence.destroy;
+  }, []);
+
+  useEffect(() => {
     configurePanel('timeline', 96, 72, 560, 320);
 
     if (mode === 'phase-3-demo') {
@@ -79,6 +110,8 @@ export function AppShell({ mode = 'single' }: WindowingAppShellProps) {
     } else if (mode === 'focus-demo') {
       configurePanel('mixer', 704, 136, 460, 280);
       usePanelRegistry.getState().focusPanel('timeline');
+    } else if (mode === 'phase-5-demo') {
+      configurePhase5DemoPanels();
     } else {
       usePanelRegistry.getState().closePanel('mixer');
       usePanelRegistry.getState().closePanel('pianoRoll');
@@ -130,6 +163,10 @@ export function WindowingPhase3DemoShell() {
 
 export function WindowingPhase4DemoShell() {
   return <AppShell mode="phase-4-demo" />;
+}
+
+export function WindowingPhase5DemoShell() {
+  return <AppShell mode="phase-5-demo" />;
 }
 
 export default AppShell;

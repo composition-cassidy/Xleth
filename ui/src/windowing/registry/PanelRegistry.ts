@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { loadPreset } from '../managers/PresetManager';
 import { PANEL_CATALOG, PANEL_IDS, type PanelId } from './panelCatalog';
 
 export type PanelMode = 'floating' | 'docked' | 'maximized';
@@ -48,7 +49,7 @@ export interface PanelRegistryState {
 
 export const LAYOUT_PERSISTENCE_DEBOUNCE_MS = 500;
 
-type LayoutPersistenceWriter = (panels: PanelStateMap) => void | Promise<void>;
+export type LayoutPersistenceWriter = (panels: PanelStateMap) => void | Promise<void>;
 
 let persistenceWriter: LayoutPersistenceWriter | null = null;
 let persistenceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -265,9 +266,12 @@ export const usePanelRegistry = create<PanelRegistryState>((set, get) => ({
     };
   }),
 
-  applyPreset: (_presetId) => {
-    // Phase 5 owns preset JSON loading. Phase 1 exposes the registry entry point
-    // so future preset application still flows through this store.
+  applyPreset: (presetId) => {
+    const raw = loadPreset(presetId);
+    if (!raw) return;
+    const panels = clonePanelStates(raw);
+    scheduleLayoutPersistence(panels);
+    set({ panels });
   },
 }));
 
