@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { Grid3x3, Eraser } from 'lucide-react'
 import { timelineEvents } from '../timelineEvents.js'
 import { snapToZero, snapToOne } from '../utils/sliderHelpers.js'
+import useGridEditStore from '../stores/useGridEditStore.js'
 
 // Maximum number of visual effects per track — must match the engine cap.
 // (CellConstants effect array is sized for 16; bridge will also reject above.)
@@ -47,7 +48,9 @@ function filterSlotsForSize(slots, columns, rows) {
   return slots.filter(s => s.gridX + s.spanX <= maxX && s.gridY + s.spanY <= maxY)
 }
 
-export default function GridLayoutTab({ gridEditMode, setGridEditMode }) {
+export default function GridLayoutTab() {
+  const gridEditMode = useGridEditStore((s) => s.gridEditMode)
+  const setGridEditMode = useGridEditStore((s) => s.setGridEditMode)
   const [layout, setLayout] = useState(DEFAULT_LAYOUT)
   const [tracks, setTracks] = useState([])
 

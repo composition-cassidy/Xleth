@@ -2,6 +2,7 @@ import { useRef, useEffect, useState, useCallback } from 'react'
 import { Import, Grid3x3 } from 'lucide-react'
 import GridEditorOverlay from './GridEditorOverlay.jsx'
 import { tokenValue } from '../theming/tokenValue.ts'
+import useGridEditStore from '../stores/useGridEditStore.js'
 
 // ── WebGL shaders ────────────────────────────────────────────────────────────
 const VERT_SRC = `
@@ -50,9 +51,19 @@ function createProgram(gl, vertSrc, fragSrc) {
   return program
 }
 
+function hexToGlColor(hex) {
+  const h = hex.replace('#', '')
+  const r = parseInt(h.slice(0, 2), 16) / 255
+  const g = parseInt(h.slice(2, 4), 16) / 255
+  const b = parseInt(h.slice(4, 6), 16) / 255
+  return [r, g, b]
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
 
-export default function VideoPreview({ gridEditMode, setGridEditMode }) {
+export default function VideoPreview() {
+  const gridEditMode = useGridEditStore((s) => s.gridEditMode)
+  const setGridEditMode = useGridEditStore((s) => s.setGridEditMode)
   const canvasRef = useRef(null)
   const containerRef = useRef(null)
   const [videoFile, setVideoFile] = useState(null)
@@ -203,7 +214,8 @@ export default function VideoPreview({ gridEditMode, setGridEditMode }) {
 
     function drawNoVideo() {
       if (useWebGL) {
-        gl.clearColor(0.067, 0.067, 0.094, 1.0)
+        const [r, g, b] = hexToGlColor(tokenValue('--theme-bg-primary') || '#0A0A0F')
+        gl.clearColor(r, g, b, 1.0)
         gl.clear(gl.COLOR_BUFFER_BIT)
       } else if (ctx2d) {
         ctx2d.fillStyle = tokenValue('--theme-preview-loaded-bg')
@@ -215,6 +227,18 @@ export default function VideoPreview({ gridEditMode, setGridEditMode }) {
         ctx2d.fillText('No video loaded', canvas.width / 2, canvas.height / 2)
       }
     }
+
+    function handleThemeChange() {
+      if (useWebGL && gl) {
+        const [r, g, b] = hexToGlColor(tokenValue('--theme-bg-primary') || '#0A0A0F')
+        gl.clearColor(r, g, b, 1.0)
+        gl.clear(gl.COLOR_BUFFER_BIT)
+      } else {
+        drawNoVideo()
+      }
+    }
+
+    window.addEventListener('xleth-theme-changed', handleThemeChange)
 
     function tick() {
       if (!running) return
@@ -263,6 +287,7 @@ export default function VideoPreview({ gridEditMode, setGridEditMode }) {
     rafId = requestAnimationFrame(tick)
     return () => {
       running = false
+      window.removeEventListener('xleth-theme-changed', handleThemeChange)
       if (rafId) cancelAnimationFrame(rafId)
       if (gl && texture) gl.deleteTexture(texture)
       if (gl && program) gl.deleteProgram(program)

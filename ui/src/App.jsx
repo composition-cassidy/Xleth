@@ -14,8 +14,12 @@ import SamplerPanel from './components/sampler/SamplerPanel.jsx'
 import MixerPanel from './components/mixer/MixerPanel.jsx'
 import SettingsPanel from './components/SettingsPanel.jsx'
 import MissingPluginsDialog from './components/MissingPluginsDialog.jsx'
+import DevThemeSwitcher from './components/debug/DevThemeSwitcher.jsx'
+import ThemeEditor from './theming/editor/ThemeEditor'
 import { ToastProvider, useToast } from './components/Toast.jsx'
 import { showUnsavedChangesDialog } from './components/UnsavedChangesDialog.jsx'
+import useGridEditStore from './stores/useGridEditStore.js'
+import usePianoRollStore from './stores/usePianoRollStore.js'
 
 const FLOATING_DEFAULT_POS = { x: 120, y: 80 }
 const FLOATING_DEFAULT_SIZE = { w: 900, h: 500 }
@@ -72,21 +76,33 @@ function AppInner() {
   const [pickerSource, setPickerSource] = useState(null)
   const [activeSampleId, setActiveSampleId] = useState(null)
   const [projectName, setProjectName] = useState('Untitled Project')
-  const [gridEditMode, setGridEditMode] = useState(false)
+  const gridEditMode = useGridEditStore((s) => s.gridEditMode)
+  const setGridEditMode = useGridEditStore((s) => s.setGridEditMode)
   const [exportDialogOpen, setExportDialogOpen] = useState(false)
   const [videoExportDialogOpen, setVideoExportDialogOpen] = useState(false)
-  const [pianoRollPatternId, setPianoRollPatternId] = useState(null)
+  const pianoRollPatternId = usePianoRollStore((s) => s.patternId)
+  const setPianoRollPatternId = usePianoRollStore((s) => s.setPatternId)
   const [samplerPanelRegionId, setSamplerPanelRegionId] = useState(null)
   const [missingPlugins, setMissingPlugins] = useState(null) // null = closed, [] or array = open
 
   // Tab + detach state
   const [showSettings, setShowSettings] = useState(false)
+  const [showThemeEditor, setShowThemeEditor] = useState(false)
 
   // Tab + detach state
-  const [activeCenterTab, setActiveCenterTab] = useState('timeline') // 'timeline' | 'piano-roll'
-  const [pianoRollDetached, setPianoRollDetached] = useState(false)
+  const activeCenterTab = usePianoRollStore((s) => s.activeCenterTab)
+  const setActiveCenterTab = usePianoRollStore((s) => s.setActiveCenterTab)
+  const pianoRollDetached = usePianoRollStore((s) => s.detached)
+  const setPianoRollDetached = usePianoRollStore((s) => s.setDetached)
   const [floatPos, setFloatPos] = useState(FLOATING_DEFAULT_POS)
   const [floatSize, setFloatSize] = useState(FLOATING_DEFAULT_SIZE)
+
+  // One-time wiring of timelineEvents handlers that own piano-roll state.
+  const pianoRollStoreInitialized = useRef(false)
+  if (!pianoRollStoreInitialized.current) {
+    pianoRollStoreInitialized.current = true
+    usePianoRollStore.getState().init()
+  }
 
   // Hoisted: current pattern per pattern-track (client-only state)
   const [currentPatternIdByTrack, setCurrentPatternIdByTrack] = useState({})
@@ -118,31 +134,6 @@ function AppInner() {
     }
   }, [fetchAllPatterns])
 
-  // Ref mirror of pianoRollDetached so the event listener below can read the
-  // latest value without re-binding each time the flag changes.
-  const pianoRollDetachedRef = useRef(pianoRollDetached)
-  useEffect(() => { pianoRollDetachedRef.current = pianoRollDetached }, [pianoRollDetached])
-
-  useEffect(() => {
-    const onOpen = (e) => {
-      const pid = e.detail?.patternId ?? null
-      setPianoRollPatternId(pid)
-      // When the Piano Roll is floating, update its pattern but keep the
-      // main window's tab on Timeline — don't yank the user away.
-      if (pid != null && !pianoRollDetachedRef.current) setActiveCenterTab('piano-roll')
-    }
-    const onClose = () => {
-      // "Back to Timeline" — keep patternId, switch tab
-      setActiveCenterTab('timeline')
-    }
-    timelineEvents.addEventListener('open-piano-roll', onOpen)
-    timelineEvents.addEventListener('close-piano-roll', onClose)
-    return () => {
-      timelineEvents.removeEventListener('open-piano-roll', onOpen)
-      timelineEvents.removeEventListener('close-piano-roll', onClose)
-    }
-  }, [])
-
   useEffect(() => {
     const onOpen = (e) => setSamplerPanelRegionId(e.detail?.regionId ?? null)
     const onClose = () => setSamplerPanelRegionId(null)
@@ -151,18 +142,6 @@ function AppInner() {
     return () => {
       timelineEvents.removeEventListener('open-sampler-settings', onOpen)
       timelineEvents.removeEventListener('close-sampler-settings', onClose)
-    }
-  }, [])
-
-  // Detach / dock events from PianoRollToolbar
-  useEffect(() => {
-    const onDetach = () => { setPianoRollDetached(true); setActiveCenterTab('timeline') }
-    const onDock = () => { setPianoRollDetached(false); setActiveCenterTab('piano-roll') }
-    timelineEvents.addEventListener('piano-roll-detach', onDetach)
-    timelineEvents.addEventListener('piano-roll-dock', onDock)
-    return () => {
-      timelineEvents.removeEventListener('piano-roll-detach', onDetach)
-      timelineEvents.removeEventListener('piano-roll-dock', onDock)
     }
   }, [])
 
@@ -426,6 +405,9 @@ function AppInner() {
       case 'Settings':
         setShowSettings(true)
         break
+      case 'Theme Editor':
+        setShowThemeEditor(true)
+        break
       default:
         break
     }
@@ -488,7 +470,7 @@ function AppInner() {
       <TitleBar projectName={projectName} onAction={handleMenuAction} />
 
       <div className="app-body" style={{ position: 'relative' }}>
-        <ResizablePanel left={<LeftPanel onOpenPicker={handleOpenPicker} activeSampleId={activeSampleId} setActiveSampleId={setActiveSampleId} gridEditMode={gridEditMode} setGridEditMode={setGridEditMode} />}>
+        <ResizablePanel left={<LeftPanel onOpenPicker={handleOpenPicker} activeSampleId={activeSampleId} setActiveSampleId={setActiveSampleId} />}>
           <div className="center-area">
             {/* SamplePicker: conditionally mounted (unmounts on close) */}
             {pickerSource && (
@@ -497,7 +479,7 @@ function AppInner() {
 
             {/* Timeline subtree: always mounted, hidden while picker is open */}
             <div style={{ display: pickerSource ? 'none' : 'contents' }}>
-              <VideoPreview gridEditMode={gridEditMode} setGridEditMode={setGridEditMode} />
+              <VideoPreview />
               {/* Center tabs */}
               <div className="center-tabs">
                 <button
@@ -552,7 +534,6 @@ function AppInner() {
                       currentPatternId={pianoRollPatternId}
                       onSwitchPattern={handleSwitchPattern}
                       onNewPattern={handleNewPatternFromPianoRoll}
-                      activeCenterTab={activeCenterTab}
                     />
                   </div>
                 )}
@@ -585,7 +566,6 @@ function AppInner() {
               currentPatternId={pianoRollPatternId}
               onSwitchPattern={handleSwitchPattern}
               onNewPattern={handleNewPatternFromPianoRoll}
-              activeCenterTab={activeCenterTab}
             />
             <div
               className="piano-roll-floating-resize-grip"
@@ -612,6 +592,8 @@ function AppInner() {
         />
       )}
       {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
+      {showThemeEditor && <ThemeEditor onClose={() => setShowThemeEditor(false)} />}
+      {import.meta.env.DEV && <DevThemeSwitcher />}
     </div>
   )
 }

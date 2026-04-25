@@ -7,6 +7,7 @@ import PianoRollScrollbarV, { SCROLLBAR_V_WIDTH } from './PianoRollScrollbarV.js
 import PianoRollScrollbarH, { SCROLLBAR_H_HEIGHT } from './PianoRollScrollbarH.jsx'
 import { timelineEvents } from '../../timelineEvents.js'
 import { PPQ, snapBeatToGrid, beatsToTicks } from '../../constants/timeline.js'
+import usePianoRollStore from '../../stores/usePianoRollStore.js'
 
 const KEYBOARD_WIDTH = 60
 const VELOCITY_HEIGHT = 80
@@ -21,8 +22,8 @@ export default function PianoRoll({
   patternId, onClose,
   onDetach, onDock, floating = false, onTitleMouseDown, onTitleDoubleClick,
   availablePatterns, currentPatternId, onSwitchPattern, onNewPattern,
-  activeCenterTab = 'timeline',
 }) {
+  const activeCenterTab = usePianoRollStore((s) => s.activeCenterTab)
   const [pattern, setPattern] = useState(null)
   const [regions, setRegions] = useState([])
   const [activeTool, setActiveTool] = useState('pencil')

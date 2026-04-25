@@ -10,7 +10,7 @@ const TABS = [
   { id: 'grid',    label: 'Grid',             icon: Grid3x3 },
 ]
 
-export default function LeftPanel({ onOpenPicker, activeSampleId, setActiveSampleId, gridEditMode, setGridEditMode }) {
+export default function LeftPanel({ onOpenPicker, activeSampleId, setActiveSampleId }) {
   const [activeTab, setActiveTab] = useState('media')
 
   const handleTabSwitch = useCallback((id) => {
@@ -36,7 +36,7 @@ export default function LeftPanel({ onOpenPicker, activeSampleId, setActiveSampl
       <div className="left-panel-content">
         {activeTab === 'media'   && <ProjectMediaTab onOpenPicker={onOpenPicker} />}
         {activeTab === 'samples' && <SampleSelectorTab onOpenPicker={onOpenPicker} activeSampleId={activeSampleId} setActiveSampleId={setActiveSampleId} />}
-        {activeTab === 'grid'    && <GridLayoutTab gridEditMode={gridEditMode} setGridEditMode={setGridEditMode} />}
+        {activeTab === 'grid'    && <GridLayoutTab />}
       </div>
     </div>
   )
