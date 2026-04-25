@@ -6,8 +6,6 @@ import { SnapGhost } from './components/SnapGhost';
 import { TopBarToggles } from './components/TopBarToggles';
 import { registerWorkAreaRect } from './managers/DragManager';
 import * as KeyboardManager from './managers/KeyboardManager';
-import { MemoryAdapter } from './managers/StatePersistence';
-import * as StatePersistence from './managers/StatePersistence';
 import { usePanelRegistry } from './registry/PanelRegistry';
 import { PANEL_CATALOG, type PanelId } from './registry/panelCatalog';
 import './components/windowing.css';
@@ -29,8 +27,14 @@ type DevShellMode =
   | 'phase-5-demo'
   | 'phase-6b-demo';
 
+export type AppShellMode = DevShellMode | 'production';
+
 export interface WindowingAppShellProps {
-  mode?: DevShellMode;
+  mode?: AppShellMode;
+}
+
+export function shouldRenderRealPanels(mode: AppShellMode): boolean {
+  return mode === 'phase-6b-demo' || mode === 'production';
 }
 
 function TestPanelBody({ label }: { label: string }) {
@@ -76,6 +80,28 @@ export function configurePhase6bDemoPanels() {
   usePanelRegistry.getState().applyPreset('fl-compose');
 }
 
+export function applyDemoShellMode(mode: AppShellMode): void {
+  if (mode === 'production') return;
+
+  configurePanel('timeline', 96, 72, 560, 320);
+
+  if (mode === 'phase-3-demo') {
+    configurePhase3DemoPanels();
+  } else if (mode === 'phase-2-demo') {
+    configurePhase2DemoPanels();
+  } else if (mode === 'focus-demo') {
+    configurePanel('mixer', 704, 136, 460, 280);
+    usePanelRegistry.getState().focusPanel('timeline');
+  } else if (mode === 'phase-5-demo') {
+    configurePhase5DemoPanels();
+  } else if (mode === 'phase-6b-demo') {
+    configurePhase6bDemoPanels();
+  } else {
+    usePanelRegistry.getState().closePanel('mixer');
+    usePanelRegistry.getState().closePanel('pianoRoll');
+  }
+}
+
 const PANEL_BODY_FOR_6B: Record<PanelId, React.LazyExoticComponent<React.FC>> = {
   timeline: TimelinePanel,
   mixer: MixerPanel,
@@ -86,7 +112,7 @@ const PANEL_BODY_FOR_6B: Record<PanelId, React.LazyExoticComponent<React.FC>> = 
   nodeEditor: NodeEditorPanel,
 };
 
-const SHELL_PANEL_IDS: Record<DevShellMode, PanelId[]> = {
+const SHELL_PANEL_IDS: Record<AppShellMode, PanelId[]> = {
   single: ['timeline'],
   'focus-demo': ['timeline', 'mixer'],
   'phase-2-demo': ['timeline', 'mixer', 'pianoRoll'],
@@ -110,6 +136,15 @@ const SHELL_PANEL_IDS: Record<DevShellMode, PanelId[]> = {
     'gridSettings',
     'nodeEditor',
   ],
+  production: [
+    'timeline',
+    'mixer',
+    'pianoRoll',
+    'sampleSelector',
+    'preview',
+    'gridSettings',
+    'nodeEditor',
+  ],
 };
 
 export function AppShell({ mode = 'single' }: WindowingAppShellProps) {
@@ -118,6 +153,7 @@ export function AppShell({ mode = 'single' }: WindowingAppShellProps) {
   const panels = typeof window === 'undefined'
     ? usePanelRegistry.getState().panels
     : reactivePanels;
+  const rendersRealPanels = shouldRenderRealPanels(mode);
 
   useEffect(() => {
     KeyboardManager.init();
@@ -125,33 +161,7 @@ export function AppShell({ mode = 'single' }: WindowingAppShellProps) {
   }, []);
 
   useEffect(() => {
-    const adapter = new MemoryAdapter();
-    StatePersistence.setPersistenceAdapter(adapter);
-    void (async () => {
-      await StatePersistence.loadPersistedState();
-      StatePersistence.init();
-    })();
-    return StatePersistence.destroy;
-  }, []);
-
-  useEffect(() => {
-    configurePanel('timeline', 96, 72, 560, 320);
-
-    if (mode === 'phase-3-demo') {
-      configurePhase3DemoPanels();
-    } else if (mode === 'phase-2-demo') {
-      configurePhase2DemoPanels();
-    } else if (mode === 'focus-demo') {
-      configurePanel('mixer', 704, 136, 460, 280);
-      usePanelRegistry.getState().focusPanel('timeline');
-    } else if (mode === 'phase-5-demo') {
-      configurePhase5DemoPanels();
-    } else if (mode === 'phase-6b-demo') {
-      configurePhase6bDemoPanels();
-    } else {
-      usePanelRegistry.getState().closePanel('mixer');
-      usePanelRegistry.getState().closePanel('pianoRoll');
-    }
+    applyDemoShellMode(mode);
   }, [mode]);
 
   useEffect(() => {
@@ -173,19 +183,19 @@ export function AppShell({ mode = 'single' }: WindowingAppShellProps) {
     <div className="xleth-windowing-app">
       <TopBarToggles />
       <div className="xleth-windowing-shell" data-testid="xleth-windowing-shell">
-        <DockRegion side="left" renderPanel={mode === 'phase-6b-demo' ? renderPhase6bPanel : undefined} />
+        <DockRegion side="left" renderPanel={rendersRealPanels ? renderPhase6bPanel : undefined} />
         <div className="xleth-center-column">
-          <DockRegion side="top" renderPanel={mode === 'phase-6b-demo' ? renderPhase6bPanel : undefined} />
+          <DockRegion side="top" renderPanel={rendersRealPanels ? renderPhase6bPanel : undefined} />
           <div className="xleth-floating-work-area" ref={workAreaRef}>
             <SnapGhost />
             {SHELL_PANEL_IDS[mode]
               .filter((panelId) => (
-                mode === 'phase-6b-demo'
+                rendersRealPanels
                   ? panels[panelId].mode !== 'docked' || panels[panelId].hidden
                   : panels[panelId].mode !== 'docked'
               ))
               .map((panelId) => {
-                if (mode === 'phase-6b-demo') return renderPhase6bPanel(panelId);
+                if (rendersRealPanels) return renderPhase6bPanel(panelId);
                 return (
                   <PanelFrame key={panelId} id={panelId}>
                     <TestPanelBody label={`${PANEL_CATALOG[panelId].title} Test Panel`} />
@@ -193,9 +203,9 @@ export function AppShell({ mode = 'single' }: WindowingAppShellProps) {
                 );
               })}
           </div>
-          <DockRegion side="bottom" renderPanel={mode === 'phase-6b-demo' ? renderPhase6bPanel : undefined} />
+          <DockRegion side="bottom" renderPanel={rendersRealPanels ? renderPhase6bPanel : undefined} />
         </div>
-        <DockRegion side="right" renderPanel={mode === 'phase-6b-demo' ? renderPhase6bPanel : undefined} />
+        <DockRegion side="right" renderPanel={rendersRealPanels ? renderPhase6bPanel : undefined} />
       </div>
     </div>
   );

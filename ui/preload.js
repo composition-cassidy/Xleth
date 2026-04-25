@@ -384,6 +384,19 @@ window.xleth = ({
     set: (key, value) => invoke('xleth:settings:set', key, value),
   },
 
+  // ── Window layout (persisted to userData/layout.json) ──────────────────────
+  layout: {
+    read:  ()      => invoke('xleth:layout:read'),
+    write: (value) => invoke('xleth:layout:write', value),
+  },
+
+  // ── User themes (persisted to userData/themes/<slug>.json) ─────────────────
+  theme: {
+    saveUser: (slug, theme) => invoke('xleth:theme:saveUser', slug, theme),
+    loadUser: (slug)        => invoke('xleth:theme:loadUser', slug),
+    listUser: ()            => invoke('xleth:theme:listUser'),
+  },
+
   // ── Global engine defaults ─────────────────────────────────────────────────
   engine: {
     setGlobalStretchMethod:   (m) => invoke('xleth:engine:setGlobalStretchMethod', m),

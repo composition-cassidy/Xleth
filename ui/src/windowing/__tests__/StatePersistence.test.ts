@@ -16,17 +16,20 @@ describe('StatePersistence', () => {
   it('loadPersistedState is a no-op when adapter returns null', async () => {
     SP.setPersistenceAdapter(makeAdapter());
     const before = usePanelRegistry.getState().panels;
-    await SP.loadPersistedState();
+    await expect(SP.loadPersistedState()).resolves.toBe(false);
     expect(usePanelRegistry.getState().panels).toEqual(before);
   });
 
-  it('loadPersistedState hydrates registry from stored JSON', async () => {
+  it('loadPersistedState hydrates registry from stored versioned JSON', async () => {
     const adapter = makeAdapter();
     const panels = createInitialPanelStates();
     panels.mixer.hidden = false;
-    await adapter.write(JSON.stringify(panels));
+    await adapter.write(JSON.stringify({
+      version: SP.LAYOUT_SCHEMA_VERSION,
+      panels,
+    }));
     SP.setPersistenceAdapter(adapter);
-    await SP.loadPersistedState();
+    await expect(SP.loadPersistedState()).resolves.toBe(true);
     expect(usePanelRegistry.getState().panels.mixer.hidden).toBe(false);
   });
 
@@ -34,7 +37,33 @@ describe('StatePersistence', () => {
     const adapter = makeAdapter();
     await adapter.write('not json {{');
     SP.setPersistenceAdapter(adapter);
-    await expect(SP.loadPersistedState()).resolves.toBeUndefined();
+    await expect(SP.loadPersistedState()).resolves.toBe(false);
+  });
+
+  it('loadPersistedState rejects wrong schema versions', async () => {
+    const adapter = makeAdapter();
+    const before = usePanelRegistry.getState().panels;
+    await adapter.write(JSON.stringify({
+      version: SP.LAYOUT_SCHEMA_VERSION + 1,
+      panels: createInitialPanelStates(),
+    }));
+    SP.setPersistenceAdapter(adapter);
+    await expect(SP.loadPersistedState()).resolves.toBe(false);
+    expect(usePanelRegistry.getState().panels).toEqual(before);
+  });
+
+  it('loadPersistedState rejects payloads with missing panel ids', async () => {
+    const adapter = makeAdapter();
+    const before = usePanelRegistry.getState().panels;
+    const panels = createInitialPanelStates();
+    delete (panels as Partial<typeof panels>).preview;
+    await adapter.write(JSON.stringify({
+      version: SP.LAYOUT_SCHEMA_VERSION,
+      panels,
+    }));
+    SP.setPersistenceAdapter(adapter);
+    await expect(SP.loadPersistedState()).resolves.toBe(false);
+    expect(usePanelRegistry.getState().panels).toEqual(before);
   });
 
   it('init wires writes through adapter on state change', async () => {
@@ -43,7 +72,10 @@ describe('StatePersistence', () => {
     SP.init();
     usePanelRegistry.getState().openPanel('mixer');
     await vi.waitFor(async () => {
-      expect(await adapter.read()).not.toBeNull();
+      expect(await adapter.read()).toBe(JSON.stringify({
+        version: SP.LAYOUT_SCHEMA_VERSION,
+        panels: usePanelRegistry.getState().panels,
+      }));
     }, { timeout: 1200 });
   });
 
@@ -62,6 +94,6 @@ describe('StatePersistence', () => {
     SP.setPersistenceAdapter(SP.noOpAdapter);
     SP.init();
     expect(() => usePanelRegistry.getState().openPanel('preview')).not.toThrow();
-    await expect(SP.loadPersistedState()).resolves.toBeUndefined();
+    await expect(SP.loadPersistedState()).resolves.toBe(false);
   });
 });

@@ -1,6 +1,6 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import App from './App.jsx'
+import XlethRoot from './XlethRoot.jsx'
 import NodeEditorWindow from './NodeEditorWindow.jsx'
 import { ThemeProvider } from './theming/runtime/ThemeProvider'
 
@@ -11,7 +11,6 @@ import '@fontsource/hanken-grotesk/500.css'
 import '@fontsource/hanken-grotesk/600.css'
 import '@fontsource/hanken-grotesk/700.css'
 
-import './styles/theme.css'
 import './styles/app.css'
 
 const params = new URLSearchParams(window.location.search)
@@ -26,7 +25,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
     <ThemeProvider>
       {view === 'node-editor' && storeKey
         ? <NodeEditorWindow storeKey={storeKey} trackPos={trackPos ? Number(trackPos) : null} />
-        : <App />}
+        : <XlethRoot />}
     </ThemeProvider>
   </React.StrictMode>
 )

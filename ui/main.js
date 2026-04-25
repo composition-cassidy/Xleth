@@ -14,6 +14,7 @@ const FRAME_SHM_NAME = 'XlethFrameBuffer';
 
 // ── User settings (persisted across sessions, not per-project) ───────────────
 const settingsPath = path.join(app.getPath('userData'), 'xleth-settings.json')
+const layoutPath = path.join(app.getPath('userData'), 'layout.json')
 function loadSettings() {
   try { return JSON.parse(fs.readFileSync(settingsPath, 'utf8')) } catch { return {} }
 }
@@ -588,6 +589,15 @@ ipcMain.handle('xleth:settings:set',    (_, key, value) => {
 // ── Themes (persisted to userData/themes/<slug>.json) ─────────────────────────
 // User-authored theme files. Shipped themes are bundled with the renderer and
 // don't hit disk — they're imported directly from ui/src/theming/shipped/.
+ipcMain.handle('xleth:layout:read', () => {
+  try { return fs.readFileSync(layoutPath, 'utf8') } catch { return null }
+})
+ipcMain.handle('xleth:layout:write', (_, raw) => {
+  if (typeof raw !== 'string') throw new Error('layout payload must be a string')
+  fs.writeFileSync(layoutPath, raw, 'utf8')
+  return true
+})
+
 const themesDir = path.join(app.getPath('userData'), 'themes')
 function ensureThemesDir() {
   try { fs.mkdirSync(themesDir, { recursive: true }) } catch {}
