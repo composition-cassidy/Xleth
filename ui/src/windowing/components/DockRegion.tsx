@@ -1,10 +1,12 @@
 import React from 'react';
+import type { ReactNode } from 'react';
 import { PANEL_CATALOG, PANEL_IDS, type PanelId } from '../registry/panelCatalog';
 import { usePanelRegistry, type DockRegion as DockRegionSide } from '../registry/PanelRegistry';
 import { PanelFrame } from './PanelFrame';
 
 export interface DockRegionProps {
   side: DockRegionSide;
+  renderPanel?: (id: PanelId) => ReactNode;
 }
 
 function DockTestBody({ label }: { label: string }) {
@@ -15,7 +17,7 @@ function DockTestBody({ label }: { label: string }) {
   );
 }
 
-export function DockRegion({ side }: DockRegionProps) {
+export function DockRegion({ side, renderPanel }: DockRegionProps) {
   const reactivePanels = usePanelRegistry((state) => state.panels);
   const panels = typeof window === 'undefined'
     ? usePanelRegistry.getState().panels
@@ -33,9 +35,13 @@ export function DockRegion({ side }: DockRegionProps) {
       data-region={side}
     >
       {docked.map((id: PanelId) => (
-        <PanelFrame key={id} id={id}>
-          <DockTestBody label={PANEL_CATALOG[id].title} />
-        </PanelFrame>
+        renderPanel ? (
+          <React.Fragment key={id}>{renderPanel(id)}</React.Fragment>
+        ) : (
+          <PanelFrame key={id} id={id}>
+            <DockTestBody label={PANEL_CATALOG[id].title} />
+          </PanelFrame>
+        )
       ))}
     </div>
   );

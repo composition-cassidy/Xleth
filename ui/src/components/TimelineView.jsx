@@ -27,6 +27,7 @@ import {
 } from '../constants/timeline.js'
 import { getRegime } from '../utils/waveformRenderer.js'
 import useSnapStore from '../stores/snapStore.js'
+import { usePanelVisibility } from '../windowing/contexts/PanelVisibilityContext'
 
 function ClipSliderRow({ label, value, min, max, step, onCommit, formatValue }) {
   const [localVal, setLocalVal] = useState(value)
@@ -66,6 +67,7 @@ export default function TimelineView({
   const [activeTool, setActiveTool] = useState('select')
   const [stickyNoteLength, setStickyNoteLength] = useState(240) // 1/16 = PPQ/4
   const { snapGranularity, setSnapGranularity } = useSnapStore()
+  const { useOnVisibilityChange } = usePanelVisibility()
 
   // Keep arranger clip length in sync with snap granularity
   useEffect(() => {
@@ -835,7 +837,21 @@ export default function TimelineView({
     observer.observe(el)
     return () => observer.disconnect()
   }, [tracks.length > 0])
-
+  useOnVisibilityChange((isVisible) => {
+    if (!isVisible) return
+    // Re-show kick: display:none leaves ResizeObserver flaky and
+    // canvas dimensions stale. Read clientWidth synchronously
+    // and force imperative redraws at the now-correct layout.
+    const el = canvasAreaRef.current
+    if (el) {
+      const w = el.clientWidth || 800
+      if (w > 0) setCanvasWidth(w)
+    }
+    canvasRef.current?.redrawGrid('visibility')
+    canvasRef.current?.redrawContent('visibility')
+    rulerRef.current?.redraw()
+    canvasRef.current?.positionPlayhead(playheadBeatRef.current)
+  })
   // ── Wheel handler (shared between ruler and canvas) ────────────────────────
 
   // Wheel on canvas/ruler = always zoom centered on cursor

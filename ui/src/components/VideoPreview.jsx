@@ -3,6 +3,7 @@ import { Import, Grid3x3 } from 'lucide-react'
 import GridEditorOverlay from './GridEditorOverlay.jsx'
 import { tokenValue } from '../theming/tokenValue.ts'
 import useGridEditStore from '../stores/useGridEditStore.js'
+import { usePanelVisibility } from '../windowing/contexts/PanelVisibilityContext'
 
 // ── WebGL shaders ────────────────────────────────────────────────────────────
 const VERT_SRC = `
@@ -64,6 +65,9 @@ function hexToGlColor(hex) {
 export default function VideoPreview() {
   const gridEditMode = useGridEditStore((s) => s.gridEditMode)
   const setGridEditMode = useGridEditStore((s) => s.setGridEditMode)
+  const { useOnVisibilityChange } = usePanelVisibility()
+  const runningRef = useRef(true)
+  const tickRef = useRef(null)
   const canvasRef = useRef(null)
   const containerRef = useRef(null)
   const [videoFile, setVideoFile] = useState(null)
@@ -126,7 +130,6 @@ export default function VideoPreview() {
   useEffect(() => {
     const canvas = canvasRef.current
     let rafId = null
-    let running = true
     let frameCount = 0
     let lastFpsTime = performance.now()
 
@@ -241,7 +244,7 @@ export default function VideoPreview() {
     window.addEventListener('xleth-theme-changed', handleThemeChange)
 
     function tick() {
-      if (!running) return
+      if (!runningRef.current) { return }
 
       if (shm) {
         // Poll the control word via native readInt32 (x86 aligned read is
@@ -284,15 +287,25 @@ export default function VideoPreview() {
       rafId = requestAnimationFrame(tick)
     }
 
+    tickRef.current = tick
     rafId = requestAnimationFrame(tick)
     return () => {
-      running = false
+      runningRef.current = false
+      tickRef.current = null
       window.removeEventListener('xleth-theme-changed', handleThemeChange)
       if (rafId) cancelAnimationFrame(rafId)
       if (gl && texture) gl.deleteTexture(texture)
       if (gl && program) gl.deleteProgram(program)
     }
   }, [])
+
+  useOnVisibilityChange((isVisible) => {
+    runningRef.current = isVisible
+    if (isVisible && tickRef.current) {
+      // resume: schedule next frame
+      requestAnimationFrame(tickRef.current)
+    }
+  })
 
   return (
     <div className="video-preview" ref={containerRef}>

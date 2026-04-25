@@ -20,6 +20,7 @@ const useMixerStore = create((set, get) => ({
   visible: false,
 
   toggleMixer: () => set(s => ({ visible: !s.visible })),
+  setVisible: (v) => set({ visible: v }),
 
   init: async () => {
     try {
