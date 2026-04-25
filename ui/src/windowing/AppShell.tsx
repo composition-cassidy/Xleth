@@ -1,12 +1,15 @@
 import React from 'react';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
+import { DockRegion } from './components/DockRegion';
 import { PanelFrame } from './components/PanelFrame';
+import { SnapGhost } from './components/SnapGhost';
 import { useEscRestoreMaximized } from './hooks/useEscRestoreMaximized';
+import { registerWorkAreaRect } from './managers/DragManager';
 import { usePanelRegistry } from './registry/PanelRegistry';
 import { PANEL_CATALOG, type PanelId } from './registry/panelCatalog';
 import './components/windowing.css';
 
-type DevShellMode = 'single' | 'focus-demo' | 'phase-2-demo';
+type DevShellMode = 'single' | 'focus-demo' | 'phase-2-demo' | 'phase-3-demo';
 
 export interface WindowingAppShellProps {
   mode?: DevShellMode;
@@ -34,19 +37,38 @@ export function configurePhase2DemoPanels() {
   usePanelRegistry.getState().focusPanel('timeline');
 }
 
+export function configurePhase3DemoPanels() {
+  const registry = usePanelRegistry.getState();
+  configurePanel('timeline', 96, 72, 620, 340);
+  configurePanel('pianoRoll', 256, 256, 680, 360);
+  registry.openPanel('sampleSelector');
+  registry.dockPanel('sampleSelector', 'left');
+  registry.openPanel('mixer');
+  registry.dockPanel('mixer', 'bottom');
+  registry.focusPanel('timeline');
+}
+
 const SHELL_PANEL_IDS: Record<DevShellMode, PanelId[]> = {
   single: ['timeline'],
   'focus-demo': ['timeline', 'mixer'],
   'phase-2-demo': ['timeline', 'mixer', 'pianoRoll'],
+  'phase-3-demo': ['timeline', 'mixer', 'pianoRoll', 'sampleSelector'],
 };
 
 export function AppShell({ mode = 'single' }: WindowingAppShellProps) {
   useEscRestoreMaximized();
+  const workAreaRef = useRef<HTMLDivElement>(null);
+  const reactivePanels = usePanelRegistry((state) => state.panels);
+  const panels = typeof window === 'undefined'
+    ? usePanelRegistry.getState().panels
+    : reactivePanels;
 
   useEffect(() => {
     configurePanel('timeline', 96, 72, 560, 320);
 
-    if (mode === 'phase-2-demo') {
+    if (mode === 'phase-3-demo') {
+      configurePhase3DemoPanels();
+    } else if (mode === 'phase-2-demo') {
       configurePhase2DemoPanels();
     } else if (mode === 'focus-demo') {
       configurePanel('mixer', 704, 136, 460, 280);
@@ -57,15 +79,30 @@ export function AppShell({ mode = 'single' }: WindowingAppShellProps) {
     }
   }, [mode]);
 
+  useEffect(() => {
+    if (workAreaRef.current) {
+      registerWorkAreaRect(workAreaRef.current.getBoundingClientRect());
+    }
+  });
+
   return (
     <div className="xleth-windowing-shell" data-testid="xleth-windowing-shell">
-      <div className="xleth-floating-work-area">
-        {SHELL_PANEL_IDS[mode].map((panelId) => (
-          <PanelFrame key={panelId} id={panelId}>
-            <TestPanelBody label={`${PANEL_CATALOG[panelId].title} Test Panel`} />
-          </PanelFrame>
-        ))}
+      <DockRegion side="left" />
+      <div className="xleth-center-column">
+        <DockRegion side="top" />
+        <div className="xleth-floating-work-area" ref={workAreaRef}>
+          <SnapGhost />
+          {SHELL_PANEL_IDS[mode]
+            .filter((panelId) => panels[panelId].mode !== 'docked')
+            .map((panelId) => (
+              <PanelFrame key={panelId} id={panelId}>
+                <TestPanelBody label={`${PANEL_CATALOG[panelId].title} Test Panel`} />
+              </PanelFrame>
+            ))}
+        </div>
+        <DockRegion side="bottom" />
       </div>
+      <DockRegion side="right" />
     </div>
   );
 }
@@ -76,6 +113,10 @@ export function WindowingFocusDemoShell() {
 
 export function WindowingPhase2DemoShell() {
   return <AppShell mode="phase-2-demo" />;
+}
+
+export function WindowingPhase3DemoShell() {
+  return <AppShell mode="phase-3-demo" />;
 }
 
 export default AppShell;

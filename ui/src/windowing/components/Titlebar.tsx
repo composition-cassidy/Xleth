@@ -38,7 +38,7 @@ export function Titlebar({ id, focused }: TitlebarProps) {
   };
 
   const startTitlebarDrag = (event: MouseEvent<HTMLDivElement>) => {
-    if (event.button !== 0 || panel.mode !== 'floating') return;
+    if (event.button !== 0 || panel.mode === 'maximized') return;
     event.preventDefault();
     beginDrag(id, event.clientX, event.clientY, panel.floating.x, panel.floating.y);
   };

@@ -1,11 +1,13 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  type ActiveDragState,
   beginDrag,
   cancelDrag,
   endDrag,
   getDragState,
+  registerWorkAreaRect,
   subscribeDrag,
   updateDrag,
   useDragOffset,
@@ -16,13 +18,17 @@ import {
 } from '../registry/PanelRegistry';
 
 const originalMoveFloatingPanel = usePanelRegistry.getState().moveFloatingPanel;
+const originalDockPanel = usePanelRegistry.getState().dockPanel;
 
 function resetRegistry() {
   cancelDrag();
+  registerWorkAreaRect({ left: -Infinity, top: -Infinity, right: Infinity, bottom: Infinity });
   usePanelRegistry.setState({
     panels: createInitialPanelStates(),
     moveFloatingPanel: originalMoveFloatingPanel,
+    dockPanel: originalDockPanel,
   });
+  vi.useRealTimers();
 }
 
 describe('DragManager', () => {
@@ -131,5 +137,73 @@ describe('DragManager', () => {
     cancelDrag();
 
     expect(calls).toBe(1);
+  });
+
+  it('sets snap target when mouse is within 40px of work-area edge', () => {
+    registerWorkAreaRect({ left: 0, top: 0, right: 1200, bottom: 800 });
+    beginDrag('timeline', 200, 400, 100, 100);
+
+    updateDrag(30, 400);
+    expect((getDragState() as ActiveDragState).currentSnapTarget).toBe('left');
+
+    updateDrag(600, 400);
+    expect((getDragState() as ActiveDragState).currentSnapTarget).toBeNull();
+  });
+
+  it('docks panel when snap target holds for >= 150ms', () => {
+    vi.useFakeTimers();
+    registerWorkAreaRect({ left: 0, top: 0, right: 1200, bottom: 800 });
+
+    const moveCalls: Array<[number, number]> = [];
+    const dockCalls: Array<string> = [];
+    usePanelRegistry.setState({
+      moveFloatingPanel: (id, x, y) => {
+        moveCalls.push([x, y]);
+        originalMoveFloatingPanel(id, x, y);
+      },
+      dockPanel: (id, region) => {
+        dockCalls.push(region);
+        originalDockPanel(id, region);
+      },
+    });
+
+    beginDrag('timeline', 200, 400, 100, 100);
+    updateDrag(20, 400);
+    vi.advanceTimersByTime(150);
+    endDrag();
+
+    expect(dockCalls).toEqual(['left']);
+    expect(moveCalls).toHaveLength(0);
+
+    vi.useRealTimers();
+  });
+
+  it('moves panel when snap target dwell is < 150ms', () => {
+    vi.useFakeTimers();
+    registerWorkAreaRect({ left: 0, top: 0, right: 1200, bottom: 800 });
+
+    const moveCalls: Array<[number, number]> = [];
+    const dockCalls: Array<string> = [];
+    usePanelRegistry.setState({
+      moveFloatingPanel: (id, x, y) => {
+        moveCalls.push([x, y]);
+        originalMoveFloatingPanel(id, x, y);
+      },
+      dockPanel: (id, region) => {
+        dockCalls.push(region);
+        originalDockPanel(id, region);
+      },
+    });
+
+    const start = usePanelRegistry.getState().panels.timeline.floating;
+    beginDrag('timeline', 200, 400, start.x, start.y);
+    updateDrag(20, 400);
+    vi.advanceTimersByTime(50);
+    endDrag();
+
+    expect(moveCalls).toHaveLength(1);
+    expect(dockCalls).toHaveLength(0);
+
+    vi.useRealTimers();
   });
 });

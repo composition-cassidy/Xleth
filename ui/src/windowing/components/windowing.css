@@ -1,5 +1,6 @@
 .xleth-windowing-shell {
-  position: relative;
+  display: flex;
+  flex-direction: row;
   width: 100%;
   height: 100%;
   min-height: 520px;
@@ -8,11 +9,42 @@
   color: var(--theme-text);
 }
 
-.xleth-floating-work-area {
-  position: absolute;
-  inset: 0;
+.xleth-center-column {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
   overflow: hidden;
+}
+
+.xleth-floating-work-area {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  min-height: 0;
+  min-width: 0;
   background: var(--theme-bg-primary);
+}
+
+.xleth-dock-region {
+  display: flex;
+  overflow: hidden;
+  background: var(--theme-bg-surface, transparent);
+}
+
+.xleth-dock-region--left,
+.xleth-dock-region--right {
+  flex-direction: column;
+  width: 280px;
+  min-height: 0;
+}
+
+.xleth-dock-region--top,
+.xleth-dock-region--bottom {
+  flex-direction: row;
+  height: 240px;
+  min-width: 0;
 }
 
 .xleth-panel-frame {
@@ -30,6 +62,16 @@
 
 .xleth-panel-frame.is-focused {
   border-color: var(--theme-border-focus);
+}
+
+.xleth-panel-frame.is-docked {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .xleth-panel-frame[data-panel-mode="maximized"] {

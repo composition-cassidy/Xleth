@@ -31,7 +31,20 @@ export function PanelFrame({ id, children }: PanelFrameProps) {
   const renderPath = getPanelFrameRenderPath(panel);
 
   if (renderPath === 'hidden') return null;
-  if (renderPath === 'docked') return null;
+  if (renderPath === 'docked') {
+    return (
+      <section
+        className="xleth-panel-frame is-docked"
+        data-panel-id={id}
+        data-panel-mode="docked"
+        style={{ '--xleth-windowing-panel-color': panelTypeColorVar(id) } as CSSProperties}
+        onMouseDown={() => focusPanel(id)}
+      >
+        <Titlebar id={id} focused={panel.focused} />
+        <div className="xleth-panel-body">{children}</div>
+      </section>
+    );
+  }
 
   const baseFrameStyle = {
     '--xleth-windowing-panel-color': panelTypeColorVar(id),
