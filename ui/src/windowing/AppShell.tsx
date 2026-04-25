@@ -3,13 +3,14 @@ import { useEffect, useRef } from 'react';
 import { DockRegion } from './components/DockRegion';
 import { PanelFrame } from './components/PanelFrame';
 import { SnapGhost } from './components/SnapGhost';
-import { useEscRestoreMaximized } from './hooks/useEscRestoreMaximized';
+import { TopBarToggles } from './components/TopBarToggles';
 import { registerWorkAreaRect } from './managers/DragManager';
+import * as KeyboardManager from './managers/KeyboardManager';
 import { usePanelRegistry } from './registry/PanelRegistry';
 import { PANEL_CATALOG, type PanelId } from './registry/panelCatalog';
 import './components/windowing.css';
 
-type DevShellMode = 'single' | 'focus-demo' | 'phase-2-demo' | 'phase-3-demo';
+type DevShellMode = 'single' | 'focus-demo' | 'phase-2-demo' | 'phase-3-demo' | 'phase-4-demo';
 
 export interface WindowingAppShellProps {
   mode?: DevShellMode;
@@ -53,15 +54,20 @@ const SHELL_PANEL_IDS: Record<DevShellMode, PanelId[]> = {
   'focus-demo': ['timeline', 'mixer'],
   'phase-2-demo': ['timeline', 'mixer', 'pianoRoll'],
   'phase-3-demo': ['timeline', 'mixer', 'pianoRoll', 'sampleSelector'],
+  'phase-4-demo': ['timeline', 'mixer', 'pianoRoll', 'sampleSelector'],
 };
 
 export function AppShell({ mode = 'single' }: WindowingAppShellProps) {
-  useEscRestoreMaximized();
   const workAreaRef = useRef<HTMLDivElement>(null);
   const reactivePanels = usePanelRegistry((state) => state.panels);
   const panels = typeof window === 'undefined'
     ? usePanelRegistry.getState().panels
     : reactivePanels;
+
+  useEffect(() => {
+    KeyboardManager.init();
+    return KeyboardManager.destroy;
+  }, []);
 
   useEffect(() => {
     configurePanel('timeline', 96, 72, 560, 320);
@@ -86,23 +92,26 @@ export function AppShell({ mode = 'single' }: WindowingAppShellProps) {
   });
 
   return (
-    <div className="xleth-windowing-shell" data-testid="xleth-windowing-shell">
-      <DockRegion side="left" />
-      <div className="xleth-center-column">
-        <DockRegion side="top" />
-        <div className="xleth-floating-work-area" ref={workAreaRef}>
-          <SnapGhost />
-          {SHELL_PANEL_IDS[mode]
-            .filter((panelId) => panels[panelId].mode !== 'docked')
-            .map((panelId) => (
-              <PanelFrame key={panelId} id={panelId}>
-                <TestPanelBody label={`${PANEL_CATALOG[panelId].title} Test Panel`} />
-              </PanelFrame>
-            ))}
+    <div className="xleth-windowing-app">
+      <TopBarToggles />
+      <div className="xleth-windowing-shell" data-testid="xleth-windowing-shell">
+        <DockRegion side="left" />
+        <div className="xleth-center-column">
+          <DockRegion side="top" />
+          <div className="xleth-floating-work-area" ref={workAreaRef}>
+            <SnapGhost />
+            {SHELL_PANEL_IDS[mode]
+              .filter((panelId) => panels[panelId].mode !== 'docked')
+              .map((panelId) => (
+                <PanelFrame key={panelId} id={panelId}>
+                  <TestPanelBody label={`${PANEL_CATALOG[panelId].title} Test Panel`} />
+                </PanelFrame>
+              ))}
+          </div>
+          <DockRegion side="bottom" />
         </div>
-        <DockRegion side="bottom" />
+        <DockRegion side="right" />
       </div>
-      <DockRegion side="right" />
     </div>
   );
 }
@@ -117,6 +126,10 @@ export function WindowingPhase2DemoShell() {
 
 export function WindowingPhase3DemoShell() {
   return <AppShell mode="phase-3-demo" />;
+}
+
+export function WindowingPhase4DemoShell() {
+  return <AppShell mode="phase-4-demo" />;
 }
 
 export default AppShell;

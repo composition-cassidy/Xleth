@@ -290,3 +290,64 @@
   color: var(--theme-text-muted);
   font-size: 12px;
 }
+
+/* -- Phase 4: App wrapper ----------------------------------- */
+
+.xleth-windowing-app {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* -- Phase 4: TopBarToggles -------------------------------- */
+
+.xleth-top-bar-toggles {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  flex: 0 0 auto;
+  height: 36px;
+  padding: 0 8px;
+  gap: 4px;
+  background: var(--theme-chrome-titlebar-bg);
+  border-bottom: 1px solid var(--theme-border-subtle);
+}
+
+.xleth-top-bar-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: var(--theme-chrome-radius-sm);
+  background: none;
+  cursor: pointer;
+  color: var(--theme-text-muted);
+}
+
+.xleth-top-bar-toggle-btn[data-active="true"] {
+  color: var(--xleth-windowing-panel-color);
+}
+
+.xleth-top-bar-toggle-btn[data-focused="true"] {
+  border-bottom-color: var(--theme-accent);
+}
+
+.xleth-top-bar-toggle-btn:hover {
+  background: var(--theme-bg-hover);
+}
+
+.xleth-top-bar-toggle-btn:focus-visible {
+  outline: 1px solid var(--theme-border-focus);
+  outline-offset: 0;
+}
+
+.xleth-top-bar-toggle-btn svg {
+  width: 16px;
+  height: 16px;
+}
