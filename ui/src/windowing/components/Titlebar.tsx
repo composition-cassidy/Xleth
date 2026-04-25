@@ -11,6 +11,12 @@ export interface TitlebarProps {
   focused: boolean;
 }
 
+export function isTitlebarControlTarget(target: EventTarget | null): boolean {
+  return typeof HTMLElement !== 'undefined'
+    && target instanceof HTMLElement
+    && Boolean(target.closest('button'));
+}
+
 export function Titlebar({ id, focused }: TitlebarProps) {
   const entry = PANEL_CATALOG[id];
   const Icon = entry.icon;
@@ -44,7 +50,7 @@ export function Titlebar({ id, focused }: TitlebarProps) {
   };
 
   const toggleTitlebarMaximize = (event: MouseEvent<HTMLDivElement>) => {
-    if (event.target instanceof HTMLElement && event.target.closest('button')) return;
+    if (isTitlebarControlTarget(event.target)) return;
     if (panel.mode === 'maximized') restorePanel(id);
     else if (panel.mode === 'floating') maximizePanel(id);
   };
