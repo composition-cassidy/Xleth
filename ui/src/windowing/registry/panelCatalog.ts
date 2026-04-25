@@ -44,6 +44,7 @@ export interface PanelCatalogEntry {
   icon: LucideIcon;
   fKey: 'F5' | 'F6' | 'F7' | 'F8' | 'F9' | 'F10' | 'F11';
   defaultFloating: FloatingDimensions;
+  keepAliveWhenHidden: boolean;
 }
 
 export const PANEL_CATALOG = {
@@ -54,6 +55,7 @@ export const PANEL_CATALOG = {
     icon: Clock3,
     fKey: 'F5',
     defaultFloating: { x: 260, y: 60, width: 1200, height: 480 },
+    keepAliveWhenHidden: true,
   },
   sampleSelector: {
     id: 'sampleSelector',
@@ -62,6 +64,7 @@ export const PANEL_CATALOG = {
     icon: PanelLeft,
     fKey: 'F6',
     defaultFloating: { x: 24, y: 72, width: 300, height: 640 },
+    keepAliveWhenHidden: false,
   },
   pianoRoll: {
     id: 'pianoRoll',
@@ -70,6 +73,7 @@ export const PANEL_CATALOG = {
     icon: Piano,
     fKey: 'F7',
     defaultFloating: { x: 320, y: 140, width: 960, height: 540 },
+    keepAliveWhenHidden: false,
   },
   preview: {
     id: 'preview',
@@ -78,6 +82,7 @@ export const PANEL_CATALOG = {
     icon: Video,
     fKey: 'F8',
     defaultFloating: { x: 400, y: 100, width: 640, height: 360 },
+    keepAliveWhenHidden: true,
   },
   mixer: {
     id: 'mixer',
@@ -86,6 +91,7 @@ export const PANEL_CATALOG = {
     icon: SlidersHorizontal,
     fKey: 'F9',
     defaultFloating: { x: 220, y: 420, width: 1040, height: 320 },
+    keepAliveWhenHidden: false,
   },
   gridSettings: {
     id: 'gridSettings',
@@ -94,6 +100,7 @@ export const PANEL_CATALOG = {
     icon: Grid3x3,
     fKey: 'F10',
     defaultFloating: { x: 300, y: 120, width: 520, height: 720 },
+    keepAliveWhenHidden: false,
   },
   nodeEditor: {
     id: 'nodeEditor',
@@ -102,6 +109,7 @@ export const PANEL_CATALOG = {
     icon: Workflow,
     fKey: 'F11',
     defaultFloating: { x: 400, y: 160, width: 900, height: 600 },
+    keepAliveWhenHidden: false,
   },
 } satisfies Record<PanelId, PanelCatalogEntry>;
 

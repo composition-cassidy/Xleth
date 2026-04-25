@@ -1,8 +1,9 @@
 import React from 'react';
 import type { CSSProperties, ReactNode } from 'react';
+import { PanelVisibilityProvider } from '../contexts/PanelVisibilityContext';
 import { useDragOffset } from '../managers/DragManager';
 import { useResizePreview } from '../managers/ResizeManager';
-import { panelTypeColorVar, type PanelId } from '../registry/panelCatalog';
+import { PANEL_CATALOG, panelTypeColorVar, type PanelId } from '../registry/panelCatalog';
 import { usePanelRegistry, type PanelState } from '../registry/PanelRegistry';
 import { ResizeHandles } from './ResizeHandles';
 import { Titlebar } from './Titlebar';
@@ -30,19 +31,33 @@ export function PanelFrame({ id, children }: PanelFrameProps) {
   const resizePreview = useResizePreview(id);
   const renderPath = getPanelFrameRenderPath(panel);
 
-  if (renderPath === 'hidden') return null;
+  if (renderPath === 'hidden') {
+    const entry = PANEL_CATALOG[id];
+    if (!entry.keepAliveWhenHidden) return null;
+
+    return (
+      <PanelVisibilityProvider isVisible={false}>
+        <div style={{ display: 'none' }} data-panel-id={id} data-panel-mode="hidden-alive">
+          {children}
+        </div>
+      </PanelVisibilityProvider>
+    );
+  }
+
   if (renderPath === 'docked') {
     return (
-      <section
-        className="xleth-panel-frame is-docked"
-        data-panel-id={id}
-        data-panel-mode="docked"
-        style={{ '--xleth-windowing-panel-color': panelTypeColorVar(id) } as CSSProperties}
-        onMouseDown={() => focusPanel(id)}
-      >
-        <Titlebar id={id} focused={panel.focused} />
-        <div className="xleth-panel-body">{children}</div>
-      </section>
+      <PanelVisibilityProvider isVisible={true}>
+        <section
+          className="xleth-panel-frame is-docked"
+          data-panel-id={id}
+          data-panel-mode="docked"
+          style={{ '--xleth-windowing-panel-color': panelTypeColorVar(id) } as CSSProperties}
+          onMouseDown={() => focusPanel(id)}
+        >
+          <Titlebar id={id} focused={panel.focused} />
+          <div className="xleth-panel-body">{children}</div>
+        </section>
+      </PanelVisibilityProvider>
     );
   }
 
@@ -65,18 +80,20 @@ export function PanelFrame({ id, children }: PanelFrameProps) {
   } as CSSProperties;
 
   return (
-    <section
-      className={`xleth-panel-frame${panel.focused ? ' is-focused' : ''}`}
-      data-panel-id={id}
-      data-panel-mode={panel.mode}
-      data-focused={panel.focused}
-      style={frameStyle}
-      onMouseDown={() => focusPanel(id)}
-    >
-      <Titlebar id={id} focused={panel.focused} />
-      <div className="xleth-panel-body">{children}</div>
-      {renderPath === 'floating' ? <ResizeHandles id={id} /> : null}
-    </section>
+    <PanelVisibilityProvider isVisible={true}>
+      <section
+        className={`xleth-panel-frame${panel.focused ? ' is-focused' : ''}`}
+        data-panel-id={id}
+        data-panel-mode={panel.mode}
+        data-focused={panel.focused}
+        style={frameStyle}
+        onMouseDown={() => focusPanel(id)}
+      >
+        <Titlebar id={id} focused={panel.focused} />
+        <div className="xleth-panel-body">{children}</div>
+        {renderPath === 'floating' ? <ResizeHandles id={id} /> : null}
+      </section>
+    </PanelVisibilityProvider>
   );
 }
 
