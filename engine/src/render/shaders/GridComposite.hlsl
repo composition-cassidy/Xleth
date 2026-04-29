@@ -3,17 +3,24 @@
 // Compile with fxc:
 //   fxc /T vs_5_0 /E VSMain /Fh GridCompositeVS.h GridComposite.hlsl
 //   fxc /T ps_5_0 /E PSMain /Fh GridCompositePS.h GridComposite.hlsl
+//
+// Phase 4 (flip v2): the legacy `flipMode` + `globalNoteIndex` cbuffer pair is
+// gone. Per-cell flip state is now resolved at event-build time by the
+// VideoFlipResolver and baked into a flat `orientation` enum that this shader
+// reads directly. Six orientations cover the D₄-subset used by Sparta
+// remixers; diagonal mirrors are deferred. See xleth-flip-v2-architecture-spec.md
+// §5.3 for the canonical UV transforms and §7.6 for byte-identical migration
+// parity against the legacy shader on ordinals 0..7.
 
 // ---------------------------------------------------------------------------
-// Per-draw constant buffer
+// Per-draw constant buffer (matches struct CellConstants in GridCompositor.h)
 // ---------------------------------------------------------------------------
 cbuffer CellConstants : register(b0)
 {
     float4 cellRect;        // (x, y, width, height) in UV space [0,1]
     float  opacity;         // slot.opacity * event.opacity
-    int    flipMode;        // 0=None, 1=HorizEven, 2=CW, 3=CCW
-    int    globalNoteIndex; // for HorizontalEven flip cycling
-    float  cornerRadius;   // 0.0–1.0 corner rounding
+    int    orientation;     // 0=none, 1=h, 2=v, 3=rot180, 4=rot90cw, 5=rot90ccw
+    float  cornerRadius;    // 0.0–1.0 corner rounding (fraction of min(w,h))
 };
 
 // ---------------------------------------------------------------------------
@@ -66,7 +73,7 @@ VSOutput VSMain(VSInput input)
 }
 
 // ---------------------------------------------------------------------------
-// Pixel shader — cell rectangle clipping, flip modes, opacity
+// Pixel shader — cell rectangle clipping, orientation transform, opacity
 // ---------------------------------------------------------------------------
 float4 PSMain(VSOutput input) : SV_Target
 {
@@ -82,43 +89,20 @@ float4 PSMain(VSOutput input) : SV_Target
         discard;
     }
 
-    // Apply flip mode
-    if (flipMode == 1)
-    {
-        // HorizontalEven: flip X on even-numbered notes
-        if ((globalNoteIndex % 2) == 0)
-            localUV.x = 1.0f - localUV.x;
-    }
-    else if (flipMode == 2)
-    {
-        // Clockwise cycle: normal → flipY → flipXY → flipX → repeat
-        int phase = globalNoteIndex % 4;
-        if (phase == 1)
-            localUV.y = 1.0f - localUV.y;
-        else if (phase == 2)
-        {
-            localUV.x = 1.0f - localUV.x;
-            localUV.y = 1.0f - localUV.y;
-        }
-        else if (phase == 3)
-            localUV.x = 1.0f - localUV.x;
-    }
-    else if (flipMode == 3)
-    {
-        // CounterClockwise cycle: normal → flipX → flipXY → flipY → repeat
-        int phase = globalNoteIndex % 4;
-        if (phase == 1)
-            localUV.x = 1.0f - localUV.x;
-        else if (phase == 2)
-        {
-            localUV.x = 1.0f - localUV.x;
-            localUV.y = 1.0f - localUV.y;
-        }
-        else if (phase == 3)
-            localUV.y = 1.0f - localUV.y;
-    }
+    // ---- Orientation transform (spec §5.3) -------------------------------
+    // Six members of D₄ that Xleth supports. The two diagonal mirrors are
+    // deferred — no Sparta cycle uses them in v1. Implemented as a 6-branch
+    // if/else; per phase 0 the GPU composite-cost floor is 0.25 ms/frame and
+    // a flat branch on a per-draw uniform is well below that threshold.
+    float2 sampleUV = localUV;
+    if      (orientation == 1) sampleUV.x = 1.0f - sampleUV.x;                            // horizontal
+    else if (orientation == 2) sampleUV.y = 1.0f - sampleUV.y;                            // vertical
+    else if (orientation == 3) { sampleUV.x = 1.0f - sampleUV.x; sampleUV.y = 1.0f - sampleUV.y; } // rotate-180
+    else if (orientation == 4) sampleUV   = float2(localUV.y,        1.0f - localUV.x);   // rotate-90 CW
+    else if (orientation == 5) sampleUV   = float2(1.0f - localUV.y, localUV.x);          // rotate-90 CCW
+    // orientation == 0 (none): identity, sampleUV stays = localUV
 
-    float4 color = cellTexture.Sample(linearSampler, localUV);
+    float4 color = cellTexture.Sample(linearSampler, sampleUV);
     color.a *= opacity;
 
     // Corner radius SDF alpha mask (pixel-space, anti-aliased over 1 px)

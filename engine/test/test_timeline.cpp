@@ -85,6 +85,259 @@ static void testSampleLabelConversion() {
 
 // ─── Main test ────────────────────────────────────────────────────────────────
 
+static nlohmann::json makeMinimalClipJson() {
+    return nlohmann::json{
+        {"id", 1},
+        {"trackId", 2},
+        {"regionId", 3},
+        {"positionTicks", 0},
+        {"durationTicks", 1000},
+        {"regionOffsetTicks", 0},
+        {"syllableIndex", -1},
+        {"velocity", 1.0f},
+        {"pitchOffset", 0}
+    };
+}
+
+static void testClipFadePercentConversion() {
+    std::cout << "[2b] Clip fade percentage conversion\n";
+
+    Clip c{};
+    c.id = 1;
+    c.trackId = 2;
+    c.regionId = 3;
+    c.duration.ticks = 1000;
+    c.syllableIndex = -1;
+    c.velocity = 1.0f;
+    c.fadeInPercent = 80.0f;
+    c.fadeOutPercent = 80.0f;
+
+    nlohmann::json saved = c;
+    CHECK(saved.contains("fadeInPercent"), "new JSON writes fadeInPercent");
+    CHECK(saved.contains("fadeOutPercent"), "new JSON writes fadeOutPercent");
+    CHECK(!saved.contains("fadeInTicks"), "new JSON omits legacy fadeInTicks");
+    CHECK(!saved.contains("fadeOutTicks"), "new JSON omits legacy fadeOutTicks");
+    CHECK_NEAR(saved["fadeInPercent"].get<float>(), 50.0f, 1e-4,
+               "80/80 fade auto-balances fade-in to 50%");
+    CHECK_NEAR(saved["fadeOutPercent"].get<float>(), 50.0f, 1e-4,
+               "80/80 fade auto-balances fade-out to 50%");
+
+    nlohmann::json legacy = makeMinimalClipJson();
+    legacy["fadeInTicks"] = 500.0f;
+    legacy["fadeOutTicks"] = 250.0f;
+    Clip migrated = legacy.get<Clip>();
+    CHECK_NEAR(migrated.fadeInPercent, 50.0f, 1e-4,
+               "legacy fadeInTicks migrates to clip-length percent");
+    CHECK_NEAR(migrated.fadeOutPercent, 25.0f, 1e-4,
+               "legacy fadeOutTicks migrates to clip-length percent");
+
+    nlohmann::json legacyOverlap = makeMinimalClipJson();
+    legacyOverlap["fadeInTicks"] = 800.0f;
+    legacyOverlap["fadeOutTicks"] = 800.0f;
+    Clip overlap = legacyOverlap.get<Clip>();
+    CHECK_NEAR(overlap.fadeInPercent, 50.0f, 1e-4,
+               "legacy overlapping fades auto-balance fade-in");
+    CHECK_NEAR(overlap.fadeOutPercent, 50.0f, 1e-4,
+               "legacy overlapping fades auto-balance fade-out");
+
+    nlohmann::json clamped = makeMinimalClipJson();
+    clamped["fadeInPercent"] = 120.0f;
+    clamped["fadeOutPercent"] = -10.0f;
+    Clip clampTest = clamped.get<Clip>();
+    CHECK_NEAR(clampTest.fadeInPercent, 100.0f, 1e-4,
+               "fade-in percent clamps to 100");
+    CHECK_NEAR(clampTest.fadeOutPercent, 0.0f, 1e-4,
+               "fade-out percent clamps to 0");
+
+    CHECK(clipFadePercentToSamples(48000, 50.0f) == 24000,
+          "50% fade resolves to half the rendered clip length");
+    CHECK(clipFadePercentToSamples(48000, 100.0f) == 48000,
+          "100% fade resolves to the full rendered clip length");
+}
+
+// ─── [15] VideoFlipConfig migration round-trip ────────────────────────────────
+// Loads a minimal track JSON carrying a legacy videoFlipMode string, verifies
+// the resulting VideoFlipConfig matches spec §3.5, then saves and reloads to
+// confirm the new schema survives a round-trip and the old field is gone.
+
+static nlohmann::json makeMinimalTrackJson(const std::string& videoFlipMode) {
+    return nlohmann::json{
+        {"id",                1},
+        {"name",              "TestTrack"},
+        {"volume",            1.0f},
+        {"pan",               0.0f},
+        {"stereoSpread",      1.0f},
+        {"muted",             false},
+        {"solo",              false},
+        {"visualOnly",        false},
+        {"order",             0},
+        {"videoX",            0.0f},
+        {"videoY",            0.0f},
+        {"videoW",            1920.0f},
+        {"videoH",            1080.0f},
+        {"videoOpacity",      1.0f},
+        {"videoZOrder",       0},
+        {"type",              "Clip"},
+        {"videoFlipMode",     videoFlipMode},
+        {"videoHoldLastFrame", false}
+    };
+}
+
+static void testVideoFlipConfigMigration() {
+    std::cout << "[15] VideoFlipConfig migration round-trip\n";
+
+    // ── 15a: None ──────────────────────────────────────────────────────────
+    {
+        TrackInfo t = makeMinimalTrackJson("None").get<TrackInfo>();
+        CHECK(!t.videoFlipConfig.enabled,           "None → enabled=false");
+        CHECK(t.videoFlipConfig.states.size() == 1, "None → 1 state");
+        CHECK(t.videoFlipConfig.states[0].orientation == Orientation::None,
+              "None → state[0]=none");
+        CHECK(t.videoFlipConfig.modifier.type == VideoFlipModifier::Type::EveryNote,
+              "None → modifier=every-note");
+        CHECK(t.videoFlipConfig.startStateIndex == 0, "None → startStateIndex=0");
+        // Round-trip: save → reload.
+        nlohmann::json saved = t;
+        CHECK(saved.contains("videoFlipConfig"),    "saved JSON has videoFlipConfig");
+        CHECK(!saved.contains("videoFlipMode"),     "saved JSON has no legacy videoFlipMode");
+        TrackInfo t2 = saved.get<TrackInfo>();
+        CHECK(!t2.videoFlipConfig.enabled,          "None round-trip: enabled=false");
+        CHECK(t2.videoFlipConfig.states.size() == 1,"None round-trip: 1 state");
+    }
+
+    // ── 15b: HorizontalEven ───────────────────────────────────────────────
+    {
+        TrackInfo t = makeMinimalTrackJson("HorizontalEven").get<TrackInfo>();
+        CHECK(t.videoFlipConfig.enabled,            "HorizEven → enabled=true");
+        CHECK(t.videoFlipConfig.states.size() == 2, "HorizEven → 2 states");
+        CHECK(t.videoFlipConfig.states[0].orientation == Orientation::None,
+              "HorizEven → state[0]=none");
+        CHECK(t.videoFlipConfig.states[1].orientation == Orientation::Horizontal,
+              "HorizEven → state[1]=horizontal");
+        CHECK(t.videoFlipConfig.modifier.type == VideoFlipModifier::Type::EveryNote,
+              "HorizEven → modifier=every-note");
+        CHECK(t.videoFlipConfig.startStateIndex == 1, "HorizEven → startStateIndex=1");
+        // Legacy-mode reverse lookup for UI compat.
+        CHECK(videoFlipConfigToLegacyMode(t.videoFlipConfig) == "HorizontalEven",
+              "HorizEven → reverse→HorizontalEven");
+        // Round-trip.
+        nlohmann::json saved = t;
+        TrackInfo t3 = saved.get<TrackInfo>();
+        CHECK(t3.videoFlipConfig.enabled,            "HorizEven round-trip: enabled");
+        CHECK(t3.videoFlipConfig.startStateIndex == 1,"HorizEven round-trip: startIdx=1");
+        CHECK(t3.videoFlipConfig.states[1].orientation == Orientation::Horizontal,
+              "HorizEven round-trip: state[1]=horizontal");
+    }
+
+    // ── 15c: Clockwise ────────────────────────────────────────────────────
+    {
+        TrackInfo t = makeMinimalTrackJson("Clockwise").get<TrackInfo>();
+        CHECK(t.videoFlipConfig.enabled,            "CW → enabled=true");
+        CHECK(t.videoFlipConfig.states.size() == 4, "CW → 4 states");
+        CHECK(t.videoFlipConfig.states[0].orientation == Orientation::None,     "CW s0=none");
+        CHECK(t.videoFlipConfig.states[1].orientation == Orientation::Vertical, "CW s1=vertical");
+        CHECK(t.videoFlipConfig.states[2].orientation == Orientation::Rotate180,"CW s2=rotate-180");
+        CHECK(t.videoFlipConfig.states[3].orientation == Orientation::Horizontal,"CW s3=horizontal");
+        CHECK(t.videoFlipConfig.startStateIndex == 0, "CW → startStateIndex=0");
+        CHECK(videoFlipConfigToLegacyMode(t.videoFlipConfig) == "Clockwise",
+              "CW → reverse→Clockwise");
+        // Ordinal verification (spec §7.6): every-note, 4 states, startIdx=0
+        // ordinal 0→state 0, ordinal 1→state 1, 2→2, 3→3, 4→0 (wrap)
+        // Verify orientations match accepted table.
+        const auto& st = t.videoFlipConfig.states;
+        CHECK(st[0].orientation == Orientation::None,      "CW ord0 orientation=none");
+        CHECK(st[1].orientation == Orientation::Vertical,  "CW ord1 orientation=vertical");
+        CHECK(st[2].orientation == Orientation::Rotate180, "CW ord2 orientation=rotate-180");
+        CHECK(st[3].orientation == Orientation::Horizontal,"CW ord3 orientation=horizontal");
+    }
+
+    // ── 15d: CounterClockwise ─────────────────────────────────────────────
+    {
+        TrackInfo t = makeMinimalTrackJson("CounterClockwise").get<TrackInfo>();
+        CHECK(t.videoFlipConfig.enabled,            "CCW → enabled=true");
+        CHECK(t.videoFlipConfig.states.size() == 4, "CCW → 4 states");
+        CHECK(t.videoFlipConfig.states[0].orientation == Orientation::None,      "CCW s0=none");
+        CHECK(t.videoFlipConfig.states[1].orientation == Orientation::Horizontal,"CCW s1=horizontal");
+        CHECK(t.videoFlipConfig.states[2].orientation == Orientation::Rotate180, "CCW s2=rotate-180");
+        CHECK(t.videoFlipConfig.states[3].orientation == Orientation::Vertical,  "CCW s3=vertical");
+        CHECK(t.videoFlipConfig.startStateIndex == 0, "CCW → startStateIndex=0");
+        CHECK(videoFlipConfigToLegacyMode(t.videoFlipConfig) == "CounterClockwise",
+              "CCW → reverse→CounterClockwise");
+    }
+
+    // ── 15e: New v2 config round-trips losslessly (no legacy field) ───────
+    {
+        VideoFlipConfig cfg;
+        cfg.enabled         = true;
+        cfg.startStateIndex = 2;
+        cfg.states = {
+            {"a0", Orientation::None,       ""},
+            {"a1", Orientation::Horizontal, "flip"},
+            {"a2", Orientation::Rotate90CW, "spin"},
+        };
+        cfg.modifier.type        = VideoFlipModifier::Type::SpecificPitches;
+        cfg.modifier.pitches     = {60, 67, 72};
+
+        TrackInfo t;
+        t.videoFlipConfig = cfg;
+        nlohmann::json saved = t;
+        CHECK(saved.contains("videoFlipConfig"),   "v2 config: JSON has videoFlipConfig");
+        CHECK(!saved.contains("videoFlipMode"),    "v2 config: JSON has no legacy field");
+
+        TrackInfo t2 = saved.get<TrackInfo>();
+        const auto& r = t2.videoFlipConfig;
+        CHECK(r.enabled,                           "v2 round-trip: enabled=true");
+        CHECK(r.startStateIndex == 2,              "v2 round-trip: startIdx=2");
+        CHECK(r.states.size() == 3,                "v2 round-trip: 3 states");
+        CHECK(r.states[0].orientation == Orientation::None,      "v2 s0=none");
+        CHECK(r.states[1].orientation == Orientation::Horizontal,"v2 s1=horizontal");
+        CHECK(r.states[2].orientation == Orientation::Rotate90CW,"v2 s2=rotate-90-cw");
+        CHECK(r.states[1].label == "flip",         "v2 state label preserved");
+        CHECK(r.modifier.type == VideoFlipModifier::Type::SpecificPitches,
+              "v2 modifier=specific-pitches");
+        CHECK(r.modifier.pitches.size() == 3,      "v2 pitches count=3");
+        CHECK(r.modifier.pitches[0] == 60,         "v2 pitch[0]=60");
+        CHECK(r.modifier.pitches[1] == 67,         "v2 pitch[1]=67");
+        CHECK(r.modifier.pitches[2] == 72,         "v2 pitch[2]=72");
+    }
+
+    // ── 15f: every-n-beats modifier round-trips ───────────────────────────
+    {
+        VideoFlipConfig cfg;
+        cfg.enabled             = true;
+        cfg.states              = { {"b0", Orientation::None, ""},
+                                    {"b1", Orientation::Vertical, ""} };
+        cfg.modifier.type        = VideoFlipModifier::Type::EveryNBeats;
+        cfg.modifier.n           = 4;
+        cfg.modifier.subdivision = VideoFlipModifier::Subdivision::Bar;
+        cfg.startStateIndex      = 0;
+
+        TrackInfo t;
+        t.videoFlipConfig = cfg;
+        nlohmann::json saved = t;
+        TrackInfo t2 = saved.get<TrackInfo>();
+        const auto& r = t2.videoFlipConfig;
+        CHECK(r.modifier.type == VideoFlipModifier::Type::EveryNBeats,
+              "every-n-beats round-trip: type");
+        CHECK(r.modifier.n == 4,                    "every-n-beats: n=4");
+        CHECK(r.modifier.subdivision == VideoFlipModifier::Subdivision::Bar,
+              "every-n-beats: subdivision=bar");
+    }
+
+    // ── 15g: projectFileVersion bumped ────────────────────────────────────
+    {
+        Timeline tl;
+        nlohmann::json j = tl.toJSON();
+        CHECK(j.contains("projectFileVersion"),     "toJSON writes projectFileVersion");
+        CHECK(j["projectFileVersion"].get<int>() == kProjectFileVersion,
+              "projectFileVersion == kProjectFileVersion");
+        // Legacy project (no version field) loads cleanly.
+        j.erase("projectFileVersion");
+        Timeline tl2;
+        CHECK(tl2.fromJSON(j), "legacy project (no version) loads without error");
+    }
+}
+
 int main() {
     std::cout << "=== Xleth Timeline Test Suite (Phase 1) ===\n\n";
 
@@ -93,6 +346,7 @@ int main() {
 
     // ── [2] Label conversion ──────────────────────────────────────────────────
     testSampleLabelConversion();
+    testClipFadePercentConversion();
 
     // ── [3] Create timeline ───────────────────────────────────────────────────
     std::cout << "[3] Create timeline\n";
@@ -419,6 +673,9 @@ int main() {
     Timeline tl3;
     CHECK(tl3.fromJSON(tl2.toJSON()), "double round-trip fromJSON succeeds");
     CHECK(tl3.getAllClips().size() == 9, "double round-trip: 9 clips");
+
+    // ── [15] VideoFlipConfig migration round-trip ─────────────────────────────
+    testVideoFlipConfigMigration();
 
     // ── Results ───────────────────────────────────────────────────────────────
     std::cout << "\n=== Results: "

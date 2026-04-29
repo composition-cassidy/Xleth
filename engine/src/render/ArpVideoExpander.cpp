@@ -200,7 +200,9 @@ std::vector<VideoEvent> ArpVideoExpander::expandArpVideoEvents(
         while (arpCursor >= 0.0 && arpCursor < nextEventBeat
                && !state.heldNotes.empty() && added < kMaxArpSteps)
         {
-            getNextArpNote(state); // advance step counter (pitch unused for video)
+            // Resolved arp-step pitch — flows into the flip-v2 resolver as
+            // the trigger pitch for new-note / specific-pitches modifiers.
+            const int stepPitch = getNextArpNote(state);
 
             VideoEvent ve;
             ve.startBeat       = arpCursor;
@@ -215,6 +217,7 @@ std::vector<VideoEvent> ArpVideoExpander::expandArpVideoEvents(
             ve.width = 1.0f; ve.height = 1.0f;
             ve.opacity         = state.storedVelocity;
             ve.globalNoteIndex = counter++;
+            ve.pitch           = stepPitch;
             result.push_back(ve);
             ++added;
 

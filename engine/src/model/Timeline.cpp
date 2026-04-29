@@ -207,6 +207,7 @@ int Timeline::addClip(Clip clip) {
         std::cout << "[Timeline] ERROR addClip: regionId=" << clip.regionId << " not found\n";
         return -1;
     }
+    normalizeClipFadePercents(clip);
     clip.id = getNextId();
     m_clips[clip.id] = clip;
     std::cout << "[Timeline] Added clip id=" << clip.id
@@ -235,7 +236,7 @@ int Timeline::addClip(Clip clip) {
         stored.pitchOffset, stored.pitchOffsetCents,
         stored.reversed ? 1 : 0, stored.stretchRatio,
         (int)stored.stretchMethod, stored.formantPreserve ? 1 : 0,
-        stored.fadeInTicks, stored.fadeOutTicks,
+        stored.fadeInPercent, stored.fadeOutPercent,
         stored.fadeInX1, stored.fadeInY1, stored.fadeInX2, stored.fadeInY2,
         stored.fadeOutX1, stored.fadeOutY1, stored.fadeOutX2, stored.fadeOutY2);
 #endif
@@ -705,16 +706,19 @@ bool Timeline::convertToClipTrack(int trackId) {
     return true;
 }
 
-bool Timeline::setTrackVideoFlipMode(int trackId, VideoFlipMode mode) {
+bool Timeline::setTrackVideoFlipConfig(int trackId, const VideoFlipConfig& config) {
     auto it = m_tracks.find(trackId);
     if (it == m_tracks.end()) {
-        std::cout << "[Timeline] ERROR setTrackVideoFlipMode: trackId="
+        std::cout << "[Timeline] ERROR setTrackVideoFlipConfig: trackId="
                   << trackId << " not found\n";
         return false;
     }
-    it->second.videoFlipMode = mode;
+    it->second.videoFlipConfig = config;
     std::cout << "[Timeline] Set track id=" << trackId
-              << " videoFlipMode=" << videoFlipModeToString(mode) << "\n";
+              << " videoFlipConfig(enabled=" << config.enabled
+              << " states=" << config.states.size()
+              << " modifier=" << videoFlipModifierTypeToString(config.modifier.type)
+              << " startIdx=" << config.startStateIndex << ")\n";
     return true;
 }
 
@@ -1082,8 +1086,10 @@ void Timeline::setPreviewFps(int fps) {
 // ─── Restore (undo/redo) ──────────────────────────────────────────────────────
 
 bool Timeline::restoreClip(const Clip& clip) {
-    m_clips[clip.id] = clip;
-    if (clip.id >= m_nextId) m_nextId = clip.id + 1;
+    Clip normalized = clip;
+    normalizeClipFadePercents(normalized);
+    m_clips[normalized.id] = normalized;
+    if (normalized.id >= m_nextId) m_nextId = normalized.id + 1;
     std::cout << "[Timeline] Restored clip id=" << clip.id
               << " trackId=" << clip.trackId
               << " regionId=" << clip.regionId
@@ -1158,6 +1164,7 @@ bool Timeline::restoreNoteInPattern(int patternId, const PatternNote& note) {
 
 nlohmann::json Timeline::toJSON() const {
     nlohmann::json j;
+    j["projectFileVersion"] = kProjectFileVersion;
     j["bpm"]           = m_bpm;
     j["sampleRate"]    = m_sampleRate;
     j["timeSigNum"]    = m_timeSigNum;
@@ -1241,6 +1248,12 @@ nlohmann::json Timeline::toJSON() const {
 
 bool Timeline::fromJSON(const nlohmann::json& j) {
     try {
+        const int fileVersion = j.value("projectFileVersion", 1);
+        if (fileVersion < kProjectFileVersion) {
+            std::cout << "[Timeline] Loading project file v" << fileVersion
+                      << " (current=" << kProjectFileVersion
+                      << "); legacy fields will be migrated on save.\n";
+        }
         j.at("bpm").get_to(m_bpm);
         j.at("sampleRate").get_to(m_sampleRate);
         j.at("timeSigNum").get_to(m_timeSigNum);

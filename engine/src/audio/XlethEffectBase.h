@@ -5,6 +5,8 @@
 
 #include <atomic>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 
@@ -135,6 +137,30 @@ public:
         for (int i = 0; i < kNumMeterSlots; ++i)
             arr.push_back(meterSlots_[i].load(std::memory_order_relaxed));
         return arr.dump();
+    }
+
+    // ── Visualization (dynamics, optional, opt-in per instance) ─────────────
+    // Default behavior: no-op. Effects with a meaningful visualization payload
+    // (Compressor today; later Limiter / Transient / Overdone) override these.
+    //
+    // Enable/disable allocates / tears down the per-instance ring on the main
+    // thread; the audio thread checks an atomic pointer per block (zero cost
+    // when disabled). Called from the bridge/UI when the editor opens/closes.
+    virtual void setVisualizationEnabled(bool /*enabled*/) {}
+
+    // Visualization type tag (see engine/src/audio/viz/DynamicsVizFrame.h).
+    // Default: kVizTypeUnknown (= 0). Compressor returns kVizTypeCompressor.
+    virtual std::uint32_t getVisualizationType() const { return 0u; }
+
+    // Schema version of the bucket layout this effect emits. Default 0 means
+    // "no visualization"; concrete effects return kDynamicsVizSchemaVersion.
+    virtual std::uint32_t getVisualizationSchemaVersion() const { return 0u; }
+
+    // Main-thread drain. Copies up to `maxBytes` of complete visualization
+    // buckets to `out`. Returns the number of bytes written. Default: 0.
+    virtual std::size_t drainVizFrames(std::uint8_t* /*out*/, std::size_t /*maxBytes*/)
+    {
+        return 0;
     }
 
     // ── AudioProcessor overrides ─────────────────────────────────────────────

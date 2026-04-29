@@ -1,5 +1,95 @@
 #include "Track.h"
 
+// ── VideoFlipConfig JSON helpers ─────────────────────────────────────────────
+
+nlohmann::json videoFlipConfigToJson(const VideoFlipConfig& cfg) {
+    nlohmann::json j;
+    j["enabled"]         = cfg.enabled;
+    j["startStateIndex"] = cfg.startStateIndex;
+
+    nlohmann::json states = nlohmann::json::array();
+    for (const auto& s : cfg.states) {
+        nlohmann::json sj;
+        sj["id"]          = s.id;
+        sj["orientation"] = orientationToString(s.orientation);
+        // Omit label when empty to keep the JSON compact.
+        if (!s.label.empty()) sj["label"] = s.label;
+        states.push_back(sj);
+    }
+    j["states"] = states;
+
+    nlohmann::json mod;
+    mod["type"] = videoFlipModifierTypeToString(cfg.modifier.type);
+    nlohmann::json config = nlohmann::json::object();
+    switch (cfg.modifier.type) {
+        case VideoFlipModifier::Type::SpecificPitches:
+            config["pitches"] = cfg.modifier.pitches;
+            break;
+        case VideoFlipModifier::Type::EveryNBeats:
+            config["n"]           = cfg.modifier.n;
+            config["subdivision"] = videoFlipSubdivisionToString(cfg.modifier.subdivision);
+            break;
+        default:
+            break;
+    }
+    mod["config"] = config;
+    j["modifier"] = mod;
+    return j;
+}
+
+VideoFlipConfig videoFlipConfigFromJson(const nlohmann::json& j) {
+    VideoFlipConfig cfg;
+    cfg.enabled         = j.value("enabled",         false);
+    cfg.startStateIndex = j.value("startStateIndex", 0);
+
+    if (j.contains("states") && j.at("states").is_array()) {
+        cfg.states.clear();
+        for (const auto& sj : j.at("states")) {
+            VideoFlipState s;
+            s.id          = sj.value("id",          std::string(""));
+            s.orientation = stringToOrientation(sj.value("orientation", std::string("none")));
+            s.label       = sj.value("label",       std::string(""));
+            cfg.states.push_back(s);
+        }
+    }
+    if (cfg.states.empty())
+        cfg.states = { {"s0", Orientation::None, ""} };
+
+    if (j.contains("modifier") && j.at("modifier").is_object()) {
+        const auto& mod     = j.at("modifier");
+        cfg.modifier.type   = stringToVideoFlipModifierType(
+            mod.value("type", std::string("every-note")));
+        if (mod.contains("config") && mod.at("config").is_object()) {
+            const auto& c = mod.at("config");
+            switch (cfg.modifier.type) {
+                case VideoFlipModifier::Type::SpecificPitches:
+                    if (c.contains("pitches") && c.at("pitches").is_array()) {
+                        cfg.modifier.pitches.clear();
+                        for (const auto& p : c.at("pitches"))
+                            cfg.modifier.pitches.push_back(p.get<int>());
+                    }
+                    break;
+                case VideoFlipModifier::Type::EveryNBeats:
+                    cfg.modifier.n = c.value("n", 1);
+                    cfg.modifier.subdivision = stringToVideoFlipSubdivision(
+                        c.value("subdivision", std::string("beat")));
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
+    // Clamp to valid range after deserialization.
+    if (!cfg.states.empty()) {
+        if (cfg.startStateIndex < 0)
+            cfg.startStateIndex = 0;
+        if (cfg.startStateIndex >= static_cast<int>(cfg.states.size()))
+            cfg.startStateIndex = static_cast<int>(cfg.states.size()) - 1;
+    }
+    return cfg;
+}
+
 // ── VisualEffect named-key helpers (Prompt 11) ───────────────────────────────
 
 std::string visualEffectTypeToString(VisualEffect::Type t) {
@@ -139,9 +229,10 @@ void to_json(nlohmann::json& j, const TrackInfo& t) {
         {"videoOpacity",      t.videoOpacity},
         {"videoZOrder",       t.videoZOrder},
         {"type",              trackTypeToString(t.type)},
-        {"videoFlipMode",     videoFlipModeToString(t.videoFlipMode)},
         {"videoHoldLastFrame", t.videoHoldLastFrame}
     };
+    // videoFlipConfig is a nested object — append after the flat initializer.
+    j["videoFlipConfig"] = videoFlipConfigToJson(t.videoFlipConfig);
 
     // ── Visual compositor effect settings (Prompt 11 persistence) ────────
     j["gapScaleOverride"] = t.gapScaleOverride;
@@ -233,8 +324,17 @@ void from_json(const nlohmann::json& j, TrackInfo& t) {
     // for backward compatibility — pattern tracks no longer bind to a region.
     (void)j.value("assignedRegionId",  -1);
     (void)j.value("assignedPatternId", -1);
-    t.videoFlipMode     = stringToVideoFlipMode(j.value("videoFlipMode", std::string("None")));
     t.videoHoldLastFrame = j.value("videoHoldLastFrame", false);
+
+    // ── VideoFlipConfig migration (spec §3.5) ─────────────────────────────
+    // v2+ projects carry "videoFlipConfig"; v1 projects carry "videoFlipMode".
+    // Read the new field first; fall back to migrating the legacy string.
+    if (j.contains("videoFlipConfig") && j.at("videoFlipConfig").is_object()) {
+        t.videoFlipConfig = videoFlipConfigFromJson(j.at("videoFlipConfig"));
+    } else {
+        const std::string legacyMode = j.value("videoFlipMode", std::string("None"));
+        t.videoFlipConfig = migrateVideoFlipMode(stringToVideoFlipMode(legacyMode));
+    }
 
     // ── Visual compositor effect settings (Prompt 11 persistence) ────────
     // All fields use j.value(...) with struct defaults so pre-Prompt-11

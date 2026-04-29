@@ -7,6 +7,12 @@
 void to_json(nlohmann::json& j, const TrackInfo& t);
 void from_json(const nlohmann::json& j, TrackInfo& t);
 
+// ── VideoFlipConfig JSON helpers ─────────────────────────────────────────────
+// Shared by Track.cpp (project file persistence) and XlethAddon.cpp (IPC).
+// The JSON schema mirrors the TypeScript interface in ui/src/types/videoFlipTypes.js.
+nlohmann::json  videoFlipConfigToJson(const VideoFlipConfig& cfg);
+VideoFlipConfig videoFlipConfigFromJson(const nlohmann::json& j);
+
 // ── VisualEffect named-key helpers (Prompt 11) ───────────────────────────────
 // Named-key serialization is the forward-compatibility contract: adding a new
 // param to an existing effect, or a new effect type, does not break old

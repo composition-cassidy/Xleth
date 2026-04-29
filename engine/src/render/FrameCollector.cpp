@@ -120,9 +120,12 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
         req.sourceId         = ev->sourceId;
         req.sourceFrameIndex = pickedFrame;
         req.opacity          = std::min(1.0f, std::max(0.0f, slotOpacity * ev->opacity));
-        req.globalNoteIndex  = ev->globalNoteIndex;
+        // Flip v2: VideoFlipApplier already resolved stateIndex/orientation per
+        // event during the build pass. The shader consumes `orientation` directly;
+        // stateIndex is propagated for analytics/debug only.
+        req.stateIndex  = ev->stateIndex;
+        req.orientation = static_cast<int>(ev->orientation);
         {
-            req.flipMode = trk ? static_cast<int>(trk->videoFlipMode) : 0;
             if (trk) {
                 req.cornerRadius     = trk->cornerRadius;
                 req.gapScaleOverride = trk->gapScaleOverride;
@@ -186,8 +189,7 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
             const auto& chorusReq = requests.back();
             lastChorusSourceFrame_ = chorusReq.sourceFrameIndex;
             lastChorusSourcePath_  = chorusReq.sourcePath;
-            lastChorusFlipMode_    = chorusReq.flipMode;
-            lastChorusNoteIndex_   = chorusReq.globalNoteIndex;
+            lastChorusOrientation_ = chorusReq.orientation;
         } else if (lastChorusSourceFrame_ >= 0) {
             // Chorus gap — hold only if videoHoldLastFrame is enabled on the chorus track
             const TrackInfo* chorusTrack = timeline.getTrack(layout.chorusTrackId);
@@ -204,8 +206,7 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
                 req.opacity          = 1.0f;
                 req.isChorus         = true;
                 req.zOrder           = -1;
-                req.flipMode         = lastChorusFlipMode_;
-                req.globalNoteIndex  = lastChorusNoteIndex_;
+                req.orientation      = lastChorusOrientation_;
                 requests.push_back(std::move(req));
             } else {
                 std::fprintf(stderr, "[FrameCollector] Chorus gap: hold=OFF\n");

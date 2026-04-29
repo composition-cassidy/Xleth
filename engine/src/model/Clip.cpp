@@ -2,6 +2,10 @@
 #include <algorithm>
 
 void to_json(nlohmann::json& j, const Clip& c) {
+    float fadeInPercent = c.fadeInPercent;
+    float fadeOutPercent = c.fadeOutPercent;
+    normalizeClipFadePercents(fadeInPercent, fadeOutPercent);
+
     j = nlohmann::json{
         {"id",                c.id},
         {"trackId",           c.trackId},
@@ -17,8 +21,8 @@ void to_json(nlohmann::json& j, const Clip& c) {
         {"stretchRatio",      c.stretchRatio},
         {"stretchMethod",     static_cast<int>(c.stretchMethod)},
         {"formantPreserve",   c.formantPreserve},
-        {"fadeInTicks",       c.fadeInTicks},
-        {"fadeOutTicks",      c.fadeOutTicks},
+        {"fadeInPercent",     fadeInPercent},
+        {"fadeOutPercent",    fadeOutPercent},
         {"fadeInX1",          c.fadeInX1},
         {"fadeInY1",          c.fadeInY1},
         {"fadeInX2",          c.fadeInX2},
@@ -50,8 +54,17 @@ void from_json(const nlohmann::json& j, Clip& c) {
     c.stretchMethod    = static_cast<StretchMethod>(j.value("stretchMethod", 0));
     c.formantPreserve  = j.value("formantPreserve", false);
 
-    c.fadeInTicks   = j.value("fadeInTicks",  0.0f);
-    c.fadeOutTicks  = j.value("fadeOutTicks", 0.0f);
+    if (j.contains("fadeInPercent"))
+        c.fadeInPercent = j.value("fadeInPercent", 0.0f);
+    else
+        c.fadeInPercent = legacyFadeTicksToPercent(j.value("fadeInTicks", 0.0f), c.duration.ticks);
+
+    if (j.contains("fadeOutPercent"))
+        c.fadeOutPercent = j.value("fadeOutPercent", 0.0f);
+    else
+        c.fadeOutPercent = legacyFadeTicksToPercent(j.value("fadeOutTicks", 0.0f), c.duration.ticks);
+    normalizeClipFadePercents(c);
+
     c.fadeInX1      = j.value("fadeInX1",     0.0f);
     c.fadeInY1      = j.value("fadeInY1",     0.0f);
     c.fadeInX2      = j.value("fadeInX2",     1.0f);

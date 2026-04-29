@@ -1,11 +1,16 @@
 #pragma once
 
 #include "audio/XlethEffectBase.h"
+#include "audio/viz/DynamicsVizCollector.h"
+#include "audio/viz/DynamicsVizFrame.h"
 #include <juce_dsp/juce_dsp.h>
 
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
 
 // ─── XlethCompressorEffect ────────────────────────────────────────────────────
 // Feed-forward compressor with soft-knee, decoupled peak/RMS envelope detector
@@ -43,6 +48,79 @@ public:
         registerSmoothedParam("mix",       SmoothType::Linear, 20.0f);
     }
 
+    // ── Visualization overrides (XlethEffectBase) ───────────────────────────
+    //
+    // Lifetime model:
+    //   • The collector is allocated lazily on the FIRST enable (main thread).
+    //   • Once allocated, it lives until the effect itself is destroyed.
+    //     `setVisualizationEnabled(false)` only un-publishes the atomic pointer
+    //     — it does NOT destroy the ring. Destroying the ring while the audio
+    //     thread is mid-block (it loads vizActive_ once per block and uses it
+    //     for the whole block) would be a use-after-free.
+    //   • The effect destructor frees the collector. By that point JUCE's
+    //     AudioProcessorGraph has already detached the effect from the audio
+    //     callback, so there is no audio thread to race against.
+    //   • Cost: ~40 KB per Compressor that has ever opened its editor. Fine.
+    //
+    // No state reset on toggle:
+    //   • We never call `vizCollector_->reset()` or `vizAccum_.reset()` from
+    //     this method, because doing so would race the audio thread if the
+    //     audio thread is still finishing a block that captured a non-null
+    //     vizCol from a previous enable. The ring's SPSC indices are
+    //     monotonically increasing under the producer; stale buckets from
+    //     before the previous disable get drained naturally by the consumer
+    //     (engine drain returns up to maxBuckets at a time, and the JS-side
+    //     ring is also bounded — the live tail wins out within a few frames).
+    //   • The accumulator's per-bucket fields (peak / max / detector) are
+    //     overwritten by `observe()` and zeroed by `advance()` on every
+    //     bucket boundary, so a stale residue at re-enable is at most one
+    //     bucket worth of inflated values (≤ 1.45 ms @ 44.1 kHz).
+    //
+    // While vizActive_ is null, processEffect's hot loop pays only one
+    // acquire-load + null-check per block.
+    void setVisualizationEnabled(bool enabled) override
+    {
+        if (enabled)
+        {
+            if (!vizCollector_)
+            {
+                vizCollector_ = std::make_unique<
+                    xleth::viz::DynamicsVizCollector<xleth::viz::CompressorBucket>>(
+                        xleth::viz::kDynamicsVizBucketSize,
+                        xleth::viz::kDynamicsVizRingDepth,
+                        xleth::viz::kVizTypeCompressor);
+            }
+            // Idempotent: re-publishing the same pointer is a no-op for the
+            // audio thread (which already loads vizActive_ each block).
+            vizActive_.store(vizCollector_.get(), std::memory_order_release);
+        }
+        else
+        {
+            // Un-publish only. The audio thread's next block sees nullptr and
+            // skips all visualization work. The collector itself is retained
+            // and re-used on the next enable to avoid use-after-free.
+            vizActive_.store(nullptr, std::memory_order_release);
+        }
+    }
+
+    std::uint32_t getVisualizationType() const override
+    {
+        return xleth::viz::kVizTypeCompressor;
+    }
+
+    std::uint32_t getVisualizationSchemaVersion() const override
+    {
+        return xleth::viz::kDynamicsVizSchemaVersion;
+    }
+
+    std::size_t drainVizFrames(std::uint8_t* out, std::size_t maxBytes) override
+    {
+        // Main-thread only — read collector_ via the unique_ptr (not the
+        // atomic), since this method is also main-thread.
+        if (!vizCollector_) return 0;
+        return vizCollector_->drain(out, maxBytes);
+    }
+
     // ── prepareEffect ───────────────────────────────────────────────────────
     void prepareEffect(double sampleRate, int maxBlockSize) override
     {
@@ -65,6 +143,8 @@ public:
 
         env_  = 0.0f;
         peak_ = 0.0f;
+        vizSampleClock_ = 0;
+        vizAccum_.reset();
 
         const float initLa = lookaheadPtr_
                            ? lookaheadPtr_->load(std::memory_order_relaxed) : 0.0f;
@@ -84,6 +164,8 @@ public:
         env_  = 0.0f;
         peak_ = 0.0f;
         lookaheadDelay_.reset();
+        vizSampleClock_ = 0;
+        vizAccum_.reset();
     }
 
     // ── getTailLengthSeconds ────────────────────────────────────────────────
@@ -127,6 +209,11 @@ public:
 
         float peakL = 0.0f, peakR = 0.0f, maxGR = 0.0f;
 
+        // Visualization (opt-in per instance). One acquire load per block —
+        // null when the editor is closed, so the hot loop pays only a cheap
+        // null-check.
+        auto* vizCol = vizActive_.load(std::memory_order_acquire);
+
 #ifdef XLETH_DEBUG
         static int blockCount_ = 0;
         ++blockCount_;
@@ -155,6 +242,12 @@ public:
             // Sidechain: read NON-delayed input (stereo-linked max)
             const float sideL = buffer.getSample(0, s);
             const float sideR = numCh > 1 ? buffer.getSample(1, s) : sideL;
+
+            // Per-sample visualization input level (pre-process). Reuses the
+            // values already read above — one extra std::max in the hot path.
+            const float vizAbsIn = vizCol
+                ? std::max(std::abs(sideL), std::abs(sideR))
+                : 0.0f;
 
             // Envelope detection
             float level;
@@ -198,6 +291,7 @@ public:
             // Delay input signal, apply gain, blend dry/wet
             // Both the wet path and dry-mix path use the delayed signal so that
             // mix < 100% with lookahead > 0 doesn't produce comb filtering.
+            float vizAbsOut = 0.0f;
             for (int ch = 0; ch < numCh; ++ch)
             {
                 const float dry = buffer.getSample(ch, s);
@@ -210,9 +304,25 @@ public:
                 const float absOut = std::abs(mixed);
                 if (ch == 0) peakL = std::max(peakL, absOut);
                 if (ch == 1) peakR = std::max(peakR, absOut);
+                if (vizCol && absOut > vizAbsOut) vizAbsOut = absOut;
             }
 
             maxGR = std::max(maxGR, grDB);
+
+            // Advance the per-instance visualization sample clock and, if
+            // visualization is enabled, accumulate this sample's observations.
+            // ioInDb / ioOutDb feed the live transfer-curve dot — we use the
+            // input level (envDB is detector dB; envDB at the end of bucket is
+            // the captured detector). For the dot we want the instantaneous
+            // input-vs-output relationship: envDB → envDB - grDB + makeup.
+            ++vizSampleClock_;
+            if (vizCol)
+            {
+                const float ioInDb  = envDB;
+                const float ioOutDb = envDB - grDB + makeup;
+                vizAccum_.observe(vizAbsIn, vizAbsOut, envDB, grDB, ioInDb, ioOutDb);
+                vizAccum_.advance(vizSampleClock_, *vizCol);
+            }
         }
 
 #ifdef XLETH_DEBUG
@@ -271,4 +381,17 @@ private:
 
     float  prevLookaheadMs_ = 0.0f;
     double sampleRate_      = 44100.0;
+
+    // ── Visualization state ─────────────────────────────────────────────────
+    // Owning unique_ptr lives only on the main thread (prepare/setEnabled).
+    // The audio thread reads `vizActive_` (release/acquire) and operates on
+    // it without ever touching the unique_ptr. While the effect is enabled,
+    // vizActive_ == vizCollector_.get(); when disabled, it's nullptr.
+    std::unique_ptr<xleth::viz::DynamicsVizCollector<xleth::viz::CompressorBucket>>
+        vizCollector_;
+    std::atomic<xleth::viz::DynamicsVizCollector<xleth::viz::CompressorBucket>*>
+        vizActive_{nullptr};
+
+    xleth::viz::CompressorBucketAccumulator vizAccum_;
+    std::uint64_t vizSampleClock_ = 0; // monotonic per-instance sample index
 };

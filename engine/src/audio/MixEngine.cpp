@@ -1561,6 +1561,44 @@ XlethEffectBase* MixEngine::getMasterEffectPtr(int nodeId)
     return masterEffectChain_->getEffect(nodeId);
 }
 
+// ── Effect visualization access ─────────────────────────────────────────────
+
+bool MixEngine::setEffectVisualizationEnabled(int trackId, int nodeId, bool enabled)
+{
+    auto* effect = (trackId == -1)
+        ? getMasterEffectPtr(nodeId)
+        : getEffectPtr(trackId, nodeId);
+    if (!effect) return false;
+    effect->setVisualizationEnabled(enabled);
+    return true;
+}
+
+std::size_t MixEngine::drainEffectVizFrames(int trackId, int nodeId,
+                                            std::uint8_t* out, std::size_t maxBytes)
+{
+    auto* effect = (trackId == -1)
+        ? getMasterEffectPtr(nodeId)
+        : getEffectPtr(trackId, nodeId);
+    if (!effect) return 0;
+    return effect->drainVizFrames(out, maxBytes);
+}
+
+std::uint32_t MixEngine::getEffectVisualizationType(int trackId, int nodeId) const
+{
+    auto* effect = (trackId == -1)
+        ? const_cast<MixEngine*>(this)->getMasterEffectPtr(nodeId)
+        : const_cast<MixEngine*>(this)->getEffectPtr(trackId, nodeId);
+    return effect ? effect->getVisualizationType() : 0u;
+}
+
+std::uint32_t MixEngine::getEffectVisualizationSchemaVersion(int trackId, int nodeId) const
+{
+    auto* effect = (trackId == -1)
+        ? const_cast<MixEngine*>(this)->getMasterEffectPtr(nodeId)
+        : const_cast<MixEngine*>(this)->getEffectPtr(trackId, nodeId);
+    return effect ? effect->getVisualizationSchemaVersion() : 0u;
+}
+
 // ── Peak meter reads (slot-based via trackIdToSlot_) ─────────────────────────
 
 float MixEngine::getTrackPeakL(int trackId) const
@@ -2102,14 +2140,12 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
 
         // ── Per-clip bezier fade LUTs (stack-allocated, built once per clip) ──
         const int64_t clipLen = ac.clipEndSample - ac.clipStartSample;
-        const double ticksToSec = 1.0 / (960.0 * bpm / 60.0);
+        float fadeInPercent = ac.clip->fadeInPercent;
+        float fadeOutPercent = ac.clip->fadeOutPercent;
+        normalizeClipFadePercents(fadeInPercent, fadeOutPercent);
 
-        const int64_t fadeInSamples  = (ac.clip->fadeInTicks > 0.0f)
-            ? static_cast<int64_t>(ac.clip->fadeInTicks * ticksToSec * sampleRate)
-            : 0;
-        const int64_t fadeOutSamples = (ac.clip->fadeOutTicks > 0.0f)
-            ? static_cast<int64_t>(ac.clip->fadeOutTicks * ticksToSec * sampleRate)
-            : 0;
+        const int64_t fadeInSamples = clipFadePercentToSamples(clipLen, fadeInPercent);
+        const int64_t fadeOutSamples = clipFadePercentToSamples(clipLen, fadeOutPercent);
 
         ClipFadeLUT fadeInLUT, fadeOutLUT;
         if (fadeInSamples > 0)

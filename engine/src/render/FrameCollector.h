@@ -48,8 +48,11 @@ struct CellFrameRequest {
     int         sourceId         = -1;  // SourceMedia ID (for decoder lookup)
     int64_t     sourceFrameIndex = 0;   // frame number in source file
     float       opacity          = 1.0f;// slot.opacity * event.opacity
-    int         globalNoteIndex  = 0;   // for flip mode cycling
-    int         flipMode         = 0;   // VideoFlipMode as int (0=None, 1=HorizEven, 2=CW, 3=CCW)
+    // ── Flip v2 (sent to the GPU as `orientation` in CellConstants) ───────
+    // Populated from VideoEvent.stateIndex / VideoEvent.orientation, which
+    // VideoFlipApplier wrote during the build pass.
+    int         stateIndex       = 0;   // resolved state machine index (analytics; not on GPU)
+    int         orientation      = 0;   // Orientation enum as int — drives the shader UV transform
     int         trackId          = -1;  // originating track
     bool        isChorus         = false;
     bool        isCrash          = false;
@@ -166,8 +169,7 @@ private:
     // the last known chorus frame so the background never goes black.
     int64_t     lastChorusSourceFrame_ = -1;
     std::string lastChorusSourcePath_;
-    int         lastChorusFlipMode_    = 0;
-    int         lastChorusNoteIndex_   = 0;
+    int         lastChorusOrientation_ = 0;   // flip-v2: preserved across hold gaps
 
     AnimationManager* animationMgr_ = nullptr;
 };

@@ -35,13 +35,18 @@ struct VisualEffect;
 
 // ---------------------------------------------------------------------------
 // CellConstants — matches cbuffer CellConstants in GridComposite.hlsl
+//
+// Phase 4: legacy flipMode / globalNoteIndex are gone from both the HLSL cbuffer
+// and this struct. Per-cell flip state is now resolved at event-build time and
+// flows through `orientation` only (0..5 — see Orientation enum / spec §5.3).
+// Layout matches the HLSL cbuffer's 28 bytes + 4 bytes implicit pad (sizeof=32).
 // ---------------------------------------------------------------------------
 struct alignas(16) CellConstants {
     float cellRect[4];      // x, y, width, height in UV [0,1]
     float opacity;
-    int   flipMode;
-    int   globalNoteIndex;
+    int   orientation;      // 0=none, 1=h, 2=v, 3=rot180, 4=rot90cw, 5=rot90ccw
     float cornerRadius;
+    // 4-byte tail pad — implicit; struct is 28 bytes used, padded to 32 for alignof(16).
 };
 static_assert(sizeof(CellConstants) == 32, "CellConstants must be 32 bytes (2 x float4)");
 
@@ -262,15 +267,15 @@ private:
                               int gridCols, int gridRows,
                               float& outX, float& outY, float& outW, float& outH);
 
-    /** Draw one cell: set constants, bind texture, draw quad. */
+    /** Draw one cell: set constants, bind texture, draw quad.
+     *  `orientation` is the flip-v2 enum (0..5 — see GridComposite.hlsl). */
     void drawCell(ID3D11ShaderResourceView* srv,
                   float rectX, float rectY, float rectW, float rectH,
-                  float opacity, int flipMode, int globalNoteIndex,
-                  float cornerRadius);
+                  float opacity, int orientation, float cornerRadius);
 
     /** Blit sourceSRV into the currently bound render target as a fullscreen quad.
-     *  Uses the main pixel shader with flip mode applied (cellRect covers full UV). */
-    void blitFullscreen(ID3D11ShaderResourceView* srv, int flipMode, int globalNoteIndex);
+     *  Uses the main pixel shader with the supplied orientation applied. */
+    void blitFullscreen(ID3D11ShaderResourceView* srv, int orientation = 0);
 
     /** Draw a fullscreen pass with a specific pixel shader (for effect chain).
      *  Binds srv at t0, draws the quad. Caller must set the PS and CB beforehand. */

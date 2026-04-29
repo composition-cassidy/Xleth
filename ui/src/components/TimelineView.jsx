@@ -31,8 +31,10 @@ import useSnapStore from '../stores/snapStore.js'
 import useUIStore from '../stores/uiStore.js'
 import useTimelineFocusStore from '../stores/timelineFocusStore.js'
 import usePianoRollStore from '../stores/usePianoRollStore.js'
+import useMixerStore from '../stores/mixerStore.js'
 import { useToast } from './Toast.jsx'
 import { usePanelVisibility } from '../windowing/contexts/PanelVisibilityContext'
+import TrackFlipPropertiesPanel from './timeline/TrackFlipPropertiesPanel.jsx'
 import { register as registerKeyboardBinding } from '../windowing/managers/KeyboardManager'
 
 // Combos the timeline panel claims. Listed once at module scope so the
@@ -81,7 +83,8 @@ function ClipSliderRow({ label, value, min, max, step, onCommit, formatValue }) 
         onChange={(e) => { dragging.current = true; setLocalVal(Number(e.target.value)) }}
         onPointerUp={(e) => {
           const v = Number(e.target.value)
-          Promise.resolve(onCommit(v)).finally(() => { dragging.current = false })
+          dragging.current = false
+          Promise.resolve(onCommit(v))
         }}
         style={{ flex: 1, accentColor: 'var(--theme-border-focus)' }}
       />
@@ -90,6 +93,47 @@ function ClipSliderRow({ label, value, min, max, step, onCommit, formatValue }) 
       </span>
     </div>
   )
+}
+
+function clampFadePercent(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n <= 0) return 0
+  if (n >= 100) return 100
+  return n
+}
+
+function legacyFadeTicksToPercent(ticks, durationTicks) {
+  const t = Number(ticks)
+  const d = Number(durationTicks)
+  if (!Number.isFinite(t) || !Number.isFinite(d) || t <= 0 || d <= 0) return 0
+  return clampFadePercent((t * 100) / d)
+}
+
+function normalizeFadePercents(fadeInPercent, fadeOutPercent) {
+  let fadeIn = clampFadePercent(fadeInPercent)
+  let fadeOut = clampFadePercent(fadeOutPercent)
+  const total = fadeIn + fadeOut
+  if (total > 100) {
+    const scale = 100 / total
+    fadeIn *= scale
+    fadeOut *= scale
+  }
+  return { fadeInPercent: fadeIn, fadeOutPercent: fadeOut }
+}
+
+function clipFadePercent(clip, side) {
+  const percentKey = side === 'in' ? 'fadeInPercent' : 'fadeOutPercent'
+  const ticksKey = side === 'in' ? 'fadeInTicks' : 'fadeOutTicks'
+  if (clip?.[percentKey] != null) return clampFadePercent(clip[percentKey])
+  return legacyFadeTicksToPercent(clip?.[ticksKey], clip?.durationTicks)
+}
+
+function normalizeClipFadeFields(clip) {
+  const fades = normalizeFadePercents(
+    clipFadePercent(clip, 'in'),
+    clipFadePercent(clip, 'out')
+  )
+  return { ...clip, ...fades }
 }
 
 export default function TimelineView({
@@ -126,6 +170,7 @@ export default function TimelineView({
   const [tracks, setTracks] = useState([])
   const [contextMenu, setContextMenu] = useState(null)
   const [trackMenu, setTrackMenu] = useState(null)         // { track, x, y }
+  const [flipPanel, setFlipPanel] = useState(null)         // { track, anchorRect }
   const [confirmDialog, setConfirmDialog] = useState(null)  // { title, message, onConfirm }
   const [quantizeOpen, setQuantizeOpen] = useState(false)
   const nextTrackNum = useRef(1)
@@ -286,6 +331,8 @@ export default function TimelineView({
       const t = await window.xleth?.timeline?.getTracks()
       if (t) {
         setTracks(t)
+        // Keep mixer in sync without an extra IPC round-trip
+        useMixerStore.getState().syncFromTimeline(t)
         console.log(`[Timeline] Tracks loaded: ${t.length}`)
       }
     } catch { /* engine not ready */ }
@@ -295,9 +342,10 @@ export default function TimelineView({
     try {
       const c = await window.xleth?.timeline?.getClips()
       if (c) {
-        setClips(c)
-        clipsRef.current = c
-        console.log(`[TimelineClips] Clips loaded: ${c.length}`)
+        const normalized = c.map(normalizeClipFadeFields)
+        setClips(normalized)
+        clipsRef.current = normalized
+        console.log(`[TimelineClips] Clips loaded: ${normalized.length}`)
       }
     } catch { /* engine not ready */ }
   }, [])
@@ -1113,9 +1161,11 @@ export default function TimelineView({
         console.warn('[Timeline] setTrackName failed', e)
       }
     }
-    setTracks((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, name } : t))
-    )
+    setTracks((prev) => {
+      const next = prev.map((t) => (t.id === id ? { ...t, name } : t))
+      useMixerStore.getState().syncFromTimeline(next)
+      return next
+    })
     console.log(`[Timeline] Track ${id} renamed to "${name}"`)
   }, [])
 
@@ -1151,6 +1201,8 @@ export default function TimelineView({
       const next = [...prev]
       const [moved] = next.splice(fromIndex, 1)
       next.splice(toIndex, 0, moved)
+      // Reorder is local-only (not persisted to engine), so sync mixer directly
+      useMixerStore.getState().syncFromTimeline(next)
       return next
     })
   }, [])
@@ -1285,13 +1337,16 @@ export default function TimelineView({
     console.log(`[Timeline] Track ${trackId} current pattern → ${patternId}`)
   }, [setCurrentPatternIdByTrack])
 
-  const handleSetVideoFlipMode = useCallback(async (trackId, mode) => {
+  // Phase 5: every flip-config edit goes through this single commit path.
+  // The popover (TrackFlipPropertiesPanel) buffers in-flight edits locally
+  // and only calls this on atomic actions (toggle, reorder mouseup, modifier
+  // change, stepper change). One IPC per commit — no per-tick round-trips.
+  const handleSetVideoFlipConfig = useCallback(async (trackId, config) => {
     try {
-      await window.xleth?.timeline?.setVideoFlipMode(trackId, mode)
+      await window.xleth?.timeline?.setVideoFlipConfig(trackId, config)
       await fetchTracks()
-      console.log(`[Timeline] Track ${trackId} videoFlipMode → ${mode}`)
     } catch (err) {
-      console.error('[Timeline] setVideoFlipMode failed:', err)
+      console.error('[Timeline] setVideoFlipConfig failed:', err)
     }
   }, [fetchTracks])
 
@@ -1342,17 +1397,22 @@ export default function TimelineView({
       })
     }
 
-    // Video Flip applies to all track types — pattern-note counter and
-    // clip counter both feed ev.globalNoteIndex in the native bridge.
-    const currentFlip = track.videoFlipMode || 'None'
+    // Video Flip — opens the inline Track Flip Properties popover (spec §6.1).
+    // The popover replaces the legacy 4-option submenu. Mark "✓" when the
+    // flip cycle is enabled so the menu still surfaces the on/off state.
     items.push({
-      label: 'Video Flip',
-      submenu: [
-        { label: 'None',              checked: currentFlip === 'None',             onClick: () => handleSetVideoFlipMode(track.id, 'None') },
-        { label: 'Horizontal (Even)', checked: currentFlip === 'HorizontalEven',   onClick: () => handleSetVideoFlipMode(track.id, 'HorizontalEven') },
-        { label: 'Clockwise',         checked: currentFlip === 'Clockwise',        onClick: () => handleSetVideoFlipMode(track.id, 'Clockwise') },
-        { label: 'Counter-Clockwise', checked: currentFlip === 'CounterClockwise', onClick: () => handleSetVideoFlipMode(track.id, 'CounterClockwise') },
-      ],
+      label: 'Video Flip…',
+      checked: !!track.videoFlipConfig?.enabled,
+      onClick: () => {
+        // Anchor the popover at the menu's click position; the popover then
+        // clamps itself to the viewport. (When the windowing spec lands and
+        // this UI moves into the Track Properties tab, anchorRect can come
+        // from the tab's bounding box instead.)
+        const anchorRect = trackMenu
+          ? { right: trackMenu.x, top: trackMenu.y }
+          : { right: 200, top: 200 }
+        setFlipPanel({ track, anchorRect })
+      },
     })
 
     const currentHold = track.videoHoldLastFrame || false
@@ -1369,7 +1429,7 @@ export default function TimelineView({
       onClick: () => handleRemove(track.id),
     })
     return items
-  }, [patterns, currentPatternIdByTrack, handleNewPatternForTrack, handleSelectPatternForTrack, handleSetVideoFlipMode, handleSetVideoHoldLastFrame, handleConvertToClipTrack, confirmAndConvertToPatternTrack, handleRemove])
+  }, [patterns, currentPatternIdByTrack, handleNewPatternForTrack, handleSelectPatternForTrack, handleSetVideoHoldLastFrame, handleConvertToClipTrack, confirmAndConvertToPatternTrack, handleRemove, trackMenu])
 
   // ── Seek via ruler ─────────────────────────────────────────────────────────
 
@@ -1455,8 +1515,8 @@ export default function TimelineView({
         stretchRatio: clip.stretchRatio ?? 1.0,
         stretchMethod: clip.stretchMethod ?? 0,
         formantPreserve: clip.formantPreserve ?? false,
-        fadeInTicks:  clip.fadeInTicks  ?? 0,
-        fadeOutTicks: clip.fadeOutTicks ?? 0,
+        fadeInPercent:  clip.fadeInPercent  ?? 0,
+        fadeOutPercent: clip.fadeOutPercent ?? 0,
         fadeInX1:  clip.fadeInX1  ?? 0,  fadeInY1:  clip.fadeInY1  ?? 0,
         fadeInX2:  clip.fadeInX2  ?? 1,  fadeInY2:  clip.fadeInY2  ?? 1,
         fadeOutX1: clip.fadeOutX1 ?? 0,  fadeOutY1: clip.fadeOutY1 ?? 0,
@@ -1474,8 +1534,8 @@ export default function TimelineView({
         stretchRatio: clip.stretchRatio ?? 1.0,
         stretchMethod: clip.stretchMethod ?? 0,
         formantPreserve: clip.formantPreserve ?? false,
-        fadeInTicks:  clip.fadeInTicks  ?? 0,
-        fadeOutTicks: clip.fadeOutTicks ?? 0,
+        fadeInPercent:  clip.fadeInPercent  ?? 0,
+        fadeOutPercent: clip.fadeOutPercent ?? 0,
         fadeInX1:  clip.fadeInX1  ?? 0,  fadeInY1:  clip.fadeInY1  ?? 0,
         fadeInX2:  clip.fadeInX2  ?? 1,  fadeInY2:  clip.fadeInY2  ?? 1,
         fadeOutX1: clip.fadeOutX1 ?? 0,  fadeOutY1: clip.fadeOutY1 ?? 0,
@@ -1976,9 +2036,9 @@ export default function TimelineView({
               stretchRatio: clip.stretchRatio ?? 1.0,
               stretchMethod: clip.stretchMethod ?? 0,   // 0 == StretchMethod::Global
               formantPreserve: clip.formantPreserve ?? false,
-              // Fade envelope (duration + cubic-bezier control points)
-              fadeInTicks:  clip.fadeInTicks  ?? 0,
-              fadeOutTicks: clip.fadeOutTicks ?? 0,
+              // Fade envelope (percent + cubic-bezier control points)
+              fadeInPercent:  clip.fadeInPercent  ?? 0,
+              fadeOutPercent: clip.fadeOutPercent ?? 0,
               fadeInX1:  clip.fadeInX1  ?? 0,
               fadeInY1:  clip.fadeInY1  ?? 0,
               fadeInX2:  clip.fadeInX2  ?? 1,
@@ -2112,8 +2172,8 @@ export default function TimelineView({
                 stretchRatio: item.stretchRatio,
                 stretchMethod: item.stretchMethod,
                 formantPreserve: item.formantPreserve,
-                fadeInTicks:  item.fadeInTicks,
-                fadeOutTicks: item.fadeOutTicks,
+                fadeInPercent:  item.fadeInPercent,
+                fadeOutPercent: item.fadeOutPercent,
                 fadeInX1:  item.fadeInX1,  fadeInY1:  item.fadeInY1,
                 fadeInX2:  item.fadeInX2,  fadeInY2:  item.fadeInY2,
                 fadeOutX1: item.fadeOutX1, fadeOutY1: item.fadeOutY1,
@@ -2246,8 +2306,8 @@ export default function TimelineView({
                 stretchRatio: clip.stretchRatio ?? 1.0,
                 stretchMethod: clip.stretchMethod ?? 0,
                 formantPreserve: clip.formantPreserve ?? false,
-                fadeInTicks:  clip.fadeInTicks  ?? 0,
-                fadeOutTicks: clip.fadeOutTicks ?? 0,
+                fadeInPercent:  clip.fadeInPercent  ?? 0,
+                fadeOutPercent: clip.fadeOutPercent ?? 0,
                 fadeInX1:  clip.fadeInX1  ?? 0,  fadeInY1:  clip.fadeInY1  ?? 0,
                 fadeInX2:  clip.fadeInX2  ?? 1,  fadeInY2:  clip.fadeInY2  ?? 1,
                 fadeOutX1: clip.fadeOutX1 ?? 0,  fadeOutY1: clip.fadeOutY1 ?? 0,
@@ -2436,7 +2496,21 @@ export default function TimelineView({
 
   const handleSetClipFade = useCallback(async (clipId, fadeParams) => {
     try {
-      await window.xleth.timeline.setClipParams(clipId, fadeParams)
+      const clip = clipsRef.current.find(c => c.id === clipId)
+      let payload = fadeParams
+      if (clip && ('fadeInPercent' in fadeParams || 'fadeOutPercent' in fadeParams)) {
+        const next = normalizeFadePercents(
+          fadeParams.fadeInPercent ?? clipFadePercent(clip, 'in'),
+          fadeParams.fadeOutPercent ?? clipFadePercent(clip, 'out')
+        )
+        payload = {
+          ...fadeParams,
+          ...next,
+          fadeInTicks: Math.round((next.fadeInPercent / 100) * (clip.durationTicks ?? 0)),
+          fadeOutTicks: Math.round((next.fadeOutPercent / 100) * (clip.durationTicks ?? 0)),
+        }
+      }
+      await window.xleth.timeline.setClipParams(clipId, payload)
       await fetchClips()
     } catch (err) {
       console.error('[Timeline] setClipFade error:', err)
@@ -2481,12 +2555,12 @@ export default function TimelineView({
                 <div>
                   <ClipSliderRow
                     label="Fade In"
-                    value={contextMenuClip?.fadeInTicks ?? 0}
-                    min={0} max={3840} step={60}
-                    onCommit={(v) => handleSetClipFade(contextMenu.clipId, { fadeInTicks: v })}
-                    formatValue={(v) => `${(v / 960).toFixed(1)}b`}
+                    value={contextMenuClip?.fadeInPercent ?? 0}
+                    min={0} max={100} step={1}
+                    onCommit={(v) => handleSetClipFade(contextMenu.clipId, { fadeInPercent: v })}
+                    formatValue={(v) => `${Math.round(v)}%`}
                   />
-                  {(contextMenuClip?.fadeInTicks ?? 0) > 0 && (
+                  {(contextMenuClip?.fadeInPercent ?? 0) > 0 && (
                     <div style={{ padding: '0 8px 6px' }}>
                       <FadeBezierEditor
                         x1={contextMenuClip?.fadeInX1 ?? 0} y1={contextMenuClip?.fadeInY1 ?? 0}
@@ -2507,12 +2581,12 @@ export default function TimelineView({
                 <div>
                   <ClipSliderRow
                     label="Fade Out"
-                    value={contextMenuClip?.fadeOutTicks ?? 0}
-                    min={0} max={3840} step={60}
-                    onCommit={(v) => handleSetClipFade(contextMenu.clipId, { fadeOutTicks: v })}
-                    formatValue={(v) => `${(v / 960).toFixed(1)}b`}
+                    value={contextMenuClip?.fadeOutPercent ?? 0}
+                    min={0} max={100} step={1}
+                    onCommit={(v) => handleSetClipFade(contextMenu.clipId, { fadeOutPercent: v })}
+                    formatValue={(v) => `${Math.round(v)}%`}
                   />
-                  {(contextMenuClip?.fadeOutTicks ?? 0) > 0 && (
+                  {(contextMenuClip?.fadeOutPercent ?? 0) > 0 && (
                     <div style={{ padding: '0 8px 6px' }}>
                       <FadeBezierEditor
                         x1={contextMenuClip?.fadeOutX1 ?? 0} y1={contextMenuClip?.fadeOutY1 ?? 0}
@@ -2774,6 +2848,18 @@ export default function TimelineView({
           y={trackMenu.y}
           items={buildTrackMenuItems(trackMenu.track)}
           onClose={() => setTrackMenu(null)}
+        />
+      )}
+
+      {/* ── Track Flip Properties popover (replaces the legacy submenu) ──── */}
+      {flipPanel && (
+        <TrackFlipPropertiesPanel
+          // Look the track up from the live `tracks` array so undo/redo and
+          // remote commits propagate into the panel without remounting it.
+          track={tracks.find(t => t.id === flipPanel.track.id) ?? flipPanel.track}
+          anchorRect={flipPanel.anchorRect}
+          onClose={() => setFlipPanel(null)}
+          onCommit={(config) => handleSetVideoFlipConfig(flipPanel.track.id, config)}
         />
       )}
 

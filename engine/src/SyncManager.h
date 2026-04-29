@@ -26,9 +26,9 @@ struct VideoEvent {
     float width, height;    // Size on screen
     float opacity;          // Transparency
 
-    // Per-track running counter. For pattern events, counts notes in timeline
-    // order; for clip events, counts clips in timeline order. Used by the grid
-    // compositor to cycle video-flip modes across any track type.
+    // Per-track running counter (counts ALL trigger events including chords).
+    // Kept for analytics and future modifiers that need a chord-inclusive index.
+    // The shader no longer reads this — `orientation` is consumed instead.
     int   globalNoteIndex = 0;
 
     // Trim end point in source video (seconds). Used by FrameCollector to
@@ -40,6 +40,25 @@ struct VideoEvent {
     // Used by SyncManager::videoTick and FrameCollector to route to a
     // per-region proxy decoder when one is available.
     int regionId = -1;
+
+    // ── Flip v2 (per-track state machine — spec §5.1) ─────────────────────
+    // Pitch identifier consumed by the resolver:
+    //   • Pattern tracks: PatternNote.pitch (MIDI 0..127).
+    //   • Clip tracks:    Clip.pitchOffset interpreted as a pitch identifier
+    //                     (the track's "specific-pitches" whitelist matches semitone offsets).
+    //   • Arp expansion:  resolved arp-step pitch from getNextArpNote().
+    int pitch = 60;
+
+    // Mono ordinal among chord-filtered trigger events on the same track.
+    // -1 for chord events (≥2 events sharing one tick on the same track).
+    // Set by VideoFlipApplier after the build loop completes.
+    int monoOrdinal = -1;
+
+    // Resolved flip-state machine output. stateIndex is the canonical analytics
+    // value; orientation is the flat enum the shader consumes (post Phase 4).
+    // Both are populated by VideoFlipApplier from the track's VideoFlipConfig.
+    int         stateIndex  = 0;
+    Orientation orientation = Orientation::None;
 };
 
 class Timeline; // fwd decl — only needed for getRegion() lookup in videoTick

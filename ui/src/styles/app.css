@@ -5931,8 +5931,8 @@ html.fx-drag-active * {
    â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 .mixer-panel {
-  height: var(--mixer-h);
-  flex-shrink: 0;
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--theme-bg-secondary);
@@ -5983,6 +5983,8 @@ html.fx-drag-active * {
 .mixer-tracks-scroll {
   flex: 1;
   display: flex;
+  align-items: stretch;
+  min-height: 0;
   overflow-x: auto;
   overflow-y: hidden;
 }
@@ -6013,6 +6015,8 @@ html.fx-drag-active * {
 .mixer-strip {
   width: 80px;
   min-width: 80px;
+  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -6043,6 +6047,7 @@ html.fx-drag-active * {
 }
 
 .mixer-strip-label {
+  flex-shrink: 0;
   font-size: 10px;
   color: var(--theme-text-muted);
   text-align: center;
@@ -6055,6 +6060,7 @@ html.fx-drag-active * {
 }
 
 .mixer-strip-controls {
+  flex-shrink: 0;
   display: flex;
   gap: 3px;
 }
@@ -6089,6 +6095,7 @@ html.fx-drag-active * {
 }
 
 .mixer-strip-knobs {
+  flex-shrink: 0;
   display: flex;
   gap: 2px;
   justify-content: center;
@@ -6207,7 +6214,9 @@ html.fx-drag-active * {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  min-height: 0;
+  height: 130px;
+  flex-shrink: 0;
+  overflow: hidden;
 }
 
 /* Mode toggle row */
@@ -6215,6 +6224,7 @@ html.fx-drag-active * {
   display: flex;
   gap: 2px;
   width: 100%;
+  flex-shrink: 0;
 }
 
 .effect-chain-mode-btn {
@@ -6245,12 +6255,14 @@ html.fx-drag-active * {
   cursor: not-allowed;
 }
 
-/* Scrollable effect list */
+/* Scrollable effect list — flex:1 fills panel, max-height caps at ~4 visible rows */
 .effect-chain-list {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  max-height: 100px;
+  flex: 1;
+  min-height: 0;
+  max-height: 82px;
   overflow-y: auto;
   overflow-x: hidden;
 }
@@ -6277,6 +6289,7 @@ html.fx-drag-active * {
 /* Add button */
 .effect-chain-footer {
   display: flex;
+  flex-shrink: 0;
 }
 
 .effect-chain-add-btn {
@@ -6305,6 +6318,74 @@ html.fx-drag-active * {
 }
 
 /* â”€â”€ Effect Module â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+
+/* Overflow badge — shown when chain.length > VISIBLE_LIMIT */
+.effect-chain-overflow {
+  width: 100%;
+  height: 14px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  border: 1px dashed var(--theme-border-subtle);
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--theme-text-subtle);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.effect-chain-overflow:hover {
+  color: var(--theme-accent);
+  border-color: var(--theme-accent);
+}
+
+/* Full-chain popover — position:fixed escapes strip layout */
+.effect-chain-full-popover {
+  position: fixed;
+  z-index: 9999;
+  background: var(--theme-bg-elevated);
+  border: 1px solid var(--theme-border-default);
+  border-radius: var(--radius-md);
+  padding: 4px;
+  min-width: 180px;
+  max-height: 300px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+
+.effect-chain-full-popover::-webkit-scrollbar {
+  width: 8px;
+}
+
+.effect-chain-full-popover::-webkit-scrollbar-thumb {
+  background: var(--theme-border-default);
+  border-radius: 4px;
+}
+
+.effect-chain-full-popover::-webkit-scrollbar-track {
+  background: var(--theme-bg-secondary);
+}
+
+.effect-chain-full-popover-header {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--theme-text-subtle);
+  padding: 2px 2px 4px;
+  flex-shrink: 0;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--theme-border-subtle);
+  margin-bottom: 2px;
+}
 
 .effect-module {
   display: flex;
@@ -10259,4 +10340,287 @@ html, body, #root {
 
 .midi-debug-open-btn:hover {
   opacity: 1;
+}
+
+/* ── Stock Plugin UI Runtime ─────────────────────────────────────────────────
+   All classes use the pluginui- prefix to avoid collisions with existing CSS.
+   Colors / fonts / borders come from theme tokens — never hardcoded here.
+   Layout (padding, gap, width) is applied as inline styles from the JSON.       */
+
+/* ── Containers ────────────────────────────────────────────────────────────── */
+
+.pluginui-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.pluginui-row {
+  display: flex;
+  flex-direction: row;
+  /* No default align-items: inherits flex stretch, which is correct for
+     rows that mix height-filling containers with leaf controls. */
+}
+
+.pluginui-row--border-top {
+  border-top: 1px solid var(--theme-border-subtle);
+}
+
+.pluginui-row--border-bottom {
+  border-bottom: 1px solid var(--theme-border-subtle);
+}
+
+.pluginui-column {
+  display: flex;
+  flex-direction: column;
+}
+
+.pluginui-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.pluginui-group-title {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--theme-text-subtle);
+  padding-bottom: 4px;
+}
+
+/* ── Tab group ─────────────────────────────────────────────────────────────── */
+
+.pluginui-tabgroup {
+  display: flex;
+  flex-direction: column;
+}
+
+.pluginui-tabgroup-headers {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--theme-border-subtle);
+  padding: 0 4px;
+}
+
+.pluginui-tabgroup-tab {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border: none;
+  background: none;
+  color: var(--theme-text-subtle);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.pluginui-tabgroup-tab:hover { color: var(--theme-text); }
+.pluginui-tabgroup-tab.active {
+  color: var(--theme-text);
+  border-bottom-color: var(--theme-accent);
+}
+
+.pluginui-tabgroup-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Knob cell ─────────────────────────────────────────────────────────────── */
+
+.pluginui-knob-cell {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+/* ── Toggle button ─────────────────────────────────────────────────────────── */
+
+.pluginui-toggle-btn {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--theme-bg-secondary);
+  color: var(--theme-text-subtle);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.pluginui-toggle-btn:hover {
+  color: var(--theme-text-muted);
+  border-color: var(--theme-accent);
+}
+
+.pluginui-toggle-btn.active {
+  background: var(--theme-accent);
+  color: var(--theme-fg-inverse);
+  border-color: var(--theme-accent);
+}
+
+/* ── Action button ─────────────────────────────────────────────────────────── */
+
+.pluginui-button {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--theme-bg-secondary);
+  color: var(--theme-text-subtle);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.pluginui-button:hover:not(:disabled) {
+  color: var(--theme-text);
+  background: var(--theme-fx-surface-tint-subtle);
+}
+
+.pluginui-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── Meter ─────────────────────────────────────────────────────────────────── */
+
+/* Vertical meter — replicates the legacy compressor-gr-meter layout */
+.pluginui-meter--vertical {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  /* width comes from inline style (widthPx); height stretches to parent */
+}
+
+.pluginui-meter--horizontal {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
+.pluginui-meter--vertical .pluginui-meter-track {
+  flex: 1;
+  width: 14px;
+  min-height: 40px;
+  background: var(--theme-bg-secondary);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 3px;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+}
+
+.pluginui-meter--horizontal .pluginui-meter-track {
+  flex: 1;
+  height: 10px;
+  background: var(--theme-bg-secondary);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 3px;
+  overflow: hidden;
+  display: flex;
+  align-items: stretch;
+}
+
+.pluginui-meter--vertical .pluginui-meter-fill {
+  width: 100%;
+  height: 0%;
+  background: linear-gradient(to bottom, var(--theme-label-kick), var(--theme-label-snare));
+  transition: height 0.05s linear;
+  border-radius: 2px 2px 0 0;
+}
+
+.pluginui-meter--horizontal .pluginui-meter-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(to right, var(--theme-label-kick), var(--theme-label-snare));
+  transition: width 0.05s linear;
+}
+
+.pluginui-meter-label {
+  font-size: 8px;
+  color: var(--theme-text-subtle);
+  text-align: center;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+/* ── Label ─────────────────────────────────────────────────────────────────── */
+
+.pluginui-label {
+  font-size: 10px;
+  color: var(--theme-text);
+}
+
+.pluginui-label--muted {
+  color: var(--theme-text-subtle);
+}
+
+.pluginui-label--header {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--theme-text);
+}
+
+/* ── Visualizer placeholder ────────────────────────────────────────────────── */
+
+.pluginui-visualizer-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--theme-bg-secondary);
+  border: 1px dashed var(--theme-border-subtle);
+  border-radius: var(--radius-sm);
+  min-height: 24px;
+}
+
+.pluginui-visualizer-placeholder-text {
+  font-size: 9px;
+  color: var(--theme-text-subtle);
+  font-style: italic;
+}
+
+/* ── Visualizer canvas wrapper ──────────────────────────────────────────── */
+
+.pluginui-visualizer-canvas-wrap {
+  display: block;
+  width: 100%;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--theme-bg-inset);
+}
+
+.pluginui-visualizer-canvas {
+  display: block;
+  width: 100%;
+}
+
+/* ── Dev-mode unknown/invalid node placeholders ────────────────────────────── */
+
+.pluginui-unknown-node,
+.pluginui-invalid-node {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9px;
+  font-family: monospace;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  border: 1px dashed;
+}
+
+.pluginui-unknown-node {
+  color: #b58900;
+  border-color: #b58900;
+  background: rgba(181, 137, 0, 0.08);
+}
+
+.pluginui-invalid-node {
+  color: #dc322f;
+  border-color: #dc322f;
+  background: rgba(220, 50, 47, 0.08);
 }

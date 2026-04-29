@@ -195,6 +195,7 @@ add_library(XlethEngineModel STATIC
     src/model/Pattern.cpp
     src/model/PatternBlock.cpp
     src/model/Timeline.cpp
+    src/model/VideoFlipResolver.cpp
     src/project/ProjectManager.cpp
     src/commands/UndoManager.cpp
     src/commands/TimelineCommands.cpp
@@ -265,6 +266,7 @@ add_library(XlethEngineCore STATIC
     src/render/GpuDeviceManager.cpp
     src/render/FrameCache.cpp
     src/render/FrameCollector.cpp
+    src/render/VideoFlipApplier.cpp
     src/render/RenderVideoDecoder.cpp
     src/render/GridCompositor.cpp
     src/render/HwEncoderDetector.cpp
@@ -411,6 +413,104 @@ add_executable(test_timeline
 
 target_link_libraries(test_timeline PRIVATE
     XlethEngineModel
+)
+
+# ── test_video_flip_resolver ──────────────────────────────────────────────────
+# Unit tests for the per-track flip state-machine evaluator (Phase 2 keystone).
+# Covers all 4 v1 modifiers and every edge case in spec §4.4 / §7.
+# Pure C++, model-only — links solely against XlethEngineModel.
+add_executable(test_video_flip_resolver
+    test/test_video_flip_resolver.cpp
+)
+
+target_link_libraries(test_video_flip_resolver PRIVATE
+    XlethEngineModel
+)
+
+# ── test_video_flip_applier ───────────────────────────────────────────────────
+# Phase 3 single-call-site wrapper: chord detection + per-track resolver.
+# Includes SyncManager.h (which needs JUCE/FFmpeg transitively) so this test
+# links against XlethEngineCore like test_frame_collector.
+add_executable(test_video_flip_applier
+    test/test_video_flip_applier.cpp
+)
+
+target_link_libraries(test_video_flip_applier PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_video_flip_applier PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_flip_determinism ────────────────────────────────────────────────────
+# Phase 6 harness: 6 fixture projects, repeated buildVideoEvents calls compared
+# byte-for-byte (acceptance #7, #8), legacy migration end-to-end (acceptance #1),
+# insertion-stability assertion (acceptance #11), state-count coverage smoke,
+# and a perf budget check (acceptance #10). Calls OfflineRenderer::buildVideoEvents
+# directly so it links against XlethEngineCore (and its JUCE/FFmpeg deps).
+add_executable(test_flip_determinism
+    test/test_flip_determinism.cpp
+)
+
+target_link_libraries(test_flip_determinism PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_flip_determinism PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_flip_orientation_golden ─────────────────────────────────────────────
+# Phase 6 GPU shader golden: 6 orientations × 4-quadrant test texture, real
+# D3D11 readback. Skips cleanly if no GPU device is available.
+add_executable(test_flip_orientation_golden
+    test/test_flip_orientation_golden.cpp
+)
+
+target_link_libraries(test_flip_orientation_golden PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    d3d11
+    dxgi
+)
+
+target_compile_definitions(test_flip_orientation_golden PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
 )
 
 # ── test_project ──────────────────────────────────────────────────────────────

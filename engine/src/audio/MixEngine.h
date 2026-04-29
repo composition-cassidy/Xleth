@@ -13,6 +13,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <deque>
@@ -347,6 +348,17 @@ public:
     std::string getMasterEffectParameters(int nodeId) const;
     bool        setMasterEffectParameter (int nodeId, const std::string& paramId, float value);
     std::string getMasterEffectMeter     (int nodeId) const;
+
+    // ── Effect visualization access (main thread only) ──────────────────
+    // Visualization is opt-in per effect instance. Toggle on the editor
+    // open/close path; while disabled, the audio thread sees nullptr and
+    // pays only an acquire-load + null-check per block. trackId == -1
+    // selects the master chain (matches existing meter/param convention).
+    bool        setEffectVisualizationEnabled(int trackId, int nodeId, bool enabled);
+    std::size_t drainEffectVizFrames        (int trackId, int nodeId,
+                                             std::uint8_t* out, std::size_t maxBytes);
+    std::uint32_t getEffectVisualizationType         (int trackId, int nodeId) const;
+    std::uint32_t getEffectVisualizationSchemaVersion(int trackId, int nodeId) const;
 
     // Direct effect pointer access (for subclass-specific APIs like EQ).
     // Returns nullptr if chain/node not found. Main-thread only.

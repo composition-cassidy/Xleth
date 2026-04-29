@@ -488,8 +488,8 @@ SetClipParamsCommand::SetClipParamsCommand(int clipId, Params newParams,
         oldParams_.stretchMethod    = c->stretchMethod;
         oldParams_.formantPreserve  = c->formantPreserve;
         oldParams_.velocity         = c->velocity;
-        oldParams_.fadeInTicks      = c->fadeInTicks;
-        oldParams_.fadeOutTicks     = c->fadeOutTicks;
+        oldParams_.fadeInPercent    = c->fadeInPercent;
+        oldParams_.fadeOutPercent   = c->fadeOutPercent;
         oldParams_.fadeInX1         = c->fadeInX1;
         oldParams_.fadeInY1         = c->fadeInY1;
         oldParams_.fadeInX2         = c->fadeInX2;
@@ -516,8 +516,9 @@ static void applyClipParams(Timeline& timeline, int clipId,
     c->stretchMethod    = p.stretchMethod;
     c->formantPreserve  = p.formantPreserve;
     c->velocity         = p.velocity;
-    c->fadeInTicks      = p.fadeInTicks;
-    c->fadeOutTicks     = p.fadeOutTicks;
+    c->fadeInPercent    = p.fadeInPercent;
+    c->fadeOutPercent   = p.fadeOutPercent;
+    normalizeClipFadePercents(c->fadeInPercent, c->fadeOutPercent);
     c->fadeInX1         = p.fadeInX1;
     c->fadeInY1         = p.fadeInY1;
     c->fadeInX2         = p.fadeInX2;
@@ -1769,13 +1770,13 @@ ConvertTrackTypeCommand::ConvertTrackTypeCommand(int trackId, TrackInfo::Type ne
 {
     const TrackInfo* t = timeline.getTrack(trackId);
     if (t) {
-        oldType_          = t->type;
-        oldVideoFlipMode_ = t->videoFlipMode;
+        oldType_            = t->type;
+        oldVideoFlipConfig_ = t->videoFlipConfig;
     } else {
         std::cerr << "[Undo] ERROR ConvertTrackTypeCommand: trackId=" << trackId
                   << " not found in timeline\n";
-        oldType_          = TrackInfo::Type::Clip;
-        oldVideoFlipMode_ = VideoFlipMode::None;
+        oldType_            = TrackInfo::Type::Clip;
+        oldVideoFlipConfig_ = defaultVideoFlipConfig();
     }
     // When converting to Clip, any pattern-blocks on this track need cascading.
     if (newType == TrackInfo::Type::Clip) {
@@ -1800,8 +1801,8 @@ void ConvertTrackTypeCommand::execute(Timeline& timeline) {
 void ConvertTrackTypeCommand::undo(Timeline& timeline) {
     // Restore old track fields.
     if (TrackInfo* t = timeline.getTrackMutable(trackId_)) {
-        t->type          = oldType_;
-        t->videoFlipMode = oldVideoFlipMode_;
+        t->type            = oldType_;
+        t->videoFlipConfig = oldVideoFlipConfig_;
     }
     // Restore any cascaded pattern-blocks.
     for (const auto& b : cascadedBlocks_)
@@ -1813,27 +1814,28 @@ std::string ConvertTrackTypeCommand::describe() const {
          + (newType_ == TrackInfo::Type::Pattern ? "Pattern" : "Clip");
 }
 
-// ─── SetVideoFlipModeCommand ──────────────────────────────────────────────────
+// ─── SetVideoFlipConfigCommand ────────────────────────────────────────────────
 
-SetVideoFlipModeCommand::SetVideoFlipModeCommand(int trackId, VideoFlipMode newMode,
-                                                 const Timeline& timeline)
-    : trackId_(trackId), newMode_(newMode)
+SetVideoFlipConfigCommand::SetVideoFlipConfigCommand(int trackId, VideoFlipConfig newConfig,
+                                                     const Timeline& timeline)
+    : trackId_(trackId), newConfig_(std::move(newConfig))
 {
     const TrackInfo* t = timeline.getTrack(trackId);
-    oldMode_ = t ? t->videoFlipMode : VideoFlipMode::None;
+    oldConfig_ = t ? t->videoFlipConfig : defaultVideoFlipConfig();
 }
 
-void SetVideoFlipModeCommand::execute(Timeline& timeline) {
-    timeline.setTrackVideoFlipMode(trackId_, newMode_);
+void SetVideoFlipConfigCommand::execute(Timeline& timeline) {
+    timeline.setTrackVideoFlipConfig(trackId_, newConfig_);
 }
 
-void SetVideoFlipModeCommand::undo(Timeline& timeline) {
-    timeline.setTrackVideoFlipMode(trackId_, oldMode_);
+void SetVideoFlipConfigCommand::undo(Timeline& timeline) {
+    timeline.setTrackVideoFlipConfig(trackId_, oldConfig_);
 }
 
-std::string SetVideoFlipModeCommand::describe() const {
-    return "Set VideoFlipMode (track=" + std::to_string(trackId_)
-         + ") → " + videoFlipModeToString(newMode_);
+std::string SetVideoFlipConfigCommand::describe() const {
+    return "Set VideoFlipConfig (track=" + std::to_string(trackId_)
+         + " enabled=" + (newConfig_.enabled ? "true" : "false")
+         + " states=" + std::to_string(newConfig_.states.size()) + ")";
 }
 
 // ─── SetTrackVideoHoldLastFrameCommand ────────────────────────────────────────

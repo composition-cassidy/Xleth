@@ -439,7 +439,7 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
                      req.sourcePath.c_str(), (long long)req.sourceFrameIndex, req.opacity);
 
         drawCell(entry->srv.Get(), 0.0f, 0.0f, 1.0f, 1.0f,
-                 req.opacity, req.flipMode, req.globalNoteIndex, 0.0f);
+                 req.opacity, req.orientation, 0.0f);
     }
 
     // ── Pass 2: Grid cells (each at its grid position) ───────────────────────
@@ -484,14 +484,15 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
             }
         }
 
-        std::fprintf(stderr, "[Compositor] Cell [%d,%d]: '%s' frame=%lld opacity=%.2f flip=%d\n",
+        std::fprintf(stderr, "[Compositor] Cell [%d,%d]: '%s' frame=%lld opacity=%.2f orient=%d\n",
                      req.cellCol, req.cellRow,
                      req.sourcePath.c_str(), (long long)req.sourceFrameIndex,
-                     req.opacity, req.flipMode);
+                     req.opacity, req.orientation);
 
-        // Process visual effect chain (if any)
+        // Process visual effect chain (if any). The final orientation transform
+        // is applied by the last drawCell() call — intermediate effect-chain
+        // passes use orientation=0 (identity).
         ID3D11ShaderResourceView* cellSRV = entry->srv.Get();
-        int finalFlipMode = req.flipMode;
 
         // Visual effect chain — skipped entirely when effectsBypass_ is set
         // (fast preview mode). Gap, bounce, corner-radius and opacity are
@@ -506,9 +507,9 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
                 *req.visualChain, req, time, /*rtSlot=*/0);
 
             if (processedSRV != cellSRV) {
-                // Chain was used — flip will be applied by drawCell at final composite
+                // Chain was used — final orientation transform is applied by the
+                // outer drawCell() once the effect-chain SRV is ready.
                 cellSRV = processedSRV;
-                // finalFlipMode stays as req.flipMode — drawCell applies flip at the final composite
 
                 // Restore main pipeline state after effect chain processing
                 D3D11_VIEWPORT mainVP = {};
@@ -549,7 +550,7 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
                     cellSRV, zpW, zpH, zprChain, req, time, /*rtSlot=*/1);
                 if (zprSRV != cellSRV) {
                     cellSRV = zprSRV;
-                    // finalFlipMode stays as req.flipMode — drawCell applies flip at the final composite
+                    // Outer drawCell() applies the orientation transform at final composite.
                     D3D11_VIEWPORT mainVP{};
                     mainVP.Width    = static_cast<float>(width_);
                     mainVP.Height   = static_cast<float>(height_);
@@ -589,15 +590,18 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
                     deviceCtx_->PSSetConstantBuffers(0, 1, constantBuffer_.GetAddressOf());
                     deviceCtx_->PSSetSamplers(0, 1, samplerState_.GetAddressOf());
 
-                    // Blit primary frame at full opacity
+                    // Blit primary frame at full opacity. Intermediate effect-chain
+                    // passes always use orientation=0 (identity); the final orientation
+                    // transform is applied by the outer drawCell() call below.
                     {
                         D3D11_MAPPED_SUBRESOURCE mapped{};
                         if (SUCCEEDED(deviceCtx_->Map(constantBuffer_.Get(), 0,
                                                       D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
                             CellConstants cb{};
-                            cb.cellRect[2] = 1.0f; cb.cellRect[3] = 1.0f;
-                            cb.opacity = 1.0f; cb.flipMode = 0;
-                            cb.globalNoteIndex = 0; cb.cornerRadius = 0.0f;
+                            cb.cellRect[2]  = 1.0f; cb.cellRect[3] = 1.0f;
+                            cb.opacity      = 1.0f;
+                            cb.orientation  = 0;
+                            cb.cornerRadius = 0.0f;
                             std::memcpy(mapped.pData, &cb, sizeof(cb));
                             deviceCtx_->Unmap(constantBuffer_.Get(), 0);
                         }
@@ -610,9 +614,10 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
                         if (SUCCEEDED(deviceCtx_->Map(constantBuffer_.Get(), 0,
                                                       D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
                             CellConstants cb{};
-                            cb.cellRect[2] = 1.0f; cb.cellRect[3] = 1.0f;
-                            cb.opacity = req.pingPongBlendFactor; cb.flipMode = 0;
-                            cb.globalNoteIndex = 0; cb.cornerRadius = 0.0f;
+                            cb.cellRect[2]  = 1.0f; cb.cellRect[3] = 1.0f;
+                            cb.opacity      = req.pingPongBlendFactor;
+                            cb.orientation  = 0;
+                            cb.cornerRadius = 0.0f;
                             std::memcpy(mapped.pData, &cb, sizeof(cb));
                             deviceCtx_->Unmap(constantBuffer_.Get(), 0);
                         }
@@ -623,7 +628,7 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
                     ID3D11RenderTargetView* nullRTV2 = nullptr;
                     deviceCtx_->OMSetRenderTargets(1, &nullRTV2, nullptr);
                     cellSRV = ppRTP.srvA.Get();
-                    // finalFlipMode stays as req.flipMode — drawCell applies flip at the final composite
+                    // Outer drawCell() applies the orientation transform at final composite.
 
                     // Restore main pipeline state
                     D3D11_VIEWPORT mainVP2{};
@@ -640,7 +645,7 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
         }
 
         drawCell(cellSRV, rx, ry, rw, rh,
-                 req.opacity, finalFlipMode, req.globalNoteIndex, req.cornerRadius);
+                 req.opacity, req.orientation, req.cornerRadius);
     }
 
     // ── Pass 3: Crash overlay (full-screen, on top) ──────────────────────────
@@ -661,7 +666,7 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
                      req.sourcePath.c_str(), (long long)req.sourceFrameIndex, req.opacity);
 
         drawCell(entry->srv.Get(), 0.0f, 0.0f, 1.0f, 1.0f,
-                 req.opacity, req.flipMode, req.globalNoteIndex, 0.0f);
+                 req.opacity, req.orientation, 0.0f);
     }
 
     // Unbind render target to allow subsequent SRV reads
@@ -679,23 +684,21 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
 
 void GridCompositor::drawCell(ID3D11ShaderResourceView* srv,
                                float rectX, float rectY, float rectW, float rectH,
-                               float opacity, int flipMode, int globalNoteIndex,
-                               float cornerRadius)
+                               float opacity, int orientation, float cornerRadius)
 {
     // Update constant buffer
     D3D11_MAPPED_SUBRESOURCE mapped;
     HRESULT hr = deviceCtx_->Map(constantBuffer_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
     if (FAILED(hr)) return;
 
-    CellConstants cb;
-    cb.cellRect[0]     = rectX;
-    cb.cellRect[1]     = rectY;
-    cb.cellRect[2]     = rectW;
-    cb.cellRect[3]     = rectH;
-    cb.opacity         = opacity;
-    cb.flipMode        = flipMode;
-    cb.globalNoteIndex = globalNoteIndex;
-    cb.cornerRadius    = cornerRadius;
+    CellConstants cb{};
+    cb.cellRect[0]  = rectX;
+    cb.cellRect[1]  = rectY;
+    cb.cellRect[2]  = rectW;
+    cb.cellRect[3]  = rectH;
+    cb.opacity      = opacity;
+    cb.orientation  = orientation;
+    cb.cornerRadius = cornerRadius;
 
     std::memcpy(mapped.pData, &cb, sizeof(cb));
     deviceCtx_->Unmap(constantBuffer_.Get(), 0);
@@ -932,12 +935,11 @@ void EffectShaderCache::shutdown()
 // blitFullscreen — blit source texture into current RT with flip mode
 // ===========================================================================
 
-void GridCompositor::blitFullscreen(ID3D11ShaderResourceView* srv,
-                                    int flipMode, int globalNoteIndex)
+void GridCompositor::blitFullscreen(ID3D11ShaderResourceView* srv, int orientation)
 {
     // Use the main GridComposite pixel shader with cellRect covering full UV [0,1]
     deviceCtx_->PSSetShader(pixelShader_.Get(), nullptr, 0);
-    drawCell(srv, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, flipMode, globalNoteIndex, 0.0f);
+    drawCell(srv, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, orientation, 0.0f);
 }
 
 // ===========================================================================
@@ -1005,20 +1007,20 @@ ID3D11ShaderResourceView* GridCompositor::processEffectChain(
     deviceCtx_->PSSetShader(pixelShader_.Get(), nullptr, 0);
     deviceCtx_->PSSetConstantBuffers(0, 1, constantBuffer_.GetAddressOf());
 
-    // Set up CellConstants for a fullscreen blit with flip mode
+    // Set up CellConstants for a fullscreen blit (identity orientation —
+    // any flip is applied later by the outer drawCell() at the final composite).
     {
         D3D11_MAPPED_SUBRESOURCE mapped;
         HRESULT hr = deviceCtx_->Map(constantBuffer_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
         if (SUCCEEDED(hr)) {
-            CellConstants cb;
-            cb.cellRect[0]     = 0.0f;
-            cb.cellRect[1]     = 0.0f;
-            cb.cellRect[2]     = 1.0f;
-            cb.cellRect[3]     = 1.0f;
-            cb.opacity         = 1.0f;
-            cb.flipMode        = 0;  // plain copy — flip applied by drawCell at final composite
-            cb.globalNoteIndex = 0;
-            cb.cornerRadius    = 0.0f;
+            CellConstants cb{};
+            cb.cellRect[0]  = 0.0f;
+            cb.cellRect[1]  = 0.0f;
+            cb.cellRect[2]  = 1.0f;
+            cb.cellRect[3]  = 1.0f;
+            cb.opacity      = 1.0f;
+            cb.orientation  = 0;
+            cb.cornerRadius = 0.0f;
             std::memcpy(mapped.pData, &cb, sizeof(cb));
             deviceCtx_->Unmap(constantBuffer_.Get(), 0);
         }

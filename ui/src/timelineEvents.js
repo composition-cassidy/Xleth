@@ -4,8 +4,10 @@
  * can re-fetch without polling.
  *
  * Events:
+ *   'timeline-tracks-changed'   — track added / removed / reordered (mute/solo/visual-only)
  *   'timeline-regions-changed'  — region added / modified / removed
  *   'timeline-sources-changed'  — source imported / removed
+ *   'timeline-clips-changed'    — audio clip added / moved / removed
  *   'timeline-patterns-changed' — pattern added / updated / removed
  *   'timeline-pattern-blocks-changed' — pattern block added / moved / removed
  *   'timeline-pattern-changed'  — individual pattern notes/settings mutated (detail: { patternId })

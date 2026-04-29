@@ -55,6 +55,7 @@ const EFFECT_CATEGORIES = [
 ]
 
 const EMPTY_CHAIN = []
+const VISIBLE_LIMIT = 4
 
 export default function EffectChainPanel({ trackId, master }) {
   const key = master ? 'master' : String(trackId)
@@ -71,8 +72,11 @@ export default function EffectChainPanel({ trackId, master }) {
   // Local drag state
   const [dragOrder, setDragOrder] = useState(null)
   const [addMenuPos, setAddMenuPos] = useState(null)
+  const [fullChainPos, setFullChainPos] = useState(null)
   const dragRef = useRef(null) // { nodeId, currentIndex }
   const addBtnRef = useRef(null)
+  const overflowBtnRef = useRef(null)
+  const fullChainPopoverRef = useRef(null)
 
   const displayChain = dragOrder ?? chain
 
@@ -123,8 +127,32 @@ export default function EffectChainPanel({ trackId, master }) {
   const handleAddClick = useCallback(() => {
     if (!addBtnRef.current) return
     const rect = addBtnRef.current.getBoundingClientRect()
+    setFullChainPos(null)
     setAddMenuPos({ x: rect.left, y: rect.top })
   }, [])
+
+  const handleOverflowClick = useCallback(() => {
+    if (!overflowBtnRef.current) return
+    const rect = overflowBtnRef.current.getBoundingClientRect()
+    setAddMenuPos(null)
+    setFullChainPos({ x: rect.right + 4, y: rect.top })
+  }, [])
+
+  // Close full-chain popover on outside click
+  useEffect(() => {
+    if (!fullChainPos) return
+    const handler = (e) => {
+      if (
+        fullChainPopoverRef.current &&
+        !fullChainPopoverRef.current.contains(e.target) &&
+        e.target !== overflowBtnRef.current
+      ) {
+        setFullChainPos(null)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [fullChainPos])
 
   // Build add menu items — stock categories + dynamic VST3 category
   const menuItems = useMemo(() => {
@@ -174,12 +202,12 @@ export default function EffectChainPanel({ trackId, master }) {
         </button>
       </div>
 
-      {/* Effect list */}
+      {/* Effect list — capped at VISIBLE_LIMIT rows */}
       <div className="effect-chain-list">
         {displayChain.length === 0 ? (
           <div className="effect-chain-empty">No effects</div>
         ) : (
-          displayChain.map((fx, idx) => (
+          displayChain.slice(0, VISIBLE_LIMIT).map((fx, idx) => (
             <EffectModule
               key={fx.nodeId === -1 ? `pending-${fx.pluginId}-${idx}` : fx.nodeId}
               effect={fx}
@@ -191,6 +219,18 @@ export default function EffectChainPanel({ trackId, master }) {
           ))
         )}
       </div>
+
+      {/* Overflow badge — visible when chain exceeds VISIBLE_LIMIT */}
+      {displayChain.length > VISIBLE_LIMIT && (
+        <button
+          ref={overflowBtnRef}
+          className="effect-chain-overflow"
+          onClick={handleOverflowClick}
+          title="Show full effect chain"
+        >
+          +{displayChain.length - VISIBLE_LIMIT} more
+        </button>
+      )}
 
       {/* Add button */}
       <div className="effect-chain-footer">
@@ -212,6 +252,29 @@ export default function EffectChainPanel({ trackId, master }) {
           items={menuItems}
           onClose={() => setAddMenuPos(null)}
         />
+      )}
+
+      {/* Full-chain popover — position:fixed, escapes strip layout */}
+      {fullChainPos && (
+        <div
+          ref={fullChainPopoverRef}
+          className="effect-chain-full-popover"
+          style={{ left: fullChainPos.x, top: fullChainPos.y }}
+        >
+          <div className="effect-chain-full-popover-header">
+            Full chain ({displayChain.length})
+          </div>
+          {displayChain.map((fx, idx) => (
+            <EffectModule
+              key={fx.nodeId === -1 ? `pending-${fx.pluginId}-${idx}` : fx.nodeId}
+              effect={fx}
+              index={idx}
+              storeKey={key}
+              onDragStart={handleDragStart}
+              onDragOver={handleDragOver}
+            />
+          ))}
+        </div>
       )}
     </div>
   )

@@ -222,8 +222,8 @@ public:
         StretchMethod stretchMethod    = StretchMethod::Global;
         bool          formantPreserve  = false;
         float         velocity         = 1.0f;
-        float         fadeInTicks      = 0.0f;
-        float         fadeOutTicks     = 0.0f;
+        float         fadeInPercent    = 0.0f;
+        float         fadeOutPercent   = 0.0f;
         float         fadeInX1         = 0.0f;
         float         fadeInY1         = 0.0f;
         float         fadeInX2         = 1.0f;
@@ -894,26 +894,27 @@ private:
     int                       trackId_;
     // Old state (full snapshot of the type-related fields).
     TrackInfo::Type           oldType_;
-    VideoFlipMode             oldVideoFlipMode_;
+    VideoFlipConfig           oldVideoFlipConfig_;
     // New state.
     TrackInfo::Type           newType_;
     // Cascade snapshot (only blocks — only populated when converting Pattern→Clip).
     std::vector<PatternBlock> cascadedBlocks_;
 };
 
-// ─── SetVideoFlipModeCommand ──────────────────────────────────────────────────
+// ─── SetVideoFlipConfigCommand ────────────────────────────────────────────────
+// Persists a new VideoFlipConfig on a track with full undo/redo support.
 
-class SetVideoFlipModeCommand : public Command {
+class SetVideoFlipConfigCommand : public Command {
 public:
-    SetVideoFlipModeCommand(int trackId, VideoFlipMode newMode,
-                            const Timeline& timeline);
+    SetVideoFlipConfigCommand(int trackId, VideoFlipConfig newConfig,
+                              const Timeline& timeline);
     void execute(Timeline& timeline) override;
     void undo(Timeline& timeline) override;
     std::string describe() const override;
 private:
-    int           trackId_;
-    VideoFlipMode oldMode_;
-    VideoFlipMode newMode_;
+    int             trackId_;
+    VideoFlipConfig oldConfig_;
+    VideoFlipConfig newConfig_;
 };
 
 // ─── SetTrackVideoHoldLastFrameCommand ────────────────────────────────────────

@@ -1,0 +1,267 @@
+/* ── Plugin UI Designer (developer mode) ──────────────────────────────────────
+   Compiled in only when VITE_XLETH_PLUGIN_UI_DESIGNER=1 — gated by lazy import
+   in CompressorPanel.jsx. Theme tokens only; no hardcoded colours / shadows.
+   All classes are prefixed `pluginui-designer-` to avoid collisions.
+   First-cut visual style: dense, utilitarian. Aesthetics come later.            */
+
+.pluginui-designer-root {
+  display: flex;
+  flex-direction: column;
+  width: 360px;
+  min-width: 320px;
+  max-width: 480px;
+  border-left: 1px solid var(--theme-border-subtle);
+  background: var(--theme-bg-primary);
+  color: var(--theme-text);
+  font-size: 11px;
+  user-select: none;
+  overflow: hidden;
+}
+
+.pluginui-designer-loading,
+.pluginui-designer-error {
+  padding: 8px 10px;
+  font-size: 11px;
+  color: var(--theme-text-subtle);
+}
+
+.pluginui-designer-error {
+  color: var(--theme-error, #d04040);
+}
+
+/* ── Section frames ─────────────────────────────────────────────────────────── */
+
+.pluginui-designer-section {
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid var(--theme-border-subtle);
+  min-height: 0;
+}
+
+.pluginui-designer-section--grow {
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.pluginui-designer-section-header {
+  padding: 4px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--theme-text-subtle);
+  background: var(--theme-fx-surface-tint-subtle, transparent);
+  border-bottom: 1px solid var(--theme-border-subtle);
+}
+
+.pluginui-designer-section-body {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 6px 8px;
+  min-height: 0;
+}
+
+.pluginui-designer-section-body--placeholder {
+  color: var(--theme-text-subtle);
+  font-style: italic;
+}
+
+/* ── Toolbar ────────────────────────────────────────────────────────────────── */
+
+.pluginui-designer-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--theme-border-subtle);
+}
+
+.pluginui-designer-button {
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 8px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm, 3px);
+  background: var(--theme-bg-primary);
+  color: var(--theme-text);
+  cursor: pointer;
+}
+
+.pluginui-designer-button:hover:not(:disabled) {
+  background: var(--theme-fx-surface-tint-subtle);
+}
+
+.pluginui-designer-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.pluginui-designer-button--primary {
+  border-color: var(--accent-primary, var(--theme-border-subtle));
+  color: var(--accent-primary, var(--theme-text));
+}
+
+.pluginui-designer-button--danger {
+  color: var(--theme-error, #d04040);
+}
+
+/* ── Compressor panel: Edit UI button (header) ──────────────────────────────── */
+
+.compressor-panel-edit-ui {
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  margin-right: 6px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm, 3px);
+  background: transparent;
+  color: var(--theme-text-subtle);
+  cursor: pointer;
+}
+
+.compressor-panel-edit-ui:hover {
+  color: var(--theme-text);
+  background: var(--theme-fx-surface-tint-subtle);
+}
+
+.compressor-panel-edit-ui--active {
+  color: var(--accent-primary, var(--theme-text));
+  border-color: var(--accent-primary, var(--theme-border-subtle));
+}
+
+/* ── Compressor panel layout when designer is open ──────────────────────────── */
+
+.compressor-panel--designer-open {
+  width: 880px;
+  max-width: 95vw;
+}
+
+.compressor-panel-runtime-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.compressor-panel-split {
+  display: flex;
+  flex-direction: row;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* ── Layout tree ────────────────────────────────────────────────────────────── */
+
+.pluginui-designer-tree {
+  display: flex;
+  flex-direction: column;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.pluginui-designer-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border-radius: var(--radius-sm, 3px);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pluginui-designer-tree-row:hover {
+  background: var(--theme-fx-surface-tint-subtle);
+}
+
+.pluginui-designer-tree-row--selected {
+  background: var(--accent-primary, var(--theme-fx-surface-tint-subtle));
+  color: var(--accent-on-primary, var(--theme-text));
+}
+
+.pluginui-designer-tree-toggle {
+  width: 14px;
+  text-align: center;
+  font-size: 9px;
+  color: var(--theme-text-subtle);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.pluginui-designer-tree-toggle--placeholder {
+  visibility: hidden;
+}
+
+.pluginui-designer-tree-type {
+  font-weight: 600;
+  color: var(--theme-text);
+}
+
+.pluginui-designer-tree-id {
+  color: var(--theme-text-subtle);
+}
+
+.pluginui-designer-tree-label {
+  font-style: italic;
+  color: var(--theme-text-subtle);
+}
+
+.pluginui-designer-tree-badge {
+  margin-left: auto;
+  font-size: 9px;
+  padding: 0 4px;
+  border-radius: 2px;
+  background: var(--theme-error, #d04040);
+  color: #fff;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.pluginui-designer-tree-children {
+  display: flex;
+  flex-direction: column;
+  border-left: 1px dotted var(--theme-border-subtle);
+  margin-left: 7px;
+  padding-left: 4px;
+}
+
+/* ── Inspector / Palette / Validation placeholders ──────────────────────────── */
+
+.pluginui-designer-inspector-stub,
+.pluginui-designer-palette-stub,
+.pluginui-designer-validation-stub {
+  font-size: 11px;
+  color: var(--theme-text-subtle);
+}
+
+/* ── Preview overlay (selection outline) ───────────────────────────────────── */
+
+.pluginui-designer-preview-host {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.pluginui-designer-preview-overlay {
+  position: absolute;
+  pointer-events: none;
+  border: 1px solid var(--accent-primary, #4a8be3);
+  box-shadow: 0 0 0 1px rgba(74, 139, 227, 0.25);
+  border-radius: 2px;
+  z-index: 10;
+}
+
+.pluginui-designer-preview-warning {
+  padding: 4px 8px;
+  font-size: 10px;
+  color: var(--theme-text-subtle);
+  border-top: 1px solid var(--theme-border-subtle);
+  background: var(--theme-fx-surface-tint-subtle, transparent);
+}

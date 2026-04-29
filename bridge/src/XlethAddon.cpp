@@ -27,6 +27,7 @@
 #include "audio/SampleProcessor.h"
 #include "SyncManager.h"
 #include "render/ArpVideoExpander.h"
+#include "render/VideoFlipApplier.h"
 #include "Transport.h"
 #include "VideoDecoder.h"
 #include "video/FrameOutput.h"
@@ -48,6 +49,8 @@
 #include "audio/XlethWaveshaperEffect.h"
 #include "audio/SmartBalanceEffect.h"
 #include "audio/PluginRegistry.h"
+#include "audio/viz/DynamicsVizFrame.h"
+#include "audio/viz/DynamicsVizCollector.h"
 #include "render/GpuDeviceManager.h"
 #include "render/HwEncoderDetector.h"
 #include "render/OfflineRenderer.h"
@@ -644,6 +647,11 @@ static void rebuildVideoEventsFromClips() {
 
     int notesAdded = 0, blocksSkipped = 0;
 
+    // Collect every emitted VideoEvent here first so VideoFlipApplier can run
+    // a single per-track resolver pass before we hand events to SyncManager.
+    std::vector<VideoEvent> eventsBuf;
+    eventsBuf.reserve(clips.size() + 256);
+
     // Group clips by trackId and sort each track's clips by timeline position
     // so globalNoteIndex is assigned in a deterministic per-track order. This
     // mirrors the pattern-note counter below and lets the grid compositor
@@ -719,12 +727,13 @@ static void rebuildVideoEventsFromClips() {
             ev.width = 1.0f; ev.height = 1.0f;
             ev.opacity = 1.0f;
             ev.globalNoteIndex = counter++;
-            syncManager->addEvent(ev);
+            ev.pitch           = clip->pitchOffset;  // flip-v2 resolver input (spec §1)
+            eventsBuf.push_back(ev);
             ++added;
         }
         const TrackInfo* tInfo = g_timeline->getTrack(trackId);
         std::cout << "[Bridge] Clip track " << trackId
-                  << " (flipMode=" << (tInfo ? videoFlipModeToString(tInfo->videoFlipMode) : "?")
+                  << " (flipMode=" << (tInfo ? videoFlipConfigToLegacyMode(tInfo->videoFlipConfig) : "?")
                   << "): " << counter << " video events (indices 0.."
                   << (counter > 0 ? counter - 1 : 0) << "), "
                   << trackSkipped << " skipped of " << trackClips.size()
@@ -822,8 +831,7 @@ static void rebuildVideoEventsFromClips() {
                         pattern->regionId,
                         region->startTime, region->endTime,
                         counter);
-                    for (const auto& ve : arpEvts)
-                        syncManager->addEvent(ve);
+                    eventsBuf.insert(eventsBuf.end(), arpEvts.begin(), arpEvts.end());
                     notesAdded += static_cast<int>(arpEvts.size());
                 } else {
                     for (int64_t L = firstLoopIdx; L <= lastLoopIdx; ++L) {
@@ -865,7 +873,8 @@ static void rebuildVideoEventsFromClips() {
                             ev.width = 1.0f; ev.height = 1.0f;
                             ev.opacity         = note->velocity;
                             ev.globalNoteIndex = counter++;
-                            syncManager->addEvent(ev);
+                            ev.pitch           = note->pitch;  // flip-v2 resolver input
+                            eventsBuf.push_back(ev);
                             ++notesAdded;
                         }
                     }
@@ -873,6 +882,15 @@ static void rebuildVideoEventsFromClips() {
             }
         }
     }
+
+    // Phase 3: single-pass per-track flip resolution. Runs ONCE for the whole
+    // event list — chord detection, mono-only resolver call, and write-back of
+    // monoOrdinal / stateIndex / orientation. After this, eventsBuf is the
+    // final immutable input for SyncManager's video tick.
+    videoFlipApplier::applyAll(eventsBuf, *g_timeline);
+
+    for (const VideoEvent& ev : eventsBuf)
+        syncManager->addEvent(ev);
 
     std::cout << "[Bridge] Rebuilt video events: "
               << added << " clip(s), " << notesAdded << " note(s) added; "
@@ -1049,8 +1067,11 @@ static Napi::Object clipToJs(Napi::Env env, const Clip& c) {
     o.Set("stretchRatio",      Napi::Number::New(env, c.stretchRatio));
     o.Set("stretchMethod",     Napi::Number::New(env, static_cast<int>(c.stretchMethod)));
     o.Set("formantPreserve",   Napi::Boolean::New(env, c.formantPreserve));
-    o.Set("fadeInTicks",       Napi::Number::New(env, c.fadeInTicks));
-    o.Set("fadeOutTicks",      Napi::Number::New(env, c.fadeOutTicks));
+    float fadeInPercent = c.fadeInPercent;
+    float fadeOutPercent = c.fadeOutPercent;
+    normalizeClipFadePercents(fadeInPercent, fadeOutPercent);
+    o.Set("fadeInPercent",     Napi::Number::New(env, fadeInPercent));
+    o.Set("fadeOutPercent",    Napi::Number::New(env, fadeOutPercent));
     o.Set("fadeInX1",          Napi::Number::New(env, c.fadeInX1));
     o.Set("fadeInY1",          Napi::Number::New(env, c.fadeInY1));
     o.Set("fadeInX2",          Napi::Number::New(env, c.fadeInX2));
@@ -1074,7 +1095,43 @@ static Napi::Object trackToJs(Napi::Env env, const TrackInfo& t) {
     o.Set("visualOnly",        Napi::Boolean::New(env, t.visualOnly));
     o.Set("order",             Napi::Number::New(env, t.order));
     o.Set("type",              Napi::String::New(env, trackTypeToString(t.type)));
-    o.Set("videoFlipMode",     Napi::String::New(env, videoFlipModeToString(t.videoFlipMode)));
+    // videoFlipMode: derived from videoFlipConfig for UI backward compatibility
+    // until Phase 5 replaces the context-menu submenu with the v2 Flip Properties panel.
+    o.Set("videoFlipMode", Napi::String::New(env, videoFlipConfigToLegacyMode(t.videoFlipConfig)));
+    {
+        // videoFlipConfig: full v2 configuration object (new API).
+        const VideoFlipConfig& cfg = t.videoFlipConfig;
+        Napi::Object fc = Napi::Object::New(env);
+        fc.Set("enabled",         Napi::Boolean::New(env, cfg.enabled));
+        fc.Set("startStateIndex", Napi::Number::New(env, cfg.startStateIndex));
+
+        Napi::Array states = Napi::Array::New(env, cfg.states.size());
+        for (uint32_t i = 0; i < static_cast<uint32_t>(cfg.states.size()); ++i) {
+            Napi::Object s = Napi::Object::New(env);
+            s.Set("id",          Napi::String::New(env, cfg.states[i].id));
+            s.Set("orientation", Napi::String::New(env, orientationToString(cfg.states[i].orientation)));
+            s.Set("label",       Napi::String::New(env, cfg.states[i].label));
+            states[i] = s;
+        }
+        fc.Set("states", states);
+
+        Napi::Object mod = Napi::Object::New(env);
+        mod.Set("type", Napi::String::New(env, videoFlipModifierTypeToString(cfg.modifier.type)));
+        Napi::Object mcfg = Napi::Object::New(env);
+        if (cfg.modifier.type == VideoFlipModifier::Type::SpecificPitches) {
+            Napi::Array pitches = Napi::Array::New(env, cfg.modifier.pitches.size());
+            for (uint32_t i = 0; i < static_cast<uint32_t>(cfg.modifier.pitches.size()); ++i)
+                pitches[i] = Napi::Number::New(env, cfg.modifier.pitches[i]);
+            mcfg.Set("pitches", pitches);
+        } else if (cfg.modifier.type == VideoFlipModifier::Type::EveryNBeats) {
+            mcfg.Set("n",           Napi::Number::New(env, cfg.modifier.n));
+            mcfg.Set("subdivision", Napi::String::New(env,
+                videoFlipSubdivisionToString(cfg.modifier.subdivision)));
+        }
+        mod.Set("config", mcfg);
+        fc.Set("modifier", mod);
+        o.Set("videoFlipConfig", fc);
+    }
     o.Set("videoHoldLastFrame", Napi::Boolean::New(env, t.videoHoldLastFrame));
     o.Set("cornerRadius",      Napi::Number::New(env, t.cornerRadius));
     o.Set("gapScaleOverride",  Napi::Number::New(env, t.gapScaleOverride));
@@ -3654,7 +3711,7 @@ void Timeline_RemoveTrack(const Napi::CallbackInfo& info)
 // timeline_addClip({ trackId, regionId, positionTicks, durationTicks,
 //                    regionOffsetTicks?, syllableIndex?, velocity?, pitchOffset?,
 //                    pitchOffsetCents?, reversed?, stretchRatio?, stretchMethod?, formantPreserve?,
-//                    fadeInTicks?, fadeOutTicks?, fadeInX1?, fadeInY1?, fadeInX2?, fadeInY2?,
+//                    fadeInPercent?, fadeOutPercent?, fadeInX1?, fadeInY1?, fadeInX2?, fadeInY2?,
 //                    fadeOutX1?, fadeOutY1?, fadeOutX2?, fadeOutY2? }) → id
 Napi::Value Timeline_AddClip(const Napi::CallbackInfo& info)
 {
@@ -3703,11 +3760,18 @@ Napi::Value Timeline_AddClip(const Napi::CallbackInfo& info)
         clip.formantPreserve = o.Get("formantPreserve").As<Napi::Boolean>().Value();
 
     // Fade envelope — optional, mirrors Timeline_SetClipParams field handling.
-    // All fields guarded so existing callers that don't send them keep struct defaults.
-    if (o.Has("fadeInTicks")  && o.Get("fadeInTicks").IsNumber())
-        clip.fadeInTicks  = std::max(0.0f, o.Get("fadeInTicks").As<Napi::Number>().FloatValue());
-    if (o.Has("fadeOutTicks") && o.Get("fadeOutTicks").IsNumber())
-        clip.fadeOutTicks = std::max(0.0f, o.Get("fadeOutTicks").As<Napi::Number>().FloatValue());
+    // Legacy tick fields are converted to percentages using the clip duration.
+    if (o.Has("fadeInPercent") && o.Get("fadeInPercent").IsNumber())
+        clip.fadeInPercent = o.Get("fadeInPercent").As<Napi::Number>().FloatValue();
+    else if (o.Has("fadeInTicks") && o.Get("fadeInTicks").IsNumber())
+        clip.fadeInPercent = legacyFadeTicksToPercent(
+            o.Get("fadeInTicks").As<Napi::Number>().FloatValue(), clip.duration.ticks);
+    if (o.Has("fadeOutPercent") && o.Get("fadeOutPercent").IsNumber())
+        clip.fadeOutPercent = o.Get("fadeOutPercent").As<Napi::Number>().FloatValue();
+    else if (o.Has("fadeOutTicks") && o.Get("fadeOutTicks").IsNumber())
+        clip.fadeOutPercent = legacyFadeTicksToPercent(
+            o.Get("fadeOutTicks").As<Napi::Number>().FloatValue(), clip.duration.ticks);
+    normalizeClipFadePercents(clip);
     if (o.Has("fadeInX1")  && o.Get("fadeInX1").IsNumber())  clip.fadeInX1  = o.Get("fadeInX1").As<Napi::Number>().FloatValue();
     if (o.Has("fadeInY1")  && o.Get("fadeInY1").IsNumber())  clip.fadeInY1  = o.Get("fadeInY1").As<Napi::Number>().FloatValue();
     if (o.Has("fadeInX2")  && o.Get("fadeInX2").IsNumber())  clip.fadeInX2  = o.Get("fadeInX2").As<Napi::Number>().FloatValue();
@@ -3732,7 +3796,7 @@ Napi::Value Timeline_AddClip(const Napi::CallbackInfo& info)
         "[XlethAddon_AddClip] presence: regionOffsetTicks=%s syllableIndex=%s "
         "pitchOffset=%s pitchOffsetCents=%s reversed=%s stretchRatio=%s "
         "stretchMethod=%s formantPreserve=%s velocity=%s "
-        "fadeInTicks=%s fadeOutTicks=%s "
+        "fadeInPercent=%s fadeOutPercent=%s legacyFadeInTicks=%s legacyFadeOutTicks=%s "
         "fadeInX1=%s fadeInY1=%s fadeInX2=%s fadeInY2=%s "
         "fadeOutX1=%s fadeOutY1=%s fadeOutX2=%s fadeOutY2=%s\n",
         presence("regionOffsetTicks"), presence("syllableIndex"),
@@ -3740,6 +3804,7 @@ Napi::Value Timeline_AddClip(const Napi::CallbackInfo& info)
         presence("reversed"),          presence("stretchRatio"),
         presence("stretchMethod"),     presence("formantPreserve"),
         presence("velocity"),
+        presence("fadeInPercent"),     presence("fadeOutPercent"),
         presence("fadeInTicks"),       presence("fadeOutTicks"),
         presence("fadeInX1"),          presence("fadeInY1"),
         presence("fadeInX2"),          presence("fadeInY2"),
@@ -3756,7 +3821,7 @@ Napi::Value Timeline_AddClip(const Napi::CallbackInfo& info)
         clip.pitchOffset, clip.pitchOffsetCents,
         clip.reversed ? 1 : 0, clip.stretchRatio,
         (int)clip.stretchMethod, clip.formantPreserve ? 1 : 0, clip.velocity,
-        clip.fadeInTicks, clip.fadeOutTicks,
+        clip.fadeInPercent, clip.fadeOutPercent,
         clip.fadeInX1, clip.fadeInY1, clip.fadeInX2, clip.fadeInY2,
         clip.fadeOutX1, clip.fadeOutY1, clip.fadeOutX2, clip.fadeOutY2);
     fflush(stderr);
@@ -3811,7 +3876,7 @@ void Timeline_RemoveClip(const Napi::CallbackInfo& info)
 
 // timeline_setClipParams(clipId: number, params: object) → clipObject
 // params: { pitchOffset?, pitchOffsetCents?, reversed?, stretchRatio?,
-//           stretchMethod?, formantPreserve? }
+//           stretchMethod?, formantPreserve?, fadeInPercent?, fadeOutPercent? }
 Napi::Value Timeline_SetClipParams(const Napi::CallbackInfo& info)
 {
     Napi::Env env = info.Env();
@@ -3843,8 +3908,8 @@ Napi::Value Timeline_SetClipParams(const Napi::CallbackInfo& info)
     p.stretchMethod    = existing->stretchMethod;
     p.formantPreserve  = existing->formantPreserve;
     p.velocity         = existing->velocity;
-    p.fadeInTicks      = existing->fadeInTicks;
-    p.fadeOutTicks     = existing->fadeOutTicks;
+    p.fadeInPercent    = existing->fadeInPercent;
+    p.fadeOutPercent   = existing->fadeOutPercent;
     p.fadeInX1         = existing->fadeInX1;
     p.fadeInY1         = existing->fadeInY1;
     p.fadeInX2         = existing->fadeInX2;
@@ -3875,10 +3940,17 @@ Napi::Value Timeline_SetClipParams(const Napi::CallbackInfo& info)
         p.formantPreserve = o.Get("formantPreserve").As<Napi::Boolean>().Value();
     if (o.Has("velocity") && o.Get("velocity").IsNumber())
         p.velocity = o.Get("velocity").As<Napi::Number>().FloatValue();
-    if (o.Has("fadeInTicks") && o.Get("fadeInTicks").IsNumber())
-        p.fadeInTicks = std::max(0.0f, o.Get("fadeInTicks").As<Napi::Number>().FloatValue());
-    if (o.Has("fadeOutTicks") && o.Get("fadeOutTicks").IsNumber())
-        p.fadeOutTicks = std::max(0.0f, o.Get("fadeOutTicks").As<Napi::Number>().FloatValue());
+    if (o.Has("fadeInPercent") && o.Get("fadeInPercent").IsNumber())
+        p.fadeInPercent = o.Get("fadeInPercent").As<Napi::Number>().FloatValue();
+    else if (o.Has("fadeInTicks") && o.Get("fadeInTicks").IsNumber())
+        p.fadeInPercent = legacyFadeTicksToPercent(
+            o.Get("fadeInTicks").As<Napi::Number>().FloatValue(), existing->duration.ticks);
+    if (o.Has("fadeOutPercent") && o.Get("fadeOutPercent").IsNumber())
+        p.fadeOutPercent = o.Get("fadeOutPercent").As<Napi::Number>().FloatValue();
+    else if (o.Has("fadeOutTicks") && o.Get("fadeOutTicks").IsNumber())
+        p.fadeOutPercent = legacyFadeTicksToPercent(
+            o.Get("fadeOutTicks").As<Napi::Number>().FloatValue(), existing->duration.ticks);
+    normalizeClipFadePercents(p.fadeInPercent, p.fadeOutPercent);
     if (o.Has("fadeInX1") && o.Get("fadeInX1").IsNumber())
         p.fadeInX1 = o.Get("fadeInX1").As<Napi::Number>().FloatValue();
     if (o.Has("fadeInY1") && o.Get("fadeInY1").IsNumber())
@@ -5809,25 +5881,87 @@ void Timeline_ConvertToClipTrack(const Napi::CallbackInfo& info)
     log.done();
 }
 
-// timeline_setVideoFlipMode(trackId, mode)
-void Timeline_SetVideoFlipMode(const Napi::CallbackInfo& info)
+// timeline_setVideoFlipConfig(trackId, configObj)
+// New v2 entry: accepts a full VideoFlipConfig object from the renderer.
+void Timeline_SetVideoFlipConfig(const Napi::CallbackInfo& info)
 {
     Napi::Env env = info.Env();
     if (!isInitialised() || !g_timeline || !g_undoManager) {
         Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
         return;
     }
-    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsString()) {
-        Napi::TypeError::New(env, "timeline_setVideoFlipMode(trackId: number, mode: string)")
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsObject()) {
+        Napi::TypeError::New(env,
+            "timeline_setVideoFlipConfig(trackId: number, config: VideoFlipConfig)")
             .ThrowAsJavaScriptException();
         return;
     }
-    int           trackId = info[0].As<Napi::Number>().Int32Value();
-    std::string   modeStr = info[1].As<Napi::String>().Utf8Value();
-    VideoFlipMode mode    = stringToVideoFlipMode(modeStr);
-    BridgeCallLog log("timeline.setVideoFlipMode");
+    int          trackId = info[0].As<Napi::Number>().Int32Value();
+    Napi::Object obj     = info[1].As<Napi::Object>();
+
+    VideoFlipConfig cfg;
+
+    if (obj.Has("enabled") && obj.Get("enabled").IsBoolean())
+        cfg.enabled = obj.Get("enabled").As<Napi::Boolean>().Value();
+    if (obj.Has("startStateIndex") && obj.Get("startStateIndex").IsNumber())
+        cfg.startStateIndex = obj.Get("startStateIndex").As<Napi::Number>().Int32Value();
+
+    if (obj.Has("states") && obj.Get("states").IsArray()) {
+        cfg.states.clear();
+        auto arr = obj.Get("states").As<Napi::Array>();
+        for (uint32_t i = 0; i < arr.Length(); ++i) {
+            if (!arr.Get(i).IsObject()) continue;
+            Napi::Object s = arr.Get(i).As<Napi::Object>();
+            VideoFlipState st;
+            if (s.Has("id") && s.Get("id").IsString())
+                st.id = s.Get("id").As<Napi::String>().Utf8Value();
+            if (s.Has("orientation") && s.Get("orientation").IsString())
+                st.orientation = stringToOrientation(
+                    s.Get("orientation").As<Napi::String>().Utf8Value());
+            if (s.Has("label") && s.Get("label").IsString())
+                st.label = s.Get("label").As<Napi::String>().Utf8Value();
+            cfg.states.push_back(st);
+        }
+    }
+    if (cfg.states.empty())
+        cfg.states = { {"s0", Orientation::None, ""} };
+
+    if (obj.Has("modifier") && obj.Get("modifier").IsObject()) {
+        Napi::Object mod = obj.Get("modifier").As<Napi::Object>();
+        if (mod.Has("type") && mod.Get("type").IsString())
+            cfg.modifier.type = stringToVideoFlipModifierType(
+                mod.Get("type").As<Napi::String>().Utf8Value());
+        if (mod.Has("config") && mod.Get("config").IsObject()) {
+            Napi::Object c = mod.Get("config").As<Napi::Object>();
+            if (cfg.modifier.type == VideoFlipModifier::Type::SpecificPitches) {
+                if (c.Has("pitches") && c.Get("pitches").IsArray()) {
+                    cfg.modifier.pitches.clear();
+                    auto pa = c.Get("pitches").As<Napi::Array>();
+                    for (uint32_t i = 0; i < pa.Length(); ++i)
+                        if (pa.Get(i).IsNumber())
+                            cfg.modifier.pitches.push_back(
+                                pa.Get(i).As<Napi::Number>().Int32Value());
+                }
+            } else if (cfg.modifier.type == VideoFlipModifier::Type::EveryNBeats) {
+                if (c.Has("n") && c.Get("n").IsNumber())
+                    cfg.modifier.n = c.Get("n").As<Napi::Number>().Int32Value();
+                if (c.Has("subdivision") && c.Get("subdivision").IsString())
+                    cfg.modifier.subdivision = stringToVideoFlipSubdivision(
+                        c.Get("subdivision").As<Napi::String>().Utf8Value());
+            }
+        }
+    }
+
+    // Clamp startStateIndex after parsing.
+    if (!cfg.states.empty()) {
+        if (cfg.startStateIndex < 0) cfg.startStateIndex = 0;
+        if (cfg.startStateIndex >= static_cast<int>(cfg.states.size()))
+            cfg.startStateIndex = static_cast<int>(cfg.states.size()) - 1;
+    }
+
+    BridgeCallLog log("timeline.setVideoFlipConfig");
     g_undoManager->execute(
-        std::make_unique<SetVideoFlipModeCommand>(trackId, mode, *g_timeline),
+        std::make_unique<SetVideoFlipConfigCommand>(trackId, std::move(cfg), *g_timeline),
         *g_timeline);
     log.done();
 }
@@ -7187,6 +7321,125 @@ Napi::Value Audio_GetEffectMeter(const Napi::CallbackInfo& info)
                  trackId, nodeId, json.size());
 #endif
     return Napi::String::New(env, json);
+}
+
+// ── Effect visualization (dynamics; opt-in per instance) ────────────────────
+//
+// audio_setEffectVisualizationEnabled(trackId, nodeId, enabled) → bool
+// Allocates / tears down the per-instance ring on the main thread and atomically
+// publishes / unpublishes it to the audio thread. While disabled, the audio
+// path pays only an acquire-load + null-check per block.
+Napi::Value Audio_SetEffectVisualizationEnabled(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised()) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsNumber() || !info[2].IsBoolean()) {
+        Napi::TypeError::New(env,
+            "audio_setEffectVisualizationEnabled(trackId: number, nodeId: number, enabled: boolean)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int  trackId = info[0].As<Napi::Number>().Int32Value();
+    const int  nodeId  = info[1].As<Napi::Number>().Int32Value();
+    const bool enabled = info[2].As<Napi::Boolean>().Value();
+
+    const bool ok = audioEngine->getMixEngine()
+                        .setEffectVisualizationEnabled(trackId, nodeId, enabled);
+    return Napi::Boolean::New(env, ok);
+}
+
+// audio_drainEffectVizFrames(trackId, nodeId, maxBuckets) →
+//   { type: "compressor"|"unknown", schema: number, bucketSize: number,
+//     count: number, frames: ArrayBuffer }
+//
+// Returns a binary payload (ArrayBuffer) of `count` × `bucketSize` bytes.
+// On any error / no frames / unknown type, returns a valid object with count=0
+// and an empty ArrayBuffer — never throws on empty.
+Napi::Value Audio_DrainEffectVizFrames(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised()) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsNumber() || !info[2].IsNumber()) {
+        Napi::TypeError::New(env,
+            "audio_drainEffectVizFrames(trackId: number, nodeId: number, maxBuckets: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int trackId    = info[0].As<Napi::Number>().Int32Value();
+    const int nodeId     = info[1].As<Napi::Number>().Int32Value();
+    const int maxBuckets = info[2].As<Napi::Number>().Int32Value();
+
+    auto& mix = audioEngine->getMixEngine();
+    const std::uint32_t typeTag = mix.getEffectVisualizationType(trackId, nodeId);
+    const std::uint32_t schema  = mix.getEffectVisualizationSchemaVersion(trackId, nodeId);
+
+    // Resolve bucket size from type tag. For now only Compressor is supported;
+    // any other type returns an empty payload so the JS side renders the
+    // "Visualization unavailable" placeholder safely.
+    std::size_t bucketSize = 0;
+    const char* typeStr    = "unknown";
+    if (typeTag == xleth::viz::kVizTypeCompressor)
+    {
+        bucketSize = sizeof(xleth::viz::CompressorBucket);
+        typeStr    = "compressor";
+    }
+
+    Napi::Object result = Napi::Object::New(env);
+    result.Set("type",       Napi::String::New(env, typeStr));
+    result.Set("schema",     Napi::Number::New(env, static_cast<double>(schema)));
+    result.Set("bucketSize", Napi::Number::New(env, static_cast<double>(bucketSize)));
+
+    if (bucketSize == 0 || maxBuckets <= 0)
+    {
+        // Always return a valid empty payload — never throw on empty.
+        result.Set("count",  Napi::Number::New(env, 0));
+        result.Set("frames", Napi::ArrayBuffer::New(env, 0));
+        return result;
+    }
+
+    // Cap maxBuckets at a sane upper bound to avoid wild allocations from the
+    // bridge caller (the ring depth is 1024; one drain should never need
+    // more, but we double it for safety).
+    const std::size_t cappedBuckets = std::min<std::size_t>(
+        static_cast<std::size_t>(maxBuckets),
+        static_cast<std::size_t>(xleth::viz::kDynamicsVizRingDepth) * 2);
+    const std::size_t maxBytes = cappedBuckets * bucketSize;
+
+    // Allocate the ArrayBuffer once and drain directly into it. JS owns the
+    // memory; engine never touches it again after we return.
+    Napi::ArrayBuffer ab = Napi::ArrayBuffer::New(env, maxBytes);
+    auto* dst = static_cast<std::uint8_t*>(ab.Data());
+    const std::size_t bytesWritten = mix.drainEffectVizFrames(trackId, nodeId, dst, maxBytes);
+    const std::size_t count        = bytesWritten / bucketSize;
+
+    // If we wrote fewer bytes than allocated, slice the ArrayBuffer to the
+    // exact size used. Avoids handing JS a buffer with trailing garbage.
+    if (bytesWritten == 0)
+    {
+        result.Set("count",  Napi::Number::New(env, 0));
+        result.Set("frames", Napi::ArrayBuffer::New(env, 0));
+        return result;
+    }
+
+    if (bytesWritten < maxBytes)
+    {
+        // Copy the used prefix into a tightly-sized ArrayBuffer.
+        Napi::ArrayBuffer trimmed = Napi::ArrayBuffer::New(env, bytesWritten);
+        std::memcpy(trimmed.Data(), dst, bytesWritten);
+        result.Set("count",  Napi::Number::New(env, static_cast<double>(count)));
+        result.Set("frames", trimmed);
+        return result;
+    }
+
+    result.Set("count",  Napi::Number::New(env, static_cast<double>(count)));
+    result.Set("frames", ab);
+    return result;
 }
 
 // ── Master effect chain variants ────────────────────────────────────────────
@@ -9859,7 +10112,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("timeline_previewAllNotesOff",     Napi::Function::New(env, Timeline_PreviewAllNotesOff));
     exports.Set("timeline_convertToPatternTrack",  Napi::Function::New(env, Timeline_ConvertToPatternTrack));
     exports.Set("timeline_convertToClipTrack",     Napi::Function::New(env, Timeline_ConvertToClipTrack));
-    exports.Set("timeline_setVideoFlipMode",          Napi::Function::New(env, Timeline_SetVideoFlipMode));
+    exports.Set("timeline_setVideoFlipConfig", Napi::Function::New(env, Timeline_SetVideoFlipConfig));
     exports.Set("timeline_setVideoHoldLastFrame",     Napi::Function::New(env, Timeline_SetVideoHoldLastFrame));
     exports.Set("timeline_setTrackCornerRadius",      Napi::Function::New(env, Timeline_SetTrackCornerRadius));
     exports.Set("timeline_setTrackGapScaleOverride",  Napi::Function::New(env, Timeline_SetTrackGapScaleOverride));
@@ -9941,6 +10194,10 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("audio_getEffectParameters",  Napi::Function::New(env, Audio_GetEffectParameters));
     exports.Set("audio_setEffectParameter",   Napi::Function::New(env, Audio_SetEffectParameter));
     exports.Set("audio_getEffectMeter",       Napi::Function::New(env, Audio_GetEffectMeter));
+    exports.Set("audio_setEffectVisualizationEnabled",
+                Napi::Function::New(env, Audio_SetEffectVisualizationEnabled));
+    exports.Set("audio_drainEffectVizFrames",
+                Napi::Function::New(env, Audio_DrainEffectVizFrames));
     exports.Set("audio_addMasterEffect",      Napi::Function::New(env, Audio_AddMasterEffect));
     exports.Set("audio_removeMasterEffect",   Napi::Function::New(env, Audio_RemoveMasterEffect));
     exports.Set("audio_moveMasterEffect",     Napi::Function::New(env, Audio_MoveMasterEffect));

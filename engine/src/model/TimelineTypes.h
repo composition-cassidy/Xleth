@@ -276,8 +276,8 @@ struct Clip {
     bool          formantPreserve  = false;
 
     // Per-clip fade envelope (CSS cubic-bezier convention: P0=(0,0), P3=(1,1))
-    float fadeInTicks   = 0.0f;    // fade-in duration in ticks (0 = no fade)
-    float fadeOutTicks  = 0.0f;    // fade-out duration in ticks (0 = no fade)
+    float fadeInPercent  = 0.0f;   // percent of visible clip length (0..100)
+    float fadeOutPercent = 0.0f;   // percent of visible clip length (0..100)
     float fadeInX1      = 0.0f;    // bezier P1.x for fade-in
     float fadeInY1      = 0.0f;    // bezier P1.y for fade-in
     float fadeInX2      = 1.0f;    // bezier P2.x for fade-in
@@ -290,8 +290,43 @@ struct Clip {
     bool isSyllableClip() const { return syllableIndex >= 0; }
 };
 
-// ─── VideoFlipMode ────────────────────────────────────────────────────────────
-// Controls per-note/clip video flipping for all track types.
+inline float clampClipFadePercent(float value) {
+    if (!(value >= 0.0f)) return 0.0f;
+    if (value > 100.0f) return 100.0f;
+    return value;
+}
+
+inline void normalizeClipFadePercents(float& fadeInPercent, float& fadeOutPercent) {
+    fadeInPercent = clampClipFadePercent(fadeInPercent);
+    fadeOutPercent = clampClipFadePercent(fadeOutPercent);
+
+    const float total = fadeInPercent + fadeOutPercent;
+    if (total > 100.0f) {
+        const float scale = 100.0f / total;
+        fadeInPercent *= scale;
+        fadeOutPercent *= scale;
+    }
+}
+
+inline float legacyFadeTicksToPercent(float fadeTicks, int64_t durationTicks) {
+    if (!(fadeTicks > 0.0f) || durationTicks <= 0) return 0.0f;
+    return clampClipFadePercent((fadeTicks * 100.0f) / static_cast<float>(durationTicks));
+}
+
+inline int64_t clipFadePercentToSamples(int64_t clipLengthSamples, float fadePercent) {
+    if (clipLengthSamples <= 0) return 0;
+    const float normalized = clampClipFadePercent(fadePercent);
+    return static_cast<int64_t>((static_cast<double>(clipLengthSamples) * normalized) / 100.0);
+}
+
+inline void normalizeClipFadePercents(Clip& clip) {
+    normalizeClipFadePercents(clip.fadeInPercent, clip.fadeOutPercent);
+}
+
+// ─── VideoFlipMode (legacy) ────────────────────────────────────────────────────
+// Original 4-option flip enum. Kept only for JSON migration: when a project file
+// written before v2 is loaded, `videoFlipMode` is read here and converted to a
+// `VideoFlipConfig` via `migrateVideoFlipMode()`. All new code uses VideoFlipConfig.
 
 enum class VideoFlipMode {
     None,              // No flipping
@@ -315,6 +350,189 @@ inline VideoFlipMode stringToVideoFlipMode(const std::string& s) {
     if (s == "Clockwise")        return VideoFlipMode::Clockwise;
     if (s == "CounterClockwise") return VideoFlipMode::CounterClockwise;
     return VideoFlipMode::None;
+}
+
+// ─── Video Flip v2 — Orientation ──────────────────────────────────────────────
+// The six D₄-subset orientations the shader supports. Diagonal mirrors are
+// deferred to v2 (the remaining two D₄ elements are rarely needed in practice).
+
+enum class Orientation {
+    None,        // identity
+    Horizontal,  // mirror left-right  (UV: x = 1 − x)
+    Vertical,    // mirror up-down     (UV: y = 1 − y)
+    Rotate180,   // half turn          (UV: x = 1 − x; y = 1 − y)
+    Rotate90CW,  // quarter turn CW    (UV: (u,v) → (v, 1−u))
+    Rotate90CCW  // quarter turn CCW   (UV: (u,v) → (1−v, u))
+};
+
+inline std::string orientationToString(Orientation o) {
+    switch (o) {
+        case Orientation::None:       return "none";
+        case Orientation::Horizontal: return "horizontal";
+        case Orientation::Vertical:   return "vertical";
+        case Orientation::Rotate180:  return "rotate-180";
+        case Orientation::Rotate90CW: return "rotate-90-cw";
+        case Orientation::Rotate90CCW:return "rotate-90-ccw";
+        default:                      return "none";
+    }
+}
+
+inline Orientation stringToOrientation(const std::string& s) {
+    if (s == "horizontal")    return Orientation::Horizontal;
+    if (s == "vertical")      return Orientation::Vertical;
+    if (s == "rotate-180")    return Orientation::Rotate180;
+    if (s == "rotate-90-cw")  return Orientation::Rotate90CW;
+    if (s == "rotate-90-ccw") return Orientation::Rotate90CCW;
+    return Orientation::None;
+}
+
+// ─── Video Flip v2 — VideoFlipState ───────────────────────────────────────────
+// One entry in the ordered flip cycle for a track. `id` is a stable client-side
+// identifier (used by the UI to track drag/reorder without index drift).
+
+struct VideoFlipState {
+    std::string id;
+    Orientation orientation = Orientation::None;
+    std::string label;  // optional user-facing name; empty = use orientation name
+};
+
+// ─── Video Flip v2 — VideoFlipModifier ────────────────────────────────────────
+// Rule that decides whether each trigger event advances the state machine.
+// Only one `type` is active at a time; only the relevant config fields are used.
+
+struct VideoFlipModifier {
+    enum class Type {
+        EveryNote,       // every-note:       advance on every mono trigger
+        NewNote,         // new-note:         advance when pitch changes vs. previous mono
+        SpecificPitches, // specific-pitches: advance only for whitelisted MIDI pitches
+        EveryNBeats      // every-n-beats:    advance every N beats/bars regardless of notes
+    };
+    Type type = Type::EveryNote;
+
+    // SpecificPitches config: MIDI note numbers that trigger an advance.
+    std::vector<int> pitches;
+
+    // EveryNBeats config.
+    int n = 1;  // 1..32
+    enum class Subdivision { Beat, Bar };
+    Subdivision subdivision = Subdivision::Beat;
+};
+
+inline std::string videoFlipModifierTypeToString(VideoFlipModifier::Type t) {
+    switch (t) {
+        case VideoFlipModifier::Type::EveryNote:       return "every-note";
+        case VideoFlipModifier::Type::NewNote:         return "new-note";
+        case VideoFlipModifier::Type::SpecificPitches: return "specific-pitches";
+        case VideoFlipModifier::Type::EveryNBeats:     return "every-n-beats";
+        default:                                       return "every-note";
+    }
+}
+
+inline VideoFlipModifier::Type stringToVideoFlipModifierType(const std::string& s) {
+    if (s == "new-note")         return VideoFlipModifier::Type::NewNote;
+    if (s == "specific-pitches") return VideoFlipModifier::Type::SpecificPitches;
+    if (s == "every-n-beats")    return VideoFlipModifier::Type::EveryNBeats;
+    return VideoFlipModifier::Type::EveryNote;
+}
+
+inline std::string videoFlipSubdivisionToString(VideoFlipModifier::Subdivision s) {
+    return s == VideoFlipModifier::Subdivision::Bar ? "bar" : "beat";
+}
+
+inline VideoFlipModifier::Subdivision stringToVideoFlipSubdivision(const std::string& s) {
+    return s == "bar" ? VideoFlipModifier::Subdivision::Bar
+                      : VideoFlipModifier::Subdivision::Beat;
+}
+
+// ─── Video Flip v2 — VideoFlipConfig ──────────────────────────────────────────
+// Per-track flip state machine configuration. Persisted to project JSON.
+// `enabled = false` means the track renders the identity transform; the resolver
+// is skipped entirely. `states` is always 1..12 elements.
+
+struct VideoFlipConfig {
+    bool                       enabled         = false;
+    std::vector<VideoFlipState> states;       // 1..12 elements
+    VideoFlipModifier           modifier;
+    int                         startStateIndex = 0;  // 0..states.size()-1
+};
+
+// Default config assigned to every new track.
+inline VideoFlipConfig defaultVideoFlipConfig() {
+    VideoFlipConfig cfg;
+    cfg.enabled         = false;
+    cfg.states          = { VideoFlipState{"s0", Orientation::None, ""} };
+    // modifier defaults: EveryNote, no extra config
+    cfg.startStateIndex = 0;
+    return cfg;
+}
+
+// Migrate a legacy VideoFlipMode value to the equivalent VideoFlipConfig (spec §3.5).
+// This is called once at project load when a pre-v2 `videoFlipMode` string is found.
+inline VideoFlipConfig migrateVideoFlipMode(VideoFlipMode legacy) {
+    VideoFlipConfig cfg;
+    cfg.modifier.type = VideoFlipModifier::Type::EveryNote;
+    switch (legacy) {
+        case VideoFlipMode::None:
+            cfg.enabled         = false;
+            cfg.states          = { {"s0", Orientation::None, ""} };
+            cfg.startStateIndex = 0;
+            break;
+        case VideoFlipMode::HorizontalEven:
+            // startStateIndex=1: ordinal 0 maps to state 1 (horizontal) — matches
+            // legacy shader which flipped on globalNoteIndex % 2 == 0 (0-indexed).
+            cfg.enabled         = true;
+            cfg.states          = { {"s0", Orientation::None,       ""},
+                                    {"s1", Orientation::Horizontal,  ""} };
+            cfg.startStateIndex = 1;
+            break;
+        case VideoFlipMode::Clockwise:
+            cfg.enabled         = true;
+            cfg.states          = { {"s0", Orientation::None,      ""},
+                                    {"s1", Orientation::Vertical,  ""},
+                                    {"s2", Orientation::Rotate180, ""},
+                                    {"s3", Orientation::Horizontal,""} };
+            cfg.startStateIndex = 0;
+            break;
+        case VideoFlipMode::CounterClockwise:
+            cfg.enabled         = true;
+            cfg.states          = { {"s0", Orientation::None,      ""},
+                                    {"s1", Orientation::Horizontal,""},
+                                    {"s2", Orientation::Rotate180, ""},
+                                    {"s3", Orientation::Vertical,  ""} };
+            cfg.startStateIndex = 0;
+            break;
+    }
+    return cfg;
+}
+
+// Best-effort reverse: returns the legacy mode string for a config that matches
+// a canonical migration pattern, or "None" for configs with no legacy equivalent.
+// Used by the bridge to keep `videoFlipMode` in the N-API track object for UI
+// backward compatibility until Phase 5 replaces the context menu.
+inline std::string videoFlipConfigToLegacyMode(const VideoFlipConfig& cfg) {
+    if (!cfg.enabled) return "None";
+    if (cfg.modifier.type != VideoFlipModifier::Type::EveryNote) return "None";
+    const auto& st = cfg.states;
+    if (st.size() == 2
+        && st[0].orientation == Orientation::None
+        && st[1].orientation == Orientation::Horizontal
+        && cfg.startStateIndex == 1)
+        return "HorizontalEven";
+    if (st.size() == 4
+        && st[0].orientation == Orientation::None
+        && st[1].orientation == Orientation::Vertical
+        && st[2].orientation == Orientation::Rotate180
+        && st[3].orientation == Orientation::Horizontal
+        && cfg.startStateIndex == 0)
+        return "Clockwise";
+    if (st.size() == 4
+        && st[0].orientation == Orientation::None
+        && st[1].orientation == Orientation::Horizontal
+        && st[2].orientation == Orientation::Rotate180
+        && st[3].orientation == Orientation::Vertical
+        && cfg.startStateIndex == 0)
+        return "CounterClockwise";
+    return "None";
 }
 
 // ─── Visual Compositor Effect Settings ────────────────────────────────────────
@@ -478,8 +696,8 @@ struct TrackInfo {
     // block references a Pattern, and each Pattern carries its own regionId.
     // Any pattern can be placed on any pattern track.
     enum class Type { Clip, Pattern };
-    Type          type          = Type::Clip;
-    VideoFlipMode videoFlipMode = VideoFlipMode::None;
+    Type            type            = Type::Clip;
+    VideoFlipConfig videoFlipConfig = defaultVideoFlipConfig();
 
     // When true: if a note sustains past the sample's trimmed video length,
     // hold the last frame of the trim region until note-off. When false
@@ -526,6 +744,13 @@ constexpr int kGridLegacyHalfUnits   = 2;        // pre-v2 sub-unit count
 constexpr int kGridLegacyToFineScale = kGridSubUnitsPerColumn / kGridLegacyHalfUnits; // = 4
 constexpr int kGridLayoutVersionFineUnits = 2;
 constexpr int kGridSubdivisionMax = 8;
+
+// ─── Project file format version ──────────────────────────────────────────────
+// Increment whenever a breaking schema change is introduced that requires
+// migration on load. Readers must handle any version ≤ current gracefully.
+//   v1 (implicit, no field)  — original schema with videoFlipMode string
+//   v2                       — videoFlipConfig replaces videoFlipMode (flip v2)
+constexpr int kProjectFileVersion = 2;
 
 // ─── GridSlot ─────────────────────────────────────────────────────────────────
 // One track's placement in the video grid. Coordinates are in fine-grid units:

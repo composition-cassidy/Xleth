@@ -1,0 +1,87 @@
+{
+  "$xleth": "plugin-ui-layout",
+  "schemaVersion": 1,
+  "pluginId": "compressor",
+  "name": "Default Compressor Layout",
+  "panel": {
+    "preferredSize": { "width": 480, "height": 330 }
+  },
+  "root": {
+    "id": "root",
+    "type": "panel",
+    "children": [
+      {
+        "id": "body",
+        "type": "row",
+        "style": { "paddingPx": 12, "gapPx": 12 },
+        "children": [
+          {
+            "id": "knob-grid",
+            "type": "group",
+            "style": { "growsToFill": true, "gapPx": 8 },
+            "props": { "columns": 4 },
+            "children": [
+              { "id": "k-threshold", "type": "knob", "props": { "param": "threshold", "label": "THRESH",    "size": 52, "format": "dB1" } },
+              { "id": "k-ratio",     "type": "knob", "props": { "param": "ratio",     "label": "RATIO",     "size": 52, "format": "ratio" } },
+              { "id": "k-attack",    "type": "knob", "props": { "param": "attack",    "label": "ATTACK",    "size": 52, "format": "ms1" } },
+              { "id": "k-release",   "type": "knob", "props": { "param": "release",   "label": "RELEASE",   "size": 52, "format": "ms0" } },
+              { "id": "k-knee",      "type": "knob", "props": { "param": "knee",      "label": "KNEE",      "size": 52, "format": "dB1" } },
+              { "id": "k-makeup",    "type": "knob", "props": { "param": "makeup",    "label": "MAKEUP",    "size": 52, "format": "dB1" } },
+              { "id": "k-mix",       "type": "knob", "props": { "param": "mix",       "label": "MIX",       "size": 52, "format": "pct0" } },
+              { "id": "k-lookahead", "type": "knob", "props": { "param": "lookahead", "label": "LOOKAHEAD", "size": 52, "format": "ms1" } }
+            ]
+          },
+          {
+            "id": "gr-meter",
+            "type": "meter",
+            "style": { "widthPx": 32 },
+            "props": {
+              "source": { "kind": "effectMeter", "slot": "GAIN_REDUCTION" },
+              "label": "GR",
+              "unit": "dB",
+              "range": { "min": 0, "max": 40, "scale": "linear" },
+              "orientation": "vertical",
+              "format": "dB1"
+            }
+          }
+        ]
+      },
+      {
+        "id": "detect-row",
+        "type": "row",
+        "style": { "paddingPx": [6, 12, 10, 12], "gapPx": 6, "align": "center" },
+        "props": { "variant": "borderTop" },
+        "children": [
+          { "id": "detect-label", "type": "label", "props": { "text": "Detect:", "variant": "muted" } },
+          {
+            "id": "btn-peak",
+            "type": "toggle",
+            "props": { "param": "detect_mode", "mode": "discreteValue", "valueWhenOn": 0, "label": "Peak" }
+          },
+          {
+            "id": "btn-rms",
+            "type": "toggle",
+            "props": { "param": "detect_mode", "mode": "discreteValue", "valueWhenOn": 1, "label": "RMS" }
+          }
+        ]
+      },
+      {
+        "id": "viz-row",
+        "type": "row",
+        "style": { "paddingPx": [0, 12, 8, 12] },
+        "children": [
+          {
+            "id": "compressor-viz",
+            "type": "visualizer",
+            "style": { "growsToFill": true },
+            "props": {
+              "source": "compressor.combined",
+              "preset": "compressorCombined",
+              "heightPx": 110
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

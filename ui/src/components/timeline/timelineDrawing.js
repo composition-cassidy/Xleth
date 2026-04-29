@@ -34,6 +34,27 @@ function _bezierGain(xNorm, x1, y1, x2, y2) {
 
 // ── Grid (background layer) ──────────────────────────────────────────────────
 
+function _clipFadePercent(clip, percentKey, ticksKey) {
+  const percent = Number(clip?.[percentKey])
+  if (Number.isFinite(percent)) return Math.min(100, Math.max(0, percent))
+  const ticks = Number(clip?.[ticksKey])
+  const duration = Number(clip?.durationTicks)
+  if (!Number.isFinite(ticks) || !Number.isFinite(duration) || ticks <= 0 || duration <= 0) return 0
+  return Math.min(100, Math.max(0, (ticks * 100) / duration))
+}
+
+function _normalizedClipFadePercents(clip) {
+  let fadeInPercent = _clipFadePercent(clip, 'fadeInPercent', 'fadeInTicks')
+  let fadeOutPercent = _clipFadePercent(clip, 'fadeOutPercent', 'fadeOutTicks')
+  const total = fadeInPercent + fadeOutPercent
+  if (total > 100) {
+    const scale = 100 / total
+    fadeInPercent *= scale
+    fadeOutPercent *= scale
+  }
+  return { fadeInPercent, fadeOutPercent }
+}
+
 export function drawGrid(ctx, w, h, scrollOffset, ppb, trackCount, tracks = null) {
   ctx.clearRect(0, 0, w, h)
 
@@ -429,10 +450,9 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
     }
 
     // ── Fade overlay ──────────────────────────────────────────────────────
-    const fadeInTicks  = clip.fadeInTicks  ?? 0
-    const fadeOutTicks = clip.fadeOutTicks ?? 0
+    const { fadeInPercent, fadeOutPercent } = _normalizedClipFadePercents(clip)
 
-    if ((fadeInTicks > 0 || fadeOutTicks > 0) && clipW > 4) {
+    if ((fadeInPercent > 0 || fadeOutPercent > 0) && clipW > 4) {
       ctx.save()
       ctx.beginPath()
       ctx.rect(x, y, clipW, clipH)
@@ -441,8 +461,8 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
       ctx.fillStyle = 'rgba(0, 0, 0, 0.35)'
 
       // Fade-in overlay
-      if (fadeInTicks > 0) {
-        const fadeInPx = (fadeInTicks / PPQ) * ppb
+      if (fadeInPercent > 0) {
+        const fadeInPx = clipW * Math.min(100, Math.max(0, fadeInPercent)) / 100
         const steps = Math.min(Math.max(Math.ceil(fadeInPx / 2), 8), 64)
         const x1 = clip.fadeInX1 ?? 0, y1 = clip.fadeInY1 ?? 0
         const x2 = clip.fadeInX2 ?? 1, y2 = clip.fadeInY2 ?? 1
@@ -459,8 +479,8 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
       }
 
       // Fade-out overlay
-      if (fadeOutTicks > 0) {
-        const fadeOutPx = (fadeOutTicks / PPQ) * ppb
+      if (fadeOutPercent > 0) {
+        const fadeOutPx = clipW * Math.min(100, Math.max(0, fadeOutPercent)) / 100
         const steps = Math.min(Math.max(Math.ceil(fadeOutPx / 2), 8), 64)
         const x1 = clip.fadeOutX1 ?? 0, y1 = clip.fadeOutY1 ?? 0
         const x2 = clip.fadeOutX2 ?? 1, y2 = clip.fadeOutY2 ?? 1

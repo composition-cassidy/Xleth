@@ -5,7 +5,9 @@
   "scripts": {
     "build": "cmake-js compile",
     "rebuild": "cmake-js rebuild",
-    "test": "node test_phase1.js"
+    "test": "node test_phase1.js",
+    "test:patterns": "node test_patterns.js",
+    "test:flip-v2": "node ../scripts/test-flip-v2.js"
   },
   "dependencies": {
     "cmake-js": "^7.0.0",

@@ -579,8 +579,8 @@ ipcMain.handle('xleth:timeline:convertToPatternTrack',
 ipcMain.handle('xleth:timeline:convertToClipTrack',
   safeHandler((_, trackId) => callWorker('timeline_convertToClipTrack', [trackId])));
 
-ipcMain.handle('xleth:timeline:setVideoFlipMode',
-  safeHandler((_, trackId, mode) => callWorker('timeline_setVideoFlipMode', [trackId, mode])));
+ipcMain.handle('xleth:timeline:setVideoFlipConfig',
+  safeHandler((_, trackId, config) => callWorker('timeline_setVideoFlipConfig', [trackId, config])));
 
 ipcMain.handle('xleth:timeline:setVideoHoldLastFrame',
   safeHandler((_, trackId, hold) => callWorker('timeline_setVideoHoldLastFrame', [trackId, hold])));
@@ -728,6 +728,61 @@ ipcMain.handle('xleth:theme:deleteUser', (_, slug) => {
   if (!themeSlugSafe(slug)) throw new Error('invalid theme slug')
   try { fs.unlinkSync(themePath(slug)); return true } catch { return false }
 })
+// ── Stock plugin UI layouts (userData/plugin-ui/<pluginId>.json) ──────────────
+// Mirrors the user-themes pattern. Does NOT require the engine worker to be
+// ready — layout files are pure JSON on disk, no C++ involvement.
+
+const pluginUiDir = userDataPath('plugin-ui')
+const KNOWN_PLUGIN_IDS = new Set(['compressor', 'limiter', 'transientproc', 'overdone'])
+
+function pluginIdSafe(id) {
+  return typeof id === 'string' && /^[a-z][a-z0-9_-]*$/.test(id) && id.length <= 64
+    && KNOWN_PLUGIN_IDS.has(id)
+}
+
+function pluginUiPath(pluginId) {
+  return path.join(pluginUiDir, `${pluginId}.json`)
+}
+
+function ensurePluginUiDir() {
+  try { fs.mkdirSync(pluginUiDir, { recursive: true }) } catch {}
+}
+
+ipcMain.handle('xleth:pluginUi:loadUserOverride', (_, pluginId) => {
+  if (!pluginIdSafe(pluginId)) throw new Error('invalid pluginId')
+  try {
+    const raw = fs.readFileSync(pluginUiPath(pluginId), 'utf8')
+    return JSON.parse(raw)
+  } catch { return null }
+})
+
+function validateLayoutStructure(layout) {
+  if (!Number.isInteger(layout.schemaVersion)) return 'missing schemaVersion'
+  if (typeof layout.pluginId !== 'string') return 'missing pluginId'
+  if (!layout.root || layout.root.type !== 'panel') return 'root must be type "panel"'
+  return null
+}
+
+ipcMain.handle('xleth:pluginUi:saveUserOverride', (_, pluginId, layout) => {
+  if (!pluginIdSafe(pluginId)) throw new Error('invalid pluginId')
+  if (!layout || typeof layout !== 'object') throw new Error('layout must be an object')
+  const structErr = validateLayoutStructure(layout)
+  if (structErr) throw new Error(`Invalid layout: ${structErr}`)
+  ensurePluginUiDir()
+  fs.writeFileSync(pluginUiPath(pluginId), JSON.stringify(layout, null, 2), 'utf8')
+  // Notify all windows that this plugin's layout changed
+  const { webContents } = require('electron')
+  for (const wc of webContents.getAllWebContents()) {
+    if (!wc.isDestroyed()) wc.send('xleth:pluginUi:changed', pluginId)
+  }
+  return true
+})
+
+ipcMain.handle('xleth:pluginUi:clearUserOverride', (_, pluginId) => {
+  if (!pluginIdSafe(pluginId)) throw new Error('invalid pluginId')
+  try { fs.unlinkSync(pluginUiPath(pluginId)); return true } catch { return false }
+})
+
 ipcMain.handle('xleth:engine:setGlobalStretchMethod',
   safeHandler((_, m) => callWorker('engine_setGlobalStretchMethod', [m])))
 ipcMain.handle('xleth:engine:getGlobalStretchMethod',
@@ -966,6 +1021,15 @@ ipcMain.handle('xleth:audio:setEffectParameter',
 
 ipcMain.handle('xleth:audio:getEffectMeter',
   safeHandler((_, trackId, nodeId) => callWorker('audio_getEffectMeter', [trackId, nodeId])));
+
+// ── Effect visualization (dynamics; binary ArrayBuffer payload) ────────────
+ipcMain.handle('xleth:audio:setEffectVisualizationEnabled',
+  safeHandler((_, trackId, nodeId, enabled) =>
+    callWorker('audio_setEffectVisualizationEnabled', [trackId, nodeId, !!enabled])));
+
+ipcMain.handle('xleth:audio:drainEffectVizFrames',
+  safeHandler((_, trackId, nodeId, maxBuckets) =>
+    callWorker('audio_drainEffectVizFrames', [trackId, nodeId, maxBuckets | 0])));
 
 // ── EQ-specific ────────────────────────────────────────────────────────────
 

@@ -234,10 +234,91 @@ async function main() {
   // Non-overridden fields preserved
   eq(patAfterSampler.rootNote, 60, 'rootNote preserved through partial update');
 
-  // SetVideoFlipMode
-  addon.timeline_setVideoFlipMode(trackAId, 'Clockwise');
+  // ── SetVideoFlipConfig IPC round-trip (Phase 6 acceptance test) ────────
+  // Sends a Clockwise-equivalent config, reads it back via the track marshalling,
+  // and verifies the full payload round-trips intact. Then exercises every modifier
+  // type so the bridge ↔ engine N-API translation stays exhaustive.
+  addon.timeline_setVideoFlipConfig(trackAId, {
+    enabled: true,
+    states: [
+      { id: 's0', orientation: 'none' },
+      { id: 's1', orientation: 'vertical' },
+      { id: 's2', orientation: 'rotate-180' },
+      { id: 's3', orientation: 'horizontal' },
+    ],
+    modifier: { type: 'every-note', config: {} },
+    startStateIndex: 0,
+  });
   const t = addon.timeline_getTracks().find(x => x.id === trackAId);
-  eq(t.videoFlipMode, 'Clockwise', 'videoFlipMode === "Clockwise"');
+  eq(t.videoFlipConfig.enabled, true,                        'videoFlipConfig.enabled === true');
+  eq(t.videoFlipConfig.states.length, 4,                     'videoFlipConfig has 4 states');
+  eq(t.videoFlipConfig.states[0].orientation, 'none',        'state[0].orientation === none');
+  eq(t.videoFlipConfig.states[1].orientation, 'vertical',    'state[1].orientation === vertical');
+  eq(t.videoFlipConfig.states[2].orientation, 'rotate-180',  'state[2].orientation === rotate-180');
+  eq(t.videoFlipConfig.states[3].orientation, 'horizontal',  'state[3].orientation === horizontal');
+  eq(t.videoFlipConfig.modifier.type, 'every-note',          'modifier.type === every-note');
+  eq(t.videoFlipConfig.startStateIndex, 0,                   'startStateIndex === 0');
+  eq(t.videoFlipMode, 'Clockwise',                           'derived legacy videoFlipMode === "Clockwise"');
+
+  // specific-pitches modifier — array payload must survive N-API translation.
+  addon.timeline_setVideoFlipConfig(trackAId, {
+    enabled: true,
+    states: [
+      { id: 'a0', orientation: 'none' },
+      { id: 'a1', orientation: 'horizontal' },
+    ],
+    modifier: { type: 'specific-pitches', config: { pitches: [60, 62, 67, 72] } },
+    startStateIndex: 1,
+  });
+  const t2 = addon.timeline_getTracks().find(x => x.id === trackAId);
+  eq(t2.videoFlipConfig.modifier.type, 'specific-pitches',           'modifier.type round-trip');
+  eq(t2.videoFlipConfig.modifier.config.pitches.length, 4,           'pitches array length 4');
+  eq(t2.videoFlipConfig.modifier.config.pitches[0], 60,              'pitches[0] === 60');
+  eq(t2.videoFlipConfig.modifier.config.pitches[3], 72,              'pitches[3] === 72');
+  eq(t2.videoFlipConfig.startStateIndex, 1,                          'startStateIndex round-trip');
+
+  // every-n-beats modifier — nested config object {n, subdivision}.
+  addon.timeline_setVideoFlipConfig(trackAId, {
+    enabled: true,
+    states: [
+      { id: 'b0', orientation: 'none' },
+      { id: 'b1', orientation: 'vertical' },
+      { id: 'b2', orientation: 'rotate-90-cw' },
+    ],
+    modifier: { type: 'every-n-beats', config: { n: 2, subdivision: 'bar' } },
+    startStateIndex: 0,
+  });
+  const t3 = addon.timeline_getTracks().find(x => x.id === trackAId);
+  eq(t3.videoFlipConfig.modifier.type, 'every-n-beats',              'every-n-beats round-trip');
+  eq(t3.videoFlipConfig.modifier.config.n, 2,                        'modifier.config.n === 2');
+  eq(t3.videoFlipConfig.modifier.config.subdivision, 'bar',          'modifier.config.subdivision === "bar"');
+  eq(t3.videoFlipConfig.states.length, 3,                            '3 states round-trip');
+  eq(t3.videoFlipConfig.states[2].orientation, 'rotate-90-cw',       'rotate-90-cw round-trip');
+
+  // Disabled + single-state config — must round-trip cleanly (acceptance #2).
+  addon.timeline_setVideoFlipConfig(trackAId, {
+    enabled: false,
+    states: [{ id: 'z', orientation: 'none' }],
+    modifier: { type: 'every-note', config: {} },
+    startStateIndex: 0,
+  });
+  const t4 = addon.timeline_getTracks().find(x => x.id === trackAId);
+  eq(t4.videoFlipConfig.enabled, false,                              'disabled config round-trip');
+  eq(t4.videoFlipConfig.states.length, 1,                            'single-state round-trip');
+  eq(t4.videoFlipMode, 'None',                                       'derived legacy mode === "None"');
+
+  // Restore the Clockwise config so the rest of the test sees a sensible state.
+  addon.timeline_setVideoFlipConfig(trackAId, {
+    enabled: true,
+    states: [
+      { id: 's0', orientation: 'none' },
+      { id: 's1', orientation: 'vertical' },
+      { id: 's2', orientation: 'rotate-180' },
+      { id: 's3', orientation: 'horizontal' },
+    ],
+    modifier: { type: 'every-note', config: {} },
+    startStateIndex: 0,
+  });
 
   // Remove pattern block
   addon.timeline_removePatternBlock(blockId);

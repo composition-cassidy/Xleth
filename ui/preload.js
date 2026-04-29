@@ -112,7 +112,7 @@ window.xleth = ({
     setPatternRegion: (patternId, regionId) => invoke('xleth:timeline:setPatternRegion', patternId, regionId),
     convertToPatternTrack: (trackId)        => invoke('xleth:timeline:convertToPatternTrack', trackId),
     convertToClipTrack: (trackId)           => invoke('xleth:timeline:convertToClipTrack', trackId),
-    setVideoFlipMode: (trackId, mode)       => invoke('xleth:timeline:setVideoFlipMode', trackId, mode),
+    setVideoFlipConfig: (trackId, config)   => invoke('xleth:timeline:setVideoFlipConfig', trackId, config),
     setVideoHoldLastFrame: (trackId, hold) => invoke('xleth:timeline:setVideoHoldLastFrame', trackId, hold),
     setTrackCornerRadius:     (trackId, v) => invoke('xleth:timeline:setTrackCornerRadius', trackId, v),
     setTrackGapScaleOverride: (trackId, v) => invoke('xleth:timeline:setTrackGapScaleOverride', trackId, v),
@@ -288,6 +288,11 @@ window.xleth = ({
     getEffectParameters: (trackId, nodeId)                    => invoke('xleth:audio:getEffectParameters', trackId, nodeId),
     setEffectParameter:  (trackId, nodeId, paramId, value)    => invoke('xleth:audio:setEffectParameter',  trackId, nodeId, paramId, value),
     getEffectMeter:      (trackId, nodeId)                    => invoke('xleth:audio:getEffectMeter',      trackId, nodeId),
+    // ── Effect visualization (dynamics; binary ArrayBuffer payload) ─
+    setEffectVisualizationEnabled: (trackId, nodeId, enabled) =>
+      invoke('xleth:audio:setEffectVisualizationEnabled', trackId, nodeId, enabled),
+    drainEffectVizFrames:          (trackId, nodeId, maxBuckets) =>
+      invoke('xleth:audio:drainEffectVizFrames', trackId, nodeId, maxBuckets),
     // ── EQ-specific ─────────────────────────────────────────────────
     eqAddBand:          (trackId, nodeId)                          => invoke('xleth:audio:eqAddBand', trackId, nodeId),
     eqRemoveBand:       (trackId, nodeId, bandIndex)               => invoke('xleth:audio:eqRemoveBand', trackId, nodeId, bandIndex),
@@ -419,6 +424,21 @@ window.xleth = ({
     saveUser: (slug, theme) => invoke('xleth:theme:saveUser', slug, theme),
     loadUser: (slug)        => invoke('xleth:theme:loadUser', slug),
     listUser: ()            => invoke('xleth:theme:listUser'),
+  },
+
+  // ── Stock plugin UI layouts ───────────────────────────────────────────────
+  // User-override layouts live in userData/plugin-ui/<pluginId>.json.
+  // Shipped defaults are bundled with the renderer and never written here.
+  pluginUi: {
+    loadUserOverride:  (pluginId)         => invoke('xleth:pluginUi:loadUserOverride', pluginId),
+    saveUserOverride:  (pluginId, layout) => invoke('xleth:pluginUi:saveUserOverride', pluginId, layout),
+    clearUserOverride: (pluginId)         => invoke('xleth:pluginUi:clearUserOverride', pluginId),
+    // Returns a cleanup function (call it to unsubscribe)
+    onLayoutChanged: (cb) => {
+      const h = (_e, pluginId) => cb(pluginId)
+      ipcRenderer.on('xleth:pluginUi:changed', h)
+      return () => ipcRenderer.removeListener('xleth:pluginUi:changed', h)
+    },
   },
 
   // ── Global engine defaults ─────────────────────────────────────────────────

@@ -14,6 +14,7 @@
 #include "export/FFmpegMuxer.h"
 #include "SyncManager.h"          // VideoEvent
 #include "render/ArpVideoExpander.h"
+#include "render/VideoFlipApplier.h"  // single resolver call site
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -162,6 +163,9 @@ std::vector<VideoEvent> OfflineRenderer::buildVideoEvents(
         ev.height          = track->videoH;
         ev.opacity         = track->videoOpacity * clip->velocity;
         ev.globalNoteIndex = noteCounterPerTrack_clip++;
+        // Flip-v2: pitch identifier consumed by the resolver. Spec §1: clip
+        // tracks use the clip's pitch-shift value (semitones from source).
+        ev.pitch = clip->pitchOffset;
 
         events.push_back(ev);
     }
@@ -294,6 +298,7 @@ std::vector<VideoEvent> OfflineRenderer::buildVideoEvents(
                     ev.height          = track->videoH;
                     ev.opacity         = track->videoOpacity * note.velocity;
                     ev.globalNoteIndex = noteCounterPerTrack_pat++;
+                    ev.pitch           = note.pitch;  // flip-v2 resolver input
 
                     events.push_back(ev);
 
@@ -303,6 +308,12 @@ std::vector<VideoEvent> OfflineRenderer::buildVideoEvents(
             }
         }
     }
+
+    // ── Flip-v2 resolution (single call site for all event-build paths) ──
+    // Per-track chord detection + pure resolver + write-back of
+    // monoOrdinal / stateIndex / orientation. No-op for tracks with
+    // VideoFlipConfig.enabled = false.
+    videoFlipApplier::applyAll(events, timeline);
 
     std::fprintf(stderr, "[Renderer] Built %d video events from timeline\n",
                  static_cast<int>(events.size()));
