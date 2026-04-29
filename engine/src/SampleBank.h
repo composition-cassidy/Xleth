@@ -32,18 +32,53 @@ public:
                              double engineSampleRate);
 
     // Thread-safe after load: data is immutable once stored.
-    // Returns nullptr if sampleId is out of range.
+    // Returns nullptr if sampleId is out of range OR the slot has been
+    // tombstoned by a prior unloadSample() call.
     const juce::AudioBuffer<float>* getSample(int sampleId) const;
 
+    // Returns the total number of slots in the bank, INCLUDING tombstoned
+    // slots from prior unloadSample calls. Code that needs a count of LIVE
+    // samples must iterate and skip nullptr returns from getSample.
     int        getNumSamples()            const;
+
+    // Returns an empty SampleInfo if sampleId is out of range OR the slot
+    // has been tombstoned.
     SampleInfo getSampleInfo(int sampleId) const;
 
     // Returns the index of the first sample (across both channels) whose
     // absolute value reaches `thresholdDb`. Returns 0 if audio breaches the
     // threshold at sample 0, and the buffer length if the sample is entirely
-    // below threshold. Returns -1 if sampleId is invalid.
+    // below threshold. Returns -1 if sampleId is invalid OR tombstoned.
     // Call from main thread only (reads immutable buffer, no locks needed).
     int64_t getLeadingSilenceSamples(int sampleId, float thresholdDb) const;
+
+    // Tombstones the slot at `id`: frees the audio buffer, leaves the slot
+    // index intact so all other IDs remain valid. After this call,
+    // getSample(id), getSampleInfo(id), and getLeadingSilenceSamples(id)
+    // return their failure values (nullptr / empty / -1) for the
+    // tombstoned id.
+    //
+    // Slots are NOT reused — tombstoned ids stay tombstoned for the process
+    // lifetime. Subsequent loadSample / loadSampleFromSource calls allocate
+    // fresh slots at the end of the vector.
+    //
+    // AUDIO-THREAD CONTRACT (load-bearing, do not violate):
+    //   The caller MUST ensure no live consumer can produce this id between
+    //   the moment unloadSample() returns and the next loadSample-style
+    //   call. In practice this means:
+    //     1. Remove the corresponding entry from MixEngine::regionToSampleMap_
+    //        BEFORE calling unloadSample, so no future findActiveClips()
+    //        pass can re-introduce the id into activeClips_.
+    //     2. The audio thread's render loop guard at MixEngine.cpp
+    //        (`if (srcBuf == nullptr) continue;`) handles the in-flight
+    //        block race: an activeClip already enqueued with this id will
+    //        get nullptr from getSample on its next read and skip.
+    //   Concurrent reads of OTHER slots remain safe.
+    //
+    // Idempotent: unload of an already-tombstoned id is a no-op. Out-of-range
+    // ids are also a no-op. Neither logs an error at runtime.
+    // Call ONLY from the main thread.
+    void unloadSample(int id);
 
 private:
     struct LoadedSample

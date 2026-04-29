@@ -6,6 +6,7 @@
 #include "render/GpuDeviceManager.h"
 #include "render/FrameCache.h"
 #include "render/FrameCollector.h"
+#include "model/TimelineTypes.h"  // kGridSubUnitsPerColumn / Row
 
 // Force assert even in Release builds (NDEBUG is defined)
 #undef NDEBUG
@@ -137,8 +138,8 @@ int main()
         CellFrameRequest chorus{};
         chorus.cellCol          = 0;
         chorus.cellRow          = 0;
-        chorus.spanX            = 4;  // 2 cols * 2 = 4 half-grid
-        chorus.spanY            = 4;  // 2 rows * 2 = 4 half-grid
+        chorus.spanX            = 2 * kGridSubUnitsPerColumn;  // 2 cols
+        chorus.spanY            = 2 * kGridSubUnitsPerRow;     // 2 rows
         chorus.sourcePath       = "blue.mp4";
         chorus.sourceFrameIndex = 0;
         chorus.opacity          = 1.0f;
@@ -149,10 +150,10 @@ int main()
 
         // Grid cell [0,0] — top-left: red
         CellFrameRequest cell0{};
-        cell0.cellCol          = 0;  // half-grid X
-        cell0.cellRow          = 0;  // half-grid Y
-        cell0.spanX            = 2;  // 1 full column
-        cell0.spanY            = 2;  // 1 full row
+        cell0.cellCol          = 0;                        // fine-grid X
+        cell0.cellRow          = 0;                        // fine-grid Y
+        cell0.spanX            = kGridSubUnitsPerColumn;   // 1 full column
+        cell0.spanY            = kGridSubUnitsPerRow;      // 1 full row
         cell0.sourcePath       = "red.mp4";
         cell0.sourceFrameIndex = 0;
         cell0.opacity          = 1.0f;
@@ -161,12 +162,12 @@ int main()
         cell0.zOrder           = 0;
         requests.push_back(cell0);
 
-        // Grid cell [1,0] — top-right: green (half-grid col=2, row=0)
+        // Grid cell [1,0] — top-right: green (col 1 in 2-col grid)
         CellFrameRequest cell1{};
-        cell1.cellCol          = 2;  // half-grid X (col 1 in 2-col grid)
+        cell1.cellCol          = kGridSubUnitsPerColumn;   // start of col 1
         cell1.cellRow          = 0;
-        cell1.spanX            = 2;
-        cell1.spanY            = 2;
+        cell1.spanX            = kGridSubUnitsPerColumn;
+        cell1.spanY            = kGridSubUnitsPerRow;
         cell1.sourcePath       = "green.mp4";
         cell1.sourceFrameIndex = 0;
         cell1.opacity          = 1.0f;
@@ -228,7 +229,7 @@ int main()
 
         CellFrameRequest chorus{};
         chorus.cellCol = 0; chorus.cellRow = 0;
-        chorus.spanX = 4; chorus.spanY = 4;
+        chorus.spanX = 2 * kGridSubUnitsPerColumn; chorus.spanY = 2 * kGridSubUnitsPerRow;
         chorus.sourcePath = "blue.mp4";
         chorus.sourceFrameIndex = 0;
         chorus.opacity = 1.0f;
@@ -237,7 +238,7 @@ int main()
 
         CellFrameRequest cell{};
         cell.cellCol = 0; cell.cellRow = 0;
-        cell.spanX = 2; cell.spanY = 2;
+        cell.spanX = kGridSubUnitsPerColumn; cell.spanY = kGridSubUnitsPerRow;
         cell.sourcePath = "red.mp4";
         cell.sourceFrameIndex = 0;
         cell.opacity = 0.5f;
@@ -286,7 +287,7 @@ int main()
 
         CellFrameRequest cell{};
         cell.cellCol = 0; cell.cellRow = 0;
-        cell.spanX = 4; cell.spanY = 4;  // full screen
+        cell.spanX = 2 * kGridSubUnitsPerColumn; cell.spanY = 2 * kGridSubUnitsPerRow;  // full screen
         cell.sourcePath = "red.mp4";
         cell.sourceFrameIndex = 0;
         cell.opacity = 1.0f;
@@ -294,7 +295,7 @@ int main()
 
         CellFrameRequest crash{};
         crash.cellCol = 0; crash.cellRow = 0;
-        crash.spanX = 4; crash.spanY = 4;
+        crash.spanX = 2 * kGridSubUnitsPerColumn; crash.spanY = 2 * kGridSubUnitsPerRow;
         crash.sourcePath = "yellow.mp4";
         crash.sourceFrameIndex = 0;
         crash.opacity = 1.0f;
@@ -354,7 +355,7 @@ int main()
 
         CellFrameRequest cell{};
         cell.cellCol = 0; cell.cellRow = 0;
-        cell.spanX = 4; cell.spanY = 4;
+        cell.spanX = 2 * kGridSubUnitsPerColumn; cell.spanY = 2 * kGridSubUnitsPerRow;
         cell.sourcePath = "nonexistent.mp4";   // Not in cache
         cell.sourceFrameIndex = 999;
         cell.opacity = 1.0f;
@@ -408,7 +409,7 @@ int main()
 
         CellFrameRequest chorus{};
         chorus.cellCol = 0; chorus.cellRow = 0;
-        chorus.spanX = 4; chorus.spanY = 4;
+        chorus.spanX = 2 * kGridSubUnitsPerColumn; chorus.spanY = 2 * kGridSubUnitsPerRow;
         chorus.sourcePath = "blue.mp4";
         chorus.sourceFrameIndex = 0;
         chorus.opacity = 1.0f;
@@ -417,7 +418,7 @@ int main()
 
         CellFrameRequest cell{};
         cell.cellCol = 0; cell.cellRow = 0;
-        cell.spanX = 4; cell.spanY = 4;
+        cell.spanX = 2 * kGridSubUnitsPerColumn; cell.spanY = 2 * kGridSubUnitsPerRow;
         cell.sourcePath = "red.mp4";
         cell.sourceFrameIndex = 0;
         cell.opacity = 1.0f;

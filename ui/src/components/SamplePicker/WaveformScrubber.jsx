@@ -3,7 +3,7 @@ import { drawEnvelope, downsamplePeaks3 } from '../../utils/waveformRenderer.js'
 import { tokenValue } from '../../theming/tokenValue.ts'
 
 const COLOR = {
-  playheadBg: 'rgba(51, 206, 214, 0.08)',
+  playheadBg: 'var(--theme-accent-bg-subtle)',
 }
 
 const HANDLE_W   = 2    // handle line width (px)

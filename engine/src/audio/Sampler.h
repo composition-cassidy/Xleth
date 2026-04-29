@@ -6,6 +6,7 @@
 #include "../model/TimelineTypes.h"
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <vector>
@@ -45,7 +46,7 @@ public:
     // ── Sample trim + declicking ─────────────────────────────────────────────
     void setSmpStart(int64_t start);          // playback start offset (source samples)
     void setSmpLength(int64_t length);        // 0 = full remaining from smpStart
-    void setDeclickSamples(int samples);      // Hann fade width at trim edges (default 64)
+    void setDeclickMs(float ms);              // Hann fade width at trim edges (ms, default 1.5)
     void setFadeIn(float ms);                 // linear fade-in duration (user-controlled)
     void setFadeOut(float ms);                // linear fade-out duration (user-controlled)
     void setCrossfadeSamples(int64_t samples);// FL-style loop crossfade width (0 = off)
@@ -78,6 +79,7 @@ public:
     // not bufEnd or any per-sample running counter — spawnAbsSample is computed
     // as (currentAbsSample_ + sampleOffset) where sampleOffset is BUFFER-RELATIVE.
     void setCurrentSample(int64_t absSample) noexcept { currentAbsSample_ = absSample; }
+    void setVisualOnly(bool v) noexcept { visualOnly_.store(v, std::memory_order_relaxed); }
 
     // ── Audio-thread triggering ──────────────────────────────────────────────
     void noteOn(int midiNote, float velocity, int sampleOffset = 0);
@@ -129,7 +131,7 @@ private:
 
     int64_t smpStart_       = 0;           // trim start (source samples)
     int64_t smpLength_      = 0;           // trim length; 0 = full from smpStart_
-    int     declickSamples_ = 64;          // Hann fade width at trim edges
+    float   declickMs_      = 1.5f;        // Hann fade width at trim edges (ms)
     float   fadeInMs_       = 0.0f;        // linear fade-in duration (ms)
     float   fadeOutMs_      = 0.0f;        // linear fade-out duration (ms)
     int64_t crossfadeSamples_ = 0;         // FL-style loop crossfade width (source samples)
@@ -141,6 +143,8 @@ private:
     int     lastNotePitch_      = -1;      // for poly+porta (start from last note)
     double  bpm_                = 140.0;
     Arpeggiator arp_;
+
+    std::atomic<bool> visualOnly_ { false };
 
     // Mono held-note stack (most recent at back, max 16)
     std::vector<int> monoHeldNotes_;

@@ -22,7 +22,7 @@
 // ──────────────────────────────────────────────────────────────────────────
 
 export type GradientCapability = 'any' | 'linear' | 'solid';
-export type TokenKind = 'color' | 'dimension' | 'duration' | 'opacity';
+export type TokenKind = 'color' | 'dimension' | 'duration' | 'opacity' | 'shadow';
 
 export type DerivationRule =
   | { type: 'base' }
@@ -176,6 +176,10 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   // bg-primary on the depth scale; not a derived formula because the
   // offset from bg-primary is not consistent across themes.
   explicit('--theme-bg-inset', '#0d0d14', 'any', 'Foundations', 'base'),
+  // Modal/overlay backdrop tints - stepped opacity scale for dark overlays
+  explicit('--theme-overlay-subtle', 'rgba(0, 0, 0, 0.25)', 'solid', 'Foundations', 'base'),
+  explicit('--theme-overlay-medium', 'rgba(0, 0, 0, 0.60)', 'solid', 'Foundations', 'base'),
+  explicit('--theme-overlay-heavy',  'rgba(0, 0, 0, 0.75)', 'solid', 'Foundations', 'base'),
 
   // ─── Foundations: Derived backgrounds (§3.2) ──────────────────────────
   derivedFormula('--theme-bg-secondary', 'any', 'Foundations', 'derived'),
@@ -213,6 +217,18 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   // shadows. In the semantic subsystem (UNIVERSAL) so any consumer may
   // reference it regardless of its own subsystem.
   explicit('--theme-drag-preview-default', '#6aa9ff', 'solid', 'Foundations', 'semantic'),
+  // Accent alpha backgrounds - stepped tints for hover/selection states
+  derivedFormula('--theme-accent-bg-subtle', 'solid', 'Foundations', 'semantic'),
+  derivedFormula('--theme-accent-bg-medium', 'solid', 'Foundations', 'semantic'),
+  // Danger alpha backgrounds - stepped tints for destructive hover/active states
+  explicit('--theme-semantic-danger-bg-subtle', 'rgba(255, 71, 87, 0.12)', 'solid', 'Foundations', 'semantic'),
+  explicit('--theme-semantic-danger-bg-medium', 'rgba(255, 71, 87, 0.15)', 'solid', 'Foundations', 'semantic'),
+  // Semantic text and border colors
+  explicit('--theme-semantic-danger-text',    '#ff8a8a', 'solid', 'Foundations', 'semantic'),
+  explicit('--theme-semantic-success-border', '#5adc86', 'solid', 'Foundations', 'semantic'),
+  explicit('--theme-semantic-warning-border', '#d8a23a', 'solid', 'Foundations', 'semantic'),
+  explicit('--theme-semantic-warning-text',      '#f2d079',              'solid', 'Foundations', 'semantic'),
+  explicit('--theme-semantic-warning-bg-subtle', 'rgba(255, 170, 51, 0.15)', 'solid', 'Foundations', 'semantic'),
 
   // ─── Foundations: Accent states (§3.2) ────────────────────────────────
   derivedFormula('--theme-accent-hover',  'solid', 'Foundations', 'semantic'),
@@ -240,7 +256,7 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   explicit('--theme-chrome-radius-lg',           '8px',  'solid', 'Window system', 'panel-chrome', 'dimension'),
   explicit('--theme-chrome-transition-fast',     '0.1s ease',  'solid', 'Window system', 'panel-chrome', 'duration'),
   explicit('--theme-chrome-transition',          '0.15s ease', 'solid', 'Window system', 'panel-chrome', 'duration'),
-  explicit('--theme-chrome-shadow', '0 12px 40px rgba(0, 0, 0, 0.6)', 'solid', 'Window system', 'panel-chrome'),
+  explicit('--theme-chrome-shadow', '0 12px 40px rgba(0, 0, 0, 0.6)', 'solid', 'Window system', 'panel-chrome', 'shadow'),
 
   // ─── Window system: Top toolbar (§3.3) ────────────────────────────────
   ref('--theme-toolbar-bg',             '--theme-bg-surface',   'any',   'Window system', 'top-toolbar'),
@@ -255,8 +271,8 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   ref('--theme-dock-divider',         '--theme-border-subtle', 'solid', 'Window system', 'dock-snap'),
   ref('--theme-dock-divider-hover',   '--theme-border-strong', 'solid', 'Window system', 'dock-snap'),
   ref('--theme-dock-divider-active',  '--theme-accent',        'solid', 'Window system', 'dock-snap'),
-  explicit('--theme-snap-ghost-fill',  'rgba(51, 206, 214, 0.18)', 'solid', 'Window system', 'dock-snap'),
-  explicit('--theme-snap-ghost-border','rgba(51, 206, 214, 0.40)', 'solid', 'Window system', 'dock-snap'),
+  derivedFormula('--theme-snap-ghost-fill',  'solid', 'Window system', 'dock-snap'),
+  derivedFormula('--theme-snap-ghost-border', 'solid', 'Window system', 'dock-snap'),
 
   // ─── Global UI: Transport bar (§3.4.1) ────────────────────────────────
   ref('--theme-transport-bar-bg',            '--theme-bg-surface',   'any',   'Global UI', 'transport-bar'),
@@ -295,7 +311,7 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   // ─── Global UI: Context menus (§3.4.3) ────────────────────────────────
   ref('--theme-contextmenu-bg',               '--theme-bg-elevated',  'any',   'Global UI', 'context-menus'),
   ref('--theme-contextmenu-border',           '--theme-border-subtle','solid', 'Global UI', 'context-menus'),
-  explicit('--theme-contextmenu-shadow', '0 4px 18px rgba(0, 0, 0, 0.45)', 'solid', 'Global UI', 'context-menus'),
+  explicit('--theme-contextmenu-shadow', '0 4px 18px rgba(0, 0, 0, 0.45)', 'solid', 'Global UI', 'context-menus', 'shadow'),
   ref('--theme-contextmenu-item-bg',          '--theme-bg-elevated',  'any',   'Global UI', 'context-menus'),
   ref('--theme-contextmenu-item-hover-bg',    '--theme-bg-hover',     'any',   'Global UI', 'context-menus'),
   ref('--theme-contextmenu-item-selected-bg', '--theme-bg-active',    'any',   'Global UI', 'context-menus'),
@@ -324,7 +340,7 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   ref('--theme-tooltip-arrow',        '--theme-bg-elevated',  'solid', 'Global UI', 'dialogs-modals'),
   ref('--theme-popover-bg',           '--theme-bg-elevated',  'any',   'Global UI', 'dialogs-modals'),
   ref('--theme-popover-border',       '--theme-border-subtle','solid', 'Global UI', 'dialogs-modals'),
-  explicit('--theme-modal-shadow', '0 12px 40px rgba(0, 0, 0, 0.6)', 'solid', 'Global UI', 'dialogs-modals'),
+  explicit('--theme-modal-shadow', '0 12px 40px rgba(0, 0, 0, 0.6)', 'solid', 'Global UI', 'dialogs-modals', 'shadow'),
 
   // ─── Global UI: Generic buttons (§3.4.5) ──────────────────────────────
   ref('--theme-button-bg',                '--theme-bg-surface',   'any',   'Global UI', 'buttons'),
@@ -406,12 +422,12 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   ref('--theme-pianoroll-note-selected', '--theme-accent-active','solid', 'Workspace panels', 'piano-roll'),
   ref('--theme-pianoroll-note-hover',    '--theme-accent-hover', 'solid', 'Workspace panels', 'piano-roll'),
   ref('--theme-pianoroll-note-resize-handle', '--theme-text', 'solid', 'Workspace panels', 'piano-roll'),
-  explicit('--theme-pianoroll-note-slide-stroke', 'rgba(51, 206, 214, 0.12)', 'solid', 'Workspace panels', 'piano-roll'),
+  derivedFormula('--theme-pianoroll-note-slide-stroke', 'solid', 'Workspace panels', 'piano-roll'),
   ref('--theme-pianoroll-velocity-bar-fill', '--theme-accent',        'linear','Workspace panels', 'piano-roll'),
   ref('--theme-pianoroll-velocity-track',    '--theme-bg-primary',    'linear','Workspace panels', 'piano-roll'),
   ref('--theme-pianoroll-playhead',          '--theme-accent',        'solid', 'Workspace panels', 'piano-roll'),
-  explicit('--theme-pianoroll-loop-region',  'rgba(51, 206, 214, 0.08)', 'any', 'Workspace panels', 'piano-roll'),
-  explicit('--theme-pianoroll-selection-rect','rgba(51, 206, 214, 0.18)','any', 'Workspace panels', 'piano-roll'),
+  derivedFormula('--theme-pianoroll-loop-region',  'any', 'Workspace panels', 'piano-roll'),
+  derivedFormula('--theme-pianoroll-selection-rect', 'any', 'Workspace panels', 'piano-roll'),
   // Automation
   ref('--theme-pianoroll-automation-bg',       '--theme-bg-primary',    'any',   'Workspace panels', 'piano-roll'),
   ref('--theme-pianoroll-automation-grid',     '--theme-border-subtle', 'solid', 'Workspace panels', 'piano-roll'),
@@ -434,17 +450,17 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   ref('--theme-sampler-sustain-line',    '--theme-accent',      'solid', 'Workspace panels', 'sampler'),
   ref('--theme-sampler-tension-indicator','--theme-text-muted', 'solid', 'Workspace panels', 'sampler'),
   // LFO
-  ref('--theme-sampler-lfo-bg',      '--theme-bg-primary',  'any',   'Workspace panels', 'sampler'),
-  ref('--theme-sampler-lfo-stroke',  '--theme-accent',      'solid', 'Workspace panels', 'sampler'),
+  ref('--theme-sampler-mod-bg',      '--theme-bg-primary',  'any',   'Workspace panels', 'sampler'),
+  ref('--theme-sampler-mod-stroke',  '--theme-accent',      'solid', 'Workspace panels', 'sampler'),
   // Per-tab LFO accent colors. Ground truth = LfoSection.jsx:5 LFO_COLORS.
   // pitch↔volume values were swapped in v1 catalog and the purple tab was
   // mis-named "filter" (component tab is "pan").
-  explicit('--theme-sampler-lfo-color-pitch',  '#E8A020', 'solid', 'Workspace panels', 'sampler'),
-  explicit('--theme-sampler-lfo-color-pan',    '#9B59B6', 'solid', 'Workspace panels', 'sampler'),
-  explicit('--theme-sampler-lfo-color-volume', '#33CED6', 'solid', 'Workspace panels', 'sampler'),
-  explicit('--theme-sampler-lfo-bg-pitch',     '#3C2E1A', 'any',   'Workspace panels', 'sampler'),
-  explicit('--theme-sampler-lfo-bg-pan',       '#2A1E3A', 'any',   'Workspace panels', 'sampler'),
-  explicit('--theme-sampler-lfo-bg-volume',    '#1E3A3C', 'any',   'Workspace panels', 'sampler'),
+  explicit('--theme-sampler-mod-color-pitch',  '#E8A020', 'solid', 'Workspace panels', 'sampler'),
+  explicit('--theme-sampler-mod-color-pan',    '#9B59B6', 'solid', 'Workspace panels', 'sampler'),
+  derivedFormula('--theme-sampler-mod-color-volume', 'solid', 'Workspace panels', 'sampler'),
+  explicit('--theme-sampler-mod-bg-pitch',     '#3C2E1A', 'any',   'Workspace panels', 'sampler'),
+  explicit('--theme-sampler-mod-bg-pan',       '#2A1E3A', 'any',   'Workspace panels', 'sampler'),
+  explicit('--theme-sampler-mod-bg-volume',    '#1E3A3C', 'any',   'Workspace panels', 'sampler'),
   // Waveform
   ref('--theme-sampler-waveform-fg',       '--theme-text-muted',   'solid', 'Workspace panels', 'sampler'),
   ref('--theme-sampler-waveform-bg',       '--theme-bg-primary',   'any',   'Workspace panels', 'sampler'),
@@ -487,7 +503,7 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   explicit('--theme-timeline-subdivision-line','rgba(255, 255, 255, 0.03)', 'solid', 'Workspace panels', 'timeline'),
   ref('--theme-timeline-playhead-line',   '--theme-accent',       'solid', 'Workspace panels', 'timeline'),
   explicit('--theme-timeline-loop-brace', 'rgba(255, 217, 61, 0.6)', 'solid', 'Workspace panels', 'timeline'),
-  explicit('--theme-timeline-selection-rect','rgba(51, 206, 214, 0.18)','any','Workspace panels', 'timeline'),
+  derivedFormula('--theme-timeline-selection-rect', 'any', 'Workspace panels', 'timeline'),
   explicit('--theme-timeline-pattern-lane-tint','rgba(106, 169, 255, 0.04)','any','Workspace panels', 'timeline'),
   ref('--theme-timeline-section-marker',  '--theme-accent',       'solid', 'Workspace panels', 'timeline'),
   // Bezier control-point handle colors — must remain visually distinguishable
@@ -501,7 +517,7 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   ref('--theme-grid-cell-occupied-bg',   '--theme-bg-surface',   'any',   'Workspace panels', 'grid-editor'),
   ref('--theme-grid-cell-border',        '--theme-border-subtle','solid', 'Workspace panels', 'grid-editor'),
   ref('--theme-grid-cell-divider',       '--theme-border-subtle','solid', 'Workspace panels', 'grid-editor'),
-  explicit('--theme-grid-chorus-overlay','rgba(51, 206, 214, 0.18)','any','Workspace panels','grid-editor'),
+  derivedFormula('--theme-grid-chorus-overlay', 'any', 'Workspace panels', 'grid-editor'),
   explicit('--theme-grid-crash-overlay', 'rgba(255, 107, 157, 0.22)','any','Workspace panels','grid-editor'),
   ref('--theme-grid-settings-bg',        '--theme-bg-surface',   'any',   'Workspace panels', 'grid-editor'),
   ref('--theme-grid-trackcard-bg',       '--theme-bg-surface',   'any',   'Workspace panels', 'grid-editor'),
@@ -545,7 +561,7 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   ref('--theme-nodeeditor-connection-audio',  '--theme-accent',       'solid', 'Workspace panels', 'node-editor'),
   explicit('--theme-nodeeditor-connection-cv',   '#FFAA33', 'solid', 'Workspace panels', 'node-editor'),
   explicit('--theme-nodeeditor-connection-event','#B197FC', 'solid', 'Workspace panels', 'node-editor'),
-  explicit('--theme-nodeeditor-selection-rect','rgba(51, 206, 214, 0.18)','any','Workspace panels','node-editor'),
+  derivedFormula('--theme-nodeeditor-selection-rect', 'any', 'Workspace panels', 'node-editor'),
   ref('--theme-nodeeditor-zoom-bg', '--theme-bg-surface', 'any',   'Workspace panels', 'node-editor'),
   ref('--theme-nodeeditor-zoom-fg', '--theme-text',       'solid', 'Workspace panels', 'node-editor'),
 
@@ -572,12 +588,12 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   ref('--theme-projectmedia-icon-file',    '--theme-text-muted',   'solid', 'Workspace panels', 'project-media'),
   ref('--theme-projectmedia-icon-video',   '--theme-accent',       'solid', 'Workspace panels', 'project-media'),
   ref('--theme-projectmedia-icon-audio',   '--theme-warning',      'solid', 'Workspace panels', 'project-media'),
-  explicit('--theme-projectmedia-dropzone','rgba(51, 206, 214, 0.14)','any','Workspace panels','project-media'),
+  derivedFormula('--theme-projectmedia-dropzone', 'any', 'Workspace panels', 'project-media'),
   ref('--theme-projectmedia-empty-bg',     '--theme-bg-primary',   'any',   'Workspace panels', 'project-media'),
   ref('--theme-projectmedia-empty-fg',     '--theme-text-muted',   'solid', 'Workspace panels', 'project-media'),
   ref('--theme-projectmedia-cta-button',   '--theme-accent',       'any',   'Workspace panels', 'project-media'),
   ref('--theme-projectmedia-add-button',   '--theme-accent',       'solid', 'Workspace panels', 'project-media'),
-  explicit('--theme-projectmedia-shadow', '0 8px 32px rgba(0, 0, 0, 0.5)', 'solid', 'Workspace panels', 'project-media'),
+  explicit('--theme-projectmedia-shadow', '0 8px 32px rgba(0, 0, 0, 0.5)', 'solid', 'Workspace panels', 'project-media', 'shadow'),
 
   // ─── Workspace: Pattern list (§3.4.24) ────────────────────────────────
   ref('--theme-patternlist-bg',          '--theme-bg-surface',   'any',   'Workspace panels', 'pattern-list'),
@@ -595,6 +611,7 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   ref('--theme-patternlist-color-5', '--theme-panel-grid',   'solid', 'Workspace panels', 'pattern-list'),
   ref('--theme-patternlist-color-6', '--theme-panel-node',   'solid', 'Workspace panels', 'pattern-list'),
   ref('--theme-patternlist-color-7', '--theme-warning',      'solid', 'Workspace panels', 'pattern-list'),
+  explicit('--theme-pattern-list-item-hover-bg', '#1d1f28', 'any', 'Workspace panels', 'pattern-list'),
 
   // ─── Stock effects: Shared primitives (§3.4.7) ────────────────────────
   ref('--theme-fx-plugin-bg',              '--theme-bg-surface',   'any',   'Stock effects', 'stock-effects.shared'),
@@ -641,7 +658,8 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   ref('--theme-fx-handle-selected', '--theme-accent',       'solid', 'Stock effects', 'stock-effects.shared'),
   ref('--theme-fx-readout-fg',      '--theme-text',         'solid', 'Stock effects', 'stock-effects.shared'),
   // Plugin window drop shadow — applied to all floating effect panels
-  explicit('--theme-fx-plugin-shadow', '0 8px 32px rgba(0, 0, 0, 0.5)', 'solid', 'Stock effects', 'stock-effects.shared'),
+  explicit('--theme-fx-plugin-shadow', '0 8px 32px rgba(0, 0, 0, 0.5)', 'solid', 'Stock effects', 'stock-effects.shared', 'shadow'),
+  explicit('--theme-fx-plugin-shadow-top', '0 -4px 24px rgba(0, 0, 0, 0.5)', 'solid', 'Stock effects', 'stock-effects.shared', 'shadow'),
   // Active-drag stroke on interactive handles — maximum-contrast white
   explicit('--theme-fx-drag-indicator', '#FFFFFF', 'solid', 'Stock effects', 'stock-effects.shared'),
 
@@ -650,10 +668,12 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   // mixer surfaces). crossSubsystem:true so any FX consumer's Gate 3
   // admits it without the subsystem-shared hop.
   explicitX('--theme-fx-surface-tint-subtle', 'rgba(255, 255, 255, 0.05)', 'any', 'Stock effects', 'stock-effects.shared'),
+  explicitX('--theme-fx-surface-tint-medium', 'rgba(255, 255, 255, 0.12)', 'any', 'Stock effects', 'stock-effects.shared'),
+  explicitX('--theme-fx-surface-tint-strong', 'rgba(255, 255, 255, 0.25)', 'any', 'Stock effects', 'stock-effects.shared'),
 
   // ─── Stock effects: Xleth EQ (§3.4.8) ─────────────────────────────────
   // 16 band colors, matching eqStore.js exactly
-  explicit('--theme-eq-band-1',  '#33CED6', 'solid', 'Stock effects', 'stock-effects.eq'),
+  derivedFormula('--theme-eq-band-1',  'solid', 'Stock effects', 'stock-effects.eq'),
   explicit('--theme-eq-band-2',  '#FF6B6B', 'solid', 'Stock effects', 'stock-effects.eq'),
   explicit('--theme-eq-band-3',  '#69DB7C', 'solid', 'Stock effects', 'stock-effects.eq'),
   explicit('--theme-eq-band-4',  '#FFA94D', 'solid', 'Stock effects', 'stock-effects.eq'),
@@ -674,7 +694,7 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   ref('--theme-eq-handle-selected', '--theme-accent',       'solid', 'Stock effects', 'stock-effects.eq'),
   ref('--theme-eq-handle-dragging', '--theme-accent-active','solid', 'Stock effects', 'stock-effects.eq'),
   ref('--theme-eq-response-curve',        '--theme-accent',       'solid', 'Stock effects', 'stock-effects.eq'),
-  explicit('--theme-eq-response-fill', 'rgba(51, 206, 214, 0.12)', 'any', 'Stock effects', 'stock-effects.eq'),
+  derivedFormula('--theme-eq-response-fill', 'any', 'Stock effects', 'stock-effects.eq'),
   explicit('--theme-eq-spectrum-pre',  'rgba(255, 255, 255, 0.10)', 'solid', 'Stock effects', 'stock-effects.eq'),
   explicit('--theme-eq-spectrum-post', 'rgba(255, 255, 255, 0.25)', 'solid', 'Stock effects', 'stock-effects.eq'),
   ref('--theme-eq-octave-grid', '--theme-border-subtle', 'solid', 'Stock effects', 'stock-effects.eq'),
@@ -682,7 +702,7 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
 
   // ─── Stock effects: Dynamics (§3.4.9) ─────────────────────────────────
   ref('--theme-dyn-transfer-curve',       '--theme-accent',        'solid', 'Stock effects', 'stock-effects.dynamics'),
-  explicit('--theme-dyn-transfer-fill', 'rgba(51, 206, 214, 0.12)', 'any', 'Stock effects', 'stock-effects.dynamics'),
+  derivedFormula('--theme-dyn-transfer-fill', 'any', 'Stock effects', 'stock-effects.dynamics'),
   ref('--theme-dyn-threshold-line',       '--theme-warning',       'solid', 'Stock effects', 'stock-effects.dynamics'),
   ref('--theme-dyn-threshold-label',      '--theme-text',          'solid', 'Stock effects', 'stock-effects.dynamics'),
   ref('--theme-dyn-ceiling-line',         '--theme-danger',        'solid', 'Stock effects', 'stock-effects.dynamics'),
@@ -692,16 +712,20 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   ref('--theme-dyn-attack-indicator',     '--theme-accent',        'solid', 'Stock effects', 'stock-effects.dynamics'),
   ref('--theme-dyn-release-indicator',    '--theme-accent',        'solid', 'Stock effects', 'stock-effects.dynamics'),
   explicit('--theme-dyn-transient-attack-fill', 'rgba(255, 160, 60, 0.30)','any','Stock effects','stock-effects.dynamics'),
-  explicit('--theme-dyn-transient-sustain-fill','rgba(51, 206, 214, 0.30)','any','Stock effects','stock-effects.dynamics'),
+  derivedFormula('--theme-dyn-transient-sustain-fill', 'any', 'Stock effects', 'stock-effects.dynamics'),
   // Smart Balance stereo field
   explicit('--theme-dyn-sb-left-fill',  'rgba(255, 107, 107, 0.25)','any','Stock effects','stock-effects.dynamics'),
   explicit('--theme-dyn-sb-right-fill', 'rgba(77, 150, 255, 0.25)', 'any','Stock effects','stock-effects.dynamics'),
   explicit('--theme-dyn-sb-center-dot', '#FFD93D',                  'solid','Stock effects','stock-effects.dynamics'),
   explicit('--theme-dyn-sb-boundary',   'rgba(255, 255, 255, 0.15)','solid','Stock effects','stock-effects.dynamics'),
+  explicit('--theme-smartbalance-band-sub',      '#FF6B6B', 'solid', 'Stock effects', 'stock-effects.dynamics'),
+  explicit('--theme-smartbalance-band-lowmid',   '#FFD93D', 'solid', 'Stock effects', 'stock-effects.dynamics'),
+  explicit('--theme-smartbalance-band-uppermid', '#6BCB77', 'solid', 'Stock effects', 'stock-effects.dynamics'),
+  explicit('--theme-smartbalance-band-air',      '#4D96FF', 'solid', 'Stock effects', 'stock-effects.dynamics'),
 
   // ─── Stock effects: Filter (§3.4.10) — plannedDeferred ────────────────
   ref('--theme-filter-response-curve',     '--theme-accent',        'solid', 'Stock effects', 'stock-effects.filter'),
-  explicit('--theme-filter-response-fill', 'rgba(51, 206, 214, 0.12)','any', 'Stock effects', 'stock-effects.filter'),
+  derivedFormula('--theme-filter-response-fill', 'any', 'Stock effects', 'stock-effects.filter'),
   ref('--theme-filter-cutoff-indicator',   '--theme-warning',       'solid', 'Stock effects', 'stock-effects.filter'),
   ref('--theme-filter-resonance-marker',   '--theme-danger',        'solid', 'Stock effects', 'stock-effects.filter'),
   ref('--theme-filter-type-label',         '--theme-text-muted',    'solid', 'Stock effects', 'stock-effects.filter'),
@@ -728,7 +752,7 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
 
   // ─── Stock effects: Distortion (§3.4.13) ──────────────────────────────
   ref('--theme-dist-waveshape-curve',    '--theme-accent',        'solid', 'Stock effects', 'stock-effects.distortion'),
-  explicit('--theme-dist-waveshape-fill','rgba(51, 206, 214, 0.12)','any','Stock effects','stock-effects.distortion'),
+  derivedFormula('--theme-dist-waveshape-fill', 'any', 'Stock effects', 'stock-effects.distortion'),
   explicit('--theme-dist-input-overlay', 'rgba(255, 255, 255, 0.25)','solid','Stock effects','stock-effects.distortion'),
   ref('--theme-dist-drive-indicator',     '--theme-warning',      'solid', 'Stock effects', 'stock-effects.distortion'),
   ref('--theme-dist-asymmetry-indicator', '--theme-danger',       'solid', 'Stock effects', 'stock-effects.distortion'),
@@ -748,7 +772,7 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   ref('--theme-syllable-play-button',    '--theme-accent',        'solid', 'Specialized editors', 'syllable-splitter'),
   ref('--theme-syllable-clear-button',   '--theme-danger',        'solid', 'Specialized editors', 'syllable-splitter'),
   ref('--theme-syllable-save-button',    '--theme-accent',        'solid', 'Specialized editors', 'syllable-splitter'),
-  explicit('--theme-syllable-accent-light', '#7ce9ef', 'solid', 'Specialized editors', 'syllable-splitter'),
+  derivedFormula('--theme-syllable-accent-light', 'solid', 'Specialized editors', 'syllable-splitter'),
   // dimmed canvas waveform color for inactive regions
   explicit('--theme-syllable-splitter-wave-dim',  '#3a3a4a', 'solid', 'Specialized editors', 'syllable-splitter'),
   // canvas-painted label text; intentionally dimmer than --theme-text because canvas text lacks subpixel anti-aliasing and reads brighter at the same value
@@ -756,7 +780,7 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   // canvas background constant — darker than --theme-bg-primary (SyllableSplitter.jsx:10).
   explicit('--theme-syllable-splitter-bg', '#1b1b24', 'any', 'Specialized editors', 'syllable-splitter'),
   // alternating section tint for the syllable timeline (SyllableSplitter.jsx:15).
-  explicit('--theme-syllable-section-alt', 'rgba(51, 206, 214, 0.06)', 'any', 'Specialized editors', 'syllable-splitter'),
+  derivedFormula('--theme-syllable-section-alt', 'any', 'Specialized editors', 'syllable-splitter'),
 
   // ─── Specialized editors: Lip Sync Picker (§3.4.21) ───────────────────
   ref('--theme-lipsync-video-bg',    '--theme-bg-primary',   'any',   'Specialized editors', 'lip-sync-picker'),
@@ -775,7 +799,7 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   ref('--theme-lipsync-marked-item-bg','--theme-bg-surface', 'any',   'Specialized editors', 'lip-sync-picker'),
   ref('--theme-lipsync-marked-item-hover','--theme-bg-hover','any',   'Specialized editors', 'lip-sync-picker'),
   ref('--theme-lipsync-count-chip-bg','--theme-bg-active',   'any',   'Specialized editors', 'lip-sync-picker'),
-  explicit('--theme-lipsync-selection-fill',    'rgba(51, 206, 214, 0.15)', 'solid', 'Specialized editors', 'lip-sync-picker'),
+  derivedFormula('--theme-lipsync-selection-fill', 'solid', 'Specialized editors', 'lip-sync-picker'),
   ref('--theme-lipsync-handle',                  '--theme-accent',           'solid', 'Specialized editors', 'lip-sync-picker'),
   // NOTE: --theme-lipsync-playback-indicator (0.35) and --theme-lipsync-scroll-thumb
   // (0.55) were renamed to --theme-waveform-envelope-fill and --theme-waveform-rms-body
@@ -789,11 +813,11 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   // matches for values found in sampler/syllable-splitter/lip-sync-picker
   // without requiring subsystem equality; such acceptance is flagged as
   // gatesPassed:[...,'subsystem:crossSubsystem'] in the v2 audit trail.
-  explicitX('--theme-waveform-envelope-fill', 'rgba(51, 206, 214, 0.35)', 'any', 'Specialized editors', 'waveform-shared'),
-  explicitX('--theme-waveform-rms-body',      'rgba(51, 206, 214, 0.55)', 'any', 'Specialized editors', 'waveform-shared'),
+  derivedFormula('--theme-waveform-envelope-fill', 'any', 'Specialized editors', 'waveform-shared'),
+  derivedFormula('--theme-waveform-rms-body',  'any', 'Specialized editors', 'waveform-shared'),
 
   // ─── Global UI: Toast notifications (§3.4.25) ─────────────────────────
-  explicit('--theme-toast-shadow', '0 6px 20px rgba(0, 0, 0, 0.5)', 'solid', 'Global UI', 'toast'),
+  explicit('--theme-toast-shadow', '0 6px 20px rgba(0, 0, 0, 0.5)', 'solid', 'Global UI', 'toast', 'shadow'),
 
   // ─── Labels (§3.4.x — promoted top-level per Clarification #3) ────────
   // Cross-cutting sample-category identity colors — used across

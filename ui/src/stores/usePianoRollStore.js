@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { timelineEvents } from '../timelineEvents.js'
+import { usePanelRegistry } from '../windowing/registry/PanelRegistry'
 
 let didInit = false
 
@@ -31,6 +32,17 @@ const usePianoRollStore = create((set, get) => ({
     timelineEvents.addEventListener('piano-roll-dock', () => {
       set({ detached: false, activeCenterTab: 'piano-roll' })
     })
+
+    // Scenario B: panel hidden via F7/togglePanel (keepAliveWhenHidden — panel
+    // stays mounted so handleClose never fires). Reset activeCenterTab so the
+    // TimelineView gate at TimelineView.jsx:1791 doesn't stay blocked.
+    // TODO: remove when central keyboard router replaces activeCenterTab —
+    // trigger: when unified keyboard-focus router lands and TimelineView.jsx:1791
+    // no longer gates on activeCenterTab.
+    usePanelRegistry.subscribe(
+      (state) => state.panels.pianoRoll.hidden,
+      (hidden) => { if (hidden) set({ activeCenterTab: 'timeline' }) }
+    )
   },
 
   setPatternId: (id) => set({ patternId: id }),

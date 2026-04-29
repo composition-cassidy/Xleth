@@ -257,7 +257,7 @@ private:
     bool createGeometry();
     bool createPipelineState();
 
-    /** Convert half-grid cell position to UV rect {x, y, w, h}. */
+    /** Convert fine-grid cell position to UV rect {x, y, w, h}. */
     static void gridCellToUV(int cellCol, int cellRow, int spanX, int spanY,
                               int gridCols, int gridRows,
                               float& outX, float& outY, float& outW, float& outH);

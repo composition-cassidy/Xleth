@@ -1,13 +1,16 @@
 import {
   clearLayoutPersistenceWriter,
+  createInitialDockRegionSizes,
+  MIN_DOCK_REGION_SIZES,
   setLayoutPersistenceWriter,
   usePanelRegistry,
+  type DockRegionSizes,
   type LayoutPersistenceWriter,
   type PanelStateMap,
 } from '../registry/PanelRegistry';
 import { PANEL_IDS } from '../registry/panelCatalog';
 
-export const LAYOUT_SCHEMA_VERSION = 1;
+export const LAYOUT_SCHEMA_VERSION = 2;
 
 interface PersistenceAdapter {
   read(): Promise<string | null>;
@@ -17,6 +20,7 @@ interface PersistenceAdapter {
 interface PersistedLayoutEnvelope {
   version: number;
   panels: PanelStateMap;
+  dockRegionSizes: DockRegionSizes;
 }
 
 export const noOpAdapter = {
@@ -59,10 +63,11 @@ export function setPersistenceAdapter(adapter: PersistenceAdapter): void {
   currentAdapter = adapter;
 }
 
-function serializeLayoutEnvelope(panels: PanelStateMap): string {
+function serializeLayoutEnvelope(panels: PanelStateMap, dockRegionSizes: DockRegionSizes): string {
   const payload: PersistedLayoutEnvelope = {
     version: LAYOUT_SCHEMA_VERSION,
     panels,
+    dockRegionSizes,
   };
   return JSON.stringify(payload);
 }
@@ -76,9 +81,21 @@ function isValidPanelStateMap(value: unknown): value is PanelStateMap {
   ));
 }
 
+const REGION_KEYS: ReadonlyArray<keyof DockRegionSizes> = ['left', 'right', 'top', 'bottom'];
+
+function isValidDockRegionSizes(value: unknown): value is DockRegionSizes {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  return REGION_KEYS.every((region) => {
+    const size = record[region];
+    if (typeof size !== 'number' || !Number.isFinite(size)) return false;
+    return size >= MIN_DOCK_REGION_SIZES[region];
+  });
+}
+
 export function init(): void {
-  const writer: LayoutPersistenceWriter = (panels) => {
-    void currentAdapter.write(serializeLayoutEnvelope(panels));
+  const writer: LayoutPersistenceWriter = (panels, dockRegionSizes) => {
+    void currentAdapter.write(serializeLayoutEnvelope(panels, dockRegionSizes));
   };
 
   setLayoutPersistenceWriter(writer);
@@ -94,13 +111,31 @@ export async function loadPersistedState(): Promise<boolean> {
   if (raw === null) return false;
 
   try {
-    const parsed = JSON.parse(raw) as PersistedLayoutEnvelope;
-    if (parsed?.version !== LAYOUT_SCHEMA_VERSION) return false;
+    const parsed = JSON.parse(raw) as Partial<PersistedLayoutEnvelope>;
     if (!isValidPanelStateMap(parsed?.panels)) return false;
-    usePanelRegistry.setState({ panels: parsed.panels });
-    return true;
+
+    if (parsed.version === LAYOUT_SCHEMA_VERSION) {
+      if (!isValidDockRegionSizes(parsed.dockRegionSizes)) return false;
+      usePanelRegistry.setState({
+        panels: parsed.panels,
+        dockRegionSizes: parsed.dockRegionSizes,
+      });
+      return true;
+    }
+
+    if (parsed.version === 1) {
+      // Soft v1 -> v2 migration: keep panels, fill default dockRegionSizes.
+      usePanelRegistry.setState({
+        panels: parsed.panels,
+        dockRegionSizes: createInitialDockRegionSizes(),
+      });
+      return true;
+    }
+
+    return false;
   } catch {
     // Corrupt persisted layout data should leave the live registry untouched.
     return false;
   }
 }
+

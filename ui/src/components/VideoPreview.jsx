@@ -65,7 +65,7 @@ function hexToGlColor(hex) {
 export default function VideoPreview() {
   const gridEditMode = useGridEditStore((s) => s.gridEditMode)
   const setGridEditMode = useGridEditStore((s) => s.setGridEditMode)
-  const { useOnVisibilityChange } = usePanelVisibility()
+  const { isVisible, useOnVisibilityChange } = usePanelVisibility()
   const runningRef = useRef(true)
   const tickRef = useRef(null)
   const canvasRef = useRef(null)
@@ -79,6 +79,7 @@ export default function VideoPreview() {
   // ── Preview performance controls ─────────────────────────────────────────
   const [resolutionScale, setResolutionScale] = useState(1.0)
   const [effectsBypass, setEffectsBypass] = useState(false)
+  const [initReady, setInitReady] = useState(false)
 
   // Restore persisted settings on mount
   useEffect(() => {
@@ -100,6 +101,12 @@ export default function VideoPreview() {
     }
     restorePreviewSettings()
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (isVisible && !initReady) {
+      setInitReady(true)
+    }
+  }, [isVisible])
 
   const handleResolutionChange = useCallback(async (e) => {
     const scale = parseFloat(e.target.value)
@@ -128,6 +135,8 @@ export default function VideoPreview() {
   }, [])
 
   useEffect(() => {
+    if (!initReady) return
+
     const canvas = canvasRef.current
     let rafId = null
     let frameCount = 0
@@ -297,7 +306,7 @@ export default function VideoPreview() {
       if (gl && texture) gl.deleteTexture(texture)
       if (gl && program) gl.deleteProgram(program)
     }
-  }, [])
+  }, [initReady])
 
   useOnVisibilityChange((isVisible) => {
     runningRef.current = isVisible

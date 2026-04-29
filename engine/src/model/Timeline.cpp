@@ -126,6 +126,14 @@ std::vector<const SampleRegion*> Timeline::getAllRegions() const {
     return out;
 }
 
+std::vector<SampleRegion*> Timeline::getAllRegionsMutable() {
+    std::vector<SampleRegion*> out;
+    out.reserve(m_regions.size());
+    for (auto& [id, r] : m_regions)
+        out.push_back(&r);
+    return out;
+}
+
 bool Timeline::removeRegion(int id) {
     auto it = m_regions.find(id);
     if (it == m_regions.end()) {
@@ -575,6 +583,31 @@ int Timeline::addNoteToPattern(int patternId, PatternNote note) {
     return note.id;
 }
 
+bool Timeline::addNotesToPatternBulk(int patternId, std::vector<PatternNote>& notes) {
+    auto it = m_patterns.find(patternId);
+    if (it == m_patterns.end()) {
+        std::cout << "[Timeline] ERROR addNotesToPatternBulk: patternId="
+                  << patternId << " not found\n";
+        return false;
+    }
+    if (notes.empty()) {
+        return true;
+    }
+
+    Pattern& pattern = it->second;
+    pattern.notes.reserve(pattern.notes.size() + notes.size());
+    for (auto& note : notes) {
+        note.id = pattern.nextNoteId++;
+        pattern.notes.push_back(note);
+    }
+
+    std::cout << "[Timeline] Added " << notes.size()
+              << " notes to pattern=" << patternId
+              << " (bulk)\n";
+    recalcPatternLength(patternId);
+    return true;
+}
+
 bool Timeline::removeNoteFromPattern(int patternId, int noteId) {
     auto it = m_patterns.find(patternId);
     if (it == m_patterns.end()) {
@@ -720,6 +753,22 @@ bool Timeline::setTrackGapScaleOverride(int trackId, float gapScale) {
     return true;
 }
 
+bool Timeline::setTrackSubdivisionFactor(int trackId, int factor) {
+    auto it = m_tracks.find(trackId);
+    if (it == m_tracks.end()) {
+        std::cout << "[Timeline] ERROR setTrackSubdivisionFactor: trackId=" << trackId << " not found\n";
+        return false;
+    }
+    if (factor != 1 && factor != 2 && factor != 4 && factor != 8) {
+        std::cout << "[Timeline] ERROR setTrackSubdivisionFactor: invalid factor=" << factor
+                  << " (must be 1, 2, 4, or 8)\n";
+        return false;
+    }
+    it->second.subdivisionFactor = factor;
+    std::cout << "[Timeline] Set track id=" << trackId << " subdivisionFactor=" << factor << "\n";
+    return true;
+}
+
 bool Timeline::setTrackBounceSettings(int trackId, const BounceSettings& settings) {
     auto it = m_tracks.find(trackId);
     if (it == m_tracks.end()) {
@@ -858,6 +907,25 @@ bool Timeline::reorderVisualEffect(int trackId, int fromIndex, int toIndex)
     return true;
 }
 
+bool Timeline::setTrackVisualEffectChainOrder(int trackId, const std::vector<int>& newOrder)
+{
+    auto it = m_tracks.find(trackId);
+    if (it == m_tracks.end()) return false;
+    auto& chain = it->second.visualEffectChain;
+    int sz = static_cast<int>(chain.size());
+    if (static_cast<int>(newOrder.size()) != sz) return false;
+    std::vector<bool> seen(sz, false);
+    for (int idx : newOrder) {
+        if (idx < 0 || idx >= sz || seen[idx]) return false;
+        seen[idx] = true;
+    }
+    std::vector<VisualEffect> reordered;
+    reordered.reserve(sz);
+    for (int idx : newOrder) reordered.push_back(chain[idx]);
+    chain = std::move(reordered);
+    return true;
+}
+
 bool Timeline::setVisualEffectParam(int trackId, int effectIndex, int paramIndex, float value)
 {
     auto it = m_tracks.find(trackId);
@@ -948,6 +1016,30 @@ void Timeline::assignTrackToGrid(int trackId, int gridX, int gridY, int spanX, i
     std::cout << "[Timeline] Grid assign track " << trackId
               << " @ (" << gridX << "," << gridY << ") span "
               << spanX << "x" << spanY << "\n";
+}
+
+void Timeline::assignTrackToGridWithZOrder(int trackId, int gridX, int gridY,
+                                            int spanX, int spanY, int zOrder) {
+    // Same move semantics as assignTrackToGrid — drop any prior slot for the
+    // same track, then insert the new one. The only difference is that
+    // zOrder is supplied by the caller instead of hardcoded to 0.
+    m_gridLayout.slots.erase(
+        std::remove_if(m_gridLayout.slots.begin(), m_gridLayout.slots.end(),
+                       [trackId](const GridSlot& s) { return s.trackId == trackId; }),
+        m_gridLayout.slots.end());
+
+    GridSlot s;
+    s.trackId = trackId;
+    s.gridX   = gridX;
+    s.gridY   = gridY;
+    s.spanX   = spanX;
+    s.spanY   = spanY;
+    s.opacity = 1.0f;
+    s.zOrder  = zOrder;
+    m_gridLayout.slots.push_back(s);
+    std::cout << "[Timeline] Grid assign track " << trackId
+              << " @ (" << gridX << "," << gridY << ") span "
+              << spanX << "x" << spanY << " zOrder " << zOrder << "\n";
 }
 
 void Timeline::removeTrackFromGrid(int trackId) {
@@ -1071,6 +1163,7 @@ nlohmann::json Timeline::toJSON() const {
     j["timeSigNum"]    = m_timeSigNum;
     j["timeSigDen"]    = m_timeSigDen;
     j["declickMs"]     = m_declickMs;
+    j["tempoLocked"]   = m_tempoLocked;
     j["nextId"]        = m_nextId;
 
     j["sources"] = nlohmann::json::array();
@@ -1113,6 +1206,10 @@ nlohmann::json Timeline::toJSON() const {
     nlohmann::json gl;
     gl["columns"]       = m_gridLayout.columns;
     gl["rows"]          = m_gridLayout.rows;
+    // Coordinate version: v2 stores gridX/gridY/spanX/spanY in fine-grid units
+    // (kGridSubUnitsPerColumn per column). Pre-v2 projects (no field, or
+    // version<2) are migrated on load — see fromJSON.
+    gl["gridLayoutVersion"] = kGridLayoutVersionFineUnits;
     gl["chorusTrackId"] = m_gridLayout.chorusTrackId;
     gl["crashEnabled"]  = m_gridLayout.crashEnabled;
     gl["crashTrackId"]  = m_gridLayout.crashTrackId;
@@ -1153,6 +1250,10 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
             j.at("declickMs").get_to(m_declickMs);
         else
             m_declickMs = 0.0; // old project: default disabled (backward-compat)
+        if (j.contains("tempoLocked"))
+            j.at("tempoLocked").get_to(m_tempoLocked);
+        else
+            m_tempoLocked = true; // old project: default on (preserves prior behavior)
 
         m_sources.clear();
         for (const auto& s : j.at("sources")) {
@@ -1244,6 +1345,22 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
             if (gl.contains("crashTrackId"))  gl.at("crashTrackId").get_to(m_gridLayout.crashTrackId);
             if (gl.contains("crashOpacity"))  gl.at("crashOpacity").get_to(m_gridLayout.crashOpacity);
             if (gl.contains("previewFps"))    gl.at("previewFps").get_to(m_gridLayout.previewFps);
+
+            // Coordinate space migration: pre-v2 projects stored slot
+            // coordinates in half-grid units (2 per column). v2+ uses
+            // fine-grid units (kGridSubUnitsPerColumn per column). Scale
+            // legacy values up by kGridLegacyToFineScale so the same logical
+            // placements survive intact.
+            const int gridLayoutVersion = gl.value("gridLayoutVersion", 1);
+            const int coordScale = (gridLayoutVersion < kGridLayoutVersionFineUnits)
+                                 ? kGridLegacyToFineScale : 1;
+            if (coordScale != 1) {
+                std::cout << "[Timeline] Migrating gridLayout slots from v"
+                          << gridLayoutVersion << " (half-grid) to v"
+                          << kGridLayoutVersionFineUnits
+                          << " (fine-grid, x" << coordScale << ")\n";
+            }
+
             if (gl.contains("slots")) {
                 for (const auto& sj : gl.at("slots")) {
                     GridSlot s;
@@ -1254,6 +1371,10 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
                     if (sj.contains("spanY"))   sj.at("spanY").get_to(s.spanY);
                     if (sj.contains("opacity")) sj.at("opacity").get_to(s.opacity);
                     if (sj.contains("zOrder"))  sj.at("zOrder").get_to(s.zOrder);
+                    s.gridX *= coordScale;
+                    s.gridY *= coordScale;
+                    s.spanX *= coordScale;
+                    s.spanY *= coordScale;
                     m_gridLayout.slots.push_back(s);
                 }
             }

@@ -1,55 +1,46 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { X } from 'lucide-react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { X, Magnet } from 'lucide-react'
 import { timelineEvents } from '../timelineEvents.js'
+import ContextMenu from './ContextMenu.jsx'
 
 const DEFAULT_LAYOUT = {
   columns: 3, rows: 3, slots: [],
   chorusTrackId: -1, crashEnabled: false, crashTrackId: -1, crashOpacity: 0.7,
-  previewFps: 30,
+  previewFps: 30, gapScale: 0,
 }
 
-// Build cells array for main-cell granularity.
-// A main cell at (x,y) corresponds to half-grid slot (x*2, y*2) with span (2,2).
-function buildCells(layout, tracks) {
-  const cells = []
-  const byMainCell = new Map()
+// Mirror of engine constants in TimelineTypes.h. Each grid column is divided
+// into SUB_UNITS_PER_COLUMN equal pieces; gridX/spanX are stored on slots in
+// these fine units. Per-track subdivisionFactor must divide SUB_UNITS_PER_COLUMN.
+const SUB_UNITS_PER_COLUMN = 8
+const SUB_UNITS_PER_ROW    = 8
+const VALID_SUBDIVISION_FACTORS = [1, 2, 4, 8]
 
-  // Index main cells (span 2x2) by their half-grid (x,y) origin
-  for (const s of layout.slots) {
-    if (s.spanX === 2 && s.spanY === 2 && s.gridX % 2 === 0 && s.gridY % 2 === 0) {
-      byMainCell.set(`${s.gridX},${s.gridY}`, s)
-    }
-  }
+// A pointer move below this px threshold counts as a click on a slot
+// (which brings it to front). Anything above starts a drag-move.
+const CLICK_VS_DRAG_THRESHOLD_PX = 4
 
-  for (let y = 0; y < layout.rows; y++) {
-    for (let x = 0; x < layout.columns; x++) {
-      const hgx = x * 2, hgy = y * 2
-      const slot = byMainCell.get(`${hgx},${hgy}`)
-      if (slot) {
-        const track = tracks.find(t => t.id === slot.trackId)
-        cells.push({
-          x, y, hgx, hgy,
-          assigned: true,
-          trackId: slot.trackId,
-          trackName: track?.name ?? `Track ${slot.trackId}`,
-          slot,
-        })
-      } else {
-        cells.push({ x, y, hgx, hgy, assigned: false })
-      }
-    }
-  }
-
-  // Half-cells: spanX=1 OR spanY=1
-  const halves = layout.slots.filter(s => s.spanX === 1 || s.spanY === 1)
-
-  return { cells, halves }
+// Snap a fine-grid value to the nearest sub-step. When snap is on, step is
+// (SUB_UNITS / factor) of the dragged track. When off, step is 1 fine-unit.
+function snapFine(rawFine, factor, snapOn, axisFineCap) {
+  const step = snapOn ? (axisFineCap / factor) : 1
+  return Math.round(rawFine / step) * step
 }
 
 export default function GridEditorOverlay() {
-  const [layout, setLayout] = useState(DEFAULT_LAYOUT)
-  const [tracks, setTracks] = useState([])
-  const [pickerCell, setPickerCell] = useState(null) // {x, y, hgx, hgy}
+  const [layout, setLayout]     = useState(DEFAULT_LAYOUT)
+  const [tracks, setTracks]     = useState([])
+  const [contextMenu, setContextMenu] = useState(null) // { x, y, slot }
+  // resizeState — in-flight slot resize (drag is owned here, persisted on pointerup).
+  const [resizeState, setResizeState] = useState(null)
+  // moveState — in-flight slot move from a pointerdown on the slot body.
+  // Doubles as a "click vs drag" detector via the moved flag.
+  const [moveState, setMoveState] = useState(null)
+  // dragSourceTrackId — set during HTML5 drag of a track palette item.
+  const [dragSourceTrackId, setDragSourceTrackId] = useState(null)
+  // dragGhost — preview rect under the cursor while dragging from palette.
+  const [dragGhost, setDragGhost] = useState(null) // { gridX, gridY, spanX, spanY }
+  const [snapEnabled, setSnapEnabled] = useState(true)
   const rootRef = useRef(null)
 
   // ── Fetch layout + tracks ────────────────────────────────────────────────
@@ -75,7 +66,7 @@ export default function GridEditorOverlay() {
     fetchLayout()
     fetchTracks()
     const onGrid = () => fetchLayout()
-    const onTracks = () => fetchTracks()
+    const onTracks = () => { fetchTracks(); fetchLayout() }
     timelineEvents.addEventListener('timeline-grid-changed', onGrid)
     timelineEvents.addEventListener('timeline-tracks-changed', onTracks)
     return () => {
@@ -84,95 +75,498 @@ export default function GridEditorOverlay() {
     }
   }, [fetchLayout, fetchTracks])
 
-  // Close picker on outside click
-  useEffect(() => {
-    if (!pickerCell) return
-    const onClick = (e) => {
-      if (rootRef.current && !e.target.closest('.grid-editor-picker')) {
-        setPickerCell(null)
-      }
-    }
-    document.addEventListener('mousedown', onClick)
-    return () => document.removeEventListener('mousedown', onClick)
-  }, [pickerCell])
-
   const notify = () => timelineEvents.dispatchEvent(new Event('timeline-grid-changed'))
 
-  const handleAssign = useCallback(async (trackId, hgx, hgy) => {
-    await window.xleth?.timeline?.assignTrackToGrid(trackId, hgx, hgy, 2, 2)
-    notify()
-    setPickerCell(null)
+  // Lookup helpers
+  const tracksById = useMemo(() => {
+    const m = new Map()
+    for (const t of tracks) m.set(t.id, t)
+    return m
+  }, [tracks])
+
+  const slotsByTrackId = useMemo(() => {
+    const m = new Map()
+    for (const s of layout.slots) m.set(s.trackId, s)
+    return m
+  }, [layout.slots])
+
+  const totalFineX = layout.columns * SUB_UNITS_PER_COLUMN
+  const totalFineY = layout.rows    * SUB_UNITS_PER_ROW
+
+  const trackFactor = useCallback((trackId) => {
+    const t = tracksById.get(trackId)
+    return (t && VALID_SUBDIVISION_FACTORS.includes(t.subdivisionFactor)) ? t.subdivisionFactor : 1
+  }, [tracksById])
+
+  // ── zOrder helpers ───────────────────────────────────────────────────────
+  // All zOrder mutations route through setGridLayout because assignTrackToGrid
+  // unconditionally resets zOrder to 0 (Timeline::assignTrackToGrid).
+  const writeLayoutSlots = useCallback(async (mutator) => {
+    const newSlots = mutator(layout.slots)
+    if (!newSlots) return
+    try {
+      await window.xleth?.timeline?.setGridLayout({ ...layout, slots: newSlots })
+      notify()
+    } catch (e) {
+      console.error('[GridEditorOverlay] setGridLayout failed:', e)
+    }
+  }, [layout])
+
+  const computeMaxZ = useCallback((slots) => {
+    let m = -1
+    for (const s of slots) if (s.zOrder > m) m = s.zOrder
+    return m
   }, [])
 
+  const computeMinZ = useCallback((slots) => {
+    let m = Infinity
+    for (const s of slots) if (s.zOrder < m) m = s.zOrder
+    return m === Infinity ? 0 : m
+  }, [])
+
+  const bringToFront = useCallback(async (trackId) => {
+    await writeLayoutSlots(slots => {
+      const m = computeMaxZ(slots)
+      return slots.map(s => s.trackId === trackId ? { ...s, zOrder: m + 1 } : s)
+    })
+  }, [writeLayoutSlots, computeMaxZ])
+
+  const sendToBack = useCallback(async (trackId) => {
+    await writeLayoutSlots(slots => {
+      const m = computeMinZ(slots)
+      return slots.map(s => s.trackId === trackId ? { ...s, zOrder: m - 1 } : s)
+    })
+  }, [writeLayoutSlots, computeMinZ])
+
+  // Move + bump zOrder of an existing slot. Single setGridLayout call so
+  // undo restores the previous geometry AND zOrder atomically.
+  const moveSlotAndBumpZ = useCallback(async (trackId, gridX, gridY, spanX, spanY) => {
+    await writeLayoutSlots(slots => {
+      const m = computeMaxZ(slots)
+      return slots.map(s => s.trackId === trackId
+        ? { ...s, gridX, gridY, spanX, spanY, zOrder: m + 1 }
+        : s)
+    })
+  }, [writeLayoutSlots, computeMaxZ])
+
+  // ── Mutations: add/remove/subdivision ────────────────────────────────────
   const handleRemove = useCallback(async (trackId) => {
     await window.xleth?.timeline?.removeTrackFromGrid(trackId)
     notify()
   }, [])
 
-  const { cells } = buildCells(layout, tracks)
+  const handleSetSubdivision = useCallback(async (trackId, factor) => {
+    try {
+      await window.xleth?.timeline?.setTrackSubdivisionFactor(trackId, factor)
+      timelineEvents.dispatchEvent(new Event('timeline-tracks-changed'))
+    } catch (e) {
+      console.error('[GridEditorOverlay] setTrackSubdivisionFactor failed:', e)
+    }
+  }, [])
 
-  // Track-picker shows all tracks (allow reassignment)
-  const pickerTracks = tracks
+  const handleSlotContextMenu = useCallback((e, slot) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setContextMenu({ x: e.clientX, y: e.clientY, slot })
+  }, [])
 
-  const chorusTrack = tracks.find(t => t.id === layout.chorusTrackId)
-  const crashTrack = tracks.find(t => t.id === layout.crashTrackId)
+  // ── Drag-from-palette: place a new track on the canvas ───────────────────
+  const handlePaletteDragStart = useCallback((e, trackId) => {
+    e.dataTransfer.effectAllowed = 'copy'
+    // Carry trackId through dataTransfer in addition to component state, so
+    // we can validate the drop is actually one of ours.
+    e.dataTransfer.setData('application/x-xleth-track', String(trackId))
+    setDragSourceTrackId(trackId)
+  }, [])
+
+  const handlePaletteDragEnd = useCallback(() => {
+    setDragSourceTrackId(null)
+    setDragGhost(null)
+  }, [])
+
+  const fineXYFromEvent = useCallback((clientX, clientY) => {
+    const rect = rootRef.current?.getBoundingClientRect()
+    if (!rect || rect.width === 0 || rect.height === 0) return null
+    const fineX = ((clientX - rect.left) / rect.width)  * totalFineX
+    const fineY = ((clientY - rect.top)  / rect.height) * totalFineY
+    return { fineX, fineY }
+  }, [totalFineX, totalFineY])
+
+  const handleCanvasDragOver = useCallback((e) => {
+    if (dragSourceTrackId == null) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+    const factor = trackFactor(dragSourceTrackId)
+    const stepFineX = SUB_UNITS_PER_COLUMN / factor
+    const stepFineY = SUB_UNITS_PER_ROW    / factor
+    const xy = fineXYFromEvent(e.clientX, e.clientY)
+    if (!xy) return
+    // Snap so the dropped slot's TOP-LEFT lands on a sub-step of the
+    // dragged track's factor. This matches how move snapping works.
+    let nx = snapFine(xy.fineX, factor, snapEnabled, SUB_UNITS_PER_COLUMN)
+    let ny = snapFine(xy.fineY, factor, snapEnabled, SUB_UNITS_PER_ROW)
+    nx = Math.max(0, Math.min(totalFineX - stepFineX, nx))
+    ny = Math.max(0, Math.min(totalFineY - stepFineY, ny))
+    setDragGhost(prev => {
+      if (prev && prev.gridX === nx && prev.gridY === ny
+              && prev.spanX === stepFineX && prev.spanY === stepFineY) return prev
+      return { gridX: nx, gridY: ny, spanX: stepFineX, spanY: stepFineY }
+    })
+  }, [dragSourceTrackId, trackFactor, snapEnabled, totalFineX, totalFineY, fineXYFromEvent])
+
+  const handleCanvasDragLeave = useCallback((e) => {
+    // Only clear the ghost if the drag truly left the overlay (relatedTarget
+    // not inside it). Without this guard, the ghost flickers off when the
+    // cursor crosses internal child boundaries.
+    if (e.relatedTarget && rootRef.current?.contains(e.relatedTarget)) return
+    setDragGhost(null)
+  }, [])
+
+  const handleCanvasDrop = useCallback(async (e) => {
+    if (dragSourceTrackId == null) return
+    e.preventDefault()
+    const trackId = dragSourceTrackId
+    const factor = trackFactor(trackId)
+    const stepFineX = SUB_UNITS_PER_COLUMN / factor
+    const stepFineY = SUB_UNITS_PER_ROW    / factor
+    const xy = fineXYFromEvent(e.clientX, e.clientY)
+    setDragSourceTrackId(null)
+    setDragGhost(null)
+    if (!xy) return
+    let nx = snapFine(xy.fineX, factor, snapEnabled, SUB_UNITS_PER_COLUMN)
+    let ny = snapFine(xy.fineY, factor, snapEnabled, SUB_UNITS_PER_ROW)
+    nx = Math.max(0, Math.min(totalFineX - stepFineX, nx))
+    ny = Math.max(0, Math.min(totalFineY - stepFineY, ny))
+
+    // Compute target zOrder = max(existing) + 1 so the dropped cell lands on
+    // top. Excludes any prior slot for this track since assign-with-zOrder
+    // replaces it (move semantics).
+    let maxZ = -1
+    for (const s of layout.slots) {
+      if (s.trackId !== trackId && s.zOrder > maxZ) maxZ = s.zOrder
+    }
+    const newZ = maxZ + 1
+
+    // Single atomic command: creates the slot with the supplied zOrder AND
+    // enqueues proxies for the track's regions. One IPC call → one undo step.
+    try {
+      await window.xleth?.timeline?.assignTrackToGridWithZOrder(
+        trackId, nx, ny, stepFineX, stepFineY, newZ)
+      notify()
+    } catch (err) {
+      console.error('[GridEditorOverlay] assignTrackToGridWithZOrder failed:', err)
+    }
+  }, [dragSourceTrackId, trackFactor, snapEnabled, totalFineX, totalFineY, fineXYFromEvent, layout.slots])
+
+  // ── Slot move (pointer-based drag of an existing slot) ───────────────────
+  const handleSlotPointerDown = useCallback((e, slot) => {
+    if (e.button !== 0) return
+    // Don't start a move when clicking on resize handles or the X button —
+    // those have their own behavior.
+    if (e.target.closest?.('.grid-editor-slot-resize')) return
+    if (e.target.closest?.('.grid-editor-cell-remove')) return
+    const overlayRect = rootRef.current?.getBoundingClientRect()
+    if (!overlayRect) return
+    e.preventDefault()
+    e.stopPropagation()
+    try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
+    const fineXAtClick = ((e.clientX - overlayRect.left) / overlayRect.width)  * totalFineX
+    const fineYAtClick = ((e.clientY - overlayRect.top)  / overlayRect.height) * totalFineY
+    setMoveState({
+      pointerId: e.pointerId,
+      trackId:   slot.trackId,
+      originGridX: slot.gridX,
+      originGridY: slot.gridY,
+      spanX:       slot.spanX,
+      spanY:       slot.spanY,
+      offsetFineX: fineXAtClick - slot.gridX,
+      offsetFineY: fineYAtClick - slot.gridY,
+      currentGridX: slot.gridX,
+      currentGridY: slot.gridY,
+      moved: false,
+      originClientX: e.clientX,
+      originClientY: e.clientY,
+    })
+  }, [totalFineX, totalFineY])
+
+  const handleSlotPointerMove = useCallback((e) => {
+    setMoveState(prev => {
+      if (!prev || prev.pointerId !== e.pointerId) return prev
+      const overlayRect = rootRef.current?.getBoundingClientRect()
+      if (!overlayRect) return prev
+      const fineX = ((e.clientX - overlayRect.left) / overlayRect.width)  * totalFineX
+      const fineY = ((e.clientY - overlayRect.top)  / overlayRect.height) * totalFineY
+      const factor = trackFactor(prev.trackId)
+      let nx = snapFine(fineX - prev.offsetFineX, factor, snapEnabled, SUB_UNITS_PER_COLUMN)
+      let ny = snapFine(fineY - prev.offsetFineY, factor, snapEnabled, SUB_UNITS_PER_ROW)
+      nx = Math.max(0, Math.min(totalFineX - prev.spanX, nx))
+      ny = Math.max(0, Math.min(totalFineY - prev.spanY, ny))
+      const dx = e.clientX - prev.originClientX
+      const dy = e.clientY - prev.originClientY
+      const moved = prev.moved || (Math.hypot(dx, dy) > CLICK_VS_DRAG_THRESHOLD_PX)
+      if (nx === prev.currentGridX && ny === prev.currentGridY && moved === prev.moved) return prev
+      return { ...prev, currentGridX: nx, currentGridY: ny, moved }
+    })
+  }, [trackFactor, snapEnabled, totalFineX, totalFineY])
+
+  const handleSlotPointerUp = useCallback((e) => {
+    setMoveState(prev => {
+      if (!prev || prev.pointerId !== e.pointerId) return prev
+      try { e.currentTarget.releasePointerCapture?.(prev.pointerId) } catch {}
+      if (!prev.moved) {
+        // Treat as click → bring to front (only if not already top).
+        bringToFront(prev.trackId)
+      } else if (prev.currentGridX !== prev.originGridX
+              || prev.currentGridY !== prev.originGridY) {
+        moveSlotAndBumpZ(prev.trackId, prev.currentGridX, prev.currentGridY,
+                         prev.spanX, prev.spanY)
+      }
+      return null
+    })
+  }, [bringToFront, moveSlotAndBumpZ])
+
+  const handleSlotPointerCancel = useCallback((e) => {
+    setMoveState(prev => {
+      if (!prev || prev.pointerId !== e.pointerId) return prev
+      return null
+    })
+  }, [])
+
+  // ── Slot resize ──────────────────────────────────────────────────────────
+  // pointerdown on a handle captures the starting geometry; pointermove
+  // updates `resizeState.currentSpanX/Y` for live visual feedback (no IPC);
+  // pointerup commits via setGridLayout (preserves zOrder).
+  const handleResizeStart = useCallback((e, slot, edge) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const overlayRect = rootRef.current?.getBoundingClientRect()
+    if (!overlayRect) return
+    const factor = trackFactor(slot.trackId)
+    setResizeState({
+      trackId:      slot.trackId,
+      edge,
+      originX:      e.clientX,
+      originY:      e.clientY,
+      gridX:        slot.gridX,
+      gridY:        slot.gridY,
+      originSpanX:  slot.spanX,
+      originSpanY:  slot.spanY,
+      currentSpanX: slot.spanX,
+      currentSpanY: slot.spanY,
+      stepFineX:    SUB_UNITS_PER_COLUMN / factor,
+      stepFineY:    SUB_UNITS_PER_ROW    / factor,
+      overlayWidth:  overlayRect.width,
+      overlayHeight: overlayRect.height,
+    })
+  }, [trackFactor])
+
+  useEffect(() => {
+    if (!resizeState) return
+
+    const onMove = (e) => {
+      setResizeState(prev => {
+        if (!prev) return prev
+        const fineDx = ((e.clientX - prev.originX) / prev.overlayWidth)  * totalFineX
+        const fineDy = ((e.clientY - prev.originY) / prev.overlayHeight) * totalFineY
+
+        // Snap + clamp to grid bounds. Untouched axes stay at the origin span.
+        // Overlapping other slots is allowed (free-canvas model — z-order
+        // determines paint order).
+        let newSpanX = prev.originSpanX
+        let newSpanY = prev.originSpanY
+        if (prev.edge === 'e' || prev.edge === 'se') {
+          newSpanX = Math.round((prev.originSpanX + fineDx) / prev.stepFineX) * prev.stepFineX
+          newSpanX = Math.max(prev.stepFineX, Math.min(totalFineX - prev.gridX, newSpanX))
+        }
+        if (prev.edge === 's' || prev.edge === 'se') {
+          newSpanY = Math.round((prev.originSpanY + fineDy) / prev.stepFineY) * prev.stepFineY
+          newSpanY = Math.max(prev.stepFineY, Math.min(totalFineY - prev.gridY, newSpanY))
+        }
+
+        if (newSpanX === prev.currentSpanX && newSpanY === prev.currentSpanY) return prev
+        return { ...prev, currentSpanX: newSpanX, currentSpanY: newSpanY }
+      })
+    }
+
+    const onUp = () => {
+      setResizeState(prev => {
+        if (!prev) return null
+        const changed = prev.currentSpanX !== prev.originSpanX
+                     || prev.currentSpanY !== prev.originSpanY
+        if (changed) {
+          // Use setGridLayout (not assignTrackToGrid) so zOrder is preserved.
+          const newSlots = layout.slots.map(s => s.trackId === prev.trackId
+            ? { ...s, spanX: prev.currentSpanX, spanY: prev.currentSpanY }
+            : s)
+          window.xleth?.timeline?.setGridLayout({ ...layout, slots: newSlots })
+            .then(() => notify())
+            .catch(err => console.error('[GridEditorOverlay] resize commit failed:', err))
+        }
+        return null
+      })
+    }
+
+    document.addEventListener('pointermove', onMove)
+    document.addEventListener('pointerup',   onUp)
+    return () => {
+      document.removeEventListener('pointermove', onMove)
+      document.removeEventListener('pointerup',   onUp)
+    }
+  }, [resizeState, layout, totalFineX, totalFineY])
+
+  const chorusTrack = tracksById.get(layout.chorusTrackId)
+  const crashTrack  = tracksById.get(layout.crashTrackId)
+
+  // Build context-menu items for an assigned slot (right-click).
+  const buildContextItems = (slot) => {
+    if (!slot) return []
+    const t = tracksById.get(slot.trackId)
+    const currentFactor = (t && VALID_SUBDIVISION_FACTORS.includes(t.subdivisionFactor))
+      ? t.subdivisionFactor : 1
+    return [
+      { label: 'Bring to Front', onClick: () => bringToFront(slot.trackId) },
+      { label: 'Send to Back',   onClick: () => sendToBack(slot.trackId)   },
+      { type: 'separator' },
+      {
+        label: 'Remove from grid',
+        danger: true,
+        onClick: () => handleRemove(slot.trackId),
+      },
+      { type: 'separator' },
+      ...VALID_SUBDIVISION_FACTORS.map(f => ({
+        label: `${f === currentFactor ? '✓ ' : '   '}Subdivision: ${f}×`,
+        onClick: () => handleSetSubdivision(slot.trackId, f),
+      })),
+    ]
+  }
+
+  // Sort slots ascending by zOrder for paint order in the DOM. This matches
+  // the engine's compositor sort so what the editor shows mirrors the render.
+  const orderedSlots = useMemo(() => {
+    return [...layout.slots].sort((a, b) => a.zOrder - b.zOrder)
+  }, [layout.slots])
+
+  // Empty backdrop cells — purely visual (column×row guidelines). They no
+  // longer accept clicks for placement; placement is drag-from-palette only.
+  const cells = []
+  for (let row = 0; row < layout.rows; row++) {
+    for (let col = 0; col < layout.columns; col++) {
+      cells.push({ col, row })
+    }
+  }
 
   return (
     <div
       ref={rootRef}
       className="grid-editor-overlay"
-      style={{
-        gridTemplateColumns: `repeat(${layout.columns}, 1fr)`,
-        gridTemplateRows: `repeat(${layout.rows}, 1fr)`,
-      }}
+      onDragOver={handleCanvasDragOver}
+      onDrop={handleCanvasDrop}
+      onDragLeave={handleCanvasDragLeave}
     >
+      {/* ── Empty backdrop cells (one per main column×row) ─────────────── */}
       {cells.map(cell => (
         <div
-          key={`${cell.x}-${cell.y}`}
-          className={`grid-editor-cell ${cell.assigned ? 'assigned' : 'empty'}`}
-          onClick={(e) => {
-            if (cell.assigned) return
-            e.stopPropagation()
-            setPickerCell({ x: cell.x, y: cell.y, hgx: cell.hgx, hgy: cell.hgy })
+          key={`empty-${cell.col}-${cell.row}`}
+          className="grid-editor-cell empty"
+          style={{
+            left:   `${(cell.col / layout.columns) * 100}%`,
+            top:    `${(cell.row / layout.rows)    * 100}%`,
+            width:  `${100 / layout.columns}%`,
+            height: `${100 / layout.rows}%`,
           }}
         >
           <div className="grid-editor-half-lines" />
-          {cell.assigned ? (
-            <>
-              <span className="grid-editor-cell-label">{cell.trackName}</span>
-              <button
-                className="grid-editor-cell-remove"
-                title="Remove from grid"
-                onClick={(e) => { e.stopPropagation(); handleRemove(cell.trackId) }}
-              >
-                <X size={12} />
-              </button>
-            </>
-          ) : (
-            <span className="grid-editor-cell-add">+</span>
-          )}
-          {pickerCell && pickerCell.x === cell.x && pickerCell.y === cell.y && (
-            <div className="grid-editor-picker" onClick={(e) => e.stopPropagation()}>
-              <div className="grid-editor-picker-header">Assign Track</div>
-              {pickerTracks.length === 0 ? (
-                <div className="grid-editor-picker-empty">No tracks available</div>
-              ) : (
-                pickerTracks.map(t => (
-                  <button
-                    key={t.id}
-                    className="grid-editor-picker-item"
-                    onClick={() => handleAssign(t.id, pickerCell.hgx, pickerCell.hgy)}
-                  >
-                    {t.name}
-                  </button>
-                ))
-              )}
-            </div>
-          )}
         </div>
       ))}
 
-      {/* ── Chorus / Crash badges ─────────────────────────── */}
+      {/* ── Assigned slots — absolutely positioned, ordered by zOrder ──── */}
+      {orderedSlots.map(slot => {
+        const track = tracksById.get(slot.trackId)
+        const factor = (track && VALID_SUBDIVISION_FACTORS.includes(track.subdivisionFactor))
+          ? track.subdivisionFactor : 1
+        const isResizing = resizeState && resizeState.trackId === slot.trackId
+        const isMoving   = moveState   && moveState.trackId   === slot.trackId && moveState.moved
+        const renderSpanX = isResizing ? resizeState.currentSpanX : slot.spanX
+        const renderSpanY = isResizing ? resizeState.currentSpanY : slot.spanY
+        const renderGridX = isMoving   ? moveState.currentGridX   : slot.gridX
+        const renderGridY = isMoving   ? moveState.currentGridY   : slot.gridY
+        const left   = (renderGridX / totalFineX) * 100
+        const top    = (renderGridY / totalFineY) * 100
+        const width  = (renderSpanX / totalFineX) * 100
+        const height = (renderSpanY / totalFineY) * 100
+        return (
+          <div
+            key={`slot-${slot.trackId}`}
+            className={`grid-editor-slot assigned ${isMoving ? 'moving' : ''}`}
+            style={{
+              left:   `${left}%`,
+              top:    `${top}%`,
+              width:  `${width}%`,
+              height: `${height}%`,
+            }}
+            onContextMenu={(e) => handleSlotContextMenu(e, slot)}
+            onPointerDown={(e) => handleSlotPointerDown(e, slot)}
+            onPointerMove={handleSlotPointerMove}
+            onPointerUp={handleSlotPointerUp}
+            onPointerCancel={handleSlotPointerCancel}
+          >
+            {factor > 1 && (
+              <div
+                className="grid-editor-subgrid-lines"
+                aria-hidden="true"
+                style={{
+                  '--xleth-subdiv-step': `${100 / factor}%`,
+                }}
+              />
+            )}
+            <span className="grid-editor-cell-label">
+              {track?.name ?? `Track ${slot.trackId}`}
+              {factor > 1 && (
+                <span className="grid-editor-cell-factor">{factor}×</span>
+              )}
+            </span>
+            <button
+              className="grid-editor-cell-remove"
+              title="Remove from grid"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => { e.stopPropagation(); handleRemove(slot.trackId) }}
+            >
+              <X size={12} />
+            </button>
+            {/* Resize handles. Snap step = (SUB_UNITS / track.subdivisionFactor). */}
+            <div
+              className="grid-editor-slot-resize grid-editor-slot-resize-e"
+              title="Drag to resize width"
+              onPointerDown={(e) => handleResizeStart(e, slot, 'e')}
+            />
+            <div
+              className="grid-editor-slot-resize grid-editor-slot-resize-s"
+              title="Drag to resize height"
+              onPointerDown={(e) => handleResizeStart(e, slot, 's')}
+            />
+            <div
+              className="grid-editor-slot-resize grid-editor-slot-resize-se"
+              title="Drag to resize"
+              onPointerDown={(e) => handleResizeStart(e, slot, 'se')}
+            />
+          </div>
+        )
+      })}
+
+      {/* ── Drag ghost preview (while dragging from the track palette) ──── */}
+      {dragGhost && (
+        <div
+          className="grid-editor-drag-ghost"
+          style={{
+            left:   `${(dragGhost.gridX / totalFineX) * 100}%`,
+            top:    `${(dragGhost.gridY / totalFineY) * 100}%`,
+            width:  `${(dragGhost.spanX / totalFineX) * 100}%`,
+            height: `${(dragGhost.spanY / totalFineY) * 100}%`,
+          }}
+        />
+      )}
+
+      {/* ── Chorus / Crash badges ─────────────────────────────────────── */}
       {(chorusTrack || (layout.crashEnabled && crashTrack)) && (
         <div className="grid-editor-badges">
           {chorusTrack && (
@@ -187,6 +581,64 @@ export default function GridEditorOverlay() {
           )}
         </div>
       )}
+
+      {/* ── Right-click context menu on an assigned slot ──────────────── */}
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          items={buildContextItems(contextMenu.slot)}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
+
+      {/* ── Toolbar (snap toggle) ──────────────────────────────────────── */}
+      <div className="grid-editor-toolbar">
+        <button
+          className={`grid-editor-snap-btn ${snapEnabled ? 'on' : 'off'}`}
+          onClick={() => setSnapEnabled(s => !s)}
+          title={snapEnabled
+            ? 'Snap on — placements align to each track\'s subdivision sub-step. Click to disable.'
+            : 'Snap off — free 1-unit positioning. Click to enable.'}
+        >
+          <Magnet size={13} />
+          <span>Snap: {snapEnabled ? 'on' : 'off'}</span>
+        </button>
+      </div>
+
+      {/* ── Track palette (drag source for placing tracks) ─────────────── */}
+      <div className="grid-editor-palette" onPointerDown={(e) => e.stopPropagation()}>
+        <div className="grid-editor-palette-header">Tracks — drag onto the grid</div>
+        <div className="grid-editor-palette-list">
+          {tracks.length === 0 ? (
+            <div className="grid-editor-palette-empty">No tracks available</div>
+          ) : (
+            tracks.map(t => {
+              const f = VALID_SUBDIVISION_FACTORS.includes(t.subdivisionFactor)
+                ? t.subdivisionFactor : 1
+              const placed = slotsByTrackId.has(t.id)
+              return (
+                <div
+                  key={t.id}
+                  className={`grid-editor-palette-item ${placed ? 'placed' : ''}`}
+                  draggable
+                  onDragStart={(e) => handlePaletteDragStart(e, t.id)}
+                  onDragEnd={handlePaletteDragEnd}
+                  title={placed
+                    ? `${t.name} — already on the grid (drag to move it)`
+                    : `${t.name} — drag onto the grid to place`}
+                >
+                  <span className="grid-editor-palette-name">{t.name}</span>
+                  {f > 1 && (
+                    <span className="grid-editor-palette-factor">{f}×</span>
+                  )}
+                  {placed && <span className="grid-editor-palette-mark">●</span>}
+                </div>
+              )
+            })
+          )}
+        </div>
+      </div>
     </div>
   )
 }

@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "name": "Xleth Warm",
+  "author": "Xleth",
+  "description": "Warm inspiration theme. Dark brown surfaces, amber accent, cream text. Retro-studio feel.",
+  "locked": true,
+  "derivationDetached": [],
+  "tokens": {
+    "--theme-bg-primary": "#0E0A06",
+    "--theme-bg-surface": "#1C1510",
+    "--theme-accent":     "#E8943A",
+    "--theme-text":       "#EDE0CE",
+    "--theme-danger":     "#E84040",
+
+    "--theme-bg-inset":                   "#070503",
+    "--theme-fg-inverse":                 "#FFF8F0",
+    "--theme-text-on-accent":             "#0E0A06",
+    "--theme-accent-bg-subtle":           "rgba(232, 148, 58, 0.08)",
+    "--theme-accent-bg-medium":           "rgba(232, 148, 58, 0.16)",
+    "--theme-lipsync-handle":             "#E8943A",
+    "--theme-lipsync-selection-fill":     "rgba(232, 148, 58, 0.15)",
+    "--theme-waveform-envelope-fill":     "rgba(232, 148, 58, 0.35)",
+    "--theme-waveform-rms-body":          "rgba(232, 148, 58, 0.55)",
+    "--theme-syllable-section-alt":       "rgba(232, 148, 58, 0.06)",
+    "--theme-syllable-accent-light":      "#F0B060",
+    "--theme-syllable-splitter-bg":       "#1A1208",
+    "--theme-syllable-splitter-wave-dim": "#5A4A38",
+    "--theme-syllable-splitter-label-fg": "#C8B89A",
+    "--theme-sampler-mod-color-volume":   "#E8943A",
+    "--theme-sampler-mod-bg-volume":      "#2E1E08",
+    "--theme-pattern-list-item-hover-bg": "#2A1E12"
+  }
+}

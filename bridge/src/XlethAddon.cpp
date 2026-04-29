@@ -33,8 +33,10 @@
 #include "video/FrameServer.h"
 
 // Phase 1 — model, commands, project
+#include "midi/MidiImporter.h"
 #include "model/Timeline.h"
 #include "model/TimelineTypes.h"
+#include "commands/ImportMidiCommand.h"
 #include "commands/UndoManager.h"
 #include "commands/TimelineCommands.h"
 #include "commands/QuantizeClipsBatchCommand.h"
@@ -215,6 +217,7 @@ std::unique_ptr<FrameCollector>     g_previewCollector;
 std::mutex          g_previewCompositorMutex;
 std::atomic<bool>   g_previewCompositorReady{false};
 std::atomic<bool>   g_previewPauseForExport{false};
+std::atomic<bool>   g_previewPauseForVisibility{false};   // Phase 7
 
 // ── Hardware encoder detection (NVENC/AMF/QSV probing) ──────────────────
 std::unique_ptr<HwEncoderDetector> g_hwEncoderDetector;
@@ -502,9 +505,25 @@ static void refreshAllClipCaches()
     }
 }
 
+// ── WORLD processing indicator ───────────────────────────────────────────────
+
+// cache_getWorldActiveJobs() → number[]
+// Returns the clip IDs currently being processed by a WORLD render job.
+// Called by the main-process poll (100ms interval) to drive the UI spinner.
+Napi::Value Cache_GetWorldActiveJobIds(const Napi::CallbackInfo& info)
+{
+    auto env = info.Env();
+    if (!audioEngine) return Napi::Array::New(env, 0);
+    const auto ids = audioEngine->getMixEngine().getWorldActiveJobIds();
+    auto arr = Napi::Array::New(env, ids.size());
+    for (size_t i = 0; i < ids.size(); ++i)
+        arr.Set(static_cast<uint32_t>(i), Napi::Number::New(env, ids[i]));
+    return arr;
+}
+
 // ── Global clip-processing defaults bridge functions ─────────────────────────
 
-// engine_setGlobalStretchMethod(method: number) — 1=PSOLA, 2=Rubber, 3=WSOLA, 4=PhaseVocoder
+// engine_setGlobalStretchMethod(method: number) — 1=PSOLA, 2=Rubber, 3=WSOLA, 4=PhaseVocoder, 5=WORLD
 void Engine_SetGlobalStretchMethod(const Napi::CallbackInfo& info)
 {
     if (!audioEngine) return;
@@ -1052,12 +1071,14 @@ static Napi::Object trackToJs(Napi::Env env, const TrackInfo& t) {
     o.Set("stereoSpread",      Napi::Number::New(env, t.stereoSpread));
     o.Set("muted",             Napi::Boolean::New(env, t.muted));
     o.Set("solo",              Napi::Boolean::New(env, t.solo));
+    o.Set("visualOnly",        Napi::Boolean::New(env, t.visualOnly));
     o.Set("order",             Napi::Number::New(env, t.order));
     o.Set("type",              Napi::String::New(env, trackTypeToString(t.type)));
     o.Set("videoFlipMode",     Napi::String::New(env, videoFlipModeToString(t.videoFlipMode)));
     o.Set("videoHoldLastFrame", Napi::Boolean::New(env, t.videoHoldLastFrame));
     o.Set("cornerRadius",      Napi::Number::New(env, t.cornerRadius));
     o.Set("gapScaleOverride",  Napi::Number::New(env, t.gapScaleOverride));
+    o.Set("subdivisionFactor", Napi::Number::New(env, t.subdivisionFactor));
     {
         Napi::Object b = Napi::Object::New(env);
         b.Set("enabled",      Napi::Boolean::New(env, t.bounce.enabled));
@@ -1222,6 +1243,9 @@ static Napi::Object regionToJs(Napi::Env env, const SampleRegion& r) {
     o.Set("startFrame",    Napi::Number::New(env, r.startFrame));
     o.Set("endFrame",      Napi::Number::New(env, r.endFrame));
     o.Set("audioFilePath", Napi::String::New(env, r.audioFilePath));
+    o.Set("swappedAudioPath",        Napi::String::New(env, r.swappedAudioPath));
+    o.Set("hasSwappedAudio",         Napi::Boolean::New(env, r.hasSwappedAudio));
+    o.Set("swappedAudioDurationSec", Napi::Number::New(env, r.swappedAudioDurationSec));
     o.Set("rootNote",         Napi::Number::New(env, r.rootNote));
     o.Set("attackMs",         Napi::Number::New(env, r.attackMs));
     o.Set("decayMs",          Napi::Number::New(env, r.decayMs));
@@ -1249,7 +1273,7 @@ static Napi::Object regionToJs(Napi::Env env, const SampleRegion& r) {
     o.Set("crossfadeEnabled", Napi::Boolean::New(env, r.crossfadeEnabled));
     o.Set("smpStart",         Napi::Number::New(env, static_cast<double>(r.smpStart)));
     o.Set("smpLength",        Napi::Number::New(env, static_cast<double>(r.smpLength)));
-    o.Set("declickSamples",   Napi::Number::New(env, r.declickSamples));
+    o.Set("declickMs",        Napi::Number::New(env, r.declickMs));
     o.Set("fadeInMs",         Napi::Number::New(env, r.fadeInMs));
     o.Set("fadeOutMs",        Napi::Number::New(env, r.fadeOutMs));
     o.Set("crossfadeSamples", Napi::Number::New(env, static_cast<double>(r.crossfadeSamples)));
@@ -1500,8 +1524,11 @@ static void videoThreadBody()
 
             if ((isPlaying || forceRender) && !events.empty()) {
 
+                const bool previewPaused =
+                    g_previewPauseForExport || g_previewPauseForVisibility;
+
                 // [PreviewUnify] GPU compositor path
-                if (g_previewCompositorReady && !g_previewPauseForExport) {
+                if (g_previewCompositorReady && !previewPaused) {
                     const GridLayout layout = g_timeline
                         ? g_timeline->getGridLayout() : GridLayout{};
 
@@ -1644,8 +1671,8 @@ static void videoThreadBody()
                         }
                     }
                 }
-                // [PreviewUnify] Export running: show black
-                else if (g_previewPauseForExport) {
+                // Export OR visibility pause: write one black frame, then idle
+                else if (previewPaused) {
                     if (!blackWritten) {
                         frameOutput.writeBlackFrame();
                         blackWritten = true;
@@ -1866,7 +1893,8 @@ void Shutdown(const Napi::CallbackInfo& info)
 
     // [PreviewUnify] Destroy GPU preview pipeline (after thread join, before g_gpuDevice)
     g_previewCompositorReady = false;
-    g_previewPauseForExport  = false;
+    g_previewPauseForExport     = false;
+    g_previewPauseForVisibility = false;   // Phase 7
     g_previewCompositor.reset();
     g_previewRenderDecoder.reset();
     g_previewRenderCache.reset();
@@ -2693,6 +2721,14 @@ Napi::Value Project_NewBlank(const Napi::CallbackInfo& info)
     return ret;
 }
 
+// Forward declaration: probeAudioInfo lives in an anonymous namespace further
+// down (~line 8079). Re-declare in an anonymous namespace here so the call in
+// Project_Load resolves to the same internal-linkage symbol.
+namespace {
+    struct ProbedAudioInfo { int sampleRate; double duration; };
+    ProbedAudioInfo probeAudioInfo(const std::string& filePath);
+}
+
 Napi::Value Project_Load(const Napi::CallbackInfo& info)
 {
     Napi::Env env = info.Env();
@@ -2746,8 +2782,24 @@ Napi::Value Project_Load(const Napi::CallbackInfo& info)
         mix.clearRegionToSampleMap();
         if (sampleBank) {
             const double engineRate = g_timeline->getSampleRate();
-            for (const SampleRegion* region : g_timeline->getAllRegions()) {
+            for (SampleRegion* region : g_timeline->getAllRegionsMutable()) {
                 if (!region) continue;
+
+                // Migration: projects saved before swappedAudioDurationSec existed
+                // have hasSwappedAudio=true but the field at 0. Probe the file once
+                // and fill it in so the UI clip-resize cap can extend past video-end.
+                if (region->hasSwappedAudio && !region->swappedAudioPath.empty()
+                    && region->swappedAudioDurationSec == 0.0) {
+                    const auto probed = probeAudioInfo(region->swappedAudioPath);
+                    if (probed.duration > 0.0) {
+                        region->swappedAudioDurationSec = probed.duration;
+                    } else {
+                        std::fprintf(stderr,
+                            "[project_load] swap-audio probe failed for region %d "
+                            "(swappedAudioPath='%s') — keeping video-cap behavior\n",
+                            region->id, region->swappedAudioPath.c_str());
+                    }
+                }
 
                 std::string audioPath;
                 double startT = 0.0, endT = 0.0;
@@ -2770,8 +2822,12 @@ Napi::Value Project_Load(const Napi::CallbackInfo& info)
 
                 const int sid = sampleBank->loadSampleFromSource(
                     audioPath, startT, endT, engineRate);
-                if (sid >= 0)
+                if (sid >= 0) {
+                    fprintf(stderr, "[PITCHDBG] projectLoad: mapRegionToSample region=%d sampleId=%d\n",
+                            region->id, sid);
+                    fflush(stderr);
                     mix.mapRegionToSample(region->id, sid);
+                }
             }
         }
 
@@ -3103,7 +3159,49 @@ void Timeline_SetBPM(const Napi::CallbackInfo& info)
     g_undoManager->execute(std::make_unique<SetBPMCommand>(bpm, *g_timeline), *g_timeline);
     // Sync live transport to match the timeline's committed BPM
     audioEngine->getTransport().setBPM(g_timeline->getBPM());
+    // Invalidate all stretched clips on BPM change. Required because the render
+    // loop never submits new jobs on cache miss — only explicit invalidation
+    // triggers job resubmission. Without this, stretched clips fall back to raw
+    // PCM permanently after a tempo change.
+    // tempoLocked clips also have their stretchRatio rescaled by SetBPMCommand,
+    // so their new job picks up both the corrected ratio and the new durationSamples.
+    if (audioEngine && g_timeline) {
+        for (const Clip* c : g_timeline->getAllClips()) {
+            if (!c) continue;
+            const bool stretched = (c->pitchOffset != 0 || c->pitchOffsetCents != 0
+                                 || c->reversed || c->stretchRatio != 1.0);
+            if (stretched)
+                audioEngine->getMixEngine().invalidateClipCache(c->id, "setBPM");
+        }
+    }
     log.done(std::to_string(bpm));
+}
+
+// timeline_getTempoLocked() → boolean
+Napi::Value Timeline_GetTempoLocked(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    return Napi::Boolean::New(env, g_timeline->getTempoLocked());
+}
+
+// timeline_setTempoLocked(locked: boolean) → void
+void Timeline_SetTempoLocked(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return;
+    }
+    if (info.Length() < 1 || !info[0].IsBoolean()) {
+        Napi::TypeError::New(env, "timeline_setTempoLocked(locked: boolean)")
+            .ThrowAsJavaScriptException();
+        return;
+    }
+    g_timeline->setTempoLocked(info[0].As<Napi::Boolean>().Value());
 }
 
 // ─── Grid Layout bridge functions ─────────────────────────────────────────────
@@ -3176,6 +3274,54 @@ void Timeline_AssignTrackToGrid(const Napi::CallbackInfo& info)
     // Enqueue proxies for every unique region referenced by clips on this
     // track. maybeEnqueueRegionProxy is idempotent (skips regions that
     // already have a valid on-disk proxy), so no-op for unchanged regions.
+    {
+        std::unordered_set<int> seenRegions;
+        for (const Clip* c : g_timeline->getAllClips()) {
+            if (!c || c->trackId != trackId) continue;
+            if (!seenRegions.insert(c->regionId).second) continue;
+            maybeEnqueueRegionProxy(c->regionId, trackId);
+        }
+    }
+
+    log.done(std::to_string(trackId));
+}
+
+// timeline_assignTrackToGridWithZOrder(trackId, gridX, gridY, spanX, spanY, zOrder)
+// Atomic placement with explicit zOrder — used by drag-to-place so the new
+// slot can land on top in a single undo step.
+void Timeline_AssignTrackToGridWithZOrder(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return;
+    }
+    if (info.Length() < 6 || !info[0].IsNumber() || !info[1].IsNumber() ||
+        !info[2].IsNumber() || !info[3].IsNumber() || !info[4].IsNumber() ||
+        !info[5].IsNumber()) {
+        Napi::TypeError::New(env,
+            "timeline_assignTrackToGridWithZOrder(trackId, gridX, gridY, spanX, spanY, zOrder)")
+            .ThrowAsJavaScriptException();
+        return;
+    }
+    int trackId = info[0].As<Napi::Number>().Int32Value();
+    int gridX   = info[1].As<Napi::Number>().Int32Value();
+    int gridY   = info[2].As<Napi::Number>().Int32Value();
+    int spanX   = info[3].As<Napi::Number>().Int32Value();
+    int spanY   = info[4].As<Napi::Number>().Int32Value();
+    int zOrder  = info[5].As<Napi::Number>().Int32Value();
+    BridgeCallLog log("timeline.assignTrackToGridWithZOrder");
+    {
+        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        g_undoManager->execute(
+            std::make_unique<AssignTrackToGridCommand>(trackId, gridX, gridY,
+                                                       spanX, spanY, zOrder,
+                                                       *g_timeline),
+            *g_timeline);
+    }
+
+    // Mirror the proxy enqueue side effect from the standard assign path —
+    // ensures clips on this track have on-disk proxies for the preview.
     {
         std::unordered_set<int> seenRegions;
         for (const Clip* c : g_timeline->getAllClips()) {
@@ -3334,6 +3480,29 @@ void Timeline_SetTrackMuted(const Napi::CallbackInfo& info)
         *g_timeline);
     // Grid compositor checks track mute live per tick, so no rebuild needed.
     log.done(std::to_string(trackId) + "=" + (muted ? "1" : "0"));
+}
+
+// timeline_setTrackVisualOnly(trackId, visualOnly) — undo-tracked visual-only toggle
+void Timeline_SetTrackVisualOnly(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return;
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsBoolean()) {
+        Napi::TypeError::New(env, "timeline_setTrackVisualOnly(trackId: number, visualOnly: boolean)")
+            .ThrowAsJavaScriptException();
+        return;
+    }
+    int  trackId    = info[0].As<Napi::Number>().Int32Value();
+    bool visualOnly = info[1].As<Napi::Boolean>().Value();
+    BridgeCallLog log("timeline.setTrackVisualOnly");
+
+    g_undoManager->execute(
+        std::make_unique<SetTrackVisualOnlyCommand>(trackId, visualOnly, *g_timeline),
+        *g_timeline);
+    log.done(std::to_string(trackId) + "=" + (visualOnly ? "1" : "0"));
 }
 
 // timeline_setTrackSolo(trackId, solo) — undo-tracked solo toggle (audio only)
@@ -3528,7 +3697,7 @@ Napi::Value Timeline_AddClip(const Napi::CallbackInfo& info)
     if (o.Has("stretchMethod") && o.Get("stretchMethod").IsNumber()) {
         int sm = o.Get("stretchMethod").As<Napi::Number>().Int32Value();
         clip.stretchMethod = static_cast<StretchMethod>(
-            (sm >= 0 && sm <= 4) ? sm : 0 /*Global*/);
+            (sm >= 0 && sm <= 5) ? sm : 0 /*Global*/);
     }
     if (o.Has("formantPreserve") && o.Get("formantPreserve").IsBoolean())
         clip.formantPreserve = o.Get("formantPreserve").As<Napi::Boolean>().Value();
@@ -3593,10 +3762,24 @@ Napi::Value Timeline_AddClip(const Napi::CallbackInfo& info)
     fflush(stderr);
 #endif
 
+    fprintf(stderr, "[PITCHDBG] Timeline_AddClip ENTRY: trackId=%d regionId=%d "
+            "pitchSemi=%d cents=%d reversed=%d stretch=%.3f\n",
+            clip.trackId, clip.regionId,
+            clip.pitchOffset, clip.pitchOffsetCents,
+            clip.reversed ? 1 : 0, clip.stretchRatio);
+    fflush(stderr);
+
     g_undoManager->execute(std::make_unique<AddClipCommand>(clip), *g_timeline);
 
     auto clips = g_timeline->getAllClips();
     int newId = clips.empty() ? -1 : clips.back()->id;
+
+    fprintf(stderr, "[PITCHDBG] Timeline_AddClip EXIT: newId=%d regionId=%d\n",
+            newId, clip.regionId);
+    fflush(stderr);
+
+    if (audioEngine && newId >= 0)
+        audioEngine->getMixEngine().invalidateClipCache(newId, "addClip");
 
     // Trigger on-demand region proxy generation if this clip is on a
     // non-Chorus / non-Crash cell. No-op when region already has a ready proxy.
@@ -3686,7 +3869,7 @@ Napi::Value Timeline_SetClipParams(const Napi::CallbackInfo& info)
     if (o.Has("stretchMethod") && o.Get("stretchMethod").IsNumber()) {
         int sm = o.Get("stretchMethod").As<Napi::Number>().Int32Value();
         p.stretchMethod = static_cast<StretchMethod>(
-            (sm >= 0 && sm <= 4) ? sm : 0 /*Global*/);
+            (sm >= 0 && sm <= 5) ? sm : 0 /*Global*/);
     }
     if (o.Has("formantPreserve") && o.Get("formantPreserve").IsBoolean())
         p.formantPreserve = o.Get("formantPreserve").As<Napi::Boolean>().Value();
@@ -3970,6 +4153,97 @@ Napi::Value Timeline_ReverseClip(const Napi::CallbackInfo& info)
     if (!updated) return env.Undefined();
     log.done(std::to_string(clipId));
     return clipToJs(env, *updated);
+}
+
+// timeline_spliceClipsAtPlayhead([{clipId, splitTick}, ...])
+//   → [[leftId, rightId], ...]   (one pair per successfully split clip)
+// Splits N clips atomically in a single undo step. Clips where splitTick is
+// exactly at the start or end are silently skipped (zero-length would be invalid).
+Napi::Value Timeline_SpliceClipsAtPlayhead(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    if (info.Length() < 1 || !info[0].IsArray()) {
+        Napi::TypeError::New(env,
+            "timeline_spliceClipsAtPlayhead(entries: [{clipId, splitTick}])")
+            .ThrowAsJavaScriptException();
+        return env.Null();
+    }
+
+    auto arr = info[0].As<Napi::Array>();
+    std::vector<SpliceClipsCommand::Entry> entries;
+    entries.reserve(arr.Length());
+
+    for (uint32_t i = 0; i < arr.Length(); ++i) {
+        Napi::Value item = arr.Get(i);
+        if (!item.IsObject()) continue;
+        auto obj = item.As<Napi::Object>();
+        if (!obj.Has("clipId") || !obj.Has("splitTick")) continue;
+        if (!obj.Get("clipId").IsNumber() || !obj.Get("splitTick").IsNumber()) continue;
+
+        int     clipId    = obj.Get("clipId").As<Napi::Number>().Int32Value();
+        int64_t splitTick = static_cast<int64_t>(
+            obj.Get("splitTick").As<Napi::Number>().Int64Value());
+
+        const Clip* c = g_timeline->getClip(clipId);
+        if (!c) continue;
+
+        int64_t clipStart = c->position.ticks;
+        int64_t clipEnd   = c->position.ticks + c->duration.ticks;
+
+        // Skip edge-exactly cases — zero-length result would be invalid
+        if (splitTick <= clipStart || splitTick >= clipEnd) continue;
+
+        int64_t leftDur  = splitTick - clipStart;
+        int64_t rightDur = clipEnd   - splitTick;
+
+        SpliceClipsCommand::Entry e;
+        e.original = *c;
+
+        e.left            = *c;
+        e.left.id         = 0;
+        e.left.duration   = TickTime{leftDur};
+
+        e.right                    = *c;
+        e.right.id                 = 0;
+        e.right.position           = TickTime{splitTick};
+        e.right.regionOffset       = TickTime{c->regionOffset.ticks + leftDur};
+        e.right.duration           = TickTime{rightDur};
+
+        entries.push_back(std::move(e));
+    }
+
+    if (entries.empty()) {
+        return Napi::Array::New(env, 0);
+    }
+
+    std::vector<std::pair<int,int>> outIds;
+    outIds.reserve(entries.size());
+    BridgeCallLog log("timeline.spliceClipsAtPlayhead");
+    g_undoManager->execute(
+        std::make_unique<SpliceClipsCommand>(std::move(entries), &outIds),
+        *g_timeline);
+
+    // Invalidate render cache for all new clip IDs
+    if (audioEngine) {
+        for (const auto& p : outIds) {
+            audioEngine->getMixEngine().invalidateClipCache(p.first,  "spliceLeft");
+            audioEngine->getMixEngine().invalidateClipCache(p.second, "spliceRight");
+        }
+    }
+
+    auto result = Napi::Array::New(env, outIds.size());
+    for (size_t i = 0; i < outIds.size(); ++i) {
+        auto pair = Napi::Array::New(env, 2);
+        pair.Set(0u, Napi::Number::New(env, outIds[i].first));
+        pair.Set(1u, Napi::Number::New(env, outIds[i].second));
+        result.Set(static_cast<uint32_t>(i), pair);
+    }
+    log.done(std::to_string(outIds.size()) + " clips split");
+    return result;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4779,7 +5053,7 @@ void Timeline_UpdateSamplerSettings(const Napi::CallbackInfo& info)
     s.crossfadeEnabled = r->crossfadeEnabled;
     s.smpStart         = r->smpStart;
     s.smpLength        = r->smpLength;
-    s.declickSamples   = r->declickSamples;
+    s.declickMs         = r->declickMs;
     s.fadeInMs         = r->fadeInMs;
     s.fadeOutMs        = r->fadeOutMs;
     s.crossfadeSamples = r->crossfadeSamples;
@@ -4876,8 +5150,8 @@ void Timeline_UpdateSamplerSettings(const Napi::CallbackInfo& info)
         s.smpStart       = static_cast<int64_t>(o.Get("smpStart").As<Napi::Number>().DoubleValue());
     if (o.Has("smpLength")      && o.Get("smpLength").IsNumber())
         s.smpLength      = static_cast<int64_t>(o.Get("smpLength").As<Napi::Number>().DoubleValue());
-    if (o.Has("declickSamples") && o.Get("declickSamples").IsNumber())
-        s.declickSamples = o.Get("declickSamples").As<Napi::Number>().Int32Value();
+    if (o.Has("declickMs")      && o.Get("declickMs").IsNumber())
+        s.declickMs      = o.Get("declickMs").As<Napi::Number>().FloatValue();
     if (o.Has("fadeInMs")  && o.Get("fadeInMs").IsNumber())
         s.fadeInMs  = o.Get("fadeInMs").As<Napi::Number>().FloatValue();
     if (o.Has("fadeOutMs") && o.Get("fadeOutMs").IsNumber())
@@ -5330,6 +5604,44 @@ void Timeline_QuantizeClipsBatch(const Napi::CallbackInfo& info)
     log.done();
 }
 
+// timeline_resizeNotesBatch(patternId, resizes[])
+// resizes = [{ noteId, durationTicks }, ...]
+// Folds N resizes into a single undo entry.
+void Timeline_ResizeNotesBatch(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return;
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsArray()) {
+        Napi::TypeError::New(env, "timeline_resizeNotesBatch(patternId, resizes: array)")
+            .ThrowAsJavaScriptException();
+        return;
+    }
+    int patternId = info[0].As<Napi::Number>().Int32Value();
+    Napi::Array arr = info[1].As<Napi::Array>();
+    std::vector<ResizeNotesBatchCommand::Resize> resizes;
+    resizes.reserve(arr.Length());
+    for (uint32_t i = 0; i < arr.Length(); ++i) {
+        Napi::Value v = arr.Get(i);
+        if (!v.IsObject()) continue;
+        Napi::Object o = v.As<Napi::Object>();
+        if (!o.Has("noteId") || !o.Has("durationTicks")) continue;
+        ResizeNotesBatchCommand::Resize r;
+        r.noteId = o.Get("noteId").As<Napi::Number>().Int32Value();
+        r.newDuration.ticks = static_cast<int64_t>(
+            o.Get("durationTicks").As<Napi::Number>().DoubleValue());
+        resizes.push_back(r);
+    }
+    if (resizes.empty()) return;
+    BridgeCallLog log("timeline.resizeNotesBatch");
+    g_undoManager->execute(
+        std::make_unique<ResizeNotesBatchCommand>(patternId, std::move(resizes), *g_timeline),
+        *g_timeline);
+    log.done();
+}
+
 // timeline_resizeNote(patternId, noteId, durTicks)
 void Timeline_ResizeNote(const Napi::CallbackInfo& info)
 {
@@ -5583,6 +5895,39 @@ void Timeline_SetTrackGapScaleOverride(const Napi::CallbackInfo& info)
     BridgeCallLog log("timeline.setTrackGapScaleOverride");
     g_undoManager->execute(
         std::make_unique<SetTrackGapScaleOverrideCommand>(trackId, value, *g_timeline),
+        *g_timeline);
+    g_previewDirty = true;
+    log.done();
+}
+
+// timeline_setTrackSubdivisionFactor(trackId, factor)
+//
+// Sets the per-track subdivisionFactor (1, 2, 4, or 8). Existing GridSlots
+// are NOT resized retroactively — only future placements use the new factor.
+// Undo-tracked. Invalid factors are rejected by the Timeline setter.
+void Timeline_SetTrackSubdivisionFactor(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return;
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
+        Napi::TypeError::New(env,
+            "timeline_setTrackSubdivisionFactor(trackId: number, factor: 1|2|4|8)")
+            .ThrowAsJavaScriptException();
+        return;
+    }
+    int trackId = info[0].As<Napi::Number>().Int32Value();
+    int factor  = info[1].As<Napi::Number>().Int32Value();
+    if (factor != 1 && factor != 2 && factor != 4 && factor != 8) {
+        Napi::RangeError::New(env, "subdivisionFactor must be 1, 2, 4, or 8")
+            .ThrowAsJavaScriptException();
+        return;
+    }
+    BridgeCallLog log("timeline.setTrackSubdivisionFactor");
+    g_undoManager->execute(
+        std::make_unique<SetTrackSubdivisionFactorCommand>(trackId, factor, *g_timeline),
         *g_timeline);
     g_previewDirty = true;
     log.done();
@@ -5950,6 +6295,40 @@ void Timeline_ReorderVisualEffect(const Napi::CallbackInfo& info)
     BridgeCallLog log("timeline.reorderVisualEffect");
     g_undoManager->execute(
         std::make_unique<ReorderVisualEffectCommand>(trackId, fromIndex, toIndex),
+        *g_timeline);
+    g_previewDirty = true;
+    log.done();
+}
+
+// timeline_setTrackVisualEffectChainOrder(trackId, newOrder[])
+void Timeline_SetTrackVisualEffectChainOrder(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return;
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsArray()) {
+        Napi::TypeError::New(env, "timeline_setTrackVisualEffectChainOrder(trackId, newOrder[])")
+            .ThrowAsJavaScriptException();
+        return;
+    }
+    int trackId = info[0].As<Napi::Number>().Int32Value();
+    Napi::Array arr = info[1].As<Napi::Array>();
+    std::vector<int> newOrder;
+    newOrder.reserve(arr.Length());
+    for (uint32_t i = 0; i < arr.Length(); ++i) {
+        Napi::Value val = arr[i];
+        if (!val.IsNumber()) {
+            Napi::TypeError::New(env, "newOrder must be an array of numbers")
+                .ThrowAsJavaScriptException();
+            return;
+        }
+        newOrder.push_back(val.As<Napi::Number>().Int32Value());
+    }
+    BridgeCallLog log("timeline.setTrackVisualEffectChainOrder");
+    g_undoManager->execute(
+        std::make_unique<SetTrackVfxChainOrderCommand>(trackId, newOrder, *g_timeline),
         *g_timeline);
     g_previewDirty = true;
     log.done();
@@ -6580,6 +6959,25 @@ Napi::Value Audio_SetTrackSpread(const Napi::CallbackInfo& info)
         t->stereoSpread = spread;
 
     log.done(std::to_string(trackId) + "=" + std::to_string(spread));
+    return env.Undefined();
+}
+
+// audio_setMasterVolume(volume) → undefined
+// volume: 0..1+ linear gain applied post-effect-chain on the master bus.
+Napi::Value Audio_SetMasterVolume(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised()) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        Napi::TypeError::New(env, "audio_setMasterVolume(volume: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const float vol = info[0].As<Napi::Number>().FloatValue();
+    audioEngine->getMixEngine().setMasterVolume(vol);
     return env.Undefined();
 }
 
@@ -7903,7 +8301,7 @@ std::string sanitizeFilename(const std::string& s)
 
 // Probe audio stream info (native sample rate + duration) via FFmpeg.
 // Returns { 44100, 0.0 } on failure.
-struct ProbedAudioInfo { int sampleRate; double duration; };
+// (Struct + forward declaration live above Project_Load — see ~line 2724.)
 ProbedAudioInfo probeAudioInfo(const std::string& filePath)
 {
     ProbedAudioInfo out{ 44100, 0.0 };
@@ -8100,8 +8498,9 @@ Napi::Value Audio_SwapRegionAudio(const Napi::CallbackInfo& info)
     audioEngine->getMixEngine().mapRegionToSample(regionId, sampleId);
     refreshSamplerForRegion(regionId);
 
-    region->swappedAudioPath = destPath;
-    region->hasSwappedAudio  = true;
+    region->swappedAudioPath        = destPath;
+    region->hasSwappedAudio         = true;
+    region->swappedAudioDurationSec = probed.duration > 0.0 ? probed.duration : 0.0;
 
     log.done(destFile.getFileName().toStdString());
 
@@ -8147,8 +8546,9 @@ Napi::Value Audio_RevertRegionAudio(const Napi::CallbackInfo& info)
     audioEngine->getMixEngine().mapRegionToSample(regionId, sampleId);
     refreshSamplerForRegion(regionId);
 
-    region->swappedAudioPath = "";
-    region->hasSwappedAudio  = false;
+    region->swappedAudioPath        = "";
+    region->hasSwappedAudio         = false;
+    region->swappedAudioDurationSec = 0.0;
 
     log.done(region->name);
 
@@ -8207,6 +8607,9 @@ Napi::Value Audio_LoadRegionAudio(const Napi::CallbackInfo& info)
     if (sampleId < 0) { log.done("decode failed"); return Napi::Number::New(env, -1); }
     triggerMipmapGeneration(sampleId, mipmapSourcePath, mipmapSaveXlpeak);
 
+    fprintf(stderr, "[PITCHDBG] audio_loadRegionAudio: mapRegionToSample region=%d sampleId=%d\n",
+            regionId, sampleId);
+    fflush(stderr);
     audioEngine->getMixEngine().mapRegionToSample(regionId, sampleId);
 
     // Now that this region's audio is mapped, warm clip caches for any clips
@@ -9093,6 +9496,247 @@ Napi::Value HwEnc_Refresh(const Napi::CallbackInfo& info)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Phase 7 — Preview visibility (panel show/hide)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// preview_setEnabled(enabled: boolean) → undefined
+//   enabled=true  ⇒ panel visible, GPU compositor runs
+//   enabled=false ⇒ panel hidden, compositor pauses (one black frame, then idle)
+// Independent of g_previewPauseForExport — render path resumes only when BOTH
+// flags are clear.
+Napi::Value Preview_SetEnabled(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsBoolean()) {
+        Napi::TypeError::New(env, "preview_setEnabled(enabled: boolean)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const bool enabled = info[0].As<Napi::Boolean>().Value();
+    g_previewPauseForVisibility.store(!enabled);
+    return env.Undefined();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MIDI Import
+// ─────────────────────────────────────────────────────────────────────────────
+
+Napi::Value Midi_ParseSummary(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 1 || !info[0].IsString()) {
+        Napi::TypeError::New(env, "parseMidiSummary(filePath: string)")
+            .ThrowAsJavaScriptException();
+        return env.Null();
+    }
+
+    std::string filePath = info[0].As<Napi::String>().Utf8Value();
+
+#ifdef XLETH_DEBUG
+    std::cout << "[MidiImport] parseSummary: " << filePath << std::endl << std::flush;
+#endif
+
+    try {
+        std::string json = MidiImporter::parseSummary(filePath);
+        return Napi::String::New(env, json);
+    } catch (const std::exception& e) {
+        Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+        return env.Null();
+    }
+}
+
+Napi::Value Midi_ImportFull(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+
+    if (info.Length() < 2 || !info[0].IsString() || !info[1].IsString()) {
+        Napi::TypeError::New(env, "importMidiFull(filePath: string, optionsJson: string)")
+            .ThrowAsJavaScriptException();
+        return env.Null();
+    }
+
+    std::string filePath    = info[0].As<Napi::String>().Utf8Value();
+    std::string optionsJson = info[1].As<Napi::String>().Utf8Value();
+
+#ifdef XLETH_DEBUG
+    std::cout << "[MidiImport] importFull: " << filePath << std::endl << std::flush;
+#endif
+
+    try {
+        MidiImportFullResult r = MidiImporter::importFull(filePath, optionsJson);
+
+        size_t sizeBytes = r.notes.getSize();
+        Napi::ArrayBuffer ab = Napi::ArrayBuffer::New(env, sizeBytes);
+        if (sizeBytes > 0)
+            std::memcpy(ab.Data(), r.notes.getData(), sizeBytes);
+
+        Napi::Object out = Napi::Object::New(env);
+        out.Set("metadata", Napi::String::New(env, r.metadataJson));
+        out.Set("noteData", ab);
+        return out;
+    } catch (const std::exception& e) {
+        Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+        return env.Null();
+    }
+}
+
+// midi_executeImport(noteData: ArrayBuffer | Buffer | Uint8Array,
+//                    optionsJson: string)
+//   Commits a parsed MIDI import (output from midi_importFull) into the
+//   live timeline as one Pattern track per output track. Atomic + undoable
+//   via ImportMidiCommand. Triggers waveform mipmap generation for each
+//   newly-loaded sample slot after dispatch.
+void Midi_ExecuteImport(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+
+    if (!isInitialised() || !g_timeline || !g_undoManager || !audioEngine || !sampleBank) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return;
+    }
+
+    if (info.Length() < 2 || !info[1].IsString()) {
+        Napi::TypeError::New(env,
+            "midi_executeImport(noteData: ArrayBuffer|Buffer|Uint8Array, optionsJson: string)")
+            .ThrowAsJavaScriptException();
+        return;
+    }
+
+    // Accept ArrayBuffer (renderer path) or Buffer/Uint8Array (worker IPC path).
+    const uint8_t* noteBytes  = nullptr;
+    size_t         noteLength = 0;
+    if (info[0].IsArrayBuffer()) {
+        Napi::ArrayBuffer ab = info[0].As<Napi::ArrayBuffer>();
+        noteBytes  = static_cast<const uint8_t*>(ab.Data());
+        noteLength = ab.ByteLength();
+    } else if (info[0].IsBuffer()) {
+        Napi::Buffer<uint8_t> b = info[0].As<Napi::Buffer<uint8_t>>();
+        noteBytes  = b.Data();
+        noteLength = b.Length();
+    } else if (info[0].IsTypedArray()) {
+        Napi::TypedArray ta = info[0].As<Napi::TypedArray>();
+        Napi::ArrayBuffer ab = ta.ArrayBuffer();
+        noteBytes  = static_cast<const uint8_t*>(ab.Data()) + ta.ByteOffset();
+        noteLength = ta.ByteLength();
+    } else {
+        Napi::TypeError::New(env,
+            "midi_executeImport: noteData must be ArrayBuffer, Buffer, or TypedArray")
+            .ThrowAsJavaScriptException();
+        return;
+    }
+
+    if ((noteLength % 12u) != 0u) {
+        Napi::TypeError::New(env,
+            "midi_executeImport: noteData length must be a multiple of 12")
+            .ThrowAsJavaScriptException();
+        return;
+    }
+
+    BridgeCallLog log("midi.executeImport");
+
+    const std::string optionsJson = info[1].As<Napi::String>().Utf8Value();
+
+    ImportMidiCommandOptions opts;
+
+    try {
+        const auto parsed = nlohmann::json::parse(optionsJson);
+
+        opts.tempoOverride = parsed.value("tempoOverride", false);
+        opts.sourceBPM     = parsed.value("sourceBPM",    0.0);
+        opts.projectTPQ    = parsed.value("projectTPQ",   960);
+        opts.sourcePath    = parsed.value("sourcePath",   std::string{});
+
+        const auto& outputTracksJson = parsed.at("outputTracks");
+        if (!outputTracksJson.is_array()) {
+            Napi::TypeError::New(env, "midi_executeImport: outputTracks must be an array")
+                .ThrowAsJavaScriptException();
+            return;
+        }
+
+        opts.outputTracks.reserve(outputTracksJson.size());
+        for (const auto& entry : outputTracksJson) {
+            ImportMidiCommandOptions::OutputTrackSpec spec;
+            spec.outputTrackIndex = entry.value("outputTrackIndex", 0);
+            spec.name             = entry.value("name",            std::string{});
+            spec.visualOnly       = entry.value("visualOnly",      false);
+            spec.regionId         = entry.value("regionId",        -1);
+            opts.outputTracks.push_back(std::move(spec));
+        }
+    } catch (const std::exception& e) {
+        Napi::TypeError::New(env,
+            std::string{"midi_executeImport: invalid options JSON: "} + e.what())
+            .ThrowAsJavaScriptException();
+        return;
+    }
+
+    // Unpack 12-byte PackedNote records, group by outputTrackIndex.
+    // Build a lookup outputTrackIndex → spec slot.
+    std::unordered_map<int, size_t> indexToSpecSlot;
+    indexToSpecSlot.reserve(opts.outputTracks.size());
+    for (size_t i = 0; i < opts.outputTracks.size(); ++i) {
+        indexToSpecSlot[opts.outputTracks[i].outputTrackIndex] = i;
+    }
+
+    auto readU32LE = [](const uint8_t* p) -> uint32_t {
+        return  static_cast<uint32_t>(p[0])
+             | (static_cast<uint32_t>(p[1]) << 8)
+             | (static_cast<uint32_t>(p[2]) << 16)
+             | (static_cast<uint32_t>(p[3]) << 24);
+    };
+
+    const size_t noteCount = noteLength / 12u;
+    for (size_t i = 0; i < noteCount; ++i) {
+        const uint8_t* rec = noteBytes + i * 12u;
+        const uint32_t tick     = readU32LE(rec + 0);
+        const uint32_t duration = readU32LE(rec + 4);
+        const uint8_t  noteNum  = rec[8];
+        const uint8_t  velocity = rec[9];
+        const uint8_t  trackIdx = rec[10];
+        // rec[11] = flags (drum-channel marker) — unused at commit time.
+
+        const auto it = indexToSpecSlot.find(static_cast<int>(trackIdx));
+        if (it == indexToSpecSlot.end()) continue;
+
+        PatternNote pn;
+        pn.position = TickTime{ static_cast<int64_t>(tick) };
+        pn.duration = TickTime{ static_cast<int64_t>(duration) };
+        pn.pitch    = static_cast<int>(noteNum);
+        pn.velocity = static_cast<float>(velocity) / 127.0f;
+        opts.outputTracks[it->second].notes.push_back(pn);
+    }
+
+#ifdef XLETH_DEBUG
+    std::fprintf(stderr,
+                 "[MidiImport] Midi_ExecuteImport notes=%zu outputTracks=%zu tempoOverride=%d\n",
+                 noteCount, opts.outputTracks.size(), opts.tempoOverride ? 1 : 0);
+    std::fflush(stderr);
+#endif
+
+    const double engineRate = audioEngine->getSampleRate();
+    auto& mixEngine = audioEngine->getMixEngine();
+
+    // Hold a non-owning pointer so we can read created-slot info after dispatch.
+    auto cmd = std::make_unique<ImportMidiCommand>(
+        std::move(opts), mixEngine, *sampleBank, engineRate);
+    ImportMidiCommand* cmdPtr = cmd.get();
+
+    {
+        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        g_undoManager->execute(std::move(cmd), *g_timeline);
+    }
+
+    // Post-pass: trigger waveform mipmap generation for each newly-loaded
+    // sample slot. cmdPtr is still valid — UndoManager owns the command on
+    // its undo stack and we just pushed it (no possibility of pop).
+    for (const auto& slot : cmdPtr->getCreatedSampleSlots()) {
+        triggerMipmapGeneration(slot.sampleBankId, slot.filePath, /*saveXlpeak*/false);
+    }
+
+    log.done(std::to_string(cmdPtr->getCreatedSampleSlots().size()) + " slots");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Module initialisation
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -9136,6 +9780,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
 
     // ── Phase 1 — Timeline queries ───────────────────────────────────────────
     exports.Set("timeline_getBPM",           Napi::Function::New(env, Timeline_GetBPM));
+    exports.Set("timeline_getTempoLocked",   Napi::Function::New(env, Timeline_GetTempoLocked));
     exports.Set("timeline_getDeclickMs",     Napi::Function::New(env, Timeline_GetDeclickMs));
     exports.Set("timeline_getSources",       Napi::Function::New(env, Timeline_GetSources));
     exports.Set("timeline_getRegions",       Napi::Function::New(env, Timeline_GetRegions));
@@ -9146,12 +9791,14 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("timeline_getClipsInRange",  Napi::Function::New(env, Timeline_GetClipsInRange));
 
     // ── Phase 1 — Timeline mutations (via UndoManager) ───────────────────────
-    exports.Set("timeline_setBPM",       Napi::Function::New(env, Timeline_SetBPM));
-    exports.Set("timeline_setDeclickMs", Napi::Function::New(env, Timeline_SetDeclickMs));
+    exports.Set("timeline_setBPM",         Napi::Function::New(env, Timeline_SetBPM));
+    exports.Set("timeline_setTempoLocked", Napi::Function::New(env, Timeline_SetTempoLocked));
+    exports.Set("timeline_setDeclickMs",   Napi::Function::New(env, Timeline_SetDeclickMs));
     exports.Set("timeline_addTrack",     Napi::Function::New(env, Timeline_AddTrack));
     exports.Set("timeline_removeTrack",  Napi::Function::New(env, Timeline_RemoveTrack));
-    exports.Set("timeline_setTrackMuted",Napi::Function::New(env, Timeline_SetTrackMuted));
-    exports.Set("timeline_setTrackSolo", Napi::Function::New(env, Timeline_SetTrackSolo));
+    exports.Set("timeline_setTrackMuted",      Napi::Function::New(env, Timeline_SetTrackMuted));
+    exports.Set("timeline_setTrackVisualOnly", Napi::Function::New(env, Timeline_SetTrackVisualOnly));
+    exports.Set("timeline_setTrackSolo",       Napi::Function::New(env, Timeline_SetTrackSolo));
     exports.Set("timeline_setTrackName", Napi::Function::New(env, Timeline_SetTrackName));
     exports.Set("timeline_setPatternName",   Napi::Function::New(env, Timeline_SetPatternName));
     exports.Set("timeline_setPatternRegion", Napi::Function::New(env, Timeline_SetPatternRegion));
@@ -9164,8 +9811,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("timeline_stretchClip",      Napi::Function::New(env, Timeline_StretchClip));
     exports.Set("timeline_stretchClipLeft",  Napi::Function::New(env, Timeline_StretchClipLeft));
     exports.Set("timeline_pitchShiftClip",   Napi::Function::New(env, Timeline_PitchShiftClip));
-    exports.Set("timeline_reverseClip",      Napi::Function::New(env, Timeline_ReverseClip));
-    exports.Set("timeline_autoTrimClip",     Napi::Function::New(env, Timeline_AutoTrimClip));
+    exports.Set("timeline_reverseClip",             Napi::Function::New(env, Timeline_ReverseClip));
+    exports.Set("timeline_autoTrimClip",            Napi::Function::New(env, Timeline_AutoTrimClip));
+    exports.Set("timeline_spliceClipsAtPlayhead",   Napi::Function::New(env, Timeline_SpliceClipsAtPlayhead));
     exports.Set("timeline_addRegion",    Napi::Function::New(env, Timeline_AddRegion));
     exports.Set("timeline_modifyRegion", Napi::Function::New(env, Timeline_ModifyRegion));
     exports.Set("timeline_setSyllables", Napi::Function::New(env, Timeline_SetSyllables));
@@ -9175,8 +9823,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     // ── Grid Layout ──────────────────────────────────────────────────────────
     exports.Set("timeline_getGridLayout",       Napi::Function::New(env, Timeline_GetGridLayout));
     exports.Set("timeline_setGridLayout",       Napi::Function::New(env, Timeline_SetGridLayout));
-    exports.Set("timeline_assignTrackToGrid",   Napi::Function::New(env, Timeline_AssignTrackToGrid));
-    exports.Set("timeline_removeTrackFromGrid", Napi::Function::New(env, Timeline_RemoveTrackFromGrid));
+    exports.Set("timeline_assignTrackToGrid",            Napi::Function::New(env, Timeline_AssignTrackToGrid));
+    exports.Set("timeline_assignTrackToGridWithZOrder",  Napi::Function::New(env, Timeline_AssignTrackToGridWithZOrder));
+    exports.Set("timeline_removeTrackFromGrid",          Napi::Function::New(env, Timeline_RemoveTrackFromGrid));
     exports.Set("timeline_setChorusTrack",      Napi::Function::New(env, Timeline_SetChorusTrack));
     exports.Set("timeline_setCrashOverlay",     Napi::Function::New(env, Timeline_SetCrashOverlay));
     exports.Set("timeline_setPreviewFps",       Napi::Function::New(env, Timeline_SetPreviewFps));
@@ -9202,6 +9851,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("timeline_moveNote",               Napi::Function::New(env, Timeline_MoveNote));
     exports.Set("timeline_moveNotesBatch",         Napi::Function::New(env, Timeline_MoveNotesBatch));
     exports.Set("timeline_quantizeClipsBatch",     Napi::Function::New(env, Timeline_QuantizeClipsBatch));
+    exports.Set("timeline_resizeNotesBatch",        Napi::Function::New(env, Timeline_ResizeNotesBatch));
     exports.Set("timeline_resizeNote",             Napi::Function::New(env, Timeline_ResizeNote));
     exports.Set("timeline_setNoteVelocity",        Napi::Function::New(env, Timeline_SetNoteVelocity));
     exports.Set("timeline_previewNote",            Napi::Function::New(env, Timeline_PreviewNote));
@@ -9213,6 +9863,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("timeline_setVideoHoldLastFrame",     Napi::Function::New(env, Timeline_SetVideoHoldLastFrame));
     exports.Set("timeline_setTrackCornerRadius",      Napi::Function::New(env, Timeline_SetTrackCornerRadius));
     exports.Set("timeline_setTrackGapScaleOverride",  Napi::Function::New(env, Timeline_SetTrackGapScaleOverride));
+    exports.Set("timeline_setTrackSubdivisionFactor", Napi::Function::New(env, Timeline_SetTrackSubdivisionFactor));
     exports.Set("timeline_setTrackBounceSettings",       Napi::Function::New(env, Timeline_SetTrackBounceSettings));
     exports.Set("timeline_setTrackZoomPanRotSettings",   Napi::Function::New(env, Timeline_SetTrackZoomPanRotSettings));
     exports.Set("timeline_setTrackPingPongSettings",     Napi::Function::New(env, Timeline_SetTrackPingPongSettings));
@@ -9224,10 +9875,14 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("timeline_setPreviewEffectsBypass",   Napi::Function::New(env, Timeline_SetPreviewEffectsBypass));
     exports.Set("timeline_addVisualEffect",           Napi::Function::New(env, Timeline_AddVisualEffect));
     exports.Set("timeline_removeVisualEffect",        Napi::Function::New(env, Timeline_RemoveVisualEffect));
-    exports.Set("timeline_reorderVisualEffect",       Napi::Function::New(env, Timeline_ReorderVisualEffect));
-    exports.Set("timeline_setVisualEffectParam",      Napi::Function::New(env, Timeline_SetVisualEffectParam));
+    exports.Set("timeline_reorderVisualEffect",                Napi::Function::New(env, Timeline_ReorderVisualEffect));
+    exports.Set("timeline_setTrackVisualEffectChainOrder",     Napi::Function::New(env, Timeline_SetTrackVisualEffectChainOrder));
+    exports.Set("timeline_setVisualEffectParam",               Napi::Function::New(env, Timeline_SetVisualEffectParam));
     exports.Set("timeline_setVisualEffectBypassed",   Napi::Function::New(env, Timeline_SetVisualEffectBypassed));
     exports.Set("timeline_getVisualEffectChain",      Napi::Function::New(env, Timeline_GetVisualEffectChain));
+
+    // ── Phase 7 — Preview visibility ────────────────────────────────────────
+    exports.Set("preview_setEnabled", Napi::Function::New(env, Preview_SetEnabled));
 
     // ── Phase 1 — Undo / Redo ────────────────────────────────────────────────
     exports.Set("undo_undo",               Napi::Function::New(env, Undo_Undo));
@@ -9241,6 +9896,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("transport_seek",      Napi::Function::New(env, Transport_Seek));
     // transport_getState = getTransportState (same function, aliased)
     exports.Set("transport_getState",  Napi::Function::New(env, GetTransportState));
+
+    // ── WORLD processing indicator ───────────────────────────────────────────
+    exports.Set("cache_getWorldActiveJobs", Napi::Function::New(env, Cache_GetWorldActiveJobIds));
 
     // ── Global clip-processing defaults ─────────────────────────────────────
     exports.Set("engine_setGlobalStretchMethod",   Napi::Function::New(env, Engine_SetGlobalStretchMethod));
@@ -9260,6 +9918,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("audio_setTrackVolume",    Napi::Function::New(env, Audio_SetTrackVolume));
     exports.Set("audio_setTrackPan",       Napi::Function::New(env, Audio_SetTrackPan));
     exports.Set("audio_setTrackSpread",    Napi::Function::New(env, Audio_SetTrackSpread));
+    exports.Set("audio_setMasterVolume",   Napi::Function::New(env, Audio_SetMasterVolume));
     exports.Set("audio_exportStart",       Napi::Function::New(env, Audio_ExportStart));
     exports.Set("audio_exportGetProgress", Napi::Function::New(env, Audio_ExportGetProgress));
     exports.Set("audio_exportCancel",      Napi::Function::New(env, Audio_ExportCancel));
@@ -9382,6 +10041,11 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("hwenc_getAvailableEncoders", Napi::Function::New(env, HwEnc_GetAvailableEncoders));
     exports.Set("hwenc_getDefaultEncoder",    Napi::Function::New(env, HwEnc_GetDefaultEncoder));
     exports.Set("hwenc_refresh",              Napi::Function::New(env, HwEnc_Refresh));
+
+    // ── MIDI Import ──────────────────────────────────────────────────────────
+    exports.Set("midi_parseSummary",  Napi::Function::New(env, Midi_ParseSummary));
+    exports.Set("midi_importFull",    Napi::Function::New(env, Midi_ImportFull));
+    exports.Set("midi_executeImport", Napi::Function::New(env, Midi_ExecuteImport));
 
     return exports;
 }

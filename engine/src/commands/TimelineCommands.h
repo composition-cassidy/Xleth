@@ -2,6 +2,7 @@
 #include "Command.h"
 #include "model/TimelineTypes.h"
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 class Timeline;
@@ -83,6 +84,36 @@ private:
     TickTime newDuration_;
     TickTime oldRegionOffset_;
     TickTime newRegionOffset_;
+};
+
+// ─── SpliceClipsCommand ───────────────────────────────────────────────────────
+// Atomically splits N clips at given tick positions in a single undo step.
+// For each entry: removes the original clip, inserts left and right halves.
+// Undo: removes both halves, restores original (with its original ID).
+// Redo: removes original again (restored by undo), re-inserts both halves
+//       using restoreClip so the same IDs are preserved.
+
+class SpliceClipsCommand : public Command {
+public:
+    struct Entry {
+        Clip original;  // full snapshot of clip being split
+        Clip left;      // left half (id=0 before first execute; filled after)
+        Clip right;     // right half (id=0 before first execute; filled after)
+    };
+
+    // outIds is filled synchronously during execute() with {leftId, rightId}
+    // per entry. Caller may pass nullptr if IDs are not needed.
+    SpliceClipsCommand(std::vector<Entry> entries,
+                       std::vector<std::pair<int,int>>* outIds = nullptr);
+
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+
+private:
+    std::vector<Entry>              entries_;
+    std::vector<std::pair<int,int>>* outIds_;
+    bool                            firstExecute_ = true;
 };
 
 // ─── AutoTrimClipCommand ─────────────────────────────────────────────────────
@@ -320,6 +351,9 @@ public:
 private:
     double oldBpm_;
     double newBpm_;
+    // Saved stretchRatios for tempoLocked stretched clips so undo restores
+    // exact values without floating-point drift from repeated BPM changes.
+    std::unordered_map<int, double> savedStretchRatios_;
 };
 
 // ─── SetTrackMutedCommand ─────────────────────────────────────────────────────
@@ -334,6 +368,20 @@ private:
     int  trackId_;
     bool oldMuted_;
     bool newMuted_;
+};
+
+// ─── SetTrackVisualOnlyCommand ────────────────────────────────────────────────
+
+class SetTrackVisualOnlyCommand : public Command {
+public:
+    SetTrackVisualOnlyCommand(int trackId, bool newVisualOnly, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int  trackId_;
+    bool oldVisualOnly_;
+    bool newVisualOnly_;
 };
 
 // ─── SetTrackSoloCommand ──────────────────────────────────────────────────────
@@ -414,11 +462,19 @@ class AssignTrackToGridCommand : public Command {
 public:
     AssignTrackToGridCommand(int trackId, int gridX, int gridY,
                              int spanX, int spanY, const Timeline& timeline);
+    // Variant that stores an explicit zOrder on the new slot (instead of the
+    // default 0). Single atomic command — used by drag-to-place so that
+    // placement-on-top is one undo step.
+    AssignTrackToGridCommand(int trackId, int gridX, int gridY,
+                             int spanX, int spanY, int zOrder,
+                             const Timeline& timeline);
     void execute(Timeline& timeline) override;
     void undo(Timeline& timeline) override;
     std::string describe() const override;
 private:
     int      trackId_, gridX_, gridY_, spanX_, spanY_;
+    bool     hasZOrder_ = false;
+    int      zOrder_ = 0;
     bool     hadPrevious_ = false;
     GridSlot prevSlot_;
 };
@@ -512,7 +568,7 @@ struct SamplerSettings {
     bool    crossfadeEnabled = false;
     int64_t smpStart         = 0;
     int64_t smpLength        = 0;
-    int     declickSamples   = 64;
+    float   declickMs        = 1.5f;
     float   fadeInMs         = 0.0f;
     float   fadeOutMs        = 0.0f;
     int64_t crossfadeSamples = 0;
@@ -766,6 +822,31 @@ private:
     std::vector<Snapshot> snapshots_;
 };
 
+// ─── ResizeNotesBatchCommand ──────────────────────────────────────────────────
+// Resizes N notes in one atomic operation (same-delta semantics).
+// Each note's duration changes by the same tick delta as the anchor.
+
+class ResizeNotesBatchCommand : public Command {
+public:
+    struct Resize {
+        int      noteId;
+        TickTime newDuration;
+    };
+    ResizeNotesBatchCommand(int patternId, std::vector<Resize> resizes,
+                            const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    struct Snapshot {
+        int      noteId;
+        TickTime oldDuration;
+        TickTime newDuration;
+    };
+    int                   patternId_;
+    std::vector<Snapshot> snapshots_;
+};
+
 // ─── ResizeNoteCommand ────────────────────────────────────────────────────────
 
 class ResizeNoteCommand : public Command {
@@ -875,6 +956,23 @@ private:
     int   trackId_;
     float oldGapScale_;
     float newGapScale_;
+};
+
+// ─── SetTrackSubdivisionFactorCommand ────────────────────────────────────────
+// Sets the per-track subdivisionFactor (1, 2, 4, or 8). Existing GridSlots are
+// untouched — only future placements use the new factor. Snapshots the prior
+// value so undo restores it.
+
+class SetTrackSubdivisionFactorCommand : public Command {
+public:
+    SetTrackSubdivisionFactorCommand(int trackId, int newFactor, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int trackId_;
+    int oldFactor_;
+    int newFactor_;
 };
 
 // ─── SetTrackBounceSettingsCommand ───────────────────────────────────────────
@@ -997,6 +1095,19 @@ private:
     int trackId_;
     int fromIndex_;
     int toIndex_;
+};
+
+// ─── SetTrackVfxChainOrderCommand ─────────────────────────────────────────────
+
+class SetTrackVfxChainOrderCommand : public Command {
+public:
+    SetTrackVfxChainOrderCommand(int trackId, const std::vector<int>& newOrder, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int trackId_;
+    std::vector<int> newOrder_;
 };
 
 // ─── SetVisualEffectParamCommand ──────────────────────────────────────────────

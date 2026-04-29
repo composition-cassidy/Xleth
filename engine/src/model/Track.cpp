@@ -130,6 +130,7 @@ void to_json(nlohmann::json& j, const TrackInfo& t) {
         {"stereoSpread",      t.stereoSpread},
         {"muted",             t.muted},
         {"solo",              t.solo},
+        {"visualOnly",        t.visualOnly},
         {"order",             t.order},
         {"videoX",            t.videoX},
         {"videoY",            t.videoY},
@@ -145,6 +146,8 @@ void to_json(nlohmann::json& j, const TrackInfo& t) {
     // ── Visual compositor effect settings (Prompt 11 persistence) ────────
     j["gapScaleOverride"] = t.gapScaleOverride;
     j["cornerRadius"]     = t.cornerRadius;
+
+    j["subdivisionFactor"] = t.subdivisionFactor;
 
     j["bounce"] = {
         {"enabled",      t.bounce.enabled},
@@ -215,6 +218,7 @@ void from_json(const nlohmann::json& j, TrackInfo& t) {
     t.stereoSpread = j.value("stereoSpread", 1.0f);  // default 1.0 for old projects
     j.at("muted").get_to(t.muted);
     j.at("solo").get_to(t.solo);
+    t.visualOnly = j.value("visualOnly", false);
     j.at("order").get_to(t.order);
     j.at("videoX").get_to(t.videoX);
     j.at("videoY").get_to(t.videoY);
@@ -237,6 +241,13 @@ void from_json(const nlohmann::json& j, TrackInfo& t) {
     // project.json files load cleanly with every visual effect at default.
     t.gapScaleOverride = j.value("gapScaleOverride", -1.0f);
     t.cornerRadius     = j.value("cornerRadius",      0.0f);
+
+    {
+        int f = j.value("subdivisionFactor", 1);
+        // Sanitize: only the four canonical factors are valid.
+        if (f != 1 && f != 2 && f != 4 && f != 8) f = 1;
+        t.subdivisionFactor = f;
+    }
 
     if (j.contains("bounce") && j.at("bounce").is_object()) {
         const auto& jb = j.at("bounce");

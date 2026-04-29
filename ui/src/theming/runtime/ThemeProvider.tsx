@@ -20,6 +20,7 @@ import { createThemeWriter, type ThemeWriter } from './ThemeWriter';
 import type { ThemeFile, TokenValue } from '../schema/types';
 
 interface ThemeContextValue {
+  slug: string;
   theme: ThemeFile;
   resolved: ResolvedTheme;
   /** Where the current theme came from. 'fallback' means the requested one failed to load. */
@@ -82,6 +83,7 @@ export function ThemeProvider({ children, writer, onLoaded }: ThemeProviderProps
     if (!resolved) return;
     writeThemeToRoot(resolved.values, appliedRef.current ?? undefined);
     appliedRef.current = resolved.values;
+    window.dispatchEvent(new CustomEvent('xleth-theme-changed'));
   }, [resolved]);
 
   const setTheme = useCallback(async (nextSlug: string, next: ThemeFile) => {
@@ -117,6 +119,7 @@ export function ThemeProvider({ children, writer, onLoaded }: ThemeProviderProps
   const value = useMemo<ThemeContextValue | null>(() => {
     if (!theme || !resolved || !loadResult) return null;
     return {
+      slug,
       theme,
       resolved,
       source: loadResult.source,
@@ -127,7 +130,7 @@ export function ThemeProvider({ children, writer, onLoaded }: ThemeProviderProps
       setDerivationDetached,
       flushSaves,
     };
-  }, [theme, resolved, loadResult, setTheme, updateTokens, setDerivationDetached, flushSaves]);
+  }, [slug, theme, resolved, loadResult, setTheme, updateTokens, setDerivationDetached, flushSaves]);
 
   // First paint before theme loads: render nothing to avoid a flash of
   // unstyled tokens. The loader is fast (one IPC roundtrip + one file read)

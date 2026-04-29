@@ -368,6 +368,8 @@ const juce::AudioBuffer<float>* SampleBank::getSample(int sampleId) const
 {
     if (sampleId < 0 || sampleId >= static_cast<int>(samples_.size()))
         return nullptr;
+    if (samples_[sampleId] == nullptr)
+        return nullptr;
     return &samples_[sampleId]->buffer;
 }
 
@@ -382,6 +384,8 @@ SampleBank::SampleInfo SampleBank::getSampleInfo(int sampleId) const
 {
     if (sampleId < 0 || sampleId >= static_cast<int>(samples_.size()))
         return {};
+    if (samples_[sampleId] == nullptr)
+        return {};
     return samples_[sampleId]->info;
 }
 
@@ -389,6 +393,8 @@ SampleBank::SampleInfo SampleBank::getSampleInfo(int sampleId) const
 int64_t SampleBank::getLeadingSilenceSamples(int sampleId, float thresholdDb) const
 {
     if (sampleId < 0 || sampleId >= static_cast<int>(samples_.size()))
+        return -1;
+    if (samples_[sampleId] == nullptr)
         return -1;
 
     const juce::AudioBuffer<float>& buf = samples_[sampleId]->buffer;
@@ -415,6 +421,36 @@ int64_t SampleBank::getLeadingSilenceSamples(int sampleId, float thresholdDb) co
         if (peak >= threshold) return static_cast<int64_t>(i);
     }
     return static_cast<int64_t>(numSamples);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+void SampleBank::unloadSample(int id)
+{
+    if (id < 0 || id >= static_cast<int>(samples_.size()))
+    {
+#ifdef XLETH_DEBUG
+        std::cout << "[SampleBank] unloadSample(id=" << id
+                  << ") — out of range, no-op (size="
+                  << samples_.size() << ")\n" << std::flush;
+#endif
+        return;
+    }
+
+    if (samples_[id] == nullptr)
+    {
+#ifdef XLETH_DEBUG
+        std::cout << "[SampleBank] unloadSample(id=" << id
+                  << ") — already tombstoned, no-op\n" << std::flush;
+#endif
+        return;
+    }
+
+    samples_[id].reset();
+
+#ifdef XLETH_DEBUG
+    std::cout << "[SampleBank] unloadSample(id=" << id
+              << ") — buffer freed, slot tombstoned\n" << std::flush;
+#endif
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

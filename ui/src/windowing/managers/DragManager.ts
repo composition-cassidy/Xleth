@@ -108,8 +108,10 @@ function unbindWindowListeners(): void {
 function getDragOffsetSnapshot(panelId: PanelId): DragOffset | null {
   if (dragState.state !== 'dragging' || dragState.panelId !== panelId) return null;
 
-  const dx = dragState.currentMouseX - dragState.startMouseX;
-  const dy = dragState.currentMouseY - dragState.startMouseY;
+  const finalX = dragState.startPanelX + (dragState.currentMouseX - dragState.startMouseX);
+  const finalY = dragState.startPanelY + (dragState.currentMouseY - dragState.startMouseY);
+  const dx = Math.max(0, finalX) - dragState.startPanelX;
+  const dy = Math.max(0, finalY) - dragState.startPanelY;
   const cached = offsetCache.get(panelId);
   if (cached && cached.dx === dx && cached.dy === dy) return cached.value;
 

@@ -1,72 +1,85 @@
 {
-  "timeline": {
-    "id": "timeline",
-    "hidden": false,
-    "focused": false,
-    "zIndex": 8,
-    "mode": "floating",
-    "floating": { "x": 0, "y": 660, "width": 1280, "height": 180 },
-    "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 280 },
-    "preMaximizeState": null
+  "panels": {
+    "timeline": {
+      "id": "timeline",
+      "hidden": false,
+      "focused": false,
+      "zIndex": 8,
+      "mode": "floating",
+      "floating": { "x": 0, "y": 660, "width": 1280, "height": 180 },
+      "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 280 },
+      "preMaximizeState": null
+    },
+    "sampleSelector": {
+      "id": "sampleSelector",
+      "hidden": false,
+      "focused": false,
+      "zIndex": 0,
+      "mode": "docked",
+      "floating": { "x": 24, "y": 72, "width": 300, "height": 640 },
+      "docked": { "region": "left", "orderInRegion": 0, "sizeInRegion": 240 },
+      "preMaximizeState": null
+    },
+    "pianoRoll": {
+      "id": "pianoRoll",
+      "hidden": true,
+      "focused": false,
+      "zIndex": 0,
+      "mode": "floating",
+      "floating": { "x": 320, "y": 140, "width": 960, "height": 540 },
+      "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 280 },
+      "preMaximizeState": null
+    },
+    "preview": {
+      "id": "preview",
+      "hidden": false,
+      "focused": false,
+      "zIndex": 9,
+      "mode": "floating",
+      "floating": { "x": 640, "y": 60, "width": 640, "height": 360 },
+      "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 280 },
+      "preMaximizeState": null
+    },
+    "mixer": {
+      "id": "mixer",
+      "hidden": true,
+      "focused": false,
+      "zIndex": 0,
+      "mode": "floating",
+      "floating": { "x": 220, "y": 420, "width": 1040, "height": 320 },
+      "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 240 },
+      "preMaximizeState": null
+    },
+    "gridSettings": {
+      "id": "gridSettings",
+      "hidden": false,
+      "focused": true,
+      "zIndex": 10,
+      "mode": "floating",
+      "floating": { "x": 0, "y": 60, "width": 640, "height": 600 },
+      "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 280 },
+      "preMaximizeState": null
+    },
+    "nodeEditor": {
+      "id": "nodeEditor",
+      "hidden": true,
+      "focused": false,
+      "zIndex": 0,
+      "mode": "floating",
+      "floating": { "x": 400, "y": 160, "width": 900, "height": 600 },
+      "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 280 },
+      "preMaximizeState": null
+    },
+    "sampler": {
+      "id": "sampler",
+      "hidden": true,
+      "focused": false,
+      "zIndex": 0,
+      "mode": "floating",
+      "floating": { "x": 340, "y": 100, "width": 680, "height": 520 },
+      "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 280 },
+      "preMaximizeState": null
+    }
   },
-  "sampleSelector": {
-    "id": "sampleSelector",
-    "hidden": false,
-    "focused": false,
-    "zIndex": 0,
-    "mode": "docked",
-    "floating": { "x": 24, "y": 72, "width": 300, "height": 640 },
-    "docked": { "region": "left", "orderInRegion": 0, "sizeInRegion": 240 },
-    "preMaximizeState": null
-  },
-  "pianoRoll": {
-    "id": "pianoRoll",
-    "hidden": true,
-    "focused": false,
-    "zIndex": 0,
-    "mode": "floating",
-    "floating": { "x": 320, "y": 140, "width": 960, "height": 540 },
-    "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 280 },
-    "preMaximizeState": null
-  },
-  "preview": {
-    "id": "preview",
-    "hidden": false,
-    "focused": false,
-    "zIndex": 9,
-    "mode": "floating",
-    "floating": { "x": 640, "y": 60, "width": 640, "height": 360 },
-    "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 280 },
-    "preMaximizeState": null
-  },
-  "mixer": {
-    "id": "mixer",
-    "hidden": true,
-    "focused": false,
-    "zIndex": 0,
-    "mode": "floating",
-    "floating": { "x": 220, "y": 420, "width": 1040, "height": 320 },
-    "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 240 },
-    "preMaximizeState": null
-  },
-  "gridSettings": {
-    "id": "gridSettings",
-    "hidden": false,
-    "focused": true,
-    "zIndex": 10,
-    "mode": "floating",
-    "floating": { "x": 0, "y": 60, "width": 640, "height": 600 },
-    "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 280 },
-    "preMaximizeState": null
-  },
-  "nodeEditor": {
-    "id": "nodeEditor",
-    "hidden": true,
-    "focused": false,
-    "zIndex": 0,
-    "mode": "floating",
-    "floating": { "x": 400, "y": 160, "width": 900, "height": 600 },
-    "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 280 },
-    "preMaximizeState": null
-  }
+  "dockRegionSizes": { "left": 280, "right": 280, "top": 240, "bottom": 240 }
 }

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useImperativeHandle, forwardRef, useCallback } from 'react'
-import { drawGrid, drawClips, drawDropPreview, drawPatternBlocks } from './timelineDrawing.js'
+import { drawGrid, drawClips, drawDropPreview, drawPatternBlocks, drawWorldSpinners } from './timelineDrawing.js'
+import useWorldProcessingStore from '../../stores/worldProcessingStore.js'
 import { TRACK_HEIGHT, PPQ, pixelToBeat, beatToPixel } from '../../constants/timeline.js'
 import { playheadClock } from '../../services/PlayheadClock.js'
 import { timelineEvents } from '../../timelineEvents.js'
@@ -27,6 +28,8 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     onSplitClip,
     onRequestClipContextMenu,
     setSelectedClipIds,
+    // Focus pivot (track-of-row under pointer) — fires on mouse-down/right-click
+    onFocusTrack,
     // Pencil template (middle-click quick copy)
     pencilTemplateRef, onSetPencilTemplate,
     // Legacy drag-drop (from SampleSelectorTab)
@@ -58,6 +61,16 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   regionsRef.current = regions
   tracksRef.current = tracks
   selectedRef.current = selectedClipIds
+
+  // ── WORLD spinner state ───────────────────────────────────────────────────
+  const worldProcessingClips    = useWorldProcessingStore(s => s.worldProcessingClips)
+  const worldProcessingClipsRef = useRef(worldProcessingClips)
+  worldProcessingClipsRef.current = worldProcessingClips
+  const spinAngleRef       = useRef(0)
+  const spinRafRef         = useRef(null)
+  // Memoized track-id→index map; rebuilt only when the tracks prop changes so
+  // the 60fps spinner rAF loop allocates nothing per tick.
+  const trackIdToIndexRef  = useRef({})
   activeSampleIdRef.current = activeSampleId
   stickyNoteLengthRef.current = stickyNoteLength
   snapGranularityRef.current = snapGranularity
@@ -107,6 +120,9 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   }
 
   // ── Track ID → index map ──────────────────────────────────────────────────
+  // buildTrackIdToIndex() is kept for use outside the spinner hot path.
+  // trackIdToIndexRef is rebuilt via useEffect on tracks changes so the 60fps
+  // rAF spinner loop never allocates a new object per tick.
 
   function buildTrackIdToIndex() {
     const map = {}
@@ -140,20 +156,31 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     const mutedTrackIds = new Set(
       (tracksRef.current || []).filter((t) => t.muted).map((t) => t.id)
     )
+    const tidx = trackIdToIndexRef.current
     drawClips(
       ctx, w, h,
       scrollOffsetRef.current, pixelsPerBeatRef.current,
-      clipsRef.current, buildTrackIdToIndex(), regionsRef.current,
+      clipsRef.current, tidx, regionsRef.current,
       selectedRef.current, waveformCacheRef?.current, hiResCacheRef?.current, clipPeakCacheRef?.current, bpmRef?.current,
       mutedTrackIds
     )
     drawPatternBlocks(
       ctx, w, h,
       scrollOffsetRef.current, pixelsPerBeatRef.current,
-      patternBlocksRef.current, buildTrackIdToIndex(),
+      patternBlocksRef.current, tidx,
       patternsRef.current, regionsRef.current,
       selectedBlockIdsRef.current, mutedTrackIds
     )
+    const wpc = worldProcessingClipsRef.current
+    if (wpc?.size) {
+      const accentColor = getComputedStyle(document.documentElement)
+        .getPropertyValue('--theme-accent').trim() || '#5b8aff'
+      drawWorldSpinners(
+        ctx, clipsRef.current, tidx, wpc,
+        scrollOffsetRef.current, pixelsPerBeatRef.current,
+        spinAngleRef.current, accentColor
+      )
+    }
   }
 
   function redrawOverlay() {
@@ -275,6 +302,40 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     return () => el.removeEventListener('wheel', onWheel)
   }, [onWheel])
 
+  // ── Keep trackIdToIndexRef in sync with the tracks prop ──────────────────
+  // Avoids allocating a new map object on every 60fps rAF tick during WORLD
+  // processing — the map rebuilds only when the track list structurally changes.
+
+  useEffect(() => {
+    const map = {}
+    const t = tracksRef.current
+    if (t) for (let i = 0; i < t.length; i++) map[t[i].id] = i
+    trackIdToIndexRef.current = map
+  }, [tracks])
+
+  // ── WORLD spinner rAF loop ────────────────────────────────────────────────
+  // Runs at ~60fps only while at least one clip is being WORLD-processed.
+
+  useEffect(() => {
+    if (worldProcessingClips.size === 0) {
+      if (spinRafRef.current) {
+        cancelAnimationFrame(spinRafRef.current)
+        spinRafRef.current = null
+        redrawContent('spinner-stop')
+      }
+      return
+    }
+    function tick() {
+      spinAngleRef.current = (spinAngleRef.current + 0.08) % (Math.PI * 2)
+      redrawContent('spinner-tick')
+      spinRafRef.current = requestAnimationFrame(tick)
+    }
+    if (!spinRafRef.current) spinRafRef.current = requestAnimationFrame(tick)
+    return () => {
+      if (spinRafRef.current) { cancelAnimationFrame(spinRafRef.current); spinRafRef.current = null }
+    }
+  }, [worldProcessingClips])
+
   // ── PlayheadClock 60fps playhead animation (DOM element, GPU-composited) ──
 
   useEffect(() => {
@@ -299,6 +360,17 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   const handleMouseDown = useCallback((e) => {
     const pos = getLocalXY(e)
     if (!pos) return
+
+    // ── Focus shift on left-click anywhere in a track row ─────────────────
+    // Covers empty-body click, clip click, and pattern-block click —
+    // selection logic stays untouched downstream.
+    if (e.button === 0 && onFocusTrack) {
+      const tks = tracksRef.current
+      const trackIdx = Math.floor(pos.localY / TRACK_HEIGHT)
+      if (tks && trackIdx >= 0 && trackIdx < tks.length) {
+        onFocusTrack(tks[trackIdx].id)
+      }
+    }
 
     // ── Middle-click: quick copy clip as pencil template ──────────────────
     if (e.button === 1) {
@@ -359,7 +431,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     }
     window.addEventListener('mousemove', onWindowMove)
     window.addEventListener('mouseup', onWindowUp)
-  }, [getLocalXY, onSetPencilTemplate])
+  }, [getLocalXY, onSetPencilTemplate, onFocusTrack])
 
   const handleMouseMove = useCallback((e) => {
     // Only handle hover (non-dragging) moves here; dragging is captured on window
@@ -416,10 +488,18 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   const handleContextMenu = useCallback((e) => {
     const pos = getLocalXY(e)
     if (!pos) return
+    // Focus shift before any menu opens — keeps right-click paste consistent
+    if (onFocusTrack) {
+      const tks = tracksRef.current
+      const trackIdx = Math.floor(pos.localY / TRACK_HEIGHT)
+      if (tks && trackIdx >= 0 && trackIdx < tks.length) {
+        onFocusTrack(tks[trackIdx].id)
+      }
+    }
     if (toolRef.current?.onContextMenu) {
       toolRef.current.onContextMenu(pos.localX, pos.localY, e)
     }
-  }, [getLocalXY])
+  }, [getLocalXY, onFocusTrack])
 
   // ── Legacy drag-drop handlers ─────────────────────────────────────────────
 

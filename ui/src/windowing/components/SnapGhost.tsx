@@ -2,22 +2,33 @@ import React from 'react';
 import type { CSSProperties } from 'react';
 import { useSyncExternalStore } from 'react';
 import { getDragState, subscribeDrag } from '../managers/DragManager';
-import type { DockRegion } from '../registry/PanelRegistry';
+import { usePanelRegistry, type DockRegion } from '../registry/PanelRegistry';
 
 function getSnapTarget(): DockRegion | null {
   const state = getDragState();
   return state.state === 'dragging' ? state.currentSnapTarget : null;
 }
 
-const GHOST_STYLE: Record<NonNullable<DockRegion>, CSSProperties> = {
-  left: { left: 0, top: 0, height: '100%', width: '320px' },
-  right: { right: 0, top: 0, height: '100%', width: '320px' },
-  top: { top: 0, left: 0, width: '100%', height: '280px' },
-  bottom: { bottom: 0, left: 0, width: '100%', height: '280px' },
-};
+function ghostStyleFor(side: DockRegion, size: number): CSSProperties {
+  const px = `${size}px`;
+  switch (side) {
+    case 'left':
+      return { left: 0, top: 0, height: '100%', width: px };
+    case 'right':
+      return { right: 0, top: 0, height: '100%', width: px };
+    case 'top':
+      return { top: 0, left: 0, width: '100%', height: px };
+    case 'bottom':
+    default:
+      return { bottom: 0, left: 0, width: '100%', height: px };
+  }
+}
 
 export function SnapGhost() {
   const snapTarget = useSyncExternalStore(subscribeDrag, getSnapTarget, getSnapTarget);
+  const reactiveSize = usePanelRegistry((state) => (
+    snapTarget !== null ? state.dockRegionSizes[snapTarget] : 0
+  ));
 
   if (!snapTarget) return null;
 
@@ -32,7 +43,7 @@ export function SnapGhost() {
         border: '2px solid var(--theme-accent)',
         boxSizing: 'border-box',
         zIndex: 9999,
-        ...GHOST_STYLE[snapTarget],
+        ...ghostStyleFor(snapTarget, reactiveSize),
       } as CSSProperties}
     />
   );

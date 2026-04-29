@@ -32,8 +32,25 @@ export interface PanelState {
 
 export type PanelStateMap = Record<PanelId, PanelState>;
 
+export type DockRegionSizes = Record<DockRegion, number>;
+
+export const DEFAULT_DOCK_REGION_SIZES: DockRegionSizes = {
+  left: 280,
+  right: 280,
+  top: 240,
+  bottom: 240,
+};
+
+export const MIN_DOCK_REGION_SIZES: DockRegionSizes = {
+  left: 220,
+  right: 220,
+  top: 160,
+  bottom: 200,
+};
+
 export interface PanelRegistryState {
   panels: PanelStateMap;
+  dockRegionSizes: DockRegionSizes;
   openPanel: (id: PanelId) => void;
   closePanel: (id: PanelId) => void;
   togglePanel: (id: PanelId) => void;
@@ -44,12 +61,16 @@ export interface PanelRegistryState {
   undockPanel: (id: PanelId, x: number, y: number) => void;
   maximizePanel: (id: PanelId) => void;
   restorePanel: (id: PanelId) => void;
+  setDockRegionSize: (region: DockRegion, size: number) => void;
   applyPreset: (presetId: PresetId) => void;
 }
 
 export const LAYOUT_PERSISTENCE_DEBOUNCE_MS = 500;
 
-export type LayoutPersistenceWriter = (panels: PanelStateMap) => void | Promise<void>;
+export type LayoutPersistenceWriter = (
+  panels: PanelStateMap,
+  dockRegionSizes: DockRegionSizes,
+) => void | Promise<void>;
 
 let persistenceWriter: LayoutPersistenceWriter | null = null;
 let persistenceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -64,13 +85,17 @@ export function clearLayoutPersistenceWriter(): void {
   persistenceTimer = null;
 }
 
-function scheduleLayoutPersistence(panels: PanelStateMap): void {
+function scheduleLayoutPersistence(
+  panels: PanelStateMap,
+  dockRegionSizes: DockRegionSizes,
+): void {
   if (!persistenceWriter) return;
   if (persistenceTimer) clearTimeout(persistenceTimer);
 
-  const snapshot = clonePanelStates(panels);
+  const panelsSnapshot = clonePanelStates(panels);
+  const sizesSnapshot = { ...dockRegionSizes };
   persistenceTimer = setTimeout(() => {
-    void persistenceWriter?.(snapshot);
+    void persistenceWriter?.(panelsSnapshot, sizesSnapshot);
   }, LAYOUT_PERSISTENCE_DEBOUNCE_MS);
   (persistenceTimer as { unref?: () => void }).unref?.();
 }
@@ -100,6 +125,10 @@ export function createInitialPanelStates(): PanelStateMap {
     acc[id] = createPanelState(id, index);
     return acc;
   }, {} as PanelStateMap);
+}
+
+export function createInitialDockRegionSizes(): DockRegionSizes {
+  return { ...DEFAULT_DOCK_REGION_SIZES };
 }
 
 function clonePartialPanelState(state: Partial<PanelState>): Partial<PanelState> {
@@ -133,7 +162,7 @@ function maxZIndex(panels: PanelStateMap): number {
 
 function focusInPanelMap(panels: PanelStateMap, id: PanelId): PanelStateMap {
   const nextZIndex = maxZIndex(panels) + 1;
-  return PANEL_IDS.reduce((acc, panelId) => {
+  const updated = PANEL_IDS.reduce((acc, panelId) => {
     const panel = panels[panelId];
     acc[panelId] = {
       ...panel,
@@ -142,6 +171,14 @@ function focusInPanelMap(panels: PanelStateMap, id: PanelId): PanelStateMap {
     };
     return acc;
   }, {} as PanelStateMap);
+
+  // Re-rank z-indices as 1..N after each focus to prevent unbounded growth.
+  const sorted = PANEL_IDS.slice().sort((a, b) => updated[a].zIndex - updated[b].zIndex);
+  sorted.forEach((panelId, i) => {
+    updated[panelId] = { ...updated[panelId], zIndex: i + 1 };
+  });
+
+  return updated;
 }
 
 function panelSnapshotForMaximize(panel: PanelState): Partial<PanelState> {
@@ -155,27 +192,33 @@ function panelSnapshotForMaximize(panel: PanelState): Partial<PanelState> {
   };
 }
 
+interface RegistryPersistenceSlice {
+  panels: PanelStateMap;
+  dockRegionSizes: DockRegionSizes;
+}
+
 function commitPanels(
-  panels: PanelStateMap,
+  slice: RegistryPersistenceSlice,
   producer: (draft: PanelStateMap) => PanelStateMap,
 ): PanelStateMap {
-  const next = producer(clonePanelStates(panels));
-  scheduleLayoutPersistence(next);
+  const next = producer(clonePanelStates(slice.panels));
+  scheduleLayoutPersistence(next, slice.dockRegionSizes);
   return next;
 }
 
-export const usePanelRegistry = create<PanelRegistryState>((set, get) => ({
+export const usePanelRegistry = create<PanelRegistryState>((set) => ({
   panels: createInitialPanelStates(),
+  dockRegionSizes: createInitialDockRegionSizes(),
 
   openPanel: (id) => set((state) => ({
-    panels: commitPanels(state.panels, (draft) => {
+    panels: commitPanels(state, (draft) => {
       draft[id].hidden = false;
       return focusInPanelMap(draft, id);
     }),
   })),
 
   closePanel: (id) => set((state) => ({
-    panels: commitPanels(state.panels, (draft) => {
+    panels: commitPanels(state, (draft) => {
       draft[id].hidden = true;
       draft[id].focused = false;
       return draft;
@@ -183,34 +226,34 @@ export const usePanelRegistry = create<PanelRegistryState>((set, get) => ({
   })),
 
   togglePanel: (id) => {
-    const panel = get().panels[id];
-    if (panel.hidden) get().openPanel(id);
-    else get().closePanel(id);
+    const panel = usePanelRegistry.getState().panels[id];
+    if (panel.hidden) usePanelRegistry.getState().openPanel(id);
+    else usePanelRegistry.getState().closePanel(id);
   },
 
   focusPanel: (id) => set((state) => {
     if (state.panels[id].hidden) return state;
     return {
-      panels: commitPanels(state.panels, (draft) => focusInPanelMap(draft, id)),
+      panels: commitPanels(state, (draft) => focusInPanelMap(draft, id)),
     };
   }),
 
   moveFloatingPanel: (id, x, y) => set((state) => ({
-    panels: commitPanels(state.panels, (draft) => {
+    panels: commitPanels(state, (draft) => {
       draft[id].floating = { ...draft[id].floating, x, y };
       return draft;
     }),
   })),
 
   resizeFloatingPanel: (id, x, y, width, height) => set((state) => ({
-    panels: commitPanels(state.panels, (draft) => {
+    panels: commitPanels(state, (draft) => {
       draft[id].floating = { x, y, width, height };
       return draft;
     }),
   })),
 
   dockPanel: (id, region) => set((state) => ({
-    panels: commitPanels(state.panels, (draft) => {
+    panels: commitPanels(state, (draft) => {
       const orderInRegion = PANEL_IDS.filter((panelId) => (
         panelId !== id
         && !draft[panelId].hidden
@@ -229,7 +272,7 @@ export const usePanelRegistry = create<PanelRegistryState>((set, get) => ({
   })),
 
   undockPanel: (id, x, y) => set((state) => ({
-    panels: commitPanels(state.panels, (draft) => {
+    panels: commitPanels(state, (draft) => {
       draft[id].hidden = false;
       draft[id].mode = 'floating';
       draft[id].floating = { ...draft[id].floating, x, y };
@@ -241,7 +284,7 @@ export const usePanelRegistry = create<PanelRegistryState>((set, get) => ({
     const panel = state.panels[id];
     if (panel.hidden || panel.mode === 'maximized') return state;
     return {
-      panels: commitPanels(state.panels, (draft) => {
+      panels: commitPanels(state, (draft) => {
         draft[id].hidden = false;
         draft[id].preMaximizeState = panelSnapshotForMaximize(panel);
         draft[id].mode = 'maximized';
@@ -254,7 +297,7 @@ export const usePanelRegistry = create<PanelRegistryState>((set, get) => ({
     const panel = state.panels[id];
     if (!panel.preMaximizeState) return state;
     return {
-      panels: commitPanels(state.panels, (draft) => {
+      panels: commitPanels(state, (draft) => {
         draft[id] = {
           ...draft[id],
           ...clonePartialPanelState(panel.preMaximizeState),
@@ -266,12 +309,22 @@ export const usePanelRegistry = create<PanelRegistryState>((set, get) => ({
     };
   }),
 
+  setDockRegionSize: (region, size) => set((state) => {
+    const minSize = MIN_DOCK_REGION_SIZES[region];
+    const clamped = Math.max(minSize, size);
+    if (state.dockRegionSizes[region] === clamped) return state;
+    const nextSizes = { ...state.dockRegionSizes, [region]: clamped };
+    scheduleLayoutPersistence(state.panels, nextSizes);
+    return { dockRegionSizes: nextSizes };
+  }),
+
   applyPreset: (presetId) => {
-    const raw = loadPreset(presetId);
-    if (!raw) return;
-    const panels = clonePanelStates(raw);
-    scheduleLayoutPersistence(panels);
-    set({ panels });
+    const preset = loadPreset(presetId);
+    if (!preset) return;
+    const panels = clonePanelStates(preset.panels);
+    const dockRegionSizes = { ...preset.dockRegionSizes };
+    scheduleLayoutPersistence(panels, dockRegionSizes);
+    set({ panels, dockRegionSizes });
   },
 }));
 

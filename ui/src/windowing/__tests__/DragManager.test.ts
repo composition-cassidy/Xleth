@@ -123,6 +123,43 @@ describe('DragManager', () => {
     expect(snapshots[0]).toBe(snapshots[1]);
   });
 
+  it('clamps live drag offset so the panel preview stays in bounds', () => {
+    const snapshots: Array<{ dx: number; dy: number } | null> = [];
+
+    function Probe() {
+      snapshots.push(useDragOffset('timeline'));
+      return React.createElement('span');
+    }
+
+    beginDrag('timeline', 120, 120, 80, 60);
+    updateDrag(40, 20);
+
+    renderToStaticMarkup(React.createElement(Probe));
+
+    expect(snapshots[0]).toEqual({ dx: -80, dy: -60 });
+  });
+
+  it('clamps committed drag position to the work area origin', () => {
+    const calls: Array<[number, number]> = [];
+
+    usePanelRegistry.setState({
+      moveFloatingPanel: (id, x, y) => {
+        calls.push([x, y]);
+        originalMoveFloatingPanel(id, x, y);
+      },
+    });
+
+    beginDrag('timeline', 120, 120, 80, 60);
+    updateDrag(40, 20);
+    endDrag();
+
+    expect(calls).toEqual([[0, 0]]);
+    expect(usePanelRegistry.getState().panels.timeline.floating).toMatchObject({
+      x: 0,
+      y: 0,
+    });
+  });
+
   it('does not notify a listener after unsubscribe', () => {
     let calls = 0;
     const unsubscribe = subscribeDrag(() => {

@@ -11,7 +11,7 @@ REM   ui           Vite production build (ui/dist)
 REM   engine       Configure + build engine (standalone exe + tests) in build/
 REM   engine-clean Wipe build/ and reconfigure + rebuild engine
 REM   tests        Run all test_*.exe (test_timeline, test_project, test_undo,
-REM                test_mix, test_sampler)
+REM                test_mix, test_sampler, test_midi_importer)
 REM   all          engine + bridge + ui  (most common "rebuild everything")
 REM   all-clean    Nuke build/ AND bridge/build/ AND ui/dist, then all
 REM   dev          Kill electron + launch dev server (same as start-ui.bat)
@@ -147,7 +147,7 @@ if not exist "%TESTDIR%\test_timeline.exe" (
     exit /b 1
 )
 set "FAILED="
-for %%T in (test_timeline test_project test_undo test_mix test_sampler) do (
+for %%T in (test_timeline test_project test_undo test_mix test_sampler test_midi_importer) do (
     echo.
     echo --- %%T ---
     "%TESTDIR%\%%T.exe"

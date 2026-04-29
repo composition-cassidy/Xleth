@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const { fork } = require('child_process');
+const { runtimeResource, userDataPath } = require('./runtimePaths');
 
 // Fixed name for the Windows file mapping that backs the FrameOutput double
 // buffer. The forked addon-worker creates it via FrameOutput::initSharedMemory;
@@ -13,8 +14,8 @@ const FRAME_SHM_NAME = 'XlethFrameBuffer';
 
 
 // ── User settings (persisted across sessions, not per-project) ───────────────
-const settingsPath = path.join(app.getPath('userData'), 'xleth-settings.json')
-const layoutPath = path.join(app.getPath('userData'), 'layout.json')
+const settingsPath = userDataPath('xleth-settings.json')
+const layoutPath = userDataPath('layout.json')
 function loadSettings() {
   try { return JSON.parse(fs.readFileSync(settingsPath, 'utf8')) } catch { return {} }
 }
@@ -23,12 +24,30 @@ function saveSettings(s) {
 }
 
 // Log file for startup debugging
-const logPath = path.join(__dirname, 'startup.log');
+const logPath = userDataPath('startup.log');
+try { fs.mkdirSync(path.dirname(logPath), { recursive: true }); } catch {}
 fs.writeFileSync(logPath, '');  // clear previous log
 function log(msg) {
   const line = `[${new Date().toISOString()}] ${msg}\n`;
   process.stdout.write(line);
   fs.appendFileSync(logPath, line);
+}
+
+function ffmpegExecutable() {
+  const exe = runtimeResource('ffmpeg', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
+  if (app.isPackaged || fs.existsSync(exe)) return exe;
+  return 'ffmpeg';
+}
+
+function workerPathEnv(entries) {
+  const pathEntries = entries.filter(Boolean);
+  if (app.isPackaged) {
+    const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+    pathEntries.push(path.join(systemRoot, 'System32'), systemRoot);
+  } else if (process.env.PATH) {
+    pathEntries.push(process.env.PATH);
+  }
+  return pathEntries.join(path.delimiter);
 }
 
 // Register custom media protocol so renderer can play local files without CORS/CSP issues
@@ -117,21 +136,36 @@ let nextMsgId = 1;
 const pending = new Map();
 
 // High-frequency polling methods — suppress routine logs for these
-const SILENT_METHODS = new Set(['getFrameRGBA', 'getCurrentFrame', 'getFrameBuffer', 'getTransportState', 'audio_getAllPeaks', 'audio_setTrackVolume', 'audio_setTrackPan', 'audio_setTrackSpread']);
+const SILENT_METHODS = new Set(['getFrameRGBA', 'getCurrentFrame', 'getFrameBuffer', 'getTransportState', 'audio_getAllPeaks', 'audio_setTrackVolume', 'audio_setTrackPan', 'audio_setTrackSpread', 'audio_setMasterVolume', 'cache_getWorldActiveJobs']);
 // Last known transport state — only log when it actually changes
 let lastTransportStateStr = null;
 
 function startWorker() {
-  const workerPath = path.join(__dirname, 'addon-worker.js');
+  const workerPath = runtimeResource('worker', 'addon-worker.js');
+  const bridgeDir = runtimeResource('bridge');
+  const ffmpegDir = runtimeResource('ffmpeg');
   // Force system node.exe — not electron.exe --run-as-node — because the
   // JUCE/FFmpeg static initializers crash inside Electron's runtime.
   // The addon is ABI-compatible with recent Node versions.
-  const nodeExe = process.env.XLETH_NODE_EXE || 'node.exe';
+  const bundledNodeExe = runtimeResource('node', process.platform === 'win32' ? 'node.exe' : 'node');
+  const nodeExe = process.env.XLETH_NODE_EXE || (app.isPackaged ? bundledNodeExe : 'node.exe');
   log(`Forking addon worker via ${nodeExe}: ${workerPath}`);
+  log(`[Runtime] app.isPackaged=${app.isPackaged}`);
+  log(`[Runtime] process.resourcesPath=${process.resourcesPath}`);
+  log(`[Runtime] bridgeDir=${bridgeDir}`);
+  log(`[Runtime] ffmpegDir=${ffmpegDir}`);
   worker = fork(workerPath, [], {
     stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
     execPath: nodeExe,
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: undefined },
+    cwd: bridgeDir,
+    env: {
+      ...process.env,
+      ELECTRON_RUN_AS_NODE: undefined,
+      XLETH_BRIDGE_DIR: bridgeDir,
+      XLETH_FFMPEG_DIR: ffmpegDir,
+      PATH: workerPathEnv([bridgeDir, ffmpegDir]),
+    },
+    serialization: 'advanced',  // preserves Buffer/TypedArray/ArrayBuffer across IPC
   });
 
   worker.on('message', (msg) => {
@@ -144,6 +178,7 @@ function startWorker() {
         callWorker('engine_setGlobalStretchMethod', [saved.globalStretchMethod]).catch(() => {})
       if (saved.globalFormantPreserve != null)
         callWorker('engine_setGlobalFormantPreserve', [saved.globalFormantPreserve]).catch(() => {})
+      setInterval(pollWorldProcessing, 100)
       return;
     }
     if (msg && typeof msg.id === 'number') {
@@ -201,7 +236,44 @@ function callWorker(method, args = []) {
 // ── BrowserWindow ─────────────────────────────────────────────────────────────
 
 let win = null;
+let splashWin = null;
+const DEFAULT_ZOOM_FACTOR = 1;
+const MIN_ZOOM_FACTOR = 0.5;
+const MAX_ZOOM_FACTOR = 3;
+const ZOOM_STEP = 0.1;
+
+function clampZoomFactor(factor) {
+  return Math.min(MAX_ZOOM_FACTOR, Math.max(MIN_ZOOM_FACTOR, factor));
+}
+
+function getTargetWindow(event) {
+  const senderWindow = BrowserWindow.fromWebContents(event.sender);
+  if (senderWindow && !senderWindow.isDestroyed()) return senderWindow;
+  return win;
+}
+
+function setWindowZoom(targetWindow, factor) {
+  const wc = targetWindow?.webContents;
+  if (!wc || wc.isDestroyed()) return DEFAULT_ZOOM_FACTOR;
+
+  const nextFactor = clampZoomFactor(Number(factor.toFixed(2)));
+  wc.setZoomFactor(nextFactor);
+  return nextFactor;
+}
+
+function nudgeWindowZoom(targetWindow, direction) {
+  const wc = targetWindow?.webContents;
+  if (!wc || wc.isDestroyed()) return DEFAULT_ZOOM_FACTOR;
+
+  return setWindowZoom(targetWindow, wc.getZoomFactor() + (direction * ZOOM_STEP));
+}
 const nodeEditorWindows = new Map(); // key → BrowserWindow
+
+function splashStatus(msg) {
+  if (splashWin && !splashWin.isDestroyed()) {
+    splashWin.webContents.send('splash:status', msg);
+  }
+}
 
 function createWindow() {
   win = new BrowserWindow({
@@ -211,6 +283,7 @@ function createWindow() {
     minHeight: 600,
     backgroundColor: '#0A0A0F',
     frame: false,
+    show: false,
     webPreferences: {
       // contextIsolation disabled so preload can hand the renderer a live
       // ArrayBuffer reference (shm_helper's file-mapped view). With isolation
@@ -218,7 +291,7 @@ function createWindow() {
       contextIsolation: false,
       nodeIntegration: false,
       sandbox: false,
-      preload: path.join(__dirname, 'preload.js'),
+      preload: runtimeResource('app', 'preload.js'),
     },
   });
 
@@ -226,7 +299,7 @@ function createWindow() {
     const msg = encodeURIComponent(addonError);
     win.loadURL(`data:text/html,<pre style="color:red;background:%230A0A0F;padding:20px">Addon error:\n${msg}</pre>`);
   } else if (process.env.XLETH_PLAYWRIGHT === '1' || app.isPackaged) {
-    win.loadFile(path.join(__dirname, 'dist/index.html'));
+    win.loadFile(runtimeResource('app', 'dist', 'index.html'));
   } else {
     win.loadURL('http://localhost:5173');
   }
@@ -438,6 +511,9 @@ ipcMain.handle('xleth:project:isExportRunning',
 ipcMain.handle('xleth:timeline:getBPM',
   safeHandler(() => callWorker('timeline_getBPM')));
 
+ipcMain.handle('xleth:timeline:getTempoLocked',
+  safeHandler(() => callWorker('timeline_getTempoLocked')));
+
 ipcMain.handle('xleth:timeline:getDeclickMs',
   safeHandler(() => callWorker('timeline_getDeclickMs')));
 
@@ -470,6 +546,9 @@ ipcMain.handle('xleth:timeline:getClipsInRange',
 ipcMain.handle('xleth:timeline:setBPM',
   safeHandler((_, bpm) => callWorker('timeline_setBPM', [bpm])));
 
+ipcMain.handle('xleth:timeline:setTempoLocked',
+  safeHandler((_, locked) => callWorker('timeline_setTempoLocked', [locked])));
+
 ipcMain.handle('xleth:timeline:addTrack',
   safeHandler((_, info) => callWorker('timeline_addTrack', [info])));
 
@@ -478,6 +557,9 @@ ipcMain.handle('xleth:timeline:removeTrack',
 
 ipcMain.handle('xleth:timeline:setTrackMuted',
   safeHandler((_, trackId, muted) => callWorker('timeline_setTrackMuted', [trackId, muted])));
+
+ipcMain.handle('xleth:timeline:setTrackVisualOnly',
+  safeHandler((_, trackId, visualOnly) => callWorker('timeline_setTrackVisualOnly', [trackId, visualOnly])));
 
 ipcMain.handle('xleth:timeline:setTrackSolo',
   safeHandler((_, trackId, solo) => callWorker('timeline_setTrackSolo', [trackId, solo])));
@@ -508,6 +590,9 @@ ipcMain.handle('xleth:timeline:setTrackCornerRadius',
 
 ipcMain.handle('xleth:timeline:setTrackGapScaleOverride',
   safeHandler((_, trackId, v) => callWorker('timeline_setTrackGapScaleOverride', [trackId, v])));
+
+ipcMain.handle('xleth:timeline:setTrackSubdivisionFactor',
+  safeHandler((_, trackId, factor) => callWorker('timeline_setTrackSubdivisionFactor', [trackId, factor])));
 
 ipcMain.handle('xleth:timeline:setTrackBounceSettings',
   safeHandler((_, trackId, bounce) => callWorker('timeline_setTrackBounceSettings', [trackId, bounce])));
@@ -546,6 +631,8 @@ ipcMain.handle('xleth:timeline:setVisualEffectBypassed',
   safeHandler((_, trackId, ei, bypassed) => callWorker('timeline_setVisualEffectBypassed', [trackId, ei, bypassed])));
 ipcMain.handle('xleth:timeline:getVisualEffectChain',
   safeHandler((_, trackId) => callWorker('timeline_getVisualEffectChain', [trackId])));
+ipcMain.handle('xleth:timeline:setTrackVisualEffectChainOrder',
+  safeHandler((_, trackId, newOrder) => callWorker('timeline_setTrackVisualEffectChainOrder', [trackId, newOrder])));
 
 ipcMain.handle('xleth:timeline:addClip',
   safeHandler((_, clip) => callWorker('timeline_addClip', [clip])));
@@ -577,6 +664,9 @@ ipcMain.handle('xleth:timeline:reverseClip',
 ipcMain.handle('xleth:timeline:autoTrimClip',
   safeHandler((_, id, thresholdDb) => callWorker('timeline_autoTrimClip', [id, thresholdDb])));
 
+ipcMain.handle('xleth:timeline:spliceClipsAtPlayhead',
+  safeHandler((_, entries) => callWorker('timeline_spliceClipsAtPlayhead', [entries])));
+
 ipcMain.handle('xleth:timeline:setClipParams',
   safeHandler((_, id, params) => callWorker('timeline_setClipParams', [id, params])));
 
@@ -585,6 +675,10 @@ ipcMain.handle('xleth:settings:get',    (_, key) => loadSettings()[key])
 ipcMain.handle('xleth:settings:set',    (_, key, value) => {
   const s = loadSettings(); s[key] = value; saveSettings(s)
 })
+
+// ── Phase 7 — Preview visibility (panel show/hide) ─────────────────────────
+ipcMain.handle('xleth:preview:setEnabled',
+  safeHandler((_, enabled) => callWorker('preview_setEnabled', [Boolean(enabled)])));
 
 // ── Themes (persisted to userData/themes/<slug>.json) ─────────────────────────
 // User-authored theme files. Shipped themes are bundled with the renderer and
@@ -598,7 +692,7 @@ ipcMain.handle('xleth:layout:write', (_, raw) => {
   return true
 })
 
-const themesDir = path.join(app.getPath('userData'), 'themes')
+const themesDir = userDataPath('themes')
 function ensureThemesDir() {
   try { fs.mkdirSync(themesDir, { recursive: true }) } catch {}
 }
@@ -668,6 +762,9 @@ ipcMain.handle('xleth:timeline:setGridLayout',
 
 ipcMain.handle('xleth:timeline:assignTrackToGrid',
   safeHandler((_, trackId, gx, gy, sx, sy) => callWorker('timeline_assignTrackToGrid', [trackId, gx, gy, sx, sy])));
+
+ipcMain.handle('xleth:timeline:assignTrackToGridWithZOrder',
+  safeHandler((_, trackId, gx, gy, sx, sy, z) => callWorker('timeline_assignTrackToGridWithZOrder', [trackId, gx, gy, sx, sy, z])));
 
 ipcMain.handle('xleth:timeline:removeTrackFromGrid',
   safeHandler((_, trackId) => callWorker('timeline_removeTrackFromGrid', [trackId])));
@@ -742,6 +839,9 @@ ipcMain.handle('xleth:timeline:moveNotesBatch',
 ipcMain.handle('xleth:timeline:quantizeClipsBatch',
   safeHandler((_, specs) => callWorker('timeline_quantizeClipsBatch', [specs])));
 
+ipcMain.handle('xleth:timeline:resizeNotesBatch',
+  safeHandler((_, patternId, resizes) => callWorker('timeline_resizeNotesBatch', [patternId, resizes])));
+
 ipcMain.handle('xleth:timeline:resizeNote',
   safeHandler((_, patternId, noteId, durTicks) => callWorker('timeline_resizeNote', [patternId, noteId, durTicks])));
 
@@ -810,6 +910,9 @@ ipcMain.handle('xleth:audio:setTrackPan',
 
 ipcMain.handle('xleth:audio:setTrackSpread',
   safeHandler((_, trackId, spread) => callWorker('audio_setTrackSpread', [trackId, spread])));
+
+ipcMain.handle('xleth:audio:setMasterVolume',
+  safeHandler((_, vol) => callWorker('audio_setMasterVolume', [vol])));
 
 ipcMain.handle('xleth:audio:getOutputDevices',
   safeHandler(() => callWorker('audio_getOutputDevices')));
@@ -1057,6 +1160,28 @@ function startVideoExportProgressPoll() {
   }, 100);
 }
 
+// ── WORLD processing indicator poll ──────────────────────────────────────────
+// Polls the engine every 100ms for in-flight WORLD render jobs and forwards
+// start/complete events to the renderer so the UI can show per-clip spinners.
+let prevWorldClips = new Set()
+
+async function pollWorldProcessing() {
+  if (!workerReady || !win || win.isDestroyed()) return
+  try {
+    const active = await callWorker('cache_getWorldActiveJobs', [])
+    const activeSet = new Set(active)
+    for (const id of activeSet) {
+      if (!prevWorldClips.has(id))
+        win.webContents.send('stretch:worldProcessingStart', { clipId: id })
+    }
+    for (const id of prevWorldClips) {
+      if (!activeSet.has(id))
+        win.webContents.send('stretch:worldProcessingComplete', { clipId: id })
+    }
+    prevWorldClips = activeSet
+  } catch {}
+}
+
 ipcMain.handle('xleth:video:exportStart', safeHandler(async (_, cfg) => {
   const ok = await callWorker('video_exportStart', [cfg]);
   if (ok) startVideoExportProgressPoll();
@@ -1204,6 +1329,19 @@ ipcMain.handle('xleth:waveform:getClipPeaks',
   safeHandler((_, clipId, startSec, endSec, numPeaks) =>
     callWorker('waveform_getClipPeaks', [clipId, startSec, endSec, numPeaks])));
 
+// ── MIDI Import ───────────────────────────────────────────────────────────────
+
+ipcMain.handle('xleth:midi:parseSummary', (_, filePath) =>
+    callWorker('midi_parseSummary', [filePath]));
+
+ipcMain.handle('xleth:midi:importFull', (_, filePath, optionsJson) =>
+    callWorker('midi_importFull', [filePath, optionsJson]));
+
+ipcMain.handle('xleth:midi:executeImport', (_, noteData, optionsJson) =>
+    // preload.js guarantees noteData is a Buffer; fork uses serialization:'advanced'
+    // so it crosses to the worker as a real Buffer. No coercion needed here.
+    callWorker('midi_executeImport', [noteData, optionsJson]));
+
 // Replaced by WaveformMipmap N-API bindings — see WaveformMipmap.h
 // Pipeline A (extractPCM, pcmCache, buildPeaks, getWaveformData/Region IPC) removed.
 
@@ -1223,7 +1361,7 @@ function legacyGetFrameAtTime(filePath, timeSeconds) {
   const outFile = path.join(os.tmpdir(), `xleth_frame_${Date.now()}.jpg`);
   log(`[FrameServer] Legacy FFmpeg frame @ ${t.toFixed(3)}s: ${path.basename(filePath)}`);
   return new Promise(resolve => {
-    execFile('ffmpeg', [
+    execFile(ffmpegExecutable(), [
       '-y',
       '-ss', String(t),
       '-i',  filePath,
@@ -1329,6 +1467,20 @@ ipcMain.handle('xleth:dialog:saveProjectAs', async () => {
   return filePaths[0];
 });
 
+ipcMain.handle('xleth:dialog:importMIDI', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+    title: 'Import MIDI',
+    filters: [
+      { name: 'MIDI Files', extensions: ['mid', 'midi'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+    properties: ['openFile'],
+  });
+  if (canceled || !filePaths.length) return null;
+  log(`[MidiImport] Import dialog selected: ${filePaths[0]}`);
+  return filePaths[0];
+});
+
 ipcMain.handle('xleth:dialog:importSources', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog(win, {
     title: 'Import Sources',
@@ -1381,7 +1533,7 @@ ipcMain.handle('xleth:project:getSourceThumbnail', async (_, filePath, duration)
   // Run ffmpeg with given args, return Buffer if output > 1KB, else null
   function tryFfmpeg(args, outFile) {
     return new Promise(resolve => {
-      execFile('ffmpeg', args, { timeout: 20000 }, err => {
+      execFile(ffmpegExecutable(), args, { timeout: 20000 }, err => {
         if (err) return resolve(null);
         try {
           const data = fs.readFileSync(outFile);
@@ -1509,6 +1661,18 @@ ipcMain.on('xleth:window:maximize', () => {
   if (win?.isMaximized()) win.unmaximize(); else win?.maximize();
 });
 ipcMain.on('xleth:window:close', () => { log('[IPC] window:close'); win?.close(); });
+ipcMain.on('xleth:window:zoomIn', (event) => {
+  const nextFactor = nudgeWindowZoom(getTargetWindow(event), 1);
+  log(`[IPC] window:zoomIn -> ${nextFactor}`);
+});
+ipcMain.on('xleth:window:zoomOut', (event) => {
+  const nextFactor = nudgeWindowZoom(getTargetWindow(event), -1);
+  log(`[IPC] window:zoomOut -> ${nextFactor}`);
+});
+ipcMain.on('xleth:window:resetZoom', (event) => {
+  const nextFactor = setWindowZoom(getTargetWindow(event), DEFAULT_ZOOM_FACTOR);
+  log(`[IPC] window:resetZoom -> ${nextFactor}`);
+});
 
 // ── Node Editor child windows ─────────────────────────────────────────────────
 
@@ -1533,7 +1697,7 @@ ipcMain.on('xleth:window:openNodeEditor', (event, key, pos) => {
       contextIsolation: false,
       nodeIntegration: false,
       sandbox: false,
-      preload: path.join(__dirname, 'preload.js'),
+      preload: runtimeResource('app', 'preload.js'),
     },
   });
 
@@ -1542,7 +1706,7 @@ ipcMain.on('xleth:window:openNodeEditor', (event, key, pos) => {
   if (!app.isPackaged) {
     child.loadURL(`http://localhost:5173${query}`);
   } else {
-    child.loadFile(path.join(__dirname, 'dist/index.html'), { search: query });
+    child.loadFile(runtimeResource('app', 'dist', 'index.html'), { search: query });
   }
 
   child.webContents.on('console-message', (_e, level, message, line, source) => {
@@ -1570,6 +1734,43 @@ ipcMain.on('xleth:window:closeNodeEditor', (event) => {
 app.whenReady().then(async () => {
   log('app ready — loading addon...');
 
+  // ── Splash window ──────────────────────────────────────────────────────────
+  splashWin = new BrowserWindow({
+    width: 680,
+    height: 400,
+    frame: false,
+    transparent: false,
+    alwaysOnTop: true,
+    resizable: false,
+    center: true,
+    backgroundColor: '#0D0F13',
+    show: false,
+    webPreferences: {
+      contextIsolation: false,
+      nodeIntegration: false,
+      sandbox: false,
+      preload: path.join(__dirname, 'splash-preload.js'),
+    },
+  });
+  splashWin.once('ready-to-show', () => {
+    // Inject logo as base64 data URL — avoids Chromium's cross-origin
+    // block on file:// URLs from different directories.
+    const logoPath = app.isPackaged
+      ? path.join(process.resourcesPath, 'xlethpopup.png')
+      : path.join(__dirname, '..', 'xlethpopup.png');
+    try {
+      const dataUrl = 'data:image/png;base64,' +
+        fs.readFileSync(logoPath).toString('base64');
+      splashWin.webContents.executeJavaScript(
+        `document.getElementById('logo').src = ${JSON.stringify(dataUrl)};`
+      ).catch(() => {});
+    } catch { /* logo file absent — img stays hidden via onerror */ }
+    splashWin.show();
+  });
+  splashWin.loadFile(path.join(__dirname, 'splash.html'));
+  splashWin.on('closed', () => { splashWin = null; });
+  // ──────────────────────────────────────────────────────────────────────────
+
   // COOP/COEP — required so the renderer's `crossOriginIsolated` flag is
   // true, which is a prerequisite for `SharedArrayBuffer` in Chromium.
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
@@ -1581,6 +1782,7 @@ app.whenReady().then(async () => {
 
   try {
     startWorker();
+    splashStatus('Initializing audio engine…');
     // Wait for worker ready signal (arrives on 'message' as {ready:true}).
     await new Promise((resolve, reject) => {
       const t0 = Date.now();
@@ -1592,9 +1794,11 @@ app.whenReady().then(async () => {
       };
       check();
     });
+    splashStatus('Registering codecs…');
 
     await callWorker('initialize');
     log('initialize() OK');
+    splashStatus('Starting compositor…');
 
     // Swap the engine's owned FrameOutput buffer for a Windows named file
     // mapping so the renderer can read frames zero-copy via shm_helper.
@@ -1606,11 +1810,12 @@ app.whenReady().then(async () => {
     }
 
     // Load samples
-    const mediaDir = path.join(__dirname, '../media');
+    const mediaDir = runtimeResource('media');
     await callWorker('loadSample', [path.join(mediaDir, 'KICK_ssedit.wav')]);
     await callWorker('loadSample', [path.join(mediaDir, 'SNARE_ssedit.wav')]);
     await callWorker('loadSample', [path.join(mediaDir, 'hihat 1.wav')]);
     log('Samples loaded');
+    splashStatus('Loading workspace…');
 
     // Load video if available
     const videoPath = path.join(mediaDir, 'source_clip.mp4');
@@ -1642,6 +1847,7 @@ app.whenReady().then(async () => {
   } catch (e) {
     addonError = e.message;
     log(`Engine init FAILED: ${e.message}`);
+    if (splashWin && !splashWin.isDestroyed()) splashWin.close();
   }
 
   // Serve local media files via xleth-media:// protocol so the renderer can load
@@ -1715,6 +1921,26 @@ app.whenReady().then(async () => {
   startMediaServer();
 
   createWindow();
+
+  // ── Splash → main window handoff ──────────────────────────────────────────
+  if (win) {
+    win.once('ready-to-show', () => {
+      setTimeout(() => {
+        if (splashWin && !splashWin.isDestroyed()) {
+          splashWin.webContents.executeJavaScript(
+            `document.body.classList.add('fade-out');`
+          ).catch(() => {});
+          setTimeout(() => {
+            if (splashWin && !splashWin.isDestroyed()) splashWin.close();
+            win.show();
+          }, 320); // 300ms CSS transition + 20ms buffer
+        } else {
+          win.show(); // splash already gone — show immediately
+        }
+      }, 400); // minimum splash visibility after first paint
+    });
+  }
+  // ──────────────────────────────────────────────────────────────────────────
 
   // Pass the main-window native HWND to the worker so VST editor-host
   // processes can call SetWindowLongPtrW(GWLP_HWNDPARENT) and be treated as

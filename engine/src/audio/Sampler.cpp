@@ -1,4 +1,5 @@
 #include "Sampler.h"
+#include "dsp/DeclickEnvelope.h"
 
 #include <algorithm>
 #include <cmath>
@@ -86,9 +87,9 @@ void Sampler::setSmpLength(int64_t length)
     smpLength_ = std::max<int64_t>(0, length);
 }
 
-void Sampler::setDeclickSamples(int n)
+void Sampler::setDeclickMs(float ms)
 {
-    declickSamples_ = std::max(0, n);
+    declickMs_ = std::max(0.0f, ms);
 }
 
 void Sampler::setFadeIn(float ms)  { fadeInMs_  = std::max(0.0f, ms); }
@@ -740,8 +741,9 @@ void Sampler::processVoice(Voice& v,
     const int64_t effEnd = smpStart_ +
         (smpLength_ > 0 ? smpLength_ : static_cast<int64_t>(nFrames) - smpStart_);
     const int64_t clampedEnd = std::min(effEnd, static_cast<int64_t>(nFrames));
-    // Declick width clamped so fade-in and fade-out never overlap.
-    const int effDeclick = std::min(declickSamples_,
+    // Declick width (ms → samples at source rate), clamped so fades never overlap.
+    const int declickN   = xleth::dsp::DeclickEnvelope::msToSamples(declickMs_, sourceSampleRate_);
+    const int effDeclick = std::min(declickN,
         static_cast<int>((clampedEnd - smpStart_) / 2));
 
     // Effective loop end: if loopEnd_ == 0, treat as end of sample.
@@ -883,25 +885,14 @@ void Sampler::processVoice(Voice& v,
             }
         }
 
-        // Hann-window declick at trim start and end.
+        // Hann-window declick at trim start and end (via shared LUT).
         float declickGain = 1.0f;
         if (effDeclick > 0)
         {
-            const double posFromStart = v.playPosition - static_cast<double>(smpStart_);
-            if (posFromStart < effDeclick)
-            {
-                const float i = static_cast<float>(posFromStart);
-                declickGain = 0.5f * (1.0f - cosf(kPi * i
-                                                   / static_cast<float>(effDeclick)));
-            }
-            const double posFromEnd = static_cast<double>(clampedEnd) - v.playPosition;
-            if (posFromEnd < effDeclick)
-            {
-                const float i = static_cast<float>(effDeclick - posFromEnd);
-                const float fadeOut = 0.5f * (1.0f + cosf(kPi * i
-                                                           / static_cast<float>(effDeclick)));
-                declickGain = std::min(declickGain, fadeOut);
-            }
+            const int posFromStart = static_cast<int>(v.playPosition - static_cast<double>(smpStart_));
+            const int posFromEnd   = static_cast<int>(static_cast<double>(clampedEnd) - v.playPosition);
+            declickGain = xleth::dsp::DeclickEnvelope::fadeIn(posFromStart, effDeclick)
+                        * xleth::dsp::DeclickEnvelope::fadeOut(posFromEnd, effDeclick);
         }
 
         // Linear fade in/out (user-controlled, applied after declick).
@@ -986,6 +977,10 @@ void Sampler::processVoice(Voice& v,
 void Sampler::processBlock(juce::AudioBuffer<float>& outputBuffer,
                            int numSamples, double engineSampleRate)
 {
+    if (visualOnly_.load(std::memory_order_relaxed)) {
+        outputBuffer.clear();
+        return;
+    }
     if (sampleData_.getNumSamples() <= 0) return;
     if (numSamples <= 0) return;
     if (engineSampleRate <= 0.0) return;

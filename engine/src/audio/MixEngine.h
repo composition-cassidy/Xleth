@@ -32,6 +32,7 @@ class EditorProcessCoordinator;
 class PluginEditorHost;
 class PluginRegistry;
 class XlethEffectBase;
+namespace xleth::audio { class WorldStretchCache; }
 
 // ─── Debug log queue (lock-free, single-producer / single-consumer) ──────────
 
@@ -87,9 +88,19 @@ public:
     // stale entries from a previous session don't cause wrong-sample cache hits.
     void clearRegionToSampleMap();
 
+    // Removes the region→sample mapping for regionId. Use this — not
+    // mapRegionToSample(id, -1) — when the corresponding SampleBank slot
+    // is about to be unloadSample'd, per the contract in SampleBank.h.
+    // No-op if regionId isn't in the map.
+    void unmapRegion(int regionId);
+
     // Look up the sample bank slot for a region. Returns -1 if not mapped.
     // Main-thread read (map is only mutated from main thread).
     int  getSampleIdForRegion(int regionId) const;
+
+    // Returns a copy of the current region→sample mapping table.
+    // Main-thread read only; the map is mutated from the main thread.
+    std::unordered_map<int, int> getRegionToSampleMapSnapshot() const;
 
     // ── Sampler lifecycle (main thread) ──────────────────────────────────────
     // Samplers are keyed by {trackId, regionId}: pattern tracks are sample-
@@ -182,9 +193,10 @@ public:
     // (TrackInfo.volume / .pan / .stereoSpread) is the caller's (XlethAddon)
     // responsibility. trackId is translated to a slot index via trackIdToSlot_;
     // no-op if track not found in slot map.
-    void setTrackVolume(int trackId, float volume);   // 0..1+
+    void setTrackVolume (int trackId, float volume);  // 0..1+
     void setTrackPan   (int trackId, float pan);      // -1..+1  (caller must clamp)
     void setTrackSpread(int trackId, float spread);   // 0..2
+    void setMasterVolume(float volume);               // 0..1+
 
     // Global clip boundary fade. Precomputed from declickMs * sampleRate / 1000.
     // 0 = disabled (zero overhead on audio thread). Call from main thread only.
@@ -194,7 +206,7 @@ public:
     // ── Global clip-processing defaults ──────────────────────────────────────
     // Resolved at CacheKey build time when clip->stretchMethod == Global.
     // Call from message thread only.
-    void setGlobalStretchMethod(int method);          // 1=PSOLA, 2=Rubber, 3=WSOLA, 4=PhaseVocoder
+    void setGlobalStretchMethod(int method);          // 1=PSOLA, 2=Rubber, 3=WSOLA, 4=PhaseVocoder, 5=WORLD
     int  getGlobalStretchMethod() const { return globalStretchMethod_; }
     void setGlobalFormantPreserve(bool enabled);
     bool getGlobalFormantPreserve() const { return globalFormantPreserve_; }
@@ -206,6 +218,10 @@ public:
     // `trigger` is a diagnostic label identifying the caller (e.g. "setClipParams",
     // "stretchClip", "addClip"). Defaulted so existing callers compile unchanged.
     void invalidateClipCache(int clipId, const char* trigger = "unknown");
+
+    // Returns clip IDs with in-flight WORLD render jobs; forwarded to the N-API
+    // layer so the main process can poll and drive the UI processing spinner.
+    std::vector<int> getWorldActiveJobIds() const { return clipRenderCache_.getWorldActiveJobIds(); }
 
     // Returns the cached processed buffer for clipId (message-thread safe via
     // atomic reads). Builds the CacheKey from the clip's current params.
@@ -368,6 +384,9 @@ private:
     std::atomic<float> masterPeakL_{0.0f};
     std::atomic<float> masterPeakR_{0.0f};
 
+    // Master output volume (post-effect-chain, pre-clamp)
+    std::atomic<float> masterVolume_{1.0f};
+
     // Global clip boundary fade length in samples (main thread writes, audio thread reads).
     // Named distinct from Sampler::declickSamples_ (Hann-window trim declick).
     std::atomic<int> clipBoundaryFadeSamples_{0};
@@ -394,7 +413,7 @@ private:
     // ── Global clip-processing defaults ──────────────────────────────────────
     // Resolved at CacheKey build time when clip->stretchMethod == Global.
     // Mutated from message thread only.
-    int  globalStretchMethod_   {1};   // 1=PSOLA (default), 2=Rubber, 3=WSOLA, 4=PhaseVocoder
+    int  globalStretchMethod_   {1};   // 1=PSOLA (default), 2=Rubber, 3=WSOLA, 4=PhaseVocoder, 5=WORLD
     bool globalFormantPreserve_ {false};
 
     // Per-track volume smoother (20ms linear ramp, indexed by SLOT).
@@ -526,6 +545,10 @@ private:
 
     // ── Clip render cache ────────────────────────────────────────────────────
     ClipRenderCache clipRenderCache_;
+
+    // Content-keyed WORLD vocoder cache, consulted by the WORLD branch of
+    // ClipRenderJob (worker thread). Lifetime tied to MixEngine.
+    std::unique_ptr<xleth::audio::WorldStretchCache> worldStretchCache_;
 
     void findActiveClips(int64_t bufferStart, int64_t bufferEnd,
                          double bpm, double sampleRate);

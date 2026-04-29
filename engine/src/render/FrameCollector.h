@@ -40,10 +40,10 @@ class AnimationManager;
 // CellFrameRequest — what one grid cell needs for this output frame
 // ---------------------------------------------------------------------------
 struct CellFrameRequest {
-    int         cellRow          = 0;   // half-grid Y
-    int         cellCol          = 0;   // half-grid X
-    int         spanX            = 2;   // half-grid units wide
-    int         spanY            = 2;   // half-grid units tall
+    int         cellRow          = 0;   // fine-grid Y (kGridSubUnitsPerRow per row)
+    int         cellCol          = 0;   // fine-grid X (kGridSubUnitsPerColumn per col)
+    int         spanX            = 8;   // fine-grid units wide (default = full column)
+    int         spanY            = 8;   // fine-grid units tall (default = full row)
     std::string sourcePath;             // source file path
     int         sourceId         = -1;  // SourceMedia ID (for decoder lookup)
     int64_t     sourceFrameIndex = 0;   // frame number in source file

@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { ChevronRight } from 'lucide-react'
 import { labelColor } from '../constants/labels.js'
 import SampleRow from './SampleRow.jsx'
+import SampleThumbnail from './SampleThumbnail.jsx'
 
 /**
  * Collapsible section for one label group in the Sample Selector.
@@ -39,6 +40,8 @@ export default function SampleGroup({
   sources,
   rootNotes,
   onFetchRootNotes,
+  viewMode = 'list',
+  onOpenPicker,
 }) {
   // Lazy root note detection — when Pitch group is first expanded
   const hasFetchedRef = useRef(false)
@@ -62,30 +65,52 @@ export default function SampleGroup({
         <span className="tab-item-count">{samples.length}</span>
       </button>
 
-      {/* ── Rows ───────────────────────────────────────────────────── */}
+      {/* ── Rows / Thumbnails ──────────────────────────────────────── */}
       {!collapsed && samples.length > 0 && (
-        <div className="sample-group-rows">
-          {samples.map(region => {
-            const src = sources[region.sourceId]
-            return (
-              <SampleRow
-                key={region.id}
-                region={region}
-                isActive={region.id === activeSampleId}
-                onSelect={onSelect}
-                onContextMenu={onContextMenu}
-                isEditing={region.id === editingNameId}
-                editValue={editingNameValue}
-                onRenameChange={onRenameChange}
-                onRenameCommit={onRenameCommit}
-                onRenameCancel={onRenameCancel}
-                sourceName={src?.name || '?'}
-                sourceFilePath={src?.filePath || ''}
-                rootNote={rootNotes[region.sourceId] ?? null}
-              />
-            )
-          })}
-        </div>
+        viewMode === 'thumbnails' ? (
+          <div className="sample-thumbnail-grid">
+            {samples.map(region => {
+              const src = sources[region.sourceId]
+              return (
+                <SampleThumbnail
+                  key={region.id}
+                  region={region}
+                  isActive={region.id === activeSampleId}
+                  onSelect={onSelect}
+                  onContextMenu={onContextMenu}
+                  sourceName={src?.name || '?'}
+                  sourceFilePath={src?.filePath || ''}
+                  sourceHasVideo={src?.hasVideo}
+                  rootNote={rootNotes[region.sourceId] ?? null}
+                  onDoubleClick={() => { if (src && onOpenPicker) onOpenPicker(src) }}
+                />
+              )
+            })}
+          </div>
+        ) : (
+          <div className="sample-group-rows">
+            {samples.map(region => {
+              const src = sources[region.sourceId]
+              return (
+                <SampleRow
+                  key={region.id}
+                  region={region}
+                  isActive={region.id === activeSampleId}
+                  onSelect={onSelect}
+                  onContextMenu={onContextMenu}
+                  isEditing={region.id === editingNameId}
+                  editValue={editingNameValue}
+                  onRenameChange={onRenameChange}
+                  onRenameCommit={onRenameCommit}
+                  onRenameCancel={onRenameCancel}
+                  sourceName={src?.name || '?'}
+                  sourceFilePath={src?.filePath || ''}
+                  rootNote={rootNotes[region.sourceId] ?? null}
+                />
+              )
+            })}
+          </div>
+        )
       )}
     </div>
   )

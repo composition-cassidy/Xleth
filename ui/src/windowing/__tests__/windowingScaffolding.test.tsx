@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { AppShell } from '../AppShell';
 import { PanelFrame, getPanelFrameRenderPath } from '../components/PanelFrame';
 import { Titlebar } from '../components/Titlebar';
+import { TopBarToggles } from '../components/TopBarToggles';
 import {
   createInitialPanelStates,
   usePanelRegistry,
@@ -88,6 +89,23 @@ describe('PanelFrame render paths', () => {
     expect(html).toContain('data-panel-mode="floating"');
     expect(html).toContain('xleth-windowing-titlebar');
     expect(html).toContain('data-testid="xleth-windowing-underline-timeline"');
+  });
+
+  it('renders layout preset and dock controls in the top toolbar', () => {
+    usePanelRegistry.getState().openPanel('timeline');
+    usePanelRegistry.getState().focusPanel('timeline');
+
+    const html = renderToStaticMarkup(<TopBarToggles />);
+
+    expect(html).toContain('aria-label="Layout presets"');
+    expect(html).toContain('Reset to FL Compose layout');
+    expect(html).toContain('Switch to Vegas Arrange layout');
+    expect(html).toContain('Switch to Grid Edit layout');
+    expect(html).toContain('aria-label="Dock focused panel"');
+    expect(html).toContain('Dock focused panel left: Timeline');
+    expect(html).toContain('Dock focused panel top: Timeline');
+    expect(html).toContain('Dock focused panel bottom: Timeline');
+    expect(html).toContain('Dock focused panel right: Timeline');
   });
 
   it('returns empty markup for hidden, docked, and maximized phase 1 stubs', () => {

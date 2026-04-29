@@ -147,6 +147,13 @@ export default function PianoRoll({
     } catch (e) { console.warn('[PianoRoll] moveNotesBatch failed:', e.message) }
   }, [patternId, notifyChanged])
 
+  const handleResizeNotesBatch = useCallback(async (resizes) => {
+    try {
+      await window.xleth?.timeline?.resizeNotesBatch(patternId, resizes)
+      notifyChanged()
+    } catch (e) { console.warn('[PianoRoll] resizeNotesBatch failed:', e.message) }
+  }, [patternId, notifyChanged])
+
   const handleResizeNote = useCallback(async (noteId, durTicks) => {
     try {
       await window.xleth?.timeline?.resizeNote(patternId, noteId, durTicks)
@@ -495,6 +502,7 @@ export default function PianoRoll({
             onRemoveNote={handleRemoveNote}
             onMoveNote={handleMoveNote}
             onMoveNotesBatch={handleMoveNotesBatch}
+            onResizeNotesBatch={handleResizeNotesBatch}
             onResizeNote={handleResizeNote}
             onPreviewNote={handlePreviewNote}
           />

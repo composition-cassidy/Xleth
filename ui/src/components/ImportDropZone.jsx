@@ -1,17 +1,19 @@
 import { useState, useCallback, useRef } from 'react'
 import { Download } from 'lucide-react'
 
-const ALLOWED_EXT = /\.(mp4|avi|mov|mkv|wav|mp3|flac)$/i
+const ALLOWED_EXT = /\.(mp4|avi|mov|mkv|wav|mp3|flac|mid|midi)$/i
+const MIDI_EXT = /\.(mid|midi)$/i
 
 /**
  * Wraps content with drag-and-drop file import.
  *
  * Props:
- *   onFilesDropped(paths: string[]) – called with array of file paths
+ *   onFilesDropped(paths: string[]) – called with array of A/V file paths
+ *   onMidiFileDropped(path: string) – optional; called with the first .mid/.midi path
  *   children
  *   disabled
  */
-export default function ImportDropZone({ onFilesDropped, children, disabled }) {
+export default function ImportDropZone({ onFilesDropped, onMidiFileDropped, children, disabled }) {
   const [dragging, setDragging] = useState(false)
   const dragCounter = useRef(0)
 
@@ -46,19 +48,29 @@ export default function ImportDropZone({ onFilesDropped, children, disabled }) {
     if (disabled) return
 
     const files = Array.from(e.dataTransfer.files)
+
+    // Route first .mid/.midi to the MIDI import dialog
+    const midiFile = files.find(f => MIDI_EXT.test(f.name))
+    if (midiFile && onMidiFileDropped) {
+      const path = midiFile.path || midiFile.name
+      console.log('[ProjectMedia] MIDI import requested (drop):', path)
+      onMidiFileDropped(path)
+    }
+
+    // Route A/V files to the existing source-import flow
     // In Electron, File objects have a .path property with full filesystem path
-    const paths = files
-      .filter(f => ALLOWED_EXT.test(f.name))
+    const avPaths = files
+      .filter(f => ALLOWED_EXT.test(f.name) && !MIDI_EXT.test(f.name))
       .map(f => f.path || f.name)
       .filter(Boolean)
 
-    if (paths.length > 0) {
-      console.log(`[ProjectMedia] Import requested (drop): ${paths.length} file(s)`)
-      onFilesDropped(paths)
-    } else {
+    if (avPaths.length > 0) {
+      console.log(`[ProjectMedia] Import requested (drop): ${avPaths.length} file(s)`)
+      onFilesDropped(avPaths)
+    } else if (!midiFile) {
       console.log('[ProjectMedia] Drop ignored — no supported media files')
     }
-  }, [disabled, onFilesDropped])
+  }, [disabled, onFilesDropped, onMidiFileDropped])
 
   return (
     <div

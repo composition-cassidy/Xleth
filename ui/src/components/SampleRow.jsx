@@ -187,7 +187,7 @@ export default function SampleRow({
       {region.hasSwappedAudio && !isEditing && (
         <span
           className="sample-row-swap-icon"
-          title={`Audio swapped: ${region.swappedAudioPath?.split(/[\\/]/).pop() ?? ''}`}
+          title={`Audio swapped: ${region.swappedAudioPath?.split(/[\\/]/).pop() ?? ''} — preview plays original, swap is audible only on timeline`}
         >
           <ArrowLeftRight size={10} />
         </span>

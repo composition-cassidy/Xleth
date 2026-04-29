@@ -146,7 +146,7 @@ export default function PianoRollCanvas({
   selectedNoteIds, setSelectedNoteIds,
   pixelsPerBeat, pixelsPerSemitone, scrollX, scrollY,
   width, height,
-  onAddNote, onRemoveNote, onMoveNote, onMoveNotesBatch, onResizeNote, onPreviewNote,
+  onAddNote, onRemoveNote, onMoveNote, onMoveNotesBatch, onResizeNote, onResizeNotesBatch, onPreviewNote,
 }) {
   const bgRef = useRef(null)
   const ctRef = useRef(null)
@@ -171,6 +171,8 @@ export default function PianoRollCanvas({
   onMoveNotesBatchRef.current = onMoveNotesBatch
   const onResizeNoteRef = useRef(onResizeNote)
   onResizeNoteRef.current = onResizeNote
+  const onResizeNotesBatchRef = useRef(onResizeNotesBatch)
+  onResizeNotesBatchRef.current = onResizeNotesBatch
   const onAddNoteRef = useRef(onAddNote)
   onAddNoteRef.current = onAddNote
   const onRemoveNoteRef = useRef(onRemoveNote)
@@ -286,8 +288,8 @@ export default function PianoRollCanvas({
       return
     }
 
-    // Begin drag: capture immutable originals snapshot (once). Multi-note move if
-    // the hit note is already in the selection and we're moving (not resizing).
+    // Begin drag: capture immutable originals snapshot (once). Multi-note op when
+    // the hit note is already in the selection (applies to both move and resize).
     const beginDrag = (hit, isMultiMove) => {
       const originals = new Map()
       if (isMultiMove) {
@@ -346,7 +348,7 @@ export default function PianoRollCanvas({
         if (!wasSelected) {
           setSelectedNoteIdsRef.current(new Set([hit.note.id]))
         }
-        beginDrag(hit, wasSelected && !hit.nearRight && selectedNoteIdsRef.current.size > 1)
+        beginDrag(hit, wasSelected && selectedNoteIdsRef.current.size > 1)
       }
       return
     }
@@ -366,7 +368,7 @@ export default function PianoRollCanvas({
           setSelectedNoteIdsRef.current(new Set([hit.note.id]))
         }
         onPreviewNoteRef.current?.(hit.note.pitch)
-        beginDrag(hit, wasSelected && !hit.nearRight && selectedNoteIdsRef.current.size > 1)
+        beginDrag(hit, wasSelected && selectedNoteIdsRef.current.size > 1)
       } else {
         // Start lasso on empty space (no modifier needed in select mode)
         dragStateRef.current = {
@@ -486,7 +488,19 @@ export default function PianoRollCanvas({
         }
       } else if (ds.action === ACTION.RESIZE_NOTE) {
         if (ds.previewDurationTicks !== ds.origDurationTicks) {
-          onResizeNoteRef.current?.(ds.anchorNoteId, ds.previewDurationTicks)
+          const deltaTicks = ds.previewDurationTicks - ds.origDurationTicks
+          if (ds.originals.size > 1 && onResizeNotesBatchRef.current) {
+            const resizes = []
+            for (const [noteId, orig] of ds.originals) {
+              resizes.push({
+                noteId,
+                durationTicks: Math.max(60, orig.durationTicks + deltaTicks),
+              })
+            }
+            onResizeNotesBatchRef.current(resizes)
+          } else {
+            onResizeNoteRef.current?.(ds.anchorNoteId, ds.previewDurationTicks)
+          }
           setStickyNoteLengthRef.current?.(ds.previewDurationTicks)
         }
       } else if (ds.action === ACTION.LASSO) {
@@ -551,19 +565,24 @@ export default function PianoRollCanvas({
       }
       ov.setLineDash([])
     } else if (ds.action === ACTION.RESIZE_NOTE) {
-      const orig = ds.originals.get(ds.anchorNoteId)
-      if (!orig) return
-      const beat = orig.positionTicks / PPQ
-      const durBeats = ds.previewDurationTicks / PPQ
-      const x = beat * pixelsPerBeat - scrollX
-      const wid = Math.max(2, durBeats * pixelsPerBeat)
-      const y = (PITCH_MAX - orig.pitch) * pixelsPerSemitone - scrollY
+      const anchorOrig = ds.originals.get(ds.anchorNoteId)
+      if (!anchorOrig) return
+      const deltaTicks = ds.previewDurationTicks - ds.origDurationTicks
       ov.fillStyle = hexToRgba(hex, 0.55)
-      ov.fillRect(x, y + 1, wid, pixelsPerSemitone - 2)
       ov.strokeStyle = tokenValue('--theme-fg-inverse')
       ov.lineWidth = 1.5
       ov.setLineDash([4, 3])
-      ov.strokeRect(x + 0.5, y + 1.5, wid - 1, pixelsPerSemitone - 3)
+      for (const [, orig] of ds.originals) {
+        const newDur = Math.max(60, orig.durationTicks + deltaTicks)
+        const beat = orig.positionTicks / PPQ
+        const durBeats = newDur / PPQ
+        const x = beat * pixelsPerBeat - scrollX
+        const wid = Math.max(2, durBeats * pixelsPerBeat)
+        const y = (PITCH_MAX - orig.pitch) * pixelsPerSemitone - scrollY
+        if (x + wid < 0 || x > width || y + pixelsPerSemitone < 0 || y > height) continue
+        ov.fillRect(x, y + 1, wid, pixelsPerSemitone - 2)
+        ov.strokeRect(x + 0.5, y + 1.5, wid - 1, pixelsPerSemitone - 3)
+      }
       ov.setLineDash([])
     } else if (ds.action === ACTION.LASSO) {
       // Convert world-space lasso coords to screen-space for rendering

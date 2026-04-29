@@ -75,7 +75,7 @@ export default function FadeBezierEditor({
     ctx.beginPath()
     ctx.moveTo(p0.cx, p0.cy)
     ctx.lineTo(p3.cx, p3.cy)
-    ctx.strokeStyle = 'rgba(255,255,255,0.12)'
+    ctx.strokeStyle = tokenValue('--theme-fx-surface-tint-medium')
     ctx.lineWidth = 1
     ctx.stroke()
 

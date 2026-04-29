@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { X } from 'lucide-react'
 import { timelineEvents } from '../../timelineEvents.js'
-import { pitchLabel } from '../pianoRoll/PianoRollKeyboard.jsx'
+import RootNotePicker from './RootNotePicker.jsx'
 import SamplerWaveform from './SamplerWaveform.jsx'
 import EnvelopeEditor from './EnvelopeEditor.jsx'
 import MiniKeyboard from './MiniKeyboard.jsx'
@@ -289,7 +289,7 @@ export default function SamplerPanel({ regionId, onClose }) {
         onMouseDown={onClose}
         style={{
           position: 'absolute', inset: 0,
-          background: 'rgba(0,0,0,0.55)',
+          background: 'var(--theme-overlay-medium)',
           zIndex: 10,
         }}
       />
@@ -306,7 +306,7 @@ export default function SamplerPanel({ regionId, onClose }) {
           background: 'var(--theme-bg-secondary)',
           border: '1px solid var(--theme-sampler-key-border)',
           borderRadius: 8,
-          boxShadow: '0 12px 40px rgba(0,0,0,0.6)',
+          boxShadow: 'var(--theme-chrome-shadow)',
           zIndex: 11,
           display: 'flex',
           flexDirection: 'column',
@@ -450,16 +450,11 @@ export default function SamplerPanel({ regionId, onClose }) {
             <div className="sampler-panel-row" style={{ marginTop: 8 }}>
               <label className="sampler-panel-field">
                 <span>Root Note</span>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <input
-                    type="number" min={0} max={127}
-                    value={settings.rootNote}
-                    onChange={(e) => setField('rootNote', Math.max(0, Math.min(127, Number(e.target.value) || 0)))}
-                    onBlur={() => commit({ rootNote: settings.rootNote })}
-                    style={{ width: 56 }}
-                  />
-                  <span style={{ fontSize: 11, color: 'var(--theme-text-muted)', minWidth: 32 }}>{pitchLabel(settings.rootNote)}</span>
-                </div>
+                <RootNotePicker
+                  value={settings.rootNote}
+                  onChange={(midi) => commitField('rootNote', midi)}
+                  fontSize={11}
+                />
               </label>
               <label className="sampler-panel-field" style={{ flex: 1 }}>
                 <span>Mode</span>
@@ -639,16 +634,16 @@ export default function SamplerPanel({ regionId, onClose }) {
                 style={{
                   flex: 1, padding: '5px 0', fontSize: 11, fontWeight: 600,
                   border: '1px solid var(--theme-sampler-key-border)', borderRadius: '4px 0 0 4px',
-                  background: envTab === 'volume' ? 'var(--theme-sampler-lfo-bg-volume)' : 'var(--theme-bg-surface)',
-                  color: envTab === 'volume' ? 'var(--theme-sampler-lfo-color-volume)' : 'var(--theme-text-muted)',
+                  background: envTab === 'volume' ? 'var(--theme-sampler-mod-bg-volume)' : 'var(--theme-bg-surface)',
+                  color: envTab === 'volume' ? 'var(--theme-sampler-mod-color-volume)' : 'var(--theme-text-muted)',
                   cursor: 'pointer',
                 }}>Volume</button>
               <button onClick={() => setEnvTab('pitch')}
                 style={{
                   flex: 1, padding: '5px 0', fontSize: 11, fontWeight: 600,
                   border: '1px solid var(--theme-sampler-key-border)', borderRadius: '0 4px 4px 0',
-                  background: envTab === 'pitch' ? 'var(--theme-sampler-lfo-bg-pitch)' : 'var(--theme-bg-surface)',
-                  color: envTab === 'pitch' ? 'var(--theme-sampler-lfo-color-pitch)' : 'var(--theme-text-muted)',
+                  background: envTab === 'pitch' ? 'var(--theme-sampler-mod-bg-pitch)' : 'var(--theme-bg-surface)',
+                  color: envTab === 'pitch' ? 'var(--theme-sampler-mod-color-pitch)' : 'var(--theme-text-muted)',
                   cursor: 'pointer',
                 }}>Pitch</button>
             </div>
@@ -682,7 +677,7 @@ export default function SamplerPanel({ regionId, onClose }) {
                 attackTension={envTab === 'volume' ? settings.attackTension : settings.pitchEnvAttackTension}
                 decayTension={envTab === 'volume' ? settings.decayTension : settings.pitchEnvDecayTension}
                 releaseTension={envTab === 'volume' ? settings.releaseTension : settings.pitchEnvReleaseTension}
-                color={envTab === 'volume' ? tokenValue('--theme-sampler-lfo-color-volume') : tokenValue('--theme-sampler-lfo-color-pitch')}
+                color={envTab === 'volume' ? tokenValue('--theme-sampler-mod-color-volume') : tokenValue('--theme-sampler-mod-color-pitch')}
                 onLiveChange={(partial) => {
                   if (envTab === 'pitch') {
                     const mapped = {}

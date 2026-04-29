@@ -34,6 +34,7 @@ public:
     const SampleRegion*            getRegion(int id) const;
     SampleRegion*                  getRegionMutable(int id);
     std::vector<const SampleRegion*> getAllRegions() const;
+    std::vector<SampleRegion*>     getAllRegionsMutable();
     bool                           removeRegion(int id);
     std::vector<const SampleRegion*> getRegionsByLabel(SampleLabel label) const;
 
@@ -60,6 +61,8 @@ public:
     // ── Transport ─────────────────────────────────────────────────────────────
     void   setBPM(double bpm);
     double getBPM()         const { return m_bpm; }
+    void   setTempoLocked(bool v) { m_tempoLocked = v; }
+    bool   getTempoLocked() const { return m_tempoLocked; }
     void   setSampleRate(double sr);
     double getSampleRate()  const { return m_sampleRate; }
     void   setTimeSignature(int numerator, int denominator);
@@ -72,6 +75,11 @@ public:
     const GridLayout& getGridLayout() const { return m_gridLayout; }
     void   setGridLayout(const GridLayout& layout);
     void   assignTrackToGrid(int trackId, int gridX, int gridY, int spanX, int spanY);
+    // Same as assignTrackToGrid but stores the supplied zOrder on the slot
+    // instead of resetting to 0. Used by the grid editor's drag-to-place flow
+    // so that a fresh placement landing on top is a single atomic command.
+    void   assignTrackToGridWithZOrder(int trackId, int gridX, int gridY,
+                                       int spanX, int spanY, int zOrder);
     void   removeTrackFromGrid(int trackId);
     void   setChorusTrack(int trackId);
     void   setCrashOverlay(bool enabled, int trackId, float opacity);
@@ -99,6 +107,7 @@ public:
 
     // ── Pattern notes ─────────────────────────────────────────────────────────
     int  addNoteToPattern(int patternId, PatternNote note);
+    bool addNotesToPatternBulk(int patternId, std::vector<PatternNote>& notes);
     bool removeNoteFromPattern(int patternId, int noteId);
     bool moveNote(int patternId, int noteId, TickTime newPosition, int newPitch);
     bool resizeNote(int patternId, int noteId, TickTime newDuration);
@@ -113,6 +122,7 @@ public:
     bool setTrackVideoHoldLastFrame(int trackId, bool hold);
     bool setTrackCornerRadius(int trackId, float radius);
     bool setTrackGapScaleOverride(int trackId, float gapScale);
+    bool setTrackSubdivisionFactor(int trackId, int factor);
     bool setTrackBounceSettings(int trackId, const BounceSettings& settings);
     bool setTrackZoomPanRotSettings(int trackId, const ZoomPanRotSettings& settings);
     bool setTrackPingPongSettings(int trackId, const PingPongSettings& settings);
@@ -126,6 +136,7 @@ public:
     bool setVisualEffectParam(int trackId, int effectIndex, int paramIndex, float value);
     bool setVisualEffectBypassed(int trackId, int effectIndex, bool bypassed);
     bool insertVisualEffectAt(int trackId, int index, const VisualEffect& fx); // for undo
+    bool setTrackVisualEffectChainOrder(int trackId, const std::vector<int>& newOrder);
     const std::vector<VisualEffect>* getVisualEffectChain(int trackId) const;
 
     // ── Restore (undo/redo) ───────────────────────────────────────────────────
@@ -176,6 +187,7 @@ private:
     int    m_timeSigNum;
     int    m_timeSigDen;
     int    m_nextId;
+    bool   m_tempoLocked = true;
 
     std::map<int, SourceMedia>  m_sources;
     std::map<int, SampleRegion> m_regions;

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "concurrently --kill-others \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "build": "vite build",
+    "dist": "npm run build && electron-builder --config electron-builder.json",
     "start": "npm run build && electron .",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -27,6 +28,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.0.0",
     "electron": "^41.0.0",
+    "electron-builder": "^26.8.1",
     "vite": "^6.0.0",
     "vitest": "^2.0.0",
     "wait-on": "^8.0.0"

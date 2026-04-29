@@ -255,8 +255,8 @@ int main()
         slot.trackId = trackId;
         slot.gridX = 0;
         slot.gridY = 0;
-        slot.spanX = 2;
-        slot.spanY = 2;
+        slot.spanX = kGridSubUnitsPerColumn;
+        slot.spanY = kGridSubUnitsPerRow;
         grid.slots.push_back(slot);
         timeline.setGridLayout(grid);
 

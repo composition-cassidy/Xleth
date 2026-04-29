@@ -11,6 +11,7 @@ import {
 import { labelHexColor } from '../../constants/labels.js'
 import { drawEnvelope, drawTrace, drawWaveformLine, drawSamplePoints, getRegime } from '../../utils/waveformRenderer.js'
 import { tokenValue } from '../../theming/tokenValue.ts'
+import { getRegionPlaybackDurationSec } from './regionDuration.js'
 
 // Default engine sample rate (used for spp computation when no per-region rate is known)
 const DEFAULT_SR = 48000
@@ -106,7 +107,7 @@ export function drawGrid(ctx, w, h, scrollOffset, ppb, trackCount, tracks = null
   ctx.stroke()
 
   // Bar lines (vertical, major — every BEATS_PER_BAR beats)
-  ctx.strokeStyle = 'rgba(255,255,255,0.12)'
+  ctx.strokeStyle = tokenValue('--theme-fx-surface-tint-medium')
   ctx.lineWidth = 1
   ctx.beginPath()
   const firstBar = Math.floor(startBeat / BEATS_PER_BAR) * BEATS_PER_BAR
@@ -290,7 +291,8 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
 
     // ── Waveform inside clip ─────────────────────────────────────────────
     if (clipW > 20 && bpm && region) {
-      const regionDurSec = Math.abs((region.endTime ?? 0) - (region.startTime ?? 0))
+      // Swap-aware: extend draw span past video range when swapped audio is longer.
+      const regionDurSec = getRegionPlaybackDurationSec(region)
 
       // Visible pixel range (clip ∩ viewport)
       const visL = Math.max(0, x)
@@ -551,6 +553,46 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
   if (visibleCount > 0) {
     console.log(`[TimelineClips] Rendering ${clips.length} clips (${visibleCount} visible in viewport)`)
   }
+}
+
+// ── WORLD processing spinners ────────────────────────────────────────────────
+// Draws a 14-px rotating arc at the bottom-right corner of each clip that is
+// currently being processed by a WORLD render job.
+// `accentColor` must be pre-resolved from the CSS variable by the caller since
+// canvas cannot read CSS custom properties directly.
+
+export function drawWorldSpinners(
+  ctx, clips, trackIdToIndex, worldProcessingClips,
+  scrollOffset, ppb, spinAngle, accentColor
+) {
+  if (!worldProcessingClips?.size || !clips?.length) return
+  const SPINNER_R   = 7    // radius → 14 px diameter
+  const SPINNER_PAD = 4    // margin from clip right/bottom edge
+  const ARC_SPAN    = Math.PI * 1.5  // 270° sweep
+
+  ctx.save()
+  ctx.lineWidth   = 2
+  ctx.lineCap     = 'round'
+  ctx.strokeStyle = accentColor
+
+  for (let i = 0; i < clips.length; i++) {
+    const clip = clips[i]
+    if (!worldProcessingClips.has(clip.id)) continue
+    const trackIdx = trackIdToIndex[clip.trackId]
+    if (trackIdx == null) continue
+
+    const x     = beatToPixel(clip.positionTicks / PPQ, scrollOffset, ppb)
+    const clipW = (clip.durationTicks / PPQ) * ppb
+    if (clipW < 20 || x + clipW < 0) continue
+
+    const cx = x + clipW - SPINNER_PAD - SPINNER_R
+    const cy = (trackIdx + 1) * TRACK_HEIGHT - CLIP_PAD - SPINNER_PAD - SPINNER_R
+
+    ctx.beginPath()
+    ctx.arc(cx, cy, SPINNER_R, spinAngle, spinAngle + ARC_SPAN)
+    ctx.stroke()
+  }
+  ctx.restore()
 }
 
 // ── Pattern Blocks (content layer) ──────────────────────────────────────────

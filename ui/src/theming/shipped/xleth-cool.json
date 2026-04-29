@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "name": "Xleth Cool",
+  "author": "Xleth",
+  "description": "Cool inspiration theme. Slate blue surfaces, cobalt accent, silver text. NLE-editor feel.",
+  "locked": true,
+  "derivationDetached": [],
+  "tokens": {
+    "--theme-bg-primary": "#070C14",
+    "--theme-bg-surface": "#0F1828",
+    "--theme-accent":     "#5B8AF0",
+    "--theme-text":       "#D4D8E8",
+    "--theme-danger":     "#E84040",
+
+    "--theme-bg-inset":                   "#040810",
+    "--theme-fg-inverse":                 "#E8EEF8",
+    "--theme-text-on-accent":             "#070C14",
+    "--theme-accent-bg-subtle":           "rgba(91, 138, 240, 0.08)",
+    "--theme-accent-bg-medium":           "rgba(91, 138, 240, 0.16)",
+    "--theme-lipsync-handle":             "#5B8AF0",
+    "--theme-lipsync-selection-fill":     "rgba(91, 138, 240, 0.15)",
+    "--theme-waveform-envelope-fill":     "rgba(91, 138, 240, 0.35)",
+    "--theme-waveform-rms-body":          "rgba(91, 138, 240, 0.55)",
+    "--theme-syllable-section-alt":       "rgba(91, 138, 240, 0.06)",
+    "--theme-syllable-accent-light":      "#80A4F4",
+    "--theme-syllable-splitter-bg":       "#0C1520",
+    "--theme-syllable-splitter-wave-dim": "#2A3A52",
+    "--theme-syllable-splitter-label-fg": "#A0AABF",
+    "--theme-sampler-mod-color-volume":   "#5B8AF0",
+    "--theme-sampler-mod-bg-volume":      "#0F1A38",
+    "--theme-pattern-list-item-hover-bg": "#162035"
+  }
+}

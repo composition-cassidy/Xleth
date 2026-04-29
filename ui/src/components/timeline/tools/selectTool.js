@@ -5,6 +5,7 @@ import {
 import { labelHexColor } from '../../../constants/labels.js'
 import { tokenValue } from '../../../theming/tokenValue.ts'
 import { drawRubberBand, drawMovePreview } from '../timelineDrawing.js'
+import { getRegionPlaybackDurationSec } from '../regionDuration.js'
 
 const HANDLE_W = 6   // Resize handle hit-test width (slightly wider than visual 4px)
 const MIN_DURATION_TICKS = 120  // 1/32 note
@@ -76,7 +77,8 @@ export function createSelectTool(deps) {
     const region = regionsRef.current?.[clip.regionId]
     const bpm = bpmRef?.current
     if (!region || !bpm) return Number.MAX_SAFE_INTEGER
-    const durSec = Math.abs((region.endTime ?? 0) - (region.startTime ?? 0))
+    // Swap-aware: extends past video range when swapped audio is longer.
+    const durSec = getRegionPlaybackDurationSec(region)
     if (durSec <= 0) return Number.MAX_SAFE_INTEGER
     return Math.round(durSec * (bpm / 60) * PPQ)
   }

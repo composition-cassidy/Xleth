@@ -1,8 +1,11 @@
 #include "audio/ClipRenderCache.h"
+#include "audio/WorldStretchCache.h"
 #include "dsp/RubberBandWrapper.h"
 #include "dsp/TDPSOLA.h"
 #include "dsp/WSOLA.h"
 #include "dsp/PhaseVocoder.h"
+#include "dsp/WORLD.h"
+#include "model/TimelineTypes.h"
 #include "XlethDebug.h"
 
 #include <algorithm>
@@ -47,6 +50,11 @@ public:
 
     JobStatus runJob() override {
         juce::ScopedNoDenormals noDenormals;
+        fprintf(stderr, "[PITCHDBG] ClipRenderJob::runJob START clip=%d region=%d pitch=%dst+%dc stretch=%.3f\n",
+                clipId_, entry_->key.regionId,
+                entry_->key.pitchOffsetSemis, entry_->key.pitchOffsetCents,
+                entry_->key.stretchRatio);
+        fflush(stderr);
 #ifdef XLETH_DEBUG
         const auto jobStart = std::chrono::steady_clock::now();
         fprintf(stderr, "[CacheQueue] START clip=%d\n", clipId_);
@@ -165,6 +173,29 @@ public:
                 p.stretchRatio        = key.stretchRatio;
                 p.formantPreserve     = key.formantPreserve;
                 copyIntoOutBuf(xleth::dsp::processPhaseVocoder(working, p));
+            } else if ((needsPitch || needsStretch) &&
+                       key.stretchMethod == static_cast<int>(StretchMethod::WORLD)) {
+                xleth::dsp::WORLDParams p;
+                p.sampleRate          = sampleRate_;
+                p.pitchShiftSemitones = key.pitchOffsetSemis
+                                        + key.pitchOffsetCents / 100.0;
+                p.stretchRatio        = key.stretchRatio;
+                p.formantPreserve     = key.formantPreserve;
+
+                if (auto* wc = owner_->worldCache()) {
+                    xleth::audio::WorldCacheKey wk;
+                    wk.sourceHash   = xleth::audio::WorldStretchCache::hashPCM(working);
+                    wk.pitchMilliSt = static_cast<int32_t>(
+                        std::lround(p.pitchShiftSemitones * 1000.0));
+                    wk.ratioMicro   = static_cast<int32_t>(
+                        std::lround(p.stretchRatio * 1000.0));
+                    wk.sampleRateHz = static_cast<int32_t>(std::lround(sampleRate_));
+                    wk.numChannels  = working.getNumChannels();
+                    auto buf = wc->getOrCompute(wk, working, p);
+                    if (buf) copyIntoOutBuf(*buf);
+                } else {
+                    copyIntoOutBuf(xleth::dsp::processWORLD(working, p));
+                }
             } else {
                 // Raw copy — Global stub or no processing needed
                 const int copyN = static_cast<int>(readLen);
@@ -176,6 +207,14 @@ public:
         entry_->buffer = std::move(outBuf);
         entry_->ready.store(true, std::memory_order_release);
         owner_->publishEntry(clipId_, entry_);
+        fprintf(stderr, "[PITCHDBG] ClipRenderJob::runJob COMPLETE clip=%d outSamples=%d\n",
+                clipId_, entry_->buffer ? entry_->buffer->getNumSamples() : 0);
+        fflush(stderr);
+
+        if (entry_->key.stretchMethod == static_cast<int>(StretchMethod::WORLD)) {
+            std::lock_guard<std::mutex> lk(owner_->cacheMutex_);
+            owner_->worldActiveJobs_.erase(clipId_);
+        }
 
 #ifdef XLETH_DEBUG
         {
@@ -275,6 +314,9 @@ void ClipRenderCache::submitJob(int clipId, const CacheKey& key,
 {
     if (!threadPool_) return;
     if (clipId < 0 || clipId >= kMaxClipId) return;
+    fprintf(stderr, "[PITCHDBG] ClipRenderCache::submitJob clip=%d region=%d pitch=%dst+%dc stretch=%.3f\n",
+            clipId, key.regionId, key.pitchOffsetSemis, key.pitchOffsetCents, key.stretchRatio);
+    fflush(stderr);
 #ifdef XLETH_DEBUG
     fprintf(stderr, "[ClipCache] submit: clip=%d key={region=%d syl=%d"
             " pitch=%dst+%dc stretch=%.3f rev=%d method=%d formant=%d}\n",
@@ -299,11 +341,18 @@ void ClipRenderCache::submitJob(int clipId, const CacheKey& key,
     {
         std::lock_guard<std::mutex> lk(cacheMutex_);
         cache_[clipId] = entry;
+        if (key.stretchMethod == static_cast<int>(StretchMethod::WORLD))
+            worldActiveJobs_.insert(clipId);
     }
 
     threadPool_->addJob(
         new ClipRenderJob(clipId, entry, std::move(srcCopy), sampleRate, this),
         /*deleteJobWhenFinished=*/true);
+}
+
+std::vector<int> ClipRenderCache::getWorldActiveJobIds() const {
+    std::lock_guard<std::mutex> lk(cacheMutex_);
+    return std::vector<int>(worldActiveJobs_.begin(), worldActiveJobs_.end());
 }
 
 // ── Worker thread → audio thread publish ──────────────────────────────────────

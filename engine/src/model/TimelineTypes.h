@@ -115,6 +115,10 @@ struct SampleRegion {
     int  rootNote        = 60;   // MIDI note (from WAV smpl chunk, default C4)
     bool hasSwappedAudio = false;
 
+    // Probed duration (seconds) of the swapped audio file. 0 when no swap or when probe failed.
+    // Used by UI to allow clip resize past the original video range when audio is longer.
+    double swappedAudioDurationSec = 0.0;
+
     // ── Sampler settings (per-instrument; shared across all patterns that bind
     //    to this region). These describe how the sample is played back.
     float attackMs        = 0.0f;
@@ -152,7 +156,7 @@ struct SampleRegion {
     // Trim points (in source samples, 0-indexed)
     int64_t smpStart       = 0;          // playback start offset
     int64_t smpLength      = 0;          // 0 = full from smpStart to end
-    int     declickSamples = 64;         // Hann fade width at trim edges
+    float   declickMs      = 1.5f;       // Hann fade width at trim edges (ms; sample-rate independent)
     float   fadeInMs       = 0.0f;       // linear fade-in duration (ms)
     float   fadeOutMs      = 0.0f;       // linear fade-out duration (ms)
     int64_t crossfadeSamples = 0;        // FL-style loop crossfade width (source samples)
@@ -245,7 +249,8 @@ enum class StretchMethod : int {
     PSOLA        = 1,   // TD-PSOLA (monophonic speech)
     Rubber       = 2,   // Rubber Band (polyphonic-safe)
     WSOLA        = 3,   // WSOLA (stub — W1)
-    PhaseVocoder = 4    // Phase Vocoder (stub — W2)
+    PhaseVocoder = 4,   // Phase Vocoder (stub — W2)
+    WORLD        = 5    // WORLD vocoder (Harvest+CheapTrick+D4C+Synthesis)
 };
 
 // ─── Clip ─────────────────────────────────────────────────────────────────────
@@ -458,6 +463,7 @@ struct TrackInfo {
     float       stereoSpread = 1.0f;  // 0.0=mono, 1.0=original, 2.0=exaggerated
     bool        muted        = false;
     bool        solo         = false;
+    bool        visualOnly   = false;
     int         order        = 0;
 
     float videoX       = 0.0f;
@@ -489,6 +495,12 @@ struct TrackInfo {
     ZoomPanRotSettings              zoomPanRot;
     SlideNoteEffectSettings         slideNoteEffect;
     std::vector<VisualEffect>       visualEffectChain;
+
+    // Sub-column subdivision used when placing this track in the grid. 1 =
+    // full column (default), 2 = half, 4 = quarter, 8 = eighth. Drives the
+    // renderer's snap step and default placement width; engine treats it as
+    // opaque metadata.
+    int subdivisionFactor = 1;
 };
 
 inline std::string trackTypeToString(TrackInfo::Type t) {
@@ -499,17 +511,35 @@ inline TrackInfo::Type stringToTrackType(const std::string& s) {
     return s == "Pattern" ? TrackInfo::Type::Pattern : TrackInfo::Type::Clip;
 }
 
+// ─── Grid sub-unit constants ──────────────────────────────────────────────────
+// Grid coordinates run on a fine sub-unit grid: each column is divided into
+// kGridSubUnitsPerColumn equal pieces, each row into kGridSubUnitsPerRow.
+// Set to 8 (the LCM of supported per-track subdivision factors {1,2,4,8}) so
+// every factor maps to an exact integer span.
+//
+// Legacy projects stored coordinates in HALF units (implicit 2 sub-units per
+// axis). Timeline::fromJSON migrates them by multiplying by 4 when the saved
+// gridLayoutVersion is missing or < 2. New projects write gridLayoutVersion=2.
+constexpr int kGridSubUnitsPerColumn = 8;
+constexpr int kGridSubUnitsPerRow    = 8;
+constexpr int kGridLegacyHalfUnits   = 2;        // pre-v2 sub-unit count
+constexpr int kGridLegacyToFineScale = kGridSubUnitsPerColumn / kGridLegacyHalfUnits; // = 4
+constexpr int kGridLayoutVersionFineUnits = 2;
+constexpr int kGridSubdivisionMax = 8;
+
 // ─── GridSlot ─────────────────────────────────────────────────────────────────
-// One track's placement in the video grid. Coordinates are in half-grid units:
-// for an N×M grid, coords run 0..2N-1 and 0..2M-1. A main cell spans 2×2, a
-// half-cell spans 1×1 — allowing tucked-in boxes between main cells.
+// One track's placement in the video grid. Coordinates are in fine-grid units:
+// for an N×M grid, coords run 0..N*kGridSubUnitsPerColumn-1 and
+// 0..M*kGridSubUnitsPerRow-1. A full-column placement spans kGridSubUnitsPerColumn
+// horizontally; a track with subdivisionFactor=F places at width
+// kGridSubUnitsPerColumn / F.
 
 struct GridSlot {
     int   trackId = -1;
-    int   gridX   = 0;     // 0 .. 2*columns-1 (half-grid coords)
-    int   gridY   = 0;     // 0 .. 2*rows-1
-    int   spanX   = 2;     // 2 = main cell, 1 = half cell
-    int   spanY   = 2;
+    int   gridX   = 0;     // 0 .. columns*kGridSubUnitsPerColumn - 1
+    int   gridY   = 0;     // 0 .. rows   *kGridSubUnitsPerRow    - 1
+    int   spanX   = kGridSubUnitsPerColumn;
+    int   spanY   = kGridSubUnitsPerRow;
     float opacity = 1.0f;
     int   zOrder  = 0;
 };

@@ -17,6 +17,7 @@ const SampleSelectorPanel = React.lazy(() => import('./panels/SampleSelectorPane
 const PreviewPanel = React.lazy(() => import('./panels/PreviewPanel'));
 const GridSettingsPanel = React.lazy(() => import('./panels/GridSettingsPanel'));
 const NodeEditorPanel = React.lazy(() => import('./panels/NodeEditorPanel'));
+const SamplerWindowPanel = React.lazy(() => import('./panels/SamplerWindowPanel'));
 
 type DevShellMode =
   | 'single'
@@ -110,6 +111,7 @@ const PANEL_BODY_FOR_6B: Record<PanelId, React.LazyExoticComponent<React.FC>> = 
   preview: PreviewPanel,
   gridSettings: GridSettingsPanel,
   nodeEditor: NodeEditorPanel,
+  sampler: SamplerWindowPanel,
 };
 
 const SHELL_PANEL_IDS: Record<AppShellMode, PanelId[]> = {
@@ -126,6 +128,7 @@ const SHELL_PANEL_IDS: Record<AppShellMode, PanelId[]> = {
     'preview',
     'gridSettings',
     'nodeEditor',
+    'sampler',
   ],
   'phase-6b-demo': [
     'timeline',
@@ -135,6 +138,7 @@ const SHELL_PANEL_IDS: Record<AppShellMode, PanelId[]> = {
     'preview',
     'gridSettings',
     'nodeEditor',
+    'sampler',
   ],
   production: [
     'timeline',
@@ -144,6 +148,7 @@ const SHELL_PANEL_IDS: Record<AppShellMode, PanelId[]> = {
     'preview',
     'gridSettings',
     'nodeEditor',
+    'sampler',
   ],
 };
 

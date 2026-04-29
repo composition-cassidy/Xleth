@@ -104,14 +104,18 @@ int main()
     layout.crashTrackId  = crashTrackId;
     layout.crashOpacity  = 0.7f;
 
+    // Coordinates use fine-grid units (kGridSubUnitsPerColumn per column,
+    // kGridSubUnitsPerRow per row). A full main cell has span = column.
+    const int FCOL = kGridSubUnitsPerColumn;
+    const int FROW = kGridSubUnitsPerRow;
     // Cell (0,0): trackIds[0]
-    layout.slots.push_back({trackIds[0], 0, 0, 2, 2, 1.0f, 0});
+    layout.slots.push_back({trackIds[0],  0,    0,    FCOL, FROW, 1.0f, 0});
     // Cell (1,0): trackIds[1]
-    layout.slots.push_back({trackIds[1], 2, 0, 2, 2, 0.8f, 1});
+    layout.slots.push_back({trackIds[1],  FCOL, 0,    FCOL, FROW, 0.8f, 1});
     // Cell (0,1): trackIds[2] — NOT assigned (gap: trackId = -1)
-    layout.slots.push_back({-1, 0, 2, 2, 2, 1.0f, 2});
+    layout.slots.push_back({-1,           0,    FROW, FCOL, FROW, 1.0f, 2});
     // Cell (1,1): trackIds[3]
-    layout.slots.push_back({trackIds[3], 2, 2, 2, 2, 0.5f, 3});
+    layout.slots.push_back({trackIds[3],  FCOL, FROW, FCOL, FROW, 0.5f, 3});
 
     timeline.setGridLayout(layout);
 
@@ -310,9 +314,11 @@ int main()
             t.type = TrackInfo::Type::Pattern;
             bigTrackIds[i] = bigTimeline.addTrack(t);
 
-            int col = (i % 4) * 2;
-            int row = (i / 4) * 2;
-            bigLayout.slots.push_back({bigTrackIds[i], col, row, 2, 2, 1.0f, i});
+            int col = (i % 4) * kGridSubUnitsPerColumn;
+            int row = (i / 4) * kGridSubUnitsPerRow;
+            bigLayout.slots.push_back({bigTrackIds[i], col, row,
+                                       kGridSubUnitsPerColumn, kGridSubUnitsPerRow,
+                                       1.0f, i});
 
             // ALL point to same source at same time → all should dedup to 1 frame
             bigEvents.push_back(makeEvent(bigTrackIds[i], bigSrcId, 0.0, 4.0, 5.0, 1.0f, i));

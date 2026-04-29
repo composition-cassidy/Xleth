@@ -1,7 +1,7 @@
 import React from 'react';
 import { PanelFrame } from '../components/PanelFrame';
 import { useXlethRootContext } from '../contexts/XlethRootContext.jsx';
-import SampleSelectorTab from '../../components/SampleSelectorTab.jsx';
+import LeftPanel from '../../components/LeftPanel.jsx';
 
 export default function SampleSelectorPanel() {
   const {
@@ -12,7 +12,7 @@ export default function SampleSelectorPanel() {
 
   return (
     <PanelFrame id="sampleSelector">
-      <SampleSelectorTab
+      <LeftPanel
         onOpenPicker={onOpenPicker}
         activeSampleId={activeSampleId}
         setActiveSampleId={setActiveSampleId}

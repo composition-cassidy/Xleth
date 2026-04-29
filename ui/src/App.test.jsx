@@ -57,6 +57,9 @@ describe('XlethRoot New Project reset', () => {
         close: vi.fn(),
         minimize: vi.fn(),
         maximize: vi.fn(),
+        zoomIn: vi.fn(),
+        zoomOut: vi.fn(),
+        resetZoom: vi.fn(),
       },
     }
   }
@@ -117,7 +120,7 @@ describe('XlethRoot New Project reset', () => {
     expect(applyPresetSpy).toHaveBeenCalledWith('fl-compose')
   })
 
-  it('maps file-menu keyboard shortcuts without triggering inside inputs', () => {
+  it('maps root keyboard shortcuts without triggering inside inputs', () => {
     expect(getFileMenuShortcutLabel({
       key: 'n',
       ctrlKey: true,
@@ -137,6 +140,33 @@ describe('XlethRoot New Project reset', () => {
     })).toBe('Export Video…')
 
     expect(getFileMenuShortcutLabel({
+      key: '=',
+      ctrlKey: true,
+      metaKey: false,
+      shiftKey: false,
+      altKey: false,
+      target: { tagName: 'DIV', isContentEditable: false },
+    })).toBe('Zoom In')
+
+    expect(getFileMenuShortcutLabel({
+      key: '-',
+      ctrlKey: true,
+      metaKey: false,
+      shiftKey: false,
+      altKey: false,
+      target: { tagName: 'DIV', isContentEditable: false },
+    })).toBe('Zoom Out')
+
+    expect(getFileMenuShortcutLabel({
+      key: '0',
+      ctrlKey: true,
+      metaKey: false,
+      shiftKey: false,
+      altKey: false,
+      target: { tagName: 'DIV', isContentEditable: false },
+    })).toBe('Reset Zoom')
+
+    expect(getFileMenuShortcutLabel({
       key: 's',
       ctrlKey: true,
       metaKey: false,
@@ -144,5 +174,17 @@ describe('XlethRoot New Project reset', () => {
       altKey: false,
       target: { tagName: 'INPUT', isContentEditable: false },
     })).toBeNull()
+  })
+
+  it('routes zoom menu actions to the Electron window bridge', async () => {
+    const xl = makeXleth()
+
+    await handleXlethRootMenuAction('Zoom In', { xl })
+    await handleXlethRootMenuAction('Zoom Out', { xl })
+    await handleXlethRootMenuAction('Reset Zoom', { xl })
+
+    expect(xl.window.zoomIn).toHaveBeenCalledTimes(1)
+    expect(xl.window.zoomOut).toHaveBeenCalledTimes(1)
+    expect(xl.window.resetZoom).toHaveBeenCalledTimes(1)
   })
 })

@@ -5,8 +5,10 @@ import { RULER_HEIGHT, HEADER_WIDTH } from '../../constants/timeline.js'
 
 export default function TrackHeaderList({
   tracks, patterns, currentPatternIdByTrack,
-  onAddTrack, onMute, onSolo, onRename, onRemove, onReorder, onRequestContextMenu,
+  focusedTrackId, onFocusTrack,
+  onAddTrack, onMute, onSolo, onVisualOnly, onRename, onRemove, onReorder, onRequestContextMenu,
   scrollContainerRef,
+  width = HEADER_WIDTH,
 }) {
   const dragIndexRef = useRef(null)
 
@@ -38,7 +40,7 @@ export default function TrackHeaderList({
   }, [scrollContainerRef])
 
   return (
-    <div className="timeline-header-column" style={{ width: HEADER_WIDTH }}>
+    <div className="timeline-header-column" style={{ width }}>
       {/* Spacer aligns with ruler */}
       <div className="timeline-header-spacer" style={{ height: RULER_HEIGHT }} />
 
@@ -58,11 +60,14 @@ export default function TrackHeaderList({
               track={track}
               index={i}
               currentPattern={currentPattern}
+              isFocused={focusedTrackId === track.id}
               onMute={onMute}
               onSolo={onSolo}
+              onVisualOnly={onVisualOnly}
               onRename={onRename}
               onRemove={onRemove}
               onRequestContextMenu={onRequestContextMenu}
+              onFocus={onFocusTrack}
               onDragStart={onDragStart}
               onDragOver={onDragOver}
               onDrop={onDrop}

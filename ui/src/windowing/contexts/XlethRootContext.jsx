@@ -12,6 +12,7 @@ const defaultValue = {
   availablePatterns: [],
   onSwitchPattern: null,
   onNewPattern: NOOP,
+  onOpenMidiImport: NOOP,
 }
 
 const XlethRootContext = createContext(defaultValue)

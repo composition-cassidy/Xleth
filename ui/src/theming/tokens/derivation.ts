@@ -160,7 +160,7 @@ export function deriveTheme(base: BaseTokens, derivationDetached: ReadonlyArray<
   // Background family — shifts from bg-primary / bg-surface.
   // Tuned: bg-secondary +3.14% L, −2.93% S  → #111118 (ΔE=0.0 vs anchor)
   put('--theme-bg-secondary', shift(bgPrimary, { dL: 3.137, dS: -2.927 }));
-  put('--theme-bg-tertiary',  shift(bgPrimary, { dL: 6 }));
+  put('--theme-bg-tertiary',  shift(bgPrimary, { dL: 4.8 }));
   put('--theme-bg-hover',     shift(bgSurface, { dL: 4 }));
   put('--theme-bg-active',    shift(bgSurface, { dL: 8 }));
   // Tuned: bg-elevated  +3.92% L, +0.94% S  → #222230 (ΔE=0.0 vs anchor)
@@ -204,6 +204,33 @@ export function deriveTheme(base: BaseTokens, derivationDetached: ReadonlyArray<
   put('--theme-panel-preview',   rotateHue(accent, 180));
   put('--theme-panel-grid',      rotateHue(accent, 240));
   put('--theme-panel-node',      rotateHue(accent, 300));
+
+  // ── Accent-relative tokens (formerly explicit teal hardcodes) ───────────
+  // These were rgba(51,206,214,...) in the catalog. Now derived so every
+  // theme that changes --theme-accent gets consistent alpha variants.
+  put('--theme-accent-bg-subtle',              withAlpha(accent, 0.08));
+  put('--theme-accent-bg-medium',              withAlpha(accent, 0.10));
+  put('--theme-snap-ghost-fill',               withAlpha(accent, 0.18));
+  put('--theme-snap-ghost-border',             withAlpha(accent, 0.40));
+  put('--theme-pianoroll-note-slide-stroke',   withAlpha(accent, 0.12));
+  put('--theme-pianoroll-loop-region',         withAlpha(accent, 0.08));
+  put('--theme-pianoroll-selection-rect',      withAlpha(accent, 0.18));
+  put('--theme-sampler-mod-color-volume',      accent);
+  put('--theme-timeline-selection-rect',       withAlpha(accent, 0.18));
+  put('--theme-grid-chorus-overlay',           withAlpha(accent, 0.18));
+  put('--theme-nodeeditor-selection-rect',     withAlpha(accent, 0.18));
+  put('--theme-projectmedia-dropzone',         withAlpha(accent, 0.14));
+  put('--theme-eq-band-1',                     accent);
+  put('--theme-eq-response-fill',              withAlpha(accent, 0.12));
+  put('--theme-dyn-transfer-fill',             withAlpha(accent, 0.12));
+  put('--theme-dyn-transient-sustain-fill',    withAlpha(accent, 0.30));
+  put('--theme-filter-response-fill',          withAlpha(accent, 0.12));
+  put('--theme-dist-waveshape-fill',           withAlpha(accent, 0.12));
+  put('--theme-syllable-accent-light',         shift(accent, { dL: 18 }));
+  put('--theme-syllable-section-alt',          withAlpha(accent, 0.06));
+  put('--theme-lipsync-selection-fill',        withAlpha(accent, 0.15));
+  put('--theme-waveform-envelope-fill',        withAlpha(accent, 0.35));
+  put('--theme-waveform-rms-body',             withAlpha(accent, 0.55));
 
   return out;
 }

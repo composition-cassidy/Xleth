@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { Music, Search, Pencil, Type, Download, ArrowLeftRight, RotateCcw, Trash2, Scissors, Sliders } from 'lucide-react'
+import { Music, Search, Pencil, Type, Download, ArrowLeftRight, RotateCcw, Trash2, Scissors, Sliders, List, LayoutGrid } from 'lucide-react'
 import { timelineEvents } from '../timelineEvents.js'
 import { DEFAULT_LABELS, loadCustomLabels, labelColor } from '../constants/labels.js'
 import SampleGroup from './SampleGroup.jsx'
 import ContextMenu from './ContextMenu.jsx'
 import SyllableSplitterModal from './SyllableSplitter/SyllableSplitterModal.jsx'
+import useSampleViewModeStore from '../stores/sampleViewModeStore.js'
 
 /**
  * Sample Selector tab — organises all marked regions by label.
@@ -13,6 +14,10 @@ import SyllableSplitterModal from './SyllableSplitter/SyllableSplitterModal.jsx'
  *   onOpenPicker – (source) => void  — opens SamplePicker in center area
  */
 export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setActiveSampleId }) {
+  // ── View mode (list | thumbnails) ─────────────────────────────────────────
+  const viewMode    = useSampleViewModeStore(s => s.viewMode)
+  const setViewMode = useSampleViewModeStore(s => s.setViewMode)
+
   // ── Data state (polled from engine) ────────────────────────────────────────
   const [regions, setRegions]   = useState([])
   const [sources, setSources]   = useState({})  // { [id]: sourceObject }
@@ -392,16 +397,36 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
   return (
     <div className="sample-selector-tab">
       {/* ── Search bar ─────────────────────────────────────────────── */}
-      <div className="tab-search-bar">
+      <div className="tab-search-bar tab-search-bar--with-actions">
         <Search size={14} className="tab-search-icon" />
         <input
           type="text"
-          className="tab-search-input"
+          className="tab-search-input tab-search-input--with-actions"
           placeholder="Search samples..."
           value={searchQuery}
           onChange={e => setSearchQuery(e.target.value)}
           onKeyDown={e => e.stopPropagation()}
         />
+        <div className="tab-search-bar-actions" role="group" aria-label="View mode">
+          <button
+            type="button"
+            className={`tab-view-toggle-btn ${viewMode === 'list' ? 'active' : ''}`}
+            onClick={() => setViewMode('list')}
+            title="List view"
+            aria-pressed={viewMode === 'list'}
+          >
+            <List size={13} />
+          </button>
+          <button
+            type="button"
+            className={`tab-view-toggle-btn ${viewMode === 'thumbnails' ? 'active' : ''}`}
+            onClick={() => setViewMode('thumbnails')}
+            title="Thumbnail view"
+            aria-pressed={viewMode === 'thumbnails'}
+          >
+            <LayoutGrid size={13} />
+          </button>
+        </div>
       </div>
 
       {/* ── Header ─────────────────────────────────────────────────── */}
@@ -417,7 +442,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
           role="alert"
           style={{
             background: '#3a1e1e',
-            color: '#ff8a8a',
+            color: 'var(--theme-semantic-danger-text)',
             padding: '6px 10px',
             fontSize: '12px',
             margin: '4px 8px',
@@ -434,7 +459,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
             style={{
               background: 'transparent',
               border: 'none',
-              color: '#ff8a8a',
+              color: 'var(--theme-semantic-danger-text)',
               cursor: 'pointer',
               fontSize: '14px',
               padding: '0 4px',
@@ -481,6 +506,8 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
                 sources={sources}
                 rootNotes={rootNotes}
                 onFetchRootNotes={fetchRootNotesForGroup}
+                viewMode={viewMode}
+                onOpenPicker={onOpenPicker}
               />
             ))}
           {/* Show message when search yields nothing */}

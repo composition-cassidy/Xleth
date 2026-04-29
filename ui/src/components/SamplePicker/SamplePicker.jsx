@@ -494,7 +494,7 @@ export default function SamplePicker({ source, onClose }) {
           className="picker-name-error"
           role="alert"
           style={{
-            color: '#ff8a8a',
+            color: 'var(--theme-semantic-danger-text)',
             background: '#3a1e1e',
             padding: '6px 12px',
             margin: '4px 12px',

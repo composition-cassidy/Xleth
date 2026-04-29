@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, memo } from 'react'
-import { SkipBack, Play, Pause, Square, SkipForward, Sliders } from 'lucide-react'
+import { SkipBack, Play, Pause, Square, SkipForward, Sliders, Lock, LockOpen } from 'lucide-react'
 import AudioDeviceSelector from './AudioDeviceSelector.jsx'
 import { subscribe } from '../transportStore.js'
 import { playheadClock } from '../services/PlayheadClock.js'
@@ -48,6 +48,25 @@ export default function TransportBar() {
   const [editingBpm, setEditingBpm] = useState(false)
   const [bpmInput, setBpmInput] = useState('140')
   const bpmRef = useRef(null)
+  const [tempoLocked, setTempoLocked] = useState(true)
+  const [spacebarMode, setSpacebarMode] = useState('play-pause')
+  const playStartBeatsRef = useRef(0)
+
+  // Load tempo-lock state from engine on mount
+  useEffect(() => {
+    window.xleth?.timeline?.getTempoLocked?.().then(v => setTempoLocked(v)).catch(() => {})
+  }, [])
+
+  // Load spacebar mode from settings and listen for live changes from SettingsPanel
+  useEffect(() => {
+    window.xleth.settings.get('spacebarMode').then(v => {
+      setSpacebarMode(v === 'play-stop' ? 'play-stop' : 'play-pause')
+    }).catch(() => {})
+
+    const onModeChange = (e) => setSpacebarMode(e.detail.mode)
+    window.addEventListener('xleth:spacebarMode-changed', onModeChange)
+    return () => window.removeEventListener('xleth:spacebarMode-changed', onModeChange)
+  }, [])
 
   // Transport store for control state (isPlaying, bpm — immediate response)
   useEffect(() => subscribe((s) => {
@@ -65,8 +84,20 @@ export default function TransportBar() {
 
       if (e.code === 'Space') {
         e.preventDefault()
-        if (isPlaying) window.xleth?.pause()
-        else window.xleth?.play()
+        if (spacebarMode === 'play-stop') {
+          if (isPlaying) {
+            window.xleth?.stop()
+            if (window.xleth && window.xleth.transport && window.xleth.transport.seek) {
+              window.xleth.transport.seek(playStartBeatsRef.current)
+            }
+          } else {
+            playStartBeatsRef.current = playheadClock.positionBeats
+            window.xleth?.play()
+          }
+        } else {
+          if (isPlaying) window.xleth?.pause()
+          else window.xleth?.play()
+        }
       } else if (e.code === 'Home') {
         e.preventDefault()
         window.xleth?.stop()
@@ -78,7 +109,7 @@ export default function TransportBar() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [isPlaying, editingBpm])
+  }, [isPlaying, editingBpm, spacebarMode])
 
   // BPM editing
   const startEditBpm = useCallback(() => {
@@ -190,12 +221,23 @@ export default function TransportBar() {
           </button>
         )}
         <span className="transport-bpm-label">BPM</span>
+        <button
+          className={`transport-btn transport-tempo-lock ${tempoLocked ? 'transport-btn-active' : ''}`}
+          onClick={() => {
+            const next = !tempoLocked
+            setTempoLocked(next)
+            window.xleth?.timeline?.setTempoLocked?.(next)
+          }}
+          title={tempoLocked ? 'Tempo lock ON — clips maintain speed on BPM change' : 'Tempo lock OFF — clips keep fixed stretch ratio'}
+        >
+          {tempoLocked ? <Lock size={12} /> : <LockOpen size={12} />}
+        </button>
       </div>
 
       {/* ── Shortcut hints ──────────────────────────────────────────────── */}
       <div className="transport-hints">
         <kbd>SPACE</kbd>
-        <span>play/pause</span>
+        <span>{spacebarMode === 'play-stop' ? 'play/stop' : 'play/pause'}</span>
         <kbd>HOME</kbd>
         <span>rewind</span>
       </div>

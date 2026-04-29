@@ -7,10 +7,10 @@ import Knob from '../sampler/Knob.jsx'
 // ── Band definitions ────────────────────────────────────────────────────────
 
 const BANDS = [
-  { key: 'sub',   label: 'SUB',       color: '#FF6B6B' },
-  { key: 'lomid', label: 'LOW-MID',   color: '#FFD93D' },
-  { key: 'upmid', label: 'UPPER-MID', color: '#6BCB77' },
-  { key: 'air',   label: 'AIR',       color: '#4D96FF' },
+  { key: 'sub',   label: 'SUB',       token: '--theme-smartbalance-band-sub' },
+  { key: 'lomid', label: 'LOW-MID',   token: '--theme-smartbalance-band-lowmid' },
+  { key: 'upmid', label: 'UPPER-MID', token: '--theme-smartbalance-band-uppermid' },
+  { key: 'air',   label: 'AIR',       token: '--theme-smartbalance-band-air' },
 ]
 
 const CROSSOVER_FREQS = [150, 800, 4000]
@@ -67,7 +67,8 @@ function getBandXRanges(width) {
   return BANDS.map((band, i) => ({
     x1: freqToX(edges[i], width),
     x2: freqToX(edges[i + 1], width),
-    color: band.color,
+    color: tokenValue(band.token),
+    cssVar: `var(${band.token})`,
     label: band.label,
     key: band.key,
   }))
@@ -234,7 +235,7 @@ function drawDebugOverlay(ctx, w, h, bandRanges, vizData, showDebug) {
 
     // Transient flash — brief bright flash on the whole band column
     if (vizData.transient[i]) {
-      ctx.fillStyle = 'rgba(255,255,255,0.12)'
+      ctx.fillStyle = tokenValue('--theme-fx-surface-tint-medium')
       ctx.fillRect(band.x1, 0, bw, h)
     }
   }
@@ -588,44 +589,47 @@ export default function SmartBalancePanel() {
 
         {/* Per-band rows */}
         <div className="sb-bands">
-          {BANDS.map((band, i) => (
-            <div key={band.key} className="sb-band-row">
-              <div className="sb-band-color" style={{ background: band.color }} />
-              <span className="sb-band-label" style={{ color: band.color }}>{band.label}</span>
-              <div className="sb-band-knobs">
-                <Knob
-                  value={params[`target_${band.key}`]}
-                  min={-40} max={12}
-                  defaultValue={0}
-                  label={isRelative ? 'OFFSET' : 'TARGET'}
-                  formatValue={v => `${v >= 0 ? '+' : ''}${v.toFixed(1)}`}
-                  onLiveChange={v => setParam(`target_${band.key}`, v)}
-                  onCommit={v => setParam(`target_${band.key}`, v)}
-                  size={40} dragRange={150}
-                />
-                <Knob
-                  value={params[`bandamt_${band.key}`]}
-                  min={0} max={100}
-                  defaultValue={100}
-                  label="AMT"
-                  formatValue={v => `${v.toFixed(0)}%`}
-                  onLiveChange={v => setParam(`bandamt_${band.key}`, v)}
-                  onCommit={v => setParam(`bandamt_${band.key}`, v)}
-                  size={40} dragRange={150}
-                />
-                <Knob
-                  value={params[`floor_${band.key}`]}
-                  min={-96} max={-20}
-                  defaultValue={-60}
-                  label="FLOOR"
-                  formatValue={v => `${v.toFixed(0)}`}
-                  onLiveChange={v => setParam(`floor_${band.key}`, v)}
-                  onCommit={v => setParam(`floor_${band.key}`, v)}
-                  size={40} dragRange={150}
-                />
+          {BANDS.map((band, i) => {
+            const cssVar = `var(${band.token})`
+            return (
+              <div key={band.key} className="sb-band-row">
+                <div className="sb-band-color" style={{ background: cssVar }} />
+                <span className="sb-band-label" style={{ color: cssVar }}>{band.label}</span>
+                <div className="sb-band-knobs">
+                  <Knob
+                    value={params[`target_${band.key}`]}
+                    min={-40} max={12}
+                    defaultValue={0}
+                    label={isRelative ? 'OFFSET' : 'TARGET'}
+                    formatValue={v => `${v >= 0 ? '+' : ''}${v.toFixed(1)}`}
+                    onLiveChange={v => setParam(`target_${band.key}`, v)}
+                    onCommit={v => setParam(`target_${band.key}`, v)}
+                    size={40} dragRange={150}
+                  />
+                  <Knob
+                    value={params[`bandamt_${band.key}`]}
+                    min={0} max={100}
+                    defaultValue={100}
+                    label="AMT"
+                    formatValue={v => `${v.toFixed(0)}%`}
+                    onLiveChange={v => setParam(`bandamt_${band.key}`, v)}
+                    onCommit={v => setParam(`bandamt_${band.key}`, v)}
+                    size={40} dragRange={150}
+                  />
+                  <Knob
+                    value={params[`floor_${band.key}`]}
+                    min={-96} max={-20}
+                    defaultValue={-60}
+                    label="FLOOR"
+                    formatValue={v => `${v.toFixed(0)}`}
+                    onLiveChange={v => setParam(`floor_${band.key}`, v)}
+                    onCommit={v => setParam(`floor_${band.key}`, v)}
+                    size={40} dragRange={150}
+                  />
+                </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       </div>
     </div>

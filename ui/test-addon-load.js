@@ -1,12 +1,17 @@
 'use strict';
 const path = require('path');
-const dllDir = path.resolve(__dirname, '../bridge/build/Release');
-const vcpkgBin = path.resolve(__dirname, '../build/vcpkg_installed/x64-windows/bin');
-process.env.PATH = dllDir + ';' + vcpkgBin + ';' + process.env.PATH;
+const fs = require('fs');
+const { runtimeResource } = require('./runtimePaths');
+const dllDir = runtimeResource('bridge');
+const ffmpegDir = runtimeResource('ffmpeg');
+const pathEntries = [dllDir];
+if (fs.existsSync(ffmpegDir)) pathEntries.push(ffmpegDir);
+if (process.env.PATH) pathEntries.push(process.env.PATH);
+process.env.PATH = pathEntries.join(path.delimiter);
 console.log('Before require');
 console.log('PATH head:', process.env.PATH.slice(0, 200));
 try {
-  const addonPath = path.resolve(__dirname, '../bridge/build/Release/xleth_native.node');
+  const addonPath = path.join(dllDir, 'xleth_native.node');
   console.log('Addon path:', addonPath);
   const xleth = require(addonPath);
   console.log('After require, keys:', Object.keys(xleth).slice(0, 8));

@@ -81,9 +81,9 @@ describe('KeyboardManager', () => {
   });
 
   it('rebind moves a binding', () => {
-    expect(rebind('F9', 'F12')).toBe(true);
+    expect(rebind('F9', 'F13')).toBe(true);
 
-    handleKeyEvent(keyEvent('F12'));
+    handleKeyEvent(keyEvent('F13'));
     expect(usePanelRegistry.getState().panels.mixer.hidden).toBe(false);
 
     handleKeyEvent(keyEvent('F9'));

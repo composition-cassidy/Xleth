@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { PanelVisibilityProvider } from '../contexts/PanelVisibilityContext';
 import { useDragOffset } from '../managers/DragManager';
@@ -27,6 +27,7 @@ export function PanelFrame({ id, children }: PanelFrameProps) {
     ? usePanelRegistry.getState().panels[id]
     : reactivePanel;
   const focusPanel = usePanelRegistry((state) => state.focusPanel);
+  const panelRef = useRef<HTMLElement>(null);
   const dragOffset = useDragOffset(id);
   const resizePreview = useResizePreview(id);
   const renderPath = getPanelFrameRenderPath(panel);
@@ -48,11 +49,13 @@ export function PanelFrame({ id, children }: PanelFrameProps) {
     return (
       <PanelVisibilityProvider isVisible={true}>
         <section
+          ref={panelRef}
+          tabIndex={-1}
           className="xleth-panel-frame is-docked"
           data-panel-id={id}
           data-panel-mode="docked"
           style={{ '--xleth-windowing-panel-color': panelTypeColorVar(id) } as CSSProperties}
-          onMouseDown={() => focusPanel(id)}
+          onMouseDown={() => { focusPanel(id); panelRef.current?.focus(); }}
         >
           <Titlebar id={id} focused={panel.focused} />
           <div className="xleth-panel-body">{children}</div>
@@ -82,12 +85,14 @@ export function PanelFrame({ id, children }: PanelFrameProps) {
   return (
     <PanelVisibilityProvider isVisible={true}>
       <section
+        ref={panelRef}
+        tabIndex={-1}
         className={`xleth-panel-frame${panel.focused ? ' is-focused' : ''}`}
         data-panel-id={id}
         data-panel-mode={panel.mode}
         data-focused={panel.focused}
         style={frameStyle}
-        onMouseDown={() => focusPanel(id)}
+        onMouseDown={() => { focusPanel(id); panelRef.current?.focus(); }}
       >
         <Titlebar id={id} focused={panel.focused} />
         <div className="xleth-panel-body">{children}</div>

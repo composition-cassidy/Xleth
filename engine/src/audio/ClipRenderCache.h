@@ -8,6 +8,10 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+namespace xleth::audio { class WorldStretchCache; }
 
 // ─── CacheKey ────────────────────────────────────────────────────────────────
 // Uniquely identifies a processed audio segment. Two clips that produce the
@@ -60,7 +64,11 @@ struct CacheEntry {
 
 class ClipRenderCache {
 public:
-    static constexpr int kMaxClipId = 1024;
+    // TODO: static flat array indexed by clip ID; IDs are monotonic and never
+    // reused (shared counter across all entity types), so the cap erodes over
+    // time. Consider switching slots_ to an unordered_map<int,…> once the
+    // real-time read path is audited for lock acceptability.
+    static constexpr int kMaxClipId = 65536;
     static constexpr int kThreads   = 4;
 
     ClipRenderCache();
@@ -75,6 +83,11 @@ public:
     // ── Message thread ───────────────────────────────────────────────────────
     // Evict the entry for clipId (e.g. clip params changed).
     void markDirty(int clipId);
+
+    // Returns the set of clip IDs that are currently being processed by a WORLD
+    // render job. Called by the main process poll to drive the UI spinner.
+    // Thread-safe: acquires cacheMutex_ internally.
+    std::vector<int> getWorldActiveJobIds() const;
 
     // Submit a background render job.
     // srcPcm is copied synchronously inside this call — safe to pass a
@@ -91,6 +104,12 @@ public:
     // Called by ClipRenderJob to publish a completed entry.
     void publishEntry(int clipId, std::shared_ptr<CacheEntry> entry);
 
+    // Optional content-keyed cache for WORLD-method jobs. Set by MixEngine
+    // once at construction; null is fine (WORLD branch then runs without
+    // caching). Read-only after setup, so no synchronization is needed.
+    void setWorldCache(xleth::audio::WorldStretchCache* c) noexcept { worldCache_ = c; }
+    xleth::audio::WorldStretchCache* worldCache() const noexcept { return worldCache_; }
+
 private:
     // Per-clipId audio-thread-visible slot.
     // C++20 std::atomic<shared_ptr<T>> — load/store are always safe across
@@ -99,8 +118,16 @@ private:
 
     // Owning map: keeps entries alive until explicitly evicted.
     // Held only by message/worker threads — NEVER audio thread.
-    std::mutex                                           cacheMutex_;
+    mutable std::mutex                                   cacheMutex_;
     std::unordered_map<int, std::shared_ptr<CacheEntry>> cache_;
 
+    // Set of clip IDs with an in-flight WORLD render job. Protected by cacheMutex_.
+    // Inserted in submitJob, erased in runJob after publishEntry.
+    std::unordered_set<int> worldActiveJobs_;
+
+    friend class ClipRenderJob;
+
     std::unique_ptr<juce::ThreadPool> threadPool_;
+
+    xleth::audio::WorldStretchCache* worldCache_ = nullptr;
 };

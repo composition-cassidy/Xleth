@@ -8,6 +8,8 @@
 #include "audio/PluginEditorHost.h"
 #include "audio/XlethEffectBase.h"
 #include "audio/ClipFade.h"
+#include "audio/WorldStretchCache.h"
+#include "dsp/DeclickEnvelope.h"
 #include "XlethDebug.h"
 
 #include <algorithm>
@@ -66,6 +68,11 @@ MixEngine::MixEngine()
     activeClips_.reserve(256);
     activeBlocks_.reserve(64);
 
+    // WORLD vocoder content cache lives next to ClipRenderCache so the WORLD
+    // dispatch branch (worker thread) can reuse analysis across pitch toggles.
+    worldStretchCache_ = std::make_unique<xleth::audio::WorldStretchCache>();
+    clipRenderCache_.setWorldCache(worldStretchCache_.get());
+
     // Create plugin registry (registers VST3 format manager).
     pluginRegistry_ = std::make_unique<PluginRegistry>();
     editorHost_     = std::make_unique<PluginEditorHost>();
@@ -79,6 +86,8 @@ MixEngine::MixEngine()
     pluginRegistry_->loadScanResults(cacheFile);
 
     coordinatorReaperThread_ = std::thread([this]() { runCoordinatorReaper(); });
+
+    xleth::dsp::DeclickEnvelope::initialize();
 }
 
 MixEngine::~MixEngine()
@@ -510,10 +519,20 @@ void MixEngine::clearRegionToSampleMap()
     regionToSampleMap_.clear();
 }
 
+void MixEngine::unmapRegion(int regionId)
+{
+    regionToSampleMap_.erase(regionId);
+}
+
 int MixEngine::getSampleIdForRegion(int regionId) const
 {
     auto it = regionToSampleMap_.find(regionId);
     return it != regionToSampleMap_.end() ? it->second : -1;
+}
+
+std::unordered_map<int, int> MixEngine::getRegionToSampleMapSnapshot() const
+{
+    return regionToSampleMap_;
 }
 
 // ── Sampler lifecycle (main thread) ──────────────────────────────────────────
@@ -554,7 +573,7 @@ void MixEngine::loadSamplerForTrackRegion(int trackId, int regionId)
     s->setCrossfadeMode(region->crossfadeEnabled);
     s->setSmpStart(region->smpStart);
     s->setSmpLength(region->smpLength);
-    s->setDeclickSamples(region->declickSamples);
+    s->setDeclickMs(region->declickMs);
     s->setFadeIn(region->fadeInMs);
     s->setFadeOut(region->fadeOutMs);
     s->setCrossfadeSamples(region->crossfadeSamples);
@@ -732,6 +751,11 @@ void MixEngine::setTrackSpread(int trackId, float spread)
     trackParams_[it->second].spread.store(spread, std::memory_order_relaxed);
 }
 
+void MixEngine::setMasterVolume(float volume)
+{
+    masterVolume_.store(volume, std::memory_order_relaxed);
+}
+
 void MixEngine::setClipBoundaryFadeSamples(int n)
 {
     clipBoundaryFadeSamples_.store(n < 0 ? 0 : n, std::memory_order_relaxed);
@@ -742,9 +766,9 @@ void MixEngine::setClipBoundaryFadeSamples(int n)
 void MixEngine::setGlobalStretchMethod(int method) {
 #ifdef XLETH_DEBUG
     fprintf(stderr, "[EngineConfig] globalStretchMethod changed: %d→%d\n",
-            globalStretchMethod_, (method >= 1 && method <= 4) ? method : 1);
+            globalStretchMethod_, (method >= 1 && method <= 5) ? method : 1);
 #endif
-    globalStretchMethod_ = (method >= 1 && method <= 4) ? method : 1;
+    globalStretchMethod_ = (method >= 1 && method <= 5) ? method : 1;
 }
 
 void MixEngine::setGlobalFormantPreserve(bool enabled) {
@@ -773,6 +797,10 @@ void MixEngine::invalidateAllGlobalMethodClips() {
 
 void MixEngine::invalidateClipCache(int clipId, const char* trigger)
 {
+    // [PITCHDBG] unconditional — remove after pitch-shift regression is diagnosed
+    fprintf(stderr, "[PITCHDBG] invalidateClipCache entry: clip=%d trigger=%s\n",
+            clipId, trigger ? trigger : "null");
+    fflush(stderr);
 #ifdef XLETH_DEBUG
     fprintf(stderr, "[CacheQueue] invalidateClipCache entry: clip=%d trigger=%s\n",
             clipId, trigger ? trigger : "null");
@@ -781,6 +809,9 @@ void MixEngine::invalidateClipCache(int clipId, const char* trigger)
     clipRenderCache_.markDirty(clipId);
 
     if (!timeline_ || !sampleBank_) {
+        fprintf(stderr, "[PITCHDBG] SKIP clip=%d reason=no_timeline_or_sampleBank trigger=%s\n",
+                clipId, trigger ? trigger : "null");
+        fflush(stderr);
 #ifdef XLETH_DEBUG
         fprintf(stderr, "[CacheQueue] SKIP clip=%d reason=no_timeline_or_sampleBank trigger=%s\n",
                 clipId, trigger ? trigger : "null");
@@ -791,6 +822,9 @@ void MixEngine::invalidateClipCache(int clipId, const char* trigger)
 
     const Clip* clip = timeline_->getClip(clipId);
     if (!clip) {
+        fprintf(stderr, "[PITCHDBG] SKIP clip=%d reason=clip_not_in_timeline trigger=%s\n",
+                clipId, trigger ? trigger : "null");
+        fflush(stderr);
 #ifdef XLETH_DEBUG
         fprintf(stderr, "[CacheQueue] SKIP clip=%d reason=clip_not_in_timeline trigger=%s\n",
                 clipId, trigger ? trigger : "null");
@@ -804,6 +838,11 @@ void MixEngine::invalidateClipCache(int clipId, const char* trigger)
                                || clip->pitchOffsetCents != 0
                                || clip->reversed
                                || clip->stretchRatio != 1.0);
+    fprintf(stderr, "[PITCHDBG] clip=%d regionId=%d pitchSemi=%d cents=%d reversed=%d stretch=%.3f needsProcessing=%d trigger=%s\n",
+            clipId, clip->regionId, clip->pitchOffset, clip->pitchOffsetCents,
+            clip->reversed ? 1 : 0, clip->stretchRatio, needsProcessing ? 1 : 0,
+            trigger ? trigger : "null");
+    fflush(stderr);
     if (!needsProcessing) {
 #ifdef XLETH_DEBUG
         fprintf(stderr, "[CacheQueue] SKIP clip=%d reason=identity_params "
@@ -818,6 +857,9 @@ void MixEngine::invalidateClipCache(int clipId, const char* trigger)
 
     auto it = regionToSampleMap_.find(clip->regionId);
     if (it == regionToSampleMap_.end()) {
+        fprintf(stderr, "[PITCHDBG] SKIP clip=%d reason=region_%d_not_in_sampleMap trigger=%s\n",
+                clipId, clip->regionId, trigger ? trigger : "null");
+        fflush(stderr);
 #ifdef XLETH_DEBUG
         fprintf(stderr, "[CacheQueue] SKIP clip=%d reason=region_%d_not_in_sampleMap trigger=%s\n",
                 clipId, clip->regionId, trigger ? trigger : "null");
@@ -874,6 +916,10 @@ void MixEngine::invalidateClipCache(int clipId, const char* trigger)
                                        : clip->formantPreserve;
     }
 
+    fprintf(stderr, "[PITCHDBG] ENQUEUE clip=%d regionId=%d pitch=%dst+%dc stretch=%.3f trigger=%s\n",
+            clipId, clip->regionId, clip->pitchOffset, clip->pitchOffsetCents,
+            clip->stretchRatio, trigger ? trigger : "null");
+    fflush(stderr);
 #ifdef XLETH_DEBUG
     fprintf(stderr, "[CacheQueue] ENQUEUE clip=%d regionId=%d stretchRatio=%.3f reversed=%d "
             "stretchMethod=%d (resolved=%d) pitch=%dst+%dc trigger=%s\n",
@@ -1008,7 +1054,7 @@ void MixEngine::ensurePreviewSampler(int regionId)
     s->setCrossfadeMode(r->crossfadeEnabled);
     s->setSmpStart(r->smpStart);
     s->setSmpLength(r->smpLength);
-    s->setDeclickSamples(r->declickSamples);
+    s->setDeclickMs(r->declickMs);
     s->setFadeIn(r->fadeInMs);
     s->setFadeOut(r->fadeOutMs);
     s->setCrossfadeSamples(r->crossfadeSamples);
@@ -1450,6 +1496,7 @@ bool MixEngine::isMasterGraphLinear() const
 
 std::string MixEngine::getEffectParameters(int trackId, int nodeId) const
 {
+    if (trackId == -1) return getMasterEffectParameters(nodeId);
     std::lock_guard<std::mutex> lock(chainsMutex_);
     auto it = effectChains_.find(trackId);
     if (it == effectChains_.end() || !it->second) return "[]";
@@ -1458,6 +1505,9 @@ std::string MixEngine::getEffectParameters(int trackId, int nodeId) const
 
 bool MixEngine::setEffectParameter(int trackId, int nodeId, const std::string& paramId, float value)
 {
+    // trackId == -1 selects the master chain (header contract). The master
+    // variant takes chainsMutex_ itself — early-return before locking here.
+    if (trackId == -1) return setMasterEffectParameter(nodeId, paramId, value);
     std::lock_guard<std::mutex> lock(chainsMutex_);
     auto it = effectChains_.find(trackId);
     if (it == effectChains_.end() || !it->second) return false;
@@ -1466,6 +1516,7 @@ bool MixEngine::setEffectParameter(int trackId, int nodeId, const std::string& p
 
 std::string MixEngine::getEffectMeter(int trackId, int nodeId) const
 {
+    if (trackId == -1) return getMasterEffectMeter(nodeId);
     std::lock_guard<std::mutex> lock(chainsMutex_);
     auto it = effectChains_.find(trackId);
     if (it == effectChains_.end() || !it->second) return "[0,0,0,0,0,0,0,0]";
@@ -2068,8 +2119,6 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             fadeOutLUT.build(ac.clip->fadeOutX1, ac.clip->fadeOutY1,
                             ac.clip->fadeOutX2, ac.clip->fadeOutY2);
 
-        const bool hasPerClipFade = (fadeInSamples > 0 || fadeOutSamples > 0);
-
         // For each sample in this buffer, calculate what to read from the source
         for (int s = 0; s < numSamples; ++s)
         {
@@ -2080,42 +2129,32 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                 continue;
 
             const int64_t posInClip = absPos - ac.clipStartSample;
+            const int64_t fromEnd   = clipLen - 1 - posInClip;
 
-            // Velocity × per-clip bezier fade (or global declick fallback).
+            // Velocity × per-side fade. User bezier curve takes priority on each
+            // side independently; global Hann declick fills any side without one.
             float gain = ac.clip->velocity;
 
-            if (hasPerClipFade)
+            // IN side
+            if (fadeInSamples > 0 && posInClip < fadeInSamples)
             {
-                // Per-clip fade-in
-                if (fadeInSamples > 0 && posInClip < fadeInSamples)
-                {
-                    const float t = static_cast<float>(posInClip) / static_cast<float>(fadeInSamples);
-                    gain *= fadeInLUT.sample(t);
-                }
-                // Per-clip fade-out
-                if (fadeOutSamples > 0)
-                {
-                    const int64_t fromEnd = clipLen - 1 - posInClip;
-                    if (fromEnd < fadeOutSamples)
-                    {
-                        const float t = static_cast<float>(fromEnd) / static_cast<float>(fadeOutSamples);
-                        gain *= fadeOutLUT.sample(t);
-                    }
-                }
+                const float t = static_cast<float>(posInClip) / static_cast<float>(fadeInSamples);
+                gain *= fadeInLUT.sample(t);
             }
-            else if (clipFadeN > 0)
+            else if (fadeInSamples == 0 && clipFadeN > 0)
             {
-                // Global clip boundary declick fade (linear ramp at start/end)
-                const int64_t fromEnd = clipLen - 1 - posInClip;
-                float fade = 1.0f;
-                if (posInClip < static_cast<int64_t>(clipFadeN))
-                    fade = static_cast<float>(posInClip) / static_cast<float>(clipFadeN);
-                if (fromEnd < static_cast<int64_t>(clipFadeN))
-                {
-                    const float fo = static_cast<float>(fromEnd) / static_cast<float>(clipFadeN);
-                    if (fo < fade) fade = fo;
-                }
-                gain *= fade;
+                gain *= xleth::dsp::DeclickEnvelope::fadeIn(static_cast<int>(posInClip), clipFadeN);
+            }
+
+            // OUT side
+            if (fadeOutSamples > 0 && fromEnd < fadeOutSamples)
+            {
+                const float t = static_cast<float>(fromEnd) / static_cast<float>(fadeOutSamples);
+                gain *= fadeOutLUT.sample(t);
+            }
+            else if (fadeOutSamples == 0 && clipFadeN > 0)
+            {
+                gain *= xleth::dsp::DeclickEnvelope::fadeOut(static_cast<int>(fromEnd), clipFadeN);
             }
 
             if (cacheHit)
@@ -2192,6 +2231,9 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         // Sample-accurate (block-granular) note triggering.
         triggerPatternNotes(apb, bufStart, bufEnd, bpm, sampleRate);
 
+        // Mirror visualOnly flag into the sampler so processBlock zeroes its output.
+        apb.sampler->setVisualOnly(trackSlots[slot].info->visualOnly);
+
         // Additively render sampler voices into the track buffer.
         apb.sampler->processBlock(trackBuffers_[slot], numSamples, sampleRate);
     }
@@ -2215,6 +2257,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         if (slot >= numTrackSlots) continue;
 
         trackSlots[slot].hasReleasingVoices = true;
+        sampler->setVisualOnly(trackSlots[slot].info->visualOnly);
         sampler->processBlock(trackBuffers_[slot], numSamples, sampleRate);
     }
 
@@ -2446,6 +2489,11 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     // Master bus insert effect chain
     if (chainsLocked && masterEffectChain_ && masterEffectChain_->isInitialized())
         masterEffectChain_->processBlock(outputBuffer, numSamples, emptyMasterMidi_);
+
+    // Master volume fader (post-effect-chain)
+    const float masterVol = masterVolume_.load(std::memory_order_relaxed);
+    if (masterVol != 1.0f)
+        outputBuffer.applyGain(masterVol);
 
     // ── Clamp output to [-1, +1] (hard safety limit; replace with soft limiter in P3) ──
     for (int ch = 0; ch < outputBuffer.getNumChannels(); ++ch)

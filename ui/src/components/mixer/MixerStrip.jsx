@@ -21,6 +21,7 @@ export default function MixerStrip({ trackId }) {
   const setSpread = useMixerStore(s => s.setSpread)
   const toggleMute = useMixerStore(s => s.toggleMute)
   const toggleSolo = useMixerStore(s => s.toggleSolo)
+  const toggleVisualOnly = useMixerStore(s => s.toggleVisualOnly)
 
   const handleVolume = useCallback((gain) => setVolume(trackId, gain), [trackId, setVolume])
   const handlePanLive = useCallback((v) => setPan(trackId, v), [trackId, setPan])
@@ -31,7 +32,7 @@ export default function MixerStrip({ trackId }) {
   if (!track) return null
 
   return (
-    <div className={`mixer-strip ${track.muted ? 'mixer-strip--muted' : ''}`}>
+    <div className={`mixer-strip ${track.muted ? 'mixer-strip--muted' : ''} ${track.visualOnly ? 'mixer-strip--visual-only' : ''}`}>
       {/* Track name */}
       <div className="mixer-strip-label" title={track.name}>
         {track.name}
@@ -52,6 +53,13 @@ export default function MixerStrip({ trackId }) {
           title="Solo"
         >
           S
+        </button>
+        <button
+          className={`mixer-ms-btn ${track.visualOnly ? 'active' : ''}`}
+          onClick={() => toggleVisualOnly(trackId)}
+          title="Visual Only — silences audio, keeps grid triggers"
+        >
+          V
         </button>
       </div>
 

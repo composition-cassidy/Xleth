@@ -34,7 +34,7 @@ const MENUS = [
       { label: 'Toggle Left Panel',  shortcut: 'Ctrl+B' },
       { label: 'Toggle Debug Panel', shortcut: 'Ctrl+`' },
       { type: 'separator' },
-      { label: 'Zoom In',  shortcut: 'Ctrl+=' },
+      { label: 'Zoom In',  shortcut: 'Ctrl++' },
       { label: 'Zoom Out', shortcut: 'Ctrl+-' },
       { label: 'Reset Zoom', shortcut: 'Ctrl+0' },
     ],
@@ -43,6 +43,8 @@ const MENUS = [
     label: 'Settings',
     items: [
       { label: 'Settings' },
+      { type: 'separator' },
+      { label: 'Theme Editor' },
     ],
   },
 ]

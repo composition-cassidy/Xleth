@@ -1,9 +1,25 @@
 # ── JUCE ─────────────────────────────────────────────────────────────────────
 # Try a local install first, fall back to FetchContent
+include(FetchContent)
+
+# ── Vendored vcpkg packages ───────────────────────────────────────────────────
+# Reuse the bridge's already-installed vcpkg packages when they exist so the
+# standalone engine build can resolve FFmpeg/GLEW/GLFW without extra machine
+# setup. This mirrors the bridge CMake configuration.
+set(_VCPKG_INSTALLED "${CMAKE_CURRENT_SOURCE_DIR}/../bridge/build/vcpkg_installed/x64-windows"
+    CACHE PATH "Pre-installed vcpkg packages shared with the bridge build")
+
+if(EXISTS "${_VCPKG_INSTALLED}")
+    list(APPEND CMAKE_PREFIX_PATH "${_VCPKG_INSTALLED}")
+    list(APPEND CMAKE_PREFIX_PATH "${_VCPKG_INSTALLED}/debug")
+    list(APPEND CMAKE_MODULE_PATH "${_VCPKG_INSTALLED}/share/ffmpeg")
+    set(VCPKG_MANIFEST_MODE OFF CACHE BOOL "" FORCE)
+    message(STATUS "Using pre-installed vcpkg packages at ${_VCPKG_INSTALLED}")
+endif()
+
 if(EXISTS "C:/JUCE/CMakeLists.txt")
     add_subdirectory("C:/JUCE" "${CMAKE_BINARY_DIR}/JUCE" EXCLUDE_FROM_ALL)
 else()
-    include(FetchContent)
     FetchContent_Declare(
         JUCE
         GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
@@ -14,7 +30,16 @@ else()
 endif()
 
 # ── nlohmann/json ────────────────────────────────────────────────────────────
-find_package(nlohmann_json CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG QUIET)
+if(NOT nlohmann_json_FOUND)
+    FetchContent_Declare(
+        nlohmann_json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG        v3.11.3
+        GIT_SHALLOW    TRUE
+    )
+    FetchContent_MakeAvailable(nlohmann_json)
+endif()
 
 # ── FFmpeg ───────────────────────────────────────────────────────────────────
 find_package(FFMPEG REQUIRED)
@@ -28,7 +53,6 @@ find_package(glfw3 CONFIG REQUIRED)
 # Rubber Band uses Meson, not CMake, so we cannot use FetchContent_MakeAvailable.
 # Instead we populate the source tree ourselves and define a static library target
 # that compiles only the sources we need with USE_BUILTIN_FFT/RESAMPLER.
-include(FetchContent)
 FetchContent_Declare(
     rubberband_src
     GIT_REPOSITORY https://github.com/breakfastquay/rubberband.git
@@ -87,6 +111,67 @@ if(MSVC)
     target_compile_options(rubberband_static PRIVATE /W0)
 endif()
 
+# ── WORLD vocoder (Harvest + CheapTrick + D4C + Synthesis) ───────────────────
+# Offline pitch/time-stretch with formant-aware reconstruction. Used as
+# StretchMethod::WORLD; processing happens on the ClipRenderCache worker
+# thread, results flow through the existing per-clip atomic publish path.
+FetchContent_Declare(
+    world_src
+    GIT_REPOSITORY https://github.com/mmorise/World.git
+    GIT_TAG        v1.0.1            # tag verified via git ls-remote 2026-04-27
+    GIT_SHALLOW    TRUE
+)
+FetchContent_GetProperties(world_src)
+if(NOT world_src_POPULATED)
+    FetchContent_Populate(world_src)
+endif()
+
+add_library(world_static STATIC
+    ${world_src_SOURCE_DIR}/src/cheaptrick.cpp
+    # codec.cpp omitted — WORLD's WAV file I/O for CLI examples; we feed
+    # JUCE buffers directly so it would compile dead.
+    ${world_src_SOURCE_DIR}/src/common.cpp
+    ${world_src_SOURCE_DIR}/src/d4c.cpp
+    ${world_src_SOURCE_DIR}/src/dio.cpp
+    ${world_src_SOURCE_DIR}/src/fft.cpp
+    ${world_src_SOURCE_DIR}/src/harvest.cpp
+    ${world_src_SOURCE_DIR}/src/matlabfunctions.cpp
+    ${world_src_SOURCE_DIR}/src/stonemask.cpp
+    ${world_src_SOURCE_DIR}/src/synthesis.cpp
+    # synthesisrealtime.cpp: kept for completeness — Xleth uses offline
+    # Synthesis only, so its symbols are never linked into the final binary.
+    # Retained so anyone exploring WORLD's streaming API doesn't re-edit CMake.
+    ${world_src_SOURCE_DIR}/src/synthesisrealtime.cpp
+)
+
+target_include_directories(world_static PUBLIC
+    ${world_src_SOURCE_DIR}/src
+)
+
+target_compile_definitions(world_static PRIVATE
+    NOMINMAX
+    _USE_MATH_DEFINES
+)
+
+if(MSVC)
+    target_compile_options(world_static PRIVATE /wd4996 /W0)
+endif()
+
+# ── xxHash (header-only, used by WorldStretchCache for content keying) ───────
+FetchContent_Declare(
+    xxhash_src
+    GIT_REPOSITORY https://github.com/Cyan4973/xxHash.git
+    GIT_TAG        v0.8.2
+    GIT_SHALLOW    TRUE
+)
+FetchContent_GetProperties(xxhash_src)
+if(NOT xxhash_src_POPULATED)
+    FetchContent_Populate(xxhash_src)
+endif()
+
+add_library(xxhash_static INTERFACE)
+target_include_directories(xxhash_static INTERFACE ${xxhash_src_SOURCE_DIR})
+
 # ── ASIO (optional) ──────────────────────────────────────────────────────────
 option(XLETH_ASIO "Enable ASIO support (requires ASIO SDK at C:/ASIOSDK)" OFF)
 if(XLETH_ASIO)
@@ -141,6 +226,8 @@ add_library(XlethEngineCore STATIC
     src/AudioScheduler.cpp
     src/Transport.cpp
     src/SampleBank.cpp
+    src/midi/MidiImporter.cpp
+    src/commands/ImportMidiCommand.cpp
     src/VoiceManager.cpp
     src/audio/MixEngine.cpp
     src/audio/PluginRegistry.cpp
@@ -157,10 +244,13 @@ add_library(XlethEngineCore STATIC
     src/audio/GuardedPluginWrapper.cpp
     src/audio/NamedAudioRing.cpp
     src/audio/WaveformMipmap.cpp
+    src/dsp/DeclickEnvelope.cpp
     src/dsp/TDPSOLA.cpp
     src/dsp/RubberBandWrapper.cpp
     src/dsp/WSOLA.cpp
     src/dsp/PhaseVocoder.cpp
+    src/dsp/WORLD.cpp
+    src/audio/WorldStretchCache.cpp
     src/video/FrameOutput.cpp
     src/video/FrameServer.cpp
     src/FrameCache.cpp
@@ -233,6 +323,8 @@ target_link_libraries(XlethEngineCore PRIVATE
     d3d11
     dxgi
     rubberband_static   # Rubber Band R3 pitch/time-stretch (static, builtin FFT)
+    world_static        # WORLD vocoder (StretchMethod::WORLD)
+    xxhash_static       # content hashing for WorldStretchCache
     # No OpenGL::GL, GLEW::GLEW, glfw, or juce_audio_utils here —
     # kept off the bridge link graph to prevent Electron GPU process conflicts.
 )
@@ -395,6 +487,64 @@ target_link_libraries(test_sampler PRIVATE
 )
 
 target_compile_definitions(test_sampler PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_world_stretch ───────────────────────────────────────────────────────
+# Verifies WORLD vocoder DSP (pitch shift + time stretch) and the
+# WorldStretchCache LRU (hit, miss, multi-variant). No MixEngine required.
+add_executable(test_world_stretch
+    test/test_world_stretch.cpp
+)
+
+target_link_libraries(test_world_stretch PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_world_stretch PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_midi_importer ────────────────────────────────────────────────────────
+# Smoke test for MIDI summary parsing using a tiny generated SMF fixture file.
+add_executable(test_midi_importer
+    test/test_midi_importer.cpp
+)
+
+target_link_libraries(test_midi_importer PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_midi_importer PRIVATE
     JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
     JUCE_USE_CURL=0
     JUCE_WEB_BROWSER=0

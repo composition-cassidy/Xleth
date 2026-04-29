@@ -31,6 +31,7 @@ void to_json(nlohmann::json& j, const SampleRegion& r) {
         {"swappedAudioPath", r.swappedAudioPath},
         {"rootNote",         r.rootNote},
         {"hasSwappedAudio",  r.hasSwappedAudio},
+        {"swappedAudioDurationSec", r.swappedAudioDurationSec},
         {"attackMs",         r.attackMs},
         {"decayMs",          r.decayMs},
         {"sustain",          r.sustain},
@@ -57,7 +58,7 @@ void to_json(nlohmann::json& j, const SampleRegion& r) {
         {"crossfadeEnabled", r.crossfadeEnabled},
         {"smpStart",         r.smpStart},
         {"smpLength",        r.smpLength},
-        {"declickSamples",   r.declickSamples},
+        {"declickMs",        r.declickMs},
         {"fadeInMs",         r.fadeInMs},
         {"fadeOutMs",        r.fadeOutMs},
         {"crossfadeSamples", r.crossfadeSamples},
@@ -132,6 +133,9 @@ void from_json(const nlohmann::json& j, SampleRegion& r) {
     j.at("swappedAudioPath").get_to(r.swappedAudioPath);
     j.at("rootNote").get_to(r.rootNote);
     j.at("hasSwappedAudio").get_to(r.hasSwappedAudio);
+    if (j.contains("swappedAudioDurationSec"))
+        j.at("swappedAudioDurationSec").get_to(r.swappedAudioDurationSec);
+    // else: defaults to 0; project_load migration probes the file and fills it in.
     // Sampler settings (added in sampler-per-region refactor). Defaults keep
     // legacy projects loading cleanly; Timeline's loader migrates any fields
     // that old projects still carry on Pattern onto the matching region.
@@ -161,7 +165,11 @@ void from_json(const nlohmann::json& j, SampleRegion& r) {
     if (j.contains("crossfadeEnabled")) j.at("crossfadeEnabled").get_to(r.crossfadeEnabled);
     if (j.contains("smpStart"))        j.at("smpStart").get_to(r.smpStart);
     if (j.contains("smpLength"))       j.at("smpLength").get_to(r.smpLength);
-    if (j.contains("declickSamples"))  j.at("declickSamples").get_to(r.declickSamples);
+    if (j.contains("declickMs"))       j.at("declickMs").get_to(r.declickMs);
+    else if (j.contains("declickSamples")) {
+        int ds = 64; j.at("declickSamples").get_to(ds);
+        r.declickMs = static_cast<float>(ds * 1000.0 / 44100.0);
+    }
     if (j.contains("fadeInMs"))        j.at("fadeInMs").get_to(r.fadeInMs);
     if (j.contains("fadeOutMs"))       j.at("fadeOutMs").get_to(r.fadeOutMs);
     if (j.contains("crossfadeSamples")) j.at("crossfadeSamples").get_to(r.crossfadeSamples);

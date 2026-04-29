@@ -4,8 +4,9 @@ import TitleBar from './components/TitleBar.jsx'
 import TransportBar from './components/TransportBar.jsx'
 import SamplePicker from './components/SamplePicker/SamplePicker.jsx'
 import ExportDialog from './components/ExportDialog.jsx'
+import MidiImportDialog from './components/MidiImport/MidiImportDialog.jsx'
 import VideoExportDialog from './components/VideoExportDialog.jsx'
-import SamplerPanel from './components/sampler/SamplerPanel.jsx'
+import useSamplerPanelStore from './stores/samplerPanelStore.js'
 import SettingsPanel from './components/SettingsPanel.jsx'
 import MissingPluginsDialog from './components/MissingPluginsDialog.jsx'
 import DevThemeSwitcher from './components/debug/DevThemeSwitcher.jsx'
@@ -13,6 +14,7 @@ import ThemeEditor from './theming/editor/ThemeEditor'
 import { ToastProvider, useToast } from './components/Toast.jsx'
 import { showUnsavedChangesDialog } from './components/UnsavedChangesDialog.jsx'
 import usePianoRollStore from './stores/usePianoRollStore.js'
+import useWorldProcessingStore from './stores/worldProcessingStore.js'
 import AppShell from './windowing/AppShell.tsx'
 import XlethRootContext from './windowing/contexts/XlethRootContext.jsx'
 import { usePanelRegistry } from './windowing/registry/PanelRegistry'
@@ -21,6 +23,9 @@ import * as StatePersistence from './windowing/managers/StatePersistence'
 
 const EXPORT_AUDIO_LABEL = 'Export Audio…'
 const EXPORT_VIDEO_LABEL = 'Export Video…'
+const ZOOM_IN_LABEL = 'Zoom In'
+const ZOOM_OUT_LABEL = 'Zoom Out'
+const RESET_ZOOM_LABEL = 'Reset Zoom'
 export const ROOT_APP_SHELL_MODE = 'production'
 
 /**
@@ -89,6 +94,9 @@ export function getFileMenuShortcutLabel(e) {
   if (key === 'i' && !e.shiftKey && !e.altKey) return 'Import Source'
   if (key === 'e' && e.shiftKey && !e.altKey) return EXPORT_VIDEO_LABEL
   if (key === 'e' && !e.shiftKey && !e.altKey) return EXPORT_AUDIO_LABEL
+  if ((key === '=' || key === '+') && !e.altKey) return ZOOM_IN_LABEL
+  if ((key === '-' || key === '_') && !e.altKey) return ZOOM_OUT_LABEL
+  if (key === '0' && !e.shiftKey && !e.altKey) return RESET_ZOOM_LABEL
   return null
 }
 
@@ -98,7 +106,6 @@ export async function handleXlethRootMenuAction(label, {
   setProjectName,
   setExportDialogOpen,
   setVideoExportDialogOpen,
-  setSamplerPanelRegionId,
   setActiveSampleId,
   setPickerSource,
   setCurrentPatternIdByTrack,
@@ -142,7 +149,8 @@ export async function handleXlethRootMenuAction(label, {
       pianoRollStore.setActiveCenterTab('timeline')
       usePanelRegistry.getState().closePanel('pianoRoll')
 
-      setSamplerPanelRegionId?.(null)
+      useSamplerPanelStore.getState().setRegionId(null)
+      usePanelRegistry.getState().closePanel('sampler')
       setActiveSampleId?.(null)
       setPickerSource?.(null)
       setCurrentPatternIdByTrack?.({})
@@ -211,6 +219,15 @@ export async function handleXlethRootMenuAction(label, {
     case EXPORT_VIDEO_LABEL:
       setVideoExportDialogOpen?.(true)
       break
+    case ZOOM_IN_LABEL:
+      xl.window.zoomIn?.()
+      break
+    case ZOOM_OUT_LABEL:
+      xl.window.zoomOut?.()
+      break
+    case RESET_ZOOM_LABEL:
+      xl.window.resetZoom?.()
+      break
     case 'Undo':
       await xl.undo.undo()
       break
@@ -246,13 +263,14 @@ function XlethRootInner() {
   // the production windowing wrappers with the legacy app components.
   const [pickerSource, setPickerSource] = useState(null)
   const [activeSampleId, setActiveSampleId] = useState(null)
-  const [samplerPanelRegionId, setSamplerPanelRegionId] = useState(null)
   const [currentPatternIdByTrack, setCurrentPatternIdByTrack] = useState({})
   const [allPatterns, setAllPatterns] = useState({})
 
   const [projectName, setProjectName] = useState('Untitled Project')
   const [exportDialogOpen, setExportDialogOpen] = useState(false)
   const [videoExportDialogOpen, setVideoExportDialogOpen] = useState(false)
+  const [midiImportOpen, setMidiImportOpen] = useState(false)
+  const [midiInitialPath, setMidiInitialPath] = useState(null)
   const [missingPlugins, setMissingPlugins] = useState(null)
   const [showSettings, setShowSettings] = useState(false)
   const [showThemeEditor, setShowThemeEditor] = useState(false)
@@ -262,6 +280,14 @@ function XlethRootInner() {
 
   useEffect(() => {
     usePianoRollStore.getState().init()
+  }, [])
+
+  useEffect(() => {
+    const offStart = window.xleth?.audio?.onWorldProcessingStart?.(({ clipId }) =>
+      useWorldProcessingStore.getState().addProcessingClip(clipId))
+    const offComplete = window.xleth?.audio?.onWorldProcessingComplete?.(({ clipId }) =>
+      useWorldProcessingStore.getState().removeProcessingClip(clipId))
+    return () => { offStart?.(); offComplete?.() }
   }, [])
 
   useEffect(() => {
@@ -304,8 +330,14 @@ function XlethRootInner() {
   }, [fetchAllPatterns])
 
   useEffect(() => {
-    const onOpen = (e) => setSamplerPanelRegionId(e.detail?.regionId ?? null)
-    const onClose = () => setSamplerPanelRegionId(null)
+    const onOpen = (e) => {
+      const regionId = e.detail?.regionId ?? null
+      useSamplerPanelStore.getState().setRegionId(regionId)
+      usePanelRegistry.getState().openPanel('sampler')
+    }
+    const onClose = () => {
+      usePanelRegistry.getState().closePanel('sampler')
+    }
     timelineEvents.addEventListener('open-sampler-settings', onOpen)
     timelineEvents.addEventListener('close-sampler-settings', onClose)
     return () => {
@@ -322,10 +354,6 @@ function XlethRootInner() {
     setPickerSource(null)
   }, [])
 
-  const handleCloseSamplerPanel = useCallback(() => {
-    setSamplerPanelRegionId(null)
-    timelineEvents.dispatchEvent(new CustomEvent('close-sampler-settings'))
-  }, [])
 
   const handleSwitchPattern = useCallback((newPatternId) => {
     if (newPatternId == null || newPatternId < 0) return
@@ -362,7 +390,6 @@ function XlethRootInner() {
       setProjectName,
       setExportDialogOpen,
       setVideoExportDialogOpen,
-      setSamplerPanelRegionId,
       setActiveSampleId,
       setPickerSource,
       setCurrentPatternIdByTrack,
@@ -392,6 +419,11 @@ function XlethRootInner() {
     ? Object.values(allPatterns).filter((pattern) => pattern.regionId === currentPattern.regionId)
     : []
 
+  const onOpenMidiImport = useCallback((fp = null) => {
+    setMidiInitialPath(fp)
+    setMidiImportOpen(true)
+  }, [])
+
   const rootContextValue = useMemo(() => ({
     onOpenPicker: handleOpenPicker,
     activeSampleId,
@@ -402,6 +434,7 @@ function XlethRootInner() {
     availablePatterns,
     onSwitchPattern: handleSwitchPattern,
     onNewPattern: handleNewPatternFromPianoRoll,
+    onOpenMidiImport,
   }), [
     handleOpenPicker,
     activeSampleId,
@@ -410,10 +443,24 @@ function XlethRootInner() {
     availablePatterns,
     handleSwitchPattern,
     handleNewPatternFromPianoRoll,
+    onOpenMidiImport,
   ])
 
+  const handleAppDragOver = useCallback((e) => {
+    if (Array.from(e.dataTransfer.types).includes('Files')) e.preventDefault()
+  }, [])
+
+  const handleAppDrop = useCallback((e) => {
+    const files = Array.from(e.dataTransfer.files)
+    const midiFile = files.find(f => /\.(mid|midi)$/i.test(f.name))
+    if (midiFile) {
+      e.preventDefault()
+      onOpenMidiImport(midiFile.path || midiFile.name)
+    }
+  }, [onOpenMidiImport])
+
   return (
-    <div className="app">
+    <div className="app" onDragOver={handleAppDragOver} onDrop={handleAppDrop}>
       <TitleBar projectName={projectName} onAction={handleMenuAction} />
 
       <div className="app-body" style={{ position: 'relative' }}>
@@ -432,6 +479,11 @@ function XlethRootInner() {
 
       <ExportDialog isOpen={exportDialogOpen} onClose={() => setExportDialogOpen(false)} />
       <VideoExportDialog isOpen={videoExportDialogOpen} onClose={() => setVideoExportDialogOpen(false)} />
+      <MidiImportDialog
+        isOpen={midiImportOpen}
+        initialFilePath={midiInitialPath}
+        onClose={() => { setMidiImportOpen(false); setMidiInitialPath(null) }}
+      />
       {missingPlugins && missingPlugins.length > 0 && (
         <MissingPluginsDialog
           plugins={missingPlugins}
@@ -440,10 +492,15 @@ function XlethRootInner() {
       )}
       {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
       {showThemeEditor && <ThemeEditor onClose={() => setShowThemeEditor(false)} />}
-      {samplerPanelRegionId != null && (
-        <SamplerPanel regionId={samplerPanelRegionId} onClose={handleCloseSamplerPanel} />
+      {import.meta.env.DEV && (
+        <button
+          className="midi-debug-open-btn"
+          onClick={() => setMidiImportOpen(true)}
+          title="Debug: open MIDI Import dialog"
+        >
+          MIDI
+        </button>
       )}
-      {import.meta.env.DEV && <DevThemeSwitcher />}
     </div>
   )
 }

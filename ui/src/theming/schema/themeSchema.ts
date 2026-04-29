@@ -118,6 +118,12 @@ function validateTokenValue(
         issues.push({ severity: 'error', path, message: `invalid opacity "${value}" (expected 0..1)` });
       }
       break;
+    case 'shadow':
+      // Box-shadow / text-shadow strings are free-form CSS; accept any non-empty string.
+      if (typeof value === 'string' && value.trim().length === 0) {
+        issues.push({ severity: 'error', path, message: 'shadow value must not be empty' });
+      }
+      break;
   }
 }
 

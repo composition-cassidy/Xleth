@@ -1,4 +1,5 @@
 import {
+  AudioWaveform,
   Clock3,
   Grid3x3,
   PanelLeft,
@@ -17,6 +18,7 @@ export const PANEL_IDS = [
   'mixer',
   'gridSettings',
   'nodeEditor',
+  'sampler',
 ] as const;
 
 export type PanelId = (typeof PANEL_IDS)[number];
@@ -42,7 +44,7 @@ export interface PanelCatalogEntry {
   title: string;
   typeColorToken: PanelTypeColorToken;
   icon: LucideIcon;
-  fKey: 'F5' | 'F6' | 'F7' | 'F8' | 'F9' | 'F10' | 'F11';
+  fKey: 'F5' | 'F6' | 'F7' | 'F8' | 'F9' | 'F10' | 'F11' | 'F12';
   defaultFloating: FloatingDimensions;
   keepAliveWhenHidden: boolean;
 }
@@ -109,6 +111,15 @@ export const PANEL_CATALOG = {
     icon: Workflow,
     fKey: 'F11',
     defaultFloating: { x: 400, y: 160, width: 900, height: 600 },
+    keepAliveWhenHidden: false,
+  },
+  sampler: {
+    id: 'sampler',
+    title: 'Sampler',
+    typeColorToken: '--theme-panel-mixer',
+    icon: AudioWaveform,
+    fKey: 'F12',
+    defaultFloating: { x: 340, y: 100, width: 680, height: 520 },
     keepAliveWhenHidden: false,
   },
 } satisfies Record<PanelId, PanelCatalogEntry>;

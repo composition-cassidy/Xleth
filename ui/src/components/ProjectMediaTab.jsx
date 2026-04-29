@@ -1,12 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { FolderOpen, Plus, Trash2, RefreshCw, FolderSearch, Music } from 'lucide-react'
+import { FolderOpen, Plus, Trash2, RefreshCw, FolderSearch, Music, Music2 } from 'lucide-react'
 import { timelineEvents } from '../timelineEvents.js'
 import ImportDropZone from './ImportDropZone.jsx'
+import { useXlethRootContext } from '../windowing/contexts/XlethRootContext.jsx'
 import SourceCard from './SourceCard.jsx'
 import ContextMenu from './ContextMenu.jsx'
 import { DEFAULT_LABELS, loadCustomLabels, labelColor } from '../constants/labels.js'
 
 export default function ProjectMediaTab({ onOpenPicker }) {
+  const { onOpenMidiImport } = useXlethRootContext()
   const [sources, setSources] = useState([])
   const [thumbnails, setThumbnails] = useState({})   // { [sourceId]: dataURL }
   const [importing, setImporting] = useState(false)
@@ -217,11 +219,22 @@ export default function ProjectMediaTab({ onOpenPicker }) {
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <ImportDropZone onFilesDropped={handleFilesDropped} disabled={importing}>
+    <ImportDropZone
+      onFilesDropped={handleFilesDropped}
+      onMidiFileDropped={(fp) => onOpenMidiImport?.(fp)}
+      disabled={importing}
+    >
       <div className="project-media-tab">
         {/* ── Header ─────────────────────────────────────────────────── */}
         <div className="tab-placeholder-header">
           <span className="tab-section-label">Sources</span>
+          <button
+            className="tab-icon-btn"
+            title="Import MIDI"
+            onClick={() => onOpenMidiImport?.()}
+          >
+            <Music2 size={14} />
+          </button>
           <button
             className="tab-icon-btn"
             title="Import source"

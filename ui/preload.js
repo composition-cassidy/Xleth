@@ -1,7 +1,7 @@
 'use strict';
 
 const { ipcRenderer } = require('electron');
-const path = require('path');
+const { runtimeResource } = require('./runtimePaths');
 
 // Thin helper — keeps call sites concise
 const invoke = (ch, ...args) => ipcRenderer.invoke(ch, ...args);
@@ -15,7 +15,7 @@ const invoke = (ch, ...args) => ipcRenderer.invoke(ch, ...args);
 let shmHelper = null;
 let frameShm = null;  // { meta, bufA, bufB, readIndex, syncFrame }
 try {
-  const shmPath = path.resolve(__dirname, '../shm_helper/build/Release/shm_helper.node');
+  const shmPath = runtimeResource('shm_helper', 'shm_helper.node');
   shmHelper = require(shmPath);
 } catch (e) {
   console.warn('[preload] shm_helper load failed:', e.message);
@@ -91,6 +91,8 @@ window.xleth = ({
   timeline: {
     getBPM:           ()                    => invoke('xleth:timeline:getBPM'),
     setBPM:           (bpm)                 => invoke('xleth:timeline:setBPM', bpm),
+    getTempoLocked:   ()                    => invoke('xleth:timeline:getTempoLocked'),
+    setTempoLocked:   (locked)              => invoke('xleth:timeline:setTempoLocked', locked),
     getDeclickMs:     ()                    => invoke('xleth:timeline:getDeclickMs'),
     setDeclickMs:     (ms)                  => invoke('xleth:timeline:setDeclickMs', ms),
     getSources:       ()                    => invoke('xleth:timeline:getSources'),
@@ -102,8 +104,9 @@ window.xleth = ({
     getClipsInRange:  (startBeat, endBeat)  => invoke('xleth:timeline:getClipsInRange', startBeat, endBeat),
     addTrack:         (info)                => invoke('xleth:timeline:addTrack', info),
     removeTrack:      (id)                  => invoke('xleth:timeline:removeTrack', id),
-    setTrackMuted:    (trackId, muted)      => invoke('xleth:timeline:setTrackMuted', trackId, muted),
-    setTrackSolo:     (trackId, solo)       => invoke('xleth:timeline:setTrackSolo', trackId, solo),
+    setTrackMuted:      (trackId, muted)      => invoke('xleth:timeline:setTrackMuted', trackId, muted),
+    setTrackVisualOnly: (trackId, visualOnly) => invoke('xleth:timeline:setTrackVisualOnly', trackId, visualOnly),
+    setTrackSolo:       (trackId, solo)       => invoke('xleth:timeline:setTrackSolo', trackId, solo),
     setTrackName:     (trackId, name)       => invoke('xleth:timeline:setTrackName', trackId, name),
     setPatternName:   (patternId, name)     => invoke('xleth:timeline:setPatternName', patternId, name),
     setPatternRegion: (patternId, regionId) => invoke('xleth:timeline:setPatternRegion', patternId, regionId),
@@ -113,6 +116,7 @@ window.xleth = ({
     setVideoHoldLastFrame: (trackId, hold) => invoke('xleth:timeline:setVideoHoldLastFrame', trackId, hold),
     setTrackCornerRadius:     (trackId, v) => invoke('xleth:timeline:setTrackCornerRadius', trackId, v),
     setTrackGapScaleOverride: (trackId, v) => invoke('xleth:timeline:setTrackGapScaleOverride', trackId, v),
+    setTrackSubdivisionFactor: (trackId, factor) => invoke('xleth:timeline:setTrackSubdivisionFactor', trackId, factor),
     setTrackBounceSettings:        (trackId, bounce) => invoke('xleth:timeline:setTrackBounceSettings', trackId, bounce),
     setTrackZoomPanRotSettings:    (trackId, zpr)   => invoke('xleth:timeline:setTrackZoomPanRotSettings', trackId, zpr),
     setTrackPingPongSettings:      (trackId, pp)    => invoke('xleth:timeline:setTrackPingPongSettings', trackId, pp),
@@ -125,7 +129,8 @@ window.xleth = ({
         invoke('xleth:timeline:setNoteSlide', patternId, noteId, isSlide, cx, cy),
     addVisualEffect:         (trackId, effectType) => invoke('xleth:timeline:addVisualEffect', trackId, effectType),
     removeVisualEffect:      (trackId, idx)        => invoke('xleth:timeline:removeVisualEffect', trackId, idx),
-    reorderVisualEffect:     (trackId, from, to)   => invoke('xleth:timeline:reorderVisualEffect', trackId, from, to),
+    reorderVisualEffect:          (trackId, from, to)   => invoke('xleth:timeline:reorderVisualEffect', trackId, from, to),
+    setTrackVisualEffectChainOrder: (trackId, newOrder) => invoke('xleth:timeline:setTrackVisualEffectChainOrder', trackId, newOrder),
     setVisualEffectParam:    (trackId, ei, pi, val) => invoke('xleth:timeline:setVisualEffectParam', trackId, ei, pi, val),
     setVisualEffectBypassed: (trackId, ei, bp)     => invoke('xleth:timeline:setVisualEffectBypassed', trackId, ei, bp),
     getVisualEffectChain:    (trackId)             => invoke('xleth:timeline:getVisualEffectChain', trackId),
@@ -138,8 +143,9 @@ window.xleth = ({
     stretchClipLeft:  (id, pos, dur)        => invoke('xleth:timeline:stretchClipLeft', id, pos, dur),
     pitchShiftClip:   (id, semi, cents)     => invoke('xleth:timeline:pitchShiftClip', id, semi, cents),
     reverseClip:      (id)                  => invoke('xleth:timeline:reverseClip', id),
-    autoTrimClip:     (id, thresholdDb=-54) => invoke('xleth:timeline:autoTrimClip', id, thresholdDb),
-    setClipParams:    (id, params)          => invoke('xleth:timeline:setClipParams', id, params),
+    autoTrimClip:            (id, thresholdDb=-54) => invoke('xleth:timeline:autoTrimClip', id, thresholdDb),
+    spliceClipsAtPlayhead:   (entries)             => invoke('xleth:timeline:spliceClipsAtPlayhead', entries),
+    setClipParams:           (id, params)          => invoke('xleth:timeline:setClipParams', id, params),
     addRegion:        (region)              => invoke('xleth:timeline:addRegion', region),
     modifyRegion:     (id, region)          => invoke('xleth:timeline:modifyRegion', id, region),
     setSyllables:     (id, syllables)       => invoke('xleth:timeline:setSyllables', id, syllables),
@@ -148,6 +154,7 @@ window.xleth = ({
     getGridLayout:       ()                              => invoke('xleth:timeline:getGridLayout'),
     setGridLayout:       (layout)                        => invoke('xleth:timeline:setGridLayout', layout),
     assignTrackToGrid:   (trackId, gx, gy, sx, sy)       => invoke('xleth:timeline:assignTrackToGrid', trackId, gx, gy, sx, sy),
+    assignTrackToGridWithZOrder: (trackId, gx, gy, sx, sy, z) => invoke('xleth:timeline:assignTrackToGridWithZOrder', trackId, gx, gy, sx, sy, z),
     removeTrackFromGrid: (trackId)                       => invoke('xleth:timeline:removeTrackFromGrid', trackId),
     setChorusTrack:      (trackId)                       => invoke('xleth:timeline:setChorusTrack', trackId),
     setCrashOverlay:     (enabled, trackId, opacity)     => invoke('xleth:timeline:setCrashOverlay', enabled, trackId, opacity),
@@ -185,6 +192,7 @@ window.xleth = ({
     moveNote:               (patternId, noteId, posTicks, pitch)=> invoke('xleth:timeline:moveNote', patternId, noteId, posTicks, pitch),
     moveNotesBatch:         (patternId, moves)                  => invoke('xleth:timeline:moveNotesBatch', patternId, moves),
     quantizeClipsBatch:     (specs)                             => invoke('xleth:timeline:quantizeClipsBatch', specs),
+    resizeNotesBatch:       (patternId, resizes)                => invoke('xleth:timeline:resizeNotesBatch', patternId, resizes),
     resizeNote:             (patternId, noteId, durTicks)       => invoke('xleth:timeline:resizeNote', patternId, noteId, durTicks),
     setNoteVelocity:        (patternId, noteId, velocity)       => invoke('xleth:timeline:setNoteVelocity', patternId, noteId, velocity),
     previewNote:            (patternId, pitch, velocity=0.8)    => invoke('xleth:timeline:previewNote', patternId, pitch, velocity),
@@ -235,6 +243,7 @@ window.xleth = ({
     setTrackVolume:    (trackId, vol)       => invoke('xleth:audio:setTrackVolume', trackId, vol),
     setTrackPan:       (trackId, pan)       => invoke('xleth:audio:setTrackPan',    trackId, pan),
     setTrackSpread:    (trackId, spread)    => invoke('xleth:audio:setTrackSpread', trackId, spread),
+    setMasterVolume:   (vol)               => invoke('xleth:audio:setMasterVolume', vol),
     // Replaced by WaveformMipmap N-API bindings — see window.xleth.waveform
     // getWaveformData / getWaveformRegion removed (Pipeline A)
     // Sample Selector: detect root note from WAV smpl chunk
@@ -317,6 +326,16 @@ window.xleth = ({
       ipcRenderer.on('export:progress', h);
       return () => ipcRenderer.removeListener('export:progress', h);
     },
+    onWorldProcessingStart: (cb) => {
+      const h = (_e, data) => cb(data);
+      ipcRenderer.on('stretch:worldProcessingStart', h);
+      return () => ipcRenderer.removeListener('stretch:worldProcessingStart', h);
+    },
+    onWorldProcessingComplete: (cb) => {
+      const h = (_e, data) => cb(data);
+      ipcRenderer.on('stretch:worldProcessingComplete', h);
+      return () => ipcRenderer.removeListener('stretch:worldProcessingComplete', h);
+    },
     // ── VST3 plugin scanner ──────────────────────────────────────────────
     scanPlugins:          (paths)            => invoke('xleth:audio:scanPlugins', paths),
     getScanProgress:      ()                 => invoke('xleth:audio:getScanProgress'),
@@ -390,6 +409,11 @@ window.xleth = ({
     write: (value) => invoke('xleth:layout:write', value),
   },
 
+  // ── Phase 7 — Preview visibility ──────────────────────────────────────────
+  preview: {
+    setEnabled: (enabled) => invoke('xleth:preview:setEnabled', enabled),
+  },
+
   // ── User themes (persisted to userData/themes/<slug>.json) ─────────────────
   theme: {
     saveUser: (slug, theme) => invoke('xleth:theme:saveUser', slug, theme),
@@ -411,11 +435,36 @@ window.xleth = ({
     openPath:         (path) => invoke('xleth:shell:openPath', path),
   },
 
+  // ── MIDI Import ───────────────────────────────────────────────────────────
+  midi: {
+    parseSummary:  (filePath)          => invoke('xleth:midi:parseSummary', filePath),
+    importFull:    (filePath, options) => invoke('xleth:midi:importFull', filePath, JSON.stringify(options || {})),
+    executeImport: (noteData, options) => {
+      // Convert ArrayBuffer/TypedArray to Buffer before crossing the renderer→main
+      // Electron IPC boundary. Buffer is the form main.js and the worker expect,
+      // and it transits Electron's structured-clone IPC cleanly as a Uint8Array.
+      const buf = noteData instanceof ArrayBuffer
+        ? Buffer.from(noteData)
+        : ArrayBuffer.isView(noteData)
+          ? Buffer.from(noteData.buffer, noteData.byteOffset, noteData.byteLength)
+          : noteData
+      return invoke('xleth:midi:executeImport', buf, JSON.stringify(options || {}))
+    },
+  },
+
+  // ── Dialogs ───────────────────────────────────────────────────────────────
+  dialog: {
+    openMidiDialog: () => invoke('xleth:dialog:importMIDI'),
+  },
+
   // ── Window controls (frameless title bar) ─────────────────────────────────
   window: {
     minimize: () => ipcRenderer.send('xleth:window:minimize'),
     maximize: () => ipcRenderer.send('xleth:window:maximize'),
     close:    () => ipcRenderer.send('xleth:window:close'),
+    zoomIn:   () => ipcRenderer.send('xleth:window:zoomIn'),
+    zoomOut:  () => ipcRenderer.send('xleth:window:zoomOut'),
+    resetZoom: () => ipcRenderer.send('xleth:window:resetZoom'),
     openNodeEditor:  (key, pos) => ipcRenderer.send('xleth:window:openNodeEditor', key, pos),
     closeNodeEditor: () => ipcRenderer.send('xleth:window:closeNodeEditor'),
   },

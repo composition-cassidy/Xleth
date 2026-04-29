@@ -12,12 +12,18 @@
 import { validateTheme } from '../schema/themeSchema';
 import type { ThemeFile, ValidationResult } from '../schema/types';
 import shippedDefault from '../shipped/xleth-default.json';
+import shippedLight from '../shipped/xleth-light.json';
+import shippedWarm  from '../shipped/xleth-warm.json';
+import shippedCool  from '../shipped/xleth-cool.json';
 
 const ACTIVE_THEME_SETTING_KEY = 'activeTheme';
 export const DEFAULT_THEME_NAME = 'xleth-default';
 
 const SHIPPED_THEMES: Record<string, ThemeFile> = {
-  [DEFAULT_THEME_NAME]: shippedDefault as unknown as ThemeFile,
+  [DEFAULT_THEME_NAME]:  shippedDefault as unknown as ThemeFile,
+  'xleth-light':         shippedLight   as unknown as ThemeFile,
+  'xleth-warm':          shippedWarm    as unknown as ThemeFile,
+  'xleth-cool':          shippedCool    as unknown as ThemeFile,
 };
 
 export interface LoadResult {
@@ -100,4 +106,8 @@ export function listShippedThemes(): ReadonlyArray<{ slug: string; name: string;
     name: t.name,
     locked: Boolean(t.locked),
   }));
+}
+
+export function getShippedTheme(slug: string): ThemeFile | null {
+  return SHIPPED_THEMES[slug] ?? null;
 }

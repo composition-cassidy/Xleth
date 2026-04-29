@@ -1,8 +1,855 @@
-/* ═══════════════════════════════════════════════════════════════════════════
-   XLETH Phase 1 — App Shell Layout
-   ═══════════════════════════════════════════════════════════════════════════ */
+﻿/* ── Structural constants (migrated from theme.css) ──────────────────────── */
+/* These are layout/timing primitives. Not user-theme tokens.                 */
 
-/* ── App root ────────────────────────────────────────────────────────────── */
+:root {
+  /* Sizing */
+  --titlebar-h:   32px;
+  --transport-h:  48px;
+  --panel-min-w: 250px;
+  --panel-max-w: 400px;
+  --divider-w:     4px;
+  --mixer-h:      400px;
+
+  /* Radius */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+
+  /* Transitions */
+  --transition-fast: 0.1s ease;
+  --transition:      0.15s ease;
+}
+
+/* ── Reset ────────────────────────────────────────────────────────────────── */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+  background: var(--theme-bg-primary);
+  color: var(--theme-text);
+  font-family: 'Hanken Grotesk', system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Scrollbar ────────────────────────────────────────────────────────────── */
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--theme-bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--theme-border-default);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--theme-text-subtle);
+}
+
+/* ── Selection ────────────────────────────────────────────────────────────── */
+
+::selection {
+  background: var(--theme-focus-ring);
+  color: var(--theme-text);
+}
+
+/* ── Focus ring ───────────────────────────────────────────────────────────── */
+
+:focus-visible {
+  outline: 1px solid var(--theme-accent);
+  outline-offset: 1px;
+}
+
+/* ── Theme Editor: Save-as-new prompt ───────────────────────────────────── */
+
+.theme-editor-save-prompt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: var(--theme-bg-secondary);
+  border-top: 1px solid var(--theme-border-subtle);
+  flex-shrink: 0;
+}
+
+.theme-editor-save-label {
+  font-size: 12px;
+  color: var(--theme-text-muted);
+  white-space: nowrap;
+}
+
+.theme-editor-save-input {
+  flex: 1;
+  background: var(--theme-bg-inset);
+  border: 1px solid var(--theme-border-default);
+  border-radius: var(--radius-sm);
+  color: var(--theme-text-primary);
+  font-size: 13px;
+  padding: 5px 10px;
+  outline: none;
+}
+
+.theme-editor-save-input:focus {
+  border-color: var(--theme-accent);
+}
+
+.theme-editor-save-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* Theme list divider between shipped and custom */
+.theme-list-divider {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--theme-text-muted);
+  padding: 8px 14px 4px;
+  margin-top: 4px;
+  border-top: 1px solid var(--theme-border-subtle);
+  list-style: none;
+}
+
+/* ── Simple Mode ─────────────────────────────────────────────────────────── */
+
+.simple-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.simple-mode-header {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--theme-text-muted);
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--theme-border-subtle);
+  margin-bottom: 16px;
+}
+
+.simple-mode-knobs {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.simple-mode-knob {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.simple-mode-knob-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--theme-text-primary);
+}
+
+.simple-mode-swatch-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.simple-mode-color-input {
+  width: 44px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--theme-border-default);
+  background: none;
+  cursor: pointer;
+  padding: 2px;
+}
+
+.simple-mode-color-input::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.simple-mode-color-input::-webkit-color-swatch {
+  border-radius: 3px;
+  border: none;
+}
+
+.simple-mode-hex {
+  font-size: 11px;
+  font-family: monospace;
+  color: var(--theme-text-secondary);
+}
+
+.simple-mode-hint {
+  font-size: 11px;
+  color: var(--theme-text-muted);
+}
+
+.simple-mode-footer-note {
+  margin-top: 24px;
+  font-size: 11px;
+  color: var(--theme-text-muted);
+  border-top: 1px solid var(--theme-border-subtle);
+  padding-top: 12px;
+}
+
+/* ── Preview Pane ────────────────────────────────────────────────────────── */
+
+.preview-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.preview-pane-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--theme-text-muted);
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--theme-border-subtle);
+}
+
+/* ── Preview Surface cards (ps-*) ────────────────────────────────────────── */
+
+.ps-card {
+  background: var(--theme-bg-surface);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ps-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--theme-text-muted);
+}
+
+/* Surface swatches */
+.ps-surface-stack {
+  display: flex;
+  gap: 4px;
+}
+
+.ps-swatch {
+  flex: 1;
+  height: 28px;
+  border-radius: 3px;
+  display: flex;
+  align-items: flex-end;
+  padding: 2px 4px;
+  border: 1px solid var(--theme-border-subtle);
+}
+
+.ps-swatch-label {
+  font-size: 9px;
+  color: var(--theme-text-muted);
+}
+
+/* Typography */
+.ps-type-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* Accent */
+.ps-accent-row {
+  display: flex;
+  gap: 6px;
+}
+
+.ps-btn-primary {
+  flex: 1;
+  padding: 5px 0;
+  border-radius: var(--radius-sm);
+  border: none;
+  background: var(--theme-accent);
+  color: var(--theme-text-on-accent);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: default;
+}
+
+.ps-btn-ghost {
+  flex: 1;
+  padding: 5px 0;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--theme-border-default);
+  background: none;
+  color: var(--theme-text-secondary);
+  font-size: 11px;
+  cursor: default;
+}
+
+.ps-accent-chips {
+  display: flex;
+  gap: 6px;
+}
+
+.ps-chip {
+  flex: 1;
+  text-align: center;
+  padding: 3px 0;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+/* Status */
+.ps-status-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ps-status-row {
+  display: flex;
+  align-items: center;
+}
+
+/* Mixer */
+.ps-mixer-row {
+  display: flex;
+  gap: 6px;
+  justify-content: space-around;
+}
+
+.ps-mixer-channel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+}
+
+.ps-mixer-fader-track {
+  width: 4px;
+  height: 40px;
+  background: var(--theme-bg-tertiary);
+  border-radius: 2px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ps-mixer-fader-thumb {
+  width: 12px;
+  height: 6px;
+  background: var(--theme-text-secondary);
+  border-radius: 2px;
+  position: absolute;
+}
+
+.ps-mixer-ch-label {
+  font-size: 9px;
+  color: var(--theme-text-muted);
+  text-align: center;
+}
+
+/* Timeline */
+.ps-timeline-tracks {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ps-track-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ps-track-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 56px;
+  flex-shrink: 0;
+}
+
+.ps-track-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.ps-track-name {
+  font-size: 10px;
+  color: var(--theme-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ps-track-clip {
+  flex: 1;
+  height: 18px;
+  border-radius: 3px;
+}
+
+/* ── Theme Editor Modal ──────────────────────────────────────────────────── */
+
+.theme-editor-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: var(--theme-overlay-medium);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.theme-editor {
+  display: flex;
+  flex-direction: column;
+  width: 90vw;
+  max-width: 1200px;
+  height: 80vh;
+  background: var(--theme-bg-primary);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: var(--theme-fx-plugin-shadow-top);
+}
+
+.theme-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--theme-border-subtle);
+  flex-shrink: 0;
+}
+
+.theme-editor-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--theme-text-primary);
+}
+
+.theme-editor-close {
+  background: none;
+  border: none;
+  color: var(--theme-text-muted);
+  cursor: pointer;
+  font-size: 16px;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+}
+
+.theme-editor-close:hover {
+  background: var(--theme-bg-surface);
+  color: var(--theme-text-primary);
+}
+
+.theme-editor-body {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* Left column — theme list */
+.theme-list {
+  width: 200px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--theme-border-subtle);
+  display: flex;
+  flex-direction: column;
+  background: var(--theme-bg-secondary);
+}
+
+.theme-list-header {
+  padding: 10px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--theme-text-muted);
+  border-bottom: 1px solid var(--theme-border-subtle);
+  flex-shrink: 0;
+}
+
+.theme-list-items {
+  list-style: none;
+  margin: 0;
+  padding: 6px 0;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.theme-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  cursor: pointer;
+  color: var(--theme-text-secondary);
+  font-size: 13px;
+  border-radius: var(--radius-sm);
+  margin: 0 4px;
+}
+
+.theme-list-item:hover {
+  background: var(--theme-pattern-list-item-hover-bg);
+  color: var(--theme-text-primary);
+}
+
+.theme-list-item--active {
+  background: var(--theme-accent-bg-subtle);
+  color: var(--theme-accent);
+}
+
+.theme-list-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.theme-list-badge {
+  font-size: 10px;
+  color: var(--theme-text-muted);
+  background: var(--theme-bg-tertiary);
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+  margin-left: 6px;
+  flex-shrink: 0;
+}
+
+/* Center column — editor content */
+.theme-editor-center {
+  flex: 1;
+  overflow: hidden;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.theme-editor-tabs {
+  display: flex;
+  flex-shrink: 0;
+  gap: 4px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--theme-border-subtle);
+  background: var(--theme-bg-primary);
+}
+
+.theme-editor-tab {
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--theme-text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 10px 4px 8px;
+}
+
+.theme-editor-tab:hover {
+  color: var(--theme-text-primary);
+}
+
+.theme-editor-tab--active {
+  border-bottom-color: var(--theme-accent);
+  color: var(--theme-text-primary);
+}
+
+.advanced-mode {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  min-height: 0;
+  overflow-y: scroll;
+  padding: 12px 16px 16px;
+}
+
+.tct-category {
+  margin-bottom: 4px;
+}
+
+.tct-category-header {
+  align-items: center;
+  background: none;
+  border: 0;
+  color: var(--theme-text-primary);
+  cursor: pointer;
+  display: flex;
+  font-size: 12px;
+  font-weight: 700;
+  gap: 6px;
+  padding: 7px 0;
+  text-align: left;
+  width: 100%;
+}
+
+.tct-subsystem {
+  padding-left: 14px;
+}
+
+.tct-subsystem-header {
+  align-items: center;
+  background: none;
+  border: 0;
+  color: var(--theme-text-secondary);
+  cursor: pointer;
+  display: flex;
+  font-size: 12px;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 0;
+  text-align: left;
+  width: 100%;
+}
+
+.tct-subsystem-header:hover {
+  color: var(--theme-text-primary);
+}
+
+.tct-subsystem-header--deferred {
+  opacity: 0.62;
+}
+
+.tct-subsystem-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tct-deferred-badge {
+  color: var(--theme-text-muted);
+  font-size: 11px;
+  font-style: italic;
+}
+
+.tct-token-count {
+  background: var(--theme-bg-tertiary);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 999px;
+  color: var(--theme-text-muted);
+  flex-shrink: 0;
+  font-size: 10px;
+  line-height: 1;
+  margin-left: auto;
+  min-width: 22px;
+  padding: 3px 6px;
+  text-align: center;
+}
+
+.tct-token-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 2px 0 8px 16px;
+}
+
+.tct-chevron {
+  flex-shrink: 0;
+  font-family: monospace;
+  text-align: center;
+  width: 12px;
+}
+
+.token-row {
+  align-items: center;
+  border-left: 2px solid transparent;
+  display: flex;
+  gap: 8px;
+  min-height: 28px;
+  min-width: 0;
+  padding: 3px 0 3px 6px;
+}
+
+.token-row--detached {
+  border-left-color: var(--theme-accent);
+}
+
+.token-row-swatch {
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 2px;
+  flex-shrink: 0;
+  height: 14px;
+  width: 14px;
+}
+
+.token-row-name {
+  color: var(--theme-text-secondary);
+  flex: 1;
+  font-family: monospace;
+  font-size: 11px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.token-row-control {
+  flex: 0 0 140px;
+  min-width: 0;
+}
+
+.token-row-value-text {
+  color: var(--theme-text-muted);
+  display: block;
+  font-family: monospace;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.token-row-detach {
+  align-items: center;
+  background: none;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--theme-text-muted);
+  cursor: pointer;
+  display: flex;
+  flex: 0 0 20px;
+  font-size: 12px;
+  height: 20px;
+  justify-content: center;
+  width: 20px;
+}
+
+.token-row-detach:hover {
+  background: var(--theme-bg-hover);
+  color: var(--theme-text-primary);
+}
+
+.token-row-detach--on {
+  color: var(--theme-accent);
+}
+
+.color-picker {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.color-picker-input {
+  background: none;
+  border: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+  height: 24px;
+  padding: 0;
+  width: 24px;
+}
+
+.color-picker-input::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.color-picker-input::-webkit-color-swatch {
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 2px;
+}
+
+.color-picker-hex {
+  color: var(--theme-text-secondary);
+  font-family: monospace;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Right column — preview */
+.theme-editor-preview {
+  width: 280px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--theme-border-subtle);
+  overflow-y: auto;
+  padding: 16px;
+  background: var(--theme-bg-secondary);
+}
+
+.theme-editor-placeholder {
+  color: var(--theme-text-muted);
+  font-size: 13px;
+  padding: 24px;
+  text-align: center;
+}
+
+/* Footer */
+.theme-editor-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--theme-border-subtle);
+  flex-shrink: 0;
+}
+
+.theme-editor-btn {
+  padding: 6px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.theme-editor-btn--ghost {
+  background: none;
+  border-color: var(--theme-border-default);
+  color: var(--theme-text-secondary);
+}
+
+.theme-editor-btn--ghost:hover {
+  background: var(--theme-bg-surface);
+  color: var(--theme-text-primary);
+}
+
+.theme-editor-btn--primary {
+  background: var(--theme-accent);
+  color: var(--theme-text-on-accent);
+  border-color: var(--theme-accent);
+}
+
+.theme-editor-btn--primary:hover {
+  opacity: 0.9;
+}
+
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+   XLETH Phase 1 â€” App Shell Layout
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+
+/* â”€â”€ App root â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .app {
   display: flex;
@@ -18,9 +865,9 @@
   overflow: hidden;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Title Bar (frameless)
-   ═══════════════════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 .titlebar {
   height: var(--titlebar-h);
@@ -78,7 +925,7 @@
   color: var(--theme-text);
 }
 
-/* ── Dropdown ──────────────────────────────────────────────────────── */
+/* â”€â”€ Dropdown â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .titlebar-dropdown {
   position: absolute;
@@ -126,7 +973,7 @@
   margin: 4px 10px;
 }
 
-/* ── Center ────────────────────────────────────────────────────────── */
+/* â”€â”€ Center â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .titlebar-center {
   flex: 1;
@@ -140,7 +987,7 @@
   color: var(--theme-text-muted);
 }
 
-/* ── Window controls ───────────────────────────────────────────────── */
+/* â”€â”€ Window controls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .titlebar-controls {
   display: flex;
@@ -171,9 +1018,9 @@
   color: var(--theme-fg-inverse);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Resizable Panel Layout
-   ═══════════════════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 .resizable-layout {
   display: flex;
@@ -227,9 +1074,9 @@
   overflow: hidden;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Center Area (Video + Timeline stack)
-   ═══════════════════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 .center-area {
   display: flex;
@@ -238,9 +1085,9 @@
   overflow: hidden;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Left Panel
-   ═══════════════════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 .left-panel {
   display: flex;
@@ -288,7 +1135,7 @@
   padding: 12px;
 }
 
-/* ── Tab placeholder styles ───────────────────────────────────────── */
+/* â”€â”€ Tab placeholder styles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .tab-placeholder {
   display: flex;
@@ -365,7 +1212,7 @@
   color: var(--theme-text-subtle);
 }
 
-/* ── Search bar ────────────────────────────────────────────────────── */
+/* â”€â”€ Search bar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .tab-search-bar {
   position: relative;
@@ -406,12 +1253,194 @@
   cursor: not-allowed;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/* Reserve room on the right of the input for the view-mode toggle */
+.tab-search-input--with-actions {
+  padding-right: 64px;
+}
+
+.tab-search-bar-actions {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.tab-view-toggle-btn {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--theme-text-muted);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.tab-view-toggle-btn:hover {
+  background: var(--theme-bg-surface);
+  color: var(--theme-text);
+}
+
+.tab-view-toggle-btn.active {
+  background: var(--theme-bg-elevated);
+  color: var(--theme-text-primary, var(--theme-text));
+}
+
+/* ── Sample thumbnail grid ─────────────────────────────────────────────── */
+
+.sample-thumbnail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+  padding: 6px 8px 10px;
+}
+
+.sample-thumbnail {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 3px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  user-select: none;
+  transition: background var(--transition-fast);
+}
+
+.sample-thumbnail:hover {
+  background: var(--theme-bg-surface);
+}
+
+.sample-thumbnail.active {
+  background: var(--theme-bg-elevated);
+}
+
+.sample-thumbnail-media {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--theme-bg-inset);
+}
+
+.sample-thumbnail-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sample-thumbnail-video,
+.sample-thumbnail-waveform {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.sample-thumbnail-overlay-play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+  pointer-events: none;
+}
+
+.sample-thumbnail:hover .sample-thumbnail-overlay-play {
+  opacity: 1;
+}
+
+.sample-thumbnail-duration {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  padding: 1px 5px;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  border-radius: 3px;
+  pointer-events: none;
+}
+
+.sample-thumbnail-label-dot {
+  position: absolute;
+  left: 5px;
+  bottom: 5px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+}
+
+.sample-thumbnail-swap-icon {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  border-radius: 3px;
+  pointer-events: none;
+}
+
+.sample-thumbnail-caption {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 2px;
+  min-width: 0;
+}
+
+.sample-thumbnail-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--theme-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sample-thumbnail-note {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--theme-label-pitch);
+}
+
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Video Preview
-   ═══════════════════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 .video-preview {
-  flex-shrink: 0;
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--theme-bg-secondary);
@@ -489,7 +1518,7 @@
   cursor: not-allowed;
 }
 
-/* ── Preview performance controls ── */
+/* â”€â”€ Preview performance controls â”€â”€ */
 
 .preview-resolution-select {
   appearance: none;
@@ -523,14 +1552,14 @@
   letter-spacing: 0.04em;
 }
 
-/* Effects active — lit green pill */
+/* Effects active â€” lit green pill */
 .preview-fx-btn.active {
   background: rgba(73, 205, 122, 0.18);
   color: #49cd7a;
   border-color: #49cd7a;
 }
 
-/* Effects bypassed — dim gray */
+/* Effects bypassed â€” dim gray */
 .preview-fx-btn.bypassed {
   background: var(--theme-bg-surface);
   color: var(--text-muted);
@@ -544,10 +1573,8 @@
 
 .video-canvas-wrapper {
   position: relative;
-  width: 100%;
-  /* 16:9 aspect ratio */
-  aspect-ratio: 16 / 9;
-  max-height: 45vh;
+  flex: 1;
+  min-height: 0;
   background: var(--theme-preview-loaded-bg);
   overflow: hidden;
 }
@@ -557,13 +1584,14 @@
   width: 100%;
   height: 100%;
   object-fit: contain;
+  background: var(--theme-bg-primary);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Timeline View
-   ═══════════════════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
-/* ── Timeline root ─────────────────────────────────────────────────── */
+/* â”€â”€ Timeline root â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .timeline-view {
   flex: 1;
@@ -688,7 +1716,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* ── Body: headers + canvas side-by-side ───────────────────────────── */
+/* â”€â”€ Body: headers + canvas side-by-side â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .timeline-body {
   flex: 1;
@@ -699,21 +1727,21 @@
   overflow: hidden;
 }
 
-/* ── Pattern list panel (left-most strip, FL-style) ────────────────── */
+/* â”€â”€ Pattern list panel (left-most strip, FL-style) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .pattern-list-panel {
   flex-shrink: 0;
   width: 140px;
   display: flex;
   flex-direction: column;
-  background: #111218;
+  background: var(--theme-bg-secondary);
   border-right: 1px solid var(--theme-border-subtle);
   overflow: hidden;
 }
 
 .pattern-list-panel-collapsed {
   width: 18px;
-  background: #0d0e13;
+  background: var(--theme-bg-inset);
   align-items: center;
   justify-content: flex-start;
   padding-top: 6px;
@@ -742,7 +1770,7 @@
   justify-content: space-between;
   padding: 4px 6px 4px 8px;
   border-bottom: 1px solid var(--theme-border-subtle);
-  background: #15161d;
+  background: var(--theme-bg-tertiary);
   flex-shrink: 0;
 }
 
@@ -809,7 +1837,7 @@
 
 .pattern-list-row:hover,
 .pattern-list-row.is-hover {
-  background: #1d1f28;
+  background: var(--theme-pattern-list-item-hover-bg);
   border-left-color: var(--theme-drag-preview-default);
   color: var(--theme-fg-inverse);
 }
@@ -863,7 +1891,7 @@
 .pattern-list-footer {
   padding: 4px 6px;
   border-top: 1px solid var(--theme-border-subtle);
-  background: #15161d;
+  background: var(--theme-bg-tertiary);
   flex-shrink: 0;
 }
 
@@ -874,7 +1902,7 @@
   gap: 4px;
   width: 100%;
   padding: 4px 6px;
-  background: #1d1f28;
+  background: var(--theme-pattern-list-item-hover-bg);
   border: 1px solid var(--theme-border-subtle);
   color: #ccc;
   border-radius: 3px;
@@ -887,7 +1915,7 @@
   color: var(--theme-fg-inverse);
 }
 
-/* ── Track header column (left, fixed width) ───────────────────────── */
+/* â”€â”€ Track header column (left, fixed width) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .timeline-header-column {
   flex-shrink: 0;
@@ -896,6 +1924,25 @@
   border-right: 1px solid var(--theme-border-subtle);
   background: var(--theme-bg-secondary);
   overflow: hidden;
+}
+
+.timeline-header-resize-handle {
+  width: 4px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: transparent;
+  z-index: 10;
+}
+
+.timeline-header-drag-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--theme-accent);
+  pointer-events: none;
+  z-index: 20;
+  transform: translateX(-1px);
 }
 
 .timeline-header-spacer {
@@ -911,43 +1958,69 @@
   overflow-x: hidden;
 }
 
-/* ── Individual track header ───────────────────────────────────────── */
+/* â”€â”€ Individual track header â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .track-header {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 8px;
+  gap: 6px;
+  padding: 0 8px 0 0;
   border-bottom: 1px solid var(--theme-border-subtle);
   user-select: none;
   cursor: default;
   transition: background var(--transition-fast);
 }
 
+.track-header-focus-bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  background: var(--theme-accent, #4AE3D0);
+  pointer-events: none;
+  z-index: 1;
+}
+
 .track-header:hover {
   background: var(--theme-bg-surface);
 }
 
-.track-header--muted {
-  opacity: 0.4;
+.track-header--muted .track-header-left {
+  opacity: 0.55;
+}
+
+.track-header--visual-only {
+  border-left: 3px solid var(--theme-label-pitch, #a78bfa);
+  background: rgba(167, 139, 250, 0.07);
 }
 
 .track-header.dragging {
   opacity: 0.4;
 }
 
+.track-header-left {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  gap: 8px;
+  padding-left: 6px;
+  overflow: hidden;
+}
+
 .track-header-color {
-  width: 4px;
-  height: 32px;
-  border-radius: 2px;
+  width: 3px;
+  height: 26px;
+  border-radius: 1.5px;
   flex-shrink: 0;
 }
 
 .track-header-name {
-  flex: 1;
-  min-width: 0;
   font-size: 12px;
   font-weight: 500;
+  line-height: 1.2;
   color: var(--theme-text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -975,33 +2048,49 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--radius-sm);
+  border-radius: 3px;
   background: transparent;
-  border: 1px solid var(--theme-border-subtle);
-  color: var(--theme-text-subtle);
-  font-size: 9px;
-  font-weight: 700;
+  border: 0.5px solid var(--theme-border-subtle);
+  color: var(--theme-text-muted);
+  font-size: 10px;
+  font-weight: 500;
   font-family: inherit;
   cursor: pointer;
   flex-shrink: 0;
-  transition: all var(--transition-fast);
+  padding: 0;
+  transition: border-color var(--transition-fast);
 }
 
 .track-header-btn:hover {
-  background: var(--theme-bg-surface);
-  color: var(--theme-text-muted);
+  border-color: var(--theme-button-hover-border);
 }
 
-.track-header-btn.active {
+/* Mute — red when active */
+.track-header-btn--mute.active {
+  background: var(--theme-semantic-danger-bg-medium);
+  border-color: var(--theme-timeline-mute-active);
+  color: var(--theme-timeline-mute-active);
+}
+
+/* Solo — amber when active */
+.track-header-btn--solo.active {
+  background: var(--theme-semantic-warning-bg-subtle);
+  border-color: var(--theme-timeline-solo-active);
+  color: var(--theme-timeline-solo-active);
+}
+
+/* Visual Only — teal when active */
+.track-header-btn--visual.active {
   background: var(--theme-focus-ring);
-  color: var(--theme-accent);
   border-color: var(--theme-accent);
+  color: var(--theme-accent);
 }
 
-.track-header-btn.muted {
-  background: rgba(255, 71, 87, 0.12);
-  color: var(--theme-danger);
-  border-color: var(--theme-danger);
+.track-header-btn-cluster {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
 }
 
 .track-delete-btn {
@@ -1028,10 +2117,10 @@
 .track-delete-btn:hover {
   opacity: 1;
   color: var(--theme-danger);
-  background: rgba(255, 71, 87, 0.12);
+  background: var(--theme-semantic-danger-bg-subtle);
 }
 
-/* ── Add Track button ──────────────────────────────────────────────── */
+/* â”€â”€ Add Track button â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .timeline-add-track {
   display: flex;
@@ -1056,7 +2145,7 @@
   color: var(--theme-text-muted);
 }
 
-/* ── Canvas area (right, flex-grow) ────────────────────────────────── */
+/* â”€â”€ Canvas area (right, flex-grow) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .timeline-canvas-area {
   flex: 1;
@@ -1066,7 +2155,7 @@
   overflow: hidden;
 }
 
-/* ── Ruler (canvas-based) ──────────────────────────────────────────── */
+/* â”€â”€ Ruler (canvas-based) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .timeline-ruler-container {
   height: 24px;
@@ -1086,7 +2175,7 @@
   pointer-events: none;
 }
 
-/* ── Horizontal scrollbar ──────────────────────────────────────────── */
+/* â”€â”€ Horizontal scrollbar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .timeline-scrollbar {
   height: 10px;
@@ -1117,7 +2206,7 @@
   cursor: grabbing;
 }
 
-/* ── Canvas scroll container (vertical overflow for many tracks) ───── */
+/* â”€â”€ Canvas scroll container (vertical overflow for many tracks) â”€â”€â”€â”€â”€ */
 
 .timeline-canvas-scroll {
   flex: 1;
@@ -1126,14 +2215,14 @@
   overflow-x: hidden;
 }
 
-/* ── Three-layer canvas stack ──────────────────────────────────────── */
+/* â”€â”€ Three-layer canvas stack â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .timeline-canvas-container {
   position: relative;
   width: 100%;
 }
 
-/* ── Tool cursors (CSS-owned; driven by data-tool attribute) ─────────────── */
+/* â”€â”€ Tool cursors (CSS-owned; driven by data-tool attribute) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .timeline-canvas-container[data-tool="select"] { cursor: default; }
 .timeline-canvas-container[data-tool="pencil"] { cursor: crosshair; }
 .timeline-canvas-container[data-tool="split"]  { cursor: col-resize; }
@@ -1170,7 +2259,7 @@
   pointer-events: auto;
 }
 
-/* ── Empty state ───────────────────────────────────────────────────── */
+/* â”€â”€ Empty state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .timeline-empty {
   flex: 1;
@@ -1207,9 +2296,9 @@
   border-color: var(--theme-accent);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Transport Bar
-   ═══════════════════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 .transport-bar {
   height: var(--transport-h);
@@ -1223,7 +2312,7 @@
   z-index: 50;
 }
 
-/* ── Controls ──────────────────────────────────────────────────────── */
+/* â”€â”€ Controls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .transport-controls {
   display: flex;
@@ -1264,7 +2353,7 @@
   background: var(--theme-focus-ring);
 }
 
-/* ── Position ──────────────────────────────────────────────────────── */
+/* â”€â”€ Position â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .transport-position {
   display: flex;
@@ -1306,13 +2395,13 @@
   margin: 0 2px;
 }
 
-/* ── Spacer ────────────────────────────────────────────────────────── */
+/* â”€â”€ Spacer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .transport-spacer {
   flex: 1;
 }
 
-/* ── BPM ────────────────────────────────────────────────────────── */
+/* â”€â”€ BPM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .transport-bpm {
   display: flex;
@@ -1370,7 +2459,17 @@
   color: var(--theme-text-subtle);
 }
 
-/* ── Audio output device selector ────────────────────────────────── */
+.transport-tempo-lock {
+  align-self: center;
+  padding: 2px 3px;
+  opacity: 0.5;
+}
+
+.transport-tempo-lock.transport-btn-active {
+  opacity: 1;
+}
+
+/* â”€â”€ Audio output device selector â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .transport-device-select {
   height: 28px;
@@ -1402,7 +2501,7 @@
   color: var(--theme-text);
 }
 
-/* ── Shortcut hints ───────────────────────────────────────────────── */
+/* â”€â”€ Shortcut hints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .transport-hints {
   display: flex;
@@ -1428,16 +2527,16 @@
   margin-right: 6px;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Project Media Tab
-   ═══════════════════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 .project-media-tab {
   display: flex;
   flex-direction: column;
 }
 
-/* ── Source list ───────────────────────────────────────────────────── */
+/* â”€â”€ Source list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .source-list {
   display: flex;
@@ -1445,7 +2544,7 @@
   gap: 2px;
 }
 
-/* ── Source card ───────────────────────────────────────────────────── */
+/* â”€â”€ Source card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .source-card {
   display: flex;
@@ -1552,7 +2651,7 @@
   to   { transform: rotate(360deg); }
 }
 
-/* ── Import drop zone ─────────────────────────────────────────────── */
+/* â”€â”€ Import drop zone â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .import-dropzone {
   position: relative;
@@ -1571,7 +2670,7 @@
   align-items: center;
   justify-content: center;
   gap: 8px;
-  background: rgba(51, 206, 214, 0.08);
+  background: var(--theme-accent-bg-subtle);
   border: 2px dashed var(--theme-accent);
   border-radius: var(--radius-md);
   z-index: 20;
@@ -1581,7 +2680,7 @@
   pointer-events: none;
 }
 
-/* ── Progress bar ─────────────────────────────────────────────────── */
+/* â”€â”€ Progress bar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .progress-bar {
   height: 3px;
@@ -1607,7 +2706,7 @@
   100% { transform: translateX(350%); }
 }
 
-/* ── Copied tooltip (middle-click quick copy) ─────────────────────── */
+/* â”€â”€ Copied tooltip (middle-click quick copy) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .timeline-copied-tooltip {
   background: rgba(51, 206, 214, 0.9);
@@ -1626,7 +2725,7 @@
   100% { opacity: 0; transform: translateY(-14px); }
 }
 
-/* ── Export dialog ────────────────────────────────────────────────── */
+/* â”€â”€ Export dialog â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .export-dialog-backdrop {
   position: fixed;
@@ -1843,7 +2942,7 @@
   filter: brightness(1.1);
 }
 
-/* ── Missing plugins dialog ───────────────────────────────────────── */
+/* â”€â”€ Missing plugins dialog â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .missing-plugins-dialog {
   width: 480px;
@@ -1941,7 +3040,7 @@
   background: rgba(224, 85, 85, 0.12);
 }
 
-/* ── Context menu ─────────────────────────────────────────────────── */
+/* â”€â”€ Context menu â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .context-menu {
   position: fixed;
@@ -1951,7 +3050,7 @@
   border-radius: var(--radius-md);
   padding: 4px 0;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-  z-index: 1000;
+  z-index: 9000;
 }
 
 .context-menu-item {
@@ -1979,7 +3078,7 @@
 }
 
 .context-menu-item.danger:hover {
-  background: rgba(255, 71, 87, 0.12);
+  background: var(--theme-semantic-danger-bg-subtle);
 }
 
 .context-menu-sep {
@@ -1988,9 +3087,9 @@
   margin: 4px 10px;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Sample Selector Tab
-   ═══════════════════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 .sample-selector-tab {
   display: flex;
@@ -2008,7 +3107,7 @@
   min-height: 0;
 }
 
-/* ── Group header ─────────────────────────────────────────────────────────── */
+/* â”€â”€ Group header â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .sample-group-header {
   display: flex;
@@ -2046,7 +3145,7 @@
   flex: 1;
 }
 
-/* ── Sample rows ──────────────────────────────────────────────────────────── */
+/* â”€â”€ Sample rows â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .sample-group-rows {
   display: flex;
@@ -2156,11 +3255,11 @@
   flex-shrink: 0;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Sample Picker
-   ═══════════════════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
-/* ── Outer shell ─────────────────────────────────────────────────────────── */
+/* â”€â”€ Outer shell â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .sample-picker {
   display: flex;
@@ -2170,7 +3269,7 @@
   background: var(--theme-bg-primary);
 }
 
-/* ── Header ──────────────────────────────────────────────────────────────── */
+/* â”€â”€ Header â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .sample-picker-header {
   display: flex;
@@ -2221,7 +3320,7 @@
   white-space: nowrap;
 }
 
-/* ── Video preview frame ─────────────────────────────────────────────────── */
+/* â”€â”€ Video preview frame â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .picker-video-preview {
   flex-shrink: 0;
@@ -2240,7 +3339,7 @@
   object-fit: contain;
   display: block;
   max-height: 32vh;
-  background: black;
+  background: var(--theme-bg-inset);
 }
 
 .picker-video-placeholder {
@@ -2252,7 +3351,7 @@
   font-size: 12px;
 }
 
-/* ── Waveform scrubber ───────────────────────────────────────────────────── */
+/* â”€â”€ Waveform scrubber â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .waveform-scrubber {
   flex-shrink: 0;
@@ -2277,7 +3376,7 @@
   right: 0;
   bottom: 0;
   height: 8px;
-  background: rgba(0, 0, 0, 0.25);
+  background: var(--theme-overlay-subtle);
   cursor: pointer;
 }
 
@@ -2300,7 +3399,7 @@
   cursor: grabbing;
 }
 
-/* ── Controls row ────────────────────────────────────────────────────────── */
+/* â”€â”€ Controls row â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .picker-controls {
   flex-shrink: 0;
@@ -2464,7 +3563,7 @@
   border-color: var(--theme-border-focus);
 }
 
-/* Add Sample button — accent colored */
+/* Add Sample button â€” accent colored */
 .picker-add-btn {
   background: var(--theme-accent);
   border-color: var(--theme-accent);
@@ -2478,7 +3577,7 @@
   color: var(--theme-bg-primary);
 }
 
-/* ── Marked Samples list ─────────────────────────────────────────────────── */
+/* â”€â”€ Marked Samples list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .marked-samples-list {
   flex: 1;
@@ -2603,13 +3702,13 @@
 }
 
 .marked-sample-delete:hover {
-  background: rgba(255, 71, 87, 0.15);
+  background: var(--theme-semantic-danger-bg-medium);
   color: var(--theme-danger);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   Grid Editor Overlay (Part B — VideoPreview)
-   ═══════════════════════════════════════════════════════════════════════════ */
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+   Grid Editor Overlay (Part B â€” VideoPreview)
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 .video-canvas-wrapper {
   position: relative;
@@ -2627,24 +3726,24 @@
 }
 
 .grid-editor-overlay {
-  /* Match the canvas's object-fit: contain rendering area — a 16:9 box
+  /* Match the canvas's object-fit: contain rendering area â€” a 16:9 box
      centered inside .video-canvas-wrapper. The wrapper has max-height: 45vh,
-     so the largest 16:9 width that fits is 45vh × 16/9 = 80vh. */
+     so the largest 16:9 width that fits is 45vh Ã— 16/9 = 80vh.
+     Empty cells AND assigned slots are absolutely positioned off the same
+     fine-grid coordinate space, so we run with no gap/padding here. */
   position: absolute;
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
   aspect-ratio: 16 / 9;
-  width: min(100%, 80vh);
-  display: grid;
-  gap: 2px;
-  padding: 4px;
+  width: 100%;
+  max-height: 100%;
   pointer-events: auto;
   z-index: 10;
 }
 
 .grid-editor-cell {
-  position: relative;
+  position: absolute;
   border: 1px solid rgba(255, 255, 255, 0.25);
   background: rgba(0, 0, 0, 0.35);
   display: flex;
@@ -2654,18 +3753,17 @@
   cursor: pointer;
   font: 600 13px "Hanken Grotesk", system-ui;
   overflow: visible;
+  box-sizing: border-box;
   transition: background 120ms, border-color 120ms, opacity 120ms;
 }
 
 .grid-editor-cell.empty {
   border-style: dashed;
   opacity: 0.55;
-}
-
-.grid-editor-cell.empty:hover {
-  background: var(--theme-grid-chorus-overlay);
-  opacity: 1.0;
-  border-color: var(--theme-accent);
+  /* Backdrop cells are guidelines only in the free-canvas model — the canvas
+     itself is the drop target, so empty cells are non-interactive. */
+  cursor: default;
+  pointer-events: none;
 }
 
 .grid-editor-cell.assigned {
@@ -2679,14 +3777,6 @@
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
   padding: 0 28px;
   text-align: center;
-}
-
-.grid-editor-cell-add {
-  pointer-events: none;
-  z-index: 2;
-  color: rgba(255, 255, 255, 0.6);
-  font-size: 28px;
-  line-height: 1;
 }
 
 .grid-editor-cell-remove {
@@ -2703,7 +3793,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 3;
+  z-index: 8;  /* above resize handles so it stays clickable in the corner */
   padding: 0;
 }
 
@@ -2721,54 +3811,114 @@
     linear-gradient(to bottom, transparent calc(50% - 0.5px), var(--theme-grid-editor-crosshair) calc(50% - 0.5px) calc(50% + 0.5px), transparent calc(50% + 0.5px));
 }
 
-.grid-editor-picker {
+/* ─── Per-track subdivision ─────────────────────────────────────────────
+   .grid-editor-slot — assigned-track placement, absolutely positioned over
+   the column×row backdrop. Coordinates come from fine-grid units in JS.
+   .grid-editor-subgrid-lines — dashed verticals at sub-positions for tracks
+   with subdivisionFactor > 1. Stride is set inline via --xleth-subdiv-step
+   (a percentage = 100% / factor). */
+.grid-editor-slot {
   position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  min-width: 140px;
-  max-height: 200px;
-  overflow-y: auto;
-  background: var(--theme-bg-elevated);
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: var(--radius-md);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
-  z-index: 20;
-  padding: 4px 0;
-  font-size: 12px;
+  border: 1px solid var(--theme-accent);
+  background: var(--theme-focus-ring);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--theme-fg-inverse);
+  font: 600 13px "Hanken Grotesk", system-ui;
+  pointer-events: auto;
+  box-sizing: border-box;
+  z-index: 4;
+  overflow: visible;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
 }
 
-.grid-editor-picker-header {
-  padding: 6px 10px 4px;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--theme-text-muted);
-  border-bottom: 1px solid var(--theme-border-subtle);
-  margin-bottom: 4px;
+.grid-editor-slot.moving {
+  cursor: grabbing;
+  opacity: 0.85;
+  outline: 2px dashed var(--theme-accent);
+  outline-offset: -2px;
 }
 
-.grid-editor-picker-empty {
-  padding: 8px 10px;
-  color: var(--theme-text-muted);
-  font-style: italic;
+/* Resize handles for placed slots. Invisible by default, faintly visible
+   on slot hover, fully visible while dragged. Sit above the slot body
+   (z-index 5) but below the remove button (z-index 3 → moved to 6 in the
+   slot button so it stays clickable in the corner). */
+.grid-editor-slot-resize {
+  position: absolute;
+  z-index: 5;
+  background: transparent;
+  transition: background 100ms;
 }
-
-.grid-editor-picker-item {
-  display: block;
+.grid-editor-slot:hover .grid-editor-slot-resize {
+  background: var(--theme-accent);
+  opacity: 0.25;
+}
+.grid-editor-slot-resize:hover,
+.grid-editor-slot-resize:active {
+  background: var(--theme-accent) !important;
+  opacity: 0.7 !important;
+}
+.grid-editor-slot-resize-e {
+  top: 0;
+  right: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: ew-resize;
+}
+.grid-editor-slot-resize-s {
+  left: 0;
+  bottom: -3px;
   width: 100%;
-  text-align: left;
-  padding: 6px 10px;
-  background: none;
-  border: 0;
-  color: var(--theme-text);
-  font: inherit;
-  cursor: pointer;
+  height: 6px;
+  cursor: ns-resize;
+}
+.grid-editor-slot-resize-se {
+  right: -4px;
+  bottom: -4px;
+  width: 12px;
+  height: 12px;
+  cursor: nwse-resize;
+  z-index: 7;  /* above the bottom + right edge handles where they overlap */
 }
 
-.grid-editor-picker-item:hover {
-  background: var(--theme-bg-surface);
-  color: var(--theme-accent);
+.grid-editor-subgrid-lines {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0.3;
+  /* Dashed vertical strokes every --xleth-subdiv-step. Each stride paints a
+     1px-wide vertical line at its origin; the rest is transparent. The
+     dashed appearance comes from a vertical mask. */
+  background-image: repeating-linear-gradient(
+    to right,
+    var(--theme-grid-cell-divider) 0,
+    var(--theme-grid-cell-divider) 1px,
+    transparent 1px,
+    transparent var(--xleth-subdiv-step, 50%)
+  );
+  /* Vertical dash mask: 4px stroke, 4px gap. */
+  mask-image: repeating-linear-gradient(
+    to bottom, #000 0 4px, transparent 4px 8px
+  );
+  -webkit-mask-image: repeating-linear-gradient(
+    to bottom, #000 0 4px, transparent 4px 8px
+  );
+}
+
+.grid-editor-cell-factor {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 5px;
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--theme-fg-inverse);
+  vertical-align: middle;
 }
 
 .grid-editor-badges {
@@ -2789,7 +3939,7 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  background: rgba(0, 0, 0, 0.75);
+  background: var(--theme-overlay-heavy);
   color: var(--theme-fg-inverse);
 }
 
@@ -2801,9 +3951,149 @@
   border-left: 2px solid #ff9500;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   Grid Layout Tab (Part A — LeftPanel)
-   ═══════════════════════════════════════════════════════════════════════════ */
+/* ─── Free-canvas drag/drop UI ────────────────────────────────────────────
+   Drag-from-palette ghost preview, snap toolbar, track palette. The
+   palette is a horizontal strip docked to the bottom of the overlay and
+   acts as the source for HTML5 drag-to-place. */
+
+.grid-editor-drag-ghost {
+  position: absolute;
+  border: 1.5px dashed var(--theme-accent);
+  background: var(--theme-focus-ring);
+  opacity: 0.5;
+  pointer-events: none;
+  z-index: 9;
+  box-sizing: border-box;
+  border-radius: 2px;
+}
+
+.grid-editor-toolbar {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: flex;
+  gap: 6px;
+  z-index: 16;
+  pointer-events: auto;
+}
+
+.grid-editor-snap-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border-radius: var(--radius-sm, 3px);
+  font: 600 11px "Hanken Grotesk", system-ui;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: var(--theme-overlay-heavy);
+  color: var(--theme-fg-inverse);
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+
+.grid-editor-snap-btn.on {
+  background: var(--theme-accent);
+  color: var(--theme-bg-primary);
+  border-color: var(--theme-accent);
+}
+
+.grid-editor-snap-btn.off {
+  opacity: 0.75;
+}
+
+.grid-editor-snap-btn:hover {
+  opacity: 1;
+}
+
+.grid-editor-palette {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  z-index: 17;
+  pointer-events: auto;
+  background: var(--theme-overlay-heavy);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-md, 4px);
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 30%;
+  box-sizing: border-box;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.grid-editor-palette-header {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--theme-text-muted);
+  font-weight: 600;
+}
+
+.grid-editor-palette-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  overflow-y: auto;
+}
+
+.grid-editor-palette-empty {
+  color: var(--theme-text-muted);
+  font-style: italic;
+  font-size: 12px;
+  padding: 4px 2px;
+}
+
+.grid-editor-palette-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  background: var(--theme-bg-elevated);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm, 3px);
+  color: var(--theme-text);
+  font: 500 12px "Hanken Grotesk", system-ui;
+  cursor: grab;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.grid-editor-palette-item:hover {
+  border-color: var(--theme-accent);
+  color: var(--theme-accent);
+}
+
+.grid-editor-palette-item:active {
+  cursor: grabbing;
+}
+
+.grid-editor-palette-item.placed {
+  opacity: 0.7;
+}
+
+.grid-editor-palette-mark {
+  color: var(--theme-accent);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.grid-editor-palette-factor {
+  display: inline-block;
+  padding: 1px 5px;
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: 3px;
+  background: var(--theme-bg-surface);
+  color: var(--theme-text-muted);
+}
+
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+   Grid Layout Tab (Part A â€” LeftPanel)
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 .grid-tab {
   padding: 12px;
@@ -2962,6 +4252,7 @@
 
 .grid-tab-track-name {
   color: var(--theme-text);
+  font-size: 15px;
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3009,22 +4300,22 @@
   font-style: italic;
 }
 
-/* ── Per-track settings: sliders, bounce, VFX ──────────────────────────── */
+/* â”€â”€ Per-track settings: sliders, bounce, VFX â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .grid-tab-track-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  padding-bottom: 10px;
+  border-bottom: 0.5px solid var(--theme-border-subtle);
 }
 
 .grid-tab-track-sliders {
-  display: grid;
-  grid-template-columns: 56px 1fr;
-  gap: 2px 8px;
-  align-items: center;
-  font-size: 11px;
-  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
 }
 
 .grid-tab-track-sliders label {
@@ -3037,7 +4328,7 @@
   min-width: 0;
 }
 
-/* ── Bounce ── */
+/* â”€â”€ Bounce â”€â”€ */
 
 .grid-tab-track-bounce {
   margin-top: 6px;
@@ -3079,7 +4370,7 @@
   border-color: var(--theme-accent);
 }
 
-/* ── Zoom/Pan/Rot ── */
+/* â”€â”€ Zoom/Pan/Rot â”€â”€ */
 
 .grid-tab-track-zpr {
   margin-top: 6px;
@@ -3099,7 +4390,7 @@
   margin: 0;
 }
 
-/* ── Ping-Pong Loop ── */
+/* â”€â”€ Ping-Pong Loop â”€â”€ */
 
 .grid-tab-track-pingpong {
   padding: 4px 6px;
@@ -3141,7 +4432,7 @@
   font-size: 11px;
 }
 
-/* ── Visual FX chain ── */
+/* â”€â”€ Visual FX chain â”€â”€ */
 
 .grid-tab-track-vfx {
   margin-top: 6px;
@@ -3280,7 +4571,7 @@
   border-radius: 2px;
 }
 
-/* ── Visual FX type-coded card borders (Prompt 12) ─────────────────────────
+/* â”€â”€ Visual FX type-coded card borders (Prompt 12) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    Each effect type gets a distinct left border so users can visually parse a
    long chain at a glance without reading every label. */
 .grid-tab-vfx-card.vfx-desat { border-left: 3px solid #888;    }
@@ -3315,7 +4606,7 @@
   padding: 6px 0;
 }
 
-/* Reset Visual FX (per-track) — muted danger style at the bottom of each
+/* Reset Visual FX (per-track) â€” muted danger style at the bottom of each
    track item. Confirm dialog gates it so accidents are recoverable. */
 .grid-tab-track-reset {
   margin-top: 8px;
@@ -3340,7 +4631,7 @@
   background: rgba(220, 60, 60, 0.06);
 }
 
-/* "→All" mini button (Apply corner radius to all tracks) */
+/* "â†’All" mini button (Apply corner radius to all tracks) */
 .grid-tab-mini-btn {
   background: var(--theme-bg-surface);
   border: 1px solid var(--theme-border-subtle);
@@ -3373,6 +4664,519 @@
   line-height: 1.3;
 }
 
+/* ── Phase 2: TrackCardHeader ─────────────────────────────────────────────── */
+
+.grid-tab-track-header-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.grid-tab-track-header-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.grid-tab-track-name-input {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--theme-text);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--theme-accent);
+  outline: none;
+  padding: 0;
+  width: 120px;
+  min-width: 0;
+}
+
+.grid-tab-track-type-badge {
+  font-size: 10px;
+  font-family: monospace;
+  text-transform: uppercase;
+  color: var(--theme-text-subtle);
+  flex-shrink: 0;
+}
+
+.grid-tab-track-unassigned {
+  font-size: 12px;
+  font-style: italic;
+  color: var(--theme-text-muted);
+}
+
+.grid-tab-track-pill {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: var(--theme-focus-ring);
+  color: var(--theme-accent);
+}
+
+/* ── Phase 2: CornerRadiusControl ────────────────────────────────────────── */
+
+.grid-tab-corner-radius-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.grid-tab-corner-radius-widget {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  flex-shrink: 0;
+  outline: none;
+  cursor: default;
+}
+
+.grid-tab-corner-radius-widget:focus {
+  outline: 1px solid color-mix(in srgb, var(--theme-accent) 30%, transparent);
+  border-radius: 4px;
+}
+
+.grid-tab-corner-radius-preview {
+  position: absolute;
+  inset: 6px;
+  background: var(--theme-accent-bg-subtle);
+  border: 1px solid var(--theme-accent);
+  pointer-events: none;
+  transition: border-radius 60ms;
+}
+
+.grid-tab-corner-radius-dot {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--theme-accent);
+  /* Pure-white outline by design — gives the dot contrast against any accent colour. */
+  outline: 1.5px solid rgba(255, 255, 255, 0.5);
+  cursor: grab;
+  box-sizing: border-box;
+}
+
+.grid-tab-corner-radius-dot:active {
+  cursor: grabbing;
+}
+
+.grid-tab-corner-radius-info {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.grid-tab-corner-radius-readout {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--theme-text-muted);
+  min-width: 32px;
+  text-align: center;
+}
+
+/* ── Phase 2: CustomGapControl ──────────────────────────────────────────── */
+
+.grid-tab-gap-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.grid-tab-gap-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.grid-tab-gap-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--theme-text-muted);
+  cursor: pointer;
+}
+
+.grid-tab-gap-readout {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--theme-text-muted);
+  min-width: 32px;
+  text-align: right;
+}
+
+.grid-tab-gap-slider {
+  width: 100%;
+  min-width: 0;
+  height: 4px;
+  cursor: pointer;
+  accent-color: var(--theme-accent);
+}
+
+.grid-tab-gap-hint {
+  font-size: 10px;
+  color: var(--theme-text-muted);
+  font-style: italic;
+}
+
+/* ── Phase 2: SlideNoteEffectSection ─────────────────────────────────────── */
+
+.grid-tab-slide-header {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  color: var(--theme-text-muted);
+  text-transform: uppercase;
+}
+
+.grid-tab-slide-type-select {
+  background: var(--theme-bg-secondary);
+  color: var(--theme-text-muted);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+  width: 100%;
+}
+
+.grid-tab-slide-type-select:hover {
+  border-color: var(--theme-accent);
+  color: var(--theme-text);
+}
+
+.grid-tab-slide-params {
+  display: grid;
+  grid-template-columns: 60px 1fr 32px;
+  column-gap: 8px;
+  row-gap: 12px;
+  align-items: center;
+  font-size: 11px;
+  margin-top: 4px;
+}
+
+.grid-tab-slide-params label {
+  color: var(--theme-text-muted);
+  font-size: 11px;
+}
+
+.grid-tab-slide-params select,
+.grid-tab-slide-params input[type=number] {
+  width: 100%;
+  min-width: 0;
+  font: inherit;
+  font-size: 11px;
+}
+
+.grid-tab-slide-readout {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--theme-text-muted);
+  text-align: right;
+}
+
+/* ── Phase 3: VisualFX unified section ───────────────────────────────────── */
+
+.fx-section {
+  margin-top: 8px;
+}
+
+.fx-section-header-wrap {
+  position: relative;
+}
+
+.fx-section-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.fx-section-title {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  color: var(--theme-text-muted);
+  text-transform: uppercase;
+}
+
+.fx-section-count {
+  font-size: 11px;
+  color: var(--theme-text-muted);
+}
+
+.fx-clear-all {
+  font-size: 11px;
+  color: var(--theme-text-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  margin-left: auto;
+}
+
+.fx-clear-all:hover {
+  color: var(--theme-text);
+}
+
+.fx-add-btn {
+  font-size: 11px;
+  padding: 3px 9px;
+  border: 0.5px solid var(--theme-accent);
+  color: var(--theme-accent);
+  background: transparent;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.fx-add-btn:hover {
+  background: var(--theme-accent-bg-medium);
+}
+
+/* ── EffectRow ───────────────────────────────────────────────────────────── */
+
+.fx-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.fx-row {
+  background: var(--theme-bg-inset);
+  border-radius: 3px;
+}
+
+.fx-row-header {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 8px;
+  gap: 5px;
+}
+
+.fx-glyph {
+  font-size: 9px;
+  color: var(--theme-accent);
+  width: 10px;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.fx-chevron {
+  font-size: 8px;
+  color: var(--theme-text-muted);
+  cursor: pointer;
+  width: 10px;
+  flex-shrink: 0;
+  display: inline-block;
+  transition: transform 100ms;
+  user-select: none;
+  line-height: 1;
+}
+
+.fx-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+.fx-chevron-ph {
+  width: 10px;
+  flex-shrink: 0;
+}
+
+.fx-checkbox {
+  width: 9px;
+  height: 9px;
+  flex-shrink: 0;
+  accent-color: var(--theme-accent);
+  cursor: pointer;
+  margin: 0;
+}
+
+.fx-name {
+  font-size: 12px;
+  color: var(--theme-text);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fx-name.disabled {
+  color: var(--theme-text-muted);
+}
+
+.fx-remove {
+  font-size: 11px;
+  color: var(--theme-text-subtle);
+  background: transparent;
+  border: none;
+  padding: 0 2px;
+  cursor: pointer;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.fx-remove:hover {
+  color: var(--theme-text);
+}
+
+.fx-grip {
+  font-size: 9px;
+  color: var(--theme-text-subtle);
+  cursor: grab;
+  flex-shrink: 0;
+  user-select: none;
+  line-height: 1;
+}
+
+.fx-grip:hover {
+  color: var(--theme-text-subtle);
+}
+
+.fx-row-body {
+  padding: 4px 8px 8px 30px;
+}
+
+.fx-divider {
+  height: 0;
+  border: none;
+  border-top: 0.5px solid var(--theme-border-subtle);
+  margin: 3px 0;
+}
+
+/* ── Param grid (4.4.6) used by both effect param components ─────────────── */
+
+.fx-params-grid {
+  display: grid;
+  grid-template-columns: 60px 1fr 32px;
+  column-gap: 8px;
+  row-gap: 12px;
+  align-items: center;
+  font-size: 11px;
+}
+
+.fx-params-grid label {
+  color: var(--theme-text-muted);
+  font-size: 11px;
+}
+
+.fx-params-grid span {
+  font-size: 10px;
+  color: var(--theme-text-muted);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.fx-params-grid input[type=range] {
+  width: 100%;
+  min-width: 0;
+  accent-color: var(--theme-accent);
+}
+
+.fx-params-grid input[type=number],
+.fx-params-grid select {
+  width: 100%;
+  min-width: 0;
+  font: inherit;
+  font-size: 11px;
+}
+
+.fx-params-grid input[type=color] {
+  width: 100%;
+  min-width: 0;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+/* Dir buttons inside fx-params-grid */
+.fx-dir-group {
+  display: flex;
+  gap: 3px;
+}
+
+/* ── Add-effect dropdown ─────────────────────────────────────────────────── */
+
+.fx-dropdown {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 2px);
+  z-index: 200;
+  background: var(--theme-bg-elevated);
+  border: 0.5px solid var(--theme-border-subtle);
+  border-radius: 4px;
+  min-width: 170px;
+  padding: 4px 0;
+  box-shadow: 0 4px 12px var(--theme-overlay-medium);
+}
+
+.fx-dropdown-item {
+  font-size: 12px;
+  padding: 5px 10px;
+  cursor: pointer;
+  color: var(--theme-text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+}
+
+.fx-dropdown-item:not(.shown):hover {
+  background: var(--theme-focus-ring);
+}
+
+.fx-dropdown-item.shown {
+  opacity: 0.6;
+  cursor: default;
+  pointer-events: none;
+}
+
+.fx-dropdown-check {
+  font-size: 10px;
+  color: var(--theme-accent);
+}
+
+.fx-dropdown-divider {
+  height: 0;
+  border: none;
+  border-top: 0.5px solid var(--theme-border-subtle);
+  margin: 4px 0;
+}
+
+/* ── Phase 4 drag-and-drop ───────────────────────────────────────────────── */
+
+.fx-row-wrap {
+  display: flex;
+  flex-direction: column;
+}
+
+.fx-drop-indicator {
+  height: 2px;
+  background: var(--theme-accent);
+  border-radius: 1px;
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+
+.fx-row.dragging {
+  opacity: 0.4;
+}
+
+html.fx-drag-active * {
+  cursor: grabbing !important;
+}
+
 /* Preview toolbar resolution display (VideoPreview.jsx) */
 .video-resolution {
   font-size: 10px;
@@ -3382,9 +5186,9 @@
   opacity: 0.85;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Syllable Splitter
-   ═══════════════════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 .syllable-splitter {
   display: flex;
@@ -3423,7 +5227,7 @@
 }
 .syllable-section-card.playing {
   border-color: var(--theme-accent);
-  background: rgba(51, 206, 214, 0.08);
+  background: var(--theme-accent-bg-subtle);
 }
 
 .syllable-section-num {
@@ -3520,7 +5324,7 @@
   background: var(--theme-bg-elevated);
   border: 1px solid var(--theme-border-subtle);
   border-radius: var(--radius-lg);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+  box-shadow: var(--theme-chrome-shadow);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -3541,7 +5345,7 @@
   color: #ff7070;
 }
 
-/* ── Toolbar syllable picker (pencil + Quote) ───────────────────────────────── */
+/* â”€â”€ Toolbar syllable picker (pencil + Quote) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .timeline-syllable-picker {
   display: flex;
@@ -3575,16 +5379,16 @@
   color: var(--theme-text);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Sampler Panel (modal)
-   ═══════════════════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 .sampler-panel-section {
   display: flex;
   flex-direction: column;
   gap: 6px;
   padding: 10px;
-  background: #15151c;
+  background: var(--theme-bg-tertiary);
   border: 1px solid var(--theme-border-subtle);
   border-radius: 6px;
 }
@@ -3643,9 +5447,9 @@
   cursor: pointer;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Center Tabs (Timeline / Piano Roll)
-   ═══════════════════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 .center-tabs {
   display: flex;
@@ -3707,7 +5511,7 @@
 }
 
 .center-tab-close:hover {
-  background: rgba(255, 71, 87, 0.18);
+  background: var(--theme-semantic-danger-bg-medium);
   color: var(--theme-danger);
 }
 
@@ -3724,9 +5528,9 @@
   flex-direction: column;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   Piano Roll — Floating card
-   ═══════════════════════════════════════════════════════════════════════════ */
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+   Piano Roll â€” Floating card
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 .piano-roll-floating {
   background: #111118;
@@ -3745,7 +5549,7 @@
   justify-content: space-between;
   height: 28px;
   padding: 0 8px;
-  background: linear-gradient(to bottom, #1f1f2a, #14141c);
+  background: linear-gradient(to bottom, var(--theme-bg-surface), var(--theme-bg-tertiary));
   border-bottom: 1px solid var(--theme-border-subtle);
   cursor: grab;
   user-select: none;
@@ -3963,12 +5767,12 @@
   color: var(--theme-accent);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   Track header — Pattern track variant + sub-label
-   ═══════════════════════════════════════════════════════════════════════════ */
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+   Track header â€” Pattern track variant + sub-label
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 .track-header--pattern .track-header-color {
-  border-radius: 2px;
+  border-radius: 1.5px;
 }
 
 .track-header-name-wrap {
@@ -3991,9 +5795,9 @@
 
 .track-header-type-badge {
   font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  opacity: 0.55;
+  color: var(--theme-text-subtle);
+  letter-spacing: 0.4px;
+  line-height: 1;
   text-transform: uppercase;
 }
 
@@ -4014,9 +5818,9 @@
   opacity: 0.9;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Track Context Menu (builds on .context-menu)
-   ═══════════════════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 .track-context-menu {
   min-width: 220px;
@@ -4031,22 +5835,22 @@
   background: transparent;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Confirm Dialog (Convert Track)
-   ═══════════════════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 .confirm-dialog-backdrop {
   position: fixed;
   top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--theme-overlay-medium);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 2000;
+  z-index: 9200;
 }
 
 .confirm-dialog {
-  background: #141420;
+  background: var(--theme-bg-tertiary);
   border: 1px solid var(--theme-border-subtle);
   border-radius: var(--radius-md, 8px);
   box-shadow: var(--theme-modal-shadow);
@@ -4106,7 +5910,7 @@
 }
 
 .confirm-dialog-btn.danger {
-  background: rgba(255, 71, 87, 0.12);
+  background: var(--theme-semantic-danger-bg-subtle);
   border-color: var(--theme-danger);
   color: var(--theme-danger);
 }
@@ -4116,15 +5920,15 @@
   color: var(--theme-fg-inverse);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Utilities
-   ═══════════════════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 .accent { color: var(--theme-accent); }
 
-/* ═══════════════════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Mixer Panel
-   ═══════════════════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 .mixer-panel {
   height: var(--mixer-h);
@@ -4165,10 +5969,10 @@
 .mixer-toolbar-btn:hover {
   border-color: var(--theme-accent);
   color: var(--theme-accent);
-  background: rgba(51, 206, 214, 0.08);
+  background: var(--theme-accent-bg-subtle);
 }
 
-/* Row wrapping track strips + master strip — fills remaining height */
+/* Row wrapping track strips + master strip â€” fills remaining height */
 .mixer-strips-row {
   flex: 1;
   display: flex;
@@ -4194,17 +5998,17 @@
 }
 
 .mixer-tracks-scroll::-webkit-scrollbar {
-  height: 6px;
+  height: 8px;
 }
 .mixer-tracks-scroll::-webkit-scrollbar-thumb {
-  background: var(--theme-border-subtle);
-  border-radius: 3px;
+  background: var(--theme-border-default);
+  border-radius: 4px;
 }
 .mixer-tracks-scroll::-webkit-scrollbar-track {
-  background: transparent;
+  background: var(--theme-bg-secondary);
 }
 
-/* ── Strip ────────────────────────────────────────────────────────────────── */
+/* â”€â”€ Strip â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .mixer-strip {
   width: 80px;
@@ -4220,6 +6024,12 @@
 
 .mixer-strip--muted {
   opacity: 0.45;
+}
+
+.mixer-strip--visual-only {
+  outline: 2px solid var(--theme-label-pitch, #a78bfa);
+  outline-offset: -1px;
+  background: rgba(167, 139, 250, 0.05);
 }
 
 .mixer-strip--master {
@@ -4268,12 +6078,12 @@
   border-color: var(--theme-text-muted);
 }
 .mixer-ms-btn.muted {
-  background: rgba(255, 71, 87, 0.15);
+  background: var(--theme-semantic-danger-bg-medium);
   color: var(--theme-danger);
   border-color: var(--theme-danger);
 }
 .mixer-ms-btn.active {
-  background: rgba(255, 170, 51, 0.15);
+  background: var(--theme-semantic-warning-bg-subtle);
   color: var(--theme-warning);
   border-color: var(--theme-warning);
 }
@@ -4284,7 +6094,7 @@
   justify-content: center;
 }
 
-/* ── Fader area (meter + fader side by side, fills remaining height) ────── */
+/* â”€â”€ Fader area (meter + fader side by side, fills remaining height) â”€â”€â”€â”€â”€â”€ */
 
 .mixer-strip-fader-area {
   flex: 1;
@@ -4296,7 +6106,7 @@
   width: 100%;
 }
 
-/* ── Volume fader ─────────────────────────────────────────────────────────── */
+/* â”€â”€ Volume fader â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .mixer-fader {
   position: relative;
@@ -4390,7 +6200,7 @@
   outline: none;
 }
 
-/* ── Effect Chain Panel ───────────────────────────────────────────────────── */
+/* â”€â”€ Effect Chain Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .effect-chain-panel {
   width: 100%;
@@ -4424,7 +6234,7 @@
 }
 
 .effect-chain-mode-btn.active {
-  background: rgba(51, 206, 214, 0.1);
+  background: var(--theme-accent-bg-medium);
   color: var(--theme-accent);
   border-color: var(--theme-accent);
   cursor: default;
@@ -4446,14 +6256,14 @@
 }
 
 .effect-chain-list::-webkit-scrollbar {
-  width: 3px;
+  width: 8px;
 }
 .effect-chain-list::-webkit-scrollbar-thumb {
-  background: var(--theme-border-subtle);
-  border-radius: 2px;
+  background: var(--theme-border-default);
+  border-radius: 4px;
 }
 .effect-chain-list::-webkit-scrollbar-track {
-  background: transparent;
+  background: var(--theme-bg-secondary);
 }
 
 .effect-chain-empty {
@@ -4494,7 +6304,7 @@
   cursor: not-allowed;
 }
 
-/* ── Effect Module ────────────────────────────────────────────────────────── */
+/* â”€â”€ Effect Module â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .effect-module {
   display: flex;
@@ -4567,7 +6377,7 @@
 
 .effect-module-bypass:hover {
   color: var(--theme-accent);
-  background: rgba(51, 206, 214, 0.1);
+  background: var(--theme-accent-bg-medium);
 }
 
 .effect-module-bypass.bypassed {
@@ -4642,7 +6452,7 @@
   border-color: var(--theme-accent);
 }
 
-/* ── Scan Progress Bar ───────────────────────────────────────────────────── */
+/* â”€â”€ Scan Progress Bar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .scan-progress-bar {
   display: flex;
@@ -4674,7 +6484,7 @@
   transition: width 0.3s ease;
 }
 
-/* ── VST Browser panel ───────────────────────────────────────────────────── */
+/* â”€â”€ VST Browser panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .vst-browser {
   position: fixed;
@@ -4763,9 +6573,9 @@
   min-height: 60px;
 }
 
-.vst-browser-list::-webkit-scrollbar { width: 3px; }
-.vst-browser-list::-webkit-scrollbar-thumb { background: var(--theme-border-subtle); border-radius: 2px; }
-.vst-browser-list::-webkit-scrollbar-track { background: transparent; }
+.vst-browser-list::-webkit-scrollbar { width: 8px; }
+.vst-browser-list::-webkit-scrollbar-thumb { background: var(--theme-border-default); border-radius: 4px; }
+.vst-browser-list::-webkit-scrollbar-track { background: var(--theme-bg-secondary); }
 
 .vst-browser-empty {
   font-size: 9px;
@@ -4942,15 +6752,15 @@
 }
 
 .vst-browser-btn--primary:hover {
-  background: rgba(51, 206, 214, 0.1);
+  background: var(--theme-accent-bg-medium);
   border-color: var(--theme-accent);
   color: var(--theme-accent);
 }
 
-/* ── EQ Theme Variables ──────────────────────────────────────────────────── */
+/* â”€â”€ EQ Theme Variables â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 :root {
-  /* Panel chrome — key vars include --xleth-global-* cascade for future theme editor */
+  /* Panel chrome â€” key vars include --xleth-global-* cascade for future theme editor */
   --xleth-eq-bg-panel:           var(--xleth-global-bg-panel, var(--theme-bg-primary));
   --xleth-eq-bg-plot:            var(--theme-bg-secondary);
   --xleth-eq-bg-header:          var(--theme-bg-primary);
@@ -4985,7 +6795,7 @@
   --xleth-eq-grid:               #1A1D26;
   --xleth-eq-grid-zero:          #3A4050;
 
-  /* GR direction colors (semantic — not exposed in font/theme editor) */
+  /* GR direction colors (semantic â€” not exposed in font/theme editor) */
   --xleth-eq-gr-cut:             #F0A3D0;
   --xleth-eq-gr-boost:           #7AE67A;
 
@@ -5001,7 +6811,7 @@
   --xleth-eq-radius-lg:          var(--radius-lg,     8px);
 }
 
-/* ── EQ Panel ────────────────────────────────────────────────────────────── */
+/* â”€â”€ EQ Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .eq-panel {
   position: fixed;
@@ -5247,7 +7057,7 @@
   opacity: 1;
 }
 
-/* B7 — Q ring: show on hover or when band is selected */
+/* B7 â€” Q ring: show on hover or when band is selected */
 .eq-band-dot:hover .eq-q-ring,
 .eq-band-dot.selected .eq-q-ring {
   opacity: 0.5;
@@ -5265,11 +7075,14 @@
 }
 
 .eq-band-list::-webkit-scrollbar {
-  width: 3px;
+  width: 8px;
 }
 .eq-band-list::-webkit-scrollbar-thumb {
-  background: var(--xleth-eq-border);
-  border-radius: 2px;
+  background: var(--theme-border-default);
+  border-radius: 4px;
+}
+.eq-band-list::-webkit-scrollbar-track {
+  background: var(--theme-bg-secondary);
 }
 
 .eq-band-row {
@@ -5318,7 +7131,7 @@
   text-align: right;
 }
 
-/* N/A field state — layout-stable, non-interactive */
+/* N/A field state â€” layout-stable, non-interactive */
 .eq-band-field.na {
   opacity: 0.25;
   pointer-events: none;
@@ -5372,7 +7185,7 @@
   background: var(--theme-fx-surface-tint-subtle);
 }
 
-/* Overflow (⋯) button replacing Trash */
+/* Overflow (â‹¯) button replacing Trash */
 .eq-band-overflow-btn {
   width: 18px;
   height: 18px;
@@ -5675,7 +7488,7 @@
   color: var(--xleth-eq-accent);
 }
 
-/* ── Node Editor ─────────────────────────────────────────────────────────── */
+/* â”€â”€ Node Editor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .ne-container {
   width: 100%;
@@ -5705,7 +7518,7 @@
   stroke-width: 2;
 }
 
-/* ── Custom Nodes ──────────────────────────────────────────────────────── */
+/* â”€â”€ Custom Nodes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .ne-node {
   border-radius: var(--radius-md);
@@ -5789,7 +7602,7 @@
   color: var(--theme-warning);
 }
 
-/* ── Handles ───────────────────────────────────────────────────────────── */
+/* â”€â”€ Handles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .ne-handle {
   width: 8px !important;
@@ -5804,7 +7617,7 @@
   transform: scale(1.3);
 }
 
-/* ── Toast ──────────────────────────────────────────────────────────────── */
+/* â”€â”€ Toast â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .ne-toast {
   position: absolute;
@@ -5835,7 +7648,7 @@
   to   { opacity: 1; transform: translateX(-50%) translateY(0); }
 }
 
-/* ── Gain Popup ────────────────────────────────────────────────────────── */
+/* â”€â”€ Gain Popup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .ne-gain-popup {
   position: fixed;
@@ -5881,7 +7694,7 @@
   background: var(--theme-label-hihat);
 }
 
-/* ── Node Editor Window (standalone child window) ────────────────────────── */
+/* â”€â”€ Node Editor Window (standalone child window) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .node-editor-window {
   display: flex;
@@ -5942,7 +7755,7 @@
   border-radius: 0;
 }
 
-/* ── Compressor Panel ────────────────────────────────────────────────────── */
+/* â”€â”€ Compressor Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .compressor-panel {
   position: fixed;
@@ -6012,7 +7825,7 @@
   justify-content: center;
 }
 
-/* GR meter — vertical bar, fills top-down */
+/* GR meter â€” vertical bar, fills top-down */
 .compressor-gr-meter {
   display: flex;
   flex-direction: column;
@@ -6087,7 +7900,7 @@
   border-color: var(--theme-accent);
 }
 
-/* ── Limiter Panel ──────────────────────────────────────────────────────── */
+/* â”€â”€ Limiter Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .limiter-panel {
   position: fixed;
@@ -6199,7 +8012,7 @@
   border-color: var(--theme-accent);
 }
 
-/* GR meter — vertical bar, fills top-down */
+/* GR meter â€” vertical bar, fills top-down */
 .limiter-gr-meter {
   display: flex;
   flex-direction: column;
@@ -6272,7 +8085,7 @@
   margin: 0 4px;
 }
 
-/* ── Distortion Panel ────────────────────────────────────────────────────── */
+/* â”€â”€ Distortion Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .distortion-panel {
   position: fixed;
@@ -6283,7 +8096,7 @@
   flex-direction: column;
   z-index: 200;
   width: 380px;
-  box-shadow: 0 -4px 24px rgba(0,0,0,0.5);
+  box-shadow: var(--theme-fx-plugin-shadow-top);
   user-select: none;
 }
 
@@ -6406,7 +8219,7 @@
   border-color: var(--theme-accent);
 }
 
-/* ── Waveshaper Panel ────────────────────────────────────────────────────── */
+/* â”€â”€ Waveshaper Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .ws-panel {
   position: fixed;
@@ -6513,7 +8326,7 @@
   justify-content: center;
 }
 
-/* ── Delay Panel ────────────────────────────────────────────────────── */
+/* â”€â”€ Delay Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .delay-panel {
   position: fixed;
@@ -6524,7 +8337,7 @@
   flex-direction: column;
   z-index: 200;
   width: 520px;
-  box-shadow: 0 -4px 24px rgba(0,0,0,0.5);
+  box-shadow: var(--theme-fx-plugin-shadow-top);
   user-select: none;
 }
 
@@ -6643,7 +8456,7 @@
   justify-content: center;
 }
 
-/* ── Reverb Panel ──────────────────────────────────────────────────── */
+/* â”€â”€ Reverb Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .reverb-panel {
   position: fixed;
@@ -6654,7 +8467,7 @@
   flex-direction: column;
   z-index: 200;
   width: 480px;
-  box-shadow: 0 -4px 24px rgba(0,0,0,0.5);
+  box-shadow: var(--theme-fx-plugin-shadow-top);
   user-select: none;
 }
 
@@ -6717,7 +8530,7 @@
   padding: 0 12px 12px;
 }
 
-/* ── Chorus Panel ───────────────────────────────────────────────────── */
+/* â”€â”€ Chorus Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .chorus-panel {
   position: fixed;
@@ -6728,7 +8541,7 @@
   flex-direction: column;
   z-index: 200;
   width: 420px;
-  box-shadow: 0 -4px 24px rgba(0,0,0,0.5);
+  box-shadow: var(--theme-fx-plugin-shadow-top);
   user-select: none;
 }
 
@@ -6781,7 +8594,7 @@
   justify-content: center;
 }
 
-/* ── Flanger Panel ───────────────────────────────────────────────────── */
+/* â”€â”€ Flanger Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .flanger-panel {
   position: fixed;
@@ -6792,7 +8605,7 @@
   flex-direction: column;
   z-index: 200;
   width: 420px;
-  box-shadow: 0 -4px 24px rgba(0,0,0,0.5);
+  box-shadow: var(--theme-fx-plugin-shadow-top);
   user-select: none;
 }
 
@@ -6845,7 +8658,7 @@
   justify-content: center;
 }
 
-/* ── Phaser Panel ────────────────────────────────────────────────────── */
+/* â”€â”€ Phaser Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .phaser-panel {
   position: fixed;
@@ -6945,7 +8758,7 @@
   border-color: var(--theme-accent);
 }
 
-/* ── OTT (Overdone) Panel ───────────────────────────────────────────────── */
+/* â”€â”€ OTT (Overdone) Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .ott-panel {
   position: fixed;
@@ -7023,7 +8836,7 @@
   justify-content: center;
 }
 
-/* ── OTT GR Meters (3 bands) ────────────────────────────────────────────── */
+/* â”€â”€ OTT GR Meters (3 bands) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .ott-gr-meters {
   display: flex;
@@ -7078,14 +8891,14 @@
   line-height: 1;
 }
 
-/* ── Smart Balance Panel ──────────────────────────────────────────── */
+/* â”€â”€ Smart Balance Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .sb-panel {
   position: fixed;
   background: var(--theme-bg-primary);
   border: 1px solid var(--theme-border-subtle);
   border-radius: var(--radius-md);
-  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  box-shadow: var(--theme-fx-plugin-shadow);
   z-index: 1200;
   width: 520px;
   user-select: none;
@@ -7107,13 +8920,13 @@
 .sb-debug-btn {
   font-size: 9px;
   padding: 2px 8px;
-  border: 1px solid rgba(255,255,255,0.12);
+  border: 1px solid var(--theme-fx-surface-tint-medium);
   border-radius: 3px;
   background: none;
   color: var(--theme-text-subtle);
   cursor: pointer;
 }
-.sb-debug-btn:hover { color: var(--theme-text); border-color: rgba(255,255,255,0.25); }
+.sb-debug-btn:hover { color: var(--theme-text); border-color: var(--theme-fx-surface-tint-strong); }
 .sb-debug-btn--active { background: rgba(255,255,255,0.08); color: var(--theme-text); }
 .sb-panel-close {
   width: 20px; height: 20px;
@@ -7168,7 +8981,7 @@
   display: block;
 }
 
-/* ── Transient Processor Panel ─────────────────────────────────────── */
+/* â”€â”€ Transient Processor Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .transientproc-panel {
   position: fixed;
@@ -7179,7 +8992,7 @@
   flex-direction: column;
   z-index: 200;
   width: 420px;
-  box-shadow: 0 -4px 24px rgba(0,0,0,0.5);
+  box-shadow: var(--theme-fx-plugin-shadow-top);
   user-select: none;
 }
 
@@ -7312,7 +9125,7 @@
   visibility: hidden;
 }
 
-/* ── Settings Panel ──────────────────────────────────────────────────────────*/
+/* â”€â”€ Settings Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€*/
 
 .settings-panel-overlay {
   position: fixed;
@@ -7397,6 +9210,13 @@
 }
 .settings-panel-select:focus { outline: none; border-color: var(--theme-accent); }
 
+.settings-panel-hint {
+  font-size: 11px;
+  color: var(--theme-text-muted);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
 .settings-panel-checkbox {
   width: 14px;
   height: 14px;
@@ -7404,9 +9224,9 @@
   accent-color: var(--theme-accent);
 }
 
-/* ══════════════════════════════════════════════════════════════════════════
-   Toasts — top-right stack, auto-dismiss except errors (click to dismiss)
-   ══════════════════════════════════════════════════════════════════════════ */
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+   Toasts â€” top-right stack, auto-dismiss except errors (click to dismiss)
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 .toast-stack {
   position: fixed;
@@ -7415,7 +9235,7 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  z-index: 2000;
+  z-index: 9300;
   pointer-events: none;
 }
 
@@ -7452,8 +9272,8 @@
 }
 
 .toast-success {
-  border-color: #5adc86;
-  border-left: 3px solid #5adc86;
+  border-color: var(--theme-semantic-success-border);
+  border-left: 3px solid var(--theme-semantic-success-border);
 }
 
 .toast-error {
@@ -7466,18 +9286,18 @@
   to   { transform: translateX(0);    opacity: 1; }
 }
 
-/* ══════════════════════════════════════════════════════════════════════════
-   Unsaved-changes dialog — modeled on confirm-dialog
-   ══════════════════════════════════════════════════════════════════════════ */
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+   Unsaved-changes dialog â€” modeled on confirm-dialog
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 .unsaved-dialog-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--theme-overlay-medium);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1400;
+  z-index: 9100;
 }
 
 .unsaved-dialog {
@@ -7549,9 +9369,9 @@
 }
 .unsaved-dialog-btn.danger:hover { filter: brightness(1.1); }
 
-/* ══════════════════════════════════════════════════════════════════════════
-   Export preset tabs — YouTube / Discord / Custom
-   ══════════════════════════════════════════════════════════════════════════ */
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+   Export preset tabs â€” YouTube / Discord / Custom
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 .export-tab-bar {
   display: flex;
@@ -7683,15 +9503,15 @@
 }
 
 .export-banner.warn {
-  background: color-mix(in srgb, #d8a23a 20%, var(--theme-bg-elevated));
-  border-color: #d8a23a;
-  color: #f2d079;
+  background: color-mix(in srgb, var(--theme-semantic-warning-border) 20%, var(--theme-bg-elevated));
+  border-color: var(--theme-semantic-warning-border);
+  color: var(--theme-semantic-warning-text);
 }
 
 .export-banner.error {
   background: color-mix(in srgb, var(--theme-danger) 22%, var(--theme-bg-elevated));
   border-color: var(--theme-danger);
-  color: #ff9aa2;
+  color: var(--theme-semantic-danger-text);
 }
 
 .custom-preset-row {
@@ -7730,9 +9550,9 @@
 
 .custom-preset-row button:disabled { opacity: 0.4; cursor: not-allowed; }
 
-/* ══════════════════════════════════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Progress panel (replaces active tab body during render)
-   ══════════════════════════════════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 .export-progress-panel {
   display: flex;
@@ -7750,7 +9570,7 @@
   align-items: baseline;
 }
 
-.export-progress-headline.error { color: #ff9aa2; }
+.export-progress-headline.error { color: var(--theme-semantic-danger-text); }
 
 .export-progress-pct {
   font-size: 13px;
@@ -7820,7 +9640,7 @@
 
 .export-progress-actions .export-btn-danger:hover:not(:disabled) { filter: brightness(1.1); }
 
-/* ── Quantize dialog ─────────────────────────────────────────────────────── */
+/* â”€â”€ Quantize dialog â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .quantize-dialog-backdrop {
   position: fixed;
@@ -7958,3 +9778,485 @@
   font-weight: 600;
 }
 .quantize-dialog-footer .quantize-btn-primary:hover:not(:disabled) { filter: brightness(1.1); }
+/* â”€â”€ Structural constants (migrated from theme.css) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* These are layout/timing primitives. Not user-theme tokens.                 */
+
+:root {
+  /* Sizing */
+  --titlebar-h:   32px;
+  --transport-h:  48px;
+  --panel-min-w: 250px;
+  --panel-max-w: 400px;
+  --divider-w:     4px;
+  --mixer-h:      400px;
+
+  /* Radius */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+
+  /* Transitions */
+  --transition-fast: 0.1s ease;
+  --transition:      0.15s ease;
+}
+
+/* â”€â”€ Reset â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+  background: var(--theme-bg-primary);
+  color: var(--theme-text);
+  font-family: 'Hanken Grotesk', system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* â”€â”€ Scrollbar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--theme-bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--theme-border-default);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--theme-text-subtle);
+}
+
+/* â”€â”€ Selection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+
+::selection {
+  background: var(--theme-focus-ring);
+  color: var(--theme-text);
+}
+
+/* â”€â”€ Focus ring â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+
+:focus-visible {
+  outline: 1px solid var(--theme-accent);
+  outline-offset: 1px;
+}
+
+
+/* -- MIDI Import dialog ------------------------------------------------ */
+
+.midi-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--theme-dialog-backdrop);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1200;
+}
+
+.midi-dialog {
+  width: 560px;
+  max-width: 94vw;
+  max-height: 90vh;
+  background: var(--theme-bg-elevated);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--theme-modal-shadow);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.midi-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--theme-border-subtle);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--theme-text);
+  background: var(--theme-bg-surface);
+  flex-shrink: 0;
+}
+
+.midi-dialog-close {
+  width: 24px;
+  height: 24px;
+  background: none;
+  border: none;
+  color: var(--theme-text-muted);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.midi-dialog-close:hover {
+  background: var(--theme-bg-secondary);
+  color: var(--theme-text);
+}
+
+.midi-dialog-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.midi-dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--theme-border-subtle);
+  background: var(--theme-bg-surface);
+  flex-shrink: 0;
+}
+
+.midi-dialog-footer button {
+  background: var(--theme-bg-secondary);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--theme-text);
+  padding: 7px 16px;
+  font-size: 13px;
+  font-family: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.midi-dialog-footer button:hover:not(:disabled) {
+  background: var(--theme-bg-elevated);
+  border-color: var(--theme-border-focus);
+}
+
+.midi-dialog-footer button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.midi-btn-primary {
+  background: var(--theme-accent) !important;
+  border-color: var(--theme-accent) !important;
+  color: var(--theme-text-on-accent) !important;
+}
+
+.midi-btn-primary:hover:not(:disabled) {
+  background: var(--theme-accent-hover) !important;
+  border-color: var(--theme-accent-hover) !important;
+}
+
+/* -- Spinner ------------------------------------------------------------ */
+
+.midi-spinner-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 32px 0;
+}
+
+.midi-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid var(--theme-border-subtle);
+  border-top-color: var(--theme-accent);
+  border-radius: 50%;
+  animation: midi-spin 0.75s linear infinite;
+}
+
+@keyframes midi-spin {
+  to { transform: rotate(360deg); }
+}
+
+.midi-spinner-label {
+  font-size: 13px;
+  color: var(--theme-text-muted);
+}
+
+/* -- Status (error / done) ---------------------------------------------- */
+
+.midi-status-wrap {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+}
+
+.midi-status-wrap--error {
+  background: var(--theme-semantic-danger-bg-subtle);
+  border: 1px solid var(--theme-semantic-danger-text);
+  color: var(--theme-semantic-danger-text);
+}
+
+.midi-status-wrap--done {
+  background: var(--theme-accent-bg-subtle);
+  border: 1px solid var(--theme-accent);
+  color: var(--theme-text);
+}
+
+.midi-status-icon {
+  font-size: 15px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.midi-status-msg {
+  flex: 1;
+  line-height: 1.4;
+}
+
+/* -- Preview: file info ------------------------------------------------- */
+
+.midi-file-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.midi-file-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--theme-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.midi-bpm-line {
+  font-size: 12px;
+  color: var(--theme-text-muted);
+}
+
+/* -- Checkbox rows (tempo override, split-by-note) ---------------------- */
+
+.midi-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  color: var(--theme-text);
+  cursor: pointer;
+  user-select: none;
+}
+
+.midi-checkbox-row input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--theme-accent);
+}
+
+/* -- Warning banner (mid-file tempo changes) ---------------------------- */
+
+.midi-warning-banner {
+  background: var(--theme-semantic-warning-bg-subtle);
+  border: 1px solid var(--theme-semantic-warning-border);
+  color: var(--theme-semantic-warning-text);
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* -- Track list --------------------------------------------------------- */
+
+.midi-track-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.midi-track-row {
+  background: var(--theme-bg-secondary);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: opacity var(--transition-fast);
+}
+
+.midi-track-row--disabled {
+  opacity: 0.45;
+}
+
+.midi-track-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.midi-track-enable {
+  flex-shrink: 0;
+  cursor: pointer;
+  accent-color: var(--theme-accent);
+}
+
+.midi-track-name {
+  flex: 1;
+  min-width: 80px;
+  font-size: 13px;
+  color: var(--theme-text);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.midi-track-notes {
+  font-size: 11px;
+  color: var(--theme-text-muted);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.midi-sample-select {
+  background: var(--theme-bg-inset);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--theme-text);
+  padding: 4px 6px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+  flex-shrink: 0;
+  max-width: 160px;
+  transition: border-color var(--transition-fast);
+}
+
+.midi-sample-select:focus {
+  border-color: var(--theme-border-focus);
+}
+
+.midi-sample-select:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.midi-visual-only-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--theme-text-muted);
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.midi-visual-only-label input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--theme-accent);
+}
+
+.midi-visual-only-label input:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* -- Per-track warnings ------------------------------------------------- */
+
+.midi-track-warning {
+  font-size: 11px;
+  color: var(--theme-semantic-warning-text);
+  padding-left: 22px;
+}
+
+/* -- Drum section ------------------------------------------------------- */
+
+.midi-drum-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 22px;
+  border-left: 2px solid var(--theme-semantic-warning-border);
+  margin-left: 2px;
+}
+
+.midi-drum-indicator {
+  font-size: 11px;
+  color: var(--theme-semantic-warning-text);
+  font-weight: 500;
+}
+
+.midi-drum-sub-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.midi-drum-sub-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 6px;
+  background: var(--theme-bg-elevated);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.midi-drum-sub-row input[type="checkbox"] {
+  margin: 0;
+  flex-shrink: 0;
+  cursor: pointer;
+  accent-color: var(--theme-accent);
+}
+
+.midi-drum-sub-note {
+  flex: 1;
+  font-size: 12px;
+  color: var(--theme-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* -- DEV-only debug trigger --------------------------------------------- */
+
+.midi-debug-open-btn {
+  position: fixed;
+  bottom: 40px;
+  right: 8px;
+  z-index: 9990;
+  background: var(--theme-bg-secondary);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--theme-text-muted);
+  font-size: 10px;
+  padding: 3px 7px;
+  cursor: pointer;
+  opacity: 0.7;
+  font-family: inherit;
+  transition: opacity var(--transition-fast);
+}
+
+.midi-debug-open-btn:hover {
+  opacity: 1;
+}

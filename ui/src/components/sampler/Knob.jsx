@@ -2,8 +2,8 @@ import { useRef, useEffect, useState, useCallback } from 'react'
 import { tokenValue } from '../../theming/tokenValue.ts'
 
 // Circular knob — FL-style vertical drag.
-// Drag up = increase, drag down = decrease. Double-click to type a value.
-// Shift = fine adjust (10x slower). Ctrl/Cmd+click = reset to defaultValue.
+// Drag up = increase, drag down = decrease. Shift = fine adjust (10x slower).
+// Ctrl/Cmd+click = reset to defaultValue. Double-click value label to type.
 //
 // Props:
 //   value            current value (required)
@@ -15,6 +15,7 @@ import { tokenValue } from '../../theming/tokenValue.ts'
 //   onCommit         (v) => void  — called on drag-end / blur of text input
 //   size             pixel diameter (default 52)
 //   dragRange        pixels of vertical travel = full min→max sweep (default 180)
+//   color            optional CSS color for value-arc + pointer line; default is --theme-border-focus
 
 export default function Knob({
   value,
@@ -27,6 +28,7 @@ export default function Knob({
   onCommit,
   size = 52,
   dragRange = 180,
+  color,
 }) {
   const canvasRef = useRef(null)
   const dragRef = useRef(null) // { startY, startValue, fine }
@@ -79,8 +81,9 @@ export default function Knob({
     ctx.stroke()
 
     // Value arc
+    const accent = color || tokenValue('--theme-border-focus')
     const valueAngle = startAngle + totalSweep * fraction
-    ctx.strokeStyle = tokenValue('--theme-border-focus')
+    ctx.strokeStyle = accent
     ctx.lineWidth = 2.5
     ctx.beginPath()
     ctx.arc(cx, cy, trackR, startAngle, valueAngle)
@@ -89,7 +92,7 @@ export default function Knob({
     // Pointer line from centre toward current angle
     const px = cx + Math.cos(valueAngle) * knobR
     const py = cy + Math.sin(valueAngle) * knobR
-    ctx.strokeStyle = tokenValue('--theme-border-focus')
+    ctx.strokeStyle = accent
     ctx.lineWidth = 2
     ctx.lineCap = 'round'
     ctx.beginPath()
@@ -97,11 +100,14 @@ export default function Knob({
     ctx.lineTo(px, py)
     ctx.stroke()
     ctx.lineCap = 'butt'
-  }, [size, fraction])
+  }, [size, fraction, color])
 
-  // Drag handling
-  const handleMouseDown = useCallback((e) => {
-    // Ctrl/Cmd + click → reset
+  // Pointer-captured drag — replaces global window mouse listeners.
+  // setPointerCapture ensures pointerup fires even when the pointer leaves the
+  // window, eliminating zombie-drag on missed mouseup.
+  // touch-action: none on the canvas prevents the browser from consuming
+  // touch-pan gestures before pointermove fires.
+  const handlePointerDown = useCallback((e) => {
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault()
       const resetTo = defaultValue != null ? defaultValue : min
@@ -110,39 +116,31 @@ export default function Knob({
       return
     }
     e.preventDefault()
-    dragRef.current = {
-      startY: e.clientY,
-      startValue: clamp(value),
-      fine: e.shiftKey,
-    }
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId)
+    } catch (_) {}
+    dragRef.current = { startY: e.clientY, startValue: clamp(value), fine: e.shiftKey }
     document.body.style.cursor = 'ns-resize'
   }, [value, clamp, defaultValue, min, onLiveChange, onCommit])
 
-  useEffect(() => {
-    const onMove = (e) => {
-      const d = dragRef.current
-      if (!d) return
-      const dy = d.startY - e.clientY
-      const range = max - min
-      const sensitivity = (e.shiftKey || d.fine) ? 10 : 1
-      const delta = (dy / dragRange) * range / sensitivity
-      const next = clamp(d.startValue + delta)
-      liveValueRef.current = next
-      onLiveChange?.(next)
-    }
-    const onUp = () => {
-      if (!dragRef.current) return
-      dragRef.current = null
-      document.body.style.cursor = ''
-      onCommit?.(liveValueRef.current)
-    }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-    return () => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
-    }
-  }, [max, min, dragRange, clamp, onLiveChange, onCommit])
+  const handlePointerMove = useCallback((e) => {
+    const d = dragRef.current
+    if (!d) return
+    const dy = d.startY - e.clientY
+    const range = max - min
+    const sensitivity = (e.shiftKey || d.fine) ? 10 : 1
+    const delta = (dy / dragRange) * range / sensitivity
+    const next = clamp(d.startValue + delta)
+    liveValueRef.current = next
+    onLiveChange?.(next)
+  }, [max, min, dragRange, clamp, onLiveChange])
+
+  const handlePointerUp = useCallback(() => {
+    if (!dragRef.current) return
+    dragRef.current = null
+    document.body.style.cursor = ''
+    onCommit?.(liveValueRef.current)
+  }, [onCommit])
 
   // Keep liveValueRef in sync when value changes externally (e.g. after fetchAll)
   useEffect(() => { liveValueRef.current = value }, [value])
@@ -158,8 +156,10 @@ export default function Knob({
     onCommit?.(next)
   }, [value, clamp, max, min, onLiveChange, onCommit])
 
-  // Double-click to edit
+  // Edit mode — entered only via value label double-click, never the canvas.
+  // Guard against accidental entry during an active drag.
   const handleDoubleClick = useCallback(() => {
+    if (dragRef.current) return
     setEditing(true)
     setEditText(String(Math.round(value)))
   }, [value])
@@ -184,34 +184,45 @@ export default function Knob({
       <div style={{ position: 'relative', width: size, height: size }}>
         <canvas
           ref={canvasRef}
-          onMouseDown={handleMouseDown}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerUp}
           onWheel={handleWheel}
-          onDoubleClick={handleDoubleClick}
-          style={{ cursor: 'ns-resize', display: 'block' }}
+          style={{ cursor: 'ns-resize', display: 'block', touchAction: 'none' }}
+          title="Drag vertical · Shift = fine · Ctrl+click = reset"
         />
       </div>
       {editing ? (
-        <input
-          autoFocus
-          type="number"
-          value={editText}
-          onChange={(e) => setEditText(e.target.value)}
-          onBlur={commitEdit}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') commitEdit()
-            else if (e.key === 'Escape') setEditing(false)
-          }}
-          style={{
-            width: size, fontSize: 10, textAlign: 'center',
-            background: '#0a0a10', color: 'var(--theme-fx-knob-lg-indicator)',
-            border: '1px solid var(--theme-border-focus)', borderRadius: 3,
-            padding: '1px 2px',
-          }}
-        />
+        <>
+          <input
+            autoFocus
+            type="number"
+            value={editText}
+            onChange={(e) => setEditText(e.target.value)}
+            onBlur={commitEdit}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') commitEdit()
+              else if (e.key === 'Escape') setEditing(false)
+            }}
+            style={{
+              width: size, fontSize: 10, textAlign: 'center',
+              background: '#0a0a10', color: 'var(--theme-fx-knob-lg-indicator)',
+              border: '1px solid var(--theme-border-focus)', borderRadius: 3,
+              padding: '1px 2px',
+            }}
+          />
+          <div style={{
+            fontSize: 8, color: 'var(--theme-text-muted)',
+            textAlign: 'center', lineHeight: 1.2, whiteSpace: 'nowrap',
+          }}>
+            ↵ apply · esc cancel
+          </div>
+        </>
       ) : (
         <div
           onDoubleClick={handleDoubleClick}
-          title="Double-click to edit · Drag vertical · Shift = fine · Ctrl+click = reset"
+          title="Double-click to edit"
           style={{
             fontSize: 10, color: '#BBBBCC', minHeight: 12,
             fontVariantNumeric: 'tabular-nums', cursor: 'text',

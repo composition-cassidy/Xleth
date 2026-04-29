@@ -1,7 +1,73 @@
 {
   "appId": "com.xleth.app",
   "productName": "XLETH",
-  "files": ["dist/**/*", "main.js", "preload.js"],
-  "directories": { "output": "release" },
-  "win": { "target": "nsis" }
+  "files": ["dist/**/*", "main.js", "preload.js", "runtimePaths.js", "splash.html", "splash-preload.js"],
+  "directories": {
+    "output": "../dist"
+  },
+  "asar": true,
+  "asarUnpack": ["**/*.node"],
+  "compression": "normal",
+  "extraResources": [
+    {
+      "from": "addon-worker.js",
+      "to": "worker/addon-worker.js"
+    },
+    {
+      "from": "../xlethpopup.png",
+      "to": "xlethpopup.png"
+    },
+    {
+      "from": "../bridge/build/Release",
+      "to": "bridge",
+      "filter": [
+        "xleth_native.node",
+        "*.dll",
+        "xleth-editor-host.exe",
+        "xleth-plugin-scanner.exe"
+      ]
+    },
+    {
+      "from": "../shm_helper/build/Release",
+      "to": "shm_helper",
+      "filter": ["shm_helper.node"]
+    },
+    {
+      "from": "../media",
+      "to": "media",
+      "filter": ["**/*"]
+    },
+    {
+      "from": "../build/engine/XlethEngine_artefacts/Release",
+      "to": "engine",
+      "filter": ["XlethEngine.exe", "*.dll"]
+    },
+    {
+      "from": "../vendor/ffmpeg/bin",
+      "to": "ffmpeg",
+      "filter": ["ffmpeg.exe", "ffprobe.exe"]
+    },
+    {
+      "from": "../vendor/ffmpeg",
+      "to": "ffmpeg",
+      "filter": ["LICENSE", "README.txt"]
+    },
+    {
+      "from": "../vendor/node",
+      "to": "node",
+      "filter": ["node.exe"]
+    }
+  ],
+  "win": {
+    "target": [
+      {
+        "target": "portable",
+        "arch": ["x64"]
+      }
+    ]
+  },
+  "portable": {
+    "artifactName": "Xleth-${version}-portable.${ext}",
+    "unpackDirName": "Xleth-${version}"
+  }
 }

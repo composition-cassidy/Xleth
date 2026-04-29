@@ -762,16 +762,17 @@ void GridCompositor::gridCellToUV(int cellCol, int cellRow, int spanX, int spanY
                                    int gridCols, int gridRows,
                                    float& outX, float& outY, float& outW, float& outH)
 {
-    // Half-grid: an NxM grid has 2N x 2M half-grid positions.
-    // cellCol/cellRow are in half-grid coordinates.
-    // spanX/spanY are in half-grid units (2 = one full cell).
-    const float halfCellW = 1.0f / (gridCols * 2.0f);
-    const float halfCellH = 1.0f / (gridRows * 2.0f);
+    // Fine-grid: an NxM grid has (N*kGridSubUnitsPerColumn) x
+    // (M*kGridSubUnitsPerRow) sub-grid positions. cellCol/cellRow are in
+    // sub-grid coords; spanX/spanY are in sub-grid units (kGridSubUnitsPerColumn
+    // = full column).
+    const float subCellW = 1.0f / (gridCols * static_cast<float>(kGridSubUnitsPerColumn));
+    const float subCellH = 1.0f / (gridRows * static_cast<float>(kGridSubUnitsPerRow));
 
-    outX = cellCol * halfCellW;
-    outY = cellRow * halfCellH;
-    outW = spanX * halfCellW;
-    outH = spanY * halfCellH;
+    outX = cellCol * subCellW;
+    outY = cellRow * subCellH;
+    outW = spanX  * subCellW;
+    outH = spanY  * subCellH;
 }
 
 // ===========================================================================

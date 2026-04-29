@@ -1,18 +1,92 @@
-import { useRef, useEffect, useCallback } from 'react'
+import { useRef, useEffect, useCallback, useMemo } from 'react'
 import { tokenValue } from '../../theming/tokenValue.ts'
 
+// 8-point catmull-rom LFO editor.
+//
+// External shape: backend stores `{t, v}[]` (one cycle, t in [0,1]).
+// Internal shape: 8 control points evenly spaced at t = i/8 for i in 0..7,
+// with periodic boundary (point 7 connects back to point 0).
+//
+// On read: sample the incoming backend curve at t = i/8 to derive the 8 Y
+// values (cheap linear interpolation between the existing points).
+// On commit: rebuild a high-resolution `{t, v}[]` (33 samples + closing point)
+// from the catmull-rom spline so the engine renders the same shape it sees
+// in the editor. This preserves the IPC payload shape — the engine's linear
+// interpolation between control points stays the source of truth at runtime.
+
+const LFO_N = 8
+const LFO_CYCLES = 2
 const HANDLE_R = 4
 const HANDLE_HIT = 10
-const MAX_POINTS = 64
+const COMMIT_SAMPLES = 32
+
+export function backendToY(waveform) {
+  const Y = new Array(LFO_N).fill(0)
+  if (!Array.isArray(waveform) || waveform.length < 2) {
+    for (let i = 0; i < LFO_N; i++) Y[i] = Math.sin((i / LFO_N) * Math.PI * 2)
+    return Y
+  }
+  const sorted = [...waveform].sort((a, b) => a.t - b.t)
+  for (let i = 0; i < LFO_N; i++) {
+    const t = i / LFO_N
+    Y[i] = sampleLinear(sorted, t)
+  }
+  return Y
+}
+
+function sampleLinear(pts, t) {
+  if (pts.length === 0) return 0
+  if (t <= pts[0].t) return pts[0].v
+  if (t >= pts[pts.length - 1].t) return pts[pts.length - 1].v
+  for (let i = 1; i < pts.length; i++) {
+    if (t <= pts[i].t) {
+      const a = pts[i - 1], b = pts[i]
+      const span = b.t - a.t
+      const frac = span > 0 ? (t - a.t) / span : 0
+      return a.v + (b.v - a.v) * frac
+    }
+  }
+  return pts[pts.length - 1].v
+}
+
+function crom(p0, p1, p2, p3, t) {
+  const t2 = t * t, t3 = t2 * t
+  return 0.5 * ((2 * p1) + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (-p0 + 3 * p1 - 3 * p2 + p3) * t3)
+}
+
+function lfoSample(Y, t) {
+  const N = Y.length
+  const i = Math.floor(t)
+  const f = t - i
+  return crom(Y[((i - 1) % N + N) % N], Y[i % N], Y[(i + 1) % N], Y[(i + 2) % N], f)
+}
+
+export function yToBackend(Y) {
+  const out = []
+  for (let i = 0; i < COMMIT_SAMPLES; i++) {
+    const t = i / COMMIT_SAMPLES
+    const sampleT = t * LFO_N
+    const v = lfoSample(Y, sampleT)
+    out.push({ t: Number(t.toFixed(4)), v: Number(v.toFixed(4)) })
+  }
+  out.push({ t: 1, v: Number(Y[0].toFixed(4)) })
+  return out
+}
 
 export default function LfoWaveformCanvas({
-  waveform = [], color = tokenValue('--theme-sampler-lfo-color-volume'), width = 200, height = 80,
-  onLiveChange, onCommit,
+  waveform = [],
+  color = tokenValue('--theme-sampler-mod-color-volume'),
+  width = 400,
+  height = 80,
+  onLiveChange,
+  onCommit,
 }) {
   const canvasRef = useRef(null)
-  const dragRef = useRef(null) // { idx, startX, startY }
+  const dragRef = useRef(null)
 
-  // --- Drawing ---
+  const Y = useMemo(() => backendToY(waveform), [waveform])
+  const amp = (height / 2) - 6
+
   const draw = useCallback(() => {
     const c = canvasRef.current
     if (!c) return
@@ -24,184 +98,121 @@ export default function LfoWaveformCanvas({
     const ctx = c.getContext('2d')
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
-    // Background
-    ctx.fillStyle = '#0a0a10'
+    ctx.fillStyle = tokenValue('--theme-sampler-envelope-bg') || tokenValue('--theme-bg-primary')
     ctx.fillRect(0, 0, width, height)
 
-    // Grid: center line
-    ctx.strokeStyle = 'rgba(255,255,255,0.08)'
+    ctx.strokeStyle = tokenValue('--theme-border-subtle')
     ctx.lineWidth = 1
     ctx.beginPath()
-    ctx.moveTo(0, height / 2)
-    ctx.lineTo(width, height / 2)
+    ctx.moveTo(0, height / 2 + 0.5)
+    ctx.lineTo(width, height / 2 + 0.5)
     ctx.stroke()
 
-    // Quarter lines
-    ctx.strokeStyle = 'rgba(255,255,255,0.04)'
+    const cyclePxW = width / LFO_CYCLES
+
     ctx.beginPath()
-    ctx.moveTo(0, height * 0.25)
-    ctx.lineTo(width, height * 0.25)
-    ctx.moveTo(0, height * 0.75)
-    ctx.lineTo(width, height * 0.75)
+    for (let px = 0; px <= width; px++) {
+      const t = (px / width) * LFO_N * LFO_CYCLES
+      const y = lfoSample(Y, t)
+      const cy = height / 2 - y * amp
+      if (px === 0) ctx.moveTo(px, cy)
+      else ctx.lineTo(px, cy)
+    }
+    ctx.lineTo(width, height / 2)
+    ctx.lineTo(0, height / 2)
+    ctx.closePath()
+    const fillColor = color
+    const fr = parseInt(fillColor.slice(1, 3), 16)
+    const fg = parseInt(fillColor.slice(3, 5), 16)
+    const fb = parseInt(fillColor.slice(5, 7), 16)
+    const grad = ctx.createLinearGradient(0, 0, 0, height)
+    grad.addColorStop(0, `rgba(${fr},${fg},${fb},0.18)`)
+    grad.addColorStop(1, `rgba(${fr},${fg},${fb},0.02)`)
+    ctx.fillStyle = grad
+    ctx.fill()
+
+    ctx.beginPath()
+    ctx.strokeStyle = color
+    ctx.lineWidth = 1.5
+    for (let px = 0; px <= width; px++) {
+      const t = (px / width) * LFO_N * LFO_CYCLES
+      const y = lfoSample(Y, t)
+      const cy = height / 2 - y * amp
+      if (px === 0) ctx.moveTo(px, cy)
+      else ctx.lineTo(px, cy)
+    }
     ctx.stroke()
 
-    // Resolve points: use waveform or sine fallback
-    const pts = waveform.length >= 2
-      ? waveform
-      : defaultSine()
+    ctx.strokeStyle = tokenValue('--theme-border-subtle')
+    ctx.lineWidth = 1
+    ctx.setLineDash([2, 2])
+    ctx.beginPath()
+    ctx.moveTo(cyclePxW, 0)
+    ctx.lineTo(cyclePxW, height)
+    ctx.stroke()
+    ctx.setLineDash([])
 
-    // Convert to pixel coords
-    const px = pts.map(p => ({
-      x: p.t * width,
-      y: (1 - (p.v + 1) / 2) * height, // v=-1→bottom, v=1→top
-    }))
-
-    // Filled area
-    if (px.length >= 2) {
+    const cardBg = tokenValue('--theme-bg-elevated')
+    for (let i = 0; i < LFO_N; i++) {
+      const px = (i / LFO_N) * cyclePxW
+      const py = height / 2 - Y[i] * amp
       ctx.beginPath()
-      ctx.moveTo(px[0].x, height / 2)
-      for (const p of px) ctx.lineTo(p.x, p.y)
-      ctx.lineTo(px[px.length - 1].x, height / 2)
-      ctx.closePath()
-      ctx.fillStyle = color + '18'
+      ctx.arc(px, py, HANDLE_R, 0, Math.PI * 2)
+      ctx.fillStyle = cardBg
       ctx.fill()
-
-      // Stroke
-      ctx.beginPath()
-      ctx.moveTo(px[0].x, px[0].y)
-      for (let i = 1; i < px.length; i++) ctx.lineTo(px[i].x, px[i].y)
       ctx.strokeStyle = color
       ctx.lineWidth = 1.5
       ctx.stroke()
     }
-
-    // Handles (only if user has custom waveform)
-    if (waveform.length >= 2) {
-      for (let i = 0; i < px.length; i++) {
-        const isDragging = dragRef.current && dragRef.current.idx === i
-        ctx.beginPath()
-        ctx.arc(px[i].x, px[i].y, isDragging ? HANDLE_R + 1 : HANDLE_R, 0, Math.PI * 2)
-        ctx.fillStyle = isDragging ? tokenValue('--theme-fg-inverse') : color
-        ctx.fill()
-        ctx.strokeStyle = '#0a0a10'
-        ctx.lineWidth = 1
-        ctx.stroke()
-      }
-    }
-  }, [waveform, color, width, height])
+  }, [Y, color, width, height, amp])
 
   useEffect(() => { draw() }, [draw])
 
-  // --- Hit testing ---
-  const canvasPos = useCallback((e) => {
-    const c = canvasRef.current
-    if (!c) return { x: 0, y: 0 }
-    const rect = c.getBoundingClientRect()
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top }
-  }, [])
-
-  const hitHandle = useCallback((px, py) => {
-    if (waveform.length < 2) return -1
-    for (let i = 0; i < waveform.length; i++) {
-      const hx = waveform[i].t * width
-      const hy = (1 - (waveform[i].v + 1) / 2) * height
-      if (Math.hypot(px - hx, py - hy) <= HANDLE_HIT) return i
-    }
-    return -1
-  }, [waveform, width, height])
-
-  // --- Mouse handlers ---
   const onMouseDown = useCallback((e) => {
-    if (e.button === 2) return // right-click handled by context menu
-    const { x, y } = canvasPos(e)
-    const idx = hitHandle(x, y)
-    if (idx >= 0) {
-      // Start drag
-      dragRef.current = { idx }
-      e.preventDefault()
-    } else {
-      // Click empty space → add point
-      if (waveform.length >= MAX_POINTS) return
-      const t = Math.max(0, Math.min(1, x / width))
-      const v = Math.max(-1, Math.min(1, 1 - (y / height) * 2))
-      let pts = waveform.length >= 2 ? [...waveform] : [...defaultSine()]
-      pts.push({ t, v })
-      pts.sort((a, b) => a.t - b.t)
-      onLiveChange?.(pts)
-      onCommit?.(pts)
-    }
-  }, [waveform, canvasPos, hitHandle, width, height, onLiveChange, onCommit])
-
-  const onMouseMove = useCallback((e) => {
-    if (!dragRef.current) return
-    const { x, y } = canvasPos(e)
-    const { idx } = dragRef.current
-    const pts = [...waveform]
-    // Clamp time between neighbors (keep endpoints at 0 and 1)
-    let tMin = 0, tMax = 1
-    if (idx > 0) tMin = pts[idx - 1].t + 0.001
-    if (idx < pts.length - 1) tMax = pts[idx + 1].t - 0.001
-    // First and last points are locked to t=0 and t=1
-    let t = pts[idx].t
-    if (idx > 0 && idx < pts.length - 1) {
-      t = Math.max(tMin, Math.min(tMax, x / width))
-    }
-    const v = Math.max(-1, Math.min(1, 1 - (y / height) * 2))
-    pts[idx] = { t, v }
-    onLiveChange?.(pts)
-  }, [waveform, canvasPos, width, height, onLiveChange])
-
-  const onMouseUp = useCallback(() => {
-    if (dragRef.current) {
-      dragRef.current = null
-      onCommit?.(waveform)
-    }
-  }, [waveform, onCommit])
-
-  // Global mouse move/up during drag
-  useEffect(() => {
-    const move = (e) => onMouseMove(e)
-    const up = () => onMouseUp()
-    window.addEventListener('mousemove', move)
-    window.addEventListener('mouseup', up)
-    return () => {
-      window.removeEventListener('mousemove', move)
-      window.removeEventListener('mouseup', up)
-    }
-  }, [onMouseMove, onMouseUp])
-
-  // Right-click to delete
-  const onContextMenu = useCallback((e) => {
+    const c = canvasRef.current
+    if (!c) return
     e.preventDefault()
-    if (waveform.length <= 2) return // keep at least 2 endpoints
-    const { x, y } = canvasPos(e)
-    const idx = hitHandle(x, y)
-    if (idx < 0) return
-    // Don't delete first or last
-    if (idx === 0 || idx === waveform.length - 1) return
-    const pts = waveform.filter((_, i) => i !== idx)
-    onLiveChange?.(pts)
-    onCommit?.(pts)
-  }, [waveform, canvasPos, hitHandle, onLiveChange, onCommit])
+    const rect = c.getBoundingClientRect()
+    const cyclePxW = width / LFO_CYCLES
+    const mx = (e.clientX - rect.left) * (width / rect.width)
+    const my = (e.clientY - rect.top) * (height / rect.height)
+    let hitIdx = -1
+    for (let i = 0; i < LFO_N; i++) {
+      const px = (i / LFO_N) * cyclePxW
+      const py = height / 2 - Y[i] * amp
+      if (Math.hypot(mx - px, my - py) <= HANDLE_HIT) { hitIdx = i; break }
+    }
+    if (hitIdx < 0) return
+
+    dragRef.current = { idx: hitIdx, Y: [...Y] }
+
+    const onMove = (ev) => {
+      const ds = dragRef.current
+      if (!ds) return
+      const r2 = c.getBoundingClientRect()
+      const my2 = (ev.clientY - r2.top) * (height / r2.height)
+      const newY = Math.max(-1, Math.min(1, -(my2 - height / 2) / amp))
+      const next = [...ds.Y]
+      next[ds.idx] = Number(newY.toFixed(4))
+      ds.Y = next
+      onLiveChange?.(yToBackend(next))
+    }
+    const onUp = () => {
+      const ds = dragRef.current
+      dragRef.current = null
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      if (ds) onCommit?.(yToBackend(ds.Y))
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [Y, amp, height, width, onLiveChange, onCommit])
 
   return (
     <canvas
       ref={canvasRef}
       onMouseDown={onMouseDown}
-      onContextMenu={onContextMenu}
-      style={{
-        borderRadius: 4,
-        border: '1px solid var(--theme-sampler-key-border)',
-        cursor: 'crosshair',
-        display: 'block',
-      }}
+      style={{ display: 'block', cursor: 'crosshair', width: '100%', height }}
     />
   )
-}
-
-function defaultSine(n = 33) {
-  return Array.from({ length: n }, (_, i) => ({
-    t: i / (n - 1),
-    v: Math.sin((i / (n - 1)) * Math.PI * 2),
-  }))
 }

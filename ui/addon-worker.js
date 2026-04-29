@@ -33,13 +33,20 @@ process.on('disconnect', () => {
 // main process / preload opens the same name via shm_helper.node.
 
 const path = require('path');
+const fs = require('fs');
 
 // Prepend DLL directories so FFmpeg/GLEW/etc DLLs are found.
-const dllDir    = path.resolve(__dirname, '../bridge/build/Release');
-const vcpkgBin  = path.resolve(__dirname, '../build/vcpkg_installed/x64-windows/bin');
-process.env.PATH = dllDir + ';' + vcpkgBin + ';' + process.env.PATH;
+const dllDir = process.env.XLETH_BRIDGE_DIR;
+if (!dllDir) {
+  throw new Error('XLETH_BRIDGE_DIR is required; launch addon-worker.js through ui/main.js');
+}
+const ffmpegDir = process.env.XLETH_FFMPEG_DIR;
+const pathEntries = [dllDir];
+if (ffmpegDir && fs.existsSync(ffmpegDir)) pathEntries.push(ffmpegDir);
+if (process.env.PATH) pathEntries.push(process.env.PATH);
+process.env.PATH = pathEntries.join(path.delimiter);
 
-const addonPath = path.resolve(__dirname, '../bridge/build/Release/xleth_native.node');
+const addonPath = path.join(dllDir, 'xleth_native.node');
 const xleth = require(addonPath);
 
 // Listen for messages from the main process via IPC (child_process.fork)
@@ -67,6 +74,19 @@ process.on('message', ({ id, method, args }) => {
       process.send({ id, result: { width: 0, height: 0 } });
       return;
     }
+
+    // midi_importFull returns { metadata: string, noteData: ArrayBuffer }.
+    // ArrayBuffer can't cross the process IPC boundary — convert to Buffer.
+    if (method === 'midi_importFull' && result && result.noteData instanceof ArrayBuffer) {
+      process.send({ id, result: { metadata: result.metadata, noteData: Buffer.from(result.noteData) } });
+      return;
+    }
+
+    // midi_executeImport: noteData arrives as a real Buffer because preload.js
+    // converts ArrayBuffer/TypedArray to Buffer and the fork uses
+    // serialization:'advanced' which preserves Buffer identity across IPC.
+    // The addon's IsBuffer check (XlethAddon.cpp) accepts it directly.
+    // Return value is undefined → becomes null on the wire below.
 
     // getFrameBuffer returns ArrayBuffer which can't cross process boundary.
     // Convert to a Buffer copy + metadata for IPC.

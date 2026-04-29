@@ -178,7 +178,9 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
     if (layout.chorusTrackId >= 0) {
         const VideoEvent* ev = findActiveEvent(events, timeline, layout.chorusTrackId, beatPos);
         if (buildRequest(ev, layout.chorusTrackId,
-                          0, 0, layout.columns * 2, layout.rows * 2,
+                          0, 0,
+                          layout.columns * kGridSubUnitsPerColumn,
+                          layout.rows    * kGridSubUnitsPerRow,
                           1.0f, -1, /*isChorus=*/true, false)) {
             // Active chorus — save frame for hold-through-gap
             const auto& chorusReq = requests.back();
@@ -195,8 +197,8 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
                 CellFrameRequest req;
                 req.cellCol          = 0;
                 req.cellRow          = 0;
-                req.spanX            = layout.columns * 2;
-                req.spanY            = layout.rows * 2;
+                req.spanX            = layout.columns * kGridSubUnitsPerColumn;
+                req.spanY            = layout.rows    * kGridSubUnitsPerRow;
                 req.sourcePath       = lastChorusSourcePath_;
                 req.sourceFrameIndex = lastChorusSourceFrame_;
                 req.opacity          = 1.0f;
@@ -236,7 +238,9 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
     if (layout.crashEnabled && layout.crashTrackId >= 0) {
         const VideoEvent* ev = findActiveEvent(events, timeline, layout.crashTrackId, beatPos);
         if (!buildRequest(ev, layout.crashTrackId,
-                          0, 0, layout.columns * 2, layout.rows * 2,
+                          0, 0,
+                          layout.columns * kGridSubUnitsPerColumn,
+                          layout.rows    * kGridSubUnitsPerRow,
                           layout.crashOpacity, 999, false, /*isCrash=*/true)) {
             ++gapsSkipped;
         }

@@ -1,7 +1,9 @@
 import React from 'react';
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
+import { useDockRegionResizePreview } from '../managers/DockRegionResizeManager';
 import { PANEL_CATALOG, PANEL_IDS, type PanelId } from '../registry/panelCatalog';
 import { usePanelRegistry, type DockRegion as DockRegionSide } from '../registry/PanelRegistry';
+import { DockRegionResizer } from './DockRegionResizer';
 import { PanelFrame } from './PanelFrame';
 
 export interface DockRegionProps {
@@ -19,9 +21,12 @@ function DockTestBody({ label }: { label: string }) {
 
 export function DockRegion({ side, renderPanel }: DockRegionProps) {
   const reactivePanels = usePanelRegistry((state) => state.panels);
-  const panels = typeof window === 'undefined'
-    ? usePanelRegistry.getState().panels
-    : reactivePanels;
+  const reactiveSize = usePanelRegistry((state) => state.dockRegionSizes[side]);
+  const isSSR = typeof window === 'undefined';
+  const panels = isSSR ? usePanelRegistry.getState().panels : reactivePanels;
+  const committedSize = isSSR ? usePanelRegistry.getState().dockRegionSizes[side] : reactiveSize;
+  const preview = useDockRegionResizePreview(side);
+  const effectiveSize = preview?.size ?? committedSize;
 
   const docked = PANEL_IDS
     .filter((id) => !panels[id].hidden && panels[id].mode === 'docked' && panels[id].docked.region === side)
@@ -29,10 +34,15 @@ export function DockRegion({ side, renderPanel }: DockRegionProps) {
 
   if (docked.length === 0) return null;
 
+  const sizeStyle: CSSProperties = (side === 'left' || side === 'right')
+    ? { width: `${effectiveSize}px` }
+    : { height: `${effectiveSize}px` };
+
   return (
     <div
       className={`xleth-dock-region xleth-dock-region--${side}`}
       data-region={side}
+      style={sizeStyle}
     >
       {docked.map((id: PanelId) => (
         renderPanel ? (
@@ -43,6 +53,7 @@ export function DockRegion({ side, renderPanel }: DockRegionProps) {
           </PanelFrame>
         )
       ))}
+      <DockRegionResizer region={side} currentSize={committedSize} />
     </div>
   );
 }

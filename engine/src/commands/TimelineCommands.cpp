@@ -168,6 +168,47 @@ std::string ResizeClipLeftCommand::describe() const {
          + "→" + std::to_string(newDuration_.ticks) + ")";
 }
 
+// ─── SpliceClipsCommand ───────────────────────────────────────────────────────
+
+SpliceClipsCommand::SpliceClipsCommand(std::vector<Entry> entries,
+                                       std::vector<std::pair<int,int>>* outIds)
+    : entries_(std::move(entries)), outIds_(outIds)
+{}
+
+void SpliceClipsCommand::execute(Timeline& timeline) {
+    for (auto& e : entries_) {
+        timeline.removeClip(e.original.id);
+        if (firstExecute_) {
+            int lid = timeline.addClip(e.left);
+            int rid = timeline.addClip(e.right);
+            e.left.id  = lid;
+            e.right.id = rid;
+        } else {
+            // Redo: restore with the IDs assigned on first execute
+            timeline.restoreClip(e.left);
+            timeline.restoreClip(e.right);
+        }
+    }
+    if (firstExecute_ && outIds_) {
+        outIds_->clear();
+        for (const auto& e : entries_)
+            outIds_->emplace_back(e.left.id, e.right.id);
+    }
+    firstExecute_ = false;
+}
+
+void SpliceClipsCommand::undo(Timeline& timeline) {
+    for (auto& e : entries_) {
+        timeline.removeClip(e.left.id);
+        timeline.removeClip(e.right.id);
+        timeline.restoreClip(e.original);
+    }
+}
+
+std::string SpliceClipsCommand::describe() const {
+    return "Split " + std::to_string(entries_.size()) + " clip(s)";
+}
+
 // ─── StretchClipCommand ───────────────────────────────────────────────────────
 
 StretchClipCommand::StretchClipCommand(int clipId, TickTime newDuration,
@@ -309,14 +350,24 @@ PitchShiftClipCommand::PitchShiftClipCommand(int clipId, int newSemis, int newCe
 }
 
 void PitchShiftClipCommand::execute(Timeline& timeline) {
+    fprintf(stderr, "[PITCHDBG] PitchShiftClip execute: clip=%d %dst+%dc → %dst+%dc\n",
+            clipId_, oldSemis_, oldCents_, newSemis_, newCents_);
+    fflush(stderr);
 #ifdef XLETH_DEBUG
     fprintf(stderr, "[PitchCmd] execute: clip=%d pitch=%dst+%dc → %dst+%dc\n",
             clipId_, oldSemis_, oldCents_, newSemis_, newCents_);
 #endif
     Clip* c = timeline.getClipMutable(clipId_);
-    if (!c) return;
+    if (!c) {
+        fprintf(stderr, "[PITCHDBG] PitchShiftClip execute: clip=%d NOT FOUND in timeline\n", clipId_);
+        fflush(stderr);
+        return;
+    }
     c->pitchOffset      = newSemis_;
     c->pitchOffsetCents = newCents_;
+    fprintf(stderr, "[PITCHDBG] PitchShiftClip execute DONE: clip=%d pitchSemi=%d cents=%d\n",
+            clipId_, c->pitchOffset, c->pitchOffsetCents);
+    fflush(stderr);
 }
 
 void PitchShiftClipCommand::undo(Timeline& timeline) {
@@ -700,14 +751,37 @@ std::string RemoveRegionCommand::describe() const {
 // ─── SetBPMCommand ────────────────────────────────────────────────────────────
 
 SetBPMCommand::SetBPMCommand(double newBpm, const Timeline& timeline)
-    : oldBpm_(timeline.getBPM()), newBpm_(newBpm) {}
+    : oldBpm_(timeline.getBPM()), newBpm_(newBpm)
+{
+    // Snapshot stretchRatios for stretched clips when tempo-lock is on, so undo
+    // restores exact values without floating-point drift from repeated BPM changes.
+    if (timeline.getTempoLocked()) {
+        for (const Clip* c : timeline.getAllClips()) {
+            if (c && c->stretchRatio != 1.0)
+                savedStretchRatios_[c->id] = c->stretchRatio;
+        }
+    }
+}
 
 void SetBPMCommand::execute(Timeline& timeline) {
     timeline.setBPM(newBpm_);
+    // When tempo-lock is on, scale stretchRatio for all stretched clips so
+    // srcReadDesired = durSamp/stretchRatio stays constant — the same source
+    // audio content is consumed at the new tempo regardless of clip label.
+    // new_stretchRatio = (oldBpm/newBpm) × old_stretchRatio
+    const double scale = oldBpm_ / newBpm_;
+    for (const auto& [clipId, oldRatio] : savedStretchRatios_) {
+        Clip* c = timeline.getClipMutable(clipId);
+        if (c) c->stretchRatio = oldRatio * scale;
+    }
 }
 
 void SetBPMCommand::undo(Timeline& timeline) {
     timeline.setBPM(oldBpm_);
+    for (const auto& [clipId, oldRatio] : savedStretchRatios_) {
+        Clip* c = timeline.getClipMutable(clipId);
+        if (c) c->stretchRatio = oldRatio;
+    }
 }
 
 std::string SetBPMCommand::describe() const {
@@ -736,6 +810,38 @@ void SetTrackMutedCommand::undo(Timeline& timeline) {
 
 std::string SetTrackMutedCommand::describe() const {
     return std::string(newMuted_ ? "Mute" : "Unmute") + " Track " + std::to_string(trackId_);
+}
+
+// ─── SetTrackVisualOnlyCommand ────────────────────────────────────────────────
+
+SetTrackVisualOnlyCommand::SetTrackVisualOnlyCommand(int trackId, bool newVisualOnly, const Timeline& timeline)
+    : trackId_(trackId), newVisualOnly_(newVisualOnly)
+{
+    const TrackInfo* t = timeline.getTrack(trackId);
+    oldVisualOnly_ = t ? t->visualOnly : false;
+}
+
+void SetTrackVisualOnlyCommand::execute(Timeline& timeline) {
+#ifdef XLETH_DEBUG
+    fprintf(stderr, "[VisualOnly] Track %d visualOnly = %s\n",
+            trackId_, newVisualOnly_ ? "true" : "false");
+#endif
+    if (TrackInfo* t = timeline.getTrackMutable(trackId_))
+        t->visualOnly = newVisualOnly_;
+}
+
+void SetTrackVisualOnlyCommand::undo(Timeline& timeline) {
+#ifdef XLETH_DEBUG
+    fprintf(stderr, "[VisualOnly] Track %d visualOnly = %s (undo)\n",
+            trackId_, oldVisualOnly_ ? "true" : "false");
+#endif
+    if (TrackInfo* t = timeline.getTrackMutable(trackId_))
+        t->visualOnly = oldVisualOnly_;
+}
+
+std::string SetTrackVisualOnlyCommand::describe() const {
+    return std::string(newVisualOnly_ ? "Set Visual-Only" : "Clear Visual-Only")
+           + " Track " + std::to_string(trackId_);
 }
 
 // ─── SetTrackSoloCommand ──────────────────────────────────────────────────────
@@ -864,8 +970,28 @@ AssignTrackToGridCommand::AssignTrackToGridCommand(int trackId, int gridX, int g
     }
 }
 
+AssignTrackToGridCommand::AssignTrackToGridCommand(int trackId, int gridX, int gridY,
+                                                   int spanX, int spanY, int zOrder,
+                                                   const Timeline& timeline)
+    : trackId_(trackId), gridX_(gridX), gridY_(gridY), spanX_(spanX), spanY_(spanY),
+      hasZOrder_(true), zOrder_(zOrder)
+{
+    for (const auto& s : timeline.getGridLayout().slots) {
+        if (s.trackId == trackId) {
+            hadPrevious_ = true;
+            prevSlot_    = s;
+            break;
+        }
+    }
+}
+
 void AssignTrackToGridCommand::execute(Timeline& timeline) {
-    timeline.assignTrackToGrid(trackId_, gridX_, gridY_, spanX_, spanY_);
+    if (hasZOrder_) {
+        timeline.assignTrackToGridWithZOrder(trackId_, gridX_, gridY_,
+                                             spanX_, spanY_, zOrder_);
+    } else {
+        timeline.assignTrackToGrid(trackId_, gridX_, gridY_, spanX_, spanY_);
+    }
 }
 
 void AssignTrackToGridCommand::undo(Timeline& timeline) {
@@ -1079,7 +1205,7 @@ SetSamplerSettingsCommand::SetSamplerSettingsCommand(int regionId,
         oldSettings_.crossfadeEnabled = r->crossfadeEnabled;
         oldSettings_.smpStart         = r->smpStart;
         oldSettings_.smpLength        = r->smpLength;
-        oldSettings_.declickSamples   = r->declickSamples;
+        oldSettings_.declickMs         = r->declickMs;
         oldSettings_.fadeInMs         = r->fadeInMs;
         oldSettings_.fadeOutMs        = r->fadeOutMs;
         oldSettings_.crossfadeSamples = r->crossfadeSamples;
@@ -1156,7 +1282,7 @@ static void applySamplerSettings(SampleRegion* r, const SamplerSettings& s) {
     r->crossfadeEnabled = s.crossfadeEnabled;
     r->smpStart         = s.smpStart;
     r->smpLength        = s.smpLength;
-    r->declickSamples   = s.declickSamples;
+    r->declickMs         = s.declickMs;
     r->fadeInMs         = s.fadeInMs;
     r->fadeOutMs        = s.fadeOutMs;
     r->crossfadeSamples = s.crossfadeSamples;
@@ -1533,6 +1659,50 @@ std::string MoveNotesBatchCommand::describe() const {
          + " (pattern=" + std::to_string(patternId_) + ")";
 }
 
+// ─── ResizeNotesBatchCommand ──────────────────────────────────────────────────
+
+ResizeNotesBatchCommand::ResizeNotesBatchCommand(int patternId, std::vector<Resize> resizes,
+                                                 const Timeline& timeline)
+    : patternId_(patternId)
+{
+    const Pattern* p = timeline.getPattern(patternId);
+    if (!p) {
+        std::cerr << "[Undo] ERROR ResizeNotesBatchCommand: patternId=" << patternId
+                  << " not found\n";
+        return;
+    }
+    snapshots_.reserve(resizes.size());
+    for (const auto& r : resizes) {
+        bool found = false;
+        for (const auto& n : p->notes) {
+            if (n.id == r.noteId) {
+                snapshots_.push_back({ r.noteId, n.duration, r.newDuration });
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            std::cerr << "[Undo] ERROR ResizeNotesBatchCommand: noteId=" << r.noteId
+                      << " not found in pattern=" << patternId << "\n";
+        }
+    }
+}
+
+void ResizeNotesBatchCommand::execute(Timeline& timeline) {
+    for (const auto& s : snapshots_)
+        timeline.resizeNote(patternId_, s.noteId, s.newDuration);
+}
+
+void ResizeNotesBatchCommand::undo(Timeline& timeline) {
+    for (const auto& s : snapshots_)
+        timeline.resizeNote(patternId_, s.noteId, s.oldDuration);
+}
+
+std::string ResizeNotesBatchCommand::describe() const {
+    return "Resize " + std::to_string(snapshots_.size()) + " Notes"
+         + " (pattern=" + std::to_string(patternId_) + ")";
+}
+
 // ─── ResizeNoteCommand ────────────────────────────────────────────────────────
 
 ResizeNoteCommand::ResizeNoteCommand(int patternId, int noteId, TickTime newDuration,
@@ -1735,6 +1905,29 @@ std::string SetTrackGapScaleOverrideCommand::describe() const {
          + ") → " + std::to_string(newGapScale_);
 }
 
+// ─── SetTrackSubdivisionFactorCommand ────────────────────────────────────────
+
+SetTrackSubdivisionFactorCommand::SetTrackSubdivisionFactorCommand(
+    int trackId, int newFactor, const Timeline& timeline)
+    : trackId_(trackId), newFactor_(newFactor)
+{
+    const TrackInfo* t = timeline.getTrack(trackId);
+    oldFactor_ = t ? t->subdivisionFactor : 1;
+}
+
+void SetTrackSubdivisionFactorCommand::execute(Timeline& timeline) {
+    timeline.setTrackSubdivisionFactor(trackId_, newFactor_);
+}
+
+void SetTrackSubdivisionFactorCommand::undo(Timeline& timeline) {
+    timeline.setTrackSubdivisionFactor(trackId_, oldFactor_);
+}
+
+std::string SetTrackSubdivisionFactorCommand::describe() const {
+    return "Set Subdivision Factor (track=" + std::to_string(trackId_)
+         + ") → " + std::to_string(newFactor_) + "x";
+}
+
 // ─── SetTrackBounceSettingsCommand ───────────────────────────────────────────
 
 SetTrackBounceSettingsCommand::SetTrackBounceSettingsCommand(
@@ -1921,6 +2114,27 @@ std::string ReorderVisualEffectCommand::describe() const {
     return "Reorder Visual Effect (track=" + std::to_string(trackId_)
            + " from=" + std::to_string(fromIndex_)
            + " to=" + std::to_string(toIndex_) + ")";
+}
+
+// ─── SetTrackVfxChainOrderCommand ─────────────────────────────────────────────
+
+SetTrackVfxChainOrderCommand::SetTrackVfxChainOrderCommand(
+    int trackId, const std::vector<int>& newOrder, const Timeline&)
+    : trackId_(trackId), newOrder_(newOrder) {}
+
+void SetTrackVfxChainOrderCommand::execute(Timeline& timeline) {
+    timeline.setTrackVisualEffectChainOrder(trackId_, newOrder_);
+}
+
+void SetTrackVfxChainOrderCommand::undo(Timeline& timeline) {
+    int n = static_cast<int>(newOrder_.size());
+    std::vector<int> inv(n);
+    for (int i = 0; i < n; ++i) inv[newOrder_[i]] = i;
+    timeline.setTrackVisualEffectChainOrder(trackId_, inv);
+}
+
+std::string SetTrackVfxChainOrderCommand::describe() const {
+    return "Set Visual Effect Chain Order (track=" + std::to_string(trackId_) + ")";
 }
 
 // ─── SetVisualEffectParamCommand ──────────────────────────────────────────────

@@ -1,3 +1,13 @@
+/* z-index ladder for the windowing system:
+ *   floating-work-area:        no z-index (creates stacking context via position: relative)
+ *   floating panel frame:      panel.zIndex (dynamic, focus-rotated by focusInPanelMap)
+ *   floating resize handle:    z-index 2 (inside frame's stacking context)
+ *   dock region:               no z-index (flow positioned)
+ *   dock region resizer:       z-index 1 (inside region's stacking context via position: relative)
+ *   maximized panel:           inset: 0 (top-level overlay; no z-index needed)
+ *   snap ghost:                z-index 9999 (inline, in floating-work-area)
+ */
+
 .xleth-windowing-shell {
   display: flex;
   flex-direction: row;
@@ -28,6 +38,7 @@
 }
 
 .xleth-dock-region {
+  position: relative;
   display: flex;
   overflow: hidden;
   background: var(--theme-bg-surface, transparent);
@@ -47,6 +58,23 @@
   min-width: 0;
 }
 
+.xleth-dock-region-resizer {
+  position: absolute;
+  z-index: 1;
+  background: transparent;
+  transition: background 120ms ease;
+}
+
+.xleth-dock-region-resizer--left   { top: 0; bottom: 0; right: 0; width:  8px; cursor: ew-resize; }
+.xleth-dock-region-resizer--right  { top: 0; bottom: 0; left:  0; width:  8px; cursor: ew-resize; }
+.xleth-dock-region-resizer--top    { left: 0; right: 0; bottom: 0; height: 8px; cursor: ns-resize; }
+.xleth-dock-region-resizer--bottom { left: 0; right: 0; top:    0; height: 8px; cursor: ns-resize; }
+
+.xleth-dock-region-resizer:hover,
+.xleth-dock-region-resizer[data-active="true"] {
+  background: color-mix(in srgb, var(--theme-accent) 28%, transparent);
+}
+
 .xleth-panel-frame {
   position: absolute;
   display: flex;
@@ -62,6 +90,10 @@
 
 .xleth-panel-frame.is-focused {
   border-color: var(--theme-border-focus);
+}
+
+.xleth-panel-frame:focus {
+  outline: none;
 }
 
 .xleth-panel-frame.is-docked {
@@ -193,6 +225,8 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
   background: var(--theme-bg-primary);
   color: var(--theme-text);
 }
@@ -207,7 +241,7 @@
   top: -2px;
   left: 8px;
   right: 8px;
-  height: 4px;
+  height: 8px;
   cursor: ns-resize;
 }
 
@@ -215,7 +249,7 @@
   bottom: -2px;
   left: 8px;
   right: 8px;
-  height: 4px;
+  height: 8px;
   cursor: ns-resize;
 }
 
@@ -223,7 +257,7 @@
   top: 8px;
   right: -2px;
   bottom: 8px;
-  width: 4px;
+  width: 8px;
   cursor: ew-resize;
 }
 
@@ -231,7 +265,7 @@
   top: 8px;
   left: -2px;
   bottom: 8px;
-  width: 4px;
+  width: 8px;
   cursor: ew-resize;
 }
 
@@ -315,6 +349,20 @@
   border-bottom: 1px solid var(--theme-border-subtle);
 }
 
+.xleth-top-bar-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.xleth-top-bar-separator {
+  width: 1px;
+  height: 20px;
+  margin: 0 4px;
+  background: var(--theme-border-subtle);
+}
+
 .xleth-top-bar-toggle-btn {
   display: inline-flex;
   align-items: center;
@@ -350,4 +398,65 @@
 .xleth-top-bar-toggle-btn svg {
   width: 16px;
   height: 16px;
+}
+
+.xleth-top-bar-preset-btn,
+.xleth-top-bar-dock-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: var(--theme-chrome-radius-sm);
+  background: none;
+  color: var(--theme-text-muted);
+  cursor: pointer;
+}
+
+.xleth-top-bar-preset-btn {
+  gap: 4px;
+  min-width: 34px;
+  padding: 0 7px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.xleth-top-bar-dock-btn {
+  width: 28px;
+}
+
+.xleth-top-bar-preset-btn:hover,
+.xleth-top-bar-dock-btn:hover {
+  background: var(--theme-bg-hover);
+}
+
+.xleth-top-bar-preset-btn[data-active="true"],
+.xleth-top-bar-dock-btn[data-active="true"] {
+  color: var(--theme-accent);
+  border-bottom-color: var(--theme-accent);
+}
+
+.xleth-top-bar-dock-btn:disabled {
+  cursor: default;
+  opacity: 0.38;
+}
+
+.xleth-top-bar-dock-btn:disabled:hover {
+  background: none;
+}
+
+.xleth-top-bar-preset-btn:focus-visible,
+.xleth-top-bar-dock-btn:focus-visible {
+  outline: 1px solid var(--theme-border-focus);
+  outline-offset: 0;
+}
+
+.xleth-top-bar-preset-btn svg,
+.xleth-top-bar-dock-btn svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
 }
