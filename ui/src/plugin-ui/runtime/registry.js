@@ -14,20 +14,32 @@ import MeterNode   from './components/MeterNode.jsx'
 import VisualizerNode from './components/VisualizerNode.jsx'
 import LabelNode   from './components/LabelNode.jsx'
 import SpacerNode  from './components/SpacerNode.jsx'
+// Freeform-A additions:
+import FreeformLayerNode from './components/FreeformLayerNode.jsx'
+import DecorTextNode     from './components/DecorTextNode.jsx'
+import DecorLineNode     from './components/DecorLineNode.jsx'
+import DecorShapeNode    from './components/DecorShapeNode.jsx'
+import DecalNode         from './components/DecalNode.jsx'
 
 export const COMPONENT_REGISTRY = {
-  panel:      Panel,
-  group:      Group,
-  row:        Row,
-  column:     Column,
-  tabGroup:   TabGroup,
-  knob:       KnobNode,
-  toggle:     ToggleNode,
-  button:     ButtonNode,
-  meter:      MeterNode,
-  visualizer: VisualizerNode,
-  label:      LabelNode,
-  spacer:     SpacerNode,
+  panel:         Panel,
+  group:         Group,
+  row:           Row,
+  column:        Column,
+  tabGroup:      TabGroup,
+  knob:          KnobNode,
+  toggle:        ToggleNode,
+  button:        ButtonNode,
+  meter:         MeterNode,
+  visualizer:    VisualizerNode,
+  label:         LabelNode,
+  spacer:        SpacerNode,
+  // Freeform-A:
+  freeformLayer: FreeformLayerNode,
+  decorText:     DecorTextNode,
+  decorLine:     DecorLineNode,
+  decorShape:    DecorShapeNode,
+  decal:         DecalNode,
 }
 
 export function resolveComponent(type) {

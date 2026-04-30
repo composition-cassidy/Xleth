@@ -7,6 +7,13 @@
       "runtimeArgs": ["vite", "--port", "5174", "--strictPort"],
       "port": 5174,
       "cwd": "ui"
+    },
+    {
+      "name": "vite-designer",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "set VITE_XLETH_PLUGIN_UI_DESIGNER=1 && npx vite --port 5174 --strictPort --force"],
+      "port": 5174,
+      "cwd": "ui"
     }
   ]
 }

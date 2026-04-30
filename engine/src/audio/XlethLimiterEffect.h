@@ -1,9 +1,15 @@
 #pragma once
 
 #include "audio/XlethEffectBase.h"
+#include "audio/viz/DynamicsVizCollector.h"
+#include "audio/viz/DynamicsVizFrame.h"
 
 #include <juce_dsp/juce_dsp.h>
 #include <array>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
 #include <vector>
 #include <cmath>
 
@@ -48,6 +54,17 @@ public:
     void releaseEffect() override;
     void processEffect(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi) override;
 
+    // ── Visualization (XlethEffectBase overrides) ────────────────────────────
+    // Lifetime model mirrors XlethCompressorEffect: collector is allocated on
+    // first enable, vizActive_ atomic publishes/un-publishes it for the audio
+    // thread, the collector itself is retained until the effect is destroyed.
+    void          setVisualizationEnabled(bool enabled) override;
+    std::uint32_t getVisualizationType()          const override
+        { return xleth::viz::kVizTypeLimiter; }
+    std::uint32_t getVisualizationSchemaVersion() const override
+        { return xleth::viz::kDynamicsVizSchemaVersion; }
+    std::size_t   drainVizFrames(std::uint8_t* out, std::size_t maxBytes) override;
+
 private:
     // ── DSP objects ───────────────────────────────────────────────────────────
     juce::dsp::Oversampling<float> oversampler_;   // 2ch, 2-stage (4×), FIR equiripple
@@ -79,10 +96,49 @@ private:
     // ── Debug ─────────────────────────────────────────────────────────────────
     int blockCounter_ = 0;
 
+    // ── Visualization ─────────────────────────────────────────────────────────
+    // Lazy collector: allocated on first setVisualizationEnabled(true), then
+    // re-used on subsequent enables. vizActive_ is the atomic the audio thread
+    // reads once per block — null when the editor is closed (zero overhead).
+    std::unique_ptr<xleth::viz::DynamicsVizCollector<xleth::viz::LimiterBucket>>
+        vizCollector_;
+    std::atomic<xleth::viz::DynamicsVizCollector<xleth::viz::LimiterBucket>*>
+        vizActive_{nullptr};
+    xleth::viz::LimiterBucketAccumulator vizAccum_;
+    std::uint64_t vizSampleClock_ = 0;
+
     // ── Helpers ───────────────────────────────────────────────────────────────
     void computeKWeightingCoeffs(double sr);
     void updateLookahead(int styleIdx, double sr);
 };
+
+// ── setVisualizationEnabled ─────────────────────────────────────────────────
+inline void XlethLimiterEffect::setVisualizationEnabled(bool enabled)
+{
+    if (enabled)
+    {
+        if (!vizCollector_)
+        {
+            vizCollector_ = std::make_unique<
+                xleth::viz::DynamicsVizCollector<xleth::viz::LimiterBucket>>(
+                    xleth::viz::kDynamicsVizBucketSize,
+                    xleth::viz::kDynamicsVizRingDepth,
+                    xleth::viz::kVizTypeLimiter);
+        }
+        vizActive_.store(vizCollector_.get(), std::memory_order_release);
+    }
+    else
+    {
+        vizActive_.store(nullptr, std::memory_order_release);
+    }
+}
+
+// ── drainVizFrames ──────────────────────────────────────────────────────────
+inline std::size_t XlethLimiterEffect::drainVizFrames(std::uint8_t* out, std::size_t maxBytes)
+{
+    if (!vizCollector_) return 0;
+    return vizCollector_->drain(out, maxBytes);
+}
 
 // ── createLayout ─────────────────────────────────────────────────────────────
 
@@ -228,6 +284,10 @@ inline void XlethLimiterEffect::prepareEffect(double sampleRate, int maxBlockSiz
     prevGRstate_  = 1.0f;
     kweightState_ = {};
     blockCounter_ = 0;
+
+    // Visualization state
+    vizSampleClock_ = 0;
+    vizAccum_.reset();
 }
 
 // ── resetEffect ───────────────────────────────────────────────────────────────
@@ -246,6 +306,9 @@ inline void XlethLimiterEffect::resetEffect()
 
     kweightState_ = {};
     blockCounter_ = 0;
+
+    vizSampleClock_ = 0;
+    vizAccum_.reset();
 }
 
 // ── releaseEffect ─────────────────────────────────────────────────────────────
@@ -379,12 +442,55 @@ inline void XlethLimiterEffect::processEffect(juce::AudioBuffer<float>& buffer,
         }
     }
 
-    // ── H: Output peak meters ─────────────────────────────────────────────────
+    // ── H: Output peak meters + visualization observation ────────────────────
+    // Visualization is opt-in per instance; one acquire-load per block. When
+    // disabled, the hot loop pays only a null-check.
+    auto* vizCol = vizActive_.load(std::memory_order_acquire);
+
+    const float* detL = detectionBuffer_.getReadPointer(0);
+    const float* detR = (detectionBuffer_.getNumChannels() > 1)
+                      ? detectionBuffer_.getReadPointer(1)
+                      : detL;
+
     for (int i = 0; i < numSamples; ++i)
     {
-        peakL = juce::jmax(peakL, std::abs(buffer.getSample(0, i)));
+        const float outLs = buffer.getSample(0, i);
+        const float outRs = (numChannels > 1) ? buffer.getSample(1, i) : outLs;
+        const float absOL = std::abs(outLs);
+        const float absOR = std::abs(outRs);
+        peakL = juce::jmax(peakL, absOL);
         if (numChannels > 1)
-            peakR = juce::jmax(peakR, std::abs(buffer.getSample(1, i)));
+            peakR = juce::jmax(peakR, absOR);
+
+        if (vizCol)
+        {
+            // Pre-limit gained input (stereo-linked max abs)
+            const float absInL = std::abs(detL[i]);
+            const float absInR = std::abs(detR[i]);
+            const float vizAbsIn  = juce::jmax(absInL, absInR);
+            const float vizAbsOut = juce::jmax(absOL,  absOR);
+
+            // Per-sample GR converted to positive dB.
+            const float gr   = gainReductionBuf_[i];
+            const float grDbS = (gr > 1e-10f) ? (-20.0f * std::log10(gr)) : 40.0f;
+
+            // Cheap mean-square contribution (stereo-summed).
+            const float msIn  = 0.5f * (absInL * absInL + absInR * absInR);
+            const float msOut = 0.5f * (absOL  * absOL  + absOR  * absOR);
+
+            const float ceilingDbS = juce::Decibels::gainToDecibels(ceilingLin[i]);
+            const float gainDbS    = juce::Decibels::gainToDecibels(gainLin[i]);
+            const float releaseMsS = releaseMs[i];
+
+            vizAccum_.observe(vizAbsIn, vizAbsOut, msIn, msOut, grDbS,
+                              ceilingDbS, gainDbS, releaseMsS);
+            ++vizSampleClock_;
+            vizAccum_.advance(vizSampleClock_, *vizCol);
+        }
+        else
+        {
+            ++vizSampleClock_;
+        }
     }
     writeMeterValue(0, peakL);
     writeMeterValue(1, peakR);

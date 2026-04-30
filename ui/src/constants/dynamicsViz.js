@@ -12,10 +12,12 @@
 export const DYNAMICS_VIZ_SCHEMA_VERSION = 1
 
 // Type-tag strings (must match the strings the bridge emits in the drain
-// response: "compressor" → kVizTypeCompressor, "unknown" → kVizTypeUnknown).
+// response: "compressor" → kVizTypeCompressor, "limiter" → kVizTypeLimiter,
+// "unknown" → kVizTypeUnknown).
 export const VIZ_TYPE = Object.freeze({
   UNKNOWN:    'unknown',
   COMPRESSOR: 'compressor',
+  LIMITER:    'limiter',
 })
 
 // ── Bucket layouts ──────────────────────────────────────────────────────────
@@ -46,6 +48,37 @@ export const COMPRESSOR_BUCKET = Object.freeze({
   }),
 })
 
+// LimiterBucket — 56 bytes total.
+//   uint64  sampleClock     @  0
+//   uint32  bucketSamples   @  8
+//   uint32  flags           @ 12
+//   float32 inLevelDb       @ 16   (peak abs, post-gain pre-limit)
+//   float32 outLevelDb      @ 20   (peak abs, post-limit)
+//   float32 gainReductionDb @ 24   (max GR dB, positive = more reduction)
+//   float32 inEnergyDb      @ 28   (mean-square dB; cheap RMS-like, NOT LUFS)
+//   float32 outEnergyDb     @ 32
+//   float32 ceilingDb       @ 36
+//   float32 gainDb          @ 40
+//   float32 releaseMs       @ 44
+//   float32 reserved0       @ 48
+//   (4 bytes pad to 56)     @ 52
+export const LIMITER_BUCKET = Object.freeze({
+  sizeBytes: 56,
+  fields: Object.freeze({
+    sampleClock:     { offset:  0, type: 'u64'   },
+    bucketSamples:   { offset:  8, type: 'u32'   },
+    flags:           { offset: 12, type: 'u32'   },
+    inLevelDb:       { offset: 16, type: 'float' },
+    outLevelDb:      { offset: 20, type: 'float' },
+    gainReductionDb: { offset: 24, type: 'float' },
+    inEnergyDb:      { offset: 28, type: 'float' },
+    outEnergyDb:     { offset: 32, type: 'float' },
+    ceilingDb:       { offset: 36, type: 'float' },
+    gainDb:          { offset: 40, type: 'float' },
+    releaseMs:       { offset: 44, type: 'float' },
+  }),
+})
+
 // ── Defensive parser ────────────────────────────────────────────────────────
 //
 // parseDrainResponse(resp, expectedType) verifies the payload metadata and
@@ -69,10 +102,16 @@ export function parseDrainResponse(resp, expectedType = VIZ_TYPE.COMPRESSOR) {
     return { ok: false, reason: `schema-mismatch:${resp.schema}` }
   }
 
-  const expectedSize = expectedType === VIZ_TYPE.COMPRESSOR
-    ? COMPRESSOR_BUCKET.sizeBytes
-    : 0
-  if (expectedSize === 0) {
+  let expectedSize = 0
+  let fields = null
+  if (expectedType === VIZ_TYPE.COMPRESSOR) {
+    expectedSize = COMPRESSOR_BUCKET.sizeBytes
+    fields = COMPRESSOR_BUCKET.fields
+  } else if (expectedType === VIZ_TYPE.LIMITER) {
+    expectedSize = LIMITER_BUCKET.sizeBytes
+    fields = LIMITER_BUCKET.fields
+  }
+  if (expectedSize === 0 || fields === null) {
     return { ok: false, reason: `unsupported-type:${expectedType}` }
   }
   if (resp.bucketSize !== expectedSize) {
@@ -93,9 +132,6 @@ export function parseDrainResponse(resp, expectedType = VIZ_TYPE.COMPRESSOR) {
   }
 
   const view = new DataView(ab)
-  const fields = expectedType === VIZ_TYPE.COMPRESSOR
-    ? COMPRESSOR_BUCKET.fields
-    : null
 
   const littleEndian = true // x86_64 / ARM little-endian (Windows-only project)
 
@@ -135,4 +171,13 @@ export const COMPRESSOR_VIZ_SOURCES = Object.freeze({
   TRANSFER_CURVE:          'compressor.transferCurve',
   DETECTOR:                'compressor.detector',
   COMBINED:                'compressor.combined',
+})
+
+// ── Limiter source keys (manifest allow-list) ───────────────────────────────
+// Mirrors the COMPRESSOR_VIZ_SOURCES layout. Source values land in the
+// Limiter manifest's vizSources array and the runtime VisualizerNode dispatch.
+export const LIMITER_VIZ_SOURCES = Object.freeze({
+  REALTIME:                'limiter.realtime',
+  GAIN_REDUCTION_HISTORY:  'limiter.gainReductionHistory',
+  METER_ONLY:              'limiter.meterOnly',
 })

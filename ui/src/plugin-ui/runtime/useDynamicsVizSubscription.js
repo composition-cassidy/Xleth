@@ -21,6 +21,7 @@ import {
   VIZ_TYPE,
   DYNAMICS_VIZ_SCHEMA_VERSION,
   COMPRESSOR_BUCKET,
+  LIMITER_BUCKET,
 } from '../../constants/dynamicsViz.js'
 
 const TARGET_HZ          = 30
@@ -34,10 +35,15 @@ const RING_CAPACITY      = 1024       // matches engine ring depth
 // same Compressor instance must NOT each call setEffectVisualizationEnabled
 // or each pump a separate rAF. We keep a refcount per (trackId, nodeId).
 
-const subscriptions = new Map() // key: "trackId:nodeId" → entry
+const subscriptions = new Map() // key: "trackId:nodeId:vizType" → entry
 
-function keyFor(trackId, nodeId) {
-  return `${trackId}:${nodeId}`
+function keyFor(trackId, nodeId, vizType) {
+  return `${trackId}:${nodeId}:${vizType}`
+}
+
+function bucketLayoutFor(vizType) {
+  if (vizType === VIZ_TYPE.LIMITER) return LIMITER_BUCKET
+  return COMPRESSOR_BUCKET
 }
 
 function makeRing(capacity) {
@@ -69,8 +75,8 @@ function makeRing(capacity) {
   }
 }
 
-function acquire(trackId, nodeId) {
-  const key = keyFor(trackId, nodeId)
+function acquire(trackId, nodeId, vizType) {
+  const key = keyFor(trackId, nodeId, vizType)
   let entry = subscriptions.get(key)
   if (entry) {
     entry.refCount++
@@ -81,6 +87,7 @@ function acquire(trackId, nodeId) {
     key,
     trackId,
     nodeId,
+    vizType,
     refCount: 1,
     ring: makeRing(RING_CAPACITY),
     epochObj: { value: 0 },
@@ -171,8 +178,10 @@ function startPumpLoop(entry) {
 }
 
 function consumeDrainResponse(entry, resp) {
-  // Accept Compressor only for now. Future types can branch here.
-  const parsed = parseDrainResponse(resp, VIZ_TYPE.COMPRESSOR)
+  // Decode buckets according to the viz type the subscriber asked for. If the
+  // engine reports a different type (e.g. effect was replaced), parser fails
+  // with 'type-mismatch:...' and the canvas falls back to the placeholder.
+  const parsed = parseDrainResponse(resp, entry.vizType)
   entry.schemaObj.value  = resp?.schema | 0
   entry.schemaObj.type   = resp?.type ?? VIZ_TYPE.UNKNOWN
   entry.schemaObj.ok     = parsed.ok
@@ -197,16 +206,22 @@ function consumeDrainResponse(entry, resp) {
 // it contains. This lets consumers (DynamicsVisualizerCanvas) put the handle
 // in a useEffect dep array without re-running on unrelated parent re-renders
 // (e.g. a knob change updating params).
-export function useDynamicsVizSubscription(trackId, nodeId) {
+//
+// vizType selects the bucket schema to decode against (Compressor or Limiter).
+// Defaults to Compressor for backwards compatibility with existing call sites.
+export function useDynamicsVizSubscription(trackId, nodeId, vizType = VIZ_TYPE.COMPRESSOR) {
   const handleRef = useRef(null)
   if (!handleRef.current) {
     handleRef.current = {
       ringRef:       { current: null },
       epochRef:      { current: null },
       schemaRef:     { current: null },
-      bucketLayout:  COMPRESSOR_BUCKET,
+      bucketLayout:  bucketLayoutFor(vizType),
       schemaVersion: DYNAMICS_VIZ_SCHEMA_VERSION,
+      vizType,
     }
+  } else {
+    handle_updateVizType(handleRef.current, vizType)
   }
   const handle = handleRef.current
 
@@ -217,7 +232,7 @@ export function useDynamicsVizSubscription(trackId, nodeId) {
       handle.schemaRef.current = null
       return
     }
-    const entry = acquire(trackId, nodeId)
+    const entry = acquire(trackId, nodeId, vizType)
     handle.ringRef.current   = entry.ring
     handle.epochRef.current  = entry.epochObj
     handle.schemaRef.current = entry.schemaObj
@@ -230,9 +245,15 @@ export function useDynamicsVizSubscription(trackId, nodeId) {
       if (handle.epochRef.current === entry.epochObj)   handle.epochRef.current = null
       if (handle.schemaRef.current === entry.schemaObj) handle.schemaRef.current = null
     }
-  }, [trackId, nodeId, handle])
+  }, [trackId, nodeId, vizType, handle])
 
   return handle
+}
+
+function handle_updateVizType(handle, vizType) {
+  if (handle.vizType === vizType) return
+  handle.vizType      = vizType
+  handle.bucketLayout = bucketLayoutFor(vizType)
 }
 
 // Exposed for tests / dev assertions only.

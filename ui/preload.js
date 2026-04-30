@@ -430,15 +430,31 @@ window.xleth = ({
   // User-override layouts live in userData/plugin-ui/<pluginId>.json.
   // Shipped defaults are bundled with the renderer and never written here.
   pluginUi: {
+    getShipped:         (pluginId)         => invoke('xleth:pluginUi:getShipped', pluginId),
     loadUserOverride:  (pluginId)         => invoke('xleth:pluginUi:loadUserOverride', pluginId),
     saveUserOverride:  (pluginId, layout) => invoke('xleth:pluginUi:saveUserOverride', pluginId, layout),
     clearUserOverride: (pluginId)         => invoke('xleth:pluginUi:clearUserOverride', pluginId),
+    importDialog:      ()                 => invoke('xleth:dialog:importPluginUi'),
+    exportDialog:      (pluginId, layout) => invoke('xleth:dialog:exportPluginUi', pluginId, layout),
+    listKnobPresets:   ()                 => invoke('xleth:pluginUi:listKnobPresets'),
+    saveKnobPreset:    (preset)           => invoke('xleth:pluginUi:saveKnobPreset', preset),
+    deleteKnobPreset:  (id)               => invoke('xleth:pluginUi:deleteKnobPreset', id),
     // Returns a cleanup function (call it to unsubscribe)
     onLayoutChanged: (cb) => {
       const h = (_e, pluginId) => cb(pluginId)
       ipcRenderer.on('xleth:pluginUi:changed', h)
       return () => ipcRenderer.removeListener('xleth:pluginUi:changed', h)
     },
+  },
+
+  // ── User-imported decal assets ────────────────────────────────────────────────
+  // Layout JSON stores only assetId. Never exposes raw fs, paths, or arbitrary URLs.
+  pluginUiAssets: {
+    list:        ()        => invoke('xleth:pluginUiAssets:list'),
+    import:      ()        => invoke('xleth:pluginUiAssets:import'),
+    getDataUrl:  (assetId) => invoke('xleth:pluginUiAssets:getDataUrl', assetId),
+    delete:      (assetId) => invoke('xleth:pluginUiAssets:delete', assetId),
+    scanOrphans: ()        => invoke('xleth:pluginUiAssets:scanOrphans'),
   },
 
   // ── Global engine defaults ─────────────────────────────────────────────────

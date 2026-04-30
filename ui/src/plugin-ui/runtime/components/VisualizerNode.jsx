@@ -3,6 +3,7 @@ import { styleToCSS } from '../styleToCSS.js'
 import { usePluginUI } from '../PluginUIContext.js'
 import DynamicsVisualizerCanvas from '../visualizers/DynamicsVisualizerCanvas.jsx'
 import { COMPRESSOR_SOURCE_DEFAULT_PRESET } from '../visualizers/compressorPainter.js'
+import { LIMITER_SOURCE_DEFAULT_PRESET } from '../visualizers/limiterPainter.js'
 
 // Source keys this node knows how to render via the Compressor pipeline.
 // Must match the manifest allow-list (compressor.js).
@@ -13,6 +14,24 @@ const COMPRESSOR_SOURCE_KEYS = new Set([
   'compressor.detector',
   'compressor.combined',
 ])
+
+// Source keys for the Limiter pipeline. Must match limiter.js manifest.
+const LIMITER_SOURCE_KEYS = new Set([
+  'limiter.realtime',
+  'limiter.gainReductionHistory',
+  'limiter.meterOnly',
+])
+
+function isKnownSource(source) {
+  return COMPRESSOR_SOURCE_KEYS.has(source) || LIMITER_SOURCE_KEYS.has(source)
+}
+
+function defaultPresetForSource(source) {
+  if (LIMITER_SOURCE_KEYS.has(source)) {
+    return LIMITER_SOURCE_DEFAULT_PRESET[source] || 'limiterRealtime'
+  }
+  return COMPRESSOR_SOURCE_DEFAULT_PRESET[source] || 'levelHistory'
+}
 
 function Placeholder({ inlineStyle, label, nodeId }) {
   return (
@@ -54,7 +73,7 @@ export default function VisualizerNode({ node }) {
   }
 
   // Unknown source key (defence in depth — manifest already gates this).
-  if (!COMPRESSOR_SOURCE_KEYS.has(source)) {
+  if (!isKnownSource(source)) {
     return <Placeholder inlineStyle={inlineStyle} nodeId={node.id} />
   }
 
@@ -62,11 +81,13 @@ export default function VisualizerNode({ node }) {
   if (unavailableReason && unavailableReason.startsWith('schema-mismatch')) {
     return <Placeholder inlineStyle={inlineStyle} nodeId={node.id} />
   }
-  if (unavailableReason === 'no-engine-api' || unavailableReason === 'unsupported-type:compressor') {
+  if (unavailableReason === 'no-engine-api'
+      || unavailableReason === 'unsupported-type:compressor'
+      || unavailableReason === 'unsupported-type:limiter') {
     return <Placeholder inlineStyle={inlineStyle} nodeId={node.id} />
   }
 
-  const effectivePreset = preset || COMPRESSOR_SOURCE_DEFAULT_PRESET[source] || 'levelHistory'
+  const effectivePreset = preset || defaultPresetForSource(source)
 
   return (
     <div className="pluginui-visualizer-canvas-wrap" style={inlineStyle} data-pluginui-id={node.id}>

@@ -121,7 +121,11 @@ export default function StockPluginRuntimeRenderer({
       // Re-run the user-override load (triggers if target is set)
       if (target) {
         window.xleth?.pluginUi?.loadUserOverride?.(pluginId).then(raw => {
-          if (!raw) return
+          if (!raw) {
+            setActiveLayout(resolveShippedLayout(pluginId, manifest))
+            setLayoutErrors([])
+            return
+          }
           const result = validate(raw, manifest)
           if (result.ok) {
             setActiveLayout(result.doc)

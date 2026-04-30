@@ -15,7 +15,7 @@
   color: var(--theme-text);
   font-size: 11px;
   user-select: none;
-  overflow: hidden;
+  overflow-y: auto;
 }
 
 .pluginui-designer-loading,
@@ -26,6 +26,28 @@
 }
 
 .pluginui-designer-error {
+  color: var(--theme-error, #d04040);
+}
+
+.pluginui-designer-mutation-error {
+  padding: 5px 8px;
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--theme-error, #d04040);
+  border-bottom: 1px solid var(--theme-border-subtle);
+  background: var(--theme-fx-surface-tint-subtle, transparent);
+}
+
+.pluginui-designer-toast {
+  padding: 5px 8px;
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--theme-text-subtle);
+  border-bottom: 1px solid var(--theme-border-subtle);
+  background: var(--theme-fx-surface-tint-subtle, transparent);
+}
+
+.pluginui-designer-toast--error {
   color: var(--theme-error, #d04040);
 }
 
@@ -41,6 +63,11 @@
 .pluginui-designer-section--grow {
   flex: 1 1 auto;
   overflow: hidden;
+}
+
+.pluginui-designer-section--scrollable {
+  max-height: 420px;
+  overflow-y: auto;
 }
 
 .pluginui-designer-section-header {
@@ -76,6 +103,43 @@
   border-bottom: 1px solid var(--theme-border-subtle);
 }
 
+.pluginui-designer-reset-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding-left: 4px;
+  border-left: 1px solid var(--theme-border-subtle);
+}
+
+.pluginui-designer-toolbar-validation {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 118px;
+  padding: 1px 6px;
+  border-left: 1px solid var(--theme-border-subtle);
+  color: var(--theme-text-subtle);
+  line-height: 1.2;
+}
+
+.pluginui-designer-toolbar-validation--valid {
+  color: var(--theme-success, #2f9d5b);
+}
+
+.pluginui-designer-toolbar-validation--info {
+  color: var(--theme-text-subtle);
+}
+
+.pluginui-designer-toolbar-validation--soft,
+.pluginui-designer-toolbar-validation--hard {
+  color: var(--theme-error, #d04040);
+}
+
+.pluginui-designer-toolbar-validation-eligibility {
+  font-size: 9px;
+  color: var(--theme-text-subtle);
+}
+
 .pluginui-designer-button {
   font: inherit;
   font-size: 11px;
@@ -105,9 +169,20 @@
   color: var(--theme-error, #d04040);
 }
 
-/* ── Compressor panel: Edit UI button (header) ──────────────────────────────── */
+.pluginui-designer-button--compact {
+  padding-left: 6px;
+  padding-right: 6px;
+  font-size: 10px;
+}
 
-.compressor-panel-edit-ui {
+.pluginui-designer-button--close {
+  margin-left: auto;
+}
+
+/* ── Compressor / Limiter panel: Edit UI button (header) ────────────────────── */
+
+.compressor-panel-edit-ui,
+.limiter-panel-edit-ui {
   font: inherit;
   font-size: 10px;
   letter-spacing: 0.04em;
@@ -121,31 +196,38 @@
   cursor: pointer;
 }
 
-.compressor-panel-edit-ui:hover {
+.compressor-panel-edit-ui:hover,
+.limiter-panel-edit-ui:hover {
   color: var(--theme-text);
   background: var(--theme-fx-surface-tint-subtle);
 }
 
-.compressor-panel-edit-ui--active {
+.compressor-panel-edit-ui--active,
+.limiter-panel-edit-ui--active {
   color: var(--accent-primary, var(--theme-text));
   border-color: var(--accent-primary, var(--theme-border-subtle));
 }
 
-/* ── Compressor panel layout when designer is open ──────────────────────────── */
+/* ── Compressor / Limiter panel layout when designer is open ────────────────── */
 
-.compressor-panel--designer-open {
+.compressor-panel--designer-open,
+.limiter-panel--designer-open {
   width: 880px;
   max-width: 95vw;
+  max-height: calc(100vh - 40px);
+  overflow: hidden;
 }
 
-.compressor-panel-runtime-pane {
+.compressor-panel-runtime-pane,
+.limiter-panel-runtime-pane {
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
   min-width: 0;
 }
 
-.compressor-panel-split {
+.compressor-panel-split,
+.limiter-panel-split {
   display: flex;
   flex-direction: row;
   flex: 1 1 auto;
@@ -212,7 +294,6 @@
 }
 
 .pluginui-designer-tree-badge {
-  margin-left: auto;
   font-size: 9px;
   padding: 0 4px;
   border-radius: 2px;
@@ -220,6 +301,61 @@
   color: #fff;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.pluginui-designer-tree-badge--hard {
+  background: var(--theme-error, #d04040);
+}
+
+.pluginui-designer-tree-badge--soft {
+  background: var(--theme-error, #d04040);
+}
+
+.pluginui-designer-tree-badge--info {
+  background: var(--theme-fx-surface-tint-subtle, #666);
+  color: var(--theme-text);
+  border: 1px solid var(--theme-border-subtle);
+}
+
+.pluginui-designer-tree-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  opacity: 0.75;
+}
+
+.pluginui-designer-tree-row:hover .pluginui-designer-tree-actions,
+.pluginui-designer-tree-row--selected .pluginui-designer-tree-actions {
+  opacity: 1;
+}
+
+.pluginui-designer-tree-action {
+  min-width: 20px;
+  height: 18px;
+  padding: 0 3px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm, 3px);
+  background: var(--theme-bg-primary);
+  color: var(--theme-text-subtle);
+  font: inherit;
+  font-size: 9px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pluginui-designer-tree-action:hover:not(:disabled) {
+  color: var(--theme-text);
+  background: var(--theme-fx-surface-tint-subtle);
+}
+
+.pluginui-designer-tree-action:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.pluginui-designer-tree-action--danger:hover:not(:disabled) {
+  color: var(--theme-error, #d04040);
 }
 
 .pluginui-designer-tree-children {
@@ -236,6 +372,308 @@
 .pluginui-designer-palette-stub,
 .pluginui-designer-validation-stub {
   font-size: 11px;
+  color: var(--theme-text-subtle);
+}
+
+.pluginui-designer-palette {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.pluginui-designer-palette-button {
+  min-width: 0;
+  height: 24px;
+  padding: 2px 6px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm, 3px);
+  background: var(--theme-bg-primary);
+  color: var(--theme-text);
+  font: inherit;
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.pluginui-designer-palette-button:hover {
+  background: var(--theme-fx-surface-tint-subtle);
+  border-color: var(--accent-primary, var(--theme-border-subtle));
+}
+
+.pluginui-designer-inspector,
+.pluginui-designer-inspector-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--theme-text);
+}
+
+.pluginui-designer-inspector-empty {
+  color: var(--theme-text-subtle);
+}
+
+.pluginui-designer-inspector-group {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.pluginui-designer-inspector-group + .pluginui-designer-inspector-group {
+  padding-top: 6px;
+  border-top: 1px solid var(--theme-border-subtle);
+}
+
+.pluginui-designer-inspector-group-title {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--theme-text-subtle);
+}
+
+.pluginui-designer-type-section {
+  gap: 6px;
+}
+
+.pluginui-designer-field {
+  display: grid;
+  grid-template-columns: minmax(84px, 1fr) minmax(0, 1.45fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+}
+
+.pluginui-designer-field--checkbox {
+  grid-template-columns: minmax(84px, 1fr) auto;
+  justify-content: stretch;
+}
+
+.pluginui-designer-binding-row {
+  align-items: center;
+}
+
+.pluginui-designer-field-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--theme-text-subtle);
+}
+
+.pluginui-designer-input,
+.pluginui-designer-select {
+  width: 100%;
+  min-width: 0;
+  height: 22px;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 11px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm, 3px);
+  background: var(--theme-bg-primary);
+  color: var(--theme-text);
+  user-select: text;
+}
+
+.pluginui-designer-input {
+  padding: 2px 6px;
+}
+
+.pluginui-designer-select {
+  padding: 1px 4px;
+}
+
+.pluginui-designer-binding-picker {
+  font-size: 10px;
+}
+
+.pluginui-designer-select option:disabled {
+  color: var(--theme-text-subtle);
+}
+
+.pluginui-designer-input:focus,
+.pluginui-designer-select:focus {
+  outline: 1px solid var(--accent-primary, var(--theme-border-subtle));
+  outline-offset: 0;
+}
+
+.pluginui-designer-input--readonly {
+  color: var(--theme-text-subtle);
+  background: var(--theme-fx-surface-tint-subtle, transparent);
+}
+
+.pluginui-designer-checkbox {
+  justify-self: end;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent-primary);
+}
+
+.pluginui-designer-field-error,
+.pluginui-designer-error-text,
+.pluginui-designer-warning-text {
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.pluginui-designer-field-error,
+.pluginui-designer-error-text {
+  color: var(--theme-error, #d04040);
+}
+
+.pluginui-designer-field-error {
+  padding-left: calc(84px + 8px);
+}
+
+.pluginui-designer-warning-text,
+.pluginui-designer-inspector-note {
+  color: var(--theme-text-subtle);
+}
+
+.pluginui-designer-inspector-note {
+  line-height: 1.35;
+}
+
+.pluginui-designer-inspector-errors {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-top: 6px;
+  border-top: 1px solid var(--theme-border-subtle);
+}
+
+.pluginui-designer-selected-errors {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.pluginui-designer-selected-error-row {
+  display: grid;
+  grid-template-columns: 34px minmax(76px, 0.9fr) minmax(0, 1.6fr);
+  gap: 5px;
+  align-items: center;
+  min-height: 20px;
+  padding: 2px 4px;
+  border-left: 2px solid var(--theme-border-subtle);
+  background: var(--theme-fx-surface-tint-subtle, transparent);
+}
+
+.pluginui-designer-selected-error-row--hard {
+  border-left-color: var(--theme-error, #d04040);
+}
+
+.pluginui-designer-selected-error-row--soft {
+  border-left-color: var(--theme-error, #d04040);
+}
+
+.pluginui-designer-selected-error-row--info {
+  border-left-color: var(--theme-border-subtle);
+}
+
+.pluginui-designer-selected-error-severity,
+.pluginui-designer-selected-error-code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 9px;
+  text-transform: uppercase;
+  color: var(--theme-text-subtle);
+}
+
+.pluginui-designer-selected-error-message {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Validation panel ──────────────────────────────────────────────────────── */
+
+.pluginui-designer-validation-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pluginui-designer-validation-empty {
+  padding: 4px 6px;
+  font-size: 11px;
+  color: var(--theme-text-subtle);
+}
+
+.pluginui-designer-validation-empty--valid {
+  color: var(--theme-success, #2f9d5b);
+}
+
+.pluginui-designer-validation-row {
+  display: grid;
+  grid-template-columns: 38px minmax(82px, 0.95fr) minmax(58px, 0.75fr) minmax(0, 1.7fr);
+  gap: 5px;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 5px;
+  border: 1px solid var(--theme-border-subtle);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm, 3px);
+  background: var(--theme-bg-primary);
+  color: var(--theme-text);
+  font: inherit;
+  font-size: 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pluginui-designer-validation-row:disabled {
+  cursor: default;
+  opacity: 0.85;
+}
+
+.pluginui-designer-validation-row:not(:disabled):hover {
+  background: var(--theme-fx-surface-tint-subtle);
+}
+
+.pluginui-designer-validation-row--selected {
+  border-color: var(--accent-primary, var(--theme-border-subtle));
+}
+
+.pluginui-designer-validation-row--hard {
+  border-left-color: var(--theme-error, #d04040);
+}
+
+.pluginui-designer-validation-row--soft {
+  border-left-color: var(--theme-error, #d04040);
+}
+
+.pluginui-designer-validation-row--info {
+  border-left-color: var(--theme-border-subtle);
+}
+
+.pluginui-designer-validation-severity,
+.pluginui-designer-validation-code,
+.pluginui-designer-validation-node,
+.pluginui-designer-validation-message {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pluginui-designer-validation-severity {
+  text-transform: uppercase;
+  color: var(--theme-text-subtle);
+}
+
+.pluginui-designer-validation-code {
+  font-weight: 600;
+}
+
+.pluginui-designer-validation-node {
   color: var(--theme-text-subtle);
 }
 
@@ -265,3 +703,464 @@
   border-top: 1px solid var(--theme-border-subtle);
   background: var(--theme-fx-surface-tint-subtle, transparent);
 }
+
+.pluginui-designer-preview-disabled {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  flex: 1 1 auto;
+  min-height: 160px;
+  padding: 16px;
+  text-align: center;
+  color: var(--theme-text-subtle);
+  background: var(--theme-fx-surface-tint-subtle, transparent);
+}
+
+.pluginui-designer-preview-disabled-title {
+  color: var(--theme-error, #d04040);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pluginui-designer-preview-disabled-detail {
+  margin-top: 4px;
+  font-size: 10px;
+}
+
+/* ── Appearance section ─────────────────────────────────────────────────────── */
+
+.pluginui-designer-appearance {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pluginui-designer-appearance-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 4px;
+  border-top: 1px dashed var(--theme-border-subtle);
+}
+
+.pluginui-designer-appearance-section-title {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--theme-text-subtle);
+}
+
+.pluginui-designer-appearance-presets {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pluginui-designer-appearance-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.pluginui-designer-appearance-preset-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  background: var(--theme-bg-surface);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 3px;
+  text-align: left;
+  color: var(--theme-text);
+  font-size: 10px;
+  cursor: pointer;
+  transition: border-color 80ms ease, background-color 80ms ease;
+}
+
+.pluginui-designer-appearance-preset-card:hover:not(:disabled) {
+  border-color: var(--theme-border-focus, var(--theme-border-subtle));
+  background: var(--theme-bg-elevated, var(--theme-bg-surface));
+}
+
+.pluginui-designer-appearance-preset-card:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.pluginui-designer-appearance-preset-card--active {
+  border-color: var(--theme-border-focus, var(--theme-accent));
+  background: var(--theme-bg-elevated, var(--theme-bg-surface));
+  box-shadow: inset 0 0 0 1px var(--theme-accent, var(--theme-border-focus));
+}
+
+.pluginui-designer-appearance-preset-card--removed {
+  border-style: dashed;
+  border-color: var(--theme-warning, var(--theme-border-subtle));
+  background: var(--theme-fx-surface-tint-subtle, transparent);
+}
+
+.pluginui-designer-appearance-preset-swatch {
+  display: inline-block;
+  width: 28px;
+  height: 10px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    var(--theme-bg-elevated, var(--theme-bg-surface)),
+    var(--theme-accent, var(--theme-bg-surface))
+  );
+  border: 1px solid var(--theme-border-subtle);
+}
+
+.pluginui-designer-appearance-preset-card-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--theme-text);
+}
+
+.pluginui-designer-appearance-preset-card-description {
+  font-size: 9px;
+  line-height: 1.3;
+  color: var(--theme-text-subtle);
+}
+
+.pluginui-designer-appearance-user-presets {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--theme-border-subtle);
+}
+
+.pluginui-designer-appearance-preset-card--user {
+  position: relative;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  padding: 0;
+  gap: 0;
+}
+
+.pluginui-designer-appearance-preset-card-apply {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.pluginui-designer-appearance-preset-card-apply:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.pluginui-designer-appearance-preset-card-delete {
+  flex: 0 0 auto;
+  width: 22px;
+  background: transparent;
+  border: 0;
+  border-left: 1px solid var(--theme-border-subtle);
+  color: var(--theme-text-subtle);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pluginui-designer-appearance-preset-card-delete:hover:not(:disabled) {
+  color: var(--theme-error, var(--theme-text-primary));
+  background: var(--theme-bg-elevated, var(--theme-bg-surface));
+}
+
+.pluginui-designer-appearance-preset-card-delete-confirm {
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--theme-border-subtle);
+}
+
+.pluginui-designer-appearance-preset-card-delete-confirm .pluginui-designer-appearance-preset-card-delete {
+  border-left: 0;
+  border-bottom: 1px solid var(--theme-border-subtle);
+  height: 50%;
+  width: 22px;
+}
+
+.pluginui-designer-appearance-preset-card-delete-confirm .pluginui-designer-appearance-preset-card-delete:last-child {
+  border-bottom: 0;
+}
+
+.pluginui-designer-appearance-preset-card-delete--yes {
+  color: var(--theme-error, var(--theme-warning, var(--theme-text-primary)));
+}
+
+.pluginui-designer-appearance-name-form {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.pluginui-designer-appearance-name-form-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.pluginui-designer-appearance-apply-defaults {
+  align-self: flex-start;
+  padding: 3px 8px;
+  font-size: 10px;
+  background: var(--theme-bg-surface);
+  color: var(--theme-text);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.pluginui-designer-appearance-apply-defaults:hover:not(:disabled) {
+  background: var(--theme-bg-elevated, var(--theme-bg-surface));
+  border-color: var(--theme-border-focus, var(--theme-border-subtle));
+}
+
+.pluginui-designer-appearance-apply-defaults:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.pluginui-designer-appearance-row {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  min-height: 0;
+}
+
+.pluginui-designer-appearance-row .pluginui-designer-field-label {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.pluginui-designer-appearance-number-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pluginui-designer-appearance-number-row .pluginui-designer-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.pluginui-designer-appearance-number-clear {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 3px;
+  color: var(--theme-text-subtle);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pluginui-designer-appearance-number-clear:hover:not(:disabled) {
+  color: var(--theme-text-primary);
+  border-color: var(--theme-border-focus);
+}
+
+.pluginui-designer-appearance-row-hint {
+  display: block;
+  margin-top: 2px;
+  font-size: 9px;
+  line-height: 1.35;
+  color: var(--theme-warning, var(--theme-text-subtle));
+}
+
+.pluginui-designer-select--invalid {
+  border-color: var(--theme-warning, var(--theme-error, var(--theme-border-subtle)));
+}
+
+.pluginui-designer-appearance-hint {
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--theme-text-subtle);
+}
+
+.pluginui-designer-appearance-hint--warning {
+  color: var(--theme-warning, var(--theme-text-subtle));
+}
+
+.pluginui-designer-appearance-hint--error {
+  color: var(--theme-error, var(--theme-text-subtle));
+}
+
+/* ── Freeform-B: tree FF badge + frame badge ────────────────────────────────── */
+
+.pluginui-designer-tree-ff-badge {
+  display: inline-block;
+  margin-right: 3px;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  vertical-align: middle;
+  color: var(--accent-primary, var(--theme-accent, var(--theme-text-subtle)));
+  opacity: 0.85;
+}
+
+.pluginui-designer-tree-frame-badge {
+  font-size: 8px;
+  padding: 0 3px;
+  border-radius: 2px;
+  background: var(--theme-fx-surface-tint-subtle, transparent);
+  border: 1px solid var(--theme-border-subtle);
+  color: var(--theme-text-subtle);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ── Freeform-B: frame number field wrapper ─────────────────────────────────── */
+
+.pluginui-designer-frame-number {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pluginui-designer-frame-number .pluginui-designer-input {
+  width: 100%;
+}
+
+.pluginui-designer-frame-rotation-hint {
+  grid-column: 1 / -1;
+  font-size: 9px;
+  color: var(--theme-text-subtle);
+  font-style: italic;
+  padding-left: calc(84px + 8px);
+}
+
+/* ── Freeform-B: freeform palette section separator ────────────────────────── */
+
+.pluginui-designer-palette-freeform-sep {
+  grid-column: 1 / -1;
+  height: 1px;
+  background: var(--theme-border-subtle);
+  margin: 2px 0;
+}
+
+/* ── Freeform-C.5: move/convert tools ──────────────────────────────────────── */
+
+.pluginui-designer-freeform-tools {
+  border-top: 1px dashed var(--theme-border-subtle);
+  padding-top: 6px;
+}
+
+.pluginui-designer-freeform-tools-btn {
+  width: 100%;
+  margin-top: 4px;
+  text-align: left;
+}
+
+.pluginui-designer-freeform-tools-hint {
+  font-size: 10px;
+  color: var(--theme-text-subtle);
+  font-style: italic;
+}
+
+/* ── Freeform-E: decal asset import ──────────────────────────────────────────── */
+
+.pluginui-designer-decal-import-btn {
+  width: 100%;
+  text-align: left;
+  margin-top: 4px;
+}
+
+/* Missing-asset warning panel (spans both grid columns) */
+.pluginui-designer-decal-missing {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 5px 0;
+  border-top: 1px solid var(--theme-border-subtle);
+  border-bottom: 1px solid var(--theme-border-subtle);
+}
+
+.pluginui-designer-decal-missing-actions {
+  display: flex;
+  gap: 5px;
+}
+
+/* ── Freeform-C: selection overlay (drag / resize / nudge) ─────────────────── */
+
+.pluginui-designer-selection-overlay {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1px solid var(--accent-primary, #4a8be3);
+  z-index: 100;
+  /* pointer-events: none on the overlay itself; children opt in */
+  pointer-events: none;
+}
+
+.pluginui-designer-selection-overlay--locked {
+  opacity: 0.45;
+  border-style: dashed;
+}
+
+/* The body is the full-overlay drag surface. */
+.pluginui-designer-selection-body {
+  position: absolute;
+  inset: 0;
+  pointer-events: all;
+  user-select: none;
+}
+
+/* Frame info badge — sits just above the overlay top edge. */
+.pluginui-designer-selection-badge {
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 0;
+  font-size: 9px;
+  line-height: 1.2;
+  padding: 1px 4px;
+  white-space: nowrap;
+  border-radius: 2px;
+  pointer-events: none;
+  background: var(--accent-primary, #4a8be3);
+  color: var(--theme-bg-primary, #111);
+}
+
+/* Resize handles: 8 × 8 px squares, half outside the overlay boundary. */
+.pluginui-designer-selection-handle {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  box-sizing: border-box;
+  background: var(--accent-primary, #4a8be3);
+  border: 1px solid var(--theme-bg-primary, #111);
+  pointer-events: all;
+  user-select: none;
+  z-index: 101;
+}
+
+/* Corners */
+.pluginui-designer-selection-handle--nw { top: -4px; left: -4px; }
+.pluginui-designer-selection-handle--ne { top: -4px; right: -4px; }
+.pluginui-designer-selection-handle--sw { bottom: -4px; left: -4px; }
+.pluginui-designer-selection-handle--se { bottom: -4px; right: -4px; }
+
+/* Edge midpoints */
+.pluginui-designer-selection-handle--n  { top: -4px;    left: calc(50% - 4px); }
+.pluginui-designer-selection-handle--s  { bottom: -4px; left: calc(50% - 4px); }
+.pluginui-designer-selection-handle--w  { top: calc(50% - 4px); left: -4px; }
+.pluginui-designer-selection-handle--e  { top: calc(50% - 4px); right: -4px; }

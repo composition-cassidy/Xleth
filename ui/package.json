@@ -5,9 +5,12 @@
   "main": "main.js",
   "scripts": {
     "dev": "concurrently --kill-others \"vite\" \"wait-on http://localhost:5173 && electron .\"",
+    "dev:designer": "set VITE_XLETH_PLUGIN_UI_DESIGNER=1&& concurrently --kill-others \"vite --force\" \"wait-on http://localhost:5173 && electron .\"",
     "build": "vite build",
+    "build:designer": "set VITE_XLETH_PLUGIN_UI_DESIGNER=1&& vite build",
     "dist": "npm run build && electron-builder --config electron-builder.json",
     "start": "npm run build && electron .",
+    "start:designer": "npm run build:designer && electron .",
     "test": "vitest run",
     "test:watch": "vitest",
     "baseline:build": "vite build",

@@ -24,7 +24,29 @@
 import { useEffect, useRef } from 'react'
 import { useDynamicsVizSubscription } from '../useDynamicsVizSubscription.js'
 import { COMPRESSOR_PRESETS, COMPRESSOR_SOURCE_DEFAULT_PRESET } from './compressorPainter.js'
+import { LIMITER_PRESETS, LIMITER_SOURCE_DEFAULT_PRESET } from './limiterPainter.js'
+import { VIZ_TYPE } from '../../../constants/dynamicsViz.js'
 import { readDynamicsTheme } from './theme.js'
+
+// Source-key prefix → bucket schema / painter set. Prefix dispatch keeps the
+// canvas oblivious to which exact preset is in play; the painter registry
+// looks the painter function up by key.
+function resolveDispatch(sourceKey) {
+  if (typeof sourceKey === 'string' && sourceKey.startsWith('limiter.')) {
+    return {
+      vizType:        VIZ_TYPE.LIMITER,
+      presets:        LIMITER_PRESETS,
+      defaultsBySrc:  LIMITER_SOURCE_DEFAULT_PRESET,
+      fallbackPreset: 'limiterRealtime',
+    }
+  }
+  return {
+    vizType:        VIZ_TYPE.COMPRESSOR,
+    presets:        COMPRESSOR_PRESETS,
+    defaultsBySrc:  COMPRESSOR_SOURCE_DEFAULT_PRESET,
+    fallbackPreset: 'levelHistory',
+  }
+}
 
 export default function DynamicsVisualizerCanvas({
   trackId,
@@ -47,11 +69,12 @@ export default function DynamicsVisualizerCanvas({
   onUnavailableRef.current = onUnavailable
   heightPxRef.current      = heightPx
 
-  const sub = useDynamicsVizSubscription(trackId, nodeId)
+  const dispatch = resolveDispatch(sourceKey)
+  const sub = useDynamicsVizSubscription(trackId, nodeId, dispatch.vizType)
 
   // Resolve painter once we know the preset / source.
-  const effectivePreset = preset || COMPRESSOR_SOURCE_DEFAULT_PRESET[sourceKey] || 'levelHistory'
-  const painter         = COMPRESSOR_PRESETS[effectivePreset] || COMPRESSOR_PRESETS.levelHistory
+  const effectivePreset = preset || dispatch.defaultsBySrc[sourceKey] || dispatch.fallbackPreset
+  const painter         = dispatch.presets[effectivePreset] || dispatch.presets[dispatch.fallbackPreset]
 
   // ── Drawing rAF loop ──────────────────────────────────────────────────────
   // Restart only on identity-stable inputs; per-frame values live in refs.

@@ -5,6 +5,8 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { usePluginUIDesignerStore } from '../usePluginUIDesignerStore.js'
 import { LayoutTreeContent } from '../LayoutTreePanel.jsx'
 import { SHIPPED_LAYOUTS } from '../../layouts/index.js'
+import { renameSelectedNode } from '../designerActions.js'
+import { findNode } from '../layoutMutations.js'
 
 // Phase A–C smoke test: with no user-override IPC available, the Designer
 // store must load the bundled shipped Compressor layout and the LayoutTreePanel
@@ -136,6 +138,21 @@ describe('PluginUIDesigner — Phase A–C skeleton', () => {
     )
     expect(html).toContain('pluginui-designer-tree-row--selected')
     expect(html).toContain('#k-threshold')
+  })
+
+  it('renameSelectedNode updates workingLayout and selectedNodeId together', async () => {
+    await usePluginUIDesignerStore.getState().loadInitial('compressor')
+    usePluginUIDesignerStore.getState().setSelectedNodeId('k-threshold')
+
+    const result = renameSelectedNode('k-threshold-renamed')
+    const state = usePluginUIDesignerStore.getState()
+
+    expect(result.ok).toBe(true)
+    expect(state.selectedNodeId).toBe('k-threshold-renamed')
+    expect(findNode(state.workingLayout, 'k-threshold')).toBeNull()
+    expect(findNode(state.workingLayout, 'k-threshold-renamed')).toBeTruthy()
+    expect(state.dirty).toBe(true)
+    expect(state.mutationError).toBeNull()
   })
 })
 

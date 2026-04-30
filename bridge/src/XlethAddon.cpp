@@ -7379,15 +7379,21 @@ Napi::Value Audio_DrainEffectVizFrames(const Napi::CallbackInfo& info)
     const std::uint32_t typeTag = mix.getEffectVisualizationType(trackId, nodeId);
     const std::uint32_t schema  = mix.getEffectVisualizationSchemaVersion(trackId, nodeId);
 
-    // Resolve bucket size from type tag. For now only Compressor is supported;
-    // any other type returns an empty payload so the JS side renders the
-    // "Visualization unavailable" placeholder safely.
+    // Resolve bucket size from type tag. Each effect class returns its own
+    // type tag from getVisualizationType(); add a branch here when a new
+    // dynamics plugin gains a viz pipeline. Unknown types fall through to an
+    // empty payload so the JS side renders a safe placeholder.
     std::size_t bucketSize = 0;
     const char* typeStr    = "unknown";
     if (typeTag == xleth::viz::kVizTypeCompressor)
     {
         bucketSize = sizeof(xleth::viz::CompressorBucket);
         typeStr    = "compressor";
+    }
+    else if (typeTag == xleth::viz::kVizTypeLimiter)
+    {
+        bucketSize = sizeof(xleth::viz::LimiterBucket);
+        typeStr    = "limiter";
     }
 
     Napi::Object result = Napi::Object::New(env);

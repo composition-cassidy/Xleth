@@ -247,6 +247,33 @@ export const COMPRESSOR_PRESETS = Object.freeze({
   compressorCombined:  drawCompressorCombined,
 })
 
+export const COMPRESSOR_VISUALIZER_PRESETS = Object.freeze({
+  levelHistory: Object.freeze({
+    label: 'Level History',
+    sources: ['compressor.levelHistory'],
+  }),
+  gainReductionStrip: Object.freeze({
+    label: 'Gain Reduction Strip',
+    sources: ['compressor.gainReductionHistory'],
+  }),
+  scrollingStrip: Object.freeze({
+    label: 'Scrolling Strip',
+    sources: ['compressor.gainReductionHistory'],
+  }),
+  transferCurveLive: Object.freeze({
+    label: 'Transfer Curve Live',
+    sources: ['compressor.transferCurve'],
+  }),
+  detector: Object.freeze({
+    label: 'Detector',
+    sources: ['compressor.detector'],
+  }),
+  compressorCombined: Object.freeze({
+    label: 'Compressor Combined',
+    sources: ['compressor.combined'],
+  }),
+})
+
 // Source-key → default preset mapping for visualizer nodes that omit
 // "preset" or specify only the source.
 export const COMPRESSOR_SOURCE_DEFAULT_PRESET = Object.freeze({

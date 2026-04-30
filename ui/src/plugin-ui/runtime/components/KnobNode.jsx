@@ -1,8 +1,8 @@
-import { useCallback } from 'react'
+import React, { useCallback } from 'react'
 import { usePluginUI } from '../PluginUIContext.js'
 import { resolveFormat } from '../formats.js'
 import { styleToCSS } from '../styleToCSS.js'
-import BaseKnob from '../../../components/sampler/Knob.jsx'
+import PluginUIKitKnob from './PluginUIKitKnob.jsx'
 
 export default function KnobNode({ node }) {
   const { target, manifest, params, setParam } = usePluginUI()
@@ -21,7 +21,7 @@ export default function KnobNode({ node }) {
 
   return (
     <div className="pluginui-knob-cell" style={inlineStyle} data-pluginui-id={node.id}>
-      <BaseKnob
+      <PluginUIKitKnob
         value={value}
         min={meta.min}
         max={meta.max}
@@ -32,7 +32,7 @@ export default function KnobNode({ node }) {
         onCommit={handleCommit}
         size={props.size ?? 52}
         dragRange={props.dragRange ?? 150}
-        color={props.color}
+        appearance={props.appearance}
       />
     </div>
   )

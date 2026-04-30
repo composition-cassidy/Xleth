@@ -170,6 +170,69 @@ function addMaster(pluginId) {
   ok(addon.audio_removeMasterEffect(nodeId) === true,
      'final removeMasterEffect returned true');
 
+  // ── Limiter visualization smoke checks ─────────────────────────────────────
+  // Mirrors the Compressor cases above: drain shape, type/schema/bucketSize,
+  // enable/disable churn, distinct from Compressor's bucket size.
+  const limiterNodeId = addMaster('limiter');
+  ok(limiterNodeId >= 0, `audio_addMasterEffect("limiter") → nodeId=${limiterNodeId}`);
+  if (limiterNodeId >= 0) {
+    // Drain BEFORE enable — well-formed empty payload, type still "unknown"
+    // because no collector has been allocated yet.
+    {
+      const r = addon.audio_drainEffectVizFrames(-1, limiterNodeId, 64);
+      ok(r && typeof r === 'object', 'limiter drain (pre-enable) returns an object');
+      ok(typeof r.type === 'string',  `limiter drain.type pre-enable is a string (got "${r.type}")`);
+      ok(r.count === 0,             'limiter drain.count == 0 before enable');
+      ok(r.frames instanceof ArrayBuffer && r.frames.byteLength === 0,
+         'limiter drain.frames is empty ArrayBuffer pre-enable');
+    }
+
+    // Enable, then drain — type/schema/bucketSize must match limiter schema.
+    ok(addon.audio_setEffectVisualizationEnabled(-1, limiterNodeId, true) === true,
+       'limiter enable(true) → true');
+    {
+      const r = addon.audio_drainEffectVizFrames(-1, limiterNodeId, 64);
+      ok(r.type === 'limiter',  `limiter drain.type === "limiter" (got "${r.type}")`);
+      ok(r.schema === 1,        `limiter drain.schema === 1 (got ${r.schema})`);
+      ok(r.bucketSize === 56,   `limiter drain.bucketSize === 56 (got ${r.bucketSize})`);
+      ok(r.frames instanceof ArrayBuffer, 'limiter drain.frames is an ArrayBuffer');
+      if (r.count > 0) {
+        ok(r.frames.byteLength === r.count * 56,
+           `limiter drain.frames.byteLength == count * 56 (got ${r.frames.byteLength} for count ${r.count})`);
+      }
+    }
+
+    // Idempotent enable.
+    ok(addon.audio_setEffectVisualizationEnabled(-1, limiterNodeId, true) === true,
+       'limiter idempotent enable(true) → true');
+
+    // Disable → empty drain.
+    ok(addon.audio_setEffectVisualizationEnabled(-1, limiterNodeId, false) === true,
+       'limiter disable returned true');
+    {
+      const r = addon.audio_drainEffectVizFrames(-1, limiterNodeId, 64);
+      ok(r.count === 0, 'limiter drain.count == 0 after disable');
+      ok(r.frames instanceof ArrayBuffer && r.frames.byteLength === 0,
+         'limiter drain.frames empty after disable');
+    }
+
+    // 30-cycle enable/disable churn.
+    let limiterChurnOk = true;
+    for (let i = 0; i < 30; i++) {
+      try {
+        const e1 = addon.audio_setEffectVisualizationEnabled(-1, limiterNodeId, true);
+        addon.audio_drainEffectVizFrames(-1, limiterNodeId, 32);
+        const e2 = addon.audio_setEffectVisualizationEnabled(-1, limiterNodeId, false);
+        addon.audio_drainEffectVizFrames(-1, limiterNodeId, 32);
+        if (e1 !== true || e2 !== true) { limiterChurnOk = false; break; }
+      } catch (e) { limiterChurnOk = false; break; }
+    }
+    ok(limiterChurnOk, '30× limiter enable/disable churn cycles complete without throw');
+
+    ok(addon.audio_removeMasterEffect(limiterNodeId) === true,
+       'remove limiter master effect returned true');
+  }
+
   console.log(`\n${failed === 0 ? 'PASSED' : 'FAILED'}: ${passed}/${total} tests`);
   process.exit(failed === 0 ? 0 : 1);
 })();

@@ -10434,6 +10434,48 @@ html, body, #root {
   align-items: flex-start;
 }
 
+.pluginui-knob {
+  --pluginui-knob-surface: var(--theme-bg-surface);
+  --pluginui-knob-accent: var(--theme-accent);
+  --pluginui-knob-text: var(--theme-text);
+  display: inline-flex;
+  justify-content: center;
+  color: var(--pluginui-knob-text);
+}
+
+.pluginui-knob--xleth-default {
+  opacity: 1;
+}
+
+.pluginui-knob--studio-ring {
+  filter: drop-shadow(0 1px 4px var(--theme-overlay-subtle));
+}
+
+.pluginui-knob--flat-minimal {
+  opacity: 0.92;
+}
+
+.pluginui-knob--encoder {
+  filter: drop-shadow(0 1px 2px var(--theme-overlay-subtle));
+}
+
+.pluginui-knob--hardware-cap {
+  filter: drop-shadow(0 2px 6px var(--theme-overlay-medium));
+}
+
+.pluginui-knob--tiny-strip {
+  opacity: 0.9;
+}
+
+.pluginui-knob--label-left {
+  align-items: center;
+}
+
+.pluginui-knob--readout-hidden,
+.pluginui-knob--readout-tooltip {
+  min-height: 0;
+}
+
 /* ── Toggle button ─────────────────────────────────────────────────────────── */
 
 .pluginui-toggle-btn {

@@ -1,15 +1,20 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import StockPluginRuntimeRenderer from '../runtime/StockPluginRuntimeRenderer.jsx'
 import { usePluginUIDesignerStore } from './usePluginUIDesignerStore.js'
+import { findNode } from './layoutMutations.js'
+import SelectionOverlay from './SelectionOverlay.jsx'
+import { nudgeSelectedFrame, setPreviewHostEl } from './designerActions.js'
 
 // Phase B+C wrapper around StockPluginRuntimeRenderer.
 //   - Drives the runtime via layoutOverride (no IPC reads while Designer is open).
 //   - Owns a selection-outline overlay over the rendered preview DOM.
+//   - For freeform children (nodes with props.frame), renders SelectionOverlay
+//     with drag / resize / nudge / snap instead of the plain SelectionOutline.
 //
 // CompressorPanel passes `target` and `onClose` down. Working-layout state
 // comes from the Designer store, not from props — so the panel doesn't need
 // to wire workingLayout through itself.
-export default function DesignerPreview({ pluginId = 'compressor', target, onClose }) {
+export default function DesignerPreview({ pluginId, target, onClose }) {
   const workingLayout    = usePluginUIDesignerStore(s => s.workingLayout)
   const validationResult = usePluginUIDesignerStore(s => s.validationResult)
   const selectedNodeId   = usePluginUIDesignerStore(s => s.selectedNodeId)
@@ -17,6 +22,33 @@ export default function DesignerPreview({ pluginId = 'compressor', target, onClo
   const loadError        = usePluginUIDesignerStore(s => s.loadError)
 
   const hostRef = useRef(null)
+  const previewDisabled = validationResult?.ok === false
+
+  // Register the preview host element with designerActions so DOM measurement
+  // (move/convert to freeform) can read positions without storing DOM refs in state.
+  useEffect(() => {
+    setPreviewHostEl(hostRef.current)
+    return () => setPreviewHostEl(null)
+  }, [])
+
+  // Determine if the selected node is a freeform child (has props.frame).
+  const selectedNode     = selectedNodeId ? findNode(workingLayout, selectedNodeId) : null
+  const hasFreeformFrame = !!selectedNode?.props?.frame
+
+  // Arrow-key nudge when a freeform child is selected.
+  useEffect(() => {
+    if (!hasFreeformFrame || !selectedNodeId) return
+
+    function handleKeyDown(e) {
+      const dir = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' }[e.key]
+      if (!dir) return
+      e.preventDefault()
+      nudgeSelectedFrame(dir, { shiftKey: e.shiftKey, altKey: e.altKey })
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [hasFreeformFrame, selectedNodeId])
 
   if (!workingLayout && isLoading) {
     return (
@@ -28,14 +60,29 @@ export default function DesignerPreview({ pluginId = 'compressor', target, onClo
 
   return (
     <div className="pluginui-designer-preview-host" ref={hostRef}>
-      <StockPluginRuntimeRenderer
-        pluginId={pluginId}
-        target={target}
-        onClose={onClose}
-        layoutOverride={workingLayout}
-        layoutOverrideErrors={validationResult?.errors ?? []}
-      />
-      <SelectionOutline hostRef={hostRef} selectedNodeId={selectedNodeId} workingLayout={workingLayout} />
+      {previewDisabled ? (
+        <div className="pluginui-designer-preview-disabled" role="status">
+          <div className="pluginui-designer-preview-disabled-title">Validation failed, preview disabled</div>
+          <div className="pluginui-designer-preview-disabled-detail">
+            Fix hard layout errors before previewing this layout.
+          </div>
+        </div>
+      ) : (
+        <>
+          <StockPluginRuntimeRenderer
+            pluginId={pluginId}
+            target={target}
+            onClose={onClose}
+            layoutOverride={workingLayout}
+            layoutOverrideErrors={validationResult?.errors ?? []}
+          />
+          {hasFreeformFrame ? (
+            <SelectionOverlay hostRef={hostRef} />
+          ) : (
+            <SelectionOutline hostRef={hostRef} selectedNodeId={selectedNodeId} workingLayout={workingLayout} />
+          )}
+        </>
+      )}
       {loadError && (
         <div className="pluginui-designer-preview-warning" role="status">
           {loadError}
@@ -45,17 +92,8 @@ export default function DesignerPreview({ pluginId = 'compressor', target, onClo
   )
 }
 
-// ── Selection outline overlay ────────────────────────────────────────────────
-//
-// Looks up the DOM node tagged with data-pluginui-id matching the current
-// selection, computes its bounding rect relative to the host, and renders an
-// absolutely-positioned outline div. Recomputes on:
-//   - selection change
-//   - layout change
-//   - window resize
-//   - host scroll
-//
-// Never mutates the runtime DOM — pure overlay.
+// ── Plain selection outline ────────────────────────────────────────────────────
+// Used for flow-layout nodes (no props.frame). Pure overlay, no interaction.
 
 function SelectionOutline({ hostRef, selectedNodeId, workingLayout }) {
   const [rect, setRect] = useState(null)

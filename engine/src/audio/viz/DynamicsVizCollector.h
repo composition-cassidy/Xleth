@@ -254,4 +254,100 @@ private:
     uint32_t flags_         {0};
 };
 
+// ── Limiter accumulator (audio-thread helper) ────────────────────────────────
+// Tracks per-bucket aggregates for the Limiter: peak input/output levels,
+// max gain reduction, mean-square energy (cheap RMS-like trace), and the last
+// snapshot of smoothed ceiling/gain/release parameters. Composes with
+// DynamicsVizCollector<LimiterBucket>.
+//
+// Usage per sample (audio thread):
+//     accum.observe(absIn, absOut, msIn, msOut, grDb,
+//                   ceilingDb, gainDb, releaseMs);
+//     accum.advance(currentSampleClock, collector);
+//
+// "msIn" / "msOut" are squared-sample contributions (xÂ²). The accumulator
+// integrates them over the bucket and emits 10*log10(meanSq) at flush time.
+// This is a cheap energy-like trace — it is NOT calibrated to any LUFS or
+// ITU-R BS.1770 standard.
+class LimiterBucketAccumulator
+{
+public:
+    void reset() noexcept { *this = LimiterBucketAccumulator{}; }
+
+    inline void observe(float absIn,
+                        float absOut,
+                        float msIn,
+                        float msOut,
+                        float grDb,
+                        float ceilingDb,
+                        float gainDb,
+                        float releaseMs) noexcept
+    {
+        if (absIn  > peakAbsIn_)  peakAbsIn_  = absIn;
+        if (absOut > peakAbsOut_) peakAbsOut_ = absOut;
+        if (grDb   > maxGrDb_)    maxGrDb_    = grDb;
+        sumMsIn_  += msIn;
+        sumMsOut_ += msOut;
+        lastCeilingDb_ = ceilingDb;
+        lastGainDb_    = gainDb;
+        lastReleaseMs_ = releaseMs;
+        ++sampleCount_;
+    }
+
+    inline void advance(uint64_t bucketEndSampleClock,
+                        DynamicsVizCollector<LimiterBucket>& collector) noexcept
+    {
+        if (sampleCount_ >= collector.bucketSamples())
+        {
+            LimiterBucket b{};
+            b.hdr.sampleClock   = bucketEndSampleClock + 1u - sampleCount_;
+            b.hdr.bucketSamples = sampleCount_;
+            b.hdr.flags         = flags_;
+            b.inLevelDb         = absToDb(peakAbsIn_);
+            b.outLevelDb        = absToDb(peakAbsOut_);
+            b.gainReductionDb   = maxGrDb_;
+            b.inEnergyDb        = msToDb(sumMsIn_  / static_cast<float>(sampleCount_));
+            b.outEnergyDb       = msToDb(sumMsOut_ / static_cast<float>(sampleCount_));
+            b.ceilingDb         = lastCeilingDb_;
+            b.gainDb            = lastGainDb_;
+            b.releaseMs         = lastReleaseMs_;
+            b.reserved0         = 0.0f;
+
+            (void) collector.push(b);
+
+            peakAbsIn_   = 0.0f;
+            peakAbsOut_  = 0.0f;
+            maxGrDb_     = 0.0f;
+            sumMsIn_     = 0.0f;
+            sumMsOut_    = 0.0f;
+            sampleCount_ = 0;
+            flags_       = 0u;
+        }
+    }
+
+private:
+    static inline float absToDb(float a) noexcept
+    {
+        if (a < 1.0e-6f) return -120.0f;
+        return 20.0f * std::log10(a);
+    }
+
+    static inline float msToDb(float meanSq) noexcept
+    {
+        if (meanSq < 1.0e-12f) return -120.0f;
+        return 10.0f * std::log10(meanSq);
+    }
+
+    float    peakAbsIn_     {0.0f};
+    float    peakAbsOut_    {0.0f};
+    float    maxGrDb_       {0.0f};
+    float    sumMsIn_       {0.0f};
+    float    sumMsOut_      {0.0f};
+    float    lastCeilingDb_ {0.0f};
+    float    lastGainDb_    {0.0f};
+    float    lastReleaseMs_ {0.0f};
+    uint32_t sampleCount_   {0};
+    uint32_t flags_         {0};
+};
+
 }} // namespace xleth::viz

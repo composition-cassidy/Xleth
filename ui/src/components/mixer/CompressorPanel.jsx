@@ -203,6 +203,7 @@ export default function CompressorPanel() {
   const close  = useCompressorStore(s => s.close)
 
   const [designerOpen, setDesignerOpen] = useState(false)
+  const designerCloseGuardRef = useRef(null)
 
   const [panelPos, setPanelPos] = useState(() => ({
     x: Math.round(window.innerWidth / 2 - 240),
@@ -237,6 +238,33 @@ export default function CompressorPanel() {
     }
   }, [])
 
+  const requestDesignerClose = useCallback(async () => {
+    if (!designerOpen) return true
+    const guard = designerCloseGuardRef.current
+    if (typeof guard !== 'function') return true
+    try {
+      return !!await guard()
+    } catch {
+      return false
+    }
+  }, [designerOpen])
+
+  const handleEditUiClick = useCallback(async () => {
+    if (!designerOpen) {
+      setDesignerOpen(true)
+      return
+    }
+    if (await requestDesignerClose()) {
+      setDesignerOpen(false)
+    }
+  }, [designerOpen, requestDesignerClose])
+
+  const handlePanelClose = useCallback(async () => {
+    if (await requestDesignerClose()) {
+      close()
+    }
+  }, [close, requestDesignerClose])
+
   if (!target) return null
 
   const panelCls = `compressor-panel${DESIGNER_ENABLED && designerOpen ? ' compressor-panel--designer-open' : ''}`
@@ -248,14 +276,14 @@ export default function CompressorPanel() {
         {DESIGNER_ENABLED && (
           <button
             className={`compressor-panel-edit-ui${designerOpen ? ' compressor-panel-edit-ui--active' : ''}`}
-            onClick={() => setDesignerOpen(o => !o)}
+            onClick={handleEditUiClick}
             title={designerOpen ? 'Close Designer' : 'Edit UI'}
             aria-pressed={designerOpen}
           >
             Edit UI
           </button>
         )}
-        <button className="compressor-panel-close" onClick={close} title="Close">
+        <button className="compressor-panel-close" onClick={handlePanelClose} title="Close">
           <X size={12} />
         </button>
       </div>
@@ -278,7 +306,18 @@ export default function CompressorPanel() {
         {DESIGNER_ENABLED && designerOpen && PluginUIDesigner && (
           <DesignerColumnBoundary>
             <Suspense fallback={<div className="pluginui-designer-root"><div className="pluginui-designer-loading">Loading Designer…</div></div>}>
-              <PluginUIDesigner pluginId="compressor" onClose={() => setDesignerOpen(false)} />
+              <PluginUIDesigner
+                pluginId="compressor"
+                onClose={() => setDesignerOpen(false)}
+                registerCloseGuard={(guard) => {
+                  designerCloseGuardRef.current = guard
+                  return () => {
+                    if (designerCloseGuardRef.current === guard) {
+                      designerCloseGuardRef.current = null
+                    }
+                  }
+                }}
+              />
             </Suspense>
           </DesignerColumnBoundary>
         )}
