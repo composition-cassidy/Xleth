@@ -59,6 +59,10 @@ export default function VideoExportDialog({ isOpen, onClose }) {
   const [renderFps, setRenderFps]       = useState(60)
 
   const saveTimerRef = useRef(null)
+  const swEncoderNotifiedRef = useRef(false)
+
+  // ── Per-export video mode override ───────────────────────────────────
+  const [videoModeOverride, setVideoModeOverride] = useState('auto')
 
   // Load presets on mount (not on every open, so user changes survive close/reopen).
   useEffect(() => {
@@ -102,6 +106,7 @@ export default function VideoExportDialog({ isOpen, onClose }) {
   // Subscribe to backend progress updates whenever the dialog is open.
   useEffect(() => {
     if (!isOpen) return
+    swEncoderNotifiedRef.current = false
     const unsub = window.xleth?.videoExport?.onExportProgress?.((p) => {
       if (!p) return
       setProgress(p.percentage != null ? p.percentage / 100 : 0)
@@ -110,6 +115,22 @@ export default function VideoExportDialog({ isOpen, onClose }) {
       setSpeed(p.speed ?? 0)
       setEta(p.eta ?? 0)
       setRenderPhase(p.phase ?? 0)
+
+      // Notify once if a software video encoder is active
+      const encName = p.videoEncoderName
+      if (encName && !swEncoderNotifiedRef.current) {
+        const isSoftware = encName === 'mpeg4' || encName.startsWith('lib')
+        if (isSoftware) {
+          swEncoderNotifiedRef.current = true
+          // Distinguish auto-fallback (HW tried and rejected) from explicit user choice
+          // (p.videoEncoderFallback will be false when Software Video Mode is active)
+          const msg = p.videoEncoderFallback
+            ? `No hardware video encoder available — using ${encName} software encode. Export will be slower.`
+            : `Using ${encName} software encode. Export will be slower.`
+          showToast(msg, 'info')
+        }
+      }
+
       if (p.running) {
         setPhase('running')
       } else if (p.complete) {
@@ -121,9 +142,9 @@ export default function VideoExportDialog({ isOpen, onClose }) {
       }
     })
     return unsub
-  }, [isOpen])
+  }, [isOpen, showToast])
 
-  // Reset progress whenever dialog opens. Keep settings.
+  // Reset progress and load global videoMode default whenever dialog opens.
   useEffect(() => {
     if (!isOpen) return
     setPhase('idle')
@@ -134,6 +155,9 @@ export default function VideoExportDialog({ isOpen, onClose }) {
     setSpeed(0)
     setEta(0)
     setErrorMsg('')
+    window.xleth?.settings?.get?.('videoMode').then(v => {
+      setVideoModeOverride(['auto', 'software', 'hardware'].includes(v) ? v : 'auto')
+    }).catch(() => setVideoModeOverride('auto'))
   }, [isOpen])
 
   const running  = phase === 'running'
@@ -216,6 +240,7 @@ export default function VideoExportDialog({ isOpen, onClose }) {
         outputPath,
         videoCodec:   'h264',
         hwEncoder:    youtubeSettings.hwEncoder || '',
+        videoMode:    videoModeOverride || 'auto',
         width:        res.width,
         height:       res.height,
         fpsNum:       Number(youtubeSettings.fps),
@@ -224,6 +249,10 @@ export default function VideoExportDialog({ isOpen, onClose }) {
         audioCodec:   'aac',
         sampleRate:   48000,
         audioBitrate: 384,
+        // Final-quality export — bypass DNxHR proxy substitution so the encoder
+        // sees original-source pixels (otherwise CRF/bitrate operate on already-
+        // degraded preview-grade input).
+        useSourceMedia: true,
         startBeat, endBeat,
       }
     }
@@ -234,6 +263,7 @@ export default function VideoExportDialog({ isOpen, onClose }) {
         outputPath,
         videoCodec:   'h264',
         hwEncoder:    discordSettings.hwEncoder || '',
+        videoMode:    videoModeOverride || 'auto',
         width:        DISCORD_WIDTH,
         height:       DISCORD_HEIGHT,
         fpsNum:       Number(discordSettings.fps),
@@ -242,6 +272,7 @@ export default function VideoExportDialog({ isOpen, onClose }) {
         audioCodec:   'opus',
         sampleRate:   44100,
         audioBitrate: 256,
+        useSourceMedia: true,
         startBeat, endBeat,
       }
     }
@@ -252,6 +283,7 @@ export default function VideoExportDialog({ isOpen, onClose }) {
       outputPath,
       videoCodec:   customSettings.videoCodec,
       hwEncoder:    customSettings.hwEncoder || '',
+      videoMode:    videoModeOverride || 'auto',
       width:        w,
       height:       h,
       fpsNum:       Number(customSettings.fps),
@@ -259,6 +291,7 @@ export default function VideoExportDialog({ isOpen, onClose }) {
       audioCodec:   customSettings.audioCodec,
       sampleRate:   Number(customSettings.sampleRate),
       audioBitrate: Number(customSettings.audioBitrate),
+      useSourceMedia: true,
       startBeat, endBeat,
     }
     if (customSettings.useCrf) {
@@ -268,7 +301,7 @@ export default function VideoExportDialog({ isOpen, onClose }) {
     }
     return cfg
   }, [activeTab, outputPath, startBar, endBar, youtubeSettings,
-      discordSettings, discordDurationSec, customSettings])
+      discordSettings, discordDurationSec, customSettings, videoModeOverride])
 
   const activeFps = activeTab === 'youtube' ? youtubeSettings.fps
                   : activeTab === 'discord' ? discordSettings.fps
@@ -381,6 +414,19 @@ export default function VideoExportDialog({ isOpen, onClose }) {
                 />
               </div>
               <div style={{ borderTop: '1px solid var(--theme-border-subtle)', margin: '4px 0', opacity: 0.3 }} />
+
+              <div className="export-row">
+                <label>Video mode</label>
+                <select
+                  value={videoModeOverride}
+                  onChange={e => setVideoModeOverride(e.target.value)}
+                  style={{ fontSize: 12 }}
+                >
+                  <option value="auto">Auto</option>
+                  <option value="software">Software</option>
+                  <option value="hardware">Hardware only</option>
+                </select>
+              </div>
 
               {activeTab === 'youtube' && (
                 <YouTubeTab

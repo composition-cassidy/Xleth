@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { X } from 'lucide-react'
 import useFlangerStore from '../../stores/flangerStore.js'
 import Knob from '../sampler/Knob.jsx'
+import FlangerVisualizerCanvas from './FlangerVisualizerCanvas.jsx'
 
 // ── Parameter definitions ────────────────────────────────────────────────────
 
@@ -97,6 +98,11 @@ export default function FlangerPanel() {
         <button className="flanger-panel-close" onClick={close} title="Close">
           <X size={12} />
         </button>
+      </div>
+
+      {/* Visualizer */}
+      <div className="flanger-viz-wrap">
+        <FlangerVisualizerCanvas params={params} />
       </div>
 
       {/* Knob grid */}

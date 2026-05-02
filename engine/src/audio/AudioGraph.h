@@ -154,6 +154,9 @@ public:
     void processBlock(juce::AudioBuffer<float>& buffer, int numSamples,
                       juce::MidiBuffer& midi);
 
+    // Reset all processors and helper nodes. Intended for transport jumps.
+    void resetProcessors();
+
     // Returns the maximum getTailLengthSeconds() across all effect nodes.
     // Lightweight (iterates effect nodes only, no alloc). Safe from audio thread.
     double getMaxTailLengthSeconds() const;

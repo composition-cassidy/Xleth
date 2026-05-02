@@ -9,10 +9,11 @@ const EFFECT_CATEGORIES = [
   {
     label: 'Dynamics',
     submenu: [
-      { label: 'Compressor',    id: 'compressor' },
-      { label: 'Limiter',       id: 'limiter' },
-      { label: 'Overdone',      id: 'overdone' },
-      { label: 'Transient Proc',id: 'transientproc' },
+      { label: 'Compressor',          id: 'compressor' },
+      { label: 'Limiter',             id: 'limiter' },
+      { label: 'Overdone',            id: 'overdone' },
+      { label: 'Transient Proc',      id: 'transientproc' },
+      { label: 'Resonance Suppressor',id: 'resonancesuppressor' },
     ],
   },
   {

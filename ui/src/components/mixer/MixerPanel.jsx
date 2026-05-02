@@ -17,6 +17,7 @@ import OTTPanel from './OTTPanel.jsx'
 import ReverbPanel from './ReverbPanel.jsx'
 import TransientProcPanel from './TransientProcPanel.jsx'
 import SmartBalancePanel from './SmartBalancePanel.jsx'
+import ResonanceSuppressorPanel from './ResonanceSuppressorPanel.jsx'
 import VstBrowser from './VstBrowser.jsx'
 import ScanProgressBar from './ScanProgressBar.jsx'
 
@@ -124,6 +125,7 @@ export default function MixerPanel() {
       <ReverbPanel />
       <TransientProcPanel />
       <SmartBalancePanel />
+      <ResonanceSuppressorPanel />
       <VstBrowser />
       <div className="mixer-toolbar">
         <button

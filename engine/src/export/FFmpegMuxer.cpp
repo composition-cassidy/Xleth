@@ -19,6 +19,7 @@ extern "C" {
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -122,55 +123,70 @@ void FFmpegMuxer::cleanup()
     trailerWritten_     = false;
     fileOpened_         = false;
     initialized_        = false;
-    videoEncoderName_   = "none";
-    audioEncoderName_   = "none";
+    videoEncoderName_     = "none";
+    videoEncoderFallback_ = false;
+    audioEncoderName_     = "none";
 }
 
 // ===========================================================================
 // Encoder lookup
 // ===========================================================================
 
-const void* FFmpegMuxer::findVideoEncoder(ExportSettings::VideoCodec codec,
-                                            const std::string& hwName)
+// Returns true for encoder names that require GPU driver support.
+static bool isHardwareEncoderName(const char* name) {
+    return std::strstr(name, "_nvenc") || std::strstr(name, "_amf") ||
+           std::strstr(name, "_qsv")   || std::strstr(name, "_mf");
+}
+
+// Build an ordered list of compiled-in encoder candidates for a codec family.
+// The explicit hwName (if non-empty) is inserted first. Duplicates are dropped.
+// VideoMode::Software skips all hardware entries; Hardware skips software entries.
+static std::vector<const AVCodec*> buildVideoEncoderCandidates(
+    ExportSettings::VideoCodec codec, const std::string& hwName,
+    ExportSettings::VideoMode mode)
 {
     using VC = ExportSettings::VideoCodec;
+    using VM = ExportSettings::VideoMode;
+    std::vector<const AVCodec*> result;
 
-    // Try explicit hardware encoder name first
-    if (!hwName.empty()) {
-        const AVCodec* c = avcodec_find_encoder_by_name(hwName.c_str());
-        if (c) return c;
-        std::fprintf(stderr, "[Muxer] hw encoder '%s' not found, trying fallbacks\n",
-                     hwName.c_str());
-    }
+    auto push = [&](const char* name) {
+        bool isHw = isHardwareEncoderName(name);
+        if (mode == VM::Software && isHw)  return;  // skip HW in Software mode
+        if (mode == VM::Hardware && !isHw) return;  // skip SW in Hardware mode
+        const AVCodec* c = avcodec_find_encoder_by_name(name);
+        if (!c) return;
+        for (const auto* e : result) if (e == c) return;
+        result.push_back(c);
+    };
+    auto pushId = [&](AVCodecID id) {
+        if (mode == VM::Hardware) return;  // ID-based lookups yield SW codecs only
+        const AVCodec* c = avcodec_find_encoder(id);
+        if (!c) return;
+        for (const auto* e : result) if (e == c) return;
+        result.push_back(c);
+    };
+
+    if (!hwName.empty()) push(hwName.c_str());
 
     switch (codec) {
-        case VC::H264: {
-            for (const char* name : {"h264_nvenc", "h264_amf", "h264_mf", "libx264"}) {
-                if (auto* c = avcodec_find_encoder_by_name(name)) return c;
-            }
-            // Absolute fallback to MPEG-4
-            return avcodec_find_encoder(AV_CODEC_ID_MPEG4);
-        }
-        case VC::H265: {
-            for (const char* name : {"hevc_nvenc", "hevc_amf", "hevc_mf", "libx265"}) {
-                if (auto* c = avcodec_find_encoder_by_name(name)) return c;
-            }
-            return nullptr;
-        }
-        case VC::AV1: {
-            for (const char* name : {"av1_nvenc", "av1_amf", "libaom-av1", "libsvtav1"}) {
-                if (auto* c = avcodec_find_encoder_by_name(name)) return c;
-            }
-            return nullptr;
-        }
-        case VC::DNXHD:
-            return avcodec_find_encoder(AV_CODEC_ID_DNXHD);
-        case VC::PRORES:
-            return avcodec_find_encoder_by_name("prores_ks");
-        case VC::MPEG4:
-            return avcodec_find_encoder(AV_CODEC_ID_MPEG4);
+        case VC::H264:
+            for (const char* n : {"h264_nvenc", "h264_amf", "h264_qsv", "h264_mf", "libx264"})
+                push(n);
+            pushId(AV_CODEC_ID_MPEG4);   // absolute last-resort
+            break;
+        case VC::H265:
+            for (const char* n : {"hevc_nvenc", "hevc_amf", "hevc_qsv", "hevc_mf", "libx265"})
+                push(n);
+            break;
+        case VC::AV1:
+            for (const char* n : {"av1_nvenc", "av1_amf", "av1_qsv", "libsvtav1", "libaom-av1"})
+                push(n);
+            break;
+        case VC::DNXHD:  pushId(AV_CODEC_ID_DNXHD); break;
+        case VC::PRORES: push("prores_ks");           break;
+        case VC::MPEG4:  pushId(AV_CODEC_ID_MPEG4);  break;
     }
-    return nullptr;
+    return result;
 }
 
 const void* FFmpegMuxer::findAudioEncoder(ExportSettings::AudioCodec codec)
@@ -255,69 +271,105 @@ bool FFmpegMuxer::init(const ExportSettings& settings)
 
 bool FFmpegMuxer::initVideoStream(const ExportSettings& s)
 {
-    const AVCodec* codec = static_cast<const AVCodec*>(
-        findVideoEncoder(s.videoCodec, s.hwEncoderName));
-    if (!codec) {
-        std::fprintf(stderr, "[Muxer] ERROR: No video encoder found\n");
+    auto candidates = buildVideoEncoderCandidates(s.videoCodec, s.hwEncoderName, s.videoMode);
+    if (candidates.empty()) {
+        std::fprintf(stderr,
+            "[Muxer] ERROR: No video encoder candidates for mode=%s codec (no matching encoder compiled in)\n",
+            s.videoMode == ExportSettings::VideoMode::Hardware ? "hardware" :
+            s.videoMode == ExportSettings::VideoMode::Software ? "software" : "auto");
         return false;
     }
-    videoEncoderName_ = codec->name;
 
-    videoStream_ = avformat_new_stream(fmtCtx_, codec);
+    std::fprintf(stderr, "[Muxer] Video encoder candidates (%zu):", candidates.size());
+    for (const auto* c : candidates) std::fprintf(stderr, " %s", c->name);
+    std::fprintf(stderr, "\n");
+
+    // Create the output stream once. All same-family encoders share AVCodecID so
+    // we don't need to recreate the stream on each retry.
+    videoStream_ = avformat_new_stream(fmtCtx_, nullptr);
     if (!videoStream_) return false;
 
-    videoCodecCtx_ = avcodec_alloc_context3(codec);
-    if (!videoCodecCtx_) return false;
+    // Try each candidate with real export settings until one opens successfully.
+    const AVCodec* chosenCodec = nullptr;
+    for (size_t ci = 0; ci < candidates.size(); ++ci) {
+        const AVCodec* codec = candidates[ci];
 
-    videoCodecCtx_->width     = s.width;
-    videoCodecCtx_->height    = s.height;
-    videoCodecCtx_->time_base = { s.fpsDen, s.fpsNum };  // duration of one frame
-    videoCodecCtx_->framerate = { s.fpsNum, s.fpsDen };
+        if (videoCodecCtx_) avcodec_free_context(&videoCodecCtx_);
+        videoCodecCtx_ = avcodec_alloc_context3(codec);
+        if (!videoCodecCtx_) {
+            std::fprintf(stderr, "[Muxer] avcodec_alloc_context3 failed for '%s', skipping\n",
+                         codec->name);
+            continue;
+        }
 
-    // Pick pixel format: prefer yuv420p, but let the encoder override
-    // (DNxHD needs yuv422p, ProRes needs yuv422p10le)
-    videoCodecCtx_->pix_fmt = AV_PIX_FMT_YUV420P;
-    {
-        const AVPixelFormat* pixFmts = nullptr;
-        int numPixFmts = 0;
-        int cfgRet = avcodec_get_supported_config(nullptr, codec,
-                         AV_CODEC_CONFIG_PIX_FORMAT, 0,
-                         reinterpret_cast<const void**>(&pixFmts), &numPixFmts);
-        if (cfgRet >= 0 && pixFmts && numPixFmts > 0) {
-            bool found420 = false;
-            for (int i = 0; i < numPixFmts && pixFmts[i] != AV_PIX_FMT_NONE; ++i) {
-                if (pixFmts[i] == AV_PIX_FMT_YUV420P) {
-                    found420 = true;
-                    break;
-                }
-            }
-            if (!found420) {
-                videoCodecCtx_->pix_fmt = pixFmts[0];
+        videoCodecCtx_->width     = s.width;
+        videoCodecCtx_->height    = s.height;
+        videoCodecCtx_->time_base = { s.fpsDen, s.fpsNum };
+        videoCodecCtx_->framerate = { s.fpsNum, s.fpsDen };
+        videoCodecCtx_->pix_fmt   = AV_PIX_FMT_YUV420P;
+
+        // Pick pixel format: prefer yuv420p, let encoder override if unsupported
+        // (DNxHD needs yuv422p, ProRes needs yuv422p10le)
+        {
+            const AVPixelFormat* pixFmts = nullptr;
+            int numPixFmts = 0;
+            int cfgRet = avcodec_get_supported_config(nullptr, codec,
+                             AV_CODEC_CONFIG_PIX_FORMAT, 0,
+                             reinterpret_cast<const void**>(&pixFmts), &numPixFmts);
+            if (cfgRet >= 0 && pixFmts && numPixFmts > 0) {
+                bool found420 = false;
+                for (int i = 0; i < numPixFmts && pixFmts[i] != AV_PIX_FMT_NONE; ++i)
+                    if (pixFmts[i] == AV_PIX_FMT_YUV420P) { found420 = true; break; }
+                if (!found420) videoCodecCtx_->pix_fmt = pixFmts[0];
             }
         }
+
+        if (s.videoBitrate > 0) videoCodecCtx_->bit_rate = s.videoBitrate;
+        if (s.crf >= 0)         av_opt_set_int(videoCodecCtx_->priv_data, "crf", s.crf, 0);
+        if (fmtCtx_->oformat->flags & AVFMT_GLOBALHEADER)
+            videoCodecCtx_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+
+        std::fprintf(stderr,
+                     "[Muxer] Trying encoder '%s' (%zu/%zu): %dx%d pix_fmt=%d bitrate=%lld\n",
+                     codec->name, ci + 1, candidates.size(),
+                     s.width, s.height, (int)videoCodecCtx_->pix_fmt,
+                     (long long)videoCodecCtx_->bit_rate);
+
+        int ret = avcodec_open2(videoCodecCtx_, codec, nullptr);
+        if (ret == 0) {
+            chosenCodec = codec;
+            // Fallback = true only in Auto mode when at least one candidate was
+            // tried and failed AND the chosen encoder is a software encoder. In
+            // Software mode ci > 0 just means "first SW candidate not compiled
+            // in" — not a hardware-rejected fallback.
+            bool chosenIsSoftware = !isHardwareEncoderName(codec->name);
+            videoEncoderFallback_ = (s.videoMode == ExportSettings::VideoMode::Auto)
+                                 && chosenIsSoftware && (ci > 0);
+            break;
+        }
+
+        char errBuf[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(ret, errBuf, sizeof(errBuf));
+        std::fprintf(stderr, "[Muxer] Encoder '%s' rejected: %s%s\n",
+                     codec->name, errBuf,
+                     (ci + 1 < candidates.size()) ? " — trying next" : " — no more fallbacks");
+        avcodec_free_context(&videoCodecCtx_);
     }
 
-    // Bitrate / CRF
-    if (s.videoBitrate > 0) {
-        videoCodecCtx_->bit_rate = s.videoBitrate;
-    }
-    if (s.crf >= 0) {
-        av_opt_set_int(videoCodecCtx_->priv_data, "crf", s.crf, 0);
-    }
-
-    // Global header flag (needed for some containers)
-    if (fmtCtx_->oformat->flags & AVFMT_GLOBALHEADER)
-        videoCodecCtx_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-
-    videoStream_->time_base = videoCodecCtx_->time_base;
-
-    int ret = avcodec_open2(videoCodecCtx_, codec, nullptr);
-    if (ret < 0) {
-        logAvError("avcodec_open2 (video)", ret);
+    if (!chosenCodec || !videoCodecCtx_) {
+        if (s.videoMode == ExportSettings::VideoMode::Hardware) {
+            std::fprintf(stderr, "[Muxer] ERROR: Hardware video mode required but no hardware encoder succeeded\n");
+        } else {
+            std::fprintf(stderr, "[Muxer] ERROR: All video encoder candidates failed to open\n");
+        }
         return false;
     }
 
-    ret = avcodec_parameters_from_context(videoStream_->codecpar, videoCodecCtx_);
+    videoEncoderName_ = chosenCodec->name;
+    videoStream_->time_base = videoCodecCtx_->time_base;
+    std::fprintf(stderr, "[Muxer] Selected video encoder: '%s'\n", chosenCodec->name);
+
+    int ret = avcodec_parameters_from_context(videoStream_->codecpar, videoCodecCtx_);
     if (ret < 0) {
         logAvError("avcodec_parameters_from_context (video)", ret);
         return false;
@@ -344,10 +396,11 @@ bool FFmpegMuxer::initVideoStream(const ExportSettings& s)
         return false;
     }
 
-    std::fprintf(stderr, "[Muxer] Video stream: %dx%d %d/%d fps timeBase=%d/%d bitrate=%lld codec=%s pixfmt=%s\n",
+    std::fprintf(stderr,
+                 "[Muxer] Video stream: %dx%d %d/%d fps timeBase=%d/%d bitrate=%lld codec=%s pixfmt=%s\n",
                  s.width, s.height, s.fpsNum, s.fpsDen,
                  videoCodecCtx_->time_base.num, videoCodecCtx_->time_base.den,
-                 (long long)videoCodecCtx_->bit_rate, codec->name,
+                 (long long)videoCodecCtx_->bit_rate, chosenCodec->name,
                  av_get_pix_fmt_name(videoCodecCtx_->pix_fmt));
 
     return true;
@@ -702,5 +755,6 @@ bool FFmpegMuxer::shouldWriteVideo() const
 // Accessors
 // ===========================================================================
 
-const char* FFmpegMuxer::videoEncoderName() const { return videoEncoderName_; }
-const char* FFmpegMuxer::audioEncoderName() const { return audioEncoderName_; }
+const char* FFmpegMuxer::videoEncoderName()     const { return videoEncoderName_; }
+bool        FFmpegMuxer::isVideoEncoderFallback() const { return videoEncoderFallback_; }
+const char* FFmpegMuxer::audioEncoderName()     const { return audioEncoderName_; }

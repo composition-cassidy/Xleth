@@ -2,38 +2,23 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { X } from 'lucide-react'
 import useDelayStore from '../../stores/delayStore.js'
 import Knob from '../sampler/Knob.jsx'
+import DelayTapeheadVisualizer from './DelayTapeheadVisualizer.jsx'
 
 // ── Parameter definitions ────────────────────────────────────────────────────
 
 const KNOBS = [
-  // Row 1 — Time & core
-  { id: 'time_l',    label: 'TIME L',    min: 1,    max: 5000,  default: 500,   fmt: v => `${v.toFixed(0)} ms` },
-  { id: 'time_r',    label: 'TIME R',    min: 1,    max: 5000,  default: 500,   fmt: v => `${v.toFixed(0)} ms` },
-  { id: 'feedback',  label: 'FEEDBACK',  min: 0,    max: 95,    default: 30,    fmt: v => `${v.toFixed(0)} %`  },
-  { id: 'mix',       label: 'MIX',       min: 0,    max: 100,   default: 30,    fmt: v => `${v.toFixed(0)} %`  },
-  // Row 2 — Filters & modulation
-  { id: 'filter_lo', label: 'LO CUT',    min: 20,   max: 2000,  default: 80,    fmt: v => `${v.toFixed(0)} Hz` },
-  { id: 'filter_hi', label: 'HI CUT',    min: 1000, max: 20000, default: 12000, fmt: v => `${v.toFixed(0)} Hz` },
-  { id: 'mod_rate',  label: 'MOD RATE',  min: 0.01, max: 5,     default: 0.3,   fmt: v => `${v.toFixed(2)} Hz` },
-  { id: 'mod_depth', label: 'MOD DEPTH', min: 0,    max: 100,   default: 15,    fmt: v => `${v.toFixed(0)} %`  },
-  // Row 3 — Stereo & ducking
-  { id: 'stereo_width', label: 'WIDTH',  min: 0,    max: 100,   default: 50,    fmt: v => `${v.toFixed(0)} %`  },
-  { id: 'duck_amount',  label: 'DUCK',   min: 0,    max: 100,   default: 0,     fmt: v => `${v.toFixed(0)} %`  },
-]
-
-const SYNC_DIVISIONS = [
-  { value: 0,  label: '1/1'   },
-  { value: 1,  label: '1/2'   },
-  { value: 2,  label: '1/2D'  },
-  { value: 3,  label: '1/4'   },
-  { value: 4,  label: '1/4D'  },
-  { value: 5,  label: '1/4T'  },
-  { value: 6,  label: '1/8'   },
-  { value: 7,  label: '1/8D'  },
-  { value: 8,  label: '1/8T'  },
-  { value: 9,  label: '1/16'  },
-  { value: 10, label: '1/16D' },
-  { value: 11, label: '1/16T' },
+  // Row 1 — Time, core, stereo
+  { id: 'time_l',       label: 'TIME L',    min: 1,    max: 5000,  default: 500,   fmt: v => `${v.toFixed(0)} ms` },
+  { id: 'time_r',       label: 'TIME R',    min: 1,    max: 5000,  default: 500,   fmt: v => `${v.toFixed(0)} ms` },
+  { id: 'feedback',     label: 'FEEDBACK',  min: 0,    max: 95,    default: 30,    fmt: v => `${v.toFixed(0)} %`  },
+  { id: 'mix',          label: 'MIX',       min: 0,    max: 100,   default: 30,    fmt: v => `${v.toFixed(0)} %`  },
+  { id: 'stereo_width', label: 'WIDTH',     min: 0,    max: 100,   default: 50,    fmt: v => `${v.toFixed(0)} %`  },
+  // Row 2 — Filters, modulation, ducking
+  { id: 'filter_lo',    label: 'LO CUT',    min: 20,   max: 2000,  default: 80,    fmt: v => `${v.toFixed(0)} Hz` },
+  { id: 'filter_hi',    label: 'HI CUT',    min: 1000, max: 20000, default: 12000, fmt: v => `${v.toFixed(0)} Hz` },
+  { id: 'mod_rate',     label: 'MOD RATE',  min: 0.01, max: 5,     default: 0.3,   fmt: v => `${v.toFixed(2)} Hz` },
+  { id: 'mod_depth',    label: 'MOD DEPTH', min: 0,    max: 100,   default: 15,    fmt: v => `${v.toFixed(0)} %`  },
+  { id: 'duck_amount',  label: 'DUCK',      min: 0,    max: 100,   default: 0,     fmt: v => `${v.toFixed(0)} %`  },
 ]
 
 const DEFAULT_PARAMS = {
@@ -43,16 +28,67 @@ const DEFAULT_PARAMS = {
   sync_div_r: 3,
 }
 
-// ── DelayPanel ──────────────────────────────────────────────────────────────
+// ── Legacy sync adapter ─────────────────────────────────────────────────────
+// The engine stores sync_div_l/r as an integer index 0–11 into kDivFractions.
+// A future engine version will expose separate note + feel params. Until then
+// we translate at the UI layer only — the engine always receives the legacy
+// index; no fake params are ever sent.
+//
+// Index map (matches engine kDivFractions exactly):
+//   0=1/1 str  1=1/2 str  2=1/2 dot
+//   3=1/4 str  4=1/4 dot  5=1/4 tri
+//   6=1/8 str  7=1/8 dot  8=1/8 tri
+//   9=1/16 str 10=1/16 dot 11=1/16 tri
+const SYNC_NOTE_FEEL = [
+  { note: '1/1',  feel: 'straight' }, // 0
+  { note: '1/2',  feel: 'straight' }, // 1
+  { note: '1/2',  feel: 'dotted'   }, // 2
+  { note: '1/4',  feel: 'straight' }, // 3
+  { note: '1/4',  feel: 'dotted'   }, // 4
+  { note: '1/4',  feel: 'triplet'  }, // 5
+  { note: '1/8',  feel: 'straight' }, // 6
+  { note: '1/8',  feel: 'dotted'   }, // 7
+  { note: '1/8',  feel: 'triplet'  }, // 8
+  { note: '1/16', feel: 'straight' }, // 9
+  { note: '1/16', feel: 'dotted'   }, // 10
+  { note: '1/16', feel: 'triplet'  }, // 11
+]
+
+/** Decodes a legacy sync_div index to { note, feel }. Clamps to [0, 11]. */
+export function indexToNoteFeel(idx) {
+  const i = Math.round(Math.max(0, Math.min(11, idx ?? 3)))
+  return SYNC_NOTE_FEEL[i]
+}
+
+/**
+ * Encodes a { note, feel } pair to the legacy engine index.
+ * Returns null if the combo is not supported by the current engine.
+ */
+export function noteFeelToIndex(note, feel) {
+  const i = SYNC_NOTE_FEEL.findIndex(e => e.note === note && e.feel === feel)
+  return i === -1 ? null : i
+}
+
+/** Returns the feels available for a given note value. */
+export function availableFeels(note) {
+  return SYNC_NOTE_FEEL.filter(e => e.note === note).map(e => e.feel)
+}
+
+const NOTE_OPTIONS = ['1/1', '1/2', '1/4', '1/8', '1/16']
+const FEEL_OPTIONS = [
+  { value: 'straight', label: 'Str' },
+  { value: 'dotted',   label: 'Dot' },
+  { value: 'triplet',  label: 'Tri' },
+]
+
+// ── DelayPanel ───────────────────────────────────────────────────────────────
 
 export default function DelayPanel() {
   const target = useDelayStore(s => s.target)
   const close  = useDelayStore(s => s.close)
 
-  // Local param state — hydrated from engine on open
   const [params, setParams] = useState(DEFAULT_PARAMS)
 
-  // Panel drag state
   const [panelPos, setPanelPos] = useState(() => ({
     x: Math.round(window.innerWidth / 2 - 260),
     y: 80,
@@ -86,7 +122,6 @@ export default function DelayPanel() {
     }
   }, [])
 
-  // Hydrate params from engine when target changes
   useEffect(() => {
     if (!target) return
     setParams(DEFAULT_PARAMS)
@@ -105,16 +140,30 @@ export default function DelayPanel() {
     })()
   }, [target])
 
-  // Set a parameter value (live drag or commit)
   const setParam = useCallback((id, value) => {
     if (!target) return
     setParams(prev => ({ ...prev, [id]: value }))
     window.xleth?.audio?.setEffectParameter(target.trackId, target.nodeId, id, value)
   }, [target])
 
+  // Note/Feel change handler: converts the selected pair to the legacy engine
+  // index and sends sync_div_l or sync_div_r. If the combo is unsupported
+  // (shouldn't happen with valid UI state) we do nothing.
+  const handleNoteFeel = useCallback((side, note, feel) => {
+    const divParam = side === 'L' ? 'sync_div_l' : 'sync_div_r'
+    // If the current feel is not valid for the new note, fall back to straight.
+    const resolvedFeel = availableFeels(note).includes(feel) ? feel : 'straight'
+    const idx = noteFeelToIndex(note, resolvedFeel)
+    if (idx !== null) setParam(divParam, idx)
+  }, [setParam])
+
   if (!target) return null
 
   const synced = params.sync >= 0.5
+
+  // Derive current note + feel from stored engine indices.
+  const nfL = indexToNoteFeel(params.sync_div_l)
+  const nfR = indexToNoteFeel(params.sync_div_r)
 
   return (
     <div
@@ -127,6 +176,11 @@ export default function DelayPanel() {
         <button className="delay-panel-close" onClick={close} title="Close">
           <X size={12} />
         </button>
+      </div>
+
+      {/* Tapehead visualizer */}
+      <div className="delay-viz-wrap">
+        <DelayTapeheadVisualizer params={params} />
       </div>
 
       {/* Sync row */}
@@ -145,35 +199,68 @@ export default function DelayPanel() {
           Sync
         </button>
 
-        <span className="delay-sync-select-label">L</span>
+        {/* L channel Note + Feel */}
+        <span className="delay-sync-chan-label">L</span>
         <select
-          className="delay-sync-select"
-          value={Math.round(params.sync_div_l)}
+          className="delay-note-select"
+          value={nfL.note}
           disabled={!synced}
-          onChange={(e) => setParam('sync_div_l', Number(e.target.value))}
+          onChange={(e) => handleNoteFeel('L', e.target.value, nfL.feel)}
         >
-          {SYNC_DIVISIONS.map(d => (
-            <option key={d.value} value={d.value}>{d.label}</option>
+          {NOTE_OPTIONS.map(n => (
+            <option key={n} value={n}>{n}</option>
           ))}
         </select>
+        <div className="delay-feel-group">
+          {FEEL_OPTIONS.map(f => {
+            const supported = availableFeels(nfL.note).includes(f.value)
+            const active    = nfL.feel === f.value
+            return (
+              <button
+                key={f.value}
+                className={`delay-feel-btn${active ? ' active' : ''}`}
+                disabled={!synced || !supported}
+                onClick={() => handleNoteFeel('L', nfL.note, f.value)}
+              >
+                {f.label}
+              </button>
+            )
+          })}
+        </div>
 
-        <span className="delay-sync-select-label">R</span>
+        {/* R channel Note + Feel */}
+        <span className="delay-sync-chan-label">R</span>
         <select
-          className="delay-sync-select"
-          value={Math.round(params.sync_div_r)}
+          className="delay-note-select"
+          value={nfR.note}
           disabled={!synced}
-          onChange={(e) => setParam('sync_div_r', Number(e.target.value))}
+          onChange={(e) => handleNoteFeel('R', e.target.value, nfR.feel)}
         >
-          {SYNC_DIVISIONS.map(d => (
-            <option key={d.value} value={d.value}>{d.label}</option>
+          {NOTE_OPTIONS.map(n => (
+            <option key={n} value={n}>{n}</option>
           ))}
         </select>
+        <div className="delay-feel-group">
+          {FEEL_OPTIONS.map(f => {
+            const supported = availableFeels(nfR.note).includes(f.value)
+            const active    = nfR.feel === f.value
+            return (
+              <button
+                key={f.value}
+                className={`delay-feel-btn${active ? ' active' : ''}`}
+                disabled={!synced || !supported}
+                onClick={() => handleNoteFeel('R', nfR.note, f.value)}
+              >
+                {f.label}
+              </button>
+            )
+          })}
+        </div>
       </div>
 
       {/* Knob grid */}
       <div className="delay-knob-grid">
         {KNOBS.map(k => {
-          // Dim time knobs when synced
           const dimmed = synced && (k.id === 'time_l' || k.id === 'time_r')
           return (
             <div key={k.id} className="delay-knob-cell" style={dimmed ? { opacity: 0.4, pointerEvents: 'none' } : undefined}>

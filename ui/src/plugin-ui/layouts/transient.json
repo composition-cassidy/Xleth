@@ -1,0 +1,76 @@
+{
+  "$xleth": "plugin-ui-layout",
+  "schemaVersion": 1,
+  "pluginId": "transientproc",
+  "name": "Default Transient Processor Layout",
+  "panel": {
+    "preferredSize": { "width": 760, "height": 460 }
+  },
+  "root": {
+    "id": "root",
+    "type": "panel",
+    "children": [
+      {
+        "id": "viz-row",
+        "type": "row",
+        "style": { "paddingPx": [12, 12, 8, 12] },
+        "children": [
+          {
+            "id": "transient-viz",
+            "type": "visualizer",
+            "style": { "growsToFill": true },
+            "props": {
+              "source": "transient.shaper",
+              "preset": "transientShaper",
+              "heightPx": 240
+            }
+          }
+        ]
+      },
+      {
+        "id": "mode-row",
+        "type": "row",
+        "style": { "paddingPx": [4, 12, 0, 12], "gapPx": 6, "align": "center" },
+        "children": [
+          { "id": "mode-label", "type": "label", "props": { "text": "Mode:", "variant": "muted" } },
+          {
+            "id": "btn-mode-envelope",
+            "type": "toggle",
+            "props": { "param": "midi_detect", "mode": "discreteValue", "valueWhenOn": 0, "label": "Envelope" }
+          },
+          {
+            "id": "btn-mode-midi",
+            "type": "toggle",
+            "props": { "param": "midi_detect", "mode": "discreteValue", "valueWhenOn": 1, "label": "MIDI" }
+          }
+        ]
+      },
+      {
+        "id": "body",
+        "type": "row",
+        "style": { "paddingPx": [4, 12, 12, 12], "gapPx": 12 },
+        "children": [
+          {
+            "id": "controls",
+            "type": "column",
+            "style": { "growsToFill": true, "gapPx": 10 },
+            "children": [
+              {
+                "id": "knob-row",
+                "type": "row",
+                "style": { "gapPx": 8, "justify": "center" },
+                "children": [
+                  { "id": "k-attack",       "type": "knob", "props": { "param": "attack",       "label": "ATTACK",  "size": 60, "format": "pct0" } },
+                  { "id": "k-sustain",      "type": "knob", "props": { "param": "sustain",      "label": "SUSTAIN", "size": 60, "format": "pct0" } },
+                  { "id": "k-attack-speed", "type": "knob", "props": { "param": "attack_speed", "label": "SPEED",   "size": 52, "format": "ms1"  } },
+                  { "id": "k-threshold",    "type": "knob", "props": { "param": "threshold",    "label": "THRESH",  "size": 52, "format": "dB1"  } },
+                  { "id": "k-mix",          "type": "knob", "props": { "param": "mix",          "label": "MIX",     "size": 52, "format": "pct0" } }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

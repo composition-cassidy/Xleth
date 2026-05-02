@@ -1,0 +1,74 @@
+{
+  "$xleth": "plugin-ui-layout",
+  "schemaVersion": 1,
+  "pluginId": "distortion",
+  "name": "Default Distortion Layout",
+  "panel": {
+    "preferredSize": { "width": 380, "height": 220 }
+  },
+  "root": {
+    "id": "root",
+    "type": "panel",
+    "children": [
+      {
+        "id": "mode-row",
+        "type": "row",
+        "style": { "paddingPx": [10, 10, 4, 10], "gapPx": 4, "justify": "center" },
+        "children": [
+          {
+            "id": "mode-tube",
+            "type": "toggle",
+            "style": { "growsToFill": true },
+            "props": { "param": "mode", "mode": "discreteValue", "valueWhenOn": 0, "label": "Tube" }
+          },
+          {
+            "id": "mode-soft-clip",
+            "type": "toggle",
+            "style": { "growsToFill": true },
+            "props": { "param": "mode", "mode": "discreteValue", "valueWhenOn": 1, "label": "Soft Clip" }
+          },
+          {
+            "id": "mode-hard-clip",
+            "type": "toggle",
+            "style": { "growsToFill": true },
+            "props": { "param": "mode", "mode": "discreteValue", "valueWhenOn": 2, "label": "Hard Clip" }
+          },
+          {
+            "id": "mode-analog",
+            "type": "toggle",
+            "style": { "growsToFill": true },
+            "props": { "param": "mode", "mode": "discreteValue", "valueWhenOn": 3, "label": "Analog" }
+          }
+        ]
+      },
+      {
+        "id": "knob-row",
+        "type": "row",
+        "style": { "paddingPx": [8, 12, 8, 12], "gapPx": 16, "justify": "center" },
+        "children": [
+          { "id": "drive-knob", "type": "knob", "props": { "param": "drive", "label": "DRIVE", "size": 64, "format": "dB1" } },
+          { "id": "tone-knob",  "type": "knob", "props": { "param": "tone",  "label": "TONE",  "size": 52, "format": "hz0" } },
+          { "id": "mix-knob",   "type": "knob", "props": { "param": "mix",   "label": "MIX",   "size": 52, "format": "pct0" } }
+        ]
+      },
+      {
+        "id": "filter-row",
+        "type": "row",
+        "style": { "paddingPx": [4, 10, 10, 10], "gapPx": 6, "align": "center" },
+        "children": [
+          { "id": "filter-label", "type": "label", "props": { "text": "Filter:", "variant": "muted" } },
+          {
+            "id": "filter-pre",
+            "type": "toggle",
+            "props": { "param": "filter_pos", "mode": "discreteValue", "valueWhenOn": 0, "label": "Pre" }
+          },
+          {
+            "id": "filter-post",
+            "type": "toggle",
+            "props": { "param": "filter_pos", "mode": "discreteValue", "valueWhenOn": 1, "label": "Post" }
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { X } from 'lucide-react'
 import useChorusStore from '../../stores/chorusStore.js'
 import Knob from '../sampler/Knob.jsx'
+import ChorusOrbitVisualizer from './ChorusOrbitVisualizer.jsx'
 
 // ── Parameter definitions ────────────────────────────────────────────────────
 
@@ -98,6 +99,11 @@ export default function ChorusPanel() {
         <button className="chorus-panel-close" onClick={close} title="Close">
           <X size={12} />
         </button>
+      </div>
+
+      {/* Orbital visualizer */}
+      <div className="chorus-viz-wrap">
+        <ChorusOrbitVisualizer params={params} />
       </div>
 
       {/* Knob grid */}

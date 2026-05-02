@@ -39,6 +39,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <type_traits>
 #include <vector>
 
@@ -348,6 +349,228 @@ private:
     float    lastReleaseMs_ {0.0f};
     uint32_t sampleCount_   {0};
     uint32_t flags_         {0};
+};
+
+// ── Transient accumulator (audio-thread helper) ─────────────────────────────
+// Tracks per-bucket aggregates for the Transient Processor: peak input/output
+// levels, last-sample envelope follower outputs (fast + slow), last-sample
+// signed gain (positive = boost, negative = cut), and the current snapshot of
+// shaping params. Composes with DynamicsVizCollector<TransientBucket>.
+//
+// observe() is called per sample with the linear (pre-dB) values; the
+// accumulator converts to dB once per bucket at flush time. Pass NaN for
+// fastEnvLin / slowEnvLin when the envelope followers are not running
+// (e.g. MIDI mode) — the bucket's fastEnvDb / slowEnvDb fields will then carry
+// NaN through to the JS side, which is a documented "not measured" sentinel.
+//
+// gainLin is the LINEAR last-sample gain applied (1.0 = unity). Converted to
+// signed dB at flush; the processor's slot-2 meter uses the same convention.
+class TransientBucketAccumulator
+{
+public:
+    void reset() noexcept { *this = TransientBucketAccumulator{}; }
+
+    inline void observe(float absIn,
+                        float absOut,
+                        float fastEnvLin,
+                        float slowEnvLin,
+                        float gainLin,
+                        float attackAmount,
+                        float sustainAmount,
+                        float speedMs,
+                        float thresholdDb,
+                        float mix) noexcept
+    {
+        if (absIn  > peakAbsIn_)  peakAbsIn_  = absIn;
+        if (absOut > peakAbsOut_) peakAbsOut_ = absOut;
+        lastFastEnvLin_  = fastEnvLin;   // may be NaN in MIDI mode
+        lastSlowEnvLin_  = slowEnvLin;   // may be NaN in MIDI mode
+        lastGainLin_     = gainLin;
+        lastAttack_      = attackAmount;
+        lastSustain_     = sustainAmount;
+        lastSpeedMs_     = speedMs;
+        lastThresholdDb_ = thresholdDb;
+        lastMix_         = mix;
+        ++sampleCount_;
+    }
+
+    inline void advance(uint64_t bucketEndSampleClock,
+                        DynamicsVizCollector<TransientBucket>& collector) noexcept
+    {
+        if (sampleCount_ >= collector.bucketSamples())
+        {
+            TransientBucket b{};
+            b.hdr.sampleClock   = bucketEndSampleClock + 1u - sampleCount_;
+            b.hdr.bucketSamples = sampleCount_;
+            b.hdr.flags         = flags_;
+            b.inLevelDb         = absToDb(peakAbsIn_);
+            b.outLevelDb        = absToDb(peakAbsOut_);
+            b.fastEnvDb         = envToDb(lastFastEnvLin_);
+            b.slowEnvDb         = envToDb(lastSlowEnvLin_);
+            b.gainDb            = gainToSignedDb(lastGainLin_);
+            b.attackAmount      = lastAttack_;
+            b.sustainAmount     = lastSustain_;
+            b.speedMs           = lastSpeedMs_;
+            b.thresholdDb       = lastThresholdDb_;
+            b.mix               = lastMix_;
+
+            (void) collector.push(b);
+
+            peakAbsIn_   = 0.0f;
+            peakAbsOut_  = 0.0f;
+            sampleCount_ = 0;
+            flags_       = 0u;
+        }
+    }
+
+private:
+    static inline float absToDb(float a) noexcept
+    {
+        if (a < 1.0e-6f) return -120.0f;
+        return 20.0f * std::log10(a);
+    }
+
+    // Envelope followers may carry NaN when not running (MIDI mode). Preserve
+    // the NaN through to the bucket so the JS side can render "not measured".
+    static inline float envToDb(float lin) noexcept
+    {
+        if (std::isnan(lin)) return std::numeric_limits<float>::quiet_NaN();
+        return absToDb(lin);
+    }
+
+    // Signed gain in dB. Linear gain near 1.0 → 0 dB, > 1 → positive (boost),
+    // < 1 → negative (cut). Floors at ±60 dB to keep the painter sane on the
+    // first few samples after enable when gainLin can be tiny.
+    static inline float gainToSignedDb(float gainLin) noexcept
+    {
+        if (gainLin < 1.0e-6f) return -60.0f;
+        return 20.0f * std::log10(gainLin);
+    }
+
+    float    peakAbsIn_       {0.0f};
+    float    peakAbsOut_      {0.0f};
+    float    lastFastEnvLin_  {std::numeric_limits<float>::quiet_NaN()};
+    float    lastSlowEnvLin_  {std::numeric_limits<float>::quiet_NaN()};
+    float    lastGainLin_     {1.0f};
+    float    lastAttack_      {0.0f};
+    float    lastSustain_     {0.0f};
+    float    lastSpeedMs_     {0.0f};
+    float    lastThresholdDb_ {-60.0f};
+    float    lastMix_         {1.0f};
+    uint32_t sampleCount_     {0};
+    uint32_t flags_           {0};
+};
+
+// ── Multiband accumulator (audio-thread helper) ─────────────────────────────
+// Tracks per-bucket aggregates for the 3-band Overdone effect: global peak
+// input/output, per-band peak input/output, max GR per band (dB, positive),
+// and a snapshot of smoothed depth / time / crossover params. Composes with
+// DynamicsVizCollector<MultibandBucket>.
+//
+// observe() is called once per audio sample with the LINEAR pre-dB peak
+// values — the accumulator converts to dB once per bucket at flush time. The
+// per-band absLowL / absLowR style inputs are the band signal post-crossover
+// pre-gain; absLowOut / absMidOut / absHighOut are the band signal post-gain.
+// grLowDb / grMidDb / grHighDb are positive-dB GR computed by the effect's
+// gain-computer — passing 0 when the band is below threshold is fine.
+class MultibandBucketAccumulator
+{
+public:
+    void reset() noexcept { *this = MultibandBucketAccumulator{}; }
+
+    inline void observe(float absInGlobal,   float absOutGlobal,
+                        float absLowIn,      float absLowOut,   float grLowDb,
+                        float absMidIn,      float absMidOut,   float grMidDb,
+                        float absHighIn,     float absHighOut,  float grHighDb,
+                        float depthPct,      float timePct,
+                        float lowXoverHz,    float highXoverHz) noexcept
+    {
+        if (absInGlobal  > peakAbsIn_)        peakAbsIn_       = absInGlobal;
+        if (absOutGlobal > peakAbsOut_)       peakAbsOut_      = absOutGlobal;
+        if (absLowIn     > peakAbsLowIn_)     peakAbsLowIn_    = absLowIn;
+        if (absLowOut    > peakAbsLowOut_)    peakAbsLowOut_   = absLowOut;
+        if (absMidIn     > peakAbsMidIn_)     peakAbsMidIn_    = absMidIn;
+        if (absMidOut    > peakAbsMidOut_)    peakAbsMidOut_   = absMidOut;
+        if (absHighIn    > peakAbsHighIn_)    peakAbsHighIn_   = absHighIn;
+        if (absHighOut   > peakAbsHighOut_)   peakAbsHighOut_  = absHighOut;
+        if (grLowDb      > maxGrLowDb_)       maxGrLowDb_      = grLowDb;
+        if (grMidDb      > maxGrMidDb_)       maxGrMidDb_      = grMidDb;
+        if (grHighDb     > maxGrHighDb_)      maxGrHighDb_     = grHighDb;
+        lastDepth_     = depthPct;
+        lastTime_      = timePct;
+        lastLowXover_  = lowXoverHz;
+        lastHighXover_ = highXoverHz;
+        ++sampleCount_;
+    }
+
+    inline void advance(uint64_t bucketEndSampleClock,
+                        DynamicsVizCollector<MultibandBucket>& collector) noexcept
+    {
+        if (sampleCount_ >= collector.bucketSamples())
+        {
+            MultibandBucket b{};
+            b.hdr.sampleClock      = bucketEndSampleClock + 1u - sampleCount_;
+            b.hdr.bucketSamples    = sampleCount_;
+            b.hdr.flags            = flags_;
+            b.inputPeakDb          = absToDb(peakAbsIn_);
+            b.outputPeakDb         = absToDb(peakAbsOut_);
+            b.depth                = lastDepth_;
+            b.time                 = lastTime_;
+            b.lowCrossoverHz       = lastLowXover_;
+            b.highCrossoverHz      = lastHighXover_;
+            b.lowInputDb           = absToDb(peakAbsLowIn_);
+            b.lowOutputDb          = absToDb(peakAbsLowOut_);
+            b.lowGainReductionDb   = maxGrLowDb_;
+            b.midInputDb           = absToDb(peakAbsMidIn_);
+            b.midOutputDb          = absToDb(peakAbsMidOut_);
+            b.midGainReductionDb   = maxGrMidDb_;
+            b.highInputDb          = absToDb(peakAbsHighIn_);
+            b.highOutputDb         = absToDb(peakAbsHighOut_);
+            b.highGainReductionDb  = maxGrHighDb_;
+            b.reserved0            = 0.0f;
+
+            (void) collector.push(b);
+
+            peakAbsIn_       = 0.0f;
+            peakAbsOut_      = 0.0f;
+            peakAbsLowIn_    = 0.0f;
+            peakAbsLowOut_   = 0.0f;
+            peakAbsMidIn_    = 0.0f;
+            peakAbsMidOut_   = 0.0f;
+            peakAbsHighIn_   = 0.0f;
+            peakAbsHighOut_  = 0.0f;
+            maxGrLowDb_      = 0.0f;
+            maxGrMidDb_      = 0.0f;
+            maxGrHighDb_     = 0.0f;
+            sampleCount_     = 0;
+            flags_           = 0u;
+        }
+    }
+
+private:
+    static inline float absToDb(float a) noexcept
+    {
+        if (a < 1.0e-6f) return -120.0f;
+        return 20.0f * std::log10(a);
+    }
+
+    float    peakAbsIn_       {0.0f};
+    float    peakAbsOut_      {0.0f};
+    float    peakAbsLowIn_    {0.0f};
+    float    peakAbsLowOut_   {0.0f};
+    float    peakAbsMidIn_    {0.0f};
+    float    peakAbsMidOut_   {0.0f};
+    float    peakAbsHighIn_   {0.0f};
+    float    peakAbsHighOut_  {0.0f};
+    float    maxGrLowDb_      {0.0f};
+    float    maxGrMidDb_      {0.0f};
+    float    maxGrHighDb_     {0.0f};
+    float    lastDepth_       {0.0f};
+    float    lastTime_        {0.0f};
+    float    lastLowXover_    {88.0f};
+    float    lastHighXover_   {2500.0f};
+    uint32_t sampleCount_     {0};
+    uint32_t flags_           {0};
 };
 
 }} // namespace xleth::viz

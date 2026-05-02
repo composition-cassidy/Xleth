@@ -1,10 +1,16 @@
 #pragma once
 
 #include "audio/XlethEffectBase.h"
+#include "audio/viz/DynamicsVizCollector.h"
+#include "audio/viz/DynamicsVizFrame.h"
 
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <memory>
 
 // ─── XlethTransientProcEffect ────────────────────────────────────────────────
 // Dual-mode transient shaper with traditional envelope detection AND a novel
@@ -60,6 +66,10 @@ public:
         // Threshold hysteresis
         isActive_ = false;
 
+        // Visualization state
+        vizSampleClock_ = 0;
+        vizAccum_.reset();
+
 #ifdef XLETH_DEBUG
         const bool midiMode = midiDetectPtr_
             && midiDetectPtr_->load(std::memory_order_relaxed) > 0.5f;
@@ -79,6 +89,25 @@ public:
         samplesInAttackWindow_ = 0;
         currentVelocity_ = 0.0f;
         isActive_ = false;
+
+        vizSampleClock_ = 0;
+        vizAccum_.reset();
+    }
+
+    // ── Visualization (XlethEffectBase overrides) ───────────────────────────
+    // Lifetime model mirrors XlethCompressorEffect / XlethLimiterEffect: the
+    // collector is allocated lazily on first enable and retained until the
+    // effect is destroyed; vizActive_ atomically publishes / unpublishes it
+    // for the audio thread.
+    void          setVisualizationEnabled(bool enabled) override;
+    std::uint32_t getVisualizationType()          const override
+        { return xleth::viz::kVizTypeTransient; }
+    std::uint32_t getVisualizationSchemaVersion() const override
+        { return xleth::viz::kDynamicsVizSchemaVersion; }
+    std::size_t   drainVizFrames(std::uint8_t* out, std::size_t maxBytes) override
+    {
+        if (!vizCollector_) return 0;
+        return vizCollector_->drain(out, maxBytes);
     }
 
     // ── processEffect ───────────────────────────────────────────────────────
@@ -116,6 +145,10 @@ public:
         float peakR = 0.0f;
         float maxGainDB = 0.0f;
 
+        // Visualization is opt-in per instance; one acquire-load per block.
+        // When disabled, the hot loop pays only a null-check.
+        auto* vizCol = vizActive_.load(std::memory_order_acquire);
+
 #ifdef XLETH_DEBUG
         static int debugCounter = 0;
         const bool doLog = (++debugCounter >= 1000);
@@ -133,6 +166,12 @@ public:
 
             const float dryL = buffer.getSample(0, s);
             const float dryR = numCh > 1 ? buffer.getSample(1, s) : dryL;
+
+            // Captured for visualization: envelope follower outputs (linear).
+            // Stay NaN in MIDI mode — the followers don't run there, so we
+            // surface "not measured" rather than stale state.
+            float vizFastEnvLin = std::numeric_limits<float>::quiet_NaN();
+            float vizSlowEnvLin = std::numeric_limits<float>::quiet_NaN();
 
             float gain = 1.0f;
 
@@ -182,6 +221,8 @@ public:
                 // Stereo-linked detection: use max of L/R
                 const float fastEnv = std::max(fastEnvL_, fastEnvR_);
                 const float slowEnv = std::max(slowEnvL_, slowEnvR_);
+                vizFastEnvLin = fastEnv;
+                vizSlowEnvLin = slowEnv;
 
                 // Transient ratio
                 const float ratio = fastEnv / (slowEnv + 1e-6f);
@@ -239,6 +280,32 @@ public:
             // boosting (positive) from cutting (negative).
             const float gainDB = 20.0f * std::log10(std::max(gainSmooth_, 1e-6f));
             maxGainDB = gainDB;   // signed, updated every sample, last wins
+
+            if (vizCol)
+            {
+                const float vizAbsIn  = std::max(std::abs(dryL),
+                                                 numCh > 1 ? std::abs(dryR) : 0.0f);
+                const float vizAbsOut = std::max(std::abs(outL),
+                                                 numCh > 1 ? std::abs(outR) : 0.0f);
+                // Param values normalised for the bucket: percent → unit
+                // ([-1, 1] for bipolar, [0, 1] for mix). speedMs / thresholdDB
+                // pass through unchanged.
+                const float attackUnit  = attackPct  * 0.01f;
+                const float sustainUnit = sustainPct * 0.01f;
+                const float mixUnit     = mixPct     * 0.01f;
+
+                vizAccum_.observe(vizAbsIn, vizAbsOut,
+                                  vizFastEnvLin, vizSlowEnvLin,
+                                  gainSmooth_,
+                                  attackUnit, sustainUnit,
+                                  attackSpeedMs, thresholdDB, mixUnit);
+                ++vizSampleClock_;
+                vizAccum_.advance(vizSampleClock_, *vizCol);
+            }
+            else
+            {
+                ++vizSampleClock_;
+            }
         }
 
 #ifdef XLETH_DEBUG
@@ -313,4 +380,37 @@ private:
     bool isActive_ = false;
 
     double sampleRate_ = 44100.0;
+
+    // ── Visualization ───────────────────────────────────────────────────────
+    // Lazy collector: allocated on first setVisualizationEnabled(true), then
+    // re-used on subsequent enables. vizActive_ is the atomic the audio thread
+    // reads once per block — null when the editor is closed (zero overhead).
+    std::unique_ptr<xleth::viz::DynamicsVizCollector<xleth::viz::TransientBucket>>
+        vizCollector_;
+    std::atomic<xleth::viz::DynamicsVizCollector<xleth::viz::TransientBucket>*>
+        vizActive_{nullptr};
+    xleth::viz::TransientBucketAccumulator vizAccum_;
+    std::uint64_t vizSampleClock_ = 0;
 };
+
+// ── setVisualizationEnabled ─────────────────────────────────────────────────
+
+inline void XlethTransientProcEffect::setVisualizationEnabled(bool enabled)
+{
+    if (enabled)
+    {
+        if (!vizCollector_)
+        {
+            vizCollector_ = std::make_unique<
+                xleth::viz::DynamicsVizCollector<xleth::viz::TransientBucket>>(
+                    xleth::viz::kDynamicsVizBucketSize,
+                    xleth::viz::kDynamicsVizRingDepth,
+                    xleth::viz::kVizTypeTransient);
+        }
+        vizActive_.store(vizCollector_.get(), std::memory_order_release);
+    }
+    else
+    {
+        vizActive_.store(nullptr, std::memory_order_release);
+    }
+}

@@ -4,6 +4,17 @@ import { usePluginUI } from '../PluginUIContext.js'
 import DynamicsVisualizerCanvas from '../visualizers/DynamicsVisualizerCanvas.jsx'
 import { COMPRESSOR_SOURCE_DEFAULT_PRESET } from '../visualizers/compressorPainter.js'
 import { LIMITER_SOURCE_DEFAULT_PRESET } from '../visualizers/limiterPainter.js'
+import { TRANSIENT_SOURCE_DEFAULT_PRESET } from '../visualizers/transientPainter.js'
+import { MULTIBAND_SOURCE_DEFAULT_PRESET } from '../visualizers/multibandPainter.js'
+import { RESONANCE_SOURCE_DEFAULT_PRESET } from '../visualizers/resonancePainter.js'
+import ResonanceCurveOverlay from './ResonanceCurveOverlay.jsx'
+
+// Editable overlays the runtime knows how to render on top of a viz canvas.
+// Layout-level allow-list, narrow on purpose: if you want a new editable
+// surface, add an entry here and a renderer below.
+const OVERLAY_RENDERERS = {
+  resonanceCurve: ResonanceCurveOverlay,
+}
 
 // Source keys this node knows how to render via the Compressor pipeline.
 // Must match the manifest allow-list (compressor.js).
@@ -22,13 +33,50 @@ const LIMITER_SOURCE_KEYS = new Set([
   'limiter.meterOnly',
 ])
 
+// Source keys for the Transient Processor pipeline. Must match
+// manifests/transient.js.
+const TRANSIENT_SOURCE_KEYS = new Set([
+  'transient.shaper',
+  'transient.envelope',
+  'transient.gainChange',
+])
+
+// Source keys for the Overdone (multiband) pipeline. Must match
+// manifests/overdone.js.
+const OVERDONE_SOURCE_KEYS = new Set([
+  'overdone.multiband',
+  'overdone.bands',
+  'overdone.gainReduction',
+])
+
+// Source keys for the Resonance Suppressor spectral visualizer.
+const RESONANCE_SOURCE_KEYS = new Set([
+  'resonance.combined',
+  'resonance.spectrum',
+  'resonance.reduction',
+  'resonance.weighting',
+])
+
 function isKnownSource(source) {
-  return COMPRESSOR_SOURCE_KEYS.has(source) || LIMITER_SOURCE_KEYS.has(source)
+  return COMPRESSOR_SOURCE_KEYS.has(source)
+      || LIMITER_SOURCE_KEYS.has(source)
+      || TRANSIENT_SOURCE_KEYS.has(source)
+      || OVERDONE_SOURCE_KEYS.has(source)
+      || RESONANCE_SOURCE_KEYS.has(source)
 }
 
 function defaultPresetForSource(source) {
   if (LIMITER_SOURCE_KEYS.has(source)) {
     return LIMITER_SOURCE_DEFAULT_PRESET[source] || 'limiterRealtime'
+  }
+  if (TRANSIENT_SOURCE_KEYS.has(source)) {
+    return TRANSIENT_SOURCE_DEFAULT_PRESET[source] || 'transientShaper'
+  }
+  if (OVERDONE_SOURCE_KEYS.has(source)) {
+    return MULTIBAND_SOURCE_DEFAULT_PRESET[source] || 'overdoneMultiband'
+  }
+  if (RESONANCE_SOURCE_KEYS.has(source)) {
+    return RESONANCE_SOURCE_DEFAULT_PRESET[source] || 'resonanceCombined'
   }
   return COMPRESSOR_SOURCE_DEFAULT_PRESET[source] || 'levelHistory'
 }
@@ -83,11 +131,17 @@ export default function VisualizerNode({ node }) {
   }
   if (unavailableReason === 'no-engine-api'
       || unavailableReason === 'unsupported-type:compressor'
-      || unavailableReason === 'unsupported-type:limiter') {
+      || unavailableReason === 'unsupported-type:limiter'
+      || unavailableReason === 'unsupported-type:transient'
+      || unavailableReason === 'unsupported-type:multiband'
+      || unavailableReason === 'unsupported-type:resonance') {
     return <Placeholder inlineStyle={inlineStyle} nodeId={node.id} />
   }
 
   const effectivePreset = preset || defaultPresetForSource(source)
+  const OverlayComponent = props.overlay && OVERLAY_RENDERERS[props.overlay]
+    ? OVERLAY_RENDERERS[props.overlay]
+    : null
 
   return (
     <div className="pluginui-visualizer-canvas-wrap" style={inlineStyle} data-pluginui-id={node.id}>
@@ -100,6 +154,7 @@ export default function VisualizerNode({ node }) {
         params={ctx.params}
         onUnavailable={setUnavailableReason}
       />
+      {OverlayComponent && <OverlayComponent />}
     </div>
   )
 }

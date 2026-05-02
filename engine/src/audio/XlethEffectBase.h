@@ -3,6 +3,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstddef>
@@ -193,6 +194,9 @@ public:
         // Pull latest APVTS values into smoothers once per block (not per sample)
         updateSmootherTargets();
 
+        const bool useAlignedBypassDry = usesLatencyAlignedBypassDry();
+        const int dryChannels = std::min(numCh, dryBuffer_.getNumChannels());
+
         // Fast path: fully wet, not transitioning → just process
         if (!wantBypass && bypassMix_ <= 0.0f)
         {
@@ -204,15 +208,32 @@ public:
         // smoothers in sync so ramps are correct when bypass is lifted
         if (wantBypass && bypassMix_ >= 1.0f)
         {
+            if (useAlignedBypassDry)
+            {
+                for (int ch = 0; ch < dryChannels; ++ch)
+                    dryBuffer_.copyFrom(ch, 0, buffer, ch, 0, numSamples);
+
+                processEffect(buffer, midi);
+
+                (void) copyLatencyAlignedBypassDry(dryBuffer_, numSamples);
+
+                for (int ch = 0; ch < dryChannels; ++ch)
+                    buffer.copyFrom(ch, 0, dryBuffer_, ch, 0, numSamples);
+                return;
+            }
+
             advanceSmoothers(numSamples);
             return;
         }
 
         // Crossfade path: save dry, process wet, blend per sample
-        for (int ch = 0; ch < std::min(numCh, dryBuffer_.getNumChannels()); ++ch)
+        for (int ch = 0; ch < dryChannels; ++ch)
             dryBuffer_.copyFrom(ch, 0, buffer, ch, 0, numSamples);
 
         processEffect(buffer, midi);
+
+        if (useAlignedBypassDry)
+            (void) copyLatencyAlignedBypassDry(dryBuffer_, numSamples);
 
         const float target = wantBypass ? 1.0f : 0.0f;
         for (int s = 0; s < numSamples; ++s)
@@ -222,7 +243,7 @@ public:
             else if (bypassMix_ > target)
                 bypassMix_ = std::max(bypassMix_ - bypassRampPerSample_, target);
 
-            for (int ch = 0; ch < std::min(numCh, dryBuffer_.getNumChannels()); ++ch)
+            for (int ch = 0; ch < dryChannels; ++ch)
             {
                 const float wet = buffer.getSample(ch, s);
                 const float dry = dryBuffer_.getSample(ch, s);
@@ -237,6 +258,12 @@ public:
         { juce::ignoreUnused(sampleRate, maxBlockSize); }
     virtual void releaseEffect() {}
     virtual void resetEffect()   {}
+    virtual bool usesLatencyAlignedBypassDry() const { return false; }
+    virtual bool copyLatencyAlignedBypassDry(juce::AudioBuffer<float>& dest, int numSamples)
+    {
+        juce::ignoreUnused(dest, numSamples);
+        return false;
+    }
 
     // ── Smoothed value accessors (audio thread only) ──────────────────────────
 

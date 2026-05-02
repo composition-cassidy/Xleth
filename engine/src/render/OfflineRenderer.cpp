@@ -398,14 +398,44 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
     muxSettings.outputPath = fragPath;
     muxSettings.fragmentedMP4 = true;
 
+    // GPU device references are declared early so failure-path [VideoMode] logs can use them.
+    auto* device = gpu_.getDevice();
+    auto* devCtx = gpu_.getContext();
+
+    using VM = ExportSettings::VideoMode;
+    auto videoModeStr = [&]() -> const char* {
+        switch (settings.videoMode) {
+            case VM::Hardware: return "hardware";
+            case VM::Software: return "software";
+            default:           return "auto";
+        }
+    };
+
     FFmpegMuxer muxer;
     if (!muxer.init(muxSettings)) {
-        progress_.setError("Failed to initialize FFmpeg muxer");
+        // At this point the decoder has not been attempted yet; report what decode
+        // would have been based on GPU availability.
+        const char* wouldBeDec = (settings.videoMode != VM::Software && device && devCtx)
+                                 ? "d3d11va" : "software";
+        const char* reason = (settings.videoMode == VM::Hardware)
+                             ? "hardware_encoder_unavailable" : "encoder_init_failed";
+        std::fprintf(stderr,
+            "[VideoMode] requested=%s decode=%s encode=none reason=%s\n",
+            videoModeStr(), wouldBeDec, reason);
+
+        progress_.setError(
+            settings.videoMode == VM::Hardware
+            ? "Hardware video mode selected, but no compatible hardware encoder could be "
+              "opened. Switch Video mode to Auto or Software in Settings."
+            : "Failed to initialize video encoder");
         progress_.failed.store(true);
         mixer_.setNonRealtime(false);
         progress_.phase.store(0);
         return;
     }
+    // Surface encoder name and fallback flag to the UI
+    progress_.setVideoEncoderName(muxer.videoEncoderName());
+    progress_.videoEncoderFallback.store(muxer.isVideoEncoderFallback());
 
     // Frame cache + collector (no GPU thread binding needed for offline)
     RenderFrameCache cache;
@@ -413,12 +443,50 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
     AnimationManager animMgr;
     collector.setAnimationManager(&animMgr);
 
-    // Video decoder
+    // Diagnostic counters for AMD/NVIDIA divergence: track frames where the GL
+    // compositor produced no readback. A non-zero count means the export is
+    // degraded — typically a sign of a GL upload/composite failure.
+    int64_t videoFramesAttempted = 0;
+    int64_t invalidReadbackCount = 0;
+
+    // Video decoder — init path depends on VideoMode preference
     RenderVideoDecoder decoder;
-    auto* device = gpu_.getDevice();
-    auto* devCtx = gpu_.getContext();
-    if (device && devCtx) {
-        decoder.initHwDevice(device, devCtx);
+
+    if (settings.videoMode == VM::Software) {
+        // Intentionally skip initHwDevice — software decode/encode unconditionally.
+        // Display compositing still uses OpenGL; this disables only HW video codecs.
+    } else if (settings.videoMode == VM::Hardware) {
+        if (!device || !devCtx || !decoder.initHwDevice(device, devCtx)) {
+            // Encoder succeeded (muxer passed), but D3D11VA decode is unavailable.
+            std::fprintf(stderr,
+                "[VideoMode] requested=hardware decode=unavailable encode=%s reason=hardware_decode_init_failed\n",
+                muxer.videoEncoderName());
+            progress_.setError(
+                "Hardware video mode selected, but D3D11VA hardware decode could not be "
+                "initialized. Switch Video mode to Auto or Software in Settings.");
+            progress_.failed.store(true);
+            muxer.finalize();
+            std::filesystem::remove(fragPath);
+            mixer_.setNonRealtime(false);
+            progress_.phase.store(0);
+            return;
+        }
+    } else {  // Auto
+        if (device && devCtx) {
+            decoder.initHwDevice(device, devCtx);
+        }
+    }
+
+    // [VideoMode] diagnostic log — resolved decode/encode path for this export
+    {
+        const char* decMode = decoder.hasHwAccel() ? "d3d11va" : "software";
+        const char* encMode = muxer.videoEncoderName();
+        const char* reason  = (settings.videoMode == VM::Hardware) ? "forced_hardware"
+                            : (settings.videoMode == VM::Software) ? "user_setting"
+                            : muxer.isVideoEncoderFallback()       ? "auto_fallback_no_hw_encoder"
+                                                                    : "auto_detected";
+        std::fprintf(stderr, "[VideoMode] requested=%s decode=%s encode=%s reason=%s\n",
+                     videoModeStr(), decMode, encMode, reason);
     }
 
     // GPU compositor
@@ -559,9 +627,12 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
                     prevBeat = currentBeat;
                 }
 
-                // Collect what each grid cell needs for this output frame
+                // Collect what each grid cell needs for this output frame.
+                // Export honors settings.useSourceMedia so the encoder gets
+                // original-source pixels by default; preview keeps proxy use.
                 auto requests = collector.collectRequests(
-                    f, timeline_, sampleRate, fps, videoEvents);
+                    f, timeline_, sampleRate, fps, videoEvents,
+                    /*allowProxy=*/ !settings.useSourceMedia);
 
                 // Deduplicate: multiple cells may reference the same source frame
                 auto deduplicated = FrameCollector::deduplicateRequests(requests);
@@ -591,11 +662,43 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
 
                     // Readback composited pixels from GPU
                     auto readback = compositor.readback();
+                    ++videoFramesAttempted;
                     if (readback.valid) {
                         if (!muxer.writeVideo(readback.pixels.data(),
                                               readback.stride, f)) {
                             progress_.setError("Video encoding failed at frame "
                                              + std::to_string(f));
+                            progress_.failed.store(true);
+                            muxer.finalize();
+                            std::filesystem::remove(fragPath);
+                            mixer_.setNonRealtime(false);
+                            progress_.phase.store(0);
+                            return;
+                        }
+                    } else {
+                        ++invalidReadbackCount;
+                        if (invalidReadbackCount <= 5 || (invalidReadbackCount % 100) == 0) {
+                            std::fprintf(stderr,
+                                         "[Renderer] Compositor readback invalid at frame %lld "
+                                         "(total invalid=%lld)\n",
+                                         (long long)f, (long long)invalidReadbackCount);
+                        }
+                        // Early abort: if every readback so far has been invalid, the D3D11
+                        // compositor is failing at the GPU/staging-texture level — fail fast
+                        // rather than silently write a video file with zero frames.
+                        //
+                        // readback.valid==false means D3D11 staging texture Map() failed
+                        // (a GPU/driver error), NOT empty/transparent content. An empty or
+                        // transparent composite still produces valid black BGRA pixels, so
+                        // this check cannot false-fire on empty-timeline exports.
+                        constexpr int64_t kEarlyAbortThreshold = 10;
+                        if (videoFramesAttempted >= kEarlyAbortThreshold &&
+                            invalidReadbackCount == videoFramesAttempted) {
+                            progress_.setError(
+                                "Compositor readback failed for the first "
+                                + std::to_string(kEarlyAbortThreshold)
+                                + " video frames (D3D11 staging Map failed). "
+                                "Check engine log for GPU/driver errors.");
                             progress_.failed.store(true);
                             muxer.finalize();
                             std::filesystem::remove(fragPath);
@@ -650,6 +753,23 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
     // ── PHASE 3: FINALIZE ────────────────────────────────────────────────
     progress_.phase.store(3);
     std::fprintf(stderr, "[Renderer] FINALIZING: flushing encoders...\n");
+
+    if (videoFramesAttempted > 0) {
+        const double invalidPct = 100.0 * static_cast<double>(invalidReadbackCount)
+                                        / static_cast<double>(videoFramesAttempted);
+        std::fprintf(stderr,
+                     "[Renderer] Video frames: attempted=%lld, invalid_readback=%lld (%.1f%%)\n",
+                     (long long)videoFramesAttempted,
+                     (long long)invalidReadbackCount,
+                     invalidPct);
+        if (invalidReadbackCount > 0) {
+            std::fprintf(stderr,
+                         "[Renderer] WARN: export degraded — %lld of %lld frames had invalid GPU readback "
+                         "(compositor produced no pixels). Check earlier log for [VideoCompositor] errors.\n",
+                         (long long)invalidReadbackCount,
+                         (long long)videoFramesAttempted);
+        }
+    }
 
     if (!muxer.finalize()) {
         progress_.setError("Muxer finalization failed");

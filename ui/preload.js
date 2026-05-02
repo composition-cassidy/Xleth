@@ -87,6 +87,11 @@ window.xleth = ({
     isExportRunning:    ()          => invoke('xleth:project:isExportRunning'),
   },
 
+  // ── Autosave ──────────────────────────────────────────────────────────────
+  autosave: {
+    restart: () => invoke('xleth:autosave:restart'),
+  },
+
   // ── Phase 1: timeline ─────────────────────────────────────────────────────
   timeline: {
     getBPM:           ()                    => invoke('xleth:timeline:getBPM'),
@@ -395,6 +400,21 @@ window.xleth = ({
       ipcRenderer.on('video-export:progress', h);
       return () => ipcRenderer.removeListener('video-export:progress', h);
     },
+  },
+
+  // ── GPU adapter detection ─────────────────────────────────────────────────
+  gpu: {
+    getAvailableGpus: () => invoke('xleth:gpu:getAvailableGpus'),
+  },
+
+  // ── Diagnostics (Settings → Graphics → Export Visual Preview Log) ────────
+  // The renderer-side helper below collects WebGL info from the live preview
+  // canvas (the main process cannot introspect the renderer's GL context) and
+  // forwards everything to the main process IPC handler, which formats the
+  // .txt and shows a save dialog.
+  diag: {
+    exportVisualPreviewLog: (extras) =>
+      invoke('xleth:diag:exportVisualPreviewLog', extras || {}),
   },
 
   // ── Phase 1: sync ─────────────────────────────────────────────────────────

@@ -17,7 +17,8 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
     const Timeline&                timeline,
     int                            sampleRate,
     AVRational                     fps,
-    const std::vector<VideoEvent>& events)
+    const std::vector<VideoEvent>& events,
+    bool                           allowProxy)
 {
     const double bpm = timeline.getBPM();
     const GridLayout& layout = timeline.getGridLayout();
@@ -90,10 +91,17 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
         //   3. Original source file.
         // Chorus/Crash paths skip the region-proxy lookup entirely — those
         // cells intentionally stream the original for longer reads.
+        //
+        // Proxy substitution is intentionally PREVIEW-ONLY (allowProxy=true).
+        // Editor seeking depends on the half-res DNxHR LB proxy to hit
+        // interactive frame rates (Phase 0 perf floor). For final export the
+        // caller passes allowProxy=false so the encoder receives original-
+        // source pixels — anything less makes CRF/bitrate settings operate on
+        // already-degraded input and the user cannot recover quality.
         std::string pickedPath  = src->filePath;
         int64_t     pickedFrame = srcFrame;
 
-        if (ev->regionId > 0 && !isChorus && !isCrash) {
+        if (allowProxy && ev->regionId > 0 && !isChorus && !isCrash) {
             const SampleRegion* r = timeline.getRegion(ev->regionId);
             if (r && r->proxyReady && !r->proxyPath.empty()) {
                 // Recompute sourceTime locally — we didn't keep it from above
@@ -111,7 +119,7 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
         }
 
         // Legacy source-wide proxy fallback
-        if (pickedPath == src->filePath &&
+        if (allowProxy && pickedPath == src->filePath &&
             src->proxyReady && !src->proxyPath.empty()) {
             pickedPath = src->proxyPath;
         }

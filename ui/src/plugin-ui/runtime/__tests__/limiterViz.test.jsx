@@ -19,12 +19,19 @@ import {
   parseDrainResponse,
 } from '../../../constants/dynamicsViz.js'
 import {
+  LIMITER_DISPLAY,
   LIMITER_PRESETS,
   LIMITER_VISUALIZER_PRESETS,
   LIMITER_SOURCE_DEFAULT_PRESET,
+  buildLimiterDisplayHistory,
+  computeLimiterMeterValues,
+  downsampleLimiterHistory,
   drawLimiterRealtime,
   drawLimiterGainReduction,
   drawLimiterMeterOnly,
+  limiterLevelToY,
+  pickLimiterGrLabels,
+  smoothLimiterDisplayHistory,
 } from '../visualizers/limiterPainter.js'
 import {
   getPresetOptionsForSource,
@@ -83,6 +90,7 @@ function makeStubCtx() {
     beginPath:   vi.fn(() => calls.push(['beginPath'])),
     moveTo:      vi.fn(),
     lineTo:      vi.fn(),
+    quadraticCurveTo: vi.fn(),
     closePath:   vi.fn(),
     stroke:      vi.fn(() => calls.push(['stroke'])),
     fill:        vi.fn(),
@@ -207,6 +215,25 @@ describe('Limiter painters', () => {
     expect(ctx.fillRect).toHaveBeenCalled()
   })
 
+  it('drawLimiterRealtime draws without throwing with noisy fake frames', () => {
+    const noisyBuckets = Array.from({ length: 900 }, (_, i) => ({
+      sampleClock: i * 64,
+      bucketSamples: 64,
+      inLevelDb: i % 41 === 0 ? Number.NaN : -16 + Math.sin(i * 0.73) * 22,
+      outLevelDb: i % 37 === 0 ? Number.POSITIVE_INFINITY : -13 + Math.cos(i * 0.51) * 14,
+      gainReductionDb: i % 53 === 0 ? Number.NaN : Math.max(0, Math.sin(i * 0.17) * 10 + (i % 89 === 0 ? 8 : 0)),
+      outEnergyDb: i % 29 === 0 ? Number.NaN : -18 + Math.sin(i * 0.11) * 5,
+      inEnergyDb: i % 31 === 0 ? Number.NEGATIVE_INFINITY : -17 + Math.cos(i * 0.09) * 6,
+      ceilingDb: -0.3,
+      gainDb: 9,
+      releaseMs: 90,
+    }))
+    const noisyRing = makeRingFromBuckets(noisyBuckets)
+    const ctx = makeStubCtx()
+    expect(() => drawLimiterRealtime(ctx, 640, 180, noisyRing, THEME, { ceiling: -0.3 })).not.toThrow()
+    expect(ctx.fillRect).toHaveBeenCalled()
+  })
+
   it('drawLimiterGainReduction draws without throwing', () => {
     const ctx = makeStubCtx()
     expect(() => drawLimiterGainReduction(ctx, 600, 80, ring, THEME)).not.toThrow()
@@ -223,6 +250,118 @@ describe('Limiter painters', () => {
     expect(typeof LIMITER_PRESETS.limiterRealtime).toBe('function')
     expect(typeof LIMITER_PRESETS.limiterGainReduction).toBe('function')
     expect(typeof LIMITER_PRESETS.limiterMeterOnly).toBe('function')
+  })
+})
+
+// --- Display history transform ------------------------------------------------
+
+describe('Limiter display transform', () => {
+  it('downsampleLimiterHistory reduces dense history to no more than canvas width buckets', () => {
+    const dense = Array.from({ length: 2048 }, (_, i) => ({
+      inLevelDb: -18 + Math.sin(i * 0.3) * 12,
+      outLevelDb: -16 + Math.cos(i * 0.2) * 8,
+      gainReductionDb: Math.max(0, Math.sin(i * 0.05) * 12),
+      inEnergyDb: -20,
+      outEnergyDb: -22,
+    }))
+    const columns = downsampleLimiterHistory(dense, 120)
+    expect(columns.length).toBeLessThanOrEqual(120)
+    expect(columns.length).toBeGreaterThan(0)
+  })
+
+  it('smoothLimiterDisplayHistory keeps finite display values', () => {
+    const columns = [
+      { x: 0, inputDb: Number.NaN, outputDb: -12, inEnergyDb: -18, outEnergyDb: -19, grDb: 0, peakGrDb: 0 },
+      { x: 2, inputDb: 8, outputDb: Number.POSITIVE_INFINITY, inEnergyDb: Number.NaN, outEnergyDb: -12, grDb: 22, peakGrDb: 22 },
+      { x: 4, inputDb: -60, outputDb: -48, inEnergyDb: -60, outEnergyDb: Number.NEGATIVE_INFINITY, grDb: Number.NaN, peakGrDb: Number.NaN },
+    ]
+    const smoothed = smoothLimiterDisplayHistory(columns)
+    for (const column of smoothed) {
+      expect(Number.isFinite(column.inputDb)).toBe(true)
+      expect(Number.isFinite(column.outputDb)).toBe(true)
+      expect(Number.isFinite(column.inEnergyDb)).toBe(true)
+      expect(Number.isFinite(column.outEnergyDb)).toBe(true)
+      expect(Number.isFinite(column.grDb)).toBe(true)
+      expect(Number.isFinite(column.peakGrDb)).toBe(true)
+    }
+  })
+
+  it('buildLimiterDisplayHistory returns smoothed finite columns from a ring', () => {
+    const ring = makeRingFromBuckets(Array.from({ length: 256 }, (_, i) => ({
+      inLevelDb: -10 + Math.sin(i * 0.2) * 9,
+      outLevelDb: -12 + Math.cos(i * 0.2) * 6,
+      gainReductionDb: Math.max(0, Math.sin(i * 0.1) * 9),
+      inEnergyDb: -17,
+      outEnergyDb: -19,
+    })))
+    const columns = buildLimiterDisplayHistory(ring, 160)
+    expect(columns.length).toBeGreaterThan(0)
+    expect(columns.length).toBeLessThanOrEqual(160)
+    expect(columns.every((column) => Number.isFinite(column.x) && Number.isFinite(column.outputDb))).toBe(true)
+  })
+
+  it('limiterLevelToY clamps 0 dB to top and -24 dB to bottom', () => {
+    expect(limiterLevelToY(0, 100)).toBe(0)
+    expect(limiterLevelToY(6, 100)).toBe(0)
+    expect(limiterLevelToY(LIMITER_DISPLAY.level.minDb, 100)).toBe(99)
+    expect(limiterLevelToY(-60, 100)).toBe(99)
+  })
+})
+
+describe('Limiter GR label picking', () => {
+  function labelColumns(values, spacing = 40) {
+    return values.map((gr, i) => ({
+      x: i * spacing,
+      grDb: Math.min(gr, LIMITER_DISPLAY.maxGrDb),
+      peakGrDb: gr,
+    }))
+  }
+
+  it('returns only labels above the configured threshold', () => {
+    const labels = pickLimiterGrLabels(labelColumns([0, 1, 2.9, 1, 4, 1, 2.5]), 280)
+    expect(labels).toHaveLength(1)
+    expect(labels[0].grDb).toBeGreaterThanOrEqual(LIMITER_DISPLAY.labelThresholdDb)
+  })
+
+  it('enforces minimum pixel distance between labels', () => {
+    const labels = pickLimiterGrLabels(
+      labelColumns([0, 6, 0, 8, 0, 5, 0], 30),
+      240,
+      { minSpacingPx: 90, maxLabels: 6 },
+    )
+    expect(labels.length).toBeLessThanOrEqual(2)
+    for (let i = 1; i < labels.length; i++) {
+      expect(labels[i].x - labels[i - 1].x).toBeGreaterThanOrEqual(90)
+    }
+  })
+
+  it('caps the maximum number of labels', () => {
+    const values = Array.from({ length: 31 }, (_, i) => (i % 2 === 1 ? 5 + i * 0.1 : 0))
+    const labels = pickLimiterGrLabels(labelColumns(values, 100), 3100, { maxLabels: 4, minSpacingPx: 70 })
+    expect(labels).toHaveLength(4)
+  })
+})
+
+describe('Limiter meter values', () => {
+  it('computeLimiterMeterValues keeps output and GR finite with noisy inputs', () => {
+    let meter = null
+    const buckets = [
+      { outLevelDb: -9, gainReductionDb: 0 },
+      { outLevelDb: Number.NaN, gainReductionDb: Number.POSITIVE_INFINITY },
+      { outLevelDb: 3, gainReductionDb: 24 },
+      { outLevelDb: -80, gainReductionDb: Number.NaN },
+      null,
+    ]
+
+    for (const bucket of buckets) {
+      meter = computeLimiterMeterValues(bucket, meter)
+      expect(Number.isFinite(meter.outputDb)).toBe(true)
+      expect(Number.isFinite(meter.gainReductionDb)).toBe(true)
+      expect(meter.outputDb).toBeGreaterThanOrEqual(LIMITER_DISPLAY.meter.minDb)
+      expect(meter.outputDb).toBeLessThanOrEqual(LIMITER_DISPLAY.meter.maxDb)
+      expect(meter.gainReductionDb).toBeGreaterThanOrEqual(0)
+      expect(meter.gainReductionDb).toBeLessThanOrEqual(LIMITER_DISPLAY.maxGrDb)
+    }
   })
 })
 

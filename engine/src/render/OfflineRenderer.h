@@ -55,10 +55,12 @@ struct RenderProgress {
     std::atomic<bool>    cancelRequested{false};
     std::atomic<bool>    complete{false};
     std::atomic<bool>    failed{false};
+    std::atomic<bool>    videoEncoderFallback{false};
 
     // Written once on failure from the render thread, read after complete/failed
     std::mutex           errorMutex;
     std::string          errorMessage;
+    std::string          videoEncoderName;   // set after muxer init
 
     void setError(const std::string& msg) {
         std::lock_guard<std::mutex> lk(errorMutex);
@@ -67,6 +69,14 @@ struct RenderProgress {
     std::string getError() const {
         std::lock_guard<std::mutex> lk(const_cast<std::mutex&>(errorMutex));
         return errorMessage;
+    }
+    void setVideoEncoderName(const std::string& name) {
+        std::lock_guard<std::mutex> lk(errorMutex);
+        videoEncoderName = name;
+    }
+    std::string getVideoEncoderName() const {
+        std::lock_guard<std::mutex> lk(const_cast<std::mutex&>(errorMutex));
+        return videoEncoderName;
     }
 };
 

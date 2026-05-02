@@ -45,16 +45,26 @@ bool GpuDeviceManager::detectAdapters()
         GpuAdapterInfo info;
         info.name                  = desc.Description;
         info.vendorId              = desc.VendorId;
+        info.deviceId              = desc.DeviceId;
         info.dedicatedVideoMemoryMB = desc.DedicatedVideoMemory / (1024 * 1024);
+        info.sharedSystemMemoryMB  = desc.SharedSystemMemory / (1024 * 1024);
         info.adapterIndex          = static_cast<int>(i);
         info.isDiscrete            = (desc.DedicatedVideoMemory > 256ULL * 1024 * 1024);
         info.isDefault             = false;
+        // LUID — DXGI returns LONG/DWORD; reinterpret HighPart as unsigned for
+        // a stable JS round-trip (we never do arithmetic on it).
+        info.luidHighPart          = static_cast<uint32_t>(desc.AdapterLuid.HighPart);
+        info.luidLowPart           = desc.AdapterLuid.LowPart;
 
-        std::fprintf(stderr, "[GpuDevice] Found adapter %d: '%ls' vendor=0x%04X vram=%zuMB discrete=%s\n",
+        std::fprintf(stderr, "[GpuDevice] Found adapter %d: '%ls' vendor=0x%04X device=0x%04X vram=%zuMB shared=%zuMB luid=%08X:%08X discrete=%s\n",
                      info.adapterIndex,
                      info.name.c_str(),
                      info.vendorId,
+                     info.deviceId,
                      info.dedicatedVideoMemoryMB,
+                     info.sharedSystemMemoryMB,
+                     info.luidHighPart,
+                     info.luidLowPart,
                      info.isDiscrete ? "yes" : "no");
 
         adapters_.push_back(std::move(info));

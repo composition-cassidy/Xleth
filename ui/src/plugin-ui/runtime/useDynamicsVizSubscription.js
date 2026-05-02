@@ -22,6 +22,9 @@ import {
   DYNAMICS_VIZ_SCHEMA_VERSION,
   COMPRESSOR_BUCKET,
   LIMITER_BUCKET,
+  TRANSIENT_BUCKET,
+  MULTIBAND_BUCKET,
+  RESONANCE_BUCKET,
 } from '../../constants/dynamicsViz.js'
 
 const TARGET_HZ          = 30
@@ -42,7 +45,10 @@ function keyFor(trackId, nodeId, vizType) {
 }
 
 function bucketLayoutFor(vizType) {
-  if (vizType === VIZ_TYPE.LIMITER) return LIMITER_BUCKET
+  if (vizType === VIZ_TYPE.LIMITER)   return LIMITER_BUCKET
+  if (vizType === VIZ_TYPE.TRANSIENT) return TRANSIENT_BUCKET
+  if (vizType === VIZ_TYPE.MULTIBAND) return MULTIBAND_BUCKET
+  if (vizType === VIZ_TYPE.RESONANCE) return RESONANCE_BUCKET
   return COMPRESSOR_BUCKET
 }
 

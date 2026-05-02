@@ -92,16 +92,16 @@ describe('Phase E layout mutations', () => {
   it('reorderSibling moves node up and down', () => {
     const layout = cloneCompressorLayout()
     const up = reorderSibling(layout, 'detect-row', 'up')
-    expect(up.root.children.map(child => child.id)).toEqual(['detect-row', 'body', 'viz-row'])
+    expect(up.root.children.map(child => child.id)).toEqual(['viz-row', 'detect-row', 'body'])
 
     const down = reorderSibling(up, 'detect-row', 'down')
-    expect(down.root.children.map(child => child.id)).toEqual(['body', 'detect-row', 'viz-row'])
+    expect(down.root.children.map(child => child.id)).toEqual(['viz-row', 'body', 'detect-row'])
   })
 
   it('wrapInContainer rejects non-contiguous siblings', () => {
     const layout = cloneCompressorLayout()
 
-    expect(() => wrapInContainer(layout, ['body', 'viz-row'], 'group')).toThrow(/contiguous/i)
+    expect(() => wrapInContainer(layout, ['viz-row', 'detect-row'], 'group')).toThrow(/contiguous/i)
   })
 
   it('regenerateSubtreeIds strips validator annotations from cloned data', () => {

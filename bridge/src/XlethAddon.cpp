@@ -222,6 +222,33 @@ std::atomic<bool>   g_previewCompositorReady{false};
 std::atomic<bool>   g_previewPauseForExport{false};
 std::atomic<bool>   g_previewPauseForVisibility{false};   // Phase 7
 
+// ── Visual preview diagnostic counters ───────────────────────────────────────
+// Lightweight instrumentation to support Settings → Graphics → Export Visual
+// Preview Diagnostic Log. Read by Diag_GetVisualPreviewDiagnostic on the JS
+// thread, written by the video thread; all counters are std::atomic.
+struct PreviewDiagCounters {
+    std::atomic<uint64_t> videoTickCount        {0};
+    std::atomic<uint64_t> compositorPathEntered {0};
+    std::atomic<uint64_t> compositeFrameCount   {0};
+    std::atomic<uint64_t> readbackValidCount    {0};
+    std::atomic<uint64_t> readbackInvalidCount  {0};
+    std::atomic<uint64_t> canvasCopyCount       {0};
+    std::atomic<uint64_t> blackFrameCount       {0};
+    std::atomic<uint64_t> initInitFailures      {0};
+    std::atomic<int32_t>  lastReadbackHRESULT   {0};  // S_OK(0) or failing HRESULT
+    std::atomic<int>      lastReadbackWidth     {0};
+    std::atomic<int>      lastReadbackHeight    {0};
+    std::atomic<int>      lastRequestCount      {0};
+    std::atomic<int>      lastDecodeMissCount   {0};
+    std::atomic<int>      lastLayoutColumns     {0};
+    std::atomic<int>      lastLayoutRows        {0};
+    std::atomic<int>      lastCompositorWidth   {0};
+    std::atomic<int>      lastCompositorHeight  {0};
+    std::atomic<int>      lastInitW             {0};
+    std::atomic<int>      lastInitH             {0};
+};
+PreviewDiagCounters g_previewDiag;
+
 // ── Hardware encoder detection (NVENC/AMF/QSV probing) ──────────────────
 std::unique_ptr<HwEncoderDetector> g_hwEncoderDetector;
 
@@ -1558,6 +1585,7 @@ static void videoThreadBody()
         g_previewRenderCache->bindToCurrentThread();
 
     while (videoRunning) {
+        g_previewDiag.videoTickCount.fetch_add(1, std::memory_order_relaxed);
         // Drain any finished proxy transcodes and install new region
         // decoders BEFORE locking syncEventsMutex — phase 2 of the drain
         // does blocking FFmpeg I/O (5-50 ms per open) that must never
@@ -1586,8 +1614,11 @@ static void videoThreadBody()
 
                 // [PreviewUnify] GPU compositor path
                 if (g_previewCompositorReady && !previewPaused) {
+                    g_previewDiag.compositorPathEntered.fetch_add(1, std::memory_order_relaxed);
                     const GridLayout layout = g_timeline
                         ? g_timeline->getGridLayout() : GridLayout{};
+                    g_previewDiag.lastLayoutColumns.store(layout.columns, std::memory_order_relaxed);
+                    g_previewDiag.lastLayoutRows.store(layout.rows, std::memory_order_relaxed);
 
                     // Wall-clock delta for animation (cap at 200ms for debugger pauses)
                     auto now = std::chrono::steady_clock::now();
@@ -1661,10 +1692,14 @@ static void videoThreadBody()
                     // Collect → dedup → resolve → decode misses → composite → readback
                     auto requests = g_previewCollector->collectRequests(
                         outputFrame, *g_timeline, sampleRate, fpsRat, events);
+                    g_previewDiag.lastRequestCount.store(static_cast<int>(requests.size()),
+                                                         std::memory_order_relaxed);
 
                     auto deduplicated = FrameCollector::deduplicateRequests(requests);
                     auto misses = FrameCollector::resolveFrames(
                         deduplicated, *g_previewRenderCache);
+                    g_previewDiag.lastDecodeMissCount.store(static_cast<int>(misses.size()),
+                                                            std::memory_order_relaxed);
 
                     auto* device = g_gpuDevice->getDevice();
                     auto* devCtx = g_gpuDevice->getContext();
@@ -1686,11 +1721,19 @@ static void videoThreadBody()
                             requests, *g_previewRenderCache,
                             layout.columns, layout.rows,
                             currentTime, layout.gapScale);
+                        g_previewDiag.compositeFrameCount.fetch_add(1, std::memory_order_relaxed);
 
                         auto rb = g_previewCompositor->readback();
+                        g_previewDiag.lastReadbackWidth.store(rb.width, std::memory_order_relaxed);
+                        g_previewDiag.lastReadbackHeight.store(rb.height, std::memory_order_relaxed);
+                        g_previewDiag.lastReadbackHRESULT.store(
+                            static_cast<int32_t>(g_previewCompositor->getLastReadbackHRESULT()),
+                            std::memory_order_relaxed);
                         if (rb.valid) {
+                            g_previewDiag.readbackValidCount.fetch_add(1, std::memory_order_relaxed);
                             uint8_t* canvas = frameOutput.getBackBuffer();
                             if (canvas) {
+                                g_previewDiag.canvasCopyCount.fetch_add(1, std::memory_order_relaxed);
                                 const uint8_t* src = rb.pixels.data();
                                 if (rb.width == CANVAS_W && rb.height == CANVAS_H) {
                                     // Fast path: compositor at full res — direct swizzle copy
@@ -1725,6 +1768,8 @@ static void videoThreadBody()
                                 frameOutput.swapBuffers();
                                 blackWritten = isPlaying ? false : true;
                             }
+                        } else {
+                            g_previewDiag.readbackInvalidCount.fetch_add(1, std::memory_order_relaxed);
                         }
                     }
                 }
@@ -1732,6 +1777,7 @@ static void videoThreadBody()
                 else if (previewPaused) {
                     if (!blackWritten) {
                         frameOutput.writeBlackFrame();
+                        g_previewDiag.blackFrameCount.fetch_add(1, std::memory_order_relaxed);
                         blackWritten = true;
                     }
                 }
@@ -1913,13 +1959,18 @@ Napi::Value Initialize(const Napi::CallbackInfo& info)
         int scaledW = std::max(1, static_cast<int>(initW * g_previewResolutionScale));
         int scaledH = std::max(1, static_cast<int>(initH * g_previewResolutionScale));
 
+        g_previewDiag.lastInitW.store(scaledW, std::memory_order_relaxed);
+        g_previewDiag.lastInitH.store(scaledH, std::memory_order_relaxed);
         if (g_previewCompositor->init(device, devCtx, scaledW, scaledH)) {
             if (g_previewEffectsBypass)
                 g_previewCompositor->setEffectsBypass(true);
             g_previewCompositorReady = true;
+            g_previewDiag.lastCompositorWidth.store(scaledW, std::memory_order_relaxed);
+            g_previewDiag.lastCompositorHeight.store(scaledH, std::memory_order_relaxed);
             std::fprintf(stderr, "[PreviewUnify] GPU compositor initialized %dx%d (scale=%.2f)\n",
                          scaledW, scaledH, g_previewResolutionScale);
         } else {
+            g_previewDiag.initInitFailures.fetch_add(1, std::memory_order_relaxed);
             std::fprintf(stderr, "[PreviewUnify] WARNING: GPU compositor init failed\n");
             g_previewCompositor.reset();
             g_previewRenderDecoder.reset();
@@ -1928,6 +1979,7 @@ Napi::Value Initialize(const Napi::CallbackInfo& info)
             g_previewAnimMgr.reset();
         }
     } else {
+        g_previewDiag.initInitFailures.fetch_add(1, std::memory_order_relaxed);
         std::fprintf(stderr, "[PreviewUnify] WARNING: No GPU device, CPU fallback\n");
     }
 
@@ -4011,6 +4063,7 @@ void Timeline_MoveClip(const Napi::CallbackInfo& info)
 
     TickTime newPos; newPos.ticks = posTicks;
     g_undoManager->execute(std::make_unique<MoveClipCommand>(id, newPos, *g_timeline), *g_timeline);
+    if (audioEngine) audioEngine->getMixEngine().invalidateClipCache(id, "moveClip");
     log.done();
 }
 
@@ -7395,6 +7448,21 @@ Napi::Value Audio_DrainEffectVizFrames(const Napi::CallbackInfo& info)
         bucketSize = sizeof(xleth::viz::LimiterBucket);
         typeStr    = "limiter";
     }
+    else if (typeTag == xleth::viz::kVizTypeTransient)
+    {
+        bucketSize = sizeof(xleth::viz::TransientBucket);
+        typeStr    = "transient";
+    }
+    else if (typeTag == xleth::viz::kVizTypeMultiband)
+    {
+        bucketSize = sizeof(xleth::viz::MultibandBucket);
+        typeStr    = "multiband";
+    }
+    else if (typeTag == xleth::viz::kVizTypeResonance)
+    {
+        bucketSize = sizeof(xleth::viz::ResonanceBucket);
+        typeStr    = "resonance";
+    }
 
     Napi::Object result = Napi::Object::New(env);
     result.Set("type",       Napi::String::New(env, typeStr));
@@ -8303,7 +8371,13 @@ Napi::Value Audio_ExportCancel(const Napi::CallbackInfo& info)
 // video_exportStart({ outputPath, videoCodec, hwEncoder, width, height,
 //                     fpsNum, fpsDen, crf, videoBitrate,
 //                     audioCodec, sampleRate, audioBitrate,
-//                     startBeat, endBeat }) → bool
+//                     startBeat, endBeat,
+//                     useSourceMedia /* bool, default true — when false the
+//                                       render reads DNxHR proxy media instead
+//                                       of original-source files. Final export
+//                                       must leave this true so CRF/bitrate
+//                                       settings operate on full-quality
+//                                       pixels. */ }) → bool
 Napi::Value Video_ExportStart(const Napi::CallbackInfo& info)
 {
     Napi::Env env = info.Env();
@@ -8351,6 +8425,12 @@ Napi::Value Video_ExportStart(const Napi::CallbackInfo& info)
         else                     settings.videoCodec = ExportSettings::VideoCodec::MPEG4;
     }
     if (o.Has("hwEncoder")) settings.hwEncoderName = o.Get("hwEncoder").As<Napi::String>().Utf8Value();
+    if (o.Has("videoMode")) {
+        std::string vm = o.Get("videoMode").As<Napi::String>().Utf8Value();
+        if      (vm == "software") settings.videoMode = ExportSettings::VideoMode::Software;
+        else if (vm == "hardware") settings.videoMode = ExportSettings::VideoMode::Hardware;
+        else                       settings.videoMode = ExportSettings::VideoMode::Auto;
+    }
     if (o.Has("width"))     settings.width     = o.Get("width").As<Napi::Number>().Int32Value();
     if (o.Has("height"))    settings.height    = o.Get("height").As<Napi::Number>().Int32Value();
     if (o.Has("fpsNum"))    settings.fpsNum    = o.Get("fpsNum").As<Napi::Number>().Int32Value();
@@ -8368,6 +8448,12 @@ Napi::Value Video_ExportStart(const Napi::CallbackInfo& info)
     }
     if (o.Has("sampleRate"))   settings.sampleRate   = o.Get("sampleRate").As<Napi::Number>().Int32Value();
     if (o.Has("audioBitrate")) settings.audioBitrate  = o.Get("audioBitrate").As<Napi::Number>().Int32Value();
+
+    // Render input: default true → original source media. UI sets this
+    // explicitly; engine struct also defaults to true so a missing field is
+    // safe. Set false only for a deliberate preview-quality export.
+    if (o.Has("useSourceMedia"))
+        settings.useSourceMedia = o.Get("useSourceMedia").As<Napi::Boolean>().Value();
 
     // Sample range from beats (0 = start of timeline)
     double startBeat = 0.0, endBeat = -1.0;
@@ -8485,9 +8571,11 @@ Napi::Value Video_ExportGetProgress(const Napi::CallbackInfo& info)
     o.Set("totalFrames",  Napi::Number::New(env, static_cast<double>(p.totalFrames.load())));
     o.Set("speed",        Napi::Number::New(env, static_cast<double>(p.speedMultiplier.load())));
     o.Set("eta",          Napi::Number::New(env, static_cast<double>(p.etaSeconds.load())));
-    o.Set("error",        Napi::String::New(env, p.getError()));
-    o.Set("complete",     Napi::Boolean::New(env, p.complete.load()));
-    o.Set("failed",       Napi::Boolean::New(env, p.failed.load()));
+    o.Set("error",                Napi::String::New(env, p.getError()));
+    o.Set("videoEncoderName",     Napi::String::New(env, p.getVideoEncoderName()));
+    o.Set("videoEncoderFallback", Napi::Boolean::New(env, p.videoEncoderFallback.load()));
+    o.Set("complete",             Napi::Boolean::New(env, p.complete.load()));
+    o.Set("failed",               Napi::Boolean::New(env, p.failed.load()));
 
     return o;
 }
@@ -9589,15 +9677,177 @@ Napi::Value Gpu_GetAvailableGpus(const Napi::CallbackInfo& info)
         o.Set("name",       Napi::String::New(env, nameUtf8));
         o.Set("vendor",     Napi::String::New(env, vendorStr));
         o.Set("vendorId",   Napi::Number::New(env, a.vendorId));
+        o.Set("deviceId",   Napi::Number::New(env, a.deviceId));
         o.Set("vramMB",     Napi::Number::New(env, static_cast<double>(a.dedicatedVideoMemoryMB)));
+        o.Set("sharedSystemMemoryMB",
+                            Napi::Number::New(env, static_cast<double>(a.sharedSystemMemoryMB)));
         o.Set("isDiscrete", Napi::Boolean::New(env, a.isDiscrete));
         o.Set("isDefault",  Napi::Boolean::New(env, a.isDefault));
         o.Set("index",      Napi::Number::New(env, a.adapterIndex));
+        o.Set("luidHighPart", Napi::Number::New(env, a.luidHighPart));
+        o.Set("luidLowPart",  Napi::Number::New(env, a.luidLowPart));
         arr.Set(static_cast<uint32_t>(i), o);
     }
 
     log.done(std::to_string(adapters.size()) + " adapters");
     return arr;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// diag_getVisualPreviewDiagnostic()
+//
+// Returns a structured snapshot of the live preview / grid pipeline state for
+// the Settings → Graphics → Export Visual Preview Diagnostic Log feature.
+// All counters are atomic and read without locking the compositor mutex so
+// the call is safe to invoke from the JS thread mid-playback.
+//
+// The shape is intentionally flat-ish so JSON.stringify in the renderer can
+// turn the whole object into a plain-text section in the .txt log.
+// ─────────────────────────────────────────────────────────────────────────────
+Napi::Value Diag_GetVisualPreviewDiagnostic(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    Napi::Object o = Napi::Object::New(env);
+
+    // ── Adapter list (mirrors gpu_getAvailableGpus output, included so the
+    //    diagnostic .txt is self-contained without a second N-API call) ───────
+    Napi::Array adapterArr;
+    if (g_gpuDevice) {
+        const auto& adapters = g_gpuDevice->getAdapters();
+        adapterArr = Napi::Array::New(env, adapters.size());
+        for (size_t i = 0; i < adapters.size(); ++i) {
+            const auto& a = adapters[i];
+            std::string nameUtf8;
+            nameUtf8.reserve(a.name.size());
+            for (wchar_t wc : a.name)
+                nameUtf8.push_back(static_cast<char>(wc & 0x7F));
+            const char* vendorStr = "Unknown";
+            if (a.vendorId == GpuVendor::NVIDIA)      vendorStr = "NVIDIA";
+            else if (a.vendorId == GpuVendor::AMD)    vendorStr = "AMD";
+            else if (a.vendorId == GpuVendor::Intel)  vendorStr = "Intel";
+
+            Napi::Object ao = Napi::Object::New(env);
+            ao.Set("name",       Napi::String::New(env, nameUtf8));
+            ao.Set("vendor",     Napi::String::New(env, vendorStr));
+            ao.Set("vendorId",   Napi::Number::New(env, a.vendorId));
+            ao.Set("deviceId",   Napi::Number::New(env, a.deviceId));
+            ao.Set("vramMB",     Napi::Number::New(env, static_cast<double>(a.dedicatedVideoMemoryMB)));
+            ao.Set("sharedSystemMemoryMB",
+                                 Napi::Number::New(env, static_cast<double>(a.sharedSystemMemoryMB)));
+            ao.Set("isDiscrete", Napi::Boolean::New(env, a.isDiscrete));
+            ao.Set("isDefault",  Napi::Boolean::New(env, a.isDefault));
+            ao.Set("index",      Napi::Number::New(env, a.adapterIndex));
+            ao.Set("luidHighPart", Napi::Number::New(env, a.luidHighPart));
+            ao.Set("luidLowPart",  Napi::Number::New(env, a.luidLowPart));
+            adapterArr.Set(static_cast<uint32_t>(i), ao);
+        }
+        o.Set("activeAdapterIndex",
+              Napi::Number::New(env, g_gpuDevice->getActiveAdapterIndex()));
+        o.Set("hasD3D11Device", Napi::Boolean::New(env, g_gpuDevice->hasDevice()));
+    } else {
+        adapterArr = Napi::Array::New(env, 0);
+        o.Set("activeAdapterIndex", Napi::Number::New(env, -1));
+        o.Set("hasD3D11Device", Napi::Boolean::New(env, false));
+    }
+    o.Set("adapters", adapterArr);
+
+    // ── Compositor lifecycle / state ─────────────────────────────────────────
+    o.Set("compositorReady",
+          Napi::Boolean::New(env, g_previewCompositorReady.load()));
+    o.Set("compositorPresent",
+          Napi::Boolean::New(env, g_previewCompositor != nullptr));
+    o.Set("decoderPresent",
+          Napi::Boolean::New(env, g_previewRenderDecoder != nullptr));
+    o.Set("collectorPresent",
+          Napi::Boolean::New(env, g_previewCollector != nullptr));
+    o.Set("renderCachePresent",
+          Napi::Boolean::New(env, g_previewRenderCache != nullptr));
+    o.Set("animMgrPresent",
+          Napi::Boolean::New(env, g_previewAnimMgr != nullptr));
+    o.Set("pauseForExport",
+          Napi::Boolean::New(env, g_previewPauseForExport.load()));
+    o.Set("pauseForVisibility",
+          Napi::Boolean::New(env, g_previewPauseForVisibility.load()));
+    o.Set("previewResolutionScale",
+          Napi::Number::New(env, g_previewResolutionScale));
+    o.Set("previewEffectsBypass",
+          Napi::Boolean::New(env, g_previewEffectsBypass));
+
+    // ── Canvas / FrameOutput ─────────────────────────────────────────────────
+    o.Set("canvasWidth",  Napi::Number::New(env, CANVAS_W));
+    o.Set("canvasHeight", Napi::Number::New(env, CANVAS_H));
+    o.Set("frameOutputInitialized",
+          Napi::Boolean::New(env, frameOutput.isInitialized()));
+    o.Set("frameOutputWidth",  Napi::Number::New(env, frameOutput.getWidth()));
+    o.Set("frameOutputHeight", Napi::Number::New(env, frameOutput.getHeight()));
+    o.Set("frameOutputBufferSize", Napi::Number::New(env, frameOutput.getBufferSize()));
+    o.Set("frameOutputCurrentIndex", Napi::Number::New(env, frameOutput.getCurrentBufferIndex()));
+
+    // ── Counters (since process start) ───────────────────────────────────────
+    Napi::Object c = Napi::Object::New(env);
+    c.Set("videoTickCount",
+          Napi::Number::New(env, static_cast<double>(g_previewDiag.videoTickCount.load())));
+    c.Set("compositorPathEntered",
+          Napi::Number::New(env, static_cast<double>(g_previewDiag.compositorPathEntered.load())));
+    c.Set("compositeFrameCount",
+          Napi::Number::New(env, static_cast<double>(g_previewDiag.compositeFrameCount.load())));
+    c.Set("readbackValidCount",
+          Napi::Number::New(env, static_cast<double>(g_previewDiag.readbackValidCount.load())));
+    c.Set("readbackInvalidCount",
+          Napi::Number::New(env, static_cast<double>(g_previewDiag.readbackInvalidCount.load())));
+    c.Set("canvasCopyCount",
+          Napi::Number::New(env, static_cast<double>(g_previewDiag.canvasCopyCount.load())));
+    c.Set("blackFrameCount",
+          Napi::Number::New(env, static_cast<double>(g_previewDiag.blackFrameCount.load())));
+    c.Set("compositorInitFailures",
+          Napi::Number::New(env, static_cast<double>(g_previewDiag.initInitFailures.load())));
+    o.Set("counters", c);
+
+    // ── Last-tick snapshot ───────────────────────────────────────────────────
+    Napi::Object last = Napi::Object::New(env);
+    last.Set("readbackWidth",  Napi::Number::New(env, g_previewDiag.lastReadbackWidth.load()));
+    last.Set("readbackHeight", Napi::Number::New(env, g_previewDiag.lastReadbackHeight.load()));
+    last.Set("requestCount",   Napi::Number::New(env, g_previewDiag.lastRequestCount.load()));
+    last.Set("decodeMissCount",Napi::Number::New(env, g_previewDiag.lastDecodeMissCount.load()));
+    last.Set("layoutColumns",  Napi::Number::New(env, g_previewDiag.lastLayoutColumns.load()));
+    last.Set("layoutRows",     Napi::Number::New(env, g_previewDiag.lastLayoutRows.load()));
+    last.Set("compositorWidth",  Napi::Number::New(env, g_previewDiag.lastCompositorWidth.load()));
+    last.Set("compositorHeight", Napi::Number::New(env, g_previewDiag.lastCompositorHeight.load()));
+    last.Set("initWidth",  Napi::Number::New(env, g_previewDiag.lastInitW.load()));
+    last.Set("initHeight", Napi::Number::New(env, g_previewDiag.lastInitH.load()));
+    {
+        const int32_t hr = g_previewDiag.lastReadbackHRESULT.load();
+        char hrHex[12];
+        std::snprintf(hrHex, sizeof(hrHex), "0x%08X", static_cast<unsigned int>(hr));
+        last.Set("lastReadbackHRESULT", Napi::String::New(env, hrHex));
+        const char* hrTxt;
+        switch (static_cast<unsigned int>(hr)) {
+            case 0x00000000U: hrTxt = "S_OK"; break;
+            case 0x887A0001U: hrTxt = "DXGI_ERROR_WAS_STILL_DRAWING"; break;
+            case 0x887A0005U: hrTxt = "DXGI_ERROR_DEVICE_REMOVED"; break;
+            case 0x887A0006U: hrTxt = "DXGI_ERROR_DEVICE_HUNG"; break;
+            case 0x887A0007U: hrTxt = "DXGI_ERROR_DEVICE_RESET"; break;
+            case 0x80070057U: hrTxt = "E_INVALIDARG"; break;
+            case 0x80004003U: hrTxt = "E_POINTER"; break;
+            case 0x8007000EU: hrTxt = "E_OUTOFMEMORY"; break;
+            default:          hrTxt = "(unknown)"; break;
+        }
+        last.Set("lastReadbackHRESULTText", Napi::String::New(env, hrTxt));
+    }
+    o.Set("lastTick", last);
+
+    // ── Timeline / grid summary (best-effort, optional) ──────────────────────
+    if (g_timeline) {
+        const auto layout = g_timeline->getGridLayout();
+        Napi::Object gl = Napi::Object::New(env);
+        gl.Set("columns",    Napi::Number::New(env, layout.columns));
+        gl.Set("rows",       Napi::Number::New(env, layout.rows));
+        gl.Set("previewFps", Napi::Number::New(env, layout.previewFps));
+        gl.Set("gapScale",   Napi::Number::New(env, layout.gapScale));
+        o.Set("gridLayout", gl);
+    }
+
+    return o;
 }
 
 // gpu_setAdapter(index) → {success, name, vramMB}
@@ -10299,6 +10549,10 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     // ── GPU device management ────────────────────────────────────────────────
     exports.Set("gpu_getAvailableGpus", Napi::Function::New(env, Gpu_GetAvailableGpus));
     exports.Set("gpu_setAdapter",       Napi::Function::New(env, Gpu_SetAdapter));
+
+    // ── Diagnostics (Settings → Graphics → Export Visual Preview Log) ───────
+    exports.Set("diag_getVisualPreviewDiagnostic",
+                Napi::Function::New(env, Diag_GetVisualPreviewDiagnostic));
 
     // ── Hardware encoder detection ───────────────────────────────────────────
     exports.Set("hwenc_getAvailableEncoders", Napi::Function::New(env, HwEnc_GetAvailableEncoders));

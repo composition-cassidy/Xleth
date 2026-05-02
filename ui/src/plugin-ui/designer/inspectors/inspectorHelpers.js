@@ -1,5 +1,7 @@
 import { COMPRESSOR_SOURCE_DEFAULT_PRESET, COMPRESSOR_VISUALIZER_PRESETS } from '../../runtime/visualizers/compressorPainter.js'
 import { LIMITER_SOURCE_DEFAULT_PRESET, LIMITER_VISUALIZER_PRESETS } from '../../runtime/visualizers/limiterPainter.js'
+import { TRANSIENT_SOURCE_DEFAULT_PRESET, TRANSIENT_VISUALIZER_PRESETS } from '../../runtime/visualizers/transientPainter.js'
+import { MULTIBAND_SOURCE_DEFAULT_PRESET, MULTIBAND_VISUALIZER_PRESETS } from '../../runtime/visualizers/multibandPainter.js'
 import { getKnobPreset } from '../../appearance/knobPresets.js'
 
 // Source-key prefix → preset registries. Keeping this prefix-driven means
@@ -11,6 +13,20 @@ function presetsForSource(source) {
       visualizers:    LIMITER_VISUALIZER_PRESETS,
       defaultsBySrc:  LIMITER_SOURCE_DEFAULT_PRESET,
       fallbackPreset: 'limiterRealtime',
+    }
+  }
+  if (typeof source === 'string' && source.startsWith('transient.')) {
+    return {
+      visualizers:    TRANSIENT_VISUALIZER_PRESETS,
+      defaultsBySrc:  TRANSIENT_SOURCE_DEFAULT_PRESET,
+      fallbackPreset: 'transientShaper',
+    }
+  }
+  if (typeof source === 'string' && source.startsWith('overdone.')) {
+    return {
+      visualizers:    MULTIBAND_VISUALIZER_PRESETS,
+      defaultsBySrc:  MULTIBAND_SOURCE_DEFAULT_PRESET,
+      fallbackPreset: 'overdoneMultiband',
     }
   }
   return {
@@ -116,7 +132,10 @@ export function isPresetAllowedForSource(presetOrKey, source) {
   // source) won't be in the per-source registry — try the other side so we
   // can still report "not allowed" instead of treating it as unknown.
   if (!preset && typeof presetOrKey === 'string') {
-    preset = COMPRESSOR_VISUALIZER_PRESETS[presetOrKey] || LIMITER_VISUALIZER_PRESETS[presetOrKey]
+    preset = COMPRESSOR_VISUALIZER_PRESETS[presetOrKey]
+          || LIMITER_VISUALIZER_PRESETS[presetOrKey]
+          || TRANSIENT_VISUALIZER_PRESETS[presetOrKey]
+          || MULTIBAND_VISUALIZER_PRESETS[presetOrKey]
   }
   if (!preset) return false
   if (!Array.isArray(preset.sources) || preset.sources.length === 0) return true

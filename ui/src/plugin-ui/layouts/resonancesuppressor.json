@@ -1,0 +1,290 @@
+{
+  "$xleth": "plugin-ui-layout",
+  "schemaVersion": 1,
+  "pluginId": "resonancesuppressor",
+  "name": "Default Resonance Suppressor Layout",
+  "panel": {
+    "preferredSize": { "width": 760, "height": 490 }
+  },
+  "root": {
+    "id": "resonance-root",
+    "type": "panel",
+    "children": [
+      {
+        "id": "header",
+        "type": "row",
+        "style": { "paddingPx": [10, 14, 10, 14], "gapPx": 10, "align": "center" },
+        "props": { "variant": "header" },
+        "children": [
+          {
+            "id": "title-cluster",
+            "type": "row",
+            "style": { "gapPx": 10, "align": "center" },
+            "children": [
+              {
+                "id": "title-copy",
+                "type": "column",
+                "style": { "gapPx": 4 },
+                "children": [
+                  { "id": "title", "type": "label", "props": { "text": "Xleth Resonance Suppressor", "variant": "header" } },
+                  { "id": "subtitle", "type": "label", "props": { "text": "adaptive local spectral resonance control", "variant": "muted" } }
+                ]
+              }
+            ]
+          },
+          { "id": "header-spacer", "type": "spacer" },
+          {
+            "id": "mode-segmented",
+            "type": "row",
+            "style": { "gapPx": 0, "align": "center" },
+            "props": { "variant": "segmented" },
+            "children": [
+              { "id": "mode-soft", "type": "toggle", "props": { "param": "mode", "mode": "discreteValue", "valueWhenOn": 0, "label": "Soft" } },
+              { "id": "mode-hard", "type": "toggle", "props": { "param": "mode", "mode": "discreteValue", "valueWhenOn": 1, "label": "Hard" } }
+            ]
+          },
+          {
+            "id": "quality-segmented",
+            "type": "row",
+            "style": { "gapPx": 0, "align": "center" },
+            "props": { "variant": "segmented" },
+            "children": [
+              { "id": "quality-fast", "type": "toggle", "props": { "param": "quality", "mode": "discreteValue", "valueWhenOn": 0, "label": "Fast" } },
+              { "id": "quality-normal", "type": "toggle", "props": { "param": "quality", "mode": "discreteValue", "valueWhenOn": 1, "label": "Normal" } },
+              { "id": "quality-high", "type": "toggle", "props": { "param": "quality", "mode": "discreteValue", "valueWhenOn": 2, "label": "High" } }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "workspace",
+        "type": "row",
+        "style": { "paddingPx": [10, 12, 14, 12], "gapPx": 10, "align": "stretch" },
+        "children": [
+          {
+            "id": "main-stack",
+            "type": "column",
+            "style": { "growsToFill": true, "gapPx": 10 },
+            "children": [
+              {
+                "id": "graph-card",
+                "type": "panel",
+                "style": { "paddingPx": [10, 10, 78, 10], "gapPx": 6 },
+                "children": [
+                  {
+                    "id": "graph-title-row",
+                    "type": "row",
+                    "style": { "gapPx": 10, "align": "center" },
+                    "children": [
+                      { "id": "graph-title", "type": "label", "props": { "text": "FOCUS CURVE", "variant": "muted" } },
+                      { "id": "graph-title-spacer", "type": "spacer" },
+                      { "id": "graph-subtitle", "type": "label", "props": { "text": "8 BAND EDITOR", "variant": "muted" } }
+                    ]
+                  },
+                  {
+                    "id": "graph-view-tabs",
+                    "type": "tabGroup",
+                    "style": { "growsToFill": true },
+                    "children": [
+                      {
+                        "id": "resonance-viz",
+                        "type": "visualizer",
+                        "style": { "growsToFill": true },
+                        "props": {
+                          "tabLabel": "Combined",
+                          "source": "resonance.combined",
+                          "preset": "resonanceCombined",
+                          "overlay": "resonanceCurve",
+                          "heightPx": 200
+                        }
+                      },
+                      {
+                        "id": "resonance-viz-spectrum",
+                        "type": "visualizer",
+                        "style": { "growsToFill": true },
+                        "props": {
+                          "tabLabel": "Spectrum",
+                          "source": "resonance.spectrum",
+                          "preset": "resonanceSpectrum",
+                          "overlay": "resonanceCurve",
+                          "heightPx": 200
+                        }
+                      },
+                      {
+                        "id": "resonance-viz-reduction",
+                        "type": "visualizer",
+                        "style": { "growsToFill": true },
+                        "props": {
+                          "tabLabel": "Reduction",
+                          "source": "resonance.reduction",
+                          "preset": "resonanceReduction",
+                          "overlay": "resonanceCurve",
+                          "heightPx": 200
+                        }
+                      },
+                      {
+                        "id": "resonance-viz-weighting",
+                        "type": "visualizer",
+                        "style": { "growsToFill": true },
+                        "props": {
+                          "tabLabel": "Weighting",
+                          "source": "resonance.weighting",
+                          "preset": "resonanceWeighting",
+                          "overlay": "resonanceCurve",
+                          "heightPx": 200
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "detection-card",
+                "type": "panel",
+                "style": { "paddingPx": [8, 10, 10, 10], "gapPx": 8 },
+                "children": [
+                  { "id": "detection-title", "type": "label", "props": { "text": "DETECTION", "variant": "muted" } },
+                  {
+                    "id": "macro-knobs",
+                    "type": "group",
+                    "style": { "growsToFill": true, "gapPx": 8 },
+                    "props": { "columns": 5 },
+                    "children": [
+                      { "id": "k-depth",      "type": "knob", "props": { "param": "depth",      "label": "DEPTH",      "size": 44, "format": "pct0", "appearance": { "cap": "encoder-cap", "ring": "metered-arc", "pointer": "notch", "ticks": "none", "valueReadout": "below", "labelPlacement": "bottom", "depth": "raised", "accentToken": "accent.focus" } } },
+                      { "id": "k-sharpness",  "type": "knob", "props": { "param": "sharpness",  "label": "SHARPNESS",  "size": 44, "format": "pct0", "appearance": { "cap": "encoder-cap", "ring": "metered-arc", "pointer": "notch", "ticks": "none", "valueReadout": "below", "labelPlacement": "bottom", "depth": "raised", "accentToken": "accent.focus" } } },
+                      { "id": "k-selectivity","type": "knob", "props": { "param": "selectivity","label": "SELECTIVITY","size": 44, "format": "pct0", "appearance": { "cap": "encoder-cap", "ring": "metered-arc", "pointer": "notch", "ticks": "none", "valueReadout": "below", "labelPlacement": "bottom", "depth": "raised", "accentToken": "accent.focus" } } },
+                      { "id": "k-attack",     "type": "knob", "props": { "param": "attack",     "label": "ATTACK",     "size": 44, "format": "ms1",  "appearance": { "cap": "encoder-cap", "ring": "metered-arc", "pointer": "notch", "ticks": "none", "valueReadout": "below", "labelPlacement": "bottom", "depth": "raised", "accentToken": "accent.focus" } } },
+                      { "id": "k-release",    "type": "knob", "props": { "param": "release",    "label": "RELEASE",    "size": 44, "format": "ms0",  "appearance": { "cap": "encoder-cap", "ring": "metered-arc", "pointer": "notch", "ticks": "none", "valueReadout": "below", "labelPlacement": "bottom", "depth": "raised", "accentToken": "accent.focus" } } }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "support-rail",
+            "type": "column",
+            "style": { "widthPx": 186, "gapPx": 8 },
+            "children": [
+              {
+                "id": "output-card",
+                "type": "panel",
+                "style": { "paddingPx": [8, 10, 10, 10], "gapPx": 8 },
+                "children": [
+                  { "id": "output-title", "type": "label", "props": { "text": "OUTPUT", "variant": "muted" } },
+                  {
+                    "id": "output-knobs",
+                    "type": "row",
+                    "style": { "gapPx": 8, "align": "center", "justify": "spaceAround" },
+                    "children": [
+                      { "id": "k-mix",  "type": "knob", "props": { "param": "mix",  "label": "MIX",  "size": 40, "format": "pct0",       "appearance": { "cap": "soft-disk", "ring": "metered-arc", "pointer": "line", "ticks": "none", "valueReadout": "below", "labelPlacement": "bottom", "depth": "raised", "accentToken": "accent.focus" } } },
+                      { "id": "k-trim", "type": "knob", "props": { "param": "trim", "label": "TRIM", "size": 40, "format": "dB1_signed", "appearance": { "cap": "soft-disk", "ring": "split-track",  "pointer": "line", "ticks": "none", "valueReadout": "below", "labelPlacement": "bottom", "depth": "raised", "accentToken": "accent.focus" } } }
+                    ]
+                  },
+                  {
+                    "id": "output-actions",
+                    "type": "row",
+                    "style": { "gapPx": 6, "align": "center" },
+                    "children": [
+                      { "id": "delta-toggle", "type": "toggle", "style": { "growsToFill": true }, "props": { "param": "delta", "mode": "boolParam", "label": "Delta Listen" } }
+                    ]
+                  },
+                  {
+                    "id": "meter-row",
+                    "type": "row",
+                    "style": { "gapPx": 8, "align": "stretch", "heightPx": 52 },
+                    "children": [
+                      {
+                        "id": "in-meter-l",
+                        "type": "meter",
+                        "style": { "widthPx": 32 },
+                        "props": {
+                          "source": { "kind": "effectMeter", "slot": "PEAK_L" },
+                          "label": "L",
+                          "unit": "",
+                          "range": { "min": 0, "max": 1, "scale": "linear" },
+                          "orientation": "vertical",
+                          "format": "raw"
+                        }
+                      },
+                      {
+                        "id": "in-meter-r",
+                        "type": "meter",
+                        "style": { "widthPx": 32 },
+                        "props": {
+                          "source": { "kind": "effectMeter", "slot": "PEAK_R" },
+                          "label": "R",
+                          "unit": "",
+                          "range": { "min": 0, "max": 1, "scale": "linear" },
+                          "orientation": "vertical",
+                          "format": "raw"
+                        }
+                      },
+                      {
+                        "id": "gr-meter",
+                        "type": "meter",
+                        "style": { "growsToFill": true },
+                        "props": {
+                          "source": { "kind": "effectMeter", "slot": "GAIN_REDUCTION" },
+                          "label": "ACT",
+                          "unit": "",
+                          "range": { "min": 0, "max": 1, "scale": "linear" },
+                          "orientation": "vertical",
+                          "format": "pct0"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "stereo-card",
+                "type": "panel",
+                "style": { "paddingPx": [8, 10, 10, 10], "gapPx": 8 },
+                "children": [
+                  { "id": "stereo-title", "type": "label", "props": { "text": "STEREO", "variant": "muted" } },
+                  {
+                    "id": "stereo-main-row",
+                    "type": "row",
+                    "style": { "gapPx": 8, "align": "center", "justify": "spaceBetween" },
+                    "children": [
+                      { "id": "k-stereo-link", "type": "knob", "props": { "param": "stereo_link", "label": "LINK", "size": 36, "format": "pct0", "appearance": { "cap": "soft-disk", "ring": "metered-arc", "pointer": "line", "ticks": "none", "valueReadout": "below", "labelPlacement": "bottom", "depth": "flat", "accentToken": "accent.focus" } } },
+                      {
+                        "id": "stereo-mode-segmented",
+                        "type": "row",
+                        "style": { "gapPx": 0, "align": "center" },
+                        "props": { "variant": "segmented" },
+                        "children": [
+                          { "id": "stereo-mode-stereo", "type": "toggle", "props": { "param": "stereo_mode", "mode": "discreteValue", "valueWhenOn": 0, "label": "Stereo" } },
+                          { "id": "stereo-mode-mid",    "type": "toggle", "props": { "param": "stereo_mode", "mode": "discreteValue", "valueWhenOn": 1, "label": "Mid" } },
+                          { "id": "stereo-mode-side",   "type": "toggle", "props": { "param": "stereo_mode", "mode": "discreteValue", "valueWhenOn": 2, "label": "Side" } }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "id": "focus-card",
+                "type": "panel",
+                "style": { "paddingPx": [8, 10, 10, 10], "gapPx": 8 },
+                "children": [
+                  { "id": "focus-title", "type": "label", "props": { "text": "BOUNDARIES", "variant": "muted" } },
+                  {
+                    "id": "boundary-group",
+                    "type": "row",
+                    "style": { "gapPx": 10, "align": "center", "justify": "spaceAround" },
+                    "children": [
+                      { "id": "k-wc-hp", "type": "knob", "props": { "param": "wc_hp", "label": "HP", "size": 36, "format": "hz_smart", "appearance": { "cap": "encoder-cap", "ring": "full-track", "pointer": "notch", "ticks": "none", "valueReadout": "below", "labelPlacement": "bottom", "depth": "sunken", "accentToken": "accent.focus" } } },
+                      { "id": "k-wc-lp", "type": "knob", "props": { "param": "wc_lp", "label": "LP", "size": 36, "format": "hz_smart", "appearance": { "cap": "encoder-cap", "ring": "full-track", "pointer": "notch", "ticks": "none", "valueReadout": "below", "labelPlacement": "bottom", "depth": "sunken", "accentToken": "accent.focus" } } }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

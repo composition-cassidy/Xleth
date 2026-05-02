@@ -1,97 +1,41 @@
-import { useState, useEffect, useRef, useCallback, memo } from 'react'
+import React, { useState, useEffect, useRef, useCallback, memo } from 'react'
 import { Power } from 'lucide-react'
 import useEqStore, { BAND_TYPES, BAND_MODES, BAND_COLORS } from '../../stores/eqStore.js'
+import {
+  SVG_W, SVG_H, PAD_L, PAD_R, PAD_T, PAD_B, PLOT_W, PLOT_H,
+  FREQ_MIN, FREQ_MAX, ANA_DB_MIN, ANA_DB_MAX, RESPONSE_SIZE,
+  freqToX, xToFreq,
+  dbToY_response, dbToY_analyzerWithRange, yToDb_response,
+  evalResponseAt, clamp,
+} from './eqGeometry.js'
+import { computeSpectrumPaths, resetMaxHold } from './eqSpectrumPath.js'
+import {
+  TILT_OPTIONS, RANGE_OPTIONS, SPEED_OPTIONS, RESOLUTION_OPTIONS,
+  SPEED_DECAY, RESOLUTION_BARS,
+  loadAnalyzerSettings, saveAnalyzerSettings,
+} from './eqAnalyzerSettings.js'
+import SelectedBandInspector from './SelectedBandInspector.jsx'
+import EqOutputMeter from './EqOutputMeter.jsx'
 
 // ── Constants ────────────────────────────────────────────────────────────────
-
-const SVG_W = 640
-const SVG_H = 280
-const PAD_L = 36
-const PAD_R = 8
-const PAD_T = 8
-const PAD_B = 20
-const PLOT_W = SVG_W - PAD_L - PAD_R
-const PLOT_H = SVG_H - PAD_T - PAD_B
-
-const FREQ_MIN = 20
-const FREQ_MAX = 20000
-
-const ANA_DB_MIN = -80
-const ANA_DB_MAX = 12
-
-const RESPONSE_SIZE = 512
-const BARS_PER_OCTAVE = 12
-const DECAY_DB_PER_SEC = 24
 
 const FREQ_GRID = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
 const FREQ_LABELS = ['20', '50', '100', '200', '500', '1k', '2k', '5k', '10k', '20k']
 const ANA_DB_LINES = [-80, -60, -40, -20, 0]
-
-const FREQ_BAR_EDGES = (() => {
-  const edges = []
-  const startLog = Math.log2(FREQ_MIN)
-  const endLog = Math.log2(FREQ_MAX)
-  const steps = Math.ceil((endLog - startLog) * BARS_PER_OCTAVE)
-  for (let i = 0; i <= steps; i++) {
-    edges.push(Math.pow(2, startLog + (i / BARS_PER_OCTAVE)))
-  }
-  return edges
-})()
 
 // B8: which types show gain / Q
 const TYPE_SHOW_GAIN = [true, true, true, false, false, false, true]  // LP/HP/Notch hide gain
 const TYPE_SHOW_Q    = [true, true, true, true,  true,  true,  false] // Tilt hides Q
 const TYPE_SHORT     = { 3: 'LP', 4: 'HP', 5: 'Notch' }
 
-let maxHoldPost = null
-let maxHoldPre = null
-let maxHoldLastTime = 0
-let lastDebugTime = 0
-
-// ── Coordinate helpers ───────────────────────────────────────────────────────
-
-function freqToX(f) {
-  const t = (Math.log(f) - Math.log(FREQ_MIN)) / (Math.log(FREQ_MAX) - Math.log(FREQ_MIN))
-  return PAD_L + t * PLOT_W
-}
-
-function xToFreq(x) {
-  const t = (x - PAD_L) / PLOT_W
-  return Math.exp(Math.log(FREQ_MIN) + t * (Math.log(FREQ_MAX) - Math.log(FREQ_MIN)))
-}
-
-function dbToY_response(db, dbZoom) {
-  const clamped = clamp(db, -dbZoom, dbZoom)
-  const t = (clamped - dbZoom) / (-dbZoom - dbZoom)
-  return PAD_T + t * PLOT_H
-}
-
-function dbToY_analyzer(db) {
-  const clamped = clamp(db, ANA_DB_MIN, ANA_DB_MAX)
-  const t = (clamped - ANA_DB_MAX) / (ANA_DB_MIN - ANA_DB_MAX)
-  return PAD_T + t * PLOT_H
-}
-
-function yToDb_response(y, dbZoom) {
-  const t = (y - PAD_T) / PLOT_H
-  return dbZoom + t * (-2 * dbZoom)
-}
-
-function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
-
-function evalResponseAt(curveData, freq) {
-  const t = (Math.log(freq) - Math.log(FREQ_MIN)) / (Math.log(FREQ_MAX) - Math.log(FREQ_MIN))
-  const idx = t * (RESPONSE_SIZE - 1)
-  const lo = Math.floor(idx)
-  const hi = Math.min(lo + 1, RESPONSE_SIZE - 1)
-  const frac = idx - lo
-  return curveData[lo] * (1 - frac) + curveData[hi] * frac
-}
+// Coordinate helpers are imported from ./eqGeometry.js
 
 // ── Grid (dual-scale, memoised) ──────────────────────────────────────────────
 
-const EqGrid = memo(function EqGrid({ dbZoom }) {
+const EqGrid = memo(function EqGrid({ dbZoom, rangeDb }) {
   const respLines = [-dbZoom, -dbZoom / 2, 0, dbZoom / 2, dbZoom]
+  const botDb = ANA_DB_MAX - rangeDb
+  const visibleAnaLines = ANA_DB_LINES.filter(db => db >= botDb)
   return (
     <g className="eq-grid">
       {FREQ_GRID.map((f, i) => {
@@ -103,8 +47,8 @@ const EqGrid = memo(function EqGrid({ dbZoom }) {
           </g>
         )
       })}
-      {ANA_DB_LINES.map(db => {
-        const y = dbToY_analyzer(db)
+      {visibleAnaLines.map(db => {
+        const y = dbToY_analyzerWithRange(db, rangeDb)
         return (
           <g key={`ana${db}`}>
             <line x1={PAD_L} y1={y} x2={PAD_L + PLOT_W} y2={y} className="eq-grid-line-ana" />
@@ -128,103 +72,7 @@ const EqGrid = memo(function EqGrid({ dbZoom }) {
   )
 })
 
-// ── Spectrum analyser paths (1/12 oct aggregation + max-hold) ────────────────
-
-function computeSpectrumPaths(data, nyquist, slopeDbPerOct, isPost) {
-  if (!data || data.length === 0) return { fill: '', maxHold: '' }
-  const bins = data.length
-  const numBars = FREQ_BAR_EDGES.length - 1
-
-  let maxHold = isPost ? maxHoldPost : maxHoldPre
-  if (!maxHold || maxHold.length !== numBars) {
-    maxHold = new Float32Array(numBars).fill(-Infinity)
-    if (isPost) maxHoldPost = maxHold
-    else maxHoldPre = maxHold
-  }
-
-  const now = performance.now()
-  const dtSec = maxHoldLastTime > 0 ? (now - maxHoldLastTime) / 1000 : 0
-  if (isPost) maxHoldLastTime = now
-
-  const barDb = new Float32Array(numBars)
-
-  for (let k = 0; k < numBars; k++) {
-    const fLo = FREQ_BAR_EDGES[k]
-    const fHi = FREQ_BAR_EDGES[k + 1]
-
-    let loBin = Math.max(1, Math.floor(fLo * bins / nyquist))
-    let hiBin = Math.min(bins - 1, Math.ceil(fHi * bins / nyquist))
-
-    let maxDb = -Infinity
-    if (hiBin >= loBin) {
-      for (let b = loBin; b <= hiBin; b++) {
-        if (data[b] > maxDb) maxDb = data[b]
-      }
-    } else {
-      const centerBin = (fLo + fHi) / 2 * bins / nyquist
-      const b0 = Math.max(0, Math.floor(centerBin))
-      const b1 = Math.min(bins - 1, b0 + 1)
-      const frac = centerBin - b0
-      maxDb = data[b0] * (1 - frac) + data[b1] * frac
-    }
-
-    if (slopeDbPerOct !== 0) {
-      const centerHz = Math.sqrt(fLo * fHi)
-      maxDb += slopeDbPerOct * Math.log2(centerHz / 1000)
-    }
-
-    barDb[k] = maxDb
-
-    if (maxDb > maxHold[k]) {
-      maxHold[k] = maxDb
-    } else {
-      maxHold[k] = Math.max(ANA_DB_MIN, maxHold[k] - DECAY_DB_PER_SEC * dtSec)
-    }
-  }
-
-  // eslint-disable-next-line no-console
-  if (window.XLETH_DEBUG && isPost) {
-    const t = performance.now()
-    if (t - lastDebugTime >= 1000) {
-      lastDebugTime = t
-      const above = Array.from(barDb).filter(db => db > -60).length
-      const peak = Math.max(...Array.from(barDb))
-      console.log(`[EQ-Render] bars >-60dB: ${above}, peak: ${peak.toFixed(1)}dB`)
-    }
-  }
-
-  const xArr = []
-  const yFillArr = []
-  const yHoldArr = []
-
-  for (let k = 0; k < numBars; k++) {
-    const fCenter = Math.sqrt(FREQ_BAR_EDGES[k] * FREQ_BAR_EDGES[k + 1])
-    xArr.push(freqToX(fCenter))
-    yFillArr.push(dbToY_analyzer(barDb[k]))
-    yHoldArr.push(dbToY_analyzer(maxHold[k]))
-  }
-
-  const fillParts = [`M ${PAD_L} ${PAD_T + PLOT_H}`]
-  const holdParts = []
-
-  for (let k = 0; k < numBars; k++) {
-    fillParts.push(`L ${xArr[k].toFixed(1)} ${yFillArr[k].toFixed(1)}`)
-    holdParts.push(k === 0
-      ? `M ${xArr[k].toFixed(1)} ${yHoldArr[k].toFixed(1)}`
-      : `L ${xArr[k].toFixed(1)} ${yHoldArr[k].toFixed(1)}`)
-
-    if (k < numBars - 1) {
-      const xMid = ((xArr[k] + xArr[k + 1]) / 2).toFixed(1)
-      const yFMid = ((yFillArr[k] + yFillArr[k + 1]) / 2).toFixed(1)
-      const yHMid = ((yHoldArr[k] + yHoldArr[k + 1]) / 2).toFixed(1)
-      fillParts.push(`L ${xMid} ${yFMid}`)
-      holdParts.push(`L ${xMid} ${yHMid}`)
-    }
-  }
-
-  fillParts.push(`L ${PAD_L + PLOT_W} ${PAD_T + PLOT_H} Z`)
-  return { fill: fillParts.join(' '), maxHold: holdParts.join(' ') }
-}
+// computeSpectrumPaths is imported from ./eqSpectrumPath.js
 
 // ── Response curve path ──────────────────────────────────────────────────────
 
@@ -323,11 +171,11 @@ function BandDot({ band, index, onDragStart, grValue, dbZoom, isSelected }) {
   )
 }
 
-// ── Band list row (B5 + B8) ──────────────────────────────────────────────────
+// ── Band list row (EQ-C: compact — dynamic/spectral moved to SelectedBandInspector) ──
 
-function BandRow({ band, index, linPhase, oversample, grValue }) {
-  const setBandParam = useEqStore(s => s.setBandParam)
-  const removeBand = useEqStore(s => s.removeBand)
+export function BandRow({ band, index, linPhase, oversample, isSelected, onSelect }) {
+  const setBandParam  = useEqStore(s => s.setBandParam)
+  const removeBand    = useEqStore(s => s.removeBand)
   const duplicateBand = useEqStore(s => s.duplicateBand)
   const color = BAND_COLORS[index % BAND_COLORS.length]
 
@@ -360,10 +208,10 @@ function BandRow({ band, index, linPhase, oversample, grValue }) {
   const handleDuplicate = () => { duplicateBand(index); setMenuOpen(false) }
 
   const handleReset = () => {
-    setBandParam(index, 'freq', 1000)
-    setBandParam(index, 'gain', 0)
-    setBandParam(index, 'q', 0.707)
-    setBandParam(index, 'type', 0)
+    setBandParam(index, 'freq',    1000)
+    setBandParam(index, 'gain',    0)
+    setBandParam(index, 'q',       0.707)
+    setBandParam(index, 'type',    0)
     setBandParam(index, 'enabled', 1)
     setMenuOpen(false)
   }
@@ -386,7 +234,10 @@ function BandRow({ band, index, linPhase, oversample, grValue }) {
   const showQ    = TYPE_SHOW_Q[band.type]    ?? true
 
   return (
-    <div className="eq-band-row">
+    <div
+      className={`eq-band-row${isSelected ? ' eq-band-row--selected' : ''}`}
+      onClick={() => onSelect?.()}
+    >
       <div className="eq-band-color" style={{ background: color }} />
 
       <select className="eq-band-mode" value={band.mode || 0}
@@ -464,81 +315,6 @@ function BandRow({ band, index, linPhase, oversample, grValue }) {
           </div>
         )}
       </div>
-
-      {/* Dynamic EQ params */}
-      {band.mode === 1 && (
-        <div className="eq-band-dyn-fields">
-          <label className="eq-band-field">
-            <span>Thr</span>
-            <input type="number" className="eq-band-input" value={(band.dyn_thresh ?? -20).toFixed(0)}
-              min={-60} max={0} step={1}
-              onChange={e => setBandParam(index, 'dyn_thresh', clamp(Number(e.target.value), -60, 0))} />
-          </label>
-          <label className="eq-band-field">
-            <span>Rat</span>
-            <input type="number" className="eq-band-input" value={(band.dyn_ratio ?? 4).toFixed(1)}
-              min={1} max={20} step={0.1}
-              onChange={e => setBandParam(index, 'dyn_ratio', clamp(Number(e.target.value), 1, 20))} />
-          </label>
-          <label className="eq-band-field">
-            <span>Atk</span>
-            <input type="number" className="eq-band-input" value={(band.dyn_attack ?? 10).toFixed(1)}
-              min={0.1} max={100} step={0.1}
-              onChange={e => setBandParam(index, 'dyn_attack', clamp(Number(e.target.value), 0.1, 100))} />
-          </label>
-          <label className="eq-band-field">
-            <span>Rel</span>
-            <input type="number" className="eq-band-input" value={(band.dyn_release ?? 100).toFixed(0)}
-              min={1} max={1000} step={1}
-              onChange={e => setBandParam(index, 'dyn_release', clamp(Number(e.target.value), 1, 1000))} />
-          </label>
-          {grValue != null && Math.abs(grValue) > 0.1 && (
-            <div className="eq-gr-bar">
-              <div className="eq-gr-fill" style={{
-                width: `${Math.min(100, Math.abs(grValue) * 3)}%`,
-                background: grValue >= 0 ? 'var(--xleth-eq-gr-boost)' : 'var(--xleth-eq-gr-cut)',
-              }} />
-              <span>{grValue.toFixed(1)} dB</span>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Spectral Dynamics params — B8 adds Atk/Rel (P1 params) */}
-      {band.mode === 2 && (
-        <div className="eq-band-spec-fields">
-          <label className="eq-band-field">
-            <span>Sens</span>
-            <input type="number" className="eq-band-input" value={(band.spec_sens ?? 0.5).toFixed(2)}
-              min={0} max={1} step={0.01}
-              onChange={e => setBandParam(index, 'spec_sens', clamp(Number(e.target.value), 0, 1))} />
-          </label>
-          <label className="eq-band-field">
-            <span>Dep</span>
-            <input type="number" className="eq-band-input" value={(band.spec_depth ?? 0).toFixed(1)}
-              min={-30} max={30} step={0.1}
-              onChange={e => setBandParam(index, 'spec_depth', clamp(Number(e.target.value), -30, 30))} />
-          </label>
-          <label className="eq-band-field">
-            <span>Sel</span>
-            <input type="number" className="eq-band-input" value={(band.spec_sel ?? 5).toFixed(1)}
-              min={1} max={20} step={0.1}
-              onChange={e => setBandParam(index, 'spec_sel', clamp(Number(e.target.value), 1, 20))} />
-          </label>
-          <label className="eq-band-field">
-            <span>Atk</span>
-            <input type="number" className="eq-band-input" value={(band.spec_attack ?? 10).toFixed(1)}
-              min={0.1} max={100} step={0.1}
-              onChange={e => setBandParam(index, 'spec_attack', clamp(Number(e.target.value), 0.1, 100))} />
-          </label>
-          <label className="eq-band-field">
-            <span>Rel</span>
-            <input type="number" className="eq-band-input" value={(band.spec_release ?? 100).toFixed(0)}
-              min={1} max={1000} step={1}
-              onChange={e => setBandParam(index, 'spec_release', clamp(Number(e.target.value), 1, 1000))} />
-          </label>
-        </div>
-      )}
     </div>
   )
 }
@@ -570,7 +346,7 @@ export default function EqPanel() {
   const setThemeFont = useEqStore(s => s.setThemeFont)
   const setThemeFontScale = useEqStore(s => s.setThemeFontScale)
 
-  const [slopeOn, setSlopeOn] = useState(true)
+  const [analyzerSettings, setAnalyzerSettings] = useState(() => loadAnalyzerSettings())
   const [panelPos, setPanelPos] = useState(() => ({
     x: Math.round(window.innerWidth / 2 - 340),
     y: 80,
@@ -585,6 +361,7 @@ export default function EqPanel() {
   const rafRef = useRef(null)
   const lastPollRef = useRef(0)
   const svgRef = useRef(null)
+  const meterPeaksRef = useRef({ l: 0, r: 0 })
   const responseCurveRef = useRef(null)
   const spectrumDataRef = useRef(null)   // latest spec data for hover readout
 
@@ -599,8 +376,8 @@ export default function EqPanel() {
   const themePopoverRef = useRef(null)
 
   // Refs so polling closure sees current values without restarting the effect
-  const slopeOnRef = useRef(slopeOn)
-  useEffect(() => { slopeOnRef.current = slopeOn }, [slopeOn])
+  const analyzerRef = useRef(analyzerSettings)
+  useEffect(() => { analyzerRef.current = analyzerSettings }, [analyzerSettings])
   const preSpectrumRef = useRef(preSpectrum)
   useEffect(() => { preSpectrumRef.current = preSpectrum }, [preSpectrum])
 
@@ -615,6 +392,16 @@ export default function EqPanel() {
     const idx = order.indexOf(useEqStore.getState().dbZoom)
     setDbZoom(order[(idx + 1) % order.length])
   }, [setDbZoom])
+
+  // Analyzer setting cycle helper
+  const cycleAnalyzer = useCallback((key, options) => {
+    setAnalyzerSettings(s => {
+      const idx  = options.indexOf(s[key])
+      const next = { ...s, [key]: options[(idx + 1) % options.length] }
+      saveAnalyzerSettings(next)
+      return next
+    })
+  }, [])
 
   useEffect(() => {
     if (responseCurveRef.current) {
@@ -680,9 +467,7 @@ export default function EqPanel() {
   useEffect(() => {
     if (!target) return
     let active = true
-    maxHoldPost = null
-    maxHoldPre = null
-    maxHoldLastTime = 0
+    resetMaxHold()
 
     const poll = async () => {
       if (!active) return
@@ -722,10 +507,11 @@ export default function EqPanel() {
 
       if (now - lastPollRef.current >= 33) {
         lastPollRef.current = now
-        const [resp, spec, gr] = await Promise.all([
+        const [resp, spec, gr, meterRaw] = await Promise.all([
           fetchResponseCurve(),
           fetchSpectrumData(),
           fetchBandGR(),
+          window.xleth?.audio?.getEffectMeter(target.trackId, target.nodeId),
         ])
         if (!active) return
         if (resp) {
@@ -734,16 +520,27 @@ export default function EqPanel() {
         }
         if (spec) {
           spectrumDataRef.current = spec
-          const slope = slopeOnRef.current ? 4.5 : 0
-          if (spec.post) setSpectrumPaths(computeSpectrumPaths(spec.post, sampleRate / 2, slope, true))
+          const { tiltDbPerOct, rangeDb, speed, resolution } = analyzerRef.current
+          const specOpts = {
+            barsPerOctave: RESOLUTION_BARS[resolution],
+            decayDbPerSec: SPEED_DECAY[speed],
+            rangeDb,
+          }
+          if (spec.post) setSpectrumPaths(computeSpectrumPaths(spec.post, sampleRate / 2, tiltDbPerOct, true, specOpts))
           if (spec.pre) {
-            setPreSpectrumPaths(computeSpectrumPaths(spec.pre, sampleRate / 2, slope, false))
+            setPreSpectrumPaths(computeSpectrumPaths(spec.pre, sampleRate / 2, tiltDbPerOct, false, specOpts))
           } else {
-            maxHoldPre = null
+            resetMaxHold('pre')
             setPreSpectrumPaths({ fill: '', maxHold: '' })
           }
         }
         if (gr) setBandGR(gr)
+        if (meterRaw != null) {
+          const meters = typeof meterRaw === 'string' ? JSON.parse(meterRaw) : meterRaw
+          if (Array.isArray(meters)) {
+            meterPeaksRef.current = { l: meters[0] ?? 0, r: meters[1] ?? 0 }
+          }
+        }
       }
       if (active) rafRef.current = requestAnimationFrame(poll)
     }
@@ -925,10 +722,32 @@ export default function EqPanel() {
             title="Response curve dB zoom — cycle 6/12/24/48">
             ±{dbZoom}
           </button>
-          <button className={`eq-global-btn${slopeOn ? ' active' : ''}`}
-            onClick={() => setSlopeOn(v => !v)}
-            title="Pink-noise slope compensation (+4.5 dB/oct)">
-            {slopeOn ? 'Slope: +4.5' : 'Slope: 0'}
+          <button
+            className={`eq-global-btn${analyzerSettings.tiltDbPerOct > 0 ? ' active' : ''}`}
+            onClick={() => cycleAnalyzer('tiltDbPerOct', TILT_OPTIONS)}
+            title="Pink-noise tilt — cycle 0 / +3 / +4.5 / +6 dB/oct">
+            {analyzerSettings.tiltDbPerOct === 0 ? 'Tilt: 0' : `Tilt: +${analyzerSettings.tiltDbPerOct}`}
+          </button>
+          <button
+            className="eq-global-btn"
+            onClick={() => cycleAnalyzer('rangeDb', RANGE_OPTIONS)}
+            title="Analyzer vertical range — 60 / 90 / 120 dB">
+            {analyzerSettings.rangeDb} dB
+          </button>
+          <button
+            className="eq-global-btn"
+            onClick={() => cycleAnalyzer('speed', SPEED_OPTIONS)}
+            title="Max-hold decay — Slow / Med / Fast">
+            {analyzerSettings.speed === 'slow' ? 'Slow' : analyzerSettings.speed === 'fast' ? 'Fast' : 'Med'}
+          </button>
+          <button
+            className="eq-global-btn"
+            onClick={() => cycleAnalyzer('resolution', RESOLUTION_OPTIONS)}
+            title="Analyzer bar density — Low=12 / Med=18 / High=24 / Max=36 bars/oct">
+            {analyzerSettings.resolution === 'maximum' ? 'Max'
+              : analyzerSettings.resolution === 'low' ? 'Low'
+              : analyzerSettings.resolution === 'medium' ? 'Med'
+              : 'High'}
           </button>
           <button className={`eq-global-btn${linPhase ? ' active' : ''}`}
             onClick={() => setLinPhase(!linPhase)}
@@ -985,24 +804,44 @@ export default function EqPanel() {
         </div>
       )}
 
-      {/* SVG display — wrapped for hover readout positioning */}
-      <div className="eq-svg-wrap">
+      {/* SVG + right-side output meter */}
+      <div className="eq-graph-row">
+        <div className="eq-svg-wrap">
         <svg ref={svgRef} className="eq-svg" viewBox={`0 0 ${SVG_W} ${SVG_H}`}
           preserveAspectRatio="none" onWheel={handleWheel}
           onMouseDown={handleSvgMouseDown}
           onMouseMove={handleSvgMouseMove}
           onMouseLeave={handleSvgMouseLeave}>
+          {/* EQ-A: token-driven vertical gradient stops.
+              All colors flow through the theme-token pipeline:
+                --xleth-eq-spectrum-* → --theme-eq-spectrum-* → catalog. */}
+          <defs>
+            <linearGradient id="xleth-eq-spectrum-fill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%"   stopColor="var(--xleth-eq-spectrum-top)" />
+              <stop offset="100%" stopColor="var(--xleth-eq-spectrum-bottom)" />
+            </linearGradient>
+            <linearGradient id="xleth-eq-pre-spectrum-fill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%"   stopColor="var(--xleth-eq-pre-spectrum-top)" />
+              <stop offset="100%" stopColor="var(--xleth-eq-pre-spectrum-bottom)" />
+            </linearGradient>
+          </defs>
           <rect x={PAD_L} y={PAD_T} width={PLOT_W} height={PLOT_H} className="eq-plot-bg" />
-          <EqGrid dbZoom={dbZoom} />
+          <EqGrid dbZoom={dbZoom} rangeDb={analyzerSettings.rangeDb} />
 
           {preSpectrumPaths.fill && (
-            <path d={preSpectrumPaths.fill} className="eq-spectrum-pre-fill" />
+            <path d={preSpectrumPaths.fill}
+              className="eq-spectrum-pre-fill"
+              fill="url(#xleth-eq-pre-spectrum-fill)"
+              stroke="var(--xleth-eq-pre-spectrum-stroke)" />
           )}
           {preSpectrumPaths.maxHold && (
             <path d={preSpectrumPaths.maxHold} className="eq-spectrum-pre-hold" />
           )}
           {spectrumPaths.fill && (
-            <path d={spectrumPaths.fill} className="eq-spectrum-fill" />
+            <path d={spectrumPaths.fill}
+              className="eq-spectrum-fill"
+              fill="url(#xleth-eq-spectrum-fill)"
+              stroke="var(--xleth-eq-spectrum-stroke)" />
           )}
           {spectrumPaths.maxHold && (
             <path d={spectrumPaths.maxHold} className="eq-spectrum-hold" />
@@ -1023,10 +862,12 @@ export default function EqPanel() {
           ))}
         </svg>
 
-        {/* B6 — hover readout */}
-        {hoverReadout && (
-          <div className="eq-hover-readout">{hoverReadout}</div>
-        )}
+          {/* B6 — hover readout */}
+          {hoverReadout && (
+            <div className="eq-hover-readout">{hoverReadout}</div>
+          )}
+        </div>
+        <EqOutputMeter peaksRef={meterPeaksRef} active={!!target} />
       </div>
 
       {/* Band list */}
@@ -1034,9 +875,18 @@ export default function EqPanel() {
         {bands.map((band, i) => (
           <BandRow key={i} band={band} index={i}
             linPhase={linPhase} oversample={oversample}
-            grValue={bandGR ? bandGR[i] : 0} />
+            isSelected={i === selectedBandIndex}
+            onSelect={() => setSelectedBand(i)} />
         ))}
       </div>
+
+      {/* EQ-C: mode-specific controls for the selected band */}
+      <SelectedBandInspector
+        band={selectedBandIndex >= 0 ? bands[selectedBandIndex] : null}
+        bandIndex={selectedBandIndex}
+        setBandParam={setBandParam}
+        grValue={selectedBandIndex >= 0 && bandGR ? bandGR[selectedBandIndex] : null}
+      />
     </div>
   )
 }

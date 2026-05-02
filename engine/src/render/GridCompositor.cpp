@@ -19,6 +19,22 @@
 #include "model/TimelineTypes.h"  // VisualEffect
 
 // ---------------------------------------------------------------------------
+// HRESULT → short text for readback failure diagnostics
+// ---------------------------------------------------------------------------
+static const char* hrText(HRESULT hr) {
+    switch (static_cast<unsigned int>(hr)) {
+        case 0x887A0001U: return "DXGI_ERROR_WAS_STILL_DRAWING";
+        case 0x887A0005U: return "DXGI_ERROR_DEVICE_REMOVED";
+        case 0x887A0006U: return "DXGI_ERROR_DEVICE_HUNG";
+        case 0x887A0007U: return "DXGI_ERROR_DEVICE_RESET";
+        case 0x80070057U: return "E_INVALIDARG";
+        case 0x80004003U: return "E_POINTER";
+        case 0x8007000EU: return "E_OUTOFMEMORY";
+        default:          return "(unknown)";
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Vertex layout for the fullscreen quad
 // ---------------------------------------------------------------------------
 struct QuadVertex {
@@ -78,7 +94,10 @@ void GridCompositor::shutdown()
     renderTarget_.Reset();
     renderTargetRTV_.Reset();
     renderTargetSRV_.Reset();
-    stagingTexture_.Reset();
+    stagingTextures_[0].Reset();
+    stagingTextures_[1].Reset();
+    readbackFrameCount_ = 0;
+    lastReadbackHR_     = S_OK;
     vertexShader_.Reset();
     pixelShader_.Reset();
     inputLayout_.Reset();
@@ -149,12 +168,22 @@ bool GridCompositor::createStagingTexture()
     desc.SampleDesc.Count = 1;
     desc.Usage            = D3D11_USAGE_STAGING;
     desc.CPUAccessFlags   = D3D11_CPU_ACCESS_READ;
+    // BindFlags must be 0 for staging textures — D3D11 spec requirement.
 
-    HRESULT hr = device_->CreateTexture2D(&desc, nullptr, &stagingTexture_);
-    if (FAILED(hr)) {
-        std::fprintf(stderr, "[Compositor] Failed to create staging texture, HR=0x%08X\n",
-                     static_cast<unsigned int>(hr));
-        return false;
+    std::fprintf(stderr,
+        "[Compositor] Staging ring: creating 2x %ux%u BGRA STAGING CPU_READ "
+        "bindFlags=0x%X expectedBytesEach=%zu\n",
+        desc.Width, desc.Height, desc.BindFlags,
+        static_cast<size_t>(desc.Width) * desc.Height * 4u);
+
+    for (int i = 0; i < 2; ++i) {
+        HRESULT hr = device_->CreateTexture2D(&desc, nullptr, &stagingTextures_[i]);
+        if (FAILED(hr)) {
+            std::fprintf(stderr,
+                "[Compositor] Failed to create staging texture[%d], HR=0x%08X\n",
+                i, static_cast<unsigned int>(hr));
+            return false;
+        }
     }
 
     return true;
@@ -721,18 +750,57 @@ ReadbackBuffer GridCompositor::readback()
 
     auto start = std::chrono::high_resolution_clock::now();
 
-    // Copy render target to staging texture
-    deviceCtx_->CopyResource(stagingTexture_.Get(), renderTarget_.Get());
+    // Two-texture staging ring — avoids AMD WDDM timing failures.
+    //
+    // Calling CopyResource(staging, rt) + Map(staging, READ, 0) on the SAME
+    // staging texture in back-to-back frames causes Map to return
+    // DXGI_ERROR_WAS_STILL_DRAWING on AMD even without DO_NOT_WAIT, because
+    // the previous copy hasn't fully retired by the time the next one is issued.
+    // NVIDIA tolerates this; AMD doesn't.
+    //
+    // Fix: alternate between two staging textures.
+    //   Frame N:   CopyResource → staging[N%2]     (submit this frame's copy)
+    //              Map           ← staging[(N-1)%2] (read previous frame's copy)
+    // The previous staging's copy was submitted a full frame period ago, so the
+    // GPU has had ample time (≥33 ms at 30 fps) to complete it.
+    const uint64_t writeIdx = readbackFrameCount_ % 2;
+    const uint64_t readIdx  = 1 - writeIdx;  // == (readbackFrameCount_ - 1) % 2
 
-    // Map staging texture
-    D3D11_MAPPED_SUBRESOURCE mapped;
-    HRESULT hr = deviceCtx_->Map(stagingTexture_.Get(), 0, D3D11_MAP_READ, 0, &mapped);
-    if (FAILED(hr)) {
-        std::fprintf(stderr, "[Compositor] Readback Map failed, HR=0x%08X\n",
-                     static_cast<unsigned int>(hr));
+    // Submit copy into this frame's staging slot
+    deviceCtx_->CopyResource(stagingTextures_[writeIdx].Get(), renderTarget_.Get());
+
+    if (readbackFrameCount_ == 0) {
+        // First call: no previous staging to read yet — ring is priming.
+        // Return invalid; next call will successfully Map staging[0].
+        ++readbackFrameCount_;
+        std::fprintf(stderr, "[Compositor] Readback ring priming (frame 0 skip)\n");
         return buf;
     }
 
+    // Map the PREVIOUS frame's staging texture
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    HRESULT hr = deviceCtx_->Map(stagingTextures_[readIdx].Get(), 0,
+                                  D3D11_MAP_READ, 0, &mapped);
+    ++readbackFrameCount_;
+
+    if (FAILED(hr)) {
+        lastReadbackHR_ = hr;
+        D3D11_TEXTURE2D_DESC sdesc{};
+        stagingTextures_[readIdx]->GetDesc(&sdesc);
+        std::fprintf(stderr,
+            "[Compositor] Readback Map FAILED: HR=0x%08X (%s) "
+            "staging[%llu] %ux%u fmt=%u usage=%u bind=0x%X cpu=0x%X rowPitchExpected=%u\n",
+            static_cast<unsigned int>(hr), hrText(hr),
+            static_cast<unsigned long long>(readIdx),
+            sdesc.Width, sdesc.Height,
+            static_cast<unsigned>(sdesc.Format),
+            static_cast<unsigned>(sdesc.Usage),
+            sdesc.BindFlags, sdesc.CPUAccessFlags,
+            sdesc.Width * 4u);
+        return buf;
+    }
+
+    lastReadbackHR_ = S_OK;
     buf.width  = width_;
     buf.height = height_;
     buf.stride = width_ * 4;
@@ -746,12 +814,12 @@ ReadbackBuffer GridCompositor::readback()
                     static_cast<size_t>(buf.stride));
     }
 
-    deviceCtx_->Unmap(stagingTexture_.Get(), 0);
+    deviceCtx_->Unmap(stagingTextures_[readIdx].Get(), 0);
     buf.valid = true;
 
     auto end = std::chrono::high_resolution_clock::now();
     double ms = std::chrono::duration<double, std::milli>(end - start).count();
-    std::fprintf(stderr, "[Compositor] GPU readback: %dx%d → CPU buffer in %.2fms\n",
+    std::fprintf(stderr, "[Compositor] GPU readback: %dx%d in %.2fms\n",
                  width_, height_, ms);
 
     return buf;

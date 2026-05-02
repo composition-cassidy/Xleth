@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <deque>
 #include <filesystem>
 #include <iostream>
 #include <regex>
@@ -189,6 +190,8 @@ int ProxyTranscoder::runFFmpegAndWait(const std::string& cmd,
     char readBuf[4096];
     std::string residual;
     DWORD bytesRead = 0;
+    constexpr size_t kStderrTailMax = 40;
+    std::deque<std::string> stderrTail;
 
     while (ReadFile(hReadPipe, readBuf, sizeof(readBuf) - 1, &bytesRead, nullptr)
            && bytesRead > 0)
@@ -202,6 +205,12 @@ int ProxyTranscoder::runFFmpegAndWait(const std::string& cmd,
         {
             std::string line = residual.substr(0, pos);
             residual.erase(0, pos + 1);
+
+            if (!line.empty()) {
+                stderrTail.push_back(line);
+                if (stderrTail.size() > kStderrTailMax)
+                    stderrTail.pop_front();
+            }
 
             std::smatch match;
             if (std::regex_search(line, match, timeRegex) && expectedDurationSec > 0.0)
@@ -222,6 +231,13 @@ int ProxyTranscoder::runFFmpegAndWait(const std::string& cmd,
     CloseHandle(pi.hThread);
     CloseHandle(hReadPipe);
 
+    if (exitCode != 0) {
+        std::cerr << "[ProxyTranscoder] FFmpeg failed (exit=" << exitCode
+                  << "). Last " << stderrTail.size() << " stderr lines:\n";
+        for (const auto& line : stderrTail)
+            std::cerr << "  | " << line << "\n";
+    }
+
     return static_cast<int>(exitCode);
 
 #else
@@ -236,10 +252,18 @@ int ProxyTranscoder::runFFmpegAndWait(const std::string& cmd,
 
     std::regex timeRegex(R"(time=(\d+:\d+:\d+\.\d+))");
     char readBuf[4096];
+    constexpr size_t kStderrTailMax = 40;
+    std::deque<std::string> stderrTail;
 
     while (fgets(readBuf, sizeof(readBuf), pipe))
     {
         std::string line(readBuf);
+        if (!line.empty() && line.back() == '\n') line.pop_back();
+        if (!line.empty()) {
+            stderrTail.push_back(line);
+            if (stderrTail.size() > kStderrTailMax)
+                stderrTail.pop_front();
+        }
         std::smatch match;
         if (std::regex_search(line, match, timeRegex) && expectedDurationSec > 0.0)
         {
@@ -249,7 +273,14 @@ int ProxyTranscoder::runFFmpegAndWait(const std::string& cmd,
         }
     }
 
-    return pclose(pipe);
+    int exitCode = pclose(pipe);
+    if (exitCode != 0) {
+        std::cerr << "[ProxyTranscoder] FFmpeg failed (exit=" << exitCode
+                  << "). Last " << stderrTail.size() << " stderr lines:\n";
+        for (const auto& line : stderrTail)
+            std::cerr << "  | " << line << "\n";
+    }
+    return exitCode;
 
 #endif
 }

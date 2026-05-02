@@ -1,49 +1,48 @@
-[OpenProfile] stage=juce_init_done elapsed_ms=13.717
+[OpenProfile] stage=juce_init_done elapsed_ms=25.375
 [EditorHost] starting
 [EditorHost] JUCE: JUCE v8.0.6
 [EditorHost] IPC mode — waiting for INIT message
 [EditorHost] entering message loop
-[EditorHost] [EditorHost IPC] Message from coordinator (3796 bytes): INIT
-C:\Users\Krasen\Desktop\VST test\UniFlange.vst3
-VkMyIegKAAA8P3htbCB2ZXJzaW9
-[EditorHost] init received plugin=C:\Users\Krasen\Desktop\VST test\UniFlange.vst3 stateLen=3736 parent=0x5C0A40
+[EditorHost] [EditorHost IPC] Message from coordinator (1821 bytes): INIT
+C:\Program Files\Common Files\VST3\XLETH\TAL-Reverb-4.vst3\Contents\x86_64-
+[EditorHost] init received plugin=C:\Program Files\Common Files\VST3\XLETH\TAL-Reverb-4.vst3\Contents\x86_64-win\TAL-Reverb-4.vst3 stateLen=1712 parent=0x500A66
 [EditorHost] creating plugin format manager
 [EditorHost] format manager has 1 format(s)
 [EditorHost]   format: VST3
 [EditorHost] found 1 plugin(s) — using first
 [EditorHost] loading plugin
-[OpenProfile] stage=before_create_instance elapsed_ms=19.365
-[OpenProfile] stage=after_create_instance elapsed_ms=44.202
-[EditorHost] plugin loaded name=UniFlange latency=0
-[EditorHost] applying saved state (3736 chars base64)
-[EditorHost] state applied (2801 bytes)
-[EditorHost] [ParamSync] ParamSyncListener attached (48 params)
+[OpenProfile] stage=before_create_instance elapsed_ms=39.337
+[OpenProfile] stage=after_create_instance elapsed_ms=51.716
+[EditorHost] plugin loaded name=TAL Reverb 4 Plugin latency=0
+[EditorHost] applying saved state (1712 chars base64)
+[EditorHost] state applied (1282 bytes)
+[EditorHost] [ParamSync] ParamSyncListener attached (21 params)
 [EditorHost] creating editor
-[OpenProfile] stage=before_create_editor elapsed_ms=44.392
-[OpenProfile] stage=after_create_editor elapsed_ms=395.396
-[EditorHost] editor created size=900x390
+[OpenProfile] stage=before_create_editor elapsed_ms=51.834
+[OpenProfile] stage=after_create_editor elapsed_ms=455.212
+[EditorHost] editor created size=611x603
 [EditorHost] showing window
-[EditorHost] parented to 0x5C0A40
-[OpenProfile] stage=after_reparent elapsed_ms=513.390
+[EditorHost] parented to 0x500A66
+[OpenProfile] stage=after_reparent elapsed_ms=635.919
 [EditorHost] entering message loop
-[OpenProfile] stage=before_redy elapsed_ms=513.399
-[EditorHost] [EditorHost IPC] Sending REDY 900x390 (12 bytes)
-[EditorHost] [EditorHost IPC] Message from coordinator (39 bytes): STRM
-Xleth_AudioStream_T27_N3
+[OpenProfile] stage=before_redy elapsed_ms=635.929
+[EditorHost] [EditorHost IPC] Sending REDY 611x603 (12 bytes)
+[EditorHost] [EditorHost IPC] Message from coordinator (38 bytes): STRM
+Xleth_AudioStream_T1_N4
 48000
 480
-[EditorHost] [AudioStream] STRM received name=Xleth_AudioStream_T27_N3 sr=48000 bs=480
-[EditorHost] [AudioStream] opened ring name=Xleth_AudioStream_T27_N3 sr=48000 bs=480
+[EditorHost] [AudioStream] STRM received name=Xleth_AudioStream_T1_N4 sr=48000 bs=480
+[EditorHost] [AudioStream] opened ring name=Xleth_AudioStream_T1_N4 sr=48000 bs=480
+[EditorHost] [AudioStream] setBusesLayout(stereo/stereo) returned false — continuing with plugin's existing layout
 [EditorHost] [AudioStream] prepareToPlay called sr=48000 bs=480
 [EditorHost] [AudioStream] pump thread started
-[EditorHost] [EditorHost IPC] Message from coordinator (4 bytes): STOP
-[EditorHost] [AudioStream] STOP received
-[EditorHost] [AudioStream] stopping pump thread
-[EditorHost] [AudioStream] releaseResources called
-[EditorHost] coordinator connection lost — quitting
-[EditorHost] coordinator connection lost — quitting
-[EditorHost] connection lost — quitting
-[EditorHost] connection lost — quitting
+[EditorHost] window closed
+[EditorHost] [AudioStream] stopping pump thread before window close
+[EditorHost] [AudioStream] releaseResources called before close
+[EditorHost] [EditorHost IPC] Sending CLSD (4 bytes)
 [EditorHost] shutting down
 [EditorHost] [ParamSync] ParamSyncListener detached
+[EditorHost] [EditorHost IPC] Message from coordinator (8 bytes): 
+[EditorHost] unknown message tag: 
+[EditorHost] coordinator connection lost — quitting
 [EditorHost] exit

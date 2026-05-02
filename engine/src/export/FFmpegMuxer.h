@@ -41,6 +41,13 @@ struct SwrContext;
 struct ExportSettings {
     std::string outputPath;
 
+    // ── Render input ───────────────────────────────────────────────────────
+    // When true (default for export), FrameCollector reads the original source
+    // media. When false, it may substitute the DNxHR LB proxy — only meaningful
+    // for preview-style renders that prioritize speed over fidelity. Final
+    // export defaults to true so CRF/bitrate operate on full-quality pixels.
+    bool        useSourceMedia  = true;
+
     // ── Video ──────────────────────────────────────────────────────────────
     enum class VideoCodec { H264, H265, AV1, DNXHD, PRORES, MPEG4 };
     VideoCodec  videoCodec      = VideoCodec::H264;
@@ -51,6 +58,14 @@ struct ExportSettings {
     int         crf             = 23;       // -1 = disable CRF, use bitrate
     int         videoBitrate    = 0;        // bps, 0 = codec default / CRF mode
     std::string hwEncoderName;              // "h264_nvenc", "h264_amf", or "" for auto
+
+    // ── Video mode ─────────────────────────────────────────────────────────
+    enum class VideoMode {
+        Auto,     // try HW first, fall through to software on failure
+        Software, // software encode/decode only; display compositing still uses OpenGL
+        Hardware  // require HW encode/decode; fail loudly if unavailable
+    };
+    VideoMode videoMode = VideoMode::Auto;
 
     // ── Audio ──────────────────────────────────────────────────────────────
     enum class AudioCodec { AAC, OPUS, FLAC, PCM_S16LE };
@@ -117,6 +132,11 @@ public:
     /** Name of the video encoder actually selected. */
     const char* videoEncoderName() const;
 
+    /** True if the chosen video encoder was not the first candidate — i.e., at
+     *  least one higher-priority (hardware) encoder was tried and rejected by
+     *  avcodec_open2 before falling back to the selected one. */
+    bool isVideoEncoderFallback() const;
+
     /** Name of the audio encoder actually selected. */
     const char* audioEncoderName() const;
 
@@ -160,9 +180,10 @@ private:
 
     ExportSettings settings_;
 
-    // Names cached after encoder selection
-    const char* videoEncoderName_ = "none";
-    const char* audioEncoderName_ = "none";
+    // Names and fallback flag cached after encoder selection
+    const char* videoEncoderName_     = "none";
+    bool        videoEncoderFallback_ = false;
+    const char* audioEncoderName_     = "none";
 
     // ── Internal helpers ───────────────────────────────────────────────────
     bool initVideoStream(const ExportSettings& s);
@@ -172,7 +193,5 @@ private:
     bool encodeAudioFrame();
     void cleanup();
 
-    static const void* findVideoEncoder(ExportSettings::VideoCodec codec,
-                                         const std::string& hwName);
     static const void* findAudioEncoder(ExportSettings::AudioCodec codec);
 };

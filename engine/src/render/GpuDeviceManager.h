@@ -43,10 +43,17 @@
 struct GpuAdapterInfo {
     std::wstring name;
     uint32_t     vendorId              = 0;
+    uint32_t     deviceId              = 0;
     size_t       dedicatedVideoMemoryMB = 0;
+    size_t       sharedSystemMemoryMB   = 0;
     int          adapterIndex          = -1;
     bool         isDiscrete            = false;   // dedicatedVideoMemory > 256 MB
     bool         isDefault             = false;   // highest-ranked adapter
+    // DXGI AdapterLuid — needed to verify D3D11 and Chromium/ANGLE picked the
+    // same physical adapter. LUID is a 64-bit kernel-namespace handle; we
+    // split it into two 32-bit halves so it survives JS Number round-trips.
+    uint32_t     luidHighPart          = 0;       // signed in DXGI; reinterpreted as u32
+    uint32_t     luidLowPart           = 0;
 };
 
 // Vendor ID constants

@@ -162,11 +162,12 @@ echo [build.bat] all tests passed
 exit /b 0
 
 :t_all
-call :t_engine      || exit /b !ERRORLEVEL!
+REM bridge first so vcpkg packages (FFmpeg etc.) are present for engine configure
 call :t_bridge      || exit /b !ERRORLEVEL!
+call :t_engine      || exit /b !ERRORLEVEL!
 call :t_ui          || exit /b !ERRORLEVEL!
 echo.
-echo [build.bat] all OK (engine + bridge + ui)
+echo [build.bat] all OK (bridge + engine + ui)
 exit /b 0
 
 :t_all_clean
@@ -174,8 +175,9 @@ echo [build.bat] nuking build/, bridge/build/, ui/dist/...
 if exist build         rmdir /S /Q build
 if exist bridge\build  rmdir /S /Q bridge\build
 if exist ui\dist       rmdir /S /Q ui\dist
-call :t_engine       || exit /b !ERRORLEVEL!
+REM bridge-clean first: installs vcpkg packages (FFmpeg etc.) that engine configure needs
 call :t_bridge_clean || exit /b !ERRORLEVEL!
+call :t_engine       || exit /b !ERRORLEVEL!
 call :t_ui           || exit /b !ERRORLEVEL!
 echo.
 echo [build.bat] all-clean OK

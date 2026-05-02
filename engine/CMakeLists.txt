@@ -684,6 +684,68 @@ target_compile_definitions(test_effects PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_distortion ──────────────────────────────────────────────────────────
+# Focused Distortion diagnostics. Kept separate from test_effects so it can run
+# independently while unrelated effect tests are being repaired.
+add_executable(test_distortion
+    test/test_distortion.cpp
+)
+
+target_link_libraries(test_distortion PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_distortion PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_reverb ──────────────────────────────────────────────────────────────
+# Stage 0 regression lock for XlethReverbEffect (Generic FDN algorithm).
+# Verifies: parameter layout, finite output, wet non-zero, tail decay,
+# determinism across fresh instances, predelay onset, serialization,
+# bypass passthrough, and stable numerical signature.
+add_executable(test_reverb
+    test/test_reverb.cpp
+)
+
+target_link_libraries(test_reverb PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_reverb PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_frame_cache ─────────────────────────────────────────────────────────
 # Verifies the render-pipeline LRU FrameCache with real D3D11 textures.
 # Requires a GPU (D3D11 device) — runs on the build machine.

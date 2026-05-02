@@ -179,10 +179,13 @@
   margin-left: auto;
 }
 
-/* ── Compressor / Limiter panel: Edit UI button (header) ────────────────────── */
+/* ── Compressor / Limiter / Transient panel: Edit UI button (header) ─────────── */
 
 .compressor-panel-edit-ui,
-.limiter-panel-edit-ui {
+.limiter-panel-edit-ui,
+.transientproc-panel-edit-ui,
+.distortion-panel-edit-ui,
+.resonancesuppressor-panel-edit-ui {
   font: inherit;
   font-size: 10px;
   letter-spacing: 0.04em;
@@ -197,21 +200,31 @@
 }
 
 .compressor-panel-edit-ui:hover,
-.limiter-panel-edit-ui:hover {
+.limiter-panel-edit-ui:hover,
+.transientproc-panel-edit-ui:hover,
+.distortion-panel-edit-ui:hover,
+.resonancesuppressor-panel-edit-ui:hover {
   color: var(--theme-text);
   background: var(--theme-fx-surface-tint-subtle);
 }
 
 .compressor-panel-edit-ui--active,
-.limiter-panel-edit-ui--active {
+.limiter-panel-edit-ui--active,
+.transientproc-panel-edit-ui--active,
+.distortion-panel-edit-ui--active,
+.resonancesuppressor-panel-edit-ui--active {
   color: var(--accent-primary, var(--theme-text));
   border-color: var(--accent-primary, var(--theme-border-subtle));
 }
 
-/* ── Compressor / Limiter panel layout when designer is open ────────────────── */
+/* ── Compressor / Limiter / Transient / Overdone panel layout when designer is open */
 
 .compressor-panel--designer-open,
-.limiter-panel--designer-open {
+.limiter-panel--designer-open,
+.transientproc-panel--designer-open,
+.ott-panel--designer-open,
+.distortion-panel--designer-open,
+.resonancesuppressor-panel--designer-open {
   width: 880px;
   max-width: 95vw;
   max-height: calc(100vh - 40px);
@@ -219,7 +232,11 @@
 }
 
 .compressor-panel-runtime-pane,
-.limiter-panel-runtime-pane {
+.limiter-panel-runtime-pane,
+.transientproc-panel-runtime-pane,
+.ott-panel-runtime-pane,
+.distortion-panel-runtime-pane,
+.resonancesuppressor-panel-runtime-pane {
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
@@ -227,7 +244,11 @@
 }
 
 .compressor-panel-split,
-.limiter-panel-split {
+.limiter-panel-split,
+.transientproc-panel-split,
+.ott-panel-split,
+.distortion-panel-split,
+.resonancesuppressor-panel-split {
   display: flex;
   flex-direction: row;
   flex: 1 1 auto;

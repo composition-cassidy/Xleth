@@ -15,6 +15,7 @@ import useOverdoneStore from '../../stores/overdoneStore.js'
 import useReverbStore from '../../stores/reverbStore.js'
 import useTransientProcStore from '../../stores/transientProcStore.js'
 import useSmartBalanceStore from '../../stores/smartBalanceStore.js'
+import useResonanceSuppressorStore from '../../stores/resonanceSuppressorStore.js'
 import ContextMenu from '../ContextMenu.jsx'
 
 // Registry: pluginId → opener(trackId, nodeId, storeKey)
@@ -59,6 +60,9 @@ const EFFECT_EDITORS = {
   smartbalance: (trackId, nodeId, storeKey) => {
     useSmartBalanceStore.getState().open(trackId, nodeId, storeKey)
   },
+  resonancesuppressor: (trackId, nodeId, storeKey) => {
+    useResonanceSuppressorStore.getState().open(trackId, nodeId, storeKey)
+  },
 }
 
 const PLUGIN_NAMES = {
@@ -77,8 +81,9 @@ const PLUGIN_NAMES = {
   phaser:       'Phaser',
   phanjer:      'Phanjer',
   delay:        'Delay',
-  reverb:       'Reverb',
-  smartbalance: 'Smart Balance',
+  reverb:               'Reverb',
+  smartbalance:         'Smart Balance',
+  resonancesuppressor:  'Resonance Suppressor',
 }
 
 export default function EffectModule({ effect, index, storeKey, onDragStart, onDragOver }) {

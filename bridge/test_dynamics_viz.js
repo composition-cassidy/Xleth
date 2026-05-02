@@ -233,6 +233,128 @@ function addMaster(pluginId) {
        'remove limiter master effect returned true');
   }
 
+  // ── Transient Processor visualization smoke checks ─────────────────────────
+  // Mirrors the Compressor / Limiter cases above: drain shape, type/schema/
+  // bucketSize, enable/disable churn, distinct from the other plugins' bucket
+  // sizes (TransientBucket is 56 bytes — same magnitude as Limiter but a
+  // different type tag).
+  const transientNodeId = addMaster('transientproc');
+  ok(transientNodeId >= 0, `audio_addMasterEffect("transientproc") → nodeId=${transientNodeId}`);
+  if (transientNodeId >= 0) {
+    // Drain BEFORE enable — well-formed empty payload.
+    {
+      const r = addon.audio_drainEffectVizFrames(-1, transientNodeId, 64);
+      ok(r && typeof r === 'object', 'transient drain (pre-enable) returns an object');
+      ok(typeof r.type === 'string',  `transient drain.type pre-enable is a string (got "${r.type}")`);
+      ok(r.count === 0,             'transient drain.count == 0 before enable');
+      ok(r.frames instanceof ArrayBuffer && r.frames.byteLength === 0,
+         'transient drain.frames is empty ArrayBuffer pre-enable');
+    }
+
+    // Enable, then drain — type/schema/bucketSize must match transient schema.
+    ok(addon.audio_setEffectVisualizationEnabled(-1, transientNodeId, true) === true,
+       'transient enable(true) → true');
+    {
+      const r = addon.audio_drainEffectVizFrames(-1, transientNodeId, 64);
+      ok(r.type === 'transient', `transient drain.type === "transient" (got "${r.type}")`);
+      ok(r.schema === 1,         `transient drain.schema === 1 (got ${r.schema})`);
+      ok(r.bucketSize === 56,    `transient drain.bucketSize === 56 (got ${r.bucketSize})`);
+      ok(r.frames instanceof ArrayBuffer, 'transient drain.frames is an ArrayBuffer');
+      if (r.count > 0) {
+        ok(r.frames.byteLength === r.count * 56,
+           `transient drain.frames.byteLength == count * 56 (got ${r.frames.byteLength} for count ${r.count})`);
+      }
+    }
+
+    // Idempotent enable.
+    ok(addon.audio_setEffectVisualizationEnabled(-1, transientNodeId, true) === true,
+       'transient idempotent enable(true) → true');
+
+    // Disable → empty drain.
+    ok(addon.audio_setEffectVisualizationEnabled(-1, transientNodeId, false) === true,
+       'transient disable returned true');
+    {
+      const r = addon.audio_drainEffectVizFrames(-1, transientNodeId, 64);
+      ok(r.count === 0, 'transient drain.count == 0 after disable');
+      ok(r.frames instanceof ArrayBuffer && r.frames.byteLength === 0,
+         'transient drain.frames empty after disable');
+    }
+
+    // 30-cycle enable/disable churn.
+    let transientChurnOk = true;
+    for (let i = 0; i < 30; i++) {
+      try {
+        const e1 = addon.audio_setEffectVisualizationEnabled(-1, transientNodeId, true);
+        addon.audio_drainEffectVizFrames(-1, transientNodeId, 32);
+        const e2 = addon.audio_setEffectVisualizationEnabled(-1, transientNodeId, false);
+        addon.audio_drainEffectVizFrames(-1, transientNodeId, 32);
+        if (e1 !== true || e2 !== true) { transientChurnOk = false; break; }
+      } catch (e) { transientChurnOk = false; break; }
+    }
+    ok(transientChurnOk, '30× transient enable/disable churn cycles complete without throw');
+
+    ok(addon.audio_removeMasterEffect(transientNodeId) === true,
+       'remove transient master effect returned true');
+  }
+
+  // ── Overdone (3-band multiband) visualization smoke checks ────────────────
+  // Mirrors the other dynamics plugins: drain shape, type/schema/bucketSize,
+  // enable/disable churn. Bucket size is 80 — distinct from Compressor (40),
+  // Limiter (56), Transient (56).
+  const overdoneNodeId = addMaster('overdone');
+  ok(overdoneNodeId >= 0, `audio_addMasterEffect("overdone") → nodeId=${overdoneNodeId}`);
+  if (overdoneNodeId >= 0) {
+    {
+      const r = addon.audio_drainEffectVizFrames(-1, overdoneNodeId, 64);
+      ok(r && typeof r === 'object', 'overdone drain (pre-enable) returns an object');
+      ok(typeof r.type === 'string',  `overdone drain.type pre-enable is a string (got "${r.type}")`);
+      ok(r.count === 0,             'overdone drain.count == 0 before enable');
+      ok(r.frames instanceof ArrayBuffer && r.frames.byteLength === 0,
+         'overdone drain.frames is empty ArrayBuffer pre-enable');
+    }
+
+    ok(addon.audio_setEffectVisualizationEnabled(-1, overdoneNodeId, true) === true,
+       'overdone enable(true) → true');
+    {
+      const r = addon.audio_drainEffectVizFrames(-1, overdoneNodeId, 64);
+      ok(r.type === 'multiband', `overdone drain.type === "multiband" (got "${r.type}")`);
+      ok(r.schema === 1,         `overdone drain.schema === 1 (got ${r.schema})`);
+      ok(r.bucketSize === 80,    `overdone drain.bucketSize === 80 (got ${r.bucketSize})`);
+      ok(r.frames instanceof ArrayBuffer, 'overdone drain.frames is an ArrayBuffer');
+      if (r.count > 0) {
+        ok(r.frames.byteLength === r.count * 80,
+           `overdone drain.frames.byteLength == count * 80 (got ${r.frames.byteLength} for count ${r.count})`);
+      }
+    }
+
+    ok(addon.audio_setEffectVisualizationEnabled(-1, overdoneNodeId, true) === true,
+       'overdone idempotent enable(true) → true');
+
+    ok(addon.audio_setEffectVisualizationEnabled(-1, overdoneNodeId, false) === true,
+       'overdone disable returned true');
+    {
+      const r = addon.audio_drainEffectVizFrames(-1, overdoneNodeId, 64);
+      ok(r.count === 0, 'overdone drain.count == 0 after disable');
+      ok(r.frames instanceof ArrayBuffer && r.frames.byteLength === 0,
+         'overdone drain.frames empty after disable');
+    }
+
+    let overdoneChurnOk = true;
+    for (let i = 0; i < 30; i++) {
+      try {
+        const e1 = addon.audio_setEffectVisualizationEnabled(-1, overdoneNodeId, true);
+        addon.audio_drainEffectVizFrames(-1, overdoneNodeId, 32);
+        const e2 = addon.audio_setEffectVisualizationEnabled(-1, overdoneNodeId, false);
+        addon.audio_drainEffectVizFrames(-1, overdoneNodeId, 32);
+        if (e1 !== true || e2 !== true) { overdoneChurnOk = false; break; }
+      } catch (e) { overdoneChurnOk = false; break; }
+    }
+    ok(overdoneChurnOk, '30× overdone enable/disable churn cycles complete without throw');
+
+    ok(addon.audio_removeMasterEffect(overdoneNodeId) === true,
+       'remove overdone master effect returned true');
+  }
+
   console.log(`\n${failed === 0 ? 'PASSED' : 'FAILED'}: ${passed}/${total} tests`);
   process.exit(failed === 0 ? 0 : 1);
 })();

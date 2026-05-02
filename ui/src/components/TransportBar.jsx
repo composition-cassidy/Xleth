@@ -59,9 +59,9 @@ export default function TransportBar() {
 
   // Load spacebar mode from settings and listen for live changes from SettingsPanel
   useEffect(() => {
-    window.xleth.settings.get('spacebarMode').then(v => {
+    window.xleth?.settings?.get?.('spacebarMode')?.then(v => {
       setSpacebarMode(v === 'play-stop' ? 'play-stop' : 'play-pause')
-    }).catch(() => {})
+    })
 
     const onModeChange = (e) => setSpacebarMode(e.detail.mode)
     window.addEventListener('xleth:spacebarMode-changed', onModeChange)

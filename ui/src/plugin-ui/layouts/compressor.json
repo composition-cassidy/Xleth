@@ -4,16 +4,33 @@
   "pluginId": "compressor",
   "name": "Default Compressor Layout",
   "panel": {
-    "preferredSize": { "width": 480, "height": 330 }
+    "preferredSize": { "width": 520, "height": 400 }
   },
   "root": {
     "id": "root",
     "type": "panel",
     "children": [
       {
+        "id": "viz-row",
+        "type": "row",
+        "style": { "paddingPx": [12, 12, 6, 12] },
+        "children": [
+          {
+            "id": "compressor-viz",
+            "type": "visualizer",
+            "style": { "growsToFill": true },
+            "props": {
+              "source": "compressor.combined",
+              "preset": "compressorCombinedV2",
+              "heightPx": 180
+            }
+          }
+        ]
+      },
+      {
         "id": "body",
         "type": "row",
-        "style": { "paddingPx": 12, "gapPx": 12 },
+        "style": { "paddingPx": [6, 12, 6, 12], "gapPx": 12 },
         "children": [
           {
             "id": "knob-grid",
@@ -62,23 +79,6 @@
             "id": "btn-rms",
             "type": "toggle",
             "props": { "param": "detect_mode", "mode": "discreteValue", "valueWhenOn": 1, "label": "RMS" }
-          }
-        ]
-      },
-      {
-        "id": "viz-row",
-        "type": "row",
-        "style": { "paddingPx": [0, 12, 8, 12] },
-        "children": [
-          {
-            "id": "compressor-viz",
-            "type": "visualizer",
-            "style": { "growsToFill": true },
-            "props": {
-              "source": "compressor.combined",
-              "preset": "compressorCombined",
-              "heightPx": 110
-            }
           }
         ]
       }

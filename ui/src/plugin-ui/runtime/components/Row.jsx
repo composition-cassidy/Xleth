@@ -8,6 +8,9 @@ export default function Row({ node, renderChildren }) {
     'pluginui-row',
     props.variant === 'borderTop'    && 'pluginui-row--border-top',
     props.variant === 'borderBottom' && 'pluginui-row--border-bottom',
+    props.variant === 'segmented'    && 'pluginui-row--segmented',
+    props.variant === 'header'       && 'pluginui-row--header',
+    props.variant === 'section'      && 'pluginui-row--section',
   ].filter(Boolean).join(' ')
 
   return (

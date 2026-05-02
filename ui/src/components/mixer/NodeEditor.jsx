@@ -22,12 +22,14 @@ const PLUGIN_NAMES = {
   xlethfilter: 'Xleth Filter', distortion: 'Distortion', waveshaper: 'Waveshaper',
   uniflange: 'UniFlange', chorus: 'Chorus', flanger: 'Flanger', phaser: 'Phaser',
   phanjer: 'Phanjer', delay: 'Delay', reverb: 'Reverb', smartbalance: 'Smart Balance',
+  resonancesuppressor: 'Resonance Suppressor',
 }
 
 const EFFECT_CATEGORIES = [
   { label: 'Dynamics', submenu: [
     { label: 'Compressor', id: 'compressor' }, { label: 'Limiter', id: 'limiter' },
     { label: 'Overdone', id: 'overdone' }, { label: 'Transient Proc', id: 'transientproc' },
+    { label: 'Resonance Suppressor', id: 'resonancesuppressor' },
   ]},
   { label: 'EQ & Filter', submenu: [
     { label: 'Xleth EQ', id: 'xletheq' }, { label: 'Xleth Filter', id: 'xlethfilter' },

@@ -152,9 +152,10 @@ public:
     /** Release all GPU resources. Safe to call multiple times. */
     void shutdown();
 
-    bool isInitialized() const { return initialized_; }
-    int  getWidth()  const { return width_; }
-    int  getHeight() const { return height_; }
+    bool    isInitialized()         const { return initialized_; }
+    int     getWidth()              const { return width_; }
+    int     getHeight()             const { return height_; }
+    HRESULT getLastReadbackHRESULT() const { return lastReadbackHR_; }
 
     /** Skip all chainable RT effect passes (desaturation, tint, B&C, TV-sim, ZPR,
      *  ping-pong crossfade) for faster preview. Gap, bounce, corner-radius and opacity
@@ -231,8 +232,14 @@ private:
     Microsoft::WRL::ComPtr<ID3D11RenderTargetView>   renderTargetRTV_;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> renderTargetSRV_;
 
-    // ── Staging texture (for GPU→CPU readback) ─────────────────────────────
-    Microsoft::WRL::ComPtr<ID3D11Texture2D> stagingTexture_;
+    // ── Staging texture ring (for GPU→CPU readback) ────────────────────────
+    // Two-texture ring: CopyResource into staging[N%2], Map staging[(N-1)%2].
+    // Gives the GPU a full frame period to finish the copy before we Map it,
+    // working around AMD WDDM Map(D3D11_MAP_READ) failures on back-to-back calls
+    // to the same staging texture.
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> stagingTextures_[2];
+    uint64_t readbackFrameCount_ = 0;   // incremented each readback() call
+    HRESULT  lastReadbackHR_     = S_OK;
 
     // ── Shaders ────────────────────────────────────────────────────────────
     Microsoft::WRL::ComPtr<ID3D11VertexShader> vertexShader_;

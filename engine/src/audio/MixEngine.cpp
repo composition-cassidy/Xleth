@@ -1914,23 +1914,6 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                              int                       numSamples,
                              const Transport&          transport)
 {
-    {
-        static std::atomic<uint64_t> plCounter{0};
-        const uint64_t n = plCounter.fetch_add(1);
-        if (n % 500 == 0)
-        {
-            fprintf(stderr, "[ProofOfLife] processBlock n=%llu xlethDebug=%d\n",
-                    (unsigned long long)n,
-#ifdef XLETH_DEBUG
-                    1
-#else
-                    0
-#endif
-            );
-            fflush(stderr);
-        }
-    }
-
     // Early out: no timeline
     if (timeline_ == nullptr)
     {
@@ -1957,6 +1940,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         // pre-stop blocks were previously active (and spuriously silence them).
         prevActiveKeys_.clear();
         lastBufferEnd_ = -1;
+        pendingEffectChainReset_ = true;
         std::fill(std::begin(tailEndSamples_), std::end(tailEndSamples_), int64_t(0));
     }
     wasPlaying_ = isPlaying;
@@ -2020,6 +2004,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     if (lastBufferEnd_ >= 0 && bufStart != lastBufferEnd_) {
         for (auto& kv : samplers_)
             if (kv.second) kv.second->allNotesOff();
+        pendingEffectChainReset_ = true;
         std::fill(std::begin(tailEndSamples_), std::end(tailEndSamples_), int64_t(0));
     }
     lastBufferEnd_ = bufEnd;
@@ -2405,6 +2390,21 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         (void)chainsLockGuard.try_lock();
     const bool chainsLocked = chainsLockGuard.owns_lock();
 
+    if (pendingEffectChainReset_ && chainsLocked)
+    {
+        for (auto& [trackId, chain] : effectChains_)
+        {
+            juce::ignoreUnused(trackId);
+            if (chain)
+                chain->resetProcessors();
+        }
+
+        if (masterEffectChain_)
+            masterEffectChain_->resetProcessors();
+
+        pendingEffectChainReset_ = false;
+    }
+
     float masterPeakL = 0.0f;
     float masterPeakR = 0.0f;
 
@@ -2429,7 +2429,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         const bool hasAudio  = trackSlots[i].hasClips || trackSlots[i].hasReleasingVoices;
         const bool isTailing = !hasAudio
                              && tailEndSamples_[i] > 0
-                             && bufEnd <= tailEndSamples_[i];
+                             && bufStart < tailEndSamples_[i];
 
         if (!hasAudio && !isTailing)
         {

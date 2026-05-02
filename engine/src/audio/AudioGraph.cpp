@@ -20,6 +20,7 @@
 #include "audio/PhanjerEffect.h"
 #include "audio/XlethDelayEffect.h"
 #include "audio/XlethReverbEffect.h"
+#include "audio/XlethResonanceSuppressorEffect.h"
 #include "audio/SmartBalanceEffect.h"
 #include "audio/WireGainProcessor.h"
 #include "audio/DelayCompensationProcessor.h"
@@ -1304,6 +1305,37 @@ void AudioGraph::processBlock(juce::AudioBuffer<float>& buffer, int numSamples,
     XlethEffectBase::setCurrentMidiBuffer(nullptr);
 }
 
+void AudioGraph::resetProcessors()
+{
+    if (!graph_) return;
+
+    for (const auto& [uid, gn] : nodes_)
+    {
+        juce::ignoreUnused(uid);
+        if (auto* node = graph_->getNodeForId(gn.apgNodeId))
+            if (auto* proc = node->getProcessor())
+                proc->reset();
+    }
+
+    for (const auto& [wid, conn] : connections_)
+    {
+        juce::ignoreUnused(wid);
+        if (conn.wire.gainNodeId.uid != 0)
+        {
+            if (auto* node = graph_->getNodeForId(conn.wire.gainNodeId))
+                if (auto* proc = node->getProcessor())
+                    proc->reset();
+        }
+
+        if (conn.wire.delayNodeId.uid != 0)
+        {
+            if (auto* node = graph_->getNodeForId(conn.wire.delayNodeId))
+                if (auto* proc = node->getProcessor())
+                    proc->reset();
+        }
+    }
+}
+
 double AudioGraph::getMaxTailLengthSeconds() const
 {
     if (!graph_) return 0.0;
@@ -1837,6 +1869,7 @@ std::unique_ptr<juce::AudioProcessor> AudioGraph::createEffect(const std::string
     if (pluginId == "phanjer")       return std::make_unique<PhanjerEffect>();
     if (pluginId == "delay")         return std::make_unique<XlethDelayEffect>();
     if (pluginId == "reverb")        return std::make_unique<XlethReverbEffect>();
+    if (pluginId == "resonancesuppressor") return std::make_unique<XlethResonanceSuppressorEffect>();
     if (pluginId == "smartbalance")  return std::make_unique<SmartBalanceEffect>();
 
     // VST3 fallback — look up in the plugin registry and instantiate.

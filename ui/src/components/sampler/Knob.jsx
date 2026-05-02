@@ -31,14 +31,14 @@ export default function Knob({
   dragRange = 180,
   color,
   appearancePreset,
-  capStyle = 'default',
-  ringStyle = 'default',
-  pointerStyle = 'default',
-  tickStyle = 'none',
+  capStyle = 'encoder-cap',
+  ringStyle = 'metered-arc',
+  pointerStyle = 'notch',
+  tickStyle = 'numbered',
   tickDensity = 'normal',
   valueReadout = 'below',
   labelPlacement = 'bottom',
-  depth = 'flat',
+  depth = 'raised',
   appearanceTokens = null,
 }) {
   const canvasRef = useRef(null)
@@ -77,21 +77,6 @@ export default function Knob({
 
     const valueAngle = startAngle + totalSweep * fraction
 
-    if (!appearancePreset) {
-      drawLegacyKnob(ctx, {
-        cx,
-        cy,
-        outerR,
-        trackR,
-        knobR,
-        startAngle,
-        endAngle,
-        valueAngle,
-        accent: readToken(appearanceTokens?.accentCssVar, color || tokenValue('--theme-border-focus')),
-      })
-      return
-    }
-
     drawAppearanceKnob(ctx, {
       cx,
       cy,
@@ -107,17 +92,16 @@ export default function Knob({
       tickStyle,
       tickDensity,
       depth,
-      surface: readToken(appearanceTokens?.surfaceCssVar, tokenValue('--theme-fx-knob-lg-bg')),
-      accent: readToken(appearanceTokens?.accentCssVar, tokenValue('--theme-border-focus')),
-      text: readToken(appearanceTokens?.textCssVar, tokenValue('--theme-text-muted')),
-      track: tokenValue('--theme-fx-knob-lg-track'),
-      border: tokenValue('--theme-fx-knob-lg-border'),
+      surface: readToken(appearanceTokens?.surfaceCssVar, tokenValue('--theme-fx-knob-lg-bg'), c, '#172033'),
+      accent: readToken(appearanceTokens?.accentCssVar, color || tokenValue('--theme-border-focus'), c, '#52e5ff'),
+      text: readToken(appearanceTokens?.textCssVar, tokenValue('--theme-text-muted'), c, '#cbd5e1'),
+      track: readToken(null, tokenValue('--theme-fx-knob-lg-track'), c, '#263246'),
+      border: readToken(null, tokenValue('--theme-fx-knob-lg-border'), c, 'rgba(203, 213, 225, 0.28)'),
     })
   }, [
     size,
     fraction,
     color,
-    appearancePreset,
     capStyle,
     ringStyle,
     pointerStyle,
@@ -308,48 +292,6 @@ export default function Knob({
   )
 }
 
-function drawLegacyKnob(ctx, {
-  cx,
-  cy,
-  outerR,
-  trackR,
-  knobR,
-  startAngle,
-  endAngle,
-  valueAngle,
-  accent,
-}) {
-  ctx.fillStyle = tokenValue('--theme-fx-knob-lg-bg')
-  ctx.beginPath()
-  ctx.arc(cx, cy, outerR, 0, Math.PI * 2)
-  ctx.fill()
-  ctx.strokeStyle = tokenValue('--theme-fx-knob-lg-border')
-  ctx.lineWidth = 1
-  ctx.stroke()
-
-  ctx.strokeStyle = tokenValue('--theme-fx-knob-lg-track')
-  ctx.lineWidth = 2.5
-  ctx.beginPath()
-  ctx.arc(cx, cy, trackR, startAngle, endAngle)
-  ctx.stroke()
-
-  ctx.strokeStyle = accent
-  ctx.lineWidth = 2.5
-  ctx.beginPath()
-  ctx.arc(cx, cy, trackR, startAngle, valueAngle)
-  ctx.stroke()
-
-  const px = cx + Math.cos(valueAngle) * knobR
-  const py = cy + Math.sin(valueAngle) * knobR
-  ctx.strokeStyle = accent
-  ctx.lineWidth = 2
-  ctx.lineCap = 'round'
-  ctx.beginPath()
-  ctx.moveTo(cx, cy)
-  ctx.lineTo(px, py)
-  ctx.stroke()
-  ctx.lineCap = 'butt'
-}
 
 function drawAppearanceKnob(ctx, opts) {
   const {
@@ -445,43 +387,70 @@ function drawAppearanceKnob(ctx, opts) {
 }
 
 function drawCap(ctx, { cx, cy, outerR, knobR, capStyle, depth, surface, text, border }) {
+  const capSurface = normalizeCanvasColor(surface, '#172033')
+  const capText = normalizeCanvasColor(text, '#cbd5e1')
+  const capBorder = normalizeCanvasColor(border, withAlpha(capText, 0.28))
+
   ctx.save()
   if (depth === 'raised') {
-    ctx.shadowColor = withAlpha(text, 0.22)
-    ctx.shadowBlur = 5
-    ctx.shadowOffsetY = 1
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.42)'
+    ctx.shadowBlur = 7
+    ctx.shadowOffsetY = 3
   }
 
-  const fill = capStyle === 'soft-disk' || capStyle === 'hardware-cap'
-    ? makeRadialFill(ctx, cx, cy, outerR, surface, text)
-    : surface
-
-  ctx.fillStyle = fill
+  const outerFill = ctx.createRadialGradient(cx - outerR * 0.28, cy - outerR * 0.36, 1, cx, cy, outerR)
+  outerFill.addColorStop(0, withAlpha(capText, 0.18))
+  outerFill.addColorStop(0.28, capSurface)
+  outerFill.addColorStop(0.72, '#111827')
+  outerFill.addColorStop(1, '#050812')
+  ctx.fillStyle = outerFill
   ctx.beginPath()
   ctx.arc(cx, cy, outerR, 0, Math.PI * 2)
   ctx.fill()
   ctx.restore()
 
-  ctx.strokeStyle = border || withAlpha(text, 0.35)
-  ctx.lineWidth = capStyle === 'hardware-cap' ? 1.5 : 1
+  ctx.strokeStyle = capBorder
+  ctx.lineWidth = 1
   ctx.beginPath()
   ctx.arc(cx, cy, outerR, 0, Math.PI * 2)
   ctx.stroke()
 
-  if (capStyle === 'hardware-cap') {
-    ctx.strokeStyle = withAlpha(text, 0.25)
+  if (capStyle === 'soft-disk' || capStyle === 'hardware-cap' || capStyle === 'encoder-cap') {
+    const innerFill = makeRadialFill(ctx, cx, cy, knobR, capSurface, capText)
+    ctx.fillStyle = innerFill
+    ctx.beginPath()
+    ctx.arc(cx, cy, knobR, 0, Math.PI * 2)
+    ctx.fill()
+
+    ctx.strokeStyle = withAlpha(capText, 0.16)
     ctx.lineWidth = 1
     ctx.beginPath()
-    ctx.arc(cx, cy, knobR - 2, 0, Math.PI * 2)
+    ctx.arc(cx, cy, knobR - 0.5, 0, Math.PI * 2)
     ctx.stroke()
-  } else if (capStyle === 'encoder-cap') {
-    ctx.strokeStyle = withAlpha(text, 0.28)
+
+    ctx.strokeStyle = withAlpha(capText, 0.18)
+    ctx.lineWidth = 1.2
+    ctx.lineCap = 'round'
+    ctx.beginPath()
+    ctx.arc(cx, cy, knobR - 4, Math.PI * 1.12, Math.PI * 1.72)
+    ctx.stroke()
+    ctx.lineCap = 'butt'
+  }
+
+  if (capStyle === 'hardware-cap') {
+    ctx.strokeStyle = withAlpha(capText, 0.2)
     ctx.lineWidth = 1
     ctx.beginPath()
     ctx.arc(cx, cy, knobR - 5, 0, Math.PI * 2)
     ctx.stroke()
+  } else if (capStyle === 'encoder-cap') {
+    ctx.strokeStyle = withAlpha(capText, 0.18)
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    ctx.arc(cx, cy, knobR - 7, 0, Math.PI * 2)
+    ctx.stroke()
   } else if (depth === 'sunken') {
-    ctx.strokeStyle = withAlpha(text, 0.2)
+    ctx.strokeStyle = withAlpha(capText, 0.2)
     ctx.lineWidth = 1
     ctx.beginPath()
     ctx.arc(cx, cy, outerR - 4, 0, Math.PI * 2)
@@ -504,7 +473,7 @@ function drawPointer(ctx, { cx, cy, knobR, angle, pointerStyle, accent, text }) 
     ctx.fill()
   } else if (pointerStyle === 'notch') {
     const inner = knobR - 7
-    ctx.lineWidth = 3
+    ctx.lineWidth = 2.4
     ctx.beginPath()
     ctx.moveTo(cx + Math.cos(angle) * inner, cy + Math.sin(angle) * inner)
     ctx.lineTo(px, py)
@@ -520,10 +489,12 @@ function drawPointer(ctx, { cx, cy, knobR, angle, pointerStyle, accent, text }) 
     ctx.arc(cx, cy, 2.5, 0, Math.PI * 2)
     ctx.fill()
   } else {
-    ctx.lineWidth = 2
+    const inner = knobR * 0.26
+    const outer = knobR - 3
+    ctx.lineWidth = 2.2
     ctx.beginPath()
-    ctx.moveTo(cx, cy)
-    ctx.lineTo(px, py)
+    ctx.moveTo(cx + Math.cos(angle) * inner, cy + Math.sin(angle) * inner)
+    ctx.lineTo(cx + Math.cos(angle) * outer, cy + Math.sin(angle) * outer)
     ctx.stroke()
   }
   ctx.lineCap = 'butt'
@@ -561,20 +532,28 @@ function getTrackWidth(ringStyle) {
 }
 
 function makeRadialFill(ctx, cx, cy, radius, surface, text) {
-  const gradient = ctx.createRadialGradient(cx - radius * 0.35, cy - radius * 0.4, 1, cx, cy, radius)
-  gradient.addColorStop(0, withAlpha(text, 0.18))
-  gradient.addColorStop(0.32, surface)
-  gradient.addColorStop(1, withAlpha(text, 0.08))
+  const fillSurface = normalizeCanvasColor(surface, '#172033')
+  const fillText = normalizeCanvasColor(text, '#cbd5e1')
+  // Top-lit linear gradient — no centre blob that looks like a floating orb at small sizes.
+  const gradient = ctx.createLinearGradient(cx, cy - radius, cx, cy + radius)
+  gradient.addColorStop(0, withAlpha(fillText, 0.10))
+  gradient.addColorStop(0.35, fillSurface)
+  gradient.addColorStop(1, '#050810')
   return gradient
 }
 
-function readToken(cssVar, fallback) {
-  if (!cssVar) return fallback
-  return tokenValue(cssVar) || fallback
+function readToken(cssVar, fallback, element, hardFallback) {
+  const safeFallback = fallback || hardFallback || '#cbd5e1'
+  if (!cssVar) return safeFallback
+  const inherited = element && typeof getComputedStyle === 'function'
+    ? getComputedStyle(element).getPropertyValue(cssVar).trim()
+    : ''
+  return inherited || tokenValue(cssVar) || safeFallback
 }
 
 function withAlpha(color, alpha) {
   const value = String(color || '').trim()
+  if (!value || value.startsWith('var(')) return `rgba(203, 213, 225, ${alpha})`
   const hex = value.match(/^#([0-9a-f]{6})$/i)
   if (hex) {
     const n = Number.parseInt(hex[1], 16)
@@ -585,5 +564,11 @@ function withAlpha(color, alpha) {
   }
   const rgb = value.match(/^rgb\(\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)\s*\)$/i)
   if (rgb) return `rgba(${rgb[1]}, ${rgb[2]}, ${rgb[3]}, ${alpha})`
+  return value
+}
+
+function normalizeCanvasColor(color, fallback) {
+  const value = String(color || '').trim()
+  if (!value || value.startsWith('var(')) return fallback
   return value
 }

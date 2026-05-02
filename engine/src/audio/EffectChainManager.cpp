@@ -197,6 +197,12 @@ void EffectChainManager::processBlock(juce::AudioBuffer<float>& buffer, int numS
     graph_->processBlock(buffer, numSamples, midi);
 }
 
+void EffectChainManager::resetProcessors()
+{
+    if (graph_)
+        graph_->resetProcessors();
+}
+
 double EffectChainManager::getMaxTailLengthSeconds() const
 {
     return graph_ ? graph_->getMaxTailLengthSeconds() : 0.0;

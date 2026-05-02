@@ -100,6 +100,10 @@ public:
      * @param sampleRate        audio sample rate (e.g. 48000)
      * @param fps               output video fps (e.g. {30,1} or {30000,1001})
      * @param events            pre-built VideoEvent list (from rebuildVideoEventsFromClips)
+     * @param allowProxy        when true (default), a ready DNxHR LB proxy may be
+     *                          substituted for the source path — preview-only
+     *                          optimization. Final exports MUST pass false so the
+     *                          encoder receives original-source pixels.
      * @return  vector of requests — one per active cell (gaps excluded)
      */
     std::vector<CellFrameRequest> collectRequests(
@@ -107,7 +111,8 @@ public:
         const Timeline&                timeline,
         int                            sampleRate,
         AVRational                     fps,
-        const std::vector<VideoEvent>& events);
+        const std::vector<VideoEvent>& events,
+        bool                           allowProxy = true);
 
     // ── Step 2: Deduplicate ─────────────────────────────────────────────────
 

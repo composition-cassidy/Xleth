@@ -142,6 +142,29 @@ export default function VideoPreview() {
     let frameCount = 0
     let lastFpsTime = performance.now()
 
+    // ── Visual preview diagnostic publisher ────────────────────────────────
+    // The Settings → Graphics → Export Visual Preview Diagnostic Log button
+    // reads window.__xlethVisualPreviewDiag to learn the *actual* state of
+    // this canvas (WebGL info, texture upload health, frame receipt). Without
+    // this, the SettingsPanel can only collect a *probe* WebGL context which
+    // may not represent the live preview canvas at all.
+    const diag = {
+      mode: 'init',
+      shm: { opened: false, name: null, error: null,
+             lastIndex: -1, framesReceived: 0, lastFrameW: 0, lastFrameH: 0 },
+      lastTickAction: 'none',          // 'frame' | 'no-frame' | 'no-shm' | 'init'
+      lastTickAt: 0,                   // performance.now()
+      texUploadSuccess: 0,
+      texUploadFailures: 0,
+      lastTexUploadError: null,
+      contextLostCount: 0,
+      contextRestoredCount: 0,
+      clearColorRgb: null,             // [r,g,b] (0..1) used by drawNoVideo
+      drawApi: 'none',                 // 'webgl' | 'canvas2d' | 'none'
+      webgl: null,                     // populated below if WebGL init succeeds
+    }
+    window.__xlethVisualPreviewDiag = diag
+
     // ── Open the named shared-memory region (synchronous handshake) ─────
     // preload.js calls shm_helper.openSharedMemory() which maps the same
     // physical pages the engine writes to. Electron 41's V8 forbids external
@@ -158,6 +181,7 @@ export default function VideoPreview() {
       if (!shm) {
         console.warn('[VideoPreview] openFrameShm returned nothing')
         setMode('no-shm')
+        diag.mode = 'no-shm'
       } else {
         bufA = shm.bufA
         bufB = shm.bufB
@@ -167,11 +191,15 @@ export default function VideoPreview() {
         canvas.width  = sabWidth
         canvas.height = sabHeight
         setOutputDims({ w: sabWidth, h: sabHeight })
+        diag.shm.opened = true
+        diag.shm.name = shm.meta.name
         console.log(`[VideoPreview] shm ready: ${shm.meta.name} ${sabWidth}x${sabHeight}`)
       }
     } catch (e) {
       console.error('[VideoPreview] openFrameShm failed:', e)
       setMode('shm-error')
+      diag.mode = 'shm-error'
+      diag.shm.error = String(e?.message || e)
     }
 
     // ── Set up WebGL (fallback: Canvas2D) ────────────────────────────────
@@ -214,19 +242,54 @@ export default function VideoPreview() {
           if (sabWidth > 0) gl.viewport(0, 0, sabWidth, sabHeight)
           useWebGL = true
           setMode('webgl')
+          diag.mode = 'webgl'
+          diag.drawApi = 'webgl'
+          // Capture WebGL info ONCE so the diagnostic export can compare it
+          // against DXGI LUID. This is the *real* live preview canvas — not
+          // a probe context.
+          try {
+            const dbg = gl.getExtension('WEBGL_debug_renderer_info')
+            diag.webgl = {
+              vendor:           gl.getParameter(gl.VENDOR),
+              renderer:         gl.getParameter(gl.RENDERER),
+              version:          gl.getParameter(gl.VERSION),
+              glsl:             gl.getParameter(gl.SHADING_LANGUAGE_VERSION),
+              unmaskedVendor:   dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL)   : null,
+              unmaskedRenderer: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : null,
+              maxTextureSize:   gl.getParameter(gl.MAX_TEXTURE_SIZE),
+              extensions:       gl.getSupportedExtensions() || [],
+            }
+          } catch (e) {
+            diag.webgl = { error: String(e?.message || e) }
+          }
         }
       }
     } catch {}
+
+    // Track WebGL context loss/restoration — AMD drivers sometimes drop the
+    // context under VRAM pressure and the canvas paints clear-color forever.
+    function onContextLost(e) {
+      e.preventDefault()
+      diag.contextLostCount += 1
+    }
+    function onContextRestored() {
+      diag.contextRestoredCount += 1
+    }
+    canvas.addEventListener('webglcontextlost', onContextLost, false)
+    canvas.addEventListener('webglcontextrestored', onContextRestored, false)
 
     let ctx2d = null
     if (!useWebGL) {
       ctx2d = canvas.getContext('2d')
       setMode('canvas2d')
+      diag.mode = 'canvas2d'
+      diag.drawApi = 'canvas2d'
     }
 
     function drawNoVideo() {
       if (useWebGL) {
         const [r, g, b] = hexToGlColor(tokenValue('--theme-bg-primary') || '#0A0A0F')
+        diag.clearColorRgb = [r, g, b]
         gl.clearColor(r, g, b, 1.0)
         gl.clear(gl.COLOR_BUFFER_BIT)
       } else if (ctx2d) {
@@ -255,35 +318,66 @@ export default function VideoPreview() {
     function tick() {
       if (!runningRef.current) { return }
 
+      diag.lastTickAt = performance.now()
+
       if (shm) {
         // Poll the control word via native readInt32 (x86 aligned read is
         // atomic; writer uses std::atomic release store).
         const idx = shm.readIndex()
         if (idx !== lastIndex) {
           lastIndex = idx
+          diag.shm.lastIndex = idx
           // memcpy the active half from the mapping into bufA/bufB
           shm.syncFrame(idx)
           const frame = (idx === 0) ? bufA : bufB
 
+          let uploadOk = false
           if (useWebGL) {
-            gl.bindTexture(gl.TEXTURE_2D, texture)
-            if (texW !== sabWidth || texH !== sabHeight) {
-              gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, sabWidth, sabHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, frame)
-              texW = sabWidth; texH = sabHeight
-            } else {
-              gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, sabWidth, sabHeight, gl.RGBA, gl.UNSIGNED_BYTE, frame)
+            try {
+              gl.bindTexture(gl.TEXTURE_2D, texture)
+              if (texW !== sabWidth || texH !== sabHeight) {
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, sabWidth, sabHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, frame)
+                texW = sabWidth; texH = sabHeight
+              } else {
+                gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, sabWidth, sabHeight, gl.RGBA, gl.UNSIGNED_BYTE, frame)
+              }
+              const err = gl.getError()
+              if (err !== gl.NO_ERROR) {
+                throw new Error(`gl.getError = 0x${err.toString(16)}`)
+              }
+              gl.drawArrays(gl.TRIANGLES, 0, 6)
+              uploadOk = true
+            } catch (e) {
+              diag.lastTexUploadError = String(e?.message || e)
             }
-            gl.drawArrays(gl.TRIANGLES, 0, 6)
           } else if (ctx2d) {
-            // Canvas2D fallback: putImageData needs a Uint8ClampedArray view over
-            // the same SAB region. ImageData constructor requires it.
-            const clamped = new Uint8ClampedArray(frame.buffer, frame.byteOffset, frame.byteLength)
-            ctx2d.putImageData(new ImageData(clamped, sabWidth, sabHeight), 0, 0)
+            try {
+              // Canvas2D fallback: putImageData needs a Uint8ClampedArray view over
+              // the same SAB region. ImageData constructor requires it.
+              const clamped = new Uint8ClampedArray(frame.buffer, frame.byteOffset, frame.byteLength)
+              ctx2d.putImageData(new ImageData(clamped, sabWidth, sabHeight), 0, 0)
+              uploadOk = true
+            } catch (e) {
+              diag.lastTexUploadError = String(e?.message || e)
+            }
+          }
+          if (uploadOk) {
+            diag.texUploadSuccess += 1
+            diag.shm.framesReceived += 1
+            diag.shm.lastFrameW = sabWidth
+            diag.shm.lastFrameH = sabHeight
+            diag.lastTickAction = 'frame'
+          } else {
+            diag.texUploadFailures += 1
+            diag.lastTickAction = 'upload-failed'
           }
           frameCount++
+        } else {
+          diag.lastTickAction = 'no-frame'
         }
       } else {
         drawNoVideo()
+        diag.lastTickAction = 'no-shm'
       }
 
       const now = performance.now()
@@ -302,6 +396,11 @@ export default function VideoPreview() {
       runningRef.current = false
       tickRef.current = null
       window.removeEventListener('xleth-theme-changed', handleThemeChange)
+      canvas.removeEventListener('webglcontextlost', onContextLost)
+      canvas.removeEventListener('webglcontextrestored', onContextRestored)
+      if (window.__xlethVisualPreviewDiag === diag) {
+        window.__xlethVisualPreviewDiag = null
+      }
       if (rafId) cancelAnimationFrame(rafId)
       if (gl && texture) gl.deleteTexture(texture)
       if (gl && program) gl.deleteProgram(program)

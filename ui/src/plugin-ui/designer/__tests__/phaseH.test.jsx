@@ -24,7 +24,7 @@ describe('Phase H persistence actions', () => {
 
   it('saveCurrentLayout rejects when validation blocks save', async () => {
     const invalid = cloneCompressorLayout()
-    invalid.root.children[0].children[0].children[0].props.param = 'missing-param'
+    invalid.root.children[1].children[0].children[0].props.param = 'missing-param'
     usePluginUIDesignerStore.getState().setWorkingLayout(invalid)
 
     const result = await saveCurrentLayout()

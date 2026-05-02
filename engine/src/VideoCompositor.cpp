@@ -165,8 +165,34 @@ bool VideoCompositor::initialize(int windowWidth, int windowHeight, const std::s
     // GLEW can generate a spurious GL_INVALID_ENUM on core profile — clear it
     glGetError();
 
-    std::cout << "[VideoCompositor] OpenGL " << glGetString(GL_VERSION)
-              << " — " << glGetString(GL_RENDERER) << "\n";
+    // AMD drivers enforce GL_UNPACK_ALIGNMENT strictly; NVIDIA silently tolerates
+    // misalignment. Set alignment=1 globally so R8 planes with any stride are
+    // uploaded correctly on all vendors.
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+
+    {
+        const GLubyte* glVendor   = glGetString(GL_VENDOR);
+        const GLubyte* glRenderer = glGetString(GL_RENDERER);
+        const GLubyte* glVersion  = glGetString(GL_VERSION);
+        const GLubyte* glslVer    = glGetString(GL_SHADING_LANGUAGE_VERSION);
+        std::cout << "[VideoCompositor] OpenGL "
+                  << (glVersion  ? reinterpret_cast<const char*>(glVersion)  : "(null)")
+                  << " — vendor=" << (glVendor   ? reinterpret_cast<const char*>(glVendor)   : "(null)")
+                  << " renderer=" << (glRenderer ? reinterpret_cast<const char*>(glRenderer) : "(null)")
+                  << " glsl=" << (glslVer ? reinterpret_cast<const char*>(glslVer) : "(null)")
+                  << "\n";
+
+        // Log critical extensions and pixel-store state for AMD vs NVIDIA divergence diagnosis
+        GLint unpackAlign = 0, packAlign = 0;
+        glGetIntegerv(GL_UNPACK_ALIGNMENT, &unpackAlign);
+        glGetIntegerv(GL_PACK_ALIGNMENT,   &packAlign);
+        const bool hasPbo = GLEW_ARB_pixel_buffer_object || GLEW_VERSION_2_1;
+        std::cout << "[VideoCompositor] pixel store: unpackAlign=" << unpackAlign
+                  << " packAlign=" << packAlign
+                  << " ARB_pixel_buffer_object=" << (hasPbo ? "yes" : "no")
+                  << "\n";
+    }
 
     if (!createShaders())          return false;
     if (!createCompositeShader())  return false;
@@ -429,6 +455,11 @@ void VideoCompositor::uploadFrame(const uint8_t* yPlane, const uint8_t* uPlane,
         glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
     }
 
+    // Defensive: re-assert alignment=1 before each upload batch.
+    // GL state is global mutable — guard against any intervening code that might
+    // have changed it (e.g. third-party libs, GLFW internals on some drivers).
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
     glBindTexture(GL_TEXTURE_2D, yTexture_);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height,
                     GL_RED, GL_UNSIGNED_BYTE, (void*)0);
@@ -451,7 +482,18 @@ void VideoCompositor::uploadFrame(const uint8_t* yPlane, const uint8_t* uPlane,
     auto t1 = std::chrono::high_resolution_clock::now();
     lastUploadMs_ = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
-    checkGLError("uploadFrame");
+    if (checkGLError("uploadFrame"))
+    {
+        std::cerr << "[VideoCompositor] uploadFrame params: w=" << width
+                  << " h=" << height
+                  << " yStride=" << yStride
+                  << " uStride=" << uStride
+                  << " vStride=" << vStride
+                  << " ySize=" << ySize
+                  << " uvSize=" << uvSize
+                  << " mapped=" << (mapped ? "ok" : "null")
+                  << "\n";
+    }
 }
 
 // ── Legacy single-layer render ──────────────────────────────────────────────
@@ -611,6 +653,9 @@ void VideoCompositor::uploadFrameToSet(int textureSetId,
         glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
     }
 
+    // Defensive: re-assert alignment=1 before each upload batch (see uploadFrame).
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
     // Upload Y from PBO -> texture
     glBindTexture(GL_TEXTURE_2D, ts.yTex);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height,
@@ -636,7 +681,18 @@ void VideoCompositor::uploadFrameToSet(int textureSetId,
     auto t1 = std::chrono::high_resolution_clock::now();
     lastUploadMs_ = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
-    checkGLError("uploadFrameToSet");
+    if (checkGLError("uploadFrameToSet"))
+    {
+        std::cerr << "[VideoCompositor] uploadFrameToSet params: setId=" << textureSetId
+                  << " w=" << width << " h=" << height
+                  << " yStride=" << yStride
+                  << " uStride=" << uStride
+                  << " vStride=" << vStride
+                  << " ySize=" << ySize
+                  << " uvSize=" << uvSize
+                  << " mapped=" << (mapped ? "ok" : "null")
+                  << "\n";
+    }
 }
 
 // ── Multi-layer: setLayer / setLayerCount ───────────────────────────────────

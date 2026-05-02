@@ -274,7 +274,7 @@ void PluginRegistry::scanPlugins(const juce::File& scannerExe)
             if (dir.isDirectory())
                 dir.findChildFiles(vst3Files,
                                    juce::File::findFilesAndDirectories,
-                                   /*recursive=*/false,
+                                   /*recursive=*/true,
                                    "*.vst3");
         }
         totalCount_.store(vst3Files.size());
@@ -420,10 +420,13 @@ void PluginRegistry::scanPlugins(const juce::File& scannerExe)
         // queue indefinitely while the JS side already sees scanning_==false and
         // calls getPluginListAsJSON, finding an empty list.
         //
-        // Instead write directly on the scan thread. KnownPluginList::addType is
-        // guarded by its own CriticalSection. scanning_ is a seq-cst atomic, so
-        // any thread that observes scanning_==false via load() is guaranteed to
-        // also observe all preceding stores (including the addType calls).
+        // Instead write directly on the scan thread. KnownPluginList::addType and
+        // clear() are guarded by its own CriticalSection. scanning_ is a seq-cst
+        // atomic, so any thread that observes scanning_==false via load() is
+        // guaranteed to also observe all preceding stores (including the addType calls).
+        //
+        // Clear first so plugins from removed paths don't persist across scans.
+        knownPlugins_.clear();
         for (const auto& desc : discovered)
             knownPlugins_.addType(desc);
 

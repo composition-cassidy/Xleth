@@ -250,26 +250,37 @@ bool RenderVideoDecoder::openSource(DecoderContext& ctx, const std::string& sour
     }
 
     // 6. Open codec
-    if (avcodec_open2(ctx.codecCtx, codec, nullptr) < 0) {
-        // If hw accel failed, retry without it
-        if (ctx.isHwAccel) {
-            std::fprintf(stderr, "[RenderDecoder] D3D11VA open failed, retrying SW for '%s'\n",
-                         sourcePath.c_str());
-            avcodec_free_context(&ctx.codecCtx);
-            ctx.codecCtx = avcodec_alloc_context3(codec);
-            avcodec_parameters_to_context(ctx.codecCtx, stream->codecpar);
-            ctx.isHwAccel = false;
-            if (avcodec_open2(ctx.codecCtx, codec, nullptr) < 0) {
-                std::fprintf(stderr, "[RenderDecoder] SW fallback also failed for '%s'\n",
-                             sourcePath.c_str());
+    {
+        int openRet = avcodec_open2(ctx.codecCtx, codec, nullptr);
+        if (openRet < 0) {
+            char errBuf[AV_ERROR_MAX_STRING_SIZE] = {0};
+            av_strerror(openRet, errBuf, sizeof(errBuf));
+            // If hw accel failed, retry without it
+            if (ctx.isHwAccel) {
+                std::fprintf(stderr,
+                             "[RenderDecoder] D3D11VA open failed for '%s' (codec=%s): %s — retrying SW\n",
+                             sourcePath.c_str(), codec->name, errBuf);
+                avcodec_free_context(&ctx.codecCtx);
+                ctx.codecCtx = avcodec_alloc_context3(codec);
+                avcodec_parameters_to_context(ctx.codecCtx, stream->codecpar);
+                ctx.isHwAccel = false;
+                int swRet = avcodec_open2(ctx.codecCtx, codec, nullptr);
+                if (swRet < 0) {
+                    char swErr[AV_ERROR_MAX_STRING_SIZE] = {0};
+                    av_strerror(swRet, swErr, sizeof(swErr));
+                    std::fprintf(stderr,
+                                 "[RenderDecoder] SW fallback also failed for '%s' (codec=%s): %s\n",
+                                 sourcePath.c_str(), codec->name, swErr);
+                    ctx.close();
+                    return false;
+                }
+            } else {
+                std::fprintf(stderr,
+                             "[RenderDecoder] Failed to open codec '%s' for '%s': %s\n",
+                             codec->name, sourcePath.c_str(), errBuf);
                 ctx.close();
                 return false;
             }
-        } else {
-            std::fprintf(stderr, "[RenderDecoder] Failed to open codec for '%s'\n",
-                         sourcePath.c_str());
-            ctx.close();
-            return false;
         }
     }
 
@@ -369,6 +380,13 @@ bool RenderVideoDecoder::decodeFrame(DecoderContext& ctx, int64_t frameIndex)
         av_packet_unref(ctx.packet);
 
         if (ret < 0 && ret != AVERROR(EAGAIN)) {
+            char errBuf[AV_ERROR_MAX_STRING_SIZE] = {0};
+            av_strerror(ret, errBuf, sizeof(errBuf));
+            std::fprintf(stderr,
+                         "[RenderDecoder] avcodec_send_packet failed (frame=%lld, hw=%s, pixfmt=%d): %s\n",
+                         (long long)frameIndex,
+                         ctx.isHwAccel ? "D3D11VA" : "SW",
+                         (int)ctx.codecCtx->pix_fmt, errBuf);
             continue;
         }
 
@@ -377,7 +395,16 @@ bool RenderVideoDecoder::decodeFrame(DecoderContext& ctx, int64_t frameIndex)
             ret = avcodec_receive_frame(ctx.codecCtx, ctx.frame);
             if (ret == AVERROR(EAGAIN)) break;  // need more packets
             if (ret == AVERROR_EOF) break;
-            if (ret < 0) break;
+            if (ret < 0) {
+                char errBuf[AV_ERROR_MAX_STRING_SIZE] = {0};
+                av_strerror(ret, errBuf, sizeof(errBuf));
+                std::fprintf(stderr,
+                             "[RenderDecoder] avcodec_receive_frame failed (frame=%lld, hw=%s, pixfmt=%d): %s\n",
+                             (long long)frameIndex,
+                             ctx.isHwAccel ? "D3D11VA" : "SW",
+                             (int)ctx.codecCtx->pix_fmt, errBuf);
+                break;
+            }
 
             int64_t pts = (ctx.frame->pts != AV_NOPTS_VALUE)
                               ? ctx.frame->pts

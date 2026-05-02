@@ -1,0 +1,54 @@
+{
+  "$xleth": "plugin-ui-layout",
+  "schemaVersion": 1,
+  "pluginId": "overdone",
+  "name": "Default Overdone Layout",
+  "panel": {
+    "preferredSize": { "width": 760, "height": 380 }
+  },
+  "root": {
+    "id": "root",
+    "type": "panel",
+    "children": [
+      {
+        "id": "viz-row",
+        "type": "row",
+        "style": { "paddingPx": [12, 12, 6, 12] },
+        "children": [
+          {
+            "id": "overdone-viz",
+            "type": "visualizer",
+            "style": { "growsToFill": true },
+            "props": {
+              "source": "overdone.multiband",
+              "preset": "overdoneMultiband",
+              "heightPx": 180
+            }
+          }
+        ]
+      },
+      {
+        "id": "controls-row",
+        "type": "row",
+        "style": { "paddingPx": [6, 12, 12, 12], "gapPx": 0, "justify": "center" },
+        "children": [
+          {
+            "id": "knob-grid",
+            "type": "group",
+            "style": { "growsToFill": true, "gapPx": 8 },
+            "props": { "columns": 7 },
+            "children": [
+              { "id": "k-depth",      "type": "knob", "props": { "param": "depth",      "label": "DEPTH",    "size": 56, "format": "pct0" } },
+              { "id": "k-time",       "type": "knob", "props": { "param": "time",       "label": "TIME",     "size": 52, "format": "pct0" } },
+              { "id": "k-gain-low",   "type": "knob", "props": { "param": "gain_low",   "label": "LOW",      "size": 52, "format": "dB1_signed" } },
+              { "id": "k-gain-mid",   "type": "knob", "props": { "param": "gain_mid",   "label": "MID",      "size": 52, "format": "dB1_signed" } },
+              { "id": "k-gain-high",  "type": "knob", "props": { "param": "gain_high",  "label": "HIGH",     "size": 52, "format": "dB1_signed" } },
+              { "id": "k-xover-low",  "type": "knob", "props": { "param": "xover_low",  "label": "LO XOVER","size": 48, "format": "hz_smart" } },
+              { "id": "k-xover-high", "type": "knob", "props": { "param": "xover_high", "label": "HI XOVER","size": 48, "format": "hz_smart" } }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -3,6 +3,7 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, protocol, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const http = require('http');
 const { fork } = require('child_process');
 const { runtimeResource, userDataPath } = require('./runtimePaths');
@@ -139,6 +140,40 @@ const pending = new Map();
 const SILENT_METHODS = new Set(['getFrameRGBA', 'getCurrentFrame', 'getFrameBuffer', 'getTransportState', 'audio_getAllPeaks', 'audio_setTrackVolume', 'audio_setTrackPan', 'audio_setTrackSpread', 'audio_setMasterVolume', 'cache_getWorldActiveJobs']);
 // Last known transport state — only log when it actually changes
 let lastTransportStateStr = null;
+let autosaveIntervalId = null;
+
+function resolveSystemNodeExe() {
+  // 1. Explicit override always wins.
+  if (process.env.XLETH_NODE_EXE) return process.env.XLETH_NODE_EXE;
+  // 2. Packaged build — use the bundled binary shipped under resources/.
+  if (app.isPackaged) {
+    return runtimeResource('node', process.platform === 'win32' ? 'node.exe' : 'node');
+  }
+  // 3. Dev build — resolve to an absolute path so child_process.fork doesn't
+  //    rely on Electron's process.env.PATH being identical to the shell PATH.
+  //    Bare 'node.exe' fails with ENOENT on Windows when CreateProcess can't
+  //    find it in the parent's environment block.
+  try {
+    const { execFileSync } = require('child_process');
+    const lookup = process.platform === 'win32' ? 'where' : 'which';
+    const out = execFileSync(lookup, ['node'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    const first = out.split(/\r?\n/).map(s => s.trim()).find(Boolean);
+    if (first && fs.existsSync(first)) return first;
+  } catch (_) { /* fall through */ }
+  if (process.platform === 'win32') {
+    const candidates = [
+      'C:\\Program Files\\nodejs\\node.exe',
+      'C:\\Program Files (x86)\\nodejs\\node.exe',
+      path.join(os.homedir(), 'AppData', 'Roaming', 'nvm', 'nodejs', 'node.exe'),
+      path.join(os.homedir(), 'scoop', 'apps', 'nodejs', 'current', 'node.exe'),
+    ];
+    for (const c of candidates) {
+      if (fs.existsSync(c)) return c;
+    }
+  }
+  // Last resort — let fork() try its luck and surface ENOENT to the UI.
+  return process.platform === 'win32' ? 'node.exe' : 'node';
+}
 
 function startWorker() {
   const workerPath = runtimeResource('worker', 'addon-worker.js');
@@ -147,13 +182,34 @@ function startWorker() {
   // Force system node.exe — not electron.exe --run-as-node — because the
   // JUCE/FFmpeg static initializers crash inside Electron's runtime.
   // The addon is ABI-compatible with recent Node versions.
-  const bundledNodeExe = runtimeResource('node', process.platform === 'win32' ? 'node.exe' : 'node');
-  const nodeExe = process.env.XLETH_NODE_EXE || (app.isPackaged ? bundledNodeExe : 'node.exe');
+  const nodeExe = resolveSystemNodeExe();
   log(`Forking addon worker via ${nodeExe}: ${workerPath}`);
   log(`[Runtime] app.isPackaged=${app.isPackaged}`);
   log(`[Runtime] process.resourcesPath=${process.resourcesPath}`);
   log(`[Runtime] bridgeDir=${bridgeDir}`);
   log(`[Runtime] ffmpegDir=${ffmpegDir}`);
+
+  // Pre-flight checks — fork() throws a confusing ENOENT for ANY missing
+  // file in the spawn args (executable, cwd, addon). Surface clear errors.
+  if (!fs.existsSync(nodeExe)) {
+    addonError = `Node.js executable not found: ${nodeExe}. Set XLETH_NODE_EXE or install Node to a standard location.`;
+    log(`[startWorker] ${addonError}`);
+    workerReady = false;
+    return;
+  }
+  if (!fs.existsSync(bridgeDir)) {
+    addonError = `Bridge addon not built — ${bridgeDir} is missing. Run: build bridge-clean`;
+    log(`[startWorker] ${addonError}`);
+    workerReady = false;
+    return;
+  }
+  const addonPath = path.join(bridgeDir, 'xleth_native.node');
+  if (!fs.existsSync(addonPath)) {
+    addonError = `Bridge addon binary missing: ${addonPath}. Run: build bridge-clean`;
+    log(`[startWorker] ${addonError}`);
+    workerReady = false;
+    return;
+  }
   worker = fork(workerPath, [], {
     stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
     execPath: nodeExe,
@@ -179,6 +235,7 @@ function startWorker() {
       if (saved.globalFormantPreserve != null)
         callWorker('engine_setGlobalFormantPreserve', [saved.globalFormantPreserve]).catch(() => {})
       setInterval(pollWorldProcessing, 100)
+      restartAutosaveTimer()
       return;
     }
     if (msg && typeof msg.id === 'number') {
@@ -474,6 +531,7 @@ ipcMain.handle('xleth:project:load',
     for (const wc of webContents.getAllWebContents()) {
       if (!wc.isDestroyed()) wc.send('xleth:project-loaded');
     }
+    restartAutosaveTimer()
     return result;
   }));
 
@@ -499,6 +557,7 @@ ipcMain.handle('xleth:project:newBlank',
       for (const wc of webContents.getAllWebContents()) {
         if (!wc.isDestroyed()) wc.send('xleth:project-loaded');
       }
+      restartAutosaveTimer()
     }
     return result;
   }));
@@ -675,6 +734,39 @@ ipcMain.handle('xleth:settings:get',    (_, key) => loadSettings()[key])
 ipcMain.handle('xleth:settings:set',    (_, key, value) => {
   const s = loadSettings(); s[key] = value; saveSettings(s)
 })
+ipcMain.handle('xleth:autosave:restart', () => { restartAutosaveTimer() })
+
+// ── Autosave timer ────────────────────────────────────────────────────────────
+
+function startAutosaveTimer(intervalMs) {
+  if (autosaveIntervalId !== null) {
+    clearInterval(autosaveIntervalId)
+    autosaveIntervalId = null
+  }
+  if (!(intervalMs > 0)) return
+  autosaveIntervalId = setInterval(async () => {
+    try {
+      if (!workerReady) return
+      if (exportProgressInterval !== null || videoExportProgressInterval !== null) return
+      const hasProjDir = await callWorker('project_hasProjectDir')
+      if (!hasProjDir) return
+      const dirty = await callWorker('project_isDirty')
+      if (!dirty) return
+      const ts = await callWorker('getTransportState')
+      if (ts && ts.isPlaying) return
+      await callWorker('project_save')
+      log('[autosave] Project saved automatically')
+    } catch (err) {
+      log('[autosave] Save failed:', err && err.message)
+    }
+  }, intervalMs)
+}
+
+function restartAutosaveTimer() {
+  const settings = loadSettings()
+  const minutes = settings.autosaveInterval ?? 5
+  startAutosaveTimer(minutes > 0 ? minutes * 60 * 1000 : 0)
+}
 
 // ── Phase 7 — Preview visibility (panel show/hide) ─────────────────────────
 ipcMain.handle('xleth:preview:setEnabled',
@@ -733,11 +825,14 @@ ipcMain.handle('xleth:theme:deleteUser', (_, slug) => {
 // ready — layout files are pure JSON on disk, no C++ involvement.
 
 const pluginUiDir = userDataPath('plugin-ui')
-const KNOWN_PLUGIN_IDS = new Set(['compressor', 'limiter'])
+const KNOWN_PLUGIN_IDS = new Set(['compressor', 'limiter', 'transientproc', 'overdone', 'distortion'])
 const PLUGIN_UI_LAYOUT_KIND = 'plugin-ui-layout'
 const SHIPPED_PLUGIN_UI_LAYOUT_FILES = {
-  compressor: runtimeResource('app', 'src', 'plugin-ui', 'layouts', 'compressor.json'),
-  limiter:    runtimeResource('app', 'src', 'plugin-ui', 'layouts', 'limiter.json'),
+  compressor:    runtimeResource('app', 'src', 'plugin-ui', 'layouts', 'compressor.json'),
+  limiter:       runtimeResource('app', 'src', 'plugin-ui', 'layouts', 'limiter.json'),
+  transientproc: runtimeResource('app', 'src', 'plugin-ui', 'layouts', 'transient.json'),
+  overdone:      runtimeResource('app', 'src', 'plugin-ui', 'layouts', 'overdone.json'),
+  distortion:    runtimeResource('app', 'src', 'plugin-ui', 'layouts', 'distortion.json'),
 }
 
 function pluginIdSafe(id) {
@@ -1658,6 +1753,408 @@ ipcMain.handle('xleth:video:getAvailableEncoders',
 
 ipcMain.handle('xleth:video:getDefaultEncoder',
   safeHandler((_, codec) => callWorker('hwenc_getDefaultEncoder', [codec])));
+
+// GPU adapter detection — used by Settings to show NVIDIA/AMD/Intel/none status
+ipcMain.handle('xleth:gpu:getAvailableGpus',
+  safeHandler(() => callWorker('gpu_getAvailableGpus', [])));
+
+// ─── Visual Preview Diagnostic Log ──────────────────────────────────────────
+// Beta-tester-friendly .txt export of the live preview / grid pipeline state.
+// Triggered from Settings → Graphics. The renderer passes `extras` containing:
+//   - preview:    snapshot of window.__xlethVisualPreviewDiag (the AUTHORITATIVE
+//                 state of the live preview canvas, or null if VideoPreview
+//                 has not mounted yet)
+//   - proxyWebgl: a fresh WebGL context created from the SettingsPanel; only
+//                 a *proxy* for the live preview canvas's adapter (Chromium
+//                 *usually* shares the GPU process but it is not guaranteed)
+// The main process pulls engine state via the diag_getVisualPreviewDiagnostic
+// N-API call, formats a plain-text report, and writes it via showSaveDialog
+// (or falls back to the user-data folder if the dialog is unavailable).
+function pad2(n) { return String(n).padStart(2, '0'); }
+function diagnosticTimestamp(d = new Date()) {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}-${pad2(d.getHours())}${pad2(d.getMinutes())}`;
+}
+function fmtVendorHex(n) {
+  if (!Number.isFinite(n) || n <= 0) return 'n/a';
+  return '0x' + n.toString(16).toUpperCase().padStart(4, '0');
+}
+function fmtBool(b) { return b ? 'yes' : 'no'; }
+function fmtKVLines(obj, indent = '  ') {
+  const lines = [];
+  for (const [k, v] of Object.entries(obj || {})) {
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      lines.push(`${indent}${k}:`);
+      lines.push(fmtKVLines(v, indent + '  '));
+    } else {
+      lines.push(`${indent}${k}: ${v == null ? 'n/a' : v}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+function buildVisualPreviewDiagnosticText({ engine, extras, settings }) {
+  const ts = new Date();
+  const out = [];
+  const sep = '─'.repeat(72);
+
+  out.push('Xleth — Visual Preview Diagnostic Log');
+  out.push(sep);
+  out.push(`Generated:        ${ts.toISOString()}`);
+  out.push(`App version:      ${app.getVersion ? app.getVersion() : 'unknown'}`);
+  out.push(`Electron:         ${process.versions.electron || 'n/a'}`);
+  out.push(`Chrome:           ${process.versions.chrome || 'n/a'}`);
+  out.push(`Node:             ${process.versions.node || 'n/a'}`);
+  out.push(`OS:               ${os.type()} ${os.release()} (${os.arch()})`);
+  out.push(`OS platform:      ${process.platform}`);
+  out.push(`CPU:              ${(os.cpus()[0] || {}).model || 'n/a'} × ${os.cpus().length}`);
+  out.push(`Total memory:     ${(os.totalmem() / (1024 * 1024)).toFixed(0)} MB`);
+  out.push(`Free memory:      ${(os.freemem() / (1024 * 1024)).toFixed(0)} MB`);
+  out.push(`Portable EXE:     ${app.isPackaged ? 'yes' : 'no (dev build)'}`);
+  out.push('');
+
+  // ── 1. System / adapter ────────────────────────────────────────────────
+  out.push('1. SYSTEM / ADAPTER');
+  out.push(sep);
+  const adapters = (engine && engine.adapters) || [];
+  if (!adapters.length) {
+    out.push('  (no adapters reported by engine — DXGI enumeration failed or engine not initialized)');
+  } else {
+    out.push(`  Detected ${adapters.length} DXGI adapter(s). Active index: ${engine.activeAdapterIndex}`);
+    adapters.forEach((a, i) => {
+      out.push(`  [${i}] ${a.vendor} — ${a.name}`);
+      out.push(`        vendorId=${fmtVendorHex(a.vendorId)} deviceId=${fmtVendorHex(a.deviceId)}`);
+      const luid = (a.luidHighPart != null && a.luidLowPart != null)
+        ? `${a.luidHighPart.toString(16).toUpperCase().padStart(8, '0')}:${a.luidLowPart.toString(16).toUpperCase().padStart(8, '0')}`
+        : 'unavailable';
+      out.push(`        LUID=${luid}  (compare against UNMASKED_RENDERER_WEBGL to confirm same adapter)`);
+      const shared = (a.sharedSystemMemoryMB == null)
+        ? 'unavailable'
+        : `${a.sharedSystemMemoryMB} MB`;
+      out.push(`        VRAM(dedicated)=${a.vramMB} MB  shared=${shared}`);
+      out.push(`        discrete=${fmtBool(a.isDiscrete)}  default=${fmtBool(a.isDefault)}  index=${a.index}`);
+    });
+  }
+  out.push(`  D3D11 device created: ${fmtBool(engine && engine.hasD3D11Device)}`);
+  out.push(`  Engine compositor backend: D3D11 (GridCompositor) — NOT OpenGL`);
+  out.push(`  Renderer (Electron preview canvas) backend: WebGL / Canvas2D`);
+  out.push(`  Video encode/decode mode (requested): ${(settings && settings.videoMode) || 'auto'}`);
+  out.push('');
+
+  // ── 2. Known-good video paths ──────────────────────────────────────────
+  out.push('2. KNOWN-GOOD VIDEO PATHS');
+  out.push(sep);
+  out.push('  Sample Selector preview:    Chromium <video> element via local HTTP server');
+  out.push('                              → bypasses native GridCompositor + shared memory entirely.');
+  out.push('  Imported-video popup:       Chromium <video> element');
+  out.push('                              → bypasses native GridCompositor + shared memory entirely.');
+  out.push('  ⚠ A working Chromium video element does NOT prove the native GridCompositor');
+  out.push('    or the shared-memory → WebGL preview pipeline is working. Those use entirely');
+  out.push('    different code paths (D3D11 composite + Win32 named file mapping + WebGL).');
+  out.push('');
+
+  // ── 3. Main preview / grid pipeline state ──────────────────────────────
+  out.push('3. MAIN PREVIEW / GRID PIPELINE');
+  out.push(sep);
+  if (!engine) {
+    out.push('  (engine state unavailable — diag_getVisualPreviewDiagnostic returned nothing)');
+  } else {
+    out.push(`  compositorReady:        ${fmtBool(engine.compositorReady)}`);
+    out.push(`  compositorPresent:      ${fmtBool(engine.compositorPresent)}`);
+    out.push(`  decoderPresent:         ${fmtBool(engine.decoderPresent)}`);
+    out.push(`  collectorPresent:       ${fmtBool(engine.collectorPresent)}`);
+    out.push(`  renderCachePresent:     ${fmtBool(engine.renderCachePresent)}`);
+    out.push(`  animMgrPresent:         ${fmtBool(engine.animMgrPresent)}`);
+    out.push(`  pauseForExport:         ${fmtBool(engine.pauseForExport)}`);
+    out.push(`  pauseForVisibility:     ${fmtBool(engine.pauseForVisibility)}`);
+    out.push(`  previewResolutionScale: ${engine.previewResolutionScale}`);
+    out.push(`  previewEffectsBypass:   ${fmtBool(engine.previewEffectsBypass)}`);
+    if (engine.gridLayout) {
+      out.push(`  Grid layout:            ${engine.gridLayout.columns} cols × ${engine.gridLayout.rows} rows @ ${engine.gridLayout.previewFps} fps  gapScale=${engine.gridLayout.gapScale}`);
+    }
+    if (engine.lastTick) {
+      out.push(`  Last tick:              ${engine.lastTick.requestCount} cell requests, ${engine.lastTick.decodeMissCount} decode misses`);
+    }
+  }
+  out.push('');
+
+  // ── 4. Native compositor / readback ────────────────────────────────────
+  out.push('4. NATIVE COMPOSITOR (D3D11 GridCompositor)');
+  out.push(sep);
+  if (engine && engine.lastTick) {
+    out.push(`  Init dimensions:        ${engine.lastTick.initWidth} × ${engine.lastTick.initHeight}`);
+    out.push(`  Compositor RT:          ${engine.lastTick.compositorWidth} × ${engine.lastTick.compositorHeight}`);
+    out.push(`  Last readback:          ${engine.lastTick.readbackWidth} × ${engine.lastTick.readbackHeight}`);
+  }
+  if (engine && engine.counters) {
+    const c = engine.counters;
+    out.push(`  Video tick count:           ${c.videoTickCount}`);
+    out.push(`  Compositor path entered:    ${c.compositorPathEntered}`);
+    out.push(`  compositeFrame() calls:     ${c.compositeFrameCount}`);
+    out.push(`  readback() valid:           ${c.readbackValidCount}`);
+    out.push(`  readback() invalid:         ${c.readbackInvalidCount}`);
+    out.push(`  Canvas copy count:          ${c.canvasCopyCount}`);
+    out.push(`  Black frames written:       ${c.blackFrameCount}`);
+    out.push(`  Compositor init failures:   ${c.compositorInitFailures}`);
+    out.push('');
+    out.push('  Interpretation:');
+    if (c.compositeFrameCount === 0 && c.compositorPathEntered === 0) {
+      out.push('    ✗ Compositor path never entered — engine is in CPU fallback or paused.');
+    } else if (c.compositeFrameCount === 0) {
+      out.push('    ✗ Path entered but compositeFrame() never called — compositor not initialized.');
+    } else if (c.readbackValidCount === 0 && c.readbackInvalidCount > 0) {
+      out.push('    ✗ Readback has been called but ALWAYS returned invalid — D3D11 readback failing.');
+    } else if (c.canvasCopyCount === 0) {
+      out.push('    ✗ Readback valid but no canvas copy — frameOutput.getBackBuffer() returning null.');
+    } else {
+      out.push('    ✓ Engine is producing frames into shared memory.');
+      out.push('      If preview is still blank, the failure is in shared-memory delivery or WebGL upload.');
+    }
+  }
+  out.push('');
+
+  // ── 5. Preview delivery to Electron / WebGL ────────────────────────────
+  out.push('5. PREVIEW DELIVERY (shared memory → WebGL canvas)');
+  out.push(sep);
+  if (engine) {
+    out.push(`  Engine side:`);
+    out.push(`    FrameOutput initialized:    ${fmtBool(engine.frameOutputInitialized)}`);
+    out.push(`    FrameOutput dimensions:     ${engine.frameOutputWidth} × ${engine.frameOutputHeight}`);
+    out.push(`    FrameOutput buffer size:    ${engine.frameOutputBufferSize} bytes (per half)`);
+    out.push(`    FrameOutput current index:  ${engine.frameOutputCurrentIndex} (0 or 1; should change as engine swaps)`);
+    out.push(`    Shared-memory name:         ${FRAME_SHM_NAME}`);
+  }
+  out.push('');
+
+  // ── 5a. Live preview canvas (authoritative renderer state) ─────────────
+  out.push('  Renderer side — LIVE PREVIEW CANVAS (authoritative):');
+  const preview = extras && extras.preview;
+  if (!preview) {
+    out.push('    ⚠ VideoPreview component never mounted (or not visible since launch).');
+    out.push('      The renderer has not exposed any state for the main preview canvas.');
+    out.push('      Re-trigger this export AFTER the preview panel has been visible at least once.');
+  } else {
+    out.push(`    mode (component reports):   ${preview.mode}`);
+    out.push(`    drawApi:                    ${preview.drawApi}  (webgl | canvas2d | none)`);
+    out.push(`    last tick action:           ${preview.lastTickAction}  (frame | no-frame | upload-failed | no-shm | none)`);
+    out.push(`    last tick:                  ${preview.lastTickAtMsAgo == null ? 'n/a' : preview.lastTickAtMsAgo + ' ms ago'}`);
+    out.push(`    shm opened:                 ${fmtBool(preview.shm && preview.shm.opened)}`);
+    out.push(`    shm name:                   ${preview.shm && preview.shm.name || 'n/a'}`);
+    out.push(`    shm open error:             ${preview.shm && preview.shm.error || 'none'}`);
+    out.push(`    last shm index seen:        ${preview.shm && preview.shm.lastIndex}`);
+    out.push(`    frames received:            ${preview.shm && preview.shm.framesReceived}`);
+    out.push(`    last frame dimensions:      ${preview.shm && preview.shm.lastFrameW} × ${preview.shm && preview.shm.lastFrameH}`);
+    out.push(`    texture upload success:     ${preview.texUploadSuccess}`);
+    out.push(`    texture upload failures:    ${preview.texUploadFailures}`);
+    out.push(`    last texture upload error:  ${preview.lastTexUploadError || 'none'}`);
+    out.push(`    WebGL context lost count:   ${preview.contextLostCount}`);
+    out.push(`    WebGL context restored:     ${preview.contextRestoredCount}`);
+    if (preview.clearColorRgb) {
+      const [r, g, b] = preview.clearColorRgb;
+      out.push(`    Last fallback clear color:  rgb(${(r*255)|0}, ${(g*255)|0}, ${(b*255)|0})  (this is what fills the canvas when no frame is accepted)`);
+    } else {
+      out.push(`    Last fallback clear color:  not yet set (drawNoVideo never called) — canvas may show its CSS background`);
+    }
+    out.push('');
+    out.push('    WebGL context info (FROM THE ACTUAL LIVE PREVIEW CANVAS):');
+    if (preview.webgl && !preview.webgl.error) {
+      const w = preview.webgl;
+      out.push(`      GL_VENDOR:                ${w.vendor || 'n/a'}`);
+      out.push(`      GL_RENDERER:              ${w.renderer || 'n/a'}`);
+      out.push(`      GL_VERSION:               ${w.version || 'n/a'}`);
+      out.push(`      GL_SHADING_LANGUAGE_VER:  ${w.glsl || 'n/a'}`);
+      out.push(`      UNMASKED_VENDOR_WEBGL:    ${w.unmaskedVendor || 'n/a'}`);
+      out.push(`      UNMASKED_RENDERER_WEBGL:  ${w.unmaskedRenderer || 'n/a'}`);
+      out.push(`      MAX_TEXTURE_SIZE:         ${w.maxTextureSize || 'n/a'}`);
+      if (Array.isArray(w.extensions)) {
+        out.push(`      Extensions (${w.extensions.length}):`);
+        const ext = w.extensions.slice().sort();
+        for (let i = 0; i < ext.length; i += 4) {
+          out.push('        ' + ext.slice(i, i + 4).join(', '));
+        }
+      }
+    } else if (preview.webgl && preview.webgl.error) {
+      out.push(`      ✗ WebGL context creation failed on the live preview canvas: ${preview.webgl.error}`);
+    } else {
+      out.push('      (no WebGL info captured — likely Canvas2D fallback or context creation failed)');
+    }
+  }
+  out.push('');
+
+  // ── 5b. Proxy WebGL context (settings-tab probe; weaker signal) ────────
+  out.push('  Renderer side — PROXY WEBGL PROBE (Settings tab, NOT the live canvas):');
+  out.push('    Chromium usually reuses the same GPU process for both contexts, but this is');
+  out.push('    NOT guaranteed. Treat this as a backup only — section 5a above is authoritative.');
+  const proxy = extras && extras.proxyWebgl;
+  if (!proxy) {
+    out.push('    (proxy probe data missing)');
+  } else if (proxy.error) {
+    out.push(`    ✗ Proxy WebGL context creation failed: ${proxy.error}`);
+  } else {
+    out.push(`    GL_VENDOR:                ${proxy.vendor || 'n/a'}`);
+    out.push(`    GL_RENDERER:              ${proxy.renderer || 'n/a'}`);
+    out.push(`    GL_VERSION:               ${proxy.version || 'n/a'}`);
+    out.push(`    UNMASKED_VENDOR_WEBGL:    ${proxy.unmaskedVendor || 'n/a'}`);
+    out.push(`    UNMASKED_RENDERER_WEBGL:  ${proxy.unmaskedRenderer || 'n/a'}`);
+    out.push(`    MAX_TEXTURE_SIZE:         ${proxy.maxTextureSize || 'n/a'}`);
+  }
+  out.push('');
+
+  // ── 5c. Interpretation (only claims things actually backed by data) ────
+  out.push('  Interpretation:');
+  if (!preview) {
+    out.push('    (cannot interpret renderer health — preview was never mounted)');
+  } else {
+    const engineWroteFrames = engine && engine.counters && engine.counters.canvasCopyCount > 0;
+    const rxFrames = preview.shm ? preview.shm.framesReceived : 0;
+    const uploadFails = preview.texUploadFailures || 0;
+    const uploadOk = preview.texUploadSuccess || 0;
+
+    if (preview.mode === 'no-shm') {
+      out.push('    ✗ openFrameShm() returned nothing → shm_helper.node not loaded or preload failed.');
+      out.push('      Preview canvas is showing the WebGL clear color (see "fallback clear color" above)');
+      out.push('      OR the underlying CSS background — that explains a white/black/themed surface.');
+    } else if (preview.mode === 'shm-error') {
+      out.push('    ✗ openFrameShm() threw → OpenFileMappingA failed (engine mapping not created yet,');
+      out.push('      or FRAME_SHM_NAME mismatch). Same fallback-color story as no-shm above.');
+    } else if (rxFrames === 0 && engineWroteFrames) {
+      out.push('    ✗ Engine wrote frames but renderer received ZERO. Either the index never changed');
+      out.push('      from the renderer\'s view (stale shared-memory mapping?) or the tick loop never ran.');
+    } else if (uploadFails > 0 && uploadOk === 0) {
+      out.push('    ✗ Every texture upload FAILED — WebGL/Canvas2D rejected the frame data.');
+      out.push(`      Last error: ${preview.lastTexUploadError || 'unknown'}`);
+      out.push('      Canvas is filled with the WebGL clear color (above) — that is your white/black surface.');
+    } else if (preview.contextLostCount > 0) {
+      out.push('    ✗ WebGL context was LOST at least once — AMD driver dropped it (often VRAM pressure).');
+      out.push('      Once lost, the canvas paints clear color until the context is restored.');
+    } else if (rxFrames > 0 && uploadOk > 0) {
+      out.push('    ✓ Renderer is receiving frames AND uploading them successfully.');
+      out.push('      If the preview is still blank, the engine may be writing all-zero pixels');
+      out.push('      (check section 4 readbackValidCount > 0 vs actual pixel content).');
+    } else {
+      out.push('    (no clear failure pattern — share this report with the dev team for analysis)');
+    }
+  }
+  out.push('');
+
+  // ── 6. Memory / allocation ─────────────────────────────────────────────
+  out.push('6. MEMORY / ALLOCATION');
+  out.push(sep);
+  if (engine) {
+    const bytes = engine.frameOutputBufferSize || 0;
+    out.push(`  Per-frame buffer:           ${bytes} bytes (${(bytes / (1024 * 1024)).toFixed(2)} MB)`);
+    out.push(`  Shared-memory total:        ~${((bytes * 2 + 64) / (1024 * 1024)).toFixed(2)} MB (2 halves + 64-byte control)`);
+  }
+  out.push(`  Process memory (rss):       ${(process.memoryUsage().rss / (1024 * 1024)).toFixed(1)} MB`);
+  out.push('  GPU memory pressure:        not directly available from JS — see vendor tooling');
+  out.push('                              (Task Manager → Performance → GPU, or GPU-Z)');
+  out.push('');
+
+  // ── Footer ─────────────────────────────────────────────────────────────
+  out.push(sep);
+  out.push('Notes for the developer reading this report:');
+  out.push('  • The Sample Selector and the imported-video popup BOTH use Chromium <video>');
+  out.push('    elements served via http://127.0.0.1 — they are completely independent of the');
+  out.push('    GridCompositor / shared-memory / WebGL pipeline. They working tells you nothing');
+  out.push('    about the main preview path.');
+  out.push('  • The "Hardware/Software" video mode setting only affects DECODE/ENCODE; it does');
+  out.push('    NOT bypass the D3D11 GridCompositor or the WebGL canvas. There is no full CPU');
+  out.push('    fallback for the main preview.');
+  out.push('  • If section 4 shows readbackValid > 0 and section 5 shows framesReceived === 0,');
+  out.push('    the failure is between the engine writing to the file mapping and the renderer');
+  out.push('    reading from it — check shm_helper.node load and FRAME_SHM_NAME match.');
+  out.push('  • If section 4 shows readbackInvalid > 0 and readbackValid === 0, the D3D11');
+  out.push('    staging-texture readback is failing — typically wrong adapter, GPU driver crash,');
+  out.push('    or out-of-VRAM on the integrated AMD adapter.');
+  out.push(sep);
+  out.push('End of report.');
+
+  return out.join('\n') + '\n';
+}
+
+ipcMain.handle('xleth:diag:exportVisualPreviewLog', safeHandler(async (event, extras) => {
+  const senderWin = BrowserWindow.fromWebContents(event.sender) || win;
+
+  // Pull engine state. Tolerate worker not ready / call failure — we still
+  // want to produce *some* report so the tester can send something.
+  let engine = null;
+  let engineError = null;
+  try {
+    engine = await callWorker('diag_getVisualPreviewDiagnostic', []);
+  } catch (e) {
+    engineError = e && e.message ? e.message : String(e);
+    log(`[diag] worker call failed: ${engineError}`);
+  }
+
+  // Carry forward the persisted videoMode setting for context.
+  let settings = {};
+  try { settings = loadSettings() || {}; } catch {}
+
+  let body = buildVisualPreviewDiagnosticText({ engine, extras, settings });
+  if (engineError) {
+    let engineWarning;
+    if (engineError === 'notImplemented') {
+      engineWarning =
+        'WARNING: engine diag returned "notImplemented" — sections 3 and 4 are empty.\n' +
+        '\n' +
+        'ROOT CAUSE: The packaged xleth_native.node was compiled BEFORE the\n' +
+        'diag_getVisualPreviewDiagnostic function was added. The source code is\n' +
+        'correct; the binary is stale.\n' +
+        '\n' +
+        'FIX (developer): Rebuild xleth_native.node:\n' +
+        '  cmake --build build --target xleth_native   (or npm run build:addon)\n' +
+        'Then repackage the portable EXE. Do NOT send this build to further\n' +
+        'testers until the native addon binary is current.\n' +
+        '\n' +
+        'Sections 1, 2, 5, and 6 below were assembled from renderer-side data\n' +
+        'only and are valid regardless of this error.\n';
+    } else {
+      engineWarning =
+        `WARNING: engine diag call failed: ${engineError}\n` +
+        `(sections 3 and 4 are empty; all other sections are renderer-side data)\n`;
+    }
+    body = engineWarning + '\n' + body;
+  }
+
+  const fileName = `xleth-visual-preview-diagnostic-${diagnosticTimestamp()}.txt`;
+
+  // Try save dialog first; fall back to the user-data folder if the dialog
+  // is unavailable (headless test, dialog cancelled, etc.).
+  let savedPath = null;
+  let cancelled = false;
+  try {
+    const defaultPath = path.join(app.getPath('desktop') || app.getPath('home') || '.', fileName);
+    const result = await dialog.showSaveDialog(senderWin, {
+      title: 'Export Visual Preview Diagnostic',
+      defaultPath,
+      filters: [{ name: 'Text', extensions: ['txt'] }],
+    });
+    if (result.canceled) {
+      cancelled = true;
+    } else if (result.filePath) {
+      fs.writeFileSync(result.filePath, body, 'utf8');
+      savedPath = result.filePath;
+    }
+  } catch (e) {
+    log(`[diag] showSaveDialog failed: ${e.message}`);
+  }
+
+  if (cancelled) return { cancelled: true };
+
+  if (!savedPath) {
+    // Fallback: write to user data folder
+    try {
+      const fallback = userDataPath(fileName);
+      fs.mkdirSync(path.dirname(fallback), { recursive: true });
+      fs.writeFileSync(fallback, body, 'utf8');
+      savedPath = fallback;
+    } catch (e) {
+      return { error: `failed to write diagnostic: ${e.message}` };
+    }
+  }
+
+  log(`[diag] visual preview diagnostic written: ${savedPath}`);
+  return { path: savedPath };
+}));
 
 ipcMain.handle('xleth:video:computeDurationSeconds',
   safeHandler((_, startBeat, endBeat) =>

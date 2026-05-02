@@ -2,13 +2,19 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { X } from 'lucide-react'
 import useReverbStore from '../../stores/reverbStore.js'
 import Knob from '../sampler/Knob.jsx'
+import ReverbVisualizerCanvas from './ReverbVisualizerCanvas.jsx'
 
 // ── Parameter definitions ────────────────────────────────────────────────────
 
 const KNOBS_ROW1 = [
-  { id: 'decay',   label: 'DECAY',   min: 0.1, max: 30,    default: 2.0, fmt: v => `${v.toFixed(1)} s`  },
-  { id: 'size',    label: 'SIZE',    min: 0,   max: 100,   default: 50,  fmt: v => `${v.toFixed(0)} %`  },
-  { id: 'damping', label: 'DAMPING', min: 0,   max: 100,   default: 50,  fmt: v => `${v.toFixed(0)} %`  },
+  { id: 'decay',      label: 'DECAY',   min: 0.1, max: 30,    default: 2.0, fmt: v => `${v.toFixed(1)} s`  },
+  { id: 'size',       label: 'SIZE',    min: 0,   max: 100,   default: 50,  fmt: v => `${v.toFixed(0)} %`  },
+  { id: 'damping',    label: 'DAMPING', min: 0,   max: 100,   default: 50,  fmt: v => `${v.toFixed(0)} %`  },
+  // Anti-metal control. APVTS id stays "smoothness" for save/load
+  // compatibility; the UI surface reads "RING TAME". 0 = legacy/raw
+  // (engine LegacyFdn backend); higher values engage the enhanced FDN
+  // backend's anti-metal processing.
+  { id: 'smoothness', label: 'RING TAME', min: 0, max: 100, default: 0, fmt: v => `${v.toFixed(0)} %` },
 ]
 
 const KNOBS_ROW2 = [
@@ -28,9 +34,25 @@ const ALL_KNOBS = [...KNOBS_ROW1, ...KNOBS_ROW2, ...KNOBS_ROW3]
 
 const MIX_KNOB = { id: 'mix', label: 'MIX', min: 0, max: 100, default: 30, fmt: v => `${v.toFixed(0)} %` }
 
-const DEFAULT_PARAMS = Object.fromEntries(
-  [...ALL_KNOBS, MIX_KNOB].map(k => [k.id, k.default])
-)
+// ── Style selector ───────────────────────────────────────────────────────────
+// Engine-side AudioParameterChoice — index 0..3. Labels are hardcoded here
+// (the bridge surfaces a choice param as a plain numeric value).
+//
+// Stage 2: all four indices route to the Generic FDN backend on the engine
+// side, so changing this currently does not change the sound. The selector
+// exists so future Room/Hall/Plate DSP work has a place to land.
+const STYLE_OPTIONS = [
+  { value: 0, label: 'GENERIC' },
+  { value: 1, label: 'ROOM' },
+  { value: 2, label: 'PLATE' },
+  { value: 3, label: 'HALL' },
+]
+const STYLE_DEFAULT = 0   // Generic — matches engine APVTS default
+
+const DEFAULT_PARAMS = {
+  ...Object.fromEntries([...ALL_KNOBS, MIX_KNOB].map(k => [k.id, k.default])),
+  style: STYLE_DEFAULT,
+}
 
 // ── ReverbPanel ──────────────────────────────────────────────────────────────
 
@@ -99,7 +121,18 @@ export default function ReverbPanel() {
     window.xleth?.audio?.setEffectParameter(target.trackId, target.nodeId, id, value)
   }, [target])
 
+  const setStyle = useCallback((idx) => {
+    if (!target) return
+    setParams(prev => ({ ...prev, style: idx }))
+    window.xleth?.audio?.setEffectParameter(target.trackId, target.nodeId, 'style', idx)
+  }, [target])
+
   if (!target) return null
+
+  // Engine returns style as a float (AudioParameterChoice index). Round to
+  // the nearest valid integer index defensively in case of float jitter.
+  const activeStyleIdx = Math.max(0, Math.min(STYLE_OPTIONS.length - 1,
+    Math.round(Number(params.style) || 0)))
 
   const renderKnobRow = (knobs) => (
     <div className="reverb-knob-row">
@@ -133,6 +166,31 @@ export default function ReverbPanel() {
         <button className="reverb-panel-close" onClick={close} title="Close">
           <X size={12} />
         </button>
+      </div>
+
+      {/* Style selector — segmented choice. Stage 2: all routes go through
+          Generic on the engine side; this is the seam for future per-style DSP. */}
+      <div className="reverb-style-row" role="radiogroup" aria-label="Reverb style">
+        {STYLE_OPTIONS.map(opt => (
+          <button
+            key={opt.value}
+            type="button"
+            role="radio"
+            aria-checked={activeStyleIdx === opt.value}
+            className={
+              'reverb-style-button' +
+              (activeStyleIdx === opt.value ? ' reverb-style-button-active' : '')
+            }
+            onClick={() => setStyle(opt.value)}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Visualizer */}
+      <div className="reverb-viz-wrap">
+        <ReverbVisualizerCanvas params={params} styleIndex={activeStyleIdx} />
       </div>
 
       {/* Knob rows */}

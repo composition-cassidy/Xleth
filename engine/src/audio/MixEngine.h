@@ -536,6 +536,10 @@ private:
     // held pattern notes so stale voices don't ring past the seek point.
     int64_t lastBufferEnd_ = -1;
 
+    // Transport stop/seek reset request for latent effect processors.
+    // Audio-thread only; serviced after chainsMutex_ is acquired.
+    bool pendingEffectChainReset_ = false;
+
     // Active pattern-block info — pre-allocated, reused each block
     struct ActivePatternBlock
     {

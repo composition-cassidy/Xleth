@@ -1,10 +1,17 @@
 #pragma once
 
 #include "audio/XlethEffectBase.h"
+#include "audio/viz/DynamicsVizCollector.h"
+#include "audio/viz/DynamicsVizFrame.h"
+
 #include <juce_dsp/juce_dsp.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
 
 // ─── XlethOTTEffect ──────────────────────────────────────────────────────────
 // 3-band multiband compressor with upward + downward compression per band.
@@ -72,6 +79,9 @@ public:
             peak_[b] = 0.0f;
         }
 
+        vizSampleClock_ = 0;
+        vizAccum_.reset();
+
 #ifdef XLETH_DEBUG
         const float timePct = getSmoothedValue("time");
         const float tScale  = std::max(timePct / 50.0f, 0.002f);
@@ -97,6 +107,24 @@ public:
             env_[b]  = 0.0f;
             peak_[b] = 0.0f;
         }
+
+        vizSampleClock_ = 0;
+        vizAccum_.reset();
+    }
+
+    // ── Visualization (XlethEffectBase overrides) ───────────────────────────
+    // Lifetime model mirrors XlethCompressorEffect / XlethLimiterEffect /
+    // XlethTransientProcEffect: lazy collector, retained until destruction;
+    // vizActive_ atomically publishes / unpublishes for the audio thread.
+    void          setVisualizationEnabled(bool enabled) override;
+    std::uint32_t getVisualizationType()          const override
+        { return xleth::viz::kVizTypeMultiband; }
+    std::uint32_t getVisualizationSchemaVersion() const override
+        { return xleth::viz::kDynamicsVizSchemaVersion; }
+    std::size_t   drainVizFrames(std::uint8_t* out, std::size_t maxBytes) override
+    {
+        if (!vizCollector_) return 0;
+        return vizCollector_->drain(out, maxBytes);
     }
 
     // ── processEffect ───────────────────────────────────────────────────────
@@ -115,6 +143,10 @@ public:
         float peakL = 0.0f, peakR = 0.0f;
         float maxGR[3] = {};
 
+        // Visualization is opt-in per instance; one acquire-load per block.
+        // When disabled, the hot loop pays only a null-check.
+        auto* vizCol = vizActive_.load(std::memory_order_acquire);
+
 #ifdef XLETH_DEBUG
         static int blockCount_ = 0;
         ++blockCount_;
@@ -126,8 +158,8 @@ public:
             // Advance all smoothed parameters
             const float depth   = getNextSmoothedValue("depth");
             const float timePct = getNextSmoothedValue("time");
-            /*xover_low*/  getNextSmoothedValue("xover_low");
-            /*xover_high*/ getNextSmoothedValue("xover_high");
+            const float xLoSm   = getNextSmoothedValue("xover_low");
+            const float xHiSm   = getNextSmoothedValue("xover_high");
             const float gLow    = getNextSmoothedValue("gain_low");
             const float gMid    = getNextSmoothedValue("gain_mid");
             const float gHigh   = getNextSmoothedValue("gain_high");
@@ -147,9 +179,11 @@ public:
 
             // ── Band splitting ──────────────────────────────────────────
             float bandL[3], bandR[3];
+            float vizGlobalInPeak = 0.0f;
             {
                 const float inL = buffer.getSample(0, s);
                 const float inR = numCh > 1 ? buffer.getSample(1, s) : inL;
+                vizGlobalInPeak = std::max(std::abs(inL), std::abs(inR));
 
                 float lowL, midHighL, midL, highL;
                 crossover1_.processSample(0, inL, lowL, midHighL);
@@ -182,6 +216,16 @@ public:
             // At depth=100%: full OTT effect
             const float depthNorm = depth / 100.0f;
 
+            // Viz: capture per-band peak input (post-crossover, pre-gain).
+            // Cheap — one max() per band, only meaningful when vizCol != null
+            // but always computed so the loop stays branch-free.
+            float bandInPeak[3] = {
+                std::max(std::abs(bandL[0]), std::abs(bandR[0])),
+                std::max(std::abs(bandL[1]), std::abs(bandR[1])),
+                std::max(std::abs(bandL[2]), std::abs(bandR[2])),
+            };
+            float bandGrSample[3] = { 0.0f, 0.0f, 0.0f };
+
             for (int b = 0; b < 3; ++b)
             {
                 // Input gain (+5.2 dB) applied to sidechain only for envelope
@@ -209,12 +253,20 @@ public:
                 if (envDB > kBands[b].downThreshDB)
                     grDB = (envDB - kBands[b].downThreshDB) * (1.0f - 1.0f / kBands[b].downRatio);
                 maxGR[b] = std::max(maxGR[b], grDB);
+                bandGrSample[b] = grDB;
 
                 // Apply linear gain
                 const float gainLin = std::pow(10.0f, totalDB / 20.0f);
                 bandL[b] *= gainLin;
                 bandR[b] *= gainLin;
             }
+
+            // Viz: per-band peak output (post-gain). One max() per band.
+            const float bandOutPeak[3] = {
+                std::max(std::abs(bandL[0]), std::abs(bandR[0])),
+                std::max(std::abs(bandL[1]), std::abs(bandR[1])),
+                std::max(std::abs(bandL[2]), std::abs(bandR[2])),
+            };
 
             // ── Recombine + master output ───────────────────────────────
             // Audio always passes through the crossover (no dry/wet mix) so
@@ -228,6 +280,24 @@ public:
 
             peakL = std::max(peakL, std::abs(outL));
             peakR = std::max(peakR, std::abs(outR));
+
+            if (vizCol)
+            {
+                const float globalOut = std::max(std::abs(outL), std::abs(outR));
+                vizAccum_.observe(
+                    vizGlobalInPeak, globalOut,
+                    bandInPeak[0],  bandOutPeak[0], bandGrSample[0],
+                    bandInPeak[1],  bandOutPeak[1], bandGrSample[1],
+                    bandInPeak[2],  bandOutPeak[2], bandGrSample[2],
+                    depth, timePct,
+                    xLoSm, xHiSm);
+                ++vizSampleClock_;
+                vizAccum_.advance(vizSampleClock_, *vizCol);
+            }
+            else
+            {
+                ++vizSampleClock_;
+            }
         }
 
 #ifdef XLETH_DEBUG
@@ -328,4 +398,37 @@ private:
     // Per-band RMS envelope state (stereo-linked)
     float env_[3]  = {};   // 0=low, 1=mid, 2=high
     float peak_[3] = {};
+
+    // ── Visualization ───────────────────────────────────────────────────────
+    // Lazy collector: allocated on first setVisualizationEnabled(true), then
+    // re-used on subsequent enables. vizActive_ is the atomic the audio thread
+    // reads once per block — null when the editor is closed (zero overhead).
+    std::unique_ptr<xleth::viz::DynamicsVizCollector<xleth::viz::MultibandBucket>>
+        vizCollector_;
+    std::atomic<xleth::viz::DynamicsVizCollector<xleth::viz::MultibandBucket>*>
+        vizActive_{nullptr};
+    xleth::viz::MultibandBucketAccumulator vizAccum_;
+    std::uint64_t vizSampleClock_ = 0;
 };
+
+// ── setVisualizationEnabled ─────────────────────────────────────────────────
+
+inline void XlethOTTEffect::setVisualizationEnabled(bool enabled)
+{
+    if (enabled)
+    {
+        if (!vizCollector_)
+        {
+            vizCollector_ = std::make_unique<
+                xleth::viz::DynamicsVizCollector<xleth::viz::MultibandBucket>>(
+                    xleth::viz::kDynamicsVizBucketSize,
+                    xleth::viz::kDynamicsVizRingDepth,
+                    xleth::viz::kVizTypeMultiband);
+        }
+        vizActive_.store(vizCollector_.get(), std::memory_order_release);
+    }
+    else
+    {
+        vizActive_.store(nullptr, std::memory_order_release);
+    }
+}

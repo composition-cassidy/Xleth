@@ -25,6 +25,9 @@ import { useEffect, useRef } from 'react'
 import { useDynamicsVizSubscription } from '../useDynamicsVizSubscription.js'
 import { COMPRESSOR_PRESETS, COMPRESSOR_SOURCE_DEFAULT_PRESET } from './compressorPainter.js'
 import { LIMITER_PRESETS, LIMITER_SOURCE_DEFAULT_PRESET } from './limiterPainter.js'
+import { TRANSIENT_PRESETS, TRANSIENT_SOURCE_DEFAULT_PRESET } from './transientPainter.js'
+import { MULTIBAND_PRESETS, MULTIBAND_SOURCE_DEFAULT_PRESET } from './multibandPainter.js'
+import { RESONANCE_PRESETS, RESONANCE_SOURCE_DEFAULT_PRESET } from './resonancePainter.js'
 import { VIZ_TYPE } from '../../../constants/dynamicsViz.js'
 import { readDynamicsTheme } from './theme.js'
 
@@ -38,6 +41,30 @@ function resolveDispatch(sourceKey) {
       presets:        LIMITER_PRESETS,
       defaultsBySrc:  LIMITER_SOURCE_DEFAULT_PRESET,
       fallbackPreset: 'limiterRealtime',
+    }
+  }
+  if (typeof sourceKey === 'string' && sourceKey.startsWith('transient.')) {
+    return {
+      vizType:        VIZ_TYPE.TRANSIENT,
+      presets:        TRANSIENT_PRESETS,
+      defaultsBySrc:  TRANSIENT_SOURCE_DEFAULT_PRESET,
+      fallbackPreset: 'transientShaper',
+    }
+  }
+  if (typeof sourceKey === 'string' && sourceKey.startsWith('overdone.')) {
+    return {
+      vizType:        VIZ_TYPE.MULTIBAND,
+      presets:        MULTIBAND_PRESETS,
+      defaultsBySrc:  MULTIBAND_SOURCE_DEFAULT_PRESET,
+      fallbackPreset: 'overdoneMultiband',
+    }
+  }
+  if (typeof sourceKey === 'string' && sourceKey.startsWith('resonance.')) {
+    return {
+      vizType:        VIZ_TYPE.RESONANCE,
+      presets:        RESONANCE_PRESETS,
+      defaultsBySrc:  RESONANCE_SOURCE_DEFAULT_PRESET,
+      fallbackPreset: 'resonanceCombined',
     }
   }
   return {

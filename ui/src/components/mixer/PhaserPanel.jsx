@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { X } from 'lucide-react'
 import usePhaserStore from '../../stores/phaserStore.js'
 import Knob from '../sampler/Knob.jsx'
+import PhaserVisualizerCanvas from './PhaserVisualizerCanvas.jsx'
 
 // ── Parameter definitions ────────────────────────────────────────────────────
 
@@ -106,7 +107,12 @@ export default function PhaserPanel() {
         </button>
       </div>
 
-      {/* Row 1: Rate, Depth, Stages */}
+      {/* Visualizer */}
+      <div className="phaser-viz-wrap">
+        <PhaserVisualizerCanvas params={params} />
+      </div>
+
+      {/* Controls */}
       <div className="phaser-knob-grid">
         {/* Rate knob */}
         <div className="phaser-knob-cell">

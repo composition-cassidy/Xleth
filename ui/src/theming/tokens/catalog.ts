@@ -697,6 +697,18 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   derivedFormula('--theme-eq-response-fill', 'any', 'Stock effects', 'stock-effects.eq'),
   explicit('--theme-eq-spectrum-pre',  'rgba(255, 255, 255, 0.10)', 'solid', 'Stock effects', 'stock-effects.eq'),
   explicit('--theme-eq-spectrum-post', 'rgba(255, 255, 255, 0.25)', 'solid', 'Stock effects', 'stock-effects.eq'),
+  // EQ-A spectrum-fill gradient stops + stroke. The post-EQ analyzer is
+  // rendered as a vertical linear gradient over the live spectrum bars; the
+  // pre-EQ overlay uses a muted variant of the same shape. Stroke colors are
+  // the crisp top edge that defines local peaks. Defaults match the current
+  // cool blue / muted gray-blue Xleth EQ palette and are user-editable
+  // through the theme editor (Stock effects → Xleth EQ).
+  explicit('--theme-eq-spectrum-fill-top',        'rgba(122, 184, 255, 0.55)', 'any',   'Stock effects', 'stock-effects.eq'),
+  explicit('--theme-eq-spectrum-fill-bottom',     'rgba(122, 184, 255, 0.05)', 'any',   'Stock effects', 'stock-effects.eq'),
+  explicit('--theme-eq-spectrum-stroke',          'rgba(122, 184, 255, 0.85)', 'solid', 'Stock effects', 'stock-effects.eq'),
+  explicit('--theme-eq-pre-spectrum-fill-top',    'rgba(74, 85, 104, 0.40)',   'any',   'Stock effects', 'stock-effects.eq'),
+  explicit('--theme-eq-pre-spectrum-fill-bottom', 'rgba(74, 85, 104, 0.05)',   'any',   'Stock effects', 'stock-effects.eq'),
+  explicit('--theme-eq-pre-spectrum-stroke',      'rgba(74, 85, 104, 0.55)',   'solid', 'Stock effects', 'stock-effects.eq'),
   ref('--theme-eq-octave-grid', '--theme-border-subtle', 'solid', 'Stock effects', 'stock-effects.eq'),
   ref('--theme-eq-db-grid',     '--theme-border-subtle', 'solid', 'Stock effects', 'stock-effects.eq'),
 

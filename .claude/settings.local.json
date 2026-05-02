@@ -81,7 +81,8 @@
       "Bash(npx tsc *)",
       "Bash(grep -n \"track\\\\\\\\.id\\\\|track\\\\\\\\.type\\\\|track\\\\\\\\.name\\\\|track\\\\\\\\.muted\\\\|track\\\\\\\\.solo\\\\|track\\\\\\\\.visual\" /c/Users/Krasen/Desktop/XLETH/ui/src/components/TimelineView.jsx)",
       "Bash(grep -E \"\\\\.\\(cpp|h\\)$\")",
-      "Bash(grep -E \"\\(Store|store\\)\\\\.js$\")"
+      "Bash(grep -E \"\\(Store|store\\)\\\\.js$\")",
+      "Bash(dir \"C:\\\\Users\\\\Krasen\\\\Desktop\\\\XLETH\" /b)"
     ]
   }
 }

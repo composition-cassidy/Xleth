@@ -155,6 +155,8 @@ public:
         }
 
         const float driveLin = std::pow(10.0f, driveDb / 20.0f);
+        const float modeDriveTrim = getModeDriveTrim(mode);
+        const float modeOutputTrim = getModeOutputTrim(mode);
 
         // ── 3. Copy dry signal BEFORE upsampling (buffer still clean here) ───
         for (int ch = 0; ch < std::min(numCh, distortDryBuf_.getNumChannels()); ++ch)
@@ -196,13 +198,13 @@ public:
 
             for (int s = 0; s < osNumSamples; ++s)
             {
-                const float x = data[s] * driveLin;
+                const float x = data[s] * driveLin * modeDriveTrim;
                 float out;
 
                 switch (mode)
                 {
                     case 0: // Tube — tanh saturation
-                        out = std::tanh(x);
+                        out = std::tanh(0.82f * x);
                         break;
 
                     case 1: // SoftClip — cubic polynomial, normalized ×1.5
@@ -214,14 +216,17 @@ public:
                         break;
 
                     case 2: // HardClip — brick-wall ±1
-                        out = juce::jlimit(-1.0f, 1.0f, x);
+                        out = juce::jlimit(-0.72f, 0.72f, x) / 0.72f;
                         break;
 
                     case 3: // Analog — asymmetric diode waveshaper
-                        if (x >= 0.0f)
-                            out = std::tanh(x);
-                        else
-                            out = 1.2f * x / (1.0f + std::abs(1.2f * x));
+                        {
+                            constexpr float bias = 0.78f;
+                            const float center = std::tanh(bias);
+                            const float y = std::tanh(0.92f * x + bias) - center;
+                            const float norm = y >= 0.0f ? (1.0f - center) : (1.0f + center);
+                            out = y / norm;
+                        }
                         break;
 
                     default:
@@ -229,7 +234,7 @@ public:
                         break;
                 }
 
-                data[s] = out;
+                data[s] = juce::jlimit(-1.0f, 1.0f, out * modeOutputTrim);
             }
         }
 
@@ -316,6 +321,32 @@ public:
     }
 
 private:
+    static float getModeDriveTrim(int mode) noexcept
+    {
+        switch (mode)
+        {
+            case 0: return 0.58f; // Tube: later, rounder saturation.
+            case 1: return 0.72f; // Soft Clip: clear knee without becoming a brick wall.
+            case 2: return 1.35f; // Hard Clip: intentionally lower effective headroom.
+            case 3: return 1.00f; // Analog: enough level to expose asymmetry.
+            default: return 1.0f;
+        }
+    }
+
+    static float getModeOutputTrim(int mode) noexcept
+    {
+        // Small compensation trims keep comparisons honest without making one
+        // mode win merely by being louder.
+        switch (mode)
+        {
+            case 0: return 1.10f;
+            case 1: return 1.08f;
+            case 2: return 0.88f;
+            case 3: return 1.04f;
+            default: return 1.0f;
+        }
+    }
+
     // ── Parameter layout ─────────────────────────────────────────────────────
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     {
