@@ -10,6 +10,7 @@
 #include "Transport.h"
 #include "Sampler.h"
 #include "audio/ClipRenderCache.h"
+#include "audio/ClipModulatedReader.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -561,6 +562,12 @@ private:
 
     // ── Clip render cache ────────────────────────────────────────────────────
     ClipRenderCache clipRenderCache_;
+
+    // ── Clip modulated reader (Phase C) ─────────────────────────────────────
+    // Renders vibrato-enabled clips directly from raw source PCM, bypassing
+    // the cache. Owns per-clip read state (one slot per clip id, mirroring
+    // the cache's slot policy). Reset on transport stop and seek.
+    xleth::audio::ClipModulatedReader clipModReader_;
 
     // Content-keyed WORLD vocoder cache, consulted by the WORLD branch of
     // ClipRenderJob (worker thread). Lifetime tied to MixEngine.

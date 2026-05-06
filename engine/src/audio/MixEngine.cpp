@@ -707,6 +707,9 @@ void MixEngine::prepare(double sampleRate, int maxBlockSize)
     }
     if (masterEffectChain_ && masterEffectChain_->isInitialized())
         masterEffectChain_->reprepare(sampleRate, maxBlockSize);
+
+    // Phase C: clear any per-clip vibrato readhead state on device prepare.
+    clipModReader_.resetAllStates();
 }
 
 void MixEngine::setNonRealtime(bool nr)
@@ -2000,6 +2003,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         lastBufferEnd_ = -1;
         pendingEffectChainReset_ = true;
         std::fill(std::begin(tailEndSamples_), std::end(tailEndSamples_), int64_t(0));
+        clipModReader_.resetAllStates();
     }
     wasPlaying_ = isPlaying;
 
@@ -2064,6 +2068,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             if (kv.second) kv.second->allNotesOff();
         pendingEffectChainReset_ = true;
         std::fill(std::begin(tailEndSamples_), std::end(tailEndSamples_), int64_t(0));
+        clipModReader_.resetAllStates();
     }
     lastBufferEnd_ = bufEnd;
 
@@ -2198,6 +2203,44 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             fadeOutLUT.build(ac.clip->fadeOutX1, ac.clip->fadeOutY1,
                             ac.clip->fadeOutX2, ac.clip->fadeOutY2);
 
+        // ── Phase C: Clip Modulation FX — vibrato MVP ────────────────────────
+        // Vibrato-enabled clips bypass ClipRenderCache and read raw source PCM
+        // through a fractional, modulated readhead. Only forward, unstretched
+        // clips qualify; reversed/stretched/formant-preserve combinations fall
+        // back to the existing cache path so user state isn't silently dropped.
+        const bool useModulatedReader =
+            ac.clip->modulation.enabled
+         && ac.clip->modulation.vibrato.enabled
+         && !ac.clip->reversed
+         && ac.clip->stretchRatio == 1.0
+         && !ac.clip->formantPreserve;
+
+        if (useModulatedReader)
+        {
+            xleth::audio::ClipModulatedReader::BlockParams p {};
+            p.srcBuf              = srcBuf;
+            p.regionOffsetSamples = ac.regionOffsetSamples;
+            p.clipStartSample     = ac.clipStartSample;
+            p.clipEndSample       = ac.clipEndSample;
+            p.bufStart            = bufStart;
+            p.numOutputSamples    = numSamples;
+            p.bpm                 = bpm;
+            p.sampleRate          = sampleRate;
+            p.pitchOffsetSemis    = ac.clip->pitchOffset;
+            p.pitchOffsetCents    = ac.clip->pitchOffsetCents;
+            p.fadeInSamples       = fadeInSamples;
+            p.fadeOutSamples      = fadeOutSamples;
+            p.fadeInLUT           = (fadeInSamples > 0)  ? &fadeInLUT  : nullptr;
+            p.fadeOutLUT          = (fadeOutSamples > 0) ? &fadeOutLUT : nullptr;
+            p.clipBoundaryFadeN   = clipFadeN;
+            p.velocity            = ac.clip->velocity;
+            p.modulation          = &ac.clip->modulation;
+
+            clipModReader_.renderBlock(p, trackBuf, ac.clip->id);
+            clipModReader_.markClipSeen(ac.clip->id);
+            continue;
+        }
+
         // For each sample in this buffer, calculate what to read from the source
         for (int s = 0; s < numSamples; ++s)
         {
@@ -2278,6 +2321,12 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             }
         }
     }
+
+    // Phase C: clear vibrato-reader state for any clip that wasn't rendered
+    // through the modulated path this block (e.g. clip ended, was deleted, or
+    // had vibrato turned off). Without this, a clip that re-activates later
+    // would resume from a stale sourcePosD.
+    clipModReader_.resetUnseenStates();
 
     // ── Render pattern blocks into track buffers ─────────────────────────────
     findActivePatternBlocks(bufStart, bufEnd, bpm, sampleRate);
