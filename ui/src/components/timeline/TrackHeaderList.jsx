@@ -1,16 +1,59 @@
-import { useCallback, useRef } from 'react'
+import { useCallback, useRef, useState, useEffect } from 'react'
 import { Plus } from 'lucide-react'
 import TrackHeader from './TrackHeader.jsx'
+import TrackColorPopover from './TrackColorPopover.jsx'
 import { RULER_HEIGHT, HEADER_WIDTH } from '../../constants/timeline.js'
+import { resolveAutoTrackColor, normalizeTrackPalette, TRACK_PALETTE_FALLBACK } from './trackColorResolver.js'
+import { tokenValue } from '../../theming/tokenValue.ts'
 
 export default function TrackHeaderList({
   tracks, patterns, currentPatternIdByTrack,
   focusedTrackId, onFocusTrack,
   onAddTrack, onMute, onSolo, onVisualOnly, onRename, onRemove, onReorder, onRequestContextMenu,
+  onSetTrackColor,
   scrollContainerRef,
   width = HEADER_WIDTH,
 }) {
   const dragIndexRef = useRef(null)
+
+  const [openColorPickerId, setOpenColorPickerId] = useState(null)
+  const [colorPickerAnchorRect, setColorPickerAnchorRect] = useState(null)
+
+  const [, _themeRev] = useState(0)
+  useEffect(() => {
+    const h = () => _themeRev(n => n + 1)
+    document.addEventListener('xleth-theme-changed', h)
+    return () => document.removeEventListener('xleth-theme-changed', h)
+  }, [])
+
+  const rawPalette = Array.from({ length: 16 }, (_, i) =>
+    tokenValue(`--theme-track-palette-${i + 1}`)
+  )
+  const trackPalette = normalizeTrackPalette(rawPalette)
+
+  const handleOpenColorPicker = useCallback((trackId, rect) => {
+    setOpenColorPickerId(prev => prev === trackId ? null : trackId)
+    setColorPickerAnchorRect(rect)
+  }, [])
+
+  const handleCloseColorPicker = useCallback(() => {
+    setOpenColorPickerId(null)
+    setColorPickerAnchorRect(null)
+  }, [])
+
+  const handleChooseAuto = useCallback((trackId) => {
+    onSetTrackColor?.(trackId, { mode: 'auto' })
+    handleCloseColorPicker()
+  }, [onSetTrackColor, handleCloseColorPicker])
+
+  const handleChooseSlot = useCallback((trackId, slot) => {
+    onSetTrackColor?.(trackId, { mode: 'paletteSlot', slot })
+    handleCloseColorPicker()
+  }, [onSetTrackColor, handleCloseColorPicker])
+
+  const handleChooseCustom = useCallback((trackId, customColor) => {
+    onSetTrackColor?.(trackId, { mode: 'custom', customColor })
+  }, [onSetTrackColor])
 
   const onDragStart = useCallback((e, index) => {
     dragIndexRef.current = index
@@ -54,11 +97,13 @@ export default function TrackHeaderList({
             const patId = currentPatternIdByTrack?.[track.id]
             if (patId != null && patId >= 0) currentPattern = patterns?.[patId] || null
           }
+          const trackColor = resolveAutoTrackColor(track, i, trackPalette, TRACK_PALETTE_FALLBACK[i % 16])
           return (
             <TrackHeader
               key={track.id}
               track={track}
               index={i}
+              trackColor={trackColor}
               currentPattern={currentPattern}
               isFocused={focusedTrackId === track.id}
               onMute={onMute}
@@ -71,6 +116,7 @@ export default function TrackHeaderList({
               onDragStart={onDragStart}
               onDragOver={onDragOver}
               onDrop={onDrop}
+              onOpenColorPicker={handleOpenColorPicker}
             />
           )
         })}
@@ -81,6 +127,28 @@ export default function TrackHeaderList({
           <span>Add Track</span>
         </button>
       </div>
+
+      {openColorPickerId !== null && colorPickerAnchorRect !== null && (() => {
+        const openTrack = tracks.find(t => t.id === openColorPickerId)
+        if (!openTrack) return null
+        const openTrackIndex = tracks.findIndex(t => t.id === openColorPickerId)
+        const resolvedColor = resolveAutoTrackColor(
+          openTrack, openTrackIndex, trackPalette,
+          TRACK_PALETTE_FALLBACK[openTrackIndex % 16]
+        )
+        return (
+          <TrackColorPopover
+            anchorRect={colorPickerAnchorRect}
+            track={openTrack}
+            palette={trackPalette}
+            resolvedTrackColor={resolvedColor}
+            onChooseAuto={() => handleChooseAuto(openColorPickerId)}
+            onChooseSlot={(slot) => handleChooseSlot(openColorPickerId, slot)}
+            onChooseCustom={(hex) => handleChooseCustom(openColorPickerId, hex)}
+            onClose={handleCloseColorPicker}
+          />
+        )
+      })()}
     </div>
   )
 }

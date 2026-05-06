@@ -231,11 +231,32 @@ struct PreviewDiagCounters {
     std::atomic<uint64_t> compositorPathEntered {0};
     std::atomic<uint64_t> compositeFrameCount   {0};
     std::atomic<uint64_t> readbackValidCount    {0};
+    std::atomic<uint64_t> readbackNotReadyCount {0};
     std::atomic<uint64_t> readbackInvalidCount  {0};
     std::atomic<uint64_t> canvasCopyCount       {0};
     std::atomic<uint64_t> blackFrameCount       {0};
     std::atomic<uint64_t> initInitFailures      {0};
     std::atomic<int32_t>  lastReadbackHRESULT   {0};  // S_OK(0) or failing HRESULT
+    std::atomic<int32_t>  lastDeviceRemovedReason {0};
+    std::atomic<int>      lastReadbackFailureStage {0};
+    std::atomic<int>      lastReadbackMapType   {0};
+    std::atomic<int>      lastReadbackMapFlags  {0};
+    std::atomic<int>      lastReadbackRowPitch  {0};
+    std::atomic<uint64_t> lastReadbackExpectedBytes {0};
+    std::atomic<uint64_t> lastReadbackActualCopyBytes {0};
+    std::atomic<bool>     lastReadbackDimensionsMatch {false};
+    std::atomic<int>      lastReadbackSourceWidth {0};
+    std::atomic<int>      lastReadbackSourceHeight {0};
+    std::atomic<int>      lastReadbackSourceFormat {0};
+    std::atomic<int>      lastReadbackSourceSampleCount {0};
+    std::atomic<int>      lastReadbackStagingWidth {0};
+    std::atomic<int>      lastReadbackStagingHeight {0};
+    std::atomic<int>      lastReadbackStagingFormat {0};
+    std::atomic<int>      lastReadbackStagingUsage {0};
+    std::atomic<int>      lastReadbackStagingCPUAccessFlags {0};
+    std::atomic<int>      lastReadbackStagingBindFlags {0};
+    std::atomic<int>      lastReadbackStagingMiscFlags {0};
+    std::atomic<int>      lastReadbackStagingSampleCount {0};
     std::atomic<int>      lastReadbackWidth     {0};
     std::atomic<int>      lastReadbackHeight    {0};
     std::atomic<int>      lastRequestCount      {0};
@@ -246,8 +267,57 @@ struct PreviewDiagCounters {
     std::atomic<int>      lastCompositorHeight  {0};
     std::atomic<int>      lastInitW             {0};
     std::atomic<int>      lastInitH             {0};
+    // ── Readback policy + timing diagnostics ─────────────────────────────────
+    std::atomic<int>      readbackPolicyActive       {0};  // 0=FastImmediate 1=AsyncQueued
+    std::atomic<int>      readbackPolicySwitchReason  {0};  // PolicySwitchReason enum (see below)
+    std::atomic<uint64_t> droppedPendingFrames        {0};
+    std::atomic<int>      pendingSlotsCount           {0};
+    std::atomic<int32_t>  lastReadbackUs              {0};  // last readback() call duration (µs)
+    std::atomic<int32_t>  avgReadbackUs               {0};  // windowed average (µs)
+    std::atomic<int32_t>  maxReadbackUs               {0};  // peak since start
 };
 PreviewDiagCounters g_previewDiag;
+
+enum class PolicySwitchReason : int {
+    None           = 0,
+    FatalInvalids  = 1,   // too many fatal readback failures in a window
+    MapStallTooSlow = 2,  // avgMs > threshold (blocking Map too slow)
+    PoorYield      = 3    // valid frames < 25% of compositor ticks in a window
+};
+
+static const char* readbackHRESULTText(int32_t hrValue)
+{
+    const HRESULT hr = static_cast<HRESULT>(hrValue);
+    switch (hr) {
+        case S_OK:                         return "S_OK";
+        case DXGI_ERROR_INVALID_CALL:      return "DXGI_ERROR_INVALID_CALL";
+        case DXGI_ERROR_WAS_STILL_DRAWING: return "DXGI_ERROR_WAS_STILL_DRAWING";
+        case DXGI_ERROR_DEVICE_REMOVED:    return "DXGI_ERROR_DEVICE_REMOVED";
+        case DXGI_ERROR_DEVICE_HUNG:       return "DXGI_ERROR_DEVICE_HUNG";
+        case DXGI_ERROR_DEVICE_RESET:      return "DXGI_ERROR_DEVICE_RESET";
+        case E_INVALIDARG:                 return "E_INVALIDARG";
+        case E_POINTER:                    return "E_POINTER";
+        case E_FAIL:                       return "E_FAIL";
+        case E_OUTOFMEMORY:                return "E_OUTOFMEMORY";
+        default:                           return "(unknown)";
+    }
+}
+
+static const char* readbackFailureStageText(int stage)
+{
+    switch (static_cast<ReadbackFailureStage>(stage)) {
+        case ReadbackFailureStage::None:                        return "none";
+        case ReadbackFailureStage::StagingTextureMissing:       return "staging_texture_missing";
+        case ReadbackFailureStage::StagingTextureCreateFailed:  return "staging_texture_create_failed";
+        case ReadbackFailureStage::SourceTextureMissing:        return "source_texture_missing";
+        case ReadbackFailureStage::CopyPreconditionFailed:      return "copy_precondition_failed";
+        case ReadbackFailureStage::CopyIssuedThenDeviceRemoved: return "copy_issued_then_device_removed";
+        case ReadbackFailureStage::MapFailed:                   return "map_failed";
+        case ReadbackFailureStage::RowPitchInvalid:             return "row_pitch_invalid";
+        case ReadbackFailureStage::DimensionsInvalid:           return "dimensions_invalid";
+        default:                                                return "unknown";
+    }
+}
 
 // ── Hardware encoder detection (NVENC/AMF/QSV probing) ──────────────────
 std::unique_ptr<HwEncoderDetector> g_hwEncoderDetector;
@@ -964,8 +1034,11 @@ static void maybeEnqueueRegionProxy(int regionId, int trackId) {
     if (!g_proxyManager || !g_timeline || !g_projectManager) return;
 
     const GridLayout& gl = g_timeline->getGridLayout();
-    if (trackId == gl.chorusTrackId) return;       // chorus always streams original
-    if (gl.crashEnabled && trackId == gl.crashTrackId) return;
+    // Fullscreen layers always stream the original — skip proxy generation
+    // for any track referenced by one (parity with the old chorus/crash skip).
+    for (const auto& fl : gl.fullscreenLayers) {
+        if (fl.trackId == trackId) return;
+    }
 
     SampleRegion* r = g_timeline->getRegionMutable(regionId);
     if (!r) return;
@@ -1163,6 +1236,18 @@ static Napi::Object trackToJs(Napi::Env env, const TrackInfo& t) {
     o.Set("cornerRadius",      Napi::Number::New(env, t.cornerRadius));
     o.Set("gapScaleOverride",  Napi::Number::New(env, t.gapScaleOverride));
     o.Set("subdivisionFactor", Napi::Number::New(env, t.subdivisionFactor));
+    // Pass 6D + 6F — track color metadata (UI-only). Always emit mode; emit
+    // slot only for PaletteSlot mode and trackColorCustom only for Custom mode
+    // so other modes don't carry stale fields.
+    o.Set("trackColorMode", Napi::String::New(env, trackColorModeToString(t.trackColorMode)));
+    if (t.trackColorMode == TrackColorMode::PaletteSlot
+        && t.trackColorSlot >= 1 && t.trackColorSlot <= 16) {
+        o.Set("trackColorSlot", Napi::Number::New(env, t.trackColorSlot));
+    }
+    if (t.trackColorMode == TrackColorMode::Custom
+        && isValidTrackCustomColor(t.trackColorCustom)) {
+        o.Set("trackColorCustom", Napi::String::New(env, t.trackColorCustom));
+    }
     {
         Napi::Object b = Napi::Object::New(env);
         b.Set("enabled",      Napi::Boolean::New(env, t.bounce.enabled));
@@ -1208,12 +1293,51 @@ static Napi::Object trackToJs(Napi::Env env, const TrackInfo& t) {
         o.Set("pingPong", p);
     }
     {
-        // Serialize SlideNoteEffect settings
+        // Serialize SlideNoteEffect settings (nested per-effect objects so the
+        // slide UI can reuse the same view components as the Visual FX panels).
         Napi::Object s = Napi::Object::New(env);
         const auto& sl = t.slideNoteEffect;
-        s.Set("type",            Napi::Number::New(env, static_cast<int>(sl.type)));
-        s.Set("durationMode",    Napi::Number::New(env, static_cast<int>(sl.durationMode)));
-        s.Set("fixedDurationMs", Napi::Number::New(env, sl.fixedDurationMs));
+        s.Set("type",             Napi::Number::New(env, static_cast<int>(sl.type)));
+        s.Set("durationMode",     Napi::Number::New(env, static_cast<int>(sl.durationMode)));
+        s.Set("fixedDurationMs",  Napi::Number::New(env, sl.fixedDurationMs));
+        s.Set("returnStyle",      Napi::Number::New(env, static_cast<int>(sl.returnStyle)));
+        s.Set("returnTrigger",    Napi::Number::New(env, static_cast<int>(sl.returnTrigger)));
+        s.Set("returnDurationMs", Napi::Number::New(env, sl.returnDurationMs));
+
+        Napi::Object sb = Napi::Object::New(env);
+        sb.Set("directionDeg", Napi::Number::New(env, sl.bounce.directionDeg));
+        sb.Set("distance",     Napi::Number::New(env, sl.bounce.distance));
+        sb.Set("squashAmount", Napi::Number::New(env, sl.bounce.squashAmount));
+        sb.Set("overshoot",    Napi::Number::New(env, sl.bounce.overshoot));
+        sb.Set("repeatCount",  Napi::Number::New(env, sl.bounce.repeatCount));
+        sb.Set("easingType",   Napi::Number::New(env, sl.bounce.easingType));
+        s.Set("bounce", sb);
+
+        Napi::Object sz = Napi::Object::New(env);
+        sz.Set("startZoom",      Napi::Number::New(env, sl.zoomPanRot.startZoom));
+        sz.Set("targetZoom",     Napi::Number::New(env, sl.zoomPanRot.targetZoom));
+        sz.Set("startPanX",      Napi::Number::New(env, sl.zoomPanRot.startPanX));
+        sz.Set("startPanY",      Napi::Number::New(env, sl.zoomPanRot.startPanY));
+        sz.Set("targetPanX",     Napi::Number::New(env, sl.zoomPanRot.targetPanX));
+        sz.Set("targetPanY",     Napi::Number::New(env, sl.zoomPanRot.targetPanY));
+        sz.Set("startRotation",  Napi::Number::New(env, sl.zoomPanRot.startRotation));
+        sz.Set("targetRotation", Napi::Number::New(env, sl.zoomPanRot.targetRotation));
+        sz.Set("zoomEasing",     Napi::Number::New(env, sl.zoomPanRot.zoomEasing));
+        sz.Set("panEasing",      Napi::Number::New(env, sl.zoomPanRot.panEasing));
+        sz.Set("rotEasing",      Napi::Number::New(env, sl.zoomPanRot.rotEasing));
+        sz.Set("overshoot",      Napi::Number::New(env, sl.zoomPanRot.overshoot));
+        s.Set("zoomPanRot", sz);
+
+        Napi::Object stv = Napi::Object::New(env);
+        stv.Set("intensity",  Napi::Number::New(env, sl.tv.intensity));
+        stv.Set("rollSpeed",  Napi::Number::New(env, sl.tv.rollSpeed));
+        stv.Set("scanlines",  Napi::Number::New(env, sl.tv.scanlines));
+        stv.Set("chroma",     Napi::Number::New(env, sl.tv.chroma));
+        stv.Set("noise",      Napi::Number::New(env, sl.tv.noise));
+        stv.Set("jitter",     Napi::Number::New(env, sl.tv.jitter));
+        stv.Set("colorBleed", Napi::Number::New(env, sl.tv.colorBleed));
+        s.Set("tv", stv);
+
         o.Set("slideNoteEffect", s);
     }
     {
@@ -1438,6 +1562,33 @@ static TrackInfo jsToTrack(const Napi::Object& o) {
         t.order  = o.Get("order").As<Napi::Number>().Int32Value();
     if (o.Has("videoHoldLastFrame") && o.Get("videoHoldLastFrame").IsBoolean())
         t.videoHoldLastFrame = o.Get("videoHoldLastFrame").As<Napi::Boolean>().Value();
+    // Pass 6D + 6F — track color metadata. Sanitize: invalid mode/slot/custom
+    // → Auto. New tracks created without these fields default to Auto via
+    // TrackInfo's member initializers, so callers may simply omit them.
+    if (o.Has("trackColorMode") && o.Get("trackColorMode").IsString()) {
+        const std::string m = o.Get("trackColorMode").As<Napi::String>().Utf8Value();
+        TrackColorMode mode = stringToTrackColorMode(m);
+        int slot = 0;
+        if (o.Has("trackColorSlot") && o.Get("trackColorSlot").IsNumber())
+            slot = o.Get("trackColorSlot").As<Napi::Number>().Int32Value();
+        std::string customRaw;
+        if (o.Has("trackColorCustom") && o.Get("trackColorCustom").IsString())
+            customRaw = o.Get("trackColorCustom").As<Napi::String>().Utf8Value();
+        const std::string customNorm = normalizeTrackCustomColor(customRaw);
+        if (mode == TrackColorMode::PaletteSlot && slot >= 1 && slot <= 16) {
+            t.trackColorMode   = TrackColorMode::PaletteSlot;
+            t.trackColorSlot   = slot;
+            t.trackColorCustom.clear();
+        } else if (mode == TrackColorMode::Custom && !customNorm.empty()) {
+            t.trackColorMode   = TrackColorMode::Custom;
+            t.trackColorSlot   = 0;
+            t.trackColorCustom = customNorm;
+        } else {
+            t.trackColorMode   = TrackColorMode::Auto;
+            t.trackColorSlot   = 0;
+            t.trackColorCustom.clear();
+        }
+    }
     return t;
 }
 
@@ -1455,20 +1606,49 @@ static Napi::Object gridSlotToJs(Napi::Env env, const GridSlot& s) {
     return o;
 }
 
+static Napi::Object fullscreenLayerToJs(Napi::Env env, const FullscreenLayer& fl) {
+    Napi::Object o = Napi::Object::New(env);
+    o.Set("trackId",   Napi::Number::New(env, fl.trackId));
+    o.Set("placement", Napi::String::New(env,
+        fl.placement == FullscreenLayerPlacement::BehindGrid ? "behind" : "front"));
+    o.Set("opacity",   Napi::Number::New(env, fl.opacity));
+    return o;
+}
+
+static FullscreenLayer jsToFullscreenLayer(const Napi::Object& o) {
+    FullscreenLayer fl;
+    if (o.Has("trackId") && o.Get("trackId").IsNumber())
+        fl.trackId = o.Get("trackId").As<Napi::Number>().Int32Value();
+    if (o.Has("placement") && o.Get("placement").IsString()) {
+        // Unknown placement strings default to BehindGrid for forward compat.
+        const std::string p = o.Get("placement").As<Napi::String>().Utf8Value();
+        fl.placement = (p == "front")
+            ? FullscreenLayerPlacement::InFrontOfGrid
+            : FullscreenLayerPlacement::BehindGrid;
+    }
+    if (o.Has("opacity") && o.Get("opacity").IsNumber()) {
+        float v = o.Get("opacity").As<Napi::Number>().FloatValue();
+        if (v < 0.0f) v = 0.0f;
+        if (v > 1.0f) v = 1.0f;
+        fl.opacity = v;
+    }
+    return fl;
+}
+
 static Napi::Object gridLayoutToJs(Napi::Env env, const GridLayout& g) {
     Napi::Object o = Napi::Object::New(env);
     o.Set("columns",       Napi::Number::New(env, g.columns));
     o.Set("rows",          Napi::Number::New(env, g.rows));
-    o.Set("chorusTrackId", Napi::Number::New(env, g.chorusTrackId));
-    o.Set("crashEnabled",  Napi::Boolean::New(env, g.crashEnabled));
-    o.Set("crashTrackId",  Napi::Number::New(env, g.crashTrackId));
-    o.Set("crashOpacity",  Napi::Number::New(env, g.crashOpacity));
     o.Set("previewFps",    Napi::Number::New(env, g.previewFps));
     o.Set("gapScale",      Napi::Number::New(env, g.gapScale));
-    Napi::Array arr = Napi::Array::New(env, g.slots.size());
+    Napi::Array slotsArr = Napi::Array::New(env, g.slots.size());
     for (size_t i = 0; i < g.slots.size(); ++i)
-        arr.Set((uint32_t)i, gridSlotToJs(env, g.slots[i]));
-    o.Set("slots", arr);
+        slotsArr.Set((uint32_t)i, gridSlotToJs(env, g.slots[i]));
+    o.Set("slots", slotsArr);
+    Napi::Array layersArr = Napi::Array::New(env, g.fullscreenLayers.size());
+    for (size_t i = 0; i < g.fullscreenLayers.size(); ++i)
+        layersArr.Set((uint32_t)i, fullscreenLayerToJs(env, g.fullscreenLayers[i]));
+    o.Set("fullscreenLayers", layersArr);
     return o;
 }
 
@@ -1497,14 +1677,6 @@ static GridLayout jsToGridLayout(const Napi::Object& o) {
         g.columns       = o.Get("columns").As<Napi::Number>().Int32Value();
     if (o.Has("rows")          && o.Get("rows").IsNumber())
         g.rows          = o.Get("rows").As<Napi::Number>().Int32Value();
-    if (o.Has("chorusTrackId") && o.Get("chorusTrackId").IsNumber())
-        g.chorusTrackId = o.Get("chorusTrackId").As<Napi::Number>().Int32Value();
-    if (o.Has("crashEnabled")  && o.Get("crashEnabled").IsBoolean())
-        g.crashEnabled  = o.Get("crashEnabled").As<Napi::Boolean>().Value();
-    if (o.Has("crashTrackId")  && o.Get("crashTrackId").IsNumber())
-        g.crashTrackId  = o.Get("crashTrackId").As<Napi::Number>().Int32Value();
-    if (o.Has("crashOpacity")  && o.Get("crashOpacity").IsNumber())
-        g.crashOpacity  = o.Get("crashOpacity").As<Napi::Number>().FloatValue();
     if (o.Has("previewFps")    && o.Get("previewFps").IsNumber())
         g.previewFps    = o.Get("previewFps").As<Napi::Number>().Int32Value();
     if (o.Has("gapScale")      && o.Get("gapScale").IsNumber()) {
@@ -1519,6 +1691,13 @@ static GridLayout jsToGridLayout(const Napi::Object& o) {
         for (uint32_t i = 0; i < arr.Length(); ++i) {
             if (arr.Get(i).IsObject())
                 g.slots.push_back(jsToGridSlot(arr.Get(i).As<Napi::Object>()));
+        }
+    }
+    if (o.Has("fullscreenLayers") && o.Get("fullscreenLayers").IsArray()) {
+        Napi::Array arr = o.Get("fullscreenLayers").As<Napi::Array>();
+        for (uint32_t i = 0; i < arr.Length(); ++i) {
+            if (arr.Get(i).IsObject())
+                g.fullscreenLayers.push_back(jsToFullscreenLayer(arr.Get(i).As<Napi::Object>()));
         }
     }
     return g;
@@ -1656,6 +1835,12 @@ static void videoThreadBody()
                         if (s_previewPrevBeat < 0.0
                             || currentBeat + 1e-6 < s_previewPrevBeat) {
                             s_previewPrevBeat = currentBeat - 1e-6;
+                            // Seek-back / loop wraparound: drop any latched
+                            // slide visual state so a previously-cursed cell
+                            // doesn't bleed across the discontinuity.
+                            if (g_previewAnimMgr) {
+                                g_previewAnimMgr->resetAll();
+                            }
                         }
                         const auto& slideEvts = syncManager->getSlideEvents();
                         for (const auto& se : slideEvts) {
@@ -1677,8 +1862,7 @@ static void videoThreadBody()
                                     g_previewAnimMgr->onSlideEvent(
                                         se.trackId,
                                         static_cast<float>(durationMs),
-                                        static_cast<int>(cfg.type),
-                                        tr->zoomPanRot, tr->bounce,
+                                        cfg,
                                         se.slideCurveCx, se.slideCurveCy);
                                 }
                             }
@@ -1723,20 +1907,79 @@ static void videoThreadBody()
                             currentTime, layout.gapScale);
                         g_previewDiag.compositeFrameCount.fetch_add(1, std::memory_order_relaxed);
 
-                        auto rb = g_previewCompositor->readback();
+                        auto rbStart = std::chrono::high_resolution_clock::now();
+                        auto rb = g_previewCompositor->readback(ReadbackMode::PreviewRing);
+                        auto rbEnd   = std::chrono::high_resolution_clock::now();
+                        const int32_t rbUs = static_cast<int32_t>(
+                            std::chrono::duration<float, std::micro>(rbEnd - rbStart).count());
+                        g_previewDiag.lastReadbackUs.store(rbUs, std::memory_order_relaxed);
+                        {
+                            int32_t prevMax = g_previewDiag.maxReadbackUs.load(std::memory_order_relaxed);
+                            if (rbUs > prevMax)
+                                g_previewDiag.maxReadbackUs.store(rbUs, std::memory_order_relaxed);
+                        }
+                        const auto& rbDiag = g_previewCompositor->getLastReadbackDiagnostics();
                         g_previewDiag.lastReadbackWidth.store(rb.width, std::memory_order_relaxed);
                         g_previewDiag.lastReadbackHeight.store(rb.height, std::memory_order_relaxed);
                         g_previewDiag.lastReadbackHRESULT.store(
-                            static_cast<int32_t>(g_previewCompositor->getLastReadbackHRESULT()),
+                            static_cast<int32_t>(rbDiag.hresult),
                             std::memory_order_relaxed);
-                        if (rb.valid) {
+                        g_previewDiag.lastDeviceRemovedReason.store(
+                            static_cast<int32_t>(rbDiag.deviceRemovedReason),
+                            std::memory_order_relaxed);
+                        g_previewDiag.lastReadbackFailureStage.store(
+                            static_cast<int>(rbDiag.failureStage),
+                            std::memory_order_relaxed);
+                        g_previewDiag.lastReadbackMapType.store(
+                            static_cast<int>(rbDiag.mapType), std::memory_order_relaxed);
+                        g_previewDiag.lastReadbackMapFlags.store(
+                            static_cast<int>(rbDiag.mapFlags), std::memory_order_relaxed);
+                        g_previewDiag.lastReadbackRowPitch.store(
+                            static_cast<int>(rbDiag.mappedRowPitch), std::memory_order_relaxed);
+                        g_previewDiag.lastReadbackExpectedBytes.store(
+                            rbDiag.expectedBytes, std::memory_order_relaxed);
+                        g_previewDiag.lastReadbackActualCopyBytes.store(
+                            rbDiag.actualCopyBytes, std::memory_order_relaxed);
+                        g_previewDiag.lastReadbackDimensionsMatch.store(
+                            rbDiag.dimensionsMatch, std::memory_order_relaxed);
+                        g_previewDiag.lastReadbackSourceWidth.store(
+                            static_cast<int>(rbDiag.sourceTexture.width), std::memory_order_relaxed);
+                        g_previewDiag.lastReadbackSourceHeight.store(
+                            static_cast<int>(rbDiag.sourceTexture.height), std::memory_order_relaxed);
+                        g_previewDiag.lastReadbackSourceFormat.store(
+                            static_cast<int>(rbDiag.sourceTexture.format), std::memory_order_relaxed);
+                        g_previewDiag.lastReadbackSourceSampleCount.store(
+                            static_cast<int>(rbDiag.sourceTexture.sampleCount), std::memory_order_relaxed);
+                        g_previewDiag.lastReadbackStagingWidth.store(
+                            static_cast<int>(rbDiag.stagingTexture.width), std::memory_order_relaxed);
+                        g_previewDiag.lastReadbackStagingHeight.store(
+                            static_cast<int>(rbDiag.stagingTexture.height), std::memory_order_relaxed);
+                        g_previewDiag.lastReadbackStagingFormat.store(
+                            static_cast<int>(rbDiag.stagingTexture.format), std::memory_order_relaxed);
+                        g_previewDiag.lastReadbackStagingUsage.store(
+                            static_cast<int>(rbDiag.stagingTexture.usage), std::memory_order_relaxed);
+                        g_previewDiag.lastReadbackStagingCPUAccessFlags.store(
+                            static_cast<int>(rbDiag.stagingTexture.cpuAccessFlags), std::memory_order_relaxed);
+                        g_previewDiag.lastReadbackStagingBindFlags.store(
+                            static_cast<int>(rbDiag.stagingTexture.bindFlags), std::memory_order_relaxed);
+                        g_previewDiag.lastReadbackStagingMiscFlags.store(
+                            static_cast<int>(rbDiag.stagingTexture.miscFlags), std::memory_order_relaxed);
+                        g_previewDiag.lastReadbackStagingSampleCount.store(
+                            static_cast<int>(rbDiag.stagingTexture.sampleCount), std::memory_order_relaxed);
+                        g_previewDiag.readbackPolicyActive.store(
+                            g_previewCompositor->getActiveReadbackPolicy() ==
+                                ReadbackPolicy::AsyncQueued ? 1 : 0, std::memory_order_relaxed);
+                        g_previewDiag.droppedPendingFrames.store(
+                            g_previewCompositor->getDroppedPendingFrames(), std::memory_order_relaxed);
+                        g_previewDiag.pendingSlotsCount.store(
+                            g_previewCompositor->getPendingSlotsCount(), std::memory_order_relaxed);
+                        if (rb.result == ReadbackResult::Valid) {
                             g_previewDiag.readbackValidCount.fetch_add(1, std::memory_order_relaxed);
                             uint8_t* canvas = frameOutput.getBackBuffer();
                             if (canvas) {
                                 g_previewDiag.canvasCopyCount.fetch_add(1, std::memory_order_relaxed);
                                 const uint8_t* src = rb.pixels.data();
                                 if (rb.width == CANVAS_W && rb.height == CANVAS_H) {
-                                    // Fast path: compositor at full res — direct swizzle copy
                                     const size_t pixelCount =
                                         static_cast<size_t>(CANVAS_W) * CANVAS_H;
                                     for (size_t i = 0; i < pixelCount; ++i) {
@@ -1747,9 +1990,6 @@ static void videoThreadBody()
                                         canvas[o + 3] = src[o + 3]; // A ← A
                                     }
                                 } else {
-                                    // Scaled path: nearest-neighbor upscale + swizzle.
-                                    // The preview canvas is always CANVAS_W×CANVAS_H;
-                                    // the compositor rendered at lower res for performance.
                                     for (int dy = 0; dy < CANVAS_H; ++dy) {
                                         const int sy = (dy * rb.height) / CANVAS_H;
                                         for (int dx = 0; dx < CANVAS_W; ++dx) {
@@ -1768,8 +2008,70 @@ static void videoThreadBody()
                                 frameOutput.swapBuffers();
                                 blackWritten = isPlaying ? false : true;
                             }
+                        } else if (rb.result == ReadbackResult::NotReady) {
+                            g_previewDiag.readbackNotReadyCount.fetch_add(1, std::memory_order_relaxed);
                         } else {
                             g_previewDiag.readbackInvalidCount.fetch_add(1, std::memory_order_relaxed);
+                        }
+
+                        // ── Windowed readback health check (60-frame window) ──────────────
+                        // Runs on the single video thread; function-local statics are safe.
+                        {
+                            static uint64_t s_windowFrame   = 0;
+                            static uint64_t s_prevValid     = 0;
+                            static uint64_t s_prevInvalid   = 0;
+                            static float    s_sumReadbackMs = 0.0f;
+                            static int      s_sumCount      = 0;
+
+                            s_sumReadbackMs += rbUs * 0.001f;   // µs → ms
+                            ++s_sumCount;
+
+                            if (++s_windowFrame % 60 == 0 && s_sumCount > 0) {
+                                const float avgMs =
+                                    s_sumReadbackMs / static_cast<float>(s_sumCount);
+
+                                uint64_t curValid   = g_previewDiag.readbackValidCount.load(
+                                    std::memory_order_relaxed);
+                                uint64_t curInvalid = g_previewDiag.readbackInvalidCount.load(
+                                    std::memory_order_relaxed);
+                                uint64_t dInvalid   = curInvalid - s_prevInvalid;
+                                uint64_t dValid     = curValid   - s_prevValid;
+
+                                g_previewDiag.avgReadbackUs.store(
+                                    static_cast<int32_t>(avgMs * 1000.0f),
+                                    std::memory_order_relaxed);
+
+                                s_prevValid     = curValid;
+                                s_prevInvalid   = curInvalid;
+                                s_sumReadbackMs = 0.0f;
+                                s_sumCount      = 0;
+
+                                if (g_previewCompositor->getActiveReadbackPolicy() ==
+                                        ReadbackPolicy::FastImmediate) {
+                                    PolicySwitchReason reason = PolicySwitchReason::None;
+                                    if (dInvalid > 3)
+                                        reason = PolicySwitchReason::FatalInvalids;
+                                    else if (avgMs > 8.0f)
+                                        reason = PolicySwitchReason::MapStallTooSlow;
+                                    else if (dValid < 15 && (dValid + dInvalid) > 30)
+                                        reason = PolicySwitchReason::PoorYield;
+
+                                    if (reason != PolicySwitchReason::None) {
+                                        g_previewCompositor->setReadbackPolicy(
+                                            ReadbackPolicy::AsyncQueued);
+                                        g_previewDiag.readbackPolicyActive.store(
+                                            1, std::memory_order_relaxed);
+                                        g_previewDiag.readbackPolicySwitchReason.store(
+                                            static_cast<int>(reason), std::memory_order_relaxed);
+                                        std::fprintf(stderr,
+                                            "[PreviewUnify] Health switch: FastImmediate → AsyncQueued "
+                                            "(reason=%d dInvalid=%llu dValid=%llu avgMs=%.2f)\n",
+                                            static_cast<int>(reason),
+                                            static_cast<unsigned long long>(dInvalid),
+                                            static_cast<unsigned long long>(dValid), avgMs);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1967,8 +2269,10 @@ Napi::Value Initialize(const Napi::CallbackInfo& info)
             g_previewCompositorReady = true;
             g_previewDiag.lastCompositorWidth.store(scaledW, std::memory_order_relaxed);
             g_previewDiag.lastCompositorHeight.store(scaledH, std::memory_order_relaxed);
-            std::fprintf(stderr, "[PreviewUnify] GPU compositor initialized %dx%d (scale=%.2f)\n",
-                         scaledW, scaledH, g_previewResolutionScale);
+            g_previewCompositor->setReadbackPolicy(ReadbackPolicy::FastImmediate);
+            g_previewDiag.readbackPolicyActive.store(0, std::memory_order_relaxed);
+            std::fprintf(stderr, "[PreviewUnify] GPU compositor initialized %dx%d (scale=%.2f) "
+                         "readback=FastImmediate\n", scaledW, scaledH, g_previewResolutionScale);
         } else {
             g_previewDiag.initInitFailures.fetch_add(1, std::memory_order_relaxed);
             std::fprintf(stderr, "[PreviewUnify] WARNING: GPU compositor init failed\n");
@@ -2481,7 +2785,9 @@ void SetVideoResolution(const Napi::CallbackInfo& info)
         auto* devCtx = g_gpuDevice->getContext();
         if (g_previewCompositor->init(device, devCtx, w, h)) {
             g_previewCompositorReady = true;
-            std::fprintf(stderr, "[PreviewUnify] Compositor reinitialized %dx%d\n", w, h);
+            g_previewCompositor->setReadbackPolicy(ReadbackPolicy::FastImmediate);
+            g_previewDiag.readbackPolicyActive.store(0, std::memory_order_relaxed);
+            std::fprintf(stderr, "[PreviewUnify] Compositor reinitialized %dx%d readback=FastImmediate\n", w, h);
         } else {
             std::fprintf(stderr, "[PreviewUnify] WARNING: Compositor reinit failed %dx%d\n", w, h);
         }
@@ -3315,7 +3621,7 @@ void Timeline_SetTempoLocked(const Napi::CallbackInfo& info)
 
 // ─── Grid Layout bridge functions ─────────────────────────────────────────────
 
-// timeline_getGridLayout() → { columns, rows, slots, chorusTrackId, ... }
+// timeline_getGridLayout() → { columns, rows, slots, fullscreenLayers, previewFps, gapScale }
 Napi::Value Timeline_GetGridLayout(const Napi::CallbackInfo& info)
 {
     Napi::Env env = info.Env();
@@ -3467,80 +3773,55 @@ void Timeline_RemoveTrackFromGrid(const Napi::CallbackInfo& info)
     log.done(std::to_string(trackId));
 }
 
-// timeline_setChorusTrack(trackId) — -1 to disable
-void Timeline_SetChorusTrack(const Napi::CallbackInfo& info)
+// timeline_setFullscreenLayers(layers: Array<{trackId, placement, opacity}>)
+// Atomically replaces the entire fullscreen layer stack.
+void Timeline_SetFullscreenLayers(const Napi::CallbackInfo& info)
 {
     Napi::Env env = info.Env();
     if (!isInitialised() || !g_timeline || !g_undoManager) {
         Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
         return;
     }
-    if (info.Length() < 1 || !info[0].IsNumber()) {
-        Napi::TypeError::New(env, "timeline_setChorusTrack(trackId: number)")
-            .ThrowAsJavaScriptException();
-        return;
-    }
-    int trackId = info[0].As<Napi::Number>().Int32Value();
-    BridgeCallLog log("timeline.setChorusTrack");
-    {
-        std::lock_guard<std::mutex> lock(syncEventsMutex);
-        g_undoManager->execute(
-            std::make_unique<SetChorusTrackCommand>(trackId, *g_timeline),
-            *g_timeline);
-    }
-
-    // Track is now the chorus track — chorus always streams from the
-    // original. Invalidate any existing region proxies on this track so we
-    // stop wasting disk & decoder slots on them.
-    if (trackId >= 0) {
-        std::unordered_set<int> seenRegions;
-        for (const Clip* c : g_timeline->getAllClips()) {
-            if (!c || c->trackId != trackId) continue;
-            if (!seenRegions.insert(c->regionId).second) continue;
-            invalidateRegionProxy(c->regionId);
-        }
-    }
-
-    log.done(std::to_string(trackId));
-}
-
-// timeline_setCrashOverlay(enabled, trackId, opacity)
-void Timeline_SetCrashOverlay(const Napi::CallbackInfo& info)
-{
-    Napi::Env env = info.Env();
-    if (!isInitialised() || !g_timeline || !g_undoManager) {
-        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
-        return;
-    }
-    if (info.Length() < 3 || !info[0].IsBoolean() || !info[1].IsNumber() || !info[2].IsNumber()) {
+    if (info.Length() < 1 || !info[0].IsArray()) {
         Napi::TypeError::New(env,
-            "timeline_setCrashOverlay(enabled: boolean, trackId: number, opacity: number)")
+            "timeline_setFullscreenLayers(layers: Array<{trackId, placement, opacity}>)")
             .ThrowAsJavaScriptException();
         return;
     }
-    bool  enabled = info[0].As<Napi::Boolean>().Value();
-    int   trackId = info[1].As<Napi::Number>().Int32Value();
-    float opacity = info[2].As<Napi::Number>().FloatValue();
-    BridgeCallLog log("timeline.setCrashOverlay");
+
+    Napi::Array arr = info[0].As<Napi::Array>();
+    std::vector<FullscreenLayer> layers;
+    layers.reserve(arr.Length());
+    for (uint32_t i = 0; i < arr.Length(); ++i) {
+        if (!arr.Get(i).IsObject()) continue;
+        layers.push_back(jsToFullscreenLayer(arr.Get(i).As<Napi::Object>()));
+    }
+
+    BridgeCallLog log("timeline.setFullscreenLayers");
     {
         std::lock_guard<std::mutex> lock(syncEventsMutex);
         g_undoManager->execute(
-            std::make_unique<SetCrashOverlayCommand>(enabled, trackId, opacity, *g_timeline),
+            std::make_unique<SetFullscreenLayersCommand>(layers, *g_timeline),
             *g_timeline);
     }
 
-    // Crash overlay always streams from the original — drop any existing
-    // region proxies for clips on the newly-designated crash track.
-    if (enabled && trackId >= 0) {
+    // Fullscreen layers always stream from the original — drop region proxies
+    // for clips on every referenced track. Dedup by (trackId, regionId) so a
+    // shared track or shared region isn't invalidated multiple times.
+    std::unordered_set<int> referencedTracks;
+    for (const auto& fl : layers) {
+        if (fl.trackId >= 0) referencedTracks.insert(fl.trackId);
+    }
+    if (!referencedTracks.empty()) {
         std::unordered_set<int> seenRegions;
         for (const Clip* c : g_timeline->getAllClips()) {
-            if (!c || c->trackId != trackId) continue;
+            if (!c || !referencedTracks.count(c->trackId)) continue;
             if (!seenRegions.insert(c->regionId).second) continue;
             invalidateRegionProxy(c->regionId);
         }
     }
 
-    log.done(std::string(enabled ? "on" : "off") + " track=" + std::to_string(trackId));
+    log.done("count=" + std::to_string(layers.size()));
 }
 
 // timeline_setPreviewFps(fps)
@@ -6120,6 +6401,53 @@ void Timeline_SetTrackSubdivisionFactor(const Napi::CallbackInfo& info)
     log.done();
 }
 
+// timeline_setTrackColor(trackId, {
+//     mode: 'auto' | 'paletteSlot' | 'custom',
+//     slot?: 1..16,
+//     customColor?: '#RRGGBB'
+// })
+//
+// Pass 6D + 6F — UI-only metadata. Sanitization: unknown mode → Auto.
+// PaletteSlot mode requires slot ∈ 1..16; Custom mode requires a valid
+// #RRGGBB customColor. Otherwise the engine collapses to Auto with slot=0
+// and trackColorCustom="" inside Timeline::setTrackColor. Undo-tracked.
+void Timeline_SetTrackColor(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return;
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsObject()) {
+        Napi::TypeError::New(env,
+            "timeline_setTrackColor(trackId: number, { mode: 'auto'|'paletteSlot'|'custom', slot?: 1..16, customColor?: '#RRGGBB' })")
+            .ThrowAsJavaScriptException();
+        return;
+    }
+    int trackId = info[0].As<Napi::Number>().Int32Value();
+    Napi::Object o = info[1].As<Napi::Object>();
+
+    TrackColorMode mode = TrackColorMode::Auto;
+    if (o.Has("mode") && o.Get("mode").IsString()) {
+        mode = stringToTrackColorMode(o.Get("mode").As<Napi::String>().Utf8Value());
+    }
+    int slot = 0;
+    if (o.Has("slot") && o.Get("slot").IsNumber()) {
+        slot = o.Get("slot").As<Napi::Number>().Int32Value();
+    }
+    std::string customColor;
+    if (o.Has("customColor") && o.Get("customColor").IsString()) {
+        customColor = o.Get("customColor").As<Napi::String>().Utf8Value();
+    }
+
+    BridgeCallLog log("timeline.setTrackColor");
+    g_undoManager->execute(
+        std::make_unique<SetTrackColorCommand>(
+            trackId, mode, slot, std::move(customColor), *g_timeline),
+        *g_timeline);
+    log.done();
+}
+
 static BounceSettings jsToBounceSettings(Napi::Object o) {
     BounceSettings b;
     if (o.Has("enabled")      && o.Get("enabled").IsBoolean())
@@ -6258,6 +6586,21 @@ void Timeline_SetTrackPingPongSettings(const Napi::CallbackInfo& info)
     log.done();
 }
 
+static SlideTVSettings jsToSlideTVSettings(Napi::Object o) {
+    SlideTVSettings t;
+    auto getF = [&](const char* k, float& v) {
+        if (o.Has(k) && o.Get(k).IsNumber()) v = o.Get(k).As<Napi::Number>().FloatValue();
+    };
+    getF("intensity",  t.intensity);
+    getF("rollSpeed",  t.rollSpeed);
+    getF("scanlines",  t.scanlines);
+    getF("chroma",     t.chroma);
+    getF("noise",      t.noise);
+    getF("jitter",     t.jitter);
+    getF("colorBleed", t.colorBleed);
+    return t;
+}
+
 static SlideNoteEffectSettings jsToSlideNoteEffectSettings(Napi::Object o) {
     SlideNoteEffectSettings s;
     if (o.Has("type") && o.Get("type").IsNumber()) {
@@ -6274,6 +6617,56 @@ static SlideNoteEffectSettings jsToSlideNoteEffectSettings(Napi::Object o) {
     }
     if (o.Has("fixedDurationMs") && o.Get("fixedDurationMs").IsNumber())
         s.fixedDurationMs = o.Get("fixedDurationMs").As<Napi::Number>().FloatValue();
+
+    // Visual return policy (added with the configurable-return system).
+    if (o.Has("returnStyle") && o.Get("returnStyle").IsNumber()) {
+        int r = o.Get("returnStyle").As<Napi::Number>().Int32Value();
+        if (r < 0) r = 0; if (r > 1) r = 1;
+        s.returnStyle = static_cast<SlideNoteEffectSettings::ReturnStyle>(r);
+    }
+    if (o.Has("returnTrigger") && o.Get("returnTrigger").IsNumber()) {
+        int r = o.Get("returnTrigger").As<Napi::Number>().Int32Value();
+        if (r < 0) r = 0; if (r > 1) r = 1;
+        s.returnTrigger = static_cast<SlideNoteEffectSettings::ReturnTrigger>(r);
+    }
+    if (o.Has("returnDurationMs") && o.Get("returnDurationMs").IsNumber())
+        s.returnDurationMs = o.Get("returnDurationMs").As<Napi::Number>().FloatValue();
+
+    // New nested shape — reuse the existing Visual FX converters.
+    if (o.Has("bounce") && o.Get("bounce").IsObject()) {
+        s.bounce = jsToBounceSettings(o.Get("bounce").As<Napi::Object>());
+    } else {
+        // Legacy migration: flat slideBounce* keys
+        if (o.Has("slideBounceDistance") && o.Get("slideBounceDistance").IsNumber())
+            s.bounce.distance = o.Get("slideBounceDistance").As<Napi::Number>().FloatValue();
+        if (o.Has("slideBounceDirDeg") && o.Get("slideBounceDirDeg").IsNumber())
+            s.bounce.directionDeg = o.Get("slideBounceDirDeg").As<Napi::Number>().FloatValue();
+    }
+
+    if (o.Has("zoomPanRot") && o.Get("zoomPanRot").IsObject()) {
+        s.zoomPanRot = jsToZoomPanRotSettings(o.Get("zoomPanRot").As<Napi::Object>());
+    } else {
+        // Legacy migration: literal value preserved, semantics shift from
+        // delta to absolute. Default-valued projects behave identically.
+        s.zoomPanRot.startZoom     = 1.0f;
+        s.zoomPanRot.startPanX     = 0.0f;
+        s.zoomPanRot.startPanY     = 0.0f;
+        s.zoomPanRot.startRotation = 0.0f;
+        if (o.Has("slideZoomDelta") && o.Get("slideZoomDelta").IsNumber())
+            s.zoomPanRot.targetZoom = o.Get("slideZoomDelta").As<Napi::Number>().FloatValue();
+        if (o.Has("slidePanXDelta") && o.Get("slidePanXDelta").IsNumber())
+            s.zoomPanRot.targetPanX = o.Get("slidePanXDelta").As<Napi::Number>().FloatValue();
+        if (o.Has("slidePanYDelta") && o.Get("slidePanYDelta").IsNumber())
+            s.zoomPanRot.targetPanY = o.Get("slidePanYDelta").As<Napi::Number>().FloatValue();
+        if (o.Has("slideRotationDelta") && o.Get("slideRotationDelta").IsNumber())
+            s.zoomPanRot.targetRotation = o.Get("slideRotationDelta").As<Napi::Number>().FloatValue();
+    }
+
+    if (o.Has("tv") && o.Get("tv").IsObject()) {
+        s.tv = jsToSlideTVSettings(o.Get("tv").As<Napi::Object>());
+    } else if (o.Has("slideTVIntensity") && o.Get("slideTVIntensity").IsNumber()) {
+        s.tv.intensity = o.Get("slideTVIntensity").As<Napi::Number>().FloatValue();
+    }
     return s;
 }
 
@@ -6366,7 +6759,9 @@ void Timeline_SetPreviewResolutionScale(const Napi::CallbackInfo& info)
             if (g_previewEffectsBypass)
                 g_previewCompositor->setEffectsBypass(true);
             g_previewCompositorReady = true;
-            std::fprintf(stderr, "[Preview] Resolution scale %.2f → compositor %dx%d\n",
+            g_previewCompositor->setReadbackPolicy(ReadbackPolicy::FastImmediate);
+            g_previewDiag.readbackPolicyActive.store(0, std::memory_order_relaxed);
+            std::fprintf(stderr, "[Preview] Resolution scale %.2f → compositor %dx%d readback=FastImmediate\n",
                          scale, sw, sh);
         } else {
             std::fprintf(stderr, "[Preview] ERROR: compositor re-init at %dx%d failed\n", sw, sh);
@@ -6749,10 +7144,15 @@ void Timeline_ModifyRegion(const Napi::CallbackInfo& info)
             // unlocked, or refactor into one helper that takes the lock
             // exactly once.
             const GridLayout& gl = g_timeline->getGridLayout();
+            std::unordered_set<int> fullscreenTracks;
+            for (const auto& fl : gl.fullscreenLayers) {
+                if (fl.trackId >= 0) fullscreenTracks.insert(fl.trackId);
+            }
             for (const Clip* c : g_timeline->getAllClips()) {
                 if (!c || c->regionId != id) continue;
-                if (c->trackId == gl.chorusTrackId) continue;
-                if (gl.crashEnabled && c->trackId == gl.crashTrackId) continue;
+                // Skip clips on tracks referenced by any fullscreen layer —
+                // those tracks always stream the original, never the proxy.
+                if (fullscreenTracks.count(c->trackId)) continue;
                 maybeEnqueueRegionProxy(id, c->trackId);
                 break;  // dedup in ProxyManager; one trigger is enough
             }
@@ -9793,6 +10193,8 @@ Napi::Value Diag_GetVisualPreviewDiagnostic(const Napi::CallbackInfo& info)
           Napi::Number::New(env, static_cast<double>(g_previewDiag.compositeFrameCount.load())));
     c.Set("readbackValidCount",
           Napi::Number::New(env, static_cast<double>(g_previewDiag.readbackValidCount.load())));
+    c.Set("readbackNotReadyCount",
+          Napi::Number::New(env, static_cast<double>(g_previewDiag.readbackNotReadyCount.load())));
     c.Set("readbackInvalidCount",
           Napi::Number::New(env, static_cast<double>(g_previewDiag.readbackInvalidCount.load())));
     c.Set("canvasCopyCount",
@@ -9801,6 +10203,20 @@ Napi::Value Diag_GetVisualPreviewDiagnostic(const Napi::CallbackInfo& info)
           Napi::Number::New(env, static_cast<double>(g_previewDiag.blackFrameCount.load())));
     c.Set("compositorInitFailures",
           Napi::Number::New(env, static_cast<double>(g_previewDiag.initInitFailures.load())));
+    c.Set("readbackPolicyActive",
+          Napi::Number::New(env, g_previewDiag.readbackPolicyActive.load()));
+    c.Set("readbackPolicySwitchReason",
+          Napi::Number::New(env, g_previewDiag.readbackPolicySwitchReason.load()));
+    c.Set("droppedPendingFrames",
+          Napi::Number::New(env, static_cast<double>(g_previewDiag.droppedPendingFrames.load())));
+    c.Set("pendingSlotsCount",
+          Napi::Number::New(env, g_previewDiag.pendingSlotsCount.load()));
+    c.Set("lastReadbackUs",
+          Napi::Number::New(env, g_previewDiag.lastReadbackUs.load()));
+    c.Set("avgReadbackUs",
+          Napi::Number::New(env, g_previewDiag.avgReadbackUs.load()));
+    c.Set("maxReadbackUs",
+          Napi::Number::New(env, g_previewDiag.maxReadbackUs.load()));
     o.Set("counters", c);
 
     // ── Last-tick snapshot ───────────────────────────────────────────────────
@@ -9820,19 +10236,52 @@ Napi::Value Diag_GetVisualPreviewDiagnostic(const Napi::CallbackInfo& info)
         char hrHex[12];
         std::snprintf(hrHex, sizeof(hrHex), "0x%08X", static_cast<unsigned int>(hr));
         last.Set("lastReadbackHRESULT", Napi::String::New(env, hrHex));
-        const char* hrTxt;
-        switch (static_cast<unsigned int>(hr)) {
-            case 0x00000000U: hrTxt = "S_OK"; break;
-            case 0x887A0001U: hrTxt = "DXGI_ERROR_WAS_STILL_DRAWING"; break;
-            case 0x887A0005U: hrTxt = "DXGI_ERROR_DEVICE_REMOVED"; break;
-            case 0x887A0006U: hrTxt = "DXGI_ERROR_DEVICE_HUNG"; break;
-            case 0x887A0007U: hrTxt = "DXGI_ERROR_DEVICE_RESET"; break;
-            case 0x80070057U: hrTxt = "E_INVALIDARG"; break;
-            case 0x80004003U: hrTxt = "E_POINTER"; break;
-            case 0x8007000EU: hrTxt = "E_OUTOFMEMORY"; break;
-            default:          hrTxt = "(unknown)"; break;
-        }
-        last.Set("lastReadbackHRESULTText", Napi::String::New(env, hrTxt));
+        last.Set("lastReadbackHRESULTText",
+                 Napi::String::New(env, readbackHRESULTText(hr)));
+
+        const int32_t removed = g_previewDiag.lastDeviceRemovedReason.load();
+        char removedHex[12];
+        std::snprintf(removedHex, sizeof(removedHex), "0x%08X",
+                      static_cast<unsigned int>(removed));
+        last.Set("deviceRemovedReason", Napi::String::New(env, removedHex));
+        last.Set("deviceRemovedReasonText",
+                 Napi::String::New(env, readbackHRESULTText(removed)));
+
+        const int stage = g_previewDiag.lastReadbackFailureStage.load();
+        last.Set("lastReadbackFailureStage",
+                 Napi::String::New(env, readbackFailureStageText(stage)));
+        last.Set("readbackMapType",
+                 Napi::Number::New(env, g_previewDiag.lastReadbackMapType.load()));
+        last.Set("readbackMapFlags",
+                 Napi::Number::New(env, g_previewDiag.lastReadbackMapFlags.load()));
+        last.Set("mappedRowPitch",
+                 Napi::Number::New(env, g_previewDiag.lastReadbackRowPitch.load()));
+        last.Set("expectedBytes",
+                 Napi::Number::New(env, static_cast<double>(
+                     g_previewDiag.lastReadbackExpectedBytes.load())));
+        last.Set("actualCopyBytes",
+                 Napi::Number::New(env, static_cast<double>(
+                     g_previewDiag.lastReadbackActualCopyBytes.load())));
+        last.Set("sourceStagingDimensionsMatch",
+                 Napi::Boolean::New(env, g_previewDiag.lastReadbackDimensionsMatch.load()));
+
+        Napi::Object source = Napi::Object::New(env);
+        source.Set("width", Napi::Number::New(env, g_previewDiag.lastReadbackSourceWidth.load()));
+        source.Set("height", Napi::Number::New(env, g_previewDiag.lastReadbackSourceHeight.load()));
+        source.Set("format", Napi::Number::New(env, g_previewDiag.lastReadbackSourceFormat.load()));
+        source.Set("sampleCount", Napi::Number::New(env, g_previewDiag.lastReadbackSourceSampleCount.load()));
+        last.Set("sourceTexture", source);
+
+        Napi::Object staging = Napi::Object::New(env);
+        staging.Set("width", Napi::Number::New(env, g_previewDiag.lastReadbackStagingWidth.load()));
+        staging.Set("height", Napi::Number::New(env, g_previewDiag.lastReadbackStagingHeight.load()));
+        staging.Set("format", Napi::Number::New(env, g_previewDiag.lastReadbackStagingFormat.load()));
+        staging.Set("usage", Napi::Number::New(env, g_previewDiag.lastReadbackStagingUsage.load()));
+        staging.Set("cpuAccessFlags", Napi::Number::New(env, g_previewDiag.lastReadbackStagingCPUAccessFlags.load()));
+        staging.Set("bindFlags", Napi::Number::New(env, g_previewDiag.lastReadbackStagingBindFlags.load()));
+        staging.Set("miscFlags", Napi::Number::New(env, g_previewDiag.lastReadbackStagingMiscFlags.load()));
+        staging.Set("sampleCount", Napi::Number::New(env, g_previewDiag.lastReadbackStagingSampleCount.load()));
+        last.Set("stagingTexture", staging);
     }
     o.Set("lastTick", last);
 
@@ -10335,8 +10784,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("timeline_assignTrackToGrid",            Napi::Function::New(env, Timeline_AssignTrackToGrid));
     exports.Set("timeline_assignTrackToGridWithZOrder",  Napi::Function::New(env, Timeline_AssignTrackToGridWithZOrder));
     exports.Set("timeline_removeTrackFromGrid",          Napi::Function::New(env, Timeline_RemoveTrackFromGrid));
-    exports.Set("timeline_setChorusTrack",      Napi::Function::New(env, Timeline_SetChorusTrack));
-    exports.Set("timeline_setCrashOverlay",     Napi::Function::New(env, Timeline_SetCrashOverlay));
+    exports.Set("timeline_setFullscreenLayers", Napi::Function::New(env, Timeline_SetFullscreenLayers));
     exports.Set("timeline_setPreviewFps",       Napi::Function::New(env, Timeline_SetPreviewFps));
 
     // ── Patterns / PatternBlocks / Notes ─────────────────────────────────────
@@ -10373,6 +10821,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("timeline_setTrackCornerRadius",      Napi::Function::New(env, Timeline_SetTrackCornerRadius));
     exports.Set("timeline_setTrackGapScaleOverride",  Napi::Function::New(env, Timeline_SetTrackGapScaleOverride));
     exports.Set("timeline_setTrackSubdivisionFactor", Napi::Function::New(env, Timeline_SetTrackSubdivisionFactor));
+    exports.Set("timeline_setTrackColor",             Napi::Function::New(env, Timeline_SetTrackColor));
     exports.Set("timeline_setTrackBounceSettings",       Napi::Function::New(env, Timeline_SetTrackBounceSettings));
     exports.Set("timeline_setTrackZoomPanRotSettings",   Napi::Function::New(env, Timeline_SetTrackZoomPanRotSettings));
     exports.Set("timeline_setTrackPingPongSettings",     Napi::Function::New(env, Timeline_SetTrackPingPongSettings));

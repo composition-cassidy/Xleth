@@ -2672,6 +2672,79 @@ static void testPlateLongTermFinite()
           "Plate tail must decay over 200 blocks (no runaway feedback)");
 }
 
+// Plate at maximum resonance settings: impulse + silence, aggressive params.
+// Verifies: finite output, absolute peak bounded, tail decays (not grows).
+// This is the targeted regression test for the gain/feedback fix: at decay=30s,
+// damping=0%, the old code could produce ~20× steady-state amplification;
+// the fixed code must keep the peak below 2× the 0.5f impulse amplitude.
+static void testPlateAggressiveImpulseDecays()
+{
+    std::cout << "  [Plate aggressive impulse decays — finite, bounded, shrinking]\n";
+    constexpr double kSR     = 48000.0;
+    constexpr int    kBS     = 512;
+    constexpr int    kBlocks = 200;   // ~2.1 s
+
+    XlethReverbEffect fx;
+    fx.setParameterValue("style",      2.0f);   // Plate
+    fx.setParameterValue("decay",      30.0f);  // maximum — worst-case feedback ceiling
+    fx.setParameterValue("size",       100.0f);
+    fx.setParameterValue("er_late",    100.0f);
+    fx.setParameterValue("mix",        100.0f);
+    fx.setParameterValue("damping",    0.0f);   // no HF damping (worst case)
+    fx.setParameterValue("smoothness", 0.0f);   // no Ring Tame (worst case)
+    fx.setParameterValue("er_level",   100.0f);
+    fx.setParameterValue("mod_depth",  0.0f);   // disable modulation for determinism
+    fx.setParameterValue("predelay",   0.0f);
+    fx.setParameterValue("hicut",      20000.0f);
+    fx.setParameterValue("locut",      20.0f);
+    fx.prepareToPlay(kSR, kBS);
+
+    juce::AudioBuffer<float> buf(2, kBS);
+    juce::MidiBuffer midi;
+
+    // Block 0: single impulse of 0.5f amplitude.
+    buf.clear();
+    buf.setSample(0, 0, 0.5f);
+    buf.setSample(1, 0, 0.5f);
+    fx.processBlock(buf, midi);
+    CHECK(allFinite(buf), "Plate aggressive: block 0 (impulse) must be finite");
+
+    double peak    = 0.0;
+    double earlyE  = 0.0;
+    double lateE   = 0.0;
+    bool   ok      = true;
+
+    for (int b = 1; b < kBlocks; ++b)
+    {
+        fillSilence(buf);
+        fx.processBlock(buf, midi);
+        if (!allFinite(buf)) { ok = false; break; }
+        const double e = sumSquared(buf);
+        for (int ch = 0; ch < buf.getNumChannels(); ++ch)
+        {
+            const float* p = buf.getReadPointer(ch);
+            for (int s = 0; s < kBS; ++s)
+                if (std::abs(p[s]) > peak) peak = std::abs(p[s]);
+        }
+        if (b >= 2  && b < 20)  earlyE += e;
+        if (b >= 180)           lateE  += e;
+    }
+
+    CHECK(ok, "Plate aggressive: all 200 silence blocks must be finite");
+
+    // A 0.5f impulse input should never produce a peak above 2.0 in the tail.
+    // (The mode-entry ramp and bounded feedback ensure this; the old code
+    // would produce peaks well above 10+ at these settings.)
+    std::cout << "    Plate aggressive peak=" << peak
+              << "  earlyE=" << earlyE << "  lateE=" << lateE << "\n";
+    CHECK(peak < 2.0,
+          "Plate aggressive: tail peak must stay below 2.0 for a 0.5f impulse");
+
+    // Tail energy must decrease — no runaway feedback growth.
+    CHECK(earlyE > lateE,
+          "Plate aggressive: late-tail energy must be less than early-tail energy");
+}
+
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 int main()
@@ -2749,6 +2822,7 @@ int main()
     testPlateTailCrestFactorBounded();
     testPlateSwitchSchedule();
     testPlateLongTermFinite();
+    testPlateAggressiveImpulseDecays();
 
     std::cout << "\nResults: " << g_passed << " passed, " << g_failed << " failed\n";
     if (g_failed > 0)

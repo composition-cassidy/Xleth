@@ -143,8 +143,7 @@ int main()
         chorus.sourcePath       = "blue.mp4";
         chorus.sourceFrameIndex = 0;
         chorus.opacity          = 1.0f;
-        chorus.isChorus         = true;
-        chorus.isCrash          = false;
+        chorus.layerKind        = CellLayerKind::FullscreenBehind;
         chorus.zOrder           = -1;
         requests.push_back(chorus);
 
@@ -157,8 +156,7 @@ int main()
         cell0.sourcePath       = "red.mp4";
         cell0.sourceFrameIndex = 0;
         cell0.opacity          = 1.0f;
-        cell0.isChorus         = false;
-        cell0.isCrash          = false;
+        cell0.layerKind        = CellLayerKind::Grid;
         cell0.zOrder           = 0;
         requests.push_back(cell0);
 
@@ -171,8 +169,7 @@ int main()
         cell1.sourcePath       = "green.mp4";
         cell1.sourceFrameIndex = 0;
         cell1.opacity          = 1.0f;
-        cell1.isChorus         = false;
-        cell1.isCrash          = false;
+        cell1.layerKind        = CellLayerKind::Grid;
         cell1.zOrder           = 1;
         requests.push_back(cell1);
 
@@ -233,7 +230,7 @@ int main()
         chorus.sourcePath = "blue.mp4";
         chorus.sourceFrameIndex = 0;
         chorus.opacity = 1.0f;
-        chorus.isChorus = true;
+        chorus.layerKind = CellLayerKind::FullscreenBehind;
         requests.push_back(chorus);
 
         CellFrameRequest cell{};
@@ -299,7 +296,7 @@ int main()
         crash.sourcePath = "yellow.mp4";
         crash.sourceFrameIndex = 0;
         crash.opacity = 1.0f;
-        crash.isCrash = true;
+        crash.layerKind = CellLayerKind::FullscreenInFront;
         crash.zOrder = 999;
         requests.push_back(crash);
 
@@ -413,7 +410,7 @@ int main()
         chorus.sourcePath = "blue.mp4";
         chorus.sourceFrameIndex = 0;
         chorus.opacity = 1.0f;
-        chorus.isChorus = true;
+        chorus.layerKind = CellLayerKind::FullscreenBehind;
         requests.push_back(chorus);
 
         CellFrameRequest cell{};

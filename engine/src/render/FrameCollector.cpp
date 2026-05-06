@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <unordered_set>
 
 // ===========================================================================
 // Step 1: Collect requests for one output frame
@@ -37,7 +38,7 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
     auto buildRequest = [&](const VideoEvent* ev, int trackId,
                             int cellCol, int cellRow, int spanX, int spanY,
                             float slotOpacity, int zOrder,
-                            bool isChorus, bool isCrash) -> bool
+                            CellLayerKind kind) -> bool
     {
         if (!ev) return false;
 
@@ -49,11 +50,12 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
 
         // Fetch TrackInfo early — needed to check pingPong.enabled before the clamp.
         const TrackInfo* trk = timeline.getTrack(trackId);
+        const bool isFullscreen = (kind != CellLayerKind::Grid);
 
         CellFrameRequest req;
 
         // Ping-pong overrides the hold-last-frame clamp for enabled tracks.
-        if (trk && trk->pingPong.enabled && !isChorus && !isCrash) {
+        if (trk && trk->pingPong.enabled && !isFullscreen) {
             int64_t secondaryFrame = -1;
             float   blendFactor    = 0.0f;
             srcFrame = computePingPongFrame(*ev, beatPos, bpm, src->fps,
@@ -101,7 +103,7 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
         std::string pickedPath  = src->filePath;
         int64_t     pickedFrame = srcFrame;
 
-        if (allowProxy && ev->regionId > 0 && !isChorus && !isCrash) {
+        if (allowProxy && ev->regionId > 0 && !isFullscreen) {
             const SampleRegion* r = timeline.getRegion(ev->regionId);
             if (r && r->proxyReady && !r->proxyPath.empty()) {
                 // Recompute sourceTime locally — we didn't keep it from above
@@ -140,10 +142,17 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
                 if (!trk->visualEffectChain.empty()) {
                     req.visualChain = &trk->visualEffectChain;
                 }
-                // Note trigger detection: fire onNoteStart when globalNoteIndex changes (grid cells only)
-                if (animationMgr_ && !isChorus && !isCrash) {
+                // Note trigger detection: fire onNoteStart when globalNoteIndex
+                // changes (grid cells only). VideoEvents are emitted only by
+                // *normal* (non-slide) PatternNotes (slide notes flow through
+                // SlideAnimationEvent and are skipped at note-build time), so
+                // this is the right place to hook the NextNormalNote slide
+                // visual return trigger — it covers both realtime preview and
+                // offline render via the shared FrameCollector path.
+                if (animationMgr_ && !isFullscreen) {
                     const CellAnimation* anim = animationMgr_->getAnimation(trackId);
                     if (!anim || ev->globalNoteIndex != anim->activeNoteId) {
+                        animationMgr_->onSlideReturnTrigger(trackId);
                         animationMgr_->onNoteStart(trackId, ev->globalNoteIndex,
                                                    trk->zoomPanRot, trk->bounce);
                     }
@@ -164,20 +173,22 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
                 req.bounceScaleX    = anim->bounceScaleX;
                 req.bounceScaleY    = anim->bounceScaleY;
                 req.tvRampIntensity = anim->tvRampIntensity;
+                req.tvRampRollSpeed  = anim->tvRampRollSpeed;
+                req.tvRampScanlines  = anim->tvRampScanlines;
+                req.tvRampChroma     = anim->tvRampChroma;
+                req.tvRampNoise      = anim->tvRampNoise;
+                req.tvRampJitter     = anim->tvRampJitter;
+                req.tvRampColorBleed = anim->tvRampColorBleed;
             }
         }
 
         req.trackId          = trackId;
-        req.isChorus         = isChorus;
-        req.isCrash          = isCrash;
+        req.layerKind        = kind;
         req.zOrder           = zOrder;
 
-        if (isChorus) {
-            std::fprintf(stderr, "[FrameCollector] Chorus cell: '%s' frame=%lld opacity=%.2f\n",
-                         req.sourcePath.c_str(), (long long)req.sourceFrameIndex, req.opacity);
-        }
-        if (isCrash) {
-            std::fprintf(stderr, "[FrameCollector] Crash cell: '%s' frame=%lld opacity=%.2f\n",
+        if (isFullscreen) {
+            std::fprintf(stderr, "[FrameCollector] FS-%s cell: '%s' frame=%lld opacity=%.2f\n",
+                         kind == CellLayerKind::FullscreenBehind ? "behind" : "front",
                          req.sourcePath.c_str(), (long long)req.sourceFrameIndex, req.opacity);
         }
 
@@ -185,43 +196,63 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
         return true;
     };
 
-    // a) CHORUS LAYER — fullscreen background (holds last frame during gaps)
-    if (layout.chorusTrackId >= 0) {
-        const VideoEvent* ev = findActiveEvent(events, timeline, layout.chorusTrackId, beatPos);
-        if (buildRequest(ev, layout.chorusTrackId,
-                          0, 0,
-                          layout.columns * kGridSubUnitsPerColumn,
-                          layout.rows    * kGridSubUnitsPerRow,
-                          1.0f, -1, /*isChorus=*/true, false)) {
-            // Active chorus — save frame for hold-through-gap
-            const auto& chorusReq = requests.back();
-            lastChorusSourceFrame_ = chorusReq.sourceFrameIndex;
-            lastChorusSourcePath_  = chorusReq.sourcePath;
-            lastChorusOrientation_ = chorusReq.orientation;
-        } else if (lastChorusSourceFrame_ >= 0) {
-            // Chorus gap — hold only if videoHoldLastFrame is enabled on the chorus track
-            const TrackInfo* chorusTrack = timeline.getTrack(layout.chorusTrackId);
-            if (chorusTrack && chorusTrack->videoHoldLastFrame) {
-                std::fprintf(stderr, "[FrameCollector] Chorus gap: hold=ON frame=%lld\n",
-                             (long long)lastChorusSourceFrame_);
+    // GC fullscreen hold-state map: keep entries only for tracks still
+    // referenced by a BehindGrid layer. Bounds the map size to the live layer
+    // count rather than every track ever assigned.
+    {
+        std::unordered_set<int> behindTrackIds;
+        for (const auto& fl : layout.fullscreenLayers) {
+            if (fl.placement == FullscreenLayerPlacement::BehindGrid && fl.trackId >= 0)
+                behindTrackIds.insert(fl.trackId);
+        }
+        for (auto it = fullscreenHoldByTrack_.begin(); it != fullscreenHoldByTrack_.end(); ) {
+            if (!behindTrackIds.count(it->first)) it = fullscreenHoldByTrack_.erase(it);
+            else ++it;
+        }
+    }
+
+    const int fullW = layout.columns * kGridSubUnitsPerColumn;
+    const int fullH = layout.rows    * kGridSubUnitsPerRow;
+
+    // a) FULLSCREEN BEHIND LAYERS — array order = bottom-to-top within the
+    // back stack. Holds last frame during gaps when track has videoHoldLastFrame.
+    for (const auto& fl : layout.fullscreenLayers) {
+        if (fl.placement != FullscreenLayerPlacement::BehindGrid) continue;
+        if (fl.trackId < 0) continue;
+
+        const VideoEvent* ev = findActiveEvent(events, timeline, fl.trackId, beatPos);
+        if (buildRequest(ev, fl.trackId, 0, 0, fullW, fullH,
+                         fl.opacity, /*zOrder*/-1,
+                         CellLayerKind::FullscreenBehind)) {
+            // Active layer — record last frame for hold-through-gap
+            const auto& r = requests.back();
+            auto& s = fullscreenHoldByTrack_[fl.trackId];
+            s.lastFrame       = r.sourceFrameIndex;
+            s.lastPath        = r.sourcePath;
+            s.lastOrientation = r.orientation;
+        } else {
+            auto it = fullscreenHoldByTrack_.find(fl.trackId);
+            const TrackInfo* trk = timeline.getTrack(fl.trackId);
+            if (it != fullscreenHoldByTrack_.end() && it->second.lastFrame >= 0
+                && trk && trk->videoHoldLastFrame) {
+                std::fprintf(stderr, "[FrameCollector] FS-behind gap (track %d): hold=ON frame=%lld\n",
+                             fl.trackId, (long long)it->second.lastFrame);
                 CellFrameRequest req;
                 req.cellCol          = 0;
                 req.cellRow          = 0;
-                req.spanX            = layout.columns * kGridSubUnitsPerColumn;
-                req.spanY            = layout.rows    * kGridSubUnitsPerRow;
-                req.sourcePath       = lastChorusSourcePath_;
-                req.sourceFrameIndex = lastChorusSourceFrame_;
-                req.opacity          = 1.0f;
-                req.isChorus         = true;
+                req.spanX            = fullW;
+                req.spanY            = fullH;
+                req.sourcePath       = it->second.lastPath;
+                req.sourceFrameIndex = it->second.lastFrame;
+                req.opacity          = std::min(1.0f, std::max(0.0f, fl.opacity));
+                req.layerKind        = CellLayerKind::FullscreenBehind;
                 req.zOrder           = -1;
-                req.orientation      = lastChorusOrientation_;
+                req.orientation      = it->second.lastOrientation;
+                req.trackId          = fl.trackId;
                 requests.push_back(std::move(req));
             } else {
-                std::fprintf(stderr, "[FrameCollector] Chorus gap: hold=OFF\n");
                 ++gapsSkipped;
             }
-        } else {
-            ++gapsSkipped;
         }
     }
 
@@ -238,19 +269,21 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
 
         if (!buildRequest(ev, slot.trackId,
                           slot.gridX, slot.gridY, slot.spanX, slot.spanY,
-                          slot.opacity, slot.zOrder, false, false)) {
+                          slot.opacity, slot.zOrder, CellLayerKind::Grid)) {
             ++gapsSkipped;
         }
     }
 
-    // c) CRASH OVERLAY — fullscreen on top
-    if (layout.crashEnabled && layout.crashTrackId >= 0) {
-        const VideoEvent* ev = findActiveEvent(events, timeline, layout.crashTrackId, beatPos);
-        if (!buildRequest(ev, layout.crashTrackId,
-                          0, 0,
-                          layout.columns * kGridSubUnitsPerColumn,
-                          layout.rows    * kGridSubUnitsPerRow,
-                          layout.crashOpacity, 999, false, /*isCrash=*/true)) {
+    // c) FULLSCREEN IN-FRONT LAYERS — array order = bottom-to-top within the
+    // front stack. Front layers are intentionally transient; no hold-through-gap.
+    for (const auto& fl : layout.fullscreenLayers) {
+        if (fl.placement != FullscreenLayerPlacement::InFrontOfGrid) continue;
+        if (fl.trackId < 0) continue;
+
+        const VideoEvent* ev = findActiveEvent(events, timeline, fl.trackId, beatPos);
+        if (!buildRequest(ev, fl.trackId, 0, 0, fullW, fullH,
+                          fl.opacity, /*zOrder*/999,
+                          CellLayerKind::FullscreenInFront)) {
             ++gapsSkipped;
         }
     }

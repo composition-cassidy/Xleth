@@ -280,6 +280,148 @@ static void testPolyphony()
     CHECK(rms(out, 1) > 0.05, "polyphony: non-zero RMS R");
 }
 
+// ─── FL-style group slide tests ──────────────────────────────────────────────
+
+// Helper: render a small number of samples without modifying voice state
+// beyond what the audio thread would naturally do per-block.
+static void renderSamples(Sampler& s, int n)
+{
+    juce::AudioBuffer<float> tmp(2, n);
+    tmp.clear();
+    s.processBlock(tmp, n, kEngineSR);
+}
+
+static void testSlideNoExtraVoice()
+{
+    std::cout << "[10] Slide does not spawn an extra voice\n";
+    auto src = makeSine(kEngineSR, 440.0, static_cast<int>(kEngineSR));
+    Sampler s;
+    s.loadSample(src, kEngineSR, 69);
+    s.setADSR(0, 0, 1.0f, 0);
+    s.setCrossfadeMode(true);
+    s.noteOn(60, 1.0f);
+    CHECK(s.activeVoiceCount() == 1, "slide-no-extra: 1 voice after noteOn");
+
+    // Slide while the note is held — must not spawn a second voice.
+    s.beginGroupSlide(64, 0.05 * kEngineSR, 0.5f, 0.5f, 0);
+    CHECK(s.activeVoiceCount() == 1, "slide-no-extra: still 1 voice after slide");
+
+    renderSamples(s, 2048);
+    CHECK(s.activeVoiceCount() == 1, "slide-no-extra: still 1 voice after render");
+}
+
+static void testSlideGlidesToTarget()
+{
+    std::cout << "[11] Slide glides voice pitch to target\n";
+    auto src = makeSine(kEngineSR, 440.0, static_cast<int>(kEngineSR));
+    Sampler s;
+    s.loadSample(src, kEngineSR, 69);
+    s.setADSR(0, 0, 1.0f, 0);
+    s.setCrossfadeMode(true);
+    s.noteOn(60, 1.0f);
+    const int idx = s.debugFirstActiveVoiceIndex();
+    CHECK(idx >= 0, "slide-glide: voice exists");
+
+    const double durSamples = 0.05 * kEngineSR;   // 50 ms
+    s.beginGroupSlide(72, durSamples, 0.5f, 0.5f, 0);
+    CHECK(s.debugVoiceSlideActive(idx), "slide-glide: slideActive after begin");
+
+    // Render past completion.
+    renderSamples(s, static_cast<int>(durSamples) + 64);
+    CHECK_NEAR(s.debugVoicePitch(idx), 72.0, 1e-6,
+               "slide-glide: pitch reached target");
+    CHECK(!s.debugVoiceSlideActive(idx), "slide-glide: slideActive false post-completion");
+}
+
+static void testSlideChordTransposition()
+{
+    std::cout << "[12] Chord slide transposes group by highest-pitch delta\n";
+    auto src = makeSine(kEngineSR, 440.0, static_cast<int>(kEngineSR));
+    Sampler s;
+    s.loadSample(src, kEngineSR, 69);
+    s.setADSR(0, 0, 1.0f, 0);
+    s.setCrossfadeMode(true);
+
+    // C major chord 60/64/67. Highest = 67. Slide target 69 → delta +2.
+    // Expected after slide: 62/66/69.
+    s.noteOn(60, 0.5f);
+    s.noteOn(64, 0.5f);
+    s.noteOn(67, 0.5f);
+    CHECK(s.activeVoiceCount() == 3, "chord-slide: 3 voices");
+
+    const double durSamples = 0.05 * kEngineSR;
+    s.beginGroupSlide(69, durSamples, 0.5f, 0.5f, 0);
+    renderSamples(s, static_cast<int>(durSamples) + 64);
+
+    // Walk all 32 voice slots. Inactive slots keep currentPitchF at the
+    // struct default (60.0) and won't match any of {62, 66, 69}, so a simple
+    // exact-match tally is sufficient.
+    int n62 = 0, n66 = 0, n69 = 0;
+    for (int i = 0; i < 32; ++i) {
+        const double p = s.debugVoicePitch(i);
+        if (std::abs(p - 62.0) < 1e-4) ++n62;
+        else if (std::abs(p - 66.0) < 1e-4) ++n66;
+        else if (std::abs(p - 69.0) < 1e-4) ++n69;
+    }
+    CHECK(n62 == 1, "chord-slide: one voice at D (62)");
+    CHECK(n66 == 1, "chord-slide: one voice at F# (66)");
+    CHECK(n69 == 1, "chord-slide: one voice at A (69)");
+}
+
+static void testChainedSlides()
+{
+    std::cout << "[13] Chained slides start from current slid pitch\n";
+    auto src = makeSine(kEngineSR, 440.0, static_cast<int>(kEngineSR));
+    Sampler s;
+    s.loadSample(src, kEngineSR, 69);
+    s.setADSR(0, 0, 1.0f, 0);
+    s.setCrossfadeMode(true);
+    s.noteOn(60, 1.0f);
+    const int idx = s.debugFirstActiveVoiceIndex();
+
+    const double dur = 0.02 * kEngineSR;   // 20 ms each
+    s.beginGroupSlide(64, dur, 0.5f, 0.5f, 0);
+    renderSamples(s, static_cast<int>(dur) + 16);
+    CHECK_NEAR(s.debugVoicePitch(idx), 64.0, 1e-6, "chained: first slide settled at 64");
+
+    // Second slide. Highest active pitch is now 64 (post first slide), so
+    // target 67 produces delta +3 → final voice pitch 67.
+    s.beginGroupSlide(67, dur, 0.5f, 0.5f, 0);
+    renderSamples(s, static_cast<int>(dur) + 16);
+    CHECK_NEAR(s.debugVoicePitch(idx), 67.0, 1e-6, "chained: second slide settled at 67");
+}
+
+static void testSlideNoActiveVoices()
+{
+    std::cout << "[14] Slide with no active voices is a silent no-op\n";
+    auto src = makeSine(kEngineSR, 440.0, static_cast<int>(kEngineSR));
+    Sampler s;
+    s.loadSample(src, kEngineSR, 69);
+    s.setADSR(0, 0, 1.0f, 0);
+    s.setCrossfadeMode(true);
+    // No noteOn — sampler is empty.
+    s.beginGroupSlide(72, 0.05 * kEngineSR, 0.5f, 0.5f, 0);
+    CHECK(s.activeVoiceCount() == 0, "no-active: still no voices");
+    auto out = render(s, 1024);
+    CHECK(peakAbs(out, 0, 1024) == 0.0f, "no-active: silent output");
+}
+
+static void testZeroDurationSlideSnaps()
+{
+    std::cout << "[15] Zero-duration slide snaps immediately\n";
+    auto src = makeSine(kEngineSR, 440.0, static_cast<int>(kEngineSR));
+    Sampler s;
+    s.loadSample(src, kEngineSR, 69);
+    s.setADSR(0, 0, 1.0f, 0);
+    s.setCrossfadeMode(true);
+    s.noteOn(60, 1.0f);
+    const int idx = s.debugFirstActiveVoiceIndex();
+    s.beginGroupSlide(72, 0.0, 0.5f, 0.5f, 0);
+    renderSamples(s, 16);
+    CHECK_NEAR(s.debugVoicePitch(idx), 72.0, 1e-6, "zero-dur: snapped to target");
+    CHECK(!s.debugVoiceSlideActive(idx), "zero-dur: slideActive cleared");
+}
+
 static void testVoiceStealing()
 {
     std::cout << "[9] Voice stealing (33 rapid triggers don't crash)\n";
@@ -315,6 +457,12 @@ int main()
     testSustainedLoop();
     testPolyphony();
     testVoiceStealing();
+    testSlideNoExtraVoice();
+    testSlideGlidesToTarget();
+    testSlideChordTransposition();
+    testChainedSlides();
+    testSlideNoActiveVoices();
+    testZeroDurationSlideSnaps();
 
     std::cout << "\n";
     if (g_failed == 0)

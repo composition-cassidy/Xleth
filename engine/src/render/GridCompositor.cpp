@@ -22,15 +22,62 @@
 // HRESULT → short text for readback failure diagnostics
 // ---------------------------------------------------------------------------
 static const char* hrText(HRESULT hr) {
-    switch (static_cast<unsigned int>(hr)) {
-        case 0x887A0001U: return "DXGI_ERROR_WAS_STILL_DRAWING";
-        case 0x887A0005U: return "DXGI_ERROR_DEVICE_REMOVED";
-        case 0x887A0006U: return "DXGI_ERROR_DEVICE_HUNG";
-        case 0x887A0007U: return "DXGI_ERROR_DEVICE_RESET";
-        case 0x80070057U: return "E_INVALIDARG";
-        case 0x80004003U: return "E_POINTER";
-        case 0x8007000EU: return "E_OUTOFMEMORY";
-        default:          return "(unknown)";
+    switch (hr) {
+        case S_OK:                           return "S_OK";
+        case DXGI_ERROR_INVALID_CALL:        return "DXGI_ERROR_INVALID_CALL";
+        case DXGI_ERROR_WAS_STILL_DRAWING:   return "DXGI_ERROR_WAS_STILL_DRAWING";
+        case DXGI_ERROR_DEVICE_REMOVED:      return "DXGI_ERROR_DEVICE_REMOVED";
+        case DXGI_ERROR_DEVICE_HUNG:         return "DXGI_ERROR_DEVICE_HUNG";
+        case DXGI_ERROR_DEVICE_RESET:        return "DXGI_ERROR_DEVICE_RESET";
+        case E_INVALIDARG:                   return "E_INVALIDARG";
+        case E_POINTER:                      return "E_POINTER";
+        case E_FAIL:                         return "E_FAIL";
+        case E_OUTOFMEMORY:                  return "E_OUTOFMEMORY";
+        default:                             return "(unknown)";
+    }
+}
+
+static const char* readbackStageText(ReadbackFailureStage stage) {
+    switch (stage) {
+        case ReadbackFailureStage::None:                        return "none";
+        case ReadbackFailureStage::StagingTextureMissing:       return "staging_texture_missing";
+        case ReadbackFailureStage::StagingTextureCreateFailed:  return "staging_texture_create_failed";
+        case ReadbackFailureStage::SourceTextureMissing:        return "source_texture_missing";
+        case ReadbackFailureStage::CopyPreconditionFailed:      return "copy_precondition_failed";
+        case ReadbackFailureStage::CopyIssuedThenDeviceRemoved: return "copy_issued_then_device_removed";
+        case ReadbackFailureStage::MapFailed:                   return "map_failed";
+        case ReadbackFailureStage::RowPitchInvalid:             return "row_pitch_invalid";
+        case ReadbackFailureStage::DimensionsInvalid:           return "dimensions_invalid";
+        default:                                                return "unknown";
+    }
+}
+
+static ReadbackTextureDesc captureTextureDesc(ID3D11Texture2D* texture) {
+    ReadbackTextureDesc out;
+    if (!texture) return out;
+
+    D3D11_TEXTURE2D_DESC desc{};
+    texture->GetDesc(&desc);
+    out.width          = desc.Width;
+    out.height         = desc.Height;
+    out.format         = desc.Format;
+    out.usage          = desc.Usage;
+    out.cpuAccessFlags = desc.CPUAccessFlags;
+    out.bindFlags      = desc.BindFlags;
+    out.miscFlags      = desc.MiscFlags;
+    out.sampleCount    = desc.SampleDesc.Count;
+    return out;
+}
+
+static UINT readbackBytesPerPixel(DXGI_FORMAT format) {
+    switch (format) {
+        case DXGI_FORMAT_B8G8R8A8_UNORM:
+        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+        case DXGI_FORMAT_R8G8B8A8_UNORM:
+        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+            return 4;
+        default:
+            return 4;
     }
 }
 
@@ -94,10 +141,17 @@ void GridCompositor::shutdown()
     renderTarget_.Reset();
     renderTargetRTV_.Reset();
     renderTargetSRV_.Reset();
-    stagingTextures_[0].Reset();
-    stagingTextures_[1].Reset();
-    readbackFrameCount_ = 0;
-    lastReadbackHR_     = S_OK;
+    for (auto& stagingTexture : stagingTextures_) {
+        stagingTexture.Reset();
+    }
+    readbackFrameCount_    = 0;
+    lastReadbackHR_        = S_OK;
+    lastReadbackDiag_      = {};
+    asyncWriteHead_        = 0;
+    asyncReadHead_         = 0;
+    droppedPendingFrames_  = 0;
+    activePolicy_          = ReadbackPolicy::FastImmediate;
+    for (auto& s : slotState_) s = StagingSlotState::Free;
     vertexShader_.Reset();
     pixelShader_.Reset();
     inputLayout_.Reset();
@@ -159,29 +213,65 @@ bool GridCompositor::createRenderTarget()
 
 bool GridCompositor::createStagingTexture()
 {
+    lastReadbackDiag_ = {};
+
+    if (!renderTarget_) {
+        lastReadbackDiag_.failureStage = ReadbackFailureStage::SourceTextureMissing;
+        lastReadbackDiag_.hresult = E_POINTER;
+        lastReadbackHR_ = E_POINTER;
+        return false;
+    }
+
+    D3D11_TEXTURE2D_DESC srcDesc = {};
+    renderTarget_->GetDesc(&srcDesc);
+    lastReadbackDiag_.sourceTexture = captureTextureDesc(renderTarget_.Get());
+
+    if (srcDesc.Width == 0 || srcDesc.Height == 0 || srcDesc.SampleDesc.Count != 1) {
+        lastReadbackDiag_.failureStage = ReadbackFailureStage::DimensionsInvalid;
+        lastReadbackDiag_.hresult = E_INVALIDARG;
+        lastReadbackHR_ = E_INVALIDARG;
+        return false;
+    }
+
     D3D11_TEXTURE2D_DESC desc = {};
-    desc.Width            = static_cast<UINT>(width_);
-    desc.Height           = static_cast<UINT>(height_);
+    desc.Width            = srcDesc.Width;
+    desc.Height           = srcDesc.Height;
     desc.MipLevels        = 1;
     desc.ArraySize        = 1;
-    desc.Format           = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.Format           = srcDesc.Format;
     desc.SampleDesc.Count = 1;
     desc.Usage            = D3D11_USAGE_STAGING;
     desc.CPUAccessFlags   = D3D11_CPU_ACCESS_READ;
+    desc.BindFlags        = 0;
+    desc.MiscFlags        = 0;
+    desc.SampleDesc.Quality = 0;
+    lastReadbackDiag_.stagingTexture.width = desc.Width;
+    lastReadbackDiag_.stagingTexture.height = desc.Height;
+    lastReadbackDiag_.stagingTexture.format = desc.Format;
+    lastReadbackDiag_.stagingTexture.usage = desc.Usage;
+    lastReadbackDiag_.stagingTexture.cpuAccessFlags = desc.CPUAccessFlags;
+    lastReadbackDiag_.stagingTexture.bindFlags = desc.BindFlags;
+    lastReadbackDiag_.stagingTexture.miscFlags = desc.MiscFlags;
+    lastReadbackDiag_.stagingTexture.sampleCount = desc.SampleDesc.Count;
     // BindFlags must be 0 for staging textures — D3D11 spec requirement.
 
     std::fprintf(stderr,
-        "[Compositor] Staging ring: creating 2x %ux%u BGRA STAGING CPU_READ "
-        "bindFlags=0x%X expectedBytesEach=%zu\n",
-        desc.Width, desc.Height, desc.BindFlags,
-        static_cast<size_t>(desc.Width) * desc.Height * 4u);
+        "[Compositor] Staging ring: creating %dx %ux%u fmt=%u STAGING CPU_READ "
+        "bindFlags=0x%X misc=0x%X sampleCount=%u expectedBytesEach=%zu\n",
+        kReadbackStagingTextureCount,
+        desc.Width, desc.Height, static_cast<unsigned>(desc.Format),
+        desc.BindFlags, desc.MiscFlags, desc.SampleDesc.Count,
+        static_cast<size_t>(desc.Width) * desc.Height * readbackBytesPerPixel(desc.Format));
 
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < kReadbackStagingTextureCount; ++i) {
         HRESULT hr = device_->CreateTexture2D(&desc, nullptr, &stagingTextures_[i]);
         if (FAILED(hr)) {
+            lastReadbackDiag_.failureStage = ReadbackFailureStage::StagingTextureCreateFailed;
+            lastReadbackDiag_.hresult = hr;
+            lastReadbackHR_ = hr;
             std::fprintf(stderr,
-                "[Compositor] Failed to create staging texture[%d], HR=0x%08X\n",
-                i, static_cast<unsigned int>(hr));
+                "[Compositor] Failed to create staging texture[%d], HR=0x%08X (%s)\n",
+                i, static_cast<unsigned int>(hr), hrText(hr));
             return false;
         }
     }
@@ -381,15 +471,17 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
     auto frameStart = std::chrono::high_resolution_clock::now();
 
     // Count layers for logging
-    int chorusCount = 0, gridCount = 0, crashCount = 0;
+    int behindCount = 0, gridCount = 0, frontCount = 0;
     for (const auto& req : requests) {
-        if (req.isChorus) ++chorusCount;
-        else if (req.isCrash) ++crashCount;
-        else ++gridCount;
+        switch (req.layerKind) {
+            case CellLayerKind::FullscreenBehind:  ++behindCount; break;
+            case CellLayerKind::FullscreenInFront: ++frontCount;  break;
+            case CellLayerKind::Grid:              ++gridCount;   break;
+        }
     }
 
-    std::fprintf(stderr, "[Compositor] Frame composite: %d chorus, %d grid cells, %d crash, %d total requests\n",
-                 chorusCount, gridCount, crashCount, static_cast<int>(requests.size()));
+    std::fprintf(stderr, "[Compositor] Frame composite: %d behind, %d grid cells, %d front, %d total requests\n",
+                 behindCount, gridCount, frontCount, static_cast<int>(requests.size()));
 
     // ── Set up pipeline state ────────────────────────────────────────────────
 
@@ -450,9 +542,10 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
     deviceCtx_->RSSetState(rasterizerState_.Get());
     deviceCtx_->OMSetDepthStencilState(depthStencilState_.Get(), 0);
 
-    // ── Pass 1: Chorus (full-screen, behind everything) ──────────────────────
+    // ── Pass 1: Fullscreen-behind layers (full-screen, behind grid) ──────────
+    // Iterates in request order, which mirrors fullscreenLayers array order.
     for (const auto& req : requests) {
-        if (!req.isChorus) continue;
+        if (req.layerKind != CellLayerKind::FullscreenBehind) continue;
 
         FrameCacheKey key;
         key.sourcePath = req.sourcePath;
@@ -460,11 +553,11 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
         FrameCacheEntry* entry = cache.get(key);
 
         if (!entry || !entry->srv) {
-            std::fprintf(stderr, "[Compositor] WARN: Skipping chorus — texture is null (cache miss?)\n");
+            std::fprintf(stderr, "[Compositor] WARN: Skipping FS-behind — texture is null (cache miss?)\n");
             continue;
         }
 
-        std::fprintf(stderr, "[Compositor] Chorus: '%s' frame=%lld opacity=%.2f\n",
+        std::fprintf(stderr, "[Compositor] FS-behind: '%s' frame=%lld opacity=%.2f\n",
                      req.sourcePath.c_str(), (long long)req.sourceFrameIndex, req.opacity);
 
         drawCell(entry->srv.Get(), 0.0f, 0.0f, 1.0f, 1.0f,
@@ -473,7 +566,7 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
 
     // ── Pass 2: Grid cells (each at its grid position) ───────────────────────
     for (const auto& req : requests) {
-        if (req.isChorus || req.isCrash) continue;
+        if (req.layerKind != CellLayerKind::Grid) continue;
 
         FrameCacheKey key;
         key.sourcePath = req.sourcePath;
@@ -492,7 +585,7 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
 
         // Apply gap scale: shrink rect symmetrically, creating inter-cell padding
         float effectiveGap = (req.gapScaleOverride >= 0.0f) ? req.gapScaleOverride : gapScale;
-        if (effectiveGap > 0.0f && !req.isChorus && !req.isCrash) {
+        if (effectiveGap > 0.0f && req.layerKind == CellLayerKind::Grid) {
             float sx = rw * effectiveGap * 0.5f;
             float sy = rh * effectiveGap * 0.5f;
             rx += sx;  ry += sy;
@@ -500,7 +593,7 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
         }
 
         // Apply bounce: offset (fraction of post-gap cell size) then scale-from-center
-        if (!req.isChorus && !req.isCrash) {
+        if (req.layerKind == CellLayerKind::Grid) {
             rx += req.bounceOffsetX * rw;
             ry += req.bounceOffsetY * rh;
             if (req.bounceScaleX != 1.0f || req.bounceScaleY != 1.0f) {
@@ -596,7 +689,7 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
         // Ping-pong crossfade — also skipped when effectsBypass_ is set.
         // Blends primary cellSRV with secondary frame texture.
         // Uses rtSlot=2 to avoid aliasing with slot 0 (main chain) and slot 1 (ZPR).
-        if (!effectsBypass_ && !req.isChorus && !req.isCrash && req.pingPongSecondaryFrame >= 0) {
+        if (!effectsBypass_ && req.layerKind == CellLayerKind::Grid && req.pingPongSecondaryFrame >= 0) {
             FrameCacheKey key2;
             key2.sourcePath = req.sourcePath;
             key2.frameIndex = req.pingPongSecondaryFrame;
@@ -677,9 +770,10 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
                  req.opacity, req.orientation, req.cornerRadius);
     }
 
-    // ── Pass 3: Crash overlay (full-screen, on top) ──────────────────────────
+    // ── Pass 3: Fullscreen-in-front layers (full-screen, on top) ─────────────
+    // Iterates in request order, which mirrors fullscreenLayers array order.
     for (const auto& req : requests) {
-        if (!req.isCrash) continue;
+        if (req.layerKind != CellLayerKind::FullscreenInFront) continue;
 
         FrameCacheKey key;
         key.sourcePath = req.sourcePath;
@@ -687,11 +781,11 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
         FrameCacheEntry* entry = cache.get(key);
 
         if (!entry || !entry->srv) {
-            std::fprintf(stderr, "[Compositor] WARN: Skipping crash — texture is null (cache miss?)\n");
+            std::fprintf(stderr, "[Compositor] WARN: Skipping FS-front — texture is null (cache miss?)\n");
             continue;
         }
 
-        std::fprintf(stderr, "[Compositor] Crash: '%s' frame=%lld opacity=%.2f\n",
+        std::fprintf(stderr, "[Compositor] FS-front: '%s' frame=%lld opacity=%.2f\n",
                      req.sourcePath.c_str(), (long long)req.sourceFrameIndex, req.opacity);
 
         drawCell(entry->srv.Get(), 0.0f, 0.0f, 1.0f, 1.0f,
@@ -740,89 +834,384 @@ void GridCompositor::drawCell(ID3D11ShaderResourceView* srv,
 }
 
 // ===========================================================================
+// Readback policy
+// ===========================================================================
+
+void GridCompositor::setReadbackPolicy(ReadbackPolicy policy)
+{
+    activePolicy_          = policy;
+    asyncWriteHead_        = 0;
+    asyncReadHead_         = 0;
+    droppedPendingFrames_  = 0;
+    readbackFrameCount_    = 0;
+    for (auto& s : slotState_) s = StagingSlotState::Free;
+    std::fprintf(stderr, "[Compositor] ReadbackPolicy set to %s\n",
+        policy == ReadbackPolicy::FastImmediate ? "FastImmediate" : "AsyncQueued");
+}
+
+// ===========================================================================
 // GPU→CPU readback
 // ===========================================================================
 
-ReadbackBuffer GridCompositor::readback()
+ReadbackBuffer GridCompositor::readback(ReadbackMode mode)
 {
     ReadbackBuffer buf;
-    if (!initialized_) return buf;
+    {
+        lastReadbackDiag_ = {};
+        lastReadbackDiag_.mode = mode;
+        lastReadbackDiag_.mapType = D3D11_MAP_READ;
+        lastReadbackDiag_.mapFlags = 0;   // set per-path below
+        lastReadbackHR_ = S_OK;
 
-    auto start = std::chrono::high_resolution_clock::now();
+        auto recordFailure = [this](ReadbackFailureStage stage, HRESULT hr) {
+            lastReadbackDiag_.failureStage = stage;
+            lastReadbackDiag_.hresult = hr;
+            lastReadbackHR_ = hr;
+            lastReadbackDiag_.deviceRemovedReason =
+                device_ ? device_->GetDeviceRemovedReason() : S_OK;
 
-    // Two-texture staging ring — avoids AMD WDDM timing failures.
-    //
-    // Calling CopyResource(staging, rt) + Map(staging, READ, 0) on the SAME
-    // staging texture in back-to-back frames causes Map to return
-    // DXGI_ERROR_WAS_STILL_DRAWING on AMD even without DO_NOT_WAIT, because
-    // the previous copy hasn't fully retired by the time the next one is issued.
-    // NVIDIA tolerates this; AMD doesn't.
-    //
-    // Fix: alternate between two staging textures.
-    //   Frame N:   CopyResource → staging[N%2]     (submit this frame's copy)
-    //              Map           ← staging[(N-1)%2] (read previous frame's copy)
-    // The previous staging's copy was submitted a full frame period ago, so the
-    // GPU has had ample time (≥33 ms at 30 fps) to complete it.
-    const uint64_t writeIdx = readbackFrameCount_ % 2;
-    const uint64_t readIdx  = 1 - writeIdx;  // == (readbackFrameCount_ - 1) % 2
+            std::fprintf(stderr,
+                "[Compositor] Readback failure stage=%s HR=0x%08X (%s) "
+                "deviceRemovedReason=0x%08X (%s) source=%ux%u fmt=%u samples=%u "
+                "staging=%ux%u fmt=%u usage=%u cpu=0x%X bind=0x%X misc=0x%X samples=%u "
+                "mapType=%u mapFlags=0x%X rowPitch=%u expectedBytes=%llu actualCopyBytes=%llu dimsMatch=%s\n",
+                readbackStageText(stage),
+                static_cast<unsigned int>(hr), hrText(hr),
+                static_cast<unsigned int>(lastReadbackDiag_.deviceRemovedReason),
+                hrText(lastReadbackDiag_.deviceRemovedReason),
+                lastReadbackDiag_.sourceTexture.width,
+                lastReadbackDiag_.sourceTexture.height,
+                static_cast<unsigned>(lastReadbackDiag_.sourceTexture.format),
+                lastReadbackDiag_.sourceTexture.sampleCount,
+                lastReadbackDiag_.stagingTexture.width,
+                lastReadbackDiag_.stagingTexture.height,
+                static_cast<unsigned>(lastReadbackDiag_.stagingTexture.format),
+                static_cast<unsigned>(lastReadbackDiag_.stagingTexture.usage),
+                lastReadbackDiag_.stagingTexture.cpuAccessFlags,
+                lastReadbackDiag_.stagingTexture.bindFlags,
+                lastReadbackDiag_.stagingTexture.miscFlags,
+                lastReadbackDiag_.stagingTexture.sampleCount,
+                lastReadbackDiag_.mapType,
+                lastReadbackDiag_.mapFlags,
+                lastReadbackDiag_.mappedRowPitch,
+                static_cast<unsigned long long>(lastReadbackDiag_.expectedBytes),
+                static_cast<unsigned long long>(lastReadbackDiag_.actualCopyBytes),
+                lastReadbackDiag_.dimensionsMatch ? "yes" : "no");
+        };
 
-    // Submit copy into this frame's staging slot
-    deviceCtx_->CopyResource(stagingTextures_[writeIdx].Get(), renderTarget_.Get());
+        if (!initialized_ || !device_ || !deviceCtx_) {
+            recordFailure(ReadbackFailureStage::Unknown, E_FAIL);
+            return buf;
+        }
 
-    if (readbackFrameCount_ == 0) {
-        // First call: no previous staging to read yet — ring is priming.
-        // Return invalid; next call will successfully Map staging[0].
-        ++readbackFrameCount_;
-        std::fprintf(stderr, "[Compositor] Readback ring priming (frame 0 skip)\n");
-        return buf;
+        auto start = std::chrono::high_resolution_clock::now();
+
+        if (!renderTarget_) {
+            recordFailure(ReadbackFailureStage::SourceTextureMissing, E_POINTER);
+            return buf;
+        }
+
+        D3D11_TEXTURE2D_DESC sourceDesc{};
+        renderTarget_->GetDesc(&sourceDesc);
+        lastReadbackDiag_.sourceTexture = captureTextureDesc(renderTarget_.Get());
+        const UINT bytesPerPixel = readbackBytesPerPixel(sourceDesc.Format);
+        const UINT expectedRowBytes = sourceDesc.Width * bytesPerPixel;
+        lastReadbackDiag_.expectedBytes =
+            static_cast<uint64_t>(expectedRowBytes) * sourceDesc.Height;
+
+        if (sourceDesc.Width == 0 || sourceDesc.Height == 0 ||
+            sourceDesc.SampleDesc.Count != 1) {
+            recordFailure(ReadbackFailureStage::DimensionsInvalid, E_INVALIDARG);
+            return buf;
+        }
+
+        D3D11_TEXTURE2D_DESC stagingDesc{};
+        stagingDesc.Width              = sourceDesc.Width;
+        stagingDesc.Height             = sourceDesc.Height;
+        stagingDesc.MipLevels          = 1;
+        stagingDesc.ArraySize          = 1;
+        stagingDesc.Format             = sourceDesc.Format;
+        stagingDesc.SampleDesc.Count   = 1;
+        stagingDesc.SampleDesc.Quality = 0;
+        stagingDesc.Usage              = D3D11_USAGE_STAGING;
+        stagingDesc.BindFlags          = 0;
+        stagingDesc.CPUAccessFlags     = D3D11_CPU_ACCESS_READ;
+        stagingDesc.MiscFlags          = 0;
+
+        auto stagingMatchesSource = [&sourceDesc](const ReadbackTextureDesc& desc) {
+            return desc.width == sourceDesc.Width &&
+                   desc.height == sourceDesc.Height &&
+                   desc.format == sourceDesc.Format &&
+                   desc.usage == D3D11_USAGE_STAGING &&
+                   desc.cpuAccessFlags == D3D11_CPU_ACCESS_READ &&
+                   desc.bindFlags == 0 &&
+                   desc.miscFlags == 0 &&
+                   desc.sampleCount == 1;
+        };
+
+        auto ensureWritableStaging = [&](uint64_t index) -> bool {
+            if (index >= static_cast<uint64_t>(kReadbackStagingTextureCount)) return false;
+
+            if (stagingTextures_[index]) {
+                const auto current = captureTextureDesc(stagingTextures_[index].Get());
+                if (stagingMatchesSource(current)) {
+                    return true;
+                }
+                stagingTextures_[index].Reset();
+            }
+
+            HRESULT hr = device_->CreateTexture2D(&stagingDesc, nullptr, &stagingTextures_[index]);
+            if (FAILED(hr)) {
+                lastReadbackDiag_.stagingTexture.width = stagingDesc.Width;
+                lastReadbackDiag_.stagingTexture.height = stagingDesc.Height;
+                lastReadbackDiag_.stagingTexture.format = stagingDesc.Format;
+                lastReadbackDiag_.stagingTexture.usage = stagingDesc.Usage;
+                lastReadbackDiag_.stagingTexture.cpuAccessFlags = stagingDesc.CPUAccessFlags;
+                lastReadbackDiag_.stagingTexture.bindFlags = stagingDesc.BindFlags;
+                lastReadbackDiag_.stagingTexture.miscFlags = stagingDesc.MiscFlags;
+                lastReadbackDiag_.stagingTexture.sampleCount = stagingDesc.SampleDesc.Count;
+                recordFailure(ReadbackFailureStage::StagingTextureCreateFailed, hr);
+                return false;
+            }
+            return true;
+        };
+
+        // PATH A: FastImmediate — Immediate mode, or PreviewRing + FastImmediate policy.
+        //   staging[0], blocking Map (no DO_NOT_WAIT). ~0-2ms on NVIDIA.
+        // PATH B: AsyncQueued — PreviewRing + AsyncQueued policy.
+        //   state-tracked ring; asyncReadHead_ only advances on success or fatal,
+        //   never on WAS_STILL_DRAWING so the same slot is retried next tick.
+        const bool useAsync = (mode == ReadbackMode::PreviewRing &&
+                               activePolicy_ == ReadbackPolicy::AsyncQueued);
+
+        if (!useAsync) {
+            // ── PATH A: FastImmediate ─────────────────────────────────────────
+            lastReadbackDiag_.mapFlags = 0;   // NO DO_NOT_WAIT
+
+            if (!ensureWritableStaging(0)) return buf;
+
+            lastReadbackDiag_.stagingTexture = captureTextureDesc(stagingTextures_[0].Get());
+            lastReadbackDiag_.dimensionsMatch = stagingMatchesSource(lastReadbackDiag_.stagingTexture);
+            if (!lastReadbackDiag_.dimensionsMatch) {
+                recordFailure(ReadbackFailureStage::CopyPreconditionFailed, E_INVALIDARG);
+                return buf;
+            }
+
+            deviceCtx_->CopyResource(stagingTextures_[0].Get(), renderTarget_.Get());
+            lastReadbackDiag_.deviceRemovedReason = device_->GetDeviceRemovedReason();
+            if (FAILED(lastReadbackDiag_.deviceRemovedReason)) {
+                lastReadbackDiag_.failureStage = ReadbackFailureStage::CopyIssuedThenDeviceRemoved;
+                lastReadbackDiag_.hresult = S_OK;
+                lastReadbackHR_ = S_OK;
+                std::fprintf(stderr,
+                    "[Compositor] Readback CopyResource issued, then device removal detected: "
+                    "deviceRemovedReason=0x%08X (%s)\n",
+                    static_cast<unsigned int>(lastReadbackDiag_.deviceRemovedReason),
+                    hrText(lastReadbackDiag_.deviceRemovedReason));
+                return buf;
+            }
+
+            D3D11_MAPPED_SUBRESOURCE mapped;
+            HRESULT hr = deviceCtx_->Map(stagingTextures_[0].Get(), 0,
+                                          D3D11_MAP_READ, 0, &mapped);
+            if (FAILED(hr)) {
+                if (hr == DXGI_ERROR_WAS_STILL_DRAWING) {
+                    // Shouldn't happen without DO_NOT_WAIT, but handle defensively
+                    buf.result = ReadbackResult::NotReady;
+                    lastReadbackDiag_.failureStage = ReadbackFailureStage::None;
+                    lastReadbackDiag_.hresult = hr;
+                    lastReadbackHR_ = hr;
+                    return buf;
+                }
+                recordFailure(ReadbackFailureStage::MapFailed, hr);
+                buf.result = ReadbackResult::Fatal;
+                return buf;
+            }
+
+            lastReadbackDiag_.mappedRowPitch = mapped.RowPitch;
+            if (mapped.RowPitch < expectedRowBytes) {
+                deviceCtx_->Unmap(stagingTextures_[0].Get(), 0);
+                recordFailure(ReadbackFailureStage::RowPitchInvalid, E_INVALIDARG);
+                return buf;
+            }
+
+            buf.width  = static_cast<int>(sourceDesc.Width);
+            buf.height = static_cast<int>(sourceDesc.Height);
+            buf.stride = static_cast<int>(expectedRowBytes);
+            buf.pixels.resize(static_cast<size_t>(buf.stride) * buf.height);
+
+            const uint8_t* src = static_cast<const uint8_t*>(mapped.pData);
+            for (int y = 0; y < buf.height; ++y) {
+                std::memcpy(buf.pixels.data() + y * buf.stride,
+                            src + y * mapped.RowPitch,
+                            static_cast<size_t>(buf.stride));
+            }
+
+            deviceCtx_->Unmap(stagingTextures_[0].Get(), 0);
+            lastReadbackDiag_.actualCopyBytes =
+                static_cast<uint64_t>(buf.stride) * buf.height;
+            lastReadbackDiag_.failureStage = ReadbackFailureStage::None;
+            lastReadbackDiag_.hresult = S_OK;
+            lastReadbackDiag_.deviceRemovedReason = S_OK;
+            lastReadbackHR_ = S_OK;
+            buf.valid = true;
+            buf.result = ReadbackResult::Valid;
+
+            auto end = std::chrono::high_resolution_clock::now();
+            double ms = std::chrono::duration<double, std::milli>(end - start).count();
+            std::fprintf(stderr,
+                "[Compositor] GPU readback: %dx%d mode=%s policy=FastImmediate staging[0] "
+                "rowPitch=%u expectedBytes=%llu copyBytes=%llu in %.2fms\n",
+                width_, height_,
+                mode == ReadbackMode::PreviewRing ? "PreviewRing" : "Immediate",
+                lastReadbackDiag_.mappedRowPitch,
+                static_cast<unsigned long long>(lastReadbackDiag_.expectedBytes),
+                static_cast<unsigned long long>(lastReadbackDiag_.actualCopyBytes),
+                ms);
+
+            return buf;
+
+        } else {
+            // ── PATH B: AsyncQueued ───────────────────────────────────────────
+            // asyncReadHead_ only advances on map success or fatal — never on
+            // WAS_STILL_DRAWING — so the same oldest slot is retried next tick.
+            lastReadbackDiag_.mapFlags = D3D11_MAP_FLAG_DO_NOT_WAIT;  // 0x00100000
+
+            const uint64_t K = kReadbackStagingTextureCount;
+
+            // (a) Ring-full guard: drop the oldest pending slot if all K are CopyIssued
+            if ((asyncWriteHead_ - asyncReadHead_) >= K) {
+                slotState_[asyncReadHead_ % K] = StagingSlotState::Free;
+                ++asyncReadHead_;
+                ++droppedPendingFrames_;
+            }
+
+            // (b) Write current render target into the next slot
+            const uint64_t writeSlot = asyncWriteHead_ % K;
+            if (!ensureWritableStaging(writeSlot)) {
+                buf.result = ReadbackResult::NotReady;
+                return buf;
+            }
+
+            lastReadbackDiag_.stagingTexture = captureTextureDesc(stagingTextures_[writeSlot].Get());
+            lastReadbackDiag_.dimensionsMatch = stagingMatchesSource(lastReadbackDiag_.stagingTexture);
+            if (!lastReadbackDiag_.dimensionsMatch) {
+                recordFailure(ReadbackFailureStage::CopyPreconditionFailed, E_INVALIDARG);
+                return buf;
+            }
+
+            deviceCtx_->CopyResource(stagingTextures_[writeSlot].Get(), renderTarget_.Get());
+            lastReadbackDiag_.deviceRemovedReason = device_->GetDeviceRemovedReason();
+            if (FAILED(lastReadbackDiag_.deviceRemovedReason)) {
+                lastReadbackDiag_.failureStage = ReadbackFailureStage::CopyIssuedThenDeviceRemoved;
+                lastReadbackDiag_.hresult = S_OK;
+                lastReadbackHR_ = S_OK;
+                std::fprintf(stderr,
+                    "[Compositor] Readback CopyResource issued, then device removal detected: "
+                    "deviceRemovedReason=0x%08X (%s)\n",
+                    static_cast<unsigned int>(lastReadbackDiag_.deviceRemovedReason),
+                    hrText(lastReadbackDiag_.deviceRemovedReason));
+                return buf;
+            }
+
+            slotState_[writeSlot] = StagingSlotState::CopyIssued;
+            ++asyncWriteHead_;
+
+            // (c) Priming: need at least 2 outstanding slots before attempting Map
+            if ((asyncWriteHead_ - asyncReadHead_) < 2) {
+                buf.result = ReadbackResult::NotReady;
+                return buf;
+            }
+
+            // (d) Try to map the oldest pending slot
+            const uint64_t readSlot = asyncReadHead_ % K;
+            if (slotState_[readSlot] != StagingSlotState::CopyIssued) {
+                buf.result = ReadbackResult::NotReady;
+                return buf;
+            }
+
+            lastReadbackDiag_.stagingTexture = captureTextureDesc(stagingTextures_[readSlot].Get());
+            lastReadbackDiag_.dimensionsMatch = stagingMatchesSource(lastReadbackDiag_.stagingTexture);
+            if (!lastReadbackDiag_.dimensionsMatch) {
+                slotState_[readSlot] = StagingSlotState::Free;
+                ++asyncReadHead_;
+                recordFailure(ReadbackFailureStage::CopyPreconditionFailed, E_INVALIDARG);
+                return buf;
+            }
+
+            D3D11_MAPPED_SUBRESOURCE mapped;
+            HRESULT hr = deviceCtx_->Map(stagingTextures_[readSlot].Get(), 0,
+                                          D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
+            if (FAILED(hr)) {
+                if (hr == DXGI_ERROR_WAS_STILL_DRAWING) {
+                    // GPU not done — do NOT advance asyncReadHead_; retry same slot next tick
+                    buf.result = ReadbackResult::NotReady;
+                    lastReadbackDiag_.failureStage = ReadbackFailureStage::None;
+                    lastReadbackDiag_.hresult = hr;
+                    lastReadbackHR_ = hr;
+                    return buf;
+                }
+                // Fatal: advance readHead to unblock the ring
+                slotState_[readSlot] = StagingSlotState::Free;
+                ++asyncReadHead_;
+                recordFailure(ReadbackFailureStage::MapFailed, hr);
+                buf.result = ReadbackResult::Fatal;
+                return buf;
+            }
+
+            lastReadbackDiag_.mappedRowPitch = mapped.RowPitch;
+            if (mapped.RowPitch < expectedRowBytes) {
+                deviceCtx_->Unmap(stagingTextures_[readSlot].Get(), 0);
+                slotState_[readSlot] = StagingSlotState::Free;
+                ++asyncReadHead_;
+                recordFailure(ReadbackFailureStage::RowPitchInvalid, E_INVALIDARG);
+                return buf;
+            }
+
+            buf.width  = static_cast<int>(sourceDesc.Width);
+            buf.height = static_cast<int>(sourceDesc.Height);
+            buf.stride = static_cast<int>(expectedRowBytes);
+            buf.pixels.resize(static_cast<size_t>(buf.stride) * buf.height);
+
+            const uint8_t* src = static_cast<const uint8_t*>(mapped.pData);
+            for (int y = 0; y < buf.height; ++y) {
+                std::memcpy(buf.pixels.data() + y * buf.stride,
+                            src + y * mapped.RowPitch,
+                            static_cast<size_t>(buf.stride));
+            }
+
+            deviceCtx_->Unmap(stagingTextures_[readSlot].Get(), 0);
+            slotState_[readSlot] = StagingSlotState::Free;
+            ++asyncReadHead_;
+
+            lastReadbackDiag_.actualCopyBytes =
+                static_cast<uint64_t>(buf.stride) * buf.height;
+            lastReadbackDiag_.failureStage = ReadbackFailureStage::None;
+            lastReadbackDiag_.hresult = S_OK;
+            lastReadbackDiag_.deviceRemovedReason = S_OK;
+            lastReadbackHR_ = S_OK;
+            buf.valid = true;
+            buf.result = ReadbackResult::Valid;
+
+            auto end = std::chrono::high_resolution_clock::now();
+            double ms = std::chrono::duration<double, std::milli>(end - start).count();
+            std::fprintf(stderr,
+                "[Compositor] GPU readback: %dx%d mode=PreviewRing policy=AsyncQueued staging[%llu] "
+                "rowPitch=%u expectedBytes=%llu copyBytes=%llu in %.2fms "
+                "ring(write=%llu read=%llu dropped=%llu)\n",
+                width_, height_,
+                static_cast<unsigned long long>(readSlot),
+                lastReadbackDiag_.mappedRowPitch,
+                static_cast<unsigned long long>(lastReadbackDiag_.expectedBytes),
+                static_cast<unsigned long long>(lastReadbackDiag_.actualCopyBytes),
+                ms,
+                static_cast<unsigned long long>(asyncWriteHead_),
+                static_cast<unsigned long long>(asyncReadHead_),
+                static_cast<unsigned long long>(droppedPendingFrames_));
+
+            return buf;
+        }
     }
-
-    // Map the PREVIOUS frame's staging texture
-    D3D11_MAPPED_SUBRESOURCE mapped;
-    HRESULT hr = deviceCtx_->Map(stagingTextures_[readIdx].Get(), 0,
-                                  D3D11_MAP_READ, 0, &mapped);
-    ++readbackFrameCount_;
-
-    if (FAILED(hr)) {
-        lastReadbackHR_ = hr;
-        D3D11_TEXTURE2D_DESC sdesc{};
-        stagingTextures_[readIdx]->GetDesc(&sdesc);
-        std::fprintf(stderr,
-            "[Compositor] Readback Map FAILED: HR=0x%08X (%s) "
-            "staging[%llu] %ux%u fmt=%u usage=%u bind=0x%X cpu=0x%X rowPitchExpected=%u\n",
-            static_cast<unsigned int>(hr), hrText(hr),
-            static_cast<unsigned long long>(readIdx),
-            sdesc.Width, sdesc.Height,
-            static_cast<unsigned>(sdesc.Format),
-            static_cast<unsigned>(sdesc.Usage),
-            sdesc.BindFlags, sdesc.CPUAccessFlags,
-            sdesc.Width * 4u);
-        return buf;
-    }
-
-    lastReadbackHR_ = S_OK;
-    buf.width  = width_;
-    buf.height = height_;
-    buf.stride = width_ * 4;
-    buf.pixels.resize(static_cast<size_t>(buf.stride) * height_);
-
-    // Copy row by row (staging pitch may differ from our tightly-packed stride)
-    const uint8_t* src = static_cast<const uint8_t*>(mapped.pData);
-    for (int y = 0; y < height_; ++y) {
-        std::memcpy(buf.pixels.data() + y * buf.stride,
-                    src + y * mapped.RowPitch,
-                    static_cast<size_t>(buf.stride));
-    }
-
-    deviceCtx_->Unmap(stagingTextures_[readIdx].Get(), 0);
-    buf.valid = true;
-
-    auto end = std::chrono::high_resolution_clock::now();
-    double ms = std::chrono::duration<double, std::milli>(end - start).count();
-    std::fprintf(stderr, "[Compositor] GPU readback: %dx%d in %.2fms\n",
-                 width_, height_, ms);
-
-    return buf;
 }
 
 // ===========================================================================
@@ -1191,6 +1580,47 @@ ID3D11ShaderResourceView* GridCompositor::processEffectChain(
         deviceCtx_->OMSetRenderTargets(1, &nullRTV, nullptr);
 
         // Swap src/dst for next pass
+        std::swap(currentSrc, nextSrc);
+        std::swap(currentDst, nextDst);
+    }
+
+    // Step 3: Slide TV ramp pass — independent of the visual chain.
+    // Renders an extra TV Simulator pass on top of whatever the chain
+    // produced, using the slide-only TV params from AnimationManager. Only
+    // active while the slide TV ramp is non-zero. tvRampIntensity is the
+    // per-frame animated value (peak * (1 - t)); the other 6 params shape the
+    // distortion and stay constant for the ramp's duration.
+    if (req.tvRampIntensity > 0.0001f && effectShaders_.tvSimulatorPS) {
+        // Pack into the TVSimConstants layout used by the chain TV pass.
+        // (Mirror the params[0..6] order; params[7] is the unused tvPad slot.)
+        float slideTvParams[8] = {
+            req.tvRampIntensity,
+            req.tvRampRollSpeed,
+            req.tvRampScanlines,
+            req.tvRampChroma,
+            req.tvRampNoise,
+            req.tvRampJitter,
+            req.tvRampColorBleed,
+            0.0f,
+        };
+
+        ID3D11Buffer* slideTvCB = effectShaders_.tvSimCB.Get();
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        if (SUCCEEDED(deviceCtx_->Map(slideTvCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+            D3D11_BUFFER_DESC cbDesc;
+            slideTvCB->GetDesc(&cbDesc);
+            UINT copySize = std::min(static_cast<UINT>(sizeof(slideTvParams)), cbDesc.ByteWidth);
+            std::memcpy(mapped.pData, slideTvParams, copySize);
+            deviceCtx_->Unmap(slideTvCB, 0);
+        }
+        deviceCtx_->PSSetConstantBuffers(2, 1, &slideTvCB);
+
+        deviceCtx_->PSSetShader(effectShaders_.tvSimulatorPS.Get(), nullptr, 0);
+        deviceCtx_->ClearRenderTargetView(currentDst, clearColor);
+        deviceCtx_->OMSetRenderTargets(1, &currentDst, nullptr);
+        drawEffectPass(currentSrc);
+
+        deviceCtx_->OMSetRenderTargets(1, &nullRTV, nullptr);
         std::swap(currentSrc, nextSrc);
         std::swap(currentDst, nextDst);
     }

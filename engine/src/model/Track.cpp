@@ -240,6 +240,19 @@ void to_json(nlohmann::json& j, const TrackInfo& t) {
 
     j["subdivisionFactor"] = t.subdivisionFactor;
 
+    // ── Track color (Pass 6D + 6F) ──────────────────────────────────────
+    // Always emit mode; emit slot only for PaletteSlot mode and trackColorCustom
+    // only for Custom mode to keep auto-only projects compact.
+    j["trackColorMode"] = trackColorModeToString(t.trackColorMode);
+    if (t.trackColorMode == TrackColorMode::PaletteSlot
+        && t.trackColorSlot >= 1 && t.trackColorSlot <= 16) {
+        j["trackColorSlot"] = t.trackColorSlot;
+    }
+    if (t.trackColorMode == TrackColorMode::Custom
+        && isValidTrackCustomColor(t.trackColorCustom)) {
+        j["trackColorCustom"] = t.trackColorCustom;
+    }
+
     j["bounce"] = {
         {"enabled",      t.bounce.enabled},
         {"directionDeg", t.bounce.directionDeg},
@@ -277,18 +290,50 @@ void to_json(nlohmann::json& j, const TrackInfo& t) {
         {"overshoot",      t.zoomPanRot.overshoot},
     };
 
-    j["slideNoteEffect"] = {
-        {"type",                static_cast<int>(t.slideNoteEffect.type)},
-        {"durationMode",        static_cast<int>(t.slideNoteEffect.durationMode)},
-        {"fixedDurationMs",     t.slideNoteEffect.fixedDurationMs},
-        {"slideZoomDelta",      t.slideNoteEffect.slideZoomDelta},
-        {"slidePanXDelta",      t.slideNoteEffect.slidePanXDelta},
-        {"slidePanYDelta",      t.slideNoteEffect.slidePanYDelta},
-        {"slideRotationDelta",  t.slideNoteEffect.slideRotationDelta},
-        {"slideBounceDistance", t.slideNoteEffect.slideBounceDistance},
-        {"slideBounceDirDeg",   t.slideNoteEffect.slideBounceDirDeg},
-        {"slideTVIntensity",    t.slideNoteEffect.slideTVIntensity},
-    };
+    {
+        const auto& sb = t.slideNoteEffect.bounce;
+        const auto& sz = t.slideNoteEffect.zoomPanRot;
+        const auto& stv = t.slideNoteEffect.tv;
+        j["slideNoteEffect"] = {
+            {"type",             static_cast<int>(t.slideNoteEffect.type)},
+            {"durationMode",     static_cast<int>(t.slideNoteEffect.durationMode)},
+            {"fixedDurationMs",  t.slideNoteEffect.fixedDurationMs},
+            {"returnStyle",      static_cast<int>(t.slideNoteEffect.returnStyle)},
+            {"returnTrigger",    static_cast<int>(t.slideNoteEffect.returnTrigger)},
+            {"returnDurationMs", t.slideNoteEffect.returnDurationMs},
+            {"bounce", {
+                {"directionDeg", sb.directionDeg},
+                {"distance",     sb.distance},
+                {"squashAmount", sb.squashAmount},
+                {"overshoot",    sb.overshoot},
+                {"repeatCount",  sb.repeatCount},
+                {"easingType",   sb.easingType},
+            }},
+            {"zoomPanRot", {
+                {"startZoom",      sz.startZoom},
+                {"targetZoom",     sz.targetZoom},
+                {"startPanX",      sz.startPanX},
+                {"startPanY",      sz.startPanY},
+                {"targetPanX",     sz.targetPanX},
+                {"targetPanY",     sz.targetPanY},
+                {"startRotation",  sz.startRotation},
+                {"targetRotation", sz.targetRotation},
+                {"zoomEasing",     sz.zoomEasing},
+                {"panEasing",      sz.panEasing},
+                {"rotEasing",      sz.rotEasing},
+                {"overshoot",      sz.overshoot},
+            }},
+            {"tv", {
+                {"intensity",  stv.intensity},
+                {"rollSpeed",  stv.rollSpeed},
+                {"scanlines",  stv.scanlines},
+                {"chroma",     stv.chroma},
+                {"noise",      stv.noise},
+                {"jitter",     stv.jitter},
+                {"colorBleed", stv.colorBleed},
+            }},
+        };
+    }
 
     nlohmann::json chain = nlohmann::json::array();
     for (const auto& fx : t.visualEffectChain) {
@@ -349,6 +394,31 @@ void from_json(const nlohmann::json& j, TrackInfo& t) {
         t.subdivisionFactor = f;
     }
 
+    // ── Track color (Pass 6D + 6F) ──────────────────────────────────────
+    // Old projects (no fields) → Auto. Invalid mode / slot / custom-hex
+    // combinations sanitize to Auto. Loader is tolerant: never throws.
+    {
+        const std::string modeStr = j.value("trackColorMode", std::string("auto"));
+        const TrackColorMode mode = stringToTrackColorMode(modeStr);
+        const int slot = j.value("trackColorSlot", 0);
+        const std::string customRaw = j.value("trackColorCustom", std::string(""));
+        const std::string customNorm = normalizeTrackCustomColor(customRaw);
+
+        if (mode == TrackColorMode::PaletteSlot && slot >= 1 && slot <= 16) {
+            t.trackColorMode   = TrackColorMode::PaletteSlot;
+            t.trackColorSlot   = slot;
+            t.trackColorCustom.clear();
+        } else if (mode == TrackColorMode::Custom && !customNorm.empty()) {
+            t.trackColorMode   = TrackColorMode::Custom;
+            t.trackColorSlot   = 0;
+            t.trackColorCustom = customNorm;
+        } else {
+            t.trackColorMode   = TrackColorMode::Auto;
+            t.trackColorSlot   = 0;
+            t.trackColorCustom.clear();
+        }
+    }
+
     if (j.contains("bounce") && j.at("bounce").is_object()) {
         const auto& jb = j.at("bounce");
         t.bounce.enabled      = jb.value("enabled",      false);
@@ -391,18 +461,79 @@ void from_json(const nlohmann::json& j, TrackInfo& t) {
 
     if (j.contains("slideNoteEffect") && j.at("slideNoteEffect").is_object()) {
         const auto& js = j.at("slideNoteEffect");
-        t.slideNoteEffect.type = static_cast<SlideNoteEffectSettings::EffectType>(
-            js.value("type", 0));
-        t.slideNoteEffect.durationMode = static_cast<SlideNoteEffectSettings::DurationMode>(
+        auto& s = t.slideNoteEffect;
+        s.type = static_cast<SlideNoteEffectSettings::EffectType>(js.value("type", 0));
+        s.durationMode = static_cast<SlideNoteEffectSettings::DurationMode>(
             js.value("durationMode", 0));
-        t.slideNoteEffect.fixedDurationMs     = js.value("fixedDurationMs",     300.0f);
-        t.slideNoteEffect.slideZoomDelta      = js.value("slideZoomDelta",      1.0f);
-        t.slideNoteEffect.slidePanXDelta      = js.value("slidePanXDelta",      0.0f);
-        t.slideNoteEffect.slidePanYDelta      = js.value("slidePanYDelta",      0.0f);
-        t.slideNoteEffect.slideRotationDelta  = js.value("slideRotationDelta",  0.0f);
-        t.slideNoteEffect.slideBounceDistance = js.value("slideBounceDistance", 0.0f);
-        t.slideNoteEffect.slideBounceDirDeg   = js.value("slideBounceDirDeg",   0.0f);
-        t.slideNoteEffect.slideTVIntensity    = js.value("slideTVIntensity",    0.0f);
+        s.fixedDurationMs = js.value("fixedDurationMs", 300.0f);
+
+        // Visual return policy (added with the configurable-return system).
+        // Defaults: SmoothReverse + NextNormalNote + 200ms — closest to the
+        // pre-feature feel and prevents stuck ZPR cells in old projects.
+        s.returnStyle = static_cast<SlideNoteEffectSettings::ReturnStyle>(
+            js.value("returnStyle", 1));     // 1 = SmoothReverse
+        s.returnTrigger = static_cast<SlideNoteEffectSettings::ReturnTrigger>(
+            js.value("returnTrigger", 0));   // 0 = NextNormalNote
+        s.returnDurationMs = js.value("returnDurationMs", 200.0f);
+
+        // New nested shape (bounce / zoomPanRot / tv objects)
+        if (js.contains("bounce") && js.at("bounce").is_object()) {
+            const auto& jb = js.at("bounce");
+            s.bounce.directionDeg = jb.value("directionDeg", 270.0f);
+            s.bounce.distance     = jb.value("distance",     0.15f);
+            s.bounce.squashAmount = jb.value("squashAmount", 0.0f);
+            s.bounce.overshoot    = jb.value("overshoot",    1.70158f);
+            s.bounce.repeatCount  = jb.value("repeatCount",  1);
+            s.bounce.easingType   = jb.value("easingType",   0);
+        } else {
+            // Legacy migration: flat slideBounce* fields
+            s.bounce.distance     = js.value("slideBounceDistance", 0.15f);
+            s.bounce.directionDeg = js.value("slideBounceDirDeg",   270.0f);
+            // Other Bounce fields fall to struct defaults.
+        }
+
+        if (js.contains("zoomPanRot") && js.at("zoomPanRot").is_object()) {
+            const auto& jz = js.at("zoomPanRot");
+            s.zoomPanRot.startZoom      = jz.value("startZoom",      1.0f);
+            s.zoomPanRot.targetZoom     = jz.value("targetZoom",     1.0f);
+            s.zoomPanRot.startPanX      = jz.value("startPanX",      0.0f);
+            s.zoomPanRot.startPanY      = jz.value("startPanY",      0.0f);
+            s.zoomPanRot.targetPanX     = jz.value("targetPanX",     0.0f);
+            s.zoomPanRot.targetPanY     = jz.value("targetPanY",     0.0f);
+            s.zoomPanRot.startRotation  = jz.value("startRotation",  0.0f);
+            s.zoomPanRot.targetRotation = jz.value("targetRotation", 0.0f);
+            s.zoomPanRot.zoomEasing     = jz.value("zoomEasing",     1);
+            s.zoomPanRot.panEasing      = jz.value("panEasing",      1);
+            s.zoomPanRot.rotEasing      = jz.value("rotEasing",      1);
+            s.zoomPanRot.overshoot      = jz.value("overshoot",      1.70158f);
+        } else {
+            // Legacy migration: literal value preserved, semantics shift from
+            // delta to absolute. For default values (1.0 / 0 / 0 / 0) behavior
+            // is identical; non-default values reinterpret as absolute targets.
+            s.zoomPanRot.startZoom      = 1.0f;
+            s.zoomPanRot.targetZoom     = js.value("slideZoomDelta",     1.0f);
+            s.zoomPanRot.startPanX      = 0.0f;
+            s.zoomPanRot.startPanY      = 0.0f;
+            s.zoomPanRot.targetPanX     = js.value("slidePanXDelta",     0.0f);
+            s.zoomPanRot.targetPanY     = js.value("slidePanYDelta",     0.0f);
+            s.zoomPanRot.startRotation  = 0.0f;
+            s.zoomPanRot.targetRotation = js.value("slideRotationDelta", 0.0f);
+        }
+
+        if (js.contains("tv") && js.at("tv").is_object()) {
+            const auto& jt = js.at("tv");
+            s.tv.intensity   = jt.value("intensity",  0.5f);
+            s.tv.rollSpeed   = jt.value("rollSpeed",  1.0f);
+            s.tv.scanlines   = jt.value("scanlines",  0.3f);
+            s.tv.chroma      = jt.value("chroma",     0.003f);
+            s.tv.noise       = jt.value("noise",      0.0f);
+            s.tv.jitter      = jt.value("jitter",     2.0f);
+            s.tv.colorBleed  = jt.value("colorBleed", 0.0f);
+        } else {
+            // Legacy migration: only intensity carried over; others use
+            // SlideTVSettings defaults (which match VisualEffect TV defaults).
+            s.tv.intensity = js.value("slideTVIntensity", 0.5f);
+        }
     }
 
     t.visualEffectChain.clear();

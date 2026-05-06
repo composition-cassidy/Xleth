@@ -122,6 +122,7 @@ window.xleth = ({
     setTrackCornerRadius:     (trackId, v) => invoke('xleth:timeline:setTrackCornerRadius', trackId, v),
     setTrackGapScaleOverride: (trackId, v) => invoke('xleth:timeline:setTrackGapScaleOverride', trackId, v),
     setTrackSubdivisionFactor: (trackId, factor) => invoke('xleth:timeline:setTrackSubdivisionFactor', trackId, factor),
+    setTrackColor:            (trackId, assignment) => invoke('xleth:timeline:setTrackColor', trackId, assignment),
     setTrackBounceSettings:        (trackId, bounce) => invoke('xleth:timeline:setTrackBounceSettings', trackId, bounce),
     setTrackZoomPanRotSettings:    (trackId, zpr)   => invoke('xleth:timeline:setTrackZoomPanRotSettings', trackId, zpr),
     setTrackPingPongSettings:      (trackId, pp)    => invoke('xleth:timeline:setTrackPingPongSettings', trackId, pp),
@@ -161,8 +162,7 @@ window.xleth = ({
     assignTrackToGrid:   (trackId, gx, gy, sx, sy)       => invoke('xleth:timeline:assignTrackToGrid', trackId, gx, gy, sx, sy),
     assignTrackToGridWithZOrder: (trackId, gx, gy, sx, sy, z) => invoke('xleth:timeline:assignTrackToGridWithZOrder', trackId, gx, gy, sx, sy, z),
     removeTrackFromGrid: (trackId)                       => invoke('xleth:timeline:removeTrackFromGrid', trackId),
-    setChorusTrack:      (trackId)                       => invoke('xleth:timeline:setChorusTrack', trackId),
-    setCrashOverlay:     (enabled, trackId, opacity)     => invoke('xleth:timeline:setCrashOverlay', enabled, trackId, opacity),
+    setFullscreenLayers: (layers)                        => invoke('xleth:timeline:setFullscreenLayers', layers),
     setPreviewFps:       (fps)                           => invoke('xleth:timeline:setPreviewFps', fps),
     // Convenience wrappers for grid-level gapScale (delegate to full grid layout
     // round-trip — dedicated named endpoints for consistency with the rest of

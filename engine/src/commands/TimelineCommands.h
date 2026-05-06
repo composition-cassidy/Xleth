@@ -274,10 +274,10 @@ private:
     // Grid cascade snapshots — restored in undo().
     bool              hadGridSlot_      = false;
     GridSlot          removedGridSlot_;
-    bool              wasChorusTrack_   = false;
-    bool              wasCrashTrack_    = false;
-    float             oldCrashOpacity_  = 0.7f;
-    bool              oldCrashEnabled_  = false;
+    // Every fullscreen layer that referenced the removed track, paired with
+    // its index in the layer vector at construction time. Restored in original
+    // order so undo() preserves the relative stacking.
+    std::vector<std::pair<size_t, FullscreenLayer>> removedFullscreenLayers_;
 };
 
 // ─── AddRegionCommand ─────────────────────────────────────────────────────────
@@ -494,34 +494,22 @@ private:
     GridSlot removedSlot_;
 };
 
-// ─── SetChorusTrackCommand ────────────────────────────────────────────────────
+// ─── SetFullscreenLayersCommand ───────────────────────────────────────────────
+// Atomically replaces the entire fullscreenLayers vector. Snapshots the prior
+// videoHoldLastFrame state of every track touched by a new BehindGrid layer so
+// undo() can restore the flag for tracks the command auto-enabled.
 
-class SetChorusTrackCommand : public Command {
+class SetFullscreenLayersCommand : public Command {
 public:
-    SetChorusTrackCommand(int trackId, const Timeline& timeline);
+    SetFullscreenLayersCommand(std::vector<FullscreenLayer> newLayers,
+                               const Timeline& timeline);
     void execute(Timeline& timeline) override;
     void undo(Timeline& timeline) override;
     std::string describe() const override;
 private:
-    int  oldTrackId_;
-    int  newTrackId_;
-    bool newTrackOldHold_ = false;  // videoHoldLastFrame before auto-enable
-};
-
-// ─── SetCrashOverlayCommand ───────────────────────────────────────────────────
-// Atomically sets enabled, trackId, and opacity for the crash overlay.
-
-class SetCrashOverlayCommand : public Command {
-public:
-    SetCrashOverlayCommand(bool enabled, int trackId, float opacity,
-                           const Timeline& timeline);
-    void execute(Timeline& timeline) override;
-    void undo(Timeline& timeline) override;
-    std::string describe() const override;
-private:
-    bool  oldEnabled_, newEnabled_;
-    int   oldTrackId_, newTrackId_;
-    float oldOpacity_, newOpacity_;
+    std::vector<FullscreenLayer>  oldLayers_;
+    std::vector<FullscreenLayer>  newLayers_;
+    std::unordered_map<int, bool> oldHoldByTrackId_;  // pre-execute videoHoldLastFrame, keyed by trackId
 };
 
 // ─── SetPreviewFpsCommand ─────────────────────────────────────────────────────
@@ -974,6 +962,31 @@ private:
     int trackId_;
     int oldFactor_;
     int newFactor_;
+};
+
+// ─── SetTrackColorCommand (Pass 6D + 6F) ─────────────────────────────────────
+// Assigns track color metadata. Snapshots the prior mode/slot/custom so undo
+// restores the exact previous state. Invalid mode/slot/custom combos are
+// normalized by Timeline::setTrackColor before storage.
+
+class SetTrackColorCommand : public Command {
+public:
+    SetTrackColorCommand(int trackId,
+                         TrackColorMode newMode,
+                         int newSlot,
+                         std::string newCustomColor,
+                         const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int            trackId_;
+    TrackColorMode oldMode_;
+    int            oldSlot_;
+    std::string    oldCustom_;
+    TrackColorMode newMode_;
+    int            newSlot_;
+    std::string    newCustom_;
 };
 
 // ─── SetTrackBounceSettingsCommand ───────────────────────────────────────────

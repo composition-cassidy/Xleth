@@ -127,7 +127,8 @@ int main(int argc, char* argv[])
                  (int)allSources.size(), (int)allRegions.size());
     std::fprintf(stderr, "[TEST:RealRender] Grid layout: %dx%d, %d cells assigned\n",
                  grid.columns, grid.rows, (int)grid.slots.size());
-    std::fprintf(stderr, "[TEST:RealRender] Chorus track: %d\n", grid.chorusTrackId);
+    std::fprintf(stderr, "[TEST:RealRender] Fullscreen layers: %d\n",
+                 (int)grid.fullscreenLayers.size());
 
     // Log sources and check file existence
     for (const auto* src : allSources) {

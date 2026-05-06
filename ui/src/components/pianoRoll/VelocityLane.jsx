@@ -16,6 +16,14 @@ export default function VelocityLane({
   const notesRef = useRef(notes)
   notesRef.current = notes
   const [dragTick, setDragTick] = useState(0)
+  // Bumped on theme change so the canvas repaints with fresh tokenValue() reads.
+  const [themeTick, setThemeTick] = useState(0)
+
+  useEffect(() => {
+    const onThemeChange = () => setThemeTick((t) => t + 1)
+    window.addEventListener('xleth-theme-changed', onThemeChange)
+    return () => window.removeEventListener('xleth-theme-changed', onThemeChange)
+  }, [])
 
   useEffect(() => {
     const c = canvasRef.current
@@ -28,17 +36,38 @@ export default function VelocityLane({
     const ctx = c.getContext('2d')
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
+    // Resolve palette once — avoids repeated getComputedStyle calls in the bars loop
+    const velBg       = tokenValue('--theme-pianoroll-velocity-bg')
+    const zeroLine    = tokenValue('--theme-pianoroll-bar-line')
+    const levelLine   = tokenValue('--theme-pianoroll-velocity-level-line')
+    const velBarSel   = tokenValue('--theme-pianoroll-velocity-bar-fill')
+    const velBarNorm  = tokenValue('--theme-label-pitch')
+
     // Background
-    ctx.fillStyle = tokenValue('--theme-pianoroll-key-black-bg')
+    ctx.fillStyle = velBg
     ctx.fillRect(0, 0, width, height)
 
     // Zero line
-    ctx.strokeStyle = tokenValue('--theme-pianoroll-bar-line')
+    ctx.strokeStyle = zeroLine
     ctx.lineWidth = 1
     ctx.beginPath()
     ctx.moveTo(0, height - 0.5)
     ctx.lineTo(width, height - 0.5)
     ctx.stroke()
+
+    // Level guides at 25 / 50 / 75 % velocity — internal structure without
+    // competing with velocity bars
+    ctx.strokeStyle = levelLine
+    ctx.lineWidth = 1
+    ctx.setLineDash([3, 4])
+    ctx.beginPath()
+    for (const frac of [0.25, 0.5, 0.75]) {
+      const guideY = Math.round(height - frac * (height - 4)) + 0.5
+      ctx.moveTo(0, guideY)
+      ctx.lineTo(width, guideY)
+    }
+    ctx.stroke()
+    ctx.setLineDash([])
 
     // Bars
     const drag = dragRef.current
@@ -52,10 +81,10 @@ export default function VelocityLane({
         : (note.velocity ?? 1.0)
       const barH = Math.max(2, effectiveVel * (height - 4))
       const selected = selectedNoteIds?.has(note.id)
-      ctx.fillStyle = selected ? tokenValue('--theme-pianoroll-velocity-bar-fill') : tokenValue('--theme-label-pitch')
+      ctx.fillStyle = selected ? velBarSel : velBarNorm
       ctx.fillRect(x, height - barH, BAR_WIDTH, barH)
     }
-  }, [notes, selectedNoteIds, pixelsPerBeat, scrollX, width, height, dragTick])
+  }, [notes, selectedNoteIds, pixelsPerBeat, scrollX, width, height, dragTick, themeTick])
 
   const getLocalXY = useCallback((e) => {
     const rect = containerRef.current?.getBoundingClientRect()
@@ -126,7 +155,7 @@ export default function VelocityLane({
         position: 'relative',
         width,
         height,
-        background: 'var(--theme-pianoroll-key-black-bg)',
+        background: 'var(--theme-pianoroll-velocity-bg)',
         borderTop: '1px solid var(--theme-border-subtle)',
         cursor: 'ns-resize',
         flexShrink: 0,

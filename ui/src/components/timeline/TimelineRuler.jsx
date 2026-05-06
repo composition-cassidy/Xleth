@@ -1,5 +1,5 @@
 import { useEffect, useRef, useImperativeHandle, forwardRef } from 'react'
-import { drawRuler } from './timelineDrawing.js'
+import { drawRuler, resolveTimelinePalette } from './timelineDrawing.js'
 import { RULER_HEIGHT, pixelToBeat } from '../../constants/timeline.js'
 import { playheadClock } from '../../services/PlayheadClock.js'
 
@@ -37,7 +37,8 @@ const TimelineRuler = forwardRef(function TimelineRuler(
     const bgCtx = bgCanvasRef.current?.getContext('2d')
     if (bgCtx) {
       bgCtx.setTransform(dpr, 0, 0, dpr, 0, 0)
-      drawRuler(bgCtx, w, RULER_HEIGHT, scrollOffsetRef.current, pixelsPerBeatRef.current)
+      const palette = resolveTimelinePalette()
+      drawRuler(bgCtx, w, RULER_HEIGHT, scrollOffsetRef.current, pixelsPerBeatRef.current, palette)
     }
   }
 

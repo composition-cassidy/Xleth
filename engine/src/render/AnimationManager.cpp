@@ -51,14 +51,7 @@ float applyEasing(float t, int easingType, float overshoot) {
     }
 }
 
-float bezierEase(float t, float cx, float cy) {
-    // Cubic bezier with control points (0,0), (cx,cy), (1-cx,1-cy), (1,1)
-    float u = 1.0f - t;
-    float tt = t * t;
-    float uu = u * u;
-    float y = 3.0f * uu * t * cy + 3.0f * u * tt * (1.0f - cy) + tt * t;
-    return y;
-}
+// bezierEase moved to engine/src/util/BezierEase.h (shared with audio thread).
 
 // ===========================================================================
 // CellAnimation
@@ -68,9 +61,19 @@ void CellAnimation::triggerNote(int noteId, const ZoomPanRotSettings& zpr,
                                  const BounceSettings& bounce) {
     activeNoteId = noteId;
 
+    // A note's own ZPR (if enabled) wins over any in-flight slide return:
+    // the user explicitly animated this cell on the new note, so cancel the
+    // smooth-reverse return and clear the latch. The new note's start values
+    // become the new baseline for any subsequent slide.
+    if (zpr.enabled) {
+        zprReturnActive = false;
+        zprSlideLatched = false;
+    }
+
     // ZPR animation
     if (zpr.enabled) {
-        zprActive     = true;
+        zprActive          = true;
+        zprIsSlideTriggered = false;   // note-triggered ZPRs do NOT latch
         zprElapsedMs  = 0.0f;
         zprDurationMs = zpr.durationMs;
         startZoom     = zpr.startZoom;
@@ -120,58 +123,110 @@ void CellAnimation::triggerNote(int noteId, const ZoomPanRotSettings& zpr,
 #endif
 }
 
-void CellAnimation::triggerSlide(float durationMs, int effectType,
-                                  const ZoomPanRotSettings& zpr,
-                                  const BounceSettings& bounce,
+void CellAnimation::triggerSlide(float durationMs,
+                                  const SlideNoteEffectSettings& cfg,
                                   float curveCx, float curveCy) {
-    useSlideEasing = true;
-    slideCurveCx   = curveCx;
-    slideCurveCy   = curveCy;
+    using EffectType = SlideNoteEffectSettings::EffectType;
 
-    // effectType: 1=ZoomPanRot, 2=Bounce, 3=TVSimulator
-    if (effectType == 1 && zpr.enabled) {
-        zprActive     = true;
-        zprElapsedMs  = 0.0f;
-        zprDurationMs = durationMs;
+    // Snapshot the return policy that will govern this slide's lifetime.
+    // The latched cell honors *this* policy on return, even if the user
+    // changes it on the track later.
+    slideReturnStyle      = static_cast<int>(cfg.returnStyle);
+    slideReturnTrigger    = static_cast<int>(cfg.returnTrigger);
+    slideReturnDurationMs = cfg.returnDurationMs;
 
-        // Slide animation is additive — store in slide fields
-        slideStartZoom      = zpr.startZoom;
-        slideTargetZoom     = zpr.targetZoom;
-        slideStartPanX      = zpr.startPanX;
-        slideStartPanY      = zpr.startPanY;
-        slideTargetPanX     = zpr.targetPanX;
-        slideTargetPanY     = zpr.targetPanY;
-        slideStartRotation  = zpr.startRotation;
-        slideTargetRotation = zpr.targetRotation;
-        zoomEasing   = zpr.zoomEasing;
-        panEasing    = zpr.panEasing;
-        rotEasing    = zpr.rotEasing;
-        zprOvershoot = zpr.overshoot;
+    // Capture per-effect baseline only on a "fresh" slide — i.e., when no
+    // slide is currently latched and no return is mid-flight. This preserves
+    // the user's true pre-slide state across chained slides (NextNormalNote
+    // chain-while-latched, or any back-to-back slides during a return).
+    const bool zprFresh = !zprSlideLatched && !zprReturnActive;
+    const bool tvFresh  = !tvSlideLatched  && !tvReturnActive;
+
+    // useSlideEasing is set per-effect below: ZPR slide honors its own Easing
+    // dropdown (bezier curve does NOT override it); Bounce slide still uses
+    // the slide note's bezier curve to shape the arc.
+    if (cfg.type == EffectType::ZoomPanRot) {
+        const auto& z = cfg.zoomPanRot;
+
+        // Capture pre-slide baseline BEFORE overwriting current* below.
+        if (zprFresh) {
+            zprBaseZoom   = currentZoom;
+            zprBasePanX   = currentPanX;
+            zprBasePanY   = currentPanY;
+            zprBaseRotDeg = currentRotDeg;
+        }
+
+        // A fresh slide overrides any in-flight return on this effect.
+        zprReturnActive    = false;
+        zprSlideLatched    = false;
+        zprIsSlideTriggered = true;
+
+        zprActive       = true;
+        zprElapsedMs    = 0.0f;
+        zprDurationMs   = durationMs;
+
+        // Absolute keyframes — matches the Visual FX ZPR module exactly.
+        startZoom       = z.startZoom;
+        targetZoom      = z.targetZoom;
+        startPanX       = z.startPanX;     targetPanX     = z.targetPanX;
+        startPanY       = z.startPanY;     targetPanY     = z.targetPanY;
+        startRotation   = z.startRotation; targetRotation = z.targetRotation;
+        zoomEasing      = z.zoomEasing;
+        panEasing       = z.panEasing;
+        rotEasing       = z.rotEasing;
+        zprOvershoot    = z.overshoot;
+
+        // Seed current values to the start keyframe so the first rendered
+        // frame matches the start state instead of jumping from the cell's
+        // pre-slide pose.
+        currentZoom     = startZoom;
+        currentPanX     = startPanX;
+        currentPanY     = startPanY;
+        currentRotDeg   = startRotation;
+
+        useSlideEasing  = false;  // ZPR slide uses its own per-axis easing.
     }
 
-    if (effectType == 2 && bounce.enabled) {
+    if (cfg.type == EffectType::Bounce) {
+        const auto& b      = cfg.bounce;
         bounceActive       = true;
         bounceElapsedMs    = 0.0f;
         bounceDurationMs   = durationMs;
-        bounceDirectionDeg = bounce.directionDeg;
-        bounceDistance      = bounce.distance;
-        bounceSquashAmount  = bounce.squashAmount;
-        bounceOvershoot     = bounce.overshoot;
-        bounceRepeatCount   = bounce.repeatCount;
-        bounceEasingType    = bounce.easingType;
+        bounceDirectionDeg = b.directionDeg;
+        bounceDistance     = b.distance;
+        bounceSquashAmount = b.squashAmount;
+        bounceOvershoot    = b.overshoot;
+        bounceRepeatCount  = b.repeatCount;
+        bounceEasingType   = b.easingType;
+
+        // Bezier curve from the slide note still shapes the bounce arc.
+        useSlideEasing  = true;
+        slideCurveCx    = curveCx;
+        slideCurveCy    = curveCy;
     }
 
-    if (effectType == 3) {
-        tvRampActive     = true;
-        tvRampElapsedMs  = 0.0f;
-        tvRampDurationMs = durationMs;
-        tvRampIntensity  = 1.0f;
+    if (cfg.type == EffectType::TVSimulator) {
+        const auto& t       = cfg.tv;
+        (void)tvFresh;                          // baseline is always 0 for TV
+        tvReturnActive      = false;            // a fresh slide overrides return
+        tvSlideLatched      = false;
+        tvRampActive        = true;
+        tvRampElapsedMs     = 0.0f;
+        tvRampDurationMs    = durationMs;
+        tvRampPeakIntensity = t.intensity;
+        tvRampIntensity     = 0.0f;             // ramp UP from 0 -> peak (advance())
+        tvRampRollSpeed     = t.rollSpeed;
+        tvRampScanlines     = t.scanlines;
+        tvRampChroma        = t.chroma;
+        tvRampNoise         = t.noise;
+        tvRampJitter        = t.jitter;
+        tvRampColorBleed    = t.colorBleed;
     }
 
 #ifdef XLETH_DEBUG
     std::fprintf(stderr, "[AnimMgr] Track %d: slide trigger, effectType=%d, duration=%.1fms, "
                  "curve=(%.2f,%.2f)\n",
-                 trackId, effectType, durationMs, curveCx, curveCy);
+                 trackId, static_cast<int>(cfg.type), durationMs, curveCx, curveCy);
 #endif
 }
 
@@ -201,9 +256,43 @@ void CellAnimation::advance(float deltaMs) {
 
             if (t >= 1.0f) {
                 zprActive = false;
+                if (zprIsSlideTriggered) {
+                    // Hold at target until a return trigger fires (the bug
+                    // fix: previously the cell stayed at target *forever*).
+                    zprSlideLatched = true;
+                }
             }
         } else {
             zprActive = false;
+        }
+    }
+
+    // Advance ZPR return animation (SmoothReverse). Runs current* back to
+    // captured base* over zprReturnDurationMs.
+    if (zprReturnActive) {
+        zprReturnElapsedMs += deltaMs;
+        if (zprReturnDurationMs > 0.0f) {
+            float t  = std::min(zprReturnElapsedMs / zprReturnDurationMs, 1.0f);
+            float et = applyEasing(t, zoomEasing, zprOvershoot);
+            currentZoom   = zprReturnFromZoom   + (zprBaseZoom   - zprReturnFromZoom)   * et;
+            currentPanX   = zprReturnFromPanX   + (zprBasePanX   - zprReturnFromPanX)   * et;
+            currentPanY   = zprReturnFromPanY   + (zprBasePanY   - zprReturnFromPanY)   * et;
+            currentRotDeg = zprReturnFromRotDeg + (zprBaseRotDeg - zprReturnFromRotDeg) * et;
+            if (t >= 1.0f) {
+                currentZoom     = zprBaseZoom;
+                currentPanX     = zprBasePanX;
+                currentPanY     = zprBasePanY;
+                currentRotDeg   = zprBaseRotDeg;
+                zprReturnActive = false;
+                zprSlideLatched = false;       // baseline can be re-captured next slide
+            }
+        } else {
+            currentZoom     = zprBaseZoom;
+            currentPanX     = zprBasePanX;
+            currentPanY     = zprBasePanY;
+            currentRotDeg   = zprBaseRotDeg;
+            zprReturnActive = false;
+            zprSlideLatched = false;
         }
     }
 
@@ -256,19 +345,41 @@ void CellAnimation::advance(float deltaMs) {
         }
     }
 
-    // Advance TV ramp
+    // Advance TV ramp — ramps intensity from 0 -> peak over tvRampDurationMs
+    // and latches at peak. The latched cell holds the configured TV effect
+    // until a return trigger fires (NextNormalNote or NextSlideNote per the
+    // SlideNoteEffectSettings.returnTrigger snapshot).
     if (tvRampActive) {
         tvRampElapsedMs += deltaMs;
         if (tvRampDurationMs > 0.0f) {
             float t = std::min(tvRampElapsedMs / tvRampDurationMs, 1.0f);
-            // Ramp down from 1.0 to 0.0
-            tvRampIntensity = 1.0f - t;
+            tvRampIntensity = tvRampPeakIntensity * t;
             if (t >= 1.0f) {
                 tvRampActive    = false;
-                tvRampIntensity = 0.0f;
+                tvSlideLatched  = true;
+                tvRampIntensity = tvRampPeakIntensity;
             }
         } else {
             tvRampActive = false;
+        }
+    }
+
+    // Advance TV return animation. Ramps intensity from captured peak (or
+    // current value when interrupted) -> 0 over tvReturnDurationMs.
+    if (tvReturnActive) {
+        tvReturnElapsedMs += deltaMs;
+        if (tvReturnDurationMs > 0.0f) {
+            float t = std::min(tvReturnElapsedMs / tvReturnDurationMs, 1.0f);
+            tvRampIntensity = tvReturnFromIntensity * (1.0f - t);
+            if (t >= 1.0f) {
+                tvRampIntensity = 0.0f;
+                tvReturnActive  = false;
+                tvSlideLatched  = false;
+            }
+        } else {
+            tvRampIntensity = 0.0f;
+            tvReturnActive  = false;
+            tvSlideLatched  = false;
         }
     }
 }
@@ -288,12 +399,103 @@ void CellAnimation::reset() {
     bounceScaleX    = 1.0f;
     bounceScaleY    = 1.0f;
 
-    tvRampActive    = false;
-    tvRampElapsedMs = 0.0f;
-    tvRampIntensity = 0.0f;
+    tvRampActive        = false;
+    tvRampElapsedMs     = 0.0f;
+    tvRampIntensity     = 0.0f;
+    tvRampPeakIntensity = 0.5f;
+    tvRampRollSpeed     = 1.0f;
+    tvRampScanlines     = 0.3f;
+    tvRampChroma        = 0.003f;
+    tvRampNoise         = 0.0f;
+    tvRampJitter        = 2.0f;
+    tvRampColorBleed    = 0.0f;
 
     useSlideEasing  = false;
     activeNoteId    = -1;
+
+    // Slide return system — clear latch, baseline, and any in-flight return
+    // so seek-back / loop wraparound / explicit resetTrack starts clean.
+    slideReturnStyle      = 1;
+    slideReturnTrigger    = 0;
+    slideReturnDurationMs = 200.0f;
+    zprIsSlideTriggered   = false;
+    zprSlideLatched       = false;
+    zprBaseZoom           = 1.0f;
+    zprBasePanX           = 0.0f;
+    zprBasePanY           = 0.0f;
+    zprBaseRotDeg         = 0.0f;
+    zprReturnActive       = false;
+    zprReturnElapsedMs    = 0.0f;
+    zprReturnDurationMs   = 0.0f;
+    zprReturnFromZoom     = 1.0f;
+    zprReturnFromPanX     = 0.0f;
+    zprReturnFromPanY     = 0.0f;
+    zprReturnFromRotDeg   = 0.0f;
+    tvSlideLatched        = false;
+    tvReturnActive        = false;
+    tvReturnElapsedMs     = 0.0f;
+    tvReturnDurationMs    = 0.0f;
+    tvReturnFromIntensity = 0.0f;
+}
+
+// Snap to base (Instant) or kick off the SmoothReverse animation. Bypasses
+// the policy gate — callers are responsible for deciding whether the trigger
+// applies (NextNormalNote vs NextSlideNote).
+void CellAnimation::runReturnNow() {
+    const bool latched = zprSlideLatched || tvSlideLatched
+                      || zprReturnActive || tvReturnActive;
+    if (!latched) return;
+
+    const bool instant = (slideReturnStyle == 0);
+
+    // A return supersedes any in-flight slide animation (we may be returning
+    // mid-flight when a NextSlideNote event consumed a still-animating slide).
+    if (zprIsSlideTriggered) zprActive = false;
+    tvRampActive = false;
+
+    if (instant) {
+        if (zprSlideLatched || zprReturnActive) {
+            currentZoom     = zprBaseZoom;
+            currentPanX     = zprBasePanX;
+            currentPanY     = zprBasePanY;
+            currentRotDeg   = zprBaseRotDeg;
+            zprSlideLatched = false;
+            zprReturnActive = false;
+        }
+        if (tvSlideLatched || tvReturnActive) {
+            tvRampIntensity = 0.0f;
+            tvSlideLatched  = false;
+            tvReturnActive  = false;
+        }
+    } else {
+        // SmoothReverse — animate from current* back to base* over the
+        // captured slideReturnDurationMs.
+        const float dur = slideReturnDurationMs > 0.0f
+            ? slideReturnDurationMs : 200.0f;
+        if (zprSlideLatched || zprReturnActive) {
+            zprReturnFromZoom   = currentZoom;
+            zprReturnFromPanX   = currentPanX;
+            zprReturnFromPanY   = currentPanY;
+            zprReturnFromRotDeg = currentRotDeg;
+            zprReturnActive     = true;
+            zprReturnElapsedMs  = 0.0f;
+            zprReturnDurationMs = dur;
+        }
+        if (tvSlideLatched || tvReturnActive) {
+            tvReturnFromIntensity = tvRampIntensity;
+            tvReturnActive        = true;
+            tvReturnElapsedMs     = 0.0f;
+            tvReturnDurationMs    = dur;
+        }
+    }
+}
+
+// Public entry from FrameCollector when a normal-note onset is detected.
+// Gates on slideReturnTrigger == NextNormalNote — under NextSlideNote the
+// return is fired from AnimationManager::onSlideEvent instead.
+void CellAnimation::onSlideReturnTrigger() {
+    if (slideReturnTrigger != 0 /* NextNormalNote */) return;
+    runReturnNow();
 }
 
 // ===========================================================================
@@ -314,13 +516,36 @@ void AnimationManager::onNoteStart(int trackId, int noteId,
     anim.triggerNote(noteId, zpr, bounce);
 }
 
-void AnimationManager::onSlideEvent(int trackId, float durationMs, int effectType,
-                                     const ZoomPanRotSettings& zpr,
-                                     const BounceSettings& bounce,
+void AnimationManager::onSlideEvent(int trackId, float durationMs,
+                                     const SlideNoteEffectSettings& cfg,
                                      float curveCx, float curveCy) {
     auto& anim = animations_[trackId];
     anim.trackId = trackId;
-    anim.triggerSlide(durationMs, effectType, zpr, bounce, curveCx, curveCy);
+
+    const bool isLatched = anim.zprSlideLatched || anim.tvSlideLatched
+                        || anim.zprReturnActive || anim.tvReturnActive;
+
+    // NextSlideNote toggle/consume: when a slide visual state is already
+    // latched and the latched policy is NextSlideNote, this slide note is
+    // *consumed* as the return trigger and does NOT also apply a new slide
+    // effect. Produces the back-and-forth toggle the user expects:
+    //   slide -> target, slide -> base, slide -> target, slide -> base, ...
+    if (isLatched && anim.slideReturnTrigger == 1 /* NextSlideNote */) {
+        anim.runReturnNow();
+        return;
+    }
+
+    // Otherwise: trigger the slide normally. NextNormalNote mode chains
+    // back-to-back slides; baseline is preserved by triggerSlide because
+    // the latch/return guards prevent a re-capture while latched.
+    anim.triggerSlide(durationMs, cfg, curveCx, curveCy);
+}
+
+void AnimationManager::onSlideReturnTrigger(int trackId) {
+    auto it = animations_.find(trackId);
+    if (it != animations_.end()) {
+        it->second.onSlideReturnTrigger();
+    }
 }
 
 const CellAnimation* AnimationManager::getAnimation(int trackId) const {
@@ -339,5 +564,11 @@ void AnimationManager::resetTrack(int trackId) {
 #ifdef XLETH_DEBUG
         std::fprintf(stderr, "[AnimMgr] Track %d: reset\n", trackId);
 #endif
+    }
+}
+
+void AnimationManager::resetAll() {
+    for (auto& [tid, anim] : animations_) {
+        anim.reset();
     }
 }

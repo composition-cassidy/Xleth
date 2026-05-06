@@ -441,7 +441,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
           className="sample-selector-error-banner"
           role="alert"
           style={{
-            background: '#3a1e1e',
+            background: 'var(--theme-semantic-danger-bg-subtle)',
             color: 'var(--theme-semantic-danger-text)',
             padding: '6px 10px',
             fontSize: '12px',

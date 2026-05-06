@@ -1,4 +1,5 @@
 import { gmDrumName } from './filenameMatch.js'
+import { MAX_NOTE_LENGTH_OPTIONS, DEFAULT_MAX_NOTE_LENGTH_DENOM } from './maxNoteLength.js'
 
 // options: { enabled, visualOnly, sampleId, outputTrackIndex, pitch, ... }
 // onChange(patch): partial patch dispatched up to onOutputChange in the dialog
@@ -35,6 +36,17 @@ export default function MidiDrumSubTrackRow({ noteNum, options, onChange, source
         />
         Visual only
       </label>
+      <select
+        className="midi-max-note-length-select"
+        value={options.maxNoteLengthDenom ?? DEFAULT_MAX_NOTE_LENGTH_DENOM}
+        onChange={e => onChange({ maxNoteLengthDenom: Number(e.target.value) })}
+        disabled={!options.enabled}
+        title="Maximum note length: clamp this drum slot's imported note durations to this musical length. Note starts are never moved."
+      >
+        {MAX_NOTE_LENGTH_OPTIONS.map(o => (
+          <option key={o.value} value={o.value}>Max {o.label}</option>
+        ))}
+      </select>
       {missingSample && (
         <div className="midi-track-warning">
           ⚠ Sample required to import this track

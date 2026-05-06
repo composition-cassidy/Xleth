@@ -1,5 +1,6 @@
 #include "Sampler.h"
 #include "dsp/DeclickEnvelope.h"
+#include "../util/BezierEase.h"
 
 #include <algorithm>
 #include <cmath>
@@ -277,6 +278,28 @@ int Sampler::countReleasingVoices() const
     return n;
 }
 
+// ─── Test-only voice introspection ───────────────────────────────────────────
+// Numeric accessors used by engine/test/test_sampler.cpp — see header.
+
+double Sampler::debugVoicePitch(int voiceIdx) const
+{
+    if (voiceIdx < 0 || voiceIdx >= MAX_VOICES) return 0.0;
+    return voices_[static_cast<size_t>(voiceIdx)].currentPitchF;
+}
+
+bool Sampler::debugVoiceSlideActive(int voiceIdx) const
+{
+    if (voiceIdx < 0 || voiceIdx >= MAX_VOICES) return false;
+    return voices_[static_cast<size_t>(voiceIdx)].slideActive;
+}
+
+int Sampler::debugFirstActiveVoiceIndex() const
+{
+    for (int i = 0; i < MAX_VOICES; ++i)
+        if (voices_[static_cast<size_t>(i)].active) return i;
+    return -1;
+}
+
 // ─── Voice allocation ────────────────────────────────────────────────────────
 
 Sampler::Voice* Sampler::findFreeVoice()
@@ -363,6 +386,11 @@ void Sampler::noteOn(int midiNote, float velocity, int sampleOffset)
             active->pitchEnvLevel    = 0.0f;
             active->pitchEnvPosition = 0.0;
             active->onsetSample      = sampleOffset;
+            // Hard retrigger cancels any in-flight slide on this voice.
+            active->slideActive          = false;
+            active->slideElapsedSamples  = 0.0;
+            active->slideDurationSamples = 0.0;
+            active->slideOnsetSample     = 0;
             // Semantic re-spawn: envelope restarts from Delay, playPosition reset
             // to smpStart_. Issue fresh identity so findVoiceForNote's
             // oldest-held-first ranking treats this as a new voice.
@@ -385,6 +413,11 @@ void Sampler::noteOn(int midiNote, float velocity, int sampleOffset)
         // Find the voice we just allocated and set up glide
         Voice* v = findVoiceForNote(midiNote);
         if (v) {
+            // A fresh noteOn cancels any slide that may have been targeting
+            // this voice (fireNoteOn already reset slide state, but if
+            // findVoiceForNote returned a different voice — e.g. duplicate
+            // pitch retrigger — this is defense in depth).
+            v->slideActive = false;
             v->currentPitchF       = static_cast<double>(lastNotePitch_);
             v->targetPitch         = midiNote;
             v->portamentoRemaining = static_cast<double>(portamentoTimeMs_)
@@ -474,6 +507,15 @@ void Sampler::fireNoteOn(int midiNote, float velocity, int sampleOffset)
     v->lfoPitchState = Voice::LfoState{};
     v->onsetSample   = sampleOffset;
     v->releaseSample = -1;
+    // Recycled voices must not inherit stale slide state.
+    v->slideActive          = false;
+    v->slideSourcePitchF    = 0.0;
+    v->slideTargetPitchF    = 0.0;
+    v->slideElapsedSamples  = 0.0;
+    v->slideDurationSamples = 0.0;
+    v->slideCurveCx         = 0.5f;
+    v->slideCurveCy         = 0.5f;
+    v->slideOnsetSample     = 0;
     v->spawnCounter   = nextSpawnCounter_++;
     v->spawnAbsSample = (currentAbsSample_ > 0)
                         ? currentAbsSample_ + sampleOffset
@@ -495,6 +537,75 @@ void Sampler::fireNoteOff(int midiNote, int sampleOffset, bool force)
     // This makes the release boundary sample-accurate within the buffer.
     jassert(sampleOffset >= 0);
     v->releaseSample = sampleOffset;
+}
+
+// ─── FL-style group slide ────────────────────────────────────────────────────
+//
+// A slide note is a silent pitch-target marker dispatched by MixEngine for
+// PatternNote.isSlide == true. It does NOT spawn a voice. Instead, it retunes
+// every active held normal voice on this sampler so the chord glides as a
+// transposed group: the highest active voice's CURRENT pitch is taken as the
+// reference, the delta to the slide-note pitch is computed, and that same
+// delta is applied to every affected voice. Chained slides automatically
+// start from each voice's already-slid pitch because we capture
+// slideSourcePitchF from currentPitchF (which the previous in-flight slide
+// was updating per sample).
+//
+// Two slide notes that arrive at the same sample compose in PARALLEL (both
+// see the same pre-slide currentPitchF), not chained — no sample has been
+// rendered between them. This matches FL's same-tick semantics.
+
+void Sampler::beginGroupSlide(int targetPitch,
+                              double durationSamples,
+                              float cx, float cy,
+                              int sampleOffset)
+{
+    // Arpeggiator-driven samplers don't support group slides; voice spawning
+    // is owned by the arp's own scheduler and slide semantics on arp'd voices
+    // are undefined. Silent no-op.
+    if (arp_.enabled) return;
+
+    // First pass: find the highest current pitch among active held voices.
+    // "Active held" excludes voices in Release / Off — the user has stopped
+    // holding those notes and they should not be slid. Voices in Delay/Attack
+    // are included (they're held and audible-imminent).
+    double highestPitch = -1.0e9;
+    bool   any          = false;
+    for (const auto& v : voices_) {
+        if (!v.active) continue;
+        if (!v.noteHeld) continue;
+        if (v.envStage == Voice::EnvStage::Release
+            || v.envStage == Voice::EnvStage::Off) continue;
+        if (v.currentPitchF > highestPitch) {
+            highestPitch = v.currentPitchF;
+            any          = true;
+        }
+    }
+    if (!any) return;  // no active held voices; silent no-op
+
+    const double delta = static_cast<double>(targetPitch) - highestPitch;
+
+    // Second pass: arm slide on each affected voice.
+    for (auto& v : voices_) {
+        if (!v.active) continue;
+        if (!v.noteHeld) continue;
+        if (v.envStage == Voice::EnvStage::Release
+            || v.envStage == Voice::EnvStage::Off) continue;
+
+        v.slideSourcePitchF    = v.currentPitchF;
+        v.slideTargetPitchF    = v.currentPitchF + delta;
+        v.slideElapsedSamples  = 0.0;
+        v.slideDurationSamples = durationSamples;
+        v.slideCurveCx         = cx;
+        v.slideCurveCy         = cy;
+        v.slideOnsetSample     = sampleOffset;
+        v.slideActive          = true;
+        // Cancel any in-flight portamento so the slide is the sole writer to
+        // currentPitchF this block. (Pattern Track is poly and porta is rare,
+        // but defense in depth.)
+        v.portamentoRemaining = 0.0;
+        v.targetPitch         = v.midiNote;
+    }
 }
 
 // ─── Envelope ────────────────────────────────────────────────────────────────
@@ -815,8 +926,34 @@ void Sampler::processVoice(Voice& v,
 
         const float envGain = advanceEnvelope(v, engineSampleRate);
 
-        // ── PORTAMENTO (updates currentPitchF only) ──────────────────
-        if (v.portamentoRemaining > 0.0) {
+        // ── FL-STYLE GROUP SLIDE (overrides portamento; updates currentPitchF) ─
+        // Modulates the voice's base pitch directly. Pitch envelope and pitch
+        // LFO continue to add semitones below as additive modulation layers,
+        // so they are NOT baked into the slide curve. The sub-buffer gate
+        // (slideOnsetSample) defers slide stepping until the slide-note's
+        // sample-offset within this buffer; on subsequent buffers it is reset
+        // to 0 and becomes vacuously true.
+        if (v.slideActive && s >= v.slideOnsetSample) {
+            if (v.slideDurationSamples <= 0.0) {
+                v.currentPitchF = v.slideTargetPitchF;
+                v.slideActive   = false;
+            } else {
+                const double t = v.slideElapsedSamples / v.slideDurationSamples;
+                if (t >= 1.0) {
+                    v.currentPitchF = v.slideTargetPitchF;
+                    v.slideActive   = false;
+                } else {
+                    const float eased = bezierEase(static_cast<float>(t),
+                                                   v.slideCurveCx, v.slideCurveCy);
+                    v.currentPitchF = v.slideSourcePitchF
+                                    + (v.slideTargetPitchF - v.slideSourcePitchF)
+                                      * static_cast<double>(eased);
+                    v.slideElapsedSamples += 1.0;
+                }
+            }
+        }
+        // ── PORTAMENTO (updates currentPitchF only; skipped while sliding) ──
+        else if (v.portamentoRemaining > 0.0) {
             const double step = (static_cast<double>(v.targetPitch) - v.currentPitchF)
                                 / v.portamentoRemaining;
             v.currentPitchF += step;
@@ -970,7 +1107,10 @@ void Sampler::processVoice(Voice& v,
     fprintf(stderr, "[VoiceExit] wrote_from=%d to=%d playPos=%f\n",
             v.onsetSample, numSamples - 1, v.playPosition);
 #endif
-    v.onsetSample = 0;
+    v.onsetSample      = 0;
+    // Slide gate is sub-buffer only: if the slide started in this block, the
+    // gate has already been honoured; subsequent blocks should not re-gate.
+    v.slideOnsetSample = 0;
 }
 
 

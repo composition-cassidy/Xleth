@@ -4,6 +4,24 @@ import { findMatchingSample, gmDrumName } from './filenameMatch.js'
 import { useToast } from '../Toast.jsx'
 import { PPQ } from '../../constants/timeline.js'
 
+// ── Maximum note length clamp (MIDI import sanitation) ───────────────────────
+// FL Studio drum-roll exports often produce hugely long note-offs for sample
+// triggers. Each output track (drum slot or melodic track) gets its own clamp
+// so a kick/snare can be capped at 1/16 while a lead can be left untouched.
+// Note starts are never modified by the clamp. denom = 0 means Off; otherwise
+// denom is the note-value denominator (4 = quarter, 16 = sixteenth, etc.).
+//
+// localStorage stores the *default* applied to each newly-seen output track.
+// Changing a row's value affects only the current import; the default is not
+// auto-updated, since per-track names differ wildly across MIDI files.
+import {
+  MAX_NOTE_LENGTH_OPTIONS,
+  DEFAULT_MAX_NOTE_LENGTH_STORAGE_KEY,
+  DEFAULT_MAX_NOTE_LENGTH_DENOM,
+  readDefaultMaxNoteLengthDenom,
+  denomToTicks,
+} from './maxNoteLength.js'
+
 // ── Module-level helpers ──────────────────────────────────────────────────────
 
 // Returns a flat array of output tracks post-drum-split, in engine-canonical order.
@@ -209,6 +227,7 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
             visualOnly: false,
             sampleId: matched?.id ?? null,
             name: ot.name,
+            maxNoteLengthDenom: readDefaultMaxNoteLengthDenom(),
           }
         }
       }
@@ -275,12 +294,22 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
 
       const projectBPM = projectBpm ?? summary.sourceTempo ?? 120
 
+      // Per-output-track clamp (in project ticks), parallel to outputTracks order.
+      // The engine builds the same output-track ordering, so a positional array
+      // is the simplest stable encoding. 0 = off for that track.
+      const maxNoteLengthByOutputTrack = outputTracks.map(ot => {
+        const opts = outputTrackOptions[ot.outputTrackIndex]
+        const denom = opts?.maxNoteLengthDenom ?? DEFAULT_MAX_NOTE_LENGTH_DENOM
+        return denomToTicks(denom)
+      })
+
       const importOptions = {
         enabledTrackIndices,
         perTrackOptions,
         tempoOverride,
         projectTPQ: PPQ,
         projectBPM,
+        maxNoteLengthByOutputTrack,
       }
 
       console.log('[MidiImport] Import payload:', importOptions)

@@ -3,26 +3,20 @@ import { Trash2, Music, Sliders, VolumeX } from 'lucide-react'
 import { TRACK_HEIGHT } from '../../constants/timeline.js'
 import { hexToRgba } from './timelineDrawing.js'
 import { timelineEvents } from '../../timelineEvents.js'
-import { tokenValue } from '../../theming/tokenValue.ts'
-
-const LABEL_TOKENS = [
-  '--theme-label-kick',   '--theme-label-snare',
-  '--theme-label-hihat',  '--theme-label-crash',
-  '--theme-label-pitch',  '--theme-label-quote',
-  '--theme-label-custom', '--theme-border-focus',
-]
+import { TRACK_PALETTE_FALLBACK } from './trackColorResolver.js'
 
 export default function TrackHeader({
-  track, index, currentPattern, isFocused,
+  track, index, trackColor, currentPattern, isFocused,
   onMute, onSolo, onVisualOnly, onRename, onRemove, onRequestContextMenu, onFocus,
   onDragStart, onDragOver, onDrop,
+  onOpenColorPicker,
 }) {
   const [editing, setEditing] = useState(false)
   const [nameInput, setNameInput] = useState('')
   const inputRef = useRef(null)
 
   const isPatternTrack = track.type === 'Pattern'
-  const color = tokenValue(LABEL_TOKENS[index % LABEL_TOKENS.length])
+  const color = trackColor || TRACK_PALETTE_FALLBACK[index % 16]
 
   const startEdit = useCallback(() => {
     setEditing(true)
@@ -77,7 +71,17 @@ export default function TrackHeader({
 
       {/* Left content — color stripe + name stack. Dims to 55% when muted. */}
       <div className="track-header-left">
-        <div className="track-header-color" style={{ background: color }} />
+        <button
+          className="track-header-color-btn"
+          style={{ background: color }}
+          onMouseDown={(e) => { e.stopPropagation() }}
+          onClick={(e) => {
+            e.stopPropagation()
+            onOpenColorPicker?.(track.id, e.currentTarget.getBoundingClientRect())
+          }}
+          title="Change track color"
+          aria-label="Change track color"
+        />
 
         <div className="track-header-name-wrap" title={track.name}>
           {editing ? (

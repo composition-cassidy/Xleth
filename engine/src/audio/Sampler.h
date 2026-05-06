@@ -85,6 +85,18 @@ public:
     void noteOn(int midiNote, float velocity, int sampleOffset = 0);
     void noteOff(int midiNote, int sampleOffset = 0, bool force = false);
 
+    // FL Studio-style group slide: silently retunes the currently active held
+    // voices on this sampler so the chord glides as a transposed group toward
+    // targetPitch. The transposition delta is computed from the highest active
+    // held voice's CURRENT effective pitch (so chained slides start from the
+    // already-slid pitch, not from the original midiNote). Slide notes do NOT
+    // spawn voices, do NOT call noteOn/noteOff, and silently no-op when no
+    // active held voice exists. Arpeggiator-enabled samplers ignore slides.
+    void beginGroupSlide(int targetPitch,
+                         double durationSamples,
+                         float cx, float cy,
+                         int sampleOffset = 0);
+
     // Additive render into outputBuffer (stereo assumed). Caller clears if needed.
     void processBlock(juce::AudioBuffer<float>& outputBuffer,
                       int numSamples, double engineSampleRate);
@@ -94,6 +106,14 @@ public:
     int  countActiveVoices() const;      // audio-thread-safe read-only scan; same as activeVoiceCount
     int  countHeldVoices() const;        // voices where active && noteHeld
     int  countReleasingVoices() const;   // voices where active && !noteHeld
+
+    // ── Test-only introspection ──────────────────────────────────────────────
+    // Numeric voice-state accessors used by engine/test/test_sampler.cpp to
+    // verify slide-note pitch behavior without resorting to FFT analysis on
+    // multi-voice chord renders. Not for production use.
+    double debugVoicePitch(int voiceIdx) const;
+    bool   debugVoiceSlideActive(int voiceIdx) const;
+    int    debugFirstActiveVoiceIndex() const;
 
 private:
     juce::AudioBuffer<float> sampleData_;
@@ -176,6 +196,18 @@ private:
         double currentPitchF       = 60.0; // fractional MIDI note (smoothed)
         int    targetPitch         = -1;   // glide target (-1 = no glide)
         double portamentoRemaining = 0.0;  // samples left in glide
+
+        // FL-style group slide state (independent of portamento — slide is its
+        // own glide layer that mutates currentPitchF directly; pitch envelope
+        // and LFO continue as additive modulation layers on top).
+        bool   slideActive          = false;
+        double slideSourcePitchF    = 0.0;  // captured at slide start (post any prior in-flight slide)
+        double slideTargetPitchF    = 0.0;  // source + (slideNotePitch - highestActivePitch)
+        double slideElapsedSamples  = 0.0;
+        double slideDurationSamples = 0.0;
+        float  slideCurveCx         = 0.5f;
+        float  slideCurveCy         = 0.5f;
+        int    slideOnsetSample     = 0;    // sub-buffer gate; reset to 0 each block (mirrors onsetSample)
 
         enum class EnvStage { Delay, Attack, Hold, Decay, Sustain, Release, Off };
         EnvStage envStage         = EnvStage::Off;

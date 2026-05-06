@@ -619,8 +619,7 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
                             animMgr.onSlideEvent(
                                 se.trackId,
                                 static_cast<float>(durationMs),
-                                static_cast<int>(cfg.type),
-                                tr->zoomPanRot, tr->bounce,
+                                cfg,
                                 se.slideCurveCx, se.slideCurveCy);
                         }
                     }

@@ -1,10 +1,38 @@
 import { Fragment } from 'react'
 import { snapToZero, snapToOne } from '../../utils/sliderHelpers.js'
+import { TvSimulatorParamsView, TV_FIELDS } from './effectParamViews.jsx'
+
+// Chain TV Simulator stores values in fx.params[0..6]; the shared view uses
+// a named-object shape. Map between the two.
+const TV_KEY_TO_PI = { intensity: 0, rollSpeed: 1, scanlines: 2, chroma: 3,
+                       noise: 4, jitter: 5, colorBleed: 6 }
+function tvParamsToView(params) {
+  const out = {}
+  for (const { key, def } of TV_FIELDS) {
+    out[key] = params?.[TV_KEY_TO_PI[key]] ?? def
+  }
+  return out
+}
 
 export default function ChainableEffectParams({ fx, trackId, fxIdx, fetchTracks }) {
   const set = async (paramIdx, v) => {
     await window.xleth?.timeline?.setVisualEffectParam(trackId, fxIdx, paramIdx, v)
     fetchTracks()
+  }
+
+  // TV Simulator uses the shared view (which provides its own fx-params-grid).
+  if (fx.type === 3) {
+    return (
+      <TvSimulatorParamsView
+        value={tvParamsToView(fx.params)}
+        onChange={async (patch) => {
+          for (const [k, v] of Object.entries(patch)) {
+            const pi = TV_KEY_TO_PI[k]
+            if (pi != null) await set(pi, v)
+          }
+        }}
+      />
+    )
   }
 
   return (
@@ -69,24 +97,6 @@ export default function ChainableEffectParams({ fx, trackId, fxIdx, fetchTracks 
           <span>{((fx.params?.[1] ?? 0) * 100).toFixed(0)}%</span>
         </>
       )}
-
-      {fx.type === 3 && [
-        { label: 'Intensity',   pi: 0, min: 0,    max: 1,    step: 0.01,   def: 0.5,   fmt: v => (v*100).toFixed(0)+'%' },
-        { label: 'Roll Speed',  pi: 1, min: 0,    max: 5,    step: 0.01,   def: 1.0,   fmt: v => v.toFixed(2)           },
-        { label: 'Scanlines',   pi: 2, min: 0,    max: 1,    step: 0.01,   def: 0.3,   fmt: v => (v*100).toFixed(0)+'%' },
-        { label: 'Chroma',      pi: 3, min: 0,    max: 0.01, step: 0.0001, def: 0.003, fmt: v => v.toFixed(4)           },
-        { label: 'Noise',       pi: 4, min: 0,    max: 1,    step: 0.01,   def: 0.0,   fmt: v => (v*100).toFixed(0)+'%' },
-        { label: 'Jitter',      pi: 5, min: 0,    max: 10,   step: 0.1,    def: 2.0,   fmt: v => v.toFixed(1)           },
-        { label: 'Color Bleed', pi: 6, min: 0,    max: 0.02, step: 0.0001, def: 0.0,   fmt: v => v.toFixed(4)           },
-      ].map(({ label, pi, min, max, step, def, fmt }) => (
-        <Fragment key={pi}>
-          <label>{label}</label>
-          <input type="range" min={min} max={max} step={step}
-            defaultValue={fx.params?.[pi] ?? def}
-            onPointerUp={async (e) => set(pi, parseFloat(e.target.value))} />
-          <span>{fmt(fx.params?.[pi] ?? def)}</span>
-        </Fragment>
-      ))}
 
       {fx.type === 4 && [
         { label: 'Target Zoom', pi: 1, min: 0.25, max: 4,   step: 0.01, def: 1.0, fmt: v => v.toFixed(2)+'×', snap1: true },

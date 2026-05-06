@@ -1,5 +1,9 @@
-import { MousePointer2, Pencil, Scissors, Trash2, Plus, AlignJustify } from 'lucide-react'
+import { useState, useRef } from 'react'
+import { MousePointer2, Pencil, Scissors, Trash2, Plus, AlignJustify, Layers } from 'lucide-react'
 import { labelHexColor } from '../../constants/labels.js'
+import { getSelectableSyllables } from '../SyllableSplitter/syllableModel.js'
+import useTimelineDisplayStore from '../../stores/timelineDisplayStore.js'
+import TimelineDisplayPopover from './TimelineDisplayPopover.jsx'
 
 const TOOLS = [
   { id: 'select', label: 'Select', shortcut: 'S', icon: MousePointer2 },
@@ -24,6 +28,10 @@ export default function TimelineToolbar({
   onOpenQuantize,
   quantizeSelectionCount = 0,
 }) {
+  const [showDisplayPopover, setShowDisplayPopover] = useState(false)
+  const displayBtnRef = useRef(null)
+  const { timelineDisplaySettings, setTimelineDisplaySetting } = useTimelineDisplayStore()
+
   const activeRegion = activeSampleId ? regions[activeSampleId] : null
   const sampleColor = activeRegion ? labelHexColor(activeRegion.label) : null
 
@@ -31,11 +39,11 @@ export default function TimelineToolbar({
   const syllableRegion = pencilTemplate
     ? regions[pencilTemplate.regionId]
     : activeRegion
+  const selectableSyllables = getSelectableSyllables(syllableRegion?.syllables)
   const showSyllablePicker =
     activeTool === 'pencil' &&
     syllableRegion?.label === 'Quote' &&
-    Array.isArray(syllableRegion?.syllables) &&
-    syllableRegion.syllables.length > 0
+    selectableSyllables.length > 0
   const currentSyllableIdx = pencilTemplate?.syllableIndex ?? -1
 
   return (
@@ -94,14 +102,14 @@ export default function TimelineToolbar({
         <>
           <div className="timeline-toolbar-sep" />
           <div className="timeline-syllable-picker" title="Pick syllable (1-9 keys)">
-            {syllableRegion.syllables.map((syl, i) => (
+            {selectableSyllables.map(({ syllable: syl, sourceIndex, number }) => (
               <button
-                key={i}
-                className={`timeline-syllable-btn ${currentSyllableIdx === i ? 'active' : ''}`}
-                onClick={() => onSelectSyllable?.(i)}
-                title={syl.text ? `${i + 1}: ${syl.text}` : `Syllable ${i + 1}`}
+                key={sourceIndex}
+                className={`timeline-syllable-btn ${currentSyllableIdx === sourceIndex ? 'active' : ''}`}
+                onClick={() => onSelectSyllable?.(sourceIndex)}
+                title={syl.text ? `${number}: ${syl.text}` : `Syllable ${number}`}
               >
-                {i + 1}
+                {number}
               </button>
             ))}
             <button
@@ -139,6 +147,7 @@ export default function TimelineToolbar({
         <span className="timeline-toolbar-tag">Declick</span>
         <input
           type="number"
+          className="timeline-declick-input"
           min="0"
           max="5"
           step="0.1"
@@ -147,7 +156,6 @@ export default function TimelineToolbar({
             const v = parseFloat(e.target.value)
             if (!isNaN(v)) onDeclickChange(v)
           }}
-          style={{ width: 40, background: '#1a1a2e', border: '1px solid #333', color: '#ddd', borderRadius: 3, padding: '1px 4px', fontSize: 10, textAlign: 'right' }}
         />
         <span className="timeline-toolbar-tag">ms</span>
       </div>
@@ -164,6 +172,27 @@ export default function TimelineToolbar({
       >
         <AlignJustify size={14} />
       </button>
+
+      {/* ── Timeline Display settings ────────────────────────── */}
+      <div className="timeline-toolbar-sep" />
+      <div className="tl-display-root">
+        <button
+          ref={displayBtnRef}
+          className={`timeline-tool-btn ${showDisplayPopover ? 'active' : ''}`}
+          onClick={() => setShowDisplayPopover(v => !v)}
+          title="Timeline display settings"
+        >
+          <Layers size={14} />
+        </button>
+        {showDisplayPopover && (
+          <TimelineDisplayPopover
+            settings={timelineDisplaySettings}
+            onSet={setTimelineDisplaySetting}
+            onClose={() => setShowDisplayPopover(false)}
+            triggerRef={displayBtnRef}
+          />
+        )}
+      </div>
 
       {/* ── Right side: zoom + add track ─────────────────────── */}
       <div className="timeline-toolbar-actions">

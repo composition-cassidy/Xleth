@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <iostream>
+#include <unordered_set>
 
 // ─── AddClipCommand ───────────────────────────────────────────────────────────
 
@@ -588,11 +589,11 @@ RemoveTrackCommand::RemoveTrackCommand(int trackId, const Timeline& timeline) {
             break;
         }
     }
-    if (gl.chorusTrackId == trackId) wasChorusTrack_ = true;
-    if (gl.crashTrackId == trackId && gl.crashEnabled) {
-        wasCrashTrack_   = true;
-        oldCrashEnabled_ = gl.crashEnabled;
-        oldCrashOpacity_ = gl.crashOpacity;
+    // Snapshot every fullscreen layer pointing at this track (with its index)
+    // so undo() can restore them in original positions.
+    for (size_t i = 0; i < gl.fullscreenLayers.size(); ++i) {
+        if (gl.fullscreenLayers[i].trackId == trackId)
+            removedFullscreenLayers_.emplace_back(i, gl.fullscreenLayers[i]);
     }
 }
 
@@ -607,13 +608,11 @@ void RemoveTrackCommand::execute(Timeline& timeline) {
         timeline.removePatternBlock(b.id);
     }
     timeline.removeTrack(track_.id);
-    // Grid cascade: remove track's slot, reset chorus/crash if they referenced it.
+    // Grid cascade: remove track's slot, strip any fullscreen layers referencing it.
     if (hadGridSlot_)
         timeline.removeTrackFromGrid(track_.id);
-    if (wasChorusTrack_)
-        timeline.setChorusTrack(-1);
-    if (wasCrashTrack_)
-        timeline.setCrashOverlay(false, -1, oldCrashOpacity_);
+    if (!removedFullscreenLayers_.empty())
+        timeline.removeFullscreenLayersForTrack(track_.id);
 }
 
 void RemoveTrackCommand::undo(Timeline& timeline) {
@@ -629,10 +628,10 @@ void RemoveTrackCommand::undo(Timeline& timeline) {
                                    removedGridSlot_.gridX, removedGridSlot_.gridY,
                                    removedGridSlot_.spanX, removedGridSlot_.spanY);
     }
-    if (wasChorusTrack_)
-        timeline.setChorusTrack(track_.id);
-    if (wasCrashTrack_)
-        timeline.setCrashOverlay(oldCrashEnabled_, track_.id, oldCrashOpacity_);
+    // Re-insert fullscreen layers in their original positions.
+    for (const auto& [idx, layer] : removedFullscreenLayers_) {
+        timeline.restoreFullscreenLayer(idx, layer);
+    }
 }
 
 std::string RemoveTrackCommand::describe() const {
@@ -1038,54 +1037,48 @@ std::string RemoveTrackFromGridCommand::describe() const {
     return "Remove Track " + std::to_string(trackId_) + " from Grid";
 }
 
-// ─── SetChorusTrackCommand ────────────────────────────────────────────────────
+// ─── SetFullscreenLayersCommand ───────────────────────────────────────────────
 
-SetChorusTrackCommand::SetChorusTrackCommand(int trackId, const Timeline& timeline)
-    : oldTrackId_(timeline.getGridLayout().chorusTrackId), newTrackId_(trackId)
+SetFullscreenLayersCommand::SetFullscreenLayersCommand(std::vector<FullscreenLayer> newLayers,
+                                                       const Timeline& timeline)
+    : oldLayers_(timeline.getFullscreenLayers()),
+      newLayers_(std::move(newLayers))
 {
-    // Snapshot the new track's hold state before auto-enable (for clean undo)
-    if (const TrackInfo* t = timeline.getTrack(trackId))
-        newTrackOldHold_ = t->videoHoldLastFrame;
+    // Snapshot pre-execute videoHoldLastFrame for every track that a new
+    // BehindGrid layer will auto-enable. First writer wins so that if the same
+    // track appears multiple times we only capture its true pre-command value.
+    for (const auto& fl : newLayers_) {
+        if (fl.placement != FullscreenLayerPlacement::BehindGrid) continue;
+        if (fl.trackId < 0) continue;
+        if (oldHoldByTrackId_.count(fl.trackId)) continue;
+        if (const TrackInfo* t = timeline.getTrack(fl.trackId))
+            oldHoldByTrackId_[fl.trackId] = t->videoHoldLastFrame;
+    }
 }
 
-void SetChorusTrackCommand::execute(Timeline& timeline) {
-    // setChorusTrack auto-enables videoHoldLastFrame on the new track
-    timeline.setChorusTrack(newTrackId_);
+void SetFullscreenLayersCommand::execute(Timeline& timeline) {
+    timeline.setFullscreenLayers(newLayers_);
 }
 
-void SetChorusTrackCommand::undo(Timeline& timeline) {
-    timeline.setChorusTrack(oldTrackId_);
-    // Restore the new track's hold state to what it was before auto-enable
-    if (TrackInfo* t = timeline.getTrackMutable(newTrackId_))
-        t->videoHoldLastFrame = newTrackOldHold_;
+void SetFullscreenLayersCommand::undo(Timeline& timeline) {
+    timeline.setFullscreenLayers(oldLayers_);
+    // Restore videoHoldLastFrame on tracks the command auto-enabled — but only
+    // for tracks that aren't BehindGrid in the restored layer set (those should
+    // remain hold-enabled to preserve the setFullscreenLayers invariant).
+    std::unordered_set<int> stillBehind;
+    for (const auto& fl : oldLayers_) {
+        if (fl.placement == FullscreenLayerPlacement::BehindGrid && fl.trackId >= 0)
+            stillBehind.insert(fl.trackId);
+    }
+    for (const auto& [tid, oldHold] : oldHoldByTrackId_) {
+        if (stillBehind.count(tid)) continue;
+        if (TrackInfo* t = timeline.getTrackMutable(tid))
+            t->videoHoldLastFrame = oldHold;
+    }
 }
 
-std::string SetChorusTrackCommand::describe() const {
-    return "Set Chorus Track " + std::to_string(newTrackId_);
-}
-
-// ─── SetCrashOverlayCommand ───────────────────────────────────────────────────
-
-SetCrashOverlayCommand::SetCrashOverlayCommand(bool enabled, int trackId, float opacity,
-                                               const Timeline& timeline)
-    : newEnabled_(enabled), newTrackId_(trackId), newOpacity_(opacity)
-{
-    const GridLayout& gl = timeline.getGridLayout();
-    oldEnabled_ = gl.crashEnabled;
-    oldTrackId_ = gl.crashTrackId;
-    oldOpacity_ = gl.crashOpacity;
-}
-
-void SetCrashOverlayCommand::execute(Timeline& timeline) {
-    timeline.setCrashOverlay(newEnabled_, newTrackId_, newOpacity_);
-}
-
-void SetCrashOverlayCommand::undo(Timeline& timeline) {
-    timeline.setCrashOverlay(oldEnabled_, oldTrackId_, oldOpacity_);
-}
-
-std::string SetCrashOverlayCommand::describe() const {
-    return std::string("Set Crash Overlay ") + (newEnabled_ ? "on" : "off");
+std::string SetFullscreenLayersCommand::describe() const {
+    return "Set Fullscreen Layers (count=" + std::to_string(newLayers_.size()) + ")";
 }
 
 // ─── SetPreviewFpsCommand ─────────────────────────────────────────────────────
@@ -1928,6 +1921,41 @@ void SetTrackSubdivisionFactorCommand::undo(Timeline& timeline) {
 std::string SetTrackSubdivisionFactorCommand::describe() const {
     return "Set Subdivision Factor (track=" + std::to_string(trackId_)
          + ") → " + std::to_string(newFactor_) + "x";
+}
+
+// ─── SetTrackColorCommand (Pass 6D + 6F) ─────────────────────────────────────
+
+SetTrackColorCommand::SetTrackColorCommand(
+    int trackId, TrackColorMode newMode, int newSlot,
+    std::string newCustomColor, const Timeline& timeline)
+    : trackId_(trackId),
+      newMode_(newMode),
+      newSlot_(newSlot),
+      newCustom_(std::move(newCustomColor))
+{
+    const TrackInfo* t = timeline.getTrack(trackId);
+    oldMode_   = t ? t->trackColorMode   : TrackColorMode::Auto;
+    oldSlot_   = t ? t->trackColorSlot   : 0;
+    oldCustom_ = t ? t->trackColorCustom : std::string();
+}
+
+void SetTrackColorCommand::execute(Timeline& timeline) {
+    timeline.setTrackColor(trackId_, newMode_, newSlot_, newCustom_);
+}
+
+void SetTrackColorCommand::undo(Timeline& timeline) {
+    timeline.setTrackColor(trackId_, oldMode_, oldSlot_, oldCustom_);
+}
+
+std::string SetTrackColorCommand::describe() const {
+    std::string suffix;
+    if (newMode_ == TrackColorMode::PaletteSlot) {
+        suffix = "[" + std::to_string(newSlot_) + "]";
+    } else if (newMode_ == TrackColorMode::Custom) {
+        suffix = "[" + newCustom_ + "]";
+    }
+    return "Set Track Color (track=" + std::to_string(trackId_)
+         + ") → " + trackColorModeToString(newMode_) + suffix;
 }
 
 // ─── SetTrackBounceSettingsCommand ───────────────────────────────────────────

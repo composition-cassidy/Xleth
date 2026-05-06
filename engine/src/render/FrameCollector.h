@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "FrameCache.h"          // FrameCacheKey
@@ -35,6 +36,16 @@ struct VideoEvent;
 struct VisualEffect;
 
 class AnimationManager;
+
+// ---------------------------------------------------------------------------
+// CellLayerKind — distinguishes which compositor pass a request belongs to.
+// Replaces the previous (isChorus, isCrash) bool pair.
+// ---------------------------------------------------------------------------
+enum class CellLayerKind : uint8_t {
+    Grid              = 0,  // normal grid cell (Pass 2)
+    FullscreenBehind  = 1,  // fullscreen layer drawn before grid (Pass 1)
+    FullscreenInFront = 2,  // fullscreen layer drawn after grid (Pass 3)
+};
 
 // ---------------------------------------------------------------------------
 // CellFrameRequest — what one grid cell needs for this output frame
@@ -54,8 +65,7 @@ struct CellFrameRequest {
     int         stateIndex       = 0;   // resolved state machine index (analytics; not on GPU)
     int         orientation      = 0;   // Orientation enum as int — drives the shader UV transform
     int         trackId          = -1;  // originating track
-    bool        isChorus         = false;
-    bool        isCrash          = false;
+    CellLayerKind layerKind      = CellLayerKind::Grid;
     int         zOrder           = 0;   // from GridSlot
     float       gapScaleOverride = -1.0f; // -1 = use global, >=0 = per-track override
 
@@ -69,7 +79,18 @@ struct CellFrameRequest {
     float bounceOffsetY   = 0.0f;
     float bounceScaleX    = 1.0f;   // MUST default to 1.0
     float bounceScaleY    = 1.0f;   // MUST default to 1.0
+
+    // Slide-triggered TV ramp snapshot. tvRampIntensity is the per-frame
+    // animated value; the other 6 fields define the character of the slide TV
+    // effect for the duration of the ramp. GridCompositor reads all 7 to drive
+    // the slide TV pass that runs independently after the visual chain.
     float tvRampIntensity = 0.0f;
+    float tvRampRollSpeed  = 1.0f;
+    float tvRampScanlines  = 0.3f;
+    float tvRampChroma     = 0.003f;
+    float tvRampNoise      = 0.0f;
+    float tvRampJitter     = 2.0f;
+    float tvRampColorBleed = 0.0f;
 
     // Ping-pong crossfade: secondary frame to blend with primary (-1 = no blend)
     int64_t pingPongSecondaryFrame = -1;
@@ -170,11 +191,17 @@ private:
         int64_t&                outSecondaryFrame,
         float&                  outBlendFactor);
 
-    // Chorus hold-frame state: when the chorus clip has a gap, we redraw
-    // the last known chorus frame so the background never goes black.
-    int64_t     lastChorusSourceFrame_ = -1;
-    std::string lastChorusSourcePath_;
-    int         lastChorusOrientation_ = 0;   // flip-v2: preserved across hold gaps
+    // Per-track hold-frame state for fullscreen BehindGrid layers: when a
+    // BehindGrid clip has a gap (and that track has videoHoldLastFrame on),
+    // we redraw the last known frame so the backdrop never goes black.
+    // GC'd each frame against the live BehindGrid trackId set so the map is
+    // bounded by the current layer count, not by all tracks ever assigned.
+    struct FullscreenHoldState {
+        int64_t     lastFrame       = -1;
+        std::string lastPath;
+        int         lastOrientation = 0;
+    };
+    std::unordered_map<int, FullscreenHoldState> fullscreenHoldByTrack_;
 
     AnimationManager* animationMgr_ = nullptr;
 };

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useImperativeHandle, forwardRef, useCallback } from 'react'
-import { drawGrid, drawClips, drawDropPreview, drawPatternBlocks, drawWorldSpinners } from './timelineDrawing.js'
+import { drawGrid, drawClips, drawDropPreview, drawPatternBlocks, drawWorldSpinners, resolveTimelinePalette } from './timelineDrawing.js'
+import { buildResolvedTrackColorMap } from './trackColorResolver.js'
 import useWorldProcessingStore from '../../stores/worldProcessingStore.js'
 import { TRACK_HEIGHT, PPQ, pixelToBeat, beatToPixel } from '../../constants/timeline.js'
 import { playheadClock } from '../../services/PlayheadClock.js'
@@ -34,6 +35,8 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     pencilTemplateRef, onSetPencilTemplate,
     // Legacy drag-drop (from SampleSelectorTab)
     onCanvasDragOver, onCanvasDrop, onCanvasDragLeave,
+    // Display settings (Pass 5B plumbing — consumed in Pass 5C)
+    timelineDisplaySettings,
   },
   ref
 ) {
@@ -56,6 +59,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   const patternsRef = useRef(patterns)
   const selectedBlockIdsRef = useRef(selectedBlockIds)
   const currentPatternIdByTrackRef = useRef(currentPatternIdByTrack)
+  const timelineDisplaySettingsRef = useRef(timelineDisplaySettings)
 
   clipsRef.current = clips
   regionsRef.current = regions
@@ -78,6 +82,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   patternsRef.current = patterns
   selectedBlockIdsRef.current = selectedBlockIds
   currentPatternIdByTrackRef.current = currentPatternIdByTrack
+  timelineDisplaySettingsRef.current = timelineDisplaySettings
 
   // ── Tool instance ref ────────────────────────────────────────────────────
   const toolRef = useRef(null)
@@ -141,7 +146,8 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     if (!ctx) return
     const dpr = window.devicePixelRatio || 1
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    drawGrid(ctx, w, h, scrollOffsetRef.current, pixelsPerBeatRef.current, trackCount, tracksRef.current)
+    const palette = resolveTimelinePalette()
+    drawGrid(ctx, w, h, scrollOffsetRef.current, pixelsPerBeatRef.current, trackCount, tracksRef.current, palette)
     const dt = performance.now() - t0
     if (dt > 16) console.warn(`[Timeline] WARNING grid redraw took ${dt.toFixed(1)}ms (reason: ${reason})`)
   }
@@ -157,24 +163,28 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       (tracksRef.current || []).filter((t) => t.muted).map((t) => t.id)
     )
     const tidx = trackIdToIndexRef.current
+    const palette = resolveTimelinePalette()
+    const trackColorById = buildResolvedTrackColorMap(tracksRef.current, palette.trackPalette)
     drawClips(
       ctx, w, h,
       scrollOffsetRef.current, pixelsPerBeatRef.current,
       clipsRef.current, tidx, regionsRef.current,
       selectedRef.current, waveformCacheRef?.current, hiResCacheRef?.current, clipPeakCacheRef?.current, bpmRef?.current,
-      mutedTrackIds
+      mutedTrackIds, palette,
+      timelineDisplaySettingsRef.current, trackColorById
     )
     drawPatternBlocks(
       ctx, w, h,
       scrollOffsetRef.current, pixelsPerBeatRef.current,
       patternBlocksRef.current, tidx,
       patternsRef.current, regionsRef.current,
-      selectedBlockIdsRef.current, mutedTrackIds
+      selectedBlockIdsRef.current, mutedTrackIds, palette,
+      timelineDisplaySettingsRef.current, trackColorById
     )
     const wpc = worldProcessingClipsRef.current
     if (wpc?.size) {
-      const accentColor = getComputedStyle(document.documentElement)
-        .getPropertyValue('--theme-accent').trim() || '#5b8aff'
+      // Use palette-resolved accent rather than per-frame getComputedStyle.
+      const accentColor = palette.accent || '#5b8aff'
       drawWorldSpinners(
         ctx, clipsRef.current, tidx, wpc,
         scrollOffsetRef.current, pixelsPerBeatRef.current,

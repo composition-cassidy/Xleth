@@ -574,23 +574,60 @@ struct ZoomPanRotSettings {
     float  overshoot        = 1.70158f;
 };
 
-struct SlideNoteEffectSettings {
-    enum class EffectType { None = 0, ZoomPanRot = 1, Bounce = 2, TVSimulator = 3 };
-    EffectType type         = EffectType::None;
-    enum class DurationMode { FollowSlide = 0, Fixed = 1 };
-    DurationMode durationMode = DurationMode::FollowSlide;
-    float fixedDurationMs   = 300.0f;
+// Slide-only TV Simulator parameter set.
+// Mirrors the 7 user-facing TV Simulator params (VisualEffect TVSimulator
+// params[0..6]) but as a named struct so slide configs don't have to index
+// into the typeless float[16] used by the chain entry.
+//
+// NOTE on intensity behaviour: the slide TV ramp now ramps 0 -> peak over
+// the slide duration, latches at peak, and returns according to the parent
+// SlideNoteEffectSettings.returnStyle / returnTrigger. Earlier versions
+// ramped peak -> 0 automatically; old projects pick up the new behaviour
+// via the chosen defaults on returnStyle / returnTrigger.
+struct SlideTVSettings {
+    float intensity   = 0.5f;    // 0..1 — peak intensity at the end of the ramp-up
+    float rollSpeed   = 1.0f;    // 0..5
+    float scanlines   = 0.3f;    // 0..1
+    float chroma      = 0.003f;  // 0..0.01
+    float noise       = 0.0f;    // 0..1
+    float jitter      = 2.0f;    // 0..10
+    float colorBleed  = 0.0f;    // 0..0.02
+};
 
-    // Delta fields (Prompt 11) — additive deltas applied at slide fire time.
-    // Consumed by AnimationManager::triggerSlide in a later prompt; currently
-    // present for project serialization forward-compatibility.
-    float slideZoomDelta      = 1.0f;  // multiplicative (1 = no change)
-    float slidePanXDelta      = 0.0f;
-    float slidePanYDelta      = 0.0f;
-    float slideRotationDelta  = 0.0f;  // degrees
-    float slideBounceDistance = 0.0f;
-    float slideBounceDirDeg   = 0.0f;
-    float slideTVIntensity    = 0.0f;
+struct SlideNoteEffectSettings {
+    enum class EffectType    { None = 0, ZoomPanRot = 1, Bounce = 2, TVSimulator = 3 };
+    enum class DurationMode  { FollowSlide = 0, Fixed = 1 };
+    // Visual return policy (added with the configurable-return system):
+    //   ReturnStyle   — how the visual returns to the captured pre-slide state.
+    //   ReturnTrigger — when the return is fired:
+    //                   * NextNormalNote: the next non-slide PatternNote on the
+    //                     same Pattern Track triggers return.
+    //                   * NextSlideNote:  normal notes do NOT return; the next
+    //                     slide note on the same track is *consumed* as the
+    //                     return trigger (it does NOT also trigger a new slide
+    //                     in the same event). Produces a toggle pattern:
+    //                     slide -> target, slide -> base, slide -> target, ...
+    enum class ReturnStyle   { Instant = 0, SmoothReverse = 1 };
+    enum class ReturnTrigger { NextNormalNote = 0, NextSlideNote = 1 };
+
+    EffectType    type             = EffectType::None;
+    DurationMode  durationMode     = DurationMode::FollowSlide;
+    float         fixedDurationMs  = 300.0f;
+
+    // Visual return policy — applies to ZoomPanRot and TVSimulator. Bounce
+    // auto-returns through its own oscillation cycle and ignores these.
+    ReturnStyle   returnStyle      = ReturnStyle::SmoothReverse;
+    ReturnTrigger returnTrigger    = ReturnTrigger::NextNormalNote;
+    float         returnDurationMs = 200.0f;   // only used when returnStyle == SmoothReverse
+
+    // Reused from the Visual FX modules so slide controls match the existing
+    // module UX (labels, ranges, defaults). When used as slide configs, the
+    // .enabled and .durationMs fields are IGNORED — slide duration is owned
+    // exclusively by durationMode + fixedDurationMs above. The slide UI hides
+    // those fields via hideEnabled / hideDuration props.
+    BounceSettings     bounce;
+    ZoomPanRotSettings zoomPanRot;
+    SlideTVSettings    tv;
 };
 
 struct SlideAnimationEvent {
@@ -670,6 +707,59 @@ struct PatternBlock {
     bool     loopEnabled = false; // true: notes loop past pattern.length; false: empty space past pattern.length
 };
 
+// ─── TrackColor (Pass 6D + 6F) ────────────────────────────────────────────────
+// Per-track color assignment metadata. UI-only — engine audio/video pipelines
+// ignore these fields. `Auto` means the renderer derives the color from the
+// visible track index modulo the 16-slot theme palette. `PaletteSlot` means
+// the user picked an explicit slot (1..16) from the same theme palette.
+// `Custom` (Pass 6F) carries a user-supplied #RRGGBB hex color.
+//
+// trackColorSlot is only meaningful when trackColorMode == PaletteSlot.
+// trackColorCustom is only meaningful when trackColorMode == Custom.
+// In any other mode the irrelevant field is cleared. Loader sanitizes
+// invalid combinations to Auto.
+
+enum class TrackColorMode { Auto, PaletteSlot, Custom };
+
+inline std::string trackColorModeToString(TrackColorMode m) {
+    switch (m) {
+        case TrackColorMode::PaletteSlot: return "paletteSlot";
+        case TrackColorMode::Custom:      return "custom";
+        default:                          return "auto";
+    }
+}
+
+inline TrackColorMode stringToTrackColorMode(const std::string& s) {
+    if (s == "paletteSlot") return TrackColorMode::PaletteSlot;
+    if (s == "custom")      return TrackColorMode::Custom;
+    return TrackColorMode::Auto;
+}
+
+// Pass 6F custom hex validation. Strict #RRGGBB (7 chars, leading '#', six
+// hex digits). Case-insensitive on input. Empty is "no custom assigned".
+// Never throws.
+inline bool isValidTrackCustomColor(const std::string& v) {
+    if (v.size() != 7 || v[0] != '#') return false;
+    for (size_t i = 1; i < 7; ++i) {
+        const char c = v[i];
+        const bool ok = (c >= '0' && c <= '9')
+                     || (c >= 'a' && c <= 'f')
+                     || (c >= 'A' && c <= 'F');
+        if (!ok) return false;
+    }
+    return true;
+}
+
+// Returns uppercase #RRGGBB for valid input, empty string for invalid.
+inline std::string normalizeTrackCustomColor(const std::string& v) {
+    if (!isValidTrackCustomColor(v)) return "";
+    std::string out = v;
+    for (size_t i = 1; i < out.size(); ++i) {
+        if (out[i] >= 'a' && out[i] <= 'f') out[i] = static_cast<char>(out[i] - 32);
+    }
+    return out;
+}
+
 // ─── TrackInfo ────────────────────────────────────────────────────────────────
 // Metadata for a sequencer track, including both audio mix and video layout.
 
@@ -719,6 +809,15 @@ struct TrackInfo {
     // renderer's snap step and default placement width; engine treats it as
     // opaque metadata.
     int subdivisionFactor = 1;
+
+    // ── Track color (Pass 6D + 6F) ──────────────────────────────────────────
+    // UI-only metadata controlling Timeline track color. Auto derives the
+    // color by visible index; PaletteSlot pins to slot 1..16 of the theme
+    // palette; Custom (Pass 6F) carries a #RRGGBB hex literal. Engine
+    // audio/video pipelines ignore these fields.
+    TrackColorMode trackColorMode   = TrackColorMode::Auto;
+    int            trackColorSlot   = 0;   // 1..16 when PaletteSlot; 0 = unassigned
+    std::string    trackColorCustom = "";  // "#RRGGBB" when Custom; empty otherwise
 };
 
 inline std::string trackTypeToString(TrackInfo::Type t) {
@@ -737,12 +836,19 @@ inline TrackInfo::Type stringToTrackType(const std::string& s) {
 //
 // Legacy projects stored coordinates in HALF units (implicit 2 sub-units per
 // axis). Timeline::fromJSON migrates them by multiplying by 4 when the saved
-// gridLayoutVersion is missing or < 2. New projects write gridLayoutVersion=2.
+// gridLayoutVersion is missing or < 2. New projects write the current version.
+//
+// gridLayoutVersion history:
+//   v1 (implicit) — half-grid coordinates (2 sub-units per column)
+//   v2            — fine-grid coordinates (kGridSubUnitsPerColumn per column)
+//   v3            — unified fullscreenLayers replaces chorusTrackId / crashEnabled
+//                   / crashTrackId / crashOpacity. v≤2 projects are migrated on
+//                   load by synthesizing layers from those legacy fields.
 constexpr int kGridSubUnitsPerColumn = 8;
 constexpr int kGridSubUnitsPerRow    = 8;
 constexpr int kGridLegacyHalfUnits   = 2;        // pre-v2 sub-unit count
 constexpr int kGridLegacyToFineScale = kGridSubUnitsPerColumn / kGridLegacyHalfUnits; // = 4
-constexpr int kGridLayoutVersionFineUnits = 2;
+constexpr int kGridLayoutVersionFineUnits = 3;
 constexpr int kGridSubdivisionMax = 8;
 
 // ─── Project file format version ──────────────────────────────────────────────
@@ -750,7 +856,8 @@ constexpr int kGridSubdivisionMax = 8;
 // migration on load. Readers must handle any version ≤ current gracefully.
 //   v1 (implicit, no field)  — original schema with videoFlipMode string
 //   v2                       — videoFlipConfig replaces videoFlipMode (flip v2)
-constexpr int kProjectFileVersion = 2;
+//   v3                       — unified fullscreenLayers replaces chorus/crash
+constexpr int kProjectFileVersion = 3;
 
 // ─── GridSlot ─────────────────────────────────────────────────────────────────
 // One track's placement in the video grid. Coordinates are in fine-grid units:
@@ -769,19 +876,30 @@ struct GridSlot {
     int   zOrder  = 0;
 };
 
+// ─── FullscreenLayer ──────────────────────────────────────────────────────────
+// One fullscreen video layer in the grid. Layers are ordered: index 0 sits at
+// the bottom of its placement stack; later entries draw on top within the same
+// placement. BehindGrid layers render before grid cells; InFrontOfGrid layers
+// render after. Replaces the pre-v3 chorus + crash special cases.
+
+enum class FullscreenLayerPlacement { BehindGrid, InFrontOfGrid };
+
+struct FullscreenLayer {
+    int                      trackId   = -1;
+    FullscreenLayerPlacement placement = FullscreenLayerPlacement::BehindGrid;
+    float                    opacity   = 1.0f;
+};
+
 // ─── GridLayout ───────────────────────────────────────────────────────────────
 // Project-level video grid configuration. Each track can be assigned to one
-// slot in the N×M grid. Optional chorus layer renders behind grid; optional
-// crash overlay renders on top when triggered.
+// slot in the N×M grid. Any number of fullscreen layers can be stacked behind
+// or in front of the grid via fullscreenLayers.
 
 struct GridLayout {
     int   columns       = 3;       // N (1-8)
     int   rows          = 3;       // M (1-8)
     std::vector<GridSlot> slots;
-    int   chorusTrackId = -1;      // -1 = disabled
-    bool  crashEnabled  = false;
-    int   crashTrackId  = -1;
-    float crashOpacity  = 0.7f;
+    std::vector<FullscreenLayer> fullscreenLayers;
     int   previewFps    = 30;      // 1-120
     float gapScale      = 0.0f;   // 0.0–0.5
 };

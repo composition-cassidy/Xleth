@@ -5,6 +5,7 @@
 // Fail:  prints "FAILED: <reason>" and exits 1
 
 #include "model/Timeline.h"
+#include "commands/TimelineCommands.h"
 #include <cassert>
 #include <cmath>
 #include <iostream>
@@ -676,6 +677,304 @@ int main() {
 
     // ── [15] VideoFlipConfig migration round-trip ─────────────────────────────
     testVideoFlipConfigMigration();
+
+    // ── [16] Track color metadata persistence (Pass 6D) ───────────────────────
+    {
+        std::cout << "[16] Track color metadata persistence (Pass 6D)\n";
+
+        // 16a — defaults: new TrackInfo is Auto/0, JSON emits "auto" with no slot
+        {
+            TrackInfo t;
+            CHECK(t.trackColorMode == TrackColorMode::Auto, "default mode is Auto");
+            CHECK(t.trackColorSlot == 0, "default slot is 0");
+            nlohmann::json j = t;
+            CHECK(j.value("trackColorMode", std::string("")) == "auto",
+                  "default JSON has trackColorMode=auto");
+            CHECK(!j.contains("trackColorSlot"),
+                  "default JSON omits trackColorSlot in Auto mode");
+        }
+
+        // 16b — paletteSlot round-trip preserves mode and slot
+        {
+            TrackInfo t;
+            t.trackColorMode = TrackColorMode::PaletteSlot;
+            t.trackColorSlot = 7;
+            nlohmann::json j = t;
+            CHECK(j.value("trackColorMode", std::string("")) == "paletteSlot",
+                  "paletteSlot JSON has trackColorMode=paletteSlot");
+            CHECK(j.value("trackColorSlot", -1) == 7,
+                  "paletteSlot JSON carries trackColorSlot=7");
+            TrackInfo t2 = j.get<TrackInfo>();
+            CHECK(t2.trackColorMode == TrackColorMode::PaletteSlot,
+                  "round-trip mode == PaletteSlot");
+            CHECK(t2.trackColorSlot == 7, "round-trip slot == 7");
+        }
+
+        // 16c — old project (no fields) loads as Auto
+        {
+            nlohmann::json j = makeMinimalTrackJson("None");
+            TrackInfo t = j.get<TrackInfo>();
+            CHECK(t.trackColorMode == TrackColorMode::Auto,
+                  "missing fields → Auto mode");
+            CHECK(t.trackColorSlot == 0, "missing fields → slot=0");
+        }
+
+        // 16d — invalid mode string sanitizes to Auto
+        {
+            nlohmann::json j = makeMinimalTrackJson("None");
+            j["trackColorMode"] = "rainbow";
+            j["trackColorSlot"] = 5;
+            TrackInfo t = j.get<TrackInfo>();
+            CHECK(t.trackColorMode == TrackColorMode::Auto,
+                  "invalid mode string → Auto");
+            CHECK(t.trackColorSlot == 0, "invalid mode → slot dropped");
+        }
+
+        // 16e — paletteSlot with out-of-range slot collapses to Auto
+        {
+            nlohmann::json j = makeMinimalTrackJson("None");
+            j["trackColorMode"] = "paletteSlot";
+            j["trackColorSlot"] = 99;
+            TrackInfo t = j.get<TrackInfo>();
+            CHECK(t.trackColorMode == TrackColorMode::Auto,
+                  "out-of-range slot → Auto");
+            CHECK(t.trackColorSlot == 0, "out-of-range slot → 0");
+        }
+
+        // 16f — paletteSlot with slot=0 collapses to Auto
+        {
+            nlohmann::json j = makeMinimalTrackJson("None");
+            j["trackColorMode"] = "paletteSlot";
+            j["trackColorSlot"] = 0;
+            TrackInfo t = j.get<TrackInfo>();
+            CHECK(t.trackColorMode == TrackColorMode::Auto,
+                  "slot=0 → Auto");
+        }
+
+        // 16g — Timeline::setTrackColor sanitizes invalid input
+        {
+            Timeline tlc;
+            TrackInfo seed;
+            seed.name = "Color";
+            int id = tlc.addTrack(seed);
+            // Valid PaletteSlot — accepted.
+            CHECK(tlc.setTrackColor(id, TrackColorMode::PaletteSlot, 5),
+                  "setTrackColor(PaletteSlot,5) returns true");
+            CHECK(tlc.getTrack(id)->trackColorMode == TrackColorMode::PaletteSlot,
+                  "mode stored as PaletteSlot");
+            CHECK(tlc.getTrack(id)->trackColorSlot == 5, "slot stored as 5");
+            // PaletteSlot with bad slot → engine collapses to Auto.
+            tlc.setTrackColor(id, TrackColorMode::PaletteSlot, 99);
+            CHECK(tlc.getTrack(id)->trackColorMode == TrackColorMode::Auto,
+                  "bad slot collapses to Auto");
+            CHECK(tlc.getTrack(id)->trackColorSlot == 0, "bad slot resets to 0");
+            // Auto mode always clears slot.
+            tlc.setTrackColor(id, TrackColorMode::Auto, 9);
+            CHECK(tlc.getTrack(id)->trackColorSlot == 0,
+                  "Auto mode forces slot=0 even with non-zero arg");
+            // Unknown trackId → false.
+            CHECK(!tlc.setTrackColor(99999, TrackColorMode::PaletteSlot, 1),
+                  "unknown trackId returns false");
+        }
+
+        // ── Pass 6F: custom-hex track color metadata ──────────────────────────
+
+        // 16h — defaults: new TrackInfo has empty trackColorCustom and JSON
+        // omits the field in Auto mode.
+        {
+            TrackInfo t;
+            CHECK(t.trackColorCustom.empty(),
+                  "default trackColorCustom is empty");
+            nlohmann::json j = t;
+            CHECK(!j.contains("trackColorCustom"),
+                  "default JSON omits trackColorCustom in Auto mode");
+        }
+
+        // 16i — validation helpers
+        {
+            CHECK(isValidTrackCustomColor("#4CC9F0"), "uppercase hex valid");
+            CHECK(isValidTrackCustomColor("#4cc9f0"), "lowercase hex valid");
+            CHECK(isValidTrackCustomColor("#FF00aa"), "mixed-case hex valid");
+            CHECK(!isValidTrackCustomColor(""), "empty hex invalid");
+            CHECK(!isValidTrackCustomColor("4CC9F0"), "missing # invalid");
+            CHECK(!isValidTrackCustomColor("#FFF"), "short hex invalid");
+            CHECK(!isValidTrackCustomColor("#GGGGGG"), "non-hex chars invalid");
+            CHECK(!isValidTrackCustomColor("#1234567"), "too long invalid");
+            CHECK(!isValidTrackCustomColor("rgb(0,0,0)"), "rgb() invalid");
+            CHECK(normalizeTrackCustomColor("#4cc9f0") == "#4CC9F0",
+                  "normalize uppercases");
+            CHECK(normalizeTrackCustomColor("#4CC9F0") == "#4CC9F0",
+                  "normalize preserves uppercase");
+            CHECK(normalizeTrackCustomColor("rgb(0,0,0)").empty(),
+                  "normalize invalid → empty");
+        }
+
+        // 16j — Timeline::setTrackColor stores normalized custom color
+        {
+            Timeline tlc;
+            TrackInfo seed; seed.name = "Cust";
+            int id = tlc.addTrack(seed);
+            CHECK(tlc.setTrackColor(id, TrackColorMode::Custom, 0, "#4cc9f0"),
+                  "setTrackColor(Custom, '#4cc9f0') returns true");
+            CHECK(tlc.getTrack(id)->trackColorMode == TrackColorMode::Custom,
+                  "mode stored as Custom");
+            CHECK(tlc.getTrack(id)->trackColorSlot == 0,
+                  "Custom clears slot to 0");
+            CHECK(tlc.getTrack(id)->trackColorCustom == "#4CC9F0",
+                  "custom hex normalized to uppercase");
+        }
+
+        // 16k — invalid custom color collapses to Auto with empty custom
+        {
+            Timeline tlc;
+            TrackInfo seed; seed.name = "Cust";
+            int id = tlc.addTrack(seed);
+            tlc.setTrackColor(id, TrackColorMode::Custom, 0, "rgb(0,0,0)");
+            CHECK(tlc.getTrack(id)->trackColorMode == TrackColorMode::Auto,
+                  "invalid custom → Auto");
+            CHECK(tlc.getTrack(id)->trackColorSlot == 0,
+                  "invalid custom → slot=0");
+            CHECK(tlc.getTrack(id)->trackColorCustom.empty(),
+                  "invalid custom → trackColorCustom empty");
+        }
+
+        // 16l — switching Custom → PaletteSlot clears custom
+        {
+            Timeline tlc;
+            TrackInfo seed; seed.name = "Cust";
+            int id = tlc.addTrack(seed);
+            tlc.setTrackColor(id, TrackColorMode::Custom, 0, "#FF00AA");
+            tlc.setTrackColor(id, TrackColorMode::PaletteSlot, 3, "");
+            CHECK(tlc.getTrack(id)->trackColorMode == TrackColorMode::PaletteSlot,
+                  "switched to PaletteSlot");
+            CHECK(tlc.getTrack(id)->trackColorSlot == 3,
+                  "slot stored as 3");
+            CHECK(tlc.getTrack(id)->trackColorCustom.empty(),
+                  "PaletteSlot clears prior custom");
+        }
+
+        // 16m — switching Custom → Auto clears custom
+        {
+            Timeline tlc;
+            TrackInfo seed; seed.name = "Cust";
+            int id = tlc.addTrack(seed);
+            tlc.setTrackColor(id, TrackColorMode::Custom, 0, "#FF00AA");
+            tlc.setTrackColor(id, TrackColorMode::Auto, 0, "");
+            CHECK(tlc.getTrack(id)->trackColorMode == TrackColorMode::Auto,
+                  "switched to Auto");
+            CHECK(tlc.getTrack(id)->trackColorCustom.empty(),
+                  "Auto clears prior custom");
+        }
+
+        // 16n — Custom JSON round-trip preserves normalized hex
+        {
+            TrackInfo t;
+            t.trackColorMode   = TrackColorMode::Custom;
+            t.trackColorCustom = "#FF00AA";
+            nlohmann::json j = t;
+            CHECK(j.value("trackColorMode", std::string("")) == "custom",
+                  "Custom JSON has trackColorMode=custom");
+            CHECK(j.value("trackColorCustom", std::string("")) == "#FF00AA",
+                  "Custom JSON carries trackColorCustom=#FF00AA");
+            CHECK(!j.contains("trackColorSlot"),
+                  "Custom JSON omits trackColorSlot");
+            TrackInfo t2 = j.get<TrackInfo>();
+            CHECK(t2.trackColorMode == TrackColorMode::Custom,
+                  "round-trip mode == Custom");
+            CHECK(t2.trackColorCustom == "#FF00AA",
+                  "round-trip hex preserved");
+            CHECK(t2.trackColorSlot == 0,
+                  "round-trip slot stays 0");
+        }
+
+        // 16o — JSON load: mode=custom but invalid hex sanitizes to Auto
+        {
+            nlohmann::json j = makeMinimalTrackJson("None");
+            j["trackColorMode"]   = "custom";
+            j["trackColorCustom"] = "rgb(1,2,3)";
+            TrackInfo t = j.get<TrackInfo>();
+            CHECK(t.trackColorMode == TrackColorMode::Auto,
+                  "invalid custom JSON → Auto");
+            CHECK(t.trackColorCustom.empty(),
+                  "invalid custom JSON → trackColorCustom empty");
+        }
+
+        // 16p — JSON load: mode=custom missing hex sanitizes to Auto
+        {
+            nlohmann::json j = makeMinimalTrackJson("None");
+            j["trackColorMode"] = "custom";
+            TrackInfo t = j.get<TrackInfo>();
+            CHECK(t.trackColorMode == TrackColorMode::Auto,
+                  "missing custom hex → Auto");
+        }
+
+        // 16q — SetTrackColorCommand: undo from Custom → Auto restores Custom
+        {
+            Timeline tlc;
+            TrackInfo seed; seed.name = "Cust";
+            int id = tlc.addTrack(seed);
+            // First, set Custom directly so the command snapshots it as "old".
+            tlc.setTrackColor(id, TrackColorMode::Custom, 0, "#123456");
+            CHECK(tlc.getTrack(id)->trackColorCustom == "#123456",
+                  "preset Custom hex");
+            // Build a command that switches to Auto.
+            SetTrackColorCommand cmd(id, TrackColorMode::Auto, 0, "", tlc);
+            cmd.execute(tlc);
+            CHECK(tlc.getTrack(id)->trackColorMode == TrackColorMode::Auto,
+                  "after execute: Auto");
+            CHECK(tlc.getTrack(id)->trackColorCustom.empty(),
+                  "after execute: custom cleared");
+            cmd.undo(tlc);
+            CHECK(tlc.getTrack(id)->trackColorMode == TrackColorMode::Custom,
+                  "after undo: Custom restored");
+            CHECK(tlc.getTrack(id)->trackColorCustom == "#123456",
+                  "after undo: custom hex restored exactly");
+        }
+
+        // 16r — SetTrackColorCommand: redo of custom assignment reapplies
+        {
+            Timeline tlc;
+            TrackInfo seed; seed.name = "Cust";
+            int id = tlc.addTrack(seed);
+            // Start in Auto; command assigns Custom.
+            SetTrackColorCommand cmd(id, TrackColorMode::Custom, 0, "#abcdef", tlc);
+            cmd.execute(tlc);
+            CHECK(tlc.getTrack(id)->trackColorMode == TrackColorMode::Custom,
+                  "execute → Custom");
+            CHECK(tlc.getTrack(id)->trackColorCustom == "#ABCDEF",
+                  "execute stores normalized hex");
+            cmd.undo(tlc);
+            CHECK(tlc.getTrack(id)->trackColorMode == TrackColorMode::Auto,
+                  "undo → Auto");
+            cmd.execute(tlc);  // redo
+            CHECK(tlc.getTrack(id)->trackColorMode == TrackColorMode::Custom,
+                  "redo → Custom");
+            CHECK(tlc.getTrack(id)->trackColorCustom == "#ABCDEF",
+                  "redo restores normalized hex");
+        }
+
+        // 16s — SetTrackColorCommand: undo from PaletteSlot → Custom restores Custom
+        {
+            Timeline tlc;
+            TrackInfo seed; seed.name = "Cust";
+            int id = tlc.addTrack(seed);
+            tlc.setTrackColor(id, TrackColorMode::Custom, 0, "#FF00AA");
+            // Command snapshots Custom as the prior state.
+            SetTrackColorCommand cmd(id, TrackColorMode::PaletteSlot, 5, "", tlc);
+            cmd.execute(tlc);
+            CHECK(tlc.getTrack(id)->trackColorMode == TrackColorMode::PaletteSlot,
+                  "after execute: PaletteSlot");
+            CHECK(tlc.getTrack(id)->trackColorCustom.empty(),
+                  "after execute: custom cleared");
+            cmd.undo(tlc);
+            CHECK(tlc.getTrack(id)->trackColorMode == TrackColorMode::Custom,
+                  "after undo: Custom restored");
+            CHECK(tlc.getTrack(id)->trackColorCustom == "#FF00AA",
+                  "after undo: custom hex restored");
+            CHECK(tlc.getTrack(id)->trackColorSlot == 0,
+                  "after undo: slot cleared back to 0");
+        }
+    }
 
     // ── Results ───────────────────────────────────────────────────────────────
     std::cout << "\n=== Results: "

@@ -566,6 +566,10 @@ target_compile_definitions(test_mix PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# MixEngine pulls in heavier JUCE + audio headers than the lighter test targets.
+# 8 MB stack prevents STATUS_STACK_OVERFLOW during JUCE static initialisation.
+target_link_options(test_mix PRIVATE /STACK:8388608)
+
 # ── test_sampler ─────────────────────────────────────────────────────────────
 # Self-verification for the Sampler DSP (pitch shift, ADSR, loop, polyphony).
 # No Timeline / MixEngine — tests the Sampler class directly with synthetic
@@ -823,6 +827,36 @@ target_link_directories(test_render_decoder PRIVATE
 )
 
 target_compile_definitions(test_render_decoder PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_animation_manager ───────────────────────────────────────────────────
+# Verifies the slide visual return system: latch-at-target, captured baseline,
+# Instant / SmoothReverse return, NextSlideNote toggle/consume, TV ramp-UP.
+# Pure CPU — no GPU or decoder.
+add_executable(test_animation_manager
+    test/test_animation_manager.cpp
+)
+
+target_link_libraries(test_animation_manager PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_animation_manager PRIVATE
     JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
     JUCE_USE_CURL=0
     JUCE_WEB_BROWSER=0

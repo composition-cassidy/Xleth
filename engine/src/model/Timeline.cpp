@@ -773,6 +773,39 @@ bool Timeline::setTrackSubdivisionFactor(int trackId, int factor) {
     return true;
 }
 
+bool Timeline::setTrackColor(int trackId,
+                             TrackColorMode mode,
+                             int slot,
+                             const std::string& customColor) {
+    auto it = m_tracks.find(trackId);
+    if (it == m_tracks.end()) {
+        std::cout << "[Timeline] ERROR setTrackColor: trackId=" << trackId << " not found\n";
+        return false;
+    }
+    // Sanitize: PaletteSlot needs slot 1..16; Custom needs valid #RRGGBB.
+    // Any other combination falls back to Auto with cleared slot/custom so
+    // corrupted callers cannot leave the project in a bad state.
+    const std::string customNorm = normalizeTrackCustomColor(customColor);
+    if (mode == TrackColorMode::PaletteSlot && slot >= 1 && slot <= 16) {
+        it->second.trackColorMode   = TrackColorMode::PaletteSlot;
+        it->second.trackColorSlot   = slot;
+        it->second.trackColorCustom.clear();
+    } else if (mode == TrackColorMode::Custom && !customNorm.empty()) {
+        it->second.trackColorMode   = TrackColorMode::Custom;
+        it->second.trackColorSlot   = 0;
+        it->second.trackColorCustom = customNorm;
+    } else {
+        it->second.trackColorMode   = TrackColorMode::Auto;
+        it->second.trackColorSlot   = 0;
+        it->second.trackColorCustom.clear();
+    }
+    std::cout << "[Timeline] Set track id=" << trackId
+              << " trackColorMode=" << trackColorModeToString(it->second.trackColorMode)
+              << " trackColorSlot=" << it->second.trackColorSlot
+              << " trackColorCustom=" << it->second.trackColorCustom << "\n";
+    return true;
+}
+
 bool Timeline::setTrackBounceSettings(int trackId, const BounceSettings& settings) {
     auto it = m_tracks.find(trackId);
     if (it == m_tracks.end()) {
@@ -996,8 +1029,7 @@ void Timeline::setGridLayout(const GridLayout& layout) {
     m_gridLayout = layout;
     std::cout << "[Timeline] Set GridLayout " << layout.columns << "x" << layout.rows
               << " slots=" << layout.slots.size()
-              << " chorus=" << layout.chorusTrackId
-              << " crash=" << (layout.crashEnabled ? "on" : "off")
+              << " fsLayers=" << layout.fullscreenLayers.size()
               << " fps=" << layout.previewFps << "\n";
 }
 
@@ -1056,24 +1088,40 @@ void Timeline::removeTrackFromGrid(int trackId) {
               << " (removed " << (before - m_gridLayout.slots.size()) << " slot(s))\n";
 }
 
-void Timeline::setChorusTrack(int trackId) {
-    m_gridLayout.chorusTrackId = trackId;
-    // Auto-enable hold-last-frame on the chorus track — every Sparta Remix
-    // expects the chorus background to persist through gaps.
-    if (trackId >= 0) {
-        auto it = m_tracks.find(trackId);
+void Timeline::setFullscreenLayers(std::vector<FullscreenLayer> layers) {
+    m_gridLayout.fullscreenLayers = std::move(layers);
+    // Auto-enable hold-last-frame on every BehindGrid layer's track — every
+    // Sparta Remix expects the backdrop to persist through gaps.
+    for (const auto& fl : m_gridLayout.fullscreenLayers) {
+        if (fl.placement != FullscreenLayerPlacement::BehindGrid) continue;
+        if (fl.trackId < 0) continue;
+        auto it = m_tracks.find(fl.trackId);
         if (it != m_tracks.end())
             it->second.videoHoldLastFrame = true;
     }
-    std::cout << "[Timeline] Set chorus track=" << trackId << "\n";
+    std::cout << "[Timeline] Set fullscreen layers count="
+              << m_gridLayout.fullscreenLayers.size() << "\n";
 }
 
-void Timeline::setCrashOverlay(bool enabled, int trackId, float opacity) {
-    m_gridLayout.crashEnabled = enabled;
-    m_gridLayout.crashTrackId = trackId;
-    m_gridLayout.crashOpacity = opacity;
-    std::cout << "[Timeline] Set crash overlay enabled=" << (enabled ? "true" : "false")
-              << " track=" << trackId << " opacity=" << opacity << "\n";
+void Timeline::removeFullscreenLayersForTrack(int trackId) {
+    auto& v = m_gridLayout.fullscreenLayers;
+    auto before = v.size();
+    v.erase(std::remove_if(v.begin(), v.end(),
+                [trackId](const FullscreenLayer& fl) { return fl.trackId == trackId; }),
+            v.end());
+    std::cout << "[Timeline] Removed " << (before - v.size())
+              << " fullscreen layer(s) for track " << trackId << "\n";
+}
+
+void Timeline::restoreFullscreenLayer(size_t index, const FullscreenLayer& layer) {
+    auto& v = m_gridLayout.fullscreenLayers;
+    if (index > v.size()) index = v.size();
+    v.insert(v.begin() + static_cast<std::ptrdiff_t>(index), layer);
+    if (layer.placement == FullscreenLayerPlacement::BehindGrid && layer.trackId >= 0) {
+        auto it = m_tracks.find(layer.trackId);
+        if (it != m_tracks.end())
+            it->second.videoHoldLastFrame = true;
+    }
 }
 
 void Timeline::setPreviewFps(int fps) {
@@ -1213,15 +1261,20 @@ nlohmann::json Timeline::toJSON() const {
     nlohmann::json gl;
     gl["columns"]       = m_gridLayout.columns;
     gl["rows"]          = m_gridLayout.rows;
-    // Coordinate version: v2 stores gridX/gridY/spanX/spanY in fine-grid units
-    // (kGridSubUnitsPerColumn per column). Pre-v2 projects (no field, or
-    // version<2) are migrated on load — see fromJSON.
+    // gridLayoutVersion: bumped to 3 when the chorus/crash special-cases were
+    // unified into fullscreenLayers. v<2 projects also need slot-coordinate
+    // migration (half-grid → fine-grid) — see fromJSON.
     gl["gridLayoutVersion"] = kGridLayoutVersionFineUnits;
-    gl["chorusTrackId"] = m_gridLayout.chorusTrackId;
-    gl["crashEnabled"]  = m_gridLayout.crashEnabled;
-    gl["crashTrackId"]  = m_gridLayout.crashTrackId;
-    gl["crashOpacity"]  = m_gridLayout.crashOpacity;
     gl["previewFps"]    = m_gridLayout.previewFps;
+    gl["fullscreenLayers"] = nlohmann::json::array();
+    for (const auto& fl : m_gridLayout.fullscreenLayers) {
+        nlohmann::json flj;
+        flj["trackId"]   = fl.trackId;
+        flj["placement"] = (fl.placement == FullscreenLayerPlacement::BehindGrid)
+                              ? "behind" : "front";
+        flj["opacity"]   = fl.opacity;
+        gl["fullscreenLayers"].push_back(flj);
+    }
     gl["slots"] = nlohmann::json::array();
     for (const auto& s : m_gridLayout.slots) {
         nlohmann::json sj;
@@ -1353,10 +1406,6 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
             const auto& gl = j.at("gridLayout");
             if (gl.contains("columns"))       gl.at("columns").get_to(m_gridLayout.columns);
             if (gl.contains("rows"))          gl.at("rows").get_to(m_gridLayout.rows);
-            if (gl.contains("chorusTrackId")) gl.at("chorusTrackId").get_to(m_gridLayout.chorusTrackId);
-            if (gl.contains("crashEnabled"))  gl.at("crashEnabled").get_to(m_gridLayout.crashEnabled);
-            if (gl.contains("crashTrackId"))  gl.at("crashTrackId").get_to(m_gridLayout.crashTrackId);
-            if (gl.contains("crashOpacity"))  gl.at("crashOpacity").get_to(m_gridLayout.crashOpacity);
             if (gl.contains("previewFps"))    gl.at("previewFps").get_to(m_gridLayout.previewFps);
 
             // Coordinate space migration: pre-v2 projects stored slot
@@ -1364,14 +1413,83 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
             // fine-grid units (kGridSubUnitsPerColumn per column). Scale
             // legacy values up by kGridLegacyToFineScale so the same logical
             // placements survive intact.
+            //
+            // Layer model migration: pre-v3 projects stored a single chorus
+            // backdrop (chorusTrackId) and an optional crash overlay
+            // (crashEnabled / crashTrackId / crashOpacity) as flat fields.
+            // v3+ unifies them into the fullscreenLayers array.
             const int gridLayoutVersion = gl.value("gridLayoutVersion", 1);
-            const int coordScale = (gridLayoutVersion < kGridLayoutVersionFineUnits)
+            const int coordScale = (gridLayoutVersion < 2)
                                  ? kGridLegacyToFineScale : 1;
             if (coordScale != 1) {
                 std::cout << "[Timeline] Migrating gridLayout slots from v"
-                          << gridLayoutVersion << " (half-grid) to v"
-                          << kGridLayoutVersionFineUnits
-                          << " (fine-grid, x" << coordScale << ")\n";
+                          << gridLayoutVersion << " (half-grid) to fine-grid (x"
+                          << coordScale << ")\n";
+            }
+
+            if (gl.contains("fullscreenLayers") && gl.at("fullscreenLayers").is_array()) {
+                for (const auto& flj : gl.at("fullscreenLayers")) {
+                    FullscreenLayer fl;
+                    if (flj.contains("trackId") && flj.at("trackId").is_number())
+                        flj.at("trackId").get_to(fl.trackId);
+                    if (flj.contains("placement") && flj.at("placement").is_string()) {
+                        // Unknown placement strings default to BehindGrid for
+                        // forward compatibility with future placement values.
+                        const std::string p = flj.at("placement").get<std::string>();
+                        fl.placement = (p == "front")
+                            ? FullscreenLayerPlacement::InFrontOfGrid
+                            : FullscreenLayerPlacement::BehindGrid;
+                    }
+                    if (flj.contains("opacity") && flj.at("opacity").is_number()) {
+                        float o = flj.at("opacity").get<float>();
+                        fl.opacity = std::clamp(o, 0.0f, 1.0f);
+                    }
+                    // Drop dangling track refs silently — the source track
+                    // may have been deleted before this project was saved.
+                    if (fl.trackId < 0 || m_tracks.find(fl.trackId) == m_tracks.end())
+                        continue;
+                    m_gridLayout.fullscreenLayers.push_back(fl);
+                }
+            } else {
+                // Legacy v≤2 path: synthesize layers from the old flat fields.
+                if (gl.contains("chorusTrackId")) {
+                    int cid = -1;
+                    gl.at("chorusTrackId").get_to(cid);
+                    if (cid >= 0 && m_tracks.find(cid) != m_tracks.end()) {
+                        FullscreenLayer fl;
+                        fl.trackId   = cid;
+                        fl.placement = FullscreenLayerPlacement::BehindGrid;
+                        fl.opacity   = 1.0f;
+                        m_gridLayout.fullscreenLayers.push_back(fl);
+                    }
+                }
+                bool legacyCrashEnabled = false;
+                int  legacyCrashTrack   = -1;
+                float legacyCrashOp     = 0.7f;
+                if (gl.contains("crashEnabled")) gl.at("crashEnabled").get_to(legacyCrashEnabled);
+                if (gl.contains("crashTrackId")) gl.at("crashTrackId").get_to(legacyCrashTrack);
+                if (gl.contains("crashOpacity")) gl.at("crashOpacity").get_to(legacyCrashOp);
+                if (legacyCrashEnabled && legacyCrashTrack >= 0
+                    && m_tracks.find(legacyCrashTrack) != m_tracks.end()) {
+                    FullscreenLayer fl;
+                    fl.trackId   = legacyCrashTrack;
+                    fl.placement = FullscreenLayerPlacement::InFrontOfGrid;
+                    fl.opacity   = std::clamp(legacyCrashOp, 0.0f, 1.0f);
+                    m_gridLayout.fullscreenLayers.push_back(fl);
+                }
+                if (!m_gridLayout.fullscreenLayers.empty()) {
+                    std::cout << "[Timeline] Migrated " << m_gridLayout.fullscreenLayers.size()
+                              << " legacy chorus/crash entries into fullscreenLayers\n";
+                }
+            }
+            // Auto-enable hold-last-frame on every BehindGrid track (the
+            // setFullscreenLayers() invariant) without going through the setter
+            // — the setter logs and we don't want to double-log on load.
+            for (const auto& fl : m_gridLayout.fullscreenLayers) {
+                if (fl.placement != FullscreenLayerPlacement::BehindGrid) continue;
+                if (fl.trackId < 0) continue;
+                auto it = m_tracks.find(fl.trackId);
+                if (it != m_tracks.end()) it->second.videoHoldLastFrame = true;
             }
 
             if (gl.contains("slots")) {

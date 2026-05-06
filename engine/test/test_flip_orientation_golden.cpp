@@ -189,7 +189,7 @@ int main() {
         req.sourcePath       = "quad.mp4";
         req.sourceFrameIndex = 0;
         req.opacity          = 1.0f;
-        req.isChorus         = true;
+        req.layerKind        = CellLayerKind::FullscreenBehind;
         req.zOrder           = -1;
         req.orientation      = g.orientation;
         requests.push_back(req);

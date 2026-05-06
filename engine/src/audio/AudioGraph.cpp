@@ -169,8 +169,6 @@ int AudioGraph::addProcessorToGraph(const std::string& pluginId,
     if (static_cast<int>(nodes_.size()) >= kMaxNodes) return -1;
 
     proc->setPlayConfigDetails(2, 2, sampleRate_, blockSize_);
-    proc->prepareToPlay(sampleRate_, blockSize_);
-
     auto nodePtr = graph_->addNode(std::move(proc));
     if (!nodePtr) return -1;
 

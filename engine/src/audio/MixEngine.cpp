@@ -1783,20 +1783,32 @@ void MixEngine::triggerPatternNotes(const ActivePatternBlock& apb,
     if (!apb.block->loopEnabled)
         lastLoopIdx = std::min<int64_t>(lastLoopIdx, 0);
 
-    // Collect note events into a stack-allocated buffer so we can sort them
-    // before firing. This guarantees noteOffs fire before noteOns at the same
-    // tick — critical for arpeggiator chord transitions: without it, adjacent
-    // chords leak notes into each other because heldNotes_ never empties and
-    // the sequencer state carries over instead of resetting.
-    // (Mirrors the sort order in XlethAddon::emitArpVideoEvents.)
-    struct NoteEvent {
+    // Collect audio events (noteOn/noteOff/slideStart) into a stack-allocated
+    // buffer so we can sort them before firing. The sort order guarantees:
+    //   1. NoteOffs fire before NoteOns at the same tick — critical for
+    //      arpeggiator chord transitions; without it, adjacent chords leak
+    //      notes into each other because heldNotes_ never empties.
+    //      (Mirrors XlethAddon::emitArpVideoEvents.)
+    //   2. NoteOns fire before SlideStarts at the same tick — so a slide
+    //      note that lands on the same tick as a chord's noteOns correctly
+    //      captures those just-spawned voices in its group, instead of
+    //      targeting future voices.
+    //
+    // Slide notes (PatternNote.isSlide == true) emit a single SlideStart
+    // event — NO noteOn, NO noteOff. They are silent pitch-target markers
+    // consumed by Sampler::beginGroupSlide.
+    struct AudioEvent {
+        enum Type : uint8_t { NoteOff = 0, NoteOn = 1, SlideStart = 2 };
         int64_t tick;
+        Type    type;
         int     pitch;
-        float   velocity;
-        bool    isNoteOn;
+        float   velocity;             // NoteOn only
+        double  slideDurationSamples; // SlideStart only
+        float   cx;                   // SlideStart only (bezier ctrl x)
+        float   cy;                   // SlideStart only (bezier ctrl y)
     };
-    static constexpr int kMaxNoteEvents = 512;
-    NoteEvent events[kMaxNoteEvents];
+    static constexpr int kMaxEvents = 512;
+    AudioEvent events[kMaxEvents];
     int eventCount = 0;
 
     for (const auto& note : apb.pattern->notes)
@@ -1811,9 +1823,36 @@ void MixEngine::triggerPatternNotes(const ActivePatternBlock& apb,
             const int64_t rawNoteOff = absNoteOn + note.duration.ticks;
             const int64_t absNoteOff = std::min<int64_t>(rawNoteOff, blockEndTicks);
 
+            if (note.isSlide)
+            {
+                // Slide note → single SlideStart event at the start tick.
+                // Duration is the note's TickTime duration converted to
+                // samples; cx/cy carry bezier easing for the audio glide.
+                if (absNoteOn >= windowStart && absNoteOn < windowEnd
+                    && eventCount < kMaxEvents) {
+                    AudioEvent e{};
+                    e.tick = absNoteOn;
+                    e.type = AudioEvent::SlideStart;
+                    e.pitch = note.pitch;
+                    e.velocity = 0.0f;
+                    e.slideDurationSamples =
+                        static_cast<double>(note.duration.toSamples(bpm, sampleRate));
+                    e.cx = note.slideCurveCx;
+                    e.cy = note.slideCurveCy;
+                    events[eventCount++] = e;
+                }
+                // Slide notes do NOT emit NoteOn/NoteOff — silence by design.
+                continue;
+            }
+
             if (absNoteOn >= windowStart && absNoteOn < windowEnd
-                && eventCount < kMaxNoteEvents) {
-                events[eventCount++] = { absNoteOn, note.pitch, note.velocity, true };
+                && eventCount < kMaxEvents) {
+                AudioEvent e{};
+                e.tick = absNoteOn;
+                e.type = AudioEvent::NoteOn;
+                e.pitch = note.pitch;
+                e.velocity = note.velocity;
+                events[eventCount++] = e;
 #ifdef XLETH_DEBUG
                 // Log where the noteOff for this note would land relative to the window.
                 // offInWin=YES means both events fire in the same buffer (very short note).
@@ -1831,78 +1870,97 @@ void MixEngine::triggerPatternNotes(const ActivePatternBlock& apb,
             // off-event that lands exactly on windowEnd (common: note ends at
             // pattern/block boundary) still fires in this buffer.
             if (absNoteOff > windowStart && absNoteOff <= windowEnd
-                && eventCount < kMaxNoteEvents)
-                events[eventCount++] = { absNoteOff, note.pitch, 0.0f, false };
+                && eventCount < kMaxEvents) {
+                AudioEvent e{};
+                e.tick = absNoteOff;
+                e.type = AudioEvent::NoteOff;
+                e.pitch = note.pitch;
+                e.velocity = 0.0f;
+                events[eventCount++] = e;
+            }
         }
     }
 
     // Catch capacity overflow in debug builds — a dropped noteOff means a
     // stuck voice, so surface this during testing rather than silently clipping.
-    jassert(eventCount < kMaxNoteEvents);
+    jassert(eventCount < kMaxEvents);
 
-    // Sort by tick, then noteOff before noteOn at equal tick so the arpeggiator
-    // fully drains heldNotes_ (triggering reset) before the next chord's notes
-    // are added.
+    // Sort by tick, then by type (NoteOff < NoteOn < SlideStart) at equal tick.
+    // - NoteOff before NoteOn: arpeggiator drains heldNotes_ before the next
+    //   chord enters.
+    // - NoteOn before SlideStart: a same-tick slide can capture just-spawned
+    //   voices instead of targeting future-spawned ones.
     std::sort(events, events + eventCount,
-        [](const NoteEvent& a, const NoteEvent& b) {
+        [](const AudioEvent& a, const AudioEvent& b) {
             if (a.tick != b.tick) return a.tick < b.tick;
-            return !a.isNoteOn && b.isNoteOn; // off before on
+            return a.type < b.type;
         });
 
     const int numSamples = static_cast<int>(bufferEnd - bufferStart);
 
     for (int i = 0; i < eventCount; ++i) {
-        if (events[i].isNoteOn) {
-            const int64_t absNoteOnSample = TickTime{events[i].tick}.toSamples(bpm, sampleRate);
-            // Sample-domain membership is the authoritative filter.
-            // The widened tick window may have admitted candidates from adjacent
-            // buffers; discard them here before computing the offset.
-            if (absNoteOnSample <  bufferStart) continue;
-            if (absNoteOnSample >= bufferEnd)   continue;
-            const int sampleOffset = static_cast<int>(absNoteOnSample - bufferStart);
-            jassert(sampleOffset >= 0 && sampleOffset < numSamples);
+        const AudioEvent& e = events[i];
+        const int64_t absSample = TickTime{e.tick}.toSamples(bpm, sampleRate);
+
+        // Sample-domain membership is the authoritative filter.
+        // The widened tick window may have admitted candidates from adjacent
+        // buffers; discard them here before computing the offset.
+        if (absSample < bufferStart) continue;
+
+        switch (e.type) {
+            case AudioEvent::NoteOn: {
+                if (absSample >= bufferEnd) continue;
+                const int sampleOffset = static_cast<int>(absSample - bufferStart);
+                jassert(sampleOffset >= 0 && sampleOffset < numSamples);
 #ifdef XLETH_DEBUG
-            fprintf(stderr, "[PatternTrig] absTick=%lld absSample=%lld "
-                    "bufStart=%lld bufEnd=%lld numSamples=%d offset=%d\n",
-                    (long long)events[i].tick, (long long)absNoteOnSample,
-                    (long long)bufferStart, (long long)bufferEnd, numSamples,
-                    sampleOffset);
+                fprintf(stderr, "[PatternTrig] absTick=%lld absSample=%lld "
+                        "bufStart=%lld bufEnd=%lld numSamples=%d offset=%d\n",
+                        (long long)e.tick, (long long)absSample,
+                        (long long)bufferStart, (long long)bufferEnd, numSamples,
+                        sampleOffset);
 #endif
-            apb.sampler->noteOn(events[i].pitch, events[i].velocity, sampleOffset);
-        } else {
-            const int64_t absNoteOffSample =
-                TickTime{events[i].tick}.toSamples(bpm, sampleRate);
-            // Sample-domain membership is the authoritative filter — same
-            // pattern as the noteOn branch above. The widened tick search
-            // admits candidates from adjacent buffers; this filter discards
-            // them so they fire in the correct buffer instead.
-            //
-            // Fix A: filter end is INCLUSIVE (> not >=). A note-off whose
-            // sample equals bufferEnd MUST dispatch in this buffer — in the
-            // next buffer the owning PatternBlock will be absent from
-            // activeBlocks_ (findActivePatternBlocks uses a half-open
-            // [blockStart, blockEnd) filter) and there is no pending-off
-            // state that would re-emit it. Admitting it here is the last
-            // chance.
-            if (absNoteOffSample <  bufferStart) continue;
-            if (absNoteOffSample >  bufferEnd)   continue;   // was >=
-            int noteOffOffset = static_cast<int>(absNoteOffSample - bufferStart);
-            // Clamp for the deferred-release scheduler in Sampler::processVoice:
-            // fireNoteOff stores sampleOffset in Voice::releaseSample; the
-            // sample-loop gate `s >= v.releaseSample` is never true when
-            // releaseSample == numSamples (the loop exits at s == numSamples),
-            // which would strand the voice permanently. Firing one sample
-            // early at the buffer edge is inaudible; stranding is not.
-            if (noteOffOffset >= numSamples) noteOffOffset = numSamples - 1;
-            jassert(noteOffOffset >= 0 && noteOffOffset < numSamples);
+                apb.sampler->noteOn(e.pitch, e.velocity, sampleOffset);
+                break;
+            }
+            case AudioEvent::NoteOff: {
+                // Inclusive end (> not >=). A note-off whose sample equals
+                // bufferEnd MUST dispatch in this buffer — in the next buffer
+                // the owning PatternBlock is absent from activeBlocks_
+                // (half-open [blockStart, blockEnd) filter) and no pending-off
+                // state would re-emit it. Admitting it here is the last chance.
+                if (absSample > bufferEnd) continue;
+                int noteOffOffset = static_cast<int>(absSample - bufferStart);
+                // Clamp for the deferred-release scheduler: the sample-loop
+                // gate `s >= v.releaseSample` is never true when
+                // releaseSample == numSamples, which would strand the voice.
+                // Firing one sample early at the edge is inaudible.
+                if (noteOffOffset >= numSamples) noteOffOffset = numSamples - 1;
+                jassert(noteOffOffset >= 0 && noteOffOffset < numSamples);
 #ifdef XLETH_DEBUG
-            fprintf(stderr, "[PatternOff] absTick=%lld absSample=%lld "
-                    "bufStart=%lld bufEnd=%lld numSamples=%d offset=%d\n",
-                    (long long)events[i].tick, (long long)absNoteOffSample,
-                    (long long)bufferStart, (long long)bufferEnd, numSamples,
-                    noteOffOffset);
+                fprintf(stderr, "[PatternOff] absTick=%lld absSample=%lld "
+                        "bufStart=%lld bufEnd=%lld numSamples=%d offset=%d\n",
+                        (long long)e.tick, (long long)absSample,
+                        (long long)bufferStart, (long long)bufferEnd, numSamples,
+                        noteOffOffset);
 #endif
-            apb.sampler->noteOff(events[i].pitch, noteOffOffset, /*force=*/true);
+                apb.sampler->noteOff(e.pitch, noteOffOffset, /*force=*/true);
+                break;
+            }
+            case AudioEvent::SlideStart: {
+                if (absSample >= bufferEnd) continue;
+                const int sampleOffset = static_cast<int>(absSample - bufferStart);
+                jassert(sampleOffset >= 0 && sampleOffset < numSamples);
+#ifdef XLETH_DEBUG
+                fprintf(stderr, "[PatternSlide] absTick=%lld absSample=%lld "
+                        "targetPitch=%d durSamples=%.1f cx=%.3f cy=%.3f offset=%d\n",
+                        (long long)e.tick, (long long)absSample,
+                        e.pitch, e.slideDurationSamples,
+                        e.cx, e.cy, sampleOffset);
+#endif
+                apb.sampler->beginGroupSlide(e.pitch, e.slideDurationSamples,
+                                             e.cx, e.cy, sampleOffset);
+                break;
+            }
         }
     }
 }

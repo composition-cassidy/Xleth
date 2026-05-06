@@ -6,6 +6,7 @@
 
 #include "audio/MixEngine.h"
 #include "audio/TrackMixer.h"
+#include "audio/XlethEQEffect.h"
 #include "model/Timeline.h"
 #include "SampleBank.h"
 #include "Transport.h"
@@ -548,6 +549,135 @@ static void testDebugLog()
     CHECK(!log.pop(popped), "pop from empty returns false");
 }
 
+// ─── Test: EQ tail — no state-injection click at clip B start ────────────────
+// Two clips (2 kHz sine) with a 125 ms silence gap on a single track.
+// Bell EQ +12 dB at 2 kHz, Q=10 is active.
+// Fix: EQ reports 0.2 s tail → MixEngine feeds silent buffers through EQ during
+// the gap → biquad state decays to ~0 before clip B → no click.
+// Without fix: z1_frozen ≈ 1.0–2.0 would inject at clip B sample 0.
+
+static void testEQTailNoClick()
+{
+    std::cout << "[EQ tail] no state-injection click across silence gap\n";
+
+    const double bpm        = 120.0;
+    const double sampleRate = 44100.0;
+    const int    blockSize  = 512;
+
+    // Clip A: beat 0 → 1  (0.0–0.5 s = 22050 samples)
+    // Silence:  beat 1 → 1.25  (0.5–0.625 s = 5512 samples ≈ 125 ms)
+    // Clip B: beat 1.25 → 2.25  (0.625–1.125 s)
+    const int clipBStartSample =
+        static_cast<int>(1.25 * (60.0 / bpm) * sampleRate); // 27562
+
+    Timeline timeline(bpm, sampleRate);
+
+    TrackInfo track;
+    track.name   = "EQ Track";
+    track.volume = 1.0f;
+    int trackId  = timeline.addTrack(track);
+
+    SampleRegion regA; regA.name = "ClipA";
+    SampleRegion regB; regB.name = "ClipB";
+    int regAId = timeline.addRegion(regA);
+    int regBId = timeline.addRegion(regB);
+
+    Clip clipA;
+    clipA.trackId  = trackId;
+    clipA.regionId = regAId;
+    clipA.position = TickTime::fromBeats(0.0);
+    clipA.duration = TickTime::fromBeats(1.0);
+    timeline.addClip(clipA);
+
+    Clip clipB;
+    clipB.trackId  = trackId;
+    clipB.regionId = regBId;
+    clipB.position = TickTime::fromBeats(1.25);
+    clipB.duration = TickTime::fromBeats(1.0);
+    timeline.addClip(clipB);
+
+    // 2 kHz sine at 0.5 amplitude — matches EQ center so z1/z2 accumulate real energy.
+    const int clipLenSamples = static_cast<int>(1.0 * (60.0 / bpm) * sampleRate);
+    juce::File tempDir = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                             .getChildFile("xleth_eq_tail_test");
+    tempDir.createDirectory();
+    juce::File wavA = generateWav(tempDir, "clipA_2k", sampleRate, clipLenSamples, 2000.0f, 0.5f);
+    juce::File wavB = generateWav(tempDir, "clipB_2k", sampleRate, clipLenSamples, 2000.0f, 0.5f);
+
+    SampleBank bank;
+    int smpA = bank.loadSample(wavA, sampleRate);
+    int smpB = bank.loadSample(wavB, sampleRate);
+
+    // JUCE APVTS lazy-init warmup: the 242-parameter APVTS requires JUCE's
+    // internal StringPool/HashMap to be primed on first construction. Without this,
+    // the first construction that happens inside AudioProcessorGraph::addNode() can
+    // hit uninitialized JUCE-internal state and crash at getRawParameterValue().
+    { auto warmup = std::make_unique<XlethParametricEQ>(); (void)warmup; }
+
+    MixEngine engine;
+    engine.setTimeline(&timeline);
+    engine.setSampleBank(&bank);
+    engine.mapRegionToSample(regAId, smpA);
+    engine.mapRegionToSample(regBId, smpB);
+    engine.rebuildAllSamplers();
+    engine.prepare(sampleRate, blockSize); // sets preparedSampleRate_ before addEffect
+
+    // Add EQ then configure — addEffect auto-inits the chain at the prepared rate.
+    int nodeId = engine.addEffect(trackId, "xletheq", 0);
+    auto* base = engine.getEffectPtr(trackId, nodeId);
+    auto* eq   = dynamic_cast<XlethParametricEQ*>(base);
+    CHECK(eq != nullptr, "getEffectPtr should return XlethParametricEQ");
+    if (!eq) return;
+
+    // Verify the fix is in place before testing its effect.
+    CHECK(eq->getTailLengthSeconds() >= 0.2,
+          "EQ should report >= 0.2 s tail after fix");
+
+    int band = eq->addBand();
+    eq->setBandParam(band, "freq",    2000.0f);
+    eq->setBandParam(band, "gain",    12.0f);   // +12 dB → steady-state |z1| ≈ 1–2
+    eq->setBandParam(band, "q",       10.0f);
+    eq->setBandParam(band, "type",    0.0f);    // Bell
+    eq->setBandParam(band, "enabled", 1.0f);
+
+    Transport transport;
+    transport.setSampleRate(sampleRate);
+    transport.setBPM(bpm);
+
+    const int totalSamples = clipBStartSample + clipLenSamples + blockSize;
+    auto output = offlineRender(engine, transport, totalSamples, blockSize);
+
+    // The Sampler applies a Hann declick fade-in at clip B start (m_declickMs=0.5 → ~22
+    // samples at 44100 Hz). Within this window, x[n] ≈ 0, so the only thing that can
+    // raise output is injected biquad state (z1):
+    //   With fix:    z1 decayed to ~0 during 200ms silence tail → y[0] ≈ 0
+    //   Without fix: z1 frozen at end of clip A → y[0] ≈ z1 ≈ 1–2 (state injection spike)
+    // Check only the first 5 samples — well inside the 22-sample fade, input is ~0.004,
+    // so any spike here is pure filter state, not audio content.
+    const int checkSamples = 5;
+    float spike = 0.0f;
+    for (int ch = 0; ch < 2; ++ch)
+        for (int s = 0; s < checkSamples; ++s)
+            spike = std::max(spike,
+                             std::abs(output.getSample(ch, clipBStartSample + s)));
+
+    CHECK(spike < 0.05f,
+          "first 5 samples of clip B must not contain a state-injection spike (EQ tail fix)");
+
+    // Sanity: flat EQ (gain=0) must also produce no click.
+    eq->setBandParam(band, "gain", 0.0f);
+    engine.prepare(sampleRate, blockSize); // reprepare clears biquad state via prepareEffect
+    auto outputFlat = offlineRender(engine, transport, totalSamples, blockSize);
+    float spikeFlat = 0.0f;
+    for (int ch = 0; ch < 2; ++ch)
+        for (int s = 0; s < checkSamples; ++s)
+            spikeFlat = std::max(spikeFlat,
+                                 std::abs(outputFlat.getSample(ch, clipBStartSample + s)));
+    CHECK(spikeFlat < 0.05f, "flat EQ (gain=0) must also produce no click (regression guard)");
+
+    tempDir.deleteRecursively();
+}
+
 // ─── main ────────────────────────────────────────────────────────────────────
 
 int main()
@@ -563,6 +693,7 @@ int main()
     testBasicRendering();
     testMute();
     testSolo();
+    testEQTailNoClick();
 
     std::cout << "\n";
     if (g_failed == 0)

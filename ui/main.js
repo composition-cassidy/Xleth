@@ -653,6 +653,9 @@ ipcMain.handle('xleth:timeline:setTrackGapScaleOverride',
 ipcMain.handle('xleth:timeline:setTrackSubdivisionFactor',
   safeHandler((_, trackId, factor) => callWorker('timeline_setTrackSubdivisionFactor', [trackId, factor])));
 
+ipcMain.handle('xleth:timeline:setTrackColor',
+  safeHandler((_, trackId, assignment) => callWorker('timeline_setTrackColor', [trackId, assignment])));
+
 ipcMain.handle('xleth:timeline:setTrackBounceSettings',
   safeHandler((_, trackId, bounce) => callWorker('timeline_setTrackBounceSettings', [trackId, bounce])));
 
@@ -1313,11 +1316,8 @@ ipcMain.handle('xleth:timeline:assignTrackToGridWithZOrder',
 ipcMain.handle('xleth:timeline:removeTrackFromGrid',
   safeHandler((_, trackId) => callWorker('timeline_removeTrackFromGrid', [trackId])));
 
-ipcMain.handle('xleth:timeline:setChorusTrack',
-  safeHandler((_, trackId) => callWorker('timeline_setChorusTrack', [trackId])));
-
-ipcMain.handle('xleth:timeline:setCrashOverlay',
-  safeHandler((_, enabled, trackId, opacity) => callWorker('timeline_setCrashOverlay', [enabled, trackId, opacity])));
+ipcMain.handle('xleth:timeline:setFullscreenLayers',
+  safeHandler((_, layers) => callWorker('timeline_setFullscreenLayers', [layers])));
 
 ipcMain.handle('xleth:timeline:setPreviewFps',
   safeHandler((_, fps) => callWorker('timeline_setPreviewFps', [fps])));
@@ -1778,6 +1778,10 @@ function fmtVendorHex(n) {
   if (!Number.isFinite(n) || n <= 0) return 'n/a';
   return '0x' + n.toString(16).toUpperCase().padStart(4, '0');
 }
+function fmtHex(n) {
+  if (!Number.isFinite(n)) return 'n/a';
+  return '0x' + (n >>> 0).toString(16).toUpperCase().padStart(8, '0');
+}
 function fmtBool(b) { return b ? 'yes' : 'no'; }
 function fmtKVLines(obj, indent = '  ') {
   const lines = [];
@@ -1884,6 +1888,22 @@ function buildVisualPreviewDiagnosticText({ engine, extras, settings }) {
     out.push(`  Init dimensions:        ${engine.lastTick.initWidth} × ${engine.lastTick.initHeight}`);
     out.push(`  Compositor RT:          ${engine.lastTick.compositorWidth} × ${engine.lastTick.compositorHeight}`);
     out.push(`  Last readback:          ${engine.lastTick.readbackWidth} × ${engine.lastTick.readbackHeight}`);
+    out.push(`  lastReadbackHRESULT:    ${fmtHex(engine.lastTick.lastReadbackHRESULT)} (${engine.lastTick.lastReadbackHRESULTText})`);
+    out.push(`  lastReadbackFailureStage: ${engine.lastTick.lastReadbackFailureStage || 'n/a'}`);
+    out.push(`  deviceRemovedReason:    ${fmtHex(engine.lastTick.deviceRemovedReason)} (${engine.lastTick.deviceRemovedReasonText})`);
+    out.push(`  Map type / flags:       ${engine.lastTick.readbackMapType} / ${fmtHex(engine.lastTick.readbackMapFlags)}`);
+    out.push(`  Map RowPitch:           ${engine.lastTick.mappedRowPitch}`);
+    out.push(`  expected bytes:         ${engine.lastTick.expectedBytes}`);
+    out.push(`  actual copy bytes:      ${engine.lastTick.actualCopyBytes}`);
+    out.push(`  source/staging dimensions match: ${fmtBool(engine.lastTick.sourceStagingDimensionsMatch)}`);
+    if (engine.lastTick.sourceTexture) {
+      const s = engine.lastTick.sourceTexture;
+      out.push(`  Source texture:         ${s.width} × ${s.height} fmt=${s.format} samples=${s.sampleCount}`);
+    }
+    if (engine.lastTick.stagingTexture) {
+      const s = engine.lastTick.stagingTexture;
+      out.push(`  Staging texture:        ${s.width} × ${s.height} fmt=${s.format} usage=${s.usage} cpu=${fmtHex(s.cpuAccessFlags)} bind=${fmtHex(s.bindFlags)} misc=${fmtHex(s.miscFlags)} samples=${s.sampleCount}`);
+    }
   }
   if (engine && engine.counters) {
     const c = engine.counters;
@@ -1891,23 +1911,50 @@ function buildVisualPreviewDiagnosticText({ engine, extras, settings }) {
     out.push(`  Compositor path entered:    ${c.compositorPathEntered}`);
     out.push(`  compositeFrame() calls:     ${c.compositeFrameCount}`);
     out.push(`  readback() valid:           ${c.readbackValidCount}`);
-    out.push(`  readback() invalid:         ${c.readbackInvalidCount}`);
+    out.push(`  readback() not-ready:       ${c.readbackNotReadyCount || 0}`);
+    out.push(`  readback() invalid (fatal): ${c.readbackInvalidCount}`);
     out.push(`  Canvas copy count:          ${c.canvasCopyCount}`);
     out.push(`  Black frames written:       ${c.blackFrameCount}`);
     out.push(`  Compositor init failures:   ${c.compositorInitFailures}`);
+    const policyStr = c.readbackPolicyActive === 1 ? 'AsyncQueued' : 'FastImmediate';
+    const switchReasonMap = {0:'none', 1:'fatal-invalids', 2:'map-stall-too-slow', 3:'poor-yield'};
+    out.push(`  Readback policy:            ${policyStr}`);
+    out.push(`  Policy switch reason:       ${switchReasonMap[c.readbackPolicySwitchReason || 0] || 'unknown'}`);
+    out.push(`  Dropped pending frames:     ${c.droppedPendingFrames || 0}`);
+    out.push(`  Pending slots (ring):       ${c.pendingSlotsCount || 0}`);
+    out.push(`  Last readback:              ${((c.lastReadbackUs||0)/1000).toFixed(2)} ms`);
+    out.push(`  Avg readback (60-frame):    ${((c.avgReadbackUs||0)/1000).toFixed(2)} ms`);
+    out.push(`  Max readback:               ${((c.maxReadbackUs||0)/1000).toFixed(2)} ms`);
     out.push('');
     out.push('  Interpretation:');
+    const notReady = c.readbackNotReadyCount || 0;
+    const policy    = c.readbackPolicyActive === 1 ? 'AsyncQueued' : 'FastImmediate';
+    const dropped   = c.droppedPendingFrames || 0;
+    const avgMs     = (c.avgReadbackUs || 0) / 1000;
     if (c.compositeFrameCount === 0 && c.compositorPathEntered === 0) {
-      out.push('    ✗ Compositor path never entered — engine is in CPU fallback or paused.');
+      out.push('    ✗ Compositor path never entered — engine in CPU fallback or paused.');
     } else if (c.compositeFrameCount === 0) {
       out.push('    ✗ Path entered but compositeFrame() never called — compositor not initialized.');
-    } else if (c.readbackValidCount === 0 && c.readbackInvalidCount > 0) {
-      out.push('    ✗ Readback has been called but ALWAYS returned invalid — D3D11 readback failing.');
-    } else if (c.canvasCopyCount === 0) {
+    } else if (c.readbackInvalidCount > 0) {
+      out.push(`    ✗ FATAL readback failures (${c.readbackInvalidCount}). Check HRESULT/stage/deviceRemovedReason.`);
+    } else if (policy === 'FastImmediate' && c.canvasCopyCount > 0) {
+      const msNote = avgMs > 0 ? ` (avg ${avgMs.toFixed(2)} ms/frame)` : '';
+      out.push(`    ✓ FastImmediate healthy — blocking Map, no DO_NOT_WAIT.${msNote}`);
+      out.push(`      canvasCopyCount=${c.canvasCopyCount} confirms frames reach the canvas.`);
+    } else if (policy === 'AsyncQueued' && c.readbackValidCount > 0) {
+      const dropNote = dropped > 0
+        ? ` (${dropped} ring drops — GPU behind tick rate)`
+        : ' (no ring drops)';
+      out.push(`    ✓ AsyncQueued healthy — ring serving valid frames.${dropNote}`);
+      out.push(`      FastImmediate switched away: reason=${switchReasonMap[c.readbackPolicySwitchReason||0]||'?'}`);
+    } else if (policy === 'AsyncQueued' && notReady > 0 && c.readbackValidCount === 0) {
+      out.push('    ⚠ AsyncQueued: ring still priming (notReady ticks, no valid yet).');
+      out.push('      Normal for first few frames; if it persists, check GPU load.');
+    } else if (c.canvasCopyCount === 0 && c.readbackValidCount > 0) {
       out.push('    ✗ Readback valid but no canvas copy — frameOutput.getBackBuffer() returning null.');
     } else {
-      out.push('    ✓ Engine is producing frames into shared memory.');
-      out.push('      If preview is still blank, the failure is in shared-memory delivery or WebGL upload.');
+      out.push(`    ✓ Engine readback healthy (policy=${policy}).`);
+      out.push('      If preview is still blank, inspect section 5 delivery/WebGL counters.');
     }
   }
   out.push('');
@@ -2062,9 +2109,13 @@ function buildVisualPreviewDiagnosticText({ engine, extras, settings }) {
   out.push('  • If section 4 shows readbackValid > 0 and section 5 shows framesReceived === 0,');
   out.push('    the failure is between the engine writing to the file mapping and the renderer');
   out.push('    reading from it — check shm_helper.node load and FRAME_SHM_NAME match.');
-  out.push('  • If section 4 shows readbackInvalid > 0 and readbackValid === 0, the D3D11');
-  out.push('    staging-texture readback is failing — typically wrong adapter, GPU driver crash,');
-  out.push('    or out-of-VRAM on the integrated AMD adapter.');
+  out.push('  • All GPUs start on FastImmediate (blocking Map, no DO_NOT_WAIT, ~0-2ms on NVIDIA).');
+  out.push('    If avgReadbackMs>8, fatalInvalids>3, or yield<25% in a 60-frame window,');
+  out.push('    the engine auto-switches to AsyncQueued (DO_NOT_WAIT ring, 5 slots).');
+  out.push('    D3D11_MAP_FLAG_DO_NOT_WAIT = 0x00100000 (confirmed in readbackMapFlags log).');
+  out.push('  • readbackInvalid(fatal)>0 = descriptor/device issue, not GPU latency.');
+  out.push('  • readbackNotReady in AsyncQueued = GPU behind tick rate; previous frame stays visible.');
+  out.push('  • droppedPendingFrames in AsyncQueued is non-fatal: oldest frame dropped, preview continues.');
   out.push(sep);
   out.push('End of report.');
 

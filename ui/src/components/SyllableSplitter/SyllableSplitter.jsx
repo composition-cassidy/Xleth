@@ -2,6 +2,11 @@ import { useRef, useEffect, useState, useCallback, useMemo } from 'react'
 import { Play, Square, Trash2 } from 'lucide-react'
 import { downsamplePeaks3 } from '../../utils/waveformRenderer.js'
 import { tokenValue } from '../../theming/tokenValue.ts'
+import {
+  buildSplitterSections,
+  createInitialSplitterState,
+  serializeSplitterSyllables,
+} from './syllableModel.js'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const CANVAS_H   = 90    // waveform canvas height
@@ -46,42 +51,28 @@ export default function SyllableSplitter({
 
   // ── Internal state: markers = region-relative seconds, sorted ───────────────
   const initial = useMemo(() => {
-    const sy = region?.syllables ?? []
-    // Syllable i has startTime = edges[i]; the first one is always 0, so
-    // markers are the startTimes of syllables 1..N-1 (region-relative).
-    const ms = []
-    for (let i = 1; i < sy.length; i++) ms.push(sy[i].startTime)
-    const ts = sy.map(s => s.text || '')
-    return { ms, ts }
-  }, [region?.id])  // eslint-disable-line react-hooks/exhaustive-deps
+    return createInitialSplitterState(region?.syllables ?? [], regionDur)
+  }, [region?.id, region?.syllables, regionDur])
 
-  const [markers, setMarkers] = useState(initial.ms)
-  const [texts,   setTexts]   = useState(initial.ts)
+  const [markers, setMarkers] = useState(initial.markers)
+  const [texts,   setTexts]   = useState(initial.texts)
+  const [hasLeadingPlaceholder, setHasLeadingPlaceholder] = useState(initial.hasLeadingPlaceholder)
   const [dirty,   setDirty]   = useState(false)
   const [drag,    setDrag]    = useState(null)  // { idx, pendingDelete }
   const [playingIdx, setPlayingIdx] = useState(null)
 
   // Reset when region changes
   useEffect(() => {
-    setMarkers(initial.ms)
-    setTexts(initial.ts)
+    setMarkers(initial.markers)
+    setTexts(initial.texts)
+    setHasLeadingPlaceholder(initial.hasLeadingPlaceholder)
     setDirty(false)
   }, [initial])
 
   // ── Derived: section count = markers.length + 1 ─────────────────────────────
   const sections = useMemo(() => {
-    const edges = [0, ...markers, regionDur]
-    const out = []
-    for (let i = 0; i < edges.length - 1; i++) {
-      out.push({
-        number: markers.length > 0 ? i : i + 1,
-        start:  edges[i],
-        end:    edges[i + 1],
-        text:   texts[i] || '',
-      })
-    }
-    return out
-  }, [markers, texts, regionDur])
+    return buildSplitterSections(markers, texts, regionDur, hasLeadingPlaceholder)
+  }, [markers, texts, regionDur, hasLeadingPlaceholder])
 
   // Keep `texts` aligned to `sections` count: pad/trim without erasing data
   useEffect(() => {
@@ -167,10 +158,9 @@ export default function SyllableSplitter({
     ctx.fillStyle = tokenValue('--theme-syllable-accent-light')
     ctx.font = '600 11px "Hanken Grotesk", system-ui, sans-serif'
     ctx.textBaseline = 'top'
-    for (let i = 0; i < edges.length - 1; i++) {
-      const x0 = (edges[i] / regionDur) * w
-      const label = markers.length > 0 ? (i === 0 ? '~' : String(i)) : String(i + 1)
-      ctx.fillText(label, x0 + 4, 3)
+    for (const section of sections) {
+      const x0 = (section.start / regionDur) * w
+      ctx.fillText(section.label, x0 + 4, 3)
     }
 
     // Marker lines
@@ -187,7 +177,7 @@ export default function SyllableSplitter({
       ctx.fillRect(x - 4, 0, 8, 4)
       ctx.fillRect(x - 4, h - 4, 8, 4)
     }
-  }, [markers, regionDur, regionPeaks])
+  }, [markers, regionDur, regionPeaks, sections])
 
   useEffect(() => { draw() }, [draw])
   useEffect(() => {
@@ -248,6 +238,7 @@ export default function SyllableSplitter({
         const next = [...prev, t].sort((a, b) => a - b)
         return next
       })
+      setHasLeadingPlaceholder(true)
       setTexts(prev => {
         // A new marker splits one section into two — insert an empty text at
         // the new section's position. Find where t fits among existing markers.
@@ -358,23 +349,20 @@ export default function SyllableSplitter({
     if (markers.length === 0 && texts.every(t => !t)) return
     setMarkers([])
     setTexts([''])
+    setHasLeadingPlaceholder(false)
     setDirty(true)
   }, [markers.length, texts])
 
   const handleSave = useCallback(() => {
-    const edges = [0, ...markers, regionDur]
-    const syllables = []
-    for (let i = 0; i < edges.length - 1; i++) {
-      syllables.push({
-        startTime: edges[i],                // region-relative seconds
-        endTime:   edges[i + 1],
-        number:    markers.length > 0 ? i : i + 1,
-        text:      (texts[i] || ''),
-      })
-    }
+    const syllables = serializeSplitterSyllables(
+      markers,
+      texts,
+      regionDur,
+      hasLeadingPlaceholder,
+    )
     onSave?.(syllables)
     setDirty(false)
-  }, [markers, texts, regionDur, onSave])
+  }, [markers, texts, regionDur, hasLeadingPlaceholder, onSave])
 
   // ── Render ──────────────────────────────────────────────────────────────────
   const canvasStyleH = compact ? Math.max(56, CANVAS_H - 20) : CANVAS_H
@@ -393,7 +381,7 @@ export default function SyllableSplitter({
       <div className="syllable-splitter-sections">
         {sections.map((s, i) => (
           <div key={i} className={`syllable-section-card${playingIdx === i ? ' playing' : ''}`}>
-            <span className="syllable-section-num">{s.number === 0 ? '~' : s.number}</span>
+            <span className="syllable-section-num">{s.label}</span>
             <button
               className="syllable-section-play"
               onClick={() => playSection(i)}

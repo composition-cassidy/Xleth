@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
 import { Import, Grid3x3 } from 'lucide-react'
 import GridEditorOverlay from './GridEditorOverlay.jsx'
+import GridEditorDock from './GridEditorDock.jsx'
 import { tokenValue } from '../theming/tokenValue.ts'
 import useGridEditStore from '../stores/useGridEditStore.js'
 import { usePanelVisibility } from '../windowing/contexts/PanelVisibilityContext'
@@ -70,6 +71,8 @@ export default function VideoPreview() {
   const tickRef = useRef(null)
   const canvasRef = useRef(null)
   const containerRef = useRef(null)
+  const canvasAreaRef = useRef(null)
+  const wrapperRef = useRef(null)
   const [videoFile, setVideoFile] = useState(null)
   const [importing, setImporting] = useState(false)
   const [fps, setFps] = useState(0)
@@ -415,6 +418,21 @@ export default function VideoPreview() {
     }
   })
 
+  // Publish the 16:9 content width as a CSS custom property so the dock strip
+  // stays aligned with the overlay rather than spanning the full wrapper width.
+  useEffect(() => {
+    const canvasArea = canvasAreaRef.current
+    const wrapper    = wrapperRef.current
+    if (!canvasArea || !wrapper) return
+    const observer = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect
+      const w = Math.min(width, height * (16 / 9))
+      wrapper.style.setProperty('--grid-16x9-width', `${w}px`)
+    })
+    observer.observe(canvasArea)
+    return () => observer.disconnect()
+  }, [])
+
   return (
     <div className="video-preview" ref={containerRef}>
       <div className="video-header">
@@ -471,9 +489,12 @@ export default function VideoPreview() {
           </button>
         </div>
       </div>
-      <div className={`video-canvas-wrapper ${gridEditMode ? 'grid-editing' : ''}`}>
-        <canvas ref={canvasRef} width={960} height={540} className="video-canvas" />
-        {gridEditMode && <GridEditorOverlay />}
+      <div className={`video-canvas-wrapper ${gridEditMode ? 'grid-editing' : ''}`} ref={wrapperRef}>
+        <div className="video-canvas-area" ref={canvasAreaRef}>
+          <canvas ref={canvasRef} width={960} height={540} className="video-canvas" />
+          {gridEditMode && <GridEditorOverlay />}
+        </div>
+        {gridEditMode && <GridEditorDock />}
       </div>
     </div>
   )

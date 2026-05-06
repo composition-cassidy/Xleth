@@ -1,4 +1,5 @@
 import MidiDrumSubTrackRow from './MidiDrumSubTrackRow.jsx'
+import { MAX_NOTE_LENGTH_OPTIONS, DEFAULT_MAX_NOTE_LENGTH_DENOM } from './maxNoteLength.js'
 
 // parentOptions: { enabled, splitByNote }
 // outputOptions: for non-split tracks — single { outputTrackIndex, sampleId, visualOnly, name, ... } or null
@@ -61,6 +62,20 @@ export default function MidiTrackRow({ track, parentOptions, outputOptions, onPa
               />
               Visual only
             </label>
+            <select
+              className="midi-max-note-length-select"
+              value={outputOptions?.maxNoteLengthDenom ?? DEFAULT_MAX_NOTE_LENGTH_DENOM}
+              onChange={e => outputOptions != null && onOutputChange(
+                outputOptions.outputTrackIndex,
+                { maxNoteLengthDenom: Number(e.target.value) }
+              )}
+              disabled={!parentOptions.enabled || outputOptions == null}
+              title="Maximum note length: clamp this track's imported note durations to this musical length. Note starts are never moved."
+            >
+              {MAX_NOTE_LENGTH_OPTIONS.map(o => (
+                <option key={o.value} value={o.value}>Max {o.label}</option>
+              ))}
+            </select>
           </>
         )}
       </div>

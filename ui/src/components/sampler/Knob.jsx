@@ -55,6 +55,8 @@ export default function Knob({
   useEffect(() => {
     const c = canvasRef.current
     if (!c) return
+    const numericSize = Number(size)
+    if (!Number.isFinite(numericSize) || numericSize <= 0) return
     const dpr = window.devicePixelRatio || 1
     c.width = size * dpr
     c.height = size * dpr
@@ -386,6 +388,11 @@ function drawAppearanceKnob(ctx, opts) {
   })
 }
 
+function safeArc(ctx, x, y, r, startAngle, endAngle, anticlockwise) {
+  if (!Number.isFinite(r) || r <= 0) return
+  ctx.arc(x, y, r, startAngle, endAngle, anticlockwise)
+}
+
 function drawCap(ctx, { cx, cy, outerR, knobR, capStyle, depth, surface, text, border }) {
   const capSurface = normalizeCanvasColor(surface, '#172033')
   const capText = normalizeCanvasColor(text, '#cbd5e1')
@@ -405,34 +412,34 @@ function drawCap(ctx, { cx, cy, outerR, knobR, capStyle, depth, surface, text, b
   outerFill.addColorStop(1, '#050812')
   ctx.fillStyle = outerFill
   ctx.beginPath()
-  ctx.arc(cx, cy, outerR, 0, Math.PI * 2)
+  safeArc(ctx, cx, cy, outerR, 0, Math.PI * 2)
   ctx.fill()
   ctx.restore()
 
   ctx.strokeStyle = capBorder
   ctx.lineWidth = 1
   ctx.beginPath()
-  ctx.arc(cx, cy, outerR, 0, Math.PI * 2)
+  safeArc(ctx, cx, cy, outerR, 0, Math.PI * 2)
   ctx.stroke()
 
   if (capStyle === 'soft-disk' || capStyle === 'hardware-cap' || capStyle === 'encoder-cap') {
     const innerFill = makeRadialFill(ctx, cx, cy, knobR, capSurface, capText)
     ctx.fillStyle = innerFill
     ctx.beginPath()
-    ctx.arc(cx, cy, knobR, 0, Math.PI * 2)
+    safeArc(ctx, cx, cy, knobR, 0, Math.PI * 2)
     ctx.fill()
 
     ctx.strokeStyle = withAlpha(capText, 0.16)
     ctx.lineWidth = 1
     ctx.beginPath()
-    ctx.arc(cx, cy, knobR - 0.5, 0, Math.PI * 2)
+    safeArc(ctx, cx, cy, knobR - 0.5, 0, Math.PI * 2)
     ctx.stroke()
 
     ctx.strokeStyle = withAlpha(capText, 0.18)
     ctx.lineWidth = 1.2
     ctx.lineCap = 'round'
     ctx.beginPath()
-    ctx.arc(cx, cy, knobR - 4, Math.PI * 1.12, Math.PI * 1.72)
+    safeArc(ctx, cx, cy, knobR - 4, Math.PI * 1.12, Math.PI * 1.72)
     ctx.stroke()
     ctx.lineCap = 'butt'
   }
@@ -441,19 +448,19 @@ function drawCap(ctx, { cx, cy, outerR, knobR, capStyle, depth, surface, text, b
     ctx.strokeStyle = withAlpha(capText, 0.2)
     ctx.lineWidth = 1
     ctx.beginPath()
-    ctx.arc(cx, cy, knobR - 5, 0, Math.PI * 2)
+    safeArc(ctx, cx, cy, knobR - 5, 0, Math.PI * 2)
     ctx.stroke()
   } else if (capStyle === 'encoder-cap') {
     ctx.strokeStyle = withAlpha(capText, 0.18)
     ctx.lineWidth = 1
     ctx.beginPath()
-    ctx.arc(cx, cy, knobR - 7, 0, Math.PI * 2)
+    safeArc(ctx, cx, cy, knobR - 7, 0, Math.PI * 2)  // negative at size<32 — safeArc skips
     ctx.stroke()
   } else if (depth === 'sunken') {
     ctx.strokeStyle = withAlpha(capText, 0.2)
     ctx.lineWidth = 1
     ctx.beginPath()
-    ctx.arc(cx, cy, outerR - 4, 0, Math.PI * 2)
+    safeArc(ctx, cx, cy, outerR - 4, 0, Math.PI * 2)
     ctx.stroke()
   }
 }
@@ -472,7 +479,7 @@ function drawPointer(ctx, { cx, cy, knobR, angle, pointerStyle, accent, text }) 
     ctx.arc(px, py, 2.5, 0, Math.PI * 2)
     ctx.fill()
   } else if (pointerStyle === 'notch') {
-    const inner = knobR - 7
+    const inner = Math.max(0, knobR - 7)
     ctx.lineWidth = 2.4
     ctx.beginPath()
     ctx.moveTo(cx + Math.cos(angle) * inner, cy + Math.sin(angle) * inner)

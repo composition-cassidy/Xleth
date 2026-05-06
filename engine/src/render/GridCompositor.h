@@ -110,6 +110,12 @@ struct EffectShaderCache {
     void shutdown();
 };
 
+enum class ReadbackResult {
+    Valid,
+    NotReady,
+    Fatal
+};
+
 // ---------------------------------------------------------------------------
 // ReadbackBuffer — CPU-side pixel data from GPU readback
 // ---------------------------------------------------------------------------
@@ -119,6 +125,61 @@ struct ReadbackBuffer {
     int  height  = 0;
     int  stride  = 0;              // bytes per row
     bool valid   = false;
+    ReadbackResult result = ReadbackResult::Fatal;
+};
+
+enum class ReadbackMode {
+    Immediate,
+    PreviewRing
+};
+
+enum class ReadbackPolicy {
+    FastImmediate,   // blocking Map(0), no DO_NOT_WAIT — default for all GPUs
+    AsyncQueued      // state-tracked ring with DO_NOT_WAIT — fallback if FastImmediate stalls
+};
+
+enum class ReadbackFailureStage {
+    None = 0,
+    StagingTextureMissing,
+    StagingTextureCreateFailed,
+    SourceTextureMissing,
+    CopyPreconditionFailed,
+    CopyIssuedThenDeviceRemoved,
+    MapFailed,
+    RowPitchInvalid,
+    DimensionsInvalid,
+    Unknown
+};
+
+struct ReadbackTextureDesc {
+    UINT        width          = 0;
+    UINT        height         = 0;
+    DXGI_FORMAT format         = DXGI_FORMAT_UNKNOWN;
+    D3D11_USAGE usage          = D3D11_USAGE_DEFAULT;
+    UINT        cpuAccessFlags = 0;
+    UINT        bindFlags      = 0;
+    UINT        miscFlags      = 0;
+    UINT        sampleCount    = 0;
+};
+
+struct ReadbackDiagnostics {
+    ReadbackMode         mode                = ReadbackMode::Immediate;
+    ReadbackFailureStage failureStage        = ReadbackFailureStage::None;
+    HRESULT              hresult            = S_OK;
+    HRESULT              deviceRemovedReason = S_OK;
+    ReadbackTextureDesc  sourceTexture;
+    ReadbackTextureDesc  stagingTexture;
+    UINT                 mapType             = D3D11_MAP_READ;
+    UINT                 mapFlags            = 0;
+    UINT                 mappedRowPitch      = 0;
+    uint64_t             expectedBytes       = 0;
+    uint64_t             actualCopyBytes     = 0;
+    bool                 dimensionsMatch     = false;
+};
+
+enum class StagingSlotState : uint8_t {
+    Free,
+    CopyIssued
 };
 
 // ---------------------------------------------------------------------------
@@ -156,6 +217,16 @@ public:
     int     getWidth()              const { return width_; }
     int     getHeight()             const { return height_; }
     HRESULT getLastReadbackHRESULT() const { return lastReadbackHR_; }
+    const ReadbackDiagnostics& getLastReadbackDiagnostics() const { return lastReadbackDiag_; }
+
+    // ── Readback policy ────────────────────────────────────────────────────
+    /** Set which readback path PreviewRing uses. Resets ring state. Call after init(). */
+    void           setReadbackPolicy(ReadbackPolicy policy);
+    ReadbackPolicy getActiveReadbackPolicy()  const { return activePolicy_; }
+    uint64_t       getDroppedPendingFrames()  const { return droppedPendingFrames_; }
+    int            getPendingSlotsCount()     const {
+        return static_cast<int>(asyncWriteHead_ - asyncReadHead_);
+    }
 
     /** Skip all chainable RT effect passes (desaturation, tint, B&C, TV-sim, ZPR,
      *  ping-pong crossfade) for faster preview. Gap, bounce, corner-radius and opacity
@@ -182,11 +253,12 @@ public:
 
     /**
      * Copy the render target to a staging texture and read back to CPU.
-     * For offline export — call after compositeFrame().
+     * Immediate mode is the default for offline export/tests. PreviewRing is
+     * explicitly for live preview and reads a staging slot from two frames ago.
      *
      * @return ReadbackBuffer with BGRA pixels, or invalid buffer on failure
      */
-    ReadbackBuffer readback();
+    ReadbackBuffer readback(ReadbackMode mode = ReadbackMode::Immediate);
 
     // ── Render target access (for downstream consumers) ────────────────────
 
@@ -233,13 +305,20 @@ private:
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> renderTargetSRV_;
 
     // ── Staging texture ring (for GPU→CPU readback) ────────────────────────
-    // Two-texture ring: CopyResource into staging[N%2], Map staging[(N-1)%2].
-    // Gives the GPU a full frame period to finish the copy before we Map it,
-    // working around AMD WDDM Map(D3D11_MAP_READ) failures on back-to-back calls
-    // to the same staging texture.
-    Microsoft::WRL::ComPtr<ID3D11Texture2D> stagingTextures_[2];
-    uint64_t readbackFrameCount_ = 0;   // incremented each readback() call
+    // FastImmediate: always uses staging[0] with blocking Map (no DO_NOT_WAIT).
+    // AsyncQueued: state-tracked ring of K slots with DO_NOT_WAIT.
+    static constexpr int kReadbackStagingTextureCount = 5;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> stagingTextures_[kReadbackStagingTextureCount];
+    uint64_t readbackFrameCount_ = 0;   // unused after policy refactor, kept for shutdown reset
     HRESULT  lastReadbackHR_     = S_OK;
+    ReadbackDiagnostics lastReadbackDiag_;
+
+    // ── Readback policy (per-vendor, set after init) ───────────────────────
+    ReadbackPolicy   activePolicy_         = ReadbackPolicy::FastImmediate;
+    uint64_t         asyncWriteHead_       = 0;   // AsyncQueued: slot written next
+    uint64_t         asyncReadHead_        = 0;   // AsyncQueued: oldest pending slot; advances only on success/fatal
+    uint64_t         droppedPendingFrames_ = 0;
+    StagingSlotState slotState_[kReadbackStagingTextureCount] = {};
 
     // ── Shaders ────────────────────────────────────────────────────────────
     Microsoft::WRL::ComPtr<ID3D11VertexShader> vertexShader_;

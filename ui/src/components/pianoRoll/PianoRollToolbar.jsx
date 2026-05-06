@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { MousePointer2, Pencil, Scissors, Eraser, ZoomIn, ZoomOut, Sliders, ExternalLink, ArrowDownToLine } from 'lucide-react'
+import { MousePointer2, Pencil, Scissors, Eraser, ZoomIn, ZoomOut, Sliders, ExternalLink, ArrowDownToLine, Waves } from 'lucide-react'
 import { timelineEvents } from '../../timelineEvents.js'
 
 const TOOLS = [
@@ -21,6 +21,7 @@ const NEW_PATTERN_VALUE = '__new__'
 export default function PianoRollToolbar({
   patternName,
   activeTool, onToolChange,
+  slideMode = false, onSlideModeChange,
   stickyNoteLength, onStickyNoteLengthChange,
   onZoomIn, onZoomOut,
   onOpenSamplerSettings,
@@ -125,6 +126,15 @@ export default function PianoRollToolbar({
             </button>
           )
         })}
+      </div>
+      <div className="piano-roll-toolbar-group">
+        <button
+          className={`timeline-toolbar-button ${slideMode ? 'active' : ''}`}
+          title="Slide Note — new notes will be drawn as slide notes"
+          onClick={() => onSlideModeChange?.(!slideMode)}
+        >
+          <Waves size={14} />
+        </button>
       </div>
       <div className="piano-roll-toolbar-group">
         <select

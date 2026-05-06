@@ -11,8 +11,7 @@
 // 8×8 Feedback Delay Network reverb with early reflections, Hadamard feedback
 // matrix, per-line damping, per-line modulation, and DC blockers.
 //
-// Two internal backends share the same state buffers but are dispatched
-// independently per block:
+// Four internal backends, each with dedicated state, dispatched per block:
 //
 //   • LegacyFdn — bit-frozen Generic algorithm. Used ONLY when style ==
 //     Generic AND the smoothness ("Ring Tame") parameter is exactly 0
@@ -22,15 +21,21 @@
 //     anti-metal work loaded with smoothness=0 reproduce their original
 //     sound exactly.
 //
-//   • EnhancedFdn — used for Room, Hall, Plate, AND for Generic when
-//     smoothness > 0. Pass 1 (this revision) replaces the legacy
-//     consecutive-prime delay cluster with log-spread non-adjacent primes,
-//     swaps equal per-line input excitation for signed/decorrelated input
-//     vectors, and replaces the even/odd output split with style-specific
-//     mixed-sign output vectors L/R. Hadamard feedback, damping, and
-//     modulation behaviour are unchanged from the previous pass; future
-//     passes will add scattering / multiband attenuation / alternate
-//     matrices behind this same backend boundary.
+//   • EnhancedFdn — used for Room AND for Generic when smoothness > 0.
+//     Pass 1 (this revision) replaces the legacy consecutive-prime delay
+//     cluster with log-spread non-adjacent primes, swaps equal per-line
+//     input excitation for signed/decorrelated input vectors, and replaces
+//     the even/odd output split with style-specific mixed-sign output
+//     vectors L/R. Hadamard feedback, damping, and modulation behaviour are
+//     unchanged from the previous pass; future passes will add scattering /
+//     multiband attenuation / alternate matrices behind this same backend.
+//
+//   • HallFdn — dedicated 16-line FDN for Hall. See processBlockHall().
+//
+//   • PlateTank — dedicated Dattorro/Griesinger-inspired cross-coupled
+//     allpass/delay tank for Plate. See processBlockPlate(). Does NOT use
+//     the FDN path. All Plate DSP constants live in the Plate constants
+//     block below.
 //
 // Processing stages (both backends):
 //   1. Pre-delay (0–100 ms, non-interpolated)
@@ -146,14 +151,18 @@ struct FdnTuning
 };
 
 // Maximum allpass stages on the FDN input path. Only Hall currently uses
-// non-zero stages (2). Generic, Room, and Plate set 0, so the diffusion loop
-// in the enhanced backend runs zero iterations.
+// non-zero stages (2). Generic and Room set 0, so the diffusion loop in the
+// enhanced backend runs zero iterations. Plate does not use the FDN path
+// at all — it has its own 4-stage input diffusion cascade in PlateLate.
 static constexpr int kMaxInputDiffusionStages = 2;
 
 // ─── Style enumeration ───────────────────────────────────────────────────────
 // Discrete topology selector exposed as the "style" APVTS choice parameter.
-// Plate currently routes to the Generic placeholder tuning (a real Dattorro-
-// inspired plate backend is intentionally deferred).
+// Each value maps to a dedicated backend in processEffect():
+//   Generic (0) → processBlockLegacy (smoothness=0) or processBlockEnhanced
+//   Room    (1) → processBlockEnhanced
+//   Plate   (2) → processBlockPlate  (cross-coupled allpass/delay tank)
+//   Hall    (3) → processBlockHall   (16-line FDN)
 enum class ReverbStyle : int { Generic = 0, Room = 1, Plate = 2, Hall = 3 };
 static constexpr int kNumReverbStyles = 4;
 
@@ -478,7 +487,12 @@ constexpr float kPlateModDepthSamples  = 3.0f;    // peak ±3 samples LFO depth
 constexpr float kPlateModDepthScalar   = 0.5f;    // halves user mod_depth — Plate stays non-chorussy
 constexpr float kPlateModRateA_Hz      = 0.43f;
 constexpr float kPlateModRateB_Hz      = 0.71f;
-constexpr float kPlateInputGain        = 0.6f;    // scales diffused signal entering tank
+// Input gain scales the diffused signal injected into arm A of the tank.
+// Arm B receives no direct input injection (driven by cross-feed only).
+// 0.20 is calibrated so steady-state tank amplitude stays ≤ 1.5× the input
+// amplitude even at the maximum feedback ceiling, preventing the gain
+// explosion that occurred at 0.6f with near-unity feedback.
+constexpr float kPlateInputGain        = 0.20f;
 
 // 6 stereo output taps (3 per arm) at deterministic positions inside the
 // long delay lines.  Σg² ≈ 1.3 per channel × kPlateLateOutputGain — the
@@ -504,14 +518,23 @@ constexpr PlateOutputTap kPlateOutputTaps[6] = {
 constexpr int   kPlateNumOutputTaps   = 6;
 constexpr float kPlateLateOutputGain  = 0.55f;     // overall tap-bus trim
 
+// Mode-entry wet ramp length (samples). Wet output fades 0→1 over this many
+// samples after each PlateLate::reset(), preventing a click or sudden blast
+// on the first block after switching to Plate. ~21 ms at 48 kHz.
+static constexpr int kPlateEntryRampSamples = 1024;
+
 // ─── Style → tuning lookup ───────────────────────────────────────────────────
-// Plate currently routes to Generic — Plate needs its own non-FDN backend
-// (Dattorro-inspired allpass plate) which is intentionally deferred.
+// Used at prepare-time to find worst-case delay and ER tap lengths for buffer
+// sizing. At runtime, processEffect() dispatches Plate to processBlockPlate()
+// — the kGenericTuning pointer at index 2 is NEVER consulted for actual
+// Plate DSP. Hall uses processBlockHall(), which also ignores kHallTuning at
+// runtime; both are included here solely so prepareEffect() can size its
+// shared buffers conservatively.
 const FdnTuning* const kReverbStyleTunings[kNumReverbStyles] = {
-    &kGenericTuning,   // 0 = Generic
-    &kRoomTuning,      // 1 = Room
-    &kGenericTuning,   // 2 = Plate — placeholder
-    &kHallTuning,      // 3 = Hall
+    &kGenericTuning,   // 0 = Generic (runtime: LegacyFdn or EnhancedFdn)
+    &kRoomTuning,      // 1 = Room    (runtime: EnhancedFdn)
+    &kGenericTuning,   // 2 = Plate   (runtime: processBlockPlate — sizing only)
+    &kHallTuning,      // 3 = Hall    (runtime: processBlockHall — sizing only)
 };
 
 } // namespace
@@ -742,6 +765,12 @@ struct PlateLate
     float modPhaseA = 0.0f;
     float modPhaseB = 0.0f;
 
+    // Mode-entry wet ramp counter. Increments from 0 to kPlateEntryRampSamples
+    // on the first samples after each reset(). Wet output is scaled by
+    // rampPos / kPlateEntryRampSamples during the ramp window, then stays at
+    // 1.0. Zeroed in reset() so every style-entry triggers the ramp.
+    int rampPos = 0;
+
     // Cached sample-rate-scaled bases & buffer max bounds.
     float modApBaseA  = 0.0f;
     float modApBaseB  = 0.0f;
@@ -827,6 +856,7 @@ struct PlateLate
         dcXA = 0.0f; dcYA = 0.0f;
         dcXB = 0.0f; dcYB = 0.0f;
         modPhaseA = 0.0f; modPhaseB = 0.0f;
+        rampPos   = 0;
     }
 };
 
@@ -1605,10 +1635,15 @@ private:
             // ── Tank coefficients ────────────────────────────────────────────
             const float sizeScale = (size / 100.0f) * 0.5f + 0.75f;
 
-            // RING TAME nudges damping up so HF in tank decays faster (less
-            // metallic ringing) without darkening dry/early signal.
+            // Plate HF damping.  A floor of 0.20 ensures some high-frequency
+            // attenuation even at damping=0%, preventing full-bandwidth
+            // metallic resonances.  The user's damping knob adds up to 0.75
+            // on top of that, keeping the full range musically useful.
+            // Smoothness contributes 0.25 (stronger than other backends:
+            // the allpass topology builds narrowband resonances faster than
+            // an FDN, so Ring Tame needs more authority here).
             const float dampG = std::clamp(
-                damping / 100.0f + smoothFrac * 0.15f,
+                0.20f + (damping / 100.0f) * 0.75f + smoothFrac * 0.25f,
                 0.0f, 0.95f);
 
             // Decay → feedback gain.  The plate's main loop traverses both
@@ -1620,9 +1655,17 @@ private:
             const float roundtripSec =
                 (roundtripBaseSamples * sizeScale * srScale) / sr;
             const float safeDecay = std::max(decay, 0.1f);
+            // Plate feedback ceiling.  0.93 is the safe maximum — at this
+            // ceiling and with single-arm input injection, the steady-state
+            // tank amplitude is bounded by kPlateInputGain / (1 − 0.93²)
+            // ≈ 1.48× input, compared to ≈ 20× with the old 0.97 ceiling.
+            // Smoothness (Ring Tame) lowers the ceiling further: at 100%
+            // smoothness the ceiling drops to 0.85, taming long-decay ringing
+            // more aggressively than damping alone.
+            const float feedbackCeiling = 0.93f - smoothFrac * 0.08f;
             const float feedbackGain = std::clamp(
                 std::pow(10.0f, -1.5f * roundtripSec / safeDecay),
-                0.0f, 0.97f);    // hard ceiling — even at 30 s the tank can't run away
+                0.0f, feedbackCeiling);
 
             const float modAmt = (modDepth / 100.0f)
                                 * kPlateModDepthSamples
@@ -1689,10 +1732,12 @@ private:
             const float armA_out = dcOutA;
 
             // ── Arm B ────────────────────────────────────────────────────────
-            // Arm B reads arm A's *current-sample* output × feedbackGain. This
-            // creates the single-loop snake A → B → (lastB) → A.
-            const float armB_in = diffused * kPlateInputGain
-                                 + armA_out * feedbackGain;
+            // Arm B is driven solely by arm A's cross-feed.  No direct input
+            // injection here — that was the original bug: injecting the full
+            // diffused signal into both arms doubled the per-round-trip
+            // excitation and caused ~20× steady-state gain at high decay.
+            // Standard Dattorro topology: diffused → arm A → arm B → arm A.
+            const float armB_in = armA_out * feedbackGain;
 
             const float lfoB = std::sin(
                 2.0f * juce::MathConstants<float>::pi * plateLate_.modPhaseB);
@@ -1739,6 +1784,19 @@ private:
 
             const float armB_out = dcOutB;
 
+            // Safety: if either arm produced a non-finite value (e.g. due to
+            // extreme parameter automation), reset the entire tank and output
+            // dry for this sample rather than feeding garbage back into the
+            // loop.  Under normal use this branch is never taken.
+            if (!std::isfinite(armA_out) || !std::isfinite(armB_out))
+            {
+                plateLate_.reset();
+                const float mixN = mixPct / 100.0f;
+                buffer.setSample(0, s, inputL * (1.0f - mixN));
+                if (numCh > 1) buffer.setSample(1, s, inputR * (1.0f - mixN));
+                continue;
+            }
+
             // Save arm B for next sample's cross-feed into arm A.
             plateLate_.lastB = armB_out;
 
@@ -1760,9 +1818,27 @@ private:
                 + tapB2 * kPlateOutputTaps[5].gainR) * kPlateLateOutputGain;
 
             // ── Wet output stage ─────────────────────────────────────────────
+            // Second-layer output guard — catches any non-finite tap sum that
+            // survived the per-arm check above (e.g. an allpass coefficient
+            // producing +Inf on an edge case).
+            if (!std::isfinite(plateL)) plateL = 0.0f;
+            if (!std::isfinite(plateR)) plateR = 0.0f;
+
             const float wetGain = erLate / 100.0f;
             float wetL = plateL * wetGain;
             float wetR = plateR * wetGain;
+
+            // Mode-entry wet ramp: fades 0→1 over kPlateEntryRampSamples
+            // after each plateLate_.reset() (i.e. on every style switch into
+            // Plate).  Has no effect once rampPos reaches the ceiling.
+            if (plateLate_.rampPos < kPlateEntryRampSamples)
+            {
+                const float rampGain = static_cast<float>(plateLate_.rampPos)
+                                      / static_cast<float>(kPlateEntryRampSamples);
+                wetL *= rampGain;
+                wetR *= rampGain;
+                ++plateLate_.rampPos;
+            }
 
             // SMOOTH HF shelf on wet output (shared with FDN backends).
             constexpr float kSmoothShelfK = 0.45f;

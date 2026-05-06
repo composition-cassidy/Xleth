@@ -325,6 +325,17 @@ public:
         return lat;
     }
 
+    // ── Tail length ──────────────────────────────────────────────────────────
+    // Active EQ bands are stateful. Their biquad/filter state must be allowed
+    // to decay through silence gaps so state from clip A is not frozen and
+    // injected into clip B when chopped clips resume.
+    //
+    // This is a practical DAW-style tail, not a mathematical bound for
+    // pathological low-frequency/high-Q settings. It covers normal musical EQ
+    // use, FIR/oversampler/spectral internal state, and keeps MixEngine's
+    // tail-gated silence processing CPU-conscious.
+    double getTailLengthSeconds() const override { return 0.2; }
+
     // ── Global params query (main thread, for N-API JSON) ────────────────────
     std::string getGlobalParamsAsJSON() const
     {
@@ -378,7 +389,6 @@ public:
             bs.gainSmooth.setCurrentAndTargetValue(g);
             bs.qSmooth.reset(sampleRate, 0.030);
             bs.qSmooth.setCurrentAndTargetValue(std::max(q, 1e-6f));
-
             bs.clearState();
         }
 
@@ -390,7 +400,6 @@ public:
         os2x_ = std::make_unique<juce::dsp::Oversampling<float>>(
             2, 1, juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR, true, true);
         os2x_->initProcessing(static_cast<size_t>(maxBlockSize));
-
         os4x_ = std::make_unique<juce::dsp::Oversampling<float>>(
             2, 2, juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR, true, true);
         os4x_->initProcessing(static_cast<size_t>(maxBlockSize));

@@ -99,10 +99,10 @@ int main()
     GridLayout layout;
     layout.columns = 2;
     layout.rows    = 2;
-    layout.chorusTrackId = chorusTrackId;
-    layout.crashEnabled  = true;
-    layout.crashTrackId  = crashTrackId;
-    layout.crashOpacity  = 0.7f;
+    layout.fullscreenLayers.push_back({chorusTrackId,
+        FullscreenLayerPlacement::BehindGrid, 1.0f});
+    layout.fullscreenLayers.push_back({crashTrackId,
+        FullscreenLayerPlacement::InFrontOfGrid, 0.7f});
 
     // Coordinates use fine-grid units (kGridSubUnitsPerColumn per column,
     // kGridSubUnitsPerRow per row). A full main cell has span = column.
@@ -156,21 +156,21 @@ int main()
                      (int)requests.size());
         assert(requests.size() == 5);
 
-        // Check chorus flag
-        int chorusCount = 0, crashCount = 0;
+        // Check fullscreen layer kinds
+        int behindCount = 0, frontCount = 0;
         for (const auto& r : requests) {
-            if (r.isChorus) ++chorusCount;
-            if (r.isCrash)  ++crashCount;
+            if (r.layerKind == CellLayerKind::FullscreenBehind)  ++behindCount;
+            if (r.layerKind == CellLayerKind::FullscreenInFront) ++frontCount;
         }
-        assert(chorusCount == 1);
-        assert(crashCount == 1);
-        std::fprintf(stderr, "[TEST:FrameCollector] chorus=%d crash=%d: PASSED\n",
-                     chorusCount, crashCount);
+        assert(behindCount == 1);
+        assert(frontCount == 1);
+        std::fprintf(stderr, "[TEST:FrameCollector] behind=%d front=%d: PASSED\n",
+                     behindCount, frontCount);
 
-        // Check crash opacity: should be crashOpacity(0.7) * event.opacity(1.0) = 0.7
+        // Check FS-front opacity: layer.opacity(0.7) * event.opacity(1.0) = 0.7
         for (const auto& r : requests) {
-            if (r.isCrash) {
-                std::fprintf(stderr, "[TEST:FrameCollector] crash opacity=%.2f (expected 0.70)\n",
+            if (r.layerKind == CellLayerKind::FullscreenInFront) {
+                std::fprintf(stderr, "[TEST:FrameCollector] FS-front opacity=%.2f (expected 0.70)\n",
                              r.opacity);
                 assert(std::abs(r.opacity - 0.7f) < 0.01f);
             }
@@ -178,7 +178,7 @@ int main()
 
         // Check that slot opacity * event opacity is applied to grid cells
         for (const auto& r : requests) {
-            if (!r.isChorus && !r.isCrash && r.trackId == trackIds[1]) {
+            if (r.layerKind == CellLayerKind::Grid && r.trackId == trackIds[1]) {
                 // slot.opacity=0.8, event.opacity=0.9 → 0.72
                 std::fprintf(stderr, "[TEST:FrameCollector] track1 opacity=%.2f (expected 0.72)\n",
                              r.opacity);
@@ -272,7 +272,7 @@ int main()
         // Find track0's request
         const CellFrameRequest* track0Req = nullptr;
         for (const auto& r : requests) {
-            if (r.trackId == trackIds[0] && !r.isChorus && !r.isCrash) {
+            if (r.trackId == trackIds[0] && r.layerKind == CellLayerKind::Grid) {
                 track0Req = &r;
                 break;
             }

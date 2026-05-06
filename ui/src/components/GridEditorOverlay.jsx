@@ -2,10 +2,11 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { X, Magnet } from 'lucide-react'
 import { timelineEvents } from '../timelineEvents.js'
 import ContextMenu from './ContextMenu.jsx'
+import { activeDragTrackId, setActiveDragTrackId } from './gridEditorDragState.js'
 
 const DEFAULT_LAYOUT = {
   columns: 3, rows: 3, slots: [],
-  chorusTrackId: -1, crashEnabled: false, crashTrackId: -1, crashOpacity: 0.7,
+  fullscreenLayers: [],
   previewFps: 30, gapScale: 0,
 }
 
@@ -36,9 +37,7 @@ export default function GridEditorOverlay() {
   // moveState — in-flight slot move from a pointerdown on the slot body.
   // Doubles as a "click vs drag" detector via the moved flag.
   const [moveState, setMoveState] = useState(null)
-  // dragSourceTrackId — set during HTML5 drag of a track palette item.
-  const [dragSourceTrackId, setDragSourceTrackId] = useState(null)
-  // dragGhost — preview rect under the cursor while dragging from palette.
+  // dragGhost — preview rect under the cursor while dragging from the dock.
   const [dragGhost, setDragGhost] = useState(null) // { gridX, gridY, spanX, spanY }
   const [snapEnabled, setSnapEnabled] = useState(true)
   const rootRef = useRef(null)
@@ -170,18 +169,14 @@ export default function GridEditorOverlay() {
     setContextMenu({ x: e.clientX, y: e.clientY, slot })
   }, [])
 
-  // ── Drag-from-palette: place a new track on the canvas ───────────────────
-  const handlePaletteDragStart = useCallback((e, trackId) => {
-    e.dataTransfer.effectAllowed = 'copy'
-    // Carry trackId through dataTransfer in addition to component state, so
-    // we can validate the drop is actually one of ours.
-    e.dataTransfer.setData('application/x-xleth-track', String(trackId))
-    setDragSourceTrackId(trackId)
-  }, [])
-
-  const handlePaletteDragEnd = useCallback(() => {
-    setDragSourceTrackId(null)
-    setDragGhost(null)
+  // ── Drag-from-dock: place a new track on the canvas ─────────────────────
+  // dragSourceTrackId is now stored in gridEditorDragState.js (activeDragTrackId)
+  // so GridEditorDock can set it without being a React child of this component.
+  // A document-level dragend listener clears the ghost when any drag ends.
+  useEffect(() => {
+    const onDragEnd = () => setDragGhost(null)
+    document.addEventListener('dragend', onDragEnd)
+    return () => document.removeEventListener('dragend', onDragEnd)
   }, [])
 
   const fineXYFromEvent = useCallback((clientX, clientY) => {
@@ -193,16 +188,14 @@ export default function GridEditorOverlay() {
   }, [totalFineX, totalFineY])
 
   const handleCanvasDragOver = useCallback((e) => {
-    if (dragSourceTrackId == null) return
+    if (activeDragTrackId == null) return
     e.preventDefault()
     e.dataTransfer.dropEffect = 'copy'
-    const factor = trackFactor(dragSourceTrackId)
+    const factor = trackFactor(activeDragTrackId)
     const stepFineX = SUB_UNITS_PER_COLUMN / factor
     const stepFineY = SUB_UNITS_PER_ROW    / factor
     const xy = fineXYFromEvent(e.clientX, e.clientY)
     if (!xy) return
-    // Snap so the dropped slot's TOP-LEFT lands on a sub-step of the
-    // dragged track's factor. This matches how move snapping works.
     let nx = snapFine(xy.fineX, factor, snapEnabled, SUB_UNITS_PER_COLUMN)
     let ny = snapFine(xy.fineY, factor, snapEnabled, SUB_UNITS_PER_ROW)
     nx = Math.max(0, Math.min(totalFineX - stepFineX, nx))
@@ -212,7 +205,7 @@ export default function GridEditorOverlay() {
               && prev.spanX === stepFineX && prev.spanY === stepFineY) return prev
       return { gridX: nx, gridY: ny, spanX: stepFineX, spanY: stepFineY }
     })
-  }, [dragSourceTrackId, trackFactor, snapEnabled, totalFineX, totalFineY, fineXYFromEvent])
+  }, [trackFactor, snapEnabled, totalFineX, totalFineY, fineXYFromEvent])
 
   const handleCanvasDragLeave = useCallback((e) => {
     // Only clear the ghost if the drag truly left the overlay (relatedTarget
@@ -223,15 +216,15 @@ export default function GridEditorOverlay() {
   }, [])
 
   const handleCanvasDrop = useCallback(async (e) => {
-    if (dragSourceTrackId == null) return
+    if (activeDragTrackId == null) return
     e.preventDefault()
-    const trackId = dragSourceTrackId
+    const trackId = activeDragTrackId
+    setActiveDragTrackId(null)
+    setDragGhost(null)
     const factor = trackFactor(trackId)
     const stepFineX = SUB_UNITS_PER_COLUMN / factor
     const stepFineY = SUB_UNITS_PER_ROW    / factor
     const xy = fineXYFromEvent(e.clientX, e.clientY)
-    setDragSourceTrackId(null)
-    setDragGhost(null)
     if (!xy) return
     let nx = snapFine(xy.fineX, factor, snapEnabled, SUB_UNITS_PER_COLUMN)
     let ny = snapFine(xy.fineY, factor, snapEnabled, SUB_UNITS_PER_ROW)
@@ -256,7 +249,7 @@ export default function GridEditorOverlay() {
     } catch (err) {
       console.error('[GridEditorOverlay] assignTrackToGridWithZOrder failed:', err)
     }
-  }, [dragSourceTrackId, trackFactor, snapEnabled, totalFineX, totalFineY, fineXYFromEvent, layout.slots])
+  }, [trackFactor, snapEnabled, totalFineX, totalFineY, fineXYFromEvent, layout.slots])
 
   // ── Slot move (pointer-based drag of an existing slot) ───────────────────
   const handleSlotPointerDown = useCallback((e, slot) => {
@@ -414,8 +407,15 @@ export default function GridEditorOverlay() {
     }
   }, [resizeState, layout, totalFineX, totalFineY])
 
-  const chorusTrack = tracksById.get(layout.chorusTrackId)
-  const crashTrack  = tracksById.get(layout.crashTrackId)
+  const fsLayers = layout.fullscreenLayers ?? []
+  const behindLayers = fsLayers
+    .filter(l => l.placement === 'behind')
+    .map(l => ({ ...l, track: tracksById.get(l.trackId) }))
+    .filter(x => x.track)
+  const frontLayers = fsLayers
+    .filter(l => l.placement === 'front')
+    .map(l => ({ ...l, track: tracksById.get(l.trackId) }))
+    .filter(x => x.track)
 
   // Build context-menu items for an assigned slot (right-click).
   const buildContextItems = (slot) => {
@@ -566,19 +566,12 @@ export default function GridEditorOverlay() {
         />
       )}
 
-      {/* ── Chorus / Crash badges ─────────────────────────────────────── */}
-      {(chorusTrack || (layout.crashEnabled && crashTrack)) && (
+      {/* ── Fullscreen layer badges ───────────────────────────────────── */}
+      {(behindLayers.length > 0 || frontLayers.length > 0) && (
         <div className="grid-editor-badges">
-          {chorusTrack && (
-            <span className="grid-editor-badge grid-editor-badge-chorus">
-              Chorus: {chorusTrack.name}
-            </span>
-          )}
-          {layout.crashEnabled && crashTrack && (
-            <span className="grid-editor-badge grid-editor-badge-crash">
-              Crash: {crashTrack.name} ({layout.crashOpacity.toFixed(2)})
-            </span>
-          )}
+          <span className="grid-editor-badge grid-editor-badge-fs-summary">
+            Fullscreen · {behindLayers.length} Behind · {frontLayers.length} Front
+          </span>
         </div>
       )}
 
@@ -606,39 +599,6 @@ export default function GridEditorOverlay() {
         </button>
       </div>
 
-      {/* ── Track palette (drag source for placing tracks) ─────────────── */}
-      <div className="grid-editor-palette" onPointerDown={(e) => e.stopPropagation()}>
-        <div className="grid-editor-palette-header">Tracks — drag onto the grid</div>
-        <div className="grid-editor-palette-list">
-          {tracks.length === 0 ? (
-            <div className="grid-editor-palette-empty">No tracks available</div>
-          ) : (
-            tracks.map(t => {
-              const f = VALID_SUBDIVISION_FACTORS.includes(t.subdivisionFactor)
-                ? t.subdivisionFactor : 1
-              const placed = slotsByTrackId.has(t.id)
-              return (
-                <div
-                  key={t.id}
-                  className={`grid-editor-palette-item ${placed ? 'placed' : ''}`}
-                  draggable
-                  onDragStart={(e) => handlePaletteDragStart(e, t.id)}
-                  onDragEnd={handlePaletteDragEnd}
-                  title={placed
-                    ? `${t.name} — already on the grid (drag to move it)`
-                    : `${t.name} — drag onto the grid to place`}
-                >
-                  <span className="grid-editor-palette-name">{t.name}</span>
-                  {f > 1 && (
-                    <span className="grid-editor-palette-factor">{f}×</span>
-                  )}
-                  {placed && <span className="grid-editor-palette-mark">●</span>}
-                </div>
-              )
-            })
-          )}
-        </div>
-      </div>
     </div>
   )
 }

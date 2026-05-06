@@ -27,6 +27,7 @@ export default function PianoRoll({
   const [pattern, setPattern] = useState(null)
   const [regions, setRegions] = useState([])
   const [activeTool, setActiveTool] = useState('pencil')
+  const [slideMode, setSlideMode] = useState(false)
   const [stickyNoteLength, setStickyNoteLength] = useState(240) // 1/16 default
   const [stickyVelocity, setStickyVelocity] = useState(1.0)
   const [selectedNoteIds, setSelectedNoteIds] = useState(new Set())
@@ -457,6 +458,7 @@ export default function PianoRoll({
       <PianoRollToolbar
         patternName={pattern?.name || 'Pattern'}
         activeTool={activeTool} onToolChange={setActiveTool}
+        slideMode={slideMode} onSlideModeChange={setSlideMode}
         stickyNoteLength={stickyNoteLength} onStickyNoteLengthChange={setStickyNoteLength}
         onZoomIn={handleZoomIn} onZoomOut={handleZoomOut}
         onOpenSamplerSettings={handleOpenSamplerSettings}
@@ -486,6 +488,7 @@ export default function PianoRoll({
             notes={notes}
             patternLengthTicks={patternLengthTicks}
             activeTool={activeTool}
+            slideMode={slideMode}
             stickyNoteLength={stickyNoteLength}
             setStickyNoteLength={setStickyNoteLength}
             stickyVelocity={stickyVelocity}

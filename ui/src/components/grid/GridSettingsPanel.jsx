@@ -1,5 +1,5 @@
 import { useCallback } from 'react'
-import { Grid3x3, Eraser } from 'lucide-react'
+import { Grid3x3, Eraser, X, Plus } from 'lucide-react'
 import { timelineEvents } from '../../timelineEvents.js'
 import useGridEditStore from '../../stores/useGridEditStore.js'
 
@@ -43,31 +43,34 @@ export default function GridSettingsPanel({ layout, setLayout, tracks }) {
     notify()
   }, [layout])
 
-  const handleChorusChange = useCallback(async (e) => {
-    await window.xleth?.timeline?.setChorusTrack(parseInt(e.target.value))
-    notify()
-  }, [])
+  const fsLayers = layout.fullscreenLayers ?? []
 
-  const handleCrashEnabledChange = useCallback(async (e) => {
-    await window.xleth?.timeline?.setCrashOverlay(e.target.checked, layout.crashTrackId, layout.crashOpacity)
+  const handleAddLayer = useCallback(async (placement) => {
+    const next = [...fsLayers, {
+      trackId:  tracks[0]?.id ?? -1,
+      placement,
+      opacity:  placement === 'behind' ? 1.0 : 0.7,
+    }]
+    await window.xleth?.timeline?.setFullscreenLayers(next)
     notify()
-  }, [layout])
+  }, [fsLayers, tracks])
 
-  const handleCrashTrackChange = useCallback(async (e) => {
-    await window.xleth?.timeline?.setCrashOverlay(layout.crashEnabled, parseInt(e.target.value), layout.crashOpacity)
+  const handleRemoveLayer = useCallback(async (index) => {
+    const next = fsLayers.filter((_, i) => i !== index)
+    await window.xleth?.timeline?.setFullscreenLayers(next)
     notify()
-  }, [layout])
+  }, [fsLayers])
 
-  const handleCrashOpacityChange = useCallback(async (e) => {
-    await window.xleth?.timeline?.setCrashOverlay(layout.crashEnabled, layout.crashTrackId, parseFloat(e.target.value))
+  const handleUpdateLayer = useCallback(async (index, patch) => {
+    const next = fsLayers.map((fl, i) => i === index ? { ...fl, ...patch } : fl)
+    await window.xleth?.timeline?.setFullscreenLayers(next)
     notify()
-  }, [layout])
+  }, [fsLayers])
 
   const handleClearLayout = useCallback(async () => {
-    if (!window.confirm('Clear all grid slots and reset chorus/crash?')) return
+    if (!window.confirm('Clear all grid slots and fullscreen layers?')) return
     await window.xleth?.timeline?.setGridLayout({
-      ...layout, slots: [], chorusTrackId: -1,
-      crashEnabled: false, crashTrackId: -1,
+      ...layout, slots: [], fullscreenLayers: [],
     })
     notify()
   }, [layout])
@@ -75,19 +78,15 @@ export default function GridSettingsPanel({ layout, setLayout, tracks }) {
   return (
     <>
       <div className="grid-tab-section">
-        <h3>Grid Size</h3>
+        <h3>Layout</h3>
         <div className="grid-tab-row">
           <label>Columns</label>
           <input type="number" min={1} max={8} value={layout.columns} onChange={handleColumnsChange} />
           <label style={{ minWidth: 'auto' }}>× Rows</label>
           <input type="number" min={1} max={8} value={layout.rows} onChange={handleRowsChange} />
         </div>
-      </div>
-
-      <div className="grid-tab-section">
-        <h3>Cell Gap</h3>
         <div className="grid-tab-row">
-          <label>Global Gap</label>
+          <label>Gap</label>
           <input
             type="range" min={0} max={0.5} step={0.01}
             value={layout.gapScale ?? 0}
@@ -101,8 +100,9 @@ export default function GridSettingsPanel({ layout, setLayout, tracks }) {
       </div>
 
       <div className="grid-tab-section">
-        <h3>Preview FPS</h3>
+        <h3>Preview</h3>
         <div className="grid-tab-row">
+          <label>FPS</label>
           <input type="number" min={1} max={120} value={layout.previewFps}
             onChange={(e) => handleFpsChange(e.target.value)} />
           <div className="grid-tab-fps-presets">
@@ -117,43 +117,75 @@ export default function GridSettingsPanel({ layout, setLayout, tracks }) {
       </div>
 
       <div className="grid-tab-section">
-        <h3>Chorus Layer</h3>
-        <div className="grid-tab-row">
-          <label>Track</label>
-          <select value={layout.chorusTrackId} onChange={handleChorusChange}>
-            <option value={-1}>-- None --</option>
-            {tracks.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-          </select>
+        <div className="grid-tab-section-header">
+          <h3>Fullscreen Layers</h3>
+          {fsLayers.length > 0 && (
+            <span className="grid-tab-section-count">
+              {fsLayers.filter(l => l.placement === 'behind').length} Behind
+              {' · '}
+              {fsLayers.filter(l => l.placement === 'front').length} Front
+            </span>
+          )}
+        </div>
+        {fsLayers.length === 0 && (
+          <div className="grid-tab-empty">No fullscreen layers</div>
+        )}
+        {fsLayers.map((fl, idx) => (
+          <div key={idx} className="grid-tab-fslayer-card">
+            <div className="grid-tab-fslayer-card-header">
+              <select
+                value={fl.trackId}
+                onChange={(e) => handleUpdateLayer(idx, { trackId: parseInt(e.target.value) })}
+              >
+                <option value={-1}>-- None --</option>
+                {tracks.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+              <button
+                type="button"
+                className="grid-tab-fslayer-remove"
+                onClick={() => handleRemoveLayer(idx)}
+                title="Remove layer"
+              >
+                <X size={12} />
+              </button>
+            </div>
+            <div className="grid-tab-fslayer-card-controls">
+              <div className="grid-tab-fslayer-placement">
+                <button
+                  type="button"
+                  className={fl.placement === 'behind' ? 'active' : ''}
+                  onClick={() => handleUpdateLayer(idx, { placement: 'behind' })}
+                  title="Render behind grid"
+                >Behind</button>
+                <button
+                  type="button"
+                  className={fl.placement === 'front' ? 'active' : ''}
+                  onClick={() => handleUpdateLayer(idx, { placement: 'front' })}
+                  title="Render in front of grid"
+                >Front</button>
+              </div>
+              <input
+                type="range" min={0} max={1} step={0.05}
+                value={fl.opacity}
+                onChange={(e) => handleUpdateLayer(idx, { opacity: parseFloat(e.target.value) })}
+              />
+              <span className="grid-tab-fslayer-opacity-val">
+                {Math.round(fl.opacity * 100)}%
+              </span>
+            </div>
+          </div>
+        ))}
+        <div className="grid-tab-row grid-tab-fslayer-add">
+          <button type="button" className="grid-tab-btn" onClick={() => handleAddLayer('behind')}>
+            <Plus size={12} /><span>Add Behind</span>
+          </button>
+          <button type="button" className="grid-tab-btn" onClick={() => handleAddLayer('front')}>
+            <Plus size={12} /><span>Add Front</span>
+          </button>
         </div>
       </div>
 
-      <div className="grid-tab-section">
-        <h3>Crash Overlay</h3>
-        <div className="grid-tab-row">
-          <label>
-            <input type="checkbox" checked={layout.crashEnabled} onChange={handleCrashEnabledChange} />
-            {' '}Enabled
-          </label>
-        </div>
-        <div className="grid-tab-row">
-          <label>Track</label>
-          <select value={layout.crashTrackId} onChange={handleCrashTrackChange} disabled={!layout.crashEnabled}>
-            <option value={-1}>-- None --</option>
-            {tracks.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-          </select>
-        </div>
-        <div className="grid-tab-row">
-          <label>Opacity</label>
-          <input type="range" min={0} max={1} step={0.05}
-            value={layout.crashOpacity} onChange={handleCrashOpacityChange}
-            disabled={!layout.crashEnabled} />
-          <span style={{ minWidth: 36, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-            {layout.crashOpacity.toFixed(2)}
-          </span>
-        </div>
-      </div>
-
-      <div className="grid-tab-section">
+      <div className="grid-tab-section grid-tab-section--separated">
         <div className="grid-tab-actions">
           <button
             className={`grid-tab-btn ${gridEditMode ? 'active' : ''}`}

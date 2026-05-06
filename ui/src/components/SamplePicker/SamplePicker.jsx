@@ -495,7 +495,7 @@ export default function SamplePicker({ source, onClose }) {
           role="alert"
           style={{
             color: 'var(--theme-semantic-danger-text)',
-            background: '#3a1e1e',
+            background: 'var(--theme-semantic-danger-bg-subtle)',
             padding: '6px 12px',
             margin: '4px 12px',
             borderRadius: '4px',

@@ -63,6 +63,11 @@ struct ImportOptions {
     bool                                    tempoOverride = false;
     int                                     projectTPQ    = 0;
     double                                  projectBPM    = 0.0;
+    // Per-output-track maximum note length, indexed by output-track index in
+    // the same order the engine emits output tracks. 0 = off for that track.
+    // Out-of-range / missing entries are treated as 0 (off). Note starts are
+    // never modified by the clamp.
+    std::vector<uint32_t>                   maxNoteLengthByOutputTrack;
 };
 
 struct OutputTrackMetadata {
@@ -391,6 +396,30 @@ bool parseImportOptions(const std::string& optionsJson,
         return false;
     }
 
+    if (parsed.contains("maxNoteLengthByOutputTrack")) {
+        const auto& arr = parsed["maxNoteLengthByOutputTrack"];
+        if (!arr.is_array()) {
+            reason = "maxNoteLengthByOutputTrack must be an array.";
+            debugLog("reject reason=\"%s\"", reason.c_str());
+            return false;
+        }
+        options.maxNoteLengthByOutputTrack.reserve(arr.size());
+        for (const auto& item : arr) {
+            if (!item.is_number_integer()) {
+                reason = "maxNoteLengthByOutputTrack entries must be integers.";
+                debugLog("reject reason=\"%s\"", reason.c_str());
+                return false;
+            }
+            const auto v = item.get<long long>();
+            if (v < 0) {
+                reason = "maxNoteLengthByOutputTrack entries must be >= 0.";
+                debugLog("reject reason=\"%s\"", reason.c_str());
+                return false;
+            }
+            options.maxNoteLengthByOutputTrack.push_back(static_cast<uint32_t>(v));
+        }
+    }
+
     return true;
 }
 
@@ -710,8 +739,8 @@ MidiImportFullResult MidiImporter::importFull(const std::string& filePath,
 
             const double durationTicks = std::max(0.0, endTick - startTick);
 
-            const auto scaledTick = scaleTicks(startTick, tickScale);
-            const auto scaledDuration = scaleTicks(durationTicks, tickScale);
+            const auto scaledTick     = scaleTicks(startTick, tickScale);
+            auto       scaledDuration = scaleTicks(durationTicks, tickScale);
 
             if (!scaledTick.has_value() || !scaledDuration.has_value()) {
                 reason = "Imported note timing exceeds the packed uint32 range.";
@@ -724,6 +753,17 @@ MidiImportFullResult MidiImporter::importFull(const std::string& filePath,
                 result.metadataJson = makeErrorJson(reason);
                 result.notes.setSize(0);
                 return result;
+            }
+
+            // Clamp imported note duration to this output track's user-selected
+            // maximum (project ticks). Start time is never altered;
+            // pitch/velocity/routing are unaffected. 0 / missing = off.
+            const uint32_t maxLen =
+                (*outputTrackIndex < options.maxNoteLengthByOutputTrack.size())
+                    ? options.maxNoteLengthByOutputTrack[*outputTrackIndex]
+                    : 0u;
+            if (maxLen > 0 && *scaledDuration > maxLen) {
+                scaledDuration = maxLen;
             }
 
             packedNotes.push_back(PackedNote{

@@ -650,17 +650,17 @@ export default function SamplerPanelContent({ regionId, onClose }) {
 
               <div style={{ display: 'flex', gap: 5, alignItems: 'flex-end' }}>
                 <Knob label="ATK T" value={settings[f('attackTension')]} min={-1} max={1} defaultValue={0}
-                  size={28} dragRange={120} color={'var(--theme-accent)'}
+                  size={28} dragRange={120} color={'var(--theme-accent)'} capStyle='soft-disk'
                   formatValue={(v) => v.toFixed(2)}
                   onLiveChange={(v) => setField(f('attackTension'), Number(v.toFixed(3)))}
                   onCommit={(v) => commit({ [f('attackTension')]: Number(v.toFixed(3)) })} />
                 <Knob label="DEC T" value={settings[f('decayTension')]} min={-1} max={1} defaultValue={0}
-                  size={28} dragRange={120} color={'var(--theme-accent)'}
+                  size={28} dragRange={120} color={'var(--theme-accent)'} capStyle='soft-disk'
                   formatValue={(v) => v.toFixed(2)}
                   onLiveChange={(v) => setField(f('decayTension'), Number(v.toFixed(3)))}
                   onCommit={(v) => commit({ [f('decayTension')]: Number(v.toFixed(3)) })} />
                 <Knob label="REL T" value={settings[f('releaseTension')]} min={-1} max={1} defaultValue={0}
-                  size={28} dragRange={120} color={'var(--theme-accent)'}
+                  size={28} dragRange={120} color={'var(--theme-accent)'} capStyle='soft-disk'
                   formatValue={(v) => v.toFixed(2)}
                   onLiveChange={(v) => setField(f('releaseTension'), Number(v.toFixed(3)))}
                   onCommit={(v) => commit({ [f('releaseTension')]: Number(v.toFixed(3)) })} />
@@ -792,6 +792,7 @@ export default function SamplerPanelContent({ regionId, onClose }) {
                     value={settings.arpFreeTimeMs}
                     min={10} max={2000} defaultValue={125}
                     size={28}
+                    capStyle='soft-disk'
                     color={accentPanel}
                     formatValue={(v) => `${Math.round(v)}ms`}
                     onLiveChange={(v) => setField('arpFreeTimeMs', Math.round(v))}
@@ -804,6 +805,7 @@ export default function SamplerPanelContent({ regionId, onClose }) {
                   value={settings.arpGate * 100}
                   min={1} max={100} defaultValue={80}
                   size={28}
+                  capStyle='soft-disk'
                   color={accentPanel}
                   formatValue={(v) => `${Math.round(v)}%`}
                   onLiveChange={(v) => setField('arpGate', Math.round(v) / 100)}

@@ -78,6 +78,7 @@ export const SUBSYSTEMS: ReadonlyArray<SubsystemMeta> = [
   { key: 'semantic',   section: '3.2', displayName: 'Semantic',     category: 'Foundations' },
   { key: 'text',       section: '3.2', displayName: 'Text',         category: 'Foundations' },
   { key: 'borders',    section: '3.2', displayName: 'Borders',      category: 'Foundations' },
+  { key: 'depth',      section: '3.2', displayName: 'Depth & elevation', category: 'Foundations' },
 
   // Window system
   { key: 'panel-chrome', section: '3.3', displayName: 'Panel chrome',        category: 'Window system', aliases: ['chrome-layout'] },
@@ -123,7 +124,8 @@ export const SUBSYSTEMS: ReadonlyArray<SubsystemMeta> = [
   { key: 'waveform-shared',   section: '3.4.26', displayName: 'Waveform (shared)', category: 'Specialized editors' },
 
   // Labels (promoted per Clarification #3)
-  { key: 'labels', section: '3.4.x (label)', displayName: 'Labels', category: 'Labels' },
+  { key: 'labels',         section: '3.4.x (label)',         displayName: 'Labels',         category: 'Labels' },
+  { key: 'track-palette',  section: '3.4.x (track-palette)', displayName: 'Track palette',  category: 'Labels' },
 ];
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -204,6 +206,61 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   derivedFormula('--theme-border-subtle', 'solid', 'Foundations', 'borders'),
   derivedFormula('--theme-border-strong', 'solid', 'Foundations', 'borders'),
   derivedFormula('--theme-border-focus',  'solid', 'Foundations', 'borders'),
+
+  // ─── Foundations: Depth & elevation (Pass 1 — registered, not yet
+  // consumed by selectors). Vocabulary for raised surfaces, recessed
+  // editor wells, floating panels, pressed controls, and accent glow.
+  // Pass 2/3/4 will read these in app.css / windowing.css. The hardcoded
+  // rgba(51, 206, 214, …) glow values match --theme-accent (#33CED6) for
+  // the shipped default; Pass 2/3 must convert them to accent-derived
+  // formulas before broad selector adoption (otherwise non-default themes
+  // won't get accent-matched glow). See docs/plans/ui-depth-pass1-token-foundation.md.
+  // ──────────────────────────────────────────────────────────────────────
+
+  // Surface aliases
+  ref('--theme-depth-elevation-1-bg', '--theme-bg-secondary', 'solid', 'Foundations', 'depth'),
+  ref('--theme-depth-elevation-2-bg', '--theme-bg-surface',   'solid', 'Foundations', 'depth'),
+  ref('--theme-depth-elevation-3-bg', '--theme-bg-elevated',  'solid', 'Foundations', 'depth'),
+  ref('--theme-depth-well-bg',        '--theme-bg-inset',     'solid', 'Foundations', 'depth'),
+  ref('--theme-depth-floating-bg',    '--theme-bg-elevated',  'solid', 'Foundations', 'depth'),
+  ref('--theme-depth-pressed-bg',     '--theme-bg-active',    'solid', 'Foundations', 'depth'),
+
+  // Borders
+  ref     ('--theme-depth-elevation-1-border',      '--theme-border-subtle', 'solid', 'Foundations', 'depth'),
+  explicit('--theme-depth-elevation-2-border',      'rgba(232, 232, 237, 0.10)', 'solid', 'Foundations', 'depth'),
+  ref     ('--theme-depth-elevation-3-border',      '--theme-border-strong', 'solid', 'Foundations', 'depth'),
+  ref     ('--theme-depth-floating-border',         '--theme-border-subtle', 'solid', 'Foundations', 'depth'),
+  ref     ('--theme-depth-floating-focused-border', '--theme-border-focus',  'solid', 'Foundations', 'depth'),
+  explicit('--theme-depth-well-border',             'rgba(0, 0, 0, 0.5)',    'solid', 'Foundations', 'depth'),
+
+  // Highlights / inset edges (kind: shadow — they're inset box-shadow strings)
+  explicit('--theme-depth-elevation-1-top-highlight', 'inset 0 1px 0 rgba(255, 255, 255, 0.04)', 'solid', 'Foundations', 'depth', 'shadow'),
+  explicit('--theme-depth-elevation-2-top-highlight', 'inset 0 1px 0 rgba(255, 255, 255, 0.06)', 'solid', 'Foundations', 'depth', 'shadow'),
+  explicit('--theme-depth-elevation-3-top-highlight', 'inset 0 1px 0 rgba(255, 255, 255, 0.08)', 'solid', 'Foundations', 'depth', 'shadow'),
+  explicit('--theme-depth-floating-top-highlight',    'inset 0 1px 0 rgba(255, 255, 255, 0.06)', 'solid', 'Foundations', 'depth', 'shadow'),
+  explicit('--theme-depth-elevation-1-bottom-edge',   'inset 0 -1px 0 rgba(0, 0, 0, 0.30)',      'solid', 'Foundations', 'depth', 'shadow'),
+
+  // Outer / inner shadows
+  explicit('--theme-depth-elevation-2-outer-shadow', '0 4px 12px rgba(0, 0, 0, 0.35)',                                           'solid', 'Foundations', 'depth', 'shadow'),
+  ref     ('--theme-depth-elevation-3-outer-shadow', '--theme-chrome-shadow',                                                    'solid', 'Foundations', 'depth', 'shadow'),
+  ref     ('--theme-depth-floating-shadow',          '--theme-chrome-shadow',                                                    'solid', 'Foundations', 'depth', 'shadow'),
+  explicit('--theme-depth-floating-focused-shadow',  '0 0 0 1px var(--theme-accent), 0 12px 40px rgba(0, 0, 0, 0.6)',            'solid', 'Foundations', 'depth', 'shadow'),
+  explicit('--theme-depth-well-inner-shadow',        'inset 0 2px 4px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(0, 0, 0, 0.30)', 'solid', 'Foundations', 'depth', 'shadow'),
+  explicit('--theme-depth-well-top-shadow',          'inset 0 4px 8px rgba(0, 0, 0, 0.35)',                                      'solid', 'Foundations', 'depth', 'shadow'),
+  explicit('--theme-depth-pressed-inner-shadow',     'inset 0 1px 2px rgba(0, 0, 0, 0.45)',                                      'solid', 'Foundations', 'depth', 'shadow'),
+
+  // Accent glow / focus halo (TEMP hardcoded accent literals — see Pass 2/3 cleanup note above)
+  explicit('--theme-depth-accent-glow-subtle', '0 0 8px rgba(51, 206, 214, 0.20)',                                'solid', 'Foundations', 'depth', 'shadow'),
+  explicit('--theme-depth-accent-glow-medium', '0 0 16px rgba(51, 206, 214, 0.28)',                               'solid', 'Foundations', 'depth', 'shadow'),
+  explicit('--theme-depth-accent-glow-strong', '0 0 26px rgba(51, 206, 214, 0.35)',                               'solid', 'Foundations', 'depth', 'shadow'),
+  explicit('--theme-depth-accent-ring',        '0 0 0 1px var(--theme-accent)',                                   'solid', 'Foundations', 'depth', 'shadow'),
+  explicit('--theme-depth-accent-halo',        '0 0 0 2px rgba(51, 206, 214, 0.20), 0 0 0 1px var(--theme-accent)', 'solid', 'Foundations', 'depth', 'shadow'),
+
+  // Amplitude knob — unitless multiplier consumed at SELECTOR level via
+  // calc() in future passes (NEVER inside token values; the catalog has
+  // no calc() synthesis). 0 = flat, 0.5 = subtle, 1 = default, 1.5–2 = strong.
+  // Future Theme Editor exposes this as a range slider; SimpleMode unaffected this pass.
+  explicit('--theme-depth-amplitude', '1', 'solid', 'Foundations', 'depth', 'dimension'),
 
   // ─── Foundations: Semantic (§3.2 / §3.3) ──────────────────────────────
   // --theme-info passes through accent via deriveTheme.
@@ -411,18 +468,36 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
 
   // ─── Workspace: Piano roll (§3.4.14) ──────────────────────────────────
   explicit('--theme-pianoroll-grid-bg', '#111118', 'any', 'Workspace panels', 'piano-roll'),
-  explicit('--theme-pianoroll-bar-line',         'rgba(255, 255, 255, 0.08)', 'solid', 'Workspace panels', 'piano-roll'),
-  explicit('--theme-pianoroll-beat-line',        'rgba(255, 255, 255, 0.03)', 'solid', 'Workspace panels', 'piano-roll'),
-  explicit('--theme-pianoroll-subdivision-line', 'rgba(255, 255, 255, 0.02)', 'solid', 'Workspace panels', 'piano-roll'),
+  explicit('--theme-pianoroll-bar-line',         'rgba(255, 255, 255, 0.14)', 'solid', 'Workspace panels', 'piano-roll'),
+  explicit('--theme-pianoroll-beat-line',        'rgba(255, 255, 255, 0.06)', 'solid', 'Workspace panels', 'piano-roll'),
+  explicit('--theme-pianoroll-subdivision-line', 'rgba(255, 255, 255, 0.04)', 'solid', 'Workspace panels', 'piano-roll'),
   explicit('--theme-pianoroll-key-black-bg', '#0A0A10', 'any', 'Workspace panels', 'piano-roll'),
   explicit('--theme-pianoroll-key-white-bg', '#15151C', 'any', 'Workspace panels', 'piano-roll'),
+  // Highlighted (hover/preview) key states — match the literals previously
+  // hardcoded in PianoRollKeyboard.jsx; light theme overrides for contrast.
+  explicit('--theme-pianoroll-key-black-highlight', '#4a3a58', 'any', 'Workspace panels', 'piano-roll'),
+  explicit('--theme-pianoroll-key-white-highlight', '#3a3a4a', 'any', 'Workspace panels', 'piano-roll'),
   ref('--theme-pianoroll-key-label-fg', '--theme-text-muted', 'solid', 'Workspace panels', 'piano-roll'),
+  // Scrollbar thumb — white-on-dark in dark themes, black-on-light in light theme.
+  // Light overrides live in xleth-light.json.
+  explicit('--theme-pianoroll-scrollbar-thumb',       'rgba(255, 255, 255, 0.22)', 'any', 'Workspace panels', 'piano-roll'),
+  explicit('--theme-pianoroll-scrollbar-thumb-hover',  'rgba(255, 255, 255, 0.36)', 'any', 'Workspace panels', 'piano-roll'),
   ref('--theme-pianoroll-note-fill',     '--theme-accent',       'solid', 'Workspace panels', 'piano-roll'),
   ref('--theme-pianoroll-note-stroke',   '--theme-border-strong','solid', 'Workspace panels', 'piano-roll'),
   ref('--theme-pianoroll-note-selected', '--theme-accent-active','solid', 'Workspace panels', 'piano-roll'),
   ref('--theme-pianoroll-note-hover',    '--theme-accent-hover', 'solid', 'Workspace panels', 'piano-roll'),
   ref('--theme-pianoroll-note-resize-handle', '--theme-text', 'solid', 'Workspace panels', 'piano-roll'),
+  // Per-note material depth overlays — drawn as 1px bands inside each note in
+  // PianoRollCanvas drawNotes. Hue-agnostic neutral overlays composite over
+  // the note body fill (regular cyan / slide magenta) without per-hue tuning.
+  // Light themes override these to softer alphas in xleth-light.json.
+  explicit('--theme-pianoroll-note-highlight-band', 'rgba(255, 255, 255, 0.16)', 'solid', 'Workspace panels', 'piano-roll'),
+  explicit('--theme-pianoroll-note-shadow-band',    'rgba(0, 0, 0, 0.22)',       'solid', 'Workspace panels', 'piano-roll'),
   derivedFormula('--theme-pianoroll-note-slide-stroke', 'solid', 'Workspace panels', 'piano-roll'),
+  // Slide-note identity color — kept constant across themes so slide notes
+  // remain visually distinct from regular notes (which derive from accent).
+  // Same pattern as sampler-mod-color-* identity tokens.
+  explicit('--theme-pianoroll-note-slide-fill', '#E64FE6', 'solid', 'Workspace panels', 'piano-roll'),
   ref('--theme-pianoroll-velocity-bar-fill', '--theme-accent',        'linear','Workspace panels', 'piano-roll'),
   ref('--theme-pianoroll-velocity-track',    '--theme-bg-primary',    'linear','Workspace panels', 'piano-roll'),
   ref('--theme-pianoroll-playhead',          '--theme-accent',        'solid', 'Workspace panels', 'piano-roll'),
@@ -437,6 +512,14 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   ref('--theme-pianoroll-automation-curve',    '--theme-accent',        'solid', 'Workspace panels', 'piano-roll'),
   // referenced by all four stops of the resize-handle linear-gradient
   explicit('--theme-pianoroll-resize-handle-stripe', 'rgba(255, 255, 255, 0.25)', 'solid', 'Workspace panels', 'piano-roll'),
+  // Velocity lane background — semantically distinct from key-black-bg so the
+  // lane surface can be independently tuned per theme.
+  explicit('--theme-pianoroll-velocity-bg',           '#090912',                  'any',   'Workspace panels', 'piano-roll'),
+  // Dashed guide lines at 25 / 50 / 75 % velocity — internal lane structure.
+  explicit('--theme-pianoroll-velocity-level-line',   'rgba(255, 255, 255, 0.05)','solid', 'Workspace panels', 'piano-roll'),
+  // Canvas-drawn top-edge shadow at the grid boundary — theme-controlled so
+  // custom themes can tune or remove the depth cue without touching JS.
+  explicit('--theme-pianoroll-well-top-shadow',       'rgba(0, 0, 0, 0.22)',      'solid', 'Workspace panels', 'piano-roll'),
 
   // ─── Workspace: Sampler UI (§3.4.15) ──────────────────────────────────
   ref('--theme-sampler-envelope-bg',     '--theme-bg-primary',  'any',   'Workspace panels', 'sampler'),
@@ -498,18 +581,25 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   explicit('--theme-timeline-fade-curve-fill','rgba(0, 0, 0, 0.45)','any','Workspace panels','timeline'),
   ref('--theme-timeline-empty-region-bg', '--theme-bg-primary',   'any',   'Workspace panels', 'timeline'),
   ref('--theme-timeline-pattern-clip-bg', '--theme-accent',       'any',   'Workspace panels', 'timeline'),
-  ref('--theme-timeline-bar-line',        '--theme-border-subtle','solid', 'Workspace panels', 'timeline'),
-  explicit('--theme-timeline-beat-line',       'rgba(255, 255, 255, 0.06)', 'solid', 'Workspace panels', 'timeline'),
-  explicit('--theme-timeline-subdivision-line','rgba(255, 255, 255, 0.03)', 'solid', 'Workspace panels', 'timeline'),
+  explicit('--theme-timeline-bar-line',        'rgba(255, 255, 255, 0.26)', 'solid', 'Workspace panels', 'timeline'),
+  explicit('--theme-timeline-beat-line',       'rgba(255, 255, 255, 0.11)', 'solid', 'Workspace panels', 'timeline'),
+  explicit('--theme-timeline-subdivision-line','rgba(255, 255, 255, 0.05)', 'solid', 'Workspace panels', 'timeline'),
   ref('--theme-timeline-playhead-line',   '--theme-accent',       'solid', 'Workspace panels', 'timeline'),
   explicit('--theme-timeline-loop-brace', 'rgba(255, 217, 61, 0.6)', 'solid', 'Workspace panels', 'timeline'),
   derivedFormula('--theme-timeline-selection-rect', 'any', 'Workspace panels', 'timeline'),
-  explicit('--theme-timeline-pattern-lane-tint','rgba(106, 169, 255, 0.04)','any','Workspace panels', 'timeline'),
+  explicit('--theme-timeline-pattern-lane-tint','rgba(106, 169, 255, 0.07)','any','Workspace panels', 'timeline'),
   ref('--theme-timeline-section-marker',  '--theme-accent',       'solid', 'Workspace panels', 'timeline'),
   // Bezier control-point handle colors — must remain visually distinguishable
   // from each other in any theme (data encoding for bezier control points).
   explicit('--theme-timeline-bezier-handle-cp1', '#f59e0b', 'solid', 'Workspace panels', 'timeline'),
   explicit('--theme-timeline-bezier-handle-cp2', '#3b82f6', 'solid', 'Workspace panels', 'timeline'),
+  // Top-edge well shadow — gradient darkening at the top of the canvas, matching
+  // the Piano Roll Pass 4A.1 well-top-shadow pattern.
+  explicit('--theme-timeline-well-top-shadow', 'rgba(0, 0, 0, 0.22)', 'any', 'Workspace panels', 'timeline'),
+  // Dedicated arrangement lane/work-bed background. Isolated from --theme-bg-inset
+  // so the Timeline canvas bed contrast can be tuned independently of shared inset
+  // surfaces (Piano Roll, SmartBalance). Not consumed until Pass 5E.3.
+  explicit('--theme-timeline-lane-bg', '#07070B', 'any', 'Workspace panels', 'timeline'),
 
   // ─── Workspace: Grid editor (§3.4.17) ─────────────────────────────────
   ref('--theme-grid-canvas-bg',          '--theme-bg-primary',   'any',   'Workspace panels', 'grid-editor'),
@@ -843,6 +933,28 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   explicit('--theme-label-quote',  '#748FFC', 'solid', 'Labels', 'labels'),
   explicit('--theme-label-custom', '#B197FC', 'solid', 'Labels', 'labels'),
   explicit('--theme-label-perc', '#E67E51', 'solid', 'Labels', 'labels'),
+
+  // ─── Labels: Track palette (Pass 6B) ──────────────────────────────────────
+  // User-editable 16-slot track identity color palette.
+  // Consumed by Timeline/Mixer/Grid in future passes; not consumed here.
+  // Values must remain solid hex — Theme Editor ColorPicker and canvas
+  // hexToRgba() helpers both require valid #RRGGBB.
+  explicit('--theme-track-palette-1',  '#4CC9F0', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-2',  '#7BD88F', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-3',  '#FF9F5A', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-4',  '#9B7BFF', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-5',  '#F472B6', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-6',  '#FFD166', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-7',  '#5B8DEF', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-8',  '#2DD4BF', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-9',  '#FF6B6B', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-10', '#A3D65C', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-11', '#C084FC', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-12', '#38BDF8', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-13', '#FBBF24', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-14', '#8EA4D2', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-15', '#6EE7B7', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-16', '#FB7185', 'solid', 'Labels', 'track-palette'),
 ];
 
 // ──────────────────────────────────────────────────────────────────────────

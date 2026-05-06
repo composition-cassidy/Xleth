@@ -16,6 +16,7 @@ import { buildQuantizeSpecs } from '../utils/quantize.js'
 import useTimelineZoom from '../hooks/useTimelineZoom.js'
 import useTimelineScroll from '../hooks/useTimelineScroll.js'
 import { labelHexColor } from '../constants/labels.js'
+import { normalizeTrackCustomColor } from './timeline/trackColorResolver.js'
 import { subscribe } from '../transportStore.js'
 import { playheadClock } from '../services/PlayheadClock.js'
 import { editCursor } from '../services/EditCursor.js'
@@ -27,7 +28,9 @@ import {
 } from '../constants/timeline.js'
 import { getRegime } from '../utils/waveformRenderer.js'
 import { getRegionPlaybackDurationSec } from './timeline/regionDuration.js'
+import { getSelectableSyllables } from './SyllableSplitter/syllableModel.js'
 import useSnapStore from '../stores/snapStore.js'
+import useTimelineDisplayStore from '../stores/timelineDisplayStore.js'
 import useUIStore from '../stores/uiStore.js'
 import useTimelineFocusStore from '../stores/timelineFocusStore.js'
 import usePianoRollStore from '../stores/usePianoRollStore.js'
@@ -146,6 +149,7 @@ export default function TimelineView({
   const [activeTool, setActiveTool] = useState('select')
   const [stickyNoteLength, setStickyNoteLength] = useState(240) // 1/16 = PPQ/4
   const { snapGranularity, setSnapGranularity } = useSnapStore()
+  const { timelineDisplaySettings } = useTimelineDisplayStore()
   const focusedTrackId = useTimelineFocusStore((s) => s.focusedTrackId)
   const setFocusedTrackId = useTimelineFocusStore((s) => s.setFocusedTrackId)
   const timelineTrackHeaderWidth = useUIStore((s) => s.timelineTrackHeaderWidth)
@@ -994,6 +998,10 @@ export default function TimelineView({
     canvasRef.current?.redrawContent('selection')
   }, [selectedClipIds, selectedBlockIds])
 
+  useEffect(() => {
+    canvasRef.current?.redrawContent('display-settings')
+  }, [timelineDisplaySettings])
+
   // ── Total song length (independent of container width) ────────────────────
   // Derived from the longest clip/pattern-block end + 64 bars of padding,
   // floored at 512 bars. This decouples horizontal scroll range from layout.
@@ -1100,7 +1108,7 @@ export default function TimelineView({
     // Offline / no-engine fallback — add locally
     setTracks((prev) => [
       ...prev,
-      { id: Date.now(), name, volume: 1, pan: 0, muted: false, solo: false, visualOnly: false },
+      { id: Date.now(), name, type: 'Audio', volume: 1, pan: 0, muted: false, solo: false, visualOnly: false },
     ])
   }, [fetchTracks])
 
@@ -1151,6 +1159,54 @@ export default function TimelineView({
       prev.map((t) => (t.id === id ? { ...t, visualOnly: next } : t))
     )
   }, [tracks, fetchTracks])
+
+  // Pass 6D + 6F — centralized track color assignment. Sanitizes input
+  // UI-side, then delegates to the engine command (undo/redo-safe). With no
+  // engine available, mutates local state so dev fixtures and standalone
+  // harnesses can exercise the resolver. Pass 6E added the Auto/paletteSlot
+  // picker; Pass 6F adds the custom-hex code path (no UI yet — exposed in 6G).
+  const handleSetTrackColor = useCallback(async (id, assignment) => {
+    const rawMode = assignment?.mode
+    let mode = 'auto'
+    let slot = 0
+    let customColor = ''
+
+    if (rawMode === 'paletteSlot') {
+      const n = typeof assignment?.slot === 'number' ? Math.trunc(assignment.slot) : NaN
+      if (Number.isFinite(n) && n >= 1 && n <= 16) { mode = 'paletteSlot'; slot = n }
+    } else if (rawMode === 'custom') {
+      const normalized = normalizeTrackCustomColor(assignment?.customColor)
+      if (normalized) { mode = 'custom'; customColor = normalized }
+    }
+
+    let sanitized
+    if (mode === 'paletteSlot')      sanitized = { mode: 'paletteSlot', slot }
+    else if (mode === 'custom')      sanitized = { mode: 'custom', customColor }
+    else                              sanitized = { mode: 'auto' }
+
+    if (window.xleth?.timeline?.setTrackColor) {
+      try {
+        await window.xleth.timeline.setTrackColor(id, sanitized)
+        await fetchTracks()
+        return
+      } catch (e) {
+        console.warn('[Timeline] setTrackColor failed', e)
+      }
+    }
+    setTracks((prev) => prev.map((t) => {
+      if (t.id !== id) return t
+      if (sanitized.mode === 'paletteSlot') {
+        const { trackColorCustom: _c, ...rest } = t
+        return { ...rest, trackColorMode: 'paletteSlot', trackColorSlot: sanitized.slot }
+      }
+      if (sanitized.mode === 'custom') {
+        const { trackColorSlot: _s, ...rest } = t
+        return { ...rest, trackColorMode: 'custom', trackColorCustom: sanitized.customColor }
+      }
+      const { trackColorSlot: _s, trackColorCustom: _c, ...rest } = t
+      return { ...rest, trackColorMode: 'auto' }
+    }))
+  }, [fetchTracks])
 
   const handleRename = useCallback(async (id, name) => {
     // Persist to engine first so undo/redo and project save see the change.
@@ -2401,10 +2457,12 @@ export default function TimelineView({
           const tmpl = pencilTemplateRef.current
           const regionId = tmpl ? tmpl.regionId : activeSampleId
           const region = regionId != null ? regions[regionId] : null
-          if (region?.label === 'Quote' && Array.isArray(region.syllables) && region.syllables.length > 0) {
+          const selectableSyllables = getSelectableSyllables(region?.syllables)
+          if (region?.label === 'Quote' && selectableSyllables.length > 0) {
             const idx = parseInt(e.key, 10) - 1
-            if (idx < region.syllables.length) {
-              handleSelectSyllable(idx)
+            const selected = selectableSyllables[idx]
+            if (selected) {
+              handleSelectSyllable(selected.sourceIndex)
               console.log(`[Keyboard] Syllable → ${idx + 1}`)
             }
             return
@@ -2721,6 +2779,7 @@ export default function TimelineView({
               onRemove={handleRemove}
               onReorder={handleReorder}
               onRequestContextMenu={handleRequestTrackContextMenu}
+              onSetTrackColor={handleSetTrackColor}
               scrollContainerRef={scrollContainerRef}
               width={timelineTrackHeaderWidth}
             />
@@ -2803,6 +2862,7 @@ export default function TimelineView({
                   onOpenPianoRoll={(patternId, blockId) => {
                     timelineEvents.dispatchEvent(new CustomEvent('open-piano-roll', { detail: { patternId, blockId } }))
                   }}
+                  timelineDisplaySettings={timelineDisplaySettings}
                 />
               </div>
               <TimelineScrollbar

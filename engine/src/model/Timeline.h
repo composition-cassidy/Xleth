@@ -81,8 +81,18 @@ public:
     void   assignTrackToGridWithZOrder(int trackId, int gridX, int gridY,
                                        int spanX, int spanY, int zOrder);
     void   removeTrackFromGrid(int trackId);
-    void   setChorusTrack(int trackId);
-    void   setCrashOverlay(bool enabled, int trackId, float opacity);
+    // Bulk-replace the fullscreen layer stack. Auto-enables videoHoldLastFrame
+    // on every BehindGrid layer's track (preserves chorus continuity semantic).
+    void   setFullscreenLayers(std::vector<FullscreenLayer> layers);
+    // Strip every layer pointing at the supplied trackId. Used by
+    // RemoveTrackCommand cascade.
+    void   removeFullscreenLayersForTrack(int trackId);
+    // Re-insert a layer at the supplied index. Used by RemoveTrackCommand undo.
+    // index is clamped to [0, fullscreenLayers.size()].
+    void   restoreFullscreenLayer(size_t index, const FullscreenLayer& layer);
+    const std::vector<FullscreenLayer>& getFullscreenLayers() const {
+        return m_gridLayout.fullscreenLayers;
+    }
     void   setPreviewFps(int fps);
 
     // ── Patterns ──────────────────────────────────────────────────────────────
@@ -123,6 +133,15 @@ public:
     bool setTrackCornerRadius(int trackId, float radius);
     bool setTrackGapScaleOverride(int trackId, float gapScale);
     bool setTrackSubdivisionFactor(int trackId, int factor);
+    // Pass 6D + 6F: assign track color metadata. mode is sanitized to Auto on
+    // unknown values. When mode == PaletteSlot, slot must be 1..16; when
+    // mode == Custom, customColor must be a valid #RRGGBB hex (case-insensitive,
+    // normalized to uppercase). Any invalid combination falls back to Auto with
+    // slot=0 and trackColorCustom="". Returns false if trackId is unknown.
+    bool setTrackColor(int trackId,
+                       TrackColorMode mode,
+                       int slot,
+                       const std::string& customColor = "");
     bool setTrackBounceSettings(int trackId, const BounceSettings& settings);
     bool setTrackZoomPanRotSettings(int trackId, const ZoomPanRotSettings& settings);
     bool setTrackPingPongSettings(int trackId, const PingPongSettings& settings);

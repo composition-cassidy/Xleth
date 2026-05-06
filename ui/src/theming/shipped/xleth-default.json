@@ -68,6 +68,24 @@
     "--theme-sampler-mod-bg-pitch":         "#3C2E1A",
     "--theme-sampler-mod-bg-pan":           "#2A1E3A",
     "--theme-sampler-mod-bg-volume":        "#1E3A3C",
-    "--theme-toast-shadow":                 "0 6px 20px rgba(0, 0, 0, 0.5)"
+    "--theme-toast-shadow":                 "0 6px 20px rgba(0, 0, 0, 0.5)",
+    "--theme-timeline-lane-bg":             "#07070B",
+
+    "--theme-track-palette-1":  "#4CC9F0",
+    "--theme-track-palette-2":  "#7BD88F",
+    "--theme-track-palette-3":  "#FF9F5A",
+    "--theme-track-palette-4":  "#9B7BFF",
+    "--theme-track-palette-5":  "#F472B6",
+    "--theme-track-palette-6":  "#FFD166",
+    "--theme-track-palette-7":  "#5B8DEF",
+    "--theme-track-palette-8":  "#2DD4BF",
+    "--theme-track-palette-9":  "#FF6B6B",
+    "--theme-track-palette-10": "#A3D65C",
+    "--theme-track-palette-11": "#C084FC",
+    "--theme-track-palette-12": "#38BDF8",
+    "--theme-track-palette-13": "#FBBF24",
+    "--theme-track-palette-14": "#8EA4D2",
+    "--theme-track-palette-15": "#6EE7B7",
+    "--theme-track-palette-16": "#FB7185"
   }
 }

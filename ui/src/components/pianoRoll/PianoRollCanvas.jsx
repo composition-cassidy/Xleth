@@ -5,6 +5,30 @@ import { PITCH_MIN, PITCH_MAX, isBlackKey } from './PianoRollKeyboard.jsx'
 
 const RESIZE_HANDLE_PX = 6
 
+// Resolve all theme tokens once per draw cycle. Calling tokenValue() (which
+// reads getComputedStyle) inside the pitch-row loop would fire ~127+ times per
+// frame; resolving here reduces that to a single batch of reads.
+function resolvePalette() {
+  return {
+    bg:            tokenValue('--theme-bg-inset'),
+    rowAlt:        tokenValue('--theme-pianoroll-grid-bg'),
+    gridMinor:     tokenValue('--theme-pianoroll-subdivision-line'),
+    gridBeat:      tokenValue('--theme-pianoroll-beat-line'),
+    gridBar:       tokenValue('--theme-pianoroll-bar-line'),
+    patternOverlay:tokenValue('--theme-overlay-medium'),
+    patternBorder: tokenValue('--theme-border-focus'),
+    noteLabel:     tokenValue('--theme-label-pitch'),
+    noteSlide:     tokenValue('--theme-pianoroll-note-slide-fill'),
+    noteBorder:    tokenValue('--theme-pianoroll-note-stroke'),
+    noteSelStroke: tokenValue('--theme-fg-inverse'),
+    noteHighlightBand: tokenValue('--theme-pianoroll-note-highlight-band'),
+    noteShadowBand:    tokenValue('--theme-pianoroll-note-shadow-band'),
+    lassoFill:     tokenValue('--theme-pianoroll-note-slide-stroke'),
+    lassoStroke:   tokenValue('--theme-border-focus'),
+    wellTopShadow: tokenValue('--theme-pianoroll-well-top-shadow'),
+  }
+}
+
 const ACTION = {
   NONE: 'none',
   MOVE_NOTES: 'move-notes',
@@ -36,9 +60,9 @@ function hitTestNote(notes, localX, localY, pixelsPerBeat, pixelsPerSemitone, sc
   return null
 }
 
-function drawBackground(ctx, w, h, pixelsPerBeat, pixelsPerSemitone, scrollX, scrollY, patternLenBeats) {
+function drawBackground(ctx, w, h, pixelsPerBeat, pixelsPerSemitone, scrollX, scrollY, patternLenBeats, palette) {
   ctx.clearRect(0, 0, w, h)
-  ctx.fillStyle = tokenValue('--theme-bg-inset')
+  ctx.fillStyle = palette.bg
   ctx.fillRect(0, 0, w, h)
 
   // Horizontal row striping: black keys slightly darker
@@ -46,12 +70,12 @@ function drawBackground(ctx, w, h, pixelsPerBeat, pixelsPerSemitone, scrollX, sc
     const y = (PITCH_MAX - p) * pixelsPerSemitone - scrollY
     if (y + pixelsPerSemitone < 0 || y > h) continue
     if (isBlackKey(p)) {
-      ctx.fillStyle = tokenValue('--theme-pianoroll-grid-bg')
+      ctx.fillStyle = palette.rowAlt
       ctx.fillRect(0, y, w, pixelsPerSemitone)
     }
     if ((p % 12) === 0) {
       // Octave boundary line (C)
-      ctx.strokeStyle = tokenValue('--theme-pianoroll-bar-line')
+      ctx.strokeStyle = palette.gridBar
       ctx.lineWidth = 1
       ctx.beginPath()
       ctx.moveTo(0, Math.round(y + pixelsPerSemitone) + 0.5)
@@ -61,7 +85,7 @@ function drawBackground(ctx, w, h, pixelsPerBeat, pixelsPerSemitone, scrollX, sc
   }
 
   // Horizontal grid for each semitone row
-  ctx.strokeStyle = tokenValue('--theme-pianoroll-subdivision-line')
+  ctx.strokeStyle = palette.gridMinor
   ctx.lineWidth = 0.5
   ctx.beginPath()
   for (let p = PITCH_MAX; p >= PITCH_MIN; p--) {
@@ -76,7 +100,7 @@ function drawBackground(ctx, w, h, pixelsPerBeat, pixelsPerSemitone, scrollX, sc
   const startBeat = Math.floor(scrollX / pixelsPerBeat)
   const endBeat = Math.ceil((scrollX + w) / pixelsPerBeat) + 1
 
-  ctx.strokeStyle = tokenValue('--theme-pianoroll-beat-line')
+  ctx.strokeStyle = palette.gridBeat
   ctx.lineWidth = 0.5
   ctx.beginPath()
   for (let b = startBeat; b <= endBeat; b++) {
@@ -89,7 +113,7 @@ function drawBackground(ctx, w, h, pixelsPerBeat, pixelsPerSemitone, scrollX, sc
   }
   ctx.stroke()
 
-  ctx.strokeStyle = tokenValue('--theme-pianoroll-bar-line')
+  ctx.strokeStyle = palette.gridBar
   ctx.lineWidth = 1
   ctx.beginPath()
   for (let b = startBeat; b <= endBeat; b++) {
@@ -100,13 +124,21 @@ function drawBackground(ctx, w, h, pixelsPerBeat, pixelsPerSemitone, scrollX, sc
   }
   ctx.stroke()
 
+  // Inner top-edge shadow — creates recessed depth at the grid boundary.
+  // One gradient draw per frame, not inside any loop.
+  const topShadow = ctx.createLinearGradient(0, 0, 0, 14)
+  topShadow.addColorStop(0, palette.wellTopShadow)
+  topShadow.addColorStop(1, 'rgba(0, 0, 0, 0)')
+  ctx.fillStyle = topShadow
+  ctx.fillRect(0, 0, w, 14)
+
   // Pattern-length marker (dim region past pattern end)
   if (patternLenBeats > 0) {
     const endX = patternLenBeats * pixelsPerBeat - scrollX
     if (endX < w) {
-      ctx.fillStyle = 'rgba(0,0,0,0.4)'
+      ctx.fillStyle = palette.patternOverlay
       ctx.fillRect(Math.max(0, endX), 0, w - endX, h)
-      ctx.strokeStyle = tokenValue('--theme-border-focus')
+      ctx.strokeStyle = palette.patternBorder
       ctx.lineWidth = 1
       ctx.beginPath()
       ctx.moveTo(endX + 0.5, 0)
@@ -116,7 +148,7 @@ function drawBackground(ctx, w, h, pixelsPerBeat, pixelsPerSemitone, scrollX, sc
   }
 }
 
-function drawNotes(ctx, w, h, notes, selectedNoteIds, pixelsPerBeat, pixelsPerSemitone, scrollX, scrollY) {
+function drawNotes(ctx, w, h, notes, selectedNoteIds, pixelsPerBeat, pixelsPerSemitone, scrollX, scrollY, palette) {
   for (let i = 0; i < notes.length; i++) {
     const note = notes[i]
     const beat = note.positionTicks / PPQ
@@ -130,10 +162,25 @@ function drawNotes(ctx, w, h, notes, selectedNoteIds, pixelsPerBeat, pixelsPerSe
     const alpha = 0.4 + 0.6 * (note.velocity ?? 1.0)
     // Slide notes use a magenta accent so they're visually distinct from
     // regular notes — they don't spawn cells, they trigger a per-track effect.
-    const hex = note.isSlide ? '#E64FE6' : tokenValue('--theme-label-pitch')
+    const hex = note.isSlide ? palette.noteSlide : palette.noteLabel
     ctx.fillStyle = hexToRgba(hex, alpha * (selected ? 1.0 : 0.85))
     ctx.fillRect(x, y + 1, wid, pixelsPerSemitone - 2)
-    ctx.strokeStyle = selected ? tokenValue('--theme-fg-inverse') : hexToRgba(hex, 1.0)
+    // Material depth: composite a 1px highlight band at the top and a 1px
+    // shadow lip at the bottom. Hue-agnostic neutral overlays so regular and
+    // slide notes share one set of values. Gated to skip on tiny notes where
+    // the bands would consume too much of the body and read as stripes.
+    const bodyH = pixelsPerSemitone - 2
+    if (bodyH >= 6 && wid >= 4) {
+      ctx.fillStyle = palette.noteHighlightBand
+      ctx.fillRect(x, y + 1, wid, 1)
+      ctx.fillStyle = palette.noteShadowBand
+      ctx.fillRect(x, y + pixelsPerSemitone - 2, wid, 1)
+    }
+    // Selected notes get a high-contrast inverse stroke for clear selection
+    // feedback; unselected notes use the dedicated note-stroke token
+    // (--theme-pianoroll-note-stroke → --theme-border-strong) for a crisper
+    // border than the same-color-as-fill approach used previously.
+    ctx.strokeStyle = selected ? palette.noteSelStroke : palette.noteBorder
     ctx.lineWidth = selected ? 2 : 1
     ctx.strokeRect(x + 0.5, y + 1.5, wid - 1, pixelsPerSemitone - 3)
   }
@@ -142,7 +189,7 @@ function drawNotes(ctx, w, h, notes, selectedNoteIds, pixelsPerBeat, pixelsPerSe
 export default function PianoRollCanvas({
   patternId,
   notes, patternLengthTicks,
-  activeTool, stickyNoteLength, setStickyNoteLength, stickyVelocity = 1.0, setStickyVelocity,
+  activeTool, slideMode = false, stickyNoteLength, setStickyNoteLength, stickyVelocity = 1.0, setStickyVelocity,
   selectedNoteIds, setSelectedNoteIds,
   pixelsPerBeat, pixelsPerSemitone, scrollX, scrollY,
   width, height,
@@ -155,6 +202,10 @@ export default function PianoRollCanvas({
 
   const dragStateRef = useRef(null)
   const [dragTick, setDragTick] = useState(0)
+  // Bumped when the active theme changes so the existing draw effects rerun
+  // with fresh tokenValue() reads. The canvas would otherwise hold stale
+  // colors until the next scroll/zoom/resize/note edit.
+  const [themeTick, setThemeTick] = useState(0)
   const notesRef = useRef(notes)
   notesRef.current = notes
   const scrollXRef = useRef(scrollX)
@@ -185,6 +236,8 @@ export default function PianoRollCanvas({
   selectedNoteIdsRef.current = selectedNoteIds
   const setStickyNoteLengthRef = useRef(setStickyNoteLength)
   setStickyNoteLengthRef.current = setStickyNoteLength
+  const slideModeRef = useRef(slideMode)
+  slideModeRef.current = slideMode
 
   // Apply DPR sizing
   useEffect(() => {
@@ -210,10 +263,21 @@ export default function PianoRollCanvas({
     bg.setTransform(dpr, 0, 0, dpr, 0, 0)
     ct.setTransform(dpr, 0, 0, dpr, 0, 0)
     const lenBeats = patternLengthTicks / PPQ
-    drawBackground(bg, width, height, pixelsPerBeat, pixelsPerSemitone, scrollX, scrollY, lenBeats)
+    const palette = resolvePalette()
+    drawBackground(bg, width, height, pixelsPerBeat, pixelsPerSemitone, scrollX, scrollY, lenBeats, palette)
     ct.clearRect(0, 0, width, height)
-    drawNotes(ct, width, height, notes, selectedNoteIds, pixelsPerBeat, pixelsPerSemitone, scrollX, scrollY)
-  }, [notes, selectedNoteIds, pixelsPerBeat, pixelsPerSemitone, scrollX, scrollY, width, height, patternLengthTicks])
+    drawNotes(ct, width, height, notes, selectedNoteIds, pixelsPerBeat, pixelsPerSemitone, scrollX, scrollY, palette)
+  }, [notes, selectedNoteIds, pixelsPerBeat, pixelsPerSemitone, scrollX, scrollY, width, height, patternLengthTicks, themeTick])
+
+  // Redraw all canvases when the active theme changes — tokenValue() reads
+  // CSS variables at draw time, but the draw effects only rerun on prop/state
+  // changes, so without this listener the canvas keeps its old palette until
+  // the user interacts. Mirrors the pattern in VideoPreview.jsx.
+  useEffect(() => {
+    const onThemeChange = () => setThemeTick((t) => t + 1)
+    window.addEventListener('xleth-theme-changed', onThemeChange)
+    return () => window.removeEventListener('xleth-theme-changed', onThemeChange)
+  }, [])
 
   const getLocalXY = useCallback((e) => {
     const rect = containerRef.current?.getBoundingClientRect()
@@ -254,17 +318,6 @@ export default function PianoRollCanvas({
     const { localX, localY } = pos
     const modifiers = { alt: e.altKey, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey }
     const hit = hitTestNote(notesRef.current, localX, localY, ppb, pps, sX, sY)
-
-    // Alt+click on existing note → toggle slide flag (visual animation trigger).
-    // Does not start a drag; reuses the same note id (no new cell spawned).
-    if (modifiers.alt && hit && patternId != null) {
-      const note = hit.note
-      const newIsSlide = !note.isSlide
-      const cx = note.slideCurveCx ?? 0.5
-      const cy = note.slideCurveCy ?? 0.5
-      window.xleth?.timeline?.setNoteSlide(patternId, note.id, newIsSlide, cx, cy)
-      return
-    }
 
     if (activeTool === 'delete') {
       if (hit) onRemoveNoteRef.current?.(hit.note.id)
@@ -341,6 +394,7 @@ export default function PianoRollCanvas({
           durationTicks: stickyNoteLength,
           pitch,
           velocity: stickyVelocity,
+          ...(slideModeRef.current && { isSlide: true, slideCurveCx: 0.5, slideCurveCy: 0.5 }),
         })
       } else {
         // Click existing note → select, begin drag
@@ -544,11 +598,11 @@ export default function PianoRollCanvas({
     ov.clearRect(0, 0, width, height)
     const ds = dragStateRef.current
     if (!ds) return
-    const hex = tokenValue('--theme-label-pitch')
+    const palette = resolvePalette()
 
     if (ds.action === ACTION.MOVE_NOTES) {
-      ov.fillStyle = hexToRgba(hex, 0.55)
-      ov.strokeStyle = tokenValue('--theme-fg-inverse')
+      ov.fillStyle = hexToRgba(palette.noteLabel, 0.55)
+      ov.strokeStyle = palette.noteSelStroke
       ov.lineWidth = 1.5
       ov.setLineDash([4, 3])
       for (const [, orig] of ds.originals) {
@@ -568,8 +622,8 @@ export default function PianoRollCanvas({
       const anchorOrig = ds.originals.get(ds.anchorNoteId)
       if (!anchorOrig) return
       const deltaTicks = ds.previewDurationTicks - ds.origDurationTicks
-      ov.fillStyle = hexToRgba(hex, 0.55)
-      ov.strokeStyle = tokenValue('--theme-fg-inverse')
+      ov.fillStyle = hexToRgba(palette.noteLabel, 0.55)
+      ov.strokeStyle = palette.noteSelStroke
       ov.lineWidth = 1.5
       ov.setLineDash([4, 3])
       for (const [, orig] of ds.originals) {
@@ -594,15 +648,15 @@ export default function PianoRollCanvas({
       const x1 = Math.max(sx0, sx1)
       const y0 = Math.min(sy0, sy1)
       const y1 = Math.max(sy0, sy1)
-      ov.fillStyle = tokenValue('--theme-pianoroll-note-slide-stroke')
+      ov.fillStyle = palette.lassoFill
       ov.fillRect(x0, y0, x1 - x0, y1 - y0)
-      ov.strokeStyle = tokenValue('--theme-border-focus')
+      ov.strokeStyle = palette.lassoStroke
       ov.lineWidth = 1
       ov.setLineDash([4, 3])
       ov.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0 - 1, y1 - y0 - 1)
       ov.setLineDash([])
     }
-  }, [dragTick, width, height, pixelsPerBeat, pixelsPerSemitone, scrollX, scrollY])
+  }, [dragTick, themeTick, width, height, pixelsPerBeat, pixelsPerSemitone, scrollX, scrollY])
 
   const cursor = activeTool === 'pencil' ? 'crosshair'
                : activeTool === 'delete' ? 'not-allowed'
