@@ -196,6 +196,7 @@ add_library(XlethEngineModel STATIC
     src/model/PatternBlock.cpp
     src/model/Timeline.cpp
     src/model/VideoFlipResolver.cpp
+    src/model/ClipModulationEvaluator.cpp
     src/project/ProjectManager.cpp
     src/commands/UndoManager.cpp
     src/commands/TimelineCommands.cpp
@@ -533,6 +534,17 @@ add_executable(test_undo
 )
 
 target_link_libraries(test_undo PRIVATE
+    XlethEngineModel
+)
+
+# ── test_clip_modulation_evaluator ────────────────────────────────────────────
+# Phase B: pure deterministic evaluator math for ClipModulation (vibrato +
+# vinyl scratch). No JUCE, no FFmpeg, no GL — model-only.
+add_executable(test_clip_modulation_evaluator
+    test/test_clip_modulation_evaluator.cpp
+)
+
+target_link_libraries(test_clip_modulation_evaluator PRIVATE
     XlethEngineModel
 )
 
