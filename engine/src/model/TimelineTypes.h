@@ -253,6 +253,173 @@ enum class StretchMethod : int {
     WORLD        = 5    // WORLD vocoder (Harvest+CheapTrick+D4C+Synthesis)
 };
 
+// ─── ClipModulation ───────────────────────────────────────────────────────────
+// Per-clip modulation FX descriptor (Phase A: data model only — no DSP).
+// Houses Vibrato (pitch LFO), Scratch (time/pitch warp), and a linked
+// video companion (Vibrato Swirl / Scratch Wave). Defaults are all-off so
+// existing projects behave identically once this field is added.
+
+struct ClipModulation {
+    // ── Vibrato ─────────────────────────────────────────────────────────────
+    struct Vibrato {
+        enum class RateMode { FreeHz, TempoSync };
+        enum class SyncDivision {
+            Whole, Half, Quarter, Eighth, Sixteenth, ThirtySecond,
+            QuarterTriplet, EighthTriplet, SixteenthTriplet,
+            QuarterDotted, EighthDotted, SixteenthDotted
+        };
+        enum class Shape { Sine, Triangle, SawUp, SawDown, Square, Custom };
+
+        bool         enabled                = false;
+        float        depthCents             = 0.0f;
+        RateMode     rateMode               = RateMode::FreeHz;
+        float        rateHz                 = 5.0f;
+        SyncDivision syncDivision           = SyncDivision::Eighth;
+        Shape        shape                  = Shape::Sine;
+        bool         phaseResetOnClipStart  = true;
+        float        phaseOffset            = 0.0f;
+        std::vector<SampleRegion::LfoBreakpoint> customShape;
+    };
+
+    // ── Scratch ─────────────────────────────────────────────────────────────
+    struct ScratchPoint {
+        float time           = 0.0f;
+        float rateMultiplier = 1.0f;
+        float curve          = 0.0f;
+    };
+    struct Scratch {
+        enum class CurveTimeMode { ClipSeconds, ClipPercent, Beats };
+        enum class EdgeMode      { Clamp, Silence, Wrap, PingPong };
+
+        bool          enabled            = false;
+        CurveTimeMode timeMode           = CurveTimeMode::ClipSeconds;
+        float         smoothingMs        = 2.0f;
+        float         gainCompensationDb = 0.0f;
+        EdgeMode      edgeMode           = EdgeMode::Clamp;
+        std::vector<ScratchPoint> curve;
+    };
+
+    // ── Linked video companion ──────────────────────────────────────────────
+    struct VideoCompanion {
+        bool  vibratoSwirlEnabled    = false;
+        bool  scratchWaveEnabled     = false;
+        float swirlAmount            = 0.25f;
+        float swirlRadius            = 0.45f;
+        float swirlCenterX           = 0.5f;
+        float swirlCenterY           = 0.5f;
+        float waveAmount             = 0.08f;
+        float waveFrequency          = 8.0f;
+        float smearAmount            = 0.0f;
+        bool  reverseWaveWithScratch = true;
+    };
+
+    bool           enabled = false;
+    Vibrato        vibrato;
+    Scratch        scratch;
+    VideoCompanion video;
+};
+
+// String conversions for modulation enums (forward-compat schema).
+inline std::string vibratoRateModeToString(ClipModulation::Vibrato::RateMode m) {
+    using R = ClipModulation::Vibrato::RateMode;
+    return m == R::TempoSync ? "tempoSync" : "freeHz";
+}
+inline ClipModulation::Vibrato::RateMode stringToVibratoRateMode(const std::string& s) {
+    using R = ClipModulation::Vibrato::RateMode;
+    return s == "tempoSync" ? R::TempoSync : R::FreeHz;
+}
+
+inline std::string vibratoSyncDivisionToString(ClipModulation::Vibrato::SyncDivision d) {
+    using D = ClipModulation::Vibrato::SyncDivision;
+    switch (d) {
+        case D::Whole:             return "whole";
+        case D::Half:              return "half";
+        case D::Quarter:           return "quarter";
+        case D::Eighth:            return "eighth";
+        case D::Sixteenth:         return "sixteenth";
+        case D::ThirtySecond:      return "thirtySecond";
+        case D::QuarterTriplet:    return "quarterTriplet";
+        case D::EighthTriplet:     return "eighthTriplet";
+        case D::SixteenthTriplet:  return "sixteenthTriplet";
+        case D::QuarterDotted:     return "quarterDotted";
+        case D::EighthDotted:      return "eighthDotted";
+        case D::SixteenthDotted:   return "sixteenthDotted";
+        default:                   return "eighth";
+    }
+}
+inline ClipModulation::Vibrato::SyncDivision stringToVibratoSyncDivision(const std::string& s) {
+    using D = ClipModulation::Vibrato::SyncDivision;
+    if (s == "whole")             return D::Whole;
+    if (s == "half")              return D::Half;
+    if (s == "quarter")           return D::Quarter;
+    if (s == "eighth")            return D::Eighth;
+    if (s == "sixteenth")         return D::Sixteenth;
+    if (s == "thirtySecond")      return D::ThirtySecond;
+    if (s == "quarterTriplet")    return D::QuarterTriplet;
+    if (s == "eighthTriplet")     return D::EighthTriplet;
+    if (s == "sixteenthTriplet")  return D::SixteenthTriplet;
+    if (s == "quarterDotted")     return D::QuarterDotted;
+    if (s == "eighthDotted")      return D::EighthDotted;
+    if (s == "sixteenthDotted")   return D::SixteenthDotted;
+    return D::Eighth;
+}
+
+inline std::string vibratoShapeToString(ClipModulation::Vibrato::Shape s) {
+    using S = ClipModulation::Vibrato::Shape;
+    switch (s) {
+        case S::Sine:     return "sine";
+        case S::Triangle: return "triangle";
+        case S::SawUp:    return "sawUp";
+        case S::SawDown:  return "sawDown";
+        case S::Square:   return "square";
+        case S::Custom:   return "custom";
+        default:          return "sine";
+    }
+}
+inline ClipModulation::Vibrato::Shape stringToVibratoShape(const std::string& s) {
+    using S = ClipModulation::Vibrato::Shape;
+    if (s == "triangle") return S::Triangle;
+    if (s == "sawUp")    return S::SawUp;
+    if (s == "sawDown")  return S::SawDown;
+    if (s == "square")   return S::Square;
+    if (s == "custom")   return S::Custom;
+    return S::Sine;
+}
+
+inline std::string scratchTimeModeToString(ClipModulation::Scratch::CurveTimeMode m) {
+    using M = ClipModulation::Scratch::CurveTimeMode;
+    switch (m) {
+        case M::ClipSeconds: return "clipSeconds";
+        case M::ClipPercent: return "clipPercent";
+        case M::Beats:       return "beats";
+        default:             return "clipSeconds";
+    }
+}
+inline ClipModulation::Scratch::CurveTimeMode stringToScratchTimeMode(const std::string& s) {
+    using M = ClipModulation::Scratch::CurveTimeMode;
+    if (s == "clipPercent") return M::ClipPercent;
+    if (s == "beats")       return M::Beats;
+    return M::ClipSeconds;
+}
+
+inline std::string scratchEdgeModeToString(ClipModulation::Scratch::EdgeMode m) {
+    using E = ClipModulation::Scratch::EdgeMode;
+    switch (m) {
+        case E::Clamp:    return "clamp";
+        case E::Silence:  return "silence";
+        case E::Wrap:     return "wrap";
+        case E::PingPong: return "pingPong";
+        default:          return "clamp";
+    }
+}
+inline ClipModulation::Scratch::EdgeMode stringToScratchEdgeMode(const std::string& s) {
+    using E = ClipModulation::Scratch::EdgeMode;
+    if (s == "silence")  return E::Silence;
+    if (s == "wrap")     return E::Wrap;
+    if (s == "pingPong") return E::PingPong;
+    return E::Clamp;
+}
+
 // ─── Clip ─────────────────────────────────────────────────────────────────────
 // A placed instance of a SampleRegion on a Track at a given TickTime position.
 // syllableIndex >= 0 means this clip plays a specific syllable of a Quote region.
@@ -286,6 +453,10 @@ struct Clip {
     float fadeOutY1     = 0.0f;    // bezier P1.y for fade-out
     float fadeOutX2     = 1.0f;    // bezier P2.x for fade-out
     float fadeOutY2     = 1.0f;    // bezier P2.y for fade-out
+
+    // Per-clip modulation FX (Vibrato / Scratch / video companion).
+    // Phase A: data only — no DSP reads this yet. Defaults are all-disabled.
+    ClipModulation modulation;
 
     bool isSyllableClip() const { return syllableIndex >= 0; }
 };

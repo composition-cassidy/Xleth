@@ -542,6 +542,34 @@ std::string SetClipParamsCommand::describe() const {
     return "Set Clip Params id=" + std::to_string(clipId_);
 }
 
+// ─── SetClipModulationCommand ─────────────────────────────────────────────────
+
+SetClipModulationCommand::SetClipModulationCommand(int clipId, ClipModulation newMod,
+                                                   const Timeline& timeline)
+    : clipId_(clipId), newMod_(std::move(newMod))
+{
+    if (const Clip* c = timeline.getClip(clipId)) {
+        oldMod_ = c->modulation;
+    } else {
+        std::cerr << "[Undo] ERROR SetClipModulationCommand: clip id=" << clipId
+                  << " not found\n";
+    }
+}
+
+void SetClipModulationCommand::execute(Timeline& timeline) {
+    if (Clip* c = timeline.getClipMutable(clipId_))
+        c->modulation = newMod_;
+}
+
+void SetClipModulationCommand::undo(Timeline& timeline) {
+    if (Clip* c = timeline.getClipMutable(clipId_))
+        c->modulation = oldMod_;
+}
+
+std::string SetClipModulationCommand::describe() const {
+    return "Set Clip Modulation id=" + std::to_string(clipId_);
+}
+
 // ─── AddTrackCommand ──────────────────────────────────────────────────────────
 
 AddTrackCommand::AddTrackCommand(TrackInfo track) : track_(std::move(track)) {}

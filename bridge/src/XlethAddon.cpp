@@ -1151,6 +1151,220 @@ static void drainProxyResults() {
 
 // JS↔C++ conversion helpers (model types)
 
+static Napi::Object clipModulationToJs(Napi::Env env, const ClipModulation& m) {
+    Napi::Object o = Napi::Object::New(env);
+    o.Set("enabled", Napi::Boolean::New(env, m.enabled));
+
+    Napi::Object vib = Napi::Object::New(env);
+    vib.Set("enabled",               Napi::Boolean::New(env, m.vibrato.enabled));
+    vib.Set("depthCents",            Napi::Number::New (env, m.vibrato.depthCents));
+    vib.Set("rateMode",              Napi::String::New (env, vibratoRateModeToString(m.vibrato.rateMode)));
+    vib.Set("rateHz",                Napi::Number::New (env, m.vibrato.rateHz));
+    vib.Set("syncDivision",          Napi::String::New (env, vibratoSyncDivisionToString(m.vibrato.syncDivision)));
+    vib.Set("shape",                 Napi::String::New (env, vibratoShapeToString(m.vibrato.shape)));
+    vib.Set("phaseResetOnClipStart", Napi::Boolean::New(env, m.vibrato.phaseResetOnClipStart));
+    vib.Set("phaseOffset",           Napi::Number::New (env, m.vibrato.phaseOffset));
+    {
+        Napi::Array arr = Napi::Array::New(env, m.vibrato.customShape.size());
+        for (uint32_t i = 0; i < m.vibrato.customShape.size(); ++i) {
+            Napi::Object bp = Napi::Object::New(env);
+            bp.Set("time",  Napi::Number::New(env, m.vibrato.customShape[i].time));
+            bp.Set("value", Napi::Number::New(env, m.vibrato.customShape[i].value));
+            arr.Set(i, bp);
+        }
+        vib.Set("customShape", arr);
+    }
+    o.Set("vibrato", vib);
+
+    Napi::Object scr = Napi::Object::New(env);
+    scr.Set("enabled",            Napi::Boolean::New(env, m.scratch.enabled));
+    scr.Set("timeMode",           Napi::String::New (env, scratchTimeModeToString(m.scratch.timeMode)));
+    scr.Set("smoothingMs",        Napi::Number::New (env, m.scratch.smoothingMs));
+    scr.Set("gainCompensationDb", Napi::Number::New (env, m.scratch.gainCompensationDb));
+    scr.Set("edgeMode",           Napi::String::New (env, scratchEdgeModeToString(m.scratch.edgeMode)));
+    {
+        Napi::Array arr = Napi::Array::New(env, m.scratch.curve.size());
+        for (uint32_t i = 0; i < m.scratch.curve.size(); ++i) {
+            Napi::Object pt = Napi::Object::New(env);
+            pt.Set("time",           Napi::Number::New(env, m.scratch.curve[i].time));
+            pt.Set("rateMultiplier", Napi::Number::New(env, m.scratch.curve[i].rateMultiplier));
+            pt.Set("curve",          Napi::Number::New(env, m.scratch.curve[i].curve));
+            arr.Set(i, pt);
+        }
+        scr.Set("curve", arr);
+    }
+    o.Set("scratch", scr);
+
+    Napi::Object vid = Napi::Object::New(env);
+    vid.Set("vibratoSwirlEnabled",    Napi::Boolean::New(env, m.video.vibratoSwirlEnabled));
+    vid.Set("scratchWaveEnabled",     Napi::Boolean::New(env, m.video.scratchWaveEnabled));
+    vid.Set("swirlAmount",            Napi::Number::New (env, m.video.swirlAmount));
+    vid.Set("swirlRadius",            Napi::Number::New (env, m.video.swirlRadius));
+    vid.Set("swirlCenterX",           Napi::Number::New (env, m.video.swirlCenterX));
+    vid.Set("swirlCenterY",           Napi::Number::New (env, m.video.swirlCenterY));
+    vid.Set("waveAmount",             Napi::Number::New (env, m.video.waveAmount));
+    vid.Set("waveFrequency",          Napi::Number::New (env, m.video.waveFrequency));
+    vid.Set("smearAmount",            Napi::Number::New (env, m.video.smearAmount));
+    vid.Set("reverseWaveWithScratch", Napi::Boolean::New(env, m.video.reverseWaveWithScratch));
+    o.Set("video", vid);
+
+    return o;
+}
+
+// Partial-update merge: start from `base` (current clip state) and override
+// fields present and well-typed on the JS object. Unknown fields are ignored;
+// missing nested objects preserve existing values; invalid enum strings fall
+// back to the existing value (consistent with Timeline_SetClipParams style).
+static ClipModulation jsToClipModulation(const Napi::Object& o,
+                                         const ClipModulation& base) {
+    ClipModulation m = base;
+
+    if (o.Has("enabled") && o.Get("enabled").IsBoolean())
+        m.enabled = o.Get("enabled").As<Napi::Boolean>().Value();
+
+    if (o.Has("vibrato") && o.Get("vibrato").IsObject()) {
+        Napi::Object v = o.Get("vibrato").As<Napi::Object>();
+        if (v.Has("enabled") && v.Get("enabled").IsBoolean())
+            m.vibrato.enabled = v.Get("enabled").As<Napi::Boolean>().Value();
+        if (v.Has("depthCents") && v.Get("depthCents").IsNumber())
+            m.vibrato.depthCents = v.Get("depthCents").As<Napi::Number>().FloatValue();
+        if (v.Has("rateMode") && v.Get("rateMode").IsString())
+            m.vibrato.rateMode = stringToVibratoRateMode(
+                v.Get("rateMode").As<Napi::String>().Utf8Value());
+        if (v.Has("rateHz") && v.Get("rateHz").IsNumber())
+            m.vibrato.rateHz = v.Get("rateHz").As<Napi::Number>().FloatValue();
+        if (v.Has("syncDivision") && v.Get("syncDivision").IsString())
+            m.vibrato.syncDivision = stringToVibratoSyncDivision(
+                v.Get("syncDivision").As<Napi::String>().Utf8Value());
+        if (v.Has("shape") && v.Get("shape").IsString())
+            m.vibrato.shape = stringToVibratoShape(
+                v.Get("shape").As<Napi::String>().Utf8Value());
+        if (v.Has("phaseResetOnClipStart") && v.Get("phaseResetOnClipStart").IsBoolean())
+            m.vibrato.phaseResetOnClipStart =
+                v.Get("phaseResetOnClipStart").As<Napi::Boolean>().Value();
+        if (v.Has("phaseOffset") && v.Get("phaseOffset").IsNumber())
+            m.vibrato.phaseOffset = v.Get("phaseOffset").As<Napi::Number>().FloatValue();
+        if (v.Has("customShape") && v.Get("customShape").IsArray()) {
+            Napi::Array arr = v.Get("customShape").As<Napi::Array>();
+            std::vector<SampleRegion::LfoBreakpoint> bps;
+            bps.reserve(arr.Length());
+            for (uint32_t i = 0; i < arr.Length(); ++i) {
+                if (!arr.Get(i).IsObject()) continue;
+                Napi::Object bp = arr.Get(i).As<Napi::Object>();
+                SampleRegion::LfoBreakpoint b;
+                if (bp.Has("time")  && bp.Get("time").IsNumber())
+                    b.time  = bp.Get("time").As<Napi::Number>().FloatValue();
+                if (bp.Has("value") && bp.Get("value").IsNumber())
+                    b.value = bp.Get("value").As<Napi::Number>().FloatValue();
+                bps.push_back(b);
+            }
+            m.vibrato.customShape = std::move(bps);
+        }
+    }
+
+    if (o.Has("scratch") && o.Get("scratch").IsObject()) {
+        Napi::Object s = o.Get("scratch").As<Napi::Object>();
+        if (s.Has("enabled") && s.Get("enabled").IsBoolean())
+            m.scratch.enabled = s.Get("enabled").As<Napi::Boolean>().Value();
+        if (s.Has("timeMode") && s.Get("timeMode").IsString())
+            m.scratch.timeMode = stringToScratchTimeMode(
+                s.Get("timeMode").As<Napi::String>().Utf8Value());
+        if (s.Has("smoothingMs") && s.Get("smoothingMs").IsNumber())
+            m.scratch.smoothingMs = std::max(0.0f,
+                s.Get("smoothingMs").As<Napi::Number>().FloatValue());
+        if (s.Has("gainCompensationDb") && s.Get("gainCompensationDb").IsNumber())
+            m.scratch.gainCompensationDb =
+                s.Get("gainCompensationDb").As<Napi::Number>().FloatValue();
+        if (s.Has("edgeMode") && s.Get("edgeMode").IsString())
+            m.scratch.edgeMode = stringToScratchEdgeMode(
+                s.Get("edgeMode").As<Napi::String>().Utf8Value());
+        if (s.Has("curve") && s.Get("curve").IsArray()) {
+            Napi::Array arr = s.Get("curve").As<Napi::Array>();
+            std::vector<ClipModulation::ScratchPoint> pts;
+            pts.reserve(arr.Length());
+            for (uint32_t i = 0; i < arr.Length(); ++i) {
+                if (!arr.Get(i).IsObject()) continue;
+                Napi::Object pj = arr.Get(i).As<Napi::Object>();
+                ClipModulation::ScratchPoint p;
+                if (pj.Has("time") && pj.Get("time").IsNumber())
+                    p.time = pj.Get("time").As<Napi::Number>().FloatValue();
+                if (pj.Has("rateMultiplier") && pj.Get("rateMultiplier").IsNumber())
+                    p.rateMultiplier = pj.Get("rateMultiplier").As<Napi::Number>().FloatValue();
+                if (pj.Has("curve") && pj.Get("curve").IsNumber())
+                    p.curve = pj.Get("curve").As<Napi::Number>().FloatValue();
+                pts.push_back(p);
+            }
+            m.scratch.curve = std::move(pts);
+        }
+    }
+
+    if (o.Has("video") && o.Get("video").IsObject()) {
+        Napi::Object v = o.Get("video").As<Napi::Object>();
+        if (v.Has("vibratoSwirlEnabled") && v.Get("vibratoSwirlEnabled").IsBoolean())
+            m.video.vibratoSwirlEnabled = v.Get("vibratoSwirlEnabled").As<Napi::Boolean>().Value();
+        if (v.Has("scratchWaveEnabled") && v.Get("scratchWaveEnabled").IsBoolean())
+            m.video.scratchWaveEnabled = v.Get("scratchWaveEnabled").As<Napi::Boolean>().Value();
+        if (v.Has("swirlAmount") && v.Get("swirlAmount").IsNumber())
+            m.video.swirlAmount = v.Get("swirlAmount").As<Napi::Number>().FloatValue();
+        if (v.Has("swirlRadius") && v.Get("swirlRadius").IsNumber())
+            m.video.swirlRadius = v.Get("swirlRadius").As<Napi::Number>().FloatValue();
+        if (v.Has("swirlCenterX") && v.Get("swirlCenterX").IsNumber())
+            m.video.swirlCenterX = v.Get("swirlCenterX").As<Napi::Number>().FloatValue();
+        if (v.Has("swirlCenterY") && v.Get("swirlCenterY").IsNumber())
+            m.video.swirlCenterY = v.Get("swirlCenterY").As<Napi::Number>().FloatValue();
+        if (v.Has("waveAmount") && v.Get("waveAmount").IsNumber())
+            m.video.waveAmount = v.Get("waveAmount").As<Napi::Number>().FloatValue();
+        if (v.Has("waveFrequency") && v.Get("waveFrequency").IsNumber())
+            m.video.waveFrequency = v.Get("waveFrequency").As<Napi::Number>().FloatValue();
+        if (v.Has("smearAmount") && v.Get("smearAmount").IsNumber())
+            m.video.smearAmount = v.Get("smearAmount").As<Napi::Number>().FloatValue();
+        if (v.Has("reverseWaveWithScratch") && v.Get("reverseWaveWithScratch").IsBoolean())
+            m.video.reverseWaveWithScratch =
+                v.Get("reverseWaveWithScratch").As<Napi::Boolean>().Value();
+    }
+
+    return m;
+}
+
+// Compares the audio-affecting subset of ClipModulation. Vibrato + Scratch
+// changes (including their `enabled` flags and the top-level `enabled`)
+// invalidate the audio render cache. Video-only fields do not.
+static bool clipModulationAudioChanged(const ClipModulation& a, const ClipModulation& b) {
+    if (a.enabled != b.enabled) return true;
+
+    const auto& va = a.vibrato; const auto& vb = b.vibrato;
+    if (va.enabled              != vb.enabled              ||
+        va.depthCents           != vb.depthCents           ||
+        va.rateMode             != vb.rateMode             ||
+        va.rateHz               != vb.rateHz               ||
+        va.syncDivision         != vb.syncDivision         ||
+        va.shape                != vb.shape                ||
+        va.phaseResetOnClipStart != vb.phaseResetOnClipStart ||
+        va.phaseOffset          != vb.phaseOffset          ||
+        va.customShape.size()   != vb.customShape.size())
+        return true;
+    for (size_t i = 0; i < va.customShape.size(); ++i)
+        if (va.customShape[i].time  != vb.customShape[i].time ||
+            va.customShape[i].value != vb.customShape[i].value)
+            return true;
+
+    const auto& sa = a.scratch; const auto& sb = b.scratch;
+    if (sa.enabled            != sb.enabled            ||
+        sa.timeMode           != sb.timeMode           ||
+        sa.smoothingMs        != sb.smoothingMs        ||
+        sa.gainCompensationDb != sb.gainCompensationDb ||
+        sa.edgeMode           != sb.edgeMode           ||
+        sa.curve.size()       != sb.curve.size())
+        return true;
+    for (size_t i = 0; i < sa.curve.size(); ++i)
+        if (sa.curve[i].time           != sb.curve[i].time ||
+            sa.curve[i].rateMultiplier != sb.curve[i].rateMultiplier ||
+            sa.curve[i].curve          != sb.curve[i].curve)
+            return true;
+
+    return false; // Video-only changes — audio cache untouched.
+}
+
 static Napi::Object clipToJs(Napi::Env env, const Clip& c) {
     Napi::Object o = Napi::Object::New(env);
     o.Set("id",                Napi::Number::New(env, c.id));
@@ -1180,6 +1394,7 @@ static Napi::Object clipToJs(Napi::Env env, const Clip& c) {
     o.Set("fadeOutY1",         Napi::Number::New(env, c.fadeOutY1));
     o.Set("fadeOutX2",         Napi::Number::New(env, c.fadeOutX2));
     o.Set("fadeOutY2",         Napi::Number::New(env, c.fadeOutY2));
+    o.Set("modulation",        clipModulationToJs(env, c.modulation));
     return o;
 }
 
@@ -4316,6 +4531,56 @@ Napi::Value Timeline_SetClipParams(const Napi::CallbackInfo& info)
 
     if (audioEngine && needsCacheInvalidation)
         audioEngine->getMixEngine().invalidateClipCache(clipId, "setClipParams");
+
+    const Clip* updated = g_timeline->getClip(clipId);
+    if (!updated) return env.Undefined();
+    log.done(std::to_string(clipId));
+    return clipToJs(env, *updated);
+}
+
+// timeline_setClipModulation(clipId: number, modulation: object) → clipObject
+// Partial-update: missing nested objects/fields preserve existing values.
+// Unknown fields are ignored. Invalid enum strings fall back to the existing
+// value. Phase A: data-only — no DSP reads modulation yet, but the audio
+// render cache is still invalidated when vibrato/scratch fields change so
+// later phases can rely on the same trigger surface.
+Napi::Value Timeline_SetClipModulation(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsObject()) {
+        Napi::TypeError::New(env, "timeline_setClipModulation(clipId: number, modulation: object)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    int clipId = info[0].As<Napi::Number>().Int32Value();
+    BridgeCallLog log("timeline.setClipModulation");
+
+    const Clip* existing = g_timeline->getClip(clipId);
+    if (!existing) {
+        Napi::Error::New(env, "Clip not found").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    Napi::Object o = info[1].As<Napi::Object>();
+    ClipModulation merged = jsToClipModulation(o, existing->modulation);
+
+    const bool needsCacheInvalidation =
+        clipModulationAudioChanged(merged, existing->modulation);
+
+    g_undoManager->execute(
+        std::make_unique<SetClipModulationCommand>(clipId, merged, *g_timeline),
+        *g_timeline);
+
+    // Selective invalidation: only audio-affecting modulation changes hit the
+    // render cache. Pure video-companion edits skip this — see
+    // clipModulationAudioChanged() above.
+    if (audioEngine && needsCacheInvalidation)
+        audioEngine->getMixEngine().invalidateClipCache(clipId, "setClipModulation");
 
     const Clip* updated = g_timeline->getClip(clipId);
     if (!updated) return env.Undefined();
@@ -10763,6 +11028,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("timeline_addClip",          Napi::Function::New(env, Timeline_AddClip));
     exports.Set("timeline_removeClip",       Napi::Function::New(env, Timeline_RemoveClip));
     exports.Set("timeline_setClipParams",    Napi::Function::New(env, Timeline_SetClipParams));
+    exports.Set("timeline_setClipModulation",Napi::Function::New(env, Timeline_SetClipModulation));
     exports.Set("timeline_moveClip",         Napi::Function::New(env, Timeline_MoveClip));
     exports.Set("timeline_resizeClip",       Napi::Function::New(env, Timeline_ResizeClip));
     exports.Set("timeline_resizeClipLeft",   Napi::Function::New(env, Timeline_ResizeClipLeft));

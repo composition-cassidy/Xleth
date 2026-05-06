@@ -243,6 +243,24 @@ private:
     Params newParams_;
 };
 
+// ─── SetClipModulationCommand ─────────────────────────────────────────────────
+// Replaces the per-clip ClipModulation descriptor (Vibrato + Scratch + linked
+// video companion) atomically. Snapshots the previous descriptor at construction
+// for single-step undo. Phase A: data-only — no DSP reads modulation yet.
+
+class SetClipModulationCommand : public Command {
+public:
+    SetClipModulationCommand(int clipId, ClipModulation newMod,
+                             const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int            clipId_;
+    ClipModulation oldMod_;
+    ClipModulation newMod_;
+};
+
 // ─── AddTrackCommand ──────────────────────────────────────────────────────────
 
 class AddTrackCommand : public Command {

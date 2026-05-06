@@ -152,6 +152,7 @@ window.xleth = ({
     autoTrimClip:            (id, thresholdDb=-54) => invoke('xleth:timeline:autoTrimClip', id, thresholdDb),
     spliceClipsAtPlayhead:   (entries)             => invoke('xleth:timeline:spliceClipsAtPlayhead', entries),
     setClipParams:           (id, params)          => invoke('xleth:timeline:setClipParams', id, params),
+    setClipModulation:       (id, modulation)      => invoke('xleth:timeline:setClipModulation', id, modulation),
     addRegion:        (region)              => invoke('xleth:timeline:addRegion', region),
     modifyRegion:     (id, region)          => invoke('xleth:timeline:modifyRegion', id, region),
     setSyllables:     (id, syllables)       => invoke('xleth:timeline:setSyllables', id, syllables),

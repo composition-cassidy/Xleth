@@ -732,6 +732,9 @@ ipcMain.handle('xleth:timeline:spliceClipsAtPlayhead',
 ipcMain.handle('xleth:timeline:setClipParams',
   safeHandler((_, id, params) => callWorker('timeline_setClipParams', [id, params])));
 
+ipcMain.handle('xleth:timeline:setClipModulation',
+  safeHandler((_, id, modulation) => callWorker('timeline_setClipModulation', [id, modulation])));
+
 // ── Global clip-processing defaults ─────────────────────────────────────────
 ipcMain.handle('xleth:settings:get',    (_, key) => loadSettings()[key])
 ipcMain.handle('xleth:settings:set',    (_, key, value) => {
