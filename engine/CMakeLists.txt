@@ -237,6 +237,7 @@ add_library(XlethEngineCore STATIC
     src/audio/EditorProcessCoordinator.cpp
     src/audio/ClipRenderCache.cpp
     src/audio/ClipModulatedReader.cpp
+    src/audio/ClipVibratoIntegrator.cpp
     src/audio/TrackMixer.cpp
     src/audio/SourcePlayer.cpp
     src/audio/Sampler.cpp

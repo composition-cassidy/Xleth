@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "audio/ClipVibratoIntegrator.h"
 #include "audio/HermiteInterp.h"
 #include "dsp/DeclickEnvelope.h"
 #include "model/ClipModulationEvaluator.h"
@@ -80,16 +81,27 @@ void ClipModulatedReader::renderBlock(const BlockParams& p,
 
         // ── Seed / re-seed sourcePosD ────────────────────────────────────────
         // First activation (posInClip == 0): seed at clip-start offset.
-        // Mid-clip seek or stale state: ignore vibrato displacement integral
-        // and seed using the static ratio only. Re-integrating vibrato from
-        // clip-start would cost up to hundreds of thousands of std::sin calls
-        // on the audio thread per seed and would glitch. The existing seek
-        // hook already calls allNotesOff, so a tiny one-time phase pop on
-        // seeks is consistent with current behavior.
+        // Mid-clip seek / stale state: reseed by integrating the vibrato
+        // pitch ratio from clip start to posInClip via the deterministic
+        // helper. Continuous playback keeps the local accumulator path; the
+        // helper only runs once per discontinuity.
         if (st.expectedNextPosInClip != posInClip)
         {
+            VibratoSourceOffsetParams sp;
+            sp.vibrato                  = &p.modulation->vibrato;
+            sp.topLevelEnabled          = p.modulation->enabled;
+            sp.staticRatio              = staticRatio;
+            sp.bpm                      = p.bpm;
+            sp.sampleRate               = p.sampleRate;
+            sp.clipLocalSamples         = posInClip;
+            sp.clipDurationSeconds      = clipDurationSeconds;
+            sp.clipDurationBeats        = clipDurationBeats;
+            sp.clipStartTimelineSamples = p.clipStartSample;
+
+            const double offsetSamples =
+                computeVibratoIntegratedSourceOffsetSamples(sp);
             st.sourcePosD = static_cast<double>(p.regionOffsetSamples)
-                          + staticRatio * static_cast<double>(posInClip);
+                          + offsetSamples;
         }
 
         // ── Velocity × per-side fade gain ─────────────────────────────────────
