@@ -1,5 +1,8 @@
 #include "SyncManager.h"
 #include "model/Timeline.h"
+#include "model/ClipVideoModulationTiming.h"
+#include "model/ClipCompanionFxBuilder.h"
+#include "model/ClipModulationCompatibility.h"
 
 // GPU compositor calls are compiled-out when building XlethEngineCore
 // (the static lib used by the Node.js bridge). The bridge target defines
@@ -14,6 +17,61 @@
 #include <cmath>
 #include <iostream>
 #include <numeric>
+
+namespace {
+
+bool isVideoModulationCompatible(const VideoEvent& event) noexcept
+{
+    return event.hasClipModulation
+        && xleth::clipmod::isClipModulationCompatible(
+               event.clipReversed,
+               event.clipStretchRatio,
+               event.clipFormantPreserve,
+               event.modulation);
+}
+
+xleth::clipmod::VideoModulationTimingContext makeVideoTimingContext(
+    const VideoEvent& event,
+    double timelineSeconds,
+    double timelineBeats,
+    int64_t timelineSamples,
+    double bpm,
+    double sampleRate,
+    double sourceFps) noexcept
+{
+    const double safeBpm = (bpm > 0.0 && std::isfinite(bpm)) ? bpm : 140.0;
+    const double beatsSinceStart = timelineBeats - event.startBeat;
+    const double clipLocalSeconds = beatsSinceStart * (60.0 / safeBpm);
+    const int64_t clipLocalSamples = clipLocalSeconds > 0.0 && sampleRate > 0.0
+        ? static_cast<int64_t>(std::llround(clipLocalSeconds * sampleRate))
+        : int64_t{0};
+
+    xleth::clipmod::VideoModulationTimingContext ctx;
+    ctx.bpm = safeBpm;
+    ctx.sampleRate = sampleRate;
+    ctx.timelineSeconds = timelineSeconds;
+    ctx.timelineBeats = timelineBeats;
+    ctx.timelineSamples = timelineSamples;
+    ctx.clipLocalSeconds = clipLocalSeconds;
+    ctx.clipLocalBeats = beatsSinceStart;
+    ctx.clipLocalSamples = clipLocalSamples;
+    ctx.clipDurationSeconds = event.durationBeats * (60.0 / safeBpm);
+    ctx.clipDurationBeats = event.durationBeats;
+    ctx.sourceStartTime = event.sourceStartTime;
+    ctx.sourceClampStartTime = event.sourceClampStartTime;
+    ctx.sourceEndTime = event.sourceEndTime;
+    ctx.sourceFps = sourceFps;
+    const bool postCacheStretchedModulation =
+        event.clipStretchRatio != 1.0
+        && !event.clipReversed
+        && !event.clipFormantPreserve;
+    ctx.clipPitchOffsetSemis = postCacheStretchedModulation ? 0 : event.clipPitchOffsetSemis;
+    ctx.clipPitchOffsetCents = postCacheStretchedModulation ? 0 : event.clipPitchOffsetCents;
+    ctx.clipStartTimelineSamples = event.clipStartTimelineSamples;
+    return ctx;
+}
+
+} // namespace
 
 SyncManager::SyncManager(Transport& transport,
                          std::vector<VideoDecoder*>& decoders,
@@ -68,6 +126,9 @@ double SyncManager::videoTick()
     // 2. Read audio position atomically
     double audioTimeSec  = transport_.getPositionSeconds();
     double audioTimeBeat = transport_.getPositionBeats();
+    int64_t audioTimeSamples = transport_.getPositionSamples();
+    double sampleRate = transport_.getSampleRate();
+    double bpm = transport_.getBPM();
 
     // Track which layers are active this tick
 #ifndef XLETH_CORE_ONLY
@@ -89,13 +150,20 @@ double SyncManager::videoTick()
             layerActive[static_cast<size_t>(event.layerIndex)] = true;
 #endif
 
-        // 4a. Calculate source video time
-        // Video plays forward from sourceStartTime for the duration of the hit,
-        // then cuts out when the event ends.
-        double beatsSinceStart = audioTimeBeat - event.startBeat;
-        double bpm = transport_.getBPM();
-        double secsSinceStart  = beatsSinceStart * (60.0 / bpm);
-        double sourceTime      = event.sourceStartTime + secsSinceStart;
+        double sourceFps = 0.0;
+        if (event.sourceId >= 0 && event.sourceId < static_cast<int>(decoders_.size()))
+        {
+            VideoDecoder* original = decoders_[static_cast<size_t>(event.sourceId)];
+            if (original && original->isOpen())
+                sourceFps = original->getFPS();
+        }
+
+        const auto timingCtx = makeVideoTimingContext(
+            event, audioTimeSec, audioTimeBeat, audioTimeSamples,
+            bpm, sampleRate, sourceFps);
+        const auto timing = xleth::clipmod::evaluateVideoClipModulationTiming(
+            event.modulation, timingCtx, isVideoModulationCompatible(event));
+        double sourceTime = timing.sourceTimeSeconds;
 
         // Pick the best decoder for this event:
         //   1. If a per-region proxy is available and the current sourceTime
@@ -143,7 +211,11 @@ double SyncManager::videoTick()
             auto it = lastDisplayedFrame_.find(event.layerIndex);
             if (it != lastDisplayedFrame_.end() && it->second == targetFrame)
             {
-                // Frame already displayed — just refresh layer properties
+                // Frame already displayed — just refresh layer properties.
+                // Phase E.3: companionFx must still be refreshed even when
+                // the source frame has not changed; otherwise preview FX
+                // freeze whenever the source repeats (events run at audio
+                // rate, source plays at video FPS).
                 VideoLayer layer = {};
                 layer.sourceTextureSet = event.sourceId;
                 layer.x       = event.x;
@@ -153,6 +225,8 @@ double SyncManager::videoTick()
                 layer.opacity = event.opacity;
                 layer.zOrder  = event.layerIndex;
                 layer.visible = true;
+                layer.companionFx = xleth::clipmod::buildClipCompanionFxSnapshot(
+                    event.modulation, timing);
                 compositor_->setLayer(event.layerIndex, layer);
                 continue;
             }
@@ -231,6 +305,8 @@ double SyncManager::videoTick()
             layer.opacity = event.opacity;
             layer.zOrder  = event.layerIndex;
             layer.visible = true;
+            layer.companionFx = xleth::clipmod::buildClipCompanionFxSnapshot(
+                event.modulation, timing);
             compositor_->setLayer(event.layerIndex, layer);
 
             // 4h. Update lastDisplayedFrame

@@ -61,6 +61,30 @@ struct alignas(16) GlobalConstants {
 };
 static_assert(sizeof(GlobalConstants) == 16, "GlobalConstants must be 16 bytes (1 x float4)");
 
+struct alignas(16) VibratoSwirlConstants {
+    float amount;
+    float radius;
+    float centerX;
+    float centerY;
+    float lfo;
+    float phase01;
+    float cents;
+    float pad0;
+};
+static_assert(sizeof(VibratoSwirlConstants) == 32, "VibratoSwirlConstants must be 32 bytes");
+
+struct alignas(16) ScratchWaveSmearConstants {
+    float amount;
+    float frequency;
+    float smearAmount;
+    float reverseWithScratch;
+    float rateMultiplier;
+    float phase01;
+    float intensity01;
+    float pad0;
+};
+static_assert(sizeof(ScratchWaveSmearConstants) == 32, "ScratchWaveSmearConstants must be 32 bytes");
+
 // ---------------------------------------------------------------------------
 // RTPool — render target pairs for ping-pong effect chain processing
 // ---------------------------------------------------------------------------
@@ -93,6 +117,8 @@ struct EffectShaderCache {
     Microsoft::WRL::ComPtr<ID3D11PixelShader> brightnessContrastPS;
     Microsoft::WRL::ComPtr<ID3D11PixelShader> tvSimulatorPS;
     Microsoft::WRL::ComPtr<ID3D11PixelShader> zoomPanRotPS;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> vibratoSwirlPS;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> scratchWaveSmearPS;
 
     // Per-effect constant buffers at b2 (small, updated per draw)
     Microsoft::WRL::ComPtr<ID3D11Buffer> desatCB;       // 16 bytes
@@ -100,6 +126,8 @@ struct EffectShaderCache {
     Microsoft::WRL::ComPtr<ID3D11Buffer> brightContCB;  // 16 bytes
     Microsoft::WRL::ComPtr<ID3D11Buffer> tvSimCB;       // 32 bytes
     Microsoft::WRL::ComPtr<ID3D11Buffer> zoomPanRotCB;  // 16 bytes
+    Microsoft::WRL::ComPtr<ID3D11Buffer> vibratoSwirlCB;     // 32 bytes
+    Microsoft::WRL::ComPtr<ID3D11Buffer> scratchWaveSmearCB; // 32 bytes
 
     bool initialized = false;
 
@@ -341,6 +369,13 @@ private:
     RTPool             rtPool_;
     EffectShaderCache  effectShaders_;
 
+    // RTPool encodes slot + dimensions in its key and has no fixed slot
+    // capacity. Slot ownership in compositeFrame/processEffectChain:
+    //   0 = track visual chain, 1 = standalone ZPR, 2 = ping-pong crossfade.
+    // This named slot is reserved for clip-local companion FX so SRV/RTV
+    // aliasing cannot occur with existing passes.
+    static constexpr int kCompanionFxRtSlot = 3;
+
     // ── Internal helpers ───────────────────────────────────────────────────
     bool createRenderTarget();
     bool createStagingTexture();
@@ -366,4 +401,11 @@ private:
     /** Draw a fullscreen pass with a specific pixel shader (for effect chain).
      *  Binds srv at t0, draws the quad. Caller must set the PS and CB beforehand. */
     void drawEffectPass(ID3D11ShaderResourceView* srv);
+
+    void restoreMainPipelineState();
+
+    ID3D11ShaderResourceView* processCompanionFx(
+        ID3D11ShaderResourceView* sourceSRV,
+        int cellWidth, int cellHeight,
+        const CellFrameRequest& req);
 };

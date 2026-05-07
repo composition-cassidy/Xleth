@@ -10,6 +10,7 @@
 #include "audio/ClipFade.h"
 #include "audio/WorldStretchCache.h"
 #include "dsp/DeclickEnvelope.h"
+#include "model/ClipModulationCompatibility.h"
 #include "XlethDebug.h"
 
 #include <algorithm>
@@ -2140,6 +2141,14 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         const int srcChannels = srcBuf->getNumChannels();
         const int srcTotal    = srcBuf->getNumSamples();
 
+        const bool isGlobalStretch = (ac.clip->stretchMethod == StretchMethod::Global);
+        const int resolvedStretchMethod = isGlobalStretch
+            ? globalStretchMethod_
+            : static_cast<int>(ac.clip->stretchMethod);
+        const bool resolvedFormantPreserve = isGlobalStretch
+            ? globalFormantPreserve_
+            : ac.clip->formantPreserve;
+
         // ── Cache check (zero overhead when no processing needed) ────────────
         const bool needsProcessing = (ac.clip->pitchOffset    != 0
                                    || ac.clip->pitchOffsetCents != 0
@@ -2162,13 +2171,8 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             key.pitchOffsetCents    = ac.clip->pitchOffsetCents;
             key.reversed            = ac.clip->reversed;
             key.stretchRatio        = ac.clip->stretchRatio;
-            {
-                const bool isGlobal = (ac.clip->stretchMethod == StretchMethod::Global);
-                key.stretchMethod   = isGlobal ? globalStretchMethod_
-                                               : static_cast<int>(ac.clip->stretchMethod);
-                key.formantPreserve = isGlobal ? globalFormantPreserve_
-                                               : ac.clip->formantPreserve;
-            }
+            key.stretchMethod       = resolvedStretchMethod;
+            key.formantPreserve     = resolvedFormantPreserve;
 
             readBuf  = clipRenderCache_.getProcessedBuffer(ac.clip->id, key);
             cacheHit = (readBuf != nullptr);
@@ -2178,8 +2182,8 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         // Throttled render-loop log: fire once every 1024 calls per clip slot (lock-free)
         if (needsProcessing) {
             static std::atomic<int> renderLogCounters[ClipRenderCache::kMaxClipId] {};
-            const int slot = (ac.clip->id >= 0 && ac.clip->id < ClipRenderCache::kMaxClipId) ? ac.clip->id : 0;
-            if ((renderLogCounters[slot].fetch_add(1, std::memory_order_relaxed) & 1023) == 0) {
+            const int clipSlot = (ac.clip->id >= 0 && ac.clip->id < ClipRenderCache::kMaxClipId) ? ac.clip->id : 0;
+            if ((renderLogCounters[clipSlot].fetch_add(1, std::memory_order_relaxed) & 1023) == 0) {
                 fprintf(stderr, "[MixRender] clip=%d needsProcessing=true cacheHit=%d\n",
                         ac.clip->id, (int)cacheHit);
             }
@@ -2203,31 +2207,46 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             fadeOutLUT.build(ac.clip->fadeOutX1, ac.clip->fadeOutY1,
                             ac.clip->fadeOutX2, ac.clip->fadeOutY2);
 
-        // ── Phase C: Clip Modulation FX — vibrato MVP ────────────────────────
-        // Vibrato-enabled clips bypass ClipRenderCache and read raw source PCM
-        // through a fractional, modulated readhead. Only forward, unstretched
-        // clips qualify; reversed/stretched/formant-preserve combinations fall
-        // back to the existing cache path so user state isn't silently dropped.
-        const bool useModulatedReader =
-            ac.clip->modulation.enabled
-         && ac.clip->modulation.vibrato.enabled
-         && !ac.clip->reversed
-         && ac.clip->stretchRatio == 1.0
-         && !ac.clip->formantPreserve;
+        // ── Phase C / D.1: Clip Modulation FX — vibrato + vinyl scratch ─────
+        // Plain clips read raw source PCM through a fractional, modulated
+        // readhead. Stretched clips read ClipRenderCache's processed buffer:
+        // the cache has already consumed regionOffsetSamples and written a
+        // clip-local post-stretch buffer starting at sample 0. Fades, boundary
+        // declick, and velocity are still applied exactly once by the reader.
+        const auto& clipMod = ac.clip->modulation;
+        const bool useModulatedReader = xleth::clipmod::isClipModulationCompatible(
+            ac.clip->reversed,
+            ac.clip->stretchRatio,
+            resolvedFormantPreserve,
+            clipMod);
+        const bool usePostCacheModulatedReader =
+            useModulatedReader
+            && ac.clip->stretchRatio != 1.0
+            && !ac.clip->reversed
+            && !resolvedFormantPreserve;
 
         if (useModulatedReader)
         {
+            if (usePostCacheModulatedReader && !cacheHit)
+            {
+                // Cache jobs are requested by the existing clip-processing
+                // invalidation path off the audio thread. On a miss, silence
+                // this clip block rather than modulating raw PCM and bypassing
+                // the user's selected stretch engine.
+                continue;
+            }
+
             xleth::audio::ClipModulatedReader::BlockParams p {};
-            p.srcBuf              = srcBuf;
-            p.regionOffsetSamples = ac.regionOffsetSamples;
+            p.srcBuf              = usePostCacheModulatedReader ? readBuf : srcBuf;
+            p.regionOffsetSamples = usePostCacheModulatedReader ? 0 : ac.regionOffsetSamples;
             p.clipStartSample     = ac.clipStartSample;
             p.clipEndSample       = ac.clipEndSample;
             p.bufStart            = bufStart;
             p.numOutputSamples    = numSamples;
             p.bpm                 = bpm;
             p.sampleRate          = sampleRate;
-            p.pitchOffsetSemis    = ac.clip->pitchOffset;
-            p.pitchOffsetCents    = ac.clip->pitchOffsetCents;
+            p.pitchOffsetSemis    = usePostCacheModulatedReader ? 0 : ac.clip->pitchOffset;
+            p.pitchOffsetCents    = usePostCacheModulatedReader ? 0 : ac.clip->pitchOffsetCents;
             p.fadeInSamples       = fadeInSamples;
             p.fadeOutSamples      = fadeOutSamples;
             p.fadeInLUT           = (fadeInSamples > 0)  ? &fadeInLUT  : nullptr;

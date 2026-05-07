@@ -25,6 +25,7 @@
 
 #include "FrameCache.h"          // FrameCacheKey
 #include "RenderClock.h"         // sampleToVideoFrame, videoFrameToSample
+#include "model/ClipCompanionFxSnapshot.h" // ClipCompanionFxSnapshot (shared with preview)
 
 // Forward declarations — avoid pulling heavy headers into every consumer
 class Timeline;
@@ -46,6 +47,10 @@ enum class CellLayerKind : uint8_t {
     FullscreenBehind  = 1,  // fullscreen layer drawn before grid (Pass 1)
     FullscreenInFront = 2,  // fullscreen layer drawn after grid (Pass 3)
 };
+
+// ClipCompanionFxSnapshot moved to model/ClipCompanionFxSnapshot.h so the
+// realtime preview path (SyncManager → VideoCompositor) and the export path
+// (this file → GridCompositor) share one definition. Included above.
 
 // ---------------------------------------------------------------------------
 // CellFrameRequest — what one grid cell needs for this output frame
@@ -98,6 +103,10 @@ struct CellFrameRequest {
 
     // Pointer to track's visual effect chain (owned by TrackInfo, valid for frame lifetime)
     const std::vector<VisualEffect>* visualChain = nullptr;
+
+    // Clip-local automatic visual FX snapshot. This intentionally contains
+    // only plain values; never store pointers to mutable Clip objects here.
+    ClipCompanionFxSnapshot companionFx;
 };
 
 // ---------------------------------------------------------------------------
@@ -109,6 +118,8 @@ public:
     FrameCollector() = default;
 
     void setAnimationManager(AnimationManager* mgr) { animationMgr_ = mgr; }
+    void setCompanionFxEnabled(bool enabled) { companionFxEnabled_ = enabled; }
+    bool companionFxEnabled() const { return companionFxEnabled_; }
 
     // ── Step 1: Collect ─────────────────────────────────────────────────────
 
@@ -174,6 +185,14 @@ private:
         const VideoEvent& ev,
         double            beatPos,
         double            bpm,
+        int               sampleRate,
+        double            sourceFps);
+
+    static double computeSourceTime(
+        const VideoEvent& ev,
+        double            beatPos,
+        double            bpm,
+        int               sampleRate,
         double            sourceFps);
 
     // Compute source frame index from an absolute source time (seconds).
@@ -186,6 +205,7 @@ private:
         const VideoEvent&       ev,
         double                  beatPos,
         double                  bpm,
+        int                     sampleRate,
         double                  sourceFps,
         const PingPongSettings& pp,
         int64_t&                outSecondaryFrame,
@@ -204,4 +224,9 @@ private:
     std::unordered_map<int, FullscreenHoldState> fullscreenHoldByTrack_;
 
     AnimationManager* animationMgr_ = nullptr;
+
+    // Companion modulation FX are export-only in Phase E.2. Preview uses the
+    // same collector/compositor stack for E.1 timing follow, so keep this off
+    // by default and let OfflineRenderer opt in explicitly.
+    bool companionFxEnabled_ = false;
 };

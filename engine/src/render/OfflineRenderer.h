@@ -132,7 +132,8 @@ public:
      */
     static std::vector<struct VideoEvent> buildVideoEvents(
         const Timeline& timeline,
-        std::vector<SlideAnimationEvent>* outSlideEvents = nullptr);
+        std::vector<SlideAnimationEvent>* outSlideEvents = nullptr,
+        double eventSampleRate = 0.0);
 
 private:
     // ── References to engine state ────────────────────────────────────────

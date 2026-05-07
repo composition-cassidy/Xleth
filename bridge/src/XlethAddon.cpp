@@ -78,6 +78,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -819,6 +820,18 @@ static void rebuildVideoEventsFromClips() {
             ev.regionId        = clip->regionId;   // route to per-region proxy if ready
             ev.sourceStartTime = sourceTime;
             ev.sourceEndTime   = region->endTime;
+            ev.sourceClampStartTime = region->startTime;
+            ev.clipId          = clip->id;
+            ev.hasClipModulation = clip->modulation.enabled
+                && (clip->modulation.vibrato.enabled || clip->modulation.scratch.enabled);
+            ev.modulation = clip->modulation;
+            ev.clipReversed = clip->reversed;
+            ev.clipStretchRatio = clip->stretchRatio;
+            ev.clipFormantPreserve = clip->formantPreserve;
+            ev.clipPitchOffsetSemis = clip->pitchOffset;
+            ev.clipPitchOffsetCents = clip->pitchOffsetCents;
+            ev.clipStartTimelineSamples = static_cast<int64_t>(
+                std::llround(startBeat * 60.0 / bpm * audioEngine->getTransport().getSampleRate()));
             ev.layerIndex      = 0;          // Phase 1: all fullscreen, last-iterated wins
             ev.x = 0.0f; ev.y = 0.0f;
             ev.width = 1.0f; ev.height = 1.0f;
@@ -965,6 +978,7 @@ static void rebuildVideoEventsFromClips() {
                             ev.regionId        = pattern->regionId;  // route to region proxy
                             ev.sourceStartTime = region->startTime;
                             ev.sourceEndTime   = region->endTime;
+                            ev.sourceClampStartTime = region->startTime;
                             ev.layerIndex      = 0;
                             ev.x = 0.0f; ev.y = 0.0f;
                             ev.width = 1.0f; ev.height = 1.0f;
@@ -1292,8 +1306,21 @@ static ClipModulation jsToClipModulation(const Napi::Object& o,
                     p.rateMultiplier = pj.Get("rateMultiplier").As<Napi::Number>().FloatValue();
                 if (pj.Has("curve") && pj.Get("curve").IsNumber())
                     p.curve = pj.Get("curve").As<Napi::Number>().FloatValue();
+                // Phase D.1 hardening: sanitize NaN/Inf so the audio
+                // evaluator never sees a non-finite curve value.
+                if (!std::isfinite(p.time))           p.time = 0.0f;
+                if (!std::isfinite(p.rateMultiplier)) p.rateMultiplier = 1.0f;
+                if (!std::isfinite(p.curve))          p.curve = 0.0f;
                 pts.push_back(p);
             }
+            // The evaluator assumes points are time-sorted. Use stable_sort to
+            // preserve author order for ties (e.g. an instantaneous step from
+            // one rate to another at the same time).
+            std::stable_sort(pts.begin(), pts.end(),
+                [](const ClipModulation::ScratchPoint& a,
+                   const ClipModulation::ScratchPoint& b) {
+                    return a.time < b.time;
+                });
             m.scratch.curve = std::move(pts);
         }
     }
@@ -1324,45 +1351,6 @@ static ClipModulation jsToClipModulation(const Napi::Object& o,
     }
 
     return m;
-}
-
-// Compares the audio-affecting subset of ClipModulation. Vibrato + Scratch
-// changes (including their `enabled` flags and the top-level `enabled`)
-// invalidate the audio render cache. Video-only fields do not.
-static bool clipModulationAudioChanged(const ClipModulation& a, const ClipModulation& b) {
-    if (a.enabled != b.enabled) return true;
-
-    const auto& va = a.vibrato; const auto& vb = b.vibrato;
-    if (va.enabled              != vb.enabled              ||
-        va.depthCents           != vb.depthCents           ||
-        va.rateMode             != vb.rateMode             ||
-        va.rateHz               != vb.rateHz               ||
-        va.syncDivision         != vb.syncDivision         ||
-        va.shape                != vb.shape                ||
-        va.phaseResetOnClipStart != vb.phaseResetOnClipStart ||
-        va.phaseOffset          != vb.phaseOffset          ||
-        va.customShape.size()   != vb.customShape.size())
-        return true;
-    for (size_t i = 0; i < va.customShape.size(); ++i)
-        if (va.customShape[i].time  != vb.customShape[i].time ||
-            va.customShape[i].value != vb.customShape[i].value)
-            return true;
-
-    const auto& sa = a.scratch; const auto& sb = b.scratch;
-    if (sa.enabled            != sb.enabled            ||
-        sa.timeMode           != sb.timeMode           ||
-        sa.smoothingMs        != sb.smoothingMs        ||
-        sa.gainCompensationDb != sb.gainCompensationDb ||
-        sa.edgeMode           != sb.edgeMode           ||
-        sa.curve.size()       != sb.curve.size())
-        return true;
-    for (size_t i = 0; i < sa.curve.size(); ++i)
-        if (sa.curve[i].time           != sb.curve[i].time ||
-            sa.curve[i].rateMultiplier != sb.curve[i].rateMultiplier ||
-            sa.curve[i].curve          != sb.curve[i].curve)
-            return true;
-
-    return false; // Video-only changes — audio cache untouched.
 }
 
 static Napi::Object clipToJs(Napi::Env env, const Clip& c) {
@@ -2466,6 +2454,7 @@ Napi::Value Initialize(const Napi::CallbackInfo& info)
         g_previewCollector     = std::make_unique<FrameCollector>();
 
         g_previewCollector->setAnimationManager(g_previewAnimMgr.get());
+        g_previewCollector->setCompanionFxEnabled(true);
         g_previewRenderDecoder->initHwDevice(device, devCtx);
 
         int initW = frameOutput.getWidth();
@@ -3062,6 +3051,7 @@ void AddVideoEvent(const Napi::CallbackInfo& info)
     ev.durationBeats   = o.Get("durationBeats").As<Napi::Number>().DoubleValue();
     ev.sourceId        = o.Get("sourceId").As<Napi::Number>().Int32Value();
     ev.sourceStartTime = o.Get("sourceStartTime").As<Napi::Number>().DoubleValue();
+    ev.sourceClampStartTime = ev.sourceStartTime;
     ev.layerIndex      = o.Get("layerIndex").As<Napi::Number>().Int32Value();
     ev.x       = o.Get("x").As<Napi::Number>().FloatValue();
     ev.y       = o.Get("y").As<Napi::Number>().FloatValue();
@@ -4541,9 +4531,9 @@ Napi::Value Timeline_SetClipParams(const Napi::CallbackInfo& info)
 // timeline_setClipModulation(clipId: number, modulation: object) → clipObject
 // Partial-update: missing nested objects/fields preserve existing values.
 // Unknown fields are ignored. Invalid enum strings fall back to the existing
-// value. Phase A: data-only — no DSP reads modulation yet, but the audio
-// render cache is still invalidated when vibrato/scratch fields change so
-// later phases can rely on the same trigger surface.
+// value. Modulation edits refresh preview state, but do not invalidate
+// ClipRenderCache because vibrato/scratch now run after the processed clip
+// buffer.
 Napi::Value Timeline_SetClipModulation(const Napi::CallbackInfo& info)
 {
     Napi::Env env = info.Env();
@@ -4569,18 +4559,15 @@ Napi::Value Timeline_SetClipModulation(const Napi::CallbackInfo& info)
     Napi::Object o = info[1].As<Napi::Object>();
     ClipModulation merged = jsToClipModulation(o, existing->modulation);
 
-    const bool needsCacheInvalidation =
-        clipModulationAudioChanged(merged, existing->modulation);
-
     g_undoManager->execute(
         std::make_unique<SetClipModulationCommand>(clipId, merged, *g_timeline),
         *g_timeline);
 
-    // Selective invalidation: only audio-affecting modulation changes hit the
-    // render cache. Pure video-companion edits skip this — see
-    // clipModulationAudioChanged() above.
-    if (audioEngine && needsCacheInvalidation)
-        audioEngine->getMixEngine().invalidateClipCache(clipId, "setClipModulation");
+    // ClipRenderCache stores only pre-modulation clip processing
+    // (source/trim/stretch/static pitch/reverse/formant). Vibrato and Scratch
+    // run after that buffer, so modulation edits refresh preview state without
+    // evicting or rebuilding the stretch cache.
+    g_previewDirty.store(true);
 
     const Clip* updated = g_timeline->getClip(clipId);
     if (!updated) return env.Undefined();

@@ -110,11 +110,15 @@ void OfflineRenderer::requestCancel()
 
 std::vector<VideoEvent> OfflineRenderer::buildVideoEvents(
     const Timeline& timeline,
-    std::vector<SlideAnimationEvent>* outSlideEvents)
+    std::vector<SlideAnimationEvent>* outSlideEvents,
+    double eventSampleRate)
 {
     std::vector<VideoEvent> events;
     if (outSlideEvents) outSlideEvents->clear();
     const double bpm = timeline.getBPM();
+    const double sampleRate = eventSampleRate > 0.0
+        ? eventSampleRate
+        : timeline.getSampleRate();
 
     // ── Clip tracks: each clip → one VideoEvent ──────────────────────────
     int noteCounterPerTrack_clip = 0;
@@ -156,6 +160,18 @@ std::vector<VideoEvent> OfflineRenderer::buildVideoEvents(
         // regionOffset: how many beats into the source to start playback
         ev.sourceStartTime = clip->regionOffset.toBeats() * (60.0 / bpm) + region->startTime;
         ev.sourceEndTime   = region->endTime;
+        ev.sourceClampStartTime = region->startTime;
+        ev.clipId          = clip->id;
+        ev.hasClipModulation = clip->modulation.enabled
+            && (clip->modulation.vibrato.enabled || clip->modulation.scratch.enabled);
+        ev.modulation = clip->modulation;
+        ev.clipReversed = clip->reversed;
+        ev.clipStretchRatio = clip->stretchRatio;
+        ev.clipFormantPreserve = clip->formantPreserve;
+        ev.clipPitchOffsetSemis = clip->pitchOffset;
+        ev.clipPitchOffsetCents = clip->pitchOffsetCents;
+        ev.clipStartTimelineSamples = static_cast<int64_t>(
+            std::llround(ev.startBeat * 60.0 / bpm * sampleRate));
         ev.layerIndex      = 0;  // not used in grid compositor path
         ev.x               = track->videoX;
         ev.y               = track->videoY;
@@ -291,6 +307,7 @@ std::vector<VideoEvent> OfflineRenderer::buildVideoEvents(
                     ev.regionId        = pattern->regionId;
                     ev.sourceStartTime = region->startTime;
                     ev.sourceEndTime   = region->endTime;
+                    ev.sourceClampStartTime = region->startTime;
                     ev.layerIndex      = 0;
                     ev.x               = track->videoX;
                     ev.y               = track->videoY;
@@ -389,7 +406,7 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
 
     // ── Build video events from timeline ─────────────────────────────────
     std::vector<SlideAnimationEvent> slideEvents;
-    auto videoEvents = buildVideoEvents(timeline_, &slideEvents);
+    auto videoEvents = buildVideoEvents(timeline_, &slideEvents, sampleRate);
 
     // ── Initialize pipeline components ───────────────────────────────────
     // Use fragmented MP4 for crash safety — remux to standard at the end
@@ -442,6 +459,7 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
     FrameCollector collector;
     AnimationManager animMgr;
     collector.setAnimationManager(&animMgr);
+    collector.setCompanionFxEnabled(true);
 
     // Diagnostic counters for AMD/NVIDIA divergence: track frames where the GL
     // compositor produced no readback. A non-zero count means the export is

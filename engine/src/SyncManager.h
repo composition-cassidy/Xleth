@@ -35,11 +35,24 @@ struct VideoEvent {
     // detect when a note sustains past the sample's trimmed video length.
     // 0.0 = unset (no boundary check).
     double sourceEndTime = 0.0;
+    double sourceClampStartTime = 0.0; // Trim start / first valid frame for reverse clamps.
 
     // Which SampleRegion this event was emitted for (-1 = unset / not region-backed).
     // Used by SyncManager::videoTick and FrameCollector to route to a
     // per-region proxy decoder when one is available.
     int regionId = -1;
+
+    // Clip-track modulation metadata. Pattern/note events leave these at
+    // defaults and remain unmodulated in Phase E.1.
+    int clipId = -1;
+    bool hasClipModulation = false;
+    ClipModulation modulation;
+    bool clipReversed = false;
+    double clipStretchRatio = 1.0;
+    bool clipFormantPreserve = false;
+    int clipPitchOffsetSemis = 0;
+    int clipPitchOffsetCents = 0;
+    int64_t clipStartTimelineSamples = 0;
 
     // ── Flip v2 (per-track state machine — spec §5.1) ─────────────────────
     // Pitch identifier consumed by the resolver:

@@ -36,7 +36,11 @@ let unsubscribeRegistry: (() => void) | null = null;
 function isTextEntryElement(element: Element | null): boolean {
   if (!element) return false;
   if (element instanceof HTMLElement && element.isContentEditable) return true;
-  return element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement;
+  return (
+    element instanceof HTMLInputElement
+    || element instanceof HTMLTextAreaElement
+    || element instanceof HTMLSelectElement
+  );
 }
 
 function normalizeKey(key: string): string {

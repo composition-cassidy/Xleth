@@ -285,6 +285,286 @@ int main()
         std::fprintf(stderr, "[TEST:FrameCollector] Test 4: PASSED\n");
     }
 
+    {
+        std::fprintf(stderr, "\n[TEST:FrameCollector] --- Test 4b: scratch timing warp ---\n");
+
+        VideoEvent ev = makeEvent(trackIds[0], srcAId, 0.0, 4.0, 0.0, 1.0f, 0);
+        ev.sourceEndTime = 120.0;
+        ev.sourceClampStartTime = 0.0;
+        ev.clipId = 42;
+        ev.hasClipModulation = true;
+        ev.modulation.enabled = true;
+        ev.modulation.scratch.enabled = true;
+        ev.modulation.scratch.timeMode = ClipModulation::Scratch::CurveTimeMode::ClipSeconds;
+        ev.modulation.scratch.curve.push_back({0.0f, 2.0f, 0.0f});
+
+        std::vector<VideoEvent> modEvents { ev };
+
+        FrameCollector collector;
+        AVRational fps = {30, 1};
+        auto requests = collector.collectRequests(30, timeline, 48000, fps, modEvents);
+
+        const CellFrameRequest* track0Req = nullptr;
+        for (const auto& r : requests) {
+            if (r.trackId == trackIds[0] && r.layerKind == CellLayerKind::Grid) {
+                track0Req = &r;
+                break;
+            }
+        }
+        assert(track0Req != nullptr);
+        std::fprintf(stderr, "[TEST:FrameCollector] scratch rate 2 at output frame 30: srcFrame=%lld (expected 60)\n",
+                     (long long)track0Req->sourceFrameIndex);
+        assert(track0Req->sourceFrameIndex == 60);
+
+        std::fprintf(stderr, "[TEST:FrameCollector] Test 4b: PASSED\n");
+    }
+
+    {
+        std::fprintf(stderr, "\n[TEST:FrameCollector] --- Test 4c: companion FX snapshots ---\n");
+
+        VideoEvent vib = makeEvent(trackIds[0], srcAId, 0.0, 4.0, 0.0, 1.0f, 0);
+        vib.sourceEndTime = 120.0;
+        vib.sourceClampStartTime = 0.0;
+        vib.clipId = 43;
+        vib.hasClipModulation = true;
+        vib.modulation.enabled = true;
+        vib.modulation.vibrato.enabled = true;
+        vib.modulation.vibrato.depthCents = 50.0f;
+        vib.modulation.vibrato.rateHz = 2.0f;
+        vib.modulation.video.vibratoSwirlEnabled = true;
+        vib.modulation.video.swirlAmount = 0.35f;
+        vib.modulation.video.swirlRadius = 0.55f;
+
+        FrameCollector collector;
+        AVRational fps = {30, 1};
+
+        auto previewDefaultRequests = collector.collectRequests(15, timeline, 48000, fps,
+                                                                std::vector<VideoEvent>{vib});
+        const CellFrameRequest* previewDefaultReq = nullptr;
+        for (const auto& r : previewDefaultRequests) {
+            if (r.trackId == trackIds[0] && r.layerKind == CellLayerKind::Grid) {
+                previewDefaultReq = &r;
+                break;
+            }
+        }
+        assert(previewDefaultReq != nullptr);
+        assert(!previewDefaultReq->companionFx.vibratoSwirlEnabled);
+        assert(!previewDefaultReq->companionFx.scratchWaveEnabled);
+
+        collector.setCompanionFxEnabled(true);
+        auto vibRequests = collector.collectRequests(15, timeline, 48000, fps,
+                                                     std::vector<VideoEvent>{vib});
+
+        const CellFrameRequest* vibReq = nullptr;
+        for (const auto& r : vibRequests) {
+            if (r.trackId == trackIds[0] && r.layerKind == CellLayerKind::Grid) {
+                vibReq = &r;
+                break;
+            }
+        }
+        assert(vibReq != nullptr);
+        assert(vibReq->companionFx.vibratoSwirlEnabled);
+        assert(!vibReq->companionFx.scratchWaveEnabled);
+        assert(std::abs(vibReq->companionFx.swirlAmount - 0.35f) < 0.0001f);
+        assert(std::abs(vibReq->companionFx.swirlRadius - 0.55f) < 0.0001f);
+
+        VideoEvent scratch = makeEvent(trackIds[0], srcAId, 0.0, 4.0, 0.0, 1.0f, 0);
+        scratch.sourceEndTime = 120.0;
+        scratch.sourceClampStartTime = 0.0;
+        scratch.clipId = 44;
+        scratch.hasClipModulation = true;
+        scratch.modulation.enabled = true;
+        scratch.modulation.scratch.enabled = true;
+        scratch.modulation.scratch.timeMode = ClipModulation::Scratch::CurveTimeMode::ClipSeconds;
+        scratch.modulation.scratch.curve.push_back({0.0f, -1.0f, 0.0f});
+        scratch.modulation.video.scratchWaveEnabled = true;
+        scratch.modulation.video.waveAmount = 0.11f;
+        scratch.modulation.video.waveFrequency = 6.0f;
+        scratch.modulation.video.smearAmount = 0.25f;
+        scratch.modulation.video.reverseWaveWithScratch = true;
+
+        auto scratchRequests = collector.collectRequests(15, timeline, 48000, fps,
+                                                         std::vector<VideoEvent>{scratch});
+
+        const CellFrameRequest* scratchReq = nullptr;
+        for (const auto& r : scratchRequests) {
+            if (r.trackId == trackIds[0] && r.layerKind == CellLayerKind::Grid) {
+                scratchReq = &r;
+                break;
+            }
+        }
+        assert(scratchReq != nullptr);
+        assert(!scratchReq->companionFx.vibratoSwirlEnabled);
+        assert(scratchReq->companionFx.scratchWaveEnabled);
+        assert(std::abs(scratchReq->companionFx.waveAmount - 0.11f) < 0.0001f);
+        assert(std::abs(scratchReq->companionFx.waveFrequency - 6.0f) < 0.0001f);
+        assert(std::abs(scratchReq->companionFx.smearAmount - 0.25f) < 0.0001f);
+        assert(scratchReq->companionFx.reverseWaveWithScratch);
+
+        scratch.clipReversed = true;
+        auto bypassRequests = collector.collectRequests(15, timeline, 48000, fps,
+                                                        std::vector<VideoEvent>{scratch});
+        const CellFrameRequest* bypassReq = nullptr;
+        for (const auto& r : bypassRequests) {
+            if (r.trackId == trackIds[0] && r.layerKind == CellLayerKind::Grid) {
+                bypassReq = &r;
+                break;
+            }
+        }
+        assert(bypassReq != nullptr);
+        assert(!bypassReq->companionFx.vibratoSwirlEnabled);
+        assert(!bypassReq->companionFx.scratchWaveEnabled);
+
+        std::fprintf(stderr, "[TEST:FrameCollector] Test 4c: PASSED\n");
+    }
+
+    // ── Phase F.0: companion FX populated for static-pitch-shifted clips ────
+    // Static pitch (pitchOffset semis or pitchOffsetCents) is NOT in the bypass
+    // list — vibrato + scratch + companion FX must still apply, and the
+    // sourceFrameIndex must reflect the static pitch ratio composed with the
+    // scratch source-time integral.
+    {
+        std::fprintf(stderr, "\n[TEST:FrameCollector] --- Test 4d (F.0): static-pitch clip with companion FX ---\n");
+
+        VideoEvent ev = makeEvent(trackIds[0], srcAId, 0.0, 4.0, 0.0, 1.0f, 0);
+        ev.sourceEndTime = 120.0;
+        ev.sourceClampStartTime = 0.0;
+        ev.clipId = 51;
+        ev.clipReversed = false;
+        ev.clipStretchRatio = 1.0;
+        ev.clipFormantPreserve = false;
+        ev.clipPitchOffsetSemis = 12;          // +1 octave static pitch
+        ev.clipPitchOffsetCents = 0;
+        ev.hasClipModulation = true;
+        ev.modulation.enabled = true;
+        ev.modulation.scratch.enabled = true;
+        ev.modulation.scratch.timeMode = ClipModulation::Scratch::CurveTimeMode::ClipSeconds;
+        ev.modulation.scratch.curve.push_back({0.0f, 2.0f, 0.0f});
+        ev.modulation.vibrato.enabled = true;
+        ev.modulation.vibrato.depthCents = 25.0f;
+        ev.modulation.vibrato.rateHz = 4.0f;
+        ev.modulation.video.vibratoSwirlEnabled = true;
+        ev.modulation.video.swirlAmount = 0.4f;
+        ev.modulation.video.swirlRadius = 0.6f;
+        ev.modulation.video.scratchWaveEnabled = true;
+        ev.modulation.video.waveAmount = 0.2f;
+        ev.modulation.video.waveFrequency = 5.0f;
+
+        FrameCollector collector;
+        collector.setCompanionFxEnabled(true);
+        AVRational fps = {30, 1};
+        auto requests = collector.collectRequests(30, timeline, 48000, fps,
+                                                  std::vector<VideoEvent>{ev});
+
+        const CellFrameRequest* req = nullptr;
+        for (const auto& r : requests) {
+            if (r.trackId == trackIds[0] && r.layerKind == CellLayerKind::Grid) {
+                req = &r;
+                break;
+            }
+        }
+        assert(req != nullptr);
+
+        // Companion FX must be populated for a static-pitch-shifted clip.
+        assert(req->companionFx.vibratoSwirlEnabled);
+        assert(req->companionFx.scratchWaveEnabled);
+
+        // sourceFrameIndex math at output frame 30 (= 1s @ 30fps):
+        //   scratchBase    = ∫₀^1 2 dt = 2.0 s
+        //   vibratoResidual ≈ clipLocalSeconds * (staticRatio - 1) ≈ 1 * (2 - 1) = 1.0 s
+        //   sourceTime     ≈ 3.0 s    (vibrato 25c at 4Hz adds <<1 frame jitter)
+        //   srcFrame       ≈ 90       (3.0 × 30 fps)
+        std::fprintf(stderr, "[TEST:FrameCollector] static pitch + scratch 2 + vibrato 25c: srcFrame=%lld (expected ~90)\n",
+                     (long long)req->sourceFrameIndex);
+        assert(req->sourceFrameIndex >= 88 && req->sourceFrameIndex <= 92);
+
+        std::fprintf(stderr, "[TEST:FrameCollector] Test 4d: PASSED\n");
+    }
+
+    // Phase F.1: stretched clips use post-cache modulation, while reversed
+    // and formant-preserve variants remain bypassed.
+    {
+        std::fprintf(stderr, "\n[TEST:FrameCollector] --- Test 4e (F.1): stretched clip post-cache modulation ---\n");
+
+        VideoEvent ev = makeEvent(trackIds[0], srcAId, 0.0, 4.0, 0.0, 1.0f, 0);
+        ev.sourceEndTime = 120.0;
+        ev.sourceClampStartTime = 0.0;
+        ev.clipId = 52;
+        ev.clipReversed = false;
+        ev.clipStretchRatio = 1.5;
+        ev.clipFormantPreserve = false;
+        ev.hasClipModulation = true;
+        ev.modulation.enabled = true;
+        ev.modulation.scratch.enabled = true;
+        ev.modulation.scratch.timeMode = ClipModulation::Scratch::CurveTimeMode::ClipSeconds;
+        ev.modulation.scratch.curve.push_back({0.0f, 2.0f, 0.0f});
+        ev.modulation.vibrato.enabled = true;
+        ev.modulation.vibrato.depthCents = 25.0f;
+        ev.modulation.video.vibratoSwirlEnabled = true;
+        ev.modulation.video.swirlAmount = 0.4f;
+        ev.modulation.video.scratchWaveEnabled = true;
+        ev.modulation.video.waveAmount = 0.2f;
+
+        FrameCollector collector;
+        collector.setCompanionFxEnabled(true);
+        AVRational fps = {30, 1};
+        auto requests = collector.collectRequests(30, timeline, 48000, fps,
+                                                  std::vector<VideoEvent>{ev});
+
+        const CellFrameRequest* req = nullptr;
+        for (const auto& r : requests) {
+            if (r.trackId == trackIds[0] && r.layerKind == CellLayerKind::Grid) {
+                req = &r;
+                break;
+            }
+        }
+        assert(req != nullptr);
+
+        // Stretched-compatible clips populate companion FX and timing warp.
+        assert(req->companionFx.vibratoSwirlEnabled);
+        assert(req->companionFx.scratchWaveEnabled);
+
+        // sourceFrameIndex reflects scratch over the stretched clip timeline:
+        //   scratchBase = integral of constant rate 2 over 1s = 2.0s
+        //   srcFrame    = 60
+        std::fprintf(stderr, "[TEST:FrameCollector] stretched active: srcFrame=%lld (expected ~60)\n",
+                     (long long)req->sourceFrameIndex);
+        assert(req->sourceFrameIndex >= 59 && req->sourceFrameIndex <= 61);
+
+        ev.clipReversed = true;
+        auto reversedRequests = collector.collectRequests(30, timeline, 48000, fps,
+                                                          std::vector<VideoEvent>{ev});
+        const CellFrameRequest* reversedReq = nullptr;
+        for (const auto& r : reversedRequests) {
+            if (r.trackId == trackIds[0] && r.layerKind == CellLayerKind::Grid) {
+                reversedReq = &r;
+                break;
+            }
+        }
+        assert(reversedReq != nullptr);
+        assert(!reversedReq->companionFx.vibratoSwirlEnabled);
+        assert(!reversedReq->companionFx.scratchWaveEnabled);
+        assert(reversedReq->sourceFrameIndex == 30);
+
+        ev.clipReversed = false;
+        ev.clipFormantPreserve = true;
+        auto formantRequests = collector.collectRequests(30, timeline, 48000, fps,
+                                                         std::vector<VideoEvent>{ev});
+        const CellFrameRequest* formantReq = nullptr;
+        for (const auto& r : formantRequests) {
+            if (r.trackId == trackIds[0] && r.layerKind == CellLayerKind::Grid) {
+                formantReq = &r;
+                break;
+            }
+        }
+        assert(formantReq != nullptr);
+        assert(!formantReq->companionFx.vibratoSwirlEnabled);
+        assert(!formantReq->companionFx.scratchWaveEnabled);
+        assert(formantReq->sourceFrameIndex == 30);
+
+        std::fprintf(stderr, "[TEST:FrameCollector] Test 4e: PASSED\n");
+    }
+
     // ── Test 5: massive dedup scenario — 12 cells showing same frame ────────
     {
         std::fprintf(stderr, "\n[TEST:FrameCollector] --- Test 5: massive deduplication ---\n");

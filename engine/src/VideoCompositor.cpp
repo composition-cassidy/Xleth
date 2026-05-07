@@ -52,22 +52,102 @@ void main() {
 }
 )glsl";
 
+// Composite fragment shader with optional Phase E.3 companion FX:
+//  Vibrato Swirl (UV remap) and Scratch Wave + Smear (UV remap + 2-tap blend).
+//
+// Both effects are pure UV remaps that each sample the source once, so chaining
+// them in a single fragment pass is mathematically equivalent to two FBO passes.
+// When uSwirlEnabled and uWaveEnabled are both false the shader runs the same
+// single YUV→RGB tap as the pre-E.3 preview path, so the no-FX fast path is
+// unchanged for projects without clip modulation.
+//
+// Polarity matches the D3D11 export shaders (FX_VibratoSwirl.hlsl,
+// FX_ScratchWaveSmear.hlsl): signed swirlAmount, signed vibratoLfo, signed
+// waveAmount/smearAmount, and reverseWaveWithScratch + scratchRateMultiplier
+// flip wave direction the same way.
 static const char* kCompositeFragmentSrc = R"glsl(
 #version 330 core
 in vec2 TexCoord;
 out vec4 FragColor;
+
 uniform sampler2D yTex;
 uniform sampler2D uTex;
 uniform sampler2D vTex;
 uniform float uOpacity;
+
+uniform bool  uSwirlEnabled;
+uniform float uSwirlAmount;
+uniform float uSwirlRadius;
+uniform float uSwirlCenterX;
+uniform float uSwirlCenterY;
+uniform float uSwirlLfo;
+
+uniform bool  uWaveEnabled;
+uniform float uWaveAmount;
+uniform float uWaveFrequency;
+uniform float uWaveSmearAmount;
+uniform float uWaveRateMultiplier;
+uniform float uWavePhase01;
+uniform float uWaveIntensity01;
+uniform bool  uReverseWaveWithScratch;
+
+vec3 yuvToRgb(vec2 uv) {
+    float y = texture(yTex, uv).r;
+    float u = texture(uTex, uv).r - 0.5;
+    float v = texture(vTex, uv).r - 0.5;
+    return clamp(vec3(
+        y + 1.5748 * v,
+        y - 0.1873 * u - 0.4681 * v,
+        y + 1.8556 * u), 0.0, 1.0);
+}
+
 void main() {
-    float y = texture(yTex, TexCoord).r;
-    float u = texture(uTex, TexCoord).r - 0.5;
-    float v = texture(vTex, TexCoord).r - 0.5;
-    float r = clamp(y + 1.5748 * v, 0.0, 1.0);
-    float g = clamp(y - 0.1873 * u - 0.4681 * v, 0.0, 1.0);
-    float b = clamp(y + 1.8556 * u, 0.0, 1.0);
-    FragColor = vec4(r, g, b, uOpacity);
+    vec2 uv = TexCoord;
+
+    // ── Vibrato Swirl ──────────────────────────────────────────────────────
+    // Mirrors FX_VibratoSwirl.hlsl. amount * 3 * lfo * smoothstep(falloff),
+    // clamped to [-1.25, 1.25]. Signed amount or signed lfo flips rotation.
+    if (uSwirlEnabled) {
+        vec2 c = vec2(uSwirlCenterX, uSwirlCenterY);
+        vec2 d = uv - c;
+        float r = length(d);
+        float safeRadius = max(uSwirlRadius, 0.0001);
+        float falloff = clamp(1.0 - r / safeRadius, 0.0, 1.0);
+        falloff = falloff * falloff * (3.0 - 2.0 * falloff);
+        float angle = clamp(uSwirlAmount * 3.0 * uSwirlLfo * falloff, -1.25, 1.25);
+        float s = sin(angle);
+        float co = cos(angle);
+        uv = clamp(vec2(d.x * co - d.y * s,
+                        d.x * s + d.y * co) + c, 0.0, 1.0);
+    }
+
+    // ── Scratch Wave + Smear ───────────────────────────────────────────────
+    // Mirrors FX_ScratchWaveSmear.hlsl. direction flips when reverseWithScratch
+    // is set and rateMultiplier < 0. Smear is a 2-tap blend along uv.x.
+    vec3 rgb;
+    if (uWaveEnabled) {
+        float dir = (uReverseWaveWithScratch && uWaveRateMultiplier < 0.0) ? -1.0 : 1.0;
+        float intensity = clamp(uWaveIntensity01, 0.0, 1.0);
+        float phase = uWavePhase01 * 6.28318531;
+        float safeFrequency = clamp(uWaveFrequency, 0.25, 64.0);
+        float wave = sin(uv.y * safeFrequency * 6.28318531 + phase);
+        float offset = clamp(wave * uWaveAmount * 1.5 * intensity * dir, -0.35, 0.35);
+        vec2 wavedUV = clamp(vec2(uv.x + offset, uv.y), 0.0, 1.0);
+
+        rgb = yuvToRgb(wavedUV);
+
+        float smear = clamp(abs(uWaveSmearAmount), 0.0, 1.0) * intensity;
+        if (smear > 0.0001) {
+            float smearOffset = clamp(uWaveSmearAmount * 0.25 * dir * intensity, -0.25, 0.25);
+            vec3 a = yuvToRgb(clamp(vec2(wavedUV.x - smearOffset, wavedUV.y), 0.0, 1.0));
+            vec3 b = yuvToRgb(clamp(vec2(wavedUV.x + smearOffset, wavedUV.y), 0.0, 1.0));
+            rgb = mix(rgb, 0.5 * (a + b), smear);
+        }
+    } else {
+        rgb = yuvToRgb(uv);
+    }
+
+    FragColor = vec4(rgb, uOpacity);
 }
 )glsl";
 
@@ -321,6 +401,26 @@ bool VideoCompositor::createCompositeShader()
     glUniform1i(glGetUniformLocation(compositeShaderProgram_, "uTex"), 1);
     glUniform1i(glGetUniformLocation(compositeShaderProgram_, "vTex"), 2);
     glUseProgram(0);
+
+    // Cache uniform locations once (Phase E.3) — avoids per-layer lookups.
+    auto& U = compositeUniforms_;
+    U.uPosition           = glGetUniformLocation(compositeShaderProgram_, "uPosition");
+    U.uScale              = glGetUniformLocation(compositeShaderProgram_, "uScale");
+    U.uOpacity            = glGetUniformLocation(compositeShaderProgram_, "uOpacity");
+    U.uSwirlEnabled       = glGetUniformLocation(compositeShaderProgram_, "uSwirlEnabled");
+    U.uSwirlAmount        = glGetUniformLocation(compositeShaderProgram_, "uSwirlAmount");
+    U.uSwirlRadius        = glGetUniformLocation(compositeShaderProgram_, "uSwirlRadius");
+    U.uSwirlCenterX       = glGetUniformLocation(compositeShaderProgram_, "uSwirlCenterX");
+    U.uSwirlCenterY       = glGetUniformLocation(compositeShaderProgram_, "uSwirlCenterY");
+    U.uSwirlLfo           = glGetUniformLocation(compositeShaderProgram_, "uSwirlLfo");
+    U.uWaveEnabled        = glGetUniformLocation(compositeShaderProgram_, "uWaveEnabled");
+    U.uWaveAmount         = glGetUniformLocation(compositeShaderProgram_, "uWaveAmount");
+    U.uWaveFrequency      = glGetUniformLocation(compositeShaderProgram_, "uWaveFrequency");
+    U.uWaveSmearAmount    = glGetUniformLocation(compositeShaderProgram_, "uWaveSmearAmount");
+    U.uWaveRateMultiplier = glGetUniformLocation(compositeShaderProgram_, "uWaveRateMultiplier");
+    U.uWavePhase01        = glGetUniformLocation(compositeShaderProgram_, "uWavePhase01");
+    U.uWaveIntensity01    = glGetUniformLocation(compositeShaderProgram_, "uWaveIntensity01");
+    U.uReverseWaveWithScratch = glGetUniformLocation(compositeShaderProgram_, "uReverseWaveWithScratch");
 
     checkGLError("createCompositeShader");
     return true;
@@ -739,9 +839,7 @@ void VideoCompositor::renderComposite()
               [this](int a, int b) { return layers_[a].zOrder < layers_[b].zOrder; });
 
     glUseProgram(compositeShaderProgram_);
-    GLint locPos     = glGetUniformLocation(compositeShaderProgram_, "uPosition");
-    GLint locScale   = glGetUniformLocation(compositeShaderProgram_, "uScale");
-    GLint locOpacity = glGetUniformLocation(compositeShaderProgram_, "uOpacity");
+    const auto& U = compositeUniforms_;
 
     for (int idx : sortedIndices)
     {
@@ -754,10 +852,34 @@ void VideoCompositor::renderComposite()
         const TextureSet& ts = textureSets_[tsId];
         if (!ts.hasData) continue;
 
-        // Set uniforms
-        glUniform2f(locPos, layer.x, layer.y);
-        glUniform2f(locScale, layer.width, layer.height);
-        glUniform1f(locOpacity, layer.opacity);
+        // Set layout uniforms
+        glUniform2f(U.uPosition, layer.x, layer.y);
+        glUniform2f(U.uScale,    layer.width, layer.height);
+        glUniform1f(U.uOpacity,  layer.opacity);
+
+        // Phase E.3: per-layer companion-FX uniforms (Vibrato Swirl + Scratch
+        // Wave/Smear). When both bools are false the shader takes the no-FX
+        // fast path and produces output visually identical to the pre-E.3
+        // preview pipeline.
+        const auto& fx = layer.companionFx;
+        glUniform1i(U.uSwirlEnabled, fx.vibratoSwirlEnabled ? 1 : 0);
+        if (fx.vibratoSwirlEnabled) {
+            glUniform1f(U.uSwirlAmount,  fx.swirlAmount);
+            glUniform1f(U.uSwirlRadius,  fx.swirlRadius);
+            glUniform1f(U.uSwirlCenterX, fx.swirlCenterX);
+            glUniform1f(U.uSwirlCenterY, fx.swirlCenterY);
+            glUniform1f(U.uSwirlLfo,     fx.vibratoLfo);
+        }
+        glUniform1i(U.uWaveEnabled, fx.scratchWaveEnabled ? 1 : 0);
+        if (fx.scratchWaveEnabled) {
+            glUniform1f(U.uWaveAmount,         fx.waveAmount);
+            glUniform1f(U.uWaveFrequency,      fx.waveFrequency);
+            glUniform1f(U.uWaveSmearAmount,    fx.smearAmount);
+            glUniform1f(U.uWaveRateMultiplier, fx.scratchRateMultiplier);
+            glUniform1f(U.uWavePhase01,        fx.scratchPhase01);
+            glUniform1f(U.uWaveIntensity01,    fx.scratchIntensity01);
+            glUniform1i(U.uReverseWaveWithScratch, fx.reverseWaveWithScratch ? 1 : 0);
+        }
 
         // Bind textures
         glActiveTexture(GL_TEXTURE0);

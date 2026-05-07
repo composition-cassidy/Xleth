@@ -14,26 +14,42 @@ namespace xleth::audio {
 
 // ─── ClipModulatedReader ─────────────────────────────────────────────────────
 //
-// Phase C MVP. Renders a single timeline clip into a track buffer when the
-// clip has top-level modulation enabled and vibrato enabled. Reads raw decoded
-// source PCM (NOT the processed ClipRenderCache buffer) and applies
+// Phase C MVP (Vibrato): renders a single timeline clip into a track buffer
+// when the clip has top-level modulation enabled and vibrato enabled. Reads
+// raw decoded source PCM (NOT the processed ClipRenderCache buffer) and
+// applies
 //   pitchRatio = 2^((staticCents + vibratoCents) / 1200)
 // per output sample, advancing a fractional source readhead.
 //
-// Static cents come from `Clip::pitchOffset * 100 + Clip::pitchOffsetCents`
-// (the same fields the cache path keys on). Vibrato cents come from the
-// stateless Phase B evaluator `xleth::clipmod::evaluateVibrato`.
+// Phase D.1 (Vinyl Scratch): when scratch is enabled and its curve is
+// non-empty, the readhead is *driven* by the deterministic Phase B evaluator
+//   sourceBase = regionOffsetSamples + scratchEval.sourceOffsetSeconds * sr
+// and the static-pitch + vibrato contribution becomes a per-sample residual
+// trim on top:
+//   vibTrim   += staticRatio * vibratoRatio - 1.0
+//   sourcePos  = sourceBase + vibTrim
+// On seek/seed at clip-local sample N, vibTrim is initialised from
+//   computeVibratoIntegratedSourceOffsetSamples(...) - N
+// (the −N strips the unity readhead motion already in sourceBase). Direction
+// flips are masked with a Hann microfade whose width is `scratch.smoothingMs`.
+//
+// When scratch is OFF, the legacy Phase C path is preserved bit-for-bit.
+//
+// Static cents usually come from
+// `Clip::pitchOffset * 100 + Clip::pitchOffsetCents`. When MixEngine feeds a
+// post-cache stretched buffer, the cache has already baked static pitch into
+// that buffer, so the caller passes zero static pitch here. Vibrato cents come
+// from the stateless Phase B evaluator `xleth::clipmod::evaluateVibrato`.
 //
 // Activation policy (caller's responsibility — checked in MixEngine):
 //   clip.modulation.enabled
-//   && clip.modulation.vibrato.enabled
+//   && (clip.modulation.vibrato.enabled || clip.modulation.scratch.enabled)
 //   && !clip.reversed
-//   && clip.stretchRatio == 1.0
+//   && !clip.formantPreserve
 //
-// If any of those fail, the caller falls back to the existing cache path.
-// Composing vibrato with reverse / time-stretch is deferred to a future phase
-// (silently dropping reverse/stretch when vibrato is enabled would be a
-// regression for users who set both).
+// Plain clips use raw PCM plus regionOffsetSamples. Stretched clips use the
+// clip-local post-cache buffer plus regionOffsetSamples=0. Reverse and
+// formant-preserve remain bypassed by the caller.
 //
 // Threading: every public function is audio-thread safe. No allocations, no
 // locks, no I/O. Per-clip state is owned by this object (one slot per
@@ -105,8 +121,27 @@ public:
 private:
     struct State
     {
-        double  sourcePosD            = 0.0;   // fractional source PCM read position (samples)
-        int64_t expectedNextPosInClip = -1;    // -1 = needs seed
+        // Legacy Phase C readhead used when scratch is OFF. Holds the
+        // accumulated fractional source PCM read position (samples).
+        double  sourcePosD            = 0.0;
+
+        // Phase D.1 vibrato/static residual when scratch is ON. Accumulates
+        // `staticRatio * vibratoRatio - 1.0` per sample so that
+        // `sourcePosD = sourceBase + vibTrimD` where `sourceBase` is the
+        // closed-form scratch readhead.
+        double  vibTrimD              = 0.0;
+
+        // Continuity marker. -1 = needs seed.
+        int64_t expectedNextPosInClip = -1;
+
+        // Phase D.1 declick / smoothing state (only meaningful when scratch
+        // is active; reset on seed).
+        double  prevRate              = 1.0;
+        double  smoothedRate          = 1.0;
+        int     declickRemaining      = 0;     // samples left in microfade
+        int     declickWidth          = 0;     // total width in samples
+        bool    declickInverting      = false; // unused for now (single-stage Hann)
+
         bool    seenThisBlock         = false;
     };
 

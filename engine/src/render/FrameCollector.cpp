@@ -2,12 +2,77 @@
 #include "AnimationManager.h"
 
 #include "model/Timeline.h"
+#include "model/ClipVideoModulationTiming.h"
+#include "model/ClipCompanionFxBuilder.h"
+#include "model/ClipModulationCompatibility.h"
 #include "SyncManager.h"     // VideoEvent
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <unordered_set>
+
+namespace {
+
+bool isVideoModulationCompatible(const VideoEvent& event) noexcept
+{
+    return event.hasClipModulation
+        && xleth::clipmod::isClipModulationCompatible(
+               event.clipReversed,
+               event.clipStretchRatio,
+               event.clipFormantPreserve,
+               event.modulation);
+}
+
+xleth::clipmod::VideoModulationTimingContext makeVideoTimingContext(
+    const VideoEvent& event,
+    double beatPos,
+    double bpm,
+    int sampleRate,
+    double sourceFps) noexcept
+{
+    const double safeBpm = (bpm > 0.0 && std::isfinite(bpm)) ? bpm : 140.0;
+    const double timelineSeconds = beatPos * (60.0 / safeBpm);
+    const int64_t timelineSamples = sampleRate > 0
+        ? static_cast<int64_t>(std::llround(timelineSeconds * sampleRate))
+        : int64_t{0};
+    const double beatsSinceStart = beatPos - event.startBeat;
+    const double clipLocalSeconds = beatsSinceStart * (60.0 / safeBpm);
+    const int64_t clipLocalSamples = clipLocalSeconds > 0.0 && sampleRate > 0
+        ? static_cast<int64_t>(std::llround(clipLocalSeconds * sampleRate))
+        : int64_t{0};
+
+    xleth::clipmod::VideoModulationTimingContext ctx;
+    ctx.bpm = safeBpm;
+    ctx.sampleRate = sampleRate > 0 ? static_cast<double>(sampleRate) : 48000.0;
+    ctx.timelineSeconds = timelineSeconds;
+    ctx.timelineBeats = beatPos;
+    ctx.timelineSamples = timelineSamples;
+    ctx.clipLocalSeconds = clipLocalSeconds;
+    ctx.clipLocalBeats = beatsSinceStart;
+    ctx.clipLocalSamples = clipLocalSamples;
+    ctx.clipDurationSeconds = event.durationBeats * (60.0 / safeBpm);
+    ctx.clipDurationBeats = event.durationBeats;
+    ctx.sourceStartTime = event.sourceStartTime;
+    ctx.sourceClampStartTime = event.sourceClampStartTime;
+    ctx.sourceEndTime = event.sourceEndTime;
+    ctx.sourceFps = sourceFps;
+    const bool postCacheStretchedModulation =
+        event.clipStretchRatio != 1.0
+        && !event.clipReversed
+        && !event.clipFormantPreserve;
+    ctx.clipPitchOffsetSemis = postCacheStretchedModulation ? 0 : event.clipPitchOffsetSemis;
+    ctx.clipPitchOffsetCents = postCacheStretchedModulation ? 0 : event.clipPitchOffsetCents;
+    ctx.clipStartTimelineSamples = event.clipStartTimelineSamples;
+    return ctx;
+}
+
+// Companion-FX snapshot construction has moved to
+// model/ClipCompanionFxBuilder.cpp so the realtime OpenGL preview path
+// (SyncManager) and this export path produce the same snapshot from the
+// same evaluator outputs.
+
+} // namespace
 
 // ===========================================================================
 // Step 1: Collect requests for one output frame
@@ -46,19 +111,27 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
         const SourceMedia* src = timeline.getSource(ev->sourceId);
         if (!src || !src->hasVideo || src->filePath.empty()) return false;
 
-        int64_t srcFrame = computeSourceFrame(*ev, beatPos, bpm, src->fps);
+        const auto timingCtx = makeVideoTimingContext(
+            *ev, beatPos, bpm, sampleRate, src->fps);
+        const auto timing = xleth::clipmod::evaluateVideoClipModulationTiming(
+            ev->modulation, timingCtx, isVideoModulationCompatible(*ev));
+
+        double sourceTime = timing.sourceTimeSeconds;
+        int64_t srcFrame = computeSourceFrameFromTime(sourceTime, src->fps);
 
         // Fetch TrackInfo early — needed to check pingPong.enabled before the clamp.
         const TrackInfo* trk = timeline.getTrack(trackId);
         const bool isFullscreen = (kind != CellLayerKind::Grid);
 
         CellFrameRequest req;
+        if (companionFxEnabled_)
+            req.companionFx = xleth::clipmod::buildClipCompanionFxSnapshot(ev->modulation, timing);
 
         // Ping-pong overrides the hold-last-frame clamp for enabled tracks.
         if (trk && trk->pingPong.enabled && !isFullscreen) {
             int64_t secondaryFrame = -1;
             float   blendFactor    = 0.0f;
-            srcFrame = computePingPongFrame(*ev, beatPos, bpm, src->fps,
+            srcFrame = computePingPongFrame(*ev, beatPos, bpm, sampleRate, src->fps,
                                             trk->pingPong, secondaryFrame, blendFactor);
             req.pingPongSecondaryFrame = secondaryFrame;
             req.pingPongBlendFactor    = blendFactor;
@@ -67,11 +140,8 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
             // Hold-last-frame: if the computed source time exceeds the trim end,
             // always clamp to the last frame so active notes never go black.
             if (ev->sourceEndTime > 0.0) {
-                const double beatsSince = beatPos - ev->startBeat;
-                const double secsSince  = beatsSince * (60.0 / bpm);
-                const double sourceTime = ev->sourceStartTime + secsSince;
                 if (sourceTime >= ev->sourceEndTime) {
-                    srcFrame = computeSourceFrameFromTime(ev->sourceEndTime - 0.001, src->fps);
+                    srcFrame = computeSourceFrameFromTime(sourceTime, src->fps);
                     std::fprintf(stderr, "[FrameCollector] Track %d: frame clamped to last frame %lld "
                                  "(source time %.3fs >= trim end %.3fs)\n",
                                  trackId, (long long)srcFrame, sourceTime, ev->sourceEndTime);
@@ -106,11 +176,6 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
         if (allowProxy && ev->regionId > 0 && !isFullscreen) {
             const SampleRegion* r = timeline.getRegion(ev->regionId);
             if (r && r->proxyReady && !r->proxyPath.empty()) {
-                // Recompute sourceTime locally — we didn't keep it from above
-                // because the pingPong / hold-last-frame branch mutated srcFrame.
-                const double beatsSince = beatPos - ev->startBeat;
-                const double secsSince  = beatsSince * (60.0 / bpm);
-                const double sourceTime = ev->sourceStartTime + secsSince;
                 if (sourceTime >= r->proxyStartTime &&
                     sourceTime <  r->proxyEndTime) {
                     pickedPath  = r->proxyPath;
@@ -410,14 +475,26 @@ int64_t FrameCollector::computeSourceFrame(
     const VideoEvent& ev,
     double            beatPos,
     double            bpm,
+    int               sampleRate,
     double            sourceFps)
 {
-    // How far into this event are we (in seconds)?
-    const double beatsSince = beatPos - ev.startBeat;
-    const double secsSince  = beatsSince * (60.0 / bpm);
-    const double sourceTime = ev.sourceStartTime + secsSince;
+    return computeSourceFrameFromTime(
+        computeSourceTime(ev, beatPos, bpm, sampleRate, sourceFps),
+        sourceFps);
+}
 
-    return computeSourceFrameFromTime(sourceTime, sourceFps);
+double FrameCollector::computeSourceTime(
+    const VideoEvent& ev,
+    double            beatPos,
+    double            bpm,
+    int               sampleRate,
+    double            sourceFps)
+{
+    const auto timingCtx = makeVideoTimingContext(
+        ev, beatPos, bpm, sampleRate, sourceFps);
+    const auto timing = xleth::clipmod::evaluateVideoClipModulationTiming(
+        ev.modulation, timingCtx, isVideoModulationCompatible(ev));
+    return timing.sourceTimeSeconds;
 }
 
 int64_t FrameCollector::computeSourceFrameFromTime(double sourceTimeSec, double sourceFps)
@@ -446,6 +523,7 @@ int64_t FrameCollector::computePingPongFrame(
     const VideoEvent&       ev,
     double                  beatPos,
     double                  bpm,
+    int                     sampleRate,
     double                  sourceFps,
     const PingPongSettings& pp,
     int64_t&                outSecondaryFrame,
@@ -454,9 +532,7 @@ int64_t FrameCollector::computePingPongFrame(
     outSecondaryFrame = -1;
     outBlendFactor    = 0.0f;
 
-    const double beatsSince = beatPos - ev.startBeat;
-    const double secsSince  = beatsSince * (60.0 / bpm);
-    double sourceTime = ev.sourceStartTime + secsSince;
+    double sourceTime = computeSourceTime(ev, beatPos, bpm, sampleRate, sourceFps);
 
     const double clipLen = ev.sourceEndTime - ev.sourceStartTime;
     if (clipLen <= 0.0)
@@ -465,13 +541,11 @@ int64_t FrameCollector::computePingPongFrame(
     const double regionStart = ev.sourceStartTime + clipLen * pp.regionStartPct;
     const double regionLen   = clipLen * (pp.regionEndPct - pp.regionStartPct);
     if (regionLen <= 0.0)
-        return computeSourceFrameFromTime(
-            std::min(sourceTime, ev.sourceEndTime - 0.001), sourceFps);
+        return computeSourceFrameFromTime(sourceTime, sourceFps);
 
     // Before bounce region: play forward normally
     if (sourceTime < regionStart)
-        return computeSourceFrameFromTime(
-            std::min(sourceTime, ev.sourceEndTime - 0.001), sourceFps);
+        return computeSourceFrameFromTime(sourceTime, sourceFps);
 
     double posInRegion = sourceTime - regionStart;
 
@@ -484,13 +558,18 @@ int64_t FrameCollector::computePingPongFrame(
     // maxLoops > 0: hold at boundary after exhausting loops
     if (pp.maxLoops > 0 && loopCount >= pp.maxLoops) {
         bool   holdAtEnd = ((pp.maxLoops % 2) == 0);
-        double holdTime  = holdAtEnd ? (regionStart + regionLen - 0.001) : regionStart;
+        double holdTime  = holdAtEnd ? (regionStart + regionLen) : regionStart;
         return computeSourceFrameFromTime(holdTime, sourceFps);
     }
 
     double posInCycle = std::fmod(posInRegion, cycleLen);
     bool   reversing  = (posInCycle >= fwdLen);
     double primaryTime;
+    const double clampLo = std::isfinite(ev.sourceClampStartTime)
+        ? ev.sourceClampStartTime : ev.sourceStartTime;
+    const double clampHi = (sourceFps > 0.0 && ev.sourceEndTime > clampLo)
+        ? std::max(clampLo, ev.sourceEndTime - 0.5 / sourceFps)
+        : ev.sourceEndTime;
 
     if (!reversing) {
         primaryTime = regionStart + posInCycle;
@@ -498,7 +577,7 @@ int64_t FrameCollector::computePingPongFrame(
         double revPos = (posInCycle - fwdLen) / std::max(revLen, 0.001);
         primaryTime = regionStart + regionLen * (1.0 - revPos);
     }
-    primaryTime = std::clamp(primaryTime, ev.sourceStartTime, ev.sourceEndTime - 0.001);
+    primaryTime = std::clamp(primaryTime, clampLo, clampHi);
 
     // Crossfade near direction-change boundaries
     if (pp.crossfadeFrames > 0 && sourceFps > 0.0) {
@@ -517,7 +596,7 @@ int64_t FrameCollector::computePingPongFrame(
                 // Near regionStart: secondary mirrors forward past the boundary
                 secondaryTime = primaryTime + (cfSec - distNearest) * 2.0;
             }
-            secondaryTime = std::clamp(secondaryTime, ev.sourceStartTime, ev.sourceEndTime - 0.001);
+            secondaryTime = std::clamp(secondaryTime, clampLo, clampHi);
             outSecondaryFrame = computeSourceFrameFromTime(secondaryTime, sourceFps);
             outBlendFactor    = 1.0f - blend; // 1=full secondary at boundary, 0=full primary away
         }

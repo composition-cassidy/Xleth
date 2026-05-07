@@ -61,6 +61,46 @@ static FrameCacheEntry makeSolidTexture(uint8_t b, uint8_t g, uint8_t r, uint8_t
     return entry;
 }
 
+static FrameCacheEntry makeGradientTexture(int w = 64, int h = 64)
+{
+    std::vector<uint8_t> pixels(static_cast<size_t>(w) * h * 4);
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const size_t i = (static_cast<size_t>(y) * w + x) * 4;
+            pixels[i + 0] = static_cast<uint8_t>((x * 255) / (w - 1));
+            pixels[i + 1] = static_cast<uint8_t>((y * 255) / (h - 1));
+            pixels[i + 2] = static_cast<uint8_t>(((x + y) * 255) / (w + h - 2));
+            pixels[i + 3] = 255;
+        }
+    }
+
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width            = static_cast<UINT>(w);
+    desc.Height           = static_cast<UINT>(h);
+    desc.MipLevels        = 1;
+    desc.ArraySize        = 1;
+    desc.Format           = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage            = D3D11_USAGE_DEFAULT;
+    desc.BindFlags        = D3D11_BIND_SHADER_RESOURCE;
+
+    D3D11_SUBRESOURCE_DATA initData = {};
+    initData.pSysMem     = pixels.data();
+    initData.SysMemPitch = static_cast<UINT>(w * 4);
+
+    FrameCacheEntry entry;
+    HRESULT hr = g_device->CreateTexture2D(&desc, &initData, &entry.texture);
+    assert(SUCCEEDED(hr) && "CreateTexture2D failed");
+
+    hr = g_device->CreateShaderResourceView(entry.texture.Get(), nullptr, &entry.srv);
+    assert(SUCCEEDED(hr) && "CreateSRV failed");
+
+    entry.width           = w;
+    entry.height          = h;
+    entry.memorySizeBytes = static_cast<size_t>(w) * h * 4;
+    return entry;
+}
+
 // ---------------------------------------------------------------------------
 // Helper: sample a pixel from the readback buffer (returns BGRA as uint32_t)
 // ---------------------------------------------------------------------------
@@ -108,6 +148,7 @@ int main()
     FrameCacheEntry yellowTexture = makeSolidTexture(0, 255, 255, 255);  // Yellow
     // Semi-transparent magenta for opacity testing
     FrameCacheEntry magentaTexture = makeSolidTexture(255, 0, 255, 128); // Magenta, 50% alpha in texture
+    FrameCacheEntry gradientTexture = makeGradientTexture();
 
     std::fprintf(stderr, "[TEST:Compositor] Created test textures\n");
 
@@ -120,6 +161,7 @@ int main()
     cache.put({"green.mp4", 0},   std::move(greenTexture));
     cache.put({"yellow.mp4", 0},  std::move(yellowTexture));
     cache.put({"magenta.mp4", 0}, std::move(magentaTexture));
+    cache.put({"gradient.mp4", 0}, std::move(gradientTexture));
 
     // ── Test 1: Basic compositing — chorus + grid cells ─────────────────────
     {
@@ -438,7 +480,111 @@ int main()
 
     // ── Test 8: Shutdown and reinit ─────────────────────────────────────────
     {
-        std::fprintf(stderr, "\n[TEST:Compositor] --- Test 8: Shutdown + reinit ---\n");
+        std::fprintf(stderr, "\n[TEST:Compositor] --- Test 8: Companion FX bypass identity ---\n");
+
+        GridCompositor bypassCompositor;
+        assert(bypassCompositor.init(g_device, g_deviceCtx, 320, 240));
+
+        std::vector<CellFrameRequest> baselineRequests;
+        CellFrameRequest baseline{};
+        baseline.cellCol = 0; baseline.cellRow = 0;
+        baseline.spanX = 2 * kGridSubUnitsPerColumn;
+        baseline.spanY = 2 * kGridSubUnitsPerRow;
+        baseline.sourcePath = "gradient.mp4";
+        baseline.sourceFrameIndex = 0;
+        baseline.opacity = 1.0f;
+        baselineRequests.push_back(baseline);
+
+        bypassCompositor.compositeFrame(baselineRequests, cache, 2, 2);
+        ReadbackBuffer baseBuf = bypassCompositor.readback();
+        assert(baseBuf.valid);
+        const uint32_t baseA = samplePixel(baseBuf, 80, 60);
+        const uint32_t baseB = samplePixel(baseBuf, 240, 180);
+
+        CellFrameRequest companion = baseline;
+        companion.companionFx.vibratoSwirlEnabled = true;
+        companion.companionFx.scratchWaveEnabled = true;
+        companion.companionFx.vibratoLfo = 1.0f;
+        companion.companionFx.swirlAmount = 0.8f;
+        companion.companionFx.swirlRadius = 0.6f;
+        companion.companionFx.scratchRateMultiplier = -1.0f;
+        companion.companionFx.scratchPhase01 = 0.25f;
+        companion.companionFx.scratchIntensity01 = 1.0f;
+        companion.companionFx.waveAmount = 0.12f;
+        companion.companionFx.waveFrequency = 8.0f;
+        companion.companionFx.smearAmount = 0.4f;
+        companion.companionFx.reverseWaveWithScratch = true;
+
+        bypassCompositor.setEffectsBypass(true);
+        bypassCompositor.compositeFrame(std::vector<CellFrameRequest>{companion}, cache, 2, 2);
+        ReadbackBuffer bypassBuf = bypassCompositor.readback();
+        assert(bypassBuf.valid);
+        assert(samplePixel(bypassBuf, 80, 60) == baseA);
+        assert(samplePixel(bypassBuf, 240, 180) == baseB);
+
+        bypassCompositor.setEffectsBypass(false);
+        bypassCompositor.compositeFrame(std::vector<CellFrameRequest>{companion}, cache, 2, 2);
+        ReadbackBuffer activeBuf = bypassCompositor.readback();
+        assert(activeBuf.valid);
+        const bool activeChanged =
+            samplePixel(activeBuf, 80, 60) != baseA ||
+            samplePixel(activeBuf, 240, 180) != baseB;
+        assert(activeChanged && "Active companion FX should alter the gradient texture");
+
+        auto sampleCompanion = [&](const ClipCompanionFxSnapshot& fx, int x, int y) {
+            CellFrameRequest req = baseline;
+            req.companionFx = fx;
+            bypassCompositor.compositeFrame(std::vector<CellFrameRequest>{req}, cache, 2, 2);
+            ReadbackBuffer buf = bypassCompositor.readback();
+            assert(buf.valid);
+            return samplePixel(buf, x, y);
+        };
+
+        ClipCompanionFxSnapshot positiveSwirl{};
+        positiveSwirl.vibratoSwirlEnabled = true;
+        positiveSwirl.vibratoLfo = 1.0f;
+        positiveSwirl.swirlAmount = 0.35f;
+        positiveSwirl.swirlRadius = 0.8f;
+        const uint32_t positiveSwirlPixel = sampleCompanion(positiveSwirl, 200, 80);
+
+        ClipCompanionFxSnapshot negativeSwirl = positiveSwirl;
+        negativeSwirl.swirlAmount = -0.35f;
+        const uint32_t negativeSwirlPixel = sampleCompanion(negativeSwirl, 200, 80);
+        assert(positiveSwirlPixel != negativeSwirlPixel &&
+               "Signed swirlAmount should invert swirl direction");
+
+        ClipCompanionFxSnapshot negativeLfoSwirl = positiveSwirl;
+        negativeLfoSwirl.vibratoLfo = -1.0f;
+        const uint32_t negativeLfoSwirlPixel = sampleCompanion(negativeLfoSwirl, 200, 80);
+        assert(negativeLfoSwirlPixel == negativeSwirlPixel &&
+               "Signed vibratoLfo should follow pitch direction");
+
+        ClipCompanionFxSnapshot positiveWave{};
+        positiveWave.scratchWaveEnabled = true;
+        positiveWave.waveAmount = 0.2f;
+        positiveWave.waveFrequency = 1.0f;
+        positiveWave.smearAmount = 0.0f;
+        positiveWave.scratchRateMultiplier = 1.0f;
+        positiveWave.scratchIntensity01 = 1.0f;
+        positiveWave.reverseWaveWithScratch = true;
+        const uint32_t positiveWavePixel = sampleCompanion(positiveWave, 160, 60);
+
+        ClipCompanionFxSnapshot negativeWave = positiveWave;
+        negativeWave.waveAmount = -0.2f;
+        const uint32_t negativeWavePixel = sampleCompanion(negativeWave, 160, 60);
+        assert(positiveWavePixel != negativeWavePixel &&
+               "Signed waveAmount should invert wave displacement");
+
+        ClipCompanionFxSnapshot reverseScratchWave = positiveWave;
+        reverseScratchWave.scratchRateMultiplier = -1.0f;
+        const uint32_t reverseScratchWavePixel = sampleCompanion(reverseScratchWave, 160, 60);
+        assert(reverseScratchWavePixel == negativeWavePixel &&
+               "reverseWaveWithScratch should flip direction for negative scratch rate");
+
+        bypassCompositor.shutdown();
+        std::fprintf(stderr, "[TEST:Compositor] Test 8: PASSED\n");
+
+        std::fprintf(stderr, "\n[TEST:Compositor] --- Test 9: Shutdown + reinit ---\n");
 
         GridCompositor compositor;
         assert(compositor.init(g_device, g_deviceCtx, 320, 240));
@@ -451,7 +597,7 @@ int main()
         assert(compositor.getHeight() == 480);
 
         compositor.shutdown();
-        std::fprintf(stderr, "[TEST:Compositor] Test 8: PASSED\n");
+        std::fprintf(stderr, "[TEST:Compositor] Test 9: PASSED\n");
     }
 
     std::fprintf(stderr, "\n[TEST:Compositor] ALL TESTS PASSED\n");

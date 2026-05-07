@@ -197,6 +197,7 @@ add_library(XlethEngineModel STATIC
     src/model/Timeline.cpp
     src/model/VideoFlipResolver.cpp
     src/model/ClipModulationEvaluator.cpp
+    src/model/ClipCompanionFxBuilder.cpp
     src/project/ProjectManager.cpp
     src/commands/UndoManager.cpp
     src/commands/TimelineCommands.cpp
@@ -238,6 +239,7 @@ add_library(XlethEngineCore STATIC
     src/audio/ClipRenderCache.cpp
     src/audio/ClipModulatedReader.cpp
     src/audio/ClipVibratoIntegrator.cpp
+    src/model/ClipVideoModulationTiming.cpp
     src/audio/TrackMixer.cpp
     src/audio/SourcePlayer.cpp
     src/audio/Sampler.cpp
@@ -550,7 +552,47 @@ target_link_libraries(test_clip_modulation_evaluator PRIVATE
     XlethEngineModel
 )
 
+# ── test_clip_companion_fx_builder ───────────────────────────────────────────
+# Phase E.3: shared ClipCompanionFxSnapshot builder used by both the export
+# pipeline (FrameCollector → GridCompositor) and the realtime preview path
+# (SyncManager → VideoCompositor). Verifies gating + signed propagation so
+# preview and export cannot drift apart. Model-only — no JUCE, FFmpeg, or GL.
+add_executable(test_clip_companion_fx_builder
+    test/test_clip_companion_fx_builder.cpp
+)
+
+target_link_libraries(test_clip_companion_fx_builder PRIVATE
+    XlethEngineModel
+)
+
 # ── test_clip_modulated_reader ────────────────────────────────────────────────
+# Phase E.1: shared video timing helper for Scratch/Vibrato source-time warp.
+add_executable(test_clip_video_modulation_timing
+    test/test_clip_video_modulation_timing.cpp
+)
+
+target_link_libraries(test_clip_video_modulation_timing PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_clip_video_modulation_timing PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # Phase C: per-clip vibrato audio reader. Renders synthetic in-memory PCM and
 # verifies static pitch ratio, depth-zero passthrough, block-size invariance,
 # bounds clamping, and the unseen-state sweep. Needs juce_audio_basics for
@@ -581,7 +623,7 @@ target_compile_definitions(test_clip_modulated_reader PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
-target_link_options(test_clip_modulated_reader PRIVATE /STACK:8388608)
+target_link_options(test_clip_modulated_reader PRIVATE /STACK:33554432)
 
 # ── test_mix ─────────────────────────────────────────────────────────────────
 # Self-verification for Phase 1 multi-track MixEngine.

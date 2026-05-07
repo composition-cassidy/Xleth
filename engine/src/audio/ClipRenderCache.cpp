@@ -105,6 +105,9 @@ public:
         }
 #endif
 
+        // outBuf is clip-local post-processing output: CacheKey::regionOffsetSamples
+        // is consumed while building `working`, and processed samples are copied
+        // back starting at sample 0 for exactly durationSamples.
         auto outBuf = std::make_shared<juce::AudioBuffer<float>>(
             std::max(1, numCh), static_cast<int>(durSamp));
         outBuf->clear();

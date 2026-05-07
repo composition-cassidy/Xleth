@@ -37,6 +37,7 @@ import usePianoRollStore from '../stores/usePianoRollStore.js'
 import useMixerStore from '../stores/mixerStore.js'
 import { useToast } from './Toast.jsx'
 import { usePanelVisibility } from '../windowing/contexts/PanelVisibilityContext'
+import { usePanelRegistry } from '../windowing/registry/PanelRegistry.ts'
 import TrackFlipPropertiesPanel from './timeline/TrackFlipPropertiesPanel.jsx'
 import { register as registerKeyboardBinding } from '../windowing/managers/KeyboardManager'
 
@@ -69,7 +70,285 @@ const TIMELINE_KEY_COMBOS = [
   '1', '2', '3', '4', '5', '6', '7', '8', '9',
 ]
 
-function ClipSliderRow({ label, value, min, max, step, onCommit, formatValue }) {
+const VIBRATO_SYNC_DIVISIONS = [
+  ['whole', 'Whole'], ['half', '1/2'], ['quarter', '1/4'], ['eighth', '1/8'],
+  ['sixteenth', '1/16'], ['thirtySecond', '1/32'],
+  ['quarterTriplet', '1/4T'], ['eighthTriplet', '1/8T'], ['sixteenthTriplet', '1/16T'],
+  ['quarterDotted', '1/4D'], ['eighthDotted', '1/8D'], ['sixteenthDotted', '1/16D'],
+]
+const VIBRATO_SHAPES = [
+  ['sine', 'Sine'], ['triangle', 'Triangle'],
+  ['sawUp', 'Saw Up'], ['sawDown', 'Saw Down'], ['square', 'Square'],
+]
+const VIBRATO_DEFAULTS = {
+  enabled: true,
+  depthCents: 50,
+  rateMode: 'freeHz',
+  rateHz: 5.0,
+  syncDivision: 'eighth',
+  shape: 'sine',
+  phaseResetOnClipStart: true,
+  phaseOffset: 0,
+}
+const SCRATCH_EDGE_MODES = [
+  ['clamp', 'Clamp'],
+  ['silence', 'Silence'],
+]
+const SCRATCH_BABY_DEFAULT_COUNT = 2
+const SCRATCH_BABY_DEFAULT_LENGTH_BEATS = 1
+const SCRATCH_BABY_LENGTHS = [
+  [0.25, '1/4 beat'],
+  [0.5, '1/2 beat'],
+  [1, '1 beat'],
+  [2, '2 beats'],
+]
+const SCRATCH_PRESETS = [
+  {
+    key: 'normal',
+    label: 'Normal',
+    timeMode: 'clipPercent',
+    curve: [
+      { time: 0.0, rateMultiplier: 1.0, curve: 0.0 },
+      { time: 1.0, rateMultiplier: 1.0, curve: 0.0 },
+    ],
+  },
+  {
+    key: 'stop',
+    label: 'Stop',
+    timeMode: 'clipSeconds',
+    curve: [
+      { time: 0.0, rateMultiplier: 1.0, curve: 0.0 },
+      { time: 0.10, rateMultiplier: 0.0, curve: 0.0 },
+    ],
+  },
+  {
+    key: 'reverse',
+    label: 'Reverse',
+    timeMode: 'clipPercent',
+    curve: [
+      { time: 0.0, rateMultiplier: -1.0, curve: 0.0 },
+      { time: 1.0, rateMultiplier: -1.0, curve: 0.0 },
+    ],
+  },
+  {
+    key: 'babyScratch',
+    label: 'Baby Scratch',
+    timeMode: 'beats',
+    curve: generateBabyScratchCurve(SCRATCH_BABY_DEFAULT_COUNT, SCRATCH_BABY_DEFAULT_LENGTH_BEATS),
+  },
+  {
+    key: 'tapeStop',
+    label: 'Tape Stop',
+    timeMode: 'clipSeconds',
+    curve: [
+      { time: 0.0, rateMultiplier: 1.0, curve: 0.0 },
+      { time: 0.45, rateMultiplier: 0.0, curve: 0.0 },
+    ],
+  },
+]
+const SCRATCH_DEFAULTS = {
+  enabled: false,
+  timeMode: 'clipPercent',
+  smoothingMs: 2,
+  gainCompensationDb: 0,
+  edgeMode: 'clamp',
+  curve: SCRATCH_PRESETS[0].curve,
+}
+
+function clampScratchCount(value) {
+  return Math.max(1, Math.min(8, Math.round(Number(value) || SCRATCH_BABY_DEFAULT_COUNT)))
+}
+
+function normalizeScratchLengthBeats(value) {
+  const numeric = Number(value)
+  return SCRATCH_BABY_LENGTHS.some(([length]) => scratchNumbersMatch(length, numeric))
+    ? numeric
+    : SCRATCH_BABY_DEFAULT_LENGTH_BEATS
+}
+
+function scratchNumbersMatch(a, b) {
+  return Math.abs(Number(a) - Number(b)) < 0.0001
+}
+
+function generateBabyScratchCurve(count, lengthBeats) {
+  const scratchCount = clampScratchCount(count)
+  const length = normalizeScratchLengthBeats(lengthBeats)
+  const curve = []
+  const addPoint = (time, rateMultiplier) => {
+    const last = curve[curve.length - 1]
+    if (last && scratchNumbersMatch(last.time, time)) {
+      last.rateMultiplier = rateMultiplier
+      last.curve = 0.0
+      return
+    }
+    curve.push({ time, rateMultiplier, curve: 0.0 })
+  }
+
+  for (let i = 0; i < scratchCount; i += 1) {
+    const segment = length / scratchCount
+    const start = i * segment
+    const mid = start + segment * 0.5
+    const end = start + segment
+    addPoint(start, 1.0)
+    addPoint(mid, -1.0)
+    addPoint(end, 1.0)
+  }
+  return curve
+}
+
+function cloneScratchCurve(curve) {
+  return (curve ?? []).map(point => ({
+    time: point.time,
+    rateMultiplier: point.rateMultiplier,
+    curve: point.curve,
+  }))
+}
+
+function scratchCurvesMatch(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
+  return a.every((point, i) =>
+    scratchNumbersMatch(point.time, b[i].time) &&
+    scratchNumbersMatch(point.rateMultiplier, b[i].rateMultiplier) &&
+    scratchNumbersMatch(point.curve, b[i].curve)
+  )
+}
+
+function scratchTimeModeMatches(a, b) {
+  return (a ?? SCRATCH_DEFAULTS.timeMode) === b
+}
+
+function inferBabyScratchSettings(scratch) {
+  if (!scratchTimeModeMatches(scratch?.timeMode, 'beats')) return null
+  for (const [lengthBeats, lengthLabel] of SCRATCH_BABY_LENGTHS) {
+    for (let count = 1; count <= 8; count += 1) {
+      if (scratchCurvesMatch(scratch?.curve, generateBabyScratchCurve(count, lengthBeats))) {
+        return { count, lengthBeats, lengthLabel }
+      }
+    }
+  }
+  return null
+}
+
+function scratchPresetKeyForScratch(scratch) {
+  if (inferBabyScratchSettings(scratch)) return 'babyScratch'
+  return SCRATCH_PRESETS
+    .filter(preset => preset.key !== 'babyScratch')
+    .find(preset => scratchTimeModeMatches(scratch?.timeMode, preset.timeMode) && scratchCurvesMatch(scratch?.curve, preset.curve))
+    ?.key ?? 'custom'
+}
+
+function scratchPresetPatch(presetKey, { scratchCount = SCRATCH_BABY_DEFAULT_COUNT, lengthBeats = SCRATCH_BABY_DEFAULT_LENGTH_BEATS } = {}) {
+  const preset = SCRATCH_PRESETS.find(p => p.key === presetKey) ?? SCRATCH_PRESETS[0]
+  const curve = preset.key === 'babyScratch'
+    ? generateBabyScratchCurve(scratchCount, lengthBeats)
+    : preset.curve
+  return {
+    enabled: true,
+    timeMode: preset.timeMode,
+    curve: cloneScratchCurve(curve),
+  }
+}
+
+function scratchCurveSummary(scratch) {
+  const babySettings = inferBabyScratchSettings(scratch)
+  if (babySettings) return `Curve: ${babySettings.count} scratches / ${babySettings.lengthLabel}`
+
+  const preset = SCRATCH_PRESETS
+    .filter(p => p.key !== 'babyScratch')
+    .find(p => scratchTimeModeMatches(scratch?.timeMode, p.timeMode) && scratchCurvesMatch(scratch?.curve, p.curve))
+  if (preset?.timeMode === 'clipSeconds') {
+    const endTime = preset.curve[preset.curve.length - 1]?.time ?? 0
+    return `Curve: fixed ${Number(endTime).toFixed(2)}s`
+  }
+  if (preset?.timeMode === 'clipPercent') return 'Curve: full clip'
+  return 'Curve: Custom'
+}
+
+function mergeClipModulationPatch(
+  clip,
+  { vibratoPatch = null, scratchPatch = null, videoPatch = null, forceEnabled = false } = {}
+) {
+  const existing = clip?.modulation ?? {}
+  const existingVibrato = existing.vibrato ?? {}
+  const existingScratch = existing.scratch ?? {}
+  const existingVideo = existing.video ?? {}
+  const nextVibrato = vibratoPatch ? { ...existingVibrato, ...vibratoPatch } : existingVibrato
+  const nextScratch = scratchPatch ? { ...existingScratch, ...scratchPatch } : existingScratch
+  const nextVideo   = videoPatch   ? { ...existingVideo,   ...videoPatch   } : existingVideo
+  const merged = {
+    ...existing,
+    enabled: Boolean(nextVibrato.enabled || nextScratch.enabled),
+  }
+
+  if (vibratoPatch) merged.vibrato = nextVibrato
+  if (scratchPatch) merged.scratch = nextScratch
+  if (videoPatch)   merged.video   = nextVideo
+  if (forceEnabled) merged.enabled = true
+
+  return merged
+}
+
+function hasAudioModulationIntent(modulation) {
+  if (!modulation) return false
+  return Boolean(modulation.enabled && (modulation.vibrato?.enabled || modulation.scratch?.enabled))
+}
+
+function hasVideoCompanionIntent(modulation) {
+  return Boolean(modulation?.video?.vibratoSwirlEnabled || modulation?.video?.scratchWaveEnabled)
+}
+
+function isClipModulationBypassed(clip) {
+  // stretchRatio is supported (Phase F.1) — NOT a bypass condition.
+  return Boolean(clip?.reversed) || Boolean(clip?.formantPreserve)
+}
+
+function getClipModulationStatus(clip) {
+  const mod = clip?.modulation
+  const audioActive = hasAudioModulationIntent(mod)
+  const videoSaved = hasVideoCompanionIntent(mod)
+  const anyIntent = audioActive || videoSaved
+
+  if (anyIntent && isClipModulationBypassed(clip)) {
+    const reasons = []
+    if (clip.reversed) reasons.push('Reverse is enabled')
+    if (clip.formantPreserve) reasons.push('Formant Preserve is enabled')
+    return { kind: 'bypassed', label: `Bypassed: ${reasons.join(' and ')}` }
+  }
+
+  const swirlOrphan = Boolean(mod?.video?.vibratoSwirlEnabled && !mod?.vibrato?.enabled)
+  const waveOrphan  = Boolean(mod?.video?.scratchWaveEnabled  && !mod?.scratch?.enabled)
+  const orphanSuffix = swirlOrphan && waveOrphan
+    ? 'Swirl waits for Vibrato; Wave waits for Scratch'
+    : swirlOrphan ? 'Swirl waits for Vibrato'
+    : waveOrphan  ? 'Wave waits for Scratch'
+    : ''
+
+  if (audioActive) {
+    const parts = []
+    if (mod.vibrato?.enabled) parts.push('Vibrato')
+    if (mod.scratch?.enabled) parts.push('Scratch')
+    const base = `Active: ${parts.join(' + ')}`
+    return { kind: 'active', label: orphanSuffix ? `${base} · ${orphanSuffix}` : base }
+  }
+
+  if (orphanSuffix) {
+    return { kind: 'saved', label: `Saved: ${orphanSuffix}` }
+  }
+
+  return { kind: 'off', label: 'Off' }
+}
+
+function isInteractiveFocusElement(element) {
+  if (!element) return false
+  if (element instanceof HTMLElement && element.isContentEditable) return true
+  return (
+    element instanceof HTMLInputElement ||
+    element instanceof HTMLTextAreaElement ||
+    element instanceof HTMLSelectElement
+  )
+}
+
+function ClipSliderRow({ label, value, min, max, step, onCommit, onPreviewChange, formatValue }) {
   const [localVal, setLocalVal] = useState(value)
   const dragging = useRef(false)
 
@@ -83,17 +362,273 @@ function ClipSliderRow({ label, value, min, max, step, onCommit, formatValue }) 
       <input
         type="range" min={min} max={max} step={step}
         value={localVal}
-        onChange={(e) => { dragging.current = true; setLocalVal(Number(e.target.value)) }}
+        onChange={(e) => {
+          const next = Number(e.target.value)
+          dragging.current = true
+          setLocalVal(next)
+          if (onPreviewChange) onPreviewChange(next)
+        }}
         onPointerUp={(e) => {
           const v = Number(e.target.value)
           dragging.current = false
           Promise.resolve(onCommit(v))
+          // Draft is cleared by the parent when committed values refresh,
+          // not here — clearing on pointer-up causes a one-frame flicker.
         }}
         style={{ flex: 1, accentColor: 'var(--theme-border-focus)' }}
       />
       <span style={{ fontSize: 10, color: '#888', minWidth: 40, textAlign: 'right' }}>
         {formatValue(localVal)}
       </span>
+    </div>
+  )
+}
+
+// ── Static visual FX preview (Phase G.3) ─────────────────────────────────────
+// Compact two-pane Original / Effect Preview rendered with Canvas 2D. Uses a
+// representative max-intensity snapshot of the Swirl/Wave/Smear shader math so
+// users can see what their settings will do before hitting play or render.
+const CLIP_FX_PREVIEW_W = 128
+const CLIP_FX_PREVIEW_H = 72
+const CLIP_FX_TAU = 6.28318530717958647692
+const CLIP_FX_VIBRATO_LFO = 1.0
+const CLIP_FX_SCRATCH_INTENSITY = 1.0
+// Mid-cycle phase keeps wave peaks visible across the full preview height.
+const CLIP_FX_SCRATCH_PHASE_01 = 0.25
+const CLIP_FX_SCRATCH_RATE_MULT = 1.0
+
+function clipFxClamp(v, lo, hi) {
+  return v < lo ? lo : v > hi ? hi : v
+}
+
+// Bilinear sample with clamp-to-edge from a flat RGBA Uint8ClampedArray.
+function clipFxSample(src, w, h, u, v, out) {
+  const fx = clipFxClamp(u, 0, 1) * (w - 1)
+  const fy = clipFxClamp(v, 0, 1) * (h - 1)
+  const x0 = Math.floor(fx), y0 = Math.floor(fy)
+  const x1 = Math.min(x0 + 1, w - 1), y1 = Math.min(y0 + 1, h - 1)
+  const tx = fx - x0, ty = fy - y0
+  const i00 = (y0 * w + x0) * 4
+  const i10 = (y0 * w + x1) * 4
+  const i01 = (y1 * w + x0) * 4
+  const i11 = (y1 * w + x1) * 4
+  for (let c = 0; c < 4; c++) {
+    const a = src[i00 + c] * (1 - tx) + src[i10 + c] * tx
+    const b = src[i01 + c] * (1 - tx) + src[i11 + c] * tx
+    out[c] = a * (1 - ty) + b * ty
+  }
+}
+
+function ClipFxPreview({ thumbDataUrl, vfx, swirlOn, waveOn, disabledReason }) {
+  const origCanvasRef = useRef(null)
+  const fxCanvasRef = useRef(null)
+  const srcImageDataRef = useRef(null) // ImageData for the loaded thumbnail
+  const [loadFailed, setLoadFailed] = useState(false)
+  const [loaded, setLoaded] = useState(false)
+  const rafRef = useRef(0)
+
+  // Reset failure state when thumbnail dataURL changes.
+  useEffect(() => {
+    setLoadFailed(false)
+    setLoaded(false)
+    srcImageDataRef.current = null
+  }, [thumbDataUrl])
+
+  // Load thumbnail into an offscreen canvas at preview resolution.
+  useEffect(() => {
+    if (!thumbDataUrl) return
+    let cancelled = false
+    const img = new window.Image()
+    img.onload = () => {
+      if (cancelled) return
+      const off = document.createElement('canvas')
+      off.width = CLIP_FX_PREVIEW_W
+      off.height = CLIP_FX_PREVIEW_H
+      const offCtx = off.getContext('2d')
+      offCtx.drawImage(img, 0, 0, CLIP_FX_PREVIEW_W, CLIP_FX_PREVIEW_H)
+      try {
+        srcImageDataRef.current = offCtx.getImageData(
+          0, 0, CLIP_FX_PREVIEW_W, CLIP_FX_PREVIEW_H,
+        )
+        setLoaded(true)
+      } catch (e) {
+        console.warn('[ClipFxPreview] getImageData failed', e)
+        setLoadFailed(true)
+      }
+    }
+    img.onerror = () => { if (!cancelled) setLoadFailed(true) }
+    img.src = thumbDataUrl
+    return () => { cancelled = true }
+  }, [thumbDataUrl])
+
+  // Schedule a single rAF redraw whenever inputs change.
+  useEffect(() => {
+    if (!loaded) return
+    if (rafRef.current) cancelAnimationFrame(rafRef.current)
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = 0
+      const src = srcImageDataRef.current
+      if (!src) return
+      const W = CLIP_FX_PREVIEW_W, H = CLIP_FX_PREVIEW_H
+
+      // Original pane: blit unchanged.
+      const origCtx = origCanvasRef.current?.getContext('2d')
+      if (origCtx) origCtx.putImageData(src, 0, 0)
+
+      // Effect pane: per-pixel CPU remap matching FX_VibratoSwirl /
+      // FX_ScratchWaveSmear (sample-and-blend smear).
+      const fxCtx = fxCanvasRef.current?.getContext('2d')
+      if (!fxCtx) return
+      const dst = fxCtx.createImageData(W, H)
+      const dstData = dst.data
+      const srcData = src.data
+
+      const swirlAmt    = swirlOn ? Number(vfx.swirlAmount    ?? 0.25) : 0
+      const swirlRadius = Math.max(Number(vfx.swirlRadius     ?? 0.45), 0.0001)
+      const cx          = Number(vfx.swirlCenterX ?? 0.5)
+      const cy          = Number(vfx.swirlCenterY ?? 0.5)
+      const waveAmt     = waveOn ? Number(vfx.waveAmount      ?? 0.08) : 0
+      const waveFreq    = Number(vfx.waveFrequency  ?? 8.0)
+      const smearAmt    = waveOn ? Number(vfx.smearAmount     ?? 0.0) : 0
+      const reverseW    = !!(vfx.reverseWaveWithScratch ?? true)
+
+      const direction = (reverseW && CLIP_FX_SCRATCH_RATE_MULT < 0) ? -1 : 1
+      const phase = CLIP_FX_SCRATCH_PHASE_01 * CLIP_FX_TAU
+      const safeFreq = clipFxClamp(waveFreq, 0.25, 64.0)
+      const smearOffset = clipFxClamp(
+        smearAmt * 0.25 * direction * CLIP_FX_SCRATCH_INTENSITY,
+        -0.25, 0.25,
+      )
+      const smearBlend = clipFxClamp(Math.abs(smearAmt), 0, 1) * CLIP_FX_SCRATCH_INTENSITY
+
+      const baseTap = [0, 0, 0, 0]
+      const lTap = [0, 0, 0, 0]
+      const rTap = [0, 0, 0, 0]
+
+      for (let py = 0; py < H; py++) {
+        const v = py / (H - 1)
+        for (let px = 0; px < W; px++) {
+          const u = px / (W - 1)
+          let uu = u, vv = v
+
+          // ── Swirl ─────────────────────────────────────────────────────
+          if (swirlOn) {
+            const dx = uu - cx, dy = vv - cy
+            const r = Math.sqrt(dx * dx + dy * dy)
+            let f = 1 - r / swirlRadius
+            if (f < 0) f = 0
+            else if (f > 1) f = 1
+            const falloff = f * f * (3 - 2 * f)
+            let angle = swirlAmt * 3.0 * CLIP_FX_VIBRATO_LFO * falloff
+            if (angle < -1.25) angle = -1.25
+            else if (angle > 1.25) angle = 1.25
+            const ca = Math.cos(angle), sa = Math.sin(angle)
+            uu = cx + dx * ca - dy * sa
+            vv = cy + dx * sa + dy * ca
+          }
+
+          // ── Wave + Smear (sample-and-blend) ───────────────────────────
+          if (waveOn) {
+            const wave = Math.sin(vv * safeFreq * CLIP_FX_TAU + phase)
+            let waveOffset = wave * waveAmt * 1.5 * CLIP_FX_SCRATCH_INTENSITY * direction
+            if (waveOffset < -0.35) waveOffset = -0.35
+            else if (waveOffset > 0.35) waveOffset = 0.35
+            const wuvX = uu + waveOffset
+            clipFxSample(srcData, W, H, wuvX, vv, baseTap)
+            if (smearBlend > 0 && smearOffset !== 0) {
+              clipFxSample(srcData, W, H, wuvX - smearOffset, vv, lTap)
+              clipFxSample(srcData, W, H, wuvX + smearOffset, vv, rTap)
+              const inv = 1 - smearBlend
+              const di = (py * W + px) * 4
+              dstData[di    ] = baseTap[0] * inv + ((lTap[0] + rTap[0]) * 0.5) * smearBlend
+              dstData[di + 1] = baseTap[1] * inv + ((lTap[1] + rTap[1]) * 0.5) * smearBlend
+              dstData[di + 2] = baseTap[2] * inv + ((lTap[2] + rTap[2]) * 0.5) * smearBlend
+              dstData[di + 3] = baseTap[3] * inv + ((lTap[3] + rTap[3]) * 0.5) * smearBlend
+            } else {
+              const di = (py * W + px) * 4
+              dstData[di    ] = baseTap[0]
+              dstData[di + 1] = baseTap[1]
+              dstData[di + 2] = baseTap[2]
+              dstData[di + 3] = baseTap[3]
+            }
+          } else {
+            // Swirl-only path: sample once at remapped UV.
+            clipFxSample(srcData, W, H, uu, vv, baseTap)
+            const di = (py * W + px) * 4
+            dstData[di    ] = baseTap[0]
+            dstData[di + 1] = baseTap[1]
+            dstData[di + 2] = baseTap[2]
+            dstData[di + 3] = baseTap[3]
+          }
+        }
+      }
+
+      fxCtx.putImageData(dst, 0, 0)
+    })
+    return () => {
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current)
+        rafRef.current = 0
+      }
+    }
+  }, [
+    loaded, swirlOn, waveOn,
+    vfx.swirlAmount, vfx.swirlRadius, vfx.swirlCenterX, vfx.swirlCenterY,
+    vfx.waveAmount, vfx.waveFrequency, vfx.smearAmount, vfx.reverseWaveWithScratch,
+  ])
+
+  if (!swirlOn && !waveOn) return null
+
+  const noteStyle = {
+    padding: '6px 8px', fontSize: 10, color: '#888',
+    fontStyle: 'italic',
+  }
+
+  if (disabledReason) {
+    return <div style={noteStyle}>{disabledReason}</div>
+  }
+  if (loadFailed || (!thumbDataUrl)) {
+    return <div style={noteStyle}>Preview unavailable for this clip.</div>
+  }
+
+  const labelStyle = {
+    fontSize: 9, color: '#888', textTransform: 'uppercase',
+    letterSpacing: 0.4, marginBottom: 2,
+  }
+  const paneStyle = {
+    display: 'flex', flexDirection: 'column', alignItems: 'center',
+  }
+  const canvasStyle = {
+    width: CLIP_FX_PREVIEW_W, height: CLIP_FX_PREVIEW_H,
+    border: '1px solid var(--theme-border-subtle, #444)',
+    borderRadius: 3,
+    background: '#111',
+    imageRendering: 'pixelated',
+  }
+
+  return (
+    <div style={{
+      padding: '6px 8px',
+      display: 'flex', gap: 8, alignItems: 'flex-start',
+    }}>
+      <div style={paneStyle}>
+        <span style={labelStyle}>Original</span>
+        <canvas
+          ref={origCanvasRef}
+          width={CLIP_FX_PREVIEW_W}
+          height={CLIP_FX_PREVIEW_H}
+          style={canvasStyle}
+        />
+      </div>
+      <div style={paneStyle}>
+        <span style={labelStyle}>Effect Preview</span>
+        <canvas
+          ref={fxCanvasRef}
+          width={CLIP_FX_PREVIEW_W}
+          height={CLIP_FX_PREVIEW_H}
+          style={canvasStyle}
+        />
+      </div>
     </div>
   )
 }
@@ -173,11 +708,16 @@ export default function TimelineView({
   // ── Track state ────────────────────────────────────────────────────────────
   const [tracks, setTracks] = useState([])
   const [contextMenu, setContextMenu] = useState(null)
+  // Phase G.4: compact quick-FX popover anchored to a clip's on-canvas FX badge
+  const [quickFxMenu, setQuickFxMenu] = useState(null)  // { clipId, x, y } | null
+  const [audioModSectionOpen, setAudioModSectionOpen] = useState(true)
+  const [videoModSectionOpen, setVideoModSectionOpen] = useState(false)
   const [trackMenu, setTrackMenu] = useState(null)         // { track, x, y }
   const [flipPanel, setFlipPanel] = useState(null)         // { track, anchorRect }
   const [confirmDialog, setConfirmDialog] = useState(null)  // { title, message, onConfirm }
   const [quantizeOpen, setQuantizeOpen] = useState(false)
   const nextTrackNum = useRef(1)
+  const focusTimelinePanel = usePanelRegistry((s) => s.focusPanel)
 
   // ── Clip state ─────────────────────────────────────────────────────────────
   const [clips, setClips] = useState([])
@@ -2552,6 +3092,70 @@ export default function TimelineView({
     }
   }, [fetchClips])
 
+  const handleSetClipVibrato = useCallback(async (clipId, vibratoPatch) => {
+    try {
+      const clip = clipsRef.current.find(c => c.id === clipId)
+      const merged = mergeClipModulationPatch(clip, {
+        vibratoPatch,
+        forceEnabled: vibratoPatch.enabled === true,
+      })
+      await window.xleth.timeline.setClipModulation(clipId, merged)
+      await fetchClips()
+    } catch (err) {
+      console.error('[Timeline] setClipVibrato error:', err)
+    }
+  }, [fetchClips])
+
+  const handleSetClipScratch = useCallback(async (clipId, scratchPatch, options = {}) => {
+    try {
+      const clip = clipsRef.current.find(c => c.id === clipId)
+      const existingScratch = clip?.modulation?.scratch ?? {}
+      let nextPatch = scratchPatch
+      let forceEnabled = false
+
+      if (options.presetKey) {
+        nextPatch = {
+          ...scratchPatch,
+          ...scratchPresetPatch(options.presetKey, {
+            scratchCount: options.scratchCount,
+            lengthBeats: options.lengthBeats,
+          }),
+        }
+        forceEnabled = true
+      } else if (scratchPatch.enabled === true) {
+        const hasCurve = Array.isArray(existingScratch.curve) && existingScratch.curve.length > 0
+        nextPatch = hasCurve
+          ? scratchPatch
+          : {
+              ...scratchPatch,
+              timeMode: SCRATCH_PRESETS[0].timeMode,
+              curve: cloneScratchCurve(SCRATCH_PRESETS[0].curve),
+            }
+        forceEnabled = true
+      }
+
+      const merged = mergeClipModulationPatch(clip, {
+        scratchPatch: nextPatch,
+        forceEnabled,
+      })
+      await window.xleth.timeline.setClipModulation(clipId, merged)
+      await fetchClips()
+    } catch (err) {
+      console.error('[Timeline] setClipScratch error:', err)
+    }
+  }, [fetchClips])
+
+  const handleSetClipVideoFx = useCallback(async (clipId, videoPatch) => {
+    try {
+      const clip = clipsRef.current.find(c => c.id === clipId)
+      const merged = mergeClipModulationPatch(clip, { videoPatch })
+      await window.xleth.timeline.setClipModulation(clipId, merged)
+      await fetchClips()
+    } catch (err) {
+      console.error('[Timeline] setClipVideoFx error:', err)
+    }
+  }, [fetchClips])
+
   const handleSetClipFade = useCallback(async (clipId, fadeParams) => {
     try {
       const clip = clipsRef.current.find(c => c.id === clipId)
@@ -2575,9 +3179,95 @@ export default function TimelineView({
     }
   }, [fetchClips])
 
+  // Phase G.4: auto-close the quick FX menu if its clip is no longer present
+  useEffect(() => {
+    if (!quickFxMenu) return
+    if (!clips.find(c => c.id === quickFxMenu.clipId)) {
+      setQuickFxMenu(null)
+    }
+  }, [clips, quickFxMenu])
+
+  const closeClipContextMenu = useCallback(() => {
+    setContextMenu(null)
+    requestAnimationFrame(() => {
+      const activeElement = document.activeElement
+      if (isInteractiveFocusElement(activeElement)) return
+      if (!usePanelRegistry.getState().panels.timeline.focused) return
+
+      focusTimelinePanel('timeline')
+
+      const timelinePanel = timelineViewRef.current?.closest?.('[data-panel-id="timeline"]')
+      if (timelinePanel instanceof HTMLElement) {
+        timelinePanel.focus()
+        timelineFocusedRef.current = true
+      } else if (timelineViewRef.current instanceof HTMLElement) {
+        timelineViewRef.current.focus()
+        timelineFocusedRef.current = true
+      }
+
+      if (usePianoRollStore.getState().activeCenterTab !== 'timeline') {
+        usePianoRollStore.getState().setActiveCenterTab('timeline')
+      }
+    })
+  }, [focusTimelinePanel])
+
   const contextMenuClip = contextMenu?.type === 'clip'
     ? clipsRef.current.find(c => c.id === contextMenu.clipId)
     : null
+  const contextModulationStatus = getClipModulationStatus(contextMenuClip)
+
+  // ── Phase G.3: live preview draft + thumbnail cache ───────────────────────
+  const [videoPreviewDraft, setVideoPreviewDraft] = useState({})
+  const thumbCacheRef = useRef(new Map()) // sourceId → dataURL
+  const [thumbVersion, setThumbVersion] = useState(0)
+
+  const contextVfx = contextMenuClip?.modulation?.video ?? {}
+  const contextRegion = contextMenuClip ? regions[contextMenuClip.regionId] : null
+  const contextSource = contextRegion ? sources[contextRegion.sourceId] : null
+  const contextHasVideo = !!contextSource && contextSource.hasVideo !== false
+  // thumbVersion is read so eslint's exhaustive-deps doesn't complain when we
+  // depend on cache reads via the ref.
+  void thumbVersion
+  const contextThumbDataUrl = contextSource
+    ? thumbCacheRef.current.get(contextSource.id) ?? null
+    : null
+
+  // Reset draft when committed video vfx changes (post-fetchClips). This is
+  // the natural moment — clearing on slider pointer-up causes a one-frame
+  // flicker between draft and committed values.
+  useEffect(() => {
+    setVideoPreviewDraft({})
+  }, [
+    contextMenu?.clipId,
+    contextVfx.swirlAmount, contextVfx.waveAmount,
+    contextVfx.waveFrequency, contextVfx.smearAmount,
+  ])
+
+  // Lazy-fetch the source thumbnail when the menu opens with Video FX expanded.
+  useEffect(() => {
+    if (!contextMenu || !videoModSectionOpen) return
+    if (!contextHasVideo) return
+    if (contextThumbDataUrl) return
+    if (!contextSource?.filePath) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const url = await window.xleth?.project
+          ?.getSourceThumbnail(contextSource.filePath, contextSource.duration)
+        if (!cancelled && url) {
+          thumbCacheRef.current.set(contextSource.id, url)
+          setThumbVersion(v => v + 1)
+        }
+      } catch (e) {
+        console.warn('[ClipFxPreview] thumbnail fetch failed', e)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [
+    contextMenu, videoModSectionOpen,
+    contextSource?.id, contextSource?.filePath, contextSource?.duration,
+    contextHasVideo, contextThumbDataUrl,
+  ])
 
   function stretchMethodName(m) {
     switch (m) {
@@ -2695,6 +3385,335 @@ export default function TimelineView({
               label: contextMenuClip?.formantPreserve ? '✓ Formant Preserve' : 'Formant Preserve',
               onClick: () => handleSetClipFormantPreserve(contextMenu.clipId, !contextMenuClip?.formantPreserve),
             },
+            { type: 'separator' },
+            {
+              type: 'custom', key: 'clip-modulation-group',
+              content: (() => {
+                const status = contextModulationStatus
+                const pillColor =
+                  status.kind === 'bypassed' ? 'var(--theme-semantic-warning-text)'
+                  : status.kind === 'active'  ? 'var(--theme-semantic-success-text, var(--theme-text-secondary, #ddd))'
+                  : status.kind === 'saved'   ? 'var(--theme-semantic-info-text, var(--theme-text-secondary, #bbb))'
+                  : 'var(--theme-text-tertiary, #888)'
+
+                const v = contextMenuClip?.modulation?.vibrato ?? {}
+                const vibEnabled = v.enabled ?? false
+                const vibRateMode = v.rateMode ?? 'freeHz'
+                const onVibEnable = (e) => {
+                  const next = e.target.checked
+                  if (next && !v.enabled && (v.depthCents ?? 0) === 0) {
+                    handleSetClipVibrato(contextMenu.clipId, { ...VIBRATO_DEFAULTS, enabled: true })
+                  } else {
+                    handleSetClipVibrato(contextMenu.clipId, { enabled: next })
+                  }
+                }
+
+                const s = contextMenuClip?.modulation?.scratch ?? {}
+                const scrEnabled = s.enabled ?? false
+                const scrPresetKey = scratchPresetKeyForScratch(s)
+                const babySettings = inferBabyScratchSettings(s) ?? {
+                  count: SCRATCH_BABY_DEFAULT_COUNT,
+                  lengthBeats: SCRATCH_BABY_DEFAULT_LENGTH_BEATS,
+                }
+                const showBabyScratchControls = scrPresetKey === 'babyScratch'
+                const onScrEnable = (e) => {
+                  handleSetClipScratch(contextMenu.clipId, { enabled: e.target.checked })
+                }
+                const updateBabyScratch = (patch) => {
+                  handleSetClipScratch(contextMenu.clipId, {}, {
+                    presetKey: 'babyScratch',
+                    scratchCount: patch.count ?? babySettings.count,
+                    lengthBeats: patch.lengthBeats ?? babySettings.lengthBeats,
+                  })
+                }
+
+                const vfx = contextMenuClip?.modulation?.video ?? {}
+                const swirlOn = vfx.vibratoSwirlEnabled ?? false
+                const waveOn  = vfx.scratchWaveEnabled ?? false
+                const setVideo = (patch) => handleSetClipVideoFx(contextMenu.clipId, patch)
+
+                const stopFocus = (e) => { e.preventDefault(); e.stopPropagation() }
+                const headerStyle = {
+                  width: '100%', textAlign: 'left',
+                  background: 'transparent', border: 'none',
+                  padding: '4px 8px', fontSize: 11, color: '#aaa',
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
+                  fontWeight: 600, letterSpacing: 0.3, textTransform: 'uppercase',
+                }
+
+                return (
+                  <div>
+                    <div style={{ padding: '4px 8px 2px', fontSize: 11, color: '#aaa', fontWeight: 600, letterSpacing: 0.3, textTransform: 'uppercase' }}>
+                      Clip Modulation
+                    </div>
+                    <div style={{ padding: '2px 8px 4px', display: 'flex', alignItems: 'center', gap: 6, maxWidth: 240, lineHeight: 1.25 }}>
+                      <span style={{
+                        fontSize: 9, fontWeight: 700, letterSpacing: 0.4,
+                        padding: '1px 6px', borderRadius: 999,
+                        border: '1px solid var(--theme-border-subtle, #444)',
+                        color: pillColor, textTransform: 'uppercase',
+                      }}>{status.kind}</span>
+                      <span style={{ fontSize: 11, color: '#bbb', flex: 1 }}>{status.label}</span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onMouseDown={stopFocus}
+                      onClick={() => setAudioModSectionOpen(o => !o)}
+                      style={headerStyle}
+                    >
+                      <span style={{ display: 'inline-block', width: 10 }}>{audioModSectionOpen ? '▾' : '▸'}</span>
+                      Audio Modulation
+                    </button>
+
+                    {audioModSectionOpen && (
+                      <>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 8px 2px 18px', fontSize: 12 }}>
+                          <input type="checkbox" checked={vibEnabled} onChange={onVibEnable} />
+                          Vibrato
+                        </label>
+                        {vibEnabled && (
+                          <div style={{ paddingLeft: 10 }}>
+                            <ClipSliderRow
+                              label="Depth"
+                              value={Math.round(v.depthCents ?? 0)}
+                              min={0} max={1200} step={1}
+                              onCommit={(val) => handleSetClipVibrato(contextMenu.clipId, { depthCents: val })}
+                              formatValue={(val) => `${val} ¢`}
+                            />
+                            <div style={{ padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                              <span style={{ fontSize: 11, color: '#aaa', minWidth: 40 }}>Rate</span>
+                              <select
+                                value={vibRateMode}
+                                onChange={(e) => handleSetClipVibrato(contextMenu.clipId, { rateMode: e.target.value })}
+                                style={{ flex: 1 }}
+                              >
+                                <option value="freeHz">Free</option>
+                                <option value="tempoSync">Sync</option>
+                              </select>
+                            </div>
+                            {vibRateMode === 'freeHz' ? (
+                              <ClipSliderRow
+                                label="Hz"
+                                value={Number((v.rateHz ?? 5.0).toFixed(2))}
+                                min={0.01} max={20} step={0.01}
+                                onCommit={(val) => handleSetClipVibrato(contextMenu.clipId, { rateHz: val })}
+                                formatValue={(val) => `${val.toFixed(2)} Hz`}
+                              />
+                            ) : (
+                              <div style={{ padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                                <span style={{ fontSize: 11, color: '#aaa', minWidth: 40 }}>Sync</span>
+                                <select
+                                  value={v.syncDivision ?? 'eighth'}
+                                  onChange={(e) => handleSetClipVibrato(contextMenu.clipId, { syncDivision: e.target.value })}
+                                  style={{ flex: 1 }}
+                                >
+                                  {VIBRATO_SYNC_DIVISIONS.map(([val, lbl]) => <option key={val} value={val}>{lbl}</option>)}
+                                </select>
+                              </div>
+                            )}
+                            <div style={{ padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                              <span style={{ fontSize: 11, color: '#aaa', minWidth: 40 }}>Shape</span>
+                              <select
+                                value={v.shape ?? 'sine'}
+                                onChange={(e) => handleSetClipVibrato(contextMenu.clipId, { shape: e.target.value })}
+                                style={{ flex: 1 }}
+                              >
+                                {VIBRATO_SHAPES.map(([val, lbl]) => <option key={val} value={val}>{lbl}</option>)}
+                              </select>
+                            </div>
+                          </div>
+                        )}
+
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 8px 2px 18px', fontSize: 12 }}>
+                          <input type="checkbox" checked={scrEnabled} onChange={onScrEnable} />
+                          Scratch
+                        </label>
+                        {scrEnabled && (
+                          <div style={{ paddingLeft: 10 }}>
+                            <div style={{ padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                              <span style={{ fontSize: 11, color: '#aaa', minWidth: 40 }}>Preset</span>
+                              <select
+                                value={scrPresetKey}
+                                onChange={(e) => {
+                                  if (e.target.value !== 'custom') handleSetClipScratch(contextMenu.clipId, {}, { presetKey: e.target.value })
+                                }}
+                                style={{ flex: 1 }}
+                              >
+                                <option value="custom" disabled>Custom</option>
+                                {SCRATCH_PRESETS.map(preset => (
+                                  <option key={preset.key} value={preset.key}>{preset.label}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <ClipSliderRow
+                              label="Smooth"
+                              value={Number((s.smoothingMs ?? SCRATCH_DEFAULTS.smoothingMs).toFixed(1))}
+                              min={0} max={50} step={0.1}
+                              onCommit={(val) => handleSetClipScratch(contextMenu.clipId, { smoothingMs: val })}
+                              formatValue={(val) => `${Number(val).toFixed(1)} ms`}
+                            />
+                            <div style={{ padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                              <span style={{ fontSize: 11, color: '#aaa', minWidth: 40 }}>Edge</span>
+                              <select
+                                value={s.edgeMode ?? SCRATCH_DEFAULTS.edgeMode}
+                                onChange={(e) => handleSetClipScratch(contextMenu.clipId, { edgeMode: e.target.value })}
+                                style={{ flex: 1 }}
+                              >
+                                {SCRATCH_EDGE_MODES.map(([val, lbl]) => <option key={val} value={val}>{lbl}</option>)}
+                              </select>
+                            </div>
+                            {showBabyScratchControls && (
+                              <>
+                                <div style={{ padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                                  <span style={{ fontSize: 11, color: '#aaa', minWidth: 78 }}>Scratch Count</span>
+                                  <input
+                                    type="range" min={1} max={8} step={1}
+                                    value={babySettings.count}
+                                    onChange={(e) => updateBabyScratch({ count: clampScratchCount(e.target.value) })}
+                                    style={{ flex: 1, accentColor: 'var(--theme-border-focus)' }}
+                                  />
+                                  <input
+                                    type="number" min={1} max={8} step={1}
+                                    value={babySettings.count}
+                                    onChange={(e) => updateBabyScratch({ count: clampScratchCount(e.target.value) })}
+                                    style={{ width: 44 }}
+                                  />
+                                </div>
+                                <div style={{ padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                                  <span style={{ fontSize: 11, color: '#aaa', minWidth: 78 }}>Length</span>
+                                  <select
+                                    value={babySettings.lengthBeats}
+                                    onChange={(e) => updateBabyScratch({ lengthBeats: normalizeScratchLengthBeats(e.target.value) })}
+                                    style={{ flex: 1 }}
+                                  >
+                                    {SCRATCH_BABY_LENGTHS.map(([length, label]) => (
+                                      <option key={length} value={length}>{label}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                              </>
+                            )}
+                            <div style={{ padding: '2px 8px 6px', fontSize: 11, color: '#888' }}>
+                              {scratchCurveSummary(s)}
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    )}
+
+                    <button
+                      type="button"
+                      onMouseDown={stopFocus}
+                      onClick={() => setVideoModSectionOpen(o => !o)}
+                      style={headerStyle}
+                    >
+                      <span style={{ display: 'inline-block', width: 10 }}>{videoModSectionOpen ? '▾' : '▸'}</span>
+                      Video Companion FX
+                    </button>
+
+                    {videoModSectionOpen && (
+                      <>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 8px 2px 18px', fontSize: 12 }}>
+                          <input
+                            type="checkbox"
+                            checked={swirlOn}
+                            onChange={(e) => setVideo({ vibratoSwirlEnabled: e.target.checked })}
+                          />
+                          Swirl with Vibrato
+                        </label>
+                        {swirlOn && !vibEnabled && (
+                          <div style={{ padding: '0 8px 2px 28px', fontSize: 10, color: '#888' }}>
+                            Activates when Vibrato is enabled.
+                          </div>
+                        )}
+                        {swirlOn && (
+                          <div style={{ paddingLeft: 10 }}>
+                            <ClipSliderRow
+                              label="Swirl"
+                              value={Number((vfx.swirlAmount ?? 0.25).toFixed(2))}
+                              min={-1} max={1} step={0.01}
+                              onCommit={(val) => setVideo({ swirlAmount: val })}
+                              onPreviewChange={(v) => setVideoPreviewDraft(d => ({ ...d, swirlAmount: v }))}
+                              formatValue={(val) => Number(val).toFixed(2)}
+                            />
+                          </div>
+                        )}
+
+                        <label style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 8px 2px 18px', fontSize: 12 }}>
+                          <input
+                            type="checkbox"
+                            checked={waveOn}
+                            onChange={(e) => setVideo({ scratchWaveEnabled: e.target.checked })}
+                          />
+                          Wave with Scratch
+                        </label>
+                        {waveOn && !scrEnabled && (
+                          <div style={{ padding: '0 8px 2px 28px', fontSize: 10, color: '#888' }}>
+                            Activates when Scratch is enabled.
+                          </div>
+                        )}
+                        {waveOn && (
+                          <div style={{ paddingLeft: 10 }}>
+                            <ClipSliderRow
+                              label="Wave"
+                              value={Number((vfx.waveAmount ?? 0.08).toFixed(2))}
+                              min={-1} max={1} step={0.01}
+                              onCommit={(val) => setVideo({ waveAmount: val })}
+                              onPreviewChange={(v) => setVideoPreviewDraft(d => ({ ...d, waveAmount: v }))}
+                              formatValue={(val) => Number(val).toFixed(2)}
+                            />
+                            <ClipSliderRow
+                              label="Freq"
+                              value={Number((vfx.waveFrequency ?? 8).toFixed(2))}
+                              min={0.25} max={64} step={0.25}
+                              onCommit={(val) => setVideo({ waveFrequency: val })}
+                              onPreviewChange={(v) => setVideoPreviewDraft(d => ({ ...d, waveFrequency: v }))}
+                              formatValue={(val) => `${Number(val).toFixed(2)}×`}
+                            />
+                            <ClipSliderRow
+                              label="Smear"
+                              value={Number((vfx.smearAmount ?? 0).toFixed(2))}
+                              min={-1} max={1} step={0.01}
+                              onCommit={(val) => setVideo({ smearAmount: val })}
+                              onPreviewChange={(v) => setVideoPreviewDraft(d => ({ ...d, smearAmount: v }))}
+                              formatValue={(val) => Number(val).toFixed(2)}
+                            />
+                            <label style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px 8px', fontSize: 12 }}>
+                              <input
+                                type="checkbox"
+                                checked={vfx.reverseWaveWithScratch ?? true}
+                                onChange={(e) => setVideo({ reverseWaveWithScratch: e.target.checked })}
+                              />
+                              Reverse Wave with Scratch
+                            </label>
+                          </div>
+                        )}
+
+                        {(swirlOn || waveOn) && (() => {
+                          const reversed = !!contextMenuClip?.reversed
+                          const formantPreserve = !!contextMenuClip?.formantPreserve
+                          const disabledReason =
+                            (reversed || formantPreserve)  ? 'Preview bypassed for this clip.'
+                          : !contextHasVideo               ? 'Preview unavailable for this clip.'
+                          : null
+                          const effectiveVfx = { ...vfx, ...videoPreviewDraft }
+                          return (
+                            <ClipFxPreview
+                              thumbDataUrl={contextThumbDataUrl}
+                              vfx={effectiveVfx}
+                              swirlOn={swirlOn}
+                              waveOn={waveOn}
+                              disabledReason={disabledReason}
+                            />
+                          )
+                        })()}
+                      </>
+                    )}
+                  </div>
+                )
+              })(),
+            },
             { label: 'Delete', danger: true, onClick: () => handleDeleteClip(contextMenu.clipId) },
           ]
         : [
@@ -2727,7 +3746,7 @@ export default function TimelineView({
   const hasTracks = tracks.length > 0
 
   return (
-    <div className="timeline-view" ref={timelineViewRef}>
+    <div className="timeline-view" ref={timelineViewRef} tabIndex={-1}>
       {/* ── Toolbar ──────────────────────────────────────────────────────── */}
       <TimelineToolbar
         activeTool={activeTool}
@@ -2840,7 +3859,16 @@ export default function TimelineView({
                   onStretchClip={handleStretchClip}
                   onStretchClipLeft={handleStretchClipLeft}
                   onSplitClip={handleSplitClip}
-                  onRequestClipContextMenu={(clipId, x, y) => setContextMenu({ type: 'clip', clipId, x, y })}
+                  onRequestClipContextMenu={(clipId, x, y) => {
+                    setQuickFxMenu(null)
+                    setContextMenu({ type: 'clip', clipId, x, y })
+                  }}
+                  onOpenClipFxQuickMenu={(clipId, anchor) => {
+                    setContextMenu(null)
+                    setQuickFxMenu({ clipId, x: anchor.x, y: anchor.y })
+                  }}
+                  scrollOffset={scrollOffset}
+                  pixelsPerBeat={pixelsPerBeat}
                   setSelectedClipIds={setSelectedClipIds}
                   onFocusTrack={setFocusedTrackId}
                   pencilTemplateRef={pencilTemplateRef}
@@ -2897,9 +3925,220 @@ export default function TimelineView({
           x={contextMenu.x}
           y={contextMenu.y}
           items={contextMenuItems}
-          onClose={() => setContextMenu(null)}
+          onClose={closeClipContextMenu}
         />
       )}
+
+      {/* ── Phase G.4: Quick FX menu (anchored to on-clip FX badge) ─────── */}
+      {quickFxMenu && (() => {
+        const clip = clipsRef.current.find(c => c.id === quickFxMenu.clipId)
+        if (!clip) return null
+        const mod = clip?.modulation ?? {}
+        const v = mod.vibrato ?? {}
+        const s = mod.scratch ?? {}
+        const vfx = mod.video ?? {}
+        const reversed = !!clip?.reversed
+        const formant = !!clip?.formantPreserve
+        const vibratoOn = !!(mod.enabled && v.enabled)
+        const scratchOn = !!(mod.enabled && s.enabled)
+        const swirlSaved = !!vfx.vibratoSwirlEnabled
+        const waveSaved  = !!vfx.scratchWaveEnabled
+        const presetKey = scratchPresetKeyForScratch(s)
+        const showBabyScratchControls = scratchOn && presetKey === 'babyScratch'
+        const babySettings = inferBabyScratchSettings(s) ?? {
+          count: SCRATCH_BABY_DEFAULT_COUNT,
+          lengthBeats: SCRATCH_BABY_DEFAULT_LENGTH_BEATS,
+        }
+        const updateBabyScratch = (patch) => {
+          handleSetClipScratch(clip.id, {}, {
+            presetKey: 'babyScratch',
+            scratchCount: patch.count ?? babySettings.count,
+            lengthBeats: patch.lengthBeats ?? babySettings.lengthBeats,
+          })
+        }
+        const stopFocusQ = (e) => { e.preventDefault(); e.stopPropagation() }
+        const sectionLabel = {
+          padding: '4px 8px 0', fontSize: 10, color: '#aaa',
+          fontWeight: 600, letterSpacing: 0.3, textTransform: 'uppercase',
+        }
+        const tinyHint = {
+          padding: '0 8px 4px', fontSize: 10,
+          color: 'var(--theme-text-tertiary, #888)',
+        }
+        const content = (
+          <div style={{ minWidth: 230, maxWidth: 260 }}>
+            <div
+              onMouseDown={stopFocusQ}
+              style={{
+                padding: '4px 8px', fontSize: 11, color: '#aaa',
+                fontWeight: 700, letterSpacing: 0.4, textTransform: 'uppercase',
+                borderBottom: '1px solid var(--theme-border-subtle, #333)',
+              }}
+            >Quick FX</div>
+
+            {(reversed || formant) && (
+              <div style={{ padding: '4px 8px 2px' }}>
+                {reversed && (
+                  <div style={{ fontSize: 11, color: 'var(--theme-semantic-warning-text)' }}>
+                    Bypassed: Reverse
+                  </div>
+                )}
+                {formant && (
+                  <div style={{ fontSize: 11, color: 'var(--theme-semantic-warning-text)' }}>
+                    Bypassed: Formant
+                  </div>
+                )}
+              </div>
+            )}
+
+            {vibratoOn && (
+              <>
+                <div style={sectionLabel}>Vibrato</div>
+                <ClipSliderRow
+                  label="Vib Depth"
+                  value={Math.round(v.depthCents ?? 0)}
+                  min={0} max={1200} step={1}
+                  onCommit={(val) => handleSetClipVibrato(clip.id, { depthCents: val })}
+                  formatValue={(val) => `${val} ¢`}
+                />
+                {v.rateMode === 'tempoSync' ? (
+                  <div style={{ padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                    <span style={{ fontSize: 11, color: '#aaa', minWidth: 60 }}>Vib Sync</span>
+                    <select
+                      value={v.syncDivision ?? 'eighth'}
+                      onChange={(e) => handleSetClipVibrato(clip.id, { syncDivision: e.target.value })}
+                      style={{ flex: 1 }}
+                    >
+                      {VIBRATO_SYNC_DIVISIONS.map(([val, lbl]) => <option key={val} value={val}>{lbl}</option>)}
+                    </select>
+                  </div>
+                ) : (
+                  <ClipSliderRow
+                    label="Vib Rate"
+                    value={Number((v.rateHz ?? 5).toFixed(2))}
+                    min={0.1} max={20} step={0.1}
+                    onCommit={(val) => handleSetClipVibrato(clip.id, { rateHz: val })}
+                    formatValue={(val) => `${val.toFixed(2)} Hz`}
+                  />
+                )}
+              </>
+            )}
+
+            {scratchOn && (
+              <>
+                <div style={sectionLabel}>Scratch</div>
+                <div style={{ padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                  <span style={{ fontSize: 11, color: '#aaa', minWidth: 60 }}>Preset</span>
+                  <select
+                    value={presetKey}
+                    onChange={(e) => {
+                      if (e.target.value !== 'custom') handleSetClipScratch(clip.id, {}, { presetKey: e.target.value })
+                    }}
+                    style={{ flex: 1 }}
+                  >
+                    <option value="custom" disabled>Custom</option>
+                    {SCRATCH_PRESETS.map(preset => (
+                      <option key={preset.key} value={preset.key}>{preset.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <ClipSliderRow
+                  label="Scratch Smooth"
+                  value={Number((s.smoothingMs ?? SCRATCH_DEFAULTS.smoothingMs).toFixed(1))}
+                  min={0} max={50} step={0.1}
+                  onCommit={(val) => handleSetClipScratch(clip.id, { smoothingMs: val })}
+                  formatValue={(val) => `${Number(val).toFixed(1)} ms`}
+                />
+                {showBabyScratchControls && (
+                  <>
+                    <div style={{ padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                      <span style={{ fontSize: 11, color: '#aaa', minWidth: 78 }}>Scratch Count</span>
+                      <input
+                        type="range" min={1} max={8} step={1}
+                        value={babySettings.count}
+                        onChange={(e) => updateBabyScratch({ count: clampScratchCount(e.target.value) })}
+                        style={{ flex: 1, accentColor: 'var(--theme-border-focus)' }}
+                      />
+                      <input
+                        type="number" min={1} max={8} step={1}
+                        value={babySettings.count}
+                        onChange={(e) => updateBabyScratch({ count: clampScratchCount(e.target.value) })}
+                        style={{ width: 44 }}
+                      />
+                    </div>
+                    <div style={{ padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                      <span style={{ fontSize: 11, color: '#aaa', minWidth: 78 }}>Length</span>
+                      <select
+                        value={babySettings.lengthBeats}
+                        onChange={(e) => updateBabyScratch({ lengthBeats: normalizeScratchLengthBeats(e.target.value) })}
+                        style={{ flex: 1 }}
+                      >
+                        {SCRATCH_BABY_LENGTHS.map(([length, label]) => (
+                          <option key={length} value={length}>{label}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+
+            {swirlSaved && (
+              <>
+                <div style={sectionLabel}>Video Swirl</div>
+                <ClipSliderRow
+                  label="Swirl"
+                  value={Number((vfx.swirlAmount ?? 0.25).toFixed(2))}
+                  min={-1} max={1} step={0.01}
+                  onCommit={(val) => handleSetClipVideoFx(clip.id, { swirlAmount: val })}
+                  formatValue={(val) => Number(val).toFixed(2)}
+                />
+                {!vibratoOn && (
+                  <div style={tinyHint}>Waiting for Vibrato</div>
+                )}
+              </>
+            )}
+
+            {waveSaved && (
+              <>
+                <div style={sectionLabel}>Video Wave</div>
+                <ClipSliderRow
+                  label="Wave"
+                  value={Number((vfx.waveAmount ?? 0.08).toFixed(2))}
+                  min={-1} max={1} step={0.01}
+                  onCommit={(val) => handleSetClipVideoFx(clip.id, { waveAmount: val })}
+                  formatValue={(val) => Number(val).toFixed(2)}
+                />
+                <ClipSliderRow
+                  label="Freq"
+                  value={Number((vfx.waveFrequency ?? 8).toFixed(2))}
+                  min={0.25} max={64} step={0.25}
+                  onCommit={(val) => handleSetClipVideoFx(clip.id, { waveFrequency: val })}
+                  formatValue={(val) => `${Number(val).toFixed(2)}×`}
+                />
+                <ClipSliderRow
+                  label="Smear"
+                  value={Number((vfx.smearAmount ?? 0).toFixed(2))}
+                  min={-1} max={1} step={0.01}
+                  onCommit={(val) => handleSetClipVideoFx(clip.id, { smearAmount: val })}
+                  formatValue={(val) => Number(val).toFixed(2)}
+                />
+                {!scratchOn && (
+                  <div style={tinyHint}>Waiting for Scratch</div>
+                )}
+              </>
+            )}
+          </div>
+        )
+        return (
+          <ContextMenu
+            x={quickFxMenu.x}
+            y={quickFxMenu.y}
+            items={[{ type: 'custom', key: 'quick-fx', content }]}
+            onClose={() => setQuickFxMenu(null)}
+          />
+        )
+      })()}
 
       {/* ── Track context menu (pattern/clip track actions) ──────────────── */}
       {trackMenu && (

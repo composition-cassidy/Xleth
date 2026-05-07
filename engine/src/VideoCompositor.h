@@ -81,6 +81,30 @@ private:
     // Composite shader with position/scale/opacity uniforms
     GLuint compositeShaderProgram_ = 0;
 
+    // Cached uniform locations for compositeShaderProgram_. Looked up once
+    // in createCompositeShader() to avoid per-layer per-frame glGetUniformLocation
+    // calls. Phase E.3 added the companion-FX block for realtime preview FX.
+    struct CompositeUniforms {
+        GLint uPosition           = -1;
+        GLint uScale              = -1;
+        GLint uOpacity            = -1;
+        GLint uSwirlEnabled       = -1;
+        GLint uSwirlAmount        = -1;
+        GLint uSwirlRadius        = -1;
+        GLint uSwirlCenterX       = -1;
+        GLint uSwirlCenterY       = -1;
+        GLint uSwirlLfo           = -1;
+        GLint uWaveEnabled        = -1;
+        GLint uWaveAmount         = -1;
+        GLint uWaveFrequency      = -1;
+        GLint uWaveSmearAmount    = -1;
+        GLint uWaveRateMultiplier = -1;
+        GLint uWavePhase01        = -1;
+        GLint uWaveIntensity01    = -1;
+        GLint uReverseWaveWithScratch = -1;
+    };
+    CompositeUniforms compositeUniforms_;
+
     // Fullscreen quad VAO/VBO
     GLuint vao_ = 0;
     GLuint vbo_ = 0;

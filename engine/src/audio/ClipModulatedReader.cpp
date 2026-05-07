@@ -10,22 +10,39 @@
 
 namespace xleth::audio {
 
+// Reset every state field except `seenThisBlock`. Defined inline in every
+// reset path so the three callers stay trivially in lock-step. Adding a new
+// State field means updating these three blocks; the alternative (a free
+// helper) is blocked by `State` being a private nested type.
+
 void ClipModulatedReader::resetAllStates() noexcept
 {
     for (auto& s : states_)
     {
-        s.sourcePosD = 0.0;
+        s.sourcePosD            = 0.0;
+        s.vibTrimD              = 0.0;
         s.expectedNextPosInClip = -1;
-        s.seenThisBlock = false;
+        s.prevRate              = 1.0;
+        s.smoothedRate          = 1.0;
+        s.declickRemaining      = 0;
+        s.declickWidth          = 0;
+        s.declickInverting      = false;
+        s.seenThisBlock         = false;
     }
 }
 
 void ClipModulatedReader::resetClipState(int clipId) noexcept
 {
     auto& s = states_[slotFor(clipId)];
-    s.sourcePosD = 0.0;
+    s.sourcePosD            = 0.0;
+    s.vibTrimD              = 0.0;
     s.expectedNextPosInClip = -1;
-    s.seenThisBlock = false;
+    s.prevRate              = 1.0;
+    s.smoothedRate          = 1.0;
+    s.declickRemaining      = 0;
+    s.declickWidth          = 0;
+    s.declickInverting      = false;
+    s.seenThisBlock         = false;
 }
 
 void ClipModulatedReader::markClipSeen(int clipId) noexcept
@@ -39,8 +56,14 @@ void ClipModulatedReader::resetUnseenStates() noexcept
     {
         if (!s.seenThisBlock)
         {
-            s.sourcePosD = 0.0;
+            s.sourcePosD            = 0.0;
+            s.vibTrimD              = 0.0;
             s.expectedNextPosInClip = -1;
+            s.prevRate              = 1.0;
+            s.smoothedRate          = 1.0;
+            s.declickRemaining      = 0;
+            s.declickWidth          = 0;
+            s.declickInverting      = false;
         }
         s.seenThisBlock = false;
     }
@@ -71,6 +94,12 @@ void ClipModulatedReader::renderBlock(const BlockParams& p,
     const double  clipDurationSeconds = static_cast<double>(clipLen) * invSampleRate;
     const double  clipDurationBeats   = clipDurationSeconds * beatsPerSecond;
 
+    // Phase D.1 — Scratch is active when its enable + curve are both present.
+    // When OFF we run the verbatim Phase C loop below; when ON we run the
+    // position-style Option A loop with declick + edge-mode handling.
+    const bool scratchActive = p.modulation->scratch.enabled
+                            && !p.modulation->scratch.curve.empty();
+
     for (int s = 0; s < p.numOutputSamples; ++s)
     {
         const int64_t absPos = p.bufStart + s;
@@ -79,12 +108,20 @@ void ClipModulatedReader::renderBlock(const BlockParams& p,
         const int64_t posInClip = absPos - p.clipStartSample;
         const int64_t fromEnd   = clipLen - 1 - posInClip;
 
-        // ── Seed / re-seed sourcePosD ────────────────────────────────────────
-        // First activation (posInClip == 0): seed at clip-start offset.
-        // Mid-clip seek / stale state: reseed by integrating the vibrato
-        // pitch ratio from clip start to posInClip via the deterministic
-        // helper. Continuous playback keeps the local accumulator path; the
-        // helper only runs once per discontinuity.
+        // ── Build the per-sample modulation context (shared by both paths) ─
+        xleth::clipmod::ClipModulationContext ctx;
+        ctx.bpm                 = p.bpm;
+        ctx.sampleRate          = p.sampleRate;
+        ctx.timelineSamples     = absPos;
+        ctx.timelineSeconds     = static_cast<double>(absPos) * invSampleRate;
+        ctx.timelineBeats       = ctx.timelineSeconds * beatsPerSecond;
+        ctx.clipLocalSamples    = posInClip;
+        ctx.clipLocalSeconds    = static_cast<double>(posInClip) * invSampleRate;
+        ctx.clipLocalBeats      = ctx.clipLocalSeconds * beatsPerSecond;
+        ctx.clipDurationSeconds = clipDurationSeconds;
+        ctx.clipDurationBeats   = clipDurationBeats;
+
+        // ── Seed / re-seed on first sample of clip or after a discontinuity.
         if (st.expectedNextPosInClip != posInClip)
         {
             VibratoSourceOffsetParams sp;
@@ -98,14 +135,39 @@ void ClipModulatedReader::renderBlock(const BlockParams& p,
             sp.clipDurationBeats        = clipDurationBeats;
             sp.clipStartTimelineSamples = p.clipStartSample;
 
-            const double offsetSamples =
+            const double integratedOff =
                 computeVibratoIntegratedSourceOffsetSamples(sp);
-            st.sourcePosD = static_cast<double>(p.regionOffsetSamples)
-                          + offsetSamples;
+
+            if (scratchActive)
+            {
+                // Phase D.1 seed: vibTrim carries the full per-sample residual
+                //   Σ (staticRatio * vibratoRatio − 1) = integratedOff − N
+                // (− N strips the unity readhead motion already encoded in
+                // sourceBase). Subtracting N * staticRatio would erase the
+                // static-pitch contribution and is wrong (see D.0/D.1 plan).
+                st.vibTrimD = integratedOff - static_cast<double>(posInClip);
+
+                // Reset declick state so a seek does not fire a phantom flip
+                // on the first sample after the discontinuity.
+                const auto sEvalAtSeed = xleth::clipmod::evaluateScratch(
+                    p.modulation->scratch, ctx, p.modulation->enabled);
+                st.prevRate         = sEvalAtSeed.rateMultiplier;
+                st.smoothedRate     = sEvalAtSeed.rateMultiplier;
+                st.declickRemaining = 0;
+                st.declickWidth     = 0;
+                st.declickInverting = false;
+                st.sourcePosD       = 0.0; // unused while scratch active
+            }
+            else
+            {
+                // Legacy Phase C seed (preserved bit-for-bit).
+                st.sourcePosD = static_cast<double>(p.regionOffsetSamples)
+                              + integratedOff;
+                st.vibTrimD = 0.0;
+            }
         }
 
         // ── Velocity × per-side fade gain ─────────────────────────────────────
-        // Identical math to the cache-path loop in MixEngine::processBlock.
         float gain = p.velocity;
 
         if (p.fadeInSamples > 0 && posInClip < p.fadeInSamples && p.fadeInLUT != nullptr)
@@ -128,49 +190,122 @@ void ClipModulatedReader::renderBlock(const BlockParams& p,
             gain *= xleth::dsp::DeclickEnvelope::fadeOut(static_cast<int>(fromEnd), p.clipBoundaryFadeN);
         }
 
-        // ── Evaluate vibrato pitch for this sample ───────────────────────────
-        xleth::clipmod::ClipModulationContext ctx;
-        ctx.bpm                 = p.bpm;
-        ctx.sampleRate          = p.sampleRate;
-        ctx.timelineSamples     = absPos;
-        ctx.timelineSeconds     = static_cast<double>(absPos) * invSampleRate;
-        ctx.timelineBeats       = ctx.timelineSeconds * beatsPerSecond;
-        ctx.clipLocalSamples    = posInClip;
-        ctx.clipLocalSeconds    = static_cast<double>(posInClip) * invSampleRate;
-        ctx.clipLocalBeats      = ctx.clipLocalSeconds * beatsPerSecond;
-        ctx.clipDurationSeconds = clipDurationSeconds;
-        ctx.clipDurationBeats   = clipDurationBeats;
-
+        // ── Per-sample modulation evaluation ──────────────────────────────
         const auto vEval = xleth::clipmod::evaluateVibrato(p.modulation->vibrato, ctx,
                                                            p.modulation->enabled);
-        const double instantRatio = staticRatio * vEval.pitchRatio;
 
-        // ── Read source via Hermite, with bounds guard ───────────────────────
-        // Hermite needs a one-sample lookahead, so guard sourcePosD < srcTotal-1.
-        // Outside the valid range we emit silence (no aliasing to negative or
-        // wrapped indices). Bounds violation is expected near clip edges.
-        const double pos = st.sourcePosD;
+        double readPos       = 0.0;
+        bool   silentByEdge  = false;
+
+        if (scratchActive)
+        {
+            // ── Option A position-style scratch readhead ────────────────────
+            const auto sEval = xleth::clipmod::evaluateScratch(
+                p.modulation->scratch, ctx, p.modulation->enabled);
+
+            const double sourceBase =
+                static_cast<double>(p.regionOffsetSamples)
+              + sEval.sourceOffsetSeconds * p.sampleRate;
+
+            readPos = sourceBase + st.vibTrimD;
+
+            // ── One-pole rate slew + Hann microfade on direction flips ─────
+            const double slewMs = std::max(0.5, static_cast<double>(
+                                            p.modulation->scratch.smoothingMs));
+            const double tauSamps = slewMs * 0.001 * p.sampleRate;
+            const double alpha    = (tauSamps > 0.0)
+                                  ? (1.0 - std::exp(-1.0 / tauSamps))
+                                  : 1.0;
+            const double targetRate = static_cast<double>(sEval.rateMultiplier);
+            const double prevSmoothed = st.smoothedRate;
+            st.smoothedRate += alpha * (targetRate - prevSmoothed);
+
+            const double prevR = st.prevRate;
+            const double newR  = st.smoothedRate;
+            const bool flipped = ((prevR > 0.0 && newR < 0.0)
+                               || (prevR < 0.0 && newR > 0.0))
+                               && std::abs(prevR) > 0.01
+                               && std::abs(newR)  > 0.01;
+            if (flipped && st.declickRemaining == 0)
+            {
+                int width = static_cast<int>(slewMs * 0.001 * p.sampleRate + 0.5);
+                if (width < 2) width = 2;
+                st.declickWidth     = width;
+                st.declickRemaining = width;
+                st.declickInverting = true;
+            }
+            st.prevRate = newR;
+
+            if (st.declickRemaining > 0)
+            {
+                const int width = std::max(2, st.declickWidth);
+                const int half  = std::max(1, width / 2);
+                const int phase = width - st.declickRemaining; // 0..width
+                if (phase < half)
+                {
+                    // Fade out the readhead just before the flip.
+                    gain *= xleth::dsp::DeclickEnvelope::fadeOut(half - phase, half);
+                }
+                else
+                {
+                    // Fade in the new readhead just after the flip.
+                    gain *= xleth::dsp::DeclickEnvelope::fadeIn(phase - half, half);
+                }
+                --st.declickRemaining;
+            }
+
+            // ── Edge mode handling (Clamp default; Silence preserves Phase C
+            // out-of-bounds-→-zero behaviour). Wrap/PingPong are deferred. ─
+            const double maxValid = static_cast<double>(srcTotal - 1);
+            using EM = ClipModulation::Scratch::EdgeMode;
+            switch (p.modulation->scratch.edgeMode)
+            {
+                case EM::Clamp:
+                {
+                    if (readPos < 0.0)            readPos = 0.0;
+                    else if (readPos >= maxValid) readPos = std::nextafter(maxValid, 0.0);
+                    break;
+                }
+                case EM::Silence:
+                default:
+                {
+                    if (readPos < 0.0 || readPos >= maxValid)
+                        silentByEdge = true;
+                    break;
+                }
+            }
+
+            // Update vibTrim for next sample using the residual.
+            st.vibTrimD += staticRatio * vEval.pitchRatio - 1.0;
+        }
+        else
+        {
+            // ── Legacy Phase C path (vibrato only, no scratch) ─────────────
+            readPos = st.sourcePosD;
+            const double instantRatio = staticRatio * vEval.pitchRatio;
+            st.sourcePosD += instantRatio;
+        }
+
+        // ── Hermite read with bounds guard ────────────────────────────────
         float sampleL = 0.0f;
         float sampleR = 0.0f;
-        if (pos >= 0.0 && pos < static_cast<double>(srcTotal - 1))
+        if (!silentByEdge && readPos >= 0.0 && readPos < static_cast<double>(srcTotal - 1))
         {
             if (srcChannels == 1)
             {
-                const float v = hermiteSample(*p.srcBuf, 0, pos);
+                const float v = hermiteSample(*p.srcBuf, 0, readPos);
                 sampleL = sampleR = v;
             }
             else
             {
-                sampleL = hermiteSample(*p.srcBuf, 0, pos);
-                sampleR = hermiteSample(*p.srcBuf, std::min(1, srcChannels - 1), pos);
+                sampleL = hermiteSample(*p.srcBuf, 0, readPos);
+                sampleR = hermiteSample(*p.srcBuf, std::min(1, srcChannels - 1), readPos);
             }
         }
 
         trackBuf.addSample(0, s, sampleL * gain);
         trackBuf.addSample(1, s, sampleR * gain);
 
-        // Advance readhead and update continuity marker.
-        st.sourcePosD += instantRatio;
         st.expectedNextPosInClip = posInClip + 1;
     }
 }

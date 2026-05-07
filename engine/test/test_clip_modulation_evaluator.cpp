@@ -7,6 +7,7 @@
 // Fail:  prints failures and exits 1
 
 #include "model/ClipModulationEvaluator.h"
+#include "model/ClipModulationCompatibility.h"
 #include "model/TimelineTypes.h"
 
 #include <cmath>
@@ -533,6 +534,141 @@ static void test21_scratchSourceOffsetIntegral() {
     }
 }
 
+// ─── Phase F.1: shared compatibility helper matrix ────────────────────────────
+
+static void test22_compatibilityHelperMatrix() {
+    std::cout << "\n[22] Phase F.1 compatibility helper — static pitch and stretch compatible, "
+                 "reverse/formant bypass with precise reason\n";
+
+    using xleth::clipmod::isClipModulationCompatible;
+    using xleth::clipmod::classifyClipModulationBypass;
+    using xleth::clipmod::ClipModulationBypassReason;
+
+    // Helper to build a vibrato-on / scratch-off modulation.
+    auto vib = [] {
+        ClipModulation m;
+        m.enabled = true;
+        m.vibrato.enabled = true;
+        m.vibrato.depthCents = 50.0f;
+        return m;
+    };
+    auto scr = [] {
+        ClipModulation m;
+        m.enabled = true;
+        m.scratch.enabled = true;
+        m.scratch.curve.push_back({0.0f, 1.5f, 0.0f});
+        return m;
+    };
+    auto both = [&] {
+        auto m = vib();
+        m.scratch.enabled = true;
+        m.scratch.curve.push_back({0.0f, 1.5f, 0.0f});
+        return m;
+    };
+
+    // ── Plain clip ──────────────────────────────────────────────────────────
+    {
+        const auto m = vib();
+        CHECK(isClipModulationCompatible(false, 1.0, false, m), "plain + vibrato compatible");
+        CHECK(classifyClipModulationBypass(false, 1.0, false, m) == ClipModulationBypassReason::None,
+              "plain + vibrato has no bypass reason");
+    }
+    {
+        const auto m = scr();
+        CHECK(isClipModulationCompatible(false, 1.0, false, m), "plain + scratch compatible");
+    }
+    {
+        const auto m = both();
+        CHECK(isClipModulationCompatible(false, 1.0, false, m), "plain + vibrato+scratch compatible");
+    }
+
+    // ── Static pitch clips MUST remain compatible ───────────────────────────
+    // Helper does not see pitchOffset/pitchOffsetCents — that's exactly the
+    // point: static pitch is composed inside the modulated reader, never
+    // bypassed. These cases assert plain/static pitch parity.
+    {
+        const auto m = vib();
+        CHECK(isClipModulationCompatible(false, 1.0, false, m),
+              "static-pitch-equivalent (semis only) clip compatible "
+              "(helper agnostic to pitchOffset)");
+    }
+    {
+        const auto m = both();
+        CHECK(isClipModulationCompatible(false, 1.0, false, m),
+              "static-pitch-equivalent clip with vibrato + scratch compatible");
+    }
+
+    // ── Stretch-compatible and bypass cases with precise reason ─────────────
+    {
+        const auto m = vib();
+        CHECK(!isClipModulationCompatible(true, 1.0, false, m),
+              "reversed clip is NOT compatible");
+        CHECK(classifyClipModulationBypass(true, 1.0, false, m) == ClipModulationBypassReason::Reversed,
+              "reversed clip reports Reversed");
+    }
+    {
+        const auto m = vib();
+        CHECK(isClipModulationCompatible(false, 1.5, false, m),
+              "stretched clip is compatible");
+        CHECK(classifyClipModulationBypass(false, 1.5, false, m) == ClipModulationBypassReason::None,
+              "stretched clip reports no bypass");
+        CHECK(isClipModulationCompatible(false, 0.5, false, m),
+              "stretched clip (0.5x) is compatible");
+        CHECK(classifyClipModulationBypass(false, 0.5, false, m) == ClipModulationBypassReason::None,
+              "stretched clip (0.5x) reports no bypass");
+    }
+    {
+        const auto m = vib();
+        CHECK(!isClipModulationCompatible(false, 1.0, true, m),
+              "formant-preserve clip is NOT compatible");
+        CHECK(classifyClipModulationBypass(false, 1.0, true, m) == ClipModulationBypassReason::FormantPreserve,
+              "formant-preserve clip reports FormantPreserve");
+    }
+
+    // ── Modulation root / curve disabled ────────────────────────────────────
+    {
+        ClipModulation m;
+        m.enabled = false;
+        m.vibrato.enabled = true;
+        CHECK(!isClipModulationCompatible(false, 1.0, false, m),
+              "root-disabled clip is NOT compatible");
+        CHECK(classifyClipModulationBypass(false, 1.0, false, m) == ClipModulationBypassReason::Disabled,
+              "root-disabled clip reports Disabled");
+    }
+    {
+        ClipModulation m;
+        m.enabled = true;  // root on
+        m.vibrato.enabled = false;
+        m.scratch.enabled = false;
+        CHECK(!isClipModulationCompatible(false, 1.0, false, m),
+              "no-active-curve clip is NOT compatible");
+        CHECK(classifyClipModulationBypass(false, 1.0, false, m) == ClipModulationBypassReason::NoActiveCurve,
+              "no-active-curve clip reports NoActiveCurve");
+    }
+
+    // ── Reason precedence: Disabled > NoActiveCurve > Reversed > FormantPreserve ──
+    // (matches the order in classifyClipModulationBypass; lock it in.)
+    {
+        ClipModulation m;  // disabled root + reversed + stretched + formant
+        CHECK(classifyClipModulationBypass(true, 1.5, true, m) == ClipModulationBypassReason::Disabled,
+              "Disabled wins over Reversed/FormantPreserve");
+    }
+    {
+        ClipModulation m;
+        m.enabled = true;
+        // no curve enabled
+        CHECK(classifyClipModulationBypass(true, 1.5, true, m) == ClipModulationBypassReason::NoActiveCurve,
+              "NoActiveCurve wins over Reversed/FormantPreserve");
+    }
+    {
+        const auto m = vib();
+        CHECK(classifyClipModulationBypass(true, 1.5, true, m) == ClipModulationBypassReason::Reversed,
+              "Reversed wins over FormantPreserve");
+        CHECK(classifyClipModulationBypass(false, 1.5, true, m) == ClipModulationBypassReason::FormantPreserve,
+              "FormantPreserve still bypasses stretched clips");
+    }
+}
+
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
 int main() {
@@ -557,6 +693,7 @@ int main() {
     test19_scratchClipPercentMode();
     test20_scratchBeatsMode();
     test21_scratchSourceOffsetIntegral();
+    test22_compatibilityHelperMatrix();
 
     std::cout << "\n";
     if (g_failed == 0) {

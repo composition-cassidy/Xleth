@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState, useImperativeHandle, forwardRef, useCallback } from 'react'
+import { useEffect, useRef, useState, useImperativeHandle, forwardRef, useCallback, useMemo } from 'react'
 import { drawGrid, drawClips, drawDropPreview, drawPatternBlocks, drawWorldSpinners, resolveTimelinePalette } from './timelineDrawing.js'
 import { buildResolvedTrackColorMap } from './trackColorResolver.js'
 import useWorldProcessingStore from '../../stores/worldProcessingStore.js'
 import { TRACK_HEIGHT, PPQ, pixelToBeat, beatToPixel } from '../../constants/timeline.js'
+import { getClipRect, clipHasFxIntent } from './clipGeometry.js'
 import { playheadClock } from '../../services/PlayheadClock.js'
 import { timelineEvents } from '../../timelineEvents.js'
 import { createSelectTool } from './tools/selectTool.js'
@@ -37,6 +38,10 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     onCanvasDragOver, onCanvasDrop, onCanvasDragLeave,
     // Display settings (Pass 5B plumbing — consumed in Pass 5C)
     timelineDisplaySettings,
+    // FX badge layer (Phase G.4)
+    onOpenClipFxQuickMenu,
+    scrollOffset,    // state value — used for badge re-positioning on scroll
+    pixelsPerBeat,   // state value — used for badge re-positioning on zoom
   },
   ref
 ) {
@@ -87,6 +92,9 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   // ── Tool instance ref ────────────────────────────────────────────────────
   const toolRef = useRef(null)
   const isDraggingRef = useRef(false)
+  // Mirror of isDraggingRef into React state — drives FX badge layer hide
+  // during drag/resize without touching the canvas hot path.
+  const [isDraggingState, setIsDraggingState] = useState(false)
 
   // ── Inline pattern-block rename overlay ──────────────────────────────────
   const [renamingBlock, setRenamingBlock] = useState(null) // { patternId, x, y, w, h, initial }
@@ -424,6 +432,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     // ── Left-click / other: dispatch to active tool ───────────────────────
     toolRef.current?.onMouseDown(pos.localX, pos.localY, e)
     isDraggingRef.current = true
+    setIsDraggingState(true)
 
     // Register window-level listeners for drag capture
     const onWindowMove = (me) => {
@@ -434,6 +443,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       const p = getLocalXY(me)
       if (p) toolRef.current?.onMouseUp(p.localX, p.localY, me)
       isDraggingRef.current = false
+      setIsDraggingState(false)
       window.removeEventListener('mousemove', onWindowMove)
       window.removeEventListener('mouseup', onWindowUp)
       // Redraw overlay after drag ends (cursor is CSS-owned via data-tool attribute)
@@ -525,6 +535,26 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     if (pos) onCanvasDrop(pos.localX, pos.localY, e)
   }, [onCanvasDrop, getLocalXY])
 
+  // ── FX badge layer (Phase G.4) ────────────────────────────────────────────
+  // Compute one entry per visible clip carrying modulation intent. Re-runs on
+  // scroll/zoom *state* changes so DOM badges follow the canvas.
+
+  const fxBadges = useMemo(() => {
+    if (!clips || !tracks || !onOpenClipFxQuickMenu) return []
+    if (typeof scrollOffset !== 'number' || typeof pixelsPerBeat !== 'number') return []
+    const trackIdToIndex = {}
+    for (let i = 0; i < tracks.length; i++) trackIdToIndex[tracks[i].id] = i
+    const out = []
+    for (const clip of clips) {
+      if (!clipHasFxIntent(clip)) continue
+      const rect = getClipRect(clip, trackIdToIndex, scrollOffset, pixelsPerBeat)
+      if (!rect) continue
+      if (rect.w < 56) continue
+      out.push({ id: clip.id, rect })
+    }
+    return out
+  }, [clips, tracks, scrollOffset, pixelsPerBeat, onOpenClipFxQuickMenu])
+
   // ── Canvas content height tracks the number of tracks ──────────────────────
 
   const contentH = Math.max(trackCount * TRACK_HEIGHT, 200)
@@ -546,6 +576,61 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       <canvas ref={bgRef} className="timeline-canvas-layer" />
       <canvas ref={ctRef} className="timeline-canvas-layer" />
       <canvas ref={ovRef} className="timeline-canvas-layer" />
+      {!isDraggingState && fxBadges.length > 0 && (
+        <div
+          className="timeline-fx-badge-layer"
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            width: '100%',
+            height: '100%',
+            pointerEvents: 'none',
+            zIndex: 12,
+          }}
+        >
+          {fxBadges.map((b) => (
+            <button
+              key={b.id}
+              type="button"
+              title="Quick FX"
+              className="timeline-fx-badge"
+              style={{
+                position: 'absolute',
+                left: Math.round(b.rect.x + b.rect.w - 28),
+                top:  Math.round(b.rect.y + 3),
+                width: 24,
+                height: 14,
+                padding: '1px 6px',
+                fontSize: 9,
+                fontWeight: 700,
+                letterSpacing: 0.4,
+                lineHeight: 1,
+                textTransform: 'uppercase',
+                border: '1px solid var(--theme-border-subtle, #444)',
+                borderRadius: 999,
+                background: 'var(--theme-surface-overlay, rgba(0,0,0,0.55))',
+                color: 'var(--theme-semantic-info-text, var(--theme-text-secondary, #ddd))',
+                cursor: 'pointer',
+                pointerEvents: 'auto',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+              onMouseDown={(e) => { e.preventDefault(); e.stopPropagation() }}
+              onPointerDown={(e) => { e.preventDefault(); e.stopPropagation() }}
+              onContextMenu={(e) => { e.preventDefault(); e.stopPropagation() }}
+              onClick={(e) => {
+                e.preventDefault(); e.stopPropagation()
+                const r = e.currentTarget.getBoundingClientRect()
+                onOpenClipFxQuickMenu(b.id, { x: r.left, y: r.bottom + 4 })
+              }}
+            >
+              FX
+            </button>
+          ))}
+        </div>
+      )}
       <div
         ref={playheadLineRef}
         style={{

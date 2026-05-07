@@ -15,6 +15,8 @@
 #include "shaders/FX_BrightnessContrastPS.h"
 #include "shaders/FX_TVSimulatorPS.h"
 #include "shaders/FX_ZoomPanRotationPS.h"
+#include "shaders/FX_VibratoSwirlPS.h"
+#include "shaders/FX_ScratchWaveSmearPS.h"
 
 #include "model/TimelineTypes.h"  // VisualEffect
 
@@ -560,7 +562,17 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
         std::fprintf(stderr, "[Compositor] FS-behind: '%s' frame=%lld opacity=%.2f\n",
                      req.sourcePath.c_str(), (long long)req.sourceFrameIndex, req.opacity);
 
-        drawCell(entry->srv.Get(), 0.0f, 0.0f, 1.0f, 1.0f,
+        ID3D11ShaderResourceView* layerSRV = entry->srv.Get();
+        if (!effectsBypass_) {
+            ID3D11ShaderResourceView* processedSRV =
+                processCompanionFx(layerSRV, width_, height_, req);
+            if (processedSRV != layerSRV) {
+                layerSRV = processedSRV;
+                restoreMainPipelineState();
+            }
+        }
+
+        drawCell(layerSRV, 0.0f, 0.0f, 1.0f, 1.0f,
                  req.opacity, req.orientation, 0.0f);
     }
 
@@ -766,6 +778,20 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
             }
         }
 
+        // Companion FX are clip-local automatic effects, but they are still
+        // chainable RT passes. effectsBypass_ intentionally returns identity
+        // here too so export/debug bypass mode skips all expensive RT effects.
+        if (!effectsBypass_) {
+            int companionW = std::max(1, static_cast<int>(rw * width_));
+            int companionH = std::max(1, static_cast<int>(rh * height_));
+            ID3D11ShaderResourceView* companionSRV =
+                processCompanionFx(cellSRV, companionW, companionH, req);
+            if (companionSRV != cellSRV) {
+                cellSRV = companionSRV;
+                restoreMainPipelineState();
+            }
+        }
+
         drawCell(cellSRV, rx, ry, rw, rh,
                  req.opacity, req.orientation, req.cornerRadius);
     }
@@ -788,7 +814,17 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
         std::fprintf(stderr, "[Compositor] FS-front: '%s' frame=%lld opacity=%.2f\n",
                      req.sourcePath.c_str(), (long long)req.sourceFrameIndex, req.opacity);
 
-        drawCell(entry->srv.Get(), 0.0f, 0.0f, 1.0f, 1.0f,
+        ID3D11ShaderResourceView* layerSRV = entry->srv.Get();
+        if (!effectsBypass_) {
+            ID3D11ShaderResourceView* processedSRV =
+                processCompanionFx(layerSRV, width_, height_, req);
+            if (processedSRV != layerSRV) {
+                layerSRV = processedSRV;
+                restoreMainPipelineState();
+            }
+        }
+
+        drawCell(layerSRV, 0.0f, 0.0f, 1.0f, 1.0f,
                  req.opacity, req.orientation, 0.0f);
     }
 
@@ -1361,15 +1397,31 @@ bool EffectShaderCache::init(ID3D11Device* device)
         return false;
     }
 
+    hr = device->CreatePixelShader(g_FX_VibratoSwirlPS, sizeof(g_FX_VibratoSwirlPS),
+                                   nullptr, &vibratoSwirlPS);
+    if (FAILED(hr)) {
+        std::fprintf(stderr, "[EffectShaders] Failed: VibratoSwirl PS\n");
+        return false;
+    }
+
+    hr = device->CreatePixelShader(g_FX_ScratchWaveSmearPS, sizeof(g_FX_ScratchWaveSmearPS),
+                                   nullptr, &scratchWaveSmearPS);
+    if (FAILED(hr)) {
+        std::fprintf(stderr, "[EffectShaders] Failed: ScratchWaveSmear PS\n");
+        return false;
+    }
+
     // Create per-effect constant buffers at b2
     if (!createEffectCB(device, 16, desatCB,      "Desaturation"))    return false;
     if (!createEffectCB(device, 32, tintCB,        "Tint"))            return false;
     if (!createEffectCB(device, 16, brightContCB,  "BrightnessContrast")) return false;
     if (!createEffectCB(device, 32, tvSimCB,       "TVSimulator"))     return false;
     if (!createEffectCB(device, 16, zoomPanRotCB,  "ZoomPanRotation")) return false;
+    if (!createEffectCB(device, 32, vibratoSwirlCB, "VibratoSwirl"))   return false;
+    if (!createEffectCB(device, 32, scratchWaveSmearCB, "ScratchWaveSmear")) return false;
 
     initialized = true;
-    std::fprintf(stderr, "[EffectShaders] All 5 effect shaders + CBs created (placeholders)\n");
+    std::fprintf(stderr, "[EffectShaders] All 7 effect shaders + CBs created\n");
     return true;
 }
 
@@ -1380,11 +1432,15 @@ void EffectShaderCache::shutdown()
     brightnessContrastPS.Reset();
     tvSimulatorPS.Reset();
     zoomPanRotPS.Reset();
+    vibratoSwirlPS.Reset();
+    scratchWaveSmearPS.Reset();
     desatCB.Reset();
     tintCB.Reset();
     brightContCB.Reset();
     tvSimCB.Reset();
     zoomPanRotCB.Reset();
+    vibratoSwirlCB.Reset();
+    scratchWaveSmearCB.Reset();
     initialized = false;
 }
 
@@ -1410,6 +1466,142 @@ void GridCompositor::drawEffectPass(ID3D11ShaderResourceView* srv)
 
     // Draw the fullscreen quad
     deviceCtx_->DrawIndexed(6, 0, 0);
+}
+
+void GridCompositor::restoreMainPipelineState()
+{
+    D3D11_VIEWPORT mainVP{};
+    mainVP.Width    = static_cast<float>(width_);
+    mainVP.Height   = static_cast<float>(height_);
+    mainVP.MinDepth = 0.0f;
+    mainVP.MaxDepth = 1.0f;
+    deviceCtx_->RSSetViewports(1, &mainVP);
+    deviceCtx_->OMSetRenderTargets(1, renderTargetRTV_.GetAddressOf(), nullptr);
+    deviceCtx_->PSSetShader(pixelShader_.Get(), nullptr, 0);
+    deviceCtx_->PSSetConstantBuffers(0, 1, constantBuffer_.GetAddressOf());
+    deviceCtx_->PSSetSamplers(0, 1, samplerState_.GetAddressOf());
+}
+
+ID3D11ShaderResourceView* GridCompositor::processCompanionFx(
+    ID3D11ShaderResourceView* sourceSRV,
+    int cellWidth,
+    int cellHeight,
+    const CellFrameRequest& req)
+{
+    if (!initialized_ || !effectShaders_.initialized || !sourceSRV)
+        return sourceSRV;
+
+    const auto& fx = req.companionFx;
+    const bool doSwirl = fx.vibratoSwirlEnabled && effectShaders_.vibratoSwirlPS;
+    const bool doWave  = fx.scratchWaveEnabled && effectShaders_.scratchWaveSmearPS;
+    if (!doSwirl && !doWave)
+        return sourceSRV;
+
+    if (cellWidth <= 0 || cellHeight <= 0)
+        return sourceSRV;
+
+    RTPool::RTPair& rtp = rtPool_.acquire(device_, cellWidth, cellHeight, kCompanionFxRtSlot);
+    if (!rtp.rtvA || !rtp.rtvB || !rtp.srvA || !rtp.srvB)
+        return sourceSRV;
+
+    const float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    D3D11_VIEWPORT cellVP{};
+    cellVP.Width    = static_cast<float>(cellWidth);
+    cellVP.Height   = static_cast<float>(cellHeight);
+    cellVP.MinDepth = 0.0f;
+    cellVP.MaxDepth = 1.0f;
+    deviceCtx_->RSSetViewports(1, &cellVP);
+
+    // Blit the current cell texture into RT_A. Intermediate companion passes
+    // use identity orientation; final orientation is still applied by drawCell().
+    deviceCtx_->ClearRenderTargetView(rtp.rtvA.Get(), clearColor);
+    deviceCtx_->OMSetRenderTargets(1, rtp.rtvA.GetAddressOf(), nullptr);
+    deviceCtx_->PSSetShader(pixelShader_.Get(), nullptr, 0);
+    deviceCtx_->PSSetConstantBuffers(0, 1, constantBuffer_.GetAddressOf());
+    deviceCtx_->PSSetSamplers(0, 1, samplerState_.GetAddressOf());
+    {
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (SUCCEEDED(deviceCtx_->Map(constantBuffer_.Get(), 0,
+                                      D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+            CellConstants cb{};
+            cb.cellRect[2]  = 1.0f;
+            cb.cellRect[3]  = 1.0f;
+            cb.opacity      = 1.0f;
+            cb.orientation  = 0;
+            cb.cornerRadius = 0.0f;
+            std::memcpy(mapped.pData, &cb, sizeof(cb));
+            deviceCtx_->Unmap(constantBuffer_.Get(), 0);
+        }
+    }
+    drawEffectPass(sourceSRV);
+
+    ID3D11RenderTargetView* nullRTV = nullptr;
+    deviceCtx_->OMSetRenderTargets(1, &nullRTV, nullptr);
+
+    ID3D11ShaderResourceView* currentSrc = rtp.srvA.Get();
+    ID3D11RenderTargetView*   currentDst = rtp.rtvB.Get();
+    ID3D11ShaderResourceView* nextSrc    = rtp.srvB.Get();
+    ID3D11RenderTargetView*   nextDst    = rtp.rtvA.Get();
+
+    auto runPass = [&](ID3D11PixelShader* ps, ID3D11Buffer* cb) {
+        if (!ps || !cb)
+            return;
+
+        deviceCtx_->PSSetShader(ps, nullptr, 0);
+        deviceCtx_->PSSetConstantBuffers(2, 1, &cb);
+        deviceCtx_->ClearRenderTargetView(currentDst, clearColor);
+        deviceCtx_->OMSetRenderTargets(1, &currentDst, nullptr);
+        drawEffectPass(currentSrc);
+        deviceCtx_->OMSetRenderTargets(1, &nullRTV, nullptr);
+        std::swap(currentSrc, nextSrc);
+        std::swap(currentDst, nextDst);
+    };
+
+    if (doSwirl) {
+        VibratoSwirlConstants cbData{};
+        cbData.amount  = fx.swirlAmount;
+        cbData.radius  = fx.swirlRadius;
+        cbData.centerX = fx.swirlCenterX;
+        cbData.centerY = fx.swirlCenterY;
+        cbData.lfo     = fx.vibratoLfo;
+        cbData.phase01 = fx.vibratoPhase01;
+        cbData.cents   = fx.vibratoCents; // Reserved for future normalized use.
+
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (SUCCEEDED(deviceCtx_->Map(effectShaders_.vibratoSwirlCB.Get(), 0,
+                                      D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+            std::memcpy(mapped.pData, &cbData, sizeof(cbData));
+            deviceCtx_->Unmap(effectShaders_.vibratoSwirlCB.Get(), 0);
+        }
+        ID3D11Buffer* cb = effectShaders_.vibratoSwirlCB.Get();
+        runPass(effectShaders_.vibratoSwirlPS.Get(), cb);
+    }
+
+    if (doWave) {
+        ScratchWaveSmearConstants cbData{};
+        cbData.amount             = fx.waveAmount;
+        cbData.frequency          = fx.waveFrequency;
+        cbData.smearAmount        = fx.smearAmount;
+        cbData.reverseWithScratch = fx.reverseWaveWithScratch ? 1.0f : 0.0f;
+        cbData.rateMultiplier     = fx.scratchRateMultiplier;
+        cbData.phase01            = fx.scratchPhase01;
+        cbData.intensity01        = fx.scratchIntensity01;
+
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (SUCCEEDED(deviceCtx_->Map(effectShaders_.scratchWaveSmearCB.Get(), 0,
+                                      D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+            std::memcpy(mapped.pData, &cbData, sizeof(cbData));
+            deviceCtx_->Unmap(effectShaders_.scratchWaveSmearCB.Get(), 0);
+        }
+        ID3D11Buffer* cb = effectShaders_.scratchWaveSmearCB.Get();
+        runPass(effectShaders_.scratchWaveSmearPS.Get(), cb);
+    }
+
+    ID3D11ShaderResourceView* nullSRV = nullptr;
+    deviceCtx_->PSSetShaderResources(0, 1, &nullSRV);
+    deviceCtx_->OMSetRenderTargets(1, &nullRTV, nullptr);
+
+    return currentSrc;
 }
 
 // ===========================================================================
