@@ -1687,7 +1687,19 @@ void MixEngine::findActiveClips(int64_t bufferStart, int64_t bufferEnd,
 void MixEngine::findActivePatternBlocks(int64_t bufferStart, int64_t bufferEnd,
                                         double bpm, double sampleRate)
 {
+    // Fix C: snapshot previous buffer's active blocks for per-block dropout
+    // diff. Using swap preserves capacity in both vectors (no heap churn on
+    // the audio thread), and populates prevActiveBlocks_ as a side effect.
+    prevActiveBlocks_.swap(activeBlocks_);
     activeBlocks_.clear();
+
+#ifdef XLETH_DEBUG
+    // Audio-thread guardrail: the per-block diff below is O(N*M). "Typically
+    // small" is exactly the assumption that breaks later — if a pattern-heavy
+    // section ever drives this into the hundreds, catch it in debug builds
+    // before it becomes an audio-thread stall in a release build.
+    jassert(prevActiveBlocks_.size() < 64);
+#endif
 
     if (timeline_ != nullptr)
     {
@@ -1717,6 +1729,39 @@ void MixEngine::findActivePatternBlocks(int64_t bufferStart, int64_t bufferEnd,
 
             activeBlocks_.push_back({block, pattern, sampler, blockStart, blockEnd});
         }
+    }
+
+    // Fix C: per-block dropout diff. The {trackId, regionId}-keyed
+    // prevActiveKeys_ diff below only fires when a whole sampler drops out.
+    // It cannot see the adjacent-block case: block X ends, block Y begins,
+    // both on the same {track, region} → sampler stays live → prevActiveKeys_
+    // thinks nothing changed, but X's held voices have lost their owning
+    // block and can strand. This diff identifies blocks that were active
+    // last buffer but aren't anymore, and if the sampler is still alive it
+    // releases only the voices that spawned inside the dropped block.
+    for (const auto& prev : prevActiveBlocks_)
+    {
+        if (prev.block == nullptr || prev.sampler == nullptr) continue;
+
+        bool stillActive = false;
+        for (const auto& cur : activeBlocks_) {
+            if (cur.block == prev.block) { stillActive = true; break; }
+        }
+        if (stillActive) continue;
+
+        // Block dropped. If the sampler is still alive in activeBlocks_,
+        // prevActiveKeys_'s allNotesOff will NOT fire for it. Release
+        // only the voices that belong to this dropped block.
+        bool samplerStillAlive = false;
+        for (const auto& cur : activeBlocks_) {
+            if (cur.sampler == prev.sampler) { samplerStillAlive = true; break; }
+        }
+        if (samplerStillAlive) {
+            prev.sampler->releaseVoicesSpawnedInRange(
+                prev.blockStartSample, prev.blockEndSample);
+        }
+        // If the sampler is NOT still alive, the prevActiveKeys_ diff below
+        // handles it (after Fix B that is a release-envelope, not hard-kill).
     }
 
     // Block-exit voice cutting: diff active {trackId, regionId} keys against

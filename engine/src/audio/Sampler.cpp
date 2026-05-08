@@ -229,25 +229,55 @@ float Sampler::advanceLfo(const LfoConfig& config, Voice::LfoState& state,
 
 void Sampler::allNotesOff()
 {
+    // Fix B: release-envelope semantics, not hard-kill. The prior
+    // implementation cleared envLevel, playPosition, and active mid-buffer,
+    // which could produce audible clicks if a voice was mid-amplitude when
+    // the sampler-level safety net fired (e.g., a PatternBlock drops out
+    // between buffers). Handing voices into their Release stage lets the
+    // envelope decay naturally and does not require touching playPosition
+    // (resetting it to 0 also caused a restart-from-zero click).
+    //
+    // Functionally equivalent to fireNoteOff(pitch, 0, force=true) on every
+    // active voice, but inlined so the audio thread does no map lookups.
     for (auto& v : voices_)
     {
-        v.active       = false;
-        v.envStage     = Voice::EnvStage::Off;
-        v.envLevel     = 0.0f;
-        v.envPosition  = 0.0;
-        v.playPosition = 0.0;
-        v.noteHeld     = false;
-        v.pitchEnvStage    = Voice::EnvStage::Off;
-        v.pitchEnvLevel    = 0.0f;
-        v.pitchEnvPosition = 0.0;
-        v.portamentoRemaining = 0.0;
-        v.lfoVolState   = Voice::LfoState{};
-        v.lfoPanState   = Voice::LfoState{};
-        v.lfoPitchState = Voice::LfoState{};
+        if (!v.active) continue;
+        if (v.envStage == Voice::EnvStage::Off) continue;  // already dead
+        v.noteHeld          = false;
+        v.releaseStartLevel = v.envLevel;    // envelope continuity
+        v.envStage          = Voice::EnvStage::Release;
+        v.envPosition       = 0.0;
+        v.pitchEnvStage     = Voice::EnvStage::Release;
+        v.pitchEnvPosition  = 0.0;
     }
+    // Control-plane state reset (unchanged).
     arp_.reset();
     lastNotePitch_ = -1;
     monoHeldNotes_.clear();
+}
+
+void Sampler::releaseVoicesSpawnedInRange(int64_t startSample, int64_t endSample)
+{
+    // Fix C: additive safety net for the adjacent-block dropout case.
+    // Only release voices whose spawnAbsSample falls inside [startSample,
+    // endSample) — voices spawned in other live blocks using the same
+    // sampler are untouched. spawnAbsSample == -1 means preview/pre-
+    // transport and is skipped (those never belonged to a transport
+    // block).
+    for (auto& v : voices_)
+    {
+        if (!v.active) continue;
+        if (!v.noteHeld) continue;
+        if (v.spawnAbsSample < 0) continue;
+        if (v.spawnAbsSample < startSample) continue;
+        if (v.spawnAbsSample >= endSample)  continue;
+        v.noteHeld          = false;
+        v.releaseStartLevel = v.envLevel;
+        v.envStage          = Voice::EnvStage::Release;
+        v.envPosition       = 0.0;
+        v.pitchEnvStage     = Voice::EnvStage::Release;
+        v.pitchEnvPosition  = 0.0;
+    }
 }
 
 int Sampler::activeVoiceCount() const

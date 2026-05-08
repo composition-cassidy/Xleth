@@ -72,6 +72,15 @@ public:
     bool hasSample() const { return sampleData_.getNumSamples() > 0; }
     void allNotesOff();
 
+    // Fix C: release voices whose spawnAbsSample falls within
+    // [startSample, endSample). Audio-thread safe (no alloc, no lock).
+    // Uses release envelope, not hard-kill. Intended as an additive safety
+    // net when a PatternBlock drops out but another block keeps its
+    // sampler alive — in that case prevActiveKeys_ in MixEngine does NOT
+    // fire allNotesOff (the key is still live), so this per-block API
+    // releases just the dropped block's voices.
+    void releaseVoicesSpawnedInRange(int64_t startSample, int64_t endSample);
+
     // ── Voice-identity plumbing (audio-thread-safe scalar stores) ────────────
     // MixEngine calls setCurrentSample(bufStart) once per buffer before
     // triggerPatternNotes so fireNoteOn can record absolute spawn positions.

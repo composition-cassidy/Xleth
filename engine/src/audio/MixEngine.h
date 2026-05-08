@@ -552,6 +552,14 @@ private:
     };
     std::vector<ActivePatternBlock> activeBlocks_;
 
+    // Fix C: previous buffer's active blocks, for per-block dropout diff.
+    // prevActiveKeys_ (below) only fires when a whole {trackId, regionId}
+    // sampler drops out — it misses the adjacent-block case where block X
+    // ends at the same buffer edge that block Y begins and both share a
+    // sampler. prevActiveBlocks_ catches that, releasing only the voices
+    // that belonged to the dropped block via releaseVoicesSpawnedInRange.
+    std::vector<ActivePatternBlock> prevActiveBlocks_;
+
     // Block-exit voice cutting: tracks which {trackId, regionId} keys had
     // active blocks on the previous processBlock call. When a key drops out
     // (no longer has any active block — block deleted, moved, or playhead
