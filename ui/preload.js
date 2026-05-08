@@ -100,6 +100,8 @@ window.xleth = ({
     setTempoLocked:   (locked)              => invoke('xleth:timeline:setTempoLocked', locked),
     getDeclickMs:     ()                    => invoke('xleth:timeline:getDeclickMs'),
     setDeclickMs:     (ms)                  => invoke('xleth:timeline:setDeclickMs', ms),
+    getGlobalStretchMethod: ()              => invoke('xleth:timeline:getGlobalStretchMethod'),
+    setGlobalStretchMethod: (method)        => invoke('xleth:timeline:setGlobalStretchMethod', method),
     getSources:       ()                    => invoke('xleth:timeline:getSources'),
     getRegions:       ()                    => invoke('xleth:timeline:getRegions'),
     getRegionsByLabel:(label)               => invoke('xleth:timeline:getRegionsByLabel', label),
@@ -535,7 +537,9 @@ window.xleth = ({
   // Fired after project_load completes. All effect chain nodeIds have been
   // reassigned by AudioGraph::fromJSON — cached nodeIds in UI stores are stale.
   onProjectLoaded: (callback) => {
-    ipcRenderer.on('xleth:project-loaded', () => callback());
+    const h = () => callback();
+    ipcRenderer.on('xleth:project-loaded', h);
+    return () => ipcRenderer.removeListener('xleth:project-loaded', h);
   },
 });
 

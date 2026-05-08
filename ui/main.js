@@ -23,6 +23,16 @@ function loadSettings() {
 function saveSettings(s) {
   try { fs.writeFileSync(settingsPath, JSON.stringify(s, null, 2), 'utf8') } catch {}
 }
+function sanitizeGlobalStretchMethod(method) {
+  const n = Number(method)
+  return Number.isInteger(n) && n >= 1 && n <= 5 ? n : 1
+}
+function getNewProjectGlobalStretchMethodDefault() {
+  const settings = loadSettings()
+  return sanitizeGlobalStretchMethod(
+    settings.defaultGlobalStretchMethod ?? settings.globalStretchMethod ?? 1
+  )
+}
 
 // Log file for startup debugging
 const logPath = userDataPath('startup.log');
@@ -228,10 +238,9 @@ function startWorker() {
     if (msg && msg.ready) {
       workerReady = true;
       log('[Worker] ready');
-      // Apply saved global stretch defaults to engine on startup
+      // Apply the saved new-project default to the initial blank project.
       const saved = loadSettings()
-      if (saved.globalStretchMethod != null)
-        callWorker('engine_setGlobalStretchMethod', [saved.globalStretchMethod]).catch(() => {})
+      callWorker('timeline_setGlobalStretchMethod', [getNewProjectGlobalStretchMethodDefault()]).catch(() => {})
       if (saved.globalFormantPreserve != null)
         callWorker('engine_setGlobalFormantPreserve', [saved.globalFormantPreserve]).catch(() => {})
       setInterval(pollWorldProcessing, 100)
@@ -549,7 +558,7 @@ ipcMain.handle('xleth:project:isDirty',
 
 ipcMain.handle('xleth:project:newBlank',
   safeHandler(async () => {
-    const result = await callWorker('project_newBlank');
+    const result = await callWorker('project_newBlank', [getNewProjectGlobalStretchMethodDefault()]);
     // Broadcast so renderers drop any stale per-project state (plugin editor
     // refs, piano roll / mixer selections, etc.) — same pattern as project:load.
     if (result && result.ok) {
@@ -578,6 +587,12 @@ ipcMain.handle('xleth:timeline:getDeclickMs',
 
 ipcMain.handle('xleth:timeline:setDeclickMs',
   safeHandler((_, ms) => callWorker('timeline_setDeclickMs', [ms])));
+
+ipcMain.handle('xleth:timeline:getGlobalStretchMethod',
+  safeHandler(() => callWorker('timeline_getGlobalStretchMethod')));
+
+ipcMain.handle('xleth:timeline:setGlobalStretchMethod',
+  safeHandler((_, method) => callWorker('timeline_setGlobalStretchMethod', [method])));
 
 ipcMain.handle('xleth:timeline:getSources',
   safeHandler(() => callWorker('timeline_getSources')));

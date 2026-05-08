@@ -137,6 +137,7 @@ bool ProjectManager::saveProject(const Timeline& timeline,
     j["patternBlocks"]  = tl.value("patternBlocks", json::array());
     j["gridLayout"]     = tl.value("gridLayout", json::object());
     j["declickMs"]      = tl.value("declickMs", 0.0);
+    j["globalStretchMethod"] = tl.value("globalStretchMethod", 1);
     j["custom_labels"]  = customLabels;
 
     // Effect chains — only written when non-empty (keeps project files clean)
@@ -273,6 +274,7 @@ std::optional<Timeline> ProjectManager::loadProject(const std::string& projectDi
     tl["patternBlocks"] = j.value("patternBlocks", json::array());
     if (j.contains("gridLayout")) tl["gridLayout"] = j["gridLayout"];
     tl["declickMs"] = j.value("declickMs", 0.0);
+    tl["globalStretchMethod"] = j.value("globalStretchMethod", 1);
 
     // Compute nextId = max(all entity ids) + 1 so the timeline counter is correct
     int maxId = 0;

@@ -115,6 +115,7 @@ int main() {
     clip.pitchOffset   = 0;
     clip.syllableIndex = -1;
     tl.addClip(clip);
+    tl.setGlobalStretchMethod(static_cast<int>(StretchMethod::WORLD));
 
     {
         ProjectManager pm;
@@ -145,6 +146,7 @@ int main() {
         CHECK(j.contains("regions"),        "has regions");
         CHECK(j.contains("tracks"),         "has tracks");
         CHECK(j.contains("clips"),          "has clips");
+        CHECK(j.contains("globalStretchMethod"), "has globalStretchMethod");
         CHECK(j.contains("custom_labels"),  "has custom_labels");
 
         CHECK(j["xleth_version"].get<std::string>() == "0.1.0",
@@ -164,6 +166,8 @@ int main() {
         CHECK(j["regions"].size() == 1, "regions array has 1 entry");
         CHECK(j["tracks"].size()  == 1, "tracks array has 1 entry");
         CHECK(j["clips"].size()   == 1, "clips array has 1 entry");
+        CHECK(j["globalStretchMethod"].get<int>() == static_cast<int>(StretchMethod::WORLD),
+              "globalStretchMethod == WORLD");
     }
 
     // ── Test 3: loadProject restores all data ─────────────────────────────────
@@ -179,6 +183,8 @@ int main() {
         CHECK(tl2.getSampleRate() == 48000.0, "SampleRate round-trips correctly");
         CHECK(tl2.getTimeSigNum() == 4,       "TimeSigNum round-trips correctly");
         CHECK(tl2.getTimeSigDen() == 4,       "TimeSigDen round-trips correctly");
+        CHECK(tl2.getGlobalStretchMethod() == static_cast<int>(StretchMethod::WORLD),
+              "GlobalStretchMethod round-trips correctly");
 
         CHECK(tl2.getAllSources().size() == 1, "1 source loaded");
         CHECK(tl2.getAllRegions().size() == 1, "1 region loaded");

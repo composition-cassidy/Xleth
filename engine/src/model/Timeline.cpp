@@ -3,6 +3,22 @@
 #include <iostream>
 #include <set>
 
+namespace {
+int sanitizeProjectGlobalStretchMethod(int method) {
+    switch (static_cast<StretchMethod>(method)) {
+        case StretchMethod::PSOLA:
+        case StretchMethod::Rubber:
+        case StretchMethod::WSOLA:
+        case StretchMethod::PhaseVocoder:
+        case StretchMethod::WORLD:
+            return method;
+        case StretchMethod::Global:
+        default:
+            return static_cast<int>(StretchMethod::PSOLA);
+    }
+}
+}
+
 // ─── SourceMedia JSON (defined here; no separate SourceMedia.h/.cpp) ──────────
 
 static void sourceToJson(nlohmann::json& j, const SourceMedia& s) {
@@ -1131,6 +1147,10 @@ void Timeline::setPreviewFps(int fps) {
     std::cout << "[Timeline] Set preview FPS=" << fps << "\n";
 }
 
+void Timeline::setGlobalStretchMethod(int method) {
+    m_globalStretchMethod = sanitizeProjectGlobalStretchMethod(method);
+}
+
 // ─── Restore (undo/redo) ──────────────────────────────────────────────────────
 
 bool Timeline::restoreClip(const Clip& clip) {
@@ -1218,6 +1238,7 @@ nlohmann::json Timeline::toJSON() const {
     j["timeSigNum"]    = m_timeSigNum;
     j["timeSigDen"]    = m_timeSigDen;
     j["declickMs"]     = m_declickMs;
+    j["globalStretchMethod"] = m_globalStretchMethod;
     j["tempoLocked"]   = m_tempoLocked;
     j["nextId"]        = m_nextId;
 
@@ -1320,6 +1341,8 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
             j.at("tempoLocked").get_to(m_tempoLocked);
         else
             m_tempoLocked = true; // old project: default on (preserves prior behavior)
+        setGlobalStretchMethod(j.value("globalStretchMethod",
+            static_cast<int>(StretchMethod::PSOLA)));
 
         m_sources.clear();
         for (const auto& s : j.at("sources")) {
@@ -1549,6 +1572,7 @@ void Timeline::clear() {
     m_timeSigNum = 4;
     m_timeSigDen = 4;
     m_declickMs  = 0.5;
+    m_globalStretchMethod = static_cast<int>(StretchMethod::PSOLA);
     m_nextId     = 1;
 
     std::cout << "[Timeline] Cleared ("

@@ -1,4 +1,8 @@
 import { useState, useEffect } from 'react'
+import {
+  GLOBAL_STRETCH_METHOD_OPTIONS,
+  sanitizeGlobalStretchMethod,
+} from '../constants/globalStretchMethods.js'
 
 // PROXY context only. This creates a fresh off-screen WebGL context inside
 // the Settings tab. In most cases Chromium's GPU process will pick the same
@@ -60,7 +64,8 @@ function snapshotPreviewDiag() {
 }
 
 export default function SettingsPanel({ onClose }) {
-  const [stretchMethod, setStretchMethod] = useState(1)   // 1=PSOLA, 2=Rubber, 3=WSOLA, 4=PhaseVocoder
+  const [projectStretchMethod, setProjectStretchMethod] = useState(null)
+  const [defaultStretchMethod, setDefaultStretchMethod] = useState(null)
   const [formantPreserve, setFormantPreserve] = useState(false)
   const [spacebarMode, setSpacebarMode] = useState('play-pause')
   const [autosaveInterval, setAutosaveInterval] = useState(5)
@@ -70,7 +75,15 @@ export default function SettingsPanel({ onClose }) {
   const [diagState, setDiagState] = useState({ status: 'idle', message: '', path: '' })
 
   useEffect(() => {
-    window.xleth.engine.getGlobalStretchMethod().then(m => setStretchMethod(m ?? 1))
+    window.xleth.timeline.getGlobalStretchMethod()
+      .then(m => setProjectStretchMethod(sanitizeGlobalStretchMethod(m)))
+      .catch(() => setProjectStretchMethod(1))
+    Promise.all([
+      window.xleth.settings.get('defaultGlobalStretchMethod').catch(() => null),
+      window.xleth.settings.get('globalStretchMethod').catch(() => null),
+    ]).then(([preferred, legacy]) => {
+      setDefaultStretchMethod(sanitizeGlobalStretchMethod(preferred ?? legacy ?? 1))
+    }).catch(() => setDefaultStretchMethod(1))
     window.xleth.engine.getGlobalFormantPreserve().then(v => setFormantPreserve(!!v))
     window.xleth.settings.get('spacebarMode').then(v => {
       setSpacebarMode(v === 'play-stop' ? 'play-stop' : 'play-pause')
@@ -158,11 +171,20 @@ export default function SettingsPanel({ onClose }) {
     return 'inherit'
   }
 
-  async function applyStretchMethod(m) {
-    console.log('[UISettings] globalStretchMethod changed:', m)
-    setStretchMethod(m)
-    await window.xleth.engine.setGlobalStretchMethod(m)
-    await window.xleth.settings.set('globalStretchMethod', m)
+  async function applyProjectStretchMethod(m) {
+    const method = sanitizeGlobalStretchMethod(m)
+    console.log('[UISettings] project globalStretchMethod changed:', method)
+    setProjectStretchMethod(method)
+    await window.xleth.timeline.setGlobalStretchMethod(method)
+    window.dispatchEvent(new CustomEvent('xleth:globalStretchMethod-changed', {
+      detail: { method },
+    }))
+  }
+
+  async function applyDefaultStretchMethod(m) {
+    const method = sanitizeGlobalStretchMethod(m)
+    setDefaultStretchMethod(method)
+    await window.xleth.settings.set('defaultGlobalStretchMethod', method)
   }
 
   async function applyFormant(v) {
@@ -230,24 +252,67 @@ export default function SettingsPanel({ onClose }) {
         </div>
         <div className="settings-panel-section">
           <div className="settings-panel-section-title">Clip Processing</div>
-          <div className="settings-panel-row">
-            <label className="settings-panel-label">Default Stretch Method</label>
-            <select
-              className="settings-panel-select"
-              value={stretchMethod}
-              onChange={e => applyStretchMethod(Number(e.target.value))}
-            >
-              <option value={2}>Rubber Band</option>
-              <option value={3}>WSOLA</option>
-              <option value={1}>TD-PSOLA</option>
-              <option value={5}>WORLD</option>
-              <option value={4}>Phase Vocoder</option>
-            </select>
-            {stretchMethod === 5 && (
-              <div className="settings-panel-hint">
-                Best for speech and vocal samples. Processes offline — parameter changes apply after a short analysis step.
+          <div className="settings-panel-clip-processing">
+            <div className="settings-panel-clip-field">
+              <div className="settings-panel-clip-field-meta">
+                <label
+                  className="settings-panel-label settings-panel-label--nowrap"
+                  htmlFor="settings-project-stretch-method"
+                >
+                  Global Clip Processing
+                </label>
+                <div className="settings-panel-field-copy">Applies to this project.</div>
               </div>
-            )}
+              <div className="settings-panel-clip-field-control">
+                <select
+                  id="settings-project-stretch-method"
+                  className="settings-panel-select settings-panel-select--stretch-method"
+                  value={projectStretchMethod ?? ''}
+                  onChange={e => applyProjectStretchMethod(Number(e.target.value))}
+                  disabled={projectStretchMethod == null}
+                >
+                  {projectStretchMethod == null && <option value="">Loading...</option>}
+                  {GLOBAL_STRETCH_METHOD_OPTIONS.map(option => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+                {projectStretchMethod === 5 && (
+                  <div className="settings-panel-hint settings-panel-hint--inline">
+                    Best for speech and vocal samples. Processes offline - parameter changes apply after a short analysis step.
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="settings-panel-clip-field">
+              <div className="settings-panel-clip-field-meta">
+                <label
+                  className="settings-panel-label settings-panel-label--nowrap"
+                  htmlFor="settings-default-stretch-method"
+                >
+                  New Project Default
+                </label>
+                <div className="settings-panel-field-copy">Used only for newly created blank projects.</div>
+              </div>
+              <div className="settings-panel-clip-field-control">
+                <select
+                  id="settings-default-stretch-method"
+                  className="settings-panel-select settings-panel-select--stretch-method"
+                  value={defaultStretchMethod ?? ''}
+                  onChange={e => applyDefaultStretchMethod(Number(e.target.value))}
+                  disabled={defaultStretchMethod == null}
+                >
+                  {defaultStretchMethod == null && <option value="">Loading...</option>}
+                  {GLOBAL_STRETCH_METHOD_OPTIONS.map(option => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+                {defaultStretchMethod === 5 && (
+                  <div className="settings-panel-hint settings-panel-hint--inline">
+                    Best for speech and vocal samples. Processes offline - parameter changes apply after a short analysis step.
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
           <div className="settings-panel-row">
             <label className="settings-panel-label">Formant Preservation</label>

@@ -17,10 +17,26 @@ const usePianoRollStore = create((set, get) => ({
 
     timelineEvents.addEventListener('open-piano-roll', (e) => {
       const pid = e.detail?.patternId ?? null
-      set({ patternId: pid })
+      const registry = usePanelRegistry.getState()
+      const panel = registry.panels.pianoRoll
+      const shouldOpenFloating = get().detached || (!panel.hidden && panel.mode === 'floating')
+
+      if (pid != null) {
+        if (panel.hidden) {
+          if (shouldOpenFloating) registry.openPanel('pianoRoll')
+          else registry.dockPanel('pianoRoll', 'bottom')
+        } else if (panel.mode !== 'floating') {
+          registry.focusPanel('pianoRoll')
+        }
+      }
+
+      const nextPanel = usePanelRegistry.getState().panels.pianoRoll
+      const floating = !nextPanel.hidden && nextPanel.mode === 'floating'
+
+      set({ patternId: pid, detached: floating })
       // When the Piano Roll is floating, update its pattern but keep the
       // main window's tab on Timeline — don't yank the user away.
-      if (pid != null && !get().detached) set({ activeCenterTab: 'piano-roll' })
+      if (pid != null) set({ activeCenterTab: floating ? 'timeline' : 'piano-roll' })
     })
     timelineEvents.addEventListener('close-piano-roll', () => {
       // "Back to Timeline" — keep patternId, switch tab.

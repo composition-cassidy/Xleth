@@ -3279,9 +3279,15 @@ Napi::Value Project_NewBlank(const Napi::CallbackInfo& info)
         mix.clearRegionToSampleMap();
     }
 
+    int newProjectGlobalStretchMethod = static_cast<int>(StretchMethod::PSOLA);
+    if (info.Length() > 0 && info[0].IsNumber()) {
+        newProjectGlobalStretchMethod = info[0].As<Napi::Number>().Int32Value();
+    }
+
     // 4. Clear the Timeline in place — preserves object identity so
     //    MixEngine / SyncManager / UI references remain valid.
     g_timeline->clear();
+    g_timeline->setGlobalStretchMethod(newProjectGlobalStretchMethod);
 
     // 5. Clear undo/redo history. markSavepoint at the end so the empty
     //    project starts out "clean".
@@ -3324,6 +3330,7 @@ Napi::Value Project_NewBlank(const Napi::CallbackInfo& info)
         });
         audioEngine->getTransport().setBPM(g_timeline->getBPM());
         syncClipFadeToMixEngine();
+        mix.setGlobalStretchMethod(g_timeline->getGlobalStretchMethod());
         mix.rebuildAllSamplers();
     }
 
@@ -3393,6 +3400,7 @@ Napi::Value Project_Load(const Napi::CallbackInfo& info)
         });
         audioEngine->getTransport().setBPM(g_timeline->getBPM());
         syncClipFadeToMixEngine();
+        mix.setGlobalStretchMethod(g_timeline->getGlobalStretchMethod());
 
         // Option A fix: rebuild regionToSampleMap_ from the loaded project before
         // calling refreshAllClipCaches(). Without this, invalidateClipCache() silently
@@ -3594,6 +3602,17 @@ Napi::Value Timeline_GetDeclickMs(const Napi::CallbackInfo& info)
     return Napi::Number::New(env, g_timeline->getDeclickMs());
 }
 
+// timeline_getGlobalStretchMethod() -> number
+Napi::Value Timeline_GetGlobalStretchMethod(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!g_timeline) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    return Napi::Number::New(env, g_timeline->getGlobalStretchMethod());
+}
+
 // timeline_setDeclickMs(ms: number) → void
 // Intentionally bypasses UndoManager — clip boundary fade is a render preference,
 // not a creative timeline edit. Applies immediately to the audio thread via atomic.
@@ -3612,6 +3631,30 @@ void Timeline_SetDeclickMs(const Napi::CallbackInfo& info)
     const double ms = info[0].As<Napi::Number>().DoubleValue();
     g_timeline->setDeclickMs(ms);
     syncClipFadeToMixEngine();
+}
+
+// timeline_setGlobalStretchMethod(method: number) -> void
+void Timeline_SetGlobalStretchMethod(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return;
+    }
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        Napi::TypeError::New(env, "timeline_setGlobalStretchMethod(method: number)")
+            .ThrowAsJavaScriptException();
+        return;
+    }
+
+    const int method = info[0].As<Napi::Number>().Int32Value();
+    g_timeline->setGlobalStretchMethod(method);
+    const int sanitized = g_timeline->getGlobalStretchMethod();
+    if (audioEngine) {
+        auto& mix = audioEngine->getMixEngine();
+        mix.setGlobalStretchMethod(sanitized);
+        mix.invalidateAllGlobalMethodClips();
+    }
 }
 
 Napi::Value Timeline_GetSources(const Napi::CallbackInfo& info)
@@ -10992,6 +11035,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("timeline_getBPM",           Napi::Function::New(env, Timeline_GetBPM));
     exports.Set("timeline_getTempoLocked",   Napi::Function::New(env, Timeline_GetTempoLocked));
     exports.Set("timeline_getDeclickMs",     Napi::Function::New(env, Timeline_GetDeclickMs));
+    exports.Set("timeline_getGlobalStretchMethod", Napi::Function::New(env, Timeline_GetGlobalStretchMethod));
     exports.Set("timeline_getSources",       Napi::Function::New(env, Timeline_GetSources));
     exports.Set("timeline_getRegions",       Napi::Function::New(env, Timeline_GetRegions));
     exports.Set("timeline_getRegionsByLabel",Napi::Function::New(env, Timeline_GetRegionsByLabel));
@@ -11004,6 +11048,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("timeline_setBPM",         Napi::Function::New(env, Timeline_SetBPM));
     exports.Set("timeline_setTempoLocked", Napi::Function::New(env, Timeline_SetTempoLocked));
     exports.Set("timeline_setDeclickMs",   Napi::Function::New(env, Timeline_SetDeclickMs));
+    exports.Set("timeline_setGlobalStretchMethod", Napi::Function::New(env, Timeline_SetGlobalStretchMethod));
     exports.Set("timeline_addTrack",     Napi::Function::New(env, Timeline_AddTrack));
     exports.Set("timeline_removeTrack",  Napi::Function::New(env, Timeline_RemoveTrack));
     exports.Set("timeline_setTrackMuted",      Napi::Function::New(env, Timeline_SetTrackMuted));

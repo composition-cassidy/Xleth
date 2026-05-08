@@ -70,6 +70,8 @@ public:
     int    getTimeSigDen()  const { return m_timeSigDen; }
     void   setDeclickMs(double ms);
     double getDeclickMs()   const { return m_declickMs; }
+    void   setGlobalStretchMethod(int method);
+    int    getGlobalStretchMethod() const { return m_globalStretchMethod; }
 
     // ── Grid Layout ───────────────────────────────────────────────────────────
     const GridLayout& getGridLayout() const { return m_gridLayout; }
@@ -217,6 +219,7 @@ private:
 
     GridLayout                  m_gridLayout;
     double m_declickMs = 0.5; // global clip boundary fade duration in ms (0 = disabled)
+    int    m_globalStretchMethod = static_cast<int>(StretchMethod::PSOLA);
 
     std::function<void(int, const char*)> m_clipCacheInvalidator;
 };

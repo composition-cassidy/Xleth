@@ -15,7 +15,6 @@ import QuantizeDialog from './timeline/QuantizeDialog.jsx'
 import { buildQuantizeSpecs } from '../utils/quantize.js'
 import useTimelineZoom from '../hooks/useTimelineZoom.js'
 import useTimelineScroll from '../hooks/useTimelineScroll.js'
-import { getGlobalStretchMethodLabel } from '../constants/globalStretchMethods.js'
 import { labelHexColor } from '../constants/labels.js'
 import { normalizeTrackCustomColor } from './timeline/trackColorResolver.js'
 import { subscribe } from '../transportStore.js'
@@ -811,32 +810,17 @@ export default function TimelineView({
   }, [timelineTrackHeaderWidth, setTimelineTrackHeaderWidth])
 
   const [declickMs, setDeclickMs] = useState(0.5)
-  const [globalStretchMethod, setGlobalStretchMethod] = useState(1) // 1=PSOLA,2=Rubber,3=WSOLA,4=PhaseVocoder,5=WORLD
+  const [globalStretchMethod, setGlobalStretchMethod] = useState(1) // 1=PSOLA,2=Rubber,3=WSOLA,4=PhaseVocoder
   const declickMountedRef = useRef(true)
   useEffect(() => {
     declickMountedRef.current = true
     window.xleth?.timeline?.getDeclickMs()
       .then(v => { if (declickMountedRef.current && v != null) setDeclickMs(v) })
       .catch(() => {})
-    const refreshGlobalStretchMethod = () => {
-      window.xleth?.timeline?.getGlobalStretchMethod()
-        .then(m => { if (declickMountedRef.current && m != null) setGlobalStretchMethod(m) })
-        .catch(() => {})
-    }
-    refreshGlobalStretchMethod()
-    const offProjectLoaded = window.xleth?.onProjectLoaded?.(refreshGlobalStretchMethod)
-
-    const onGlobalStretchMethodChanged = (event) => {
-      const method = Number(event.detail?.method)
-      if (method >= 1 && method <= 5) setGlobalStretchMethod(method)
-    }
-    window.addEventListener('xleth:globalStretchMethod-changed', onGlobalStretchMethodChanged)
-
-    return () => {
-      declickMountedRef.current = false
-      offProjectLoaded?.()
-      window.removeEventListener('xleth:globalStretchMethod-changed', onGlobalStretchMethodChanged)
-    }
+    window.xleth?.engine?.getGlobalStretchMethod()
+      .then(m => { if (declickMountedRef.current && m != null) setGlobalStretchMethod(m) })
+      .catch(() => {})
+    return () => { declickMountedRef.current = false }
   }, [])
   const handleDeclick = useCallback((v) => {
     const clamped = Math.max(0, Math.min(5, v))
@@ -3285,6 +3269,17 @@ export default function TimelineView({
     contextHasVideo, contextThumbDataUrl,
   ])
 
+  function stretchMethodName(m) {
+    switch (m) {
+      case 1: return 'TD-PSOLA'
+      case 2: return 'Rubber Band'
+      case 3: return 'WSOLA'
+      case 4: return 'Phase Vocoder'
+      case 5: return 'WORLD'
+      default: return 'TD-PSOLA'
+    }
+  }
+
   const contextMenuItems = contextMenu
     ? (contextMenu.type === 'clip'
         ? [
@@ -3362,38 +3357,28 @@ export default function TimelineView({
             { type: 'separator' },
             {
               label: (contextMenuClip?.stretchMethod ?? 0) === 0
-                ? `● Method: Global (${getGlobalStretchMethodLabel(globalStretchMethod)})`
-                : `○ Method: Global (${getGlobalStretchMethodLabel(globalStretchMethod)})`,
+                ? `● Method: Global (${stretchMethodName(globalStretchMethod)})`
+                : `○ Method: Global (${stretchMethodName(globalStretchMethod)})`,
               onClick: () => handleSetClipStretchMethod(contextMenu.clipId, 0),
             },
             {
-              label: contextMenuClip?.stretchMethod === 1
-                ? `● Method: ${getGlobalStretchMethodLabel(1)}`
-                : `○ Method: ${getGlobalStretchMethodLabel(1)}`,
+              label: contextMenuClip?.stretchMethod === 1 ? '● Method: TD-PSOLA' : '○ Method: TD-PSOLA',
               onClick: () => handleSetClipStretchMethod(contextMenu.clipId, 1),
             },
             {
-              label: contextMenuClip?.stretchMethod === 2
-                ? `● Method: ${getGlobalStretchMethodLabel(2)}`
-                : `○ Method: ${getGlobalStretchMethodLabel(2)}`,
+              label: contextMenuClip?.stretchMethod === 2 ? '● Method: Rubber Band' : '○ Method: Rubber Band',
               onClick: () => handleSetClipStretchMethod(contextMenu.clipId, 2),
             },
             {
-              label: contextMenuClip?.stretchMethod === 3
-                ? `● Method: ${getGlobalStretchMethodLabel(3)}`
-                : `○ Method: ${getGlobalStretchMethodLabel(3)}`,
+              label: contextMenuClip?.stretchMethod === 3 ? '● Method: WSOLA' : '○ Method: WSOLA',
               onClick: () => handleSetClipStretchMethod(contextMenu.clipId, 3),
             },
             {
-              label: contextMenuClip?.stretchMethod === 5
-                ? `● Method: ${getGlobalStretchMethodLabel(5)}`
-                : `○ Method: ${getGlobalStretchMethodLabel(5)}`,
+              label: contextMenuClip?.stretchMethod === 5 ? '● Method: WORLD' : '○ Method: WORLD',
               onClick: () => handleSetClipStretchMethod(contextMenu.clipId, 5),
             },
             {
-              label: contextMenuClip?.stretchMethod === 4
-                ? `● Method: ${getGlobalStretchMethodLabel(4)}`
-                : `○ Method: ${getGlobalStretchMethodLabel(4)}`,
+              label: contextMenuClip?.stretchMethod === 4 ? '● Method: Phase Vocoder' : '○ Method: Phase Vocoder',
               onClick: () => handleSetClipStretchMethod(contextMenu.clipId, 4),
             },
             {

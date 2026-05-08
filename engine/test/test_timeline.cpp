@@ -600,6 +600,7 @@ int main() {
 
     // ── [14] JSON round-trip ──────────────────────────────────────────────────
     std::cout << "[14] JSON serialization round-trip\n";
+    tl.setGlobalStretchMethod(static_cast<int>(StretchMethod::WORLD));
     nlohmann::json j = tl.toJSON();
 
     // Top-level keys present
@@ -610,6 +611,7 @@ int main() {
     CHECK(j.contains("regions"),    "JSON has regions");
     CHECK(j.contains("tracks"),     "JSON has tracks");
     CHECK(j.contains("clips"),      "JSON has clips");
+    CHECK(j.contains("globalStretchMethod"), "JSON has globalStretchMethod");
 
     // Counts
     CHECK(j["sources"].size() == 2, "JSON: 2 sources");
@@ -624,6 +626,8 @@ int main() {
     CHECK_NEAR(tl2.getBPM(),        tl.getBPM(),        1e-9, "deserialized BPM matches");
     CHECK_NEAR(tl2.getSampleRate(), tl.getSampleRate(), 1e-9, "deserialized SR matches");
     CHECK(tl2.getTimeSigNum() == tl.getTimeSigNum(), "deserialized timeSigNum matches");
+    CHECK(tl2.getGlobalStretchMethod() == static_cast<int>(StretchMethod::WORLD),
+          "deserialized globalStretchMethod matches");
     CHECK(tl2.getAllSources().size() == 2, "deserialized 2 sources");
     CHECK(tl2.getAllRegions().size() == 5, "deserialized 5 regions");
     CHECK(tl2.getAllTracks().size()  == 3, "deserialized 3 tracks");
@@ -674,6 +678,22 @@ int main() {
     Timeline tl3;
     CHECK(tl3.fromJSON(tl2.toJSON()), "double round-trip fromJSON succeeds");
     CHECK(tl3.getAllClips().size() == 9, "double round-trip: 9 clips");
+
+    {
+        nlohmann::json legacy = j;
+        legacy.erase("globalStretchMethod");
+        Timeline legacyTl;
+        CHECK(legacyTl.fromJSON(legacy), "legacy project without globalStretchMethod loads");
+        CHECK(legacyTl.getGlobalStretchMethod() == static_cast<int>(StretchMethod::PSOLA),
+              "missing globalStretchMethod falls back to PSOLA");
+
+        nlohmann::json invalid = j;
+        invalid["globalStretchMethod"] = 0;
+        Timeline invalidTl;
+        CHECK(invalidTl.fromJSON(invalid), "invalid globalStretchMethod project loads");
+        CHECK(invalidTl.getGlobalStretchMethod() == static_cast<int>(StretchMethod::PSOLA),
+              "invalid globalStretchMethod falls back to PSOLA");
+    }
 
     // ── [15] VideoFlipConfig migration round-trip ─────────────────────────────
     testVideoFlipConfigMigration();

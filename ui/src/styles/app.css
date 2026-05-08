@@ -10746,6 +10746,10 @@ html.fx-drag-active * {
   color: var(--theme-text);
 }
 
+.settings-panel-label--nowrap {
+  white-space: nowrap;
+}
+
 .settings-panel-select {
   background: var(--bg-control);
   border: 1px solid var(--theme-border-subtle);
@@ -10756,6 +10760,46 @@ html.fx-drag-active * {
   cursor: pointer;
 }
 .settings-panel-select:focus { outline: none; border-color: var(--theme-accent); }
+
+.settings-panel-clip-processing {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.settings-panel-clip-field {
+  display: grid;
+  grid-template-columns: 148px minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+}
+
+.settings-panel-clip-field-meta {
+  min-width: 0;
+}
+
+.settings-panel-field-copy {
+  font-size: 11px;
+  color: var(--theme-text-muted);
+  line-height: 1.4;
+  margin-top: 4px;
+}
+
+.settings-panel-clip-field-control {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.settings-panel-select--stretch-method {
+  width: 100%;
+  min-width: 150px;
+}
+
+.settings-panel-hint--inline {
+  margin-top: 6px;
+}
 
 .settings-panel-button {
   background: var(--bg-control);
