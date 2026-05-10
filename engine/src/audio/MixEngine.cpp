@@ -1910,6 +1910,12 @@ void MixEngine::prepare(double sampleRate, int maxBlockSize)
     clipModReader_.resetAllStates();
 }
 
+void MixEngine::setDiagnosticTapSink(DiagnosticTapSink* sink)
+{
+    diagnosticTapSink_ = sink;
+    diagnosticTapBlockIndex_ = 0;
+}
+
 void MixEngine::setNonRealtime(bool nr)
 {
     nonRealtime_.store(nr, std::memory_order_relaxed);
@@ -3685,6 +3691,9 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     const int64_t position  = transport.getRenderPositionSamples();
     const int64_t bufStart  = position;
     const int64_t bufEnd    = position + numSamples;
+    auto* diagnosticTapSink = diagnosticTapSink_;
+    const uint64_t diagnosticBlockIndex =
+        diagnosticTapSink != nullptr ? diagnosticTapBlockIndex_++ : 0;
 
     // Seek detection: if buffer start doesn't continue from previous buffer
     // end, the playhead jumped. Release all held pattern notes so stale
@@ -4248,6 +4257,65 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     float masterPeakL = 0.0f;
     float masterPeakR = 0.0f;
 
+    auto emitTrackDiagnosticTap = [&](DiagnosticTapPoint point,
+                                      int slot,
+                                      const TrackSlot& trackSlot,
+                                      bool shouldPlay,
+                                      bool hasAudio,
+                                      bool isTailing)
+    {
+        if (diagnosticTapSink == nullptr || trackSlot.info == nullptr)
+            return;
+        if (!diagnosticTapSink->wantsTrack(trackSlot.info->id))
+            return;
+
+        DiagnosticTapBlock tap;
+        tap.point = point;
+        tap.buffer = &trackBuffers_[slot];
+        tap.numSamples = numSamples;
+        tap.sampleRate = sampleRate;
+        tap.transportStartSample = bufStart;
+        tap.blockIndex = diagnosticBlockIndex;
+        tap.trackId = trackSlot.info->id;
+        tap.trackName = trackSlot.info->name.c_str();
+        tap.trackType = trackSlot.info->type;
+        tap.muted = trackSlot.info->muted;
+        tap.solo = trackSlot.info->solo;
+        tap.visualOnly = trackSlot.info->visualOnly;
+        tap.audible = shouldPlay;
+        tap.hadAudio = hasAudio;
+        tap.tailing = isTailing;
+        tap.chainsLocked = chainsLocked;
+        tap.nonRealtime = nonRealtime_.load(std::memory_order_relaxed);
+        tap.declaredLatencySamples = cachedTrackInsertLatencySamples_[slot];
+        tap.compensationDelaySamples = cachedTrackCompensationSamples_[slot];
+        tap.maxAudibleTrackLatencySamples = cachedMaxAudibleTrackLatencySamples_;
+        tap.masterInsertLatencySamples = cachedMasterInsertLatencySamples_;
+        diagnosticTapSink->capture(tap);
+    };
+
+    auto emitBusDiagnosticTap = [&](DiagnosticTapPoint point,
+                                    const juce::AudioBuffer<float>& bus)
+    {
+        if (diagnosticTapSink == nullptr)
+            return;
+
+        DiagnosticTapBlock tap;
+        tap.point = point;
+        tap.buffer = &bus;
+        tap.numSamples = numSamples;
+        tap.sampleRate = sampleRate;
+        tap.transportStartSample = bufStart;
+        tap.blockIndex = diagnosticBlockIndex;
+        tap.trackId = -1;
+        tap.trackName = "MASTER_INPUT_SUM";
+        tap.chainsLocked = chainsLocked;
+        tap.nonRealtime = nonRealtime_.load(std::memory_order_relaxed);
+        tap.maxAudibleTrackLatencySamples = cachedMaxAudibleTrackLatencySamples_;
+        tap.masterInsertLatencySamples = cachedMasterInsertLatencySamples_;
+        diagnosticTapSink->capture(tap);
+    };
+
     for (int i = 0; i < numTrackSlots; ++i)
     {
         const auto* track = trackSlots[i].info;
@@ -4378,12 +4446,26 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         trackPeaks_[i].peakL.store(tpL, std::memory_order_relaxed);
         trackPeaks_[i].peakR.store(tpR, std::memory_order_relaxed);
 
+        emitTrackDiagnosticTap(DiagnosticTapPoint::PrePdcTrack,
+                               i,
+                               trackSlots[i],
+                               shouldPlay,
+                               hasAudio,
+                               isTailing);
+
         {
             const uint64_t pdcStartNs = rtDiagEnabled ? steadyNowNs() : 0;
             trackCompensationDelays_[i].process(trackBuffers_[i], numSamples);
             if (rtDiagEnabled)
                 recordPdcDelayTiming(steadyNowNs() - pdcStartNs);
         }
+
+        emitTrackDiagnosticTap(DiagnosticTapPoint::PostPdcTrack,
+                               i,
+                               trackSlots[i],
+                               shouldPlay,
+                               hasAudio,
+                               isTailing);
 
         // Sum into output
         for (int ch = 0; ch < std::min(2, outputBuffer.getNumChannels()); ++ch)
@@ -4407,6 +4489,8 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     }
     for (int ch = 0; ch < std::min(2, outputBuffer.getNumChannels()); ++ch)
         outputBuffer.addFrom(ch, 0, previewBuffer_, ch, 0, numSamples);
+
+    emitBusDiagnosticTap(DiagnosticTapPoint::MasterInputSum, outputBuffer);
 
     // Master bus insert effect chain
     if (chainsLocked && masterEffectChain_ && masterEffectChain_->isInitialized())
@@ -4437,6 +4521,8 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     const float masterVol = masterVolume_.load(std::memory_order_relaxed);
     if (masterVol != 1.0f)
         outputBuffer.applyGain(masterVol);
+
+    emitBusDiagnosticTap(DiagnosticTapPoint::PostMasterOutput, outputBuffer);
 
     // ── Clamp output to [-1, +1] (hard safety limit; replace with soft limiter in P3) ──
     for (int ch = 0; ch < outputBuffer.getNumChannels(); ++ch)

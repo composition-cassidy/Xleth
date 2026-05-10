@@ -173,6 +173,49 @@ public:
                       int                       numSamples,
                       const Transport&          transport);
 
+    enum class DiagnosticTapPoint
+    {
+        PrePdcTrack,
+        PostPdcTrack,
+        MasterInputSum,
+        PostMasterOutput
+    };
+
+    struct DiagnosticTapBlock
+    {
+        DiagnosticTapPoint point = DiagnosticTapPoint::PrePdcTrack;
+        const juce::AudioBuffer<float>* buffer = nullptr;
+        int numSamples = 0;
+        double sampleRate = 0.0;
+        int64_t transportStartSample = 0;
+        uint64_t blockIndex = 0;
+        int trackId = -1;
+        const char* trackName = nullptr;
+        TrackInfo::Type trackType = TrackInfo::Type::Clip;
+        bool muted = false;
+        bool solo = false;
+        bool visualOnly = false;
+        bool audible = false;
+        bool hadAudio = false;
+        bool tailing = false;
+        bool chainsLocked = false;
+        bool nonRealtime = false;
+        int declaredLatencySamples = 0;
+        int compensationDelaySamples = 0;
+        int maxAudibleTrackLatencySamples = 0;
+        int masterInsertLatencySamples = 0;
+    };
+
+    class DiagnosticTapSink
+    {
+    public:
+        virtual ~DiagnosticTapSink() = default;
+        virtual bool wantsTrack(int trackId) const { juce::ignoreUnused(trackId); return true; }
+        virtual void capture(const DiagnosticTapBlock& block) = 0;
+    };
+
+    void setDiagnosticTapSink(DiagnosticTapSink* sink);
+
     // ── Peak meters (thread-safe reads) ──────────────────────────────────────
     float getMasterPeakL() const { return masterPeakL_.load(std::memory_order_relaxed); }
     float getMasterPeakR() const { return masterPeakR_.load(std::memory_order_relaxed); }
@@ -686,6 +729,9 @@ private:
                                uint64_t latencyEpoch = 0,
                                int compensationSamples = 0) noexcept;
     int countActiveResonanceSuppressorHighQualityInstancesLocked() const;
+
+    DiagnosticTapSink* diagnosticTapSink_ = nullptr;
+    std::uint64_t diagnosticTapBlockIndex_ = 0;
 
     // ── Track ID → slot mapping (main thread read/write, never audio thread) ──
     // Updated by updateSlotMapping() in rebuildAllSamplers and track add/remove.
