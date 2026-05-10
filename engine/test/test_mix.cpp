@@ -17,12 +17,14 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include <array>
+#include <algorithm>
 #include <cstdint>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
 #include <limits>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // ─── Test harness ────────────────────────────────────────────────────────────
@@ -142,6 +144,92 @@ static float maxAbsInRange(const juce::AudioBuffer<float>& buf, int channel,
         peak = std::max(peak, std::abs(buf.getSample(channel, i)));
     return peak;
 }
+
+struct PdcTapPeakStats
+{
+    bool seen = false;
+    int64_t peakSample = -1;
+    float peak = 0.0f;
+    int declaredLatencySamples = 0;
+    int compensationDelaySamples = 0;
+};
+
+struct PdcTrackTapStats
+{
+    PdcTapPeakStats pre;
+    PdcTapPeakStats post;
+};
+
+class PdcTapPeakCollector final : public MixEngine::DiagnosticTapSink
+{
+public:
+    PdcTapPeakCollector(std::initializer_list<int> trackIds,
+                        int64_t captureStart,
+                        int64_t captureEnd)
+        : captureStart_(captureStart), captureEnd_(captureEnd)
+    {
+        for (int trackId : trackIds)
+            stats_.emplace(trackId, PdcTrackTapStats{});
+    }
+
+    bool wantsTrack(int trackId) const override
+    {
+        return stats_.find(trackId) != stats_.end();
+    }
+
+    void capture(const MixEngine::DiagnosticTapBlock& block) override
+    {
+        if (block.buffer == nullptr
+            || (block.point != MixEngine::DiagnosticTapPoint::PrePdcTrack
+                && block.point != MixEngine::DiagnosticTapPoint::PostPdcTrack))
+            return;
+
+        auto it = stats_.find(block.trackId);
+        if (it == stats_.end())
+            return;
+
+        const int64_t blockStart = block.transportStartSample;
+        const int64_t blockEnd = blockStart + block.numSamples;
+        const int64_t overlapStart = std::max(blockStart, captureStart_);
+        const int64_t overlapEnd = std::min(blockEnd, captureEnd_);
+        if (overlapStart >= overlapEnd)
+            return;
+
+        auto& stats = block.point == MixEngine::DiagnosticTapPoint::PrePdcTrack
+            ? it->second.pre
+            : it->second.post;
+
+        stats.seen = true;
+        stats.declaredLatencySamples = block.declaredLatencySamples;
+        stats.compensationDelaySamples = block.compensationDelaySamples;
+
+        const int localStart = static_cast<int>(overlapStart - blockStart);
+        const int localEnd = static_cast<int>(overlapEnd - blockStart);
+        for (int sample = localStart; sample < localEnd; ++sample)
+        {
+            float value = std::abs(block.buffer->getSample(0, sample));
+            if (block.buffer->getNumChannels() > 1)
+                value = std::max(value, std::abs(block.buffer->getSample(1, sample)));
+
+            if (value > stats.peak)
+            {
+                stats.peak = value;
+                stats.peakSample = blockStart + sample;
+            }
+        }
+    }
+
+    const PdcTrackTapStats* statsFor(int trackId) const
+    {
+        auto it = stats_.find(trackId);
+        return it != stats_.end() ? &it->second : nullptr;
+    }
+
+private:
+    int64_t captureStart_ = 0;
+    int64_t captureEnd_ = 0;
+    std::unordered_map<int, PdcTrackTapStats> stats_;
+};
 
 static bool allSamplesFinite(const juce::AudioBuffer<float>& buf)
 {
@@ -1241,6 +1329,153 @@ static void testTrackPdcMultiLatencyAlignment()
     tempDir.deleteRecursively();
 }
 
+static void testTrackPdcSilenceGapResumeRetainsDelayTargets()
+{
+    std::cout << "[PDC 2b] Silence-gap resume keeps real delay targets\n";
+
+    const double bpm = 120.0;
+    const double sampleRate = 51200.0;
+    constexpr int blockSize = 512;
+    constexpr int clipDurationSamples = 2048;
+    constexpr int secondClipStart = 8192;
+    constexpr int impulseIndex = 128;
+    constexpr int maxLatency = 1024;
+    constexpr int midLatency = 256;
+
+    Timeline timeline(bpm, sampleRate);
+    TrackInfo zeroTrack; zeroTrack.name = "ZeroLatency";
+    TrackInfo midTrack; midTrack.name = "MidLatency";
+    TrackInfo maxTrack; maxTrack.name = "MaxLatency";
+    const int zeroTrackId = timeline.addTrack(zeroTrack);
+    const int midTrackId = timeline.addTrack(midTrack);
+    const int maxTrackId = timeline.addTrack(maxTrack);
+
+    SampleRegion zeroRegion; zeroRegion.name = "ZeroImpulse"; zeroRegion.label = SampleLabel::Custom;
+    SampleRegion midRegion; midRegion.name = "MidImpulse"; midRegion.label = SampleLabel::Custom;
+    SampleRegion maxRegion; maxRegion.name = "MaxImpulse"; maxRegion.label = SampleLabel::Custom;
+    const int zeroRegionId = timeline.addRegion(zeroRegion);
+    const int midRegionId = timeline.addRegion(midRegion);
+    const int maxRegionId = timeline.addRegion(maxRegion);
+
+    auto addClip = [&](int trackId, int regionId, int64_t startSample)
+    {
+        Clip clip;
+        clip.trackId = trackId;
+        clip.regionId = regionId;
+        clip.position = TickTime::fromBeats(sampleToBeats(startSample, sampleRate, bpm));
+        clip.duration = TickTime::fromBeats(sampleToBeats(clipDurationSamples, sampleRate, bpm));
+        timeline.addClip(clip);
+    };
+
+    for (const int startSample : {0, secondClipStart})
+    {
+        addClip(zeroTrackId, zeroRegionId, startSample);
+        addClip(midTrackId, midRegionId, startSample);
+        addClip(maxTrackId, maxRegionId, startSample);
+    }
+
+    auto tempDir = makeTempTestDir("xleth_test_pdc_silence_gap");
+    auto impulseWav = generateImpulseWav(tempDir, "impulse", sampleRate,
+                                         clipDurationSamples, impulseIndex, 0.25f);
+    CHECK(impulseWav.existsAsFile(), "silence-gap impulse WAV generated");
+
+    SampleBank bank;
+    const int sampleId = bank.loadSample(impulseWav, sampleRate);
+    CHECK(sampleId >= 0, "silence-gap impulse sample loaded");
+
+    MixEngine engine;
+    engine.setTimeline(&timeline);
+    engine.setSampleBank(&bank);
+    engine.mapRegionToSample(zeroRegionId, sampleId);
+    engine.mapRegionToSample(midRegionId, sampleId);
+    engine.mapRegionToSample(maxRegionId, sampleId);
+    engine.prepare(sampleRate, blockSize);
+    engine.setNonRealtime(true);
+
+    const int compNode = engine.addEffect(midTrackId, "compressor", 0);
+    CHECK(compNode >= 0, "silence-gap compressor effect added");
+    CHECK(engine.setEffectParameter(midTrackId, compNode, "threshold", 0.0f),
+          "silence-gap compressor threshold should be settable");
+    CHECK(engine.setEffectParameter(midTrackId, compNode, "ratio", 1.0f),
+          "silence-gap compressor ratio should be settable");
+    CHECK(engine.setEffectParameter(midTrackId, compNode, "mix", 100.0f),
+          "silence-gap compressor mix should be settable");
+    CHECK(engine.setEffectParameter(midTrackId, compNode, "lookahead", 5.0f),
+          "silence-gap compressor lookahead should be settable");
+
+    const int rsNode = engine.addEffect(maxTrackId, "resonancesuppressor", 0);
+    CHECK(rsNode >= 0, "silence-gap RS effect added");
+    configureHighQualityResonanceSuppressor(engine, maxTrackId, rsNode, 1,
+                                            100.0f, false, 0.0f);
+
+    engine.prepare(sampleRate, blockSize);
+    engine.setNonRealtime(true);
+
+    CHECK(engine.getTrackInsertLatencySamples(zeroTrackId) == 0,
+          "zero track starts with zero insert latency");
+    CHECK(engine.getTrackInsertLatencySamples(midTrackId) == midLatency,
+          "mid track reports compressor lookahead latency");
+    CHECK(engine.getTrackInsertLatencySamples(maxTrackId) == maxLatency,
+          "max track reports RS latency");
+    CHECK(engine.getTrackCompensationDelaySamples(zeroTrackId) == maxLatency,
+          "zero track receives max compensation before render");
+    CHECK(engine.getTrackCompensationDelaySamples(midTrackId) == maxLatency - midLatency,
+          "mid track receives remaining compensation before render");
+    CHECK(engine.getTrackCompensationDelaySamples(maxTrackId) == 0,
+          "max-latency track receives no extra compensation before render");
+
+    Transport transport;
+    transport.setSampleRate(sampleRate);
+    transport.setBPM(bpm);
+
+    constexpr int renderSamples = secondClipStart + maxLatency + blockSize * 3;
+    PdcTapPeakCollector tap({zeroTrackId, midTrackId, maxTrackId},
+                            secondClipStart,
+                            secondClipStart + maxLatency + blockSize * 2);
+    engine.setDiagnosticTapSink(&tap);
+    auto output = offlineRender(engine, transport, renderSamples, blockSize);
+    engine.setDiagnosticTapSink(nullptr);
+
+    CHECK(allSamplesFinite(output), "silence-gap PDC render should stay finite");
+
+    const auto* zeroStats = tap.statsFor(zeroTrackId);
+    const auto* midStats = tap.statsFor(midTrackId);
+    const auto* maxStats = tap.statsFor(maxTrackId);
+
+    CHECK(zeroStats != nullptr && zeroStats->pre.seen && zeroStats->post.seen,
+          "zero track pre/post PDC taps should be captured after resume");
+    CHECK(midStats != nullptr && midStats->pre.seen && midStats->post.seen,
+          "mid track pre/post PDC taps should be captured after resume");
+    CHECK(maxStats != nullptr && maxStats->pre.seen && maxStats->post.seen,
+          "max track pre/post PDC taps should be captured after resume");
+
+    if (zeroStats != nullptr && zeroStats->pre.seen && zeroStats->post.seen)
+    {
+        CHECK(zeroStats->post.compensationDelaySamples == maxLatency,
+              "zero track tap should report max compensation after resume");
+        CHECK(zeroStats->post.peakSample - zeroStats->pre.peakSample == maxLatency,
+              "zero track real post-PDC buffer should lag pre-PDC by max compensation after resume");
+    }
+
+    if (midStats != nullptr && midStats->pre.seen && midStats->post.seen)
+    {
+        CHECK(midStats->post.compensationDelaySamples == maxLatency - midLatency,
+              "mid track tap should report remaining compensation after resume");
+        CHECK(midStats->post.peakSample - midStats->pre.peakSample == maxLatency - midLatency,
+              "mid track real post-PDC buffer should lag pre-PDC by remaining compensation after resume");
+    }
+
+    if (maxStats != nullptr && maxStats->pre.seen && maxStats->post.seen)
+    {
+        CHECK(maxStats->post.compensationDelaySamples == 0,
+              "max-latency track tap should report zero compensation after resume");
+        CHECK(maxStats->post.peakSample == maxStats->pre.peakSample,
+              "max-latency track real post-PDC buffer should stay at zero added delay after resume");
+    }
+
+    tempDir.deleteRecursively();
+}
+
 static void testTrackPdcBypassRecalculation()
 {
     std::cout << "[PDC 3] Bypass recalculation\n";
@@ -1970,6 +2205,7 @@ int main()
     testEQTailNoClick();
     testTrackPdcTwoTrackImpulseAlignment();
     testTrackPdcMultiLatencyAlignment();
+    testTrackPdcSilenceGapResumeRetainsDelayTargets();
     testTrackPdcBypassRecalculation();
     testTrackPdcResonanceMixZeroAndQualityLatencyChange();
     testTrackPdcRawLivePlaybackProjectStart();

@@ -615,6 +615,7 @@ private:
     public:
         void prepare(double sampleRate, int maxBlockSize);
         void reset();
+        void resetToDelaySamples(int delaySamples);
         void setTargetDelaySamples(int delaySamples);
         void process(juce::AudioBuffer<float>& buffer, int numSamples);
 
@@ -895,6 +896,9 @@ private:
     double      debugSampleRate_    = 44100.0;
 
     void resetLatencyCompensationState();
+    void syncTrackCompensationDelayState(int slot,
+                                         int compensationSamples,
+                                         bool clearHistory);
     LatencyCompensationSnapshot computeLatencyCompensationSnapshotLocked() const;
     int getTrackChainOutputLatencySamplesLocked(int trackId) const;
 

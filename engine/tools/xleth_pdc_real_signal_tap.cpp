@@ -78,6 +78,8 @@ struct Options {
     fs::path jsonPath;
     fs::path markdownPath;
     std::string scratchSource;
+    std::string stageName = "Stage 8B";
+    std::string reportTitle = "Stage 8B Real-Signal PDC Tap Diagnostic";
     int liveBlockSize = kLiveBlockSize;
     int offlineBlockSize = kOfflineBlockSize;
     double captureSeconds = kDefaultCaptureSeconds;
@@ -1325,7 +1327,7 @@ void writeMarkdownReport(const fs::path& path, const json& report)
     if (!out)
         throw std::runtime_error("failed to write markdown report");
 
-    out << "# Stage 8B Real-Signal PDC Tap Diagnostic\n\n";
+    out << "# " << report.value("reportTitle", "Stage 8B Real-Signal PDC Tap Diagnostic") << "\n\n";
     out << "## Checkout\n";
     out << "- Branch: `" << report["git"].value("branch", "") << "`\n";
     out << "- HEAD: `" << report["git"].value("head", "") << "`\n";
@@ -1460,6 +1462,13 @@ Options parseOptions(int argc, char** argv)
 
         if (arg == "--repo-root")
             options.repoRoot = value("--repo-root");
+        else if (arg == "--stage8c") {
+            options.stageName = "Stage 8C";
+            options.reportTitle = "Stage 8C Real-Buffer PDC Fix Diagnostic";
+            options.projectDir = options.repoRoot / "diagnostics" / "pdc-stage8c" / "NO_MAIL_stage8c_copy";
+            options.jsonPath = options.repoRoot / "diagnostics" / "pdc-stage8c" / "pdc-real-buffer-fix-stage8c.json";
+            options.markdownPath = options.repoRoot / "docs" / "diagnostics" / "pdc-real-buffer-fix-stage8c.md";
+        }
         else if (arg == "--project")
             options.projectDir = value("--project");
         else if (arg == "--original-project")
@@ -1486,6 +1495,7 @@ Options parseOptions(int argc, char** argv)
             std::cout
                 << "Usage: xleth_pdc_real_signal_tap [options]\n"
                 << "  --repo-root <path>\n"
+                << "  --stage8c\n"
                 << "  --project <scratch project dir>\n"
                 << "  --original-project <original project dir>\n"
                 << "  --json <path>\n"
@@ -1523,7 +1533,7 @@ int main(int argc, char** argv)
         ProjectManager projectManager;
         auto loaded = projectManager.loadProject(options.projectDir.string());
         if (!loaded)
-            throw std::runtime_error("failed to load Stage 8B scratch project");
+            throw std::runtime_error("failed to load scratch project");
 
         Timeline timeline = std::move(*loaded);
         const double sampleRate = timeline.getSampleRate() > 0.0
@@ -1694,6 +1704,8 @@ int main(int argc, char** argv)
 
         json report;
         report["generatedBy"] = "xleth_pdc_real_signal_tap";
+        report["stage"] = options.stageName;
+        report["reportTitle"] = options.reportTitle;
         report["git"] = {
             {"branch", runCommand(gitBase + " branch --show-current")},
             {"head", runCommand(gitBase + " log --oneline -1")},

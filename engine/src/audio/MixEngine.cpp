@@ -185,13 +185,21 @@ void MixEngine::StereoCompensationDelay::prepare(double sampleRate, int maxBlock
 
 void MixEngine::StereoCompensationDelay::reset()
 {
+    resetToDelaySamples(0);
+}
+
+void MixEngine::StereoCompensationDelay::resetToDelaySamples(int delaySamples)
+{
+    delaySamples = juce::jmax(0, delaySamples);
+    ensureCapacity(delaySamples);
+
     for (auto& channel : channels_)
         std::fill(channel.begin(), channel.end(), 0.0f);
 
     writePos_ = 0;
-    currentDelaySamples_ = 0;
-    sourceDelaySamples_ = 0;
-    targetDelaySamples_ = 0;
+    currentDelaySamples_ = delaySamples;
+    sourceDelaySamples_ = delaySamples;
+    targetDelaySamples_ = delaySamples;
     crossfadeRemaining_ = 0;
     hasProcessedAudio_ = false;
 }
@@ -2969,6 +2977,20 @@ void MixEngine::resetLatencyCompensationState()
     cachedMasterLatencyEpoch_ = 0;
 }
 
+void MixEngine::syncTrackCompensationDelayState(int slot,
+                                                int compensationSamples,
+                                                bool clearHistory)
+{
+    if (slot < 0 || slot >= kMaxTracks)
+        return;
+
+    compensationSamples = juce::jmax(0, compensationSamples);
+    if (clearHistory)
+        trackCompensationDelays_[slot].resetToDelaySamples(compensationSamples);
+    else
+        trackCompensationDelays_[slot].setTargetDelaySamples(compensationSamples);
+}
+
 int MixEngine::getTrackChainOutputLatencySamplesLocked(int trackId) const
 {
     auto chainIt = effectChains_.find(trackId);
@@ -4236,8 +4258,8 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             {
                 cachedTrackCompensationSamples_[i] = compensation;
                 recordPdcRetarget();
-                trackCompensationDelays_[i].setTargetDelaySamples(compensation);
             }
+            syncTrackCompensationDelayState(i, compensation, false);
         }
 
         cachedMaxAudibleTrackLatencySamples_ = maxAudibleTrackLatency;
@@ -4352,7 +4374,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             trackPeaks_[i].peakL.store(0.0f, std::memory_order_relaxed);
             trackPeaks_[i].peakR.store(0.0f, std::memory_order_relaxed);
             tailEndSamples_[i] = 0;
-            trackCompensationDelays_[i].reset();
+            syncTrackCompensationDelayState(i, 0, true);
             continue;
         }
 
@@ -4368,9 +4390,11 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             trackPeaks_[i].peakL.store(0.0f, std::memory_order_relaxed);
             trackPeaks_[i].peakR.store(0.0f, std::memory_order_relaxed);
             tailEndSamples_[i] = 0;
-            trackCompensationDelays_[i].reset();
+            syncTrackCompensationDelayState(i, trackCompensationSamples, true);
             continue;
         }
+
+        syncTrackCompensationDelayState(i, trackCompensationSamples, false);
 
         // 1. Update smoothed volume target so the ramp stays current even
         //    while effects run.  Indexed by slot i (always in [0, kMaxTracks)).
