@@ -1383,6 +1383,215 @@ static void testLivePresentationLatencyMasterTrackAndZeroCases()
     }
 }
 
+// Stage 7B regression: live presentation latency and position must reflect
+// MixEngine state after a chain mutation WITHOUT any caller invoking
+// refreshLivePresentationLatency() or any transport / lifecycle event. This
+// targets the exact failure mode that surfaced when adding RS HQ to one track
+// in the NO MAIL project: per-route audio PDC adjusted, but the bridge-side
+// presentation cache stayed pinned to the pre-mutation total, so the playhead
+// drifted off-grid until the user pressed Stop/Play.
+//
+// Each subtest mutates state and then immediately reads
+// getLivePresentationLatencySamples / getLivePresentationLatencyDiagnostics /
+// getLivePresentationPositionSamples — no manual refresh, no seek, no replay.
+static void testLivePresentationLatencyAutoRefreshAfterMutation()
+{
+    std::cout << "[Presentation] Live latency auto-refreshes after mutation (Stage 7B)\n";
+
+    constexpr int64_t kDeviceLatency = 384;
+    constexpr int64_t kHop = static_cast<int64_t>(XlethParametricEQ::kSTFTHop);
+
+    // Helper: add an XlethEQ insert with a single band and toggle Spectral mode
+    // through MixEngine — exactly the path the bridge uses for built-in effect
+    // parameter changes (audio_setEffectParameter → MixEngine::setEffectParameter
+    // → EffectChainManager::setEffectParameter → chain PDC recompute).
+    auto addAndEnableSpectralViaMixer = [](MixEngine& mixer, int trackId) {
+        const int eqNode = mixer.addEffect(trackId, "xletheq", 0);
+        CHECK(eqNode >= 0, "Stage 7B helper: track should accept XlethEQ insert");
+        auto* eq = dynamic_cast<XlethParametricEQ*>(
+            mixer.getEffectPtr(trackId, eqNode));
+        CHECK(eq != nullptr, "Stage 7B helper: inserted effect should be XlethEQ");
+        if (eq != nullptr)
+            CHECK(eq->addBand() == 0, "Stage 7B helper: EQ should add band 0");
+        // The mode toggle is the latency-changing mutation that goes through
+        // the MixEngine bridge surface — that path used to call
+        // refreshLivePresentationLatency() in production. With Stage 7B the
+        // refresh is no longer needed.
+        CHECK(mixer.setEffectParameter(trackId, eqNode, "b0_mode", 2.0f),
+              "Stage 7B helper: setEffectParameter should toggle spectral via MixEngine");
+        return eqNode;
+    };
+
+    // ── 1. Track insert + parameter toggled via MixEngine, no manual refresh ──
+    {
+        auto fixture = makePresentationLatencyEngine(false, false, kDeviceLatency);
+        auto& engine = fixture->engine;
+        auto& mixer = engine.getMixEngine();
+
+        CHECK(engine.getLivePresentationLatencySamples() == kDeviceLatency,
+              "Stage 7B: baseline presentation latency should equal device output");
+
+        addAndEnableSpectralViaMixer(mixer, fixture->latentTrackId);
+
+        // No engine.refreshLivePresentationLatency() — that's the regression.
+        const auto diag = engine.getLivePresentationLatencyDiagnostics();
+        CHECK(diag.maxTrackLatencySamples == kHop,
+              "Stage 7B: diagnostics maxTrack should reflect added insert without refresh");
+        CHECK(diag.totalPresentationLatencySamples == kHop + kDeviceLatency,
+              "Stage 7B: diagnostics total should reflect added insert without refresh");
+        CHECK(engine.getLivePresentationLatencySamples() == kHop + kDeviceLatency,
+              "Stage 7B: latency getter should reflect added insert without refresh");
+
+        auto& transport = engine.getTransport();
+        transport.seekToSample(kHop + kDeviceLatency + 1024);
+        // Mutate again on the dry track — same MixEngine path — without any
+        // further refresh. Both insertions should now contribute to the live
+        // max-audible latency, and the position must subtract that updated
+        // total instead of any stale cache.
+        addAndEnableSpectralViaMixer(mixer, fixture->dryTrackId);
+        CHECK(engine.getLivePresentationPositionSamples() == 1024,
+              "Stage 7B: live position must subtract live latency, not stale cache");
+    }
+
+    // ── 2. Parameter change toggles latency mid-flight without manual refresh ──
+    {
+        auto fixture = makePresentationLatencyEngine(false, false, kDeviceLatency);
+        auto& engine = fixture->engine;
+        auto& mixer = engine.getMixEngine();
+
+        const int eqNode = mixer.addEffect(fixture->latentTrackId, "xletheq", 0);
+        CHECK(eqNode >= 0, "Stage 7B param: track should accept XlethEQ insert");
+        auto* eq = dynamic_cast<XlethParametricEQ*>(
+            mixer.getEffectPtr(fixture->latentTrackId, eqNode));
+        CHECK(eq != nullptr, "Stage 7B param: inserted effect should be XlethEQ");
+        CHECK(eq->addBand() == 0, "Stage 7B param: EQ should add the spectral test band");
+
+        // Band still in non-spectral mode → zero added latency.
+        CHECK(engine.getLivePresentationLatencySamples() == kDeviceLatency,
+              "Stage 7B param: pre-spectral latency should match device only");
+
+        // Toggle to spectral via the same MixEngine setter the bridge uses for
+        // built-in parameter changes — this is the path that sets
+        // pendingLatencyCompensationReset_ on the audio thread but, before
+        // Stage 7B, never repaired the AudioEngine cache until next transport.
+        CHECK(mixer.setEffectParameter(fixture->latentTrackId, eqNode, "b0_mode", 2.0f),
+              "Stage 7B param: setEffectParameter should toggle spectral mode");
+
+        // No refresh, no seek — just read.
+        const auto diag = engine.getLivePresentationLatencyDiagnostics();
+        CHECK(diag.maxTrackLatencySamples == kHop,
+              "Stage 7B param: diagnostics should pick up post-parameter latency live");
+        CHECK(engine.getLivePresentationLatencySamples() == kHop + kDeviceLatency,
+              "Stage 7B param: latency getter should pick up post-parameter latency live");
+    }
+
+    // ── 3. Pre-existing master latency + new track latency, no double count ──
+    // Mirrors the NO MAIL project shape: master RS HQ already present at load
+    // time (fixture establishes the master spectral path), then the user adds
+    // a latency-inducing insert to one individual track via the MixEngine
+    // bridge surface.
+    {
+        auto fixture = makePresentationLatencyEngine(false, true, kDeviceLatency);
+        auto& engine = fixture->engine;
+        auto& mixer = engine.getMixEngine();
+
+        // Master XlethEQ already configured by fixture (masterSpectral=true).
+        CHECK(engine.getLivePresentationLatencyDiagnostics().masterLatencySamples == kHop,
+              "Stage 7B master+track: master spectral latency should be reported");
+        CHECK(engine.getLivePresentationLatencyDiagnostics().maxTrackLatencySamples == 0,
+              "Stage 7B master+track: no track latency yet");
+
+        // Add a track-side spectral insert via the bridge-equivalent route
+        // without any manual refresh.
+        addAndEnableSpectralViaMixer(mixer, fixture->latentTrackId);
+
+        const auto diag = engine.getLivePresentationLatencyDiagnostics();
+        CHECK(diag.maxTrackLatencySamples == kHop,
+              "Stage 7B master+track: track latency should be visible live");
+        CHECK(diag.masterLatencySamples == kHop,
+              "Stage 7B master+track: master latency should still be reported");
+        CHECK(diag.totalPresentationLatencySamples == kHop + kHop + kDeviceLatency,
+              "Stage 7B master+track: total = track + master + device, no double count");
+    }
+
+    // ── 4. Remove path drops latency live without manual refresh ─────────────
+    {
+        auto fixture = makePresentationLatencyEngine(true, false, kDeviceLatency);
+        auto& engine = fixture->engine;
+        auto& mixer = engine.getMixEngine();
+
+        CHECK(engine.getLivePresentationLatencySamples() == kHop + kDeviceLatency,
+              "Stage 7B remove: spectral track should contribute latency live");
+
+        CHECK(mixer.removeEffect(fixture->latentTrackId, fixture->trackEqNodeId),
+              "Stage 7B remove: track effect should remove cleanly");
+        CHECK(engine.getLivePresentationLatencySamples() == kDeviceLatency,
+              "Stage 7B remove: latency should drop back to device only without refresh");
+        CHECK(engine.getLivePresentationLatencyDiagnostics().maxTrackLatencySamples == 0,
+              "Stage 7B remove: diagnostics should drop max-track to zero live");
+    }
+
+    // ── 5. Master parameter mutation visible without bridge refresh ──────────
+    // (This path has no audio_setMasterEffectParameter wrapper in the bridge
+    //  today; with Stage 7B the AudioEngine read still picks it up.)
+    {
+        auto fixture = makePresentationLatencyEngine(false, false, kDeviceLatency);
+        auto& engine = fixture->engine;
+        auto& mixer = engine.getMixEngine();
+
+        const int masterEq = mixer.addMasterEffect("xletheq", 0);
+        CHECK(masterEq >= 0, "Stage 7B master-param: master should accept XlethEQ");
+        auto* eq = dynamic_cast<XlethParametricEQ*>(mixer.getMasterEffectPtr(masterEq));
+        CHECK(eq != nullptr, "Stage 7B master-param: master effect should be XlethEQ");
+        CHECK(eq->addBand() == 0,
+              "Stage 7B master-param: master EQ should add the test band");
+
+        CHECK(engine.getLivePresentationLatencySamples() == kDeviceLatency,
+              "Stage 7B master-param: pre-spectral master latency should be device-only");
+
+        // trackId == -1 selects the master chain inside MixEngine.
+        CHECK(mixer.setEffectParameter(-1, masterEq, "b0_mode", 2.0f),
+              "Stage 7B master-param: setEffectParameter(-1, ...) routes to master chain");
+
+        // Critically: no refreshLivePresentationLatency call, no transport
+        // event. The bridge has no audio_setMasterEffectParameter wrapper that
+        // could refresh even if it wanted to.
+        const auto diag = engine.getLivePresentationLatencyDiagnostics();
+        CHECK(diag.masterLatencySamples == kHop,
+              "Stage 7B master-param: master latency should be visible after parameter change");
+        CHECK(engine.getLivePresentationLatencySamples() == kHop + kDeviceLatency,
+              "Stage 7B master-param: total latency should include new master latency");
+    }
+
+    // ── 6. Position math always uses live latency (the user-visible symptom) ──
+    // This is the exact failure shape the user reported: with the playhead
+    // mid-flight, adding a latency-inducing insert via the MixEngine bridge
+    // surface used to leave the presentation position unchanged (cache stale)
+    // until Stop/Play. Post-Stage-7B the position must drop immediately by
+    // exactly the new insert latency.
+    {
+        auto fixture = makePresentationLatencyEngine(false, false, kDeviceLatency);
+        auto& engine = fixture->engine;
+        auto& mixer = engine.getMixEngine();
+        auto& transport = engine.getTransport();
+
+        // Simulate a "live" playhead well past device latency.
+        transport.seekToSample(kHop + kDeviceLatency + 4096);
+        const int64_t baselinePos = engine.getLivePresentationPositionSamples();
+        CHECK(baselinePos == kHop + 4096,
+              "Stage 7B pos: baseline presentation position = raw - device");
+
+        // Add the spectral insert via the MixEngine bridge route, no seek.
+        addAndEnableSpectralViaMixer(mixer, fixture->latentTrackId);
+
+        const int64_t postMutPos = engine.getLivePresentationPositionSamples();
+        CHECK(postMutPos == 4096,
+              "Stage 7B pos: presentation position must subtract NEW latency live");
+        CHECK(baselinePos - postMutPos == kHop,
+              "Stage 7B pos: position delta should equal added insert latency");
+    }
+}
+
 static void testSyncManagerUsesPresentationProvider()
 {
     std::cout << "[Presentation] SyncManager presentation position provider\n";
@@ -2141,6 +2350,7 @@ int main()
     testLivePresentationLatencyFormulaAndPositions();
     testLivePresentationLatencyRefreshAfterEqChange();
     testLivePresentationLatencyMasterTrackAndZeroCases();
+    testLivePresentationLatencyAutoRefreshAfterMutation();
     testSyncManagerUsesPresentationProvider();
     testAudioExporterPrerollDiscard();
     testAudioExporterProjectStartWithLatency();

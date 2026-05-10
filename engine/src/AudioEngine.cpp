@@ -242,6 +242,13 @@ void AudioEngine::cacheCurrentDeviceOutputLatency()
         std::memory_order_release);
 }
 
+// Stage 7B: presentation latency is computed live from MixEngine on every read
+// (see getLivePresentationLatencySamples). The cached atomics below are mirrors
+// kept in sync by this method so external observers that read the atomics
+// directly (diagnostics, tests) see the most recent published snapshot. No live
+// reader inside AudioEngine depends on the cache: even if this method is never
+// called between mutations, getLivePresentationLatencySamples and
+// getLivePresentationLatencyDiagnostics still return current values.
 void AudioEngine::refreshLivePresentationLatency()
 {
     const auto snapshot = mixEngine_.getLatencyCompensationSnapshot();
@@ -287,9 +294,27 @@ void AudioEngine::seekTimelineToBeat(double beat)
     seekTimelineToSample(sample);
 }
 
+// Stage 7B: read live from MixEngine + cached device output latency. MixEngine
+// owns the authoritative track / master insert latency state and updates it
+// synchronously under chainsMutex_ on every mutation path (insert/remove/move/
+// bypass/parameter/program/state-restore/guarded-wrapper-refresh). Reading on
+// demand removes the staleness window where the AudioEngine cache lagged behind
+// the chain after a non-transport mutation. The mutex is uncontended on the
+// read side: the audio render thread does not take chainsMutex_, only non-RT
+// chain mutators do.
 int64_t AudioEngine::getLivePresentationLatencySamples() const
 {
-    return livePresentationTotalLatencySamples_.load(std::memory_order_acquire);
+    const auto snapshot = mixEngine_.getLatencyCompensationSnapshot();
+    const int64_t maxTrackLatency = std::max<int64_t>(
+        0,
+        static_cast<int64_t>(snapshot.maxAudibleTrackLatencySamples));
+    const int64_t masterLatency = std::max<int64_t>(
+        0,
+        static_cast<int64_t>(snapshot.masterInsertLatencySamples));
+    const int64_t deviceOutputLatency = std::max<int64_t>(
+        0,
+        livePresentationDeviceOutputLatencySamples_.load(std::memory_order_acquire));
+    return maxTrackLatency + masterLatency + deviceOutputLatency;
 }
 
 int64_t AudioEngine::getLivePresentationPositionSamples() const
@@ -307,18 +332,29 @@ double AudioEngine::getLivePresentationPositionSeconds() const
         : 0.0;
 }
 
+// Stage 7B: same live-on-read story as getLivePresentationLatencySamples — all
+// four fields are recomputed from the authoritative MixEngine snapshot plus the
+// cached device output latency, so callers never see a stale max-track / master
+// / total triple after a mutation that did not pass through a transport
+// lifecycle event.
 AudioEngine::LivePresentationLatencyDiagnostics
 AudioEngine::getLivePresentationLatencyDiagnostics() const
 {
+    const auto snapshot = mixEngine_.getLatencyCompensationSnapshot();
     LivePresentationLatencyDiagnostics diagnostics;
-    diagnostics.maxTrackLatencySamples =
-        livePresentationMaxTrackLatencySamples_.load(std::memory_order_acquire);
-    diagnostics.masterLatencySamples =
-        livePresentationMasterLatencySamples_.load(std::memory_order_acquire);
-    diagnostics.deviceOutputLatencySamples =
-        livePresentationDeviceOutputLatencySamples_.load(std::memory_order_acquire);
+    diagnostics.maxTrackLatencySamples = std::max<int64_t>(
+        0,
+        static_cast<int64_t>(snapshot.maxAudibleTrackLatencySamples));
+    diagnostics.masterLatencySamples = std::max<int64_t>(
+        0,
+        static_cast<int64_t>(snapshot.masterInsertLatencySamples));
+    diagnostics.deviceOutputLatencySamples = std::max<int64_t>(
+        0,
+        livePresentationDeviceOutputLatencySamples_.load(std::memory_order_acquire));
     diagnostics.totalPresentationLatencySamples =
-        livePresentationTotalLatencySamples_.load(std::memory_order_acquire);
+        diagnostics.maxTrackLatencySamples
+        + diagnostics.masterLatencySamples
+        + diagnostics.deviceOutputLatencySamples;
     return diagnostics;
 }
 
