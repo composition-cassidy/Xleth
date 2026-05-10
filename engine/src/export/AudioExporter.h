@@ -3,6 +3,7 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <string>
 
@@ -33,6 +34,21 @@ public:
         double      startBeat   = 0.0;
         double      endBeat     = 0.0;      // 0 = auto from max clip end
     };
+
+    struct PrerollPlan {
+        int     maxAudibleTrackLatencySamples = 0;
+        int     masterInsertLatencySamples = 0;
+        int64_t totalPrerollSamples = 0;
+        int64_t renderStartSample = 0;
+        int64_t availablePrerollSamples = 0;
+        int64_t discardSamples = 0;
+    };
+
+    static PrerollPlan computePrerollPlan(int64_t startSample,
+                                          int maxAudibleTrackLatencySamples,
+                                          int masterInsertLatencySamples);
+    static PrerollPlan computePrerollPlan(MixEngine& mixer,
+                                          int64_t startSample);
 
     // Renders [startBeat, endBeat) of the timeline through mixer and writes
     // to config.outputPath. progressCallback receives 0..1 as render+encode

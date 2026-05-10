@@ -63,6 +63,35 @@ CodecPick pickCodec(const AudioExporter::Config& cfg)
 
 } // namespace
 
+AudioExporter::PrerollPlan AudioExporter::computePrerollPlan(
+    int64_t startSample,
+    int maxAudibleTrackLatencySamples,
+    int masterInsertLatencySamples)
+{
+    PrerollPlan plan;
+    plan.maxAudibleTrackLatencySamples = std::max(0, maxAudibleTrackLatencySamples);
+    plan.masterInsertLatencySamples = std::max(0, masterInsertLatencySamples);
+    plan.totalPrerollSamples =
+        static_cast<int64_t>(plan.maxAudibleTrackLatencySamples)
+        + static_cast<int64_t>(plan.masterInsertLatencySamples);
+    plan.renderStartSample =
+        std::max<int64_t>(0, startSample - plan.totalPrerollSamples);
+    plan.availablePrerollSamples = startSample - plan.renderStartSample;
+    plan.discardSamples =
+        plan.availablePrerollSamples + plan.totalPrerollSamples;
+    return plan;
+}
+
+AudioExporter::PrerollPlan AudioExporter::computePrerollPlan(
+    MixEngine& mixer,
+    int64_t startSample)
+{
+    const auto latencySnapshot = mixer.getLatencyCompensationSnapshot();
+    return computePrerollPlan(startSample,
+                              latencySnapshot.maxAudibleTrackLatencySamples,
+                              latencySnapshot.masterInsertLatencySamples);
+}
+
 // ─── Offline render pass ─────────────────────────────────────────────────────
 
 bool AudioExporter::renderOffline(const Timeline& timeline,
@@ -79,13 +108,9 @@ bool AudioExporter::renderOffline(const Timeline& timeline,
 
     constexpr int kBlockSize = 4096;
 
-    const auto latencySnapshot = mixer.getLatencyCompensationSnapshot();
-    const int64_t totalPrerollSamples =
-        static_cast<int64_t>(latencySnapshot.maxAudibleTrackLatencySamples)
-        + static_cast<int64_t>(latencySnapshot.masterInsertLatencySamples);
-    const int64_t renderStartSample = std::max<int64_t>(0, startSample - totalPrerollSamples);
-    const int64_t availablePreroll = startSample - renderStartSample;
-    const int64_t samplesToDiscard = availablePreroll + totalPrerollSamples;
+    const auto prerollPlan = computePrerollPlan(mixer, startSample);
+    const int64_t renderStartSample = prerollPlan.renderStartSample;
+    const int64_t samplesToDiscard = prerollPlan.discardSamples;
     const int64_t renderEndSample =
         renderStartSample + samplesToDiscard + static_cast<int64_t>(totalSamples);
 
