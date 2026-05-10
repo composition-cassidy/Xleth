@@ -2,6 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronRight } from 'lucide-react'
 
+function joinClassNames(...classNames) {
+  return classNames.filter(Boolean).join(' ')
+}
+
 /**
  * Context menu for track headers with nested submenu support.
  *
@@ -11,8 +15,16 @@ import { ChevronRight } from 'lucide-react'
  *               { label, onClick?, danger?, disabled?, checked?, submenu?: items[] }
  *               { type: 'separator' }
  *   onClose   – called on outside click / Escape / action
+ *   menuClassName / submenuClassName – optional class hooks for variants
  */
-export default function TrackContextMenu({ x, y, items, onClose }) {
+export default function TrackContextMenu({
+  x,
+  y,
+  items,
+  onClose,
+  menuClassName = '',
+  submenuClassName = '',
+}) {
   const menuRef = useRef(null)
   const [openSubIdx, setOpenSubIdx] = useState(-1)
   const [subPos, setSubPos] = useState({ x: 0, y: 0 })
@@ -57,7 +69,7 @@ export default function TrackContextMenu({ x, y, items, onClose }) {
     <>
       <div
         ref={menuRef}
-        className="context-menu track-context-menu"
+        className={joinClassNames('context-menu', 'track-context-menu', menuClassName)}
         style={{ left: x, top: y }}
       >
         {items.map((item, i) => {
@@ -88,6 +100,7 @@ export default function TrackContextMenu({ x, y, items, onClose }) {
           x={subPos.x}
           y={subPos.y}
           items={items[openSubIdx].submenu}
+          submenuClassName={submenuClassName || menuClassName}
           onSelect={() => onClose()}
         />
       )}
@@ -96,7 +109,7 @@ export default function TrackContextMenu({ x, y, items, onClose }) {
   )
 }
 
-function TrackContextSubmenu({ x, y, items, onSelect }) {
+function TrackContextSubmenu({ x, y, items, onSelect, submenuClassName = '' }) {
   const elRef = useRef(null)
 
   useEffect(() => {
@@ -110,7 +123,7 @@ function TrackContextSubmenu({ x, y, items, onSelect }) {
   return (
     <div
       ref={elRef}
-      className="context-menu track-context-submenu"
+      className={joinClassNames('context-menu', 'track-context-submenu', submenuClassName)}
       style={{ left: x, top: y }}
     >
       {items.length === 0 && (

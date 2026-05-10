@@ -6760,7 +6760,7 @@ html.fx-drag-active * {
   width: 100%;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
   height: 130px;
   flex-shrink: 0;
   overflow: hidden;
@@ -6769,7 +6769,7 @@ html.fx-drag-active * {
 /* Mode toggle row */
 .effect-chain-mode-row {
   display: flex;
-  gap: 2px;
+  gap: 3px;
   width: 100%;
   flex-shrink: 0;
 }
@@ -6806,12 +6806,13 @@ html.fx-drag-active * {
 .effect-chain-list {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 3px;
   flex: 1;
   min-height: 0;
-  max-height: 82px;
+  max-height: 91px;
   overflow-y: auto;
   overflow-x: hidden;
+  padding-right: 1px;
 }
 
 .effect-chain-list::-webkit-scrollbar {
@@ -6825,12 +6826,25 @@ html.fx-drag-active * {
   background: var(--theme-bg-secondary);
 }
 
-.effect-chain-empty {
-  font-size: 9px;
+.effect-chain-empty-btn {
+  width: 100%;
+  min-height: 20px;
+  border: 1px dashed var(--theme-border-subtle);
+  border-radius: var(--radius-sm);
+  background: none;
   color: var(--theme-text-subtle);
-  text-align: center;
-  padding: 4px 0;
-  font-style: italic;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  padding: 0 6px;
+  transition: border-color var(--transition-fast), color var(--transition-fast), background var(--transition-fast);
+}
+
+.effect-chain-empty-btn:hover {
+  border-color: var(--theme-accent);
+  color: var(--theme-accent);
+  background: var(--theme-accent-bg-subtle);
 }
 
 /* Add button */
@@ -6841,8 +6855,8 @@ html.fx-drag-active * {
 
 .effect-chain-add-btn {
   width: 100%;
-  height: 14px;
-  font-size: 13px;
+  height: 16px;
+  font-size: 12px;
   font-weight: 400;
   line-height: 1;
   border: 1px dashed var(--theme-border-subtle);
@@ -6869,13 +6883,13 @@ html.fx-drag-active * {
 /* Overflow badge — shown when chain.length > VISIBLE_LIMIT */
 .effect-chain-overflow {
   width: 100%;
-  height: 14px;
+  min-height: 16px;
   font-size: 9px;
   font-weight: 600;
   letter-spacing: 0.04em;
   border: 1px dashed var(--theme-border-subtle);
   border-radius: var(--radius-sm);
-  background: none;
+  background: var(--theme-mixer-effect-slot-bg);
   color: var(--theme-text-subtle);
   cursor: pointer;
   display: flex;
@@ -6889,6 +6903,13 @@ html.fx-drag-active * {
 .effect-chain-overflow:hover {
   color: var(--theme-accent);
   border-color: var(--theme-accent);
+  background: var(--theme-accent-bg-subtle);
+}
+
+.effect-chain-overflow--open {
+  color: var(--theme-accent);
+  border-color: var(--theme-accent);
+  background: var(--theme-accent-bg-subtle);
 }
 
 /* Full-chain popover — position:fixed escapes strip layout */
@@ -6899,26 +6920,35 @@ html.fx-drag-active * {
   border: 1px solid var(--theme-border-default);
   border-radius: var(--radius-md);
   padding: 4px;
-  min-width: 180px;
+  min-width: 208px;
+  max-width: min(280px, calc(100vw - 16px));
   max-height: 300px;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
-  gap: 1px;
-  box-shadow: var(--theme-depth-elevation-2-outer-shadow);
+  gap: 4px;
+  box-shadow: var(--theme-depth-elevation-3-outer-shadow);
 }
 
-.effect-chain-full-popover::-webkit-scrollbar {
+.effect-chain-full-popover-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 1px;
+}
+
+.effect-chain-full-popover-list::-webkit-scrollbar {
   width: 8px;
 }
 
-.effect-chain-full-popover::-webkit-scrollbar-thumb {
+.effect-chain-full-popover-list::-webkit-scrollbar-thumb {
   background: var(--theme-border-default);
   border-radius: 4px;
 }
 
-.effect-chain-full-popover::-webkit-scrollbar-track {
+.effect-chain-full-popover-list::-webkit-scrollbar-track {
   background: var(--theme-bg-secondary);
 }
 
@@ -6927,63 +6957,149 @@ html.fx-drag-active * {
   font-weight: 700;
   letter-spacing: 0.05em;
   color: var(--theme-text-subtle);
-  padding: 2px 2px 4px;
-  flex-shrink: 0;
+  padding: 2px 2px 4px 2px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   text-transform: uppercase;
   border-bottom: 1px solid var(--theme-border-subtle);
-  margin-bottom: 2px;
+}
+
+.effect-chain-full-popover-close {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 2px;
+  background: none;
+  color: var(--theme-text-subtle);
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.effect-chain-full-popover-close:hover {
+  color: var(--theme-text);
+  background: var(--theme-focus-ring);
+}
+
+.effect-chain-add-menu.context-menu,
+.effect-chain-add-submenu.context-menu {
+  min-width: 196px;
+  max-height: 260px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 3px 0;
+}
+
+.effect-chain-add-menu.context-menu::-webkit-scrollbar,
+.effect-chain-add-submenu.context-menu::-webkit-scrollbar {
+  width: 8px;
+}
+
+.effect-chain-add-menu.context-menu::-webkit-scrollbar-thumb,
+.effect-chain-add-submenu.context-menu::-webkit-scrollbar-thumb {
+  background: var(--theme-border-default);
+  border-radius: 4px;
+}
+
+.effect-chain-add-menu.context-menu::-webkit-scrollbar-track,
+.effect-chain-add-submenu.context-menu::-webkit-scrollbar-track {
+  background: var(--theme-bg-secondary);
+}
+
+.effect-chain-add-menu .context-menu-item,
+.effect-chain-add-submenu .context-menu-item {
+  font-size: 11px;
+  padding: 5px 10px;
+  gap: 6px;
+}
+
+.effect-chain-add-menu .context-menu-item.disabled,
+.effect-chain-add-submenu .context-menu-item.disabled {
+  color: var(--theme-text-subtle);
 }
 
 .effect-module {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
   align-items: center;
-  gap: 2px;
+  column-gap: 2px;
   width: 100%;
-  height: 18px;
-  background: var(--theme-bg-elevated);
+  min-height: 20px;
+  background: var(--theme-mixer-effect-slot-bg);
   border: 1px solid var(--theme-border-subtle);
   border-radius: var(--radius-sm);
-  padding: 0 2px;
+  padding: 1px 3px;
   box-sizing: border-box;
   cursor: default;
-  transition: border-color var(--transition-fast), opacity var(--transition-fast);
+  transition: border-color var(--transition-fast), background var(--transition-fast), opacity var(--transition-fast), box-shadow var(--transition-fast);
   flex-shrink: 0;
+}
+
+.effect-module:hover {
+  background: var(--theme-mixer-effect-slot-hover-bg);
+}
+
+.effect-module--selected {
+  background: var(--theme-accent-bg-subtle);
+  border-color: var(--theme-accent);
+  box-shadow: inset 0 0 0 1px var(--theme-focus-ring);
+}
+
+.effect-module--selected:hover {
+  background: var(--theme-accent-bg-medium);
 }
 
 .effect-module--bypassed {
-  opacity: 0.45;
+  opacity: 0.58;
 }
 
 .effect-module--pending {
-  opacity: 0.6;
+  opacity: 0.7;
+}
+
+.effect-module-grip-zone {
+  display: flex;
+  align-items: center;
 }
 
 .effect-module-grip {
-  flex-shrink: 0;
   display: flex;
   align-items: center;
-  color: var(--theme-text-subtle);
+  justify-content: center;
+  color: var(--theme-mixer-effect-drag-handle);
   cursor: grab;
   padding: 0 1px;
+  border-radius: 2px;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.effect-module-grip:hover {
+  color: var(--theme-text);
+  background: var(--theme-focus-ring);
 }
 
 .effect-module-grip:active {
   cursor: grabbing;
 }
 
-.effect-module-name {
-  flex: 1;
-  font-size: 9px;
-  font-weight: 500;
-  color: var(--theme-text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: pointer;
+.effect-module-content {
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0;
+  color: var(--theme-text-muted);
 }
 
-.effect-module-name:hover {
+.effect-module-content--editable {
+  cursor: pointer;
+}
+
+.effect-module-content--editable:hover .effect-module-name-text {
   color: var(--theme-text);
 }
 
@@ -7005,32 +7121,17 @@ html.fx-drag-active * {
 
 .effect-module-bypass:hover {
   color: var(--theme-accent);
-  background: var(--theme-accent-bg-medium);
+  background: var(--theme-focus-ring);
 }
 
 .effect-module-bypass.bypassed {
   color: var(--theme-warning);
 }
 
-/* Override effect-module-name to support optional vendor line.
-   The existing rule sets white-space:nowrap and text-overflow:ellipsis
-   on the container; we move those to the inner name-text span so the
-   vendor span can sit on a second micro-line. */
-.effect-module-name {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  justify-content: center;
-  white-space: normal;
-  overflow: hidden;
-  text-overflow: clip;
-  gap: 0;
-}
-
 .effect-module-name-text {
   display: block;
   font-size: 9px;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--theme-text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -7048,23 +7149,52 @@ html.fx-drag-active * {
   line-height: 1;
 }
 
-.effect-module-crashed {
-  display: inline-block;
-  font-size: 7px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  color: var(--theme-fg-inverse);
-  background: #c0392b;
-  border-radius: 2px;
-  padding: 0 2px;
-  line-height: 1.3;
+.effect-module-badges {
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
 
-.effect-module-edit {
+.effect-module-badge {
+  display: inline-block;
+  font-size: 6.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  border-radius: 2px;
+  padding: 0 3px;
+  line-height: 1.4;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+
+.effect-module-badge--missing {
+  color: var(--theme-semantic-warning-text);
+  background: var(--theme-semantic-warning-bg-subtle);
+  border-color: var(--theme-semantic-warning-border);
+}
+
+.effect-module-badge--crashed {
+  color: var(--theme-semantic-danger-text);
+  background: var(--theme-semantic-danger-bg-subtle);
+  border-color: var(--theme-danger);
+}
+
+.effect-module-action-slot {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.effect-module-action-placeholder {
+  display: block;
+  width: 0;
+  height: 0;
+}
+
+.effect-module-action {
   flex-shrink: 0;
   height: 14px;
-  padding: 0 3px;
-  font-size: 7px;
+  padding: 0 2px;
+  font-size: 6.5px;
   font-weight: 600;
   border: 1px solid var(--theme-border-subtle);
   border-radius: 2px;
@@ -7075,9 +7205,34 @@ html.fx-drag-active * {
   transition: color var(--transition-fast), border-color var(--transition-fast);
 }
 
-.effect-module-edit:hover {
+.effect-module-action:hover {
   color: var(--theme-accent);
   border-color: var(--theme-accent);
+  background: var(--theme-accent-bg-subtle);
+}
+
+.effect-module-action--warning {
+  color: var(--theme-semantic-warning-text);
+  border-color: var(--theme-semantic-warning-border);
+  background: var(--theme-semantic-warning-bg-subtle);
+}
+
+.effect-module-action--warning:hover {
+  color: var(--theme-semantic-warning-text);
+  border-color: var(--theme-semantic-warning-border);
+  background: color-mix(in srgb, var(--theme-semantic-warning-border) 20%, var(--theme-bg-elevated));
+}
+
+.effect-module-action--danger {
+  color: var(--theme-semantic-danger-text);
+  border-color: var(--theme-danger);
+  background: var(--theme-semantic-danger-bg-subtle);
+}
+
+.effect-module-action--danger:hover {
+  color: var(--theme-semantic-danger-text);
+  border-color: var(--theme-danger);
+  background: color-mix(in srgb, var(--theme-danger) 22%, var(--theme-bg-elevated));
 }
 
 /* â”€â”€ Scan Progress Bar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */

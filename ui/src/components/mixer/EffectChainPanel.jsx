@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import useEffectChainStore from '../../stores/effectChainStore.js'
 import useMixerStore from '../../stores/mixerStore.js'
 import useVstStore from '../../stores/vstStore.js'
@@ -9,42 +9,42 @@ const EFFECT_CATEGORIES = [
   {
     label: 'Dynamics',
     submenu: [
-      { label: 'Compressor',          id: 'compressor' },
-      { label: 'Limiter',             id: 'limiter' },
-      { label: 'Overdone',            id: 'overdone' },
-      { label: 'Transient Proc',      id: 'transientproc' },
-      { label: 'Resonance Suppressor',id: 'resonancesuppressor' },
+      { label: 'Compressor', id: 'compressor' },
+      { label: 'Limiter', id: 'limiter' },
+      { label: 'Overdone', id: 'overdone' },
+      { label: 'Transient Proc', id: 'transientproc' },
+      { label: 'Resonance Suppressor', id: 'resonancesuppressor' },
     ],
   },
   {
     label: 'EQ & Filter',
     submenu: [
-      { label: 'Xleth EQ',      id: 'xletheq' },
-      { label: 'Xleth Filter',  id: 'xlethfilter' },
+      { label: 'Xleth EQ', id: 'xletheq' },
+      { label: 'Xleth Filter', id: 'xlethfilter' },
     ],
   },
   {
     label: 'Distortion',
     submenu: [
-      { label: 'Distortion',    id: 'distortion' },
-      { label: 'Waveshaper',    id: 'waveshaper' },
+      { label: 'Distortion', id: 'distortion' },
+      { label: 'Waveshaper', id: 'waveshaper' },
     ],
   },
   {
     label: 'Modulation',
     submenu: [
-      { label: 'UniFlange',     id: 'uniflange' },
-      { label: 'Chorus',        id: 'chorus' },
-      { label: 'Flanger',       id: 'flanger' },
-      { label: 'Phaser',        id: 'phaser' },
-      { label: 'Phanjer',       id: 'phanjer' },
+      { label: 'UniFlange', id: 'uniflange' },
+      { label: 'Chorus', id: 'chorus' },
+      { label: 'Flanger', id: 'flanger' },
+      { label: 'Phaser', id: 'phaser' },
+      { label: 'Phanjer', id: 'phanjer' },
     ],
   },
   {
     label: 'Time',
     submenu: [
-      { label: 'Delay',         id: 'delay' },
-      { label: 'Reverb',        id: 'reverb' },
+      { label: 'Delay', id: 'delay' },
+      { label: 'Reverb', id: 'reverb' },
     ],
   },
   {
@@ -56,55 +56,137 @@ const EFFECT_CATEGORIES = [
 ]
 
 const EMPTY_CHAIN = []
-const VISIBLE_LIMIT = 4
+export const VISIBLE_LIMIT = 4
+
+export function isSelectableEffectChainNode(effect) {
+  return Number.isInteger(effect?.nodeId) && effect.nodeId !== -1
+}
+
+export function selectEffectChainNode(effect, currentSelectedNodeId = null) {
+  return isSelectableEffectChainNode(effect) ? effect.nodeId : currentSelectedNodeId
+}
+
+export function syncSelectedEffectChainNode(selectedNodeId, chain) {
+  if (selectedNodeId == null) return null
+  return chain.some((effect) => effect.nodeId === selectedNodeId && isSelectableEffectChainNode(effect))
+    ? selectedNodeId
+    : null
+}
+
+export function shouldShowEffectChainOverflow(chainLength, visibleLimit = VISIBLE_LIMIT) {
+  return chainLength > visibleLimit
+}
+
+export function sortRackVstPlugins(vstPlugins) {
+  return [...vstPlugins].sort((a, b) => {
+    const byName = (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' })
+    if (byName !== 0) return byName
+    return (a.vendor || '').localeCompare(b.vendor || '', undefined, { sensitivity: 'base' })
+  })
+}
+
+export function buildEffectChainMenuItems({ addEffect, storeKey, vstPlugins }) {
+  const sortedVstPlugins = sortRackVstPlugins(vstPlugins)
+  const vstSubmenu = sortedVstPlugins.length === 0
+    ? [{ label: 'No plugins scanned - open VST Browser to scan', disabled: true }]
+    : sortedVstPlugins.map((plugin) => ({
+        label: plugin.name + (plugin.vendor ? ` - ${plugin.vendor}` : ''),
+        onClick: () => addEffect(storeKey, plugin.id),
+      }))
+
+  return [
+    ...EFFECT_CATEGORIES.map((category) => ({
+      label: `${category.label} (${category.submenu.length})`,
+      submenu: category.submenu.map((effect) => ({
+        label: effect.label,
+        onClick: () => addEffect(storeKey, effect.id),
+      })),
+    })),
+    { label: `VST3 Plugins (${sortedVstPlugins.length})`, submenu: vstSubmenu },
+  ]
+}
+
+export function getInitialEffectChainPopoverPosition(anchorRect, viewport = {
+  width: window.innerWidth,
+  height: window.innerHeight,
+}) {
+  const margin = 8
+  const preferredWidth = 236
+  const preferredHeight = 260
+  const openRight = viewport.width - anchorRect.right >= preferredWidth
+  const left = openRight
+    ? anchorRect.right + 6
+    : Math.max(margin, anchorRect.left - preferredWidth - 6)
+  const top = Math.max(margin, Math.min(anchorRect.top, viewport.height - preferredHeight - margin))
+
+  return { left, top }
+}
+
+export function clampEffectChainPopoverPosition(position, size, viewport = {
+  width: window.innerWidth,
+  height: window.innerHeight,
+}) {
+  const margin = 8
+  const maxLeft = Math.max(margin, viewport.width - size.width - margin)
+  const maxTop = Math.max(margin, viewport.height - size.height - margin)
+
+  return {
+    left: Math.min(Math.max(position.left, margin), maxLeft),
+    top: Math.min(Math.max(position.top, margin), maxTop),
+  }
+}
 
 export default function EffectChainPanel({ trackId, master }) {
   const key = master ? 'master' : String(trackId)
 
-  const chain = useEffectChainStore(s => s.chains[key] ?? EMPTY_CHAIN)
-  const fetchChain = useEffectChainStore(s => s.fetchChain)
-  const addEffect = useEffectChainStore(s => s.addEffect)
-  const moveEffect = useEffectChainStore(s => s.moveEffect)
-  const trackOrder = useMixerStore(s => s.trackOrder)
+  const chain = useEffectChainStore((state) => state.chains[key] ?? EMPTY_CHAIN)
+  const fetchChain = useEffectChainStore((state) => state.fetchChain)
+  const addEffect = useEffectChainStore((state) => state.addEffect)
+  const moveEffect = useEffectChainStore((state) => state.moveEffect)
+  const trackOrder = useMixerStore((state) => state.trackOrder)
 
-  const vstPlugins  = useVstStore(s => s.plugins)
-  const fetchVst    = useVstStore(s => s.fetchPlugins)
+  const vstPlugins = useVstStore((state) => state.plugins)
+  const fetchVst = useVstStore((state) => state.fetchPlugins)
 
-  // Local drag state
   const [dragOrder, setDragOrder] = useState(null)
+  const [selectedNodeId, setSelectedNodeId] = useState(null)
   const [addMenuPos, setAddMenuPos] = useState(null)
   const [fullChainPos, setFullChainPos] = useState(null)
-  const dragRef = useRef(null) // { nodeId, currentIndex }
-  const addBtnRef = useRef(null)
+  const dragRef = useRef(null)
   const overflowBtnRef = useRef(null)
   const fullChainPopoverRef = useRef(null)
 
   const displayChain = dragOrder ?? chain
 
-  // Fetch chain on mount / when key changes
   useEffect(() => {
     fetchChain(key)
     fetchVst()
   }, [key, fetchChain, fetchVst])
 
-  // Global mouseup to commit drag
+  useEffect(() => {
+    setSelectedNodeId((currentSelectedNodeId) => syncSelectedEffectChainNode(currentSelectedNodeId, chain))
+  }, [chain])
+
   useEffect(() => {
     const onMouseUp = () => {
       if (!dragRef.current) return
+
       const { nodeId, currentIndex, fromIndex } = dragRef.current
       dragRef.current = null
       document.body.style.cursor = ''
       setDragOrder(null)
+
       if (currentIndex !== fromIndex) {
         moveEffect(key, nodeId, currentIndex)
       }
     }
+
     document.addEventListener('mouseup', onMouseUp)
     return () => document.removeEventListener('mouseup', onMouseUp)
   }, [key, moveEffect])
 
-  const handleDragStart = useCallback((nodeId, index, e) => {
-    e.preventDefault()
+  const handleDragStart = useCallback((nodeId, index, event) => {
+    event.preventDefault()
     dragRef.current = { nodeId, fromIndex: index, currentIndex: index }
     setDragOrder([...chain])
     document.body.style.cursor = 'grabbing'
@@ -113,70 +195,103 @@ export default function EffectChainPanel({ trackId, master }) {
   const handleDragOver = useCallback((toIndex) => {
     if (!dragRef.current) return
     if (toIndex === dragRef.current.currentIndex) return
+
     dragRef.current.currentIndex = toIndex
-    setDragOrder(prev => {
-      if (!prev) return prev
-      const arr = [...prev]
-      const srcIdx = arr.findIndex(fx => fx.nodeId === dragRef.current.nodeId)
-      if (srcIdx === -1) return prev
-      const [item] = arr.splice(srcIdx, 1)
-      arr.splice(toIndex, 0, item)
-      return arr
+    setDragOrder((previousOrder) => {
+      if (!previousOrder) return previousOrder
+
+      const nextOrder = [...previousOrder]
+      const sourceIndex = nextOrder.findIndex((effect) => effect.nodeId === dragRef.current.nodeId)
+      if (sourceIndex === -1) return previousOrder
+
+      const [draggedEffect] = nextOrder.splice(sourceIndex, 1)
+      nextOrder.splice(toIndex, 0, draggedEffect)
+      return nextOrder
     })
   }, [])
 
-  const handleAddClick = useCallback(() => {
-    if (!addBtnRef.current) return
-    const rect = addBtnRef.current.getBoundingClientRect()
+  const handleSelectNode = useCallback((nodeId) => {
+    setSelectedNodeId(nodeId)
+  }, [])
+
+  const handleAddClick = useCallback((event) => {
+    const rect = event.currentTarget.getBoundingClientRect()
     setFullChainPos(null)
-    setAddMenuPos({ x: rect.left, y: rect.top })
+    setAddMenuPos((currentPos) => (currentPos ? null : { x: rect.left, y: rect.top }))
   }, [])
 
   const handleOverflowClick = useCallback(() => {
     if (!overflowBtnRef.current) return
+
+    if (fullChainPos) {
+      setFullChainPos(null)
+      return
+    }
+
     const rect = overflowBtnRef.current.getBoundingClientRect()
     setAddMenuPos(null)
-    setFullChainPos({ x: rect.right + 4, y: rect.top })
-  }, [])
+    setFullChainPos(getInitialEffectChainPopoverPosition(rect))
+  }, [fullChainPos])
 
-  // Close full-chain popover on outside click
   useEffect(() => {
     if (!fullChainPos) return
-    const handler = (e) => {
+
+    const handleOutsideClick = (event) => {
       if (
         fullChainPopoverRef.current &&
-        !fullChainPopoverRef.current.contains(e.target) &&
-        e.target !== overflowBtnRef.current
+        !fullChainPopoverRef.current.contains(event.target) &&
+        event.target !== overflowBtnRef.current
       ) {
         setFullChainPos(null)
       }
     }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
+
+    document.addEventListener('mousedown', handleOutsideClick)
+    return () => document.removeEventListener('mousedown', handleOutsideClick)
   }, [fullChainPos])
 
-  // Build add menu items — stock categories + dynamic VST3 category
-  const menuItems = useMemo(() => {
-    const vstSubmenu = vstPlugins.length === 0
-      ? [{ label: 'No plugins scanned — open VST Browser to scan', disabled: true }]
-      : vstPlugins.map(p => ({
-          label: p.name + (p.vendor ? ' \u2014 ' + p.vendor : ''),
-          onClick: () => addEffect(key, p.id),
-        }))
+  useEffect(() => {
+    if (!fullChainPos) return
 
-    return [
-      ...EFFECT_CATEGORIES.map(cat => ({
-        label: cat.label,
-        submenu: cat.submenu.map(fx => ({
-          label: fx.label,
-          onClick: () => addEffect(key, fx.id),
-        })),
-      })),
-      { label: 'VST3 Plugins', submenu: vstSubmenu },
-    ]
-  }, [key, addEffect, vstPlugins])
+    const handleEscape = (event) => {
+      if (event.key === 'Escape') {
+        setFullChainPos(null)
+      }
+    }
 
-  // Open node editor in separate window
+    window.addEventListener('keydown', handleEscape)
+    return () => window.removeEventListener('keydown', handleEscape)
+  }, [fullChainPos])
+
+  useEffect(() => {
+    if (!fullChainPos) return
+    if (!shouldShowEffectChainOverflow(displayChain.length)) {
+      setFullChainPos(null)
+    }
+  }, [displayChain.length, fullChainPos])
+
+  useEffect(() => {
+    if (!fullChainPos || !fullChainPopoverRef.current) return
+
+    const rect = fullChainPopoverRef.current.getBoundingClientRect()
+    const nextPosition = clampEffectChainPopoverPosition(fullChainPos, {
+      width: rect.width,
+      height: rect.height,
+    })
+
+    if (nextPosition.left !== fullChainPos.left || nextPosition.top !== fullChainPos.top) {
+      setFullChainPos(nextPosition)
+    }
+  }, [displayChain.length, fullChainPos])
+
+  const menuItems = useMemo(() => (
+    buildEffectChainMenuItems({
+      addEffect,
+      storeKey: key,
+      vstPlugins,
+    })
+  ), [key, addEffect, vstPlugins])
+
   const handleNodeMode = useCallback(() => {
     const pos = master ? null : trackOrder.indexOf(trackId) + 1
     window.xleth?.window?.openNodeEditor(key, pos || null)
@@ -184,9 +299,27 @@ export default function EffectChainPanel({ trackId, master }) {
 
   if (!master && trackId == null) return null
 
+  const renderEffectRows = (effects, { limit = effects.length } = {}) => (
+    effects.slice(0, limit).map((effect, index) => (
+      <EffectModule
+        key={effect.nodeId === -1 ? `pending-${effect.pluginId}-${index}` : effect.nodeId}
+        effect={effect}
+        index={index}
+        storeKey={key}
+        onDragStart={handleDragStart}
+        onDragOver={handleDragOver}
+        onSelect={handleSelectNode}
+        selected={effect.nodeId === selectedNodeId}
+      />
+    ))
+  )
+
+  const overflowCount = Math.max(0, displayChain.length - VISIBLE_LIMIT)
+  const overflowVisible = shouldShowEffectChainOverflow(displayChain.length)
+  const chainLabel = master ? 'Master effect chain' : 'Track effect chain'
+
   return (
     <div className="effect-chain-panel">
-      {/* Mode toggle */}
       <div className="effect-chain-mode-row">
         <button
           className="effect-chain-mode-btn active"
@@ -203,44 +336,40 @@ export default function EffectChainPanel({ trackId, master }) {
         </button>
       </div>
 
-      {/* Effect list — capped at VISIBLE_LIMIT rows */}
-      <div className="effect-chain-list">
+      <div className="effect-chain-list" role="listbox" aria-label={chainLabel}>
         {displayChain.length === 0 ? (
-          <div className="effect-chain-empty">No effects</div>
+          <button
+            className="effect-chain-empty-btn"
+            onClick={handleAddClick}
+            title="Add effect"
+            aria-label="Add effect"
+          >
+            + Add effect
+          </button>
         ) : (
-          displayChain.slice(0, VISIBLE_LIMIT).map((fx, idx) => (
-            <EffectModule
-              key={fx.nodeId === -1 ? `pending-${fx.pluginId}-${idx}` : fx.nodeId}
-              effect={fx}
-              index={idx}
-              storeKey={key}
-              onDragStart={handleDragStart}
-              onDragOver={handleDragOver}
-            />
-          ))
+          renderEffectRows(displayChain, { limit: VISIBLE_LIMIT })
         )}
       </div>
 
-      {/* Overflow badge — visible when chain exceeds VISIBLE_LIMIT */}
-      {displayChain.length > VISIBLE_LIMIT && (
+      {overflowVisible && (
         <button
           ref={overflowBtnRef}
-          className="effect-chain-overflow"
+          className={`effect-chain-overflow${fullChainPos ? ' effect-chain-overflow--open' : ''}`}
           onClick={handleOverflowClick}
-          title="Show full effect chain"
+          title={fullChainPos ? 'Hide full effect chain' : 'Show full effect chain'}
+          aria-label={fullChainPos ? 'Hide full effect chain' : 'Show full effect chain'}
         >
-          +{displayChain.length - VISIBLE_LIMIT} more
+          +{overflowCount} more
         </button>
       )}
 
-      {/* Add button */}
       <div className="effect-chain-footer">
         <button
-          ref={addBtnRef}
           className="effect-chain-add-btn"
           disabled={chain.length >= 100}
           onClick={handleAddClick}
           title="Add effect"
+          aria-label="Add effect"
         >
           +
         </button>
@@ -252,29 +381,31 @@ export default function EffectChainPanel({ trackId, master }) {
           y={addMenuPos.y}
           items={menuItems}
           onClose={() => setAddMenuPos(null)}
+          menuClassName="effect-chain-add-menu"
+          submenuClassName="effect-chain-add-submenu"
         />
       )}
 
-      {/* Full-chain popover — position:fixed, escapes strip layout */}
       {fullChainPos && (
         <div
           ref={fullChainPopoverRef}
           className="effect-chain-full-popover"
-          style={{ left: fullChainPos.x, top: fullChainPos.y }}
+          style={{ left: fullChainPos.left, top: fullChainPos.top }}
         >
           <div className="effect-chain-full-popover-header">
-            Full chain ({displayChain.length})
+            <span>Effect Chain - {displayChain.length} Effect{displayChain.length === 1 ? '' : 's'}</span>
+            <button
+              className="effect-chain-full-popover-close"
+              onClick={() => setFullChainPos(null)}
+              title="Close full effect chain"
+              aria-label="Close full effect chain"
+            >
+              x
+            </button>
           </div>
-          {displayChain.map((fx, idx) => (
-            <EffectModule
-              key={fx.nodeId === -1 ? `pending-${fx.pluginId}-${idx}` : fx.nodeId}
-              effect={fx}
-              index={idx}
-              storeKey={key}
-              onDragStart={handleDragStart}
-              onDragOver={handleDragOver}
-            />
-          ))}
+          <div className="effect-chain-full-popover-list" role="listbox" aria-label={`${chainLabel} full list`}>
+            {renderEffectRows(displayChain)}
+          </div>
         </div>
       )}
     </div>
