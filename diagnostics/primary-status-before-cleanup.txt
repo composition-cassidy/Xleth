@@ -1,0 +1,13 @@
+ m .claude/worktrees/admiring-archimedes-25eabb
+ m .claude/worktrees/beautiful-shockley-852298
+ m .claude/worktrees/interesting-einstein-26e532
+ ? .claude/worktrees/loving-cerf-a37193
+ ? .claude/worktrees/musing-lewin-a871bb
+ m .claude/worktrees/naughty-hugle-ed37ec
+ ? .claude/worktrees/practical-albattani-2e76b2
+ m .claude/worktrees/recursing-johnson-8b55da
+ m .claude/worktrees/serene-bhabha-1a9f51
+ m .claude/worktrees/vibrant-diffie-020730
+?? diagnostics/branches-before-cleanup.txt
+?? diagnostics/primary-status-before-cleanup.txt
+?? diagnostics/worktrees-before-cleanup.txt

@@ -1,0 +1,72 @@
+worktree C:/Users/Krasen/Desktop/XLETH
+HEAD db2cb7bcc17d9145299218f2844a20d4f9e77bb0
+branch refs/heads/stage7b-pdc-live-presentation-checkpoint
+
+worktree C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/admiring-archimedes-25eabb
+HEAD 71bfc30335f0b2ce09bbeaed60b780ec5563cee3
+branch refs/heads/claude/admiring-archimedes-25eabb
+
+worktree C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/beautiful-shockley-852298
+HEAD 71bfc30335f0b2ce09bbeaed60b780ec5563cee3
+branch refs/heads/claude/beautiful-shockley-852298
+
+worktree C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/clever-hamilton-bd173b
+HEAD 71bfc30335f0b2ce09bbeaed60b780ec5563cee3
+branch refs/heads/claude/clever-hamilton-bd173b
+
+worktree C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/clip-modulation-phase-a
+HEAD 7d34d4a7cbc9d1e9b7cbb8dd263d95aa0044e62b
+branch refs/heads/feature/clip-modulation-phase-a
+
+worktree C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/compassionate-gates-ed095c
+HEAD 71bfc30335f0b2ce09bbeaed60b780ec5563cee3
+branch refs/heads/claude/compassionate-gates-ed095c
+
+worktree C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/gifted-roentgen-a5b381
+HEAD 71bfc30335f0b2ce09bbeaed60b780ec5563cee3
+branch refs/heads/claude/gifted-roentgen-a5b381
+
+worktree C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/infallible-mendel-67f3ba
+HEAD a56fc852cff585cc8143d4f42df12228f7d93c0c
+branch refs/heads/claude/infallible-mendel-67f3ba
+
+worktree C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/interesting-einstein-26e532
+HEAD 71bfc30335f0b2ce09bbeaed60b780ec5563cee3
+branch refs/heads/claude/interesting-einstein-26e532
+
+worktree C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/loving-cerf-a37193
+HEAD 22a4356ebf2ed489b31788b940f154e58322d715
+branch refs/heads/feature/clip-modulation-phase-b
+
+worktree C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/musing-lewin-a871bb
+HEAD 71bfc30335f0b2ce09bbeaed60b780ec5563cee3
+branch refs/heads/claude/musing-lewin-a871bb
+
+worktree C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/naughty-hugle-ed37ec
+HEAD 71bfc30335f0b2ce09bbeaed60b780ec5563cee3
+branch refs/heads/claude/naughty-hugle-ed37ec
+
+worktree C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/nifty-lovelace-108e12
+HEAD 71bfc30335f0b2ce09bbeaed60b780ec5563cee3
+branch refs/heads/claude/nifty-lovelace-108e12
+
+worktree C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/practical-albattani-2e76b2
+HEAD 71bfc30335f0b2ce09bbeaed60b780ec5563cee3
+branch refs/heads/claude/practical-albattani-2e76b2
+
+worktree C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/quirky-wilson-97c60f
+HEAD 71bfc30335f0b2ce09bbeaed60b780ec5563cee3
+branch refs/heads/claude/quirky-wilson-97c60f
+
+worktree C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/recursing-johnson-8b55da
+HEAD 71bfc30335f0b2ce09bbeaed60b780ec5563cee3
+branch refs/heads/claude/recursing-johnson-8b55da
+
+worktree C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/serene-bhabha-1a9f51
+HEAD 71bfc30335f0b2ce09bbeaed60b780ec5563cee3
+branch refs/heads/claude/serene-bhabha-1a9f51
+
+worktree C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/vibrant-diffie-020730
+HEAD 71bfc30335f0b2ce09bbeaed60b780ec5563cee3
+branch refs/heads/claude/vibrant-diffie-020730
+

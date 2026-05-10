@@ -1,0 +1,28 @@
++ claude/admiring-archimedes-25eabb               71bfc30 (C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/admiring-archimedes-25eabb) Fix C: per-block dropout tracking catches adjacent-block case
++ claude/beautiful-shockley-852298                71bfc30 (C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/beautiful-shockley-852298) Fix C: per-block dropout tracking catches adjacent-block case
++ claude/clever-hamilton-bd173b                   71bfc30 (C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/clever-hamilton-bd173b) Fix C: per-block dropout tracking catches adjacent-block case
+  claude/clever-hellman                           7548480 [origin/main] gitignore: add test scratch folders
++ claude/compassionate-gates-ed095c               71bfc30 (C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/compassionate-gates-ed095c) Fix C: per-block dropout tracking catches adjacent-block case
++ claude/gifted-roentgen-a5b381                   71bfc30 (C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/gifted-roentgen-a5b381) Fix C: per-block dropout tracking catches adjacent-block case
++ claude/infallible-mendel-67f3ba                 a56fc85 (C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/infallible-mendel-67f3ba) theme(fix): replace dangling --border-subtle/default vars with --theme-border-subtle
+  claude/inspiring-poincare                       7548480 gitignore: add test scratch folders
++ claude/interesting-einstein-26e532              71bfc30 (C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/interesting-einstein-26e532) Fix C: per-block dropout tracking catches adjacent-block case
+  claude/loving-cerf-a37193                       71bfc30 Fix C: per-block dropout tracking catches adjacent-block case
++ claude/musing-lewin-a871bb                      71bfc30 (C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/musing-lewin-a871bb) Fix C: per-block dropout tracking catches adjacent-block case
++ claude/naughty-hugle-ed37ec                     71bfc30 (C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/naughty-hugle-ed37ec) Fix C: per-block dropout tracking catches adjacent-block case
++ claude/nifty-lovelace-108e12                    71bfc30 (C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/nifty-lovelace-108e12) Fix C: per-block dropout tracking catches adjacent-block case
+  claude/nostalgic-babbage                        7548480 gitignore: add test scratch folders
++ claude/practical-albattani-2e76b2               71bfc30 (C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/practical-albattani-2e76b2) Fix C: per-block dropout tracking catches adjacent-block case
++ claude/quirky-wilson-97c60f                     71bfc30 (C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/quirky-wilson-97c60f) Fix C: per-block dropout tracking catches adjacent-block case
++ claude/recursing-johnson-8b55da                 71bfc30 (C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/recursing-johnson-8b55da) Fix C: per-block dropout tracking catches adjacent-block case
++ claude/serene-bhabha-1a9f51                     71bfc30 (C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/serene-bhabha-1a9f51) Fix C: per-block dropout tracking catches adjacent-block case
++ claude/vibrant-diffie-020730                    71bfc30 (C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/vibrant-diffie-020730) Fix C: per-block dropout tracking catches adjacent-block case
+  claude/zen-black-e47025                         7548480 [origin/main] gitignore: add test scratch folders
+  codex-save-progress-20260424                    e3f03a5 Checkpoint before syllable splitter indexing fix
+  feature/clip-modulation-fx-integration          9da2ee6 Merge branch 'main' into feature/clip-modulation-fx-integration
++ feature/clip-modulation-phase-a                 7d34d4a (C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/clip-modulation-phase-a) Phase A: Clip Modulation FX data model + plumbing
++ feature/clip-modulation-phase-b                 22a4356 (C:/Users/Krasen/Desktop/XLETH/.claude/worktrees/loving-cerf-a37193) Phase B: pure deterministic ClipModulation evaluator + tests
+  feature/clip-modulation-phase-c-vibrato-audio   aabae0f Phase C: Clip Modulation FX — Audio Vibrato MVP
+  main                                            71bfc30 [origin/main: ahead 4] Fix C: per-block dropout tracking catches adjacent-block case
+* stage7b-pdc-live-presentation-checkpoint        db2cb7b Checkpoint PDC stages before Stage 7B presentation latency fix
+  wip/codex-save-progress-20260424-before-clipmod 9f381c1 WIP: preserve codex progress before Clip Modulation integration
