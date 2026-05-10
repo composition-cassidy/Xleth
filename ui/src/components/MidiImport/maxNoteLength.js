@@ -12,7 +12,7 @@ export const MAX_NOTE_LENGTH_OPTIONS = [
 ]
 
 export const DEFAULT_MAX_NOTE_LENGTH_STORAGE_KEY = 'xleth.midiImport.defaultMaxNoteLengthDenom'
-export const DEFAULT_MAX_NOTE_LENGTH_DENOM = 16
+export const DEFAULT_MAX_NOTE_LENGTH_DENOM = 0
 
 // 1/4 = 1 quarter = PPQ ticks. 1/16 = PPQ * 4 / 16 = 240 at PPQ=960.
 // denom = 0 means Off (no clamp), encoded as 0 ticks on the wire.

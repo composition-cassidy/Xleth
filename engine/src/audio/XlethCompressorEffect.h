@@ -121,6 +121,27 @@ public:
         return vizCollector_->drain(out, maxBytes);
     }
 
+    void setStateInformation(const void* data, int sizeInBytes) override
+    {
+        XlethEffectBase::setStateInformation(data, sizeInBytes);
+        refreshLatencySamples();
+    }
+
+    std::uint64_t getProcessBlockLatencyUpdateCount() const
+    {
+        return processBlockLatencyUpdateCount_.load(std::memory_order_acquire);
+    }
+
+    std::uint64_t getNonRealtimeLatencyUpdateCount() const
+    {
+        return nonRealtimeLatencyUpdateCount_.load(std::memory_order_acquire);
+    }
+
+    int getReportedProcessorLatencySamples() const
+    {
+        return AudioProcessor::getLatencySamples();
+    }
+
     // ── prepareEffect ───────────────────────────────────────────────────────
     void prepareEffect(double sampleRate, int maxBlockSize) override
     {
@@ -146,10 +167,7 @@ public:
         vizSampleClock_ = 0;
         vizAccum_.reset();
 
-        const float initLa = lookaheadPtr_
-                           ? lookaheadPtr_->load(std::memory_order_relaxed) : 0.0f;
-        prevLookaheadMs_ = initLa;
-        setLatencySamples(static_cast<int>(initLa * sampleRate / 1000.0));
+        refreshLatencySamples();
 
 #ifdef XLETH_DEBUG
         DBG("[Compressor] prepareEffect sr=" + juce::String(sampleRate)
@@ -190,17 +208,6 @@ public:
                                 ? lookaheadPtr_->load(std::memory_order_relaxed)
                                 : 0.0f;
         const int lookaheadSamps = static_cast<int>(lookaheadMs * sampleRate_ / 1000.0);
-
-        // Latency compensation: update whenever lookahead changes
-        if (lookaheadMs != prevLookaheadMs_)
-        {
-            prevLookaheadMs_ = lookaheadMs;
-            setLatencySamples(lookaheadSamps);
-#ifdef XLETH_DEBUG
-            DBG("[Compressor] lookahead changed to " + juce::String(lookaheadMs)
-                + "ms (" + juce::String(lookaheadSamps) + " samples)");
-#endif
-        }
 
         // JUCE DelayLine: pushSample decrements writePos after writing, so
         // pop with delay=1 retrieves the just-pushed sample (0-sample net latency).
@@ -338,6 +345,34 @@ public:
     }
 
 private:
+    void onParameterValueChanged(const std::string& paramId, float /*value*/) override
+    {
+        if (paramId == "lookahead")
+            refreshLatencySamples();
+    }
+
+    int computeLatencySamples() const
+    {
+        const auto* lookaheadPtr = lookaheadPtr_ != nullptr
+            ? lookaheadPtr_
+            : apvts_.getRawParameterValue("lookahead");
+        const float lookaheadMs = lookaheadPtr != nullptr
+            ? lookaheadPtr->load(std::memory_order_relaxed)
+            : 0.0f;
+        return static_cast<int>(lookaheadMs * sampleRate_ / 1000.0);
+    }
+
+    bool refreshLatencySamples()
+    {
+        const int newLatency = computeLatencySamples();
+        if (newLatency == AudioProcessor::getLatencySamples())
+            return false;
+
+        setLatencySamples(newLatency);
+        nonRealtimeLatencyUpdateCount_.fetch_add(1, std::memory_order_acq_rel);
+        return true;
+    }
+
     // ── Parameter layout ────────────────────────────────────────────────────
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     {
@@ -379,8 +414,9 @@ private:
     // Lookahead delay line (stereo, integer-sample delay, no interpolation)
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None> lookaheadDelay_;
 
-    float  prevLookaheadMs_ = 0.0f;
     double sampleRate_      = 44100.0;
+    std::atomic<std::uint64_t> processBlockLatencyUpdateCount_{0};
+    std::atomic<std::uint64_t> nonRealtimeLatencyUpdateCount_{0};
 
     // ── Visualization state ─────────────────────────────────────────────────
     // Owning unique_ptr lives only on the main thread (prepare/setEnabled).

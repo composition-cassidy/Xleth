@@ -22,6 +22,110 @@
 #include <cstdio>
 #include <thread>
 
+namespace {
+
+uint64_t steadyNowNs() noexcept
+{
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+uint64_t deadlineNsFor(int numSamples, double sampleRate) noexcept
+{
+    if (numSamples <= 0 || sampleRate <= 0.0 || !std::isfinite(sampleRate))
+        return 0;
+
+    return static_cast<uint64_t>(
+        (static_cast<double>(numSamples) / sampleRate) * 1000000000.0);
+}
+
+uint64_t ratioPermille(uint64_t elapsedNs, uint64_t deadlineNs) noexcept
+{
+    if (deadlineNs == 0)
+        return 0;
+
+    return static_cast<uint64_t>(
+        (static_cast<long double>(elapsedNs) * 1000.0L)
+        / static_cast<long double>(deadlineNs));
+}
+
+void atomicMax(std::atomic<uint64_t>& target, uint64_t value) noexcept
+{
+    uint64_t observed = target.load(std::memory_order_relaxed);
+    while (value > observed
+        && !target.compare_exchange_weak(observed, value,
+                                         std::memory_order_relaxed,
+                                         std::memory_order_relaxed))
+    {
+    }
+}
+
+bool atomicMaxWithWinner(std::atomic<uint64_t>& target, uint64_t value) noexcept
+{
+    uint64_t observed = target.load(std::memory_order_relaxed);
+    while (value > observed)
+    {
+        if (target.compare_exchange_weak(observed, value,
+                                         std::memory_order_relaxed,
+                                         std::memory_order_relaxed))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+template <size_t Size>
+void storeAtomicString(std::array<std::atomic<char>, Size>& dest,
+                       const char* text) noexcept
+{
+    const char* src = text != nullptr ? text : "";
+    size_t i = 0;
+    for (; i + 1 < Size && src[i] != '\0'; ++i)
+        dest[i].store(src[i], std::memory_order_relaxed);
+    dest[i].store('\0', std::memory_order_relaxed);
+    for (++i; i < Size; ++i)
+        dest[i].store('\0', std::memory_order_relaxed);
+}
+
+template <size_t Size>
+std::string loadAtomicString(const std::array<std::atomic<char>, Size>& src)
+{
+    char buffer[Size] = {};
+    for (size_t i = 0; i < Size; ++i)
+    {
+        buffer[i] = src[i].load(std::memory_order_relaxed);
+        if (buffer[i] == '\0')
+            break;
+    }
+    buffer[Size - 1] = '\0';
+    return std::string(buffer);
+}
+
+double nsToMs(uint64_t ns) noexcept
+{
+    return static_cast<double>(ns) / 1000000.0;
+}
+
+double permilleToRatio(uint64_t value) noexcept
+{
+    return static_cast<double>(value) / 1000.0;
+}
+
+bool isResonanceSuppressorPlugin(const char* pluginId) noexcept
+{
+    return pluginId != nullptr && std::strcmp(pluginId, "resonancesuppressor") == 0;
+}
+
+bool isSection(const char* sectionId, const char* expected) noexcept
+{
+    return sectionId != nullptr && expected != nullptr
+        && std::strcmp(sectionId, expected) == 0;
+}
+
+} // namespace
+
 // ─── MixDebugLog ─────────────────────────────────────────────────────────────
 
 int MixDebugLog::nextPow2(int v)
@@ -62,6 +166,168 @@ bool MixDebugLog::pop(MixDebugEntry& entry)
 
 // ─── MixEngine ───────────────────────────────────────────────────────────────
 
+
+int MixEngine::StereoCompensationDelay::nextPowerOfTwo(int value)
+{
+    int power = 1;
+    while (power < value)
+        power <<= 1;
+    return power;
+}
+
+void MixEngine::StereoCompensationDelay::prepare(double sampleRate, int maxBlockSize)
+{
+    sampleRate_ = sampleRate;
+    maxBlockSize_ = maxBlockSize;
+    ensureCapacity(0);
+    reset();
+}
+
+void MixEngine::StereoCompensationDelay::reset()
+{
+    for (auto& channel : channels_)
+        std::fill(channel.begin(), channel.end(), 0.0f);
+
+    writePos_ = 0;
+    currentDelaySamples_ = 0;
+    sourceDelaySamples_ = 0;
+    targetDelaySamples_ = 0;
+    crossfadeRemaining_ = 0;
+    hasProcessedAudio_ = false;
+}
+
+void MixEngine::StereoCompensationDelay::ensureCapacity(int requiredDelaySamples)
+{
+    const int requiredSamples = juce::jmax(
+        kDefaultCapacitySamples,
+        requiredDelaySamples + maxBlockSize_ + kCrossfadeSamples + 1);
+
+    if (requiredSamples <= 0)
+        return;
+
+    const int oldSize = static_cast<int>(channels_[0].size());
+    if (oldSize >= requiredSamples)
+        return;
+
+    const int newSize = nextPowerOfTwo(requiredSamples);
+    const int delta = newSize - oldSize;
+
+    for (auto& channel : channels_)
+    {
+        std::vector<float> grown(static_cast<size_t>(newSize), 0.0f);
+        if (oldSize > 0)
+        {
+            for (int i = 0; i < oldSize; ++i)
+                grown[static_cast<size_t>(i + delta)] = channel[static_cast<size_t>(i)];
+        }
+        channel.swap(grown);
+    }
+
+    bufferMask_ = newSize - 1;
+    if (oldSize > 0)
+        writePos_ += delta;
+    writePos_ &= bufferMask_;
+}
+
+float MixEngine::StereoCompensationDelay::readSample(int channel, int delaySamples) const
+{
+    if (channels_[channel].empty())
+        return 0.0f;
+
+    const int readIndex = (writePos_ - delaySamples) & bufferMask_;
+    return channels_[channel][static_cast<size_t>(readIndex)];
+}
+
+void MixEngine::StereoCompensationDelay::setTargetDelaySamples(int delaySamples)
+{
+    delaySamples = juce::jmax(0, delaySamples);
+    ensureCapacity(delaySamples);
+
+    if (!hasProcessedAudio_)
+    {
+        currentDelaySamples_ = delaySamples;
+        sourceDelaySamples_ = delaySamples;
+        targetDelaySamples_ = delaySamples;
+        crossfadeRemaining_ = 0;
+        return;
+    }
+
+    if (crossfadeRemaining_ == 0 && delaySamples == currentDelaySamples_)
+    {
+        targetDelaySamples_ = delaySamples;
+        sourceDelaySamples_ = delaySamples;
+        return;
+    }
+
+    const int activeDelay = (crossfadeRemaining_ > 0) ? targetDelaySamples_
+                                                      : currentDelaySamples_;
+    if (delaySamples == activeDelay)
+        return;
+
+    sourceDelaySamples_ = activeDelay;
+    targetDelaySamples_ = delaySamples;
+
+    if (sourceDelaySamples_ == targetDelaySamples_)
+    {
+        currentDelaySamples_ = targetDelaySamples_;
+        crossfadeRemaining_ = 0;
+        return;
+    }
+
+    crossfadeRemaining_ = kCrossfadeSamples;
+}
+
+void MixEngine::StereoCompensationDelay::process(juce::AudioBuffer<float>& buffer, int numSamples)
+{
+    if (numSamples <= 0)
+        return;
+
+    ensureCapacity(juce::jmax(currentDelaySamples_,
+                              juce::jmax(sourceDelaySamples_, targetDelaySamples_)));
+
+    auto* left = buffer.getWritePointer(0);
+    auto* right = buffer.getNumChannels() > 1 ? buffer.getWritePointer(1) : nullptr;
+
+    for (int sample = 0; sample < numSamples; ++sample)
+    {
+        const float inL = left[sample];
+        const float inR = (right != nullptr) ? right[sample] : 0.0f;
+
+        channels_[0][static_cast<size_t>(writePos_)] = inL;
+        channels_[1][static_cast<size_t>(writePos_)] = inR;
+
+        float outL = readSample(0, currentDelaySamples_);
+        float outR = readSample(1, currentDelaySamples_);
+
+        if (crossfadeRemaining_ > 0)
+        {
+            const float oldL = readSample(0, sourceDelaySamples_);
+            const float oldR = readSample(1, sourceDelaySamples_);
+            const float newL = readSample(0, targetDelaySamples_);
+            const float newR = readSample(1, targetDelaySamples_);
+            const float alpha = static_cast<float>(kCrossfadeSamples - crossfadeRemaining_)
+                              / static_cast<float>(kCrossfadeSamples);
+
+            outL = oldL + (newL - oldL) * alpha;
+            outR = oldR + (newR - oldR) * alpha;
+
+            --crossfadeRemaining_;
+            if (crossfadeRemaining_ == 0)
+            {
+                currentDelaySamples_ = targetDelaySamples_;
+                sourceDelaySamples_ = targetDelaySamples_;
+            }
+        }
+
+        left[sample] = outL;
+        if (right != nullptr)
+            right[sample] = outR;
+
+        writePos_ = (writePos_ + 1) & bufferMask_;
+    }
+
+    hasProcessedAudio_ = true;
+}
 
 MixEngine::MixEngine()
 {
@@ -118,6 +384,939 @@ MixEngine::~MixEngine()
 }
 
 // ── Coordinator reaper ────────────────────────────────────────────────────────
+
+void MixEngine::setRealtimeDiagnosticsEnabled(bool enabled)
+{
+    realtimeDiagnostics_.enabled.store(enabled, std::memory_order_release);
+    audioPerformanceTelemetry_.setEnabled(enabled);
+}
+
+bool MixEngine::isRealtimeDiagnosticsEnabled() const
+{
+    return realtimeDiagnostics_.enabled.load(std::memory_order_acquire)
+        || audioPerformanceTelemetry_.isEnabled();
+}
+
+void MixEngine::resetRealtimeDiagnostics()
+{
+    const bool enabled = realtimeDiagnostics_.enabled.load(std::memory_order_relaxed);
+
+    realtimeDiagnostics_.blockCount.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.audioCallbackCount.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.totalProcessNs.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.maxProcessNs.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.totalDeadlineNs.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.maxRatioPermille.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.overBudgetBlockCount.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.overrunBlockCount.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.totalAudioCallbackNs.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.maxAudioCallbackNs.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.maxAudioCallbackRatioPermille.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.audioCallbackOverrunCount.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.chainLockMissCount.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.pdcRetargetCount.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.pdcDelayProcessCount.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.trackProcessCount.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.totalTrackProcessNs.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.maxTrackProcessNs.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.worstTrackId.store(-1, std::memory_order_relaxed);
+    realtimeDiagnostics_.trackChainProcessCount.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.totalTrackChainNs.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.maxTrackChainNs.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.worstTrackChainId.store(-1, std::memory_order_relaxed);
+    realtimeDiagnostics_.totalPdcDelayNs.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.maxPdcDelayNs.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.pluginCallCount.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.totalPluginNs.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.maxPluginNs.store(0, std::memory_order_relaxed);
+    storeAtomicString(realtimeDiagnostics_.worstPluginId, "");
+    realtimeDiagnostics_.worstPluginTrackId.store(-1, std::memory_order_relaxed);
+    realtimeDiagnostics_.worstPluginNodeId.store(-1, std::memory_order_relaxed);
+    realtimeDiagnostics_.resonanceSuppressorCallCount.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.totalResonanceSuppressorNs.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.maxResonanceSuppressorNs.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.resonanceSuppressorWolaCallCount.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.totalResonanceSuppressorWolaNs.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.maxResonanceSuppressorWolaNs.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.resonanceSuppressorAudioThreadReprepareCount.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.resonanceSuppressorDeferredReprepareCount.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.nanInfBlockCount.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.lastBlockSize.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.lastSampleRateMilliHz.store(0, std::memory_order_relaxed);
+    realtimeDiagnostics_.lastDeadlineNs.store(0, std::memory_order_relaxed);
+    audioPerformanceTelemetry_.reset();
+
+    realtimeDiagnostics_.enabled.store(enabled, std::memory_order_release);
+    audioPerformanceTelemetry_.setEnabled(enabled);
+}
+
+MixEngine::RealtimeDiagnosticsSnapshot MixEngine::getRealtimeDiagnosticsSnapshot(
+    uint64_t minTimingSequence) const
+{
+    RealtimeDiagnosticsSnapshot snapshot;
+    const auto perf = minTimingSequence > 0
+        ? audioPerformanceTelemetry_.getSnapshotSince(minTimingSequence)
+        : audioPerformanceTelemetry_.getSnapshot();
+    const auto usToMs = [](double us) noexcept { return us / 1000.0; };
+    const auto metricAvgMs = [&](const xleth::audio::AudioTelemetryMetricSummary& metric) {
+        return usToMs(metric.averageUs);
+    };
+    {
+        std::lock_guard<std::mutex> lock(chainsMutex_);
+        snapshot.activeResonanceSuppressorHighQualityInstanceCount =
+            countActiveResonanceSuppressorHighQualityInstancesLocked();
+    }
+
+    snapshot.enabled = realtimeDiagnostics_.enabled.load(std::memory_order_acquire);
+    snapshot.timingSequence = perf.counters.lastTimingSequence;
+    snapshot.blockCount = realtimeDiagnostics_.blockCount.load(std::memory_order_relaxed);
+    snapshot.audioCallbackCount = realtimeDiagnostics_.audioCallbackCount.load(std::memory_order_relaxed);
+    snapshot.lastBlockSize = realtimeDiagnostics_.lastBlockSize.load(std::memory_order_relaxed);
+    snapshot.lastSampleRate =
+        static_cast<double>(realtimeDiagnostics_.lastSampleRateMilliHz.load(std::memory_order_relaxed))
+        / 1000.0;
+    snapshot.lastDeadlineMs = nsToMs(realtimeDiagnostics_.lastDeadlineNs.load(std::memory_order_relaxed));
+
+    const uint64_t totalProcessNs = realtimeDiagnostics_.totalProcessNs.load(std::memory_order_relaxed);
+    const uint64_t totalDeadlineNs = realtimeDiagnostics_.totalDeadlineNs.load(std::memory_order_relaxed);
+    snapshot.avgProcessBlockMs = snapshot.blockCount > 0
+        ? nsToMs(totalProcessNs / snapshot.blockCount)
+        : 0.0;
+    snapshot.maxProcessBlockMs = nsToMs(realtimeDiagnostics_.maxProcessNs.load(std::memory_order_relaxed));
+    snapshot.avgProcessBlockRatio = totalDeadlineNs > 0
+        ? static_cast<double>(totalProcessNs) / static_cast<double>(totalDeadlineNs)
+        : 0.0;
+    snapshot.maxProcessBlockRatio =
+        permilleToRatio(realtimeDiagnostics_.maxRatioPermille.load(std::memory_order_relaxed));
+
+    snapshot.avgAudioCallbackMs = snapshot.audioCallbackCount > 0
+        ? nsToMs(realtimeDiagnostics_.totalAudioCallbackNs.load(std::memory_order_relaxed)
+                 / snapshot.audioCallbackCount)
+        : 0.0;
+    snapshot.maxAudioCallbackMs =
+        nsToMs(realtimeDiagnostics_.maxAudioCallbackNs.load(std::memory_order_relaxed));
+    snapshot.maxAudioCallbackRatio =
+        permilleToRatio(realtimeDiagnostics_.maxAudioCallbackRatioPermille.load(std::memory_order_relaxed));
+
+    snapshot.overBudgetBlockCount =
+        realtimeDiagnostics_.overBudgetBlockCount.load(std::memory_order_relaxed);
+    snapshot.overrunBlockCount =
+        realtimeDiagnostics_.overrunBlockCount.load(std::memory_order_relaxed);
+    snapshot.audioCallbackOverrunCount =
+        realtimeDiagnostics_.audioCallbackOverrunCount.load(std::memory_order_relaxed);
+    snapshot.chainLockMissCount =
+        realtimeDiagnostics_.chainLockMissCount.load(std::memory_order_relaxed);
+    snapshot.pdcRetargetCount =
+        realtimeDiagnostics_.pdcRetargetCount.load(std::memory_order_relaxed);
+    snapshot.pdcDelayProcessCount =
+        realtimeDiagnostics_.pdcDelayProcessCount.load(std::memory_order_relaxed);
+
+    const uint64_t trackProcessCount =
+        realtimeDiagnostics_.trackProcessCount.load(std::memory_order_relaxed);
+    snapshot.avgTrackProcessMs = trackProcessCount > 0
+        ? nsToMs(realtimeDiagnostics_.totalTrackProcessNs.load(std::memory_order_relaxed)
+                 / trackProcessCount)
+        : 0.0;
+    snapshot.maxTrackProcessMs =
+        nsToMs(realtimeDiagnostics_.maxTrackProcessNs.load(std::memory_order_relaxed));
+    snapshot.worstTrackId = realtimeDiagnostics_.worstTrackId.load(std::memory_order_relaxed);
+
+    const uint64_t trackChainProcessCount =
+        realtimeDiagnostics_.trackChainProcessCount.load(std::memory_order_relaxed);
+    snapshot.avgTrackChainMs = trackChainProcessCount > 0
+        ? nsToMs(realtimeDiagnostics_.totalTrackChainNs.load(std::memory_order_relaxed)
+                 / trackChainProcessCount)
+        : 0.0;
+    snapshot.maxTrackChainMs =
+        nsToMs(realtimeDiagnostics_.maxTrackChainNs.load(std::memory_order_relaxed));
+    snapshot.worstTrackChainId =
+        realtimeDiagnostics_.worstTrackChainId.load(std::memory_order_relaxed);
+
+    snapshot.avgPdcDelayMs = snapshot.pdcDelayProcessCount > 0
+        ? nsToMs(realtimeDiagnostics_.totalPdcDelayNs.load(std::memory_order_relaxed)
+                 / snapshot.pdcDelayProcessCount)
+        : 0.0;
+    snapshot.maxPdcDelayMs =
+        nsToMs(realtimeDiagnostics_.maxPdcDelayNs.load(std::memory_order_relaxed));
+
+    snapshot.pluginCallCount =
+        realtimeDiagnostics_.pluginCallCount.load(std::memory_order_relaxed);
+    snapshot.avgPluginMs = snapshot.pluginCallCount > 0
+        ? nsToMs(realtimeDiagnostics_.totalPluginNs.load(std::memory_order_relaxed)
+                 / snapshot.pluginCallCount)
+        : 0.0;
+    snapshot.maxPluginMs =
+        nsToMs(realtimeDiagnostics_.maxPluginNs.load(std::memory_order_relaxed));
+    snapshot.worstPluginId = loadAtomicString(realtimeDiagnostics_.worstPluginId);
+    snapshot.worstPluginTrackId =
+        realtimeDiagnostics_.worstPluginTrackId.load(std::memory_order_relaxed);
+    snapshot.worstPluginNodeId =
+        realtimeDiagnostics_.worstPluginNodeId.load(std::memory_order_relaxed);
+
+    const uint64_t rsCount =
+        realtimeDiagnostics_.resonanceSuppressorCallCount.load(std::memory_order_relaxed);
+    snapshot.avgResonanceSuppressorMs = rsCount > 0
+        ? nsToMs(realtimeDiagnostics_.totalResonanceSuppressorNs.load(std::memory_order_relaxed)
+                 / rsCount)
+        : 0.0;
+    snapshot.maxResonanceSuppressorMs =
+        nsToMs(realtimeDiagnostics_.maxResonanceSuppressorNs.load(std::memory_order_relaxed));
+    snapshot.resonanceSuppressorWolaCallCount =
+        realtimeDiagnostics_.resonanceSuppressorWolaCallCount.load(std::memory_order_relaxed);
+    snapshot.avgResonanceSuppressorWolaMs = snapshot.resonanceSuppressorWolaCallCount > 0
+        ? nsToMs(realtimeDiagnostics_.totalResonanceSuppressorWolaNs.load(std::memory_order_relaxed)
+                 / snapshot.resonanceSuppressorWolaCallCount)
+        : 0.0;
+    snapshot.maxResonanceSuppressorWolaMs =
+        nsToMs(realtimeDiagnostics_.maxResonanceSuppressorWolaNs.load(std::memory_order_relaxed));
+    snapshot.resonanceSuppressorAudioThreadReprepareCount =
+        realtimeDiagnostics_.resonanceSuppressorAudioThreadReprepareCount.load(std::memory_order_relaxed);
+    snapshot.resonanceSuppressorDeferredReprepareCount =
+        realtimeDiagnostics_.resonanceSuppressorDeferredReprepareCount.load(std::memory_order_relaxed);
+    snapshot.nanInfBlockCount =
+        realtimeDiagnostics_.nanInfBlockCount.load(std::memory_order_relaxed);
+
+    snapshot.enabled = snapshot.enabled || perf.counters.enabled;
+    snapshot.blockCount = (minTimingSequence > 0 && perf.mixBlock.count > 0)
+        ? perf.mixBlock.count
+        : perf.counters.mixBlockCount > 0
+        ? perf.counters.mixBlockCount
+        : snapshot.blockCount;
+    snapshot.audioCallbackCount = (minTimingSequence > 0 && perf.callback.count > 0)
+        ? perf.callback.count
+        : perf.counters.audioCallbackCount > 0
+        ? perf.counters.audioCallbackCount
+        : snapshot.audioCallbackCount;
+    snapshot.lastBlockSize = perf.counters.lastBlockSize > 0
+        ? static_cast<int>(perf.counters.lastBlockSize)
+        : snapshot.lastBlockSize;
+    snapshot.lastSampleRate = perf.counters.lastSampleRateMilliHz > 0
+        ? static_cast<double>(perf.counters.lastSampleRateMilliHz) / 1000.0
+        : snapshot.lastSampleRate;
+    snapshot.lastDeadlineMs = perf.counters.lastDeadlineUs > 0
+        ? usToMs(static_cast<double>(perf.counters.lastDeadlineUs))
+        : snapshot.lastDeadlineMs;
+
+    if (perf.mixBlock.count > 0)
+    {
+        snapshot.avgProcessBlockMs = metricAvgMs(perf.mixBlock);
+        snapshot.p50ProcessBlockMs = usToMs(perf.mixBlock.p50Us);
+        snapshot.p95ProcessBlockMs = usToMs(perf.mixBlock.p95Us);
+        snapshot.p99ProcessBlockMs = usToMs(perf.mixBlock.p99Us);
+        snapshot.maxProcessBlockMs = usToMs(perf.mixBlock.maxUs);
+        snapshot.maxProcessBlockRatio =
+            perf.counters.lastDeadlineUs > 0
+                ? static_cast<double>(perf.mixBlock.maxUs)
+                    / static_cast<double>(perf.counters.lastDeadlineUs)
+                : snapshot.maxProcessBlockRatio;
+    }
+
+    if (perf.callback.count > 0)
+    {
+        snapshot.avgAudioCallbackMs = metricAvgMs(perf.callback);
+        snapshot.p50AudioCallbackMs = usToMs(perf.callback.p50Us);
+        snapshot.p95AudioCallbackMs = usToMs(perf.callback.p95Us);
+        snapshot.p99AudioCallbackMs = usToMs(perf.callback.p99Us);
+        snapshot.maxAudioCallbackMs = usToMs(perf.callback.maxUs);
+        snapshot.maxAudioCallbackRatio =
+            perf.counters.lastDeadlineUs > 0
+                ? static_cast<double>(perf.callback.maxUs)
+                    / static_cast<double>(perf.counters.lastDeadlineUs)
+                : snapshot.maxAudioCallbackRatio;
+    }
+
+    snapshot.overBudgetBlockCount = perf.counters.overBudgetBlockCount;
+    snapshot.overrunBlockCount = perf.counters.mixOverrunCount;
+    snapshot.audioCallbackOverrunCount = perf.counters.callbackOverrunCount;
+    snapshot.droppedTelemetrySamples = perf.counters.droppedTimingSamples;
+    snapshot.chainLockMissCount = perf.counters.chainLockMissCount;
+    snapshot.masterChainSkippedCount = perf.counters.masterChainSkippedCount;
+    snapshot.trackChainSkippedCount = perf.counters.trackChainSkippedCount;
+    snapshot.staleSnapshotReuseCount = perf.counters.staleSnapshotReuseCount;
+    snapshot.guardedPluginCrashedSkippedCount =
+        perf.counters.guardedPluginCrashedSkippedCount;
+    snapshot.latencyEpochChangeCount = perf.counters.latencyEpochChangeCount;
+    snapshot.pdcRetargetCount = perf.counters.compensationTargetChangeCount;
+    snapshot.pdcDelayProcessCount = perf.counters.pdcDelayProcessCount;
+
+    if (perf.trackChain.count > 0)
+    {
+        snapshot.avgTrackChainMs = metricAvgMs(perf.trackChain);
+        snapshot.p95TrackChainMs = usToMs(perf.trackChain.p95Us);
+        snapshot.p99TrackChainMs = usToMs(perf.trackChain.p99Us);
+        snapshot.maxTrackChainMs = usToMs(perf.trackChain.maxUs);
+    }
+    if (perf.masterChain.count > 0)
+    {
+        snapshot.avgMasterChainMs = metricAvgMs(perf.masterChain);
+        snapshot.p95MasterChainMs = usToMs(perf.masterChain.p95Us);
+        snapshot.p99MasterChainMs = usToMs(perf.masterChain.p99Us);
+        snapshot.maxMasterChainMs = usToMs(perf.masterChain.maxUs);
+    }
+    if (perf.pdcDelay.count > 0)
+    {
+        snapshot.avgPdcDelayMs = metricAvgMs(perf.pdcDelay);
+        snapshot.p95PdcDelayMs = usToMs(perf.pdcDelay.p95Us);
+        snapshot.p99PdcDelayMs = usToMs(perf.pdcDelay.p99Us);
+        snapshot.maxPdcDelayMs = usToMs(perf.pdcDelay.maxUs);
+    }
+    if (perf.effect.count > 0)
+    {
+        snapshot.pluginCallCount = perf.effect.count;
+        snapshot.avgPluginMs = metricAvgMs(perf.effect);
+        snapshot.p95PluginMs = usToMs(perf.effect.p95Us);
+        snapshot.p99PluginMs = usToMs(perf.effect.p99Us);
+        snapshot.maxPluginMs = usToMs(perf.effect.maxUs);
+    }
+
+    if (!perf.worstEffectsByMax.empty())
+    {
+        const auto& worst = perf.worstEffectsByMax.front();
+        snapshot.worstPluginId =
+            xleth::audio::AudioPerformanceTelemetry::effectTypeName(worst.effectType);
+        snapshot.worstPluginTrackId = worst.trackId;
+        snapshot.worstPluginNodeId = worst.slotOrNodeId;
+    }
+
+    snapshot.recentAudioCallbackUs = perf.recentCallbackDurationUs;
+    snapshot.worstEffectsByMax = perf.worstEffectsByMax;
+    snapshot.worstEffectsByP99 = perf.worstEffectsByP99;
+    snapshot.worstChainsByMax = perf.worstChainsByMax;
+    snapshot.worstChainsByP99 = perf.worstChainsByP99;
+
+    snapshot.resonanceSuppressorWolaCallCount =
+        perf.counters.resonanceSuppressorWolaCallCount;
+    if (perf.effectSection.count > 0)
+    {
+        snapshot.avgResonanceSuppressorWolaMs = metricAvgMs(perf.effectSection);
+        snapshot.p99ResonanceSuppressorWolaMs = usToMs(perf.effectSection.p99Us);
+        snapshot.maxResonanceSuppressorWolaMs = usToMs(perf.effectSection.maxUs);
+    }
+    snapshot.resonanceSuppressorAudioThreadReprepareCount =
+        perf.counters.resonanceSuppressorAudioThreadReprepareCount;
+    snapshot.resonanceSuppressorDeferredReprepareCount =
+        perf.counters.resonanceSuppressorDeferredReprepareCount;
+    snapshot.nanInfBlockCount = perf.counters.nanInfBlockCount;
+
+    if (snapshot.overrunBlockCount > 0 || snapshot.audioCallbackOverrunCount > 0)
+        snapshot.diagnosis = "realtime_cpu_overrun";
+    else if (snapshot.blockCount > 0 && snapshot.pdcRetargetCount > (snapshot.blockCount / 4))
+        snapshot.diagnosis = "pdc_target_churn";
+    else if (snapshot.chainLockMissCount > 0)
+        snapshot.diagnosis = "chain_lock_contention";
+    else if (snapshot.overBudgetBlockCount > 0)
+        snapshot.diagnosis = "realtime_cpu_margin_risk";
+    else
+        snapshot.diagnosis = "no_realtime_instability_observed";
+
+    const double safeWolaMs = snapshot.lastDeadlineMs * 0.70;
+    snapshot.highQualityResonanceSuppressorRealtimeSafe =
+        snapshot.resonanceSuppressorWolaCallCount > 0
+        && snapshot.maxResonanceSuppressorWolaMs <= safeWolaMs
+        && snapshot.resonanceSuppressorAudioThreadReprepareCount == 0
+        && snapshot.overrunBlockCount == 0;
+
+    xleth::audio::RealtimeRsHqRiskInputs rsHqInputs;
+    rsHqInputs.sampleRate = snapshot.lastSampleRate;
+    rsHqInputs.blockSize = static_cast<std::uint32_t>(std::max(0, snapshot.lastBlockSize));
+    rsHqInputs.offlineOrExport = nonRealtime_.load(std::memory_order_relaxed);
+    rsHqInputs.activeHighQualityInstanceCount =
+        static_cast<std::uint32_t>(
+            std::max(0, snapshot.activeResonanceSuppressorHighQualityInstanceCount));
+    rsHqInputs.counters = perf.counters;
+    rsHqInputs.callback = perf.callback;
+    rsHqInputs.mixBlock = perf.mixBlock;
+    rsHqInputs.resonanceSuppressorWola = perf.effectSection;
+    const auto rsHqRisk =
+        xleth::audio::AudioPerformanceTelemetry::classifyRealtimeRsHqRisk(rsHqInputs);
+    snapshot.activeResonanceSuppressorHighQualityInstanceCount =
+        static_cast<int>(rsHqRisk.activeResonanceSuppressorHighQualityInstanceCount);
+    snapshot.realtimeRsHqRiskLevel = rsHqRisk.realtimeRsHqRiskLevel;
+    snapshot.realtimeRsHqRiskReasons = rsHqRisk.realtimeRsHqRiskReasons;
+    snapshot.recommendedAction = rsHqRisk.recommendedAction;
+
+    return snapshot;
+}
+
+void MixEngine::beginRealtimeDiagnosticsCaptureAccumulation(
+    uint64_t minTimingSequence) const
+{
+    audioPerformanceTelemetry_.beginCaptureAccumulation(minTimingSequence);
+}
+
+void MixEngine::drainRealtimeDiagnosticsCaptureAccumulation() const
+{
+    audioPerformanceTelemetry_.drainPendingTimingSamplesForCapture();
+}
+
+MixEngine::RealtimeDiagnosticsSnapshot
+MixEngine::finishRealtimeDiagnosticsCaptureAccumulation(
+    uint64_t* accumulatedTimingSampleCount,
+    uint64_t* accumulatorOverflowDrops) const
+{
+    const auto capture = audioPerformanceTelemetry_.finishCaptureAccumulation();
+    if (accumulatedTimingSampleCount != nullptr)
+        *accumulatedTimingSampleCount = capture.accumulatedTimingSampleCount;
+    if (accumulatorOverflowDrops != nullptr)
+        *accumulatorOverflowDrops = capture.accumulatorOverflowDrops;
+
+    RealtimeDiagnosticsSnapshot snapshot = getRealtimeDiagnosticsSnapshot();
+    const auto& perf = capture.snapshot;
+    const auto usToMs = [](double us) noexcept { return us / 1000.0; };
+
+    snapshot.timingSequence = perf.counters.lastTimingSequence;
+    snapshot.enabled = snapshot.enabled || perf.counters.enabled;
+    snapshot.blockCount = perf.mixBlock.count;
+    snapshot.audioCallbackCount = perf.callback.count;
+    snapshot.lastBlockSize = perf.counters.lastBlockSize > 0
+        ? static_cast<int>(perf.counters.lastBlockSize)
+        : snapshot.lastBlockSize;
+    snapshot.lastSampleRate = perf.counters.lastSampleRateMilliHz > 0
+        ? static_cast<double>(perf.counters.lastSampleRateMilliHz) / 1000.0
+        : snapshot.lastSampleRate;
+    snapshot.lastDeadlineMs = perf.counters.lastDeadlineUs > 0
+        ? usToMs(static_cast<double>(perf.counters.lastDeadlineUs))
+        : snapshot.lastDeadlineMs;
+
+    if (perf.mixBlock.count > 0)
+    {
+        snapshot.avgProcessBlockMs = usToMs(perf.mixBlock.averageUs);
+        snapshot.p50ProcessBlockMs = usToMs(perf.mixBlock.p50Us);
+        snapshot.p95ProcessBlockMs = usToMs(perf.mixBlock.p95Us);
+        snapshot.p99ProcessBlockMs = usToMs(perf.mixBlock.p99Us);
+        snapshot.maxProcessBlockMs = usToMs(perf.mixBlock.maxUs);
+        snapshot.maxProcessBlockRatio =
+            perf.counters.lastDeadlineUs > 0
+                ? static_cast<double>(perf.mixBlock.maxUs)
+                    / static_cast<double>(perf.counters.lastDeadlineUs)
+                : snapshot.maxProcessBlockRatio;
+    }
+    if (perf.callback.count > 0)
+    {
+        snapshot.avgAudioCallbackMs = usToMs(perf.callback.averageUs);
+        snapshot.p50AudioCallbackMs = usToMs(perf.callback.p50Us);
+        snapshot.p95AudioCallbackMs = usToMs(perf.callback.p95Us);
+        snapshot.p99AudioCallbackMs = usToMs(perf.callback.p99Us);
+        snapshot.maxAudioCallbackMs = usToMs(perf.callback.maxUs);
+        snapshot.maxAudioCallbackRatio =
+            perf.counters.lastDeadlineUs > 0
+                ? static_cast<double>(perf.callback.maxUs)
+                    / static_cast<double>(perf.counters.lastDeadlineUs)
+                : snapshot.maxAudioCallbackRatio;
+    }
+
+    snapshot.overBudgetBlockCount = perf.counters.overBudgetBlockCount;
+    snapshot.overrunBlockCount = perf.counters.mixOverrunCount;
+    snapshot.audioCallbackOverrunCount = perf.counters.callbackOverrunCount;
+    snapshot.droppedTelemetrySamples = perf.counters.droppedTimingSamples;
+    snapshot.chainLockMissCount = perf.counters.chainLockMissCount;
+    snapshot.masterChainSkippedCount = perf.counters.masterChainSkippedCount;
+    snapshot.trackChainSkippedCount = perf.counters.trackChainSkippedCount;
+    snapshot.staleSnapshotReuseCount = perf.counters.staleSnapshotReuseCount;
+    snapshot.guardedPluginCrashedSkippedCount =
+        perf.counters.guardedPluginCrashedSkippedCount;
+    snapshot.latencyEpochChangeCount = perf.counters.latencyEpochChangeCount;
+    snapshot.pdcRetargetCount = perf.counters.compensationTargetChangeCount;
+    snapshot.pdcDelayProcessCount = perf.counters.pdcDelayProcessCount;
+
+    if (perf.trackChain.count > 0)
+    {
+        snapshot.avgTrackChainMs = usToMs(perf.trackChain.averageUs);
+        snapshot.p95TrackChainMs = usToMs(perf.trackChain.p95Us);
+        snapshot.p99TrackChainMs = usToMs(perf.trackChain.p99Us);
+        snapshot.maxTrackChainMs = usToMs(perf.trackChain.maxUs);
+    }
+    if (perf.masterChain.count > 0)
+    {
+        snapshot.avgMasterChainMs = usToMs(perf.masterChain.averageUs);
+        snapshot.p95MasterChainMs = usToMs(perf.masterChain.p95Us);
+        snapshot.p99MasterChainMs = usToMs(perf.masterChain.p99Us);
+        snapshot.maxMasterChainMs = usToMs(perf.masterChain.maxUs);
+    }
+    if (perf.pdcDelay.count > 0)
+    {
+        snapshot.avgPdcDelayMs = usToMs(perf.pdcDelay.averageUs);
+        snapshot.p95PdcDelayMs = usToMs(perf.pdcDelay.p95Us);
+        snapshot.p99PdcDelayMs = usToMs(perf.pdcDelay.p99Us);
+        snapshot.maxPdcDelayMs = usToMs(perf.pdcDelay.maxUs);
+    }
+    if (perf.effect.count > 0)
+    {
+        snapshot.pluginCallCount = perf.effect.count;
+        snapshot.avgPluginMs = usToMs(perf.effect.averageUs);
+        snapshot.p95PluginMs = usToMs(perf.effect.p95Us);
+        snapshot.p99PluginMs = usToMs(perf.effect.p99Us);
+        snapshot.maxPluginMs = usToMs(perf.effect.maxUs);
+    }
+
+    snapshot.recentAudioCallbackUs = perf.recentCallbackDurationUs;
+    snapshot.worstEffectsByMax = perf.worstEffectsByMax;
+    snapshot.worstEffectsByP99 = perf.worstEffectsByP99;
+    snapshot.worstChainsByMax = perf.worstChainsByMax;
+    snapshot.worstChainsByP99 = perf.worstChainsByP99;
+
+    snapshot.resonanceSuppressorWolaCallCount =
+        perf.counters.resonanceSuppressorWolaCallCount;
+    if (perf.effectSection.count > 0)
+    {
+        snapshot.avgResonanceSuppressorWolaMs = usToMs(perf.effectSection.averageUs);
+        snapshot.p99ResonanceSuppressorWolaMs = usToMs(perf.effectSection.p99Us);
+        snapshot.maxResonanceSuppressorWolaMs = usToMs(perf.effectSection.maxUs);
+    }
+    snapshot.resonanceSuppressorAudioThreadReprepareCount =
+        perf.counters.resonanceSuppressorAudioThreadReprepareCount;
+    snapshot.resonanceSuppressorDeferredReprepareCount =
+        perf.counters.resonanceSuppressorDeferredReprepareCount;
+    snapshot.nanInfBlockCount = perf.counters.nanInfBlockCount;
+
+    if (snapshot.overrunBlockCount > 0 || snapshot.audioCallbackOverrunCount > 0)
+        snapshot.diagnosis = "realtime_cpu_overrun";
+    else if (snapshot.blockCount > 0 && snapshot.pdcRetargetCount > (snapshot.blockCount / 4))
+        snapshot.diagnosis = "pdc_target_churn";
+    else if (snapshot.chainLockMissCount > 0)
+        snapshot.diagnosis = "chain_lock_contention";
+    else if (snapshot.overBudgetBlockCount > 0)
+        snapshot.diagnosis = "realtime_cpu_margin_risk";
+    else
+        snapshot.diagnosis = "no_realtime_instability_observed";
+
+    const double safeWolaMs = snapshot.lastDeadlineMs * 0.70;
+    snapshot.highQualityResonanceSuppressorRealtimeSafe =
+        snapshot.resonanceSuppressorWolaCallCount > 0
+        && snapshot.maxResonanceSuppressorWolaMs <= safeWolaMs
+        && snapshot.resonanceSuppressorAudioThreadReprepareCount == 0
+        && snapshot.overrunBlockCount == 0;
+
+    xleth::audio::RealtimeRsHqRiskInputs rsHqInputs;
+    rsHqInputs.sampleRate = snapshot.lastSampleRate;
+    rsHqInputs.blockSize = static_cast<std::uint32_t>(std::max(0, snapshot.lastBlockSize));
+    rsHqInputs.offlineOrExport = nonRealtime_.load(std::memory_order_relaxed);
+    rsHqInputs.activeHighQualityInstanceCount =
+        static_cast<std::uint32_t>(
+            std::max(0, snapshot.activeResonanceSuppressorHighQualityInstanceCount));
+    rsHqInputs.counters = perf.counters;
+    rsHqInputs.callback = perf.callback;
+    rsHqInputs.mixBlock = perf.mixBlock;
+    rsHqInputs.resonanceSuppressorWola = perf.effectSection;
+    const auto rsHqRisk =
+        xleth::audio::AudioPerformanceTelemetry::classifyRealtimeRsHqRisk(rsHqInputs);
+    snapshot.activeResonanceSuppressorHighQualityInstanceCount =
+        static_cast<int>(rsHqRisk.activeResonanceSuppressorHighQualityInstanceCount);
+    snapshot.realtimeRsHqRiskLevel = rsHqRisk.realtimeRsHqRiskLevel;
+    snapshot.realtimeRsHqRiskReasons = rsHqRisk.realtimeRsHqRiskReasons;
+    snapshot.recommendedAction = rsHqRisk.recommendedAction;
+
+    return snapshot;
+}
+
+int MixEngine::countActiveResonanceSuppressorHighQualityInstancesLocked() const
+{
+    int count = 0;
+    for (const auto& [trackId, chain] : effectChains_)
+    {
+        juce::ignoreUnused(trackId);
+        if (chain)
+            count += chain->countActiveResonanceSuppressorHighQualityInstances();
+    }
+    if (masterEffectChain_)
+        count += masterEffectChain_->countActiveResonanceSuppressorHighQualityInstances();
+    return count;
+}
+
+std::string MixEngine::getRealtimeDiagnosticsJSON() const
+{
+    const auto snapshot = getRealtimeDiagnosticsSnapshot();
+    nlohmann::json j;
+    j["enabled"] = snapshot.enabled;
+    j["blockCount"] = snapshot.blockCount;
+    j["audioCallbackCount"] = snapshot.audioCallbackCount;
+    j["lastBlockSize"] = snapshot.lastBlockSize;
+    j["lastSampleRate"] = snapshot.lastSampleRate;
+    j["lastDeadlineMs"] = snapshot.lastDeadlineMs;
+    j["avgProcessBlockMs"] = snapshot.avgProcessBlockMs;
+    j["p50ProcessBlockMs"] = snapshot.p50ProcessBlockMs;
+    j["p95ProcessBlockMs"] = snapshot.p95ProcessBlockMs;
+    j["p99ProcessBlockMs"] = snapshot.p99ProcessBlockMs;
+    j["maxProcessBlockMs"] = snapshot.maxProcessBlockMs;
+    j["avgProcessBlockRatio"] = snapshot.avgProcessBlockRatio;
+    j["maxProcessBlockRatio"] = snapshot.maxProcessBlockRatio;
+    j["avgAudioCallbackMs"] = snapshot.avgAudioCallbackMs;
+    j["p50AudioCallbackMs"] = snapshot.p50AudioCallbackMs;
+    j["p95AudioCallbackMs"] = snapshot.p95AudioCallbackMs;
+    j["p99AudioCallbackMs"] = snapshot.p99AudioCallbackMs;
+    j["maxAudioCallbackMs"] = snapshot.maxAudioCallbackMs;
+    j["maxAudioCallbackRatio"] = snapshot.maxAudioCallbackRatio;
+    j["overBudgetBlockCount"] = snapshot.overBudgetBlockCount;
+    j["overrunBlockCount"] = snapshot.overrunBlockCount;
+    j["audioCallbackOverrunCount"] = snapshot.audioCallbackOverrunCount;
+    j["droppedTelemetrySamples"] = snapshot.droppedTelemetrySamples;
+    j["chainLockMissCount"] = snapshot.chainLockMissCount;
+    j["masterChainSkippedCount"] = snapshot.masterChainSkippedCount;
+    j["trackChainSkippedCount"] = snapshot.trackChainSkippedCount;
+    j["staleSnapshotReuseCount"] = snapshot.staleSnapshotReuseCount;
+    j["guardedPluginCrashedSkippedCount"] = snapshot.guardedPluginCrashedSkippedCount;
+    j["latencyEpochChangeCount"] = snapshot.latencyEpochChangeCount;
+    j["pdcRetargetCount"] = snapshot.pdcRetargetCount;
+    j["pdcDelayProcessCount"] = snapshot.pdcDelayProcessCount;
+    j["avgTrackProcessMs"] = snapshot.avgTrackProcessMs;
+    j["maxTrackProcessMs"] = snapshot.maxTrackProcessMs;
+    j["worstTrackId"] = snapshot.worstTrackId;
+    j["avgTrackChainMs"] = snapshot.avgTrackChainMs;
+    j["p95TrackChainMs"] = snapshot.p95TrackChainMs;
+    j["p99TrackChainMs"] = snapshot.p99TrackChainMs;
+    j["maxTrackChainMs"] = snapshot.maxTrackChainMs;
+    j["worstTrackChainId"] = snapshot.worstTrackChainId;
+    j["avgMasterChainMs"] = snapshot.avgMasterChainMs;
+    j["p95MasterChainMs"] = snapshot.p95MasterChainMs;
+    j["p99MasterChainMs"] = snapshot.p99MasterChainMs;
+    j["maxMasterChainMs"] = snapshot.maxMasterChainMs;
+    j["avgPdcDelayMs"] = snapshot.avgPdcDelayMs;
+    j["p95PdcDelayMs"] = snapshot.p95PdcDelayMs;
+    j["p99PdcDelayMs"] = snapshot.p99PdcDelayMs;
+    j["maxPdcDelayMs"] = snapshot.maxPdcDelayMs;
+    j["pluginCallCount"] = snapshot.pluginCallCount;
+    j["avgPluginMs"] = snapshot.avgPluginMs;
+    j["p95PluginMs"] = snapshot.p95PluginMs;
+    j["p99PluginMs"] = snapshot.p99PluginMs;
+    j["maxPluginMs"] = snapshot.maxPluginMs;
+    j["worstPluginId"] = snapshot.worstPluginId;
+    j["worstPluginTrackId"] = snapshot.worstPluginTrackId;
+    j["worstPluginNodeId"] = snapshot.worstPluginNodeId;
+    j["recentAudioCallbackUs"] = snapshot.recentAudioCallbackUs;
+    auto encodeWorst = [](const std::vector<xleth::audio::AudioTelemetryWorstScope>& scopes) {
+        nlohmann::json arr = nlohmann::json::array();
+        for (const auto& scope : scopes)
+        {
+            nlohmann::json item;
+            item["kind"] = static_cast<int>(scope.kind);
+            item["effectType"] = scope.effectType;
+            item["effectTypeName"] =
+                xleth::audio::AudioPerformanceTelemetry::effectTypeName(scope.effectType);
+            item["flags"] = scope.flags;
+            item["trackId"] = scope.trackId;
+            item["slotOrNodeId"] = scope.slotOrNodeId;
+            item["count"] = scope.timing.count;
+            item["p99Us"] = scope.timing.p99Us;
+            item["maxUs"] = scope.timing.maxUs;
+            arr.push_back(std::move(item));
+        }
+        return arr;
+    };
+    j["worstEffectsByMax"] = encodeWorst(snapshot.worstEffectsByMax);
+    j["worstEffectsByP99"] = encodeWorst(snapshot.worstEffectsByP99);
+    j["worstChainsByMax"] = encodeWorst(snapshot.worstChainsByMax);
+    j["worstChainsByP99"] = encodeWorst(snapshot.worstChainsByP99);
+    j["avgResonanceSuppressorMs"] = snapshot.avgResonanceSuppressorMs;
+    j["maxResonanceSuppressorMs"] = snapshot.maxResonanceSuppressorMs;
+    j["avgResonanceSuppressorWolaMs"] = snapshot.avgResonanceSuppressorWolaMs;
+    j["p99ResonanceSuppressorWolaMs"] = snapshot.p99ResonanceSuppressorWolaMs;
+    j["maxResonanceSuppressorWolaMs"] = snapshot.maxResonanceSuppressorWolaMs;
+    j["resonanceSuppressorWolaCallCount"] = snapshot.resonanceSuppressorWolaCallCount;
+    j["resonanceSuppressorAudioThreadReprepareCount"] =
+        snapshot.resonanceSuppressorAudioThreadReprepareCount;
+    j["resonanceSuppressorDeferredReprepareCount"] =
+        snapshot.resonanceSuppressorDeferredReprepareCount;
+    j["nanInfBlockCount"] = snapshot.nanInfBlockCount;
+    j["diagnosis"] = snapshot.diagnosis;
+    j["highQualityResonanceSuppressorRealtimeSafe"] =
+        snapshot.highQualityResonanceSuppressorRealtimeSafe;
+    j["activeResonanceSuppressorHighQualityInstanceCount"] =
+        snapshot.activeResonanceSuppressorHighQualityInstanceCount;
+    j["realtimeRsHqRiskLevel"] = snapshot.realtimeRsHqRiskLevel;
+    j["realtimeRsHqRiskReasons"] = snapshot.realtimeRsHqRiskReasons;
+    j["recommendedAction"] = snapshot.recommendedAction;
+    return j.dump();
+}
+
+void MixEngine::recordAudioCallbackTiming(int numSamples, double sampleRate, uint64_t elapsedNs)
+{
+    if (!isRealtimeDiagnosticsEnabled())
+        return;
+
+    const uint64_t deadlineNs = deadlineNsFor(numSamples, sampleRate);
+    const uint64_t ratio = ratioPermille(elapsedNs, deadlineNs);
+
+    realtimeDiagnostics_.audioCallbackCount.fetch_add(1, std::memory_order_relaxed);
+    realtimeDiagnostics_.totalAudioCallbackNs.fetch_add(elapsedNs, std::memory_order_relaxed);
+    atomicMax(realtimeDiagnostics_.maxAudioCallbackNs, elapsedNs);
+    atomicMax(realtimeDiagnostics_.maxAudioCallbackRatioPermille, ratio);
+    if (deadlineNs > 0 && elapsedNs >= deadlineNs)
+        realtimeDiagnostics_.audioCallbackOverrunCount.fetch_add(1, std::memory_order_relaxed);
+
+    recordTelemetryTiming(xleth::audio::AudioTelemetrySampleKind::AudioCallback,
+                          -1,
+                          -1,
+                          xleth::audio::kAudioTelemetryEffectUnknown,
+                          xleth::audio::kAudioTelemetryFlagNone,
+                          numSamples,
+                          sampleRate,
+                          elapsedNs);
+}
+
+void MixEngine::realtimePluginTimingCallback(void* userData, const char* pluginId,
+                                             int trackId, int nodeId, uint64_t elapsedNs)
+{
+    if (auto* engine = static_cast<MixEngine*>(userData))
+        engine->recordRealtimePluginTiming(pluginId, trackId, nodeId, elapsedNs);
+}
+
+void MixEngine::realtimeSectionTimingCallback(void* userData, const char* pluginId,
+                                              const char* sectionId, int trackId,
+                                              int nodeId, uint64_t elapsedNs)
+{
+    if (auto* engine = static_cast<MixEngine*>(userData))
+        engine->recordRealtimeSectionTiming(pluginId, sectionId, trackId, nodeId, elapsedNs);
+}
+
+void MixEngine::realtimeEventCallback(void* userData, const char* pluginId,
+                                      const char* eventId, int trackId, int nodeId)
+{
+    if (auto* engine = static_cast<MixEngine*>(userData))
+        engine->recordRealtimeEvent(pluginId, eventId, trackId, nodeId);
+}
+
+void MixEngine::recordRealtimePluginTiming(const char* pluginId, int trackId,
+                                           int nodeId, uint64_t elapsedNs) noexcept
+{
+    if (!realtimeDiagnostics_.enabled.load(std::memory_order_relaxed))
+        return;
+
+    realtimeDiagnostics_.pluginCallCount.fetch_add(1, std::memory_order_relaxed);
+    realtimeDiagnostics_.totalPluginNs.fetch_add(elapsedNs, std::memory_order_relaxed);
+    if (atomicMaxWithWinner(realtimeDiagnostics_.maxPluginNs, elapsedNs))
+    {
+        realtimeDiagnostics_.worstPluginTrackId.store(trackId, std::memory_order_relaxed);
+        realtimeDiagnostics_.worstPluginNodeId.store(nodeId, std::memory_order_relaxed);
+    }
+
+    const uint32_t effectType =
+        xleth::audio::AudioPerformanceTelemetry::effectTypeFromPluginId(pluginId);
+    const uint32_t flags =
+        xleth::audio::AudioPerformanceTelemetry::flagsFromPluginId(pluginId);
+    recordTelemetryTiming(xleth::audio::AudioTelemetrySampleKind::Effect,
+                          trackId,
+                          nodeId,
+                          effectType,
+                          flags,
+                          0,
+                          0.0,
+                          elapsedNs);
+
+    if (isResonanceSuppressorPlugin(pluginId))
+    {
+        realtimeDiagnostics_.resonanceSuppressorCallCount.fetch_add(1, std::memory_order_relaxed);
+        realtimeDiagnostics_.totalResonanceSuppressorNs.fetch_add(elapsedNs, std::memory_order_relaxed);
+        atomicMax(realtimeDiagnostics_.maxResonanceSuppressorNs, elapsedNs);
+    }
+}
+
+void MixEngine::recordRealtimeSectionTiming(const char* pluginId, const char* sectionId,
+                                            int trackId, int nodeId, uint64_t elapsedNs) noexcept
+{
+    juce::ignoreUnused(trackId, nodeId);
+    if (!realtimeDiagnostics_.enabled.load(std::memory_order_relaxed))
+        return;
+
+    if (isResonanceSuppressorPlugin(pluginId) && isSection(sectionId, "rs_wola"))
+    {
+        realtimeDiagnostics_.resonanceSuppressorWolaCallCount.fetch_add(1, std::memory_order_relaxed);
+        realtimeDiagnostics_.totalResonanceSuppressorWolaNs.fetch_add(elapsedNs, std::memory_order_relaxed);
+        atomicMax(realtimeDiagnostics_.maxResonanceSuppressorWolaNs, elapsedNs);
+    }
+
+    recordTelemetryTiming(xleth::audio::AudioTelemetrySampleKind::EffectSection,
+                          trackId,
+                          nodeId,
+                          xleth::audio::AudioPerformanceTelemetry::effectTypeFromPluginId(pluginId),
+                          xleth::audio::AudioPerformanceTelemetry::flagsFromPluginId(pluginId)
+                              | xleth::audio::AudioPerformanceTelemetry::flagsFromSectionId(sectionId),
+                          0,
+                          0.0,
+                          elapsedNs);
+}
+
+void MixEngine::recordRealtimeEvent(const char* pluginId, const char* eventId,
+                                    int trackId, int nodeId) noexcept
+{
+    juce::ignoreUnused(trackId, nodeId);
+    if (!realtimeDiagnostics_.enabled.load(std::memory_order_relaxed))
+    {
+        return;
+    }
+
+    if (isSection(eventId, "guarded_plugin_crashed_skipped"))
+    {
+        audioPerformanceTelemetry_.incrementGuardedPluginCrashedSkipped();
+        return;
+    }
+
+    if (!isResonanceSuppressorPlugin(pluginId))
+        return;
+
+    if (isSection(eventId, "rs_audio_thread_reprepare_blocked"))
+    {
+        realtimeDiagnostics_.resonanceSuppressorAudioThreadReprepareCount.fetch_add(
+            1, std::memory_order_relaxed);
+        audioPerformanceTelemetry_.incrementResonanceSuppressorAudioThreadReprepare();
+    }
+    else if (isSection(eventId, "rs_hq_reprepare_deferred"))
+    {
+        realtimeDiagnostics_.resonanceSuppressorDeferredReprepareCount.fetch_add(
+            1, std::memory_order_relaxed);
+        audioPerformanceTelemetry_.incrementResonanceSuppressorDeferredReprepare();
+    }
+}
+
+void MixEngine::recordProcessBlockTiming(int numSamples, double sampleRate,
+                                         uint64_t elapsedNs) noexcept
+{
+    if (!realtimeDiagnostics_.enabled.load(std::memory_order_relaxed))
+        return;
+
+    const uint64_t deadlineNs = deadlineNsFor(numSamples, sampleRate);
+    const uint64_t ratio = ratioPermille(elapsedNs, deadlineNs);
+
+    realtimeDiagnostics_.blockCount.fetch_add(1, std::memory_order_relaxed);
+    realtimeDiagnostics_.totalProcessNs.fetch_add(elapsedNs, std::memory_order_relaxed);
+    realtimeDiagnostics_.totalDeadlineNs.fetch_add(deadlineNs, std::memory_order_relaxed);
+    atomicMax(realtimeDiagnostics_.maxProcessNs, elapsedNs);
+    atomicMax(realtimeDiagnostics_.maxRatioPermille, ratio);
+
+    realtimeDiagnostics_.lastBlockSize.store(numSamples, std::memory_order_relaxed);
+    realtimeDiagnostics_.lastSampleRateMilliHz.store(
+        sampleRate > 0.0 && std::isfinite(sampleRate)
+            ? static_cast<uint64_t>(sampleRate * 1000.0)
+            : 0,
+        std::memory_order_relaxed);
+    realtimeDiagnostics_.lastDeadlineNs.store(deadlineNs, std::memory_order_relaxed);
+
+    if (deadlineNs > 0 && ratio >= 700)
+        realtimeDiagnostics_.overBudgetBlockCount.fetch_add(1, std::memory_order_relaxed);
+    if (deadlineNs > 0 && elapsedNs >= deadlineNs)
+        realtimeDiagnostics_.overrunBlockCount.fetch_add(1, std::memory_order_relaxed);
+
+    recordTelemetryTiming(xleth::audio::AudioTelemetrySampleKind::MixBlock,
+                          -1,
+                          -1,
+                          xleth::audio::kAudioTelemetryEffectUnknown,
+                          xleth::audio::kAudioTelemetryFlagNone,
+                          numSamples,
+                          sampleRate,
+                          elapsedNs);
+}
+
+void MixEngine::recordTrackProcessTiming(int trackId, uint64_t elapsedNs) noexcept
+{
+    if (!realtimeDiagnostics_.enabled.load(std::memory_order_relaxed))
+        return;
+
+    realtimeDiagnostics_.trackProcessCount.fetch_add(1, std::memory_order_relaxed);
+    realtimeDiagnostics_.totalTrackProcessNs.fetch_add(elapsedNs, std::memory_order_relaxed);
+    if (atomicMaxWithWinner(realtimeDiagnostics_.maxTrackProcessNs, elapsedNs))
+        realtimeDiagnostics_.worstTrackId.store(trackId, std::memory_order_relaxed);
+
+    recordTelemetryTiming(xleth::audio::AudioTelemetrySampleKind::TrackRender,
+                          trackId,
+                          -1,
+                          xleth::audio::kAudioTelemetryEffectUnknown,
+                          xleth::audio::kAudioTelemetryFlagNone,
+                          0,
+                          0.0,
+                          elapsedNs);
+}
+
+void MixEngine::recordTrackChainTiming(int trackId, uint64_t elapsedNs) noexcept
+{
+    if (!realtimeDiagnostics_.enabled.load(std::memory_order_relaxed))
+        return;
+
+    realtimeDiagnostics_.trackChainProcessCount.fetch_add(1, std::memory_order_relaxed);
+    realtimeDiagnostics_.totalTrackChainNs.fetch_add(elapsedNs, std::memory_order_relaxed);
+    if (atomicMaxWithWinner(realtimeDiagnostics_.maxTrackChainNs, elapsedNs))
+        realtimeDiagnostics_.worstTrackChainId.store(trackId, std::memory_order_relaxed);
+
+    recordTelemetryTiming(trackId < 0
+                              ? xleth::audio::AudioTelemetrySampleKind::MasterChain
+                              : xleth::audio::AudioTelemetrySampleKind::TrackChain,
+                          trackId,
+                          -1,
+                          xleth::audio::kAudioTelemetryEffectUnknown,
+                          trackId < 0 ? xleth::audio::kAudioTelemetryFlagMaster
+                                      : xleth::audio::kAudioTelemetryFlagNone,
+                          0,
+                          0.0,
+                          elapsedNs);
+}
+
+void MixEngine::recordPdcDelayTiming(uint64_t elapsedNs) noexcept
+{
+    if (!realtimeDiagnostics_.enabled.load(std::memory_order_relaxed))
+        return;
+
+    realtimeDiagnostics_.pdcDelayProcessCount.fetch_add(1, std::memory_order_relaxed);
+    realtimeDiagnostics_.totalPdcDelayNs.fetch_add(elapsedNs, std::memory_order_relaxed);
+    atomicMax(realtimeDiagnostics_.maxPdcDelayNs, elapsedNs);
+
+    recordTelemetryTiming(xleth::audio::AudioTelemetrySampleKind::PdcDelay,
+                          -1,
+                          -1,
+                          xleth::audio::kAudioTelemetryEffectUnknown,
+                          xleth::audio::kAudioTelemetryFlagNone,
+                          0,
+                          0.0,
+                          elapsedNs);
+}
+
+void MixEngine::recordPdcRetarget() noexcept
+{
+    if (realtimeDiagnostics_.enabled.load(std::memory_order_relaxed))
+    {
+        realtimeDiagnostics_.pdcRetargetCount.fetch_add(1, std::memory_order_relaxed);
+        audioPerformanceTelemetry_.incrementCompensationTargetChange();
+    }
+}
+
+void MixEngine::recordTelemetryTiming(xleth::audio::AudioTelemetrySampleKind kind,
+                                      int trackId,
+                                      int slotOrNodeId,
+                                      uint32_t effectType,
+                                      uint32_t flags,
+                                      int numSamples,
+                                      double sampleRate,
+                                      uint64_t elapsedNs,
+                                      uint64_t latencyEpoch,
+                                      int compensationSamples) noexcept
+{
+    if (!audioPerformanceTelemetry_.isEnabled())
+        return;
+
+    xleth::audio::AudioTelemetryTimingSample sample;
+    sample.kind = kind;
+    sample.trackId = trackId;
+    sample.slotOrNodeId = slotOrNodeId;
+    sample.effectType = effectType;
+    sample.flags = flags;
+    sample.blockSize = numSamples > 0 ? static_cast<uint32_t>(numSamples) : 0;
+    sample.sampleRateMilliHz =
+        sampleRate > 0.0 && std::isfinite(sampleRate)
+            ? static_cast<uint64_t>(sampleRate * 1000.0)
+            : 0;
+    sample.deadlineUs =
+        sample.blockSize > 0 && sample.sampleRateMilliHz > 0
+            ? static_cast<uint32_t>(
+                  std::max<double>(
+                      0.0,
+                      (static_cast<double>(sample.blockSize) / sampleRate)
+                          * 1000000.0))
+            : 0;
+    const uint64_t elapsedUs = (elapsedNs + 999u) / 1000u;
+    sample.durationUs = elapsedUs > UINT32_MAX
+        ? UINT32_MAX
+        : static_cast<uint32_t>(elapsedUs);
+    sample.latencyEpoch = latencyEpoch;
+    sample.compensationSamples = compensationSamples;
+    audioPerformanceTelemetry_.recordTimingFromAudioThread(sample);
+}
 
 void MixEngine::runCoordinatorReaper()
 {
@@ -277,7 +1476,12 @@ bool MixEngine::openPluginEditor(int trackId, int nodeId)
             dynamic_cast<juce::AudioPluginInstance*>(wrapper->getInner());
 
         // Create coordinator and wire close callback.
-        auto coord = std::make_unique<EditorProcessCoordinator>(pluginInstance);
+        auto coord = std::make_unique<EditorProcessCoordinator>(pluginInstance, wrapper);
+
+        coord->onWorkerPluginMutated_ = [this, key](std::uint64_t latencyPublishCountBefore)
+        {
+            refreshGuardedPluginLatency(key.first, key.second, latencyPublishCountBefore);
+        };
 
         coord->onClosed_ = [this, key, wrapper]()
         {
@@ -503,6 +1707,7 @@ bool MixEngine::isPluginEditorOpen(int trackId, int nodeId) const
 void MixEngine::setTimeline(const Timeline* timeline)
 {
     timeline_ = timeline;
+    syncTrackSlotsFromTimeline(false);
 }
 
 void MixEngine::setSampleBank(const SampleBank* bank)
@@ -666,22 +1871,10 @@ void MixEngine::rebuildAllSamplers()
         loadSamplerForTrackRegion(key.trackId, key.regionId);
     }
 
-    // 4. Update slot mapping and sync audio atomics + volume smoothers.
-    //    Safe here because all callers (project load, undo/redo) hold no
-    //    concurrent audio thread — see threading constraint in MixEngine.h.
-    updateSlotMapping();
-
-    const auto allTracks = timeline_->getAllTracks();
-    for (int i = 0; i < static_cast<int>(allTracks.size()) && i < kMaxTracks; ++i)
-    {
-        const auto* t = allTracks[i];
-        if (t == nullptr) continue;
-        trackParams_[i].volume.store(t->volume,         std::memory_order_relaxed);
-        trackParams_[i].pan.store   (t->pan,            std::memory_order_relaxed);
-        trackParams_[i].spread.store(t->stereoSpread,   std::memory_order_relaxed);
-        // Snap smoother immediately — no ramp from previous value after undo/load
-        volumeSmoothed_[i].setCurrentAndTargetValue(t->volume);
-    }
+    // 4. Sync slot mapping, slot-owned atomics, and the non-thread-safe
+    //    smoothers. Safe here because all callers hold no concurrent audio
+    //    thread — see threading constraint in MixEngine.h.
+    syncTrackSlotsFromTimeline(true);
 }
 
 // ── Prepare ──────────────────────────────────────────────────────────────────
@@ -697,7 +1890,11 @@ void MixEngine::prepare(double sampleRate, int maxBlockSize)
         // Snap immediately to current atomic value — no initial ramp from 0
         const float cur = trackParams_[i].volume.load(std::memory_order_relaxed);
         volumeSmoothed_[i].setCurrentAndTargetValue(cur);
+        trackCompensationDelays_[i].prepare(sampleRate, maxBlockSize);
     }
+
+    resetLatencyCompensationState();
+    pendingLatencyCompensationReset_.store(false, std::memory_order_relaxed);
 
     // Re-prepare any existing effect chains with the new sample rate / block size
     std::lock_guard<std::mutex> lock(chainsMutex_);
@@ -1001,7 +2198,13 @@ const juce::AudioBuffer<float>* MixEngine::getClipProcessedBuffer(int clipId) co
 
 void MixEngine::updateSlotMapping()
 {
-    if (timeline_ == nullptr) return;
+    if (timeline_ == nullptr)
+    {
+        std::unique_lock<std::shared_mutex> lock(slotMutex_);
+        trackIdToSlot_.clear();
+        return;
+    }
+
     const auto allTracks = timeline_->getAllTracks();
     std::unique_lock<std::shared_mutex> lock(slotMutex_);
     trackIdToSlot_.clear();
@@ -1009,6 +2212,27 @@ void MixEngine::updateSlotMapping()
     {
         if (allTracks[i] != nullptr)
             trackIdToSlot_[allTracks[i]->id] = i;
+    }
+}
+
+void MixEngine::syncTrackSlotsFromTimeline(bool snapVolumeSmoothers)
+{
+    updateSlotMapping();
+    pendingLatencyCompensationReset_.store(true, std::memory_order_release);
+    if (timeline_ == nullptr) return;
+
+    const auto allTracks = timeline_->getAllTracks();
+    for (int i = 0; i < static_cast<int>(allTracks.size()) && i < kMaxTracks; ++i)
+    {
+        const auto* t = allTracks[i];
+        if (t == nullptr) continue;
+
+        trackParams_[i].volume.store(t->volume, std::memory_order_relaxed);
+        trackParams_[i].pan.store(t->pan, std::memory_order_relaxed);
+        trackParams_[i].spread.store(t->stereoSpread, std::memory_order_relaxed);
+
+        if (snapVolumeSmoothers)
+            volumeSmoothed_[i].setCurrentAndTargetValue(t->volume);
     }
 }
 
@@ -1124,6 +2348,7 @@ void MixEngine::destroyEffectChain(int trackId)
 {
     std::lock_guard<std::mutex> lock(chainsMutex_);
     effectChains_.erase(trackId);
+    pendingLatencyCompensationReset_.store(true, std::memory_order_release);
 }
 
 void MixEngine::destroyAllEffectChains()
@@ -1136,6 +2361,7 @@ void MixEngine::destroyAllEffectChains()
     std::fprintf(stderr,
                  "[MixEngine] destroyAllEffectChains: cleared %zu track chain(s)%s\n",
                  nTrack, hadMaster ? ", destroyed master chain" : "");
+    pendingLatencyCompensationReset_.store(true, std::memory_order_release);
 }
 
 int MixEngine::addEffect(int trackId, const std::string& pluginId, int position)
@@ -1149,7 +2375,10 @@ int MixEngine::addEffect(int trackId, const std::string& pluginId, int position)
         chain->setPluginRegistry(pluginRegistry_.get());
         chain->init(preparedSampleRate_, preparedBlockSize_);
     }
-    return chain->addEffect(pluginId, position);
+    const int nodeId = chain->addEffect(pluginId, position);
+    if (nodeId >= 0)
+        pendingLatencyCompensationReset_.store(true, std::memory_order_release);
+    return nodeId;
 }
 
 bool MixEngine::removeEffect(int trackId, int nodeId)
@@ -1162,7 +2391,10 @@ bool MixEngine::removeEffect(int trackId, int nodeId)
     std::lock_guard<std::mutex> lock(chainsMutex_);
     auto it = effectChains_.find(trackId);
     if (it == effectChains_.end() || !it->second) return false;
-    return it->second->removeEffect(nodeId);
+    const bool ok = it->second->removeEffect(nodeId);
+    if (ok)
+        pendingLatencyCompensationReset_.store(true, std::memory_order_release);
+    return ok;
 }
 
 bool MixEngine::moveEffect(int trackId, int nodeId, int newPosition)
@@ -1170,7 +2402,10 @@ bool MixEngine::moveEffect(int trackId, int nodeId, int newPosition)
     std::lock_guard<std::mutex> lock(chainsMutex_);
     auto it = effectChains_.find(trackId);
     if (it == effectChains_.end() || !it->second) return false;
-    return it->second->moveEffect(nodeId, newPosition);
+    const bool ok = it->second->moveEffect(nodeId, newPosition);
+    if (ok)
+        pendingLatencyCompensationReset_.store(true, std::memory_order_release);
+    return ok;
 }
 
 bool MixEngine::setEffectBypass(int trackId, int nodeId, bool bypassed)
@@ -1178,7 +2413,10 @@ bool MixEngine::setEffectBypass(int trackId, int nodeId, bool bypassed)
     std::lock_guard<std::mutex> lock(chainsMutex_);
     auto it = effectChains_.find(trackId);
     if (it == effectChains_.end() || !it->second) return false;
-    return it->second->setBypass(nodeId, bypassed);
+    const bool ok = it->second->setBypass(nodeId, bypassed);
+    if (ok)
+        pendingLatencyCompensationReset_.store(true, std::memory_order_release);
+    return ok;
 }
 
 std::string MixEngine::getEffectChainState(int trackId) const
@@ -1204,6 +2442,7 @@ void MixEngine::destroyMasterEffectChain()
 {
     std::lock_guard<std::mutex> lock(chainsMutex_);
     masterEffectChain_.reset();
+    pendingLatencyCompensationReset_.store(true, std::memory_order_release);
 }
 
 int MixEngine::addMasterEffect(const std::string& pluginId, int position)
@@ -1215,7 +2454,10 @@ int MixEngine::addMasterEffect(const std::string& pluginId, int position)
         masterEffectChain_->setPluginRegistry(pluginRegistry_.get());
         masterEffectChain_->init(preparedSampleRate_, preparedBlockSize_);
     }
-    return masterEffectChain_->addEffect(pluginId, position);
+    const int nodeId = masterEffectChain_->addEffect(pluginId, position);
+    if (nodeId >= 0)
+        pendingLatencyCompensationReset_.store(true, std::memory_order_release);
+    return nodeId;
 }
 
 bool MixEngine::removeMasterEffect(int nodeId)
@@ -1225,21 +2467,30 @@ bool MixEngine::removeMasterEffect(int nodeId)
 
     std::lock_guard<std::mutex> lock(chainsMutex_);
     if (!masterEffectChain_) return false;
-    return masterEffectChain_->removeEffect(nodeId);
+    const bool ok = masterEffectChain_->removeEffect(nodeId);
+    if (ok)
+        pendingLatencyCompensationReset_.store(true, std::memory_order_release);
+    return ok;
 }
 
 bool MixEngine::moveMasterEffect(int nodeId, int newPosition)
 {
     std::lock_guard<std::mutex> lock(chainsMutex_);
     if (!masterEffectChain_) return false;
-    return masterEffectChain_->moveEffect(nodeId, newPosition);
+    const bool ok = masterEffectChain_->moveEffect(nodeId, newPosition);
+    if (ok)
+        pendingLatencyCompensationReset_.store(true, std::memory_order_release);
+    return ok;
 }
 
 bool MixEngine::setMasterEffectBypass(int nodeId, bool bypassed)
 {
     std::lock_guard<std::mutex> lock(chainsMutex_);
     if (!masterEffectChain_) return false;
-    return masterEffectChain_->setBypass(nodeId, bypassed);
+    const bool ok = masterEffectChain_->setBypass(nodeId, bypassed);
+    if (ok)
+        pendingLatencyCompensationReset_.store(true, std::memory_order_release);
+    return ok;
 }
 
 std::string MixEngine::getMasterEffectChainState() const
@@ -1275,7 +2526,10 @@ bool MixEngine::loadEffectChainFromJSON(int trackId, const nlohmann::json& j)
         chain->setPluginRegistry(pluginRegistry_.get());
         chain->init(preparedSampleRate_, preparedBlockSize_);
     }
-    return chain->graphFromJSON(j);
+    const bool ok = chain->graphFromJSON(j);
+    if (ok)
+        pendingLatencyCompensationReset_.store(true, std::memory_order_release);
+    return ok;
 }
 
 bool MixEngine::loadMasterEffectChainFromJSON(const nlohmann::json& j)
@@ -1286,7 +2540,10 @@ bool MixEngine::loadMasterEffectChainFromJSON(const nlohmann::json& j)
         masterEffectChain_->setPluginRegistry(pluginRegistry_.get());
         masterEffectChain_->init(preparedSampleRate_, preparedBlockSize_);
     }
-    return masterEffectChain_->graphFromJSON(j);
+    const bool ok = masterEffectChain_->graphFromJSON(j);
+    if (ok)
+        pendingLatencyCompensationReset_.store(true, std::memory_order_release);
+    return ok;
 }
 
 // ── Missing-plugin support ──────────────────────────────────────────────────
@@ -1347,11 +2604,17 @@ bool MixEngine::tryResolvePlugin(int trackId, int nodeId)
     if (trackId == -1)
     {
         if (!masterEffectChain_) return false;
-        return masterEffectChain_->tryResolvePlugin(nodeId, *pluginRegistry_);
+        const bool ok = masterEffectChain_->tryResolvePlugin(nodeId, *pluginRegistry_);
+        if (ok)
+            pendingLatencyCompensationReset_.store(true, std::memory_order_release);
+        return ok;
     }
     auto it = effectChains_.find(trackId);
     if (it == effectChains_.end() || !it->second) return false;
-    return it->second->tryResolvePlugin(nodeId, *pluginRegistry_);
+    const bool ok = it->second->tryResolvePlugin(nodeId, *pluginRegistry_);
+    if (ok)
+        pendingLatencyCompensationReset_.store(true, std::memory_order_release);
+    return ok;
 }
 
 void MixEngine::removeAllMissingPlugins()
@@ -1380,11 +2643,17 @@ bool MixEngine::resetCrashedPlugin(int trackId, int nodeId)
     if (trackId == -1)
     {
         if (!masterEffectChain_) return false;
-        return masterEffectChain_->resetCrashedPlugin(nodeId);
+        const bool ok = masterEffectChain_->resetCrashedPlugin(nodeId);
+        if (ok)
+            pendingLatencyCompensationReset_.store(true, std::memory_order_release);
+        return ok;
     }
     auto it = effectChains_.find(trackId);
     if (it == effectChains_.end() || !it->second) return false;
-    return it->second->resetCrashedPlugin(nodeId);
+    const bool ok = it->second->resetCrashedPlugin(nodeId);
+    if (ok)
+        pendingLatencyCompensationReset_.store(true, std::memory_order_release);
+    return ok;
 }
 
 // ── Graph-mode routing (per-track) ──────────────────────────────────────────
@@ -1515,7 +2784,115 @@ bool MixEngine::setEffectParameter(int trackId, int nodeId, const std::string& p
     std::lock_guard<std::mutex> lock(chainsMutex_);
     auto it = effectChains_.find(trackId);
     if (it == effectChains_.end() || !it->second) return false;
-    return it->second->setEffectParameter(nodeId, paramId, value);
+    const bool ok = it->second->setEffectParameter(nodeId, paramId, value);
+    if (ok)
+        pendingLatencyCompensationReset_.store(true, std::memory_order_release);
+    return ok;
+}
+
+bool MixEngine::setEffectProgram(int trackId, int nodeId, int programIndex)
+{
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+    EffectChainManager* chain = nullptr;
+    if (trackId == -1)
+    {
+        chain = masterEffectChain_.get();
+    }
+    else
+    {
+        auto it = effectChains_.find(trackId);
+        if (it != effectChains_.end())
+            chain = it->second.get();
+    }
+
+    if (chain == nullptr)
+        return false;
+
+    const bool ok = chain->setEffectProgram(nodeId, programIndex);
+    if (ok)
+        pendingLatencyCompensationReset_.store(true, std::memory_order_release);
+    return ok;
+}
+
+bool MixEngine::setEffectStateInformation(int trackId,
+                                          int nodeId,
+                                          const void* data,
+                                          int sizeInBytes)
+{
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+    EffectChainManager* chain = nullptr;
+    if (trackId == -1)
+    {
+        chain = masterEffectChain_.get();
+    }
+    else
+    {
+        auto it = effectChains_.find(trackId);
+        if (it != effectChains_.end())
+            chain = it->second.get();
+    }
+
+    if (chain == nullptr)
+        return false;
+
+    const bool ok = chain->setEffectStateInformation(nodeId, data, sizeInBytes);
+    if (ok)
+        pendingLatencyCompensationReset_.store(true, std::memory_order_release);
+    return ok;
+}
+
+bool MixEngine::refreshGuardedPluginLatency(int trackId, int nodeId)
+{
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+
+    EffectChainManager* chain = nullptr;
+    if (trackId == -1)
+    {
+        chain = masterEffectChain_.get();
+    }
+    else
+    {
+        auto it = effectChains_.find(trackId);
+        if (it != effectChains_.end())
+            chain = it->second.get();
+    }
+
+    if (chain == nullptr)
+        return false;
+
+    const bool changed = chain->refreshGuardedPluginLatency(nodeId);
+    if (changed)
+        pendingLatencyCompensationReset_.store(true, std::memory_order_release);
+    return changed;
+}
+
+bool MixEngine::refreshGuardedPluginLatency(
+    int trackId,
+    int nodeId,
+    std::uint64_t latencyPublishCountBefore)
+{
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+
+    EffectChainManager* chain = nullptr;
+    if (trackId == -1)
+    {
+        chain = masterEffectChain_.get();
+    }
+    else
+    {
+        auto it = effectChains_.find(trackId);
+        if (it != effectChains_.end())
+            chain = it->second.get();
+    }
+
+    if (chain == nullptr)
+        return false;
+
+    const bool changed =
+        chain->refreshGuardedPluginLatency(nodeId, latencyPublishCountBefore);
+    if (changed)
+        pendingLatencyCompensationReset_.store(true, std::memory_order_release);
+    return changed;
 }
 
 std::string MixEngine::getEffectMeter(int trackId, int nodeId) const
@@ -1538,7 +2915,10 @@ bool MixEngine::setMasterEffectParameter(int nodeId, const std::string& paramId,
 {
     std::lock_guard<std::mutex> lock(chainsMutex_);
     if (!masterEffectChain_) return false;
-    return masterEffectChain_->setEffectParameter(nodeId, paramId, value);
+    const bool ok = masterEffectChain_->setEffectParameter(nodeId, paramId, value);
+    if (ok)
+        pendingLatencyCompensationReset_.store(true, std::memory_order_release);
+    return ok;
 }
 
 std::string MixEngine::getMasterEffectMeter(int nodeId) const
@@ -1566,6 +2946,177 @@ XlethEffectBase* MixEngine::getMasterEffectPtr(int nodeId)
 }
 
 // ── Effect visualization access ─────────────────────────────────────────────
+
+void MixEngine::resetLatencyCompensationState()
+{
+    for (int i = 0; i < kMaxTracks; ++i)
+    {
+        trackCompensationDelays_[i].reset();
+        cachedTrackInsertLatencySamples_[i] = 0;
+        cachedTrackCompensationSamples_[i] = 0;
+        cachedTrackLatencyEpochs_[i] = 0;
+        cachedTrackTailSeconds_[i] = 0.0;
+    }
+
+    cachedMaxAudibleTrackLatencySamples_ = 0;
+    cachedMasterInsertLatencySamples_ = 0;
+    cachedMasterLatencyEpoch_ = 0;
+}
+
+int MixEngine::getTrackChainOutputLatencySamplesLocked(int trackId) const
+{
+    auto chainIt = effectChains_.find(trackId);
+    if (chainIt == effectChains_.end() || !chainIt->second || !chainIt->second->isInitialized())
+        return 0;
+
+    return juce::jmax(0, chainIt->second->getOutputLatencySamples());
+}
+
+MixEngine::LatencyCompensationSnapshot MixEngine::computeLatencyCompensationSnapshotLocked() const
+{
+    LatencyCompensationSnapshot snapshot;
+    snapshot.masterInsertLatencySamples =
+        (masterEffectChain_ && masterEffectChain_->isInitialized())
+            ? juce::jmax(0, masterEffectChain_->getOutputLatencySamples())
+            : 0;
+
+    if (timeline_ == nullptr)
+        return snapshot;
+
+    const auto allTracks = timeline_->getAllTracks();
+    bool anySolo = false;
+    for (const auto* track : allTracks)
+    {
+        if (track != nullptr && track->solo)
+        {
+            anySolo = true;
+            break;
+        }
+    }
+
+    for (const auto* track : allTracks)
+    {
+        if (track == nullptr) continue;
+
+        const bool shouldPlay = anySolo ? track->solo : !track->muted;
+        if (!shouldPlay || track->visualOnly)
+            continue;
+
+        snapshot.maxAudibleTrackLatencySamples = std::max(
+            snapshot.maxAudibleTrackLatencySamples,
+            getTrackChainOutputLatencySamplesLocked(track->id));
+    }
+
+    return snapshot;
+}
+
+MixEngine::LatencyCompensationSnapshot MixEngine::getLatencyCompensationSnapshot() const
+{
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+    return computeLatencyCompensationSnapshotLocked();
+}
+
+int MixEngine::getTrackInsertLatencySamples(int trackId) const
+{
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+    return getTrackChainOutputLatencySamplesLocked(trackId);
+}
+
+int MixEngine::getTrackCompensationDelaySamples(int trackId) const
+{
+    if (timeline_ == nullptr)
+        return 0;
+
+    const TrackInfo* track = timeline_->getTrack(trackId);
+    if (track == nullptr || track->visualOnly)
+        return 0;
+
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+    const auto snapshot = computeLatencyCompensationSnapshotLocked();
+
+    bool anySolo = false;
+    for (const auto* t : timeline_->getAllTracks())
+    {
+        if (t != nullptr && t->solo)
+        {
+            anySolo = true;
+            break;
+        }
+    }
+
+    const bool shouldPlay = anySolo ? track->solo : !track->muted;
+    if (!shouldPlay)
+        return 0;
+
+    return juce::jmax(0, snapshot.maxAudibleTrackLatencySamples
+                            - getTrackChainOutputLatencySamplesLocked(trackId));
+}
+
+int MixEngine::getMaxAudibleTrackLatencySamples() const
+{
+    return getLatencyCompensationSnapshot().maxAudibleTrackLatencySamples;
+}
+
+int MixEngine::getMasterInsertLatencySamples() const
+{
+    return getLatencyCompensationSnapshot().masterInsertLatencySamples;
+}
+
+bool MixEngine::isInterTrackLatencyCompensationApplied() const
+{
+    return true;
+}
+
+void MixEngine::refreshLatencyDiagnostics()
+{
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+
+    for (auto& [trackId, chain] : effectChains_)
+    {
+        juce::ignoreUnused(trackId);
+        if (chain)
+            chain->refreshLatencyDiagnostics();
+    }
+
+    if (masterEffectChain_)
+        masterEffectChain_->refreshLatencyDiagnostics();
+}
+
+int MixEngine::addProcessorForTesting(int trackId,
+                                      const std::string& pluginId,
+                                      std::unique_ptr<juce::AudioProcessor> proc,
+                                      int position)
+{
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+
+    EffectChainManager* chain = nullptr;
+    if (trackId == -1)
+    {
+        if (!masterEffectChain_)
+        {
+            masterEffectChain_ = std::make_unique<EffectChainManager>();
+            masterEffectChain_->setPluginRegistry(pluginRegistry_.get());
+            masterEffectChain_->init(preparedSampleRate_, preparedBlockSize_);
+        }
+        chain = masterEffectChain_.get();
+    }
+    else
+    {
+        auto& owned = effectChains_[trackId];
+        if (!owned)
+        {
+            owned = std::make_unique<EffectChainManager>();
+            owned->setPluginRegistry(pluginRegistry_.get());
+            owned->init(preparedSampleRate_, preparedBlockSize_);
+        }
+        chain = owned.get();
+    }
+
+    const int nodeId = chain->addProcessorForTesting(pluginId, std::move(proc), position);
+    if (nodeId >= 0)
+        pendingLatencyCompensationReset_.store(true, std::memory_order_release);
+    return nodeId;
+}
 
 bool MixEngine::setEffectVisualizationEnabled(int trackId, int nodeId, bool enabled)
 {
@@ -2021,6 +3572,31 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                              int                       numSamples,
                              const Transport&          transport)
 {
+    struct ProcessBlockTimingScope
+    {
+        MixEngine* engine = nullptr;
+        bool enabled = false;
+        int samples = 0;
+        double sampleRate = 0.0;
+        uint64_t startNs = 0;
+
+        ~ProcessBlockTimingScope()
+        {
+            if (enabled && engine != nullptr)
+                engine->recordProcessBlockTiming(samples, sampleRate, steadyNowNs() - startNs);
+        }
+    };
+
+    const bool rtDiagEnabled =
+        realtimeDiagnostics_.enabled.load(std::memory_order_relaxed);
+    ProcessBlockTimingScope processTiming {
+        this,
+        rtDiagEnabled,
+        numSamples,
+        transport.getSampleRate(),
+        rtDiagEnabled ? steadyNowNs() : 0
+    };
+
     // Early out: no timeline
     if (timeline_ == nullptr)
     {
@@ -2048,10 +3624,14 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         prevActiveKeys_.clear();
         lastBufferEnd_ = -1;
         pendingEffectChainReset_ = true;
+        pendingLatencyCompensationReset_.store(true, std::memory_order_release);
         std::fill(std::begin(tailEndSamples_), std::end(tailEndSamples_), int64_t(0));
         clipModReader_.resetAllStates();
     }
     wasPlaying_ = isPlaying;
+
+    if (pendingLatencyCompensationReset_.exchange(false, std::memory_order_acq_rel))
+        resetLatencyCompensationState();
 
     if (!isPlaying)
     {
@@ -2102,7 +3682,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     const double bpm        = transport.getBPM();
     XlethEffectBase::setGlobalBPM(bpm);
     const double sampleRate = transport.getSampleRate();
-    const int64_t position  = transport.getPositionSamples();
+    const int64_t position  = transport.getRenderPositionSamples();
     const int64_t bufStart  = position;
     const int64_t bufEnd    = position + numSamples;
 
@@ -2113,10 +3693,14 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         for (auto& kv : samplers_)
             if (kv.second) kv.second->allNotesOff();
         pendingEffectChainReset_ = true;
+        pendingLatencyCompensationReset_.store(true, std::memory_order_release);
         std::fill(std::begin(tailEndSamples_), std::end(tailEndSamples_), int64_t(0));
         clipModReader_.resetAllStates();
     }
     lastBufferEnd_ = bufEnd;
+
+    if (pendingLatencyCompensationReset_.exchange(false, std::memory_order_acq_rel))
+        resetLatencyCompensationState();
 
     ensureTrackBuffers(numSamples);
 
@@ -2168,6 +3752,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
 
     // Precompute clip boundary fade length for this block (0 = disabled, no overhead).
     const int clipFadeN = clipBoundaryFadeSamples_.load(std::memory_order_relaxed);
+    const uint64_t sourceRenderStartNs = rtDiagEnabled ? steadyNowNs() : 0;
 
     // ── Render active clips into track buffers ───────────────────────────────
     for (const auto& ac : activeClips_)
@@ -2453,6 +4038,18 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         sampler->processBlock(trackBuffers_[slot], numSamples, sampleRate);
     }
 
+    if (rtDiagEnabled)
+    {
+        recordTelemetryTiming(xleth::audio::AudioTelemetrySampleKind::TrackRender,
+                              -1,
+                              -1,
+                              xleth::audio::kAudioTelemetryEffectUnknown,
+                              xleth::audio::kAudioTelemetryFlagNone,
+                              numSamples,
+                              sampleRate,
+                              steadyNowNs() - sourceRenderStartNs);
+    }
+
     // ── Populate per-track MidiBuffers with onset events ──────────────────────
     // Effects (e.g. TransientProcessor) can read these for sample-accurate
     // note-on and clip-start timing.  Channel 1 = pattern notes, channel 2 =
@@ -2560,6 +4157,17 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     else
         (void)chainsLockGuard.try_lock();
     const bool chainsLocked = chainsLockGuard.owns_lock();
+    if (rtDiagEnabled
+        && !chainsLocked
+        && !nonRealtime_.load(std::memory_order_relaxed))
+    {
+        realtimeDiagnostics_.chainLockMissCount.fetch_add(1, std::memory_order_relaxed);
+        audioPerformanceTelemetry_.incrementChainLockMiss();
+        audioPerformanceTelemetry_.incrementTrackChainSkipped(
+            static_cast<uint64_t>(juce::jmax(0, numTrackSlots)));
+        if (pendingEffectChainReset_)
+            audioPerformanceTelemetry_.incrementStaleSnapshotReuse();
+    }
 
     if (pendingEffectChainReset_ && chainsLocked)
     {
@@ -2576,12 +4184,96 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         pendingEffectChainReset_ = false;
     }
 
+    if (chainsLocked)
+    {
+        int trackLatencies[kMaxTracks] = {};
+        double trackTailSeconds[kMaxTracks] = {};
+        bool audibleForPdc[kMaxTracks] = {};
+        int maxAudibleTrackLatency = 0;
+
+        for (int i = 0; i < numTrackSlots; ++i)
+        {
+            const auto* track = trackSlots[i].info;
+            const bool shouldPlay = anySolo ? track->solo : !track->muted;
+
+            auto chainIt = effectChains_.find(track->id);
+            if (chainIt != effectChains_.end() && chainIt->second && chainIt->second->isInitialized())
+            {
+                trackLatencies[i] = juce::jmax(0, chainIt->second->getOutputLatencySamples());
+                trackTailSeconds[i] = chainIt->second->getMaxTailLengthSeconds();
+                const std::uint64_t epoch = chainIt->second->getLatencyEpoch();
+                if (cachedTrackLatencyEpochs_[i] != 0 && cachedTrackLatencyEpochs_[i] != epoch)
+                    audioPerformanceTelemetry_.incrementLatencyEpochChange();
+                cachedTrackLatencyEpochs_[i] = epoch;
+            }
+
+            audibleForPdc[i] = shouldPlay && !track->visualOnly;
+            if (audibleForPdc[i])
+                maxAudibleTrackLatency = std::max(maxAudibleTrackLatency, trackLatencies[i]);
+        }
+
+        for (int i = 0; i < kMaxTracks; ++i)
+        {
+            const int trackLatency = (i < numTrackSlots) ? trackLatencies[i] : 0;
+            const double tailSeconds = (i < numTrackSlots) ? trackTailSeconds[i] : 0.0;
+            const int compensation = (i < numTrackSlots && audibleForPdc[i])
+                                   ? (maxAudibleTrackLatency - trackLatency)
+                                   : 0;
+
+            cachedTrackInsertLatencySamples_[i] = trackLatency;
+            cachedTrackTailSeconds_[i] = tailSeconds;
+
+            if (cachedTrackCompensationSamples_[i] != compensation)
+            {
+                cachedTrackCompensationSamples_[i] = compensation;
+                recordPdcRetarget();
+                trackCompensationDelays_[i].setTargetDelaySamples(compensation);
+            }
+        }
+
+        cachedMaxAudibleTrackLatencySamples_ = maxAudibleTrackLatency;
+        cachedMasterInsertLatencySamples_ =
+            (masterEffectChain_ && masterEffectChain_->isInitialized())
+                ? juce::jmax(0, masterEffectChain_->getOutputLatencySamples())
+                : 0;
+        const std::uint64_t masterEpoch =
+            (masterEffectChain_ && masterEffectChain_->isInitialized())
+                ? masterEffectChain_->getLatencyEpoch()
+                : 0;
+        if (cachedMasterLatencyEpoch_ != 0 && cachedMasterLatencyEpoch_ != masterEpoch)
+            audioPerformanceTelemetry_.incrementLatencyEpochChange();
+        cachedMasterLatencyEpoch_ = masterEpoch;
+    }
+
     float masterPeakL = 0.0f;
     float masterPeakR = 0.0f;
 
     for (int i = 0; i < numTrackSlots; ++i)
     {
         const auto* track = trackSlots[i].info;
+        struct TrackTimingScope
+        {
+            MixEngine* engine = nullptr;
+            bool enabled = false;
+            int trackId = -1;
+            uint64_t startNs = 0;
+
+            ~TrackTimingScope()
+            {
+                if (enabled && engine != nullptr)
+                    engine->recordTrackProcessTiming(trackId, steadyNowNs() - startNs);
+            }
+        };
+
+        TrackTimingScope trackTiming {
+            this,
+            rtDiagEnabled,
+            track != nullptr ? track->id : -1,
+            rtDiagEnabled ? steadyNowNs() : 0
+        };
+
+        const int trackInsertLatencySamples = cachedTrackInsertLatencySamples_[i];
+        const int trackCompensationSamples = cachedTrackCompensationSamples_[i];
 
         // Mute/solo logic: if any track is soloed, only play soloed tracks.
         // If a track is muted (and not soloed), skip it.
@@ -2592,6 +4284,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             trackPeaks_[i].peakL.store(0.0f, std::memory_order_relaxed);
             trackPeaks_[i].peakR.store(0.0f, std::memory_order_relaxed);
             tailEndSamples_[i] = 0;
+            trackCompensationDelays_[i].reset();
             continue;
         }
 
@@ -2607,6 +4300,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             trackPeaks_[i].peakL.store(0.0f, std::memory_order_relaxed);
             trackPeaks_[i].peakR.store(0.0f, std::memory_order_relaxed);
             tailEndSamples_[i] = 0;
+            trackCompensationDelays_[i].reset();
             continue;
         }
 
@@ -2623,23 +4317,40 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             auto chainIt = effectChains_.find(track->id);
             if (chainIt != effectChains_.end() && chainIt->second && chainIt->second->isInitialized())
             {
+                const uint64_t chainStartNs = rtDiagEnabled ? steadyNowNs() : 0;
+                if (rtDiagEnabled)
+                {
+                    XlethEffectBase::RealtimeTimingContext context;
+                    context.enabled = true;
+                    context.trackId = track->id;
+                    context.userData = this;
+                    context.recordPlugin = &MixEngine::realtimePluginTimingCallback;
+                    context.recordSection = &MixEngine::realtimeSectionTimingCallback;
+                    context.recordEvent = &MixEngine::realtimeEventCallback;
+                    XlethEffectBase::setRealtimeTimingContext(context);
+                }
+
                 chainIt->second->processBlock(trackBuffers_[i], numSamples,
                                               trackMidiBuffers_[i]);
 
-                // While audio is entering the effect chain, keep refreshing the
-                // tail-end timestamp.  Once content stops, the countdown runs
-                // from the last refresh and the chain processes silent buffers
-                // until its internal state drains.
-                if (hasAudio)
+                if (rtDiagEnabled)
                 {
-                    const double tailSec = chainIt->second->getMaxTailLengthSeconds();
-                    if (tailSec > 0.0)
-                        tailEndSamples_[i] = bufEnd
-                            + static_cast<int64_t>(tailSec * sampleRate);
-                    else
-                        tailEndSamples_[i] = 0;
+                    XlethEffectBase::setRealtimeTimingContext({});
+                    recordTrackChainTiming(track->id, steadyNowNs() - chainStartNs);
                 }
             }
+        }
+
+        if (hasAudio)
+        {
+            const int64_t chainTailSamples =
+                static_cast<int64_t>(std::ceil(cachedTrackTailSeconds_[i] * sampleRate));
+            const int64_t drainSamples =
+                juce::jmax<int64_t>(chainTailSamples,
+                                    static_cast<int64_t>(trackInsertLatencySamples))
+                + static_cast<int64_t>(trackCompensationSamples);
+
+            tailEndSamples_[i] = (drainSamples > 0) ? (bufEnd + drainSamples) : 0;
         }
 
         // Post-effects fader — 20ms linear ramp to eliminate zipper noise.
@@ -2663,18 +4374,22 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         float tpL = 0.0f, tpR = 0.0f;
         TrackMixer::process(trackBuffers_[i], 1.0f, pan, spread, tpL, tpR);
 
-        // Store track peaks
+        // Store track peaks before compensation so meters stay responsive.
         trackPeaks_[i].peakL.store(tpL, std::memory_order_relaxed);
         trackPeaks_[i].peakR.store(tpR, std::memory_order_relaxed);
+
+        {
+            const uint64_t pdcStartNs = rtDiagEnabled ? steadyNowNs() : 0;
+            trackCompensationDelays_[i].process(trackBuffers_[i], numSamples);
+            if (rtDiagEnabled)
+                recordPdcDelayTiming(steadyNowNs() - pdcStartNs);
+        }
 
         // Sum into output
         for (int ch = 0; ch < std::min(2, outputBuffer.getNumChannels()); ++ch)
         {
             outputBuffer.addFrom(ch, 0, trackBuffers_[i], ch, 0, numSamples);
         }
-
-        masterPeakL = std::max(masterPeakL, tpL);
-        masterPeakR = std::max(masterPeakR, tpR);
     }
 
     // ── Preview samplers (audition bus, also audible during playback) ────────
@@ -2695,7 +4410,28 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
 
     // Master bus insert effect chain
     if (chainsLocked && masterEffectChain_ && masterEffectChain_->isInitialized())
+    {
+        const uint64_t masterChainStartNs = rtDiagEnabled ? steadyNowNs() : 0;
+        if (rtDiagEnabled)
+        {
+            XlethEffectBase::RealtimeTimingContext context;
+            context.enabled = true;
+            context.trackId = -1;
+            context.userData = this;
+            context.recordPlugin = &MixEngine::realtimePluginTimingCallback;
+            context.recordSection = &MixEngine::realtimeSectionTimingCallback;
+            context.recordEvent = &MixEngine::realtimeEventCallback;
+            XlethEffectBase::setRealtimeTimingContext(context);
+        }
+
         masterEffectChain_->processBlock(outputBuffer, numSamples, emptyMasterMidi_);
+
+        if (rtDiagEnabled)
+        {
+            XlethEffectBase::setRealtimeTimingContext({});
+            recordTrackChainTiming(-1, steadyNowNs() - masterChainStartNs);
+        }
+    }
 
     // Master volume fader (post-effect-chain)
     const float masterVol = masterVolume_.load(std::memory_order_relaxed);
@@ -2713,6 +4449,31 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         }
     }
 
+    if (rtDiagEnabled)
+    {
+        bool hasNonFinite = false;
+        for (int ch = 0; ch < outputBuffer.getNumChannels() && !hasNonFinite; ++ch)
+        {
+            const float* data = outputBuffer.getReadPointer(ch);
+            for (int s = 0; s < numSamples; ++s)
+            {
+                if (!std::isfinite(data[s]))
+                {
+                    hasNonFinite = true;
+                    break;
+                }
+            }
+        }
+
+        if (hasNonFinite)
+        {
+            realtimeDiagnostics_.nanInfBlockCount.fetch_add(1, std::memory_order_relaxed);
+            audioPerformanceTelemetry_.incrementNanInfBlock();
+        }
+    }
+
+    const uint64_t outputPostStartNs = rtDiagEnabled ? steadyNowNs() : 0;
+
     // Recompute master peaks from clamped output
     masterPeakL = outputBuffer.getMagnitude(0, 0, numSamples);
     if (outputBuffer.getNumChannels() >= 2)
@@ -2720,6 +4481,18 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
 
     masterPeakL_.store(masterPeakL, std::memory_order_relaxed);
     masterPeakR_.store(masterPeakR, std::memory_order_relaxed);
+
+    if (rtDiagEnabled)
+    {
+        recordTelemetryTiming(xleth::audio::AudioTelemetrySampleKind::OutputPost,
+                              -1,
+                              -1,
+                              xleth::audio::kAudioTelemetryEffectUnknown,
+                              xleth::audio::kAudioTelemetryFlagNone,
+                              numSamples,
+                              sampleRate,
+                              steadyNowNs() - outputPostStartNs);
+    }
 
     // Debug logging (throttled to ~1 Hz)
     maybeLogDebug(numSamples, sampleRate);

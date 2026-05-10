@@ -125,9 +125,9 @@ static_assert(std::is_standard_layout<LimiterBucket>::value,
 // fastEnvDb / slowEnvDb : last-sample of the fast (transient) and slow
 //   (sustain) envelope followers, in dB. NaN when the effect is in MIDI mode
 //   (the envelope followers are not run there) — the parser MUST tolerate NaN.
-// gainDb                : signed gain applied at last sample (positive = boost,
-//   negative = cut). Maps directly to the transient processor's signed-gain
-//   meter slot 2.
+// gainDb                : dominant signed gain seen in the bucket (positive =
+//   boost, negative = cut). Maps directly to the transient processor's
+//   signed-gain meter slot 2.
 // attackAmount          : current 'attack'  param, normalised to [-1, 1].
 // sustainAmount         : current 'sustain' param, normalised to [-1, 1].
 // speedMs               : current 'attack_speed' param (ms).
@@ -140,7 +140,7 @@ struct alignas(8) TransientBucket
     float outLevelDb;    // peak |y| over bucket, post-process
     float fastEnvDb;     // last-sample fast envelope (transient detector)
     float slowEnvDb;     // last-sample slow envelope (sustain follower)
-    float gainDb;        // last-sample signed gain (positive = boost, negative = cut)
+    float gainDb;        // dominant signed gain in bucket (positive = boost, negative = cut)
     float attackAmount;  // attack param normalised to [-1, 1]
     float sustainAmount; // sustain param normalised to [-1, 1]
     float speedMs;       // smoothed attack_speed param at bucket end

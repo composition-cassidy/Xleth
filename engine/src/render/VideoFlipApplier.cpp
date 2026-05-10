@@ -27,6 +27,23 @@ int64_t eventTick(const VideoEvent& ev) {
     return static_cast<int64_t>(std::llround(ev.startBeat * kTicksPerBeat));
 }
 
+bool eventTriggerLess(const VideoEvent* a, const VideoEvent* b) {
+    const int64_t tickA = eventTick(*a);
+    const int64_t tickB = eventTick(*b);
+    if (tickA != tickB) return tickA < tickB;
+
+    if (a->hasSourceTriggerOrder && b->hasSourceTriggerOrder
+        && a->sourceTriggerOrder != b->sourceTriggerOrder) {
+        return a->sourceTriggerOrder < b->sourceTriggerOrder;
+    }
+
+    if (a->hasSourceTriggerOrder != b->hasSourceTriggerOrder)
+        return a->hasSourceTriggerOrder;
+
+    if (a->pitch != b->pitch) return a->pitch < b->pitch;
+    return a->originalEmissionOrder < b->originalEmissionOrder;
+}
+
 }  // namespace
 
 namespace videoFlipApplier {
@@ -51,28 +68,33 @@ void applyTrack(std::vector<VideoEvent*>& trackEvents,
     }
 
     // ── Sort by tick (stable, preserves emission order within ties) ───────
-    std::stable_sort(trackEvents.begin(), trackEvents.end(),
-        [](const VideoEvent* a, const VideoEvent* b) {
-            return eventTick(*a) < eventTick(*b);
-        });
+    std::stable_sort(trackEvents.begin(), trackEvents.end(), eventTriggerLess);
 
-    // ── Detect chord groups; build mono-only resolver input ───────────────
-    // ≥2 events sharing a tick on the same track → chord (skipped from the
-    // mono ordinal counter and from the resolver input list).
+    // ── Detect chord groups; build resolver input ─────────────────────────
+    // EveryNote means every note-on, so same-tick chord members all enter the
+    // resolver. Other modifiers keep the existing chord-transparent behavior.
     const std::size_t n = trackEvents.size();
     std::vector<bool>         isMono(n, false);
     std::vector<TriggerEvent> monoEvents;
     monoEvents.reserve(n);
 
-    for (std::size_t i = 0; i < n; ) {
-        const int64_t tick = eventTick(*trackEvents[i]);
-        std::size_t j = i + 1;
-        while (j < n && eventTick(*trackEvents[j]) == tick) ++j;
-        if (j - i == 1) {
+    const bool everyNote = config.modifier.type == VideoFlipModifier::Type::EveryNote;
+    if (everyNote) {
+        for (std::size_t i = 0; i < n; ++i) {
             isMono[i] = true;
-            monoEvents.push_back({tick, trackEvents[i]->pitch});
+            monoEvents.push_back({eventTick(*trackEvents[i]), trackEvents[i]->pitch});
         }
-        i = j;
+    } else {
+        for (std::size_t i = 0; i < n; ) {
+            const int64_t tick = eventTick(*trackEvents[i]);
+            std::size_t j = i + 1;
+            while (j < n && eventTick(*trackEvents[j]) == tick) ++j;
+            if (j - i == 1) {
+                isMono[i] = true;
+                monoEvents.push_back({tick, trackEvents[i]->pitch});
+            }
+            i = j;
+        }
     }
 
     // ── Run the pure resolver once for this track ─────────────────────────
@@ -108,6 +130,8 @@ void applyTrack(std::vector<VideoEvent*>& trackEvents,
                 ? resolved[monoCounter]
                 : startIdx;
             ev->monoOrdinal = monoCounter;
+            if (everyNote)
+                ev->globalNoteIndex = monoCounter;
             ++monoCounter;
             lastMonoState = stateIdx;
             hasPriorMono  = true;

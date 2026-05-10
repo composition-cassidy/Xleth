@@ -1,16 +1,16 @@
 // test_video_flip_applier.cpp
 // Unit tests for the VideoFlipApplier — Phase 3 single-call-site wrapper that
-// runs per-track chord detection + the pure resolver + writes back
+// runs per-track trigger grouping + the pure resolver + writes back
 // monoOrdinal / stateIndex / orientation onto VideoEvents.
 //
 // Coverage map:
 //   §4.4 row 1 — first mono trigger never advances           (testFirstMonoNoAdvance)
-//   §4.4 row 2 — chord event renders prior mono state         (testChordInheritsState)
+//   EveryNote   — same-tick chord notes each trigger          (testEveryNoteChordTriggers)
 //   §4.4 row 3 — mono trigger between chords keeps memory     (testMonoBetweenChords)
 //   §4.4 row 4 — pattern loop (no reset)                      (covered in resolver tests)
 //   §3.1       — disabled config = identity                    (testDisabledShortCircuit)
-//   §4.3       — chord ≥2 onsets at same tick → mono ord = -1  (testChordDetection)
-//   §1         — startStateIndex inherited by chord-with-no-mono (testChordBeforeAnyMono)
+//   §4.3       — non-EveryNote chord transparency              (testMonoBetweenChords)
+//   §1         — startStateIndex honored for first chord note  (testChordBeforeAnyMono)
 //   misc       — multi-track applyAll grouping                  (testMultiTrackApplyAll)
 //
 // Build target: test_video_flip_applier (engine/CMakeLists.txt)
@@ -67,6 +67,25 @@ static VideoFlipConfig configHorizontalEven() {
     return cfg;
 }
 
+static VideoFlipConfig configEveryNoteStates(int count) {
+    VideoFlipConfig cfg;
+    cfg.enabled = true;
+    cfg.startStateIndex = 0;
+    cfg.modifier.type = VideoFlipModifier::Type::EveryNote;
+    static const Orientation cycle[6] = {
+        Orientation::None,
+        Orientation::Horizontal,
+        Orientation::Vertical,
+        Orientation::Rotate180,
+        Orientation::Rotate90CW,
+        Orientation::Rotate90CCW,
+    };
+    for (int i = 0; i < count; ++i) {
+        cfg.states.push_back({"s" + std::to_string(i), cycle[i % 6], ""});
+    }
+    return cfg;
+}
+
 // ─── [1] Disabled config short-circuits to identity ───────────────────────────
 
 static void testDisabledShortCircuit() {
@@ -115,13 +134,13 @@ static void testFirstMonoNoAdvance() {
     CHECK(events[2].orientation == Orientation::None,        "ev2 orientation=none (wrap)");
 }
 
-// ─── [3] Chord detection: ≥2 events at same tick → mono ord = -1 ─────────────
+// ─── [3] EveryNote chord notes each trigger ─────────────────────────────────
 
-static void testChordDetection() {
-    std::cout << "[3] Chord detection (>=2 events at same tick)\n";
+static void testEveryNoteChordTriggers() {
+    std::cout << "[3] EveryNote chord notes each trigger\n";
 
     auto cfg = configHorizontalEven();
-    // Three events at tick 0 (chord), then a mono event at tick 960.
+    // Three events at tick 0 (chord), then a single event at tick 960.
     std::vector<VideoEvent> events = {
         makeEvent(0.0, 60),  // chord member
         makeEvent(0.0, 64),  // chord member
@@ -133,22 +152,60 @@ static void testChordDetection() {
 
     videoFlipApplier::applyTrack(ptrs, cfg, kPPQ);
 
-    CHECK(events[0].monoOrdinal == -1, "chord member 0 -> monoOrdinal=-1");
-    CHECK(events[1].monoOrdinal == -1, "chord member 1 -> monoOrdinal=-1");
-    CHECK(events[2].monoOrdinal == -1, "chord member 2 -> monoOrdinal=-1");
-    CHECK(events[3].monoOrdinal == 0,  "lone mono after chord -> monoOrdinal=0");
+    CHECK(events[0].monoOrdinal == 0 && events[0].stateIndex == 0,
+          "chord member 0 -> ordinal 0, state 0");
+    CHECK(events[1].monoOrdinal == 1 && events[1].stateIndex == 1,
+          "chord member 1 -> ordinal 1, state 1");
+    CHECK(events[2].monoOrdinal == 2 && events[2].stateIndex == 0,
+          "chord member 2 -> ordinal 2, state 0");
+    CHECK(events[3].monoOrdinal == 3 && events[3].stateIndex == 1,
+          "single after chord -> ordinal 3, state 1");
+    CHECK(events[0].globalNoteIndex == 0, "globalNoteIndex rewritten to ordinal 0");
+    CHECK(events[3].globalNoteIndex == 3, "globalNoteIndex rewritten to ordinal 3");
 }
 
-// ─── [4] Chord events inherit prior mono's stateIndex ────────────────────────
+// ─── [4] Chord followed by single advances immediately ──────────────────────
 
-static void testChordInheritsState() {
-    std::cout << "[4] Chord events render prior mono state, do not advance\n";
+static void testSameTickUsesSourceOrderBeforePitch() {
+    std::cout << "[3a] Same-tick EveryNote order prefers source note order before pitch\n";
+
+    auto cfg = configEveryNoteStates(6);
+    std::vector<VideoEvent> events = {
+        makeEvent(0.0, 72),  // source order 10, pitch highest
+        makeEvent(0.0, 60),  // source order 11, pitch lowest
+        makeEvent(0.0, 67),  // source order 12
+    };
+    events[0].hasSourceTriggerOrder = true;
+    events[0].sourceTriggerOrder = 10;
+    events[0].originalEmissionOrder = 0;
+    events[1].hasSourceTriggerOrder = true;
+    events[1].sourceTriggerOrder = 11;
+    events[1].originalEmissionOrder = 1;
+    events[2].hasSourceTriggerOrder = true;
+    events[2].sourceTriggerOrder = 12;
+    events[2].originalEmissionOrder = 2;
+
+    std::vector<VideoEvent*> ptrs;
+    for (auto& e : events) ptrs.push_back(&e);
+
+    videoFlipApplier::applyTrack(ptrs, cfg, kPPQ);
+
+    CHECK(events[0].monoOrdinal == 0 && events[0].orientation == Orientation::None,
+          "source-order first event gets ordinal 0, not pitch-sorted last");
+    CHECK(events[1].monoOrdinal == 1 && events[1].orientation == Orientation::Horizontal,
+          "source-order second event gets ordinal 1");
+    CHECK(events[2].monoOrdinal == 2 && events[2].orientation == Orientation::Vertical,
+          "source-order third event gets ordinal 2");
+}
+
+static void testChordFollowedBySingle() {
+    std::cout << "[4] EveryNote chord followed by single advances immediately\n";
 
     auto cfg = configHorizontalEven();  // 2 states, every-note, startIdx=0
     // Sequence on one track:
     //   tick 0    : mono D5     (first → state 0, no advance)
     //   tick 960  : mono D#5    (advance → state 1)
-    //   tick 1920 : chord [E5, G5]  (transparent: state 1 inherited, no advance)
+    //   tick 1920 : chord [E5, G5]  (two more note-ons)
     //   tick 2880 : mono A5     (advance → state 0 wrap)
     std::vector<VideoEvent> events = {
         makeEvent(0.0, 74),   // mono
@@ -166,12 +223,12 @@ static void testChordInheritsState() {
           "ev0 mono first -> state 0, ord 0");
     CHECK(events[1].stateIndex  == 1 && events[1].monoOrdinal == 1,
           "ev1 mono advance -> state 1, ord 1");
-    CHECK(events[2].stateIndex  == 1 && events[2].monoOrdinal == -1,
-          "ev2 chord inherits state 1, ord -1");
-    CHECK(events[3].stateIndex  == 1 && events[3].monoOrdinal == -1,
-          "ev3 chord inherits state 1, ord -1");
-    CHECK(events[4].stateIndex  == 0 && events[4].monoOrdinal == 2,
-          "ev4 mono advance after chord -> state 0 (wrap), ord 2");
+    CHECK(events[2].stateIndex  == 0 && events[2].monoOrdinal == 2,
+          "ev2 chord member advances -> state 0, ord 2");
+    CHECK(events[3].stateIndex  == 1 && events[3].monoOrdinal == 3,
+          "ev3 chord member advances -> state 1, ord 3");
+    CHECK(events[4].stateIndex  == 0 && events[4].monoOrdinal == 4,
+          "ev4 single after chord advances -> state 0, ord 4");
 }
 
 // ─── [5] new-note across chord gap remembers last mono pitch ─────────────────
@@ -216,15 +273,15 @@ static void testMonoBetweenChords() {
     CHECK(events[4].monoOrdinal == 2,                "ev4 monoOrdinal = 2");
 }
 
-// ─── [6] Chord before any mono inherits startStateIndex ──────────────────────
+// ─── [6] Chord before any single starts from startStateIndex ─────────────────
 
 static void testChordBeforeAnyMono() {
-    std::cout << "[6] Chord with no prior mono -> startStateIndex\n";
+    std::cout << "[6] EveryNote chord starts from startStateIndex\n";
 
     auto cfg = configHorizontalEven();
     cfg.startStateIndex = 1;   // start cycle on state 1
 
-    // First two events form a chord at tick 0; no prior mono.
+    // First two events form a chord at tick 0.
     std::vector<VideoEvent> events = {
         makeEvent(0.0, 60),   // chord
         makeEvent(0.0, 64),   // chord
@@ -235,17 +292,52 @@ static void testChordBeforeAnyMono() {
 
     videoFlipApplier::applyTrack(ptrs, cfg, kPPQ);
 
-    CHECK(events[0].stateIndex  == 1 && events[0].monoOrdinal == -1,
-          "chord-before-mono -> startStateIndex=1");
-    CHECK(events[1].stateIndex  == 1 && events[1].monoOrdinal == -1,
-          "chord-before-mono (2nd) -> startStateIndex=1");
-    // First mono trigger after the chord: every-note, startIdx=1, no advance on first
-    // → state 1.
-    CHECK(events[2].stateIndex  == 1 && events[2].monoOrdinal == 0,
-          "first mono after chord-only opening -> state 1, ord 0");
+    CHECK(events[0].stateIndex  == 1 && events[0].monoOrdinal == 0,
+          "first chord member -> startStateIndex=1, ord 0");
+    CHECK(events[1].stateIndex  == 0 && events[1].monoOrdinal == 1,
+          "second chord member advances and wraps -> state 0, ord 1");
+    CHECK(events[2].stateIndex  == 1 && events[2].monoOrdinal == 2,
+          "single after opening chord advances -> state 1, ord 2");
 }
 
 // ─── [7] applyAll groups by trackId and routes to per-track config ───────────
+
+// Repro: first chord, two singles, later chord. The single immediately after
+// the first chord must advance from the chord's final note-on state.
+static void testEveryNoteChordReproSequence() {
+    std::cout << "[7] EveryNote repro sequence: chord, singles, later chord\n";
+
+    auto cfg = configEveryNoteStates(4);
+    std::vector<VideoEvent> events = {
+        makeEvent(0.0, 60),
+        makeEvent(0.0, 64),
+        makeEvent(0.0, 67),
+        makeEvent(0.5, 72),
+        makeEvent(0.75, 74),
+        makeEvent(1.5, 76),
+        makeEvent(1.5, 79),
+        makeEvent(1.5, 83),
+    };
+    std::vector<VideoEvent*> ptrs;
+    for (auto& e : events) ptrs.push_back(&e);
+
+    videoFlipApplier::applyTrack(ptrs, cfg, kPPQ);
+
+    for (int i = 0; i < static_cast<int>(events.size()); ++i) {
+        CHECK(events[static_cast<size_t>(i)].monoOrdinal == i,
+              "every note-on gets the next ordinal");
+        CHECK(events[static_cast<size_t>(i)].globalNoteIndex == i,
+              "globalNoteIndex mirrors the resolved EveryNote ordinal");
+        CHECK(events[static_cast<size_t>(i)].stateIndex == (i % 4),
+              "stateIndex follows ordinal modulo state count");
+        CHECK(events[static_cast<size_t>(i)].orientation == cfg.states[static_cast<size_t>(i % 4)].orientation,
+              "orientation follows the render-consumed state");
+    }
+    CHECK(events[2].stateIndex == 2, "first chord final visible member -> state 2");
+    CHECK(events[3].stateIndex == 3, "single immediately after chord -> state 3");
+    CHECK(events[4].stateIndex == 0, "next single advances again -> state 0");
+    CHECK(events[7].stateIndex == 3, "later chord final member -> state 3");
+}
 
 static void testMultiTrackApplyAll() {
     std::cout << "[7] applyAll: per-track grouping uses each track's config\n";
@@ -341,10 +433,12 @@ int main() {
 
     testDisabledShortCircuit();
     testFirstMonoNoAdvance();
-    testChordDetection();
-    testChordInheritsState();
+    testEveryNoteChordTriggers();
+    testSameTickUsesSourceOrderBeforePitch();
+    testChordFollowedBySingle();
     testMonoBetweenChords();
     testChordBeforeAnyMono();
+    testEveryNoteChordReproSequence();
     testMultiTrackApplyAll();
     testEmptyInput();
     testOutOfOrderSort();

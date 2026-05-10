@@ -45,78 +45,85 @@ void ImportMidiCommand::execute(Timeline& timeline)
         timeline.setBPM(options_.sourceBPM);
     }
 
-    // 2. For each output track, bind to an EXISTING region (do not create one).
+    // 2. For each selected output track, create the pattern container.
+    // Region/sample resolution is conditional: assigned rows use the existing
+    // region binding path, while regionId < 0 imports as an unassigned pattern.
     for (auto& spec : options_.outputTracks) {
-        if (spec.regionId < 0) {
+        const bool hasAssignedRegion = spec.regionId >= 0;
+        const SampleRegion* region = nullptr;
+        bool wasAlreadyMapped = false;
+        bool createdSampleMapping = false;
+        int sampleBankId = -1;
+
+        if (hasAssignedRegion) {
+            // 2a. Resolve the existing region.
+            region = timeline.getRegion(spec.regionId);
+            if (region == nullptr) {
+#ifdef XLETH_DEBUG
+                std::fprintf(stderr,
+                             "[MidiImport] regionId %d not found - skipping output track %d\n",
+                             spec.regionId, spec.outputTrackIndex);
+                std::fflush(stderr);
+#endif
+                continue;
+            }
+
+            // 2b. Determine sample slot - reuse if already mapped, otherwise load.
+            const int existingSampleId = mixEngine_->getSampleIdForRegion(spec.regionId);
+            wasAlreadyMapped = (existingSampleId >= 0);
+
+            if (wasAlreadyMapped) {
+                sampleBankId = existingSampleId;
+#ifdef XLETH_DEBUG
+                std::fprintf(stderr,
+                             "[MidiImport]   regionId=%d already mapped -> reusing sampleId=%d\n",
+                             spec.regionId, sampleBankId);
+                std::fflush(stderr);
+#endif
+            } else {
+                // Resolve audio path. Mirror Audio_LoadRegionAudio: prefer swapped
+                // audio if present, otherwise the source media's file path with the
+                // region's [startTime, endTime] window.
+                const SourceMedia* source = timeline.getSource(region->sourceId);
+                if (source == nullptr || source->filePath.empty()) {
+#ifdef XLETH_DEBUG
+                    std::fprintf(stderr,
+                                 "[MidiImport] regionId %d source %d unresolved - skipping\n",
+                                 spec.regionId, region->sourceId);
+                    std::fflush(stderr);
+#endif
+                    continue;
+                }
+
+                const std::string audioPath =
+                    (region->hasSwappedAudio && !region->swappedAudioPath.empty())
+                        ? region->swappedAudioPath
+                        : source->filePath;
+
+                sampleBankId = sampleBank_->loadSampleFromSource(
+                    audioPath, region->startTime, region->endTime, engineSampleRate_);
+                if (sampleBankId < 0) {
+#ifdef XLETH_DEBUG
+                    std::fprintf(stderr,
+                                 "[MidiImport] loadSampleFromSource failed for regionId=%d path=%s - skipping\n",
+                                 spec.regionId, audioPath.c_str());
+                    std::fflush(stderr);
+#endif
+                    continue;
+                }
+
+                mixEngine_->mapRegionToSample(spec.regionId, sampleBankId);
+                createdSampleSlots_.push_back(CreatedSampleSlotInfo{ sampleBankId, audioPath });
+                createdMappedRegionIds_.push_back(spec.regionId);
+                createdSampleMapping = true;
+            }
+        } else {
 #ifdef XLETH_DEBUG
             std::fprintf(stderr,
-                         "[MidiImport] skipping output track %d (no region assigned)\n",
+                         "[MidiImport] output track %d importing as unassigned pattern\n",
                          spec.outputTrackIndex);
             std::fflush(stderr);
 #endif
-            continue;
-        }
-
-        // 2a. Resolve the existing region.
-        const SampleRegion* region = timeline.getRegion(spec.regionId);
-        if (region == nullptr) {
-#ifdef XLETH_DEBUG
-            std::fprintf(stderr,
-                         "[MidiImport] regionId %d not found — skipping output track %d\n",
-                         spec.regionId, spec.outputTrackIndex);
-            std::fflush(stderr);
-#endif
-            continue;
-        }
-
-        // 2b. Determine sample slot — reuse if already mapped, otherwise load.
-        const int existingSampleId = mixEngine_->getSampleIdForRegion(spec.regionId);
-        const bool wasAlreadyMapped = (existingSampleId >= 0);
-        int sampleBankId = -1;
-
-        if (wasAlreadyMapped) {
-            sampleBankId = existingSampleId;
-#ifdef XLETH_DEBUG
-            std::fprintf(stderr,
-                         "[MidiImport]   regionId=%d already mapped → reusing sampleId=%d\n",
-                         spec.regionId, sampleBankId);
-            std::fflush(stderr);
-#endif
-        } else {
-            // Resolve audio path. Mirror Audio_LoadRegionAudio: prefer swapped
-            // audio if present, otherwise the source media's file path with the
-            // region's [startTime, endTime] window.
-            const SourceMedia* source = timeline.getSource(region->sourceId);
-            if (source == nullptr || source->filePath.empty()) {
-#ifdef XLETH_DEBUG
-                std::fprintf(stderr,
-                             "[MidiImport] regionId %d source %d unresolved — skipping\n",
-                             spec.regionId, region->sourceId);
-                std::fflush(stderr);
-#endif
-                continue;
-            }
-
-            const std::string audioPath =
-                (region->hasSwappedAudio && !region->swappedAudioPath.empty())
-                    ? region->swappedAudioPath
-                    : source->filePath;
-
-            sampleBankId = sampleBank_->loadSampleFromSource(
-                audioPath, region->startTime, region->endTime, engineSampleRate_);
-            if (sampleBankId < 0) {
-#ifdef XLETH_DEBUG
-                std::fprintf(stderr,
-                             "[MidiImport] loadSampleFromSource failed for regionId=%d path=%s — skipping\n",
-                             spec.regionId, audioPath.c_str());
-                std::fflush(stderr);
-#endif
-                continue;
-            }
-
-            mixEngine_->mapRegionToSample(spec.regionId, sampleBankId);
-            createdSampleSlots_.push_back(CreatedSampleSlotInfo{ sampleBankId, audioPath });
-            createdMappedRegionIds_.push_back(spec.regionId);
         }
 
         // 2c. Create TrackInfo (Pattern type).
@@ -133,7 +140,7 @@ void ImportMidiCommand::execute(Timeline& timeline)
             std::fflush(stderr);
 #endif
             // Roll back this iteration's sample-load if we just performed one.
-            if (!wasAlreadyMapped) {
+            if (createdSampleMapping) {
                 mixEngine_->unmapRegion(spec.regionId);
                 sampleBank_->unloadSample(sampleBankId);
                 createdSampleSlots_.pop_back();
@@ -143,7 +150,8 @@ void ImportMidiCommand::execute(Timeline& timeline)
         }
         createdTrackIds_.push_back(trackId);
 
-        // 2d. Create Pattern bound to the EXISTING region.
+        // 2d. Create Pattern bound to the assigned region, or left unassigned
+        // when regionId is -1.
         Pattern pattern;
         pattern.name     = spec.name;
         pattern.regionId = spec.regionId;
@@ -151,7 +159,7 @@ void ImportMidiCommand::execute(Timeline& timeline)
         if (patternId < 0) {
             timeline.removeTrack(trackId);
             createdTrackIds_.pop_back();
-            if (!wasAlreadyMapped) {
+            if (createdSampleMapping) {
                 mixEngine_->unmapRegion(spec.regionId);
                 sampleBank_->unloadSample(sampleBankId);
                 createdSampleSlots_.pop_back();
@@ -232,9 +240,9 @@ void ImportMidiCommand::undo(Timeline& timeline)
     std::fflush(stderr);
 #endif
 
-    // Reverse order: blocks → patterns → unmap (only command-created mappings) →
-    // unload (only command-created slots) → remove regions (defensive, empty in
-    // normal flow) → remove tracks → restore BPM → defensive snapshot restore.
+    // Reverse order: blocks -> patterns -> unmap (only command-created mappings) ->
+    // unload (only command-created slots) -> remove regions (defensive, empty in
+    // normal flow) -> remove tracks -> restore BPM -> defensive snapshot restore.
 
     for (auto it = createdPatternBlockIds_.rbegin(); it != createdPatternBlockIds_.rend(); ++it) {
         timeline.removePatternBlock(*it);
@@ -247,7 +255,7 @@ void ImportMidiCommand::undo(Timeline& timeline)
     createdPatternIds_.clear();
 
     // Critical: unmap regions BEFORE unloadSample (per SampleBank.h contract).
-    // ONLY mappings this command created — pre-existing mappings are left alone.
+    // ONLY mappings this command created - pre-existing mappings are left alone.
     if (mixEngine_ != nullptr) {
         for (auto it = createdMappedRegionIds_.rbegin(); it != createdMappedRegionIds_.rend(); ++it) {
             mixEngine_->unmapRegion(*it);
@@ -274,11 +282,11 @@ void ImportMidiCommand::undo(Timeline& timeline)
     }
     createdTrackIds_.clear();
 
-    // Restore BPM (always — execute may have written, and even if it didn't,
+    // Restore BPM (always - execute may have written, and even if it didn't,
     // restoring to the captured value is a no-op).
     timeline.setBPM(preBpm_);
 
-    // Restore any pre-existing region→sample mappings the snapshot captured.
+    // Restore any pre-existing region->sample mappings the snapshot captured.
     // execute() never mutates these (it only adds new region ids), but the
     // snapshot is the source of truth on undo.
     if (mixEngine_ != nullptr) {

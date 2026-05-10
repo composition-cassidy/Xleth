@@ -138,6 +138,8 @@ void AudioGraph::destroy()
 {
     stopTimer();
     pendingRebuild_.store(false);
+    outputLatencySamples_ = 0;
+    latencyEpoch_.store(0, std::memory_order_release);
     nodes_.clear();
     connections_.clear();
     adjForward_.clear();
@@ -158,6 +160,7 @@ void AudioGraph::reprepare(double sampleRate, int blockSize)
     graph_->releaseResources();
     graph_->setPlayConfigDetails(2, 2, sampleRate_, blockSize_);
     graph_->prepareToPlay(sampleRate_, blockSize_);
+    computePDC();
 }
 
 // ─── Node management ────────────────────────────────────────────────────────
@@ -173,6 +176,11 @@ int AudioGraph::addProcessorToGraph(const std::string& pluginId,
     if (!nodePtr) return -1;
 
     const int uid = static_cast<int>(nodePtr->nodeID.uid);
+    if (auto* stockEffect = dynamic_cast<XlethEffectBase*>(nodePtr->getProcessor()))
+        stockEffect->setHostNodeId(uid);
+    if (auto* guarded = dynamic_cast<GuardedPluginWrapper*>(nodePtr->getProcessor()))
+        guarded->setHostNodeId(uid);
+
     GraphNode gn;
     gn.apgNodeId = nodePtr->nodeID;
     gn.pluginId  = pluginId;
@@ -271,9 +279,26 @@ bool AudioGraph::setBypass(int nodeId, bool bypassed)
     if (!node) return false;
 
     auto* effect = dynamic_cast<XlethEffectBase*>(node->getProcessor());
-    if (!effect) return false;
+    if (!effect)
+    {
+        auto* guarded = dynamic_cast<GuardedPluginWrapper*>(node->getProcessor());
+        if (guarded == nullptr)
+            return false;
 
+        const auto publishCountBefore = guarded->getLatencyChangePublishCount();
+        if (!guarded->setWrappedBypass(bypassed))
+            return false;
+        if (guarded->refreshReportedLatency()
+            || guarded->getLatencyChangePublishCount() != publishCountBefore)
+            rebuildImmediate();
+        return true;
+    }
+
+    const int beforeLatency = effect->getLatencySamples();
     effect->setBypassed(bypassed);
+    const int afterLatency = effect->getLatencySamples();
+    if (afterLatency != beforeLatency)
+        rebuildImmediate();
     return true;
 }
 
@@ -448,6 +473,70 @@ int AudioGraph::addEffect(const std::string& pluginId, int position)
         }
 
         // Insert pred → uid → succ
+        GraphConnection gc1;
+        gc1.sourceNodeId = pred;
+        gc1.destNodeId   = uid;
+        connections_[{pred, uid}] = gc1;
+        addAdj(pred, uid);
+
+        GraphConnection gc2;
+        gc2.sourceNodeId = uid;
+        gc2.destNodeId   = succ;
+        connections_[{uid, succ}] = gc2;
+        addAdj(uid, succ);
+    }
+
+    updateLinearOrder();
+    rebuildImmediate();
+    return uid;
+}
+
+int AudioGraph::addProcessorForTesting(const std::string& pluginId,
+                                       std::unique_ptr<juce::AudioProcessor> proc,
+                                       int position)
+{
+    const int uid = addProcessorToGraph(pluginId, std::move(proc));
+    if (uid < 0) return -1;
+
+    const int inUid  = static_cast<int>(inputNode_.uid);
+    const int outUid = static_cast<int>(outputNode_.uid);
+
+    if (linearOrder_.empty())
+    {
+        GraphConnection gc1;
+        gc1.sourceNodeId = inUid;
+        gc1.destNodeId   = uid;
+        connections_[{inUid, uid}] = gc1;
+        addAdj(inUid, uid);
+
+        GraphConnection gc2;
+        gc2.sourceNodeId = uid;
+        gc2.destNodeId   = outUid;
+        connections_[{uid, outUid}] = gc2;
+        addAdj(uid, outUid);
+    }
+    else
+    {
+        const int pos = std::clamp(position, 0, static_cast<int>(linearOrder_.size()));
+        const int pred = (pos == 0)
+                       ? inUid
+                       : linearOrder_[static_cast<size_t>(pos - 1)];
+        const int succ = (pos == static_cast<int>(linearOrder_.size()))
+                       ? outUid
+                       : linearOrder_[static_cast<size_t>(pos)];
+
+        WireId oldWid{pred, succ};
+        auto cit = connections_.find(oldWid);
+        if (cit != connections_.end())
+        {
+            if (cit->second.wire.gainNodeId.uid != 0)
+                graph_->removeNode(cit->second.wire.gainNodeId);
+            if (cit->second.wire.delayNodeId.uid != 0)
+                graph_->removeNode(cit->second.wire.delayNodeId);
+            connections_.erase(cit);
+            removeAdj(pred, succ);
+        }
+
         GraphConnection gc1;
         gc1.sourceNodeId = pred;
         gc1.destNodeId   = uid;
@@ -712,7 +801,7 @@ nlohmann::json AudioGraph::getGraphTopology() const
         io["x"] = 0.0f;
         io["y"] = 0.0f;
         io["level"] = -1;  // will be filled if topo sort ran
-        io["cumulativeLatency"] = 0;
+        io["cumulativeLatency"] = outputLatencySamples_;
         io["bypassed"] = false;
         nodesArr.push_back(io);
     }
@@ -759,6 +848,31 @@ nlohmann::json AudioGraph::getGraphTopology() const
     result["isLinear"] = isGraphLinear();
 
     return result;
+}
+
+int AudioGraph::countActiveResonanceSuppressorHighQualityInstances() const
+{
+    if (!graph_)
+        return 0;
+
+    int count = 0;
+    for (const auto& [uid, nodeInfo] : nodes_)
+    {
+        if (nodeInfo.pluginId != "resonancesuppressor")
+            continue;
+        if (missingNodes_.count(uid) > 0)
+            continue;
+
+        auto* node = graph_->getNodeForId(nodeInfo.apgNodeId);
+        if (node == nullptr)
+            continue;
+        auto* effect = dynamic_cast<XlethEffectBase*>(node->getProcessor());
+        if (effect == nullptr || effect->isBypassed())
+            continue;
+        if (effect->getParameterValue("processing_mode") >= 0.5f)
+            ++count;
+    }
+    return count;
 }
 
 bool AudioGraph::isGraphLinear() const
@@ -1277,7 +1391,11 @@ bool AudioGraph::resetCrashedPlugin(int nodeId)
     if (!apgNode) return false;
     auto* guarded = dynamic_cast<GuardedPluginWrapper*>(apgNode->getProcessor());
     if (!guarded) return false;
-    return guarded->resetCrashed();
+    const auto publishCountBefore = guarded->getLatencyChangePublishCount();
+    const bool ok = guarded->resetCrashed();
+    if (ok && guarded->getLatencyChangePublishCount() != publishCountBefore)
+        rebuildImmediate();
+    return ok;
 }
 
 // ─── Audio thread ───────────────────────────────────────────────────────────
@@ -1370,6 +1488,11 @@ void AudioGraph::rebuildImmediate()
     pendingRebuild_.store(false);
     stopTimer();
     rebuildAPGConnections();
+    computePDC();
+}
+
+void AudioGraph::refreshLatencyDiagnostics()
+{
     computePDC();
 }
 
@@ -1478,6 +1601,7 @@ void AudioGraph::computePDC()
         gn.cumulativeLatency = 0;
 
     const int inUid = static_cast<int>(inputNode_.uid);
+    const int outUid = static_cast<int>(outputNode_.uid);
 
     // Map uid → cumulative latency (includes I/O nodes)
     std::unordered_map<int, int> cumLatency;
@@ -1518,6 +1642,10 @@ void AudioGraph::computePDC()
                 nIt->second.cumulativeLatency = maxInputLat + nodeLat;
         }
     }
+
+    auto outIt = cumLatency.find(outUid);
+    outputLatencySamples_ = (outIt != cumLatency.end()) ? outIt->second : 0;
+    latencyEpoch_.fetch_add(1, std::memory_order_acq_rel);
 
     // For each connection, determine if delay compensation is needed
     for (auto& [wid, conn] : connections_)
@@ -1584,6 +1712,66 @@ void AudioGraph::computePDC()
             }
         }
     }
+}
+
+void AudioGraph::refreshOutputLatencyCache()
+{
+    if (!graph_)
+        return;
+
+    auto levels = topologicalSortWithLevels();
+    if (levels.empty())
+    {
+        outputLatencySamples_ = 0;
+        return;
+    }
+
+    const int inUid = static_cast<int>(inputNode_.uid);
+    const int outUid = static_cast<int>(outputNode_.uid);
+
+    std::unordered_map<int, int> cumLatency;
+    cumLatency[inUid] = 0;
+
+    for (const auto& level : levels)
+    {
+        for (int uid : level)
+        {
+            if (uid == inUid)
+                continue;
+
+            int maxInputLat = 0;
+            auto rIt = adjReverse_.find(uid);
+            if (rIt != adjReverse_.end())
+            {
+                for (int pred : rIt->second)
+                {
+                    auto cIt = cumLatency.find(pred);
+                    if (cIt != cumLatency.end())
+                        maxInputLat = std::max(maxInputLat, cIt->second);
+                }
+            }
+
+            int nodeLat = 0;
+            auto nIt = nodes_.find(uid);
+            if (nIt != nodes_.end())
+            {
+                if (auto* node = graph_->getNodeForId(nIt->second.apgNodeId))
+                {
+                    if (auto* proc = node->getProcessor())
+                        nodeLat = proc->getLatencySamples();
+                }
+            }
+
+            const int cumulativeLatency = maxInputLat + nodeLat;
+            cumLatency[uid] = cumulativeLatency;
+
+            if (nIt != nodes_.end())
+                nIt->second.cumulativeLatency = cumulativeLatency;
+        }
+    }
+
+    auto outIt = cumLatency.find(outUid);
+    outputLatencySamples_ = (outIt != cumLatency.end()) ? outIt->second : 0;
 }
 
 // ─── APG rebuild ────────────────────────────────────────────────────────────
@@ -1831,7 +2019,113 @@ std::string AudioGraph::getEffectParameters(int nodeId) const
 bool AudioGraph::setEffectParameter(int nodeId, const std::string& paramId, float value)
 {
     auto* effect = getEffect(nodeId);
-    return effect ? effect->setParameterValue(paramId, value) : false;
+    if (effect)
+    {
+        const int beforeLatency = effect->getLatencySamples();
+        const bool ok = effect->setParameterValue(paramId, value);
+        if (!ok)
+            return false;
+
+        const int afterLatency = effect->getLatencySamples();
+        if (afterLatency != beforeLatency)
+            rebuildImmediate();
+        return true;
+    }
+
+    auto* proc = getProcessor(nodeId);
+    auto* guarded = dynamic_cast<GuardedPluginWrapper*>(proc);
+    if (!guarded)
+        return false;
+
+    const bool ok = guarded->setWrappedParameterValue(paramId, value);
+    if (!ok)
+        return false;
+
+    if (guarded->refreshReportedLatency())
+        rebuildImmediate();
+    return true;
+}
+
+bool AudioGraph::setEffectProgram(int nodeId, int programIndex)
+{
+    auto* proc = getProcessor(nodeId);
+    if (proc == nullptr)
+        return false;
+
+    if (auto* guarded = dynamic_cast<GuardedPluginWrapper*>(proc))
+    {
+        const auto publishCountBefore = guarded->getLatencyChangePublishCount();
+        if (!guarded->setWrappedCurrentProgram(programIndex))
+            return false;
+        (void)refreshGuardedPluginLatency(nodeId, publishCountBefore);
+        return true;
+    }
+
+    const int beforeLatency = proc->getLatencySamples();
+    proc->setCurrentProgram(programIndex);
+    const int afterLatency = proc->getLatencySamples();
+    if (afterLatency != beforeLatency)
+    {
+        rebuildImmediate();
+        return true;
+    }
+    return true;
+}
+
+bool AudioGraph::setEffectStateInformation(int nodeId,
+                                           const void* data,
+                                           int sizeInBytes)
+{
+    auto* proc = getProcessor(nodeId);
+    if (proc == nullptr || data == nullptr || sizeInBytes <= 0)
+        return false;
+
+    if (auto* guarded = dynamic_cast<GuardedPluginWrapper*>(proc))
+    {
+        const auto publishCountBefore = guarded->getLatencyChangePublishCount();
+        guarded->setStateInformation(data, sizeInBytes);
+        (void)refreshGuardedPluginLatency(nodeId, publishCountBefore);
+        return true;
+    }
+
+    const int beforeLatency = proc->getLatencySamples();
+    proc->setStateInformation(data, sizeInBytes);
+    const int afterLatency = proc->getLatencySamples();
+    if (afterLatency != beforeLatency)
+    {
+        rebuildImmediate();
+        return true;
+    }
+    return true;
+}
+
+bool AudioGraph::refreshGuardedPluginLatency(int nodeId)
+{
+    auto* proc = getProcessor(nodeId);
+    auto* guarded = dynamic_cast<GuardedPluginWrapper*>(proc);
+    if (!guarded)
+        return false;
+
+    return refreshGuardedPluginLatency(nodeId, guarded->getLatencyChangePublishCount());
+}
+
+bool AudioGraph::refreshGuardedPluginLatency(
+    int nodeId,
+    std::uint64_t latencyPublishCountBefore)
+{
+    auto* proc = getProcessor(nodeId);
+    auto* guarded = dynamic_cast<GuardedPluginWrapper*>(proc);
+    if (!guarded)
+        return false;
+
+    const bool refreshed = guarded->refreshReportedLatency();
+    const bool alreadyPublished =
+        guarded->getLatencyChangePublishCount() != latencyPublishCountBefore;
+    if (!refreshed && !alreadyPublished)
+        return false;
+
+    rebuildImmediate();
+    return true;
 }
 
 std::string AudioGraph::getEffectMeter(int nodeId) const

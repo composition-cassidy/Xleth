@@ -1,0 +1,267 @@
+{
+  "accumulatedTimingSampleCount": 27003,
+  "activeResonanceSuppressorHighQualityInstanceCount": 1,
+  "audioDeviceOutputLatencySamples": 480,
+  "blockSize": 480,
+  "build": {
+    "configuration": "Debug"
+  },
+  "callback": {
+    "averageMs": 0.4643914342629482,
+    "averageUs": 464.3914342629482,
+    "count": 3012,
+    "maxMs": 3.14,
+    "maxUs": 3140.0,
+    "p50Ms": 0.463,
+    "p50Us": 463.0,
+    "p95Ms": 0.592,
+    "p95Us": 592.0,
+    "p99Ms": 0.715,
+    "p99Us": 715.0
+  },
+  "callbackCoveragePercent": 99.90049751243781,
+  "callbackDeadlineUs": 10000.0,
+  "callbackMaxUs": 3140.0,
+  "callbackOverrunCount": 0,
+  "callbackP50Us": 463.0,
+  "callbackP95Us": 592.0,
+  "callbackP99Us": 715.0,
+  "callbackSampleCount": 3012,
+  "captureDurationSeconds": 30.146,
+  "capturedAt": "2026-05-09T16:06:37Z",
+  "capturedCallbackCount": 3012,
+  "chainLockMissCount": 0,
+  "compensationTargetChanges": 0,
+  "cpuHealth": "Healthy",
+  "deviceOutputLatencySamples": 480,
+  "diagnosis": {
+    "cpuDeadlinePressure": "no callback or MixEngine deadline overrun observed",
+    "cpuHealth": "Healthy",
+    "lockStaleState": "no lock misses or stale chain reuse observed",
+    "pdcPresentationLatency": "reported separately as compensated timing, not CPU deadline pressure",
+    "status": "Healthy",
+    "summary": "no_realtime_instability_observed",
+    "telemetryCoverageQuality": "good",
+    "telemetryPressure": "no dropped telemetry samples observed"
+  },
+  "droppedTelemetryByScope": {
+    "captureAccumulatorOverflow": 0,
+    "deliberateVerboseScopeSamplingSkips": 0,
+    "ringOverflow": 0
+  },
+  "droppedTelemetrySamples": 0,
+  "droppedTelemetrySamplesDuringCapture": 0,
+  "effectCoveragePercent": null,
+  "effectSampleCount": 5994,
+  "expectedApproxCallbackCount": 3015,
+  "guardedPluginCrashedSkippedCount": 0,
+  "guardedPluginSkippedOrCrashedCount": 0,
+  "latencyEpochChanges": 0,
+  "livePresentationLatencySamples": 2528,
+  "lockMisses": 0,
+  "masterInsertLatencySamples": 2048,
+  "maxAudibleTrackLatencySamples": 0,
+  "mixEngine": {
+    "averageMs": 0.46168492695883134,
+    "averageUs": 461.68492695883134,
+    "count": 3012,
+    "maxMs": 3.136,
+    "maxUs": 3136.0,
+    "p50Ms": 0.461,
+    "p50Us": 461.0,
+    "p95Ms": 0.589,
+    "p95Us": 589.0,
+    "p99Ms": 0.699,
+    "p99Us": 699.0
+  },
+  "mixEngineCoveragePercent": 99.90049751243781,
+  "mixEngineMaxUs": 3136.0,
+  "mixEngineOverrunCount": 0,
+  "mixEngineP50Us": 461.0,
+  "mixEngineP95Us": 589.0,
+  "mixEngineP99Us": 699.0,
+  "mixEngineSampleCount": 3012,
+  "pdcDelayProcessCount": 0,
+  "positionSamples": {
+    "presentationEnd": 0,
+    "presentationStart": 0,
+    "rawEnd": 0,
+    "rawStart": 0
+  },
+  "presentationPositionSamplesAtCaptureEnd": 0,
+  "presentationPositionSamplesAtCaptureStart": 0,
+  "privacy": "Report intentionally omits raw media paths, project directories, usernames, and full project JSON.",
+  "project": {
+    "clipCount": 24,
+    "effectCount": 1,
+    "mediaCount": 2,
+    "projectDurationSeconds": 10.285714285714286,
+    "projectName": "buffer-test",
+    "regionCount": 2,
+    "sourceCount": 2,
+    "trackCount": 2
+  },
+  "rawPositionSamplesAtCaptureEnd": 0,
+  "rawPositionSamplesAtCaptureStart": 0,
+  "realtimeRsHqRiskLevel": "healthy",
+  "realtimeRsHqRiskReasons": [],
+  "recommendedAction": [
+    "reduceHqInstances",
+    "useNormalQualityForRealtime",
+    "useHqForExport"
+  ],
+  "renderedBlockCount": 3012,
+  "requestedDurationSeconds": 30,
+  "resonanceSuppressorHighQuality": {
+    "activeInstanceCount": 1,
+    "appearsInWorstEffects": true,
+    "recommendedAction": [
+      "reduceHqInstances",
+      "useNormalQualityForRealtime",
+      "useHqForExport"
+    ],
+    "riskLevel": "healthy",
+    "riskReasons": [],
+    "wolaCallCount": 2997,
+    "wolaMaxUs": 282.0,
+    "wolaP99Us": 199.0
+  },
+  "sampleRate": 48000.0,
+  "schemaVersion": "xleth.audioPerformanceCapture.v1",
+  "staleChainReuse": 0,
+  "staleSnapshotReuseCount": 0,
+  "strictFailed": false,
+  "strictMode": false,
+  "telemetryCaptureAccumulatorOverflowDrops": 0,
+  "telemetryCoverageQuality": "good",
+  "timingSequence": {
+    "end": 27003,
+    "startExclusive": 1
+  },
+  "transport": {
+    "bpm": 140.0,
+    "endPlaying": false,
+    "startPlaying": false
+  },
+  "verboseEffectSampling": {
+    "downsampled": false,
+    "notes": "Verbose effect scopes were not downsampled; coverage was improved by periodic off-thread draining.",
+    "skippedSamples": 0
+  },
+  "worstChainsByMax": [
+    {
+      "count": 2997,
+      "effectTypeName": "unknown",
+      "flags": 1,
+      "kind": "masterChain",
+      "maxUs": 324,
+      "p99Us": 240,
+      "slotOrNodeId": -1,
+      "timing": {
+        "averageUs": 184.995995995996,
+        "count": 2997,
+        "maxUs": 324,
+        "p50Us": 193,
+        "p95Us": 216,
+        "p99Us": 240
+      },
+      "trackId": -1
+    }
+  ],
+  "worstChainsByP99": [
+    {
+      "count": 2997,
+      "effectTypeName": "unknown",
+      "flags": 1,
+      "kind": "masterChain",
+      "maxUs": 324,
+      "p99Us": 240,
+      "slotOrNodeId": -1,
+      "timing": {
+        "averageUs": 184.995995995996,
+        "count": 2997,
+        "maxUs": 324,
+        "p50Us": 193,
+        "p95Us": 216,
+        "p99Us": 240
+      },
+      "trackId": -1
+    }
+  ],
+  "worstEffectsByMax": [
+    {
+      "count": 2997,
+      "effectTypeName": "resonancesuppressor",
+      "flags": 0,
+      "kind": "effect",
+      "maxUs": 312,
+      "p99Us": 230,
+      "slotOrNodeId": 3,
+      "timing": {
+        "averageUs": 178.00934267600934,
+        "count": 2997,
+        "maxUs": 312,
+        "p50Us": 187,
+        "p95Us": 206,
+        "p99Us": 230
+      },
+      "trackId": -1
+    },
+    {
+      "count": 2997,
+      "effectTypeName": "resonancesuppressor",
+      "flags": 6,
+      "kind": "effectSection",
+      "maxUs": 282,
+      "p99Us": 199,
+      "slotOrNodeId": 3,
+      "timing": {
+        "averageUs": 150.1031031031031,
+        "count": 2997,
+        "maxUs": 282,
+        "p50Us": 160,
+        "p95Us": 172,
+        "p99Us": 199
+      },
+      "trackId": -1
+    }
+  ],
+  "worstEffectsByP99": [
+    {
+      "count": 2997,
+      "effectTypeName": "resonancesuppressor",
+      "flags": 0,
+      "kind": "effect",
+      "maxUs": 312,
+      "p99Us": 230,
+      "slotOrNodeId": 3,
+      "timing": {
+        "averageUs": 178.00934267600934,
+        "count": 2997,
+        "maxUs": 312,
+        "p50Us": 187,
+        "p95Us": 206,
+        "p99Us": 230
+      },
+      "trackId": -1
+    },
+    {
+      "count": 2997,
+      "effectTypeName": "resonancesuppressor",
+      "flags": 6,
+      "kind": "effectSection",
+      "maxUs": 282,
+      "p99Us": 199,
+      "slotOrNodeId": 3,
+      "timing": {
+        "averageUs": 150.1031031031031,
+        "count": 2997,
+        "maxUs": 282,
+        "p50Us": 160,
+        "p95Us": 172,
+        "p99Us": 199
+      },
+      "trackId": -1
+    }
+  ]
+}

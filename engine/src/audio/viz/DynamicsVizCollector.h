@@ -353,18 +353,19 @@ private:
 
 // ── Transient accumulator (audio-thread helper) ─────────────────────────────
 // Tracks per-bucket aggregates for the Transient Processor: peak input/output
-// levels, last-sample envelope follower outputs (fast + slow), last-sample
-// signed gain (positive = boost, negative = cut), and the current snapshot of
-// shaping params. Composes with DynamicsVizCollector<TransientBucket>.
+// levels, last-sample envelope follower outputs (fast + slow), dominant signed
+// gain over the bucket (positive = boost, negative = cut), and the current
+// snapshot of shaping params. Composes with DynamicsVizCollector<TransientBucket>.
 //
-// observe() is called per sample with the linear (pre-dB) values; the
-// accumulator converts to dB once per bucket at flush time. Pass NaN for
+// observe() is called per sample. Level and envelope inputs stay linear and are
+// converted to dB once per bucket at flush time. Pass NaN for
 // fastEnvLin / slowEnvLin when the envelope followers are not running
 // (e.g. MIDI mode) — the bucket's fastEnvDb / slowEnvDb fields will then carry
 // NaN through to the JS side, which is a documented "not measured" sentinel.
 //
-// gainLin is the LINEAR last-sample gain applied (1.0 = unity). Converted to
-// signed dB at flush; the processor's slot-2 meter uses the same convention.
+// gainDb is the signed per-sample gain in dB. The accumulator keeps the
+// strongest positive and strongest negative excursion, then emits whichever has
+// larger magnitude so short boosts/cuts survive bucket downsampling.
 class TransientBucketAccumulator
 {
 public:
@@ -374,7 +375,7 @@ public:
                         float absOut,
                         float fastEnvLin,
                         float slowEnvLin,
-                        float gainLin,
+                        float gainDb,
                         float attackAmount,
                         float sustainAmount,
                         float speedMs,
@@ -385,7 +386,13 @@ public:
         if (absOut > peakAbsOut_) peakAbsOut_ = absOut;
         lastFastEnvLin_  = fastEnvLin;   // may be NaN in MIDI mode
         lastSlowEnvLin_  = slowEnvLin;   // may be NaN in MIDI mode
-        lastGainLin_     = gainLin;
+        if (std::isfinite(gainDb))
+        {
+            if (gainDb > maxBoostDb_)
+                maxBoostDb_ = gainDb;
+            if (gainDb < maxCutDb_)
+                maxCutDb_ = gainDb;
+        }
         lastAttack_      = attackAmount;
         lastSustain_     = sustainAmount;
         lastSpeedMs_     = speedMs;
@@ -407,7 +414,7 @@ public:
             b.outLevelDb        = absToDb(peakAbsOut_);
             b.fastEnvDb         = envToDb(lastFastEnvLin_);
             b.slowEnvDb         = envToDb(lastSlowEnvLin_);
-            b.gainDb            = gainToSignedDb(lastGainLin_);
+            b.gainDb            = dominantSignedGain(maxBoostDb_, maxCutDb_);
             b.attackAmount      = lastAttack_;
             b.sustainAmount     = lastSustain_;
             b.speedMs           = lastSpeedMs_;
@@ -418,6 +425,8 @@ public:
 
             peakAbsIn_   = 0.0f;
             peakAbsOut_  = 0.0f;
+            maxBoostDb_  = 0.0f;
+            maxCutDb_    = 0.0f;
             sampleCount_ = 0;
             flags_       = 0u;
         }
@@ -441,17 +450,17 @@ private:
     // Signed gain in dB. Linear gain near 1.0 → 0 dB, > 1 → positive (boost),
     // < 1 → negative (cut). Floors at ±60 dB to keep the painter sane on the
     // first few samples after enable when gainLin can be tiny.
-    static inline float gainToSignedDb(float gainLin) noexcept
+    static inline float dominantSignedGain(float maxBoostDb, float maxCutDb) noexcept
     {
-        if (gainLin < 1.0e-6f) return -60.0f;
-        return 20.0f * std::log10(gainLin);
+        return std::abs(maxBoostDb) >= std::abs(maxCutDb) ? maxBoostDb : maxCutDb;
     }
 
     float    peakAbsIn_       {0.0f};
     float    peakAbsOut_      {0.0f};
     float    lastFastEnvLin_  {std::numeric_limits<float>::quiet_NaN()};
     float    lastSlowEnvLin_  {std::numeric_limits<float>::quiet_NaN()};
-    float    lastGainLin_     {1.0f};
+    float    maxBoostDb_      {0.0f};
+    float    maxCutDb_        {0.0f};
     float    lastAttack_      {0.0f};
     float    lastSustain_     {0.0f};
     float    lastSpeedMs_     {0.0f};

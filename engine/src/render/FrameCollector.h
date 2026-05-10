@@ -136,6 +136,11 @@ public:
      *                          substituted for the source path — preview-only
      *                          optimization. Final exports MUST pass false so the
      *                          encoder receives original-source pixels.
+     * @param projectStartSample absolute project sample where output frame 0 maps.
+     *                           Keep this at 0 for full-timeline / preview-style
+     *                           collection, or pass the export range start sample
+     *                           so source sampling follows absolute project time
+     *                           while encoded frame indices still start at 0.
      * @return  vector of requests — one per active cell (gaps excluded)
      */
     std::vector<CellFrameRequest> collectRequests(
@@ -144,7 +149,8 @@ public:
         int                            sampleRate,
         AVRational                     fps,
         const std::vector<VideoEvent>& events,
-        bool                           allowProxy = true);
+        bool                           allowProxy = true,
+        int64_t                        projectStartSample = 0);
 
     // ── Step 2: Deduplicate ─────────────────────────────────────────────────
 

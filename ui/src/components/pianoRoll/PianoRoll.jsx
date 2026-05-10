@@ -39,12 +39,20 @@ export default function PianoRoll({
   const containerRef = useRef(null)
   const selectedNoteIdsRef = useRef(selectedNoteIds)
   selectedNoteIdsRef.current = selectedNoteIds
+  const previewReleasesRef = useRef(new Set())
   // Mirror scroll/zoom into refs so the keydown handler (Ctrl+V paste) can
   // read them without re-registering on every scroll tick.
   const scrollXRef = useRef(scrollX)
   scrollXRef.current = scrollX
   const pixelsPerBeatRef = useRef(pixelsPerBeat)
   pixelsPerBeatRef.current = pixelsPerBeat
+
+  const clearPendingPreviewReleases = useCallback((sendNoteOff = false) => {
+    const releases = Array.from(previewReleasesRef.current)
+    for (const release of releases) {
+      try { release(sendNoteOff) } catch { /* ignore */ }
+    }
+  }, [])
 
   const fetchPattern = useCallback(async () => {
     try {
@@ -177,9 +185,10 @@ export default function PianoRoll({
   useEffect(() => {
     const regionId = pattern?.regionId
     const silence = () => {
-      if (regionId != null) {
+      if (regionId != null && regionId >= 0) {
         try { window.xleth?.timeline?.previewAllNotesOff?.(regionId) } catch { /* ignore */ }
       }
+      clearPendingPreviewReleases(false)
     }
     window.addEventListener('blur', silence)
     document.addEventListener('visibilitychange', silence)
@@ -188,30 +197,39 @@ export default function PianoRoll({
       window.removeEventListener('blur', silence)
       document.removeEventListener('visibilitychange', silence)
     }
-  }, [pattern?.regionId])
+  }, [clearPendingPreviewReleases, pattern?.regionId])
 
   // Silence when the center tab navigates away from the piano roll.
   useEffect(() => {
     if (floating) return
     if (activeCenterTab !== 'piano-roll') {
       const regionId = pattern?.regionId
-      if (regionId != null) {
+      if (regionId != null && regionId >= 0) {
         try { window.xleth?.timeline?.previewAllNotesOff?.(regionId) } catch { /* ignore */ }
       }
+      clearPendingPreviewReleases(false)
     }
-  }, [activeCenterTab, floating, pattern?.regionId])
+  }, [activeCenterTab, clearPendingPreviewReleases, floating, pattern?.regionId])
 
   const handlePreviewNote = useCallback((pitch) => {
     const regionId = pattern?.regionId
-    if (regionId == null) return
+    if (regionId == null || regionId < 0) return
     window.xleth?.timeline?.previewNote?.(regionId, pitch, 0.8)
-    const release = () => {
-      window.xleth?.timeline?.previewNoteOff?.(regionId, pitch)
-      window.removeEventListener('mouseup', release)
-      window.removeEventListener('mouseleave', release)
+    let onMouseUp = null
+    let onMouseLeave = null
+    const release = (sendNoteOff = true) => {
+      if (!previewReleasesRef.current.delete(release)) return
+      if (onMouseUp) window.removeEventListener('mouseup', onMouseUp)
+      if (onMouseLeave) window.removeEventListener('mouseleave', onMouseLeave)
+      if (sendNoteOff) {
+        window.xleth?.timeline?.previewNoteOff?.(regionId, pitch)
+      }
     }
-    window.addEventListener('mouseup', release)
-    window.addEventListener('mouseleave', release)
+    onMouseUp = () => release(true)
+    onMouseLeave = () => release(true)
+    previewReleasesRef.current.add(release)
+    window.addEventListener('mouseup', onMouseUp)
+    window.addEventListener('mouseleave', onMouseLeave)
   }, [pattern?.regionId])
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────────
@@ -368,9 +386,11 @@ export default function PianoRoll({
 
   const handleOpenSamplerSettings = useCallback(() => {
     const regionId = pattern?.regionId
-    if (regionId == null) return
+    if (regionId == null || regionId < 0) return
     timelineEvents.dispatchEvent(new CustomEvent('open-sampler-settings', { detail: { regionId } }))
   }, [pattern?.regionId])
+
+  const samplerSettingsDisabled = pattern?.regionId == null || pattern.regionId < 0
 
   // Wheel: vertical scroll; ctrl+wheel = zoom horizontal; shift+wheel = horizontal scroll
   const handleWheel = useCallback((e) => {
@@ -462,6 +482,7 @@ export default function PianoRoll({
         stickyNoteLength={stickyNoteLength} onStickyNoteLengthChange={setStickyNoteLength}
         onZoomIn={handleZoomIn} onZoomOut={handleZoomOut}
         onOpenSamplerSettings={handleOpenSamplerSettings}
+        samplerSettingsDisabled={samplerSettingsDisabled}
         onClose={onClose}
         floating={floating}
         onDetach={onDetach}
@@ -471,7 +492,7 @@ export default function PianoRoll({
         onSwitchPattern={onSwitchPattern}
         onNewPattern={onNewPattern}
         regions={regions}
-        currentRegionId={pattern?.regionId}
+        currentRegionId={pattern?.regionId ?? -1}
         onRegionChange={handleRegionChange}
       />
       <div ref={containerRef} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>

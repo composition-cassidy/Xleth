@@ -34,6 +34,40 @@ extern "C" {
 // automation resolution and predictable video frame boundaries.
 static constexpr int kBufferSize = 512;
 
+namespace {
+
+struct PatternNoteRef {
+    const PatternNote* note = nullptr;
+    int sourceOrder = 0;
+};
+
+bool patternNoteRefLess(const PatternNoteRef& a, const PatternNoteRef& b) {
+    if (a.note->position.ticks != b.note->position.ticks)
+        return a.note->position.ticks < b.note->position.ticks;
+
+    const int orderA = a.note->id > 0 ? a.note->id : a.sourceOrder;
+    const int orderB = b.note->id > 0 ? b.note->id : b.sourceOrder;
+    if (orderA != orderB) return orderA < orderB;
+
+    if (a.note->pitch != b.note->pitch) return a.note->pitch < b.note->pitch;
+    return a.sourceOrder < b.sourceOrder;
+}
+
+std::vector<PatternNoteRef> sortedPatternNoteRefs(const Pattern& pattern) {
+    std::vector<PatternNoteRef> refs;
+    refs.reserve(pattern.notes.size());
+    for (int i = 0; i < static_cast<int>(pattern.notes.size()); ++i)
+        refs.push_back({&pattern.notes[static_cast<std::size_t>(i)], i});
+    std::sort(refs.begin(), refs.end(), patternNoteRefLess);
+    return refs;
+}
+
+int sourceOrderFor(const PatternNote& note, int fallbackOrder) {
+    return note.id > 0 ? note.id : fallbackOrder;
+}
+
+} // namespace
+
 // ===========================================================================
 // Constructor / Destructor
 // ===========================================================================
@@ -178,7 +212,11 @@ std::vector<VideoEvent> OfflineRenderer::buildVideoEvents(
         ev.width           = track->videoW;
         ev.height          = track->videoH;
         ev.opacity         = track->videoOpacity * clip->velocity;
-        ev.globalNoteIndex = noteCounterPerTrack_clip++;
+        const int clipEmissionOrder = noteCounterPerTrack_clip++;
+        ev.globalNoteIndex = clipEmissionOrder;
+        ev.hasSourceTriggerOrder = true;
+        ev.sourceTriggerOrder = clip->id > 0 ? clip->id : clipEmissionOrder;
+        ev.originalEmissionOrder = clipEmissionOrder;
         // Flip-v2: pitch identifier consumed by the resolver. Spec §1: clip
         // tracks use the clip's pitch-shift value (semitones from source).
         ev.pitch = clip->pitchOffset;
@@ -234,13 +272,10 @@ std::vector<VideoEvent> OfflineRenderer::buildVideoEvents(
             if (!block->loopEnabled)
                 lastL = std::min<int64_t>(lastL, 0);
 
+            const auto noteRefs = sortedPatternNoteRefs(*pattern);
             std::vector<const PatternNote*> notesPtrs;
-            notesPtrs.reserve(pattern->notes.size());
-            for (const auto& n : pattern->notes) notesPtrs.push_back(&n);
-            std::sort(notesPtrs.begin(), notesPtrs.end(),
-                [](const PatternNote* a, const PatternNote* b) {
-                    return a->position.ticks < b->position.ticks;
-                });
+            notesPtrs.reserve(noteRefs.size());
+            for (const auto& ref : noteRefs) notesPtrs.push_back(ref.note);
 
             auto arpEvts = ArpVideoExpander::expandArpVideoEvents(
                 notesPtrs, bpTicks, bdTicks,
@@ -264,7 +299,9 @@ std::vector<VideoEvent> OfflineRenderer::buildVideoEvents(
             events.insert(events.end(), arpEvts.begin(), arpEvts.end());
         } else {
             // ── Standard per-note emission (unchanged) ───────────────────
-            for (const auto& note : pattern->notes) {
+            const auto noteRefs = sortedPatternNoteRefs(*pattern);
+            for (const auto& noteRef : noteRefs) {
+                const PatternNote& note = *noteRef.note;
                 const double noteOffsetBeats = note.position.toBeats() - block->offset.toBeats();
                 const double noteDurBeats    = note.duration.toBeats();
 
@@ -314,7 +351,11 @@ std::vector<VideoEvent> OfflineRenderer::buildVideoEvents(
                     ev.width           = track->videoW;
                     ev.height          = track->videoH;
                     ev.opacity         = track->videoOpacity * note.velocity;
-                    ev.globalNoteIndex = noteCounterPerTrack_pat++;
+                    const int noteEmissionOrder = noteCounterPerTrack_pat++;
+                    ev.globalNoteIndex = noteEmissionOrder;
+                    ev.hasSourceTriggerOrder = true;
+                    ev.sourceTriggerOrder = sourceOrderFor(note, noteRef.sourceOrder);
+                    ev.originalEmissionOrder = noteEmissionOrder;
                     ev.pitch           = note.pitch;  // flip-v2 resolver input
 
                     events.push_back(ev);
@@ -397,12 +438,24 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
     // Pre-roll: skip latency compensation samples (no latency in offline mode
     // since we're not using the JUCE AudioProcessorGraph's realtime path).
     // The MixEngine is driven directly — no graph latency to compensate.
-    const int64_t prerollSamples = 0;  // No PDC in direct MixEngine drive
-    const int64_t renderStart = startSample;
-    std::fprintf(stderr, "[Renderer] PRE-ROLL: %lld samples to discard\n",
-                 (long long)prerollSamples);
-    std::fprintf(stderr, "[Renderer] PRE-ROLL complete. Rendering starts at sample %lld\n",
-                 (long long)renderStart);
+    const auto latencySnapshot = mixer_.getLatencyCompensationSnapshot();
+    const int64_t totalPrerollSamples =
+        static_cast<int64_t>(latencySnapshot.maxAudibleTrackLatencySamples)
+        + static_cast<int64_t>(latencySnapshot.masterInsertLatencySamples);
+    const int64_t historyPreroll = std::min(startSample, totalPrerollSamples);
+    const int64_t renderStart = startSample - historyPreroll;
+    const int64_t totalDiscard = historyPreroll + totalPrerollSamples;
+    const int64_t renderSamplesNeeded = totalSamples + totalDiscard;
+    const int64_t renderEnd = renderStart + renderSamplesNeeded;
+    std::fprintf(stderr,
+                 "[Renderer] PRE-ROLL: track=%d master=%d history=%lld discard=%lld start=%lld renderStart=%lld renderEnd=%lld\n",
+                 latencySnapshot.maxAudibleTrackLatencySamples,
+                 latencySnapshot.masterInsertLatencySamples,
+                 (long long)historyPreroll,
+                 (long long)totalDiscard,
+                 (long long)startSample,
+                 (long long)renderStart,
+                 (long long)renderEnd);
 
     // ── Build video events from timeline ─────────────────────────────────
     std::vector<SlideAnimationEvent> slideEvents;
@@ -520,11 +573,12 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
         }
     }
 
-    std::fprintf(stderr, "[Renderer] START: samples %lld → %lld (%.2fs), latency=%lld, preroll=%lld → %lld\n",
+    std::fprintf(stderr, "[Renderer] START: samples %lld → %lld (%.2fs), renderStart=%lld discard=%lld renderEnd=%lld\n",
                  (long long)startSample, (long long)endSample,
                  static_cast<double>(totalSamples) / sampleRate,
-                 (long long)prerollSamples,
-                 (long long)(renderStart - prerollSamples), (long long)renderStart);
+                 (long long)renderStart,
+                 (long long)totalDiscard,
+                 (long long)renderEnd);
 
     // ── PHASE 2: RENDER ──────────────────────────────────────────────────
     progress_.phase.store(2);
@@ -542,6 +596,7 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
 
     int64_t currentSample = renderStart;
     int64_t audioSamplesWritten = 0;
+    int64_t samplesRemainingToDiscard = totalDiscard;
     int64_t lastVideoFrame = -1;
     int     iterationCount = 0;
     double  prevBeat = -1.0;  // for slide-event beat-crossing dispatch
@@ -549,7 +604,7 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
     const auto renderStartTime = std::chrono::steady_clock::now();
     const GridLayout& grid = timeline_.getGridLayout();
 
-    while (currentSample < endSample) {
+    while (currentSample < renderEnd && audioSamplesWritten < totalSamples) {
         // ── Check cancel every buffer ────────────────────────────────────
         if (progress_.cancelRequested.load()) {
             std::fprintf(stderr, "[Renderer] CANCELLED at %.1f%% (sample %lld). "
@@ -565,7 +620,7 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
 
         // Handle last partial buffer
         const int thisBufferSize = static_cast<int>(
-            std::min(static_cast<int64_t>(kBufferSize), endSample - currentSample));
+            std::min(static_cast<int64_t>(kBufferSize), renderEnd - currentSample));
 
         // ── Process audio ────────────────────────────────────────────────
         if (audioBuffer.getNumSamples() != thisBufferSize)
@@ -575,11 +630,25 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
         mixer_.processBlock(audioBuffer, thisBufferSize, transport);
 
         // ── Write audio to muxer ─────────────────────────────────────────
+        const int discardThisBlock = static_cast<int>(
+            std::min<int64_t>(samplesRemainingToDiscard, thisBufferSize));
+        samplesRemainingToDiscard -= discardThisBlock;
+
+        int keepOffset = discardThisBlock;
+        int keepSamples = thisBufferSize - discardThisBlock;
+        if (keepSamples > 0)
+        {
+            const int64_t samplesRemainingToWrite = totalSamples - audioSamplesWritten;
+            keepSamples = static_cast<int>(
+                std::min<int64_t>(keepSamples, samplesRemainingToWrite));
+        }
+
         const float* audioChannels[2] = {
-            audioBuffer.getReadPointer(0),
-            audioBuffer.getReadPointer(1)
+            audioBuffer.getReadPointer(0) + keepOffset,
+            audioBuffer.getReadPointer(1) + keepOffset
         };
-        if (!muxer.writeAudio(audioChannels, thisBufferSize, audioSamplesWritten)) {
+        if (keepSamples > 0
+            && !muxer.writeAudio(audioChannels, keepSamples, audioSamplesWritten)) {
             progress_.setError("Audio encoding failed");
             progress_.failed.store(true);
             muxer.finalize();
@@ -592,10 +661,17 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
         // ── Emit video frames at audio-derived boundaries ────────────────
         // Use audioSamplesWritten (0-based relative to export start) for
         // video frame calculation, so frame 0 aligns with sample 0 of output.
-        auto [firstFrame, lastFrame] = RenderClock::frameBoundsForBuffer(
-            audioSamplesWritten, thisBufferSize, sampleRate, fps);
+        int64_t firstFrame = 1;
+        int64_t lastFrame = 0;
+        if (keepSamples > 0)
+        {
+            const auto frameBounds = RenderClock::frameBoundsForBuffer(
+                audioSamplesWritten, keepSamples, sampleRate, fps);
+            firstFrame = frameBounds.first;
+            lastFrame = frameBounds.second;
+        }
 
-        if (firstFrame <= lastFrame) {
+        if (keepSamples > 0 && firstFrame <= lastFrame) {
             // Log every 30th frame
             if (iterationCount % 30 == 0) {
                 std::fprintf(stderr, "[Renderer] Emit video frames %lld–%lld "
@@ -609,15 +685,19 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
                 const float frameDurationMs = 1000.0f * static_cast<float>(fps.den)
                                             / static_cast<float>(fps.num);
                 animMgr.advanceAll(frameDurationMs);
+                const int64_t localFrameSample = RenderClock::videoFrameToSample(
+                    f, sampleRate, fps);
+                const int64_t projectFrameSample = startSample + localFrameSample;
 
                 // ── Slide-note beat-crossing dispatch ───────────────────
-                // Compute current beat from the output frame index and fire
+                // Compute current beat from the absolute project frame sample and fire
                 // any SlideAnimationEvents whose startBeat falls in the
                 // (prevBeat, currentBeat] window. Reset on first iteration.
                 {
-                    const double currentBeat = (fps.num > 0)
-                        ? (static_cast<double>(f) * fps.den * bpm) / (60.0 * fps.num)
-                        : 0.0;
+                    const int64_t currentPpq = RenderClock::sampleToPPQ(
+                        projectFrameSample, sampleRate, bpm);
+                    const double ticksPerBeat = static_cast<double>(TickTime::fromBeats(1).ticks);
+                    const double currentBeat = static_cast<double>(currentPpq) / ticksPerBeat;
                     if (prevBeat < 0.0 || currentBeat + 1e-6 < prevBeat)
                         prevBeat = currentBeat - 1e-6;
                     for (const auto& se : slideEvents) {
@@ -649,7 +729,8 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
                 // original-source pixels by default; preview keeps proxy use.
                 auto requests = collector.collectRequests(
                     f, timeline_, sampleRate, fps, videoEvents,
-                    /*allowProxy=*/ !settings.useSourceMedia);
+                    /*allowProxy=*/ !settings.useSourceMedia,
+                    /*projectStartSample=*/ startSample);
 
                 // Deduplicate: multiple cells may reference the same source frame
                 auto deduplicated = FrameCollector::deduplicateRequests(requests);
@@ -670,9 +751,11 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
 
                 // Composite
                 if (compositor.isInitialized()) {
-                    const float currentTime = static_cast<float>(f)
-                                            * static_cast<float>(fps.den)
-                                            / static_cast<float>(fps.num);
+                    // Global shader time drives visual-state evaluation, so
+                    // subrange exports must sample it in absolute project time
+                    // even while encoded frame numbers stay local from zero.
+                    const float currentTime = static_cast<float>(
+                        RenderClock::sampleToSeconds(projectFrameSample, sampleRate));
                     compositor.compositeFrame(requests, cache,
                                               grid.columns, grid.rows,
                                               currentTime, grid.gapScale);
@@ -734,7 +817,7 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
 
         // ── Advance ──────────────────────────────────────────────────────
         transport.advance(thisBufferSize);
-        audioSamplesWritten += thisBufferSize;
+        audioSamplesWritten += keepSamples;
         currentSample += thisBufferSize;
         ++iterationCount;
 

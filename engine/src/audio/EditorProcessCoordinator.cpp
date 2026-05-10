@@ -1,4 +1,5 @@
 #include "audio/EditorProcessCoordinator.h"
+#include "audio/GuardedPluginWrapper.h"
 
 #include <cstdio>
 
@@ -75,6 +76,11 @@ public:
         juce::MessageManager::callAsync([c, parameterIndex, newValue]
         {
             c->sendParamChange(parameterIndex, newValue);
+            if (c->onWorkerPluginMutated_)
+                c->onWorkerPluginMutated_(
+                    c->workerWrapper_
+                        ? c->workerWrapper_->getLatencyChangePublishCount()
+                        : 0);
         });
     }
 
@@ -96,6 +102,11 @@ public:
         juce::MessageManager::callAsync([c, state]
         {
             c->sendStateChange(state);
+            if (c->onWorkerPluginMutated_)
+                c->onWorkerPluginMutated_(
+                    c->workerWrapper_
+                        ? c->workerWrapper_->getLatencyChangePublishCount()
+                        : 0);
         });
     }
 
@@ -108,8 +119,10 @@ private:
 
 // ─── Constructor / Destructor ─────────────────────────────────────────────────
 
-EditorProcessCoordinator::EditorProcessCoordinator(juce::AudioPluginInstance* workerPlugin)
+EditorProcessCoordinator::EditorProcessCoordinator(juce::AudioPluginInstance* workerPlugin,
+                                                   GuardedPluginWrapper* workerWrapper)
     : workerPlugin_(workerPlugin)
+    , workerWrapper_(workerWrapper)
 {
     if (workerPlugin_)
     {
@@ -459,7 +472,15 @@ void EditorProcessCoordinator::handleMessageFromWorker(const juce::MemoryBlock& 
             "[EditorCoord] [ParamSync] applied from editor paramIdx=%d value=%.6f\n",
             paramIdx, value);
         paramListener_->suppressNextChange(paramIdx);
-        params[paramIdx]->setValueNotifyingHost(value);
+        const auto publishCountBefore = workerWrapper_
+            ? workerWrapper_->getLatencyChangePublishCount()
+            : 0;
+        if (workerWrapper_)
+            workerWrapper_->setWrappedParameterValue("#" + std::to_string(paramIdx), value);
+        else
+            params[paramIdx]->setValueNotifyingHost(value);
+        if (onWorkerPluginMutated_)
+            onWorkerPluginMutated_(publishCountBefore);
     }
     else if (msg.startsWith("STAT"))
     {
@@ -498,8 +519,16 @@ void EditorProcessCoordinator::handleMessageFromWorker(const juce::MemoryBlock& 
             (int)state.getSize());
 
         paramListener_->setBulkUpdate(true);
-        workerPlugin_->setStateInformation(state.getData(), (int)state.getSize());
+        const auto publishCountBefore = workerWrapper_
+            ? workerWrapper_->getLatencyChangePublishCount()
+            : 0;
+        if (workerWrapper_)
+            workerWrapper_->setStateInformation(state.getData(), (int)state.getSize());
+        else
+            workerPlugin_->setStateInformation(state.getData(), (int)state.getSize());
         paramListener_->setBulkUpdate(false);
+        if (onWorkerPluginMutated_)
+            onWorkerPluginMutated_(publishCountBefore);
 
         std::fprintf(stderr,
             "[EditorCoord] [ParamSync] STAT: applied\n");

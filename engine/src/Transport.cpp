@@ -47,6 +47,11 @@ int64_t Transport::getPositionSamples() const
     return positionSamples_.load(std::memory_order_acquire);
 }
 
+int64_t Transport::getRenderPositionSamples() const
+{
+    return positionSamples_.load(std::memory_order_acquire);
+}
+
 double Transport::getPositionSeconds() const
 {
     return samplesToSeconds(getPositionSamples());
@@ -77,6 +82,16 @@ double Transport::getSampleRate() const
     return sampleRate_;
 }
 
+bool Transport::isPresentationPrerolling() const
+{
+    return false;
+}
+
+int64_t Transport::getPresentationLatencySamples() const
+{
+    return 0;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 void Transport::seekToSample(int64_t sample)
 {
@@ -91,6 +106,21 @@ void Transport::seekToBeat(double beat)
 void Transport::seekToBar(int bar)
 {
     seekToBeat(static_cast<double>(bar - 1) * 4.0);
+}
+
+void Transport::configureLivePresentationTiming(int64_t renderStart,
+                                                int64_t requestedStart,
+                                                int64_t totalLatency,
+                                                int64_t discardSamples)
+{
+    (void) requestedStart;
+    (void) totalLatency;
+    (void) discardSamples;
+    positionSamples_.store(renderStart, std::memory_order_release);
+}
+
+void Transport::clearLivePresentationTiming()
+{
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

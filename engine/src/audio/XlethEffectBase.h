@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -54,10 +55,44 @@ public:
     ~XlethEffectBase() override = default;
 
     // ── Bypass control (main thread writes, audio thread reads) ─────────────
-    void setBypassed(bool b) { bypassed_.store(b, std::memory_order_relaxed); }
+    void setBypassed(bool b)
+    {
+        bypassed_.store(b, std::memory_order_relaxed);
+        onBypassChanged(b);
+    }
     bool isBypassed()  const { return bypassed_.load(std::memory_order_relaxed); }
 
     const std::string& getPluginId() const { return pluginId_; }
+
+    struct RealtimeTimingContext
+    {
+        bool enabled = false;
+        int trackId = 0;
+        void* userData = nullptr;
+        void (*recordPlugin)(void*, const char*, int, int, std::uint64_t) = nullptr;
+        void (*recordSection)(void*, const char*, const char*, int, int, std::uint64_t) = nullptr;
+        void (*recordEvent)(void*, const char*, const char*, int, int) = nullptr;
+    };
+
+    void setHostNodeId(int nodeId) noexcept
+    {
+        hostNodeId_.store(nodeId, std::memory_order_relaxed);
+    }
+
+    int getHostNodeId() const noexcept
+    {
+        return hostNodeId_.load(std::memory_order_relaxed);
+    }
+
+    static void setRealtimeTimingContext(const RealtimeTimingContext& context) noexcept
+    {
+        sRealtimeTimingContext_ = context;
+    }
+
+    static RealtimeTimingContext getRealtimeTimingContext() noexcept
+    {
+        return sRealtimeTimingContext_;
+    }
 
     // ── Global BPM (written by MixEngine once per block, read by any effect) ──
     static void setGlobalBPM(double bpm) { sBPM_.store(bpm, std::memory_order_relaxed); }
@@ -120,6 +155,14 @@ public:
         return arr.dump();
     }
 
+    float getParameterValue(const std::string& paramId) const
+    {
+        auto* param = apvts_.getParameter(juce::String(paramId));
+        if (!param) return 0.0f;
+        auto* rp = dynamic_cast<juce::RangedAudioParameter*>(param);
+        return rp ? rp->convertFrom0to1(rp->getValue()) : 0.0f;
+    }
+
     // Set a parameter by ID (denormalised value).  Returns false if not found.
     bool setParameterValue(const std::string& paramId, float value)
     {
@@ -128,6 +171,7 @@ public:
         auto* rp = dynamic_cast<juce::RangedAudioParameter*>(param);
         if (!rp) return false;
         param->setValueNotifyingHost(rp->convertTo0to1(value));
+        onParameterValueChanged(paramId, value);
         return true;
     }
 
@@ -182,6 +226,41 @@ public:
 
     void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& /*apgMidi*/) override
     {
+        struct TimingScope
+        {
+            RealtimeTimingContext context;
+            const char* pluginId = "";
+            int nodeId = -1;
+            std::chrono::steady_clock::time_point start;
+
+            TimingScope(RealtimeTimingContext c, const char* id, int node)
+                : context(c), pluginId(id), nodeId(node)
+            {
+                if (context.enabled && context.recordPlugin != nullptr)
+                    start = std::chrono::steady_clock::now();
+            }
+
+            ~TimingScope()
+            {
+                if (!context.enabled || context.recordPlugin == nullptr)
+                    return;
+
+                const auto end = std::chrono::steady_clock::now();
+                const auto elapsed =
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+                context.recordPlugin(context.userData,
+                                     pluginId,
+                                     context.trackId,
+                                     nodeId,
+                                     static_cast<std::uint64_t>(
+                                         std::max<std::int64_t>(0, elapsed)));
+            }
+        };
+
+        TimingScope timingScope(sRealtimeTimingContext_,
+                                pluginId_.c_str(),
+                                hostNodeId_.load(std::memory_order_relaxed));
+
         juce::ScopedNoDenormals noDenormals;
         const int  numSamples = buffer.getNumSamples();
         const int  numCh      = buffer.getNumChannels();
@@ -263,6 +342,47 @@ public:
     {
         juce::ignoreUnused(dest, numSamples);
         return false;
+    }
+    virtual void onBypassChanged(bool /*bypassed*/) {}
+    virtual void onParameterValueChanged(const std::string& /*paramId*/, float /*value*/) {}
+
+    static bool isRealtimeTimingEnabled() noexcept
+    {
+        return sRealtimeTimingContext_.enabled;
+    }
+
+    static std::uint64_t realtimeNowNs() noexcept
+    {
+        return static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count());
+    }
+
+    void recordRealtimeSection(const char* sectionId, std::uint64_t elapsedNs) const noexcept
+    {
+        const auto context = sRealtimeTimingContext_;
+        if (context.enabled && context.recordSection != nullptr)
+        {
+            context.recordSection(context.userData,
+                                  pluginId_.c_str(),
+                                  sectionId,
+                                  context.trackId,
+                                  hostNodeId_.load(std::memory_order_relaxed),
+                                  elapsedNs);
+        }
+    }
+
+    void recordRealtimeEvent(const char* eventId) const noexcept
+    {
+        const auto context = sRealtimeTimingContext_;
+        if (context.enabled && context.recordEvent != nullptr)
+        {
+            context.recordEvent(context.userData,
+                                pluginId_.c_str(),
+                                eventId,
+                                context.trackId,
+                                hostNodeId_.load(std::memory_order_relaxed));
+        }
     }
 
     // ── Smoothed value accessors (audio thread only) ──────────────────────────
@@ -466,10 +586,12 @@ private:
 
     // ── Per-block MidiBuffer pointer (audio-thread only, single-threaded) ──
     static inline juce::MidiBuffer* sCurrentMidi_ = nullptr;
+    static inline thread_local RealtimeTimingContext sRealtimeTimingContext_ {};
 
     // ── Data members ─────────────────────────────────────────────────────────
     std::string       pluginId_;
     std::atomic<bool> bypassed_{false};
+    std::atomic<int>  hostNodeId_{-1};
     float             bypassMix_           = 0.0f; // 0 = fully wet, 1 = fully dry
     float             bypassRampPerSample_ = 0.0f;
     juce::AudioBuffer<float> dryBuffer_;

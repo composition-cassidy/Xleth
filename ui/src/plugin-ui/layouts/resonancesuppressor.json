@@ -44,6 +44,16 @@
             ]
           },
           {
+            "id": "processing-mode-segmented",
+            "type": "row",
+            "style": { "gapPx": 0, "align": "center" },
+            "props": { "variant": "segmented" },
+            "children": [
+              { "id": "processing-mode-low", "type": "toggle", "props": { "param": "processing_mode", "mode": "discreteValue", "valueWhenOn": 0, "label": "Low Latency" } },
+              { "id": "processing-mode-hq", "type": "toggle", "props": { "param": "processing_mode", "mode": "discreteValue", "valueWhenOn": 1, "label": "High Quality" } }
+            ]
+          },
+          {
             "id": "quality-segmented",
             "type": "row",
             "style": { "gapPx": 0, "align": "center" },

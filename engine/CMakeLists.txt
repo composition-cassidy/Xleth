@@ -233,6 +233,7 @@ add_library(XlethEngineCore STATIC
     src/commands/ImportMidiCommand.cpp
     src/VoiceManager.cpp
     src/audio/MixEngine.cpp
+    src/audio/AudioPerformanceTelemetry.cpp
     src/audio/PluginRegistry.cpp
     src/audio/PluginEditorHost.cpp
     src/audio/EditorProcessCoordinator.cpp
@@ -659,6 +660,78 @@ target_compile_definitions(test_mix PRIVATE
 # 8 MB stack prevents STATUS_STACK_OVERFLOW during JUCE static initialisation.
 target_link_options(test_mix PRIVATE /STACK:8388608)
 
+# Audio performance telemetry unit tests. No JUCE dependency.
+add_executable(test_audio_telemetry
+    test/test_audio_telemetry.cpp
+    src/audio/AudioPerformanceTelemetry.cpp
+)
+
+target_include_directories(test_audio_telemetry PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_compile_definitions(test_audio_telemetry PRIVATE
+    NOMINMAX
+)
+
+# Audio performance scenario harness/report tests. This target is deterministic:
+# it verifies report structure and soft classifications, not host wall-clock speed.
+add_executable(test_audio_perf_scenarios
+    test/test_audio_perf_scenarios.cpp
+    src/audio/AudioPerformanceTelemetry.cpp
+    src/audio/AudioPerformanceScenarioRunner.cpp
+)
+
+target_include_directories(test_audio_perf_scenarios PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(test_audio_perf_scenarios PRIVATE
+    nlohmann_json::nlohmann_json
+)
+
+target_compile_definitions(test_audio_perf_scenarios PRIVATE
+    NOMINMAX
+)
+
+# Manual audio performance report runner. This is intentionally not registered
+# as a normal unit test: it drives real MixEngine processing and produces
+# machine-local timing diagnostics without making CI depend on wall-clock speed.
+add_executable(xleth_audio_perf_report
+    tools/xleth_audio_perf_report.cpp
+    src/audio/AudioPerformanceScenarioRunner.cpp
+)
+
+target_link_libraries(xleth_audio_perf_report PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_include_directories(xleth_audio_perf_report PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_compile_definitions(xleth_audio_perf_report PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+    NOMINMAX
+)
+
+target_link_options(xleth_audio_perf_report PRIVATE /STACK:33554432)
+
 # ── test_sampler ─────────────────────────────────────────────────────────────
 # Self-verification for the Sampler DSP (pitch shift, ADSR, loop, polyphony).
 # No Timeline / MixEngine — tests the Sampler class directly with synthetic
@@ -780,6 +853,36 @@ target_compile_definitions(test_effects PRIVATE
 # ── test_distortion ──────────────────────────────────────────────────────────
 # Focused Distortion diagnostics. Kept separate from test_effects so it can run
 # independently while unrelated effect tests are being repaired.
+# Latency observability and expected-fail Plugin Delay Compensation probes.
+add_executable(test_pdc_stage1
+    test/test_pdc_stage1.cpp
+)
+
+target_link_libraries(test_pdc_stage1 PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_devices
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_pdc_stage1 PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 add_executable(test_distortion
     test/test_distortion.cpp
 )
@@ -1064,6 +1167,14 @@ target_include_directories(test_offline_render PRIVATE
 target_link_directories(test_offline_render PRIVATE
     ${FFMPEG_LIBRARY_DIRS}
 )
+
+if(MSVC)
+    # Debug builds of this integration harness instantiate several large
+    # renderer/mixer/timeline objects across scoped tests. MSVC's Debug stack
+    # probes can fault before main() prints diagnostics when the default 1 MB
+    # stack is used, making the failure look like a silent exit.
+    target_link_options(test_offline_render PRIVATE "/STACK:67108864")
+endif()
 
 target_compile_definitions(test_offline_render PRIVATE
     JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1

@@ -17,6 +17,7 @@
 #include <cmath>
 #include <iostream>
 #include <numeric>
+#include <utility>
 
 namespace {
 
@@ -76,11 +77,13 @@ xleth::clipmod::VideoModulationTimingContext makeVideoTimingContext(
 SyncManager::SyncManager(Transport& transport,
                          std::vector<VideoDecoder*>& decoders,
                          FrameCache& cache,
-                         VideoCompositor* compositor)
+                         VideoCompositor* compositor,
+                         std::function<int64_t()> presentationPositionProvider)
     : transport_(transport)
     , decoders_(decoders)
     , cache_(cache)
     , compositor_(compositor)
+    , presentationPositionProvider_(std::move(presentationPositionProvider))
 {
 }
 
@@ -123,12 +126,19 @@ double SyncManager::videoTick()
         return -1.0;
     }
 
-    // 2. Read audio position atomically
-    double audioTimeSec  = transport_.getPositionSeconds();
-    double audioTimeBeat = transport_.getPositionBeats();
-    int64_t audioTimeSamples = transport_.getPositionSamples();
     double sampleRate = transport_.getSampleRate();
     double bpm = transport_.getBPM();
+    const int64_t audioTimeSamples = std::max<int64_t>(
+        0,
+        presentationPositionProvider_
+            ? presentationPositionProvider_()
+            : transport_.getPositionSamples());
+    const double audioTimeSec = sampleRate > 0.0
+        ? static_cast<double>(audioTimeSamples) / sampleRate
+        : 0.0;
+    const double audioTimeBeat = (sampleRate > 0.0 && bpm > 0.0)
+        ? (static_cast<double>(audioTimeSamples) * bpm) / (60.0 * sampleRate)
+        : 0.0;
 
     // Track which layers are active this tick
 #ifndef XLETH_CORE_ONLY
@@ -335,7 +345,7 @@ double SyncManager::videoTick()
 #endif
 
     // 7. Measure drift
-    double renderTimeSec = transport_.getPositionSeconds();
+    double renderTimeSec = audioTimeSec;
     double driftMs = std::abs((renderTimeSec - audioTimeSec) * 1000.0);
 
     driftSamples_.push_back(driftMs);

@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 
 #include <memory>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -64,6 +65,7 @@ public:
 
     // Returns JSON array describing the chain: [{nodeId, pluginId, position, bypassed}, ...]
     nlohmann::json getChainState() const;
+    int countActiveResonanceSuppressorHighQualityInstances() const;
 
     // ── Graph-mode APIs (main thread) ───────────────────────────────────
 
@@ -87,7 +89,12 @@ public:
     // ── Effect parameter / meter access (main-thread only) ─────────────
     std::string getEffectParameters(int nodeId) const;
     bool        setEffectParameter (int nodeId, const std::string& paramId, float value);
+    bool        setEffectProgram   (int nodeId, int programIndex);
+    bool        setEffectStateInformation(int nodeId, const void* data, int sizeInBytes);
     std::string getEffectMeter     (int nodeId) const;
+    bool        refreshGuardedPluginLatency(int nodeId);
+    bool        refreshGuardedPluginLatency(int nodeId,
+                                            std::uint64_t latencyPublishCountBefore);
 
     // Direct access to the effect processor (for subclass-specific APIs like EQ).
     XlethEffectBase* getEffect(int nodeId);
@@ -126,6 +133,15 @@ public:
 
     // Returns the maximum getTailLengthSeconds() across all effect nodes.
     double getMaxTailLengthSeconds() const;
+
+    // Returns the cumulative latency at the chain output in samples.
+    int getOutputLatencySamples() const;
+    std::uint64_t getLatencyEpoch() const;
+    void refreshLatencyDiagnostics();
+
+    int addProcessorForTesting(const std::string& pluginId,
+                               std::unique_ptr<juce::AudioProcessor> proc,
+                               int position);
 
 private:
     std::unique_ptr<AudioGraph> graph_;

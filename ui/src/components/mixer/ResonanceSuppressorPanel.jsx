@@ -13,6 +13,13 @@ const DesignerPreview = DESIGNER_ENABLED
 
 const PLUGIN_ID = 'resonancesuppressor'
 const PANEL_WIDTH = 760
+const RS_HQ_RISK_POLL_MS = 750
+
+export function shouldShowRsHqRealtimeWarning(snapshot) {
+  const level = snapshot?.realtimeRsHqRiskLevel
+    || snapshot?.resonanceSuppressorHighQuality?.riskLevel
+  return level === 'warning' || level === 'overrunning'
+}
 
 // ── Legacy body ───────────────────────────────────────────────────────────────
 // Minimal fallback rendered only when the runtime renderer throws.
@@ -99,6 +106,7 @@ export default function ResonanceSuppressorPanel() {
   const close  = useResonanceSuppressorStore(s => s.close)
 
   const [designerOpen, setDesignerOpen] = useState(false)
+  const [rsHqRiskSnapshot, setRsHqRiskSnapshot] = useState(null)
   const designerCloseGuardRef = useRef(null)
 
   const [panelPos, setPanelPos] = useState(() => ({
@@ -133,6 +141,29 @@ export default function ResonanceSuppressorPanel() {
       document.removeEventListener('mouseup',   onUp)
     }
   }, [])
+
+  useEffect(() => {
+    if (!target) return undefined
+    let cancelled = false
+    let timer = null
+
+    async function pollRisk() {
+      try {
+        const next = await window.xleth?.audio?.getAudioPerformanceTelemetry?.()
+        if (!cancelled) setRsHqRiskSnapshot(next || null)
+      } catch {
+        if (!cancelled) setRsHqRiskSnapshot(null)
+      } finally {
+        if (!cancelled) timer = window.setTimeout(pollRisk, RS_HQ_RISK_POLL_MS)
+      }
+    }
+
+    pollRisk()
+    return () => {
+      cancelled = true
+      if (timer != null) window.clearTimeout(timer)
+    }
+  }, [target])
 
   const requestDesignerClose = useCallback(async () => {
     if (!designerOpen) return true
@@ -183,6 +214,12 @@ export default function ResonanceSuppressorPanel() {
           <X size={12} />
         </button>
       </div>
+
+      {shouldShowRsHqRealtimeWarning(rsHqRiskSnapshot) && (
+        <div className="resonancesuppressor-panel-hq-warning">
+          High Quality can overrun realtime playback at small buffers or with multiple HQ instances.
+        </div>
+      )}
 
       <div className="resonancesuppressor-panel-split">
         <div className="resonancesuppressor-panel-runtime-pane">

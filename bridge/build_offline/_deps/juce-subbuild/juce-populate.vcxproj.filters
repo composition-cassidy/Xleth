@@ -1,0 +1,44 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\Krasen\Desktop\XLETH\bridge\build_offline\_deps\juce-subbuild\CMakeFiles\33ca8c03b761d43bf8575b9e783e0689\juce-populate-mkdir.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\Krasen\Desktop\XLETH\bridge\build_offline\_deps\juce-subbuild\CMakeFiles\33ca8c03b761d43bf8575b9e783e0689\juce-populate-download.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\Krasen\Desktop\XLETH\bridge\build_offline\_deps\juce-subbuild\CMakeFiles\33ca8c03b761d43bf8575b9e783e0689\juce-populate-update.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\Krasen\Desktop\XLETH\bridge\build_offline\_deps\juce-subbuild\CMakeFiles\33ca8c03b761d43bf8575b9e783e0689\juce-populate-patch.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\Krasen\Desktop\XLETH\bridge\build_offline\_deps\juce-subbuild\CMakeFiles\33ca8c03b761d43bf8575b9e783e0689\juce-populate-configure.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\Krasen\Desktop\XLETH\bridge\build_offline\_deps\juce-subbuild\CMakeFiles\33ca8c03b761d43bf8575b9e783e0689\juce-populate-build.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\Krasen\Desktop\XLETH\bridge\build_offline\_deps\juce-subbuild\CMakeFiles\33ca8c03b761d43bf8575b9e783e0689\juce-populate-install.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\Krasen\Desktop\XLETH\bridge\build_offline\_deps\juce-subbuild\CMakeFiles\33ca8c03b761d43bf8575b9e783e0689\juce-populate-test.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\Krasen\Desktop\XLETH\bridge\build_offline\_deps\juce-subbuild\CMakeFiles\1649fca924a6d2ea716428f7808a34e6\juce-populate-complete.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\Krasen\Desktop\XLETH\bridge\build_offline\_deps\juce-subbuild\CMakeFiles\4c327ee36ff80d61896b4c5b23d3b118\juce-populate.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Users\Krasen\Desktop\XLETH\bridge\build_offline\_deps\juce-subbuild\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="C:\Users\Krasen\Desktop\XLETH\bridge\build_offline\_deps\juce-subbuild\CMakeFiles\juce-populate" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{E56D57EE-1A9A-3A15-A7DB-EF1ACEF824AB}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

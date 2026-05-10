@@ -3,11 +3,14 @@
 
 #include "render/FrameCollector.h"
 #include "render/FrameCache.h"
+#include "render/RenderClock.h"
+#include "render/VideoFlipApplier.h"
 #include "model/Timeline.h"
 #include "SyncManager.h"
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstdio>
 
 // ---------------------------------------------------------------------------
@@ -28,6 +31,33 @@ static VideoEvent makeEvent(int trackId, int sourceId, double startBeat,
     ev.opacity         = opacity;
     ev.globalNoteIndex = globalNoteIndex;
     return ev;
+}
+
+static VideoFlipConfig makeEveryNoteSixStateConfig()
+{
+    VideoFlipConfig cfg;
+    cfg.enabled = true;
+    cfg.modifier.type = VideoFlipModifier::Type::EveryNote;
+    cfg.startStateIndex = 0;
+    cfg.states = {
+        {"s0", Orientation::None,        ""},
+        {"s1", Orientation::Horizontal,  ""},
+        {"s2", Orientation::Vertical,    ""},
+        {"s3", Orientation::Rotate180,   ""},
+        {"s4", Orientation::Rotate90CW,  ""},
+        {"s5", Orientation::Rotate90CCW, ""},
+    };
+    return cfg;
+}
+
+static const CellFrameRequest* findGridRequestForTrack(
+    const std::vector<CellFrameRequest>& requests, int trackId)
+{
+    for (const auto& r : requests) {
+        if (r.layerKind == CellLayerKind::Grid && r.trackId == trackId)
+            return &r;
+    }
+    return nullptr;
 }
 
 int main()
@@ -191,6 +221,104 @@ int main()
 
     // ── Test 2: deduplicateRequests ──────────────────────────────────────────
     {
+        std::fprintf(stderr, "\n[TEST:FrameCollector] --- Test 1a: same-start ordinal tiebreak ---\n");
+
+        VideoEvent early = makeEvent(trackIds[0], srcAId, 0.0, 2.0,
+                                     1.0, 1.0f, 1);
+        early.orientation = Orientation::Horizontal;
+        VideoEvent final = makeEvent(trackIds[0], srcAId, 0.0, 2.0,
+                                     3.0, 1.0f, 3);
+        final.orientation = Orientation::Rotate180;
+
+        FrameCollector tieCollector;
+        AVRational tieFps = {30, 1};
+        auto tieRequests = tieCollector.collectRequests(
+            0, timeline, 48000, tieFps, std::vector<VideoEvent>{early, final});
+
+        const CellFrameRequest* track0Req = nullptr;
+        for (const auto& r : tieRequests) {
+            if (r.layerKind == CellLayerKind::Grid && r.trackId == trackIds[0]) {
+                track0Req = &r;
+                break;
+            }
+        }
+
+        assert(track0Req != nullptr);
+        assert(track0Req->sourceFrameIndex == 90);
+        assert(track0Req->orientation == static_cast<int>(Orientation::Rotate180));
+
+        std::fprintf(stderr, "[TEST:FrameCollector] Test 1a: PASSED\n");
+    }
+
+    {
+        std::fprintf(stderr, "\n[TEST:FrameCollector] --- Test 1b: EveryNote chord consumed orientation ---\n");
+
+        TrackInfo* t0 = timeline.getTrackMutable(trackIds[0]);
+        assert(t0);
+        t0->videoFlipConfig = makeEveryNoteSixStateConfig();
+
+        auto noteEvent = [&](double beat, double dur, int pitch,
+                             int sourceOrder, int emissionOrder) {
+            VideoEvent ev = makeEvent(trackIds[0], srcAId, beat, dur,
+                                      0.0, 1.0f, emissionOrder);
+            ev.pitch = pitch;
+            ev.hasSourceTriggerOrder = true;
+            ev.sourceTriggerOrder = sourceOrder;
+            ev.originalEmissionOrder = emissionOrder;
+            return ev;
+        };
+
+        std::vector<VideoEvent> flipEvents = {
+            noteEvent(0.0, 0.5, 60, 1, 0),
+            noteEvent(1.0, 0.5, 62, 2, 1),
+            // Same-tick chord intentionally not pitch-sorted; source order wins.
+            noteEvent(2.0, 2.0, 72, 10, 2),
+            noteEvent(2.0, 2.0, 60, 11, 3),
+            noteEvent(2.0, 2.0, 67, 12, 4),
+            // Starts while the chord is still held; latest note-on must win.
+            noteEvent(3.0, 0.5, 69, 13, 5),
+            noteEvent(4.0, 0.5, 71, 14, 6),
+            noteEvent(5.0, 1.5, 76, 20, 7),
+            noteEvent(5.0, 1.5, 64, 21, 8),
+            noteEvent(5.0, 1.5, 79, 22, 9),
+        };
+        std::vector<VideoEvent*> ptrs;
+        for (auto& ev : flipEvents) ptrs.push_back(&ev);
+        videoFlipApplier::applyTrack(ptrs, t0->videoFlipConfig,
+                                     static_cast<int>(TickTime::fromBeats(1).ticks));
+
+        auto collectAtBeat = [&](double beat) {
+            FrameCollector collector;
+            AVRational fps = {30, 1};
+            const int sampleRate = 48000;
+            const int64_t projectSample = static_cast<int64_t>(
+                std::llround(beat * 60.0 / timeline.getBPM()
+                             * static_cast<double>(sampleRate)));
+            return collector.collectRequests(0, timeline, sampleRate, fps,
+                                             flipEvents,
+                                             /*allowProxy=*/ true,
+                                             /*projectStartSample=*/ projectSample);
+        };
+
+        auto assertOrientationAtBeat = [&](double beat, Orientation expected) {
+            auto reqs = collectAtBeat(beat);
+            const CellFrameRequest* req = findGridRequestForTrack(reqs, trackIds[0]);
+            assert(req != nullptr);
+            assert(req->orientation == static_cast<int>(expected));
+        };
+
+        assertOrientationAtBeat(0.0, Orientation::None);
+        assertOrientationAtBeat(1.0, Orientation::Horizontal);
+        assertOrientationAtBeat(2.0, Orientation::Rotate90CW);
+        assertOrientationAtBeat(2.75, Orientation::Rotate90CW);
+        assertOrientationAtBeat(3.0, Orientation::Rotate90CCW);
+        assertOrientationAtBeat(4.0, Orientation::None);
+        assertOrientationAtBeat(5.0, Orientation::Rotate180);
+
+        std::fprintf(stderr, "[TEST:FrameCollector] Test 1b: PASSED\n");
+    }
+
+    {
         std::fprintf(stderr, "\n[TEST:FrameCollector] --- Test 2: deduplicateRequests ---\n");
 
         FrameCollector collector;
@@ -283,6 +411,58 @@ int main()
         assert(track0Req->sourceFrameIndex == 30);
 
         std::fprintf(stderr, "[TEST:FrameCollector] Test 4: PASSED\n");
+    }
+
+    {
+        std::fprintf(stderr, "\n[TEST:FrameCollector] --- Test 4a: subrange origin mapping ---\n");
+
+        constexpr int sampleRate = 48000;
+        AVRational fps = {30, 1};
+        const int64_t projectStartSample = sampleRate; // 1.0 second into the project
+
+        FrameCollector collector;
+        auto requests = collector.collectRequests(0, timeline, sampleRate, fps, events,
+                                                  /*allowProxy=*/ true,
+                                                  /*projectStartSample=*/ projectStartSample);
+
+        const CellFrameRequest* track0Req = nullptr;
+        for (const auto& r : requests) {
+            if (r.trackId == trackIds[0] && r.layerKind == CellLayerKind::Grid) {
+                track0Req = &r;
+                break;
+            }
+        }
+        assert(track0Req != nullptr);
+        std::fprintf(stderr,
+                     "[TEST:FrameCollector] track0 at export frame 0 with 1s origin: srcFrame=%lld (expected 30)\n",
+                     (long long)track0Req->sourceFrameIndex);
+        assert(track0Req->sourceFrameIndex == 30);
+
+        const double projectStartBeat = static_cast<double>(
+            RenderClock::sampleToPPQ(projectStartSample, sampleRate, timeline.getBPM()))
+            / static_cast<double>(TickTime::fromBeats(1).ticks);
+        VideoEvent boundaryEvent = makeEvent(trackIds[0], srcAId, projectStartBeat, 2.0,
+                                             0.0, 1.0f, 99);
+
+        auto boundaryRequests = collector.collectRequests(
+            0, timeline, sampleRate, fps, std::vector<VideoEvent>{boundaryEvent},
+            /*allowProxy=*/ true,
+            /*projectStartSample=*/ projectStartSample);
+
+        const CellFrameRequest* boundaryReq = nullptr;
+        for (const auto& r : boundaryRequests) {
+            if (r.trackId == trackIds[0] && r.layerKind == CellLayerKind::Grid) {
+                boundaryReq = &r;
+                break;
+            }
+        }
+        assert(boundaryReq != nullptr);
+        std::fprintf(stderr,
+                     "[TEST:FrameCollector] boundary event at export origin: srcFrame=%lld (expected 0)\n",
+                     (long long)boundaryReq->sourceFrameIndex);
+        assert(boundaryReq->sourceFrameIndex == 0);
+
+        std::fprintf(stderr, "[TEST:FrameCollector] Test 4a: PASSED\n");
     }
 
     {

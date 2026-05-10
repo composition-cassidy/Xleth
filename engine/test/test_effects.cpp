@@ -9,6 +9,7 @@
 #include "audio/XlethEQEffect.h"
 #include "audio/XlethDistortionEffect.h"
 #include "audio/XlethResonanceSuppressorEffect.h"
+#include "audio/XlethTransientProcEffect.h"
 #include "audio/viz/DynamicsVizFrame.h"
 
 #include <juce_audio_basics/juce_audio_basics.h>
@@ -23,6 +24,7 @@
 #include <iostream>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 // ─── Test harness ────────────────────────────────────────────────────────────
@@ -74,6 +76,40 @@ static float maxAbsBuffer(const juce::AudioBuffer<float>& buf)
             maxAbs = std::max(maxAbs, std::abs(p[s]));
     }
     return maxAbs;
+}
+
+static float maxAbsInRange(const juce::AudioBuffer<float>& buf,
+                           int startSample,
+                           int endSample)
+{
+    float maxAbs = 0.0f;
+    startSample = std::max(startSample, 0);
+    endSample = std::min(endSample, buf.getNumSamples());
+
+    for (int ch = 0; ch < buf.getNumChannels(); ++ch)
+    {
+        const float* p = buf.getReadPointer(ch);
+        for (int s = startSample; s < endSample; ++s)
+            maxAbs = std::max(maxAbs, std::abs(p[s]));
+    }
+
+    return maxAbs;
+}
+
+static int findFirstSampleAbove(const juce::AudioBuffer<float>& buf,
+                                int channel,
+                                float threshold,
+                                int startSample = 0)
+{
+    channel = std::clamp(channel, 0, std::max(buf.getNumChannels() - 1, 0));
+    startSample = std::max(startSample, 0);
+    const float* p = buf.getReadPointer(channel);
+    for (int s = startSample; s < buf.getNumSamples(); ++s)
+    {
+        if (std::abs(p[s]) >= threshold)
+            return s;
+    }
+    return -1;
 }
 
 static juce::AudioBuffer<float> renderEffectInBlocks(
@@ -187,6 +223,18 @@ static int maxBlockSizeOf(const std::vector<int>& blockSizes)
     return maxBlock;
 }
 
+static void setResonanceHighQualityMode(XlethResonanceSuppressorEffect& fx)
+{
+    CHECK(fx.setParameterValue("processing_mode", 1.0f),
+          "RS processing_mode should accept High Quality");
+}
+
+static void setResonanceLowLatencyMode(XlethResonanceSuppressorEffect& fx)
+{
+    CHECK(fx.setParameterValue("processing_mode", 0.0f),
+          "RS processing_mode should accept Low Latency");
+}
+
 static int measureImpulseDelayForQuality(int quality, const std::vector<int>& blockSizes)
 {
     constexpr double kSR = 44100.0;
@@ -194,6 +242,7 @@ static int measureImpulseDelayForQuality(int quality, const std::vector<int>& bl
     constexpr int kImpulseIndex = 4096;
 
     XlethResonanceSuppressorEffect fx;
+    setResonanceHighQualityMode(fx);
     CHECK(fx.setParameterValue("quality", static_cast<float>(quality)),
           "RS quality param should be settable before prepare");
     CHECK(fx.setParameterValue("depth", 0.0f),
@@ -392,6 +441,168 @@ static bool allSamplesFinite(const juce::AudioBuffer<float>& buf)
         }
     }
     return true;
+}
+
+struct TransientRenderResult
+{
+    juce::AudioBuffer<float> output;
+    float dominantSignedGainDb = 0.0f;
+};
+
+static void fillTransientHit(juce::AudioBuffer<float>& buf,
+                             float rightScale = 1.0f,
+                             float transientScale = 0.85f,
+                             float transientDecaySamples = 3.0f,
+                             float bodyScale = 0.40f,
+                             float bodyDecaySamples = 900.0f)
+{
+    for (int s = 0; s < buf.getNumSamples(); ++s)
+    {
+        const float sampleIndex = static_cast<float>(s);
+        const float transient = s < 24
+            ? transientScale * std::exp(-sampleIndex / transientDecaySamples)
+            : 0.0f;
+        const float body = bodyScale * std::exp(-sampleIndex / bodyDecaySamples);
+        const float left = juce::jlimit(-0.98f, 0.98f, transient + body);
+        buf.setSample(0, s, left);
+        if (buf.getNumChannels() > 1)
+            buf.setSample(1, s, left * rightScale);
+    }
+}
+
+static void fillSineBuffer(juce::AudioBuffer<float>& buf,
+                           double sampleRate,
+                           float amplitude,
+                           float frequencyHz,
+                           float rightScale = 1.0f)
+{
+    const float pi2 = 2.0f * juce::MathConstants<float>::pi;
+    for (int s = 0; s < buf.getNumSamples(); ++s)
+    {
+        const float phase = pi2 * frequencyHz * static_cast<float>(s)
+                          / static_cast<float>(sampleRate);
+        const float left = amplitude * std::sin(phase);
+        buf.setSample(0, s, left);
+        if (buf.getNumChannels() > 1)
+            buf.setSample(1, s, left * rightScale);
+    }
+}
+
+static float maxAbsDifference(const juce::AudioBuffer<float>& a,
+                              const juce::AudioBuffer<float>& b)
+{
+    const int channels = std::min(a.getNumChannels(), b.getNumChannels());
+    const int samples = std::min(a.getNumSamples(), b.getNumSamples());
+    float maxDiff = 0.0f;
+    for (int ch = 0; ch < channels; ++ch)
+    {
+        for (int s = 0; s < samples; ++s)
+            maxDiff = std::max(maxDiff,
+                               std::abs(a.getSample(ch, s) - b.getSample(ch, s)));
+    }
+    return maxDiff;
+}
+
+static float windowPeakAbs(const juce::AudioBuffer<float>& buf,
+                           int channel,
+                           int startSample,
+                           int endSample)
+{
+    const int start = std::max(0, startSample);
+    const int end = std::min(endSample, buf.getNumSamples());
+    float peak = 0.0f;
+    for (int s = start; s < end; ++s)
+        peak = std::max(peak, std::abs(buf.getSample(channel, s)));
+    return peak;
+}
+
+static double windowRms(const juce::AudioBuffer<float>& buf,
+                        int channel,
+                        int startSample,
+                        int endSample)
+{
+    const int start = std::max(0, startSample);
+    const int end = std::min(endSample, buf.getNumSamples());
+    double sumSq = 0.0;
+    int count = 0;
+    for (int s = start; s < end; ++s)
+    {
+        const double v = buf.getSample(channel, s);
+        sumSq += v * v;
+        ++count;
+    }
+    return count > 0 ? std::sqrt(sumSq / static_cast<double>(count)) : 0.0;
+}
+
+static double maxStereoRatioError(const juce::AudioBuffer<float>& buf,
+                                  float expectedRightScale)
+{
+    double maxErr = 0.0;
+    const int samples = buf.getNumSamples();
+    for (int s = 0; s < samples; ++s)
+    {
+        const double left = buf.getSample(0, s);
+        const double right = buf.getSample(1, s);
+        if (std::abs(left) < 1.0e-6 && std::abs(right) < 1.0e-6)
+            continue;
+        maxErr = std::max(maxErr, std::abs(right - expectedRightScale * left));
+    }
+    return maxErr;
+}
+
+static TransientRenderResult renderTransientEffectInBlocks(
+    XlethTransientProcEffect& fx,
+    const juce::AudioBuffer<float>& input,
+    const std::vector<int>& blockSizes,
+    bool sendMidiOnFirstBlock = false,
+    float midiVelocity = 1.0f)
+{
+    TransientRenderResult result;
+    result.output.setSize(input.getNumChannels(), input.getNumSamples());
+    result.output.clear();
+
+    juce::MidiBuffer ignoredMidi;
+    int pos = 0;
+    int blockIndex = 0;
+    bool sentMidi = false;
+
+    while (pos < input.getNumSamples())
+    {
+        const int requested = blockSizes[static_cast<std::size_t>(blockIndex % blockSizes.size())];
+        const int n = std::min(requested, input.getNumSamples() - pos);
+
+        juce::AudioBuffer<float> block(input.getNumChannels(), n);
+        for (int ch = 0; ch < input.getNumChannels(); ++ch)
+            block.copyFrom(ch, 0, input, ch, pos, n);
+
+        juce::MidiBuffer blockMidi;
+        if (sendMidiOnFirstBlock && !sentMidi)
+        {
+            const int velocityByte = juce::jlimit(1, 127,
+                static_cast<int>(std::round(midiVelocity * 127.0f)));
+            blockMidi.addEvent(
+                juce::MidiMessage::noteOn(1, 60, static_cast<juce::uint8>(velocityByte)),
+                0);
+            sentMidi = true;
+        }
+
+        XlethEffectBase::setCurrentMidiBuffer(&blockMidi);
+        fx.processBlock(block, ignoredMidi);
+        XlethEffectBase::setCurrentMidiBuffer(nullptr);
+
+        const float signedGainDb = fx.readMeterValue(2);
+        if (std::abs(signedGainDb) > std::abs(result.dominantSignedGainDb))
+            result.dominantSignedGainDb = signedGainDb;
+
+        for (int ch = 0; ch < input.getNumChannels(); ++ch)
+            result.output.copyFrom(ch, pos, block, ch, 0, n);
+
+        pos += n;
+        ++blockIndex;
+    }
+
+    XlethEffectBase::setCurrentMidiBuffer(nullptr);
+    return result;
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -700,6 +911,247 @@ static void testDistortionModesDiffer()
           "distortion modes should produce measurably different output for the same input");
 }
 
+static void testTransientAttackShaping()
+{
+    std::cout << "  [transient attack]\n";
+    constexpr double kSR = 44100.0;
+    constexpr int kSamples = 4096;
+    const std::vector<int> schedule = {37, 128, 255, 511};
+
+    juce::AudioBuffer<float> input(2, kSamples);
+    fillTransientHit(input, 1.0f, 0.86f, 3.0f, 0.38f, 820.0f);
+
+    auto renderAttack = [&](float attackValue)
+    {
+        XlethTransientProcEffect fx;
+        CHECK(fx.setParameterValue("attack", attackValue),
+              "Transient attack param should be settable");
+        CHECK(fx.setParameterValue("sustain", 0.0f),
+              "Transient sustain param should be settable");
+        CHECK(fx.setParameterValue("attack_speed", 4.0f),
+              "Transient attack_speed param should be settable");
+        CHECK(fx.setParameterValue("threshold", -60.0f),
+              "Transient threshold param should be settable");
+        CHECK(fx.setParameterValue("mix", 100.0f),
+              "Transient mix param should be settable");
+        CHECK(fx.setParameterValue("midi_detect", 0.0f),
+              "Transient midi_detect param should be settable");
+        fx.prepareToPlay(kSR, maxBlockSizeOf(schedule));
+        return renderTransientEffectInBlocks(fx, input, schedule);
+    };
+
+    const auto neutral = renderAttack(0.0f);
+    const auto boosted = renderAttack(100.0f);
+    const auto softened = renderAttack(-100.0f);
+
+    const double neutralPeak = windowPeakAbs(neutral.output, 0, 0, 96);
+    const double boostedPeak = windowPeakAbs(boosted.output, 0, 0, 96);
+    const double softenedPeak = windowPeakAbs(softened.output, 0, 0, 96);
+    const double neutralEarlyRms = windowRms(neutral.output, 0, 0, 128);
+    const double boostedEarlyRms = windowRms(boosted.output, 0, 0, 128);
+    const double softenedEarlyRms = windowRms(softened.output, 0, 0, 128);
+
+    CHECK(boostedPeak > neutralPeak * 1.05,
+          "positive attack should increase early transient peak");
+    CHECK(boostedEarlyRms > neutralEarlyRms * 1.08,
+          "positive attack should increase early transient RMS");
+    CHECK(softenedPeak < neutralPeak * 0.96,
+          "negative attack should reduce early transient peak");
+    CHECK(softenedEarlyRms < neutralEarlyRms * 0.96,
+          "negative attack should reduce early transient RMS");
+    CHECK(boosted.dominantSignedGainDb > 0.5f,
+          "positive attack should report positive signed gain");
+    CHECK(softened.dominantSignedGainDb < -0.5f,
+          "negative attack should report negative signed gain");
+}
+
+static void testTransientSustainShaping()
+{
+    std::cout << "  [transient sustain]\n";
+    constexpr double kSR = 44100.0;
+    constexpr int kSamples = 8192;
+    const std::vector<int> schedule = {64, 257, 511};
+
+    juce::AudioBuffer<float> input(2, kSamples);
+    fillTransientHit(input, 1.0f, 0.72f, 2.4f, 0.48f, 1800.0f);
+
+    auto renderSustain = [&](float sustainValue)
+    {
+        XlethTransientProcEffect fx;
+        CHECK(fx.setParameterValue("attack", 0.0f),
+              "Transient attack param should be settable");
+        CHECK(fx.setParameterValue("sustain", sustainValue),
+              "Transient sustain param should be settable");
+        CHECK(fx.setParameterValue("attack_speed", 5.0f),
+              "Transient attack_speed param should be settable");
+        CHECK(fx.setParameterValue("threshold", -60.0f),
+              "Transient threshold param should be settable");
+        CHECK(fx.setParameterValue("mix", 100.0f),
+              "Transient mix param should be settable");
+        CHECK(fx.setParameterValue("midi_detect", 0.0f),
+              "Transient midi_detect param should be settable");
+        fx.prepareToPlay(kSR, maxBlockSizeOf(schedule));
+        return renderTransientEffectInBlocks(fx, input, schedule);
+    };
+
+    const auto neutral = renderSustain(0.0f);
+    const auto boosted = renderSustain(100.0f);
+    const auto tightened = renderSustain(-100.0f);
+
+    const double neutralTailRms = windowRms(neutral.output, 0, 512, 4096);
+    const double boostedTailRms = windowRms(boosted.output, 0, 512, 4096);
+    const double tightenedTailRms = windowRms(tightened.output, 0, 512, 4096);
+
+    CHECK(boostedTailRms > neutralTailRms * 1.10,
+          "positive sustain should increase post-onset tail RMS");
+    CHECK(tightenedTailRms < neutralTailRms * 0.90,
+          "negative sustain should reduce post-onset tail RMS");
+    CHECK(boosted.dominantSignedGainDb > 0.5f,
+          "positive sustain should report positive signed gain");
+    CHECK(tightened.dominantSignedGainDb < -0.5f,
+          "negative sustain should report negative signed gain");
+}
+
+static void testTransientMixAndBypass()
+{
+    std::cout << "  [transient mix and bypass]\n";
+    constexpr double kSR = 44100.0;
+    constexpr int kSamples = 4096;
+    const std::vector<int> schedule = {113, 256, 511};
+
+    juce::AudioBuffer<float> input(2, kSamples);
+    fillTransientHit(input, 1.0f, 0.84f, 3.2f, 0.42f, 1200.0f);
+
+    XlethTransientProcEffect mixZero;
+    CHECK(mixZero.setParameterValue("attack", 100.0f), "Transient attack should be settable");
+    CHECK(mixZero.setParameterValue("sustain", 100.0f), "Transient sustain should be settable");
+    CHECK(mixZero.setParameterValue("attack_speed", 4.0f), "Transient attack_speed should be settable");
+    CHECK(mixZero.setParameterValue("threshold", -60.0f), "Transient threshold should be settable");
+    CHECK(mixZero.setParameterValue("mix", 0.0f), "Transient mix should be settable");
+    CHECK(mixZero.setParameterValue("midi_detect", 0.0f), "Transient midi_detect should be settable");
+    mixZero.prepareToPlay(kSR, maxBlockSizeOf(schedule));
+    const auto mixZeroRender = renderTransientEffectInBlocks(mixZero, input, schedule);
+    CHECK(maxAbsDifference(mixZeroRender.output, input) < 1.0e-6f,
+          "mix 0 should return the dry signal");
+
+    XlethTransientProcEffect bypassed;
+    CHECK(bypassed.setParameterValue("attack", 100.0f), "Transient attack should be settable");
+    CHECK(bypassed.setParameterValue("sustain", -100.0f), "Transient sustain should be settable");
+    CHECK(bypassed.setParameterValue("attack_speed", 4.0f), "Transient attack_speed should be settable");
+    CHECK(bypassed.setParameterValue("threshold", -60.0f), "Transient threshold should be settable");
+    CHECK(bypassed.setParameterValue("mix", 100.0f), "Transient mix should be settable");
+    CHECK(bypassed.setParameterValue("midi_detect", 0.0f), "Transient midi_detect should be settable");
+    bypassed.prepareToPlay(kSR, maxBlockSizeOf(schedule));
+    bypassed.setBypassed(true);
+    bypassed.reset();
+    const auto bypassRender = renderTransientEffectInBlocks(bypassed, input, schedule);
+    CHECK(maxAbsDifference(bypassRender.output, input) < 1.0e-6f,
+          "bypassed transient processor should return the dry signal");
+}
+
+static void testTransientSafety()
+{
+    std::cout << "  [transient safety]\n";
+    constexpr double kSR = 44100.0;
+    constexpr int kSamples = 8192;
+    const std::vector<int> schedule = {31, 97, 255, 640};
+
+    juce::AudioBuffer<float> input(2, kSamples);
+    for (int s = 0; s < kSamples; ++s)
+    {
+        const float left = (s % 2 == 0 ? 0.98f : -0.98f);
+        const float right = (s % 3 == 0 ? 0.91f : -0.91f);
+        input.setSample(0, s, left);
+        input.setSample(1, s, right);
+    }
+
+    XlethTransientProcEffect fx;
+    CHECK(fx.setParameterValue("attack", 100.0f), "Transient attack should be settable");
+    CHECK(fx.setParameterValue("sustain", 100.0f), "Transient sustain should be settable");
+    CHECK(fx.setParameterValue("attack_speed", 0.5f), "Transient attack_speed should be settable");
+    CHECK(fx.setParameterValue("threshold", -60.0f), "Transient threshold should be settable");
+    CHECK(fx.setParameterValue("mix", 100.0f), "Transient mix should be settable");
+    CHECK(fx.setParameterValue("midi_detect", 0.0f), "Transient midi_detect should be settable");
+    fx.prepareToPlay(kSR, maxBlockSizeOf(schedule));
+
+    const auto rendered = renderTransientEffectInBlocks(fx, input, schedule);
+    CHECK(allSamplesFinite(rendered.output),
+          "transient output should remain finite under extreme settings");
+    CHECK(maxAbsBuffer(rendered.output) <= 4.1f,
+          "transient output should remain bounded under extreme settings");
+    CHECK(std::isfinite(rendered.dominantSignedGainDb),
+          "transient signed gain meter should remain finite");
+}
+
+static void testTransientStereoLinking()
+{
+    std::cout << "  [transient stereo link]\n";
+    constexpr double kSR = 44100.0;
+    constexpr int kSamples = 4096;
+    constexpr float kRightScale = 0.5f;
+    const std::vector<int> schedule = {53, 149, 337};
+
+    juce::AudioBuffer<float> input(2, kSamples);
+    fillTransientHit(input, kRightScale, 0.82f, 2.8f, 0.44f, 1000.0f);
+
+    XlethTransientProcEffect fx;
+    CHECK(fx.setParameterValue("attack", 80.0f), "Transient attack should be settable");
+    CHECK(fx.setParameterValue("sustain", -65.0f), "Transient sustain should be settable");
+    CHECK(fx.setParameterValue("attack_speed", 4.5f), "Transient attack_speed should be settable");
+    CHECK(fx.setParameterValue("threshold", -60.0f), "Transient threshold should be settable");
+    CHECK(fx.setParameterValue("mix", 100.0f), "Transient mix should be settable");
+    CHECK(fx.setParameterValue("midi_detect", 0.0f), "Transient midi_detect should be settable");
+    fx.prepareToPlay(kSR, maxBlockSizeOf(schedule));
+
+    const auto rendered = renderTransientEffectInBlocks(fx, input, schedule);
+    CHECK(maxStereoRatioError(rendered.output, kRightScale) < 1.0e-5,
+          "stereo-linked gain should preserve left/right balance");
+}
+
+static void testTransientMidiAttackMode()
+{
+    std::cout << "  [transient MIDI mode]\n";
+    constexpr double kSR = 44100.0;
+    constexpr int kSamples = 4096;
+    const std::vector<int> schedule = {128, 256, 512};
+
+    juce::AudioBuffer<float> input(2, kSamples);
+    fillSineBuffer(input, kSR, 0.35f, 220.0f);
+
+    auto renderMidi = [&](float sustainValue, bool triggerMidi)
+    {
+        XlethTransientProcEffect fx;
+        CHECK(fx.setParameterValue("attack", 100.0f),
+              "Transient attack should be settable");
+        CHECK(fx.setParameterValue("sustain", sustainValue),
+              "Transient sustain should be settable");
+        CHECK(fx.setParameterValue("attack_speed", 8.0f),
+              "Transient attack_speed should be settable");
+        CHECK(fx.setParameterValue("threshold", -12.0f),
+              "Transient threshold should be settable");
+        CHECK(fx.setParameterValue("mix", 100.0f),
+              "Transient mix should be settable");
+        CHECK(fx.setParameterValue("midi_detect", 1.0f),
+              "Transient midi_detect should be settable");
+        fx.prepareToPlay(kSR, maxBlockSizeOf(schedule));
+        return renderTransientEffectInBlocks(fx, input, schedule, triggerMidi, 1.0f);
+    };
+
+    const auto noOnset = renderMidi(0.0f, false);
+    const auto onset = renderMidi(0.0f, true);
+    const auto onsetSustainChanged = renderMidi(100.0f, true);
+
+    const double dryEarlyRms = windowRms(noOnset.output, 0, 0, 256);
+    const double onsetEarlyRms = windowRms(onset.output, 0, 0, 256);
+
+    CHECK(onsetEarlyRms > dryEarlyRms * 1.08,
+          "MIDI mode note-on should make attack shaping audible");
+    CHECK(onset.dominantSignedGainDb > 0.5f,
+          "MIDI mode note-on should report positive signed gain");
+    CHECK(maxAbsDifference(onset.output, onsetSustainChanged.output) < 1.0e-6f,
+          "sustain should remain envelope-only in MIDI mode");
+}
+
 static void testResonanceSuppressorWolaIdentity()
 {
     std::cout << "  [resonance suppressor WOLA identity]\n";
@@ -726,6 +1178,7 @@ static void testResonanceSuppressorWolaIdentity()
             measureImpulseDelayForQuality(quality, mixedSchedule);
 
         XlethResonanceSuppressorEffect fx;
+        setResonanceHighQualityMode(fx);
         fx.setParameterValue("quality", static_cast<float>(quality));
         fx.setParameterValue("depth", 0.0f);
         fx.prepareToPlay(kSR, maxBlockSizeOf(mixedSchedule));
@@ -745,6 +1198,7 @@ static void testResonanceSuppressorWolaIdentity()
     for (const auto& schedule : schedules)
     {
         XlethResonanceSuppressorEffect fx;
+        setResonanceHighQualityMode(fx);
         fx.setParameterValue("quality", 1.0f);
         fx.setParameterValue("depth", 0.0f);
         fx.prepareToPlay(kSR, maxBlockSizeOf(schedule));
@@ -765,6 +1219,7 @@ static void testResonanceSuppressorWolaIdentity()
 
     {
         XlethResonanceSuppressorEffect fx;
+        setResonanceHighQualityMode(fx);
         fx.setParameterValue("quality", 1.0f);
         fx.setParameterValue("depth", 0.0f);
         fx.prepareToPlay(kSR, maxBlockSizeOf(mixedSchedule));
@@ -790,6 +1245,7 @@ static void testResonanceSuppressorWolaIdentity()
 
     {
         XlethResonanceSuppressorEffect fx;
+        setResonanceHighQualityMode(fx);
         fx.setParameterValue("quality", 1.0f);
         fx.setParameterValue("depth", 0.0f);
         fx.prepareToPlay(kSR, maxBlockSizeOf(mixedSchedule));
@@ -826,6 +1282,7 @@ static void testResonanceSuppressorWolaIdentity()
 
     {
         XlethResonanceSuppressorEffect fx;
+        setResonanceHighQualityMode(fx);
         fx.setParameterValue("quality", 1.0f);
         fx.setParameterValue("depth", 0.0f);
         fx.prepareToPlay(kSR, maxBlockSizeOf(mixedSchedule));
@@ -861,26 +1318,124 @@ static void testResonanceSuppressorWolaIdentity()
 
     {
         XlethResonanceSuppressorEffect fx;
+        setResonanceHighQualityMode(fx);
         fx.setParameterValue("quality", 0.0f);
         fx.setParameterValue("depth", 0.0f);
         fx.prepareToPlay(kSR, 512);
         const int preparedLatency = fx.getLatencySamples();
         CHECK(fx.setParameterValue("quality", 2.0f),
               "RS runtime quality change should be accepted");
+        CHECK(fx.getLatencySamples() != preparedLatency,
+              "RS runtime quality change should refresh reported latency immediately");
+        CHECK(fx.getLatencySamples() == 2048,
+              "RS High Quality quality=2 should report 2048 samples after runtime change");
 
         juce::AudioBuffer<float> buf(2, 512);
         fillBuffer(buf, 0.0f);
         juce::MidiBuffer midi;
         fx.processBlock(buf, midi);
 
-        CHECK(fx.getLatencySamples() == preparedLatency,
-              "RS runtime quality change should not rebuild latency inside processEffect");
+        CHECK(fx.getLatencySamples() == 2048,
+              "RS runtime quality change should keep the refreshed latency through processEffect");
+    }
+}
+
+static void testResonanceSuppressorLowLatencyMode()
+{
+    std::cout << "  [resonance suppressor low-latency mode]\n";
+
+    constexpr double kSR = 44100.0;
+    constexpr int kTotalSamples = 65536;
+    constexpr int kImpulseIndex = 4096;
+    const std::vector<int> mixedSchedule = {1, 37, 128, 255, 511, 1024, 37};
+    const int start = 8192;
+    const int end = kTotalSamples - 4096;
+    const float pi2 = 2.0f * juce::MathConstants<float>::pi;
+
+    juce::AudioBuffer<float> impulse(2, kTotalSamples);
+    impulse.clear();
+    impulse.setSample(0, kImpulseIndex, 1.0f);
+    impulse.setSample(1, kImpulseIndex, -0.75f);
+
+    juce::AudioBuffer<float> resonance(2, kTotalSamples);
+    for (int s = 0; s < kTotalSamples; ++s)
+    {
+        const float t = static_cast<float>(s) / static_cast<float>(kSR);
+        const float v = 0.12f * std::sin(pi2 * 997.0f * t)
+                      + 0.10f * std::sin(pi2 * 1009.0f * t)
+                      + 0.02f * std::sin(pi2 * 311.0f * t);
+        resonance.setSample(0, s, v);
+        resonance.setSample(1, s, 0.85f * v);
+    }
+
+    auto renderLowLatency = [&](const juce::AudioBuffer<float>& input, float depth) {
+        XlethResonanceSuppressorEffect fx;
+        setResonanceLowLatencyMode(fx);
+        fx.setParameterValue("depth", depth);
+        fx.setParameterValue("sharpness", 80.0f);
+        fx.setParameterValue("selectivity", 35.0f);
+        fx.setParameterValue("attack", 5.0f);
+        fx.setParameterValue("release", 180.0f);
+        fx.setParameterValue("mode", 0.0f);
+        fx.setParameterValue("stereo_link", 100.0f);
+        fx.setParameterValue("mix", 100.0f);
+        fx.setParameterValue("trim", 0.0f);
+        fx.setParameterValue("delta", 0.0f);
+        fx.prepareToPlay(kSR, maxBlockSizeOf(mixedSchedule));
+
+        RenderWithMeterResult result = renderEffectAndMeterInBlocks(fx, input, mixedSchedule);
+        CHECK(fx.getLatencySamples() == 0,
+              "RS Low Latency mode should report zero latency");
+        return std::make_pair(std::move(result), fx.readMeterValue(2));
+    };
+
+    {
+        auto [impulseResult, impulseMeter] = renderLowLatency(impulse, 100.0f);
+        const float preImpulseMax = maxAbsInRange(impulseResult.output, 0, kImpulseIndex);
+        const int firstStrongSample =
+            findFirstSampleAbove(impulseResult.output, 0, 0.05f, kImpulseIndex - 2);
+
+        std::cout << "    LL impulse first sample / pre-max / meter: "
+                  << firstStrongSample << " / " << preImpulseMax
+                  << " / " << impulseMeter << "\n";
+
+        CHECK(allSamplesFinite(impulseResult.output),
+              "RS Low Latency impulse output should stay finite");
+        CHECK(preImpulseMax < 1.0e-6f,
+              "RS Low Latency impulse should not appear before the input sample");
+        CHECK(firstStrongSample == kImpulseIndex,
+              "RS Low Latency impulse should begin on the original sample index");
+    }
+
+    {
+        auto [depth0, depth0Meter] = renderLowLatency(resonance, 0.0f);
+        auto [depth100, depth100Meter] = renderLowLatency(resonance, 100.0f);
+
+        const double depth0Db =
+            computeAlignedToneReductionDb(resonance, depth0.output, 0, start, end, 0, kSR, 997.0);
+        const double depth100Db =
+            computeAlignedToneReductionDb(resonance, depth100.output, 0, start, end, 0, kSR, 997.0);
+
+        std::cout << "    LL tone reduction depth0/depth100 and meter: "
+                  << depth0Db << " / " << depth100Db
+                  << " ; " << depth0Meter << " / " << depth100Meter << "\n";
+
+        CHECK(allSamplesFinite(depth0.output) && allSamplesFinite(depth100.output),
+              "RS Low Latency tonal renders should stay finite");
+        CHECK(std::abs(depth0Db) < 0.1,
+              "RS Low Latency depth 0 should stay near identity");
+        CHECK(depth100Db > depth0Db + 0.5,
+              "RS Low Latency depth 100 should audibly suppress the resonant tone");
+        CHECK(depth100Meter > depth0Meter + 0.02f,
+              "RS Low Latency meter should rise when suppression engages");
+        CHECK(maxAbsBuffer(depth100.output) < 4.0f,
+              "RS Low Latency extreme suppression should stay bounded");
     }
 }
 
 static void testResonanceSuppressorLatencySafeBypass()
 {
-    std::cout << "  [resonance suppressor latency-safe bypass]\n";
+    std::cout << "  [resonance suppressor dry/bypass latency]\n";
 
     constexpr double kSR = 44100.0;
     constexpr int kTotalSamples = 65536;
@@ -890,9 +1445,54 @@ static void testResonanceSuppressorLatencySafeBypass()
     juce::AudioBuffer<float> input(2, kTotalSamples);
     fillResonanceRegressionSignal(input, kSR);
 
+    {
+        XlethResonanceSuppressorEffect fx;
+        setResonanceHighQualityMode(fx);
+        fx.setParameterValue("quality", 1.0f);
+        fx.setParameterValue("depth", 100.0f);
+        fx.setParameterValue("sharpness", 80.0f);
+        fx.setParameterValue("selectivity", 40.0f);
+        fx.setParameterValue("mix", 0.0f);
+        fx.setParameterValue("trim", 12.0f);
+        fx.setParameterValue("delta", 0.0f);
+        fx.prepareToPlay(kSR, maxBlockSizeOf(mixedSchedule));
+
+        CHECK(fx.getLatencySamples() == 0,
+              "RS mix 0 with delta off should report zero latency in High Quality mode");
+
+        juce::AudioBuffer<float> impulse(2, kTotalSamples);
+        impulse.clear();
+        constexpr int kImpulseIndex = 4096;
+        impulse.setSample(0, kImpulseIndex, 1.0f);
+        impulse.setSample(1, kImpulseIndex, -0.75f);
+
+        auto impulseOut = renderEffectInBlocks(fx, impulse, mixedSchedule);
+        const ErrorStats impulseError =
+            computeAlignedError(impulse, impulseOut, 0, kImpulseIndex - 8, kImpulseIndex + 16, 2);
+        const int impulsePeakIndex = findFirstSampleAbove(impulseOut, 0, 0.5f, kImpulseIndex - 4);
+
+        auto audioOut = renderEffectInBlocks(fx, input, mixedSchedule);
+        const ErrorStats audioError =
+            computeAlignedError(input, audioOut, 0, 0, kTotalSamples - 1, 2);
+
+        std::cout << "    HQ mix 0 impulse/audio max error: "
+                  << impulseError.maxAbs << " / " << audioError.maxAbs
+                  << ", impulse peak index: " << impulsePeakIndex << "\n";
+
+        CHECK(impulseError.maxAbs < 1.0e-6f && impulseError.rms < 1.0e-7f,
+              "RS mix 0 impulse should stay sample-aligned with live dry");
+        CHECK(audioError.maxAbs < 1.0e-6f && audioError.rms < 1.0e-7f,
+              "RS mix 0 should output true live dry even in High Quality mode");
+        CHECK(impulsePeakIndex == kImpulseIndex,
+              "RS mix 0 impulse peak should stay at the original sample index");
+        CHECK_NEAR(fx.readMeterValue(2), 0.0f, 1.0e-6f,
+                   "RS mix 0 should not keep gain-reduction metering active");
+    }
+
     for (int quality = 0; quality < 3; ++quality)
     {
         XlethResonanceSuppressorEffect fx;
+        setResonanceHighQualityMode(fx);
         fx.setParameterValue("quality", static_cast<float>(quality));
         fx.setParameterValue("depth", 100.0f);
         fx.setParameterValue("sharpness", 80.0f);
@@ -912,9 +1512,11 @@ static void testResonanceSuppressorLatencySafeBypass()
 
         fx.setBypassed(true);
         fx.reset();
+        CHECK(fx.getLatencySamples() == 0,
+              "RS bypass should report zero latency");
         auto output = renderEffectInBlocks(fx, input, mixedSchedule);
         const ErrorStats bypassError =
-            computeAlignedError(input, output, latency, 0, kTotalSamples - 1, 2);
+            computeAlignedError(input, output, 0, 0, kTotalSamples - 1, 2);
 
         std::cout << "    quality " << quality
                   << " bypass dry max/RMS error: "
@@ -923,9 +1525,9 @@ static void testResonanceSuppressorLatencySafeBypass()
                   << " / " << fx.readMeterValue(1) << "\n";
 
         CHECK(bypassError.maxAbs < 1.0e-6 && bypassError.rms < 1.0e-7,
-              "RS fully bypassed output should equal latency-aligned dry");
-        CHECK(fx.readMeterValue(0) > 0.05f && fx.readMeterValue(1) > 0.05f,
-              "RS processEffect should still advance meters while fully bypassed");
+              "RS fully bypassed output should equal true live dry");
+        CHECK_NEAR(fx.readMeterValue(2), 0.0f, 1.0e-6f,
+                   "RS fully bypassed gain-reduction meter should stay idle");
     }
 
     {
@@ -933,8 +1535,28 @@ static void testResonanceSuppressorLatencySafeBypass()
         chain.init(kSR, 1024);
         const int nodeId = chain.addEffect("resonancesuppressor", 0);
         CHECK(nodeId >= 0, "RS should be addable to an EffectChainManager");
+        CHECK_NEAR(chain.getMaxTailLengthSeconds() * kSR, 0.0, 0.5,
+                   "RS chain tail should report zero latency for a new Low Latency instance");
+        CHECK(chain.setEffectParameter(nodeId, "processing_mode", 1.0f),
+              "RS chain processing_mode should be settable");
         CHECK_NEAR(chain.getMaxTailLengthSeconds() * kSR, 1024.0, 0.5,
-                   "RS chain tail should report Normal latency by default");
+                   "RS chain tail should refresh immediately when switching to High Quality mode");
+        CHECK(chain.setEffectParameter(nodeId, "mix", 0.0f),
+              "RS chain mix should be settable");
+        CHECK_NEAR(chain.getMaxTailLengthSeconds() * kSR, 0.0, 0.5,
+                   "RS chain tail should return to zero when mix is 0");
+        CHECK(chain.setEffectParameter(nodeId, "mix", 100.0f),
+              "RS chain mix should return to wet");
+        CHECK_NEAR(chain.getMaxTailLengthSeconds() * kSR, 1024.0, 0.5,
+                   "RS chain tail should restore when High Quality wet processing is active");
+        CHECK(chain.setBypass(nodeId, true),
+              "RS chain bypass should be settable");
+        CHECK_NEAR(chain.getMaxTailLengthSeconds() * kSR, 0.0, 0.5,
+                   "RS chain tail should return to zero while bypassed");
+        CHECK(chain.setBypass(nodeId, false),
+              "RS chain bypass should be clearable");
+        CHECK_NEAR(chain.getMaxTailLengthSeconds() * kSR, 1024.0, 0.5,
+                   "RS chain tail should restore after bypass is lifted");
         CHECK(chain.setEffectParameter(nodeId, "quality", 2.0f),
               "RS chain quality param should be settable");
         chain.reprepare(kSR, 1024);
@@ -945,6 +1567,7 @@ static void testResonanceSuppressorLatencySafeBypass()
 
     {
         XlethResonanceSuppressorEffect fx;
+        setResonanceHighQualityMode(fx);
         fx.setParameterValue("quality", 1.0f);
         fx.setParameterValue("depth", 100.0f);
         fx.setParameterValue("sharpness", 70.0f);
@@ -1006,9 +1629,10 @@ static void testResonanceSuppressorLatencySafeBypass()
         constexpr int blockSize = 128;
         constexpr int total = 8192;
         constexpr int toggleAt = 4096;
-        constexpr int impulseIndex = toggleAt + 50;
+        constexpr int impulseIndex = toggleAt + 1024;
 
         XlethResonanceSuppressorEffect fx;
+        setResonanceHighQualityMode(fx);
         fx.setParameterValue("quality", 1.0f);
         fx.setParameterValue("depth", 0.0f);
         fx.setParameterValue("mix", 100.0f);
@@ -1040,11 +1664,11 @@ static void testResonanceSuppressorLatencySafeBypass()
                 output.copyFrom(ch, pos, block, ch, 0, n);
         }
 
-        const int expectedIndex = impulseIndex + fx.getLatencySamples();
         int largePeakCount = 0;
         int peakIndex = -1;
         float peak = 0.0f;
         float earlyMax = 0.0f;
+        float delayedEchoMax = 0.0f;
         for (int s = 0; s < total; ++s)
         {
             const float v = std::abs(output.getSample(0, s));
@@ -1055,20 +1679,24 @@ static void testResonanceSuppressorLatencySafeBypass()
                 peak = v;
                 peakIndex = s;
             }
-            if (s < expectedIndex - 8)
+            if (s < impulseIndex - 8)
                 earlyMax = std::max(earlyMax, v);
+            if (s > impulseIndex + 256)
+                delayedEchoMax = std::max(delayedEchoMax, v);
         }
 
-        std::cout << "    bypass-ramp impulse peak count/index/earlyMax: "
+        std::cout << "    bypass-ramp impulse peak count/index/earlyMax/delayedEcho: "
                   << largePeakCount << " / " << peakIndex
-                  << " / " << earlyMax << "\n";
+                  << " / " << earlyMax << " / " << delayedEchoMax << "\n";
 
         CHECK(largePeakCount == 1,
-              "RS bypass ramp should not emit an early live impulse plus delayed duplicate");
-        CHECK(std::abs(peakIndex - expectedIndex) <= 1 && peak > 0.8f,
-              "RS bypass-ramp impulse should appear once at the aligned latency");
+              "RS bypass ramp should not emit a delayed duplicate impulse");
+        CHECK(std::abs(peakIndex - impulseIndex) <= 1 && peak > 0.8f,
+              "RS bypass-ramp impulse should land at the live dry sample once bypass settles");
         CHECK(earlyMax < 0.05f,
-              "RS bypass-ramp impulse should not leak live dry before latency");
+              "RS bypass-ramp impulse should stay quiet before the live impulse");
+        CHECK(delayedEchoMax < 0.05f,
+              "RS bypass-ramp impulse should not leave a stale delayed echo after bypass");
     }
 
     {
@@ -1085,6 +1713,7 @@ static void testResonanceSuppressorLatencySafeBypass()
         }
 
         XlethResonanceSuppressorEffect fx;
+        setResonanceHighQualityMode(fx);
         fx.setParameterValue("quality", 1.0f);
         fx.setParameterValue("depth", 0.0f);
         fx.prepareToPlay(kSR, maxBlockSizeOf(mixedSchedule));
@@ -1105,6 +1734,7 @@ static void testResonanceSuppressorLatencySafeBypass()
 
     {
         XlethResonanceSuppressorEffect fx;
+        setResonanceHighQualityMode(fx);
         fx.setParameterValue("quality", 1.0f);
         fx.setParameterValue("depth", 0.0f);
         fx.prepareToPlay(kSR, 1024);
@@ -1151,6 +1781,127 @@ static void testResonanceSuppressorLatencySafeBypass()
     }
 }
 
+static void testResonanceSuppressorTransitionSafety()
+{
+    std::cout << "  [resonance suppressor transition safety]\n";
+
+    constexpr double kSR = 44100.0;
+    constexpr int kTotalSamples = 65536;
+    const std::vector<int> mixedSchedule = {1, 37, 128, 255, 511, 1024, 37};
+
+    juce::AudioBuffer<float> input(2, kTotalSamples);
+    fillResonanceRegressionSignal(input, kSR);
+
+    XlethResonanceSuppressorEffect fx;
+    setResonanceLowLatencyMode(fx);
+    fx.setParameterValue("quality", 1.0f);
+    fx.setParameterValue("depth", 100.0f);
+    fx.setParameterValue("sharpness", 70.0f);
+    fx.setParameterValue("selectivity", 35.0f);
+    fx.setParameterValue("attack", 10.0f);
+    fx.setParameterValue("release", 200.0f);
+    fx.setParameterValue("mix", 0.0f);
+    fx.setParameterValue("trim", 0.0f);
+    fx.setParameterValue("delta", 0.0f);
+    fx.prepareToPlay(kSR, maxBlockSizeOf(mixedSchedule));
+
+    juce::AudioBuffer<float> output(2, kTotalSamples);
+    output.clear();
+    juce::MidiBuffer midi;
+
+    constexpr int kMixOn = 8192;
+    constexpr int kModeToHQ = 16384;
+    constexpr int kBypassOn = 28672;
+    constexpr int kBypassOff = 36864;
+    constexpr int kModeToLL = 45056;
+    constexpr int kMixOff = 53248;
+
+    bool mixOnSet = false;
+    bool modeToHQSet = false;
+    bool bypassOnSet = false;
+    bool bypassOffSet = false;
+    bool modeToLLSet = false;
+    bool mixOffSet = false;
+
+    int pos = 0;
+    int blockIndex = 0;
+    while (pos < kTotalSamples)
+    {
+        if (!mixOnSet && pos >= kMixOn)
+        {
+            fx.setParameterValue("mix", 100.0f);
+            mixOnSet = true;
+        }
+        if (!modeToHQSet && pos >= kModeToHQ)
+        {
+            fx.setParameterValue("processing_mode", 1.0f);
+            modeToHQSet = true;
+        }
+        if (!bypassOnSet && pos >= kBypassOn)
+        {
+            fx.setBypassed(true);
+            bypassOnSet = true;
+        }
+        if (!bypassOffSet && pos >= kBypassOff)
+        {
+            fx.setBypassed(false);
+            bypassOffSet = true;
+        }
+        if (!modeToLLSet && pos >= kModeToLL)
+        {
+            fx.setParameterValue("processing_mode", 0.0f);
+            modeToLLSet = true;
+        }
+        if (!mixOffSet && pos >= kMixOff)
+        {
+            fx.setParameterValue("mix", 0.0f);
+            mixOffSet = true;
+        }
+
+        const int requested = mixedSchedule[static_cast<std::size_t>(blockIndex % mixedSchedule.size())];
+        const int n = std::min(requested, kTotalSamples - pos);
+
+        juce::AudioBuffer<float> block(2, n);
+        for (int ch = 0; ch < 2; ++ch)
+            block.copyFrom(ch, 0, input, ch, pos, n);
+
+        fx.processBlock(block, midi);
+
+        for (int ch = 0; ch < 2; ++ch)
+            output.copyFrom(ch, pos, block, ch, 0, n);
+
+        pos += n;
+        ++blockIndex;
+    }
+
+    const float stepMixOn = maxAdjacentStepInRange(output, kMixOn - 512, kMixOn + 4096);
+    const float stepModeToHQ = maxAdjacentStepInRange(output, kModeToHQ - 512, kModeToHQ + 4096);
+    const float stepBypassOn = maxAdjacentStepInRange(output, kBypassOn - 512, kBypassOn + 4096);
+    const float stepBypassOff = maxAdjacentStepInRange(output, kBypassOff - 512, kBypassOff + 4096);
+    const float stepModeToLL = maxAdjacentStepInRange(output, kModeToLL - 512, kModeToLL + 4096);
+    const float stepMixOff = maxAdjacentStepInRange(output, kMixOff - 512, kMixOff + 4096);
+    const ErrorStats finalDryError =
+        computeAlignedError(input, output, 0, kMixOff + 2048, kTotalSamples - 1, 2);
+
+    std::cout << "    transition max steps mixOn/HQ/on/off/LL/mixOff: "
+              << stepMixOn << " / " << stepModeToHQ << " / "
+              << stepBypassOn << " / " << stepBypassOff << " / "
+              << stepModeToLL << " / " << stepMixOff << "\n";
+    std::cout << "    final dry max/RMS error: "
+              << finalDryError.maxAbs << " / " << finalDryError.rms << "\n";
+
+    CHECK(allSamplesFinite(output),
+          "RS mix/mode/bypass transitions should stay finite");
+    CHECK(stepMixOn < 0.85f && stepModeToHQ < 0.85f
+          && stepBypassOn < 0.85f && stepBypassOff < 0.85f
+          && stepModeToLL < 0.85f && stepMixOff < 0.85f,
+          "RS mix/mode/bypass transitions should not create explosive discontinuities");
+    CHECK(fx.getLatencySamples() == 0,
+          "RS final Low Latency dry state should report zero latency");
+    CHECK(finalDryError.maxAbs < 1.0e-5f && finalDryError.rms < 1.0e-6f,
+          "RS should return cleanly to live dry after wet/mode/bypass transitions");
+}
+
 static void testResonanceSuppressorDetector()
 {
     std::cout << "  [resonance suppressor detector]\n";
@@ -1160,6 +1911,7 @@ static void testResonanceSuppressorDetector()
     const std::vector<int> mixedSchedule = {1, 37, 128, 255, 511, 1024, 37};
 
     auto prepareDetectorFx = [&mixedSchedule](XlethResonanceSuppressorEffect& fx) {
+        setResonanceHighQualityMode(fx);
         fx.setParameterValue("quality", 1.0f);
         fx.setParameterValue("depth", 100.0f);
         fx.setParameterValue("sharpness", 70.0f);
@@ -1279,6 +2031,7 @@ static void testResonanceSuppressorDetector()
 
     {
         XlethResonanceSuppressorEffect fx;
+        setResonanceHighQualityMode(fx);
         fx.setParameterValue("quality", 1.0f);
         fx.setParameterValue("depth", 25.0f);
         fx.setParameterValue("sharpness", 70.0f);
@@ -1347,6 +2100,7 @@ static void testResonanceSuppressorSuppression()
                                              float attackMs = 15.0f,
                                              float releaseMs = 200.0f) {
         XlethResonanceSuppressorEffect fx;
+        setResonanceHighQualityMode(fx);
         fx.setParameterValue("quality", 1.0f);
         fx.setParameterValue("depth", depth);
         fx.setParameterValue("sharpness", 70.0f);
@@ -1457,6 +2211,7 @@ static void testResonanceSuppressorOutputStage()
                                          float trim,
                                          bool delta) {
         XlethResonanceSuppressorEffect fx;
+        setResonanceHighQualityMode(fx);
         fx.setParameterValue("quality", 1.0f);
         fx.setParameterValue("depth", depth);
         fx.setParameterValue("sharpness", 70.0f);
@@ -1478,13 +2233,13 @@ static void testResonanceSuppressorOutputStage()
 
     auto dryOnly = renderOutput(resonance, 100.0f, 0.0f, 0.0f, false);
     const ErrorStats dryOnlyError =
-        computeAlignedError(resonance, dryOnly.output, delay, start, end, 2);
+        computeAlignedError(resonance, dryOnly.output, 0, start, end, 2);
 
     auto wetSuppressed = renderOutput(resonance, 100.0f, 100.0f, 0.0f, false);
     auto halfMix = renderOutput(resonance, 100.0f, 50.0f, 0.0f, false);
 
     const double dryRmsReduction =
-        computeAlignedRmsReductionDb(resonance, dryOnly.output, delay, start, end, 0);
+        computeAlignedRmsReductionDb(resonance, dryOnly.output, 0, start, end, 0);
     const double halfRmsReduction =
         computeAlignedRmsReductionDb(resonance, halfMix.output, delay, start, end, 0);
     const double wetRmsReduction =
@@ -1521,8 +2276,8 @@ static void testResonanceSuppressorOutputStage()
 
     CHECK(identityWetError.maxAbs < 2.0e-4 && identityWetError.rms < 5.0e-5,
           "RS mix 100 depth 0 should preserve WOLA identity");
-    CHECK(dryOnlyError.maxAbs < 2.0e-4 && dryOnlyError.rms < 5.0e-5,
-          "RS mix 0 should output latency-aligned dry");
+    CHECK(dryOnlyError.maxAbs < 1.0e-6 && dryOnlyError.rms < 1.0e-7,
+          "RS mix 0 should output true live dry");
     CHECK(halfRmsReduction > dryRmsReduction + 0.2 && halfRmsReduction < wetRmsReduction - 0.2,
           "RS mix 50 RMS reduction should sit between dry and fully wet");
     CHECK(trimPlusDb > 5.8 && trimPlusDb < 6.2 && trimMinusDb < -5.8 && trimMinusDb > -6.2,
@@ -1531,11 +2286,12 @@ static void testResonanceSuppressorOutputStage()
           "RS delta depth 0 should be near silence after latency compensation");
     CHECK(delta100Rms > delta0Rms + 0.01,
           "RS delta depth 100 should expose measurable removed material");
-    CHECK(std::abs(meterNormal.peakMeter - meterDryTrimmed.peakMeter) < 1.0e-5f,
-          "RS slot 2 should be independent from mix and trim");
+    CHECK(meterNormal.peakMeter > meterDryTrimmed.peakMeter + 0.05f,
+          "RS mix 0 should stop wet gain-reduction metering");
 
     {
         XlethResonanceSuppressorEffect fx;
+        setResonanceHighQualityMode(fx);
         fx.setParameterValue("quality", 1.0f);
         fx.setParameterValue("depth", 100.0f);
         fx.setParameterValue("sharpness", 70.0f);
@@ -1601,6 +2357,7 @@ static void testResonanceSuppressorWeightingCurve()
                                            bool delta = false,
                                            float mix = 100.0f) {
         XlethResonanceSuppressorEffect fx;
+        setResonanceHighQualityMode(fx);
         fx.setParameterValue("quality", 1.0f);
         fx.setParameterValue("depth", 100.0f);
         fx.setParameterValue("sharpness", 70.0f);
@@ -1645,7 +2402,7 @@ static void testResonanceSuppressorWeightingCurve()
     const double lowHpDb =
         computeAlignedToneReductionDb(lowTone, lowHpBlocked.output, delay, start, end, 0, kSR, 155.0);
     const ErrorStats lowDryError =
-        computeAlignedError(lowTone, lowHpDry.output, delay, start, end, 2);
+        computeAlignedError(lowTone, lowHpDry.output, 0, start, end, 2);
 
     auto highDefault = renderWeighted(highTone, 997.0f, 0.0f, 80.0f, 16000.0f);
     auto highLpBlocked = renderWeighted(highTone, 997.0f, 0.0f, 80.0f, 3000.0f);
@@ -1655,7 +2412,7 @@ static void testResonanceSuppressorWeightingCurve()
     const double highLpDb =
         computeAlignedToneReductionDb(highTone, highLpBlocked.output, delay, start, end, 0, kSR, 6000.0);
     const ErrorStats highDryError =
-        computeAlignedError(highTone, highLpDry.output, delay, start, end, 2);
+        computeAlignedError(highTone, highLpDry.output, 0, start, end, 2);
 
     auto deltaDefault = renderWeighted(centered, 997.0f, 0.0f, 80.0f, 16000.0f, true);
     auto deltaBoost = renderWeighted(centered, 997.0f, 12.0f, 80.0f, 16000.0f, true);
@@ -1729,6 +2486,7 @@ static void testResonanceSuppressorFocusCurveV11Bands()
     const auto highTone = makeResonance(2000.0f);
 
     auto configureCommon = [](XlethResonanceSuppressorEffect& fx) {
+        setResonanceHighQualityMode(fx);
         fx.setParameterValue("quality", 1.0f);
         fx.setParameterValue("depth", 100.0f);
         fx.setParameterValue("sharpness", 70.0f);
@@ -1976,6 +2734,7 @@ static void testResonanceSuppressorFocusCurveLiveEdits()
     };
 
     XlethResonanceSuppressorEffect fx;
+    setResonanceHighQualityMode(fx);
     fx.setParameterValue("quality",     1.0f);
     fx.setParameterValue("depth",       100.0f);
     fx.setParameterValue("sharpness",   70.0f);
@@ -2110,6 +2869,7 @@ static void testResonanceSuppressorStereoModes()
                                        int stereoMode,
                                        bool delta = false) {
         XlethResonanceSuppressorEffect fx;
+        setResonanceHighQualityMode(fx);
         fx.setParameterValue("quality", 1.0f);
         fx.setParameterValue("depth", 100.0f);
         fx.setParameterValue("sharpness", 70.0f);
@@ -2251,6 +3011,7 @@ static void testResonanceSuppressorModeSwitching()
     auto runSequence = [&](const std::vector<std::pair<int, int>>& seq, const char* desc)
     {
         XlethResonanceSuppressorEffect fx;
+        setResonanceHighQualityMode(fx);
         fx.setParameterValue("quality",     1.0f);  // Normal: fftSize=1024
         fx.setParameterValue("depth",       0.0f);  // identity — no suppression
         fx.setParameterValue("mix",       100.0f);
@@ -2327,6 +3088,7 @@ static void testResonanceSuppressorVisualization()
     }
 
     XlethResonanceSuppressorEffect fx;
+    setResonanceHighQualityMode(fx);
     fx.setParameterValue("quality", 1.0f);
     fx.setParameterValue("depth", 100.0f);
     fx.setParameterValue("sharpness", 70.0f);
@@ -2869,8 +3631,16 @@ int main()
     testBypass();
     testJSONHelpers();
     testDistortionModesDiffer();
+    testTransientAttackShaping();
+    testTransientSustainShaping();
+    testTransientMixAndBypass();
+    testTransientSafety();
+    testTransientStereoLinking();
+    testTransientMidiAttackMode();
     testResonanceSuppressorWolaIdentity();
+    testResonanceSuppressorLowLatencyMode();
     testResonanceSuppressorLatencySafeBypass();
+    testResonanceSuppressorTransitionSafety();
     testResonanceSuppressorDetector();
     testResonanceSuppressorSuppression();
     testResonanceSuppressorOutputStage();

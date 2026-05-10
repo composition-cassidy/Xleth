@@ -74,6 +74,11 @@ nlohmann::json EffectChainManager::getChainState() const
     return graph_->getChainState();
 }
 
+int EffectChainManager::countActiveResonanceSuppressorHighQualityInstances() const
+{
+    return graph_ ? graph_->countActiveResonanceSuppressorHighQualityInstances() : 0;
+}
+
 // ─── Graph-mode APIs ────────────────────────────────────────────────────────
 
 bool EffectChainManager::addConnection(int sourceNodeId, int destNodeId)
@@ -123,9 +128,35 @@ bool EffectChainManager::setEffectParameter(int nodeId, const std::string& param
     return graph_->setEffectParameter(nodeId, paramId, value);
 }
 
+bool EffectChainManager::setEffectProgram(int nodeId, int programIndex)
+{
+    return graph_->setEffectProgram(nodeId, programIndex);
+}
+
+bool EffectChainManager::setEffectStateInformation(int nodeId,
+                                                   const void* data,
+                                                   int sizeInBytes)
+{
+    return graph_->setEffectStateInformation(nodeId, data, sizeInBytes);
+}
+
 std::string EffectChainManager::getEffectMeter(int nodeId) const
 {
     return graph_->getEffectMeter(nodeId);
+}
+
+bool EffectChainManager::refreshGuardedPluginLatency(int nodeId)
+{
+    return graph_ ? graph_->refreshGuardedPluginLatency(nodeId) : false;
+}
+
+bool EffectChainManager::refreshGuardedPluginLatency(
+    int nodeId,
+    std::uint64_t latencyPublishCountBefore)
+{
+    return graph_
+        ? graph_->refreshGuardedPluginLatency(nodeId, latencyPublishCountBefore)
+        : false;
 }
 
 XlethEffectBase* EffectChainManager::getEffect(int nodeId)
@@ -206,4 +237,27 @@ void EffectChainManager::resetProcessors()
 double EffectChainManager::getMaxTailLengthSeconds() const
 {
     return graph_ ? graph_->getMaxTailLengthSeconds() : 0.0;
+}
+
+int EffectChainManager::getOutputLatencySamples() const
+{
+    return graph_ ? graph_->getOutputLatencySamples() : 0;
+}
+
+std::uint64_t EffectChainManager::getLatencyEpoch() const
+{
+    return graph_ ? graph_->getLatencyEpoch() : 0;
+}
+
+void EffectChainManager::refreshLatencyDiagnostics()
+{
+    if (graph_)
+        graph_->refreshLatencyDiagnostics();
+}
+
+int EffectChainManager::addProcessorForTesting(const std::string& pluginId,
+                                               std::unique_ptr<juce::AudioProcessor> proc,
+                                               int position)
+{
+    return graph_ ? graph_->addProcessorForTesting(pluginId, std::move(proc), position) : -1;
 }

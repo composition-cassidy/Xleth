@@ -153,7 +153,7 @@ describe('Transient parser (parseDrainResponse)', () => {
 
   it('rejects a Transient payload whose bucketSize does not match the schema', () => {
     const resp = {
-      type: 'transient', schema: 1,
+      type: 'transient', schema: DYNAMICS_VIZ_SCHEMA_VERSION,
       bucketSize: 40, // Compressor's size, wrong for Transient
       count: 0, frames: new ArrayBuffer(0),
     }
@@ -164,7 +164,7 @@ describe('Transient parser (parseDrainResponse)', () => {
 
   it('rejects when the engine returns a Limiter payload but consumer asked for Transient', () => {
     const resp = {
-      type: 'limiter', schema: 1,
+      type: 'limiter', schema: DYNAMICS_VIZ_SCHEMA_VERSION,
       bucketSize: LIMITER_BUCKET.sizeBytes, count: 0, frames: new ArrayBuffer(0),
     }
     const parsed = parseDrainResponse(resp, VIZ_TYPE.TRANSIENT)
@@ -174,7 +174,7 @@ describe('Transient parser (parseDrainResponse)', () => {
 
   it('rejects when the engine returns a Compressor payload but consumer asked for Transient', () => {
     const resp = {
-      type: 'compressor', schema: 1,
+      type: 'compressor', schema: DYNAMICS_VIZ_SCHEMA_VERSION,
       bucketSize: COMPRESSOR_BUCKET.sizeBytes, count: 0, frames: new ArrayBuffer(0),
     }
     const parsed = parseDrainResponse(resp, VIZ_TYPE.TRANSIENT)
@@ -194,7 +194,7 @@ describe('Transient parser (parseDrainResponse)', () => {
 
   it('still accepts a Compressor payload when the consumer asks for Compressor (no regression)', () => {
     const resp = {
-      type: 'compressor', schema: 1,
+      type: 'compressor', schema: DYNAMICS_VIZ_SCHEMA_VERSION,
       bucketSize: COMPRESSOR_BUCKET.sizeBytes, count: 0, frames: new ArrayBuffer(0),
     }
     const parsed = parseDrainResponse(resp, VIZ_TYPE.COMPRESSOR)
@@ -203,7 +203,7 @@ describe('Transient parser (parseDrainResponse)', () => {
 
   it('still accepts a Limiter payload when the consumer asks for Limiter (no regression)', () => {
     const resp = {
-      type: 'limiter', schema: 1,
+      type: 'limiter', schema: DYNAMICS_VIZ_SCHEMA_VERSION,
       bucketSize: LIMITER_BUCKET.sizeBytes, count: 0, frames: new ArrayBuffer(0),
     }
     const parsed = parseDrainResponse(resp, VIZ_TYPE.LIMITER)
@@ -302,6 +302,23 @@ describe('Transient display transform', () => {
     const columns = downsampleTransientHistory(dense, 120)
     expect(columns.length).toBeLessThanOrEqual(120)
     expect(columns.length).toBeGreaterThan(0)
+  })
+
+  it('downsampleTransientHistory keeps the dominant signed gain per column', () => {
+    const columns = downsampleTransientHistory([
+      { inLevelDb: -14, outLevelDb: -12, fastEnvDb: -8, slowEnvDb: -14, gainDb: 3 },
+      { inLevelDb: -13, outLevelDb: -12, fastEnvDb: -7, slowEnvDb: -13, gainDb: -7 },
+      { inLevelDb: -12, outLevelDb: -10, fastEnvDb: -6, slowEnvDb: -12, gainDb: 5 },
+      { inLevelDb: -12, outLevelDb: -10, fastEnvDb: -6, slowEnvDb: -11, gainDb: 2 },
+    ], 4, { columnWidthPx: 2 })
+
+    expect(columns).toHaveLength(2)
+    expect(columns[0].gainDb).toBe(-7)
+    expect(columns[0].boostDb).toBe(3)
+    expect(columns[0].cutDb).toBe(-7)
+    expect(columns[1].gainDb).toBe(5)
+    expect(columns[1].boostDb).toBe(5)
+    expect(columns[1].cutDb).toBe(0)
   })
 
   it('smoothTransientDisplayHistory keeps finite display values', () => {

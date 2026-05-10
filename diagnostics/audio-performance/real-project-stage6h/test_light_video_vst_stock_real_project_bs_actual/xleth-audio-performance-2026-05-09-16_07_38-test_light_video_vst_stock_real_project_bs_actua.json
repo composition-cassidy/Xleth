@@ -1,0 +1,227 @@
+{
+  "accumulatedTimingSampleCount": 19825,
+  "activeResonanceSuppressorHighQualityInstanceCount": 0,
+  "audioDeviceOutputLatencySamples": 480,
+  "blockSize": 480,
+  "build": {
+    "configuration": "Debug"
+  },
+  "callback": {
+    "averageMs": 0.3006251246261216,
+    "averageUs": 300.62512462612165,
+    "count": 3009,
+    "maxMs": 3.584,
+    "maxUs": 3584.0,
+    "p50Ms": 0.287,
+    "p50Us": 287.0,
+    "p95Ms": 0.437,
+    "p95Us": 437.0,
+    "p99Ms": 0.559,
+    "p99Us": 559.0
+  },
+  "callbackCoveragePercent": 99.8672419515433,
+  "callbackDeadlineUs": 10000.0,
+  "callbackMaxUs": 3584.0,
+  "callbackOverrunCount": 0,
+  "callbackP50Us": 287.0,
+  "callbackP95Us": 437.0,
+  "callbackP99Us": 559.0,
+  "callbackSampleCount": 3009,
+  "captureDurationSeconds": 30.126,
+  "capturedAt": "2026-05-09T16:07:08Z",
+  "capturedCallbackCount": 3009,
+  "chainLockMissCount": 0,
+  "compensationTargetChanges": 0,
+  "cpuHealth": "Healthy",
+  "deviceOutputLatencySamples": 480,
+  "diagnosis": {
+    "cpuDeadlinePressure": "no callback or MixEngine deadline overrun observed",
+    "cpuHealth": "Healthy",
+    "lockStaleState": "no lock misses or stale chain reuse observed",
+    "pdcPresentationLatency": "reported separately as compensated timing, not CPU deadline pressure",
+    "status": "Healthy",
+    "summary": "no_realtime_instability_observed",
+    "telemetryCoverageQuality": "good",
+    "telemetryPressure": "no dropped telemetry samples observed"
+  },
+  "droppedTelemetryByScope": {
+    "captureAccumulatorOverflow": 0,
+    "deliberateVerboseScopeSamplingSkips": 0,
+    "ringOverflow": 0
+  },
+  "droppedTelemetrySamples": 0,
+  "droppedTelemetrySamplesDuringCapture": 0,
+  "effectCoveragePercent": null,
+  "effectSampleCount": 549,
+  "expectedApproxCallbackCount": 3013,
+  "guardedPluginCrashedSkippedCount": 0,
+  "guardedPluginSkippedOrCrashedCount": 0,
+  "latencyEpochChanges": 0,
+  "livePresentationLatencySamples": 480,
+  "lockMisses": 0,
+  "masterInsertLatencySamples": 0,
+  "maxAudibleTrackLatencySamples": 0,
+  "mixEngine": {
+    "averageMs": 0.29783050847457626,
+    "averageUs": 297.8305084745763,
+    "count": 3009,
+    "maxMs": 3.576,
+    "maxUs": 3576.0,
+    "p50Ms": 0.284,
+    "p50Us": 284.0,
+    "p95Ms": 0.434,
+    "p95Us": 434.0,
+    "p99Ms": 0.555,
+    "p99Us": 555.0
+  },
+  "mixEngineCoveragePercent": 99.8672419515433,
+  "mixEngineMaxUs": 3576.0,
+  "mixEngineOverrunCount": 0,
+  "mixEngineP50Us": 284.0,
+  "mixEngineP95Us": 434.0,
+  "mixEngineP99Us": 555.0,
+  "mixEngineSampleCount": 3009,
+  "pdcDelayProcessCount": 721,
+  "positionSamples": {
+    "presentationEnd": 0,
+    "presentationStart": 0,
+    "rawEnd": 0,
+    "rawStart": 0
+  },
+  "presentationPositionSamplesAtCaptureEnd": 0,
+  "presentationPositionSamplesAtCaptureStart": 0,
+  "privacy": "Report intentionally omits raw media paths, project directories, usernames, and full project JSON.",
+  "project": {
+    "clipCount": 7,
+    "effectCount": 1,
+    "mediaCount": 1,
+    "projectDurationSeconds": 3.4285714285714284,
+    "projectName": "test",
+    "regionCount": 2,
+    "sourceCount": 1,
+    "trackCount": 2
+  },
+  "rawPositionSamplesAtCaptureEnd": 0,
+  "rawPositionSamplesAtCaptureStart": 0,
+  "realtimeRsHqRiskLevel": "healthy",
+  "realtimeRsHqRiskReasons": [],
+  "recommendedAction": [
+    "noImmediateAction"
+  ],
+  "renderedBlockCount": 3009,
+  "requestedDurationSeconds": 30,
+  "resonanceSuppressorHighQuality": {
+    "activeInstanceCount": 0,
+    "appearsInWorstEffects": false,
+    "recommendedAction": [
+      "noImmediateAction"
+    ],
+    "riskLevel": "healthy",
+    "riskReasons": [],
+    "wolaCallCount": 0,
+    "wolaMaxUs": 0.0,
+    "wolaP99Us": 0.0
+  },
+  "sampleRate": 48000.0,
+  "schemaVersion": "xleth.audioPerformanceCapture.v1",
+  "staleChainReuse": 0,
+  "staleSnapshotReuseCount": 0,
+  "strictFailed": false,
+  "strictMode": false,
+  "telemetryCaptureAccumulatorOverflowDrops": 0,
+  "telemetryCoverageQuality": "good",
+  "timingSequence": {
+    "end": 19825,
+    "startExclusive": 1
+  },
+  "transport": {
+    "bpm": 140.0,
+    "endPlaying": false,
+    "startPlaying": false
+  },
+  "verboseEffectSampling": {
+    "downsampled": false,
+    "notes": "Verbose effect scopes were not downsampled; coverage was improved by periodic off-thread draining.",
+    "skippedSamples": 0
+  },
+  "worstChainsByMax": [
+    {
+      "count": 549,
+      "effectTypeName": "unknown",
+      "flags": 0,
+      "kind": "trackChain",
+      "maxUs": 236,
+      "p99Us": 187,
+      "slotOrNodeId": -1,
+      "timing": {
+        "averageUs": 105.95628415300547,
+        "count": 549,
+        "maxUs": 236,
+        "p50Us": 105,
+        "p95Us": 117,
+        "p99Us": 187
+      },
+      "trackId": 27
+    }
+  ],
+  "worstChainsByP99": [
+    {
+      "count": 549,
+      "effectTypeName": "unknown",
+      "flags": 0,
+      "kind": "trackChain",
+      "maxUs": 236,
+      "p99Us": 187,
+      "slotOrNodeId": -1,
+      "timing": {
+        "averageUs": 105.95628415300547,
+        "count": 549,
+        "maxUs": 236,
+        "p50Us": 105,
+        "p95Us": 117,
+        "p99Us": 187
+      },
+      "trackId": 27
+    }
+  ],
+  "worstEffectsByMax": [
+    {
+      "count": 549,
+      "effectTypeName": "third_party",
+      "flags": 32,
+      "kind": "effect",
+      "maxUs": 226,
+      "p99Us": 175,
+      "slotOrNodeId": 3,
+      "timing": {
+        "averageUs": 97.79234972677595,
+        "count": 549,
+        "maxUs": 226,
+        "p50Us": 96,
+        "p95Us": 105,
+        "p99Us": 175
+      },
+      "trackId": 27
+    }
+  ],
+  "worstEffectsByP99": [
+    {
+      "count": 549,
+      "effectTypeName": "third_party",
+      "flags": 32,
+      "kind": "effect",
+      "maxUs": 226,
+      "p99Us": 175,
+      "slotOrNodeId": 3,
+      "timing": {
+        "averageUs": 97.79234972677595,
+        "count": 549,
+        "maxUs": 226,
+        "p50Us": 96,
+        "p95Us": 105,
+        "p99Us": 175
+      },
+      "trackId": 27
+    }
+  ]
+}

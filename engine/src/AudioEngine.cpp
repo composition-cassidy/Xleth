@@ -1,6 +1,7 @@
 #include "AudioEngine.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <iostream>
 
@@ -117,6 +118,8 @@ bool AudioEngine::initialize(bool recordToFile)
 
     sampleRate_ = device->getCurrentSampleRate();
     bufferSize_ = device->getCurrentBufferSizeSamples();
+    cacheCurrentDeviceOutputLatency();
+    refreshLivePresentationLatency();
 
     std::cout << "[AudioEngine] Driver      : " << selectedDriver.toStdString() << "\n"
               << "[AudioEngine] Device      : " << device->getName().toStdString() << "\n"
@@ -159,6 +162,8 @@ void AudioEngine::shutdown()
 
     deviceManager_.removeAudioCallback(this);
     deviceManager_.closeAudioDevice();
+    livePresentationDeviceOutputLatencySamples_.store(0, std::memory_order_release);
+    refreshLivePresentationLatency();
 
     wavWriter_.reset();
     writerThread_.stopThread(2000);
@@ -207,8 +212,122 @@ std::string AudioEngine::setOutputDevice(const std::string& deviceName)
     setup.outputDeviceName         = juce::String(deviceName);
     setup.useDefaultOutputChannels = true;
     auto err = deviceManager_.setAudioDeviceSetup(setup, true);
-    if (err.isEmpty()) preferredOutputDevice_ = deviceName;
+    if (err.isEmpty())
+    {
+        preferredOutputDevice_ = deviceName;
+        cacheCurrentDeviceOutputLatency();
+        refreshLivePresentationLatency();
+    }
     return err.toStdString();
+}
+
+int64_t AudioEngine::readCurrentDeviceOutputLatencySamples() const
+{
+    const int64_t overrideSamples =
+        testDeviceOutputLatencyOverrideSamples_.load(std::memory_order_acquire);
+    if (overrideSamples >= 0)
+        return overrideSamples;
+
+    auto* device = deviceManager_.getCurrentAudioDevice();
+    if (device == nullptr)
+        return 0;
+
+    return std::max<int64_t>(0, device->getOutputLatencyInSamples());
+}
+
+void AudioEngine::cacheCurrentDeviceOutputLatency()
+{
+    livePresentationDeviceOutputLatencySamples_.store(
+        readCurrentDeviceOutputLatencySamples(),
+        std::memory_order_release);
+}
+
+void AudioEngine::refreshLivePresentationLatency()
+{
+    const auto snapshot = mixEngine_.getLatencyCompensationSnapshot();
+    const int64_t maxTrackLatency = std::max<int64_t>(
+        0,
+        static_cast<int64_t>(snapshot.maxAudibleTrackLatencySamples));
+    const int64_t masterLatency = std::max<int64_t>(
+        0,
+        static_cast<int64_t>(snapshot.masterInsertLatencySamples));
+    const int64_t deviceOutputLatency =
+        livePresentationDeviceOutputLatencySamples_.load(std::memory_order_acquire);
+    const int64_t totalLatency = maxTrackLatency
+                               + masterLatency
+                               + std::max<int64_t>(0, deviceOutputLatency);
+
+    livePresentationMaxTrackLatencySamples_.store(maxTrackLatency,
+                                                  std::memory_order_release);
+    livePresentationMasterLatencySamples_.store(masterLatency,
+                                                std::memory_order_release);
+    livePresentationTotalLatencySamples_.store(totalLatency,
+                                               std::memory_order_release);
+}
+
+void AudioEngine::playTimeline()
+{
+    refreshLivePresentationLatency();
+    transport_.play();
+}
+
+void AudioEngine::seekTimelineToSample(int64_t sample)
+{
+    sample = std::max<int64_t>(0, sample);
+    transport_.seekToSample(sample);
+    refreshLivePresentationLatency();
+}
+
+void AudioEngine::seekTimelineToBeat(double beat)
+{
+    const double bpm = transport_.getBPM();
+    const double sr = transport_.getSampleRate();
+    const int64_t sample = static_cast<int64_t>(
+        std::max(0.0, beat) * (sr * 60.0 / bpm));
+    seekTimelineToSample(sample);
+}
+
+int64_t AudioEngine::getLivePresentationLatencySamples() const
+{
+    return livePresentationTotalLatencySamples_.load(std::memory_order_acquire);
+}
+
+int64_t AudioEngine::getLivePresentationPositionSamples() const
+{
+    const int64_t rawPosition = transport_.getPositionSamples();
+    const int64_t latency = getLivePresentationLatencySamples();
+    return std::max<int64_t>(0, rawPosition - latency);
+}
+
+double AudioEngine::getLivePresentationPositionSeconds() const
+{
+    const double sampleRate = transport_.getSampleRate();
+    return sampleRate > 0.0
+        ? static_cast<double>(getLivePresentationPositionSamples()) / sampleRate
+        : 0.0;
+}
+
+AudioEngine::LivePresentationLatencyDiagnostics
+AudioEngine::getLivePresentationLatencyDiagnostics() const
+{
+    LivePresentationLatencyDiagnostics diagnostics;
+    diagnostics.maxTrackLatencySamples =
+        livePresentationMaxTrackLatencySamples_.load(std::memory_order_acquire);
+    diagnostics.masterLatencySamples =
+        livePresentationMasterLatencySamples_.load(std::memory_order_acquire);
+    diagnostics.deviceOutputLatencySamples =
+        livePresentationDeviceOutputLatencySamples_.load(std::memory_order_acquire);
+    diagnostics.totalPresentationLatencySamples =
+        livePresentationTotalLatencySamples_.load(std::memory_order_acquire);
+    return diagnostics;
+}
+
+void AudioEngine::setTestDeviceOutputLatencySamplesForDiagnostics(int64_t samples)
+{
+    testDeviceOutputLatencyOverrideSamples_.store(samples >= 0 ? samples : -1,
+                                                  std::memory_order_release);
+    cacheCurrentDeviceOutputLatency();
+    refreshLivePresentationLatency();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -227,6 +346,8 @@ void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* device)
     bufferSize_ = device->getCurrentBufferSizeSamples();
     transport_.setSampleRate(sampleRate_);
     mixEngine_.prepare(sampleRate_, bufferSize_);
+    cacheCurrentDeviceOutputLatency();
+    refreshLivePresentationLatency();
 
 #if JUCE_WINDOWS
     if (g_avSet != nullptr)
@@ -257,6 +378,10 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     const juce::AudioIODeviceCallbackContext& /*context*/)
 {
     // a) Wrap raw pointers — no allocation, just a view
+    const bool rtDiagEnabled = mixEngine_.isRealtimeDiagnosticsEnabled();
+    const auto rtDiagStart = rtDiagEnabled ? std::chrono::steady_clock::now()
+                                           : std::chrono::steady_clock::time_point {};
+
     juce::AudioBuffer<float> outBuf(outputChannelData, numOutputChannels, numSamples);
 
     // b) Clear output
@@ -286,10 +411,25 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
 
     // Advance master clock — always last, after all processing
     transport_.advance(numSamples);
+
+    if (rtDiagEnabled)
+    {
+        const auto elapsed =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - rtDiagStart).count();
+        mixEngine_.recordAudioCallbackTiming(
+            numSamples,
+            sampleRate_,
+            static_cast<uint64_t>(std::max<int64_t>(0, elapsed)));
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-void AudioEngine::audioDeviceStopped() {}
+void AudioEngine::audioDeviceStopped()
+{
+    livePresentationDeviceOutputLatencySamples_.store(0, std::memory_order_release);
+    refreshLivePresentationLatency();
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 bool AudioEngine::analyzeRecording(const juce::File& wavFile) const
@@ -341,4 +481,3 @@ bool AudioEngine::analyzeRecording(const juce::File& wavFile) const
     std::cout << "[Analyze] " << (pass ? "PASS" : "FAIL") << "\n";
     return pass;
 }
-

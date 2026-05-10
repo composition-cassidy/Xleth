@@ -1,15 +1,12 @@
 import { create } from 'zustand'
 import { timelineEvents } from '../timelineEvents.js'
+import { createPeakEntry, prunePeakSnapshotTracks } from '../components/mixer/meterTelemetry.js'
 
 // ── Peak snapshot (non-reactive, mutated in-place) ──────────────────────────
 // PeakMeter reads this in rAF; polling loop writes it. Never triggers renders.
 export const peaksSnapshot = {
-  tracks: {},  // { [trackId]: { peakL, peakR, holdL, holdR, holdTimeL, holdTimeR } }
-  master: { peakL: 0, peakR: 0, holdL: 0, holdR: 0, holdTimeL: 0, holdTimeR: 0 },
-}
-
-function newPeakEntry() {
-  return { peakL: 0, peakR: 0, holdL: 0, holdR: 0, holdTimeL: 0, holdTimeR: 0 }
+  tracks: {},  // { [trackId]: { peakL, peakR, holdL, holdR, holdTimeL, holdTimeR, hasTelemetry, lastTelemetryMs } }
+  master: createPeakEntry(),
 }
 
 // ── Store ───────────────────────────────────────────────────────────────────
@@ -46,9 +43,10 @@ const useMixerStore = create((set, get) => ({
         }
         // Ensure peak entry exists
         if (!peaksSnapshot.tracks[t.id]) {
-          peaksSnapshot.tracks[t.id] = newPeakEntry()
+          peaksSnapshot.tracks[t.id] = createPeakEntry()
         }
       }
+      prunePeakSnapshotTracks(peaksSnapshot, trackOrder)
       set({ tracks, trackOrder })
     } catch (e) {
       console.warn('[mixerStore] init failed:', e.message)
@@ -132,7 +130,7 @@ const useMixerStore = create((set, get) => ({
             muted: t.muted, solo: t.solo, visualOnly: t.visualOnly ?? false, type: t.type,
           }
           if (!peaksSnapshot.tracks[t.id]) {
-            peaksSnapshot.tracks[t.id] = newPeakEntry()
+            peaksSnapshot.tracks[t.id] = createPeakEntry()
           }
         }
       }
@@ -140,6 +138,7 @@ const useMixerStore = create((set, get) => ({
       for (const id of Object.keys(tracks)) {
         if (!trackOrder.includes(Number(id))) delete tracks[id]
       }
+      prunePeakSnapshotTracks(peaksSnapshot, trackOrder)
       return { tracks, trackOrder }
     })
   },

@@ -52,6 +52,8 @@ void ProjectManager::ensureDirectories() {
 
 std::string ProjectManager::getProjectDir()  const { return projectDir_; }
 
+std::string ProjectManager::getProjectName() const { return projectName_; }
+
 std::string ProjectManager::getProxiesDir()  const {
     return (fs::path(projectDir_) / "proxies").string();
 }

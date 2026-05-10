@@ -5,6 +5,7 @@
 #include "FrameCache.h"
 #include "model/TimelineTypes.h"
 
+#include <functional>
 #include <unordered_map>
 #include <vector>
 
@@ -30,6 +31,13 @@ struct VideoEvent {
     // Kept for analytics and future modifiers that need a chord-inclusive index.
     // The shader no longer reads this — `orientation` is consumed instead.
     int   globalNoteIndex = 0;
+
+    // Internal resolver tie-break metadata. For same-tick note-ons the flip
+    // resolver prefers source insertion/id order (pattern note id when
+    // available), then pitch, then original emission order. Not persisted.
+    bool    hasSourceTriggerOrder = false;
+    int64_t sourceTriggerOrder    = 0;
+    int     originalEmissionOrder = 0;
 
     // Trim end point in source video (seconds). Used by FrameCollector to
     // detect when a note sustains past the sample's trimmed video length.
@@ -62,8 +70,9 @@ struct VideoEvent {
     //   • Arp expansion:  resolved arp-step pitch from getNextArpNote().
     int pitch = 60;
 
-    // Mono ordinal among chord-filtered trigger events on the same track.
-    // -1 for chord events (≥2 events sharing one tick on the same track).
+    // Resolved trigger ordinal on the same track. In EveryNote mode this
+    // counts every note-on, including same-tick chord members. Other modes
+    // keep chord-transparent behavior and use -1 for chord events.
     // Set by VideoFlipApplier after the build loop completes.
     int monoOrdinal = -1;
 
@@ -84,7 +93,8 @@ public:
     SyncManager(Transport& transport,
                 std::vector<VideoDecoder*>& decoders,
                 FrameCache& cache,
-                VideoCompositor* compositor = nullptr);
+                VideoCompositor* compositor = nullptr,
+                std::function<int64_t()> presentationPositionProvider = {});
 
     // Wire in per-region proxy decoders and the Timeline used to resolve
     // SampleRegion metadata during videoTick(). Both references are stored
@@ -131,6 +141,7 @@ private:
     std::vector<VideoDecoder*>& decoders_;
     FrameCache&                 cache_;
     VideoCompositor*            compositor_;  // nullable
+    std::function<int64_t()>     presentationPositionProvider_;
 
     // Region proxy lookup surfaces — both nullable; nullptr disables
     // per-region proxy preference (videoTick falls back to the source decoder).

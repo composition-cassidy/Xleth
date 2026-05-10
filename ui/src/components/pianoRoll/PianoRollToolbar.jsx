@@ -25,6 +25,7 @@ export default function PianoRollToolbar({
   stickyNoteLength, onStickyNoteLengthChange,
   onZoomIn, onZoomOut,
   onOpenSamplerSettings,
+  samplerSettingsDisabled = false,
   onClose,
   // Detach / float props
   floating = false, onDetach, onDock,
@@ -34,6 +35,11 @@ export default function PianoRollToolbar({
   regions, currentRegionId, onRegionChange,
 }) {
   const hasPatternDropdown = Array.isArray(availablePatterns) && availablePatterns.length > 0
+  const regionOptions = Array.isArray(regions) ? regions : []
+  const currentRegionValue = String(currentRegionId ?? -1)
+  const samplerSettingsTitle = samplerSettingsDisabled
+    ? 'Assign a region to edit sampler settings'
+    : 'Sampler Settings'
 
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleInput, setTitleInput] = useState('')
@@ -98,20 +104,19 @@ export default function PianoRollToolbar({
           </select>
         )}
       </div>
-      {Array.isArray(regions) && regions.length > 0 && (
-        <div className="piano-roll-toolbar-group">
-          <select
-            className="piano-roll-region-select"
-            value={currentRegionId ?? ''}
-            onChange={(e) => onRegionChange?.(Number(e.target.value))}
-            title="Sample region"
-          >
-            {regions.map((r) => (
-              <option key={r.id} value={r.id}>{r.name}</option>
-            ))}
-          </select>
-        </div>
-      )}
+      <div className="piano-roll-toolbar-group">
+        <select
+          className="piano-roll-region-select"
+          value={currentRegionValue}
+          onChange={(e) => onRegionChange?.(Number(e.target.value))}
+          title="Sample region"
+        >
+          <option value={-1}>None - assign later</option>
+          {regionOptions.map((r) => (
+            <option key={r.id} value={r.id}>{r.name}</option>
+          ))}
+        </select>
+      </div>
       <div className="piano-roll-toolbar-group">
         {TOOLS.map((t) => {
           const Icon = t.icon
@@ -151,8 +156,9 @@ export default function PianoRollToolbar({
       <div className="piano-roll-toolbar-group">
         <button
           className="timeline-toolbar-button"
-          title="Sampler Settings"
+          title={samplerSettingsTitle}
           onClick={onOpenSamplerSettings}
+          disabled={samplerSettingsDisabled}
         >
           <Sliders size={14} />
         </button>

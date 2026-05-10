@@ -1,0 +1,150 @@
+^C:\USERS\KRASEN\DESKTOP\XLETH\BRIDGE\BUILD_OFFLINE\_DEPS\JUCE-SUBBUILD\CMAKEFILES\33CA8C03B761D43BF8575B9E783E0689\JUCE-POPULATE-MKDIR.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -Dcfgdir=/Debug -P C:/Users/Krasen/Desktop/XLETH/bridge/build_offline/_deps/juce-subbuild/juce-populate-prefix/tmp/juce-populate-mkdirs.cmake
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E touch C:/Users/Krasen/Desktop/XLETH/bridge/build_offline/_deps/juce-subbuild/juce-populate-prefix/src/juce-populate-stamp/Debug/juce-populate-mkdir
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^C:\USERS\KRASEN\DESKTOP\XLETH\BRIDGE\BUILD_OFFLINE\_DEPS\JUCE-SUBBUILD\CMAKEFILES\33CA8C03B761D43BF8575B9E783E0689\JUCE-POPULATE-DOWNLOAD.RULE
+setlocal
+cd C:\Users\Krasen\Desktop\XLETH\bridge\build_offline\_deps
+if %errorlevel% neq 0 goto :cmEnd
+C:
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -DCMAKE_MESSAGE_LOG_LEVEL=VERBOSE -P C:/Users/Krasen/Desktop/XLETH/bridge/build_offline/_deps/juce-subbuild/juce-populate-prefix/tmp/juce-populate-gitclone.cmake
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E touch C:/Users/Krasen/Desktop/XLETH/bridge/build_offline/_deps/juce-subbuild/juce-populate-prefix/src/juce-populate-stamp/Debug/juce-populate-download
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^C:\USERS\KRASEN\DESKTOP\XLETH\BRIDGE\BUILD_OFFLINE\_DEPS\JUCE-SUBBUILD\CMAKEFILES\33CA8C03B761D43BF8575B9E783E0689\JUCE-POPULATE-UPDATE.RULE
+setlocal
+cd C:\Users\Krasen\Desktop\XLETH\bridge\build_offline\_deps\juce-src
+if %errorlevel% neq 0 goto :cmEnd
+C:
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -Dcan_fetch=YES -DCMAKE_MESSAGE_LOG_LEVEL=VERBOSE -P C:/Users/Krasen/Desktop/XLETH/bridge/build_offline/_deps/juce-subbuild/juce-populate-prefix/tmp/juce-populate-gitupdate.cmake
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^C:\USERS\KRASEN\DESKTOP\XLETH\BRIDGE\BUILD_OFFLINE\_DEPS\JUCE-SUBBUILD\CMAKEFILES\33CA8C03B761D43BF8575B9E783E0689\JUCE-POPULATE-PATCH.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -E echo_append
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E touch C:/Users/Krasen/Desktop/XLETH/bridge/build_offline/_deps/juce-subbuild/juce-populate-prefix/src/juce-populate-stamp/Debug/juce-populate-patch
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^C:\USERS\KRASEN\DESKTOP\XLETH\BRIDGE\BUILD_OFFLINE\_DEPS\JUCE-SUBBUILD\CMAKEFILES\33CA8C03B761D43BF8575B9E783E0689\JUCE-POPULATE-CONFIGURE.RULE
+setlocal
+cd C:\Users\Krasen\Desktop\XLETH\bridge\build_offline\_deps\juce-build
+if %errorlevel% neq 0 goto :cmEnd
+C:
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E echo_append
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E touch C:/Users/Krasen/Desktop/XLETH/bridge/build_offline/_deps/juce-subbuild/juce-populate-prefix/src/juce-populate-stamp/Debug/juce-populate-configure
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^C:\USERS\KRASEN\DESKTOP\XLETH\BRIDGE\BUILD_OFFLINE\_DEPS\JUCE-SUBBUILD\CMAKEFILES\33CA8C03B761D43BF8575B9E783E0689\JUCE-POPULATE-BUILD.RULE
+setlocal
+cd C:\Users\Krasen\Desktop\XLETH\bridge\build_offline\_deps\juce-build
+if %errorlevel% neq 0 goto :cmEnd
+C:
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E echo_append
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E touch C:/Users/Krasen/Desktop/XLETH/bridge/build_offline/_deps/juce-subbuild/juce-populate-prefix/src/juce-populate-stamp/Debug/juce-populate-build
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^C:\USERS\KRASEN\DESKTOP\XLETH\BRIDGE\BUILD_OFFLINE\_DEPS\JUCE-SUBBUILD\CMAKEFILES\33CA8C03B761D43BF8575B9E783E0689\JUCE-POPULATE-INSTALL.RULE
+setlocal
+cd C:\Users\Krasen\Desktop\XLETH\bridge\build_offline\_deps\juce-build
+if %errorlevel% neq 0 goto :cmEnd
+C:
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E echo_append
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E touch C:/Users/Krasen/Desktop/XLETH/bridge/build_offline/_deps/juce-subbuild/juce-populate-prefix/src/juce-populate-stamp/Debug/juce-populate-install
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^C:\USERS\KRASEN\DESKTOP\XLETH\BRIDGE\BUILD_OFFLINE\_DEPS\JUCE-SUBBUILD\CMAKEFILES\33CA8C03B761D43BF8575B9E783E0689\JUCE-POPULATE-TEST.RULE
+setlocal
+cd C:\Users\Krasen\Desktop\XLETH\bridge\build_offline\_deps\juce-build
+if %errorlevel% neq 0 goto :cmEnd
+C:
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E echo_append
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E touch C:/Users/Krasen/Desktop/XLETH/bridge/build_offline/_deps/juce-subbuild/juce-populate-prefix/src/juce-populate-stamp/Debug/juce-populate-test
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^C:\USERS\KRASEN\DESKTOP\XLETH\BRIDGE\BUILD_OFFLINE\_DEPS\JUCE-SUBBUILD\CMAKEFILES\1649FCA924A6D2EA716428F7808A34E6\JUCE-POPULATE-COMPLETE.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -E make_directory C:/Users/Krasen/Desktop/XLETH/bridge/build_offline/_deps/juce-subbuild/CMakeFiles/Debug
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E touch C:/Users/Krasen/Desktop/XLETH/bridge/build_offline/_deps/juce-subbuild/CMakeFiles/Debug/juce-populate-complete
+if %errorlevel% neq 0 goto :cmEnd
+"C:\Program Files\CMake\bin\cmake.exe" -E touch C:/Users/Krasen/Desktop/XLETH/bridge/build_offline/_deps/juce-subbuild/juce-populate-prefix/src/juce-populate-stamp/Debug/juce-populate-done
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^C:\USERS\KRASEN\DESKTOP\XLETH\BRIDGE\BUILD_OFFLINE\_DEPS\JUCE-SUBBUILD\CMAKEFILES\4C327EE36FF80D61896B4C5B23D3B118\JUCE-POPULATE.RULE
+setlocal
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
+^C:\USERS\KRASEN\DESKTOP\XLETH\BRIDGE\BUILD_OFFLINE\_DEPS\JUCE-SUBBUILD\CMAKELISTS.TXT
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/Krasen/Desktop/XLETH/bridge/build_offline/_deps/juce-subbuild -BC:/Users/Krasen/Desktop/XLETH/bridge/build_offline/_deps/juce-subbuild --check-stamp-file C:/Users/Krasen/Desktop/XLETH/bridge/build_offline/_deps/juce-subbuild/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

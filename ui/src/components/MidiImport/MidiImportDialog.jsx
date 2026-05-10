@@ -15,8 +15,6 @@ import { PPQ } from '../../constants/timeline.js'
 // Changing a row's value affects only the current import; the default is not
 // auto-updated, since per-track names differ wildly across MIDI files.
 import {
-  MAX_NOTE_LENGTH_OPTIONS,
-  DEFAULT_MAX_NOTE_LENGTH_STORAGE_KEY,
   DEFAULT_MAX_NOTE_LENGTH_DENOM,
   readDefaultMaxNoteLengthDenom,
   denomToTicks,
@@ -241,8 +239,7 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
     return outputTracks.every(ot => {
       const opts = outputTrackOptions[ot.outputTrackIndex]
       if (!opts) return false
-      if (!opts.enabled) return true  // disabled rows skip validation
-      return opts.sampleId != null && Number(opts.sampleId) >= 0
+      return opts.enabled !== false
     })
   }, [outputTracks, outputTrackOptions])
 
@@ -251,19 +248,12 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
     [outputTracks, outputTrackOptions]
   )
 
-  const missingSampleCount = useMemo(
-    () => outputTracks.filter(ot => {
-      const o = outputTrackOptions[ot.outputTrackIndex]
-      return o?.enabled && (o.sampleId == null || Number(o.sampleId) < 0)
-    }).length,
-    [outputTracks, outputTrackOptions]
-  )
 
   // ── Two-step commit flow ────────────────────────────────────────────────────
   const handleImport = useCallback(async () => {
     if (!summary || !filePath) return
     if (!canImport) {
-      console.log('[MidiImport] Import blocked:', missingSampleCount, 'tracks missing sample assignment')
+      console.log('[MidiImport] Import blocked: output track options incomplete')
       return
     }
 
@@ -351,7 +341,7 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
       setErrorMsg(String(err?.message ?? err))
       setPhase('error')
     }
-  }, [summary, filePath, canImport, missingSampleCount, tempoOverride, outputTracks, outputTrackOptions, trackOptions, enabledCount, projectBpm, showToast])
+  }, [summary, filePath, canImport, tempoOverride, outputTracks, outputTrackOptions, trackOptions, enabledCount, projectBpm, showToast])
 
   if (!isOpen) return null
 

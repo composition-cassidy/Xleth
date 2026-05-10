@@ -17,6 +17,7 @@ extern "C" {
 // Force assert even in Release builds
 #undef NDEBUG
 #include <cassert>
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -61,6 +62,57 @@ static ProbeResult probeFile(const std::string& path)
     return r;
 }
 
+struct ExportTrimWindow
+{
+    int64_t requestedDuration = 0;
+    int64_t totalPrerollSamples = 0;
+    int64_t historyPreroll = 0;
+    int64_t renderStart = 0;
+    int64_t totalDiscard = 0;
+    int64_t renderSamplesNeeded = 0;
+    int64_t renderEnd = 0;
+};
+
+static ExportTrimWindow computeExportTrimWindow(int64_t startSample, int64_t endSample,
+                                                int trackLatency, int masterLatency)
+{
+    ExportTrimWindow window;
+    window.requestedDuration = endSample - startSample;
+    window.totalPrerollSamples = static_cast<int64_t>(trackLatency) + static_cast<int64_t>(masterLatency);
+    window.historyPreroll = std::min(startSample, window.totalPrerollSamples);
+    window.renderStart = startSample - window.historyPreroll;
+    window.totalDiscard = window.historyPreroll + window.totalPrerollSamples;
+    window.renderSamplesNeeded = window.requestedDuration + window.totalDiscard;
+    window.renderEnd = window.renderStart + window.renderSamplesNeeded;
+    return window;
+}
+
+static void verifyExportTrimWindowMath()
+{
+    const auto projectStartWithPdc = computeExportTrimWindow(0, 48000, 1024, 0);
+    assert(projectStartWithPdc.historyPreroll == 0);
+    assert(projectStartWithPdc.renderStart == 0);
+    assert(projectStartWithPdc.totalDiscard == 1024);
+    assert(projectStartWithPdc.renderSamplesNeeded == projectStartWithPdc.requestedDuration + 1024);
+
+    const auto midProjectWithPdc = computeExportTrimWindow(48000, 96000, 1024, 0);
+    assert(midProjectWithPdc.historyPreroll == 1024);
+    assert(midProjectWithPdc.renderStart == 48000 - 1024);
+    assert(midProjectWithPdc.totalDiscard == 2048);
+    assert(midProjectWithPdc.renderSamplesNeeded == midProjectWithPdc.requestedDuration + 2048);
+
+    const auto noPdc = computeExportTrimWindow(0, 48000, 0, 0);
+    assert(noPdc.historyPreroll == 0);
+    assert(noPdc.totalDiscard == 0);
+    assert(noPdc.renderStart == 0);
+    assert(noPdc.renderSamplesNeeded == noPdc.requestedDuration);
+
+    const auto masterLatencyOnly = computeExportTrimWindow(0, 48000, 0, 1024);
+    assert(masterLatencyOnly.historyPreroll == 0);
+    assert(masterLatencyOnly.totalDiscard == 1024);
+    assert(masterLatencyOnly.renderSamplesNeeded == masterLatencyOnly.requestedDuration + 1024);
+}
+
 int main()
 {
     std::fprintf(stderr, "\n[TEST:Renderer] Starting offline render tests...\n");
@@ -73,6 +125,9 @@ int main()
     gpu.detectAdapters();
     bool hasGpu = gpu.createDevice();
     std::fprintf(stderr, "[TEST:Renderer] GPU available: %s\n", hasGpu ? "YES" : "NO");
+    std::fprintf(stderr, "\n[TEST:Renderer] --- Test 0: Export trim window math ---\n");
+    verifyExportTrimWindowMath();
+    std::fprintf(stderr, "[TEST:Renderer] Test 0: PASSED\n");
 
     // ── Test 1: Build video events from timeline ────────────────────────
     {
@@ -272,6 +327,21 @@ int main()
         MixEngine mixer;
         mixer.setTimeline(&timeline);
         mixer.prepare(48000.0, 512);
+        mixer.setNonRealtime(true);
+
+        const int masterRsNode = mixer.addMasterEffect("resonancesuppressor", 0);
+        assert(masterRsNode >= 0 && "master RS should be added for trim regression");
+        assert(mixer.setMasterEffectParameter(masterRsNode, "processing_mode", 1.0f));
+        assert(mixer.setMasterEffectParameter(masterRsNode, "quality", 2.0f));
+        assert(mixer.setMasterEffectParameter(masterRsNode, "depth", 0.0f));
+        assert(mixer.setMasterEffectParameter(masterRsNode, "mix", 100.0f));
+        assert(mixer.setMasterEffectParameter(masterRsNode, "delta", 0.0f));
+        mixer.prepare(48000.0, 512);
+        mixer.setNonRealtime(true);
+
+        const auto latencySnapshot = mixer.getLatencyCompensationSnapshot();
+        assert(latencySnapshot.maxAudibleTrackLatencySamples == 0);
+        assert(latencySnapshot.masterInsertLatencySamples == 2048);
 
         // Export settings
         ExportSettings settings;
@@ -338,7 +408,8 @@ int main()
             assert(probe.streamCount == 2 && "Should have 2 streams");
             assert(probe.hasVideo && "Must have video stream");
             assert(probe.hasAudio && "Must have audio stream");
-            assert(probe.duration > 0.5 && probe.duration < 2.0 && "Duration ~1 second");
+            assert(probe.duration > 0.9 && probe.duration < 1.2
+                   && "Duration should stay close to the requested 1 second after trim");
 
             // Cleanup
             std::filesystem::remove(settings.outputPath);

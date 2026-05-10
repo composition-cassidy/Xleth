@@ -63,6 +63,7 @@
 #include "render/RenderClock.h"
 #include "export/FFmpegMuxer.h"       // ExportSettings
 
+#include "ExportNaming.h"
 #include "XlethDebug.h"
 
 #ifdef _WIN32
@@ -80,12 +81,15 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -199,6 +203,7 @@ std::unique_ptr<SyncManager> syncManager;
 // ── Video thread ──────────────────────────────────────────────────────────
 std::thread       videoThread;
 std::atomic<bool> videoRunning{false};
+std::atomic<uint64_t> videoThreadCompletedTicks{0};
 std::atomic<bool> g_previewDirty{false};  // set by bridge functions to force a re-render while stopped
 
 // Guards both SyncManager event mutations (main thread) and videoTick() calls
@@ -433,8 +438,9 @@ void blitYuvToCanvas(std::vector<uint8_t>& canvas,
 
 // Find the active VideoEvent on the given track at beatPos (mute-aware).
 // Returns nullptr when no event is active, or when the track is muted.
-// If multiple events on the same track are active (shouldn't happen with
-// non-overlapping clips, but be defensive), the latest-starting one wins.
+// If multiple events on the same track are active, the latest-starting one
+// wins. Same-start ties choose the highest resolved ordinal so an EveryNote
+// chord shows the final state after all chord members fire.
 static const VideoEvent* findActiveEventOnTrack(
     const std::vector<VideoEvent>& events, int trackId, double beatPos)
 {
@@ -447,7 +453,12 @@ static const VideoEvent* findActiveEventOnTrack(
         if (ev.trackId != trackId) continue;
         if (beatPos < ev.startBeat) continue;
         if (beatPos >= ev.startBeat + ev.durationBeats) continue;
-        if (!best || ev.startBeat > best->startBeat) best = &ev;
+        if (!best
+            || ev.startBeat > best->startBeat
+            || (ev.startBeat == best->startBeat
+                && ev.globalNoteIndex > best->globalNoteIndex)) {
+            best = &ev;
+        }
     }
     return best;
 }
@@ -591,6 +602,12 @@ static void rebuildAllSamplers()
     audioEngine->getMixEngine().rebuildAllSamplers();
 }
 
+static void syncMixerTrackSlots(bool snapVolumeSmoothers = false)
+{
+    if (!audioEngine) return;
+    audioEngine->getMixEngine().syncTrackSlotsFromTimeline(snapVolumeSmoothers);
+}
+
 // Invalidate and re-submit render cache for every clip that needs processing.
 // Call after project_load, undo, redo, or any clip-params change.
 static void refreshAllClipCaches()
@@ -728,6 +745,40 @@ static void ensureSourceDecoder(int sourceId) {
 
 }
 
+struct PatternNoteRefForVideo {
+    const PatternNote* note = nullptr;
+    int sourceOrder = 0;
+};
+
+static bool patternNoteRefForVideoLess(const PatternNoteRefForVideo& a,
+                                       const PatternNoteRefForVideo& b)
+{
+    if (a.note->position.ticks != b.note->position.ticks)
+        return a.note->position.ticks < b.note->position.ticks;
+
+    const int orderA = a.note->id > 0 ? a.note->id : a.sourceOrder;
+    const int orderB = b.note->id > 0 ? b.note->id : b.sourceOrder;
+    if (orderA != orderB) return orderA < orderB;
+
+    if (a.note->pitch != b.note->pitch) return a.note->pitch < b.note->pitch;
+    return a.sourceOrder < b.sourceOrder;
+}
+
+static std::vector<PatternNoteRefForVideo> sortedPatternNoteRefsForVideo(const Pattern& pattern)
+{
+    std::vector<PatternNoteRefForVideo> refs;
+    refs.reserve(pattern.notes.size());
+    for (int i = 0; i < static_cast<int>(pattern.notes.size()); ++i)
+        refs.push_back({&pattern.notes[static_cast<std::size_t>(i)], i});
+    std::sort(refs.begin(), refs.end(), patternNoteRefForVideoLess);
+    return refs;
+}
+
+static int sourceOrderForVideo(const PatternNote& note, int fallbackOrder)
+{
+    return note.id > 0 ? note.id : fallbackOrder;
+}
+
 // Rebuild SyncManager's VideoEvent list from the current clips on the
 // timeline. Each clip with a video-backed region produces one fullscreen
 // VideoEvent mapping the clip's beat range to the correct source-time.
@@ -836,7 +887,11 @@ static void rebuildVideoEventsFromClips() {
             ev.x = 0.0f; ev.y = 0.0f;
             ev.width = 1.0f; ev.height = 1.0f;
             ev.opacity = 1.0f;
-            ev.globalNoteIndex = counter++;
+            const int clipEmissionOrder = counter++;
+            ev.globalNoteIndex = clipEmissionOrder;
+            ev.hasSourceTriggerOrder = true;
+            ev.sourceTriggerOrder = clip->id > 0 ? clip->id : clipEmissionOrder;
+            ev.originalEmissionOrder = clipEmissionOrder;
             ev.pitch           = clip->pitchOffset;  // flip-v2 resolver input (spec §1)
             eventsBuf.push_back(ev);
             ++added;
@@ -902,14 +957,12 @@ static void rebuildVideoEventsFromClips() {
                     && decoderPtrs[static_cast<size_t>(region->sourceId)];
                 if (!hasVideo) { ++blocksSkipped; continue; }
 
-                // Sort notes by position within the pattern (stable iteration order).
+                // Sort notes by position, then source note id/order for
+                // deterministic same-tick chord resolution.
+                const auto noteRefs = sortedPatternNoteRefsForVideo(*pattern);
                 std::vector<const PatternNote*> notes;
-                notes.reserve(pattern->notes.size());
-                for (const auto& n : pattern->notes) notes.push_back(&n);
-                std::sort(notes.begin(), notes.end(),
-                    [](const PatternNote* a, const PatternNote* b) {
-                        return a->position.ticks < b->position.ticks;
-                    });
+                notes.reserve(noteRefs.size());
+                for (const auto& ref : noteRefs) notes.push_back(ref.note);
 
                 const int64_t blockPosTicks    = block->position.ticks;
                 const int64_t blockOffsetTicks = block->offset.ticks;
@@ -945,7 +998,8 @@ static void rebuildVideoEventsFromClips() {
                     notesAdded += static_cast<int>(arpEvts.size());
                 } else {
                     for (int64_t L = firstLoopIdx; L <= lastLoopIdx; ++L) {
-                        for (const PatternNote* note : notes) {
+                        for (const auto& noteRef : noteRefs) {
+                            const PatternNote* note = noteRef.note;
                             const int64_t tapePos = L * patternLenTicks + note->position.ticks;
                             if (tapePos < windowStart) continue;
                             if (tapePos >= windowEnd) continue;
@@ -983,7 +1037,11 @@ static void rebuildVideoEventsFromClips() {
                             ev.x = 0.0f; ev.y = 0.0f;
                             ev.width = 1.0f; ev.height = 1.0f;
                             ev.opacity         = note->velocity;
-                            ev.globalNoteIndex = counter++;
+                            const int noteEmissionOrder = counter++;
+                            ev.globalNoteIndex = noteEmissionOrder;
+                            ev.hasSourceTriggerOrder = true;
+                            ev.sourceTriggerOrder = sourceOrderForVideo(*note, noteRef.sourceOrder);
+                            ev.originalEmissionOrder = noteEmissionOrder;
                             ev.pitch           = note->pitch;  // flip-v2 resolver input
                             eventsBuf.push_back(ev);
                             ++notesAdded;
@@ -2013,8 +2071,8 @@ static void videoThreadBody()
                     if (isPlaying && g_previewAnimMgr)
                         g_previewAnimMgr->advanceAll(deltaMs);
 
-                    // Compute output frame index from transport sample position
-                    int64_t samplePos  = t.getPositionSamples();
+                    // Compute output frame index from engine-owned presentation time.
+                    int64_t samplePos  = audioEngine->getLivePresentationPositionSamples();
                     int     sampleRate = static_cast<int>(t.getSampleRate());
                     int previewFps = layout.previewFps;
                     if (previewFps < 1 || previewFps > 120) previewFps = 30;
@@ -2334,27 +2392,50 @@ static void videoThreadBody()
         }
         std::this_thread::sleep_for(
             std::chrono::microseconds(1000000 / previewFps));
+        videoThreadCompletedTicks.fetch_add(1, std::memory_order_release);
     }
 }
 
 static void startVideoThread()
 {
     if (videoThread.joinable()) return;   // already running
+    videoThreadCompletedTicks.store(0, std::memory_order_release);
     videoRunning = true;
     videoThread  = std::thread(&videoThreadBody);
+
+    // Avoid shutdown racing the preview thread's first SyncManager/frame-cache
+    // tick when tests initialize and immediately tear down the bridge.
+    const auto deadline = std::chrono::steady_clock::now()
+        + std::chrono::milliseconds(500);
+    while (videoRunning
+           && videoThreadCompletedTicks.load(std::memory_order_acquire) == 0
+           && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 }
 
 static void stopVideoThread()
 {
+    std::fprintf(stderr, "[BridgeShutdown] stopping video thread\n");
     videoRunning = false;
     if (videoThread.joinable())
         videoThread.join();
+    std::fprintf(stderr, "[BridgeShutdown] video thread stopped\n");
 }
 
 Napi::Value Initialize(const Napi::CallbackInfo& info)
 {
     Napi::Env env = info.Env();
     BridgeCallLog log("initialize");
+    bool disablePreviewGpuForInit = false;
+    if (info.Length() > 0 && info[0].IsObject()) {
+        Napi::Object options = info[0].As<Napi::Object>();
+        if (options.Has("disablePreviewGpu")
+            && options.Get("disablePreviewGpu").IsBoolean()) {
+            disablePreviewGpuForInit =
+                options.Get("disablePreviewGpu").As<Napi::Boolean>().Value();
+        }
+    }
 
     if (isInitialised()) {
         log.done("already init");
@@ -2398,7 +2479,12 @@ Napi::Value Initialize(const Napi::CallbackInfo& info)
         audioEngine->getTransport(),
         decoderPtrs,
         *frameCache,
-        nullptr
+        nullptr,
+        []() -> int64_t {
+            return audioEngine
+                ? audioEngine->getLivePresentationPositionSamples()
+                : int64_t{0};
+        }
     );
 
     // 6. Initialize FrameOutput (double-buffered RGBA)
@@ -2417,6 +2503,7 @@ Napi::Value Initialize(const Napi::CallbackInfo& info)
 
     // Wire MixEngine to Timeline (safe before playback starts)
     audioEngine->getMixEngine().setTimeline(g_timeline.get());
+    audioEngine->refreshLivePresentationLatency();
 
     // Bind Timeline's per-clip cache-invalidation hook to MixEngine so that
     // addClip/restoreClip automatically enqueue a render-cache rebuild.
@@ -2443,7 +2530,18 @@ Napi::Value Initialize(const Napi::CallbackInfo& info)
         }
     }
 
-    if (g_gpuDevice && g_gpuDevice->hasDevice()) {
+    const char* disablePreviewGpuEnv = std::getenv("XLETH_BRIDGE_DISABLE_PREVIEW_GPU");
+    const bool disablePreviewGpu = disablePreviewGpuForInit
+        ||
+        disablePreviewGpuEnv
+        && (std::strcmp(disablePreviewGpuEnv, "1") == 0
+            || std::strcmp(disablePreviewGpuEnv, "true") == 0
+            || std::strcmp(disablePreviewGpuEnv, "TRUE") == 0);
+
+    if (disablePreviewGpu) {
+        g_previewDiag.initInitFailures.fetch_add(1, std::memory_order_relaxed);
+        std::fprintf(stderr, "[PreviewUnify] GPU preview disabled by XLETH_BRIDGE_DISABLE_PREVIEW_GPU\n");
+    } else if (g_gpuDevice && g_gpuDevice->hasDevice()) {
         auto* device = g_gpuDevice->getDevice();
         auto* devCtx = g_gpuDevice->getContext();
 
@@ -2508,55 +2606,77 @@ void Shutdown(const Napi::CallbackInfo& info)
     if (videoThread.joinable())
         videoThread.join();
 
-    // [PreviewUnify] Destroy GPU preview pipeline (after thread join, before g_gpuDevice)
-    g_previewCompositorReady = false;
-    g_previewPauseForExport     = false;
-    g_previewPauseForVisibility = false;   // Phase 7
-    g_previewCompositor.reset();
-    g_previewRenderDecoder.reset();
-    g_previewRenderCache.reset();
-    g_previewCollector.reset();
-    g_previewAnimMgr.reset();
+    // [PreviewUnify] Destroy GPU preview pipeline (after thread join, before g_gpuDevice).
+    // Shut down the initialized compositor explicitly so a short
+    // initialize/assert/shutdown test does not rely on destructor ordering for
+    // D3D resources. Keep the decoder/cache release path otherwise unchanged.
+    {
+        std::lock_guard<std::mutex> lock(g_previewCompositorMutex);
+        g_previewCompositorReady = false;
+        g_previewPauseForExport     = false;
+        g_previewPauseForVisibility = false;   // Phase 7
+        if (g_previewCompositor)
+            g_previewCompositor->shutdown();
+        g_previewCompositor.reset();
+        g_previewRenderDecoder.reset();
+        g_previewRenderCache.reset();
+        g_previewCollector.reset();
+        g_previewAnimMgr.reset();
+    }
+    std::fprintf(stderr, "[BridgeShutdown] preview pipeline released\n");
 
     for (auto& [k, sc] : scalerCache) {
         if (sc.ctx) sws_freeContext(sc.ctx);
     }
     scalerCache.clear();
+    std::fprintf(stderr, "[BridgeShutdown] scaler cache cleared\n");
 
     frameOutput.shutdown();
+    std::fprintf(stderr, "[BridgeShutdown] frame output stopped\n");
 
     // Tear down the proxy pool before SyncManager — proxy jobs can still be
     // running ffmpeg subprocesses, and shutdown() waits up to 10 s for them.
+    std::fprintf(stderr, "[BridgeShutdown] stopping proxy manager\n");
     if (g_proxyManager) g_proxyManager->shutdown();
     g_proxyManager.reset();
+    std::fprintf(stderr, "[BridgeShutdown] proxy manager stopped\n");
+
+    std::fprintf(stderr, "[BridgeShutdown] stopping audio engine\n");
+    audioEngine->shutdown();
+    audioEngine.reset();
+    std::fprintf(stderr, "[BridgeShutdown] audio engine stopped\n");
 
     syncManager.reset();
+    std::fprintf(stderr, "[BridgeShutdown] sync manager released\n");
 
     for (auto& d : decoderOwner)
         d->close();
     decoderOwner.clear();
     decoderPtrs.clear();
+    std::fprintf(stderr, "[BridgeShutdown] decoders released\n");
 
     // Region decoders are owned by unique_ptr — destructor closes each cleanly.
     regionDecoderPtrs.clear();
     regionDecoderOwner.clear();
+    std::fprintf(stderr, "[BridgeShutdown] region decoders released\n");
 
     // Phase 1B teardown — FrameServer (before frameCache)
     g_frameServer.reset();
+    std::fprintf(stderr, "[BridgeShutdown] frame server released\n");
 
     // Phase 1 teardown (before audioEngine, after video thread)
     g_undoManager.reset();
     g_timeline.reset();
     g_projectManager.reset();
-
-    audioEngine->shutdown();
-    audioEngine.reset();
+    std::fprintf(stderr, "[BridgeShutdown] project state released\n");
 
     g_mipmapCache.reset();  // release mipmaps before SampleBank (they hold buffer ptrs)
     sampleBank.reset();
     frameCache.reset();
+    std::fprintf(stderr, "[BridgeShutdown] sample/frame caches released\n");
 
     juceInit.reset();
+    std::fprintf(stderr, "[BridgeShutdown] JUCE released\n");
     log.done();
 }
 
@@ -2733,7 +2853,7 @@ void Play(const Napi::CallbackInfo& info)
     audioEngine->getMixEngine().rebuildAllSamplers();
 
     rebuildVideoEventsFromClips();
-    audioEngine->getTransport().play();
+    audioEngine->playTimeline();
 }
 
 void Stop(const Napi::CallbackInfo& info)
@@ -2792,13 +2912,39 @@ Napi::Value GetTransportState(const Napi::CallbackInfo& info)
     }
 
     Transport& t = audioEngine->getTransport();
+    const double sampleRate = t.getSampleRate();
+    const double bpm = t.getBPM();
+    const int64_t rawPositionSamples = t.getPositionSamples();
+    const int64_t presentationPositionSamples =
+        audioEngine->getLivePresentationPositionSamples();
+    const double presentationSeconds = sampleRate > 0.0
+        ? static_cast<double>(presentationPositionSamples) / sampleRate
+        : 0.0;
+    const double presentationBeats = (sampleRate > 0.0 && bpm > 0.0)
+        ? (static_cast<double>(presentationPositionSamples) * bpm) / (60.0 * sampleRate)
+        : 0.0;
+    const auto presentationDiag =
+        audioEngine->getLivePresentationLatencyDiagnostics();
 
     Napi::Object obj = Napi::Object::New(env);
-    obj.Set("positionMs",    Napi::Number::New(env, t.getPositionSeconds() * 1000.0));
-    obj.Set("positionBeats", Napi::Number::New(env, t.getPositionBeats()));
-    obj.Set("positionBars",  Napi::Number::New(env, t.getPositionBars()));
+    obj.Set("positionMs",    Napi::Number::New(env, presentationSeconds * 1000.0));
+    obj.Set("positionBeats", Napi::Number::New(env, presentationBeats));
+    obj.Set("positionBars",  Napi::Number::New(env, static_cast<int>(std::floor(presentationBeats / 4.0)) + 1));
+    obj.Set("positionSamples", Napi::Number::New(env, static_cast<double>(presentationPositionSamples)));
+    obj.Set("rawPositionMs", Napi::Number::New(env, t.getPositionSeconds() * 1000.0));
+    obj.Set("rawPositionBeats", Napi::Number::New(env, t.getPositionBeats()));
+    obj.Set("rawPositionBars", Napi::Number::New(env, t.getPositionBars()));
+    obj.Set("rawPositionSamples", Napi::Number::New(env, static_cast<double>(rawPositionSamples)));
+    obj.Set("livePresentationLatencySamples",
+            Napi::Number::New(env, static_cast<double>(presentationDiag.totalPresentationLatencySamples)));
+    obj.Set("livePresentationMaxTrackLatencySamples",
+            Napi::Number::New(env, static_cast<double>(presentationDiag.maxTrackLatencySamples)));
+    obj.Set("livePresentationMasterLatencySamples",
+            Napi::Number::New(env, static_cast<double>(presentationDiag.masterLatencySamples)));
+    obj.Set("livePresentationDeviceOutputLatencySamples",
+            Napi::Number::New(env, static_cast<double>(presentationDiag.deviceOutputLatencySamples)));
     obj.Set("isPlaying",     Napi::Boolean::New(env, t.isPlaying()));
-    obj.Set("bpm",           Napi::Number::New(env, t.getBPM()));
+    obj.Set("bpm",           Napi::Number::New(env, bpm));
     return obj;
 }
 
@@ -2816,7 +2962,7 @@ void Transport_Seek(const Napi::CallbackInfo& info)
     }
     double beatPos = info[0].As<Napi::Number>().DoubleValue();
     std::cout << "[Bridge] → transport.seek beatPos=" << beatPos << "\n" << std::flush;
-    audioEngine->getTransport().seekToBeat(beatPos);
+    audioEngine->seekTimelineToBeat(beatPos);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3332,6 +3478,7 @@ Napi::Value Project_NewBlank(const Napi::CallbackInfo& info)
         syncClipFadeToMixEngine();
         mix.setGlobalStretchMethod(g_timeline->getGlobalStretchMethod());
         mix.rebuildAllSamplers();
+        audioEngine->refreshLivePresentationLatency();
     }
 
     // 10. Reset ProjectManager (project dir / name / timestamps).
@@ -3475,6 +3622,7 @@ Napi::Value Project_Load(const Napi::CallbackInfo& info)
             if (masterChain.is_object() && !masterChain.is_null())
                 mix.loadMasterEffectChainFromJSON(masterChain);
         }
+        audioEngine->refreshLivePresentationLatency();
     }
 
     // Drop any stale decoders/events from before the load, then re-wire every
@@ -4116,6 +4264,7 @@ void Timeline_SetTrackMuted(const Napi::CallbackInfo& info)
     g_undoManager->execute(
         std::make_unique<SetTrackMutedCommand>(trackId, muted, *g_timeline),
         *g_timeline);
+    audioEngine->refreshLivePresentationLatency();
     // Grid compositor checks track mute live per tick, so no rebuild needed.
     log.done(std::to_string(trackId) + "=" + (muted ? "1" : "0"));
 }
@@ -4140,6 +4289,7 @@ void Timeline_SetTrackVisualOnly(const Napi::CallbackInfo& info)
     g_undoManager->execute(
         std::make_unique<SetTrackVisualOnlyCommand>(trackId, visualOnly, *g_timeline),
         *g_timeline);
+    audioEngine->refreshLivePresentationLatency();
     log.done(std::to_string(trackId) + "=" + (visualOnly ? "1" : "0"));
 }
 
@@ -4164,6 +4314,7 @@ void Timeline_SetTrackSolo(const Napi::CallbackInfo& info)
         std::make_unique<SetTrackSoloCommand>(trackId, solo, *g_timeline),
         *g_timeline);
     // Solo does not affect video — do NOT rebuild video events.
+    audioEngine->refreshLivePresentationLatency();
     log.done(std::to_string(trackId) + "=" + (solo ? "1" : "0"));
 }
 
@@ -4254,6 +4405,7 @@ Napi::Value Timeline_AddTrack(const Napi::CallbackInfo& info)
 
     TrackInfo t = jsToTrack(info[0].As<Napi::Object>());
     g_undoManager->execute(std::make_unique<AddTrackCommand>(t), *g_timeline);
+    syncMixerTrackSlots(false);
 
     // The newly added track always has the highest ID in the sorted map
     auto tracks = g_timeline->getAllTracks();
@@ -4286,6 +4438,7 @@ void Timeline_RemoveTrack(const Napi::CallbackInfo& info)
     if (audioEngine) audioEngine->getMixEngine().closePluginEditorsForTrack(id);
     // Release every sampler pair this track owned (no-op if it was a clip track).
     if (audioEngine) audioEngine->getMixEngine().unloadSamplersForTrack(id);
+    syncMixerTrackSlots(false);
     log.done();
 }
 
@@ -7768,6 +7921,1300 @@ Napi::Value Audio_GetAllPeaks(const Napi::CallbackInfo& info)
 // audio_setTrackVolume(trackId, volume) → undefined
 // Writes the atomic RT parameter and the model's TrackInfo in one call.
 // No undo tracking — use for continuous fader moves and automation.
+// audio_setRealtimeDiagnosticsEnabled(enabled) -> boolean
+Napi::Value Audio_SetRealtimeDiagnosticsEnabled(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised()) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsBoolean()) {
+        Napi::TypeError::New(env, "audio_setRealtimeDiagnosticsEnabled(enabled: boolean)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    audioEngine->getMixEngine().setRealtimeDiagnosticsEnabled(
+        info[0].As<Napi::Boolean>().Value());
+    return Napi::Boolean::New(env, true);
+}
+
+// audio_resetRealtimeDiagnostics() -> boolean
+Napi::Value Audio_ResetRealtimeDiagnostics(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised()) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    audioEngine->getMixEngine().resetRealtimeDiagnostics();
+    return Napi::Boolean::New(env, true);
+}
+
+// audio_getRealtimeDiagnostics() -> JSON string
+Napi::Value Audio_GetRealtimeDiagnostics(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised()) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    return Napi::String::New(
+        env,
+        audioEngine->getMixEngine().getRealtimeDiagnosticsJSON());
+}
+
+namespace {
+
+const char* AudioTelemetryKindName(xleth::audio::AudioTelemetrySampleKind kind) noexcept
+{
+    switch (kind)
+    {
+        case xleth::audio::AudioTelemetrySampleKind::AudioCallback: return "audioCallback";
+        case xleth::audio::AudioTelemetrySampleKind::MixBlock: return "mixEngine";
+        case xleth::audio::AudioTelemetrySampleKind::TrackRender: return "trackRender";
+        case xleth::audio::AudioTelemetrySampleKind::TrackChain: return "trackChain";
+        case xleth::audio::AudioTelemetrySampleKind::MasterChain: return "masterChain";
+        case xleth::audio::AudioTelemetrySampleKind::Effect: return "effect";
+        case xleth::audio::AudioTelemetrySampleKind::EffectSection: return "effectSection";
+        case xleth::audio::AudioTelemetrySampleKind::PdcDelay: return "pdcDelay";
+        case xleth::audio::AudioTelemetrySampleKind::OutputPost: return "outputPost";
+        default: return "unknown";
+    }
+}
+
+Napi::Object MakeMetricObject(Napi::Env env,
+                              uint64_t count,
+                              double averageMs,
+                              double p50Ms,
+                              double p95Ms,
+                              double p99Ms,
+                              double maxMs)
+{
+    Napi::Object metric = Napi::Object::New(env);
+    metric.Set("count", Napi::Number::New(env, static_cast<double>(count)));
+    metric.Set("averageUs", Napi::Number::New(env, averageMs * 1000.0));
+    metric.Set("p50Us", Napi::Number::New(env, p50Ms * 1000.0));
+    metric.Set("p95Us", Napi::Number::New(env, p95Ms * 1000.0));
+    metric.Set("p99Us", Napi::Number::New(env, p99Ms * 1000.0));
+    metric.Set("maxUs", Napi::Number::New(env, maxMs * 1000.0));
+    metric.Set("averageMs", Napi::Number::New(env, averageMs));
+    metric.Set("p50Ms", Napi::Number::New(env, p50Ms));
+    metric.Set("p95Ms", Napi::Number::New(env, p95Ms));
+    metric.Set("p99Ms", Napi::Number::New(env, p99Ms));
+    metric.Set("maxMs", Napi::Number::New(env, maxMs));
+    return metric;
+}
+
+Napi::Object MakeWorstScopeObject(
+    Napi::Env env,
+    const xleth::audio::AudioTelemetryWorstScope& scope)
+{
+    Napi::Object item = Napi::Object::New(env);
+    item.Set("kind", Napi::String::New(env, AudioTelemetryKindName(scope.kind)));
+    item.Set("kindId", Napi::Number::New(env, static_cast<int>(scope.kind)));
+    item.Set("effectType", Napi::Number::New(env, scope.effectType));
+    item.Set("effectTypeName", Napi::String::New(
+        env,
+        xleth::audio::AudioPerformanceTelemetry::effectTypeName(scope.effectType)));
+    item.Set("flags", Napi::Number::New(env, scope.flags));
+    item.Set("trackId", Napi::Number::New(env, scope.trackId));
+    item.Set("slotOrNodeId", Napi::Number::New(env, scope.slotOrNodeId));
+    item.Set("timing", MakeMetricObject(
+        env,
+        scope.timing.count,
+        scope.timing.averageUs / 1000.0,
+        static_cast<double>(scope.timing.p50Us) / 1000.0,
+        static_cast<double>(scope.timing.p95Us) / 1000.0,
+        static_cast<double>(scope.timing.p99Us) / 1000.0,
+        static_cast<double>(scope.timing.maxUs) / 1000.0));
+    item.Set("count", Napi::Number::New(env, static_cast<double>(scope.timing.count)));
+    item.Set("p99Us", Napi::Number::New(env, scope.timing.p99Us));
+    item.Set("maxUs", Napi::Number::New(env, scope.timing.maxUs));
+    return item;
+}
+
+Napi::Array MakeWorstScopeArray(
+    Napi::Env env,
+    const std::vector<xleth::audio::AudioTelemetryWorstScope>& scopes)
+{
+    Napi::Array arr = Napi::Array::New(env, scopes.size());
+    for (size_t i = 0; i < scopes.size(); ++i)
+        arr.Set(static_cast<uint32_t>(i), MakeWorstScopeObject(env, scopes[i]));
+    return arr;
+}
+
+Napi::Array MakeStringArray(Napi::Env env, const std::vector<std::string>& values)
+{
+    Napi::Array arr = Napi::Array::New(env, values.size());
+    for (size_t i = 0; i < values.size(); ++i)
+        arr.Set(static_cast<uint32_t>(i), Napi::String::New(env, values[i]));
+    return arr;
+}
+
+struct AudioPerformanceCaptureOptions
+{
+    int durationSeconds = 10;
+    std::string outputDir;
+    bool includeJson = true;
+    bool includeMarkdown = true;
+    bool strict = false;
+    std::string label;
+};
+
+struct AudioPerformanceCaptureState
+{
+    bool active = false;
+    AudioPerformanceCaptureOptions options;
+    std::string capturedAtIso;
+    std::chrono::steady_clock::time_point startedAt;
+    MixEngine::RealtimeDiagnosticsSnapshot startSnapshot;
+    bool previousDiagnosticsEnabled = false;
+    int64_t startRawPositionSamples = 0;
+    int64_t startPresentationPositionSamples = 0;
+    bool startPlaying = false;
+    uint64_t minTimingSequence = 1;
+    uint64_t accumulatedTimingSampleCount = 0;
+    uint64_t accumulatorOverflowDrops = 0;
+};
+
+std::mutex g_audioPerformanceCaptureMutex;
+AudioPerformanceCaptureState g_audioPerformanceCapture;
+nlohmann::json g_lastAudioPerformanceCaptureReport;
+std::string g_lastAudioPerformanceCaptureJsonPath;
+std::string g_lastAudioPerformanceCaptureMarkdownPath;
+std::thread g_audioPerformanceCaptureDrainThread;
+std::atomic<bool> g_audioPerformanceCaptureDrainStop{false};
+
+std::string isoUtcNow()
+{
+    const auto now = std::chrono::system_clock::now();
+    const auto t = std::chrono::system_clock::to_time_t(now);
+    std::tm tm {};
+#ifdef _WIN32
+    gmtime_s(&tm, &t);
+#else
+    gmtime_r(&t, &tm);
+#endif
+    std::ostringstream oss;
+    oss << std::put_time(&tm, "%Y-%m-%dT%H:%M:%SZ");
+    return oss.str();
+}
+
+std::string filenameTimestamp()
+{
+    std::string value = isoUtcNow();
+    for (char& c : value)
+        if (c == ':' || c == 'T' || c == 'Z')
+            c = (c == 'T') ? '-' : '_';
+    while (!value.empty() && value.back() == '_')
+        value.pop_back();
+    return value;
+}
+
+std::string sanitizeReportLabel(std::string label)
+{
+    std::string out;
+    out.reserve(std::min<std::size_t>(label.size(), 48));
+    for (char c : label)
+    {
+        const unsigned char uc = static_cast<unsigned char>(c);
+        if ((uc >= 'a' && uc <= 'z') || (uc >= 'A' && uc <= 'Z')
+            || (uc >= '0' && uc <= '9') || c == '-' || c == '_')
+        {
+            out.push_back(c);
+        }
+        else if (c == ' ' || c == '.')
+        {
+            out.push_back('-');
+        }
+        if (out.size() >= 48)
+            break;
+    }
+    while (!out.empty() && out.back() == '-')
+        out.pop_back();
+    return out;
+}
+
+double numberOption(const Napi::Object& options,
+                    const char* key,
+                    double fallback)
+{
+    if (!options.Has(key))
+        return fallback;
+    Napi::Value value = options.Get(key);
+    return value.IsNumber() ? value.As<Napi::Number>().DoubleValue() : fallback;
+}
+
+bool boolOption(const Napi::Object& options,
+                const char* key,
+                bool fallback)
+{
+    if (!options.Has(key))
+        return fallback;
+    Napi::Value value = options.Get(key);
+    return value.IsBoolean() ? value.As<Napi::Boolean>().Value() : fallback;
+}
+
+std::string stringOption(const Napi::Object& options,
+                         const char* key,
+                         const std::string& fallback = {})
+{
+    if (!options.Has(key))
+        return fallback;
+    Napi::Value value = options.Get(key);
+    return value.IsString() ? value.As<Napi::String>().Utf8Value() : fallback;
+}
+
+AudioPerformanceCaptureOptions parseAudioPerformanceCaptureOptions(
+    const Napi::CallbackInfo& info)
+{
+    AudioPerformanceCaptureOptions options;
+    if (info.Length() > 0 && info[0].IsObject())
+    {
+        Napi::Object obj = info[0].As<Napi::Object>();
+        options.durationSeconds =
+            static_cast<int>(std::round(numberOption(obj, "seconds", 10.0)));
+        if (obj.Has("durationSeconds"))
+            options.durationSeconds =
+                static_cast<int>(std::round(numberOption(obj, "durationSeconds", 10.0)));
+        options.outputDir = stringOption(obj, "outputDir");
+        options.includeJson = boolOption(obj, "includeJson", true);
+        options.includeMarkdown = boolOption(obj, "includeMarkdown", true);
+        options.strict = boolOption(obj, "strict", false);
+        options.label = stringOption(obj, "label");
+        if (options.label.empty())
+            options.label = stringOption(obj, "name");
+    }
+
+    if (options.durationSeconds < 3 || options.durationSeconds > 60)
+        throw std::invalid_argument("audio performance capture duration must be between 3 and 60 seconds");
+    if (!options.includeJson && !options.includeMarkdown)
+        options.includeJson = true;
+    options.label = sanitizeReportLabel(options.label);
+    return options;
+}
+
+uint64_t counterDelta(uint64_t endValue, uint64_t startValue) noexcept
+{
+    return endValue >= startValue ? endValue - startValue : 0;
+}
+
+nlohmann::json metricJson(uint64_t count,
+                          double averageMs,
+                          double p50Ms,
+                          double p95Ms,
+                          double p99Ms,
+                          double maxMs)
+{
+    return {
+        {"count", count},
+        {"averageUs", averageMs * 1000.0},
+        {"p50Us", p50Ms * 1000.0},
+        {"p95Us", p95Ms * 1000.0},
+        {"p99Us", p99Ms * 1000.0},
+        {"maxUs", maxMs * 1000.0},
+        {"averageMs", averageMs},
+        {"p50Ms", p50Ms},
+        {"p95Ms", p95Ms},
+        {"p99Ms", p99Ms},
+        {"maxMs", maxMs},
+    };
+}
+
+nlohmann::json worstScopeJson(
+    const std::vector<xleth::audio::AudioTelemetryWorstScope>& scopes)
+{
+    nlohmann::json arr = nlohmann::json::array();
+    for (const auto& scope : scopes)
+    {
+        arr.push_back({
+            {"kind", AudioTelemetryKindName(scope.kind)},
+            {"effectTypeName",
+             xleth::audio::AudioPerformanceTelemetry::effectTypeName(scope.effectType)},
+            {"flags", scope.flags},
+            {"trackId", scope.trackId},
+            {"slotOrNodeId", scope.slotOrNodeId},
+            {"count", scope.timing.count},
+            {"p99Us", scope.timing.p99Us},
+            {"maxUs", scope.timing.maxUs},
+            {"timing", {
+                {"count", scope.timing.count},
+                {"averageUs", scope.timing.averageUs},
+                {"p50Us", scope.timing.p50Us},
+                {"p95Us", scope.timing.p95Us},
+                {"p99Us", scope.timing.p99Us},
+                {"maxUs", scope.timing.maxUs},
+            }},
+        });
+    }
+    return arr;
+}
+
+bool containsResonanceSuppressor(
+    const std::vector<xleth::audio::AudioTelemetryWorstScope>& scopes)
+{
+    for (const auto& scope : scopes)
+        if (scope.effectType == xleth::audio::kAudioTelemetryEffectResonanceSuppressor)
+            return true;
+    return false;
+}
+
+int countEffectNodes(const nlohmann::json& chain)
+{
+    if (chain.is_array())
+        return static_cast<int>(chain.size());
+    if (chain.contains("nodes") && chain["nodes"].is_array())
+    {
+        int count = 0;
+        for (const auto& node : chain["nodes"])
+        {
+            const std::string role = node.value("role", std::string{});
+            const std::string pluginId = node.value("pluginId", std::string{});
+            if (!pluginId.empty() || role == "effect")
+                ++count;
+        }
+        return count;
+    }
+    return 0;
+}
+
+nlohmann::json safeProjectMetadata()
+{
+    nlohmann::json meta;
+    meta["projectName"] =
+        g_projectManager ? sanitizeReportLabel(g_projectManager->getProjectName()) : "";
+    meta["trackCount"] = 0;
+    meta["effectCount"] = 0;
+    meta["sourceCount"] = 0;
+    meta["regionCount"] = 0;
+    meta["clipCount"] = 0;
+    meta["mediaCount"] = 0;
+    meta["projectDurationSeconds"] = 0.0;
+
+    if (!g_timeline)
+        return meta;
+
+    const auto tracks = g_timeline->getAllTracks();
+    meta["trackCount"] = tracks.size();
+    meta["sourceCount"] = g_timeline->getAllSources().size();
+    meta["regionCount"] = g_timeline->getAllRegions().size();
+    meta["clipCount"] = g_timeline->getAllClips().size();
+    meta["mediaCount"] = meta["sourceCount"];
+
+    double maxBeats = 0.0;
+    for (const auto* clip : g_timeline->getAllClips())
+        if (clip)
+            maxBeats = std::max(maxBeats,
+                                (clip->position + clip->duration).toBeats());
+    for (const auto* block : g_timeline->getAllPatternBlocks())
+        if (block)
+            maxBeats = std::max(maxBeats,
+                                (block->position + block->duration).toBeats());
+    const double bpm = g_timeline->getBPM();
+    meta["projectDurationSeconds"] = bpm > 0.0 ? maxBeats * 60.0 / bpm : 0.0;
+
+    if (audioEngine)
+    {
+        auto& mix = audioEngine->getMixEngine();
+        int effectCount = countEffectNodes(mix.getMasterEffectChainJSON());
+        for (const auto* track : tracks)
+            if (track)
+                effectCount += countEffectNodes(mix.getEffectChainJSON(track->id));
+        meta["effectCount"] = effectCount;
+    }
+    return meta;
+}
+
+std::string diagnosisLabel(const MixEngine::RealtimeDiagnosticsSnapshot& capture,
+                           uint64_t callbackOverruns,
+                           uint64_t mixOverruns,
+                           uint64_t droppedSamples,
+                           uint64_t lockMisses,
+                           uint64_t staleReuse)
+{
+    const double deadlineUs = capture.lastDeadlineMs * 1000.0;
+    if (capture.blockCount == 0 && capture.audioCallbackCount == 0)
+        return "Inconclusive";
+    if (callbackOverruns > 0 || mixOverruns > 0
+        || (deadlineUs > 0.0
+            && (capture.p99AudioCallbackMs * 1000.0 >= deadlineUs
+                || capture.p99ProcessBlockMs * 1000.0 >= deadlineUs
+                || capture.maxAudioCallbackMs * 1000.0 >= deadlineUs
+                || capture.maxProcessBlockMs * 1000.0 >= deadlineUs)))
+        return "Overrunning";
+    if ((deadlineUs > 0.0
+         && (capture.p99AudioCallbackMs * 1000.0 >= deadlineUs * 0.70
+             || capture.p99ProcessBlockMs * 1000.0 >= deadlineUs * 0.70))
+        || droppedSamples > 0 || lockMisses > 0 || staleReuse > 0
+        || capture.realtimeRsHqRiskLevel == "warning")
+        return "Warning";
+    return "Healthy";
+}
+
+std::vector<std::string> recommendedActionsForReport(
+    const MixEngine::RealtimeDiagnosticsSnapshot& capture,
+    const std::string& diagnosis)
+{
+    std::vector<std::string> actions = capture.recommendedAction;
+    auto append = [&](const std::string& value) {
+        if (std::find(actions.begin(), actions.end(), value) == actions.end())
+            actions.push_back(value);
+    };
+
+    if (diagnosis == "Overrunning" || diagnosis == "Warning")
+        append("increaseBufferSize");
+    if (capture.activeResonanceSuppressorHighQualityInstanceCount > 0)
+    {
+        append("reduceHqInstances");
+        append("useNormalQualityForRealtime");
+        append("useHqForExport");
+    }
+    if (actions.empty())
+        actions.push_back("noImmediateAction");
+    return actions;
+}
+
+uint64_t expectedApproxCallbacks(double elapsedSeconds,
+                                 double sampleRate,
+                                 int blockSize) noexcept
+{
+    if (elapsedSeconds <= 0.0 || sampleRate <= 0.0 || blockSize <= 0
+        || !std::isfinite(elapsedSeconds) || !std::isfinite(sampleRate))
+    {
+        return 0;
+    }
+    const double expected = (elapsedSeconds * sampleRate)
+                          / static_cast<double>(blockSize);
+    return expected <= 0.0 || !std::isfinite(expected)
+        ? 0ull
+        : static_cast<uint64_t>(std::llround(expected));
+}
+
+void startAudioPerformanceCaptureDrainThread()
+{
+    g_audioPerformanceCaptureDrainStop.store(false, std::memory_order_release);
+    g_audioPerformanceCaptureDrainThread = std::thread([] {
+        while (!g_audioPerformanceCaptureDrainStop.load(std::memory_order_acquire))
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            if (g_audioPerformanceCaptureDrainStop.load(std::memory_order_acquire))
+                break;
+            if (audioEngine)
+                audioEngine->getMixEngine().drainRealtimeDiagnosticsCaptureAccumulation();
+        }
+    });
+}
+
+void stopAudioPerformanceCaptureDrainThread()
+{
+    g_audioPerformanceCaptureDrainStop.store(true, std::memory_order_release);
+    if (g_audioPerformanceCaptureDrainThread.joinable())
+        g_audioPerformanceCaptureDrainThread.join();
+}
+
+nlohmann::json buildAudioPerformanceCaptureReport(
+    const AudioPerformanceCaptureState& state)
+{
+    uint64_t accumulatedTimingSampleCount = 0;
+    uint64_t accumulatorOverflowDrops = 0;
+    const auto capture =
+        audioEngine->getMixEngine().finishRealtimeDiagnosticsCaptureAccumulation(
+            &accumulatedTimingSampleCount,
+            &accumulatorOverflowDrops);
+    const auto totalEnd = audioEngine->getMixEngine().getRealtimeDiagnosticsSnapshot();
+    const auto presentationDiag =
+        audioEngine->getLivePresentationLatencyDiagnostics();
+    Transport& transport = audioEngine->getTransport();
+
+    const int64_t endRawPositionSamples = transport.getPositionSamples();
+    const int64_t endPresentationPositionSamples =
+        audioEngine->getLivePresentationPositionSamples();
+    const bool endPlaying = transport.isPlaying();
+    const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - state.startedAt).count();
+    const double elapsedSeconds =
+        std::max(0.0, static_cast<double>(elapsedMs) / 1000.0);
+    const double reportSampleRate = capture.lastSampleRate > 0.0
+        ? capture.lastSampleRate
+        : audioEngine->getSampleRate();
+    const int reportBlockSize = capture.lastBlockSize > 0
+        ? capture.lastBlockSize
+        : audioEngine->getBufferSize();
+    const uint64_t expectedCallbackCount =
+        expectedApproxCallbacks(elapsedSeconds, reportSampleRate, reportBlockSize);
+    const uint64_t callbackSampleCount = capture.audioCallbackCount;
+    const uint64_t mixEngineSampleCount = capture.blockCount;
+    const uint64_t effectSampleCount =
+        capture.pluginCallCount + capture.resonanceSuppressorWolaCallCount;
+    const double callbackCoverage =
+        xleth::audio::AudioPerformanceTelemetry::coveragePercent(
+            callbackSampleCount, expectedCallbackCount);
+    const double mixEngineCoverage =
+        xleth::audio::AudioPerformanceTelemetry::coveragePercent(
+            mixEngineSampleCount, expectedCallbackCount);
+    const char* coverageQuality =
+        xleth::audio::AudioPerformanceTelemetry::classifyCoverageQuality(
+            callbackSampleCount, mixEngineSampleCount, expectedCallbackCount);
+
+    const uint64_t callbackOverruns =
+        counterDelta(totalEnd.audioCallbackOverrunCount,
+                     state.startSnapshot.audioCallbackOverrunCount);
+    const uint64_t mixOverruns =
+        counterDelta(totalEnd.overrunBlockCount,
+                     state.startSnapshot.overrunBlockCount);
+    const uint64_t droppedSamples =
+        counterDelta(totalEnd.droppedTelemetrySamples,
+                     state.startSnapshot.droppedTelemetrySamples);
+    const uint64_t lockMisses =
+        counterDelta(totalEnd.chainLockMissCount,
+                     state.startSnapshot.chainLockMissCount);
+    const uint64_t staleReuse =
+        counterDelta(totalEnd.staleSnapshotReuseCount,
+                     state.startSnapshot.staleSnapshotReuseCount);
+    const std::string diagnosis =
+        diagnosisLabel(capture, callbackOverruns, mixOverruns,
+                       droppedSamples, lockMisses, staleReuse);
+    const auto recommendedActions =
+        recommendedActionsForReport(capture, diagnosis);
+    const bool rsInWorstEffects =
+        containsResonanceSuppressor(capture.worstEffectsByMax)
+        || containsResonanceSuppressor(capture.worstEffectsByP99);
+
+    nlohmann::json report;
+    report["schemaVersion"] = "xleth.audioPerformanceCapture.v1";
+    report["capturedAt"] = state.capturedAtIso;
+    report["build"] = {
+#ifdef XLETH_DEBUG
+        {"configuration", "Debug"},
+#else
+        {"configuration", "Release"},
+#endif
+    };
+    report["project"] = safeProjectMetadata();
+    report["sampleRate"] = capture.lastSampleRate > 0.0
+        ? capture.lastSampleRate
+        : audioEngine->getSampleRate();
+    report["blockSize"] = capture.lastBlockSize > 0
+        ? capture.lastBlockSize
+        : audioEngine->getBufferSize();
+    report["captureDurationSeconds"] = elapsedSeconds;
+    report["requestedDurationSeconds"] = state.options.durationSeconds;
+    report["renderedBlockCount"] = capture.blockCount;
+    report["capturedCallbackCount"] = capture.audioCallbackCount;
+    report["cpuHealth"] = diagnosis;
+    report["telemetryCoverageQuality"] = coverageQuality;
+    report["expectedApproxCallbackCount"] = expectedCallbackCount;
+    report["callbackSampleCount"] = callbackSampleCount;
+    report["mixEngineSampleCount"] = mixEngineSampleCount;
+    report["effectSampleCount"] = effectSampleCount;
+    report["callbackCoveragePercent"] = callbackCoverage;
+    report["mixEngineCoveragePercent"] = mixEngineCoverage;
+    report["effectCoveragePercent"] = nullptr;
+    report["accumulatedTimingSampleCount"] = accumulatedTimingSampleCount;
+    report["telemetryCaptureAccumulatorOverflowDrops"] = accumulatorOverflowDrops;
+    report["callbackDeadlineUs"] = capture.lastDeadlineMs * 1000.0;
+    report["callback"] = metricJson(
+        capture.audioCallbackCount,
+        capture.avgAudioCallbackMs,
+        capture.p50AudioCallbackMs,
+        capture.p95AudioCallbackMs,
+        capture.p99AudioCallbackMs,
+        capture.maxAudioCallbackMs);
+    report["mixEngine"] = metricJson(
+        capture.blockCount,
+        capture.avgProcessBlockMs,
+        capture.p50ProcessBlockMs,
+        capture.p95ProcessBlockMs,
+        capture.p99ProcessBlockMs,
+        capture.maxProcessBlockMs);
+    report["callbackP50Us"] = capture.p50AudioCallbackMs * 1000.0;
+    report["callbackP95Us"] = capture.p95AudioCallbackMs * 1000.0;
+    report["callbackP99Us"] = capture.p99AudioCallbackMs * 1000.0;
+    report["callbackMaxUs"] = capture.maxAudioCallbackMs * 1000.0;
+    report["mixEngineP50Us"] = capture.p50ProcessBlockMs * 1000.0;
+    report["mixEngineP95Us"] = capture.p95ProcessBlockMs * 1000.0;
+    report["mixEngineP99Us"] = capture.p99ProcessBlockMs * 1000.0;
+    report["mixEngineMaxUs"] = capture.maxProcessBlockMs * 1000.0;
+    report["worstChainsByP99"] = worstScopeJson(capture.worstChainsByP99);
+    report["worstChainsByMax"] = worstScopeJson(capture.worstChainsByMax);
+    report["worstEffectsByP99"] = worstScopeJson(capture.worstEffectsByP99);
+    report["worstEffectsByMax"] = worstScopeJson(capture.worstEffectsByMax);
+    report["resonanceSuppressorHighQuality"] = {
+        {"activeInstanceCount", capture.activeResonanceSuppressorHighQualityInstanceCount},
+        {"wolaP99Us", capture.p99ResonanceSuppressorWolaMs * 1000.0},
+        {"wolaMaxUs", capture.maxResonanceSuppressorWolaMs * 1000.0},
+        {"wolaCallCount", capture.resonanceSuppressorWolaCallCount},
+        {"riskLevel", capture.realtimeRsHqRiskLevel},
+        {"riskReasons", capture.realtimeRsHqRiskReasons},
+        {"recommendedAction", recommendedActions},
+        {"appearsInWorstEffects", rsInWorstEffects},
+    };
+    report["activeResonanceSuppressorHighQualityInstanceCount"] =
+        capture.activeResonanceSuppressorHighQualityInstanceCount;
+    report["realtimeRsHqRiskLevel"] = capture.realtimeRsHqRiskLevel;
+    report["realtimeRsHqRiskReasons"] = capture.realtimeRsHqRiskReasons;
+    report["recommendedAction"] = recommendedActions;
+    report["callbackOverrunCount"] = callbackOverruns;
+    report["mixEngineOverrunCount"] = mixOverruns;
+    report["droppedTelemetrySamples"] = droppedSamples;
+    report["droppedTelemetrySamplesDuringCapture"] = droppedSamples;
+    report["droppedTelemetryByScope"] = {
+        {"ringOverflow", droppedSamples},
+        {"captureAccumulatorOverflow", accumulatorOverflowDrops},
+        {"deliberateVerboseScopeSamplingSkips", 0},
+    };
+    report["verboseEffectSampling"] = {
+        {"downsampled", false},
+        {"skippedSamples", 0},
+        {"notes", "Verbose effect scopes were not downsampled; coverage was improved by periodic off-thread draining."},
+    };
+    report["lockMisses"] = lockMisses;
+    report["chainLockMissCount"] = lockMisses;
+    report["staleChainReuse"] = staleReuse;
+    report["staleSnapshotReuseCount"] = staleReuse;
+    report["guardedPluginSkippedOrCrashedCount"] =
+        counterDelta(totalEnd.guardedPluginCrashedSkippedCount,
+                     state.startSnapshot.guardedPluginCrashedSkippedCount);
+    report["guardedPluginCrashedSkippedCount"] =
+        report["guardedPluginSkippedOrCrashedCount"];
+    report["latencyEpochChanges"] =
+        counterDelta(totalEnd.latencyEpochChangeCount,
+                     state.startSnapshot.latencyEpochChangeCount);
+    report["compensationTargetChanges"] =
+        counterDelta(totalEnd.pdcRetargetCount,
+                     state.startSnapshot.pdcRetargetCount);
+    report["pdcDelayProcessCount"] =
+        counterDelta(totalEnd.pdcDelayProcessCount,
+                     state.startSnapshot.pdcDelayProcessCount);
+    report["maxAudibleTrackLatencySamples"] =
+        presentationDiag.maxTrackLatencySamples;
+    report["masterInsertLatencySamples"] =
+        presentationDiag.masterLatencySamples;
+    report["deviceOutputLatencySamples"] =
+        presentationDiag.deviceOutputLatencySamples;
+    report["audioDeviceOutputLatencySamples"] =
+        presentationDiag.deviceOutputLatencySamples;
+    report["livePresentationLatencySamples"] =
+        presentationDiag.totalPresentationLatencySamples;
+    report["positionSamples"] = {
+        {"rawStart", state.startRawPositionSamples},
+        {"rawEnd", endRawPositionSamples},
+        {"presentationStart", state.startPresentationPositionSamples},
+        {"presentationEnd", endPresentationPositionSamples},
+    };
+    report["rawPositionSamplesAtCaptureStart"] = state.startRawPositionSamples;
+    report["rawPositionSamplesAtCaptureEnd"] = endRawPositionSamples;
+    report["presentationPositionSamplesAtCaptureStart"] =
+        state.startPresentationPositionSamples;
+    report["presentationPositionSamplesAtCaptureEnd"] =
+        endPresentationPositionSamples;
+    report["transport"] = {
+        {"startPlaying", state.startPlaying},
+        {"endPlaying", endPlaying},
+        {"bpm", transport.getBPM()},
+    };
+    report["diagnosis"] = {
+        {"status", diagnosis},
+        {"cpuHealth", diagnosis},
+        {"telemetryCoverageQuality", coverageQuality},
+        {"summary", capture.diagnosis},
+        {"cpuDeadlinePressure",
+         diagnosis == "Overrunning"
+             ? "callback or MixEngine met/exceeded the callback deadline"
+             : "no callback or MixEngine deadline overrun observed"},
+        {"pdcPresentationLatency",
+         "reported separately as compensated timing, not CPU deadline pressure"},
+        {"lockStaleState",
+         (lockMisses > 0 || staleReuse > 0)
+             ? "lock misses or stale chain reuse observed"
+             : "no lock misses or stale chain reuse observed"},
+        {"telemetryPressure",
+         droppedSamples > 0
+             ? "telemetry samples were dropped"
+             : "no dropped telemetry samples observed"},
+    };
+    report["strictMode"] = state.options.strict;
+    report["strictFailed"] = state.options.strict && diagnosis == "Overrunning";
+    report["timingSequence"] = {
+        {"startExclusive", state.minTimingSequence},
+        {"end", totalEnd.timingSequence},
+    };
+    report["privacy"] =
+        "Report intentionally omits raw media paths, project directories, usernames, and full project JSON.";
+    return report;
+}
+
+std::string joinStrings(const nlohmann::json& values)
+{
+    if (!values.is_array() || values.empty())
+        return "None";
+    std::ostringstream oss;
+    for (std::size_t i = 0; i < values.size(); ++i)
+    {
+        if (i > 0)
+            oss << ", ";
+        oss << values[i].get<std::string>();
+    }
+    return oss.str();
+}
+
+std::string makeAudioPerformanceMarkdown(const nlohmann::json& report)
+{
+    const auto& rs = report["resonanceSuppressorHighQuality"];
+    const auto& diag = report["diagnosis"];
+    std::ostringstream md;
+    md << "# Xleth Audio Performance Capture\n\n";
+    md << "## Summary\n";
+    md << "- Captured at: " << report.value("capturedAt", "") << "\n";
+    md << "- Diagnosis: " << diag.value("status", "Inconclusive") << "\n";
+    md << "- Duration: " << report.value("captureDurationSeconds", 0.0)
+       << " s, blocks: " << report.value("renderedBlockCount", 0ull) << "\n";
+    md << "- Sample rate: " << report.value("sampleRate", 0.0)
+       << " Hz, block size: " << report.value("blockSize", 0) << "\n\n";
+
+    md << "## Realtime CPU\n";
+    md << "- CPU health: " << report.value("cpuHealth", diag.value("status", "Inconclusive")) << "\n";
+    md << "- Callback deadline: " << report.value("callbackDeadlineUs", 0.0) << " us\n";
+    md << "- Callback p50/p95/p99/max: "
+       << report.value("callbackP50Us", 0.0) << " / "
+       << report.value("callbackP95Us", 0.0) << " / "
+       << report.value("callbackP99Us", 0.0) << " / "
+       << report.value("callbackMaxUs", 0.0) << " us\n";
+    md << "- MixEngine p50/p95/p99/max: "
+       << report.value("mixEngineP50Us", 0.0) << " / "
+       << report.value("mixEngineP95Us", 0.0) << " / "
+       << report.value("mixEngineP99Us", 0.0) << " / "
+       << report.value("mixEngineMaxUs", 0.0) << " us\n";
+    md << "- Callback overruns: " << report.value("callbackOverrunCount", 0ull)
+       << ", MixEngine overruns: " << report.value("mixEngineOverrunCount", 0ull) << "\n";
+    md << "- Lock misses: " << report.value("lockMisses", 0ull)
+       << ", stale chain reuse: " << report.value("staleChainReuse", 0ull)
+       << ", dropped telemetry samples: " << report.value("droppedTelemetrySamples", 0ull)
+       << "\n\n";
+
+    md << "## Telemetry Coverage\n";
+    md << "- Coverage quality: " << report.value("telemetryCoverageQuality", "inconclusive") << "\n";
+    md << "- Expected callback count: "
+       << report.value("expectedApproxCallbackCount", 0ull) << "\n";
+    md << "- Callback samples: " << report.value("callbackSampleCount", 0ull)
+       << " (" << report.value("callbackCoveragePercent", 0.0) << "%)\n";
+    md << "- MixEngine samples: " << report.value("mixEngineSampleCount", 0ull)
+       << " (" << report.value("mixEngineCoveragePercent", 0.0) << "%)\n";
+    md << "- Effect samples: " << report.value("effectSampleCount", 0ull) << "\n";
+    md << "- Dropped during capture: "
+       << report.value("droppedTelemetrySamplesDuringCapture", 0ull) << "\n";
+    md << "- Capture accumulator overflow drops: "
+       << report.value("telemetryCaptureAccumulatorOverflowDrops", 0ull) << "\n";
+    md << "- Verbose effect sampling: "
+       << (report["verboseEffectSampling"].value("downsampled", false)
+               ? "downsampled"
+               : "not downsampled")
+       << "\n\n";
+
+    md << "## Latency / PDC\n";
+    md << "- Max audible track latency: "
+       << report.value("maxAudibleTrackLatencySamples", 0ll) << " samples\n";
+    md << "- Master insert latency: "
+       << report.value("masterInsertLatencySamples", 0ll) << " samples\n";
+    md << "- Device output latency: "
+       << report.value("deviceOutputLatencySamples", 0ll) << " samples\n";
+    md << "- Live presentation latency: "
+       << report.value("livePresentationLatencySamples", 0ll) << " samples\n";
+    md << "- Latency epoch changes: " << report.value("latencyEpochChanges", 0ull)
+       << ", compensation target changes: "
+       << report.value("compensationTargetChanges", 0ull) << "\n";
+    md << "- Interpretation: PDC and presentation latency are expected compensated timing and are separate from CPU deadline pressure.\n\n";
+
+    md << "## RS HQ\n";
+    if (rs.value("activeInstanceCount", 0) > 0)
+    {
+        md << "- Active RS HQ instances: " << rs.value("activeInstanceCount", 0) << "\n";
+        md << "- WOLA p99/max: " << rs.value("wolaP99Us", 0.0)
+           << " / " << rs.value("wolaMaxUs", 0.0) << " us\n";
+        md << "- Risk: " << rs.value("riskLevel", "healthy") << "\n";
+        md << "- Reasons: " << joinStrings(rs["riskReasons"]) << "\n";
+        md << "- Recommended action: " << joinStrings(rs["recommendedAction"]) << "\n";
+        md << "- Appears in worst effects: "
+           << (rs.value("appearsInWorstEffects", false) ? "yes" : "no") << "\n\n";
+    }
+    else
+    {
+        md << "- RS HQ was not active in this capture.\n\n";
+    }
+
+    md << "## Worst Effects\n";
+    for (const auto& item : report["worstEffectsByP99"])
+    {
+        md << "- " << item.value("effectTypeName", "unknown")
+           << " track " << item.value("trackId", -1)
+           << " node " << item.value("slotOrNodeId", -1)
+           << ": p99 " << item.value("p99Us", 0u)
+           << " us, max " << item.value("maxUs", 0u) << " us\n";
+    }
+    if (report["worstEffectsByP99"].empty())
+        md << "- None captured.\n";
+    md << "\n";
+
+    md << "## Diagnosis\n";
+    md << "- Status: " << diag.value("status", "Inconclusive") << "\n";
+    md << "- CPU deadline pressure: " << diag.value("cpuDeadlinePressure", "") << "\n";
+    md << "- PDC / presentation latency: " << diag.value("pdcPresentationLatency", "") << "\n";
+    md << "- Lock / stale-state: " << diag.value("lockStaleState", "") << "\n";
+    md << "- Telemetry pressure: " << diag.value("telemetryPressure", "") << "\n\n";
+
+    md << "Privacy: " << report.value("privacy", "") << "\n";
+    return md.str();
+}
+
+std::filesystem::path defaultAudioPerformanceReportDir()
+{
+    if (g_projectManager && g_projectManager->hasProjectDir())
+        return std::filesystem::path(g_projectManager->getProjectDir())
+            / "diagnostics" / "audio-performance";
+    return std::filesystem::current_path() / "diagnostics" / "audio-performance";
+}
+
+std::pair<std::string, std::string> writeAudioPerformanceReportFiles(
+    const nlohmann::json& report,
+    const AudioPerformanceCaptureOptions& options)
+{
+    const std::filesystem::path dir = options.outputDir.empty()
+        ? defaultAudioPerformanceReportDir()
+        : std::filesystem::path(options.outputDir);
+    std::filesystem::create_directories(dir);
+
+    const std::string labelSuffix = options.label.empty()
+        ? std::string{}
+        : "-" + options.label;
+    const std::string base =
+        "xleth-audio-performance-" + filenameTimestamp() + labelSuffix;
+    std::string jsonPath;
+    std::string markdownPath;
+
+    if (options.includeJson)
+    {
+        const auto path = dir / (base + ".json");
+        std::ofstream out(path, std::ios::binary);
+        out << report.dump(2);
+        jsonPath = path.string();
+    }
+    if (options.includeMarkdown)
+    {
+        const auto path = dir / (base + ".md");
+        std::ofstream out(path, std::ios::binary);
+        out << makeAudioPerformanceMarkdown(report);
+        markdownPath = path.string();
+    }
+    return {jsonPath, markdownPath};
+}
+
+Napi::Value jsonToNapi(Napi::Env env, const nlohmann::json& value)
+{
+    if (value.is_null())
+        return env.Null();
+    if (value.is_boolean())
+        return Napi::Boolean::New(env, value.get<bool>());
+    if (value.is_number_integer())
+        return Napi::Number::New(env, static_cast<double>(value.get<int64_t>()));
+    if (value.is_number_unsigned())
+        return Napi::Number::New(env, static_cast<double>(value.get<uint64_t>()));
+    if (value.is_number_float())
+        return Napi::Number::New(env, value.get<double>());
+    if (value.is_string())
+        return Napi::String::New(env, value.get<std::string>());
+    if (value.is_array())
+    {
+        Napi::Array arr = Napi::Array::New(env, value.size());
+        for (std::size_t i = 0; i < value.size(); ++i)
+            arr.Set(static_cast<uint32_t>(i), jsonToNapi(env, value[i]));
+        return arr;
+    }
+
+    Napi::Object obj = Napi::Object::New(env);
+    for (auto it = value.begin(); it != value.end(); ++it)
+        obj.Set(it.key(), jsonToNapi(env, it.value()));
+    return obj;
+}
+
+Napi::Object makeCaptureResultObject(Napi::Env env,
+                                     const nlohmann::json& report,
+                                     const std::string& jsonPath,
+                                     const std::string& markdownPath)
+{
+    Napi::Object out = Napi::Object::New(env);
+    out.Set("ok", Napi::Boolean::New(env, true));
+    out.Set("schemaVersion",
+            Napi::String::New(env, report.value("schemaVersion", "")));
+    out.Set("status", Napi::String::New(env, "exported"));
+    out.Set("jsonPath", Napi::String::New(env, jsonPath));
+    out.Set("markdownPath", Napi::String::New(env, markdownPath));
+    out.Set("paths", jsonToNapi(env, nlohmann::json::array({jsonPath, markdownPath})));
+    out.Set("report", jsonToNapi(env, report));
+    return out;
+}
+
+void beginAudioPerformanceCapture(const AudioPerformanceCaptureOptions& options)
+{
+    if (!isInitialised())
+        throw std::runtime_error("Engine not initialised.");
+
+    std::lock_guard<std::mutex> lock(g_audioPerformanceCaptureMutex);
+    if (g_audioPerformanceCapture.active)
+        throw std::runtime_error("audio performance capture already in progress");
+
+    auto& mix = audioEngine->getMixEngine();
+    AudioPerformanceCaptureState state;
+    state.active = true;
+    state.options = options;
+    state.capturedAtIso = isoUtcNow();
+    state.startedAt = std::chrono::steady_clock::now();
+    state.previousDiagnosticsEnabled = mix.isRealtimeDiagnosticsEnabled();
+    if (!state.previousDiagnosticsEnabled)
+        mix.setRealtimeDiagnosticsEnabled(true);
+    state.startSnapshot = mix.getRealtimeDiagnosticsSnapshot();
+    state.minTimingSequence = state.startSnapshot.timingSequence + 1u;
+    mix.beginRealtimeDiagnosticsCaptureAccumulation(state.minTimingSequence);
+    Transport& transport = audioEngine->getTransport();
+    state.startRawPositionSamples = transport.getPositionSamples();
+    state.startPresentationPositionSamples =
+        audioEngine->getLivePresentationPositionSamples();
+    state.startPlaying = transport.isPlaying();
+
+    g_audioPerformanceCapture = std::move(state);
+    startAudioPerformanceCaptureDrainThread();
+}
+
+nlohmann::json finishAudioPerformanceCapture()
+{
+    AudioPerformanceCaptureState state;
+    {
+        std::lock_guard<std::mutex> lock(g_audioPerformanceCaptureMutex);
+        if (!g_audioPerformanceCapture.active)
+            throw std::runtime_error("no audio performance capture in progress");
+        g_audioPerformanceCapture.active = false;
+    }
+
+    stopAudioPerformanceCaptureDrainThread();
+    if (audioEngine)
+        audioEngine->getMixEngine().drainRealtimeDiagnosticsCaptureAccumulation();
+
+    {
+        std::lock_guard<std::mutex> lock(g_audioPerformanceCaptureMutex);
+        state = g_audioPerformanceCapture;
+    }
+
+    nlohmann::json report = buildAudioPerformanceCaptureReport(state);
+    if (!state.previousDiagnosticsEnabled)
+        audioEngine->getMixEngine().setRealtimeDiagnosticsEnabled(false);
+
+    {
+        std::lock_guard<std::mutex> lock(g_audioPerformanceCaptureMutex);
+        g_lastAudioPerformanceCaptureReport = report;
+        g_lastAudioPerformanceCaptureJsonPath.clear();
+        g_lastAudioPerformanceCaptureMarkdownPath.clear();
+    }
+    return report;
+}
+
+} // namespace
+
+// getAudioPerformanceTelemetry() -> plain object
+Napi::Value Audio_GetAudioPerformanceTelemetry(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised()) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return Napi::Object::New(env);
+    }
+
+    const auto snapshot = audioEngine->getAudioPerformanceTelemetrySnapshot();
+    const auto presentationDiag =
+        audioEngine->getLivePresentationLatencyDiagnostics();
+    Transport& transport = audioEngine->getTransport();
+
+    const double sampleRate = snapshot.lastSampleRate > 0.0
+        ? snapshot.lastSampleRate
+        : audioEngine->getSampleRate();
+    const int blockSize = snapshot.lastBlockSize > 0
+        ? snapshot.lastBlockSize
+        : audioEngine->getBufferSize();
+    const double callbackDeadlineUs = snapshot.lastDeadlineMs * 1000.0;
+    const int64_t rawPositionSamples = transport.getPositionSamples();
+    const int64_t presentationPositionSamples =
+        audioEngine->getLivePresentationPositionSamples();
+
+    Napi::Object obj = Napi::Object::New(env);
+    obj.Set("enabled", Napi::Boolean::New(env, snapshot.enabled));
+    obj.Set("sampleRate", Napi::Number::New(env, sampleRate));
+    obj.Set("blockSize", Napi::Number::New(env, blockSize));
+    obj.Set("callbackDeadlineUs", Napi::Number::New(env, callbackDeadlineUs));
+
+    obj.Set("callback", MakeMetricObject(
+        env,
+        snapshot.audioCallbackCount,
+        snapshot.avgAudioCallbackMs,
+        snapshot.p50AudioCallbackMs,
+        snapshot.p95AudioCallbackMs,
+        snapshot.p99AudioCallbackMs,
+        snapshot.maxAudioCallbackMs));
+    obj.Set("mixEngine", MakeMetricObject(
+        env,
+        snapshot.blockCount,
+        snapshot.avgProcessBlockMs,
+        snapshot.p50ProcessBlockMs,
+        snapshot.p95ProcessBlockMs,
+        snapshot.p99ProcessBlockMs,
+        snapshot.maxProcessBlockMs));
+
+    obj.Set("callbackP50Us", Napi::Number::New(env, snapshot.p50AudioCallbackMs * 1000.0));
+    obj.Set("callbackP95Us", Napi::Number::New(env, snapshot.p95AudioCallbackMs * 1000.0));
+    obj.Set("callbackP99Us", Napi::Number::New(env, snapshot.p99AudioCallbackMs * 1000.0));
+    obj.Set("callbackMaxUs", Napi::Number::New(env, snapshot.maxAudioCallbackMs * 1000.0));
+    obj.Set("mixEngineP50Us", Napi::Number::New(env, snapshot.p50ProcessBlockMs * 1000.0));
+    obj.Set("mixEngineP95Us", Napi::Number::New(env, snapshot.p95ProcessBlockMs * 1000.0));
+    obj.Set("mixEngineP99Us", Napi::Number::New(env, snapshot.p99ProcessBlockMs * 1000.0));
+    obj.Set("mixEngineMaxUs", Napi::Number::New(env, snapshot.maxProcessBlockMs * 1000.0));
+
+    obj.Set("callbackOverrunCount",
+            Napi::Number::New(env, static_cast<double>(snapshot.audioCallbackOverrunCount)));
+    obj.Set("mixEngineOverrunCount",
+            Napi::Number::New(env, static_cast<double>(snapshot.overrunBlockCount)));
+    obj.Set("overBudgetBlockCount",
+            Napi::Number::New(env, static_cast<double>(snapshot.overBudgetBlockCount)));
+    obj.Set("droppedTelemetrySamples",
+            Napi::Number::New(env, static_cast<double>(snapshot.droppedTelemetrySamples)));
+    obj.Set("lockMissCount",
+            Napi::Number::New(env, static_cast<double>(snapshot.chainLockMissCount)));
+    obj.Set("chainLockMissCount",
+            Napi::Number::New(env, static_cast<double>(snapshot.chainLockMissCount)));
+    obj.Set("masterChainSkippedCount",
+            Napi::Number::New(env, static_cast<double>(snapshot.masterChainSkippedCount)));
+    obj.Set("trackChainSkippedCount",
+            Napi::Number::New(env, static_cast<double>(snapshot.trackChainSkippedCount)));
+    obj.Set("staleSnapshotReuseCount",
+            Napi::Number::New(env, static_cast<double>(snapshot.staleSnapshotReuseCount)));
+    obj.Set("guardedPluginCrashedSkippedCount",
+            Napi::Number::New(env, static_cast<double>(snapshot.guardedPluginCrashedSkippedCount)));
+    obj.Set("latencyEpochChanges",
+            Napi::Number::New(env, static_cast<double>(snapshot.latencyEpochChangeCount)));
+    obj.Set("compensationTargetChanges",
+            Napi::Number::New(env, static_cast<double>(snapshot.pdcRetargetCount)));
+    obj.Set("pdcDelayProcessCount",
+            Napi::Number::New(env, static_cast<double>(snapshot.pdcDelayProcessCount)));
+    obj.Set("nanInfBlockCount",
+            Napi::Number::New(env, static_cast<double>(snapshot.nanInfBlockCount)));
+
+    obj.Set("worstChainsByMax", MakeWorstScopeArray(env, snapshot.worstChainsByMax));
+    obj.Set("worstChainsByP99", MakeWorstScopeArray(env, snapshot.worstChainsByP99));
+    obj.Set("worstEffectsByMax", MakeWorstScopeArray(env, snapshot.worstEffectsByMax));
+    obj.Set("worstEffectsByP99", MakeWorstScopeArray(env, snapshot.worstEffectsByP99));
+
+    Napi::Object resonance = Napi::Object::New(env);
+    resonance.Set("wolaCallCount",
+                  Napi::Number::New(env, static_cast<double>(snapshot.resonanceSuppressorWolaCallCount)));
+    resonance.Set("averageWolaUs",
+                  Napi::Number::New(env, snapshot.avgResonanceSuppressorWolaMs * 1000.0));
+    resonance.Set("maxWolaUs",
+                  Napi::Number::New(env, snapshot.maxResonanceSuppressorWolaMs * 1000.0));
+    resonance.Set("averageWolaMs",
+                  Napi::Number::New(env, snapshot.avgResonanceSuppressorWolaMs));
+    resonance.Set("p99WolaUs",
+                  Napi::Number::New(env, snapshot.p99ResonanceSuppressorWolaMs * 1000.0));
+    resonance.Set("p99WolaMs",
+                  Napi::Number::New(env, snapshot.p99ResonanceSuppressorWolaMs));
+    resonance.Set("maxWolaMs",
+                  Napi::Number::New(env, snapshot.maxResonanceSuppressorWolaMs));
+    resonance.Set("audioThreadReprepareCount",
+                  Napi::Number::New(env, static_cast<double>(snapshot.resonanceSuppressorAudioThreadReprepareCount)));
+    resonance.Set("deferredReprepareCount",
+                  Napi::Number::New(env, static_cast<double>(snapshot.resonanceSuppressorDeferredReprepareCount)));
+    resonance.Set("realtimeSafe",
+                  Napi::Boolean::New(env, snapshot.highQualityResonanceSuppressorRealtimeSafe));
+    resonance.Set("activeInstanceCount",
+                  Napi::Number::New(env, static_cast<double>(
+                      snapshot.activeResonanceSuppressorHighQualityInstanceCount)));
+    resonance.Set("riskLevel",
+                  Napi::String::New(env, snapshot.realtimeRsHqRiskLevel));
+    resonance.Set("riskReasons",
+                  MakeStringArray(env, snapshot.realtimeRsHqRiskReasons));
+    resonance.Set("recommendedAction",
+                  MakeStringArray(env, snapshot.recommendedAction));
+    obj.Set("resonanceSuppressorHighQuality", resonance);
+    obj.Set("resonanceSuppressorWolaCallCount",
+            Napi::Number::New(env, static_cast<double>(snapshot.resonanceSuppressorWolaCallCount)));
+    obj.Set("maxResonanceSuppressorWolaUs",
+            Napi::Number::New(env, snapshot.maxResonanceSuppressorWolaMs * 1000.0));
+    obj.Set("p99ResonanceSuppressorWolaUs",
+            Napi::Number::New(env, snapshot.p99ResonanceSuppressorWolaMs * 1000.0));
+    obj.Set("activeResonanceSuppressorHighQualityInstanceCount",
+            Napi::Number::New(env, static_cast<double>(
+                snapshot.activeResonanceSuppressorHighQualityInstanceCount)));
+    obj.Set("realtimeRsHqRiskLevel",
+            Napi::String::New(env, snapshot.realtimeRsHqRiskLevel));
+    obj.Set("realtimeRsHqRiskReasons",
+            MakeStringArray(env, snapshot.realtimeRsHqRiskReasons));
+    obj.Set("recommendedAction",
+            MakeStringArray(env, snapshot.recommendedAction));
+
+    obj.Set("maxAudibleTrackLatencySamples",
+            Napi::Number::New(env, static_cast<double>(presentationDiag.maxTrackLatencySamples)));
+    obj.Set("masterInsertLatencySamples",
+            Napi::Number::New(env, static_cast<double>(presentationDiag.masterLatencySamples)));
+    obj.Set("audioDeviceOutputLatencySamples",
+            Napi::Number::New(env, static_cast<double>(presentationDiag.deviceOutputLatencySamples)));
+    obj.Set("livePresentationLatencySamples",
+            Napi::Number::New(env, static_cast<double>(presentationDiag.totalPresentationLatencySamples)));
+    obj.Set("rawPositionSamples",
+            Napi::Number::New(env, static_cast<double>(rawPositionSamples)));
+    obj.Set("presentationPositionSamples",
+            Napi::Number::New(env, static_cast<double>(presentationPositionSamples)));
+    obj.Set("diagnosis", Napi::String::New(env, snapshot.diagnosis));
+    obj.Set("timingSequence",
+            Napi::Number::New(env, static_cast<double>(snapshot.timingSequence)));
+
+    return obj;
+}
+
+// startAudioPerformanceCapture(options) -> { status, durationSeconds, startedAt }
+Napi::Value Audio_StartAudioPerformanceCapture(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    try
+    {
+        auto options = parseAudioPerformanceCaptureOptions(info);
+        beginAudioPerformanceCapture(options);
+
+        std::lock_guard<std::mutex> lock(g_audioPerformanceCaptureMutex);
+        Napi::Object out = Napi::Object::New(env);
+        out.Set("ok", Napi::Boolean::New(env, true));
+        out.Set("status", Napi::String::New(env, "capturing"));
+        out.Set("durationSeconds", Napi::Number::New(env, options.durationSeconds));
+        out.Set("startedAt", Napi::String::New(env, g_audioPerformanceCapture.capturedAtIso));
+        out.Set("startTimingSequence",
+                Napi::Number::New(env,
+                                  static_cast<double>(
+                                      g_audioPerformanceCapture.minTimingSequence)));
+        return out;
+    }
+    catch (const std::exception& e)
+    {
+        Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+        return Napi::Object::New(env);
+    }
+}
+
+// stopAudioPerformanceCapture() -> report object
+Napi::Value Audio_StopAudioPerformanceCapture(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    try
+    {
+        const auto report = finishAudioPerformanceCapture();
+        return jsonToNapi(env, report);
+    }
+    catch (const std::exception& e)
+    {
+        Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+        return Napi::Object::New(env);
+    }
+}
+
+// exportAudioPerformanceCaptureReport(options) -> { jsonPath, markdownPath, report }
+Napi::Value Audio_ExportAudioPerformanceCaptureReport(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    try
+    {
+        auto options = parseAudioPerformanceCaptureOptions(info);
+        nlohmann::json report;
+        {
+            std::lock_guard<std::mutex> lock(g_audioPerformanceCaptureMutex);
+            if (g_lastAudioPerformanceCaptureReport.is_null()
+                || g_lastAudioPerformanceCaptureReport.empty())
+            {
+                throw std::runtime_error("no completed audio performance capture to export");
+            }
+            report = g_lastAudioPerformanceCaptureReport;
+        }
+
+        auto [jsonPath, markdownPath] =
+            writeAudioPerformanceReportFiles(report, options);
+        {
+            std::lock_guard<std::mutex> lock(g_audioPerformanceCaptureMutex);
+            g_lastAudioPerformanceCaptureJsonPath = jsonPath;
+            g_lastAudioPerformanceCaptureMarkdownPath = markdownPath;
+        }
+        return makeCaptureResultObject(env, report, jsonPath, markdownPath);
+    }
+    catch (const std::exception& e)
+    {
+        Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+        return Napi::Object::New(env);
+    }
+}
+
+// captureAudioPerformanceReport(options) -> { jsonPath, markdownPath, report }
+Napi::Value Audio_CaptureAudioPerformanceReport(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    try
+    {
+        auto options = parseAudioPerformanceCaptureOptions(info);
+        beginAudioPerformanceCapture(options);
+        std::this_thread::sleep_for(std::chrono::seconds(options.durationSeconds));
+        const auto report = finishAudioPerformanceCapture();
+        auto [jsonPath, markdownPath] =
+            writeAudioPerformanceReportFiles(report, options);
+        {
+            std::lock_guard<std::mutex> lock(g_audioPerformanceCaptureMutex);
+            g_lastAudioPerformanceCaptureJsonPath = jsonPath;
+            g_lastAudioPerformanceCaptureMarkdownPath = markdownPath;
+        }
+        return makeCaptureResultObject(env, report, jsonPath, markdownPath);
+    }
+    catch (const std::exception& e)
+    {
+        try
+        {
+            stopAudioPerformanceCaptureDrainThread();
+            std::lock_guard<std::mutex> lock(g_audioPerformanceCaptureMutex);
+            g_audioPerformanceCapture.active = false;
+        }
+        catch (...) {}
+        Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+        return Napi::Object::New(env);
+    }
+}
+
+// audio_setTestDeviceOutputLatencySamplesForDiagnostics(samples) -> boolean
+// Test-only bridge for AudioEngine's diagnostic override. Pass -1 to return
+// to the live audio-device latency.
+Napi::Value Audio_SetTestDeviceOutputLatencySamplesForDiagnostics(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised()) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return Napi::Boolean::New(env, false);
+    }
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        Napi::TypeError::New(env, "audio_setTestDeviceOutputLatencySamplesForDiagnostics(samples: number)")
+            .ThrowAsJavaScriptException();
+        return Napi::Boolean::New(env, false);
+    }
+
+    const int64_t samples =
+        static_cast<int64_t>(info[0].As<Napi::Number>().DoubleValue());
+    audioEngine->setTestDeviceOutputLatencySamplesForDiagnostics(samples);
+    return Napi::Boolean::New(env, true);
+}
+
+// audio_setTrackVolume(trackId, volume) -> undefined
+// Writes the atomic RT parameter and the model's TrackInfo in one call.
+// No undo tracking; use for continuous fader moves and automation.
 Napi::Value Audio_SetTrackVolume(const Napi::CallbackInfo& info)
 {
     Napi::Env env = info.Env();
@@ -7888,6 +9335,7 @@ Napi::Value Audio_AddEffect(const Napi::CallbackInfo& info)
         Napi::Error::New(env, "Failed to add effect (unknown pluginId or chain full)").ThrowAsJavaScriptException();
         return env.Undefined();
     }
+    audioEngine->refreshLivePresentationLatency();
 
     Napi::Object result = Napi::Object::New(env);
     result.Set("nodeId", Napi::Number::New(env, nodeId));
@@ -7913,6 +9361,7 @@ Napi::Value Audio_RemoveEffect(const Napi::CallbackInfo& info)
     BridgeCallLog log("audio.removeEffect");
 
     const bool ok = audioEngine->getMixEngine().removeEffect(trackId, nodeId);
+    if (ok) audioEngine->refreshLivePresentationLatency();
 #ifdef XLETH_DEBUG
     if (!ok) DBG("[Bridge] removeEffect FAILED track=" + std::to_string(trackId) + " node=" + std::to_string(nodeId));
 #endif
@@ -7939,6 +9388,7 @@ Napi::Value Audio_MoveEffect(const Napi::CallbackInfo& info)
     BridgeCallLog log("audio.moveEffect");
 
     const bool ok = audioEngine->getMixEngine().moveEffect(trackId, nodeId, newPosition);
+    if (ok) audioEngine->refreshLivePresentationLatency();
 #ifdef XLETH_DEBUG
     if (!ok) DBG("[Bridge] moveEffect FAILED track=" + std::to_string(trackId) + " node=" + std::to_string(nodeId));
 #endif
@@ -7965,6 +9415,7 @@ Napi::Value Audio_SetEffectBypass(const Napi::CallbackInfo& info)
     BridgeCallLog log("audio.setEffectBypass");
 
     const bool ok = audioEngine->getMixEngine().setEffectBypass(trackId, nodeId, bypassed);
+    if (ok) audioEngine->refreshLivePresentationLatency();
 #ifdef XLETH_DEBUG
     if (!ok) DBG("[Bridge] setEffectBypass FAILED track=" + std::to_string(trackId) + " node=" + std::to_string(nodeId) + " bypassed=" + (bypassed ? "true" : "false"));
 #endif
@@ -8038,6 +9489,7 @@ Napi::Value Audio_SetEffectParameter(const Napi::CallbackInfo& info)
     BridgeCallLog log("audio.setEffectParameter");
 
     const bool ok = audioEngine->getMixEngine().setEffectParameter(trackId, nodeId, paramId, value);
+    if (ok) audioEngine->refreshLivePresentationLatency();
 #ifdef XLETH_DEBUG
     if (!ok) DBG("[Bridge] setEffectParameter FAILED track=" + std::to_string(trackId) + " node=" + std::to_string(nodeId) + " param=" + paramId);
 #endif
@@ -8235,6 +9687,7 @@ Napi::Value Audio_AddMasterEffect(const Napi::CallbackInfo& info)
         Napi::Error::New(env, "Failed to add master effect (unknown pluginId or chain full)").ThrowAsJavaScriptException();
         return env.Undefined();
     }
+    audioEngine->refreshLivePresentationLatency();
 
     Napi::Object result = Napi::Object::New(env);
     result.Set("nodeId", Napi::Number::New(env, nodeId));
@@ -8259,6 +9712,7 @@ Napi::Value Audio_RemoveMasterEffect(const Napi::CallbackInfo& info)
     BridgeCallLog log("audio.removeMasterEffect");
 
     const bool ok = audioEngine->getMixEngine().removeMasterEffect(nodeId);
+    if (ok) audioEngine->refreshLivePresentationLatency();
 #ifdef XLETH_DEBUG
     if (!ok) DBG("[Bridge] removeMasterEffect FAILED node=" + std::to_string(nodeId));
 #endif
@@ -8284,6 +9738,7 @@ Napi::Value Audio_MoveMasterEffect(const Napi::CallbackInfo& info)
     BridgeCallLog log("audio.moveMasterEffect");
 
     const bool ok = audioEngine->getMixEngine().moveMasterEffect(nodeId, newPosition);
+    if (ok) audioEngine->refreshLivePresentationLatency();
 #ifdef XLETH_DEBUG
     if (!ok) DBG("[Bridge] moveMasterEffect FAILED node=" + std::to_string(nodeId));
 #endif
@@ -8309,6 +9764,7 @@ Napi::Value Audio_SetMasterEffectBypass(const Napi::CallbackInfo& info)
     BridgeCallLog log("audio.setMasterEffectBypass");
 
     const bool ok = audioEngine->getMixEngine().setMasterEffectBypass(nodeId, bypassed);
+    if (ok) audioEngine->refreshLivePresentationLatency();
 #ifdef XLETH_DEBUG
     if (!ok) DBG("[Bridge] setMasterEffectBypass FAILED node=" + std::to_string(nodeId) + " bypassed=" + (bypassed ? "true" : "false"));
 #endif
@@ -9327,20 +10783,6 @@ Napi::Value Video_ComputeDurationSeconds(const Napi::CallbackInfo& info)
 
 namespace {
 
-// Replace non-alphanumeric chars (except - and _) with underscores.
-std::string sanitizeFilename(const std::string& s)
-{
-    std::string out;
-    out.reserve(s.size());
-    for (unsigned char c : s) {
-        if (std::isalnum(c) || c == '-' || c == '_')
-            out += static_cast<char>(c);
-        else if (c == ' ')
-            out += '_';
-    }
-    return out;
-}
-
 // Probe audio stream info (native sample rate + duration) via FFmpeg.
 // Returns { 44100, 0.0 } on failure.
 // (Struct + forward declaration live above Project_Load — see ~line 2724.)
@@ -9434,15 +10876,15 @@ Napi::Value Audio_ExportRegion(const Napi::CallbackInfo& info)
     const SourceMedia* source = g_timeline->getSource(region->sourceId);
     if (!source) return fail("Source not found for region.");
 
-    // Build filename: {SourceName}_{Label}_{RegionName}.wav
+    // Build filename using the caller-supplied naming format (default: sampleNameOnly).
+    const std::string format = (info.Length() >= 2 && info[1].IsString())
+        ? info[1].As<Napi::String>().Utf8Value()
+        : "sampleNameOnly";
     const std::string srcStem = juce::File(juce::String(source->fileName))
                                      .getFileNameWithoutExtension()
                                      .toStdString();
     const std::string labelStr = sampleLabelToString(region->label);
-    std::string filename = sanitizeFilename(srcStem)   + "_"
-                         + sanitizeFilename(labelStr)  + "_"
-                         + sanitizeFilename(region->name) + ".wav";
-    if (filename.size() <= 4) filename = "export.wav"; // safety fallback
+    std::string filename = buildExportFilename(srcStem, labelStr, region->name, format);
 
     const std::string outputPath = g_projectManager->getExportsDir() + "/" + filename;
 
@@ -10978,6 +12420,7 @@ void Midi_ExecuteImport(const Napi::CallbackInfo& info)
         std::lock_guard<std::mutex> lock(syncEventsMutex);
         g_undoManager->execute(std::move(cmd), *g_timeline);
     }
+    syncMixerTrackSlots(false);
 
     // Post-pass: trigger waveform mipmap generation for each newly-loaded
     // sample slot. cmdPtr is still valid — UndoManager owns the command on
@@ -11171,6 +12614,34 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("audio_getMasterPeak",      Napi::Function::New(env, Audio_GetMasterPeak));
     exports.Set("audio_getTrackPeak",      Napi::Function::New(env, Audio_GetTrackPeak));
     exports.Set("audio_getAllPeaks",       Napi::Function::New(env, Audio_GetAllPeaks));
+    exports.Set("audio_setRealtimeDiagnosticsEnabled",
+                Napi::Function::New(env, Audio_SetRealtimeDiagnosticsEnabled));
+    exports.Set("audio_resetRealtimeDiagnostics",
+                Napi::Function::New(env, Audio_ResetRealtimeDiagnostics));
+    exports.Set("audio_getRealtimeDiagnostics",
+                Napi::Function::New(env, Audio_GetRealtimeDiagnostics));
+    exports.Set("getAudioPerformanceTelemetry",
+                Napi::Function::New(env, Audio_GetAudioPerformanceTelemetry));
+    exports.Set("audio_getAudioPerformanceTelemetry",
+                Napi::Function::New(env, Audio_GetAudioPerformanceTelemetry));
+    exports.Set("startAudioPerformanceCapture",
+                Napi::Function::New(env, Audio_StartAudioPerformanceCapture));
+    exports.Set("audio_startAudioPerformanceCapture",
+                Napi::Function::New(env, Audio_StartAudioPerformanceCapture));
+    exports.Set("stopAudioPerformanceCapture",
+                Napi::Function::New(env, Audio_StopAudioPerformanceCapture));
+    exports.Set("audio_stopAudioPerformanceCapture",
+                Napi::Function::New(env, Audio_StopAudioPerformanceCapture));
+    exports.Set("exportAudioPerformanceCaptureReport",
+                Napi::Function::New(env, Audio_ExportAudioPerformanceCaptureReport));
+    exports.Set("audio_exportAudioPerformanceCaptureReport",
+                Napi::Function::New(env, Audio_ExportAudioPerformanceCaptureReport));
+    exports.Set("captureAudioPerformanceReport",
+                Napi::Function::New(env, Audio_CaptureAudioPerformanceReport));
+    exports.Set("audio_captureAudioPerformanceReport",
+                Napi::Function::New(env, Audio_CaptureAudioPerformanceReport));
+    exports.Set("audio_setTestDeviceOutputLatencySamplesForDiagnostics",
+                Napi::Function::New(env, Audio_SetTestDeviceOutputLatencySamplesForDiagnostics));
     exports.Set("audio_setTrackVolume",    Napi::Function::New(env, Audio_SetTrackVolume));
     exports.Set("audio_setTrackPan",       Napi::Function::New(env, Audio_SetTrackPan));
     exports.Set("audio_setTrackSpread",    Napi::Function::New(env, Audio_SetTrackSpread));

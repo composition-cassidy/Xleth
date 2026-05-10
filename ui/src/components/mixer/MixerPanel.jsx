@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import useMixerStore, { peaksSnapshot } from '../../stores/mixerStore.js'
 import useVstStore from '../../stores/vstStore.js'
 import { timelineEvents } from '../../timelineEvents.js'
+import { clearAllMeterTelemetry, mergeMeterTelemetry } from './meterTelemetry.js'
 import MixerStrip from './MixerStrip.jsx'
 import MasterStrip from './MasterStrip.jsx'
 import EqPanel from './EqPanel.jsx'
@@ -20,10 +21,6 @@ import SmartBalancePanel from './SmartBalancePanel.jsx'
 import ResonanceSuppressorPanel from './ResonanceSuppressorPanel.jsx'
 import VstBrowser from './VstBrowser.jsx'
 import ScanProgressBar from './ScanProgressBar.jsx'
-
-function newPeakEntry() {
-  return { peakL: 0, peakR: 0, holdL: 0, holdR: 0, holdTimeL: 0, holdTimeR: 0 }
-}
 
 export default function MixerPanel() {
   const visible = useMixerStore(s => s.visible)
@@ -61,34 +58,13 @@ export default function MixerPanel() {
         try {
           const data = await window.xleth?.audio?.getAllPeaks()
           if (data) {
-            const now = performance.now()
-            // Write all track peaks in one pass
-            if (data.tracks) {
-              for (const [tid, p] of Object.entries(data.tracks)) {
-                if (!peaksSnapshot.tracks[tid]) {
-                  peaksSnapshot.tracks[tid] = newPeakEntry()
-                }
-                const t = peaksSnapshot.tracks[tid]
-                t.peakL = p.peakL
-                t.peakR = p.peakR
-                if (p.peakL >= t.holdL) { t.holdL = p.peakL; t.holdTimeL = now }
-                if (p.peakR >= t.holdR) { t.holdR = p.peakR; t.holdTimeR = now }
-                if (now - t.holdTimeL > 1500) t.holdL *= 0.95
-                if (now - t.holdTimeR > 1500) t.holdR *= 0.95
-              }
-            }
-            // Master peaks
-            if (data.master) {
-              const m = peaksSnapshot.master
-              m.peakL = data.master.peakL
-              m.peakR = data.master.peakR
-              if (data.master.peakL >= m.holdL) { m.holdL = data.master.peakL; m.holdTimeL = now }
-              if (data.master.peakR >= m.holdR) { m.holdR = data.master.peakR; m.holdTimeR = now }
-              if (now - m.holdTimeL > 1500) m.holdL *= 0.95
-              if (now - m.holdTimeR > 1500) m.holdR *= 0.95
-            }
+            mergeMeterTelemetry(peaksSnapshot, data, performance.now())
+          } else {
+            clearAllMeterTelemetry(peaksSnapshot)
           }
-        } catch {}
+        } catch {
+          clearAllMeterTelemetry(peaksSnapshot)
+        }
         // 50 ms ≈ 20 Hz.  Previously 33 ms (30 Hz): getAllPeaks iterates every
         // active track under a lock shared with the audio thread.  At 30 Hz with
         // 10+ tracks each Napi::Object allocation adds up.  20 Hz is imperceptible
@@ -99,12 +75,7 @@ export default function MixerPanel() {
     })()
     return () => {
       polling = false
-      // Zero all peaks on hide
-      for (const t of Object.values(peaksSnapshot.tracks)) {
-        t.peakL = t.peakR = t.holdL = t.holdR = 0
-      }
-      const m = peaksSnapshot.master
-      m.peakL = m.peakR = m.holdL = m.holdR = 0
+      clearAllMeterTelemetry(peaksSnapshot)
     }
   }, [visible])
 

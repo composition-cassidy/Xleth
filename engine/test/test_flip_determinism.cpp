@@ -62,6 +62,9 @@ static bool eventsEqual(const VideoEvent& a, const VideoEvent& b) {
         && a.x == b.x && a.y == b.y && a.width == b.width && a.height == b.height
         && a.opacity          == b.opacity
         && a.globalNoteIndex  == b.globalNoteIndex
+        && a.hasSourceTriggerOrder == b.hasSourceTriggerOrder
+        && a.sourceTriggerOrder    == b.sourceTriggerOrder
+        && a.originalEmissionOrder == b.originalEmissionOrder
         && a.sourceEndTime    == b.sourceEndTime
         && a.regionId         == b.regionId
         && a.pitch            == b.pitch
@@ -270,7 +273,7 @@ static Timeline fixture_patternTrack_everyNBeats() {
 }
 
 // Fixture 5: Pattern track with chord events (simultaneous notes) to exercise
-// the chord-transparency rule (mono ordinal stays put, chord inherits state).
+// EveryNote chord triggering.
 static Timeline fixture_patternTrack_withChords() {
     Timeline tl(120.0, 48000.0, 4, 4);
     int regionId = addVideoSourceAndRegion(tl);
@@ -373,8 +376,9 @@ static void testDeterminism_AcrossCalls() {
 
 // ─── [2] Mono / chord propagation correctness inside fixtures ────────────────
 
+#if 0
 static void testChordHandling() {
-    std::cout << "[2] Chord events are transparent (acceptance #6)\n";
+    std::cout << "[2] EveryNote chord events advance by note count (acceptance #6)\n";
 
     Timeline tl = fixture_patternTrack_withChords();
     auto events = OfflineRenderer::buildVideoEvents(tl);
@@ -386,7 +390,7 @@ static void testChordHandling() {
             return x.pitch < y.pitch;
         });
 
-    CHECK(events.size() == 6, "fixture: 6 events (1 mono + 3 chord + 2 mono)");
+    CHECK(events.size() == 6, "fixture: 6 events (1 single + 3 chord + 2 singles)");
 
     // Tick 0 — mono D5 (pitch 74)
     CHECK(events[0].monoOrdinal ==  0 && events[0].stateIndex == 0,
@@ -408,6 +412,39 @@ static void testChordHandling() {
 }
 
 // ─── [3] Migration parity — each legacy mode round-trips into a working engine
+
+#endif
+
+static void testEveryNoteChordHandling() {
+    std::cout << "[2] EveryNote chord events advance by note count (acceptance #6)\n";
+
+    Timeline tl = fixture_patternTrack_withChords();
+    auto events = OfflineRenderer::buildVideoEvents(tl);
+
+    std::sort(events.begin(), events.end(),
+        [](const VideoEvent& x, const VideoEvent& y) {
+            if (x.startBeat != y.startBeat) return x.startBeat < y.startBeat;
+            return x.pitch < y.pitch;
+        });
+
+    CHECK(events.size() == 6, "fixture: 6 events (1 single + 3 chord + 2 singles)");
+    CHECK(events[0].monoOrdinal == 0 && events[0].stateIndex == 0,
+          "tick 0 single -> ord 0, state 0");
+    CHECK(events[1].monoOrdinal == 1 && events[1].stateIndex == 1,
+          "tick 1 chord member 1 -> ord 1, state 1");
+    CHECK(events[2].monoOrdinal == 2 && events[2].stateIndex == 0,
+          "tick 1 chord member 2 -> ord 2, state 0");
+    CHECK(events[3].monoOrdinal == 3 && events[3].stateIndex == 1,
+          "tick 1 chord member 3 -> ord 3, state 1");
+    CHECK(events[4].monoOrdinal == 4 && events[4].stateIndex == 0,
+          "tick 2 single -> ord 4, state 0");
+    CHECK(events[5].monoOrdinal == 5 && events[5].stateIndex == 1,
+          "tick 3 single -> ord 5, state 1");
+    CHECK(events[3].orientation == Orientation::Horizontal,
+          "tick 1 final chord member exposes render-consumed orientation");
+    CHECK(events[4].orientation == Orientation::None,
+          "single after chord exposes next render-consumed orientation");
+}
 
 static void testMigrationParity_EngineEnd() {
     std::cout << "[3] Migration parity end-to-end (acceptance #1)\n";
@@ -660,14 +697,26 @@ static void testStateRangeCoverage() {
 
 // ─── main ────────────────────────────────────────────────────────────────────
 
+static void testEveryNoteModifierMapping() {
+    std::cout << "[7] Every note modifier string maps to EveryNote enum\n";
+
+    CHECK(videoFlipModifierTypeToString(VideoFlipModifier::Type::EveryNote) == "every-note",
+          "native EveryNote serializes as every-note");
+    CHECK(stringToVideoFlipModifierType("every-note") == VideoFlipModifier::Type::EveryNote,
+          "UI value every-note maps to native EveryNote");
+    CHECK(stringToVideoFlipModifierType("Every note") == VideoFlipModifier::Type::EveryNote,
+          "unknown/display label fallback stays on EveryNote path");
+}
+
 int main() {
     std::cout << "=== Xleth Flip v2 Determinism + Migration + Stability Harness (Phase 6) ===\n\n";
 
     testDeterminism_AcrossCalls();
-    testChordHandling();
+    testEveryNoteChordHandling();
     testMigrationParity_EngineEnd();
     testInsertionStability();
     testStateRangeCoverage();
+    testEveryNoteModifierMapping();
     testPerfBudget();
 
     std::cout << "\n=== Results: "

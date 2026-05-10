@@ -73,16 +73,22 @@ export default function PeakMeter({ trackId, master }) {
 
       // Read peaks from snapshot
       const snap = master ? peaksSnapshot.master : peaksSnapshot.tracks[trackId]
+      const hasTelemetry = Boolean(snap?.hasTelemetry)
       const rawL = snap ? snap.peakL : 0
       const rawR = snap ? snap.peakR : 0
       const holdL = snap ? snap.holdL : 0
       const holdR = snap ? snap.holdR : 0
 
-      // Smooth: fast attack, ~26dB/sec release
       const sm = smoothRef.current
-      const decay = 0.85 // per-frame decay at 60fps ≈ 26dB/sec
-      sm.l = rawL >= sm.l ? rawL : sm.l * decay
-      sm.r = rawR >= sm.r ? rawR : sm.r * decay
+      if (!hasTelemetry) {
+        sm.l = 0
+        sm.r = 0
+      } else {
+        // Smooth: fast attack, ~26dB/sec release
+        const decay = 0.85 // per-frame decay at 60fps ≈ 26dB/sec
+        sm.l = rawL >= sm.l ? rawL : sm.l * decay
+        sm.r = rawR >= sm.r ? rawR : sm.r * decay
+      }
 
       // Draw bars
       const posL = peakToPos(sm.l)
@@ -94,17 +100,19 @@ export default function PeakMeter({ trackId, master }) {
       if (hL > 0) ctx.fillRect(0, h - hL, BAR_W, hL)
       if (hR > 0) ctx.fillRect(BAR_W + GAP, h - hR, BAR_W, hR)
 
-      // Peak hold lines
-      const holdPosL = peakToPos(holdL)
-      const holdPosR = peakToPos(holdR)
-      ctx.fillStyle = tokenValue('--theme-mixer-meter-peak-hold')
-      if (holdPosL > 0.01) {
-        const hy = h - holdPosL * h
-        ctx.fillRect(0, hy, BAR_W, 2)
-      }
-      if (holdPosR > 0.01) {
-        const hy = h - holdPosR * h
-        ctx.fillRect(BAR_W + GAP, hy, BAR_W, 2)
+      if (hasTelemetry) {
+        // Peak hold lines
+        const holdPosL = peakToPos(holdL)
+        const holdPosR = peakToPos(holdR)
+        ctx.fillStyle = tokenValue('--theme-mixer-meter-peak-hold')
+        if (holdPosL > 0.01) {
+          const hy = h - holdPosL * h
+          ctx.fillRect(0, hy, BAR_W, 2)
+        }
+        if (holdPosR > 0.01) {
+          const hy = h - holdPosR * h
+          ctx.fillRect(BAR_W + GAP, hy, BAR_W, 2)
+        }
       }
 
       rafRef.current = requestAnimationFrame(draw)

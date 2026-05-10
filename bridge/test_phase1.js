@@ -41,6 +41,11 @@ function assertEqual(actual, expected, label) {
   assert(actual === expected, `${label} (expected ${expected}, got ${actual})`);
 }
 
+function assertNear(actual, expected, tolerance, label) {
+  assert(Math.abs(actual - expected) <= tolerance,
+         `${label} (expected ${expected}, got ${actual}, tolerance ${tolerance})`);
+}
+
 // Media files
 const KICK_WAV  = path.resolve(__dirname, '../media/KICK_ssedit.wav');
 const SNARE_WAV = path.resolve(__dirname, '../media/SNARE_ssedit.wav');
@@ -247,8 +252,27 @@ async function main() {
   addon.transport_seek(4.0);  // seek to beat 4
   const stateAfterSeek = addon.transport_getState();
   assert(typeof stateAfterSeek === 'object', 'transport_getState() returns object after seek');
-  // Position may take a moment to reflect for non-playing transport, but seek shouldn't crash
-  assert(true, 'transport_seek(4.0) does not throw');
+  assertNear(stateAfterSeek.rawPositionBeats, 4.0, 1.0e-4,
+             'transport rawPositionBeats remains raw musical time after seek');
+  assert(typeof stateAfterSeek.rawPositionMs === 'number',
+         'transport_getState exposes rawPositionMs for editing/diagnostics');
+  assert(typeof stateAfterSeek.rawPositionSamples === 'number',
+         'transport_getState exposes rawPositionSamples for editing/diagnostics');
+  assert(typeof stateAfterSeek.livePresentationLatencySamples === 'number',
+         'transport_getState exposes live presentation latency diagnostics');
+
+  // Bridge contract: positionMs/positionBeats/positionSamples drive live
+  // playhead/video presentation. rawPosition* remains the unshifted transport.
+  const expectedPresentationSamples = Math.max(
+    0,
+    stateAfterSeek.rawPositionSamples
+      - stateAfterSeek.livePresentationLatencySamples);
+  assertNear(stateAfterSeek.positionSamples, expectedPresentationSamples, 1.0e-6,
+             'transport positionSamples is live presentation time');
+  assert(stateAfterSeek.positionBeats <= stateAfterSeek.rawPositionBeats + 1.0e-9,
+         'transport positionBeats does not lead rawPositionBeats');
+  assert(stateAfterSeek.positionMs <= stateAfterSeek.rawPositionMs + 1.0e-6,
+         'transport positionMs does not lead rawPositionMs');
 
   // ── 16. Save project ──────────────────────────────────────────────────────
   console.log('\n[ project.save ]');

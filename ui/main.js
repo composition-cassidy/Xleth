@@ -147,7 +147,7 @@ let nextMsgId = 1;
 const pending = new Map();
 
 // High-frequency polling methods — suppress routine logs for these
-const SILENT_METHODS = new Set(['getFrameRGBA', 'getCurrentFrame', 'getFrameBuffer', 'getTransportState', 'audio_getAllPeaks', 'audio_setTrackVolume', 'audio_setTrackPan', 'audio_setTrackSpread', 'audio_setMasterVolume', 'cache_getWorldActiveJobs']);
+const SILENT_METHODS = new Set(['getFrameRGBA', 'getCurrentFrame', 'getFrameBuffer', 'getTransportState', 'audio_getAllPeaks', 'audio_getRealtimeDiagnostics', 'audio_getAudioPerformanceTelemetry', 'getAudioPerformanceTelemetry', 'audio_setTrackVolume', 'audio_setTrackPan', 'audio_setTrackSpread', 'audio_setMasterVolume', 'cache_getWorldActiveJobs']);
 // Last known transport state — only log when it actually changes
 let lastTransportStateStr = null;
 let autosaveIntervalId = null;
@@ -1464,6 +1464,27 @@ ipcMain.handle('xleth:audio:getTrackPeak',
 ipcMain.handle('xleth:audio:getAllPeaks',
   safeHandler(() => callWorker('audio_getAllPeaks')));
 
+ipcMain.handle('xleth:audio:setRealtimeDiagnosticsEnabled',
+  safeHandler((_, enabled) => callWorker('audio_setRealtimeDiagnosticsEnabled', [Boolean(enabled)])));
+
+ipcMain.handle('xleth:audio:resetRealtimeDiagnostics',
+  safeHandler(() => callWorker('audio_resetRealtimeDiagnostics')));
+
+ipcMain.handle('xleth:audio:getRealtimeDiagnostics',
+  safeHandler(() => callWorker('audio_getRealtimeDiagnostics')));
+
+ipcMain.handle('xleth:audio:getAudioPerformanceTelemetry',
+  safeHandler(() => callWorker('audio_getAudioPerformanceTelemetry')));
+
+ipcMain.handle('xleth:audio:captureAudioPerformanceReport',
+  safeHandler((_, options = {}) => {
+    const reportOptions = {
+      ...(options && typeof options === 'object' ? options : {}),
+      outputDir: options?.outputDir || userDataPath('diagnostics', 'audio-performance'),
+    };
+    return callWorker('audio_captureAudioPerformanceReport', [reportOptions]);
+  }));
+
 ipcMain.handle('xleth:audio:setTrackVolume',
   safeHandler((_, trackId, vol) => callWorker('audio_setTrackVolume', [trackId, vol])));
 
@@ -2285,7 +2306,10 @@ ipcMain.handle('xleth:dialog:swapAudio', async () => {
 // Export region audio to exports/ at native sample rate, then reveal in Explorer
 ipcMain.handle('xleth:audio:exportRegion',
   safeHandler(async (_, regionId) => {
-    const result = await callWorker('audio_exportRegion', [regionId]);
+    const VALID_NAMING_FORMATS = ['sampleNameOnly', 'categoryAndName', 'sourceAndName', 'fullLegacy'];
+    const saved = loadSettings().sampleNamingFormat;
+    const format = VALID_NAMING_FORMATS.includes(saved) ? saved : 'sampleNameOnly';
+    const result = await callWorker('audio_exportRegion', [regionId, format]);
     if (result?.success && result.path) shell.showItemInFolder(result.path);
     return result;
   }));

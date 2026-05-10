@@ -216,7 +216,11 @@ std::vector<VideoEvent> ArpVideoExpander::expandArpVideoEvents(
             ve.x = 0.0f; ve.y = 0.0f;
             ve.width = 1.0f; ve.height = 1.0f;
             ve.opacity         = state.storedVelocity;
-            ve.globalNoteIndex = counter++;
+            const int emissionOrder = counter++;
+            ve.globalNoteIndex = emissionOrder;
+            ve.hasSourceTriggerOrder = true;
+            ve.sourceTriggerOrder = emissionOrder;
+            ve.originalEmissionOrder = emissionOrder;
             ve.pitch           = stepPitch;
             result.push_back(ve);
             ++added;

@@ -369,7 +369,7 @@ bool Timeline::resizeClipLeft(int clipId, TickTime newPosition,
 // ─── Patterns ─────────────────────────────────────────────────────────────────
 
 int Timeline::addPattern(Pattern pattern) {
-    if (m_regions.find(pattern.regionId) == m_regions.end()) {
+    if (pattern.regionId >= 0 && m_regions.find(pattern.regionId) == m_regions.end()) {
         std::cout << "[Timeline] ERROR addPattern: regionId="
                   << pattern.regionId << " not found\n";
         return -1;

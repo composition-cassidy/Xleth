@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cmath>
 #include <complex>
+#include <cstdint>
 #include <cstring>
 #include <string>
 #include <thread>
@@ -97,6 +98,7 @@ public:
             bandCount_.store(count, std::memory_order_relaxed);
             for (int i = 0; i < count && i < kMaxBands; ++i)
                 bands_[i].clearState();
+            refreshLatencySamples();
         }
     }
 
@@ -129,6 +131,7 @@ public:
         bands_[count].clearState();
 
         bandCount_.store(count + 1, std::memory_order_relaxed);
+        refreshLatencySamples();
         return count;
     }
 
@@ -147,6 +150,7 @@ public:
         }
         bands_[last].clearState();
         bandCount_.store(last, std::memory_order_relaxed);
+        refreshLatencySamples();
         return true;
     }
 
@@ -156,7 +160,10 @@ public:
     {
         int count = bandCount_.load(std::memory_order_relaxed);
         if (bandIndex < 0 || bandIndex >= count) return false;
-        return setParamDirect(bandIndex, paramName, value);
+        const bool ok = setParamDirect(bandIndex, paramName, value);
+        if (ok && isLatencyAffectingBandParam(paramName))
+            refreshLatencySamples();
+        return ok;
     }
 
     int getBandCount() const { return bandCount_.load(std::memory_order_relaxed); }
@@ -315,14 +322,42 @@ public:
     int getLatencySamples() const
     {
         int lat = 0;
-        if (hasSpectralBands_) lat += kSTFTHop;
-        if (linPhaseActive_) lat += firLength_ / 2;
-        if (currentOSFactor_ > 0)
+        if (hasSpectralBands_.load(std::memory_order_relaxed)) lat += kSTFTHop;
+        if (linPhaseActive_.load(std::memory_order_relaxed)) lat += firLength_ / 2;
+        const int currentOSFactor = currentOSFactor_.load(std::memory_order_relaxed);
+        if (currentOSFactor > 0)
         {
-            auto* os = (currentOSFactor_ == 1) ? os2x_.get() : os4x_.get();
+            auto* os = (currentOSFactor == 1) ? os2x_.get() : os4x_.get();
             if (os) lat += static_cast<int>(std::ceil(os->getLatencyInSamples()));
         }
         return lat;
+    }
+
+    std::uint64_t getProcessBlockLatencyUpdateCount() const
+    {
+        return processBlockLatencyUpdateCount_.load(std::memory_order_acquire);
+    }
+
+    std::uint64_t getNonRealtimeLatencyUpdateCount() const
+    {
+        return nonRealtimeLatencyUpdateCount_.load(std::memory_order_acquire);
+    }
+
+    int getReportedProcessorLatencySamples() const
+    {
+        return AudioProcessor::getLatencySamples();
+    }
+
+    bool refreshLatencySamples()
+    {
+        refreshLatencyStateFromParameters();
+        const int newLat = getLatencySamples();
+        if (newLat == AudioProcessor::getLatencySamples())
+            return false;
+
+        setLatencySamples(newLat);
+        nonRealtimeLatencyUpdateCount_.fetch_add(1, std::memory_order_acq_rel);
+        return true;
     }
 
     // ── Tail length ──────────────────────────────────────────────────────────
@@ -482,8 +517,7 @@ public:
         specThreadRunning_.store(true, std::memory_order_relaxed);
         specThread_ = std::thread([this] { analysisThreadFunc(); });
 
-        // Reset latency
-        setLatencySamples(0);
+        refreshLatencySamples();
     }
 
     void processEffect(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& /*midi*/) override
@@ -504,8 +538,9 @@ public:
         }
 
         // ── Read global mode state ──────────────────────────────────────────
-        linPhaseActive_ = linPhasePtr_
+        const bool linPhaseActive = linPhasePtr_
             ? (linPhasePtr_->load(std::memory_order_relaxed) > 0.5f) : false;
+        linPhaseActive_.store(linPhaseActive, std::memory_order_relaxed);
 
         // Read oversample factor (0=off, 1=2x, 2=4x)
         int osRaw = oversamplePtr_
@@ -513,21 +548,22 @@ public:
 
         // Spectral + OS mutually exclusive: spectral wins, OS bypassed
         bool anySpectral = false;
-        if (!linPhaseActive_)
+        if (!linPhaseActive)
         {
             for (int b = 0; b < count; ++b)
                 if (bands_[b].mode == 2 && bands_[b].enabled) { anySpectral = true; break; }
         }
-        currentOSFactor_ = anySpectral ? 0 : osRaw;
+        const int currentOSFactor = anySpectral ? 0 : osRaw;
+        currentOSFactor_.store(currentOSFactor, std::memory_order_relaxed);
 
         // Effective sample rate for coefficient computation
-        const double effectiveSR = sr * static_cast<double>(1 << currentOSFactor_);
+        const double effectiveSR = sr * static_cast<double>(1 << currentOSFactor);
 
         // ── Dynamic EQ sidechain analysis (Model B, FabFilter-style) ────────
         // Skipped when linPhase is active (all bands treated as Normal).
         // Detector: dedicated constant-skirt BPF (independent of band gain).
         // Output: activation in [0,1]; 0 = band off, 1 = at user target gain.
-        if (!linPhaseActive_ && hasDynamic)
+        if (!linPhaseActive && hasDynamic)
         {
             for (int b = 0; b < count; ++b)
             {
@@ -659,24 +695,25 @@ public:
         }
 
         // ── STFT Spectral Dynamics (skipped when linPhase) ────────────────────
-        if (!linPhaseActive_)
+        if (!linPhaseActive)
         {
-            hasSpectralBands_ = false;
+            bool hasSpectralBands = false;
             for (int b = 0; b < count; ++b)
             {
                 if (bands_[b].mode == 2 && bands_[b].enabled)
                 {
-                    hasSpectralBands_ = true;
+                    hasSpectralBands = true;
                     break;
                 }
             }
+            hasSpectralBands_.store(hasSpectralBands, std::memory_order_relaxed);
 
             // Auto-enable pre-EQ spectrum when any Spectral band is active.
             // Do NOT auto-disable; user may want pre-spectrum with other modes too.
-            if (hasSpectralBands_ && !specPreEnabled_.load(std::memory_order_relaxed))
+            if (hasSpectralBands && !specPreEnabled_.load(std::memory_order_relaxed))
                 specPreEnabled_.store(true, std::memory_order_release);
 
-            if (hasSpectralBands_)
+            if (hasSpectralBands)
             {
                 const int ringSize = kSTFTSize * 2;
                 for (int s = 0; s < numSamples; ++s)
@@ -705,28 +742,21 @@ public:
         }
         else
         {
-            hasSpectralBands_ = false; // linPhase disables spectral
-        }
-
-        // Update reported latency
-        {
-            int newLat = getLatencySamples();
-            if (newLat != AudioProcessor::getLatencySamples())
-                setLatencySamples(newLat);
+            hasSpectralBands_.store(false, std::memory_order_relaxed); // linPhase disables spectral
         }
 
         // ── Processing path ─────────────────────────────────────────────────
 
-        if (linPhaseActive_)
+        if (linPhaseActive)
         {
             // ── Linear Phase FIR convolution (replaces biquad cascade) ──────
             if (firDirty_)
                 rebuildFIR();
 
-            if (currentOSFactor_ > 0)
+            if (currentOSFactor > 0)
             {
                 // Oversampled FIR: upsample → FIR → downsample
-                auto* os = (currentOSFactor_ == 1) ? os2x_.get() : os4x_.get();
+                auto* os = (currentOSFactor == 1) ? os2x_.get() : os4x_.get();
                 juce::dsp::AudioBlock<float> block(buffer);
                 auto upBlock = os->processSamplesUp(block);
 
@@ -777,10 +807,10 @@ public:
                 }
             }
         }
-        else if (currentOSFactor_ > 0)
+        else if (currentOSFactor > 0)
         {
             // ── Oversampled biquad: upsample → cascade → downsample ─────────
-            auto* os = (currentOSFactor_ == 1) ? os2x_.get() : os4x_.get();
+            auto* os = (currentOSFactor == 1) ? os2x_.get() : os4x_.get();
             juce::dsp::AudioBlock<float> block(buffer);
             auto upBlock = os->processSamplesUp(block);
 
@@ -868,6 +898,12 @@ public:
     }
 
 private:
+    void onParameterValueChanged(const std::string& paramId, float /*value*/) override
+    {
+        if (isLatencyAffectingParameterId(paramId))
+            refreshLatencySamples();
+    }
+
     // ── Per-band state ───────────────────────────────────────────────────────
     struct BandState
     {
@@ -979,8 +1015,10 @@ private:
     // ── Global mode pointers ────────────────────────────────────────────────
     std::atomic<float>* linPhasePtr_   = nullptr;
     std::atomic<float>* oversamplePtr_ = nullptr;
-    bool linPhaseActive_ = false;
-    int  currentOSFactor_ = 0;  // 0=off, 1=2x, 2=4x
+    std::atomic<bool> linPhaseActive_{false};
+    std::atomic<int> currentOSFactor_{0};  // 0=off, 1=2x, 2=4x
+    std::atomic<std::uint64_t> processBlockLatencyUpdateCount_{0};
+    std::atomic<std::uint64_t> nonRealtimeLatencyUpdateCount_{0};
 
     // ── STFT state (Spectral Dynamics) ──────────────────────────────────────
     std::vector<float> stftInRing_[2];
@@ -988,7 +1026,7 @@ private:
     int stftWritePos_ = 0;
     int stftSinceLastFrame_ = 0;
     float stftWindow_[kSTFTSize]{};
-    bool hasSpectralBands_ = false;
+    std::atomic<bool> hasSpectralBands_{false};
     int  preparedBlockSize_ = 512;
 
     // ── Linear Phase (direct FIR convolution) ───────────────────────────────
@@ -1544,6 +1582,53 @@ private:
     }
 
     // ── APVTS helpers ────────────────────────────────────────────────────────
+
+    float readGlobalParam(const char* paramId, float fallback) const
+    {
+        auto* raw = apvts_.getRawParameterValue(paramId);
+        return raw ? raw->load(std::memory_order_relaxed) : fallback;
+    }
+
+    void refreshLatencyStateFromParameters()
+    {
+        const bool linPhase = readGlobalParam("linphase", 0.0f) > 0.5f;
+        const int osRaw = std::clamp(
+            static_cast<int>(std::lround(readGlobalParam("oversample", 0.0f))),
+            0, 2);
+
+        bool anySpectral = false;
+        const int count = bandCount_.load(std::memory_order_relaxed);
+        if (!linPhase)
+        {
+            for (int b = 0; b < count; ++b)
+            {
+                const bool enabled = readParam(b, "enabled") > 0.5f;
+                const int mode = static_cast<int>(std::lround(readParam(b, "mode")));
+                if (enabled && mode == 2)
+                {
+                    anySpectral = true;
+                    break;
+                }
+            }
+        }
+
+        linPhaseActive_.store(linPhase, std::memory_order_relaxed);
+        hasSpectralBands_.store(anySpectral, std::memory_order_relaxed);
+        currentOSFactor_.store(anySpectral ? 0 : osRaw, std::memory_order_relaxed);
+    }
+
+    static bool isLatencyAffectingBandParam(const std::string& name)
+    {
+        return name == "enabled" || name == "mode";
+    }
+
+    static bool isLatencyAffectingParameterId(const std::string& paramId)
+    {
+        return paramId == "linphase"
+            || paramId == "oversample"
+            || paramId.find("_enabled") != std::string::npos
+            || paramId.find("_mode") != std::string::npos;
+    }
 
     static juce::String paramId(int bandIndex, const char* suffix)
     {

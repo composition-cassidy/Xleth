@@ -5,7 +5,7 @@ import { MAX_NOTE_LENGTH_OPTIONS, DEFAULT_MAX_NOTE_LENGTH_DENOM } from './maxNot
 // onChange(patch): partial patch dispatched up to onOutputChange in the dialog
 export default function MidiDrumSubTrackRow({ noteNum, options, onChange, sources }) {
   const gmName = gmDrumName(noteNum) || `Note ${noteNum}`
-  const missingSample = options.enabled && (options.sampleId == null || Number(options.sampleId) < 0)
+  const unassignedSample = options.enabled && (options.sampleId == null || Number(options.sampleId) < 0)
 
   return (
     <div className="midi-drum-sub-row">
@@ -22,7 +22,7 @@ export default function MidiDrumSubTrackRow({ noteNum, options, onChange, source
         onChange={e => onChange({ sampleId: e.target.value || null })}
         disabled={!options.enabled}
       >
-        <option value="">None — assign later</option>
+        <option value="">None - assign later</option>
         {(sources || []).map(s => (
           <option key={s.id} value={s.id}>{s.name}</option>
         ))}
@@ -47,9 +47,9 @@ export default function MidiDrumSubTrackRow({ noteNum, options, onChange, source
           <option key={o.value} value={o.value}>Max {o.label}</option>
         ))}
       </select>
-      {missingSample && (
+      {unassignedSample && (
         <div className="midi-track-warning">
-          ⚠ Sample required to import this track
+          This note will import without a sample assignment. You can assign one later.
         </div>
       )}
     </div>

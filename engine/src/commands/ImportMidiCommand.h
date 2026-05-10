@@ -20,8 +20,8 @@ struct ImportMidiCommandOptions {
         int                       outputTrackIndex = 0;  // index into MIDI metadata.outputTracks
         std::string               name;
         bool                      visualOnly = false;
-        int                       regionId   = -1;        // existing SampleRegion id; -1 → skip this output track
-        std::vector<PatternNote>  notes;                  // pre-converted, pre-grouped by outputTrackIndex
+        int                       regionId   = -1;       // existing SampleRegion id; -1 -> import as unassigned pattern
+        std::vector<PatternNote>  notes;                 // pre-converted, pre-grouped by outputTrackIndex
     };
 
     std::vector<OutputTrackSpec> outputTracks;
@@ -54,20 +54,20 @@ private:
     void capturePreImportState(Timeline& timeline);
 
     ImportMidiCommandOptions options_;
-    MixEngine*               mixEngine_         = nullptr;
-    SampleBank*              sampleBank_        = nullptr;
-    double                   engineSampleRate_  = 44100.0;
+    MixEngine*               mixEngine_           = nullptr;
+    SampleBank*              sampleBank_          = nullptr;
+    double                   engineSampleRate_    = 44100.0;
     bool                     hasCapturedPreState_ = false;
 
-    // ── Pre-execute snapshot ────────────────────────────────────────────────
+    // Pre-execute snapshot
     double                       preBpm_ = 0.0;
     std::unordered_map<int, int> preRegionToSampleMap_;
 
-    // ── Per-execute creation log (for undo + bridge mipmap post-pass) ──────
+    // Per-execute creation log (for undo + bridge mipmap post-pass)
     std::vector<int>                    createdTrackIds_;
-    std::vector<int>                    createdRegionIds_;        // empty in normal flow; defensive
+    std::vector<int>                    createdRegionIds_;       // empty in normal flow; defensive
     std::vector<int>                    createdPatternIds_;
     std::vector<int>                    createdPatternBlockIds_;
-    std::vector<CreatedSampleSlotInfo>  createdSampleSlots_;      // only slots THIS command allocated
-    std::vector<int>                    createdMappedRegionIds_;  // only mappings THIS command created
+    std::vector<CreatedSampleSlotInfo>  createdSampleSlots_;     // only slots THIS command allocated
+    std::vector<int>                    createdMappedRegionIds_; // only mappings THIS command created
 };

@@ -25,10 +25,13 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <mutex>
 #include <string>
 #include <unordered_set>
+
+class GuardedPluginWrapper;
 
 // UID token used to match this coordinator with the editor-host worker.
 // MUST match kEditorHostUID in EditorHostMain.cpp.
@@ -72,7 +75,8 @@ class EditorProcessCoordinator : public juce::ChildProcessCoordinator
 public:
     // workerPlugin: the plugin instance running in the AudioGraph. Pass nullptr
     // in test mode (EDIT-02/03 test) — param sync is silently skipped.
-    explicit EditorProcessCoordinator(juce::AudioPluginInstance* workerPlugin = nullptr);
+    explicit EditorProcessCoordinator(juce::AudioPluginInstance* workerPlugin = nullptr,
+                                      GuardedPluginWrapper* workerWrapper = nullptr);
     ~EditorProcessCoordinator() override;
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -130,6 +134,7 @@ public:
     // ── Callbacks (set before calling start()) ───────────────────────────────
     std::function<void(int w, int h)> onReady_;
     std::function<void()>             onClosed_;
+    std::function<void(std::uint64_t latencyPublishCountBefore)> onWorkerPluginMutated_;
 
 private:
     // ── IPC overrides ─────────────────────────────────────────────────────────
@@ -142,6 +147,7 @@ private:
 
     // ── State ─────────────────────────────────────────────────────────────────
     juce::AudioPluginInstance* workerPlugin_ {nullptr};
+    GuardedPluginWrapper*      workerWrapper_ {nullptr};
 
     int         editorWidth_   {0};
     int         editorHeight_  {0};

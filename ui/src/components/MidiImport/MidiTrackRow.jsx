@@ -2,15 +2,15 @@ import MidiDrumSubTrackRow from './MidiDrumSubTrackRow.jsx'
 import { MAX_NOTE_LENGTH_OPTIONS, DEFAULT_MAX_NOTE_LENGTH_DENOM } from './maxNoteLength.js'
 
 // parentOptions: { enabled, splitByNote }
-// outputOptions: for non-split tracks — single { outputTrackIndex, sampleId, visualOnly, name, ... } or null
-//                for split-drum tracks — array of { pitch, outputTrackIndex, sampleId, visualOnly, ... }
-// onParentChange(patch)              — partial patch to source-track-level options
-// onOutputChange(outputTrackIndex, patch) — partial patch to output-track-level options
+// outputOptions: for non-split tracks - single { outputTrackIndex, sampleId, visualOnly, name, ... } or null
+//                for split-drum tracks - array of { pitch, outputTrackIndex, sampleId, visualOnly, ... }
+// onParentChange(patch)              - partial patch to source-track-level options
+// onOutputChange(outputTrackIndex, patch) - partial patch to output-track-level options
 export default function MidiTrackRow({ track, parentOptions, outputOptions, onParentChange, onOutputChange, sources }) {
   const isSplitDrum = !!track.isDrum && !!parentOptions.splitByNote
 
-  // Inline warning for non-split rows missing a sample assignment.
-  const nonSplitMissingSample = (
+  // Inline help for non-split rows that will import as unassigned patterns.
+  const nonSplitUnassigned = (
     !isSplitDrum &&
     parentOptions.enabled &&
     outputOptions != null &&
@@ -45,7 +45,7 @@ export default function MidiTrackRow({ track, parentOptions, outputOptions, onPa
               )}
               disabled={!parentOptions.enabled || outputOptions == null}
             >
-              <option value="">None — assign later</option>
+              <option value="">None - assign later</option>
               {(sources || []).map(s => (
                 <option key={s.id} value={s.id}>{s.name}</option>
               ))}
@@ -82,19 +82,19 @@ export default function MidiTrackRow({ track, parentOptions, outputOptions, onPa
 
       {track.hasPitchBend && (
         <div className="midi-track-warning">
-          ⚠ Pitch bend will be discarded (slide note conversion planned)
+          Pitch bend will be discarded (slide note conversion planned)
         </div>
       )}
 
-      {nonSplitMissingSample && (
+      {nonSplitUnassigned && (
         <div className="midi-track-warning">
-          ⚠ Sample required to import this track
+          This track will import without a sample assignment. You can assign one later.
         </div>
       )}
 
       {track.isDrum && (
         <div className="midi-drum-section">
-          <div className="midi-drum-indicator">⚠ Detected as drum track</div>
+          <div className="midi-drum-indicator">Detected as drum track</div>
           <label className="midi-checkbox-row">
             <input
               type="checkbox"

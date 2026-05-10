@@ -121,21 +121,74 @@ public:
             : 0.0;
     }
 
+    std::uint64_t getProcessBlockLatencyUpdateCount() const
+    {
+        return processBlockLatencyUpdateCount_.load(std::memory_order_acquire);
+    }
+
+    std::uint64_t getNonRealtimeLatencyUpdateCount() const
+    {
+        return nonRealtimeLatencyUpdateCount_.load(std::memory_order_acquire);
+    }
+
+    int getReportedProcessorLatencySamples() const
+    {
+        return AudioProcessor::getLatencySamples();
+    }
+
+    void setStateInformation(const void* data, int sizeInBytes) override
+    {
+        auto xml = getXmlFromBinary(data, sizeInBytes);
+        if (xml && xml->hasTagName(apvts_.state.getType()))
+        {
+            bool hasProcessingMode = false;
+            for (auto* child : xml->getChildIterator())
+            {
+                if (child != nullptr
+                    && child->hasTagName("PARAM")
+                    && child->getStringAttribute("id") == "processing_mode")
+                {
+                    hasProcessingMode = true;
+                    break;
+                }
+            }
+
+            if (!hasProcessingMode)
+            {
+                auto legacyMode = std::make_unique<juce::XmlElement>("PARAM");
+                legacyMode->setAttribute("id", "processing_mode");
+                legacyMode->setAttribute("value", "1.0");
+                xml->addChildElement(legacyMode.release());
+            }
+
+            apvts_.replaceState(juce::ValueTree::fromXml(*xml));
+            preparedHighQualityQualityIndex_ = -1;
+            pendingHighQualityReprepare_ = true;
+            reprepareHighQualityStateForCurrentQuality();
+            activeEngine_ = ProcessingEngine::None;
+            wetStateCleared_ = false;
+            refreshLatencyState();
+        }
+    }
+
     void prepareEffect(double sampleRate, int maxBlockSize) override
     {
         sampleRate_   = sampleRate;
         maxBlockSize_ = maxBlockSize;
 
-        const int quality = readQualityForPrepare();
-        wola_.prepare(quality, maxBlockSize, sampleRate);
-        setLatencySamples(wola_.getLatencySamples());
-        dryDelay_.prepare(wola_.getLatencySamples(), maxBlockSize);
-        delayedDry_.setSize(2, std::max(1, maxBlockSize), false, true, true);
+        preparedHighQualityQualityIndex_ = -1;
+        pendingHighQualityReprepare_ = true;
+        reprepareHighQualityStateForCurrentQuality();
+        lowLatency_.prepare(maxBlockSize, sampleRate);
+        liveDry_.setSize(2, std::max(1, maxBlockSize), false, true, true);
         msComponent_.assign(static_cast<std::size_t>(std::max(1, maxBlockSize)), 0.0f);
         deltaRampPerSample_ = sampleRate > 0.0
             ? static_cast<float>(1.0 / (sampleRate * 0.005))
             : 1.0f;
         deltaMix_ = readBoolParam("delta", false) ? 1.0f : 0.0f;
+        activeEngine_ = ProcessingEngine::None;
+        wetStateCleared_ = false;
+        refreshLatencyState();
 
 #ifdef XLETH_DEBUG
         DBG("[ResonanceSuppressor] prepareEffect sr=" + juce::String(sampleRate)
@@ -149,20 +202,23 @@ public:
     void releaseEffect() override
     {
         wola_.release();
+        lowLatency_.release();
         dryDelay_.release();
         delayedDry_.setSize(0, 0);
+        liveDry_.setSize(0, 0);
         msComponent_.clear();
         setLatencySamples(0);
+        activeEngine_ = ProcessingEngine::None;
+        wetStateCleared_ = false;
     }
 
     void resetEffect() override
     {
-        wola_.reset();
-        dryDelay_.reset();
-        delayedDry_.clear();
+        clearWetProcessingState();
         std::fill(msComponent_.begin(), msComponent_.end(), 0.0f);
         deltaMix_ = readBoolParam("delta", false) ? 1.0f : 0.0f;
-        lastStereoMode_ = -1;
+        activeEngine_ = ProcessingEngine::None;
+        wetStateCleared_ = false;
     }
 
     void processEffect(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& /*midi*/) override
@@ -173,7 +229,7 @@ public:
         float peakL = 0.0f;
         float peakR = 0.0f;
 
-#ifdef XLETH_DEBUG
+#if defined(XLETH_DEBUG) && defined(XLETH_RESONANCE_SUPPRESSOR_AUDIO_LOG)
         // Throttled diagnostic: confirms processEffect runs in the real app and
         // reports input vs output peak so we can verify the wet path actually
         // modifies the buffer. Logged once every ~500 blocks (~5s at 48k/480).
@@ -207,110 +263,141 @@ public:
             peakR = peakL;
         }
 
-        if (wola_.isPrepared())
+        const int processedChannels = std::min(numCh, 2);
+        if (processedChannels > 0 && liveDry_.getNumSamples() >= numSamples)
         {
-            const int processedChannels = std::min(numCh, 2);
             for (int ch = 0; ch < processedChannels; ++ch)
-                dryDelay_.processChannel(ch,
-                                         buffer.getReadPointer(ch),
-                                         delayedDry_.getWritePointer(ch),
-                                         numSamples);
+                liveDry_.copyFrom(ch, 0, buffer, ch, 0, numSamples);
+        }
 
-            ProcessorSettings settings;
-            settings.depth = readPercentParam("depth", 50.0f);
-            settings.sharpness = readPercentParam("sharpness", 50.0f);
-            settings.selectivity = readPercentParam("selectivity", 50.0f);
-            settings.attackMs = readFloatParam("attack", 15.0f);
-            settings.releaseMs = readFloatParam("release", 200.0f);
-            settings.stereoLink = readPercentParam("stereo_link", 100.0f);
-            settings.hardMode = readChoiceParam("mode", 0) == 1;
-            settings.wcHp = readFloatParam("wc_hp", 80.0f);
-            settings.wcLp = readFloatParam("wc_lp", 16000.0f);
-            settings.wcActive = {
-                readBoolParam("wc_b1_active", true),
-                readBoolParam("wc_b2_active", true),
-                readBoolParam("wc_b3_active", true),
-                readBoolParam("wc_b4_active", true),
-                readBoolParam("wc_b5_active", false),
-                readBoolParam("wc_b6_active", false),
-                readBoolParam("wc_b7_active", false),
-                readBoolParam("wc_b8_active", false)
-            };
-            settings.wcTypes = {
-                std::clamp(readChoiceParam("wc_b1_type", 0), 0, 4),
-                std::clamp(readChoiceParam("wc_b2_type", 0), 0, 4),
-                std::clamp(readChoiceParam("wc_b3_type", 0), 0, 4),
-                std::clamp(readChoiceParam("wc_b4_type", 0), 0, 4),
-                std::clamp(readChoiceParam("wc_b5_type", 0), 0, 4),
-                std::clamp(readChoiceParam("wc_b6_type", 0), 0, 4),
-                std::clamp(readChoiceParam("wc_b7_type", 0), 0, 4),
-                std::clamp(readChoiceParam("wc_b8_type", 0), 0, 4)
-            };
-            settings.wcFreqs = {
-                readFloatParam("wc_b1_freq",  250.0f),
-                readFloatParam("wc_b2_freq",  800.0f),
-                readFloatParam("wc_b3_freq",  2500.0f),
-                readFloatParam("wc_b4_freq",  8000.0f),
-                readFloatParam("wc_b5_freq",  500.0f),
-                readFloatParam("wc_b6_freq",  1500.0f),
-                readFloatParam("wc_b7_freq",  4000.0f),
-                readFloatParam("wc_b8_freq",  10000.0f)
-            };
-            settings.wcGainsDb = {
-                readFloatParam("wc_b1_gain", 0.0f),
-                readFloatParam("wc_b2_gain", 0.0f),
-                readFloatParam("wc_b3_gain", 0.0f),
-                readFloatParam("wc_b4_gain", 0.0f),
-                readFloatParam("wc_b5_gain", 0.0f),
-                readFloatParam("wc_b6_gain", 0.0f),
-                readFloatParam("wc_b7_gain", 0.0f),
-                readFloatParam("wc_b8_gain", 0.0f)
-            };
-            settings.wcQs = {
-                readFloatParam("wc_b1_q", 1.0f),
-                readFloatParam("wc_b2_q", 1.0f),
-                readFloatParam("wc_b3_q", 1.0f),
-                readFloatParam("wc_b4_q", 1.0f),
-                readFloatParam("wc_b5_q", 1.0f),
-                readFloatParam("wc_b6_q", 1.0f),
-                readFloatParam("wc_b7_q", 1.0f),
-                readFloatParam("wc_b8_q", 1.0f)
-            };
+        const ProcessorSettings settings = readProcessorSettings();
+        const bool dryOnlyTarget = shouldOutputLiveDry();
+        float gainReductionActivity = 0.0f;
 
-            const int stereoMode = readChoiceParam("stereo_mode", 0);
-            settings.stereoMode = static_cast<float>(std::clamp(stereoMode, 0, 2));
-
-            if (stereoMode != lastStereoMode_)
+        if (processedChannels > 0)
+        {
+            if (dryOnlyTarget)
             {
-                wola_.reset();
-                lastStereoMode_ = stereoMode;
-            }
-            wola_.beginBlock(settings, vizActive_.load(std::memory_order_acquire));
+                advanceOutputSmoothers(numSamples);
+                deltaMix_ = 0.0f;
 
-            if (processedChannels == 2 && stereoMode == 1)
-                processMidMode(buffer, numSamples);
-            else if (processedChannels == 2 && stereoMode == 2)
-                processSideMode(buffer, numSamples);
-            else if (processedChannels == 2)
-                wola_.processStereo(buffer.getWritePointer(0),
-                                    buffer.getWritePointer(1),
-                                    numSamples);
-            else if (processedChannels == 1)
+                if (!wetStateCleared_)
+                {
+                    clearWetProcessingState();
+                    activeEngine_ = ProcessingEngine::None;
+                    wetStateCleared_ = true;
+                }
+
+                for (int ch = 0; ch < processedChannels; ++ch)
+                    buffer.copyFrom(ch, 0, liveDry_, ch, 0, numSamples);
+            }
+            else if (readProcessingMode() == 1)
             {
-                if (stereoMode == 2)
-                    processMonoSideMode(buffer, numSamples);
-                else
-                    wola_.processMono(buffer.getWritePointer(0), numSamples);
-            }
+                ensureHighQualityStateForCurrentQuality();
+                if (!wola_.isPrepared())
+                {
+                    buffer.clear();
+                    writeMeterValue(0, peakL);
+                    writeMeterValue(1, peakR);
+                    writeMeterValue(2, gainReductionActivity);
+                    return;
+                }
 
-            applyOutputStage(buffer, processedChannels, numSamples);
+                wetStateCleared_ = false;
+                if (activeEngine_ != ProcessingEngine::HighQuality)
+                {
+                    clearLowLatencyState();
+                    activeEngine_ = ProcessingEngine::HighQuality;
+                }
+
+                for (int ch = 0; ch < processedChannels; ++ch)
+                    dryDelay_.processChannel(ch,
+                                             liveDry_.getReadPointer(ch),
+                                             delayedDry_.getWritePointer(ch),
+                                             numSamples);
+
+                const int stereoMode = std::clamp(static_cast<int>(settings.stereoMode), 0, 2);
+                if (stereoMode != lastStereoMode_)
+                {
+                    wola_.reset();
+                    lastStereoMode_ = stereoMode;
+                }
+
+                const bool timeWola = isRealtimeTimingEnabled();
+                const std::uint64_t wolaStartNs = timeWola ? realtimeNowNs() : 0;
+
+                wola_.beginBlock(settings, vizActive_.load(std::memory_order_acquire));
+
+                if (processedChannels == 2 && stereoMode == 1)
+                    processHighQualityMidMode(buffer, numSamples);
+                else if (processedChannels == 2 && stereoMode == 2)
+                    processHighQualitySideMode(buffer, numSamples);
+                else if (processedChannels == 2)
+                    wola_.processStereo(buffer.getWritePointer(0),
+                                        buffer.getWritePointer(1),
+                                        numSamples);
+                else if (processedChannels == 1)
+                {
+                    if (stereoMode == 2)
+                        processHighQualityMonoSideMode(buffer, numSamples);
+                    else
+                        wola_.processMono(buffer.getWritePointer(0), numSamples);
+                }
+
+                if (timeWola)
+                    recordRealtimeSection("rs_wola", realtimeNowNs() - wolaStartNs);
+
+                applyOutputStage(buffer, delayedDry_, processedChannels, numSamples);
+                gainReductionActivity = wola_.getGainReductionActivityForMeter();
+            }
+            else if (lowLatency_.isPrepared())
+            {
+                wetStateCleared_ = false;
+                if (activeEngine_ != ProcessingEngine::LowLatency)
+                {
+                    clearHighQualityState();
+                    activeEngine_ = ProcessingEngine::LowLatency;
+                }
+
+                lowLatency_.beginBlock(settings);
+
+                const int stereoMode = std::clamp(static_cast<int>(settings.stereoMode), 0, 2);
+                if (processedChannels == 2 && stereoMode == 1)
+                    processLowLatencyMidMode(buffer, numSamples);
+                else if (processedChannels == 2 && stereoMode == 2)
+                    processLowLatencySideMode(buffer, numSamples);
+                else if (processedChannels == 2)
+                    lowLatency_.processStereo(buffer.getWritePointer(0),
+                                              buffer.getWritePointer(1),
+                                              numSamples);
+                else if (processedChannels == 1)
+                {
+                    if (stereoMode == 2)
+                        processLowLatencyMonoSideMode(buffer, numSamples);
+                    else
+                        lowLatency_.processMono(buffer.getWritePointer(0), numSamples);
+                }
+
+                applyOutputStage(buffer, liveDry_, processedChannels, numSamples);
+                gainReductionActivity = lowLatency_.getGainReductionActivityForMeter();
+            }
+            else
+            {
+                deltaMix_ = 0.0f;
+                for (int ch = 0; ch < processedChannels; ++ch)
+                    buffer.copyFrom(ch, 0, liveDry_, ch, 0, numSamples);
+            }
+        }
+        else
+        {
+            deltaMix_ = readBoolParam("delta", false) ? 1.0f : 0.0f;
         }
 
         writeMeterValue(0, peakL);
         writeMeterValue(1, peakR);
-        writeMeterValue(2, wola_.getGainReductionActivityForMeter());
+        writeMeterValue(2, gainReductionActivity);
 
-#ifdef XLETH_DEBUG
+#if defined(XLETH_DEBUG) && defined(XLETH_RESONANCE_SUPPRESSOR_AUDIO_LOG)
         if (rsLogThis)
         {
             float rsOutPeak = 0.0f;
@@ -335,31 +422,182 @@ public:
 protected:
     bool usesLatencyAlignedBypassDry() const override
     {
-        return true;
+        return false;
     }
 
     bool copyLatencyAlignedBypassDry(juce::AudioBuffer<float>& dest, int numSamples) override
     {
-        const int destSamples = std::min(numSamples, dest.getNumSamples());
-        const int channels = std::min({ dest.getNumChannels(), delayedDry_.getNumChannels(), 2 });
-
-        if (destSamples <= 0
-            || channels <= 0
-            || delayedDry_.getNumSamples() < destSamples)
-        {
-            return false;
-        }
-
-        for (int ch = 0; ch < channels; ++ch)
-            dest.copyFrom(ch, 0, delayedDry_, ch, 0, destSamples);
-
-        for (int ch = channels; ch < std::min(dest.getNumChannels(), 2); ++ch)
-            dest.clear(ch, 0, destSamples);
-
-        return true;
+        juce::ignoreUnused(dest, numSamples);
+        return false;
     }
 
 private:
+    enum class ProcessingEngine
+    {
+        None,
+        LowLatency,
+        HighQuality
+    };
+
+    static constexpr float kDryOnlyMixThresholdPct = 1.0e-4f;
+
+    void onBypassChanged(bool bypassed) override
+    {
+        if (bypassed)
+        {
+            clearWetProcessingState();
+            activeEngine_ = ProcessingEngine::None;
+            wetStateCleared_ = true;
+        }
+
+        refreshLatencyState();
+    }
+
+    void onParameterValueChanged(const std::string& paramId, float /*value*/) override
+    {
+        if (paramId == "processing_mode")
+        {
+            clearWetProcessingState();
+            activeEngine_ = ProcessingEngine::None;
+            wetStateCleared_ = false;
+        }
+        else if (paramId == "quality")
+        {
+            clearWetProcessingState();
+            preparedHighQualityQualityIndex_ = -1;
+            pendingHighQualityReprepare_ = true;
+            reprepareHighQualityStateForCurrentQuality();
+            activeEngine_ = ProcessingEngine::None;
+            wetStateCleared_ = false;
+        }
+        else if ((paramId == "mix" || paramId == "delta") && shouldOutputLiveDry())
+        {
+            clearWetProcessingState();
+            activeEngine_ = ProcessingEngine::None;
+            wetStateCleared_ = true;
+        }
+
+        if (paramId == "mix"
+            || paramId == "delta"
+            || paramId == "processing_mode"
+            || paramId == "quality")
+        {
+            refreshLatencyState();
+        }
+    }
+
+    void advanceOutputSmoothers(int numSamples)
+    {
+        for (int s = 0; s < numSamples; ++s)
+        {
+            (void) getNextSmoothedValue(mixParamId_);
+            (void) getNextSmoothedValue(trimParamId_);
+        }
+    }
+
+    bool shouldOutputLiveDry() const noexcept
+    {
+        return !readBoolParam("delta", false)
+            && readFloatParam("mix", 100.0f) <= kDryOnlyMixThresholdPct;
+    }
+
+    int readProcessingMode() const noexcept
+    {
+        return std::clamp(readChoiceParam("processing_mode", 0), 0, 1);
+    }
+
+    static int latencyForQualityIndex(int qualityIndex) noexcept
+    {
+        switch (std::clamp(qualityIndex, 0, 2))
+        {
+            case 0: return 512;
+            case 2: return 2048;
+            case 1:
+            default: return 1024;
+        }
+    }
+
+    int computeDesiredLatencySamples() const noexcept
+    {
+        if (isBypassed() || shouldOutputLiveDry())
+            return 0;
+
+        if (readProcessingMode() == 0)
+            return 0;
+
+        const int targetQuality = readQualityForPrepare();
+        if (pendingHighQualityReprepare_ || preparedHighQualityQualityIndex_ != targetQuality)
+        {
+            return wola_.isPrepared()
+                ? wola_.getLatencySamples()
+                : latencyForQualityIndex(targetQuality);
+        }
+
+        return wola_.isPrepared()
+            ? wola_.getLatencySamples()
+            : latencyForQualityIndex(targetQuality);
+    }
+
+    bool refreshLatencyState()
+    {
+        const int desiredLatency = computeDesiredLatencySamples();
+        if (desiredLatency == getLatencySamples())
+            return false;
+
+        setLatencySamples(desiredLatency);
+        nonRealtimeLatencyUpdateCount_.fetch_add(1, std::memory_order_acq_rel);
+        return true;
+    }
+
+    void ensureHighQualityStateForCurrentQuality()
+    {
+        const int targetQuality = readQualityForPrepare();
+        if (!pendingHighQualityReprepare_
+            && preparedHighQualityQualityIndex_ == targetQuality
+            && wola_.isPrepared())
+        {
+            return;
+        }
+
+        pendingHighQualityReprepare_ = true;
+        recordRealtimeEvent("rs_audio_thread_reprepare_blocked");
+    }
+
+    void reprepareHighQualityStateForCurrentQuality()
+    {
+        if (sampleRate_ <= 0.0 || maxBlockSize_ <= 0)
+        {
+            pendingHighQualityReprepare_ = true;
+            return;
+        }
+
+        const int targetQuality = readQualityForPrepare();
+        wola_.prepare(targetQuality, maxBlockSize_, sampleRate_);
+        dryDelay_.prepare(wola_.getLatencySamples(), maxBlockSize_);
+        delayedDry_.setSize(2, std::max(1, maxBlockSize_), false, true, true);
+        preparedHighQualityQualityIndex_ = targetQuality;
+        pendingHighQualityReprepare_ = false;
+    }
+
+    void clearHighQualityState()
+    {
+        wola_.reset();
+        dryDelay_.reset();
+        delayedDry_.clear();
+        lastStereoMode_ = -1;
+    }
+
+    void clearLowLatencyState()
+    {
+        lowLatency_.reset();
+    }
+
+    void clearWetProcessingState()
+    {
+        clearHighQualityState();
+        clearLowLatencyState();
+    }
+
     struct ProcessorSettings
     {
         float depth = 0.5f;
@@ -562,9 +800,14 @@ private:
             normalization_.assign(static_cast<std::size_t>(config_.hopSize), 1.0f);
             const int numBins = config_.fftSize / 2 + 1;
             magDb_.assign(static_cast<std::size_t>(numBins), kFloorDb);
+            magDbPrefix_.assign(static_cast<std::size_t>(numBins + 1), 0.0f);
             weighting_.assign(static_cast<std::size_t>(numBins), 1.0f);
+            binFrequencies_.assign(static_cast<std::size_t>(numBins), 0.0f);
 
             buildWindowAndNormalization();
+            buildBinFrequencies();
+            weightingDirty_ = true;
+            rebuildWeightingIfNeeded();
 
             for (auto& ch : channels_)
                 ch.prepare(config_.fftSize, config_.hopSize, ringSize_, numBins);
@@ -579,7 +822,9 @@ private:
             window_.clear();
             normalization_.clear();
             magDb_.clear();
+            magDbPrefix_.clear();
             weighting_.clear();
+            binFrequencies_.clear();
             ringSize_ = 0;
             blockDetectorActivity_ = 0.0f;
             meterDetectorActivity_ = 0.0f;
@@ -587,6 +832,7 @@ private:
             meterReductionActivity_ = 0.0f;
             vizCollector_ = nullptr;
             vizSampleClock_ = 0;
+            weightingDirty_ = true;
             for (auto& ch : channels_)
                 ch.release();
         }
@@ -617,6 +863,8 @@ private:
             vizCollector_ = vizCollector;
             blockDetectorActivity_ = 0.0f;
             blockReductionActivity_ = 0.0f;
+            updateDerivedSettings();
+            rebuildWeightingIfNeeded();
         }
 
         float getGainReductionActivityForMeter() noexcept
@@ -727,6 +975,87 @@ private:
             }
         }
 
+        void buildBinFrequencies()
+        {
+            const int numBins = config_.fftSize / 2 + 1;
+            if (numBins <= 0 || binFrequencies_.size() != static_cast<std::size_t>(numBins))
+                return;
+
+            const float nyquist = static_cast<float>(sampleRate_ * 0.5);
+            for (int k = 0; k < numBins; ++k)
+            {
+                binFrequencies_[static_cast<std::size_t>(k)] = std::clamp(
+                    static_cast<float>(static_cast<double>(k) * sampleRate_
+                                     / static_cast<double>(config_.fftSize)),
+                    1.0f,
+                    nyquist);
+            }
+        }
+
+        static bool weightingSettingsEqual(const ProcessorSettings& a,
+                                           const ProcessorSettings& b) noexcept
+        {
+            if (a.wcHp != b.wcHp || a.wcLp != b.wcLp)
+                return false;
+
+            for (std::size_t i = 0; i < a.wcActive.size(); ++i)
+            {
+                if (a.wcActive[i] != b.wcActive[i]
+                    || a.wcTypes[i] != b.wcTypes[i]
+                    || a.wcFreqs[i] != b.wcFreqs[i]
+                    || a.wcGainsDb[i] != b.wcGainsDb[i]
+                    || a.wcQs[i] != b.wcQs[i])
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        void updateDerivedSettings() noexcept
+        {
+            detectorThresholdOffsetDb_ = 2.0f + settings_.selectivity * 14.0f;
+            detectorSharpness_ = std::clamp(settings_.sharpness, 0.0f, 1.0f);
+            detectorCenterGap_ = 1 + static_cast<int>(std::lround(detectorSharpness_ * 4.0f));
+            detectorNormCurve_ = 0.055f + detectorSharpness_ * 0.085f;
+            maxReductionDb_ = getMaxReductionDb();
+
+            const float frameSeconds = static_cast<float>(config_.hopSize / sampleRate_);
+            maskAttack_ = smoothingAmount(std::clamp(settings_.attackMs, 1.0f, 200.0f), frameSeconds);
+            maskRelease_ = smoothingAmount(std::clamp(settings_.releaseMs, 10.0f, 2000.0f), frameSeconds);
+            maskStereoLink_ = std::clamp(settings_.stereoLink, 0.0f, 1.0f);
+        }
+
+        void rebuildWeightingIfNeeded() noexcept
+        {
+            const int numBins = config_.fftSize / 2 + 1;
+            if (numBins <= 0 || weighting_.size() != static_cast<std::size_t>(numBins))
+                return;
+
+            if (!weightingDirty_ && weightingSettingsEqual(settings_, cachedWeightingSettings_))
+                return;
+
+            weighting_[0] = 0.0f;
+            if (numBins > 1)
+                weighting_[static_cast<std::size_t>(numBins - 1)] = 0.0f;
+
+            for (int k = 1; k < numBins - 1; ++k)
+            {
+                const float freq = binFrequencies_.size() == weighting_.size()
+                    ? binFrequencies_[static_cast<std::size_t>(k)]
+                    : std::clamp(
+                        static_cast<float>(static_cast<double>(k) * sampleRate_
+                                         / static_cast<double>(config_.fftSize)),
+                        1.0f,
+                        static_cast<float>(sampleRate_ * 0.5));
+                weighting_[static_cast<std::size_t>(k)] = weightingForFrequency(freq);
+            }
+
+            cachedWeightingSettings_ = settings_;
+            weightingDirty_ = false;
+        }
+
         void processReadyFrames(SpectralChannelState& ch)
         {
             while (ch.nextFrameStart + config_.fftSize <= ch.samplesWritten)
@@ -750,12 +1079,31 @@ private:
 
         void forwardFrame(SpectralChannelState& ch, std::int64_t frameStart)
         {
-            std::fill(ch.fftBuffer.begin(), ch.fftBuffer.end(), 0.0f);
-
-            for (int n = 0; n < config_.fftSize; ++n)
+            if (static_cast<int>(ch.fftBuffer.size()) >= config_.fftSize * 2)
             {
-                ch.fftBuffer[static_cast<std::size_t>(n)] =
-                    ch.readInput(frameStart + n) * window_[static_cast<std::size_t>(n)];
+                std::fill(ch.fftBuffer.begin() + config_.fftSize,
+                          ch.fftBuffer.end(),
+                          0.0f);
+            }
+
+            if (frameStart >= 0
+                && frameStart + static_cast<std::int64_t>(config_.fftSize) <= ch.samplesWritten)
+            {
+                std::int64_t readIndex = frameStart;
+                for (int n = 0; n < config_.fftSize; ++n, ++readIndex)
+                {
+                    ch.fftBuffer[static_cast<std::size_t>(n)] =
+                        ch.inputRing[static_cast<std::size_t>(readIndex & ch.ringMask)]
+                        * window_[static_cast<std::size_t>(n)];
+                }
+            }
+            else
+            {
+                for (int n = 0; n < config_.fftSize; ++n)
+                {
+                    ch.fftBuffer[static_cast<std::size_t>(n)] =
+                        ch.readInput(frameStart + n) * window_[static_cast<std::size_t>(n)];
+                }
             }
 
             fft_->performRealOnlyForwardTransform(ch.fftBuffer.data(), false);
@@ -789,13 +1137,33 @@ private:
             const std::int64_t outputStart =
                 frameStart + static_cast<std::int64_t>(getLatencySamples());
 
-            for (int n = 0; n < config_.fftSize; ++n)
+            int phase = 0;
+            if (ch.ringSize > 0 && outputStart >= ch.samplesEmitted)
             {
-                const float y = ch.fftBuffer[static_cast<std::size_t>(n)]
-                              * window_[static_cast<std::size_t>(n)]
-                              * normalization_[static_cast<std::size_t>(n % config_.hopSize)];
+                std::int64_t writeIndex = outputStart;
+                for (int n = 0; n < config_.fftSize; ++n, ++writeIndex)
+                {
+                    const float y = ch.fftBuffer[static_cast<std::size_t>(n)]
+                                  * window_[static_cast<std::size_t>(n)]
+                                  * normalization_[static_cast<std::size_t>(phase)];
 
-                ch.addOutput(outputStart + n, y);
+                    ch.outputRing[static_cast<std::size_t>(writeIndex & ch.ringMask)] += y;
+                    if (++phase == config_.hopSize)
+                        phase = 0;
+                }
+            }
+            else
+            {
+                for (int n = 0; n < config_.fftSize; ++n)
+                {
+                    const float y = ch.fftBuffer[static_cast<std::size_t>(n)]
+                                  * window_[static_cast<std::size_t>(n)]
+                                  * normalization_[static_cast<std::size_t>(phase)];
+
+                    ch.addOutput(outputStart + n, y);
+                    if (++phase == config_.hopSize)
+                        phase = 0;
+                }
             }
         }
 
@@ -816,10 +1184,14 @@ private:
                 magDb_[static_cast<std::size_t>(k)] = 10.0f * std::log10(magSq);
             }
 
-            const float thresholdOffsetDb = 2.0f + settings_.selectivity * 14.0f;
-            const float sharpness = std::clamp(settings_.sharpness, 0.0f, 1.0f);
-            const int centerGap = 1 + static_cast<int>(std::lround(sharpness * 4.0f));
-            const float normCurve = 0.055f + sharpness * 0.085f;
+            if (magDbPrefix_.size() < static_cast<std::size_t>(numBins + 1))
+                return;
+
+            buildDetectorPrefix(magDb_, magDbPrefix_, numBins);
+
+            const float thresholdOffsetDb = detectorThresholdOffsetDb_;
+            const int centerGap = detectorCenterGap_;
+            const float normCurve = detectorNormCurve_;
 
             std::array<float, 12> topStable {};
             int activeCount = 0;
@@ -834,25 +1206,8 @@ private:
 
             for (int k = 1; k < numBins - 1; ++k)
             {
-                const int radius = std::clamp(k / 6 + 4, 6, 48);
-                const int lo = std::max(1, k - radius);
-                const int hi = std::min(numBins - 2, k + radius);
-
-                float localSum = 0.0f;
-                int localCount = 0;
-
-                for (int j = lo; j <= hi; ++j)
-                {
-                    if (std::abs(j - k) <= centerGap)
-                        continue;
-
-                    localSum += magDb_[static_cast<std::size_t>(j)];
-                    ++localCount;
-                }
-
-                const float baseline = localCount > 0
-                    ? (localSum / static_cast<float>(localCount))
-                    : magDb_[static_cast<std::size_t>(k)];
+                const float baseline = detectorBaselineFromPrefix(
+                    magDb_, magDbPrefix_, numBins, k, centerGap);
 
                 const float excessDb = magDb_[static_cast<std::size_t>(k)]
                                      - baseline
@@ -927,10 +1282,9 @@ private:
             return std::isfinite(a) ? std::clamp(a, 0.0f, 1.0f) : 1.0f;
         }
 
-        float salienceToReductionDb(float salience) const noexcept
+        float salienceToReductionDb(float salience, float maxReductionDb) const noexcept
         {
             const float s = std::clamp(salience, 0.0f, 1.0f);
-            const float maxReductionDb = getMaxReductionDb();
             if (maxReductionDb <= 0.0f || s <= 0.0f)
                 return 0.0f;
 
@@ -969,16 +1323,99 @@ private:
             return std::exp(std::clamp(x, -60.0f, 60.0f));
         }
 
-        float weightingForBin(int binIndex) const noexcept
+    public:
+        static int detectorRadiusForBin(int binIndex) noexcept
         {
-            if (binIndex <= 0 || config_.fftSize <= 0 || sampleRate_ <= 0.0)
+            return std::clamp(binIndex / 6 + 4, 6, 48);
+        }
+
+        static void detectorRangeForBin(int binIndex,
+                                        int numBins,
+                                        int& lo,
+                                        int& hi) noexcept
+        {
+            const int radius = detectorRadiusForBin(binIndex);
+            lo = std::max(1, binIndex - radius);
+            hi = std::min(numBins - 2, binIndex + radius);
+        }
+
+        static void buildDetectorPrefix(const std::vector<float>& source,
+                                        std::vector<float>& prefix,
+                                        int numBins) noexcept
+        {
+            prefix[0] = 0.0f;
+            for (int k = 0; k < numBins; ++k)
+            {
+                const std::size_t idx = static_cast<std::size_t>(k);
+                prefix[idx + 1] = prefix[idx] + source[idx];
+            }
+        }
+
+        static float detectorBaselineFromPrefix(const std::vector<float>& source,
+                                                const std::vector<float>& prefix,
+                                                int numBins,
+                                                int binIndex,
+                                                int centerGap) noexcept
+        {
+            int lo = 1;
+            int hi = numBins - 2;
+            detectorRangeForBin(binIndex, numBins, lo, hi);
+
+            const std::size_t loIndex = static_cast<std::size_t>(lo);
+            const std::size_t hiIndex = static_cast<std::size_t>(hi + 1);
+            float localSum = prefix[hiIndex] - prefix[loIndex];
+            int localCount = hi - lo + 1;
+
+            const int gapLo = std::max(lo, binIndex - centerGap);
+            const int gapHi = std::min(hi, binIndex + centerGap);
+            if (gapLo <= gapHi)
+            {
+                const std::size_t gapLoIndex = static_cast<std::size_t>(gapLo);
+                const std::size_t gapHiIndex = static_cast<std::size_t>(gapHi + 1);
+                localSum -= prefix[gapHiIndex] - prefix[gapLoIndex];
+                localCount -= gapHi - gapLo + 1;
+            }
+
+            return localCount > 0
+                ? (localSum / static_cast<float>(localCount))
+                : source[static_cast<std::size_t>(binIndex)];
+        }
+
+#if defined(XLETH_RESONANCE_SUPPRESSOR_TEST_HOOKS)
+        static float detectorBaselineReferenceSlow(const std::vector<float>& source,
+                                                   int numBins,
+                                                   int binIndex,
+                                                   int centerGap) noexcept
+        {
+            int lo = 1;
+            int hi = numBins - 2;
+            detectorRangeForBin(binIndex, numBins, lo, hi);
+
+            float localSum = 0.0f;
+            int localCount = 0;
+            for (int j = lo; j <= hi; ++j)
+            {
+                if (std::abs(j - binIndex) <= centerGap)
+                    continue;
+
+                localSum += source[static_cast<std::size_t>(j)];
+                ++localCount;
+            }
+
+            return localCount > 0
+                ? (localSum / static_cast<float>(localCount))
+                : source[static_cast<std::size_t>(binIndex)];
+        }
+#endif
+
+    private:
+        float weightingForFrequency(float freq) const noexcept
+        {
+            if (config_.fftSize <= 0 || sampleRate_ <= 0.0)
                 return 0.0f;
 
             const float nyquist = static_cast<float>(sampleRate_ * 0.5);
-            const float freq = std::clamp(
-                static_cast<float>(static_cast<double>(binIndex) * sampleRate_
-                                 / static_cast<double>(config_.fftSize)),
-                1.0f, nyquist);
+            freq = std::clamp(freq, 1.0f, nyquist);
 
             const float hp = std::clamp(settings_.wcHp, 20.0f, std::max(20.0f, nyquist * 0.98f));
             const float lp = std::clamp(settings_.wcLp, hp * 1.01f, std::max(hp * 1.01f, nyquist));
@@ -1057,11 +1494,10 @@ private:
                 || weighting_.size() != ch.salience.size())
                 return;
 
-            const float maxReductionDb = getMaxReductionDb();
-            const float frameSeconds = static_cast<float>(config_.hopSize / sampleRate_);
-            const float attack = smoothingAmount(std::clamp(settings_.attackMs, 1.0f, 200.0f), frameSeconds);
-            const float release = smoothingAmount(std::clamp(settings_.releaseMs, 10.0f, 2000.0f), frameSeconds);
-            const float link = linkedChannel != nullptr ? std::clamp(settings_.stereoLink, 0.0f, 1.0f) : 0.0f;
+            const float maxReductionDb = maxReductionDb_;
+            const float attack = maskAttack_;
+            const float release = maskRelease_;
+            const float link = linkedChannel != nullptr ? maskStereoLink_ : 0.0f;
 
             std::array<float, 12> topReduction {};
 
@@ -1071,13 +1507,13 @@ private:
             for (int k = 1; k < numBins - 1; ++k)
             {
                 const std::size_t idx = static_cast<std::size_t>(k);
-                weighting_[idx] = weightingForBin(k);
-                float targetDb = std::clamp(salienceToReductionDb(ch.salience[idx]) * weighting_[idx],
+                const float weight = weighting_[idx];
+                float targetDb = std::clamp(salienceToReductionDb(ch.salience[idx], maxReductionDb) * weight,
                                             0.0f, maxReductionDb);
 
                 if (linkedChannel != nullptr && linkedChannel->salience.size() == ch.salience.size())
                 {
-                    const float linkedDb = std::clamp(salienceToReductionDb(linkedChannel->salience[idx]) * weighting_[idx],
+                    const float linkedDb = std::clamp(salienceToReductionDb(linkedChannel->salience[idx], maxReductionDb) * weight,
                                                       0.0f, maxReductionDb);
                     const float commonDb = std::max(targetDb, linkedDb);
                     targetDb += link * (commonDb - targetDb);
@@ -1173,7 +1609,7 @@ private:
             bucket.stereoMode = settings_.stereoMode;
             bucket.activity = ch.reductionActivity;
             bucket.bucketCount = static_cast<float>(xleth::viz::kResonanceVizBucketCount);
-            bucket.maxReductionDb = getMaxReductionDb();
+            bucket.maxReductionDb = maxReductionDb_;
 
             std::array<float, xleth::viz::kResonanceVizBucketCount> weightingSum {};
             std::array<std::uint32_t, xleth::viz::kResonanceVizBucketCount> weightingCount {};
@@ -1219,12 +1655,505 @@ private:
         float meterReductionActivity_ = 0.0f;
         xleth::viz::DynamicsVizCollector<xleth::viz::ResonanceBucket>* vizCollector_ = nullptr;
         std::uint64_t vizSampleClock_ = 0;
+        bool weightingDirty_ = true;
+        ProcessorSettings cachedWeightingSettings_;
+        float detectorThresholdOffsetDb_ = 9.0f;
+        float detectorSharpness_ = 0.5f;
+        int detectorCenterGap_ = 3;
+        float detectorNormCurve_ = 0.0975f;
+        float maxReductionDb_ = 6.0f;
+        float maskAttack_ = 1.0f;
+        float maskRelease_ = 1.0f;
+        float maskStereoLink_ = 1.0f;
         std::unique_ptr<juce::dsp::FFT> fft_;
         std::vector<float> window_;
         std::vector<float> normalization_;
         std::vector<float> magDb_;
+        std::vector<float> magDbPrefix_;
         std::vector<float> weighting_;
+        std::vector<float> binFrequencies_;
         std::array<SpectralChannelState, 2> channels_;
+    };
+
+#if defined(XLETH_RESONANCE_SUPPRESSOR_TEST_HOOKS)
+public:
+    struct DetectorBaselineTestResult
+    {
+        std::vector<float> reference;
+        std::vector<float> prefix;
+    };
+
+    static DetectorBaselineTestResult computeDetectorBaselinesForTest(
+        const std::vector<float>& source,
+        int centerGap)
+    {
+        DetectorBaselineTestResult result;
+        const int numBins = static_cast<int>(source.size());
+        result.reference.assign(source.size(), 0.0f);
+        result.prefix.assign(source.size(), 0.0f);
+        if (numBins <= 2)
+            return result;
+
+        std::vector<float> prefix(static_cast<std::size_t>(numBins + 1), 0.0f);
+        WolaProcessor::buildDetectorPrefix(source, prefix, numBins);
+
+        for (int k = 1; k < numBins - 1; ++k)
+        {
+            const std::size_t idx = static_cast<std::size_t>(k);
+            result.reference[idx] =
+                WolaProcessor::detectorBaselineReferenceSlow(source, numBins, k, centerGap);
+            result.prefix[idx] =
+                WolaProcessor::detectorBaselineFromPrefix(source, prefix, numBins, k, centerGap);
+        }
+
+        return result;
+    }
+
+private:
+#endif
+
+    class LowLatencyProcessor
+    {
+    public:
+        static constexpr int kNumBands = 8;
+
+        void prepare(int maxBlockSize, double sampleRate)
+        {
+            juce::ignoreUnused(maxBlockSize);
+            sampleRate_ = sampleRate > 0.0 ? sampleRate : 44100.0;
+            prepared_ = true;
+            reset();
+        }
+
+        void release()
+        {
+            prepared_ = false;
+            sampleRate_ = 44100.0;
+            blockReductionActivity_ = 0.0f;
+            meterReductionActivity_ = 0.0f;
+            for (auto& channel : channels_)
+            {
+                for (auto& band : channel)
+                {
+                    band.detectorNarrow.reset();
+                    band.detectorWide.reset();
+                    band.wetFilter.reset();
+                    band.narrowEnv = 0.0f;
+                    band.wideEnv = 0.0f;
+                    band.reductionDb = 0.0f;
+                }
+            }
+        }
+
+        void reset()
+        {
+            blockReductionActivity_ = 0.0f;
+            meterReductionActivity_ = 0.0f;
+            for (auto& channel : channels_)
+            {
+                for (auto& band : channel)
+                {
+                    band.detectorNarrow.reset();
+                    band.detectorWide.reset();
+                    band.wetFilter.reset();
+                    band.narrowEnv = 0.0f;
+                    band.wideEnv = 0.0f;
+                    band.reductionDb = 0.0f;
+                }
+            }
+        }
+
+        bool isPrepared() const noexcept { return prepared_; }
+
+        void beginBlock(const ProcessorSettings& settings) noexcept
+        {
+            settings_ = settings;
+            blockReductionActivity_ = 0.0f;
+            updateBandLayout();
+        }
+
+        float getGainReductionActivityForMeter() noexcept
+        {
+            if (blockReductionActivity_ > meterReductionActivity_)
+                meterReductionActivity_ = blockReductionActivity_;
+            else
+                meterReductionActivity_ *= 0.90f;
+
+            if (!std::isfinite(meterReductionActivity_) || meterReductionActivity_ < 1.0e-6f)
+                meterReductionActivity_ = 0.0f;
+
+            return std::clamp(meterReductionActivity_, 0.0f, 1.0f);
+        }
+
+        void processMono(float* data, int numSamples)
+        {
+            if (!prepared_ || data == nullptr || numSamples <= 0)
+                return;
+
+            std::array<float, kNumBands> targets {};
+            analyzeChannel(0, data, numSamples, targets);
+            smoothTargets(0, targets, numSamples);
+            processChannel(0, data, numSamples);
+        }
+
+        void processStereo(float* left, float* right, int numSamples)
+        {
+            if (!prepared_ || left == nullptr || right == nullptr || numSamples <= 0)
+                return;
+
+            std::array<float, kNumBands> leftTargets {};
+            std::array<float, kNumBands> rightTargets {};
+
+            analyzeChannel(0, left, numSamples, leftTargets);
+            analyzeChannel(1, right, numSamples, rightTargets);
+            applyStereoLink(leftTargets, rightTargets);
+            smoothTargets(0, leftTargets, numSamples);
+            smoothTargets(1, rightTargets, numSamples);
+            processChannel(0, left, numSamples);
+            processChannel(1, right, numSamples);
+        }
+
+    private:
+        struct BandState
+        {
+            juce::dsp::IIR::Filter<float> detectorNarrow;
+            juce::dsp::IIR::Filter<float> detectorWide;
+            juce::dsp::IIR::Filter<float> wetFilter;
+            float narrowEnv = 0.0f;
+            float wideEnv = 0.0f;
+            float reductionDb = 0.0f;
+        };
+
+        static float smoothStep(float x) noexcept
+        {
+            x = std::clamp(x, 0.0f, 1.0f);
+            return x * x * (3.0f - 2.0f * x);
+        }
+
+        static float boundedExp(float x) noexcept
+        {
+            return std::exp(std::clamp(x, -60.0f, 60.0f));
+        }
+
+        static float logRamp(float freq, float lo, float hi) noexcept
+        {
+            const float safeFreq = std::max(freq, 1.0f);
+            const float safeLo = std::max(lo, 1.0f);
+            const float safeHi = std::max(hi, safeLo * 1.001f);
+            const float denom = std::log2(safeHi) - std::log2(safeLo);
+            if (denom <= 1.0e-6f)
+                return safeFreq >= safeHi ? 1.0f : 0.0f;
+            return smoothStep((std::log2(safeFreq) - std::log2(safeLo)) / denom);
+        }
+
+        float computeWeightingForFrequency(float freq) const noexcept
+        {
+            if (sampleRate_ <= 0.0)
+                return 0.0f;
+
+            const float nyquist = static_cast<float>(sampleRate_ * 0.5);
+            const float clampedFreq = std::clamp(freq, 1.0f, nyquist);
+            const float hp = std::clamp(settings_.wcHp, 20.0f, std::max(20.0f, nyquist * 0.98f));
+            const float lp = std::clamp(settings_.wcLp, hp * 1.01f, std::max(hp * 1.01f, nyquist));
+
+            const float hpGate = logRamp(clampedFreq, hp * 0.5f, hp);
+            const float lpUpper = std::max(lp * 1.001f, std::min(nyquist, lp * 2.0f));
+            const float lpGate = lpUpper >= nyquist && lp >= nyquist * 0.999f
+                ? 1.0f
+                : (1.0f - logRamp(clampedFreq, lp, lpUpper));
+
+            float nodeOffset = 0.0f;
+            for (std::size_t i = 0; i < settings_.wcFreqs.size(); ++i)
+            {
+                if (!settings_.wcActive[i])
+                    continue;
+
+                const float bandFreq = std::clamp(settings_.wcFreqs[i], 20.0f, nyquist);
+                const float gain = std::clamp(settings_.wcGainsDb[i], -12.0f, 12.0f);
+                const float qSafe = std::clamp(settings_.wcQs[i], 0.25f, 4.0f);
+                const float offsetOct = std::log2(std::max(clampedFreq, 1.0f) / std::max(bandFreq, 1.0f));
+                float contribution = 0.0f;
+
+                switch (settings_.wcTypes[i])
+                {
+                    case 1:
+                    {
+                        const float transitionK = 4.0f * qSafe;
+                        const float shelf = 1.0f / (1.0f + boundedExp(transitionK * offsetOct));
+                        contribution = (gain / 12.0f) * shelf;
+                        break;
+                    }
+                    case 2:
+                    {
+                        const float transitionK = 4.0f * qSafe;
+                        const float shelf = 1.0f / (1.0f + boundedExp(-transitionK * offsetOct));
+                        contribution = (gain / 12.0f) * shelf;
+                        break;
+                    }
+                    case 3:
+                    {
+                        const float effectiveGain = std::min(gain, 0.0f);
+                        const float qReject = std::max(qSafe, 0.5f);
+                        const float sigmaOct = 0.5f / qReject;
+                        const float bell = boundedExp(-(offsetOct * offsetOct) / (2.0f * sigmaOct * sigmaOct));
+                        contribution = (effectiveGain / 12.0f) * bell;
+                        break;
+                    }
+                    case 4:
+                    {
+                        const float tilt = std::clamp(offsetOct / 5.0f, -1.0f, 1.0f);
+                        contribution = (gain / 12.0f) * tilt;
+                        break;
+                    }
+                    case 0:
+                    default:
+                    {
+                        const float sigmaOct = 0.5f / qSafe;
+                        const float bell = boundedExp(-(offsetOct * offsetOct) / (2.0f * sigmaOct * sigmaOct));
+                        contribution = (gain / 12.0f) * bell;
+                        break;
+                    }
+                }
+
+                nodeOffset += std::isfinite(contribution) ? contribution : 0.0f;
+            }
+
+            const float nodeWeight = std::clamp(1.0f + nodeOffset, 0.0f, 2.5f);
+            const float weight = nodeWeight * hpGate * lpGate;
+            return std::isfinite(weight) ? std::clamp(weight, 0.0f, 2.5f) : 0.0f;
+        }
+
+        float maxReductionDb() const noexcept
+        {
+            const float depth = std::clamp(settings_.depth, 0.0f, 1.0f);
+            return depth * (settings_.hardMode ? 24.0f : 12.0f);
+        }
+
+        static float timeCoeff(double sampleRate, float ms) noexcept
+        {
+            const float safeMs = std::max(ms, 0.1f);
+            const double tau = static_cast<double>(safeMs) * 0.001;
+            const double coeff = std::exp(-1.0 / std::max(tau * sampleRate, 1.0));
+            return std::isfinite(coeff) ? static_cast<float>(std::clamp(coeff, 0.0, 0.999999)) : 0.0f;
+        }
+
+        void updateBandLayout() noexcept
+        {
+            const float nyquist = static_cast<float>(sampleRate_ * 0.5);
+            float low = std::clamp(settings_.wcHp, 40.0f, std::max(40.0f, nyquist * 0.45f));
+            float high = std::clamp(settings_.wcLp, low * 1.5f, std::max(low * 1.5f, nyquist * 0.98f));
+            if (high <= low * 1.05f)
+                high = std::min(nyquist * 0.98f, low * 2.0f);
+
+            for (int i = 0; i < kNumBands; ++i)
+            {
+                const float t = (static_cast<float>(i) + 0.5f) / static_cast<float>(kNumBands);
+                const float ratio = std::pow(high / low, t);
+                bandFreqs_[static_cast<std::size_t>(i)] = std::clamp(low * ratio, 30.0f, high);
+                bandWeights_[static_cast<std::size_t>(i)] =
+                    computeWeightingForFrequency(bandFreqs_[static_cast<std::size_t>(i)]);
+            }
+        }
+
+        void configureDetectorFilters(int channel) noexcept
+        {
+            const float sharpness = std::clamp(settings_.sharpness, 0.0f, 1.0f);
+            const float detectorQ = std::clamp(0.7f + sharpness * 7.0f, 0.5f, 8.0f);
+            const float contextQ = std::max(0.35f, detectorQ * 0.35f);
+
+            for (int i = 0; i < kNumBands; ++i)
+            {
+                auto& band = channels_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i)];
+                const float freq = bandFreqs_[static_cast<std::size_t>(i)];
+                band.detectorNarrow.coefficients =
+                    juce::dsp::IIR::Coefficients<float>::makeBandPass(sampleRate_, freq, detectorQ);
+                band.detectorWide.coefficients =
+                    juce::dsp::IIR::Coefficients<float>::makeBandPass(sampleRate_, freq, contextQ);
+            }
+        }
+
+        void analyzeChannel(int channel,
+                            const float* data,
+                            int numSamples,
+                            std::array<float, kNumBands>& targets) noexcept
+        {
+            configureDetectorFilters(channel);
+
+            const float attackCoeff = timeCoeff(sampleRate_, std::clamp(settings_.attackMs, 1.0f, 200.0f));
+            const float releaseCoeff = timeCoeff(sampleRate_, std::clamp(settings_.releaseMs, 10.0f, 2000.0f));
+            const float maxDb = maxReductionDb();
+            const float thresholdDb = 0.35f + std::clamp(settings_.selectivity, 0.0f, 1.0f) * 2.0f;
+            const float sharpness = std::clamp(settings_.sharpness, 0.0f, 1.0f);
+
+            for (int s = 0; s < numSamples; ++s)
+            {
+                const float x = std::isfinite(data[s]) ? data[s] : 0.0f;
+                for (int i = 0; i < kNumBands; ++i)
+                {
+                    auto& band = channels_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i)];
+                    const float narrow = band.detectorNarrow.processSample(x);
+                    const float wide = band.detectorWide.processSample(x);
+                    const float narrowAbs = std::abs(narrow);
+                    const float wideAbs = std::abs(wide);
+
+                    band.narrowEnv = narrowAbs > band.narrowEnv
+                        ? narrowAbs + attackCoeff * (band.narrowEnv - narrowAbs)
+                        : narrowAbs + releaseCoeff * (band.narrowEnv - narrowAbs);
+                    band.wideEnv = wideAbs > band.wideEnv
+                        ? wideAbs + attackCoeff * (band.wideEnv - wideAbs)
+                        : wideAbs + releaseCoeff * (band.wideEnv - wideAbs);
+                }
+            }
+
+            for (int i = 0; i < kNumBands; ++i)
+            {
+                auto& band = channels_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i)];
+                float neighborSum = 0.0f;
+                float neighborWeight = 0.0f;
+                if (i > 0)
+                {
+                    neighborSum += channels_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i - 1)].narrowEnv;
+                    neighborWeight += 1.0f;
+                }
+                if (i + 1 < kNumBands)
+                {
+                    neighborSum += channels_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i + 1)].narrowEnv;
+                    neighborWeight += 1.0f;
+                }
+                if (i > 1)
+                {
+                    neighborSum += 0.5f * channels_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i - 2)].narrowEnv;
+                    neighborWeight += 0.5f;
+                }
+                if (i + 2 < kNumBands)
+                {
+                    neighborSum += 0.5f * channels_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i + 2)].narrowEnv;
+                    neighborWeight += 0.5f;
+                }
+
+                const float neighborBase = neighborWeight > 0.0f
+                    ? (neighborSum / neighborWeight)
+                    : band.narrowEnv;
+                const float spectralBase = std::max(neighborBase, band.wideEnv * 0.2f);
+                const float base = std::max(spectralBase, 1.0e-5f);
+                const float bandDb = juce::Decibels::gainToDecibels(std::max(band.narrowEnv, 1.0e-6f), -120.0f);
+                const float baseDb = juce::Decibels::gainToDecibels(base, -120.0f);
+                const float excessDb = std::max(0.0f, bandDb - baseDb - thresholdDb);
+                float salience = 1.0f - std::exp(-excessDb * (0.35f + sharpness * 0.35f));
+                if (!std::isfinite(salience))
+                    salience = 0.0f;
+
+                salience = std::clamp(salience, 0.0f, 1.0f);
+                salience = settings_.hardMode
+                    ? std::pow(salience, 0.75f)
+                    : (smoothStep(salience) * 0.85f);
+
+                const float weighted = salience * std::clamp(bandWeights_[static_cast<std::size_t>(i)] * 1.2f, 0.0f, 2.5f);
+                targets[static_cast<std::size_t>(i)] = std::clamp(weighted * maxDb, 0.0f, maxDb);
+            }
+        }
+
+        void applyStereoLink(std::array<float, kNumBands>& leftTargets,
+                             std::array<float, kNumBands>& rightTargets) const noexcept
+        {
+            const float link = std::clamp(settings_.stereoLink, 0.0f, 1.0f);
+            if (link <= 0.0f)
+                return;
+
+            for (int i = 0; i < kNumBands; ++i)
+            {
+                const float common = std::max(leftTargets[static_cast<std::size_t>(i)],
+                                              rightTargets[static_cast<std::size_t>(i)]);
+                leftTargets[static_cast<std::size_t>(i)] +=
+                    link * (common - leftTargets[static_cast<std::size_t>(i)]);
+                rightTargets[static_cast<std::size_t>(i)] +=
+                    link * (common - rightTargets[static_cast<std::size_t>(i)]);
+            }
+        }
+
+        void smoothTargets(int channel,
+                           const std::array<float, kNumBands>& targets,
+                           int numSamples) noexcept
+        {
+            const float blockSeconds = static_cast<float>(numSamples / sampleRate_);
+            const float attack = 1.0f - std::exp(-blockSeconds / (std::max(settings_.attackMs, 1.0f) * 0.001f));
+            const float release = 1.0f - std::exp(-blockSeconds / (std::max(settings_.releaseMs, 10.0f) * 0.001f));
+            const float maxDb = maxReductionDb();
+            std::array<float, 8> topReduction {};
+
+            for (int i = 0; i < kNumBands; ++i)
+            {
+                auto& band = channels_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i)];
+                const float targetDb = std::clamp(targets[static_cast<std::size_t>(i)], 0.0f, maxDb);
+                const float amount = targetDb > band.reductionDb ? attack : release;
+                band.reductionDb += amount * (targetDb - band.reductionDb);
+
+                if (!std::isfinite(band.reductionDb) || band.reductionDb < 1.0e-5f)
+                    band.reductionDb = 0.0f;
+
+                band.reductionDb = std::clamp(band.reductionDb, 0.0f, maxDb);
+
+                if (band.reductionDb > topReduction.back())
+                {
+                    topReduction.back() = band.reductionDb;
+                    for (int j = static_cast<int>(topReduction.size()) - 1; j > 0; --j)
+                    {
+                        if (topReduction[static_cast<std::size_t>(j)] <= topReduction[static_cast<std::size_t>(j - 1)])
+                            break;
+                        std::swap(topReduction[static_cast<std::size_t>(j)],
+                                  topReduction[static_cast<std::size_t>(j - 1)]);
+                    }
+                }
+            }
+
+            float topSum = 0.0f;
+            int topCount = 0;
+            for (float v : topReduction)
+            {
+                if (v <= 0.0f)
+                    break;
+                topSum += v;
+                ++topCount;
+            }
+
+            const float topAvgDb = topCount > 0 ? (topSum / static_cast<float>(topCount)) : 0.0f;
+            const float activity = maxDb > 1.0e-5f
+                ? std::clamp(topAvgDb / 24.0f, 0.0f, 1.0f)
+                : 0.0f;
+            blockReductionActivity_ = std::max(blockReductionActivity_, activity);
+        }
+
+        void processChannel(int channel, float* data, int numSamples) noexcept
+        {
+            const float sharpness = std::clamp(settings_.sharpness, 0.0f, 1.0f);
+            const float filterQ = std::clamp(0.8f + sharpness * 10.0f, 0.6f, 12.0f);
+
+            for (int i = 0; i < kNumBands; ++i)
+            {
+                auto& band = channels_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i)];
+                const float cutGain = juce::Decibels::decibelsToGain(-band.reductionDb);
+                band.wetFilter.coefficients =
+                    juce::dsp::IIR::Coefficients<float>::makePeakFilter(
+                        sampleRate_, bandFreqs_[static_cast<std::size_t>(i)], filterQ, cutGain);
+            }
+
+            for (int s = 0; s < numSamples; ++s)
+            {
+                float y = std::isfinite(data[s]) ? data[s] : 0.0f;
+                for (int i = 0; i < kNumBands; ++i)
+                    y = channels_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i)].wetFilter.processSample(y);
+                data[s] = std::isfinite(y) ? y : 0.0f;
+            }
+        }
+
+        double sampleRate_ = 44100.0;
+        bool prepared_ = false;
+        ProcessorSettings settings_;
+        float blockReductionActivity_ = 0.0f;
+        float meterReductionActivity_ = 0.0f;
+        std::array<float, kNumBands> bandFreqs_ {};
+        std::array<float, kNumBands> bandWeights_ {};
+        std::array<std::array<BandState, kNumBands>, 2> channels_ {};
     };
 
     float readPercentParam(const char* paramId, float fallback) const noexcept
@@ -1262,7 +2191,73 @@ private:
         return fallback;
     }
 
-    void processMidMode(juce::AudioBuffer<float>& buffer, int numSamples)
+    ProcessorSettings readProcessorSettings() const
+    {
+        ProcessorSettings settings;
+        settings.depth = readPercentParam("depth", 50.0f);
+        settings.sharpness = readPercentParam("sharpness", 50.0f);
+        settings.selectivity = readPercentParam("selectivity", 50.0f);
+        settings.attackMs = readFloatParam("attack", 15.0f);
+        settings.releaseMs = readFloatParam("release", 200.0f);
+        settings.stereoLink = readPercentParam("stereo_link", 100.0f);
+        settings.hardMode = readChoiceParam("mode", 0) == 1;
+        settings.wcHp = readFloatParam("wc_hp", 80.0f);
+        settings.wcLp = readFloatParam("wc_lp", 16000.0f);
+        settings.wcActive = {
+            readBoolParam("wc_b1_active", true),
+            readBoolParam("wc_b2_active", true),
+            readBoolParam("wc_b3_active", true),
+            readBoolParam("wc_b4_active", true),
+            readBoolParam("wc_b5_active", false),
+            readBoolParam("wc_b6_active", false),
+            readBoolParam("wc_b7_active", false),
+            readBoolParam("wc_b8_active", false)
+        };
+        settings.wcTypes = {
+            std::clamp(readChoiceParam("wc_b1_type", 0), 0, 4),
+            std::clamp(readChoiceParam("wc_b2_type", 0), 0, 4),
+            std::clamp(readChoiceParam("wc_b3_type", 0), 0, 4),
+            std::clamp(readChoiceParam("wc_b4_type", 0), 0, 4),
+            std::clamp(readChoiceParam("wc_b5_type", 0), 0, 4),
+            std::clamp(readChoiceParam("wc_b6_type", 0), 0, 4),
+            std::clamp(readChoiceParam("wc_b7_type", 0), 0, 4),
+            std::clamp(readChoiceParam("wc_b8_type", 0), 0, 4)
+        };
+        settings.wcFreqs = {
+            readFloatParam("wc_b1_freq",  250.0f),
+            readFloatParam("wc_b2_freq",  800.0f),
+            readFloatParam("wc_b3_freq",  2500.0f),
+            readFloatParam("wc_b4_freq",  8000.0f),
+            readFloatParam("wc_b5_freq",  500.0f),
+            readFloatParam("wc_b6_freq",  1500.0f),
+            readFloatParam("wc_b7_freq",  4000.0f),
+            readFloatParam("wc_b8_freq",  10000.0f)
+        };
+        settings.wcGainsDb = {
+            readFloatParam("wc_b1_gain", 0.0f),
+            readFloatParam("wc_b2_gain", 0.0f),
+            readFloatParam("wc_b3_gain", 0.0f),
+            readFloatParam("wc_b4_gain", 0.0f),
+            readFloatParam("wc_b5_gain", 0.0f),
+            readFloatParam("wc_b6_gain", 0.0f),
+            readFloatParam("wc_b7_gain", 0.0f),
+            readFloatParam("wc_b8_gain", 0.0f)
+        };
+        settings.wcQs = {
+            readFloatParam("wc_b1_q", 1.0f),
+            readFloatParam("wc_b2_q", 1.0f),
+            readFloatParam("wc_b3_q", 1.0f),
+            readFloatParam("wc_b4_q", 1.0f),
+            readFloatParam("wc_b5_q", 1.0f),
+            readFloatParam("wc_b6_q", 1.0f),
+            readFloatParam("wc_b7_q", 1.0f),
+            readFloatParam("wc_b8_q", 1.0f)
+        };
+        settings.stereoMode = static_cast<float>(std::clamp(readChoiceParam("stereo_mode", 0), 0, 2));
+        return settings;
+    }
+
+    void processHighQualityMidMode(juce::AudioBuffer<float>& buffer, int numSamples)
     {
         if (static_cast<int>(msComponent_.size()) < numSamples)
             return;
@@ -1288,7 +2283,7 @@ private:
         }
     }
 
-    void processSideMode(juce::AudioBuffer<float>& buffer, int numSamples)
+    void processHighQualitySideMode(juce::AudioBuffer<float>& buffer, int numSamples)
     {
         if (static_cast<int>(msComponent_.size()) < numSamples)
             return;
@@ -1314,7 +2309,7 @@ private:
         }
     }
 
-    void processMonoSideMode(juce::AudioBuffer<float>& buffer, int numSamples)
+    void processHighQualityMonoSideMode(juce::AudioBuffer<float>& buffer, int numSamples)
     {
         if (static_cast<int>(msComponent_.size()) < numSamples)
             return;
@@ -1328,7 +2323,75 @@ private:
             out[s] = dry[s];
     }
 
-    void applyOutputStage(juce::AudioBuffer<float>& buffer, int processedChannels, int numSamples)
+    void processLowLatencyMidMode(juce::AudioBuffer<float>& buffer, int numSamples)
+    {
+        if (static_cast<int>(msComponent_.size()) < numSamples)
+            return;
+
+        const float* inL = buffer.getReadPointer(0);
+        const float* inR = buffer.getReadPointer(1);
+        for (int s = 0; s < numSamples; ++s)
+            msComponent_[static_cast<std::size_t>(s)] = 0.5f * (inL[s] + inR[s]);
+
+        lowLatency_.processMono(msComponent_.data(), numSamples);
+
+        float* outL = buffer.getWritePointer(0);
+        float* outR = buffer.getWritePointer(1);
+        const float* dryL = liveDry_.getReadPointer(0);
+        const float* dryR = liveDry_.getReadPointer(1);
+
+        for (int s = 0; s < numSamples; ++s)
+        {
+            const float mid = msComponent_[static_cast<std::size_t>(s)];
+            const float side = 0.5f * (dryL[s] - dryR[s]);
+            outL[s] = mid + side;
+            outR[s] = mid - side;
+        }
+    }
+
+    void processLowLatencySideMode(juce::AudioBuffer<float>& buffer, int numSamples)
+    {
+        if (static_cast<int>(msComponent_.size()) < numSamples)
+            return;
+
+        const float* inL = buffer.getReadPointer(0);
+        const float* inR = buffer.getReadPointer(1);
+        for (int s = 0; s < numSamples; ++s)
+            msComponent_[static_cast<std::size_t>(s)] = 0.5f * (inL[s] - inR[s]);
+
+        lowLatency_.processMono(msComponent_.data(), numSamples);
+
+        float* outL = buffer.getWritePointer(0);
+        float* outR = buffer.getWritePointer(1);
+        const float* dryL = liveDry_.getReadPointer(0);
+        const float* dryR = liveDry_.getReadPointer(1);
+        for (int s = 0; s < numSamples; ++s)
+        {
+            const float mid = 0.5f * (dryL[s] + dryR[s]);
+            const float side = msComponent_[static_cast<std::size_t>(s)];
+            outL[s] = mid + side;
+            outR[s] = mid - side;
+        }
+    }
+
+    void processLowLatencyMonoSideMode(juce::AudioBuffer<float>& buffer, int numSamples)
+    {
+        if (static_cast<int>(msComponent_.size()) < numSamples)
+            return;
+
+        std::fill(msComponent_.begin(), msComponent_.begin() + numSamples, 0.0f);
+        lowLatency_.processMono(msComponent_.data(), numSamples);
+
+        float* out = buffer.getWritePointer(0);
+        const float* dry = liveDry_.getReadPointer(0);
+        for (int s = 0; s < numSamples; ++s)
+            out[s] = dry[s];
+    }
+
+    void applyOutputStage(juce::AudioBuffer<float>& buffer,
+                          const juce::AudioBuffer<float>& drySource,
+                          int processedChannels,
+                          int numSamples)
     {
         if (processedChannels <= 0)
             return;
@@ -1336,9 +2399,12 @@ private:
         const bool deltaTarget = readBoolParam("delta", false);
         const float deltaTargetValue = deltaTarget ? 1.0f : 0.0f;
         float* out0 = buffer.getWritePointer(0);
-        const float* dry0 = delayedDry_.getReadPointer(0);
+        const float* dry0 = drySource.getReadPointer(0);
         float* out1 = processedChannels > 1 ? buffer.getWritePointer(1) : nullptr;
-        const float* dry1 = processedChannels > 1 ? delayedDry_.getReadPointer(1) : nullptr;
+        const float* dry1 = processedChannels > 1 ? drySource.getReadPointer(1) : nullptr;
+        bool trimGainValid = false;
+        float lastTrimDb = 0.0f;
+        float trimGain = 1.0f;
 
         for (int s = 0; s < numSamples; ++s)
         {
@@ -1349,7 +2415,12 @@ private:
 
             const float mix = std::clamp(getNextSmoothedValue(mixParamId_) * 0.01f, 0.0f, 1.0f);
             const float trimDb = std::clamp(getNextSmoothedValue(trimParamId_), -24.0f, 24.0f);
-            const float trimGain = std::pow(10.0f, trimDb / 20.0f);
+            if (!trimGainValid || trimDb != lastTrimDb)
+            {
+                trimGain = std::pow(10.0f, trimDb / 20.0f);
+                lastTrimDb = trimDb;
+                trimGainValid = true;
+            }
 
             const float wet0 = out0[s];
             const float normal0 = dry0[s] + mix * (wet0 - dry0[s]);
@@ -1396,6 +2467,9 @@ private:
                 Nar{-12.0f,  12.0f,    0.0f, 1.0f},          0.0f,     "dB"),
 
             std::make_unique<Apb>(Pid{"delta",       1}, "Delta", false),
+
+            std::make_unique<Apc>(Pid{"processing_mode", 1}, "Processing Mode",
+                juce::StringArray{"Low Latency", "High Quality"}, 0),
 
             std::make_unique<Apc>(Pid{"quality",     1}, "Quality",
                 juce::StringArray{"Fast", "Normal", "High"},  1),
@@ -1510,11 +2584,19 @@ private:
     int    maxBlockSize_ = 0;
     int    lastStereoMode_ = -1;
     WolaProcessor wola_;
+    LowLatencyProcessor lowLatency_;
     DryDelayLine dryDelay_;
     juce::AudioBuffer<float> delayedDry_;
+    juce::AudioBuffer<float> liveDry_;
     std::vector<float> msComponent_;
     float deltaMix_ = 0.0f;
     float deltaRampPerSample_ = 1.0f;
+    ProcessingEngine activeEngine_ = ProcessingEngine::None;
+    bool wetStateCleared_ = false;
+    bool pendingHighQualityReprepare_ = false;
+    int preparedHighQualityQualityIndex_ = -1;
+    std::atomic<std::uint64_t> processBlockLatencyUpdateCount_{0};
+    std::atomic<std::uint64_t> nonRealtimeLatencyUpdateCount_{0};
     const std::string mixParamId_ {"mix"};
     const std::string trimParamId_ {"trim"};
     std::unique_ptr<xleth::viz::DynamicsVizCollector<xleth::viz::ResonanceBucket>>

@@ -84,17 +84,22 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
     int                            sampleRate,
     AVRational                     fps,
     const std::vector<VideoEvent>& events,
-    bool                           allowProxy)
+    bool                           allowProxy,
+    int64_t                        projectStartSample)
 {
     const double bpm = timeline.getBPM();
     const GridLayout& layout = timeline.getGridLayout();
 
-    // Convert output frame index → sample position → beat position.
-    // Use RenderClock integer arithmetic for sample derivation, then convert
-    // to beats for VideoEvent lookup (events use beat-based time).
-    const int64_t samplePos = RenderClock::videoFrameToSample(outputFrameIndex, sampleRate, fps);
-    const double  seconds   = RenderClock::sampleToSeconds(samplePos, sampleRate);
-    const double  beatPos   = seconds * (bpm / 60.0);
+    // Output frame indices stay local to the export / preview starting at 0.
+    // Project sampling must instead happen at the matching absolute timeline
+    // sample so subrange exports look up the same visual state as audio.
+    const int64_t localFrameSample = RenderClock::videoFrameToSample(
+        outputFrameIndex, sampleRate, fps);
+    const int64_t projectFrameSample = projectStartSample + localFrameSample;
+    const int64_t projectFramePpq = RenderClock::sampleToPPQ(
+        projectFrameSample, sampleRate, bpm);
+    const double ticksPerBeat = static_cast<double>(TickTime::fromBeats(1).ticks);
+    const double beatPos = static_cast<double>(projectFramePpq) / ticksPerBeat;
 
     std::vector<CellFrameRequest> requests;
     int gapsSkipped = 0;
@@ -460,13 +465,20 @@ const VideoEvent* FrameCollector::findActiveEvent(
     const TrackInfo* track = timeline.getTrack(trackId);
     if (track && track->muted) return nullptr;
 
-    // Find the latest-starting active event on this track
+    // Find the latest-starting active event on this track. If multiple
+    // same-tick note-ons are active, choose the highest resolved ordinal so
+    // an EveryNote chord shows the final state after all chord members fire.
     const VideoEvent* best = nullptr;
     for (const auto& ev : events) {
         if (ev.trackId != trackId) continue;
         if (beatPos < ev.startBeat) continue;
         if (beatPos >= ev.startBeat + ev.durationBeats) continue;
-        if (!best || ev.startBeat > best->startBeat) best = &ev;
+        if (!best
+            || ev.startBeat > best->startBeat
+            || (ev.startBeat == best->startBeat
+                && ev.globalNoteIndex > best->globalNoteIndex)) {
+            best = &ev;
+        }
     }
     return best;
 }

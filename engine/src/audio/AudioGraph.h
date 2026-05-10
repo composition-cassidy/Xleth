@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -101,6 +102,8 @@ public:
     // Returns full graph topology JSON with nodes, connections, levels, latencies.
     nlohmann::json getGraphTopology() const;
 
+    int countActiveResonanceSuppressorHighQualityInstances() const;
+
     // True iff graph is a single linear path (every node has <=1 in, <=1 out).
     bool isGraphLinear() const;
 
@@ -122,6 +125,14 @@ public:
 
     // Set a parameter by ID (denormalised).  Returns false if invalid.
     bool setEffectParameter(int nodeId, const std::string& paramId, float value);
+    bool setEffectProgram(int nodeId, int programIndex);
+    bool setEffectStateInformation(int nodeId, const void* data, int sizeInBytes);
+
+    // Non-realtime third-party latency refresh hook. Returns true if a
+    // GuardedPluginWrapper published a changed latency and PDC was recomputed.
+    bool refreshGuardedPluginLatency(int nodeId);
+    bool refreshGuardedPluginLatency(int nodeId,
+                                     std::uint64_t latencyPublishCountBefore);
 
     // Returns JSON meter array ("[0,0,0,0,0,0,0,0]" if nodeId invalid).
     std::string getEffectMeter(int nodeId) const;
@@ -160,6 +171,23 @@ public:
     // Returns the maximum getTailLengthSeconds() across all effect nodes.
     // Lightweight (iterates effect nodes only, no alloc). Safe from audio thread.
     double getMaxTailLengthSeconds() const;
+
+    // Returns the cumulative latency at the graph output in samples.
+    int getOutputLatencySamples() const { return outputLatencySamples_; }
+    std::uint64_t getLatencyEpoch() const
+    {
+        return latencyEpoch_.load(std::memory_order_acquire);
+    }
+
+    // Main-thread diagnostic refresh for latency-sensitive tests/tools.
+    // This recomputes cached latency accounting without changing audio routing.
+    void refreshLatencyDiagnostics();
+
+    // Test hook for fake third-party processors. Production plugin loading
+    // still goes through createEffect()/PluginRegistry.
+    int addProcessorForTesting(const std::string& pluginId,
+                               std::unique_ptr<juce::AudioProcessor> proc,
+                               int position);
 
     // ── Input/output node IDs (for external wiring references) ──────────
     int getInputNodeId()  const { return static_cast<int>(inputNode_.uid); }
@@ -249,6 +277,8 @@ private:
     double sampleRate_ = 44100.0;
     int    blockSize_  = 512;
     juce::MidiBuffer emptyMidi_;
+    int outputLatencySamples_ = 0;
+    std::atomic<std::uint64_t> latencyEpoch_{0};
 
     // ── Debounce state ──────────────────────────────────────────────────
 
@@ -269,6 +299,7 @@ private:
 
     // Compute cumulative latencies and insert/remove delay nodes.
     void computePDC();
+    void refreshOutputLatencyCache();
 
     // Rebuild all APG connections from topology data. Idempotent.
     void rebuildAPGConnections();

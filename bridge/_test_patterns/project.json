@@ -1,0 +1,563 @@
+{
+    "bpm": 140.0,
+    "clips": [],
+    "created_at": "2026-05-08T02:32:18Z",
+    "custom_labels": [],
+    "declickMs": 0.5,
+    "globalStretchMethod": 1,
+    "gridLayout": {
+        "columns": 3,
+        "fullscreenLayers": [],
+        "gridLayoutVersion": 3,
+        "previewFps": 30,
+        "rows": 3,
+        "slots": []
+    },
+    "modified_at": "2026-05-08T02:32:18Z",
+    "patternBlocks": [],
+    "patterns": [
+        {
+            "id": 5,
+            "lengthTicks": 3840,
+            "name": "Lead pattern",
+            "nextNoteId": 11,
+            "notes": [
+                {
+                    "durationTicks": 200,
+                    "id": 1,
+                    "isSlide": false,
+                    "pitch": 60,
+                    "positionTicks": 0,
+                    "slideCurveCx": 0.5,
+                    "slideCurveCy": 0.5,
+                    "velocity": 0.5
+                },
+                {
+                    "durationTicks": 200,
+                    "id": 2,
+                    "isSlide": false,
+                    "pitch": 61,
+                    "positionTicks": 240,
+                    "slideCurveCx": 0.5,
+                    "slideCurveCy": 0.5,
+                    "velocity": 0.550000011920929
+                },
+                {
+                    "durationTicks": 200,
+                    "id": 3,
+                    "isSlide": false,
+                    "pitch": 62,
+                    "positionTicks": 480,
+                    "slideCurveCx": 0.5,
+                    "slideCurveCy": 0.5,
+                    "velocity": 0.6000000238418579
+                },
+                {
+                    "durationTicks": 200,
+                    "id": 4,
+                    "isSlide": false,
+                    "pitch": 63,
+                    "positionTicks": 720,
+                    "slideCurveCx": 0.5,
+                    "slideCurveCy": 0.5,
+                    "velocity": 0.6499999761581421
+                },
+                {
+                    "durationTicks": 200,
+                    "id": 5,
+                    "isSlide": false,
+                    "pitch": 64,
+                    "positionTicks": 960,
+                    "slideCurveCx": 0.5,
+                    "slideCurveCy": 0.5,
+                    "velocity": 0.699999988079071
+                },
+                {
+                    "durationTicks": 200,
+                    "id": 6,
+                    "isSlide": false,
+                    "pitch": 65,
+                    "positionTicks": 1200,
+                    "slideCurveCx": 0.5,
+                    "slideCurveCy": 0.5,
+                    "velocity": 0.75
+                },
+                {
+                    "durationTicks": 200,
+                    "id": 7,
+                    "isSlide": false,
+                    "pitch": 66,
+                    "positionTicks": 1440,
+                    "slideCurveCx": 0.5,
+                    "slideCurveCy": 0.5,
+                    "velocity": 0.800000011920929
+                },
+                {
+                    "durationTicks": 200,
+                    "id": 8,
+                    "isSlide": false,
+                    "pitch": 67,
+                    "positionTicks": 1680,
+                    "slideCurveCx": 0.5,
+                    "slideCurveCy": 0.5,
+                    "velocity": 0.8500000238418579
+                },
+                {
+                    "durationTicks": 200,
+                    "id": 9,
+                    "isSlide": false,
+                    "pitch": 68,
+                    "positionTicks": 1920,
+                    "slideCurveCx": 0.5,
+                    "slideCurveCy": 0.5,
+                    "velocity": 0.8999999761581421
+                },
+                {
+                    "durationTicks": 200,
+                    "id": 10,
+                    "isSlide": false,
+                    "pitch": 69,
+                    "positionTicks": 2160,
+                    "slideCurveCx": 0.5,
+                    "slideCurveCy": 0.5,
+                    "velocity": 0.949999988079071
+                }
+            ],
+            "regionId": 1
+        }
+    ],
+    "project_name": "PatternTest",
+    "regions": [
+        {
+            "arpDirection": 0,
+            "arpDivision": 8,
+            "arpEnabled": false,
+            "arpFreeTimeMs": 125.0,
+            "arpGate": 0.800000011920929,
+            "arpRange": 1,
+            "arpTempoSync": true,
+            "attackMs": 0.0,
+            "attackTension": 0.0,
+            "audioFilePath": "",
+            "crossfadeEnabled": false,
+            "crossfadeSamples": 0,
+            "customLabelName": "",
+            "dcOffsetRemoved": false,
+            "decayMs": 0.0,
+            "decayTension": 0.0,
+            "declickMs": 1.5,
+            "delayMs": 0.0,
+            "endFrame": 0,
+            "endTime": 2.0,
+            "fadeInMs": 0.0,
+            "fadeOutMs": 0.0,
+            "hasSwappedAudio": false,
+            "holdMs": 0.0,
+            "id": 1,
+            "label": "Custom",
+            "lfoPanAmount": 0.0,
+            "lfoPanAttackMs": 0.0,
+            "lfoPanDelayMs": 0.0,
+            "lfoPanEnabled": false,
+            "lfoPanSpeedHz": 1.0,
+            "lfoPanTempoDivision": 4,
+            "lfoPanTempoSync": false,
+            "lfoPanWaveform": [],
+            "lfoPitchAmount": 0.0,
+            "lfoPitchAttackMs": 0.0,
+            "lfoPitchDelayMs": 0.0,
+            "lfoPitchEnabled": false,
+            "lfoPitchSpeedHz": 1.0,
+            "lfoPitchTempoDivision": 4,
+            "lfoPitchTempoSync": false,
+            "lfoPitchWaveform": [],
+            "lfoVolAmount": 0.0,
+            "lfoVolAttackMs": 0.0,
+            "lfoVolDelayMs": 0.0,
+            "lfoVolEnabled": false,
+            "lfoVolSpeedHz": 1.0,
+            "lfoVolTempoDivision": 4,
+            "lfoVolTempoSync": false,
+            "lfoVolWaveform": [],
+            "loopEnabled": false,
+            "loopEnd": 0,
+            "loopStart": 0,
+            "monoEnabled": false,
+            "name": "Lead",
+            "normalized": false,
+            "pitchEnvAmount": 0.0,
+            "pitchEnvAttackMs": 0.0,
+            "pitchEnvAttackTension": 0.0,
+            "pitchEnvDecayMs": 0.0,
+            "pitchEnvDecayTension": 0.0,
+            "pitchEnvDelayMs": 0.0,
+            "pitchEnvEnabled": false,
+            "pitchEnvHoldMs": 0.0,
+            "pitchEnvReleaseMs": 0.0,
+            "pitchEnvReleaseTension": 0.0,
+            "pitchEnvSustain": 0.0,
+            "polarityReversed": false,
+            "portamentoEnabled": false,
+            "portamentoTimeMs": 100.0,
+            "proxyEndTime": 0.0,
+            "proxyPath": "",
+            "proxyReady": false,
+            "proxyStartTime": 0.0,
+            "releaseMs": 50.0,
+            "releaseTension": 0.0,
+            "reversed": false,
+            "rootNote": 60,
+            "smpLength": 0,
+            "smpStart": 0,
+            "sourceId": 0,
+            "startFrame": 0,
+            "startTime": 0.0,
+            "sustain": 1.0,
+            "swappedAudioDurationSec": 0.0,
+            "swappedAudioPath": "",
+            "syllables": []
+        }
+    ],
+    "sample_rate": 48000.0,
+    "sources": [],
+    "time_signature": [
+        4,
+        4
+    ],
+    "tracks": [
+        {
+            "bounce": {
+                "directionDeg": 270.0,
+                "distance": 0.15000000596046448,
+                "durationMs": 200.0,
+                "easingType": 0,
+                "enabled": false,
+                "overshoot": 1.7015800476074219,
+                "repeatCount": 1,
+                "squashAmount": 0.0
+            },
+            "cornerRadius": 0.0,
+            "gapScaleOverride": -1.0,
+            "id": 2,
+            "muted": false,
+            "name": "Pat-A",
+            "order": 0,
+            "pan": 0.0,
+            "pingPong": {
+                "crossfadeFrames": 3,
+                "enabled": false,
+                "maxLoops": 0,
+                "regionEndPct": 1.0,
+                "regionStartPct": 0.800000011920929,
+                "reverseSpeed": 1.0
+            },
+            "slideNoteEffect": {
+                "bounce": {
+                    "directionDeg": 270.0,
+                    "distance": 0.15000000596046448,
+                    "easingType": 0,
+                    "overshoot": 1.7015800476074219,
+                    "repeatCount": 1,
+                    "squashAmount": 0.0
+                },
+                "durationMode": 0,
+                "fixedDurationMs": 300.0,
+                "returnDurationMs": 200.0,
+                "returnStyle": 1,
+                "returnTrigger": 0,
+                "tv": {
+                    "chroma": 0.003000000026077032,
+                    "colorBleed": 0.0,
+                    "intensity": 0.5,
+                    "jitter": 2.0,
+                    "noise": 0.0,
+                    "rollSpeed": 1.0,
+                    "scanlines": 0.30000001192092896
+                },
+                "type": 0,
+                "zoomPanRot": {
+                    "overshoot": 1.7015800476074219,
+                    "panEasing": 1,
+                    "rotEasing": 1,
+                    "startPanX": 0.0,
+                    "startPanY": 0.0,
+                    "startRotation": 0.0,
+                    "startZoom": 1.0,
+                    "targetPanX": 0.0,
+                    "targetPanY": 0.0,
+                    "targetRotation": 0.0,
+                    "targetZoom": 1.0,
+                    "zoomEasing": 1
+                }
+            },
+            "solo": false,
+            "stereoSpread": 1.0,
+            "subdivisionFactor": 1,
+            "trackColorMode": "auto",
+            "type": "Clip",
+            "videoFlipConfig": {
+                "enabled": false,
+                "modifier": {
+                    "config": {},
+                    "type": "every-note"
+                },
+                "startStateIndex": 0,
+                "states": [
+                    {
+                        "id": "s0",
+                        "orientation": "none"
+                    }
+                ]
+            },
+            "videoH": 1080.0,
+            "videoHoldLastFrame": false,
+            "videoOpacity": 1.0,
+            "videoW": 1920.0,
+            "videoX": 0.0,
+            "videoY": 0.0,
+            "videoZOrder": 0,
+            "visualEffectChain": [],
+            "visualOnly": false,
+            "volume": 1.0,
+            "zoomPanRot": {
+                "durationMs": 300.0,
+                "enabled": false,
+                "overshoot": 1.7015800476074219,
+                "panEasing": 1,
+                "rotEasing": 1,
+                "startPanX": 0.0,
+                "startPanY": 0.0,
+                "startRotation": 0.0,
+                "startZoom": 1.0,
+                "targetPanX": 0.0,
+                "targetPanY": 0.0,
+                "targetRotation": 0.0,
+                "targetZoom": 1.0,
+                "zoomEasing": 1
+            }
+        },
+        {
+            "bounce": {
+                "directionDeg": 270.0,
+                "distance": 0.15000000596046448,
+                "durationMs": 200.0,
+                "easingType": 0,
+                "enabled": false,
+                "overshoot": 1.7015800476074219,
+                "repeatCount": 1,
+                "squashAmount": 0.0
+            },
+            "cornerRadius": 0.0,
+            "gapScaleOverride": -1.0,
+            "id": 3,
+            "muted": false,
+            "name": "Pat-B",
+            "order": 1,
+            "pan": 0.0,
+            "pingPong": {
+                "crossfadeFrames": 3,
+                "enabled": false,
+                "maxLoops": 0,
+                "regionEndPct": 1.0,
+                "regionStartPct": 0.800000011920929,
+                "reverseSpeed": 1.0
+            },
+            "slideNoteEffect": {
+                "bounce": {
+                    "directionDeg": 270.0,
+                    "distance": 0.15000000596046448,
+                    "easingType": 0,
+                    "overshoot": 1.7015800476074219,
+                    "repeatCount": 1,
+                    "squashAmount": 0.0
+                },
+                "durationMode": 0,
+                "fixedDurationMs": 300.0,
+                "returnDurationMs": 200.0,
+                "returnStyle": 1,
+                "returnTrigger": 0,
+                "tv": {
+                    "chroma": 0.003000000026077032,
+                    "colorBleed": 0.0,
+                    "intensity": 0.5,
+                    "jitter": 2.0,
+                    "noise": 0.0,
+                    "rollSpeed": 1.0,
+                    "scanlines": 0.30000001192092896
+                },
+                "type": 0,
+                "zoomPanRot": {
+                    "overshoot": 1.7015800476074219,
+                    "panEasing": 1,
+                    "rotEasing": 1,
+                    "startPanX": 0.0,
+                    "startPanY": 0.0,
+                    "startRotation": 0.0,
+                    "startZoom": 1.0,
+                    "targetPanX": 0.0,
+                    "targetPanY": 0.0,
+                    "targetRotation": 0.0,
+                    "targetZoom": 1.0,
+                    "zoomEasing": 1
+                }
+            },
+            "solo": false,
+            "stereoSpread": 1.0,
+            "subdivisionFactor": 1,
+            "trackColorMode": "auto",
+            "type": "Clip",
+            "videoFlipConfig": {
+                "enabled": false,
+                "modifier": {
+                    "config": {},
+                    "type": "every-note"
+                },
+                "startStateIndex": 0,
+                "states": [
+                    {
+                        "id": "s0",
+                        "orientation": "none"
+                    }
+                ]
+            },
+            "videoH": 1080.0,
+            "videoHoldLastFrame": false,
+            "videoOpacity": 1.0,
+            "videoW": 1920.0,
+            "videoX": 0.0,
+            "videoY": 0.0,
+            "videoZOrder": 0,
+            "visualEffectChain": [],
+            "visualOnly": false,
+            "volume": 1.0,
+            "zoomPanRot": {
+                "durationMs": 300.0,
+                "enabled": false,
+                "overshoot": 1.7015800476074219,
+                "panEasing": 1,
+                "rotEasing": 1,
+                "startPanX": 0.0,
+                "startPanY": 0.0,
+                "startRotation": 0.0,
+                "startZoom": 1.0,
+                "targetPanX": 0.0,
+                "targetPanY": 0.0,
+                "targetRotation": 0.0,
+                "targetZoom": 1.0,
+                "zoomEasing": 1
+            }
+        },
+        {
+            "bounce": {
+                "directionDeg": 270.0,
+                "distance": 0.15000000596046448,
+                "durationMs": 200.0,
+                "easingType": 0,
+                "enabled": false,
+                "overshoot": 1.7015800476074219,
+                "repeatCount": 1,
+                "squashAmount": 0.0
+            },
+            "cornerRadius": 0.0,
+            "gapScaleOverride": -1.0,
+            "id": 4,
+            "muted": false,
+            "name": "Clip",
+            "order": 2,
+            "pan": 0.0,
+            "pingPong": {
+                "crossfadeFrames": 3,
+                "enabled": false,
+                "maxLoops": 0,
+                "regionEndPct": 1.0,
+                "regionStartPct": 0.800000011920929,
+                "reverseSpeed": 1.0
+            },
+            "slideNoteEffect": {
+                "bounce": {
+                    "directionDeg": 270.0,
+                    "distance": 0.15000000596046448,
+                    "easingType": 0,
+                    "overshoot": 1.7015800476074219,
+                    "repeatCount": 1,
+                    "squashAmount": 0.0
+                },
+                "durationMode": 0,
+                "fixedDurationMs": 300.0,
+                "returnDurationMs": 200.0,
+                "returnStyle": 1,
+                "returnTrigger": 0,
+                "tv": {
+                    "chroma": 0.003000000026077032,
+                    "colorBleed": 0.0,
+                    "intensity": 0.5,
+                    "jitter": 2.0,
+                    "noise": 0.0,
+                    "rollSpeed": 1.0,
+                    "scanlines": 0.30000001192092896
+                },
+                "type": 0,
+                "zoomPanRot": {
+                    "overshoot": 1.7015800476074219,
+                    "panEasing": 1,
+                    "rotEasing": 1,
+                    "startPanX": 0.0,
+                    "startPanY": 0.0,
+                    "startRotation": 0.0,
+                    "startZoom": 1.0,
+                    "targetPanX": 0.0,
+                    "targetPanY": 0.0,
+                    "targetRotation": 0.0,
+                    "targetZoom": 1.0,
+                    "zoomEasing": 1
+                }
+            },
+            "solo": false,
+            "stereoSpread": 1.0,
+            "subdivisionFactor": 1,
+            "trackColorMode": "auto",
+            "type": "Clip",
+            "videoFlipConfig": {
+                "enabled": false,
+                "modifier": {
+                    "config": {},
+                    "type": "every-note"
+                },
+                "startStateIndex": 0,
+                "states": [
+                    {
+                        "id": "s0",
+                        "orientation": "none"
+                    }
+                ]
+            },
+            "videoH": 1080.0,
+            "videoHoldLastFrame": false,
+            "videoOpacity": 1.0,
+            "videoW": 1920.0,
+            "videoX": 0.0,
+            "videoY": 0.0,
+            "videoZOrder": 0,
+            "visualEffectChain": [],
+            "visualOnly": false,
+            "volume": 1.0,
+            "zoomPanRot": {
+                "durationMs": 300.0,
+                "enabled": false,
+                "overshoot": 1.7015800476074219,
+                "panEasing": 1,
+                "rotEasing": 1,
+                "startPanX": 0.0,
+                "startPanY": 0.0,
+                "startRotation": 0.0,
+                "startZoom": 1.0,
+                "targetPanX": 0.0,
+                "targetPanY": 0.0,
+                "targetRotation": 0.0,
+                "targetZoom": 1.0,
+                "zoomEasing": 1
+            }
+        }
+    ],
+    "xleth_version": "0.1.0"
+}

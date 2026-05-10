@@ -1,0 +1,741 @@
+{
+  "accumulatedTimingSampleCount": 193152,
+  "activeResonanceSuppressorHighQualityInstanceCount": 4,
+  "audioDeviceOutputLatencySamples": 480,
+  "blockSize": 480,
+  "build": {
+    "configuration": "Debug"
+  },
+  "callback": {
+    "averageMs": 2.1354045725646125,
+    "averageUs": 2135.4045725646124,
+    "count": 3018,
+    "maxMs": 4.361,
+    "maxUs": 4361.0,
+    "p50Ms": 2.169,
+    "p50Us": 2169.0,
+    "p95Ms": 2.451,
+    "p95Us": 2451.0,
+    "p99Ms": 2.681,
+    "p99Us": 2681.0
+  },
+  "callbackCoveragePercent": 99.93377483443709,
+  "callbackDeadlineUs": 10000.0,
+  "callbackMaxUs": 4361.0,
+  "callbackOverrunCount": 0,
+  "callbackP50Us": 2169.0,
+  "callbackP95Us": 2451.0,
+  "callbackP99Us": 2681.0,
+  "callbackSampleCount": 3018,
+  "captureDurationSeconds": 30.195,
+  "capturedAt": "2026-05-09T15:54:02Z",
+  "capturedCallbackCount": 3018,
+  "chainLockMissCount": 0,
+  "compensationTargetChanges": 13,
+  "cpuHealth": "Warning",
+  "deviceOutputLatencySamples": 480,
+  "diagnosis": {
+    "cpuDeadlinePressure": "no callback or MixEngine deadline overrun observed",
+    "cpuHealth": "Warning",
+    "lockStaleState": "no lock misses or stale chain reuse observed",
+    "pdcPresentationLatency": "reported separately as compensated timing, not CPU deadline pressure",
+    "status": "Warning",
+    "summary": "no_realtime_instability_observed",
+    "telemetryCoverageQuality": "good",
+    "telemetryPressure": "no dropped telemetry samples observed"
+  },
+  "droppedTelemetryByScope": {
+    "captureAccumulatorOverflow": 0,
+    "deliberateVerboseScopeSamplingSkips": 0,
+    "ringOverflow": 0
+  },
+  "droppedTelemetrySamples": 0,
+  "droppedTelemetrySamplesDuringCapture": 0,
+  "effectCoveragePercent": null,
+  "effectSampleCount": 63378,
+  "expectedApproxCallbackCount": 3020,
+  "guardedPluginCrashedSkippedCount": 0,
+  "guardedPluginSkippedOrCrashedCount": 0,
+  "latencyEpochChanges": 0,
+  "livePresentationLatencySamples": 8876,
+  "lockMisses": 0,
+  "masterInsertLatencySamples": 8192,
+  "maxAudibleTrackLatencySamples": 204,
+  "mixEngine": {
+    "averageMs": 2.132773359840954,
+    "averageUs": 2132.773359840954,
+    "count": 3018,
+    "maxMs": 4.358,
+    "maxUs": 4358.0,
+    "p50Ms": 2.167,
+    "p50Us": 2167.0,
+    "p95Ms": 2.449,
+    "p95Us": 2449.0,
+    "p99Ms": 2.676,
+    "p99Us": 2676.0
+  },
+  "mixEngineCoveragePercent": 99.93377483443709,
+  "mixEngineMaxUs": 4358.0,
+  "mixEngineOverrunCount": 0,
+  "mixEngineP50Us": 2167.0,
+  "mixEngineP95Us": 2449.0,
+  "mixEngineP99Us": 2676.0,
+  "mixEngineSampleCount": 3018,
+  "pdcDelayProcessCount": 45285,
+  "positionSamples": {
+    "presentationEnd": 1440724,
+    "presentationStart": 0,
+    "rawEnd": 1449600,
+    "rawStart": 0
+  },
+  "presentationPositionSamplesAtCaptureEnd": 1440724,
+  "presentationPositionSamplesAtCaptureStart": 0,
+  "privacy": "Report intentionally omits raw media paths, project directories, usernames, and full project JSON.",
+  "project": {
+    "clipCount": 0,
+    "effectCount": 17,
+    "mediaCount": 1,
+    "projectDurationSeconds": 130.285584,
+    "projectName": "test-2",
+    "regionCount": 2,
+    "sourceCount": 1,
+    "trackCount": 15
+  },
+  "rawPositionSamplesAtCaptureEnd": 1449600,
+  "rawPositionSamplesAtCaptureStart": 0,
+  "realtimeRsHqRiskLevel": "warning",
+  "realtimeRsHqRiskReasons": [
+    "multipleInstances"
+  ],
+  "recommendedAction": [
+    "reduceHqInstances",
+    "useNormalQualityForRealtime",
+    "useHqForExport",
+    "increaseBufferSize"
+  ],
+  "renderedBlockCount": 3018,
+  "requestedDurationSeconds": 30,
+  "resonanceSuppressorHighQuality": {
+    "activeInstanceCount": 4,
+    "appearsInWorstEffects": true,
+    "recommendedAction": [
+      "reduceHqInstances",
+      "useNormalQualityForRealtime",
+      "useHqForExport",
+      "increaseBufferSize"
+    ],
+    "riskLevel": "warning",
+    "riskReasons": [
+      "multipleInstances"
+    ],
+    "wolaCallCount": 12072,
+    "wolaMaxUs": 549.0,
+    "wolaP99Us": 208.0
+  },
+  "sampleRate": 48000.0,
+  "schemaVersion": "xleth.audioPerformanceCapture.v1",
+  "staleChainReuse": 0,
+  "staleSnapshotReuseCount": 0,
+  "strictFailed": false,
+  "strictMode": false,
+  "telemetryCaptureAccumulatorOverflowDrops": 0,
+  "telemetryCoverageQuality": "good",
+  "timingSequence": {
+    "end": 193216,
+    "startExclusive": 1
+  },
+  "transport": {
+    "bpm": 140.00014000014,
+    "endPlaying": true,
+    "startPlaying": true
+  },
+  "verboseEffectSampling": {
+    "downsampled": false,
+    "notes": "Verbose effect scopes were not downsampled; coverage was improved by periodic off-thread draining.",
+    "skippedSamples": 0
+  },
+  "worstChainsByMax": [
+    {
+      "count": 3018,
+      "effectTypeName": "unknown",
+      "flags": 1,
+      "kind": "masterChain",
+      "maxUs": 1782,
+      "p99Us": 848,
+      "slotOrNodeId": -1,
+      "timing": {
+        "averageUs": 723.8104705102717,
+        "count": 3018,
+        "maxUs": 1782,
+        "p50Us": 767,
+        "p95Us": 815,
+        "p99Us": 848
+      },
+      "trackId": -1
+    },
+    {
+      "count": 3018,
+      "effectTypeName": "unknown",
+      "flags": 0,
+      "kind": "trackChain",
+      "maxUs": 1449,
+      "p99Us": 111,
+      "slotOrNodeId": -1,
+      "timing": {
+        "averageUs": 66.94499668654738,
+        "count": 3018,
+        "maxUs": 1449,
+        "p50Us": 65,
+        "p95Us": 79,
+        "p99Us": 111
+      },
+      "trackId": 36
+    },
+    {
+      "count": 3018,
+      "effectTypeName": "unknown",
+      "flags": 0,
+      "kind": "trackChain",
+      "maxUs": 739,
+      "p99Us": 200,
+      "slotOrNodeId": -1,
+      "timing": {
+        "averageUs": 146.71636845593108,
+        "count": 3018,
+        "maxUs": 739,
+        "p50Us": 145,
+        "p95Us": 163,
+        "p99Us": 200
+      },
+      "trackId": 33
+    },
+    {
+      "count": 3018,
+      "effectTypeName": "unknown",
+      "flags": 0,
+      "kind": "trackChain",
+      "maxUs": 422,
+      "p99Us": 211,
+      "slotOrNodeId": -1,
+      "timing": {
+        "averageUs": 169.02451954937044,
+        "count": 3018,
+        "maxUs": 422,
+        "p50Us": 167,
+        "p95Us": 182,
+        "p99Us": 211
+      },
+      "trackId": 30
+    },
+    {
+      "count": 3018,
+      "effectTypeName": "unknown",
+      "flags": 0,
+      "kind": "trackChain",
+      "maxUs": 328,
+      "p99Us": 209,
+      "slotOrNodeId": -1,
+      "timing": {
+        "averageUs": 148.06262425447315,
+        "count": 3018,
+        "maxUs": 328,
+        "p50Us": 145,
+        "p95Us": 178,
+        "p99Us": 209
+      },
+      "trackId": 42
+    },
+    {
+      "count": 3018,
+      "effectTypeName": "unknown",
+      "flags": 0,
+      "kind": "trackChain",
+      "maxUs": 298,
+      "p99Us": 192,
+      "slotOrNodeId": -1,
+      "timing": {
+        "averageUs": 148.14976805831677,
+        "count": 3018,
+        "maxUs": 298,
+        "p50Us": 146,
+        "p95Us": 158,
+        "p99Us": 192
+      },
+      "trackId": 51
+    },
+    {
+      "count": 3018,
+      "effectTypeName": "unknown",
+      "flags": 0,
+      "kind": "trackChain",
+      "maxUs": 176,
+      "p99Us": 114,
+      "slotOrNodeId": -1,
+      "timing": {
+        "averageUs": 70.89662027833002,
+        "count": 3018,
+        "maxUs": 176,
+        "p50Us": 70,
+        "p95Us": 77,
+        "p99Us": 114
+      },
+      "trackId": 48
+    },
+    {
+      "count": 3018,
+      "effectTypeName": "unknown",
+      "flags": 0,
+      "kind": "trackChain",
+      "maxUs": 161,
+      "p99Us": 85,
+      "slotOrNodeId": -1,
+      "timing": {
+        "averageUs": 49.28462557985421,
+        "count": 3018,
+        "maxUs": 161,
+        "p50Us": 48,
+        "p95Us": 53,
+        "p99Us": 85
+      },
+      "trackId": 45
+    }
+  ],
+  "worstChainsByP99": [
+    {
+      "count": 3018,
+      "effectTypeName": "unknown",
+      "flags": 1,
+      "kind": "masterChain",
+      "maxUs": 1782,
+      "p99Us": 848,
+      "slotOrNodeId": -1,
+      "timing": {
+        "averageUs": 723.8104705102717,
+        "count": 3018,
+        "maxUs": 1782,
+        "p50Us": 767,
+        "p95Us": 815,
+        "p99Us": 848
+      },
+      "trackId": -1
+    },
+    {
+      "count": 3018,
+      "effectTypeName": "unknown",
+      "flags": 0,
+      "kind": "trackChain",
+      "maxUs": 422,
+      "p99Us": 211,
+      "slotOrNodeId": -1,
+      "timing": {
+        "averageUs": 169.02451954937044,
+        "count": 3018,
+        "maxUs": 422,
+        "p50Us": 167,
+        "p95Us": 182,
+        "p99Us": 211
+      },
+      "trackId": 30
+    },
+    {
+      "count": 3018,
+      "effectTypeName": "unknown",
+      "flags": 0,
+      "kind": "trackChain",
+      "maxUs": 328,
+      "p99Us": 209,
+      "slotOrNodeId": -1,
+      "timing": {
+        "averageUs": 148.06262425447315,
+        "count": 3018,
+        "maxUs": 328,
+        "p50Us": 145,
+        "p95Us": 178,
+        "p99Us": 209
+      },
+      "trackId": 42
+    },
+    {
+      "count": 3018,
+      "effectTypeName": "unknown",
+      "flags": 0,
+      "kind": "trackChain",
+      "maxUs": 739,
+      "p99Us": 200,
+      "slotOrNodeId": -1,
+      "timing": {
+        "averageUs": 146.71636845593108,
+        "count": 3018,
+        "maxUs": 739,
+        "p50Us": 145,
+        "p95Us": 163,
+        "p99Us": 200
+      },
+      "trackId": 33
+    },
+    {
+      "count": 3018,
+      "effectTypeName": "unknown",
+      "flags": 0,
+      "kind": "trackChain",
+      "maxUs": 298,
+      "p99Us": 192,
+      "slotOrNodeId": -1,
+      "timing": {
+        "averageUs": 148.14976805831677,
+        "count": 3018,
+        "maxUs": 298,
+        "p50Us": 146,
+        "p95Us": 158,
+        "p99Us": 192
+      },
+      "trackId": 51
+    },
+    {
+      "count": 3018,
+      "effectTypeName": "unknown",
+      "flags": 0,
+      "kind": "trackChain",
+      "maxUs": 176,
+      "p99Us": 114,
+      "slotOrNodeId": -1,
+      "timing": {
+        "averageUs": 70.89662027833002,
+        "count": 3018,
+        "maxUs": 176,
+        "p50Us": 70,
+        "p95Us": 77,
+        "p99Us": 114
+      },
+      "trackId": 48
+    },
+    {
+      "count": 3018,
+      "effectTypeName": "unknown",
+      "flags": 0,
+      "kind": "trackChain",
+      "maxUs": 1449,
+      "p99Us": 111,
+      "slotOrNodeId": -1,
+      "timing": {
+        "averageUs": 66.94499668654738,
+        "count": 3018,
+        "maxUs": 1449,
+        "p50Us": 65,
+        "p95Us": 79,
+        "p99Us": 111
+      },
+      "trackId": 36
+    },
+    {
+      "count": 3018,
+      "effectTypeName": "unknown",
+      "flags": 0,
+      "kind": "trackChain",
+      "maxUs": 161,
+      "p99Us": 85,
+      "slotOrNodeId": -1,
+      "timing": {
+        "averageUs": 49.28462557985421,
+        "count": 3018,
+        "maxUs": 161,
+        "p50Us": 48,
+        "p95Us": 53,
+        "p99Us": 85
+      },
+      "trackId": 45
+    }
+  ],
+  "worstEffectsByMax": [
+    {
+      "count": 3018,
+      "effectTypeName": "unknown",
+      "flags": 32,
+      "kind": "effect",
+      "maxUs": 1447,
+      "p99Us": 109,
+      "slotOrNodeId": 3,
+      "timing": {
+        "averageUs": 65.38634857521538,
+        "count": 3018,
+        "maxUs": 1447,
+        "p50Us": 64,
+        "p95Us": 77,
+        "p99Us": 109
+      },
+      "trackId": 36
+    },
+    {
+      "count": 3018,
+      "effectTypeName": "unknown",
+      "flags": 32,
+      "kind": "effect",
+      "maxUs": 737,
+      "p99Us": 197,
+      "slotOrNodeId": 3,
+      "timing": {
+        "averageUs": 144.88833664678594,
+        "count": 3018,
+        "maxUs": 737,
+        "p50Us": 143,
+        "p95Us": 161,
+        "p99Us": 197
+      },
+      "trackId": 33
+    },
+    {
+      "count": 3018,
+      "effectTypeName": "resonancesuppressor",
+      "flags": 0,
+      "kind": "effect",
+      "maxUs": 575,
+      "p99Us": 230,
+      "slotOrNodeId": 3,
+      "timing": {
+        "averageUs": 184.7269715043075,
+        "count": 3018,
+        "maxUs": 575,
+        "p50Us": 195,
+        "p95Us": 215,
+        "p99Us": 230
+      },
+      "trackId": -1
+    },
+    {
+      "count": 3018,
+      "effectTypeName": "resonancesuppressor",
+      "flags": 6,
+      "kind": "effectSection",
+      "maxUs": 549,
+      "p99Us": 199,
+      "slotOrNodeId": 3,
+      "timing": {
+        "averageUs": 160.1335321404904,
+        "count": 3018,
+        "maxUs": 549,
+        "p50Us": 171,
+        "p95Us": 187,
+        "p99Us": 199
+      },
+      "trackId": -1
+    },
+    {
+      "count": 3018,
+      "effectTypeName": "resonancesuppressor",
+      "flags": 0,
+      "kind": "effect",
+      "maxUs": 464,
+      "p99Us": 234,
+      "slotOrNodeId": 4,
+      "timing": {
+        "averageUs": 181.50231941683234,
+        "count": 3018,
+        "maxUs": 464,
+        "p50Us": 188,
+        "p95Us": 221,
+        "p99Us": 234
+      },
+      "trackId": -1
+    },
+    {
+      "count": 3018,
+      "effectTypeName": "resonancesuppressor",
+      "flags": 6,
+      "kind": "effectSection",
+      "maxUs": 412,
+      "p99Us": 207,
+      "slotOrNodeId": 4,
+      "timing": {
+        "averageUs": 158.82339297548046,
+        "count": 3018,
+        "maxUs": 412,
+        "p50Us": 166,
+        "p95Us": 194,
+        "p99Us": 207
+      },
+      "trackId": -1
+    },
+    {
+      "count": 3018,
+      "effectTypeName": "resonancesuppressor",
+      "flags": 0,
+      "kind": "effect",
+      "maxUs": 405,
+      "p99Us": 229,
+      "slotOrNodeId": 6,
+      "timing": {
+        "averageUs": 174.88866799204771,
+        "count": 3018,
+        "maxUs": 405,
+        "p50Us": 184,
+        "p95Us": 200,
+        "p99Us": 229
+      },
+      "trackId": -1
+    },
+    {
+      "count": 3018,
+      "effectTypeName": "resonancesuppressor",
+      "flags": 0,
+      "kind": "effect",
+      "maxUs": 403,
+      "p99Us": 240,
+      "slotOrNodeId": 5,
+      "timing": {
+        "averageUs": 180.1066931742876,
+        "count": 3018,
+        "maxUs": 403,
+        "p50Us": 187,
+        "p95Us": 219,
+        "p99Us": 240
+      },
+      "trackId": -1
+    }
+  ],
+  "worstEffectsByP99": [
+    {
+      "count": 3018,
+      "effectTypeName": "resonancesuppressor",
+      "flags": 0,
+      "kind": "effect",
+      "maxUs": 403,
+      "p99Us": 240,
+      "slotOrNodeId": 5,
+      "timing": {
+        "averageUs": 180.1066931742876,
+        "count": 3018,
+        "maxUs": 403,
+        "p50Us": 187,
+        "p95Us": 219,
+        "p99Us": 240
+      },
+      "trackId": -1
+    },
+    {
+      "count": 3018,
+      "effectTypeName": "resonancesuppressor",
+      "flags": 0,
+      "kind": "effect",
+      "maxUs": 464,
+      "p99Us": 234,
+      "slotOrNodeId": 4,
+      "timing": {
+        "averageUs": 181.50231941683234,
+        "count": 3018,
+        "maxUs": 464,
+        "p50Us": 188,
+        "p95Us": 221,
+        "p99Us": 234
+      },
+      "trackId": -1
+    },
+    {
+      "count": 3018,
+      "effectTypeName": "resonancesuppressor",
+      "flags": 0,
+      "kind": "effect",
+      "maxUs": 575,
+      "p99Us": 230,
+      "slotOrNodeId": 3,
+      "timing": {
+        "averageUs": 184.7269715043075,
+        "count": 3018,
+        "maxUs": 575,
+        "p50Us": 195,
+        "p95Us": 215,
+        "p99Us": 230
+      },
+      "trackId": -1
+    },
+    {
+      "count": 3018,
+      "effectTypeName": "resonancesuppressor",
+      "flags": 0,
+      "kind": "effect",
+      "maxUs": 405,
+      "p99Us": 229,
+      "slotOrNodeId": 6,
+      "timing": {
+        "averageUs": 174.88866799204771,
+        "count": 3018,
+        "maxUs": 405,
+        "p50Us": 184,
+        "p95Us": 200,
+        "p99Us": 229
+      },
+      "trackId": -1
+    },
+    {
+      "count": 3018,
+      "effectTypeName": "resonancesuppressor",
+      "flags": 6,
+      "kind": "effectSection",
+      "maxUs": 367,
+      "p99Us": 216,
+      "slotOrNodeId": 5,
+      "timing": {
+        "averageUs": 158.66633532140492,
+        "count": 3018,
+        "maxUs": 367,
+        "p50Us": 166,
+        "p95Us": 196,
+        "p99Us": 216
+      },
+      "trackId": -1
+    },
+    {
+      "count": 3018,
+      "effectTypeName": "resonancesuppressor",
+      "flags": 6,
+      "kind": "effectSection",
+      "maxUs": 412,
+      "p99Us": 207,
+      "slotOrNodeId": 4,
+      "timing": {
+        "averageUs": 158.82339297548046,
+        "count": 3018,
+        "maxUs": 412,
+        "p50Us": 166,
+        "p95Us": 194,
+        "p99Us": 207
+      },
+      "trackId": -1
+    },
+    {
+      "count": 3018,
+      "effectTypeName": "resonancesuppressor",
+      "flags": 6,
+      "kind": "effectSection",
+      "maxUs": 367,
+      "p99Us": 206,
+      "slotOrNodeId": 6,
+      "timing": {
+        "averageUs": 154.67296222664015,
+        "count": 3018,
+        "maxUs": 367,
+        "p50Us": 164,
+        "p95Us": 178,
+        "p99Us": 206
+      },
+      "trackId": -1
+    },
+    {
+      "count": 3018,
+      "effectTypeName": "unknown",
+      "flags": 32,
+      "kind": "effect",
+      "maxUs": 402,
+      "p99Us": 201,
+      "slotOrNodeId": 3,
+      "timing": {
+        "averageUs": 162.08217362491717,
+        "count": 3018,
+        "maxUs": 402,
+        "p50Us": 160,
+        "p95Us": 174,
+        "p99Us": 201
+      },
+      "trackId": 30
+    }
+  ]
+}

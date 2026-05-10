@@ -3,6 +3,9 @@ import {
   GLOBAL_STRETCH_METHOD_OPTIONS,
   sanitizeGlobalStretchMethod,
 } from '../constants/globalStretchMethods.js'
+import AudioPerformanceDiagnosticsPanel from './debug/AudioPerformanceDiagnosticsPanel.jsx'
+
+const VALID_NAMING_FORMATS = ['sampleNameOnly', 'categoryAndName', 'sourceAndName', 'fullLegacy']
 
 // PROXY context only. This creates a fresh off-screen WebGL context inside
 // the Settings tab. In most cases Chromium's GPU process will pick the same
@@ -73,6 +76,7 @@ export default function SettingsPanel({ onClose }) {
   const [hwEncoderStatus, setHwEncoderStatus] = useState({ state: 'loading', encoders: [] })
   const [videoMode, setVideoMode] = useState('auto')
   const [diagState, setDiagState] = useState({ status: 'idle', message: '', path: '' })
+  const [namingFormat, setNamingFormat] = useState('sampleNameOnly')
 
   useEffect(() => {
     window.xleth.timeline.getGlobalStretchMethod()
@@ -93,6 +97,9 @@ export default function SettingsPanel({ onClose }) {
     }).catch(() => {})
     window.xleth.settings.get('videoMode').then(v => {
       setVideoMode(['auto', 'software', 'hardware'].includes(v) ? v : 'auto')
+    }).catch(() => {})
+    window.xleth.settings.get('sampleNamingFormat').then(v => {
+      if (VALID_NAMING_FORMATS.includes(v)) setNamingFormat(v)
     }).catch(() => {})
 
     if (window.xleth?.gpu?.getAvailableGpus) {
@@ -209,6 +216,12 @@ export default function SettingsPanel({ onClose }) {
   async function applyVideoMode(mode) {
     setVideoMode(mode)
     await window.xleth.settings.set('videoMode', mode)
+  }
+
+  async function applyNamingFormat(v) {
+    const validated = VALID_NAMING_FORMATS.includes(v) ? v : 'sampleNameOnly'
+    setNamingFormat(validated)
+    await window.xleth.settings.set('sampleNamingFormat', validated)
   }
 
   async function exportVisualPreviewDiagnostic() {
@@ -342,6 +355,10 @@ export default function SettingsPanel({ onClose }) {
           </div>
         </div>
         <div className="settings-panel-section">
+          <div className="settings-panel-section-title">Audio Diagnostics</div>
+          <AudioPerformanceDiagnosticsPanel />
+        </div>
+        <div className="settings-panel-section">
           <div className="settings-panel-section-title">Graphics</div>
           <div className="settings-panel-row">
             <label className="settings-panel-label">Graphics adapter</label>
@@ -418,6 +435,22 @@ export default function SettingsPanel({ onClose }) {
               <option value={5}>5 min</option>
               <option value={15}>15 min</option>
               <option value={30}>30 min</option>
+            </select>
+          </div>
+        </div>
+        <div className="settings-panel-section">
+          <div className="settings-panel-section-title">Sample Export</div>
+          <div className="settings-panel-row">
+            <label className="settings-panel-label">Filename Format</label>
+            <select
+              className="settings-panel-select"
+              value={namingFormat}
+              onChange={e => applyNamingFormat(e.target.value)}
+            >
+              <option value="sampleNameOnly">Sample name only</option>
+              <option value="categoryAndName">Category + sample name</option>
+              <option value="sourceAndName">Source + sample name</option>
+              <option value="fullLegacy">Full legacy</option>
             </select>
           </div>
         </div>

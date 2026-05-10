@@ -86,6 +86,7 @@ public:
                      std::function<void(float)> progressCallback = nullptr);
 
     std::string getProjectDir()  const;
+    std::string getProjectName() const;
     std::string getProxiesDir()  const;
     std::string getExportsDir()  const;
     std::string getSwappedDir()  const;

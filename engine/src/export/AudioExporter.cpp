@@ -77,33 +77,59 @@ bool AudioExporter::renderOffline(const Timeline& timeline,
     output.setSize(2, totalSamples, false, true, false);
     output.clear();
 
+    constexpr int kBlockSize = 4096;
+
+    const auto latencySnapshot = mixer.getLatencyCompensationSnapshot();
+    const int64_t totalPrerollSamples =
+        static_cast<int64_t>(latencySnapshot.maxAudibleTrackLatencySamples)
+        + static_cast<int64_t>(latencySnapshot.masterInsertLatencySamples);
+    const int64_t renderStartSample = std::max<int64_t>(0, startSample - totalPrerollSamples);
+    const int64_t availablePreroll = startSample - renderStartSample;
+    const int64_t samplesToDiscard = availablePreroll + totalPrerollSamples;
+    const int64_t renderEndSample =
+        renderStartSample + samplesToDiscard + static_cast<int64_t>(totalSamples);
+
     Transport transport;
     transport.setSampleRate(static_cast<double>(sampleRate));
     transport.setBPM(timeline.getBPM());
-    transport.seekToSample(startSample);
+    transport.seekToSample(renderStartSample);
     transport.play();
 
-    constexpr int kBlockSize = 4096;
     juce::AudioBuffer<float> block(2, kBlockSize);
 
+    int64_t currentSample = renderStartSample;
+    int64_t samplesRemainingToDiscard = samplesToDiscard;
     int pos = 0;
     int lastPct = -1;
-    while (pos < totalSamples) {
+    while (currentSample < renderEndSample && pos < totalSamples) {
         if (cancelFlag.load(std::memory_order_relaxed))
             return false;
 
-        const int n = std::min(kBlockSize, totalSamples - pos);
+        const int n = static_cast<int>(
+            std::min<int64_t>(kBlockSize, renderEndSample - currentSample));
         if (block.getNumSamples() != n)
             block.setSize(2, n, false, false, true);
         block.clear();
 
         mixer.processBlock(block, n, transport);
 
-        for (int ch = 0; ch < 2; ++ch)
-            output.copyFrom(ch, pos, block, ch, 0, n);
+        const int discardThisBlock = static_cast<int>(
+            std::min<int64_t>(samplesRemainingToDiscard, n));
+        samplesRemainingToDiscard -= discardThisBlock;
+
+        const int keepOffset = discardThisBlock;
+        int keepSamples = n - discardThisBlock;
+        if (keepSamples > 0)
+            keepSamples = std::min(keepSamples, totalSamples - pos);
+
+        if (keepSamples > 0) {
+            for (int ch = 0; ch < 2; ++ch)
+                output.copyFrom(ch, pos, block, ch, keepOffset, keepSamples);
+            pos += keepSamples;
+        }
 
         transport.advance(n);
-        pos += n;
+        currentSample += n;
 
         if (progressCallback) {
             const float p = (static_cast<float>(pos) / static_cast<float>(totalSamples)) * 0.7f;
@@ -281,26 +307,24 @@ bool AudioExporter::encodeWithFFmpeg(const juce::AudioBuffer<float>& buf,
         if (cancelFlag.load(std::memory_order_relaxed)) { cleanup(); return false; }
 
         const int n = std::min(frameSize, totalSamples - samplePos);
-        for (int i = 0; i < n; ++i) {
-            interleaved[i * 2]     = chL[samplePos + i];
-            interleaved[i * 2 + 1] = chR[samplePos + i];
-        }
-        // Zero-pad the tail if the final chunk is short
-        if (n < frameSize) {
-            std::memset(interleaved.data() + static_cast<size_t>(n) * 2, 0,
-                        static_cast<size_t>(frameSize - n) * 2 * sizeof(float));
+        const int samplesInFrame = codecCtx->frame_size > 0 ? frameSize : n;
+        for (int i = 0; i < samplesInFrame; ++i) {
+            const bool hasInputSample = i < n;
+            interleaved[i * 2] = hasInputSample ? chL[samplePos + i] : 0.0f;
+            interleaved[i * 2 + 1] = hasInputSample ? chR[samplePos + i] : 0.0f;
         }
 
         if (av_frame_make_writable(frame) < 0) { cleanup(); return false; }
+        frame->nb_samples = samplesInFrame;
 
         const uint8_t* inBuf[1] = { reinterpret_cast<const uint8_t*>(interleaved.data()) };
-        if (swr_convert(swr, frame->data, frameSize, inBuf, frameSize) < 0) {
+        if (swr_convert(swr, frame->data, samplesInFrame, inBuf, samplesInFrame) < 0) {
             cleanup();
             return false;
         }
 
         frame->pts = pts;
-        pts += frameSize;
+        pts += samplesInFrame;
 
         if (avcodec_send_frame(codecCtx, frame) < 0) { cleanup(); return false; }
         if (!drainPackets())                          { cleanup(); return false; }

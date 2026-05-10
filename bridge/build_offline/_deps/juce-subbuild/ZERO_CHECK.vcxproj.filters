@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\Krasen\Desktop\XLETH\bridge\build_offline\_deps\juce-subbuild\CMakeFiles\4c327ee36ff80d61896b4c5b23d3b118\generate.stamp.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{E56D57EE-1A9A-3A15-A7DB-EF1ACEF824AB}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

@@ -7,11 +7,10 @@
 // on that track, returns one stateIndex per event. The function is deterministic
 // (same inputs → same output, always) and stateless (no globals, no caches).
 //
-// **Mono-only contract.** Chord events (≥2 onsets sharing the same tick on the
-// same track) are filtered upstream by the same loop that assigns globalNoteIndex
-// today. The resolver never sees chord events; it must not be made aware of them.
-// The caller fills chord-event stateIndex from the most recent prior mono event
-// (or startStateIndex if none).
+// **Trigger contract.** EveryNote callers pass every note-on, including
+// same-tick chord members. Other modifiers filter chord events upstream; the
+// caller fills those chord-event stateIndex values from the most recent prior
+// mono event (or startStateIndex if none).
 //
 // **First-trigger rule.** every-note and new-note never advance on the first
 // mono trigger; specific-pitches advances on the first trigger if the pitch is

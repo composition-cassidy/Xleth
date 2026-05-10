@@ -52,7 +52,7 @@ int64_t AudioScheduler::beatsToSamples(double beats) const
 
 void AudioScheduler::processBlock(int numSamples)
 {
-    const int64_t startSample = transport_.getPositionSamples();
+    const int64_t startSample = transport_.getRenderPositionSamples();
 
     // ── Seek detection ────────────────────────────────────────────────────────
     // Covers transport.stop() (resets to 0) and any explicit seekTo*() call.

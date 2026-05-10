@@ -9,10 +9,12 @@
 #include "SampleBank.h"
 #include "Transport.h"
 #include "Sampler.h"
+#include "audio/AudioPerformanceTelemetry.h"
 #include "audio/ClipRenderCache.h"
 #include "audio/ClipModulatedReader.h"
 
 #include <atomic>
+#include <array>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -34,6 +36,7 @@ class EditorProcessCoordinator;
 class PluginEditorHost;
 class PluginRegistry;
 class XlethEffectBase;
+namespace juce { class AudioProcessor; }
 namespace xleth::audio { class WorldStretchCache; }
 
 // ─── Debug log queue (lock-free, single-producer / single-consumer) ──────────
@@ -176,6 +179,116 @@ public:
     float getTrackPeakL(int trackId) const;
     float getTrackPeakR(int trackId) const;
 
+    struct LatencyCompensationSnapshot
+    {
+        int maxAudibleTrackLatencySamples = 0;
+        int masterInsertLatencySamples = 0;
+    };
+
+    int getTrackInsertLatencySamples(int trackId) const;
+    int getTrackCompensationDelaySamples(int trackId) const;
+    int getMaxAudibleTrackLatencySamples() const;
+    int getMasterInsertLatencySamples() const;
+    LatencyCompensationSnapshot getLatencyCompensationSnapshot() const;
+    bool isInterTrackLatencyCompensationApplied() const;
+    void refreshLatencyDiagnostics();
+    int addProcessorForTesting(int trackId,
+                               const std::string& pluginId,
+                               std::unique_ptr<juce::AudioProcessor> proc,
+                               int position);
+
+    struct RealtimeDiagnosticsSnapshot
+    {
+        bool enabled = false;
+        uint64_t blockCount = 0;
+        uint64_t audioCallbackCount = 0;
+        int lastBlockSize = 0;
+        double lastSampleRate = 0.0;
+        double lastDeadlineMs = 0.0;
+        double avgProcessBlockMs = 0.0;
+        double p50ProcessBlockMs = 0.0;
+        double p95ProcessBlockMs = 0.0;
+        double p99ProcessBlockMs = 0.0;
+        double maxProcessBlockMs = 0.0;
+        double avgProcessBlockRatio = 0.0;
+        double maxProcessBlockRatio = 0.0;
+        double avgAudioCallbackMs = 0.0;
+        double p50AudioCallbackMs = 0.0;
+        double p95AudioCallbackMs = 0.0;
+        double p99AudioCallbackMs = 0.0;
+        double maxAudioCallbackMs = 0.0;
+        double maxAudioCallbackRatio = 0.0;
+        uint64_t overBudgetBlockCount = 0;
+        uint64_t overrunBlockCount = 0;
+        uint64_t audioCallbackOverrunCount = 0;
+        uint64_t droppedTelemetrySamples = 0;
+        uint64_t chainLockMissCount = 0;
+        uint64_t masterChainSkippedCount = 0;
+        uint64_t trackChainSkippedCount = 0;
+        uint64_t staleSnapshotReuseCount = 0;
+        uint64_t guardedPluginCrashedSkippedCount = 0;
+        uint64_t latencyEpochChangeCount = 0;
+        uint64_t pdcRetargetCount = 0;
+        uint64_t pdcDelayProcessCount = 0;
+        double avgTrackProcessMs = 0.0;
+        double maxTrackProcessMs = 0.0;
+        int worstTrackId = -1;
+        double avgTrackChainMs = 0.0;
+        double p95TrackChainMs = 0.0;
+        double p99TrackChainMs = 0.0;
+        double maxTrackChainMs = 0.0;
+        int worstTrackChainId = -1;
+        double avgMasterChainMs = 0.0;
+        double p95MasterChainMs = 0.0;
+        double p99MasterChainMs = 0.0;
+        double maxMasterChainMs = 0.0;
+        double avgPdcDelayMs = 0.0;
+        double p95PdcDelayMs = 0.0;
+        double p99PdcDelayMs = 0.0;
+        double maxPdcDelayMs = 0.0;
+        uint64_t pluginCallCount = 0;
+        double avgPluginMs = 0.0;
+        double p95PluginMs = 0.0;
+        double p99PluginMs = 0.0;
+        double maxPluginMs = 0.0;
+        std::string worstPluginId;
+        int worstPluginTrackId = -1;
+        int worstPluginNodeId = -1;
+        std::vector<uint32_t> recentAudioCallbackUs;
+        std::vector<xleth::audio::AudioTelemetryWorstScope> worstEffectsByMax;
+        std::vector<xleth::audio::AudioTelemetryWorstScope> worstEffectsByP99;
+        std::vector<xleth::audio::AudioTelemetryWorstScope> worstChainsByMax;
+        std::vector<xleth::audio::AudioTelemetryWorstScope> worstChainsByP99;
+        double avgResonanceSuppressorMs = 0.0;
+        double maxResonanceSuppressorMs = 0.0;
+        double avgResonanceSuppressorWolaMs = 0.0;
+        double p99ResonanceSuppressorWolaMs = 0.0;
+        double maxResonanceSuppressorWolaMs = 0.0;
+        uint64_t resonanceSuppressorWolaCallCount = 0;
+        uint64_t resonanceSuppressorAudioThreadReprepareCount = 0;
+        uint64_t resonanceSuppressorDeferredReprepareCount = 0;
+        uint64_t nanInfBlockCount = 0;
+        std::string diagnosis;
+        bool highQualityResonanceSuppressorRealtimeSafe = false;
+        int activeResonanceSuppressorHighQualityInstanceCount = 0;
+        std::string realtimeRsHqRiskLevel = "healthy";
+        std::vector<std::string> realtimeRsHqRiskReasons;
+        std::vector<std::string> recommendedAction;
+        uint64_t timingSequence = 0;
+    };
+
+    void setRealtimeDiagnosticsEnabled(bool enabled);
+    bool isRealtimeDiagnosticsEnabled() const;
+    void resetRealtimeDiagnostics();
+    RealtimeDiagnosticsSnapshot getRealtimeDiagnosticsSnapshot(uint64_t minTimingSequence = 0) const;
+    void beginRealtimeDiagnosticsCaptureAccumulation(uint64_t minTimingSequence) const;
+    void drainRealtimeDiagnosticsCaptureAccumulation() const;
+    RealtimeDiagnosticsSnapshot finishRealtimeDiagnosticsCaptureAccumulation(
+        uint64_t* accumulatedTimingSampleCount = nullptr,
+        uint64_t* accumulatorOverflowDrops = nullptr) const;
+    std::string getRealtimeDiagnosticsJSON() const;
+    void recordAudioCallbackTiming(int numSamples, double sampleRate, uint64_t elapsedNs);
+
     // ── Debug log ────────────────────────────────────────────────────────────
     MixDebugLog& getDebugLog() { return debugLog_; }
 
@@ -235,9 +348,16 @@ public:
     // Returns the engine sample rate set by the last prepare() call.
     double getPreparedSampleRate() const { return preparedSampleRate_; }
 
+    // Rebuild the trackId → slot mapping and refresh the slot-owned atomic
+    // track params from the current Timeline. Safe for live topology changes
+    // because it only touches atomics unless snapVolumeSmoothers is enabled.
+    // NEVER call from processBlock (audio thread) — no locks on audio thread.
+    void syncTrackSlotsFromTimeline(bool snapVolumeSmoothers = false);
+
     // Rebuild the trackId → slot mapping from the current track list.
+    // Mapping-only primitive used by syncTrackSlotsFromTimeline().
     // Must be called from the main/message thread whenever tracks are
-    // added, removed, or reordered (e.g. in rebuildAllSamplers).
+    // added, removed, or reordered.
     // NEVER call from processBlock (audio thread) — no locks on audio thread.
     void updateSlotMapping();
 
@@ -343,7 +463,12 @@ public:
     // Per-track: returns "[]" / false / "[0,0,0,0]" if chain/node not found.
     std::string getEffectParameters(int trackId, int nodeId) const;
     bool        setEffectParameter (int trackId, int nodeId, const std::string& paramId, float value);
+    bool        setEffectProgram   (int trackId, int nodeId, int programIndex);
+    bool        setEffectStateInformation(int trackId, int nodeId, const void* data, int sizeInBytes);
     std::string getEffectMeter     (int trackId, int nodeId) const;
+    bool        refreshGuardedPluginLatency(int trackId, int nodeId);
+    bool        refreshGuardedPluginLatency(int trackId, int nodeId,
+                                            std::uint64_t latencyPublishCountBefore);
 
     // Master chain variants
     std::string getMasterEffectParameters(int nodeId) const;
@@ -441,6 +566,126 @@ private:
     // effect chain on silent buffers until internal state drains.
     // Audio-thread only — no mutex needed.
     int64_t tailEndSamples_[kMaxTracks] = {};
+
+    class StereoCompensationDelay
+    {
+    public:
+        void prepare(double sampleRate, int maxBlockSize);
+        void reset();
+        void setTargetDelaySamples(int delaySamples);
+        void process(juce::AudioBuffer<float>& buffer, int numSamples);
+
+    private:
+        static constexpr int kCrossfadeSamples = 64;
+        static constexpr int kDefaultCapacitySamples = 65536;
+
+        void ensureCapacity(int requiredDelaySamples);
+        static int nextPowerOfTwo(int value);
+        float readSample(int channel, int delaySamples) const;
+
+        std::vector<float> channels_[2];
+        int bufferMask_ = 0;
+        int writePos_ = 0;
+        int currentDelaySamples_ = 0;
+        int sourceDelaySamples_ = 0;
+        int targetDelaySamples_ = 0;
+        int crossfadeRemaining_ = 0;
+        bool hasProcessedAudio_ = false;
+        int maxBlockSize_ = 0;
+        double sampleRate_ = 44100.0;
+    };
+
+    StereoCompensationDelay trackCompensationDelays_[kMaxTracks];
+    int cachedTrackInsertLatencySamples_[kMaxTracks] = {};
+    int cachedTrackCompensationSamples_[kMaxTracks] = {};
+    std::uint64_t cachedTrackLatencyEpochs_[kMaxTracks] = {};
+    double cachedTrackTailSeconds_[kMaxTracks] = {};
+    int cachedMaxAudibleTrackLatencySamples_ = 0;
+    int cachedMasterInsertLatencySamples_ = 0;
+    std::uint64_t cachedMasterLatencyEpoch_ = 0;
+    std::atomic<bool> pendingLatencyCompensationReset_{false};
+    mutable xleth::audio::AudioPerformanceTelemetry audioPerformanceTelemetry_;
+
+    struct RealtimeDiagnosticsState
+    {
+        std::atomic<bool> enabled{false};
+        std::atomic<uint64_t> blockCount{0};
+        std::atomic<uint64_t> audioCallbackCount{0};
+        std::atomic<uint64_t> totalProcessNs{0};
+        std::atomic<uint64_t> maxProcessNs{0};
+        std::atomic<uint64_t> totalDeadlineNs{0};
+        std::atomic<uint64_t> maxRatioPermille{0};
+        std::atomic<uint64_t> overBudgetBlockCount{0};
+        std::atomic<uint64_t> overrunBlockCount{0};
+        std::atomic<uint64_t> totalAudioCallbackNs{0};
+        std::atomic<uint64_t> maxAudioCallbackNs{0};
+        std::atomic<uint64_t> maxAudioCallbackRatioPermille{0};
+        std::atomic<uint64_t> audioCallbackOverrunCount{0};
+        std::atomic<uint64_t> chainLockMissCount{0};
+        std::atomic<uint64_t> pdcRetargetCount{0};
+        std::atomic<uint64_t> pdcDelayProcessCount{0};
+        std::atomic<uint64_t> trackProcessCount{0};
+        std::atomic<uint64_t> totalTrackProcessNs{0};
+        std::atomic<uint64_t> maxTrackProcessNs{0};
+        std::atomic<int> worstTrackId{-1};
+        std::atomic<uint64_t> trackChainProcessCount{0};
+        std::atomic<uint64_t> totalTrackChainNs{0};
+        std::atomic<uint64_t> maxTrackChainNs{0};
+        std::atomic<int> worstTrackChainId{-1};
+        std::atomic<uint64_t> totalPdcDelayNs{0};
+        std::atomic<uint64_t> maxPdcDelayNs{0};
+        std::atomic<uint64_t> pluginCallCount{0};
+        std::atomic<uint64_t> totalPluginNs{0};
+        std::atomic<uint64_t> maxPluginNs{0};
+        std::array<std::atomic<char>, 64> worstPluginId{};
+        std::atomic<int> worstPluginTrackId{-1};
+        std::atomic<int> worstPluginNodeId{-1};
+        std::atomic<uint64_t> resonanceSuppressorCallCount{0};
+        std::atomic<uint64_t> totalResonanceSuppressorNs{0};
+        std::atomic<uint64_t> maxResonanceSuppressorNs{0};
+        std::atomic<uint64_t> resonanceSuppressorWolaCallCount{0};
+        std::atomic<uint64_t> totalResonanceSuppressorWolaNs{0};
+        std::atomic<uint64_t> maxResonanceSuppressorWolaNs{0};
+        std::atomic<uint64_t> resonanceSuppressorAudioThreadReprepareCount{0};
+        std::atomic<uint64_t> resonanceSuppressorDeferredReprepareCount{0};
+        std::atomic<uint64_t> nanInfBlockCount{0};
+        std::atomic<int> lastBlockSize{0};
+        std::atomic<uint64_t> lastSampleRateMilliHz{0};
+        std::atomic<uint64_t> lastDeadlineNs{0};
+    };
+
+    RealtimeDiagnosticsState realtimeDiagnostics_;
+
+    static void realtimePluginTimingCallback(void* userData, const char* pluginId,
+                                             int trackId, int nodeId, uint64_t elapsedNs);
+    static void realtimeSectionTimingCallback(void* userData, const char* pluginId,
+                                              const char* sectionId, int trackId,
+                                              int nodeId, uint64_t elapsedNs);
+    static void realtimeEventCallback(void* userData, const char* pluginId,
+                                      const char* eventId, int trackId, int nodeId);
+    void recordRealtimePluginTiming(const char* pluginId, int trackId,
+                                    int nodeId, uint64_t elapsedNs) noexcept;
+    void recordRealtimeSectionTiming(const char* pluginId, const char* sectionId,
+                                     int trackId, int nodeId, uint64_t elapsedNs) noexcept;
+    void recordRealtimeEvent(const char* pluginId, const char* eventId,
+                             int trackId, int nodeId) noexcept;
+    void recordProcessBlockTiming(int numSamples, double sampleRate,
+                                  uint64_t elapsedNs) noexcept;
+    void recordTrackProcessTiming(int trackId, uint64_t elapsedNs) noexcept;
+    void recordTrackChainTiming(int trackId, uint64_t elapsedNs) noexcept;
+    void recordPdcDelayTiming(uint64_t elapsedNs) noexcept;
+    void recordPdcRetarget() noexcept;
+    void recordTelemetryTiming(xleth::audio::AudioTelemetrySampleKind kind,
+                               int trackId,
+                               int slotOrNodeId,
+                               uint32_t effectType,
+                               uint32_t flags,
+                               int numSamples,
+                               double sampleRate,
+                               uint64_t elapsedNs,
+                               uint64_t latencyEpoch = 0,
+                               int compensationSamples = 0) noexcept;
+    int countActiveResonanceSuppressorHighQualityInstancesLocked() const;
 
     // ── Track ID → slot mapping (main thread read/write, never audio thread) ──
     // Updated by updateSlotMapping() in rebuildAllSamplers and track add/remove.
@@ -603,6 +848,9 @@ private:
     int64_t     debugSampleCounter_ = 0;
     double      debugSampleRate_    = 44100.0;
 
+    void resetLatencyCompensationState();
+    LatencyCompensationSnapshot computeLatencyCompensationSnapshotLocked() const;
+    int getTrackChainOutputLatencySamplesLocked(int trackId) const;
 
     void maybeLogDebug(int numSamples, double sampleRate);
 };

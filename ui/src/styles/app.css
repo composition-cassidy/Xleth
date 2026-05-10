@@ -10575,6 +10575,16 @@ html.fx-drag-active * {
   color: #e9fbff;
 }
 
+.resonancesuppressor-panel-hq-warning {
+  border-bottom: 1px solid rgba(224, 184, 79, 0.22);
+  background: rgba(224, 184, 79, 0.08);
+  color: rgba(255, 232, 168, 0.92);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.35;
+  padding: 7px 14px;
+}
+
 .resonancesuppressor-panel-split,
 .resonancesuppressor-panel-runtime-pane {
   min-width: 0;
@@ -10685,7 +10695,7 @@ html.fx-drag-active * {
 }
 
 .settings-panel {
-  width: 360px;
+  width: 520px;
   max-width: 90vw;
   background: var(--theme-bg-elevated);
   border: 1px solid var(--theme-border-subtle);
@@ -10825,6 +10835,143 @@ html.fx-drag-active * {
   height: 14px;
   cursor: pointer;
   accent-color: var(--theme-accent);
+}
+
+.audio-perf-diag {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.audio-perf-diag-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.audio-perf-diag-capture {
+  border-top: 1px solid var(--theme-border-subtle);
+  padding-top: 8px;
+}
+
+.audio-perf-diag-capture-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.audio-perf-diag-capture-status {
+  margin-top: 6px;
+  color: var(--theme-text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.audio-perf-diag-capture-status--exported {
+  color: #7ac77a;
+}
+
+.audio-perf-diag-capture-status--failed {
+  color: #e08a3a;
+}
+
+.audio-perf-diag-group {
+  min-width: 0;
+  border-top: 1px solid var(--theme-border-subtle);
+  padding-top: 8px;
+}
+
+.audio-perf-diag-group--wide {
+  grid-column: 1 / -1;
+}
+
+.audio-perf-diag-title {
+  color: var(--theme-text);
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.audio-perf-diag-kv {
+  display: grid;
+  grid-template-columns: minmax(84px, 1fr) auto;
+  gap: 4px 8px;
+  align-items: baseline;
+}
+
+.audio-perf-diag-kv span,
+.audio-perf-diag-lines span {
+  color: var(--theme-text-muted);
+  font-size: 11px;
+}
+
+.audio-perf-diag-kv strong,
+.audio-perf-diag-lines strong {
+  color: var(--theme-text);
+  font-size: 11px;
+  font-weight: 650;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.audio-perf-diag-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.audio-perf-diag-lines > div {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+}
+
+.audio-perf-diag-status {
+  display: inline-flex;
+  width: fit-content;
+  margin-bottom: 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--theme-border-subtle);
+  padding: 2px 6px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.audio-perf-diag-status--ok {
+  color: #7ac77a;
+}
+
+.audio-perf-diag-status--warn {
+  color: #e0b84f;
+}
+
+.audio-perf-diag-status--bad {
+  color: #e08a3a;
+}
+
+.audio-perf-diag-note {
+  margin-top: 6px;
+  color: var(--theme-text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+@media (max-width: 560px) {
+  .audio-perf-diag-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .audio-perf-diag-lines > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+
+  .audio-perf-diag-lines strong {
+    text-align: left;
+  }
 }
 
 /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•

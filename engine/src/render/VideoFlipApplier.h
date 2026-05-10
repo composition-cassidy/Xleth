@@ -7,14 +7,14 @@
 // pattern loop / ArpVideoExpander, bridge XlethAddon::rebuildVideoEventsFromClips)
 // converge here. The applier:
 //   1. Groups events by trackId.
-//   2. Per track, sorts events by tick and detects chord groups (≥2 events
-//      sharing the same tick).
-//   3. Builds a mono-only TriggerEvent list and runs `resolveStateIndex`
+//   2. Per track, sorts events by tick, preserving event order within ties.
+//   3. Builds a TriggerEvent list and runs `resolveStateIndex`
 //      (the pure resolver from VideoFlipResolver.h) ONCE per track.
 //   4. Writes monoOrdinal / stateIndex / orientation back to each event.
-//      Chord events inherit stateIndex from the most recent prior mono event
-//      (or startStateIndex if none); they do NOT advance state and they are
-//      marked monoOrdinal = -1.
+//      EveryNote includes every note-on, including same-tick chord members.
+//      Other modifiers keep chord-transparent behavior: chord events inherit
+//      stateIndex from the most recent prior mono event (or startStateIndex if
+//      none), do not advance state, and are marked monoOrdinal = -1.
 //
 // Determinism: same project + same input event list → same output. The
 // applier is pure, stateless, and threadsafe.

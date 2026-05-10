@@ -2,9 +2,12 @@
 #include "audio/EditorProcessCoordinator.h"  // CPLOG / g_closeProfile_t0
 #include "audio/PluginCrashGuard.h"
 #include "audio/NamedAudioRing.h"
+#include "audio/XlethEffectBase.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <thread>
 
 // ─── Construction / destruction ─────────────────────────────────────────────
@@ -24,7 +27,7 @@ GuardedPluginWrapper::GuardedPluginWrapper(std::unique_ptr<juce::AudioProcessor>
                                      getSampleRate() > 0 ? getSampleRate() : 44100.0,
                                      getBlockSize()  > 0 ? getBlockSize()  : 512);
         cachedName_ = inner_->getName();
-        setLatencySamples(inner_->getLatencySamples());
+        refreshReportedLatency();
     }
 }
 
@@ -53,7 +56,7 @@ void GuardedPluginWrapper::prepareToPlay(double sampleRate, int samplesPerBlock)
 #endif
         return;
     }
-    setLatencySamples(innerPtr->getLatencySamples());
+    refreshReportedLatency();
 
     // Some VST3 plugins initialise their reported name lazily — refresh the
     // cache now so getName() returns the real value after first prepareToPlay.
@@ -76,18 +79,101 @@ void GuardedPluginWrapper::reset()
     xleth::pluginGuardCall([&]{ innerPtr->reset(); });
 }
 
+void GuardedPluginWrapper::setCurrentProgram(int index)
+{
+    (void)setWrappedCurrentProgram(index);
+}
+
+bool GuardedPluginWrapper::setWrappedCurrentProgram(int index)
+{
+    if (!inner_ || crashed_.load(std::memory_order_acquire))
+        return false;
+
+    auto* innerPtr = inner_.get();
+    const bool ok = xleth::pluginGuardCall([&]{ innerPtr->setCurrentProgram(index); });
+    if (!ok)
+    {
+        crashed_.store(true, std::memory_order_release);
+        return false;
+    }
+
+    if (!syncBypassStateFromInner())
+        return false;
+    refreshReportedLatency();
+    return true;
+}
+
+void GuardedPluginWrapper::changeProgramName(int index, const juce::String& newName)
+{
+    if (!inner_ || crashed_.load(std::memory_order_acquire))
+        return;
+
+    auto* innerPtr = inner_.get();
+    const bool ok = xleth::pluginGuardCall([&]{ innerPtr->changeProgramName(index, newName); });
+    if (!ok)
+        crashed_.store(true, std::memory_order_release);
+}
+
 // ─── Audio thread ───────────────────────────────────────────────────────────
 
 void GuardedPluginWrapper::processBlock(juce::AudioBuffer<float>& buffer,
                                         juce::MidiBuffer&         midi)
 {
+    struct TimingScope
+    {
+        XlethEffectBase::RealtimeTimingContext context;
+        const char* pluginId = "third_party";
+        int nodeId = -1;
+        std::chrono::steady_clock::time_point start;
+
+        TimingScope(const char* id, int node)
+            : context(XlethEffectBase::getRealtimeTimingContext()),
+              pluginId(id),
+              nodeId(node)
+        {
+            if (context.enabled && context.recordPlugin != nullptr)
+                start = std::chrono::steady_clock::now();
+        }
+
+        ~TimingScope()
+        {
+            if (!context.enabled || context.recordPlugin == nullptr)
+                return;
+
+            const auto elapsed =
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - start).count();
+            context.recordPlugin(context.userData,
+                                 pluginId,
+                                 context.trackId,
+                                 nodeId,
+                                 static_cast<std::uint64_t>(
+                                     std::max<std::int64_t>(0, elapsed)));
+        }
+    };
+
+    const auto context = XlethEffectBase::getRealtimeTimingContext();
+    const int nodeId = hostNodeId_.load(std::memory_order_relaxed);
+    const char* pluginId = "third_party";
+
     // Fast path: already crashed → passthrough.  The APG render sequence leaves
     // the input audio in the buffer, so returning without touching it equals
     // dry signal.
     if (crashed_.load(std::memory_order_acquire))
+    {
+        if (context.enabled && context.recordEvent != nullptr)
+        {
+            context.recordEvent(context.userData,
+                                pluginId,
+                                "guarded_plugin_crashed_skipped",
+                                context.trackId,
+                                nodeId);
+        }
         return;
+    }
 
     if (!inner_) return;
+    TimingScope timing(pluginId, nodeId);
 
     auto* innerPtr = inner_.get();
     const bool ok = xleth::pluginGuardCall([&]
@@ -255,10 +341,212 @@ void GuardedPluginWrapper::setStateInformation(const void* data, int sizeInBytes
         return;
     }
     // setStateInformation often changes reported latency — re-sync for PDC.
-    setLatencySamples(innerPtr->getLatencySamples());
+    if (!syncBypassStateFromInner())
+        return;
+    refreshReportedLatency();
 }
 
 // ─── Recovery ───────────────────────────────────────────────────────────────
+
+bool GuardedPluginWrapper::refreshReportedLatency()
+{
+    if (!inner_ || crashed_.load(std::memory_order_acquire))
+        return false;
+
+    nonRealtimeLatencyRefreshCount_.fetch_add(1, std::memory_order_acq_rel);
+
+    auto* innerPtr = inner_.get();
+    int newLatency = 0;
+    const bool ok = xleth::pluginGuardCall([&]
+    {
+        newLatency = std::max(0, innerPtr->getLatencySamples());
+    });
+
+    if (!ok)
+    {
+        crashed_.store(true, std::memory_order_release);
+        return false;
+    }
+
+    int latencyToPublish = newLatency;
+    if (ownerBypassed_.load(std::memory_order_acquire))
+    {
+        latencyToPublish = std::max(
+            newLatency,
+            preservedActiveLatencySamples_.load(std::memory_order_acquire));
+    }
+    else
+    {
+        preservedActiveLatencySamples_.store(newLatency, std::memory_order_release);
+    }
+
+    const bool hadPendingFlag =
+        pendingLatencyMayHaveChanged_.exchange(false, std::memory_order_acq_rel);
+    const int oldLatency = juce::AudioProcessor::getLatencySamples();
+    if (latencyToPublish == oldLatency)
+    {
+        if (hadPendingFlag)
+            staleLatencyDetectedCount_.fetch_add(1, std::memory_order_acq_rel);
+        return false;
+    }
+
+    setLatencySamples(latencyToPublish);
+    latencyChangePublishCount_.fetch_add(1, std::memory_order_acq_rel);
+    return true;
+}
+
+bool GuardedPluginWrapper::setWrappedParameterValue(const std::string& paramId,
+                                                    float normalizedValue)
+{
+    if (!inner_ || crashed_.load(std::memory_order_acquire))
+        return false;
+
+    auto* innerPtr = inner_.get();
+    auto& params = innerPtr->getParameters();
+    if (params.isEmpty())
+        return false;
+
+    juce::AudioProcessorParameter* target = nullptr;
+
+    auto parseIndex = [](const std::string& text, int& out) -> bool
+    {
+        const char* begin = text.c_str();
+        if (*begin == '#')
+            ++begin;
+        char* end = nullptr;
+        const long parsed = std::strtol(begin, &end, 10);
+        if (begin == end || *end != '\0')
+            return false;
+        out = static_cast<int>(parsed);
+        return true;
+    };
+
+    int paramIndex = -1;
+    if (parseIndex(paramId, paramIndex)
+        && paramIndex >= 0
+        && paramIndex < params.size())
+    {
+        target = params[paramIndex];
+    }
+
+    if (target == nullptr)
+    {
+        const juce::String wanted(paramId);
+        for (auto* param : params)
+        {
+            if (param == nullptr)
+                continue;
+
+            if (auto* withId = dynamic_cast<juce::AudioProcessorParameterWithID*>(param))
+            {
+                if (withId->paramID == wanted)
+                {
+                    target = param;
+                    break;
+                }
+            }
+
+            if (param->getName(128) == wanted)
+            {
+                target = param;
+                break;
+            }
+        }
+    }
+
+    if (target == nullptr)
+        return false;
+
+    juce::AudioProcessorParameter* bypassParam = nullptr;
+    const bool bypassLookupOk = xleth::pluginGuardCall([&]
+    {
+        bypassParam = innerPtr->getBypassParameter();
+    });
+    if (!bypassLookupOk)
+    {
+        crashed_.store(true, std::memory_order_release);
+        return false;
+    }
+    const bool targetsBypass = (bypassParam != nullptr && target == bypassParam);
+
+    normalizedValue = std::clamp(normalizedValue, 0.0f, 1.0f);
+    const bool ok = xleth::pluginGuardCall([&]
+    {
+        target->setValueNotifyingHost(normalizedValue);
+    });
+
+    if (!ok)
+    {
+        crashed_.store(true, std::memory_order_release);
+        return false;
+    }
+
+    if (targetsBypass)
+        ownerBypassed_.store(normalizedValue >= 0.5f, std::memory_order_release);
+
+    pendingLatencyMayHaveChanged_.store(true, std::memory_order_release);
+    pendingLatencyChangeFlagCount_.fetch_add(1, std::memory_order_acq_rel);
+    return true;
+}
+
+bool GuardedPluginWrapper::setWrappedBypass(bool bypassed)
+{
+    if (!inner_ || crashed_.load(std::memory_order_acquire))
+        return false;
+
+    auto* innerPtr = inner_.get();
+    bool applied = false;
+    const bool ok = xleth::pluginGuardCall([&]
+    {
+        if (auto* bypassParam = innerPtr->getBypassParameter())
+        {
+            bypassParam->setValueNotifyingHost(bypassed ? 1.0f : 0.0f);
+            applied = true;
+        }
+    });
+
+    if (!ok)
+    {
+        crashed_.store(true, std::memory_order_release);
+        return false;
+    }
+
+    if (applied)
+    {
+        ownerBypassed_.store(bypassed, std::memory_order_release);
+        pendingLatencyMayHaveChanged_.store(true, std::memory_order_release);
+        pendingLatencyChangeFlagCount_.fetch_add(1, std::memory_order_acq_rel);
+    }
+    return applied;
+}
+
+bool GuardedPluginWrapper::syncBypassStateFromInner()
+{
+    if (!inner_ || crashed_.load(std::memory_order_acquire))
+        return false;
+
+    auto* innerPtr = inner_.get();
+    bool hasBypass = false;
+    bool bypassed = false;
+    const bool ok = xleth::pluginGuardCall([&]
+    {
+        if (auto* bypassParam = innerPtr->getBypassParameter())
+        {
+            hasBypass = true;
+            bypassed = bypassParam->getValue() >= 0.5f;
+        }
+    });
+
+    if (!ok)
+    {
+        crashed_.store(true, std::memory_order_release);
+        return false;
+    }
+
+    if (hasBypass)
+        ownerBypassed_.store(bypassed, std::memory_order_release);
+    return true;
+}
 
 bool GuardedPluginWrapper::resetCrashed()
 {
@@ -287,8 +575,8 @@ bool GuardedPluginWrapper::resetCrashed()
         return false;
     }
 
-    setLatencySamples(innerPtr->getLatencySamples());
     crashed_.store(false, std::memory_order_release);
+    refreshReportedLatency();
 #ifdef XLETH_DEBUG
     std::fprintf(stderr,
                  "[PluginHost] Reset attempted: \"%s\" — success\n",

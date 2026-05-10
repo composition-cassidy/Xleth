@@ -4,6 +4,7 @@
 #include <juce_audio_formats/juce_audio_formats.h>
 
 #include <atomic>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -44,6 +45,28 @@ public:
     MixEngine&      getMixEngine()       { return mixEngine_; }
     SourcePlayer&   getSourcePlayer()    { return sourcePlayer_; }
 
+    struct LivePresentationLatencyDiagnostics
+    {
+        int64_t maxTrackLatencySamples = 0;
+        int64_t masterLatencySamples = 0;
+        int64_t deviceOutputLatencySamples = 0;
+        int64_t totalPresentationLatencySamples = 0;
+    };
+
+    void playTimeline();
+    void seekTimelineToSample(int64_t sample);
+    void seekTimelineToBeat(double beat);
+    void refreshLivePresentationLatency();
+    int64_t getLivePresentationLatencySamples() const;
+    int64_t getLivePresentationPositionSamples() const;
+    double  getLivePresentationPositionSeconds() const;
+    LivePresentationLatencyDiagnostics getLivePresentationLatencyDiagnostics() const;
+    void setTestDeviceOutputLatencySamplesForDiagnostics(int64_t samples);
+    MixEngine::RealtimeDiagnosticsSnapshot getAudioPerformanceTelemetrySnapshot() const
+    {
+        return mixEngine_.getRealtimeDiagnosticsSnapshot();
+    }
+
     // Suspend / resume the audio device callback.  Used by export codepaths
     // to guarantee exclusive MixEngine access on the render thread.
     void suspendCallback() { deviceManager_.removeAudioCallback(this); }
@@ -78,6 +101,15 @@ private:
     double sampleRate_  = 44100.0;
     int    bufferSize_  = 256;
     bool   initialized_ = false;
+
+    std::atomic<int64_t> livePresentationMaxTrackLatencySamples_{ 0 };
+    std::atomic<int64_t> livePresentationMasterLatencySamples_{ 0 };
+    std::atomic<int64_t> livePresentationDeviceOutputLatencySamples_{ 0 };
+    std::atomic<int64_t> livePresentationTotalLatencySamples_{ 0 };
+    std::atomic<int64_t> testDeviceOutputLatencyOverrideSamples_{ -1 };
+
+    int64_t readCurrentDeviceOutputLatencySamples() const;
+    void cacheCurrentDeviceOutputLatency();
 
     void*       mmcssHandle_        = nullptr;
     std::string preferredOutputDevice_;

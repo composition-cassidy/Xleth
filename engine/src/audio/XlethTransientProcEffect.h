@@ -12,23 +12,19 @@
 #include <limits>
 #include <memory>
 
-// ─── XlethTransientProcEffect ────────────────────────────────────────────────
-// Dual-mode transient shaper with traditional envelope detection AND a novel
-// MIDI-aware mode that uses sample-accurate note/clip onset data from the
-// engine's MidiBuffer (populated by MixEngine in TP-01).
+// Dual-mode transient shaper with envelope detection or MIDI-triggered attack
+// shaping. Public identity and APVTS parameter surface stay stable:
+//   attack       -100..100 %   transient boost/cut
+//   sustain      -100..100 %   body/tail boost/cut (envelope mode only)
+//   attack_speed 0.5..20 ms    detector timing / MIDI attack window
+//   threshold    -60..0 dB     envelope gate threshold (envelope mode only)
+//   mix          0..100 %      dry/wet
+//   midi_detect  0 or 1        envelope mode / MIDI mode
 //
-// Parameters (APVTS-backed):
-//   attack       -100–100 %    transient boost/cut
-//   sustain      -100–100 %    sustain boost/cut (envelope mode only)
-//   attack_speed 0.5–20 ms     fast-envelope attack time / MIDI attack window
-//   threshold    -60–0 dB      envelope gate threshold (envelope mode only)
-//   mix          0–100 %       dry/wet
-//   midi_detect  0=Envelope, 1=MIDI mode (discrete, stepped)
-//
-// Metering slots:
-//   0 — L output peak (absolute, max over block)
-//   1 — R output peak
-//   2 — Current gain (dB relative to unity, max over block)
+// Meter slots:
+//   0 - L output peak (absolute, max over block)
+//   1 - R output peak
+//   2 - dominant signed gain in dB (boost positive, cut negative)
 //
 // pluginId: "transientproc"
 
@@ -42,50 +38,38 @@ public:
         registerSmoothedParam("attack_speed", SmoothType::Linear, 20.0f);
         registerSmoothedParam("threshold",    SmoothType::Linear, 20.0f);
         registerSmoothedParam("mix",          SmoothType::Linear, 20.0f);
-        // midi_detect is discrete — no smoothing
     }
 
-    // ── prepareEffect ───────────────────────────────────────────────────────
     void prepareEffect(double sampleRate, int /*maxBlockSize*/) override
     {
         sampleRate_ = sampleRate;
-
         midiDetectPtr_ = apvts_.getRawParameterValue("midi_detect");
 
-        // Reset envelope state
-        fastEnvL_ = 0.0f;
-        fastEnvR_ = 0.0f;
-        slowEnvL_ = 0.0f;
-        slowEnvR_ = 0.0f;
-        gainSmooth_ = 1.0f;
+        fastEnv_ = 0.0f;
+        slowEnv_ = 0.0f;
+        smoothedGainDb_ = 0.0f;
 
-        // Reset MIDI state
         samplesInAttackWindow_ = 0;
         currentVelocity_ = 0.0f;
-
-        // Threshold hysteresis
         isActive_ = false;
 
-        // Visualization state
         vizSampleClock_ = 0;
         vizAccum_.reset();
 
 #ifdef XLETH_DEBUG
         const bool midiMode = midiDetectPtr_
             && midiDetectPtr_->load(std::memory_order_relaxed) > 0.5f;
+        juce::ignoreUnused(midiMode);
         DBG("[TransientProc] prepareEffect sr=" + juce::String(sampleRate)
             + " mode=" + juce::String(midiMode ? "MIDI" : "Envelope"));
 #endif
     }
 
-    // ── resetEffect ─────────────────────────────────────────────────────────
     void resetEffect() override
     {
-        fastEnvL_ = 0.0f;
-        fastEnvR_ = 0.0f;
-        slowEnvL_ = 0.0f;
-        slowEnvR_ = 0.0f;
-        gainSmooth_ = 1.0f;
+        fastEnv_ = 0.0f;
+        slowEnv_ = 0.0f;
+        smoothedGainDb_ = 0.0f;
         samplesInAttackWindow_ = 0;
         currentVelocity_ = 0.0f;
         isActive_ = false;
@@ -94,38 +78,38 @@ public:
         vizAccum_.reset();
     }
 
-    // ── Visualization (XlethEffectBase overrides) ───────────────────────────
-    // Lifetime model mirrors XlethCompressorEffect / XlethLimiterEffect: the
-    // collector is allocated lazily on first enable and retained until the
-    // effect is destroyed; vizActive_ atomically publishes / unpublishes it
-    // for the audio thread.
-    void          setVisualizationEnabled(bool enabled) override;
-    std::uint32_t getVisualizationType()          const override
-        { return xleth::viz::kVizTypeTransient; }
-    std::uint32_t getVisualizationSchemaVersion() const override
-        { return xleth::viz::kDynamicsVizSchemaVersion; }
-    std::size_t   drainVizFrames(std::uint8_t* out, std::size_t maxBytes) override
+    void setVisualizationEnabled(bool enabled) override;
+    std::uint32_t getVisualizationType() const override
     {
-        if (!vizCollector_) return 0;
+        return xleth::viz::kVizTypeTransient;
+    }
+    std::uint32_t getVisualizationSchemaVersion() const override
+    {
+        return xleth::viz::kDynamicsVizSchemaVersion;
+    }
+    std::size_t drainVizFrames(std::uint8_t* out, std::size_t maxBytes) override
+    {
+        if (!vizCollector_)
+            return 0;
         return vizCollector_->drain(out, maxBytes);
     }
 
-    // ── processEffect ───────────────────────────────────────────────────────
     void processEffect(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi) override
     {
         const int numSamples = buffer.getNumSamples();
-        const int numCh      = buffer.getNumChannels();
-        const float sr       = static_cast<float>(sampleRate_);
-
-        // Read discrete param
+        const int numCh = buffer.getNumChannels();
+        const float sr = static_cast<float>(sampleRate_);
         const bool midiMode = midiDetectPtr_
             && midiDetectPtr_->load(std::memory_order_relaxed) > 0.5f;
 
-        // ── MIDI mode: collect onsets from MidiBuffer ────────────────────────
-        struct Onset { int sampleOffset; float velocity; };
+        struct Onset
+        {
+            int sampleOffset = 0;
+            float velocity = 0.0f;
+        };
+
         Onset onsets[64];
         int numOnsets = 0;
-
         if (midiMode)
         {
             for (const auto metadata : midi)
@@ -134,7 +118,7 @@ public:
                 if (msg.isNoteOn() && numOnsets < 64)
                 {
                     onsets[numOnsets].sampleOffset = metadata.samplePosition;
-                    onsets[numOnsets].velocity     = msg.getFloatVelocity();
+                    onsets[numOnsets].velocity = juce::jlimit(0.0f, 1.0f, msg.getFloatVelocity());
                     ++numOnsets;
                 }
             }
@@ -143,129 +127,124 @@ public:
 
         float peakL = 0.0f;
         float peakR = 0.0f;
-        float maxGainDB = 0.0f;
+        float maxBoostDb = 0.0f;
+        float maxCutDb = 0.0f;
 
-        // Visualization is opt-in per instance; one acquire-load per block.
-        // When disabled, the hot loop pays only a null-check.
+        const float gainDbAttackCoeff = msToCoeff(0.25f, sr);
+        const float gainDbReleaseCoeff = msToCoeff(4.0f, sr);
+
         auto* vizCol = vizActive_.load(std::memory_order_acquire);
 
 #ifdef XLETH_DEBUG
         static int debugCounter = 0;
         const bool doLog = (++debugCounter >= 1000);
-        if (doLog) debugCounter = 0;
+        if (doLog)
+            debugCounter = 0;
 #endif
 
         for (int s = 0; s < numSamples; ++s)
         {
-            // Advance smoothers every sample — MUST happen in both modes
-            const float attackPct    = getNextSmoothedValue("attack");
-            const float sustainPct   = getNextSmoothedValue("sustain");
+            const float attackPct = getNextSmoothedValue("attack");
+            const float sustainPct = getNextSmoothedValue("sustain");
             const float attackSpeedMs = getNextSmoothedValue("attack_speed");
-            const float thresholdDB  = getNextSmoothedValue("threshold");
-            const float mixPct       = getNextSmoothedValue("mix");
+            const float thresholdDb = getNextSmoothedValue("threshold");
+            const float mixPct = getNextSmoothedValue("mix");
 
             const float dryL = buffer.getSample(0, s);
             const float dryR = numCh > 1 ? buffer.getSample(1, s) : dryL;
+            const float absIn = std::max(std::abs(dryL),
+                                         numCh > 1 ? std::abs(dryR) : std::abs(dryL));
 
-            // Captured for visualization: envelope follower outputs (linear).
-            // Stay NaN in MIDI mode — the followers don't run there, so we
-            // surface "not measured" rather than stale state.
             float vizFastEnvLin = std::numeric_limits<float>::quiet_NaN();
             float vizSlowEnvLin = std::numeric_limits<float>::quiet_NaN();
-
-            float gain = 1.0f;
+            float targetGainDb = 0.0f;
 
             if (midiMode)
             {
-                // ── MIDI detect path ─────────────────────────────────────
-                // Check if current sample hits an onset
                 while (nextOnsetIdx < numOnsets
                        && onsets[nextOnsetIdx].sampleOffset <= s)
                 {
-                    samplesInAttackWindow_ = static_cast<int>(
-                        attackSpeedMs * 0.001f * sr);
+                    const float attackWindowSamples =
+                        std::max(1.0f, attackSpeedMs * 0.001f * sr);
+                    samplesInAttackWindow_ = static_cast<int>(std::ceil(attackWindowSamples));
                     currentVelocity_ = onsets[nextOnsetIdx].velocity;
                     ++nextOnsetIdx;
                 }
 
                 if (samplesInAttackWindow_ > 0)
                 {
-                    // Inside attack window — apply attack shaping
-                    // Scale by velocity: louder hits get more shaping
-                    gain += (attackPct / 100.0f) * currentVelocity_;
+                    const float attackDb = amountToSignedDb(attackPct);
+                    targetGainDb = juce::jlimit(-kMaxShapeGainDb, kMaxShapeGainDb,
+                                                attackDb * currentVelocity_);
                     --samplesInAttackWindow_;
                 }
-                // No sustain in MIDI mode — ADSR handles that
-                // No threshold in MIDI mode — onsets are known
             }
             else
             {
-                // ── Envelope detect path ─────────────────────────────────
-                // Compute coefficients from attack_speed
-                const float fastAttackMs  = attackSpeedMs;
-                const float fastReleaseMs = 15.0f;
-                const float slowAttackMs  = 30.0f;
-                const float slowReleaseMs = std::max(attackSpeedMs * 20.0f, 150.0f);
+                const float fastAttackMs = std::max(0.125f, attackSpeedMs * 0.25f);
+                const float fastReleaseMs = std::max(1.0f, attackSpeedMs * 1.5f);
+                const float slowAttackMs = std::max(5.0f, attackSpeedMs * 3.0f);
+                const float slowReleaseMs = std::max(40.0f, attackSpeedMs * 12.0f);
 
-                const float fastAttCoeff  = msToCoeff(fastAttackMs, sr);
-                const float fastRelCoeff  = msToCoeff(fastReleaseMs, sr);
-                const float slowAttCoeff  = msToCoeff(slowAttackMs, sr);
-                const float slowRelCoeff  = msToCoeff(slowReleaseMs, sr);
+                const float fastAttCoeff = msToCoeff(fastAttackMs, sr);
+                const float fastRelCoeff = msToCoeff(fastReleaseMs, sr);
+                const float slowAttCoeff = msToCoeff(slowAttackMs, sr);
+                const float slowRelCoeff = msToCoeff(slowReleaseMs, sr);
 
-                // Update envelopes per channel
-                updateEnvelope(dryL, fastEnvL_, fastAttCoeff, fastRelCoeff);
-                updateEnvelope(dryR, fastEnvR_, fastAttCoeff, fastRelCoeff);
-                updateEnvelope(dryL, slowEnvL_, slowAttCoeff, slowRelCoeff);
-                updateEnvelope(dryR, slowEnvR_, slowAttCoeff, slowRelCoeff);
+                updateEnvelope(absIn, fastEnv_, fastAttCoeff, fastRelCoeff);
+                updateEnvelope(absIn, slowEnv_, slowAttCoeff, slowRelCoeff);
 
-                // Stereo-linked detection: use max of L/R
-                const float fastEnv = std::max(fastEnvL_, fastEnvR_);
-                const float slowEnv = std::max(slowEnvL_, slowEnvR_);
-                vizFastEnvLin = fastEnv;
-                vizSlowEnvLin = slowEnv;
+                vizFastEnvLin = fastEnv_;
+                vizSlowEnvLin = slowEnv_;
 
-                // Transient ratio
-                const float ratio = fastEnv / (slowEnv + 1e-6f);
-
-                // Gain computation
-                const float transientAmount = attackPct / 100.0f;
-                const float sustainAmount   = sustainPct / 100.0f;
-
-                if (ratio > 1.0f)
-                    gain += transientAmount * (ratio - 1.0f);
-                else if (slowEnv > 1e-5f) // noise floor guard
-                    gain += sustainAmount * (1.0f - ratio) * 0.5f;
-
-                // Threshold gating with hysteresis
-                const float level = std::max(std::abs(dryL),
-                                             numCh > 1 ? std::abs(dryR) : 0.0f);
-                const float threshLin = std::pow(10.0f, thresholdDB / 20.0f);
-
-                if (!isActive_ && level > threshLin)
+                const float threshLin = std::pow(10.0f, thresholdDb / 20.0f);
+                if (!isActive_ && absIn > threshLin)
                     isActive_ = true;
-                if (isActive_ && level < threshLin * 0.7f)
+                if (isActive_ && absIn < threshLin * 0.7f)
                     isActive_ = false;
-                if (!isActive_)
-                    gain = 1.0f;
+
+                if (isActive_)
+                {
+                    const float attackDb = amountToSignedDb(attackPct);
+                    const float sustainDb = amountToSignedDb(sustainPct);
+                    const float safeFastEnv = std::max(fastEnv_, 1.0e-5f);
+                    const float transientMask = juce::jlimit(0.0f, 1.0f,
+                        (fastEnv_ - slowEnv_) / safeFastEnv);
+                    const float bodyMask = 1.0f - transientMask;
+
+                    targetGainDb = juce::jlimit(-kMaxShapeGainDb, kMaxShapeGainDb,
+                        attackDb * transientMask + sustainDb * bodyMask);
 
 #ifdef XLETH_DEBUG
-                if (doLog)
-                    DBG("[TransientProc] env fast=" + juce::String(fastEnv, 4)
-                        + " slow=" + juce::String(slowEnv, 4)
-                        + " ratio=" + juce::String(ratio, 2)
-                        + " gain=" + juce::String(gain, 3));
+                    if (doLog)
+                    {
+                        DBG("[TransientProc] env fast=" + juce::String(fastEnv_, 4)
+                            + " slow=" + juce::String(slowEnv_, 4)
+                            + " tMask=" + juce::String(transientMask, 3)
+                            + " targetDb=" + juce::String(targetGainDb, 3));
+                    }
 #endif
+                }
             }
 
-            gain = juce::jlimit(0.01f, 10.0f, gain);
+            if (!std::isfinite(targetGainDb))
+                targetGainDb = 0.0f;
 
-            // Smooth gain — fast one-pole (~0.1ms)
-            gainSmooth_ += 0.002f * (gain - gainSmooth_);
+            const bool engagingMore =
+                std::abs(targetGainDb) > std::abs(smoothedGainDb_) + 1.0e-6f;
+            const float gainCoeff = engagingMore ? gainDbAttackCoeff : gainDbReleaseCoeff;
 
-            // Apply gain with dry/wet mix
-            const float mixN = mixPct / 100.0f;
-            const float wetL = dryL * gainSmooth_;
-            const float wetR = dryR * gainSmooth_;
+            smoothedGainDb_ = gainCoeff * smoothedGainDb_
+                            + (1.0f - gainCoeff) * targetGainDb;
+            if (!std::isfinite(smoothedGainDb_))
+                smoothedGainDb_ = 0.0f;
+
+            smoothedGainDb_ = juce::jlimit(-kMaxShapeGainDb, kMaxShapeGainDb, smoothedGainDb_);
+            const float gainLin = dbToLinearGain(smoothedGainDb_);
+            const float mixN = juce::jlimit(0.0f, 1.0f, mixPct * 0.01f);
+
+            const float wetL = dryL * gainLin;
+            const float wetR = dryR * gainLin;
             const float outL = dryL * (1.0f - mixN) + wetL * mixN;
             const float outR = dryR * (1.0f - mixN) + wetR * mixN;
 
@@ -276,29 +255,23 @@ public:
             peakL = std::max(peakL, std::abs(outL));
             peakR = std::max(peakR, std::abs(outR));
 
-            // Signed gainDB — written as last-sample value so UI can distinguish
-            // boosting (positive) from cutting (negative).
-            const float gainDB = 20.0f * std::log10(std::max(gainSmooth_, 1e-6f));
-            maxGainDB = gainDB;   // signed, updated every sample, last wins
+            if (smoothedGainDb_ > maxBoostDb)
+                maxBoostDb = smoothedGainDb_;
+            if (smoothedGainDb_ < maxCutDb)
+                maxCutDb = smoothedGainDb_;
 
             if (vizCol)
             {
-                const float vizAbsIn  = std::max(std::abs(dryL),
-                                                 numCh > 1 ? std::abs(dryR) : 0.0f);
                 const float vizAbsOut = std::max(std::abs(outL),
-                                                 numCh > 1 ? std::abs(outR) : 0.0f);
-                // Param values normalised for the bucket: percent → unit
-                // ([-1, 1] for bipolar, [0, 1] for mix). speedMs / thresholdDB
-                // pass through unchanged.
-                const float attackUnit  = attackPct  * 0.01f;
-                const float sustainUnit = sustainPct * 0.01f;
-                const float mixUnit     = mixPct     * 0.01f;
+                                                 numCh > 1 ? std::abs(outR) : std::abs(outL));
+                const float attackUnit = juce::jlimit(-1.0f, 1.0f, attackPct * 0.01f);
+                const float sustainUnit = juce::jlimit(-1.0f, 1.0f, sustainPct * 0.01f);
 
-                vizAccum_.observe(vizAbsIn, vizAbsOut,
+                vizAccum_.observe(absIn, vizAbsOut,
                                   vizFastEnvLin, vizSlowEnvLin,
-                                  gainSmooth_,
+                                  smoothedGainDb_,
                                   attackUnit, sustainUnit,
-                                  attackSpeedMs, thresholdDB, mixUnit);
+                                  attackSpeedMs, thresholdDb, mixN);
                 ++vizSampleClock_;
                 vizAccum_.advance(vizSampleClock_, *vizCol);
             }
@@ -310,17 +283,18 @@ public:
 
 #ifdef XLETH_DEBUG
         if (midiMode && numOnsets > 0 && doLog)
+        {
             DBG("[TransientProc] MIDI onsets=" + juce::String(numOnsets)
                 + " vel=" + juce::String(currentVelocity_, 2));
+        }
 #endif
 
         writeMeterValue(0, peakL);
         writeMeterValue(1, numCh > 1 ? peakR : peakL);
-        writeMeterValue(2, maxGainDB);
+        writeMeterValue(2, dominantSignedGain(maxBoostDb, maxCutDb));
     }
 
 private:
-    // ── Parameter layout ────────────────────────────────────────────────────
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     {
         using Apf = juce::AudioParameterFloat;
@@ -343,48 +317,58 @@ private:
         };
     }
 
-    // ── Helpers ─────────────────────────────────────────────────────────────
-
-    // Convert milliseconds to one-pole coefficient: exp(-1 / (ms * sr / 1000))
     static float msToCoeff(float ms, float sr)
     {
-        return std::exp(-1.0f / (ms * 0.001f * sr + 1e-6f));
+        return std::exp(-1.0f / (ms * 0.001f * sr + 1.0e-6f));
     }
 
-    // Update a one-pole envelope follower in place.
+    static float amountToSignedDb(float percent)
+    {
+        const float unit = juce::jlimit(-1.0f, 1.0f, percent * 0.01f);
+        if (!std::isfinite(unit))
+            return 0.0f;
+        return std::copysign(unit * unit * kMaxShapeGainDb, unit);
+    }
+
+    static float dbToLinearGain(float gainDb)
+    {
+        if (!std::isfinite(gainDb))
+            return 1.0f;
+
+        const float clampedDb = juce::jlimit(-kMaxShapeGainDb, kMaxShapeGainDb, gainDb);
+        return juce::jlimit(kMinShapeGainLin, kMaxShapeGainLin,
+                            std::pow(10.0f, clampedDb / 20.0f));
+    }
+
+    static float dominantSignedGain(float maxBoostDb, float maxCutDb)
+    {
+        return std::abs(maxBoostDb) >= std::abs(maxCutDb) ? maxBoostDb : maxCutDb;
+    }
+
     static void updateEnvelope(float input, float& state,
                                float attackCoeff, float releaseCoeff)
     {
         const float level = std::abs(input);
-        const float coeff = (level > state) ? attackCoeff : releaseCoeff;
+        const float coeff = level > state ? attackCoeff : releaseCoeff;
         state = coeff * state + (1.0f - coeff) * level;
     }
 
-    // ── Raw APVTS pointer for discrete parameter ────────────────────────────
     std::atomic<float>* midiDetectPtr_ = nullptr;
 
-    // ── Envelope follower state (per channel) ───────────────────────────────
-    float fastEnvL_ = 0.0f;
-    float fastEnvR_ = 0.0f;
-    float slowEnvL_ = 0.0f;
-    float slowEnvR_ = 0.0f;
+    static constexpr float kMaxShapeGainDb = 12.0f;
+    static constexpr float kMinShapeGainLin = 0.25118864f;
+    static constexpr float kMaxShapeGainLin = 3.98107171f;
 
-    // ── Shared state ────────────────────────────────────────────────────────
-    float gainSmooth_ = 1.0f;
+    float fastEnv_ = 0.0f;
+    float slowEnv_ = 0.0f;
+    float smoothedGainDb_ = 0.0f;
 
-    // ── MIDI mode state ─────────────────────────────────────────────────────
-    int   samplesInAttackWindow_ = 0;
-    float currentVelocity_       = 0.0f;
+    int samplesInAttackWindow_ = 0;
+    float currentVelocity_ = 0.0f;
 
-    // ── Threshold hysteresis (envelope mode) ────────────────────────────────
     bool isActive_ = false;
-
     double sampleRate_ = 44100.0;
 
-    // ── Visualization ───────────────────────────────────────────────────────
-    // Lazy collector: allocated on first setVisualizationEnabled(true), then
-    // re-used on subsequent enables. vizActive_ is the atomic the audio thread
-    // reads once per block — null when the editor is closed (zero overhead).
     std::unique_ptr<xleth::viz::DynamicsVizCollector<xleth::viz::TransientBucket>>
         vizCollector_;
     std::atomic<xleth::viz::DynamicsVizCollector<xleth::viz::TransientBucket>*>
@@ -392,8 +376,6 @@ private:
     xleth::viz::TransientBucketAccumulator vizAccum_;
     std::uint64_t vizSampleClock_ = 0;
 };
-
-// ── setVisualizationEnabled ─────────────────────────────────────────────────
 
 inline void XlethTransientProcEffect::setVisualizationEnabled(bool enabled)
 {

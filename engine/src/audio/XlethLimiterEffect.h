@@ -53,6 +53,22 @@ public:
     void resetEffect()   override;
     void releaseEffect() override;
     void processEffect(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi) override;
+    void setStateInformation(const void* data, int sizeInBytes) override;
+
+    std::uint64_t getProcessBlockLatencyUpdateCount() const
+    {
+        return processBlockLatencyUpdateCount_.load(std::memory_order_acquire);
+    }
+
+    std::uint64_t getNonRealtimeLatencyUpdateCount() const
+    {
+        return nonRealtimeLatencyUpdateCount_.load(std::memory_order_acquire);
+    }
+
+    int getReportedProcessorLatencySamples() const
+    {
+        return AudioProcessor::getLatencySamples();
+    }
 
     // ── Visualization (XlethEffectBase overrides) ────────────────────────────
     // Lifetime model mirrors XlethCompressorEffect: collector is allocated on
@@ -77,6 +93,8 @@ private:
     int    prevStyle_             = -1;    // detect style changes
     int    totalLookaheadSamples_ = 0;
     double sampleRate_            = 44100.0;
+    std::atomic<std::uint64_t> processBlockLatencyUpdateCount_{0};
+    std::atomic<std::uint64_t> nonRealtimeLatencyUpdateCount_{0};
 
     // ── K-weighting (ITU-R BS.1770) ───────────────────────────────────────────
     std::array<KWeightState, 2> kweightState_{};   // per channel
@@ -110,6 +128,7 @@ private:
     // ── Helpers ───────────────────────────────────────────────────────────────
     void computeKWeightingCoeffs(double sr);
     void updateLookahead(int styleIdx, double sr);
+    void onParameterValueChanged(const std::string& paramId, float value) override;
 };
 
 // ── setVisualizationEnabled ─────────────────────────────────────────────────
@@ -138,6 +157,24 @@ inline std::size_t XlethLimiterEffect::drainVizFrames(std::uint8_t* out, std::si
 {
     if (!vizCollector_) return 0;
     return vizCollector_->drain(out, maxBytes);
+}
+
+inline void XlethLimiterEffect::setStateInformation(const void* data, int sizeInBytes)
+{
+    XlethEffectBase::setStateInformation(data, sizeInBytes);
+    const int style = (int)std::round(*apvts_.getRawParameterValue("style"));
+    updateLookahead(style, sampleRate_);
+    prevStyle_ = style;
+}
+
+inline void XlethLimiterEffect::onParameterValueChanged(const std::string& paramId, float value)
+{
+    if (paramId != "style")
+        return;
+
+    const int style = juce::jlimit(0, 2, (int)std::round(value));
+    updateLookahead(style, sampleRate_);
+    prevStyle_ = style;
 }
 
 // ── createLayout ─────────────────────────────────────────────────────────────
@@ -233,11 +270,11 @@ inline void XlethLimiterEffect::updateLookahead(int styleIdx, double sr)
     const int styleSamples       = (int)std::ceil(styleMs * 0.001f * (float)sr);
     totalLookaheadSamples_       = styleSamples + oversamplerLatency;
 
-    setLatencySamples(totalLookaheadSamples_);
-
-    juce::Logger::writeToLog("[Limiter] prepareToPlay: style=" + juce::String(styleIdx)
-        + " lookahead=" + juce::String(styleMs, 1) + " ms"
-        + " latency=" + juce::String(totalLookaheadSamples_) + " samples");
+    if (totalLookaheadSamples_ != AudioProcessor::getLatencySamples())
+    {
+        setLatencySamples(totalLookaheadSamples_);
+        nonRealtimeLatencyUpdateCount_.fetch_add(1, std::memory_order_acq_rel);
+    }
 }
 
 // ── prepareEffect ─────────────────────────────────────────────────────────────
@@ -334,7 +371,6 @@ inline void XlethLimiterEffect::processEffect(juce::AudioBuffer<float>& buffer,
     if (styleIdx != prevStyle_)
     {
         prevStyle_ = styleIdx;
-        updateLookahead(styleIdx, sampleRate_);
     }
     static constexpr float kBaseRelease[3] = { 100.0f, 50.0f, 20.0f };
     const float baseReleaseMs = kBaseRelease[juce::jlimit(0, 2, styleIdx)];

@@ -126,3 +126,8 @@ target_link_libraries(xleth_native PRIVATE
 # spawn it. Without this, a build that touches only XlethAddon.cpp would skip
 # the editor-host target.
 add_dependencies(xleth_native xleth-editor-host)
+
+# ── Export naming unit test (no external dependencies) ────────────────────────
+add_executable(test_export_naming test_export_naming.cpp)
+target_include_directories(test_export_naming PRIVATE src)
+target_compile_features(test_export_naming PRIVATE cxx_std_20)

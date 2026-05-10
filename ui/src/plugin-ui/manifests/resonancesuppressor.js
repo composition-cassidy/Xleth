@@ -28,6 +28,7 @@ export const RESONANCE_SUPPRESSOR_MANIFEST = {
     trim:         { kind: 'continuous', min: -12,  max: 12,    defaultValue: 0,     format: 'dB1_signed', label: 'Trim' },
 
     delta:        { kind: 'discrete',   min: 0,    max: 1,     defaultValue: 0,     format: 'raw',        label: 'Delta' },
+    processing_mode: { kind: 'discrete', min: 0,   max: 1,     defaultValue: 0,     format: 'raw',        label: 'Processing Mode' },
     quality:      { kind: 'discrete',   min: 0,    max: 2,     defaultValue: 1,     format: 'raw',        label: 'Quality' },
 
     stereo_link:  { kind: 'continuous', min: 0,    max: 100,   defaultValue: 100,   format: 'pct0',       label: 'Stereo Link' },

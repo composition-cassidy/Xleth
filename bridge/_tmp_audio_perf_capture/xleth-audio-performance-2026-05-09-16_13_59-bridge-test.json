@@ -1,0 +1,151 @@
+{
+  "accumulatedTimingSampleCount": 76,
+  "activeResonanceSuppressorHighQualityInstanceCount": 0,
+  "audioDeviceOutputLatencySamples": 480,
+  "blockSize": 480,
+  "build": {
+    "configuration": "Debug"
+  },
+  "callback": {
+    "averageMs": 0.4655833333333333,
+    "averageUs": 465.5833333333333,
+    "count": 24,
+    "maxMs": 4.441,
+    "maxUs": 4441.0,
+    "p50Ms": 0.271,
+    "p50Us": 271.0,
+    "p95Ms": 2.747,
+    "p95Us": 2747.0,
+    "p99Ms": 4.441,
+    "p99Us": 4441.0
+  },
+  "callbackCoveragePercent": 96.0,
+  "callbackDeadlineUs": 10000.0,
+  "callbackMaxUs": 4441.0,
+  "callbackOverrunCount": 0,
+  "callbackP50Us": 271.0,
+  "callbackP95Us": 2747.0,
+  "callbackP99Us": 4441.0,
+  "callbackSampleCount": 24,
+  "captureDurationSeconds": 0.251,
+  "capturedAt": "2026-05-09T16:13:58Z",
+  "capturedCallbackCount": 24,
+  "chainLockMissCount": 0,
+  "compensationTargetChanges": 0,
+  "cpuHealth": "Healthy",
+  "deviceOutputLatencySamples": 480,
+  "diagnosis": {
+    "cpuDeadlinePressure": "no callback or MixEngine deadline overrun observed",
+    "cpuHealth": "Healthy",
+    "lockStaleState": "no lock misses or stale chain reuse observed",
+    "pdcPresentationLatency": "reported separately as compensated timing, not CPU deadline pressure",
+    "status": "Healthy",
+    "summary": "no_realtime_instability_observed",
+    "telemetryCoverageQuality": "good",
+    "telemetryPressure": "no dropped telemetry samples observed"
+  },
+  "droppedTelemetryByScope": {
+    "captureAccumulatorOverflow": 0,
+    "deliberateVerboseScopeSamplingSkips": 0,
+    "ringOverflow": 0
+  },
+  "droppedTelemetrySamples": 0,
+  "droppedTelemetrySamplesDuringCapture": 0,
+  "effectCoveragePercent": null,
+  "effectSampleCount": 0,
+  "expectedApproxCallbackCount": 25,
+  "guardedPluginCrashedSkippedCount": 0,
+  "guardedPluginSkippedOrCrashedCount": 0,
+  "latencyEpochChanges": 0,
+  "livePresentationLatencySamples": 480,
+  "lockMisses": 0,
+  "masterInsertLatencySamples": 0,
+  "maxAudibleTrackLatencySamples": 0,
+  "mixEngine": {
+    "averageMs": 0.45558333333333334,
+    "averageUs": 455.5833333333333,
+    "count": 24,
+    "maxMs": 4.43,
+    "maxUs": 4430.0,
+    "p50Ms": 0.262,
+    "p50Us": 262.0,
+    "p95Ms": 2.734,
+    "p95Us": 2734.0,
+    "p99Ms": 4.43,
+    "p99Us": 4430.0
+  },
+  "mixEngineCoveragePercent": 96.0,
+  "mixEngineMaxUs": 4430.0,
+  "mixEngineOverrunCount": 0,
+  "mixEngineP50Us": 262.0,
+  "mixEngineP95Us": 2734.0,
+  "mixEngineP99Us": 4430.0,
+  "mixEngineSampleCount": 24,
+  "pdcDelayProcessCount": 0,
+  "positionSamples": {
+    "presentationEnd": 0,
+    "presentationStart": 0,
+    "rawEnd": 0,
+    "rawStart": 0
+  },
+  "presentationPositionSamplesAtCaptureEnd": 0,
+  "presentationPositionSamplesAtCaptureStart": 0,
+  "privacy": "Report intentionally omits raw media paths, project directories, usernames, and full project JSON.",
+  "project": {
+    "clipCount": 0,
+    "effectCount": 0,
+    "mediaCount": 0,
+    "projectDurationSeconds": 0.0,
+    "projectName": "",
+    "regionCount": 0,
+    "sourceCount": 0,
+    "trackCount": 0
+  },
+  "rawPositionSamplesAtCaptureEnd": 0,
+  "rawPositionSamplesAtCaptureStart": 0,
+  "realtimeRsHqRiskLevel": "healthy",
+  "realtimeRsHqRiskReasons": [],
+  "recommendedAction": [
+    "noImmediateAction"
+  ],
+  "renderedBlockCount": 24,
+  "requestedDurationSeconds": 3,
+  "resonanceSuppressorHighQuality": {
+    "activeInstanceCount": 0,
+    "appearsInWorstEffects": false,
+    "recommendedAction": [
+      "noImmediateAction"
+    ],
+    "riskLevel": "healthy",
+    "riskReasons": [],
+    "wolaCallCount": 0,
+    "wolaMaxUs": 0.0,
+    "wolaP99Us": 0.0
+  },
+  "sampleRate": 48000.0,
+  "schemaVersion": "xleth.audioPerformanceCapture.v1",
+  "staleChainReuse": 0,
+  "staleSnapshotReuseCount": 0,
+  "strictFailed": false,
+  "strictMode": false,
+  "telemetryCaptureAccumulatorOverflowDrops": 0,
+  "telemetryCoverageQuality": "good",
+  "timingSequence": {
+    "end": 200,
+    "startExclusive": 125
+  },
+  "transport": {
+    "bpm": 140.0,
+    "endPlaying": false,
+    "startPlaying": false
+  },
+  "verboseEffectSampling": {
+    "downsampled": false,
+    "notes": "Verbose effect scopes were not downsampled; coverage was improved by periodic off-thread draining.",
+    "skippedSamples": 0
+  },
+  "worstChainsByMax": [],
+  "worstChainsByP99": [],
+  "worstEffectsByMax": [],
+  "worstEffectsByP99": []
+}
