@@ -91,9 +91,9 @@ REM ─── targets ───────────────────�
 echo [build.bat] rebuilding native addon...
 pushd bridge
 call npx cmake-js compile --CDCMAKE_BUILD_TYPE=Release
-set "RC=!ERRORLEVEL!"
+set "BUILD_RC=!ERRORLEVEL!"
 popd
-if not "!RC!"=="0" ( echo [build.bat] bridge build FAILED ^(!RC!^) & exit /b !RC! )
+if not "!BUILD_RC!"=="0" ( echo [build.bat] bridge build FAILED ^(!BUILD_RC!^) & exit /b !BUILD_RC! )
 echo [build.bat] bridge OK
 exit /b 0
 
@@ -103,9 +103,9 @@ if exist bridge\build rmdir /S /Q bridge\build
 echo [build.bat] rebuilding native addon from scratch...
 pushd bridge
 call npx cmake-js rebuild --CDCMAKE_BUILD_TYPE=Release
-set "RC=!ERRORLEVEL!"
+set "BUILD_RC=!ERRORLEVEL!"
 popd
-if not "!RC!"=="0" ( echo [build.bat] bridge-clean FAILED ^(!RC!^) & exit /b !RC! )
+if not "!BUILD_RC!"=="0" ( echo [build.bat] bridge-clean FAILED ^(!BUILD_RC!^) & exit /b !BUILD_RC! )
 echo [build.bat] bridge-clean OK
 exit /b 0
 
@@ -113,9 +113,9 @@ exit /b 0
 echo [build.bat] vite build...
 pushd ui
 call npm run build
-set "RC=!ERRORLEVEL!"
+set "BUILD_RC=!ERRORLEVEL!"
 popd
-if not "!RC!"=="0" ( echo [build.bat] ui build FAILED ^(!RC!^) & exit /b !RC! )
+if not "!BUILD_RC!"=="0" ( echo [build.bat] ui build FAILED ^(!BUILD_RC!^) & exit /b !BUILD_RC! )
 echo [build.bat] ui OK
 exit /b 0
 
@@ -124,12 +124,12 @@ echo [build.bat] configuring + building engine...
 if not exist build mkdir build
 pushd build
 call cmake .. -G "Visual Studio 17 2022" -A x64
-set "RC=!ERRORLEVEL!"
-if not "!RC!"=="0" ( popd & echo [build.bat] cmake configure FAILED ^(!RC!^) & exit /b !RC! )
+set "BUILD_RC=!ERRORLEVEL!"
+if not "!BUILD_RC!"=="0" ( popd & echo [build.bat] cmake configure FAILED ^(!BUILD_RC!^) & exit /b !BUILD_RC! )
 call cmake --build . --config Release --parallel
-set "RC=!ERRORLEVEL!"
+set "BUILD_RC=!ERRORLEVEL!"
 popd
-if not "!RC!"=="0" ( echo [build.bat] engine build FAILED ^(!RC!^) & exit /b !RC! )
+if not "!BUILD_RC!"=="0" ( echo [build.bat] engine build FAILED ^(!BUILD_RC!^) & exit /b !BUILD_RC! )
 echo [build.bat] engine OK
 exit /b 0
 
