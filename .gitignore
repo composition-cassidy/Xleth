@@ -77,6 +77,8 @@ proxies/
 *.dnxhr.mov
 *.xlpeak
 *.rar
+vendor/*.7z
+vendor/ffmpeg-*.7z
 
 # CMake
 CMakeCache.txt
