@@ -6831,12 +6831,20 @@ html.fx-drag-active * {
   flex: 1;
   min-height: 0;
   flex-direction: column;
-  justify-content: center;
   gap: 4px;
-  padding: 8px;
+  padding: 6px;
   border: 1px solid var(--theme-border-subtle);
   border-radius: var(--radius-sm);
   background: var(--theme-bg-surface);
+  overflow: hidden;
+}
+
+.effect-chain-shell-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-height: 14px;
 }
 
 .effect-chain-shell-title {
@@ -6847,10 +6855,90 @@ html.fx-drag-active * {
   color: var(--theme-text);
 }
 
+.effect-chain-shell-badge {
+  flex-shrink: 0;
+  padding: 2px 5px;
+  border: 1px solid var(--theme-accent);
+  border-radius: 2px;
+  color: var(--theme-accent);
+  background: var(--theme-accent-bg-subtle);
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.effect-chain-graph-preview {
+  display: flex;
+  align-items: center;
+  min-height: 32px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 1px 4px;
+}
+
+.effect-chain-graph-preview::-webkit-scrollbar {
+  height: 6px;
+}
+.effect-chain-graph-preview::-webkit-scrollbar-thumb {
+  background: var(--theme-border-default);
+  border-radius: 3px;
+}
+.effect-chain-graph-preview::-webkit-scrollbar-track {
+  background: var(--theme-bg-secondary);
+}
+
+.effect-chain-graph-node {
+  flex: 0 0 auto;
+  max-width: 96px;
+  min-width: 62px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 7px;
+  border: 1px solid var(--theme-border-default);
+  border-radius: var(--radius-sm);
+  background: var(--theme-bg-inset);
+  color: var(--theme-text);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.15;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.effect-chain-graph-node--terminal {
+  border-color: var(--theme-accent);
+  color: var(--theme-accent);
+  background: var(--theme-accent-bg-subtle);
+}
+
+.effect-chain-graph-connector {
+  flex: 0 0 24px;
+  height: 1px;
+  background: var(--theme-border-default);
+  position: relative;
+}
+
+.effect-chain-graph-connector::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: -3px;
+  width: 0;
+  height: 0;
+  border-top: 3px solid transparent;
+  border-bottom: 3px solid transparent;
+  border-left: 5px solid var(--theme-border-default);
+}
+
 .effect-chain-shell-copy {
   margin: 0;
-  font-size: 9px;
-  line-height: 1.4;
+  font-size: 8px;
+  line-height: 1.25;
   color: var(--theme-text-subtle);
 }
 

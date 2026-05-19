@@ -57,10 +57,17 @@ const EFFECT_CATEGORIES = [
 const EMPTY_CHAIN = []
 export const VISIBLE_LIMIT = 4
 export const FX_GRAPH_SHELL_TITLE = 'FX Graph Shell'
-export const FX_GRAPH_SHELL_MESSAGE = 'Graph editing and chain-to-graph conversion are not implemented yet.'
-export const FX_GRAPH_SHELL_NOTE = 'This panel is a preview gate only. The track still uses the normal Mixer Chain.'
+export const FX_GRAPH_PREVIEW_LABEL = 'Preview Only'
+export const FX_GRAPH_SHELL_MESSAGE = 'This read-only preview mirrors the current Mixer Chain order without mutating routing.'
+export const FX_GRAPH_SHELL_NOTE = 'Editable FX Graph conversion is not implemented yet. The track still uses the normal Mixer Chain.'
 export const FX_GRAPH_SHELL_BUTTON_TITLE =
   'Open FX Graph shell preview. Graph editing and chain-to-graph conversion are not implemented yet.'
+
+const STOCK_EFFECT_NAMES = EFFECT_CATEGORIES
+  .flatMap((category) => category.submenu)
+  .reduce((names, effect) => ({ ...names, [effect.id]: effect.label }), {
+    testgain: 'Test Gain',
+  })
 
 export function isSelectableEffectChainNode(effect) {
   return Number.isInteger(effect?.nodeId) && effect.nodeId !== -1
@@ -131,10 +138,49 @@ export function getEffectChainPanelViewState(fxPanelView) {
   }
 }
 
-export function EffectChainGraphShell({ chainLabel }) {
+export function resolveEffectChainPreviewName(effect, vstPlugins = []) {
+  if (effect?.name) return effect.name
+  if (effect?.displayName) return effect.displayName
+  if (effect?.pluginName) return effect.pluginName
+  if (STOCK_EFFECT_NAMES[effect?.pluginId]) return STOCK_EFFECT_NAMES[effect.pluginId]
+
+  const vstPlugin = vstPlugins.find((plugin) => plugin.id === effect?.pluginId)
+  return vstPlugin?.name ?? effect?.pluginId ?? 'Unknown Effect'
+}
+
+export function buildEffectChainPreviewNodes(chain = [], vstPlugins = []) {
+  return [
+    { id: 'track-input', label: 'Track Input', type: 'terminal' },
+    ...chain.map((effect, index) => ({
+      id: effect.nodeId === -1 ? `pending-${effect.pluginId}-${index}` : `effect-${effect.nodeId}`,
+      label: resolveEffectChainPreviewName(effect, vstPlugins),
+      type: 'effect',
+    })),
+    { id: 'track-output', label: 'Track Output', type: 'terminal' },
+  ]
+}
+
+export function EffectChainGraphShell({ chain, chainLabel, vstPlugins = [] }) {
+  const previewNodes = buildEffectChainPreviewNodes(chain, vstPlugins)
+
   return (
     <div className="effect-chain-shell" role="note" aria-label={`${chainLabel} graph shell`}>
-      <div className="effect-chain-shell-title">{FX_GRAPH_SHELL_TITLE}</div>
+      <div className="effect-chain-shell-header">
+        <div className="effect-chain-shell-title">{FX_GRAPH_SHELL_TITLE}</div>
+        <div className="effect-chain-shell-badge">{FX_GRAPH_PREVIEW_LABEL}</div>
+      </div>
+      <div className="effect-chain-graph-preview" aria-label={`${chainLabel} read-only serial preview`}>
+        {previewNodes.map((node, index) => (
+          <React.Fragment key={node.id}>
+            <div className={`effect-chain-graph-node effect-chain-graph-node--${node.type}`}>
+              {node.label}
+            </div>
+            {index < previewNodes.length - 1 && (
+              <div className="effect-chain-graph-connector" aria-hidden="true" />
+            )}
+          </React.Fragment>
+        ))}
+      </div>
       <p className="effect-chain-shell-copy">{FX_GRAPH_SHELL_MESSAGE}</p>
       <p className="effect-chain-shell-copy">{FX_GRAPH_SHELL_NOTE}</p>
     </div>
@@ -393,7 +439,7 @@ export default function EffectChainPanel({ trackId, master }) {
       </div>
 
       {showingGraphShell ? (
-        <EffectChainGraphShell chainLabel={chainLabel} />
+        <EffectChainGraphShell chain={chain} chainLabel={chainLabel} vstPlugins={vstPlugins} />
       ) : (
         <>
           <div className="effect-chain-list" role="listbox" aria-label={chainLabel}>
