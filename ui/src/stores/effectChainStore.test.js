@@ -32,6 +32,9 @@ describe('effectChainStore FX mode safety gate', () => {
     globalThis.window = {
       xleth: {
         audio,
+        timeline: {
+          getTracks: vi.fn(async () => []),
+        },
         onGraphChanged: vi.fn(() => () => {}),
         onProjectLoaded: vi.fn((callback) => {
           projectLoadedHandler = callback
@@ -143,27 +146,46 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(useEffectChainStore.getState().chains['7']).toEqual(baseChain)
   })
 
-  it('resets renderer-only mode and panel view state on project load', async () => {
+  it('hydrates persisted fxMode and resets renderer-only panel view state on project load', async () => {
     const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
     const refreshedChain = [makeEffect(11, 'compressor', 0)]
 
     audio.getEffectChain.mockResolvedValueOnce(JSON.stringify(refreshedChain))
+    window.xleth.timeline.getTracks.mockResolvedValueOnce([
+      { id: 7, fxMode: 'graph' },
+      { id: 8, fxMode: 'bogus' },
+      { id: 9 },
+    ])
 
     useEffectChainStore.setState({
       chains: { '7': [makeEffect(11, 'compressor', 0)] },
-      fxModes: { '7': 'graph' },
+      fxModes: { '7': 'chain' },
       fxPanelViews: { '7': 'graphShell' },
     })
 
     expect(projectLoadedHandler).toBeTypeOf('function')
 
-    projectLoadedHandler()
-    await Promise.resolve()
+    await projectLoadedHandler()
 
     const state = useEffectChainStore.getState()
-    expect(state.fxModes['7']).toBe('chain')
+    expect(state.fxModes['7']).toBe('graph')
+    expect(state.fxModes['8']).toBe('chain')
+    expect(state.fxModes['9']).toBe('chain')
     expect(state.fxPanelViews['7']).toBe('chain')
     expect(state.chains['7']).toEqual(refreshedChain)
+    expect(window.xleth.timeline.getTracks).toHaveBeenCalled()
+    expect(audio.getEffectChain).toHaveBeenCalledWith(7)
+  })
+
+  it('does not let lazy fetchChain overwrite hydrated graph ownership', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+
+    useEffectChainStore.getState().hydrateFxModesFromTracks([{ id: 7, fxMode: 'graph' }])
+
+    await useEffectChainStore.getState().fetchChain('7')
+
+    expect(useEffectChainStore.getState().fxModes['7']).toBe('graph')
+    expect(useEffectChainStore.getState().fxPanelViews['7']).toBe('chain')
     expect(audio.getEffectChain).toHaveBeenCalledWith(7)
   })
 })

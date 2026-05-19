@@ -327,6 +327,16 @@ struct PatternBlock {
 // ─── TrackInfo ────────────────────────────────────────────────────────────────
 // Metadata for a sequencer track, including both audio mix and video layout.
 
+enum class TrackFxMode { Chain, Graph };
+
+inline std::string trackFxModeToString(TrackFxMode mode) {
+    return mode == TrackFxMode::Graph ? "graph" : "chain";
+}
+
+inline TrackFxMode stringToTrackFxMode(const std::string& s) {
+    return s == "graph" ? TrackFxMode::Graph : TrackFxMode::Chain;
+}
+
 struct TrackInfo {
     int         id           = 0;
     std::string name;
@@ -336,6 +346,7 @@ struct TrackInfo {
     bool        muted        = false;
     bool        solo         = false;
     int         order        = 0;
+    TrackFxMode fxMode       = TrackFxMode::Chain;
 
     float videoX       = 0.0f;
     float videoY       = 0.0f;

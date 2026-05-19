@@ -49,6 +49,51 @@ describe('EffectChainPanel FX graph shell gating', () => {
     expect(html).not.toContain('FX Graph Shell')
   })
 
+  it('allows the read-only serial preview only for chain-owned graphShell view', async () => {
+    const { panelModule } = await loadEffectChainPanelFixture()
+    const chain = [
+      { nodeId: 1, pluginId: 'xletheq', position: 0 },
+      { nodeId: 2, pluginId: 'delay', position: 1 },
+    ]
+    const renderState = panelModule.getEffectChainPanelRenderState('chain', 'graphShell')
+    const html = renderToStaticMarkup(
+      <panelModule.EffectChainGraphShell chain={chain} chainLabel="Track effect chain" />
+    )
+
+    expect(renderState.graphOwned).toBe(false)
+    expect(renderState.showingGraphShell).toBe(true)
+    expect(renderState.showingEditableChain).toBe(false)
+    expect(html).toContain('FX Graph Shell')
+    expect(html).toContain('Track Input')
+    expect(html).toContain('Xleth EQ')
+    expect(html).toContain('Delay')
+    expect(html).toContain('Track Output')
+    expect(html).not.toContain('effect-module')
+    expect(html).not.toContain('effect-chain-add-btn')
+  })
+
+  it('routes graph-owned tracks to a graph-active placeholder without chain preview or controls', async () => {
+    const { panelModule } = await loadEffectChainPanelFixture()
+    const renderState = panelModule.getEffectChainPanelRenderState('graph', 'graphShell')
+    const html = renderToStaticMarkup(
+      <panelModule.EffectChainGraphActivePlaceholder chainLabel="Track effect chain" />
+    )
+
+    expect(renderState.graphOwned).toBe(true)
+    expect(renderState.showingGraphShell).toBe(false)
+    expect(renderState.showingEditableChain).toBe(false)
+    expect(html).toContain('FX Graph Active')
+    expect(html).toContain('Routing is owned by FX Graph.')
+    expect(html).toContain('Editable graph view is not implemented in this phase.')
+    expect(html).not.toContain('FX Graph Shell')
+    expect(html).not.toContain('Track Input')
+    expect(html).not.toContain('Track Output')
+    expect(html).not.toContain('Xleth EQ')
+    expect(html).not.toContain('effect-module')
+    expect(html).not.toContain('effect-chain-add-btn')
+    expect(window.xleth.window.openNodeEditor).not.toHaveBeenCalled()
+  })
+
   it('exposes a graphShell panel branch with read-only preview copy', async () => {
     const { panelModule } = await loadEffectChainPanelFixture()
     const viewState = panelModule.getEffectChainPanelViewState('graphShell')

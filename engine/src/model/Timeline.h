@@ -108,6 +108,7 @@ public:
     // pattern (regardless of its regionId) can be placed on any pattern track.
     bool convertToPatternTrack(int trackId);
     bool convertToClipTrack(int trackId);
+    bool setTrackFxMode(int trackId, TrackFxMode mode);
     bool setTrackVideoFlipMode(int trackId, VideoFlipMode mode);
     bool setTrackVideoHoldLastFrame(int trackId, bool hold);
 

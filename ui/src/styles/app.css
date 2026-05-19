@@ -3986,6 +3986,29 @@
   color: var(--text-tertiary);
 }
 
+.effect-chain-graph-active {
+  justify-content: center;
+}
+
+.effect-chain-graph-future-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.effect-chain-graph-future-chip {
+  flex: 0 0 auto;
+  padding: 2px 5px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  color: var(--text-tertiary);
+  background: var(--bg-primary);
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .effect-chain-empty {
   font-size: 9px;
   color: var(--text-tertiary);

@@ -810,6 +810,7 @@ static Napi::Object trackToJs(Napi::Env env, const TrackInfo& t) {
     o.Set("muted",             Napi::Boolean::New(env, t.muted));
     o.Set("solo",              Napi::Boolean::New(env, t.solo));
     o.Set("order",             Napi::Number::New(env, t.order));
+    o.Set("fxMode",            Napi::String::New(env, trackFxModeToString(t.fxMode)));
     o.Set("type",              Napi::String::New(env, trackTypeToString(t.type)));
     o.Set("videoFlipMode",     Napi::String::New(env, videoFlipModeToString(t.videoFlipMode)));
     o.Set("videoHoldLastFrame", Napi::Boolean::New(env, t.videoHoldLastFrame));
@@ -1005,6 +1006,8 @@ static TrackInfo jsToTrack(const Napi::Object& o) {
         t.solo   = o.Get("solo").As<Napi::Boolean>().Value();
     if (o.Has("order")  && o.Get("order").IsNumber())
         t.order  = o.Get("order").As<Napi::Number>().Int32Value();
+    if (o.Has("fxMode") && o.Get("fxMode").IsString())
+        t.fxMode = stringToTrackFxMode(o.Get("fxMode").As<Napi::String>().Utf8Value());
     if (o.Has("videoHoldLastFrame") && o.Get("videoHoldLastFrame").IsBoolean())
         t.videoHoldLastFrame = o.Get("videoHoldLastFrame").As<Napi::Boolean>().Value();
     return t;
@@ -2736,6 +2739,30 @@ void Timeline_SetTrackName(const Napi::CallbackInfo& info)
         std::make_unique<SetTrackNameCommand>(trackId, name, *g_timeline),
         *g_timeline);
     log.done(std::to_string(trackId) + "=\"" + name + "\"");
+}
+
+// timeline_setTrackFxMode(trackId, mode) - metadata ownership only.
+Napi::Value Timeline_SetTrackFxMode(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsString()) {
+        Napi::TypeError::New(env, "timeline_setTrackFxMode(trackId: number, mode: string)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    int trackId = info[0].As<Napi::Number>().Int32Value();
+    std::string modeText = info[1].As<Napi::String>().Utf8Value();
+    TrackFxMode mode = stringToTrackFxMode(modeText);
+    BridgeCallLog log("timeline.setTrackFxMode");
+
+    const bool ok = g_timeline->setTrackFxMode(trackId, mode);
+    log.done(std::to_string(trackId) + "=" + trackFxModeToString(mode));
+    return Napi::Boolean::New(env, ok);
 }
 
 // timeline_setPatternName(patternId, name) — undo-tracked rename
@@ -7426,6 +7453,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("timeline_setTrackMuted",Napi::Function::New(env, Timeline_SetTrackMuted));
     exports.Set("timeline_setTrackSolo", Napi::Function::New(env, Timeline_SetTrackSolo));
     exports.Set("timeline_setTrackName", Napi::Function::New(env, Timeline_SetTrackName));
+    exports.Set("timeline_setTrackFxMode", Napi::Function::New(env, Timeline_SetTrackFxMode));
     exports.Set("timeline_setPatternName",   Napi::Function::New(env, Timeline_SetPatternName));
     exports.Set("timeline_setPatternRegion", Napi::Function::New(env, Timeline_SetPatternRegion));
     exports.Set("timeline_addClip",          Napi::Function::New(env, Timeline_AddClip));

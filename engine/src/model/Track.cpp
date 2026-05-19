@@ -10,6 +10,7 @@ void to_json(nlohmann::json& j, const TrackInfo& t) {
         {"muted",             t.muted},
         {"solo",              t.solo},
         {"order",             t.order},
+        {"fxMode",            trackFxModeToString(t.fxMode)},
         {"videoX",            t.videoX},
         {"videoY",            t.videoY},
         {"videoW",            t.videoW},
@@ -31,6 +32,7 @@ void from_json(const nlohmann::json& j, TrackInfo& t) {
     j.at("muted").get_to(t.muted);
     j.at("solo").get_to(t.solo);
     j.at("order").get_to(t.order);
+    t.fxMode = stringToTrackFxMode(j.value("fxMode", std::string("chain")));
     j.at("videoX").get_to(t.videoX);
     j.at("videoY").get_to(t.videoY);
     j.at("videoW").get_to(t.videoW);

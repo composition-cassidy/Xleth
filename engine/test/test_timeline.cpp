@@ -224,6 +224,9 @@ int main() {
     CHECK(tl.getAllTracks().size() == 3,      "3 tracks in timeline");
     CHECK(tl.getTrack(t1id)->name == "Drums", "track1 name == Drums");
     CHECK_NEAR(tl.getTrack(t2id)->volume, 0.8f, 1e-5f, "track2 volume == 0.8");
+    CHECK(tl.getTrack(t1id)->fxMode == TrackFxMode::Chain, "track fxMode defaults to chain");
+    CHECK(tl.setTrackFxMode(t3id, TrackFxMode::Graph), "setTrackFxMode accepts graph ownership metadata");
+    CHECK(tl.getTrack(t3id)->fxMode == TrackFxMode::Graph, "track3 fxMode set to graph");
 
     // ── [7] Add 10 clips ──────────────────────────────────────────────────────
     std::cout << "[7] Add 10 clips\n";
@@ -361,6 +364,34 @@ int main() {
     CHECK(j["regions"].size() == 5, "JSON: 5 regions");
     CHECK(j["tracks"].size()  == 3, "JSON: 3 tracks");
     CHECK(j["clips"].size()   == 9, "JSON: 9 clips (one was removed)");
+    CHECK(j.dump().find("fxPanelView") == std::string::npos,
+          "JSON does not contain renderer-only fxPanelView");
+
+    bool sawChainFxMode = false;
+    bool sawGraphFxMode = false;
+    for (const auto& trackJson : j["tracks"]) {
+        if (trackJson.value("id", 0) == t1id)
+            sawChainFxMode = trackJson.value("fxMode", std::string("")) == "chain";
+        if (trackJson.value("id", 0) == t3id)
+            sawGraphFxMode = trackJson.value("fxMode", std::string("")) == "graph";
+    }
+    CHECK(sawChainFxMode, "track JSON includes chain fxMode");
+    CHECK(sawGraphFxMode, "track JSON includes graph fxMode");
+
+    nlohmann::json legacyTrackJson = j;
+    for (auto& trackJson : legacyTrackJson["tracks"])
+        trackJson.erase("fxMode");
+    Timeline legacyFxModeTimeline;
+    CHECK(legacyFxModeTimeline.fromJSON(legacyTrackJson), "legacy missing fxMode JSON loads");
+    CHECK(legacyFxModeTimeline.getTrack(t3id)->fxMode == TrackFxMode::Chain,
+          "missing fxMode loads as chain");
+
+    nlohmann::json invalidTrackJson = j;
+    invalidTrackJson["tracks"][0]["fxMode"] = "not-a-mode";
+    Timeline invalidFxModeTimeline;
+    CHECK(invalidFxModeTimeline.fromJSON(invalidTrackJson), "invalid fxMode JSON loads");
+    CHECK(invalidFxModeTimeline.getTrack(invalidTrackJson["tracks"][0].value("id", 0))->fxMode == TrackFxMode::Chain,
+          "invalid fxMode loads as chain");
 
     // Deserialize into fresh timeline
     Timeline tl2;
@@ -394,6 +425,10 @@ int main() {
     CHECK(t1Copy != nullptr,                           "track1 found after deser");
     CHECK(t1Copy->name == "Drums",                     "track1 name preserved");
     CHECK_NEAR(t1Copy->videoOpacity, 1.0f, 1e-5f,     "track1 videoOpacity preserved");
+    CHECK(t1Copy->fxMode == TrackFxMode::Chain,        "track1 fxMode chain preserved");
+    const TrackInfo* t3Copy = tl2.getTrack(t3id);
+    CHECK(t3Copy != nullptr,                           "track3 found after deser");
+    CHECK(t3Copy->fxMode == TrackFxMode::Graph,        "track3 graph fxMode preserved");
 
     // Moved clip survived
     const Clip* movedCopy = tl2.getClip(movedId);

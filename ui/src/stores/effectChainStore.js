@@ -29,8 +29,22 @@ export function resolveFxMode(fxModes = {}, key) {
   return fxModes?.[key] === 'graph' ? 'graph' : DEFAULT_FX_MODE
 }
 
+export function resolveTrackFxModeValue(value) {
+  return value === 'graph' ? 'graph' : DEFAULT_FX_MODE
+}
+
 export function resolveFxPanelView(fxPanelViews = {}, key) {
   return fxPanelViews?.[key] === 'graphShell' ? 'graphShell' : DEFAULT_FX_PANEL_VIEW
+}
+
+export function buildFxModesFromTracks(tracks = []) {
+  if (!Array.isArray(tracks)) return {}
+
+  return tracks.reduce((modes, track) => {
+    if (track?.id == null) return modes
+    modes[String(track.id)] = resolveTrackFxModeValue(track.fxMode)
+    return modes
+  }, {})
 }
 
 function buildFxStateDefaults(fxModes, fxPanelViews, key) {
@@ -50,6 +64,7 @@ function buildFxStateDefaults(fxModes, fxPanelViews, key) {
 }
 
 function isChainFxMode(state, key) {
+  if (key === 'master') return true
   return resolveFxMode(state.fxModes, key) === DEFAULT_FX_MODE
 }
 
@@ -70,13 +85,20 @@ const useEffectChainStore = create((set, get) => ({
   },
 
   setFxMode: (key, mode) => {
-    const nextMode = mode === 'graph' ? 'graph' : DEFAULT_FX_MODE
+    const nextMode = key === 'master' ? DEFAULT_FX_MODE : resolveTrackFxModeValue(mode)
     set((state) => ({ fxModes: { ...state.fxModes, [key]: nextMode } }))
   },
 
   setFxPanelView: (key, view) => {
     const nextView = view === 'graphShell' ? 'graphShell' : DEFAULT_FX_PANEL_VIEW
     set((state) => ({ fxPanelViews: { ...state.fxPanelViews, [key]: nextView } }))
+  },
+
+  hydrateFxModesFromTracks: (tracks = []) => {
+    set({
+      fxModes: buildFxModesFromTracks(tracks),
+      fxPanelViews: {},
+    })
   },
 
   fetchChain: async (key) => {
@@ -195,13 +217,17 @@ window.xleth?.onGraphChanged?.((key) => {
 // On project load, all AudioGraph nodeIds have been reassigned by fromJSON.
 // Close every open effect editor panel (they hold stale nodeIds in target)
 // and re-fetch every cached chain so the store has the new nodeIds.
-window.xleth?.onProjectLoaded?.(() => {
+window.xleth?.onProjectLoaded?.(async () => {
   console.log('[effectChainStore] project-loaded - closing panels, refreshing all chains')
 
-  useEffectChainStore.setState({
-    fxModes: {},
-    fxPanelViews: {},
-  })
+  let tracks = []
+  try {
+    tracks = await window.xleth?.timeline?.getTracks?.()
+  } catch (e) {
+    console.warn('[effectChainStore] project-loaded track hydration failed:', e?.message)
+  }
+
+  useEffectChainStore.getState().hydrateFxModesFromTracks(tracks)
 
   // Close all open effect editor panels
   useEqStore.getState().close()
@@ -213,9 +239,7 @@ window.xleth?.onProjectLoaded?.(() => {
 
   // Re-fetch every chain that was cached
   const { chains, fetchChain } = useEffectChainStore.getState()
-  for (const key of Object.keys(chains)) {
-    fetchChain(key)
-  }
+  await Promise.all(Object.keys(chains).map((key) => fetchChain(key)))
 })
 
 export default useEffectChainStore

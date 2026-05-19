@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <string>
 #include <nlohmann/json.hpp>
 
 namespace fs = std::filesystem;
@@ -104,6 +105,7 @@ int main() {
     track.pan    = 0.0f;
     track.muted  = false;
     track.solo   = false;
+    track.fxMode = TrackFxMode::Graph;
     const int trkId = tl.addTrack(track);
 
     Clip clip;
@@ -164,6 +166,10 @@ int main() {
         CHECK(j["regions"].size() == 1, "regions array has 1 entry");
         CHECK(j["tracks"].size()  == 1, "tracks array has 1 entry");
         CHECK(j["clips"].size()   == 1, "clips array has 1 entry");
+        CHECK(j["tracks"][0].value("fxMode", std::string("")) == "graph",
+              "saved track JSON includes graph fxMode");
+        CHECK(j.dump().find("fxPanelView") == std::string::npos,
+              "saved project JSON does not include fxPanelView");
     }
 
     // ── Test 3: loadProject restores all data ─────────────────────────────────
@@ -207,6 +213,7 @@ int main() {
         REQUIRE(t != nullptr, "getTrack(trkId) returned null after load");
         CHECK(t->name  == "Drums", "track name round-trips");
         CHECK(t->order == 0,       "track order round-trips");
+        CHECK(t->fxMode == TrackFxMode::Graph, "track fxMode round-trips");
 
         const Clip* c = tl2.getClip(srcId + 3); // 4th ID issued
         // Fallback: just verify via getAllClips

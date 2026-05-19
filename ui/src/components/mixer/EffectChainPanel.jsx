@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
-import useEffectChainStore, { resolveFxPanelView } from '../../stores/effectChainStore.js'
+import useEffectChainStore, { resolveFxMode, resolveFxPanelView } from '../../stores/effectChainStore.js'
 import EffectModule from './EffectModule.jsx'
 import TrackContextMenu from '../timeline/TrackContextMenu.jsx'
 
@@ -59,6 +59,14 @@ export const FX_GRAPH_SHELL_MESSAGE = 'This read-only preview mirrors the curren
 export const FX_GRAPH_SHELL_NOTE = 'Editable FX Graph conversion is not implemented yet. The track still uses the normal Mixer Chain.'
 export const FX_GRAPH_SHELL_BUTTON_TITLE =
   'Open FX Graph shell preview. Graph editing and chain-to-graph conversion are not implemented yet.'
+export const FX_GRAPH_ACTIVE_TITLE = 'FX Graph Active'
+export const FX_GRAPH_ACTIVE_MESSAGE = 'Routing is owned by FX Graph.'
+export const FX_GRAPH_ACTIVE_NOTE = 'Editable graph view is not implemented in this phase.'
+export const FX_GRAPH_ACTIVE_FUTURE_LABELS = [
+  'Open Preview later',
+  'Bypass Graph later',
+  'Published Macros later',
+]
 
 const STOCK_EFFECT_NAMES = EFFECT_CATEGORIES
   .flatMap((category) => category.submenu)
@@ -84,6 +92,17 @@ export function getEffectChainPanelViewState(fxPanelView) {
     nodeButtonClassName: `effect-chain-mode-btn${showingGraphShell ? ' active' : ''}`,
     nodeButtonDisabled: showingGraphShell,
     nodeButtonTitle: FX_GRAPH_SHELL_BUTTON_TITLE,
+  }
+}
+
+export function getEffectChainPanelRenderState(fxMode, fxPanelView) {
+  const graphOwned = fxMode === 'graph'
+  const showingGraphShell = !graphOwned && fxPanelView === 'graphShell'
+
+  return {
+    graphOwned,
+    showingGraphShell,
+    showingEditableChain: !graphOwned && !showingGraphShell,
   }
 }
 
@@ -134,10 +153,28 @@ export function EffectChainGraphShell({ chain = [], chainLabel }) {
   )
 }
 
+export function EffectChainGraphActivePlaceholder({ chainLabel }) {
+  return (
+    <div className="effect-chain-shell effect-chain-graph-active" role="note" aria-label={`${chainLabel} graph active`}>
+      <div className="effect-chain-shell-header">
+        <div className="effect-chain-shell-title">{FX_GRAPH_ACTIVE_TITLE}</div>
+      </div>
+      <p className="effect-chain-shell-copy">{FX_GRAPH_ACTIVE_MESSAGE}</p>
+      <p className="effect-chain-shell-copy">{FX_GRAPH_ACTIVE_NOTE}</p>
+      <div className="effect-chain-graph-future-list" aria-label="Future graph controls">
+        {FX_GRAPH_ACTIVE_FUTURE_LABELS.map((label) => (
+          <span key={label} className="effect-chain-graph-future-chip">{label}</span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export default function EffectChainPanel({ trackId, master }) {
   const key = master ? 'master' : String(trackId)
 
   const chain = useEffectChainStore(s => s.chains[key] ?? EMPTY_CHAIN)
+  const fxMode = useEffectChainStore(s => master ? 'chain' : resolveFxMode(s.fxModes, key))
   const fxPanelView = useEffectChainStore(s => resolveFxPanelView(s.fxPanelViews, key))
   const fetchChain = useEffectChainStore(s => s.fetchChain)
   const addEffect = useEffectChainStore(s => s.addEffect)
@@ -150,8 +187,8 @@ export default function EffectChainPanel({ trackId, master }) {
   const addBtnRef = useRef(null)
 
   const displayChain = dragOrder ?? chain
-  const panelViewState = getEffectChainPanelViewState(fxPanelView)
-  const { showingGraphShell } = panelViewState
+  const { graphOwned, showingGraphShell } = getEffectChainPanelRenderState(fxMode, fxPanelView)
+  const panelViewState = getEffectChainPanelViewState(graphOwned ? 'graphShell' : fxPanelView)
   const chainLabel = master ? 'Master effect chain' : 'Track effect chain'
 
   useEffect(() => {
@@ -253,7 +290,9 @@ export default function EffectChainPanel({ trackId, master }) {
         </button>
       </div>
 
-      {showingGraphShell ? (
+      {graphOwned ? (
+        <EffectChainGraphActivePlaceholder chainLabel={chainLabel} />
+      ) : showingGraphShell ? (
         <EffectChainGraphShell chain={chain} chainLabel={chainLabel} />
       ) : (
         <>
