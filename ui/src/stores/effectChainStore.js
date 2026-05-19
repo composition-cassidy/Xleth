@@ -6,9 +6,12 @@ import useWaveshaperStore from './waveshaperStore.js'
 import useDelayStore from './delayStore.js'
 import useChorusStore from './chorusStore.js'
 
+export const DEFAULT_FX_MODE = 'chain'
+export const DEFAULT_FX_PANEL_VIEW = 'chain'
+
 // Dispatch IPC to the correct track vs. master variant.
-// key === 'master' → masterFn(...args)
-// key === String(trackId) → trackFn(Number(key), ...args)
+// key === 'master' -> masterFn(...args)
+// key === String(trackId) -> trackFn(Number(key), ...args)
 function ipc(key, trackFn, masterFn, ...args) {
   if (key === 'master') return window.xleth?.audio?.[masterFn]?.(...args)
   return window.xleth?.audio?.[trackFn]?.(Number(key), ...args)
@@ -22,27 +25,87 @@ function parseChain(raw) {
   return Array.isArray(raw) ? raw : []
 }
 
+export function resolveFxMode(fxModes = {}, key) {
+  return fxModes?.[key] === 'graph' ? 'graph' : DEFAULT_FX_MODE
+}
+
+export function resolveFxPanelView(fxPanelViews = {}, key) {
+  return fxPanelViews?.[key] === 'graphShell' ? 'graphShell' : DEFAULT_FX_PANEL_VIEW
+}
+
+function buildFxStateDefaults(fxModes, fxPanelViews, key) {
+  const nextState = {}
+  const nextMode = resolveFxMode(fxModes, key)
+  const nextPanelView = resolveFxPanelView(fxPanelViews, key)
+
+  if (fxModes?.[key] !== nextMode) {
+    nextState.fxModes = { ...(fxModes ?? {}), [key]: nextMode }
+  }
+
+  if (fxPanelViews?.[key] !== nextPanelView) {
+    nextState.fxPanelViews = { ...(fxPanelViews ?? {}), [key]: nextPanelView }
+  }
+
+  return nextState
+}
+
+function isChainFxMode(state, key) {
+  return resolveFxMode(state.fxModes, key) === DEFAULT_FX_MODE
+}
+
 const useEffectChainStore = create((set, get) => ({
   // { [key: "master" | String(trackId)]: [{nodeId, pluginId, position, bypassed}] }
   chains: {},
+  // { [key: "master" | String(trackId)]: "chain" | "graph" }
+  fxModes: {},
+  // { [key: "master" | String(trackId)]: "chain" | "graphShell" }
+  fxPanelViews: {},
+
+  ensureFxState: (key) => {
+    const { fxModes, fxPanelViews } = get()
+    const nextState = buildFxStateDefaults(fxModes, fxPanelViews, key)
+    if (Object.keys(nextState).length > 0) {
+      set(nextState)
+    }
+  },
+
+  setFxMode: (key, mode) => {
+    const nextMode = mode === 'graph' ? 'graph' : DEFAULT_FX_MODE
+    set((state) => ({ fxModes: { ...state.fxModes, [key]: nextMode } }))
+  },
+
+  setFxPanelView: (key, view) => {
+    const nextView = view === 'graphShell' ? 'graphShell' : DEFAULT_FX_PANEL_VIEW
+    set((state) => ({ fxPanelViews: { ...state.fxPanelViews, [key]: nextView } }))
+  },
 
   fetchChain: async (key) => {
+    get().ensureFxState(key)
+
     try {
       const raw = await ipc(key, 'getEffectChain', 'getMasterEffectChain')
       const chain = parseChain(raw)
-      set(s => ({ chains: { ...s.chains, [key]: chain } }))
+      set((state) => ({
+        ...buildFxStateDefaults(state.fxModes, state.fxPanelViews, key),
+        chains: { ...state.chains, [key]: chain },
+      }))
     } catch (e) {
       console.warn('[effectChainStore] fetchChain failed:', e?.message)
     }
   },
 
   addEffect: async (key, pluginId) => {
-    const chain = get().chains[key] ?? []
-    if (chain.length >= 100) return
+    const state = get()
+    if (!isChainFxMode(state, key)) return false
+
+    const chain = state.chains[key] ?? []
+    if (chain.length >= 100) return false
 
     // Optimistic: append placeholder so UI responds immediately
     const placeholder = { nodeId: -1, pluginId, position: chain.length, bypassed: false }
-    set(s => ({ chains: { ...s.chains, [key]: [...(s.chains[key] ?? []), placeholder] } }))
+    set((currentState) => ({
+      chains: { ...currentState.chains, [key]: [...(currentState.chains[key] ?? []), placeholder] },
+    }))
 
     try {
       await ipc(key, 'addEffect', 'addMasterEffect', pluginId, chain.length)
@@ -50,12 +113,15 @@ const useEffectChainStore = create((set, get) => ({
       console.warn('[effectChainStore] addEffect failed:', e?.message)
     }
     await get().fetchChain(key)
+    return true
   },
 
   removeEffect: async (key, nodeId) => {
+    if (!isChainFxMode(get(), key)) return false
+
     // Optimistic: filter out immediately
-    set(s => ({
-      chains: { ...s.chains, [key]: (s.chains[key] ?? []).filter(fx => fx.nodeId !== nodeId) },
+    set((state) => ({
+      chains: { ...state.chains, [key]: (state.chains[key] ?? []).filter((fx) => fx.nodeId !== nodeId) },
     }))
 
     try {
@@ -67,17 +133,20 @@ const useEffectChainStore = create((set, get) => ({
       console.warn('[effectChainStore] removeEffect failed:', e?.message)
     }
     await get().fetchChain(key)
+    return true
   },
 
   moveEffect: async (key, nodeId, newPos) => {
+    if (!isChainFxMode(get(), key)) return false
+
     // Optimistic: reorder locally
-    set(s => {
-      const arr = [...(s.chains[key] ?? [])]
-      const srcIdx = arr.findIndex(fx => fx.nodeId === nodeId)
-      if (srcIdx === -1) return s
+    set((state) => {
+      const arr = [...(state.chains[key] ?? [])]
+      const srcIdx = arr.findIndex((fx) => fx.nodeId === nodeId)
+      if (srcIdx === -1) return state
       const [item] = arr.splice(srcIdx, 1)
       arr.splice(newPos, 0, item)
-      return { chains: { ...s.chains, [key]: arr } }
+      return { chains: { ...state.chains, [key]: arr } }
     })
 
     try {
@@ -89,14 +158,17 @@ const useEffectChainStore = create((set, get) => ({
       console.warn('[effectChainStore] moveEffect failed:', e?.message)
     }
     await get().fetchChain(key)
+    return true
   },
 
   setBypass: async (key, nodeId, bypassed) => {
+    if (!isChainFxMode(get(), key)) return false
+
     // Optimistic: flip bypass flag
-    set(s => ({
+    set((state) => ({
       chains: {
-        ...s.chains,
-        [key]: (s.chains[key] ?? []).map(fx =>
+        ...state.chains,
+        [key]: (state.chains[key] ?? []).map((fx) =>
           fx.nodeId === nodeId ? { ...fx, bypassed } : fx
         ),
       },
@@ -111,6 +183,7 @@ const useEffectChainStore = create((set, get) => ({
       console.warn('[effectChainStore] setBypass failed:', e?.message)
     }
     await get().fetchChain(key)
+    return true
   },
 }))
 
@@ -123,7 +196,12 @@ window.xleth?.onGraphChanged?.((key) => {
 // Close every open effect editor panel (they hold stale nodeIds in target)
 // and re-fetch every cached chain so the store has the new nodeIds.
 window.xleth?.onProjectLoaded?.(() => {
-  console.log('[effectChainStore] project-loaded — closing panels, refreshing all chains')
+  console.log('[effectChainStore] project-loaded - closing panels, refreshing all chains')
+
+  useEffectChainStore.setState({
+    fxModes: {},
+    fxPanelViews: {},
+  })
 
   // Close all open effect editor panels
   useEqStore.getState().close()

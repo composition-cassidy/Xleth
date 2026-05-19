@@ -45,13 +45,14 @@ describe('EffectChainPanel compact rack rendering', () => {
   it('renders the compact empty state when the chain has no effects', async () => {
     const { EffectChainPanel, useEffectChainStore, useMixerStore, useVstStore } = await loadEffectChainPanelFixture()
     useEffectChainStore.setState({ chains: { '7': [] } })
-    useMixerStore.setState({ trackOrder: [7] })
     useVstStore.setState({ plugins: [] })
 
     const html = renderToStaticMarkup(<EffectChainPanel trackId={7} />)
 
+    expect(html).toContain('effect-chain-mode-btn active')
     expect(html).toContain('effect-chain-empty-btn')
     expect(html).toContain('+ Add effect')
+    expect(html).not.toContain('FX Graph Shell')
   })
 
   it('marks overflow as visible when the chain exceeds the 4-row rack limit', async () => {
@@ -96,5 +97,31 @@ describe('EffectChainPanel compact rack rendering', () => {
 
     expect(panelModule.selectEffectChainNode({ nodeId: -1, pluginId: 'delay' }, 123)).toBe(123)
     expect(panelModule.syncSelectedEffectChainNode(123, [{ nodeId: -1, pluginId: 'delay' }])).toBeNull()
+  })
+
+  it('exposes a graphShell panel branch with inert shell copy', async () => {
+    const { panelModule } = await loadEffectChainPanelFixture()
+    const viewState = panelModule.getEffectChainPanelViewState('graphShell')
+    const html = renderToStaticMarkup(
+      <panelModule.EffectChainGraphShell chainLabel="Track effect chain" />
+    )
+
+    expect(viewState.showingGraphShell).toBe(true)
+    expect(viewState.chainButtonDisabled).toBe(false)
+    expect(viewState.nodeButtonDisabled).toBe(true)
+    expect(html).toContain('FX Graph Shell')
+    expect(html).toContain('Graph editing and chain-to-graph conversion are not implemented yet.')
+    expect(html).toContain('This panel is a preview gate only. The track still uses the normal Mixer Chain.')
+  })
+
+  it('routes NODE through the graph shell helper instead of openNodeEditor', async () => {
+    const { panelModule } = await loadEffectChainPanelFixture()
+    const setFxPanelView = vi.fn()
+
+    panelModule.showEffectChainGraphShell({ setFxPanelView, storeKey: '7' })
+
+    expect(setFxPanelView).toHaveBeenCalledWith('7', 'graphShell')
+    expect(window.xleth.window.openNodeEditor).not.toHaveBeenCalled()
+    expect(panelModule.FX_GRAPH_SHELL_BUTTON_TITLE).not.toContain('Node Editor')
   })
 })

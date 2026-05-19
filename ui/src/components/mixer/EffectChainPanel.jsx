@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
-import useEffectChainStore from '../../stores/effectChainStore.js'
-import useMixerStore from '../../stores/mixerStore.js'
+import useEffectChainStore, { resolveFxPanelView } from '../../stores/effectChainStore.js'
 import useVstStore from '../../stores/vstStore.js'
 import EffectModule from './EffectModule.jsx'
 import TrackContextMenu from '../timeline/TrackContextMenu.jsx'
@@ -57,6 +56,11 @@ const EFFECT_CATEGORIES = [
 
 const EMPTY_CHAIN = []
 export const VISIBLE_LIMIT = 4
+export const FX_GRAPH_SHELL_TITLE = 'FX Graph Shell'
+export const FX_GRAPH_SHELL_MESSAGE = 'Graph editing and chain-to-graph conversion are not implemented yet.'
+export const FX_GRAPH_SHELL_NOTE = 'This panel is a preview gate only. The track still uses the normal Mixer Chain.'
+export const FX_GRAPH_SHELL_BUTTON_TITLE =
+  'Open FX Graph shell preview. Graph editing and chain-to-graph conversion are not implemented yet.'
 
 export function isSelectableEffectChainNode(effect) {
   return Number.isInteger(effect?.nodeId) && effect.nodeId !== -1
@@ -106,6 +110,37 @@ export function buildEffectChainMenuItems({ addEffect, storeKey, vstPlugins }) {
   ]
 }
 
+export function showEffectChainRack({ setFxPanelView, storeKey }) {
+  setFxPanelView(storeKey, 'chain')
+}
+
+export function showEffectChainGraphShell({ setFxPanelView, storeKey }) {
+  setFxPanelView(storeKey, 'graphShell')
+}
+
+export function getEffectChainPanelViewState(fxPanelView) {
+  const showingGraphShell = fxPanelView === 'graphShell'
+
+  return {
+    showingGraphShell,
+    chainButtonClassName: `effect-chain-mode-btn${showingGraphShell ? '' : ' active'}`,
+    chainButtonDisabled: !showingGraphShell,
+    nodeButtonClassName: `effect-chain-mode-btn${showingGraphShell ? ' active' : ''}`,
+    nodeButtonDisabled: showingGraphShell,
+    nodeButtonTitle: FX_GRAPH_SHELL_BUTTON_TITLE,
+  }
+}
+
+export function EffectChainGraphShell({ chainLabel }) {
+  return (
+    <div className="effect-chain-shell" role="note" aria-label={`${chainLabel} graph shell`}>
+      <div className="effect-chain-shell-title">{FX_GRAPH_SHELL_TITLE}</div>
+      <p className="effect-chain-shell-copy">{FX_GRAPH_SHELL_MESSAGE}</p>
+      <p className="effect-chain-shell-copy">{FX_GRAPH_SHELL_NOTE}</p>
+    </div>
+  )
+}
+
 export function getInitialEffectChainPopoverPosition(anchorRect, viewport = {
   width: window.innerWidth,
   height: window.innerHeight,
@@ -140,10 +175,11 @@ export default function EffectChainPanel({ trackId, master }) {
   const key = master ? 'master' : String(trackId)
 
   const chain = useEffectChainStore((state) => state.chains[key] ?? EMPTY_CHAIN)
+  const fxPanelView = useEffectChainStore((state) => resolveFxPanelView(state.fxPanelViews, key))
   const fetchChain = useEffectChainStore((state) => state.fetchChain)
   const addEffect = useEffectChainStore((state) => state.addEffect)
   const moveEffect = useEffectChainStore((state) => state.moveEffect)
-  const trackOrder = useMixerStore((state) => state.trackOrder)
+  const setFxPanelView = useEffectChainStore((state) => state.setFxPanelView)
 
   const vstPlugins = useVstStore((state) => state.plugins)
   const fetchVst = useVstStore((state) => state.fetchPlugins)
@@ -157,6 +193,8 @@ export default function EffectChainPanel({ trackId, master }) {
   const fullChainPopoverRef = useRef(null)
 
   const displayChain = dragOrder ?? chain
+  const panelViewState = getEffectChainPanelViewState(fxPanelView)
+  const { showingGraphShell } = panelViewState
 
   useEffect(() => {
     fetchChain(key)
@@ -292,10 +330,25 @@ export default function EffectChainPanel({ trackId, master }) {
     })
   ), [key, addEffect, vstPlugins])
 
+  const clearFloatingState = useCallback(() => {
+    dragRef.current = null
+    if (typeof document !== 'undefined') {
+      document.body.style.cursor = ''
+    }
+    setDragOrder(null)
+    setAddMenuPos(null)
+    setFullChainPos(null)
+  }, [])
+
+  const handleChainMode = useCallback(() => {
+    clearFloatingState()
+    showEffectChainRack({ setFxPanelView, storeKey: key })
+  }, [clearFloatingState, key, setFxPanelView])
+
   const handleNodeMode = useCallback(() => {
-    const pos = master ? null : trackOrder.indexOf(trackId) + 1
-    window.xleth?.window?.openNodeEditor(key, pos || null)
-  }, [key, master, trackId, trackOrder])
+    clearFloatingState()
+    showEffectChainGraphShell({ setFxPanelView, storeKey: key })
+  }, [clearFloatingState, key, setFxPanelView])
 
   if (!master && trackId == null) return null
 
@@ -322,58 +375,67 @@ export default function EffectChainPanel({ trackId, master }) {
     <div className="effect-chain-panel">
       <div className="effect-chain-mode-row">
         <button
-          className="effect-chain-mode-btn active"
-          disabled
+          className={panelViewState.chainButtonClassName}
+          onClick={handleChainMode}
+          disabled={panelViewState.chainButtonDisabled}
+          title="Show Mixer Chain rack"
         >
           CHAIN
         </button>
         <button
-          className="effect-chain-mode-btn"
+          className={panelViewState.nodeButtonClassName}
           onClick={handleNodeMode}
-          title="Open Node Editor window"
+          disabled={panelViewState.nodeButtonDisabled}
+          title={panelViewState.nodeButtonTitle}
         >
           NODE
         </button>
       </div>
 
-      <div className="effect-chain-list" role="listbox" aria-label={chainLabel}>
-        {displayChain.length === 0 ? (
-          <button
-            className="effect-chain-empty-btn"
-            onClick={handleAddClick}
-            title="Add effect"
-            aria-label="Add effect"
-          >
-            + Add effect
-          </button>
-        ) : (
-          renderEffectRows(displayChain, { limit: VISIBLE_LIMIT })
-        )}
-      </div>
+      {showingGraphShell ? (
+        <EffectChainGraphShell chainLabel={chainLabel} />
+      ) : (
+        <>
+          <div className="effect-chain-list" role="listbox" aria-label={chainLabel}>
+            {displayChain.length === 0 ? (
+              <button
+                className="effect-chain-empty-btn"
+                onClick={handleAddClick}
+                title="Add effect"
+                aria-label="Add effect"
+              >
+                + Add effect
+              </button>
+            ) : (
+              renderEffectRows(displayChain, { limit: VISIBLE_LIMIT })
+            )}
+          </div>
 
-      {overflowVisible && (
-        <button
-          ref={overflowBtnRef}
-          className={`effect-chain-overflow${fullChainPos ? ' effect-chain-overflow--open' : ''}`}
-          onClick={handleOverflowClick}
-          title={fullChainPos ? 'Hide full effect chain' : 'Show full effect chain'}
-          aria-label={fullChainPos ? 'Hide full effect chain' : 'Show full effect chain'}
-        >
-          +{overflowCount} more
-        </button>
+          {overflowVisible && (
+            <button
+              ref={overflowBtnRef}
+              className={`effect-chain-overflow${fullChainPos ? ' effect-chain-overflow--open' : ''}`}
+              onClick={handleOverflowClick}
+              title={fullChainPos ? 'Hide full effect chain' : 'Show full effect chain'}
+              aria-label={fullChainPos ? 'Hide full effect chain' : 'Show full effect chain'}
+            >
+              +{overflowCount} more
+            </button>
+          )}
+
+          <div className="effect-chain-footer">
+            <button
+              className="effect-chain-add-btn"
+              disabled={chain.length >= 100}
+              onClick={handleAddClick}
+              title="Add effect"
+              aria-label="Add effect"
+            >
+              +
+            </button>
+          </div>
+        </>
       )}
-
-      <div className="effect-chain-footer">
-        <button
-          className="effect-chain-add-btn"
-          disabled={chain.length >= 100}
-          onClick={handleAddClick}
-          title="Add effect"
-          aria-label="Add effect"
-        >
-          +
-        </button>
-      </div>
 
       {addMenuPos && (
         <TrackContextMenu
