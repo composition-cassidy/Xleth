@@ -3871,6 +3871,35 @@
 }
 
 .effect-chain-empty {
+.effect-chain-shell {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+}
+
+.effect-chain-shell-title {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+}
+
+.effect-chain-shell-copy {
+  margin: 0;
+  font-size: 9px;
+  line-height: 1.4;
+  color: var(--text-tertiary);
+}
+
+.effect-chain-empty {
   font-size: 9px;
   color: var(--text-tertiary);
   text-align: center;

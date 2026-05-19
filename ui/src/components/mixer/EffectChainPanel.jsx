@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
-import useEffectChainStore from '../../stores/effectChainStore.js'
-import useMixerStore from '../../stores/mixerStore.js'
+import useEffectChainStore, { resolveFxPanelView } from '../../stores/effectChainStore.js'
 import EffectModule from './EffectModule.jsx'
 import TrackContextMenu from '../timeline/TrackContextMenu.jsx'
 
@@ -54,30 +53,67 @@ const EFFECT_CATEGORIES = [
 ]
 
 const EMPTY_CHAIN = []
+export const FX_GRAPH_SHELL_TITLE = 'FX Graph Shell'
+export const FX_GRAPH_SHELL_MESSAGE = 'Graph editing and chain-to-graph conversion are not implemented yet.'
+export const FX_GRAPH_SHELL_NOTE = 'This panel is a preview gate only. The track still uses the normal Mixer Chain.'
+export const FX_GRAPH_SHELL_BUTTON_TITLE =
+  'Open FX Graph shell preview. Graph editing and chain-to-graph conversion are not implemented yet.'
+
+export function showEffectChainRack({ setFxPanelView, storeKey }) {
+  setFxPanelView(storeKey, 'chain')
+}
+
+export function showEffectChainGraphShell({ setFxPanelView, storeKey }) {
+  setFxPanelView(storeKey, 'graphShell')
+}
+
+export function getEffectChainPanelViewState(fxPanelView) {
+  const showingGraphShell = fxPanelView === 'graphShell'
+
+  return {
+    showingGraphShell,
+    chainButtonClassName: `effect-chain-mode-btn${showingGraphShell ? '' : ' active'}`,
+    chainButtonDisabled: !showingGraphShell,
+    nodeButtonClassName: `effect-chain-mode-btn${showingGraphShell ? ' active' : ''}`,
+    nodeButtonDisabled: showingGraphShell,
+    nodeButtonTitle: FX_GRAPH_SHELL_BUTTON_TITLE,
+  }
+}
+
+export function EffectChainGraphShell({ chainLabel }) {
+  return (
+    <div className="effect-chain-shell" role="note" aria-label={`${chainLabel} graph shell`}>
+      <div className="effect-chain-shell-title">{FX_GRAPH_SHELL_TITLE}</div>
+      <p className="effect-chain-shell-copy">{FX_GRAPH_SHELL_MESSAGE}</p>
+      <p className="effect-chain-shell-copy">{FX_GRAPH_SHELL_NOTE}</p>
+    </div>
+  )
+}
 
 export default function EffectChainPanel({ trackId, master }) {
   const key = master ? 'master' : String(trackId)
 
   const chain = useEffectChainStore(s => s.chains[key] ?? EMPTY_CHAIN)
+  const fxPanelView = useEffectChainStore(s => resolveFxPanelView(s.fxPanelViews, key))
   const fetchChain = useEffectChainStore(s => s.fetchChain)
   const addEffect = useEffectChainStore(s => s.addEffect)
   const moveEffect = useEffectChainStore(s => s.moveEffect)
-  const trackOrder = useMixerStore(s => s.trackOrder)
+  const setFxPanelView = useEffectChainStore(s => s.setFxPanelView)
 
-  // Local drag state
   const [dragOrder, setDragOrder] = useState(null)
   const [addMenuPos, setAddMenuPos] = useState(null)
-  const dragRef = useRef(null) // { nodeId, currentIndex }
+  const dragRef = useRef(null)
   const addBtnRef = useRef(null)
 
   const displayChain = dragOrder ?? chain
+  const panelViewState = getEffectChainPanelViewState(fxPanelView)
+  const { showingGraphShell } = panelViewState
+  const chainLabel = master ? 'Master effect chain' : 'Track effect chain'
 
-  // Fetch chain on mount / when key changes
   useEffect(() => {
     fetchChain(key)
   }, [key, fetchChain])
 
-  // Global mouseup to commit drag
   useEffect(() => {
     const onMouseUp = () => {
       if (!dragRef.current) return
@@ -115,13 +151,31 @@ export default function EffectChainPanel({ trackId, master }) {
     })
   }, [])
 
+  const clearFloatingState = useCallback(() => {
+    dragRef.current = null
+    if (typeof document !== 'undefined') {
+      document.body.style.cursor = ''
+    }
+    setDragOrder(null)
+    setAddMenuPos(null)
+  }, [])
+
   const handleAddClick = useCallback(() => {
     if (!addBtnRef.current) return
     const rect = addBtnRef.current.getBoundingClientRect()
     setAddMenuPos({ x: rect.left, y: rect.top })
   }, [])
 
-  // Build add menu items
+  const handleChainMode = useCallback(() => {
+    clearFloatingState()
+    showEffectChainRack({ setFxPanelView, storeKey: key })
+  }, [clearFloatingState, key, setFxPanelView])
+
+  const handleNodeMode = useCallback(() => {
+    clearFloatingState()
+    showEffectChainGraphShell({ setFxPanelView, storeKey: key })
+  }, [clearFloatingState, key, setFxPanelView])
+
   const menuItems = useMemo(() => {
     return EFFECT_CATEGORIES.map(cat => ({
       label: cat.label,
@@ -132,63 +186,64 @@ export default function EffectChainPanel({ trackId, master }) {
     }))
   }, [key, addEffect])
 
-  // Open node editor in separate window
-  const handleNodeMode = useCallback(() => {
-    const pos = master ? null : trackOrder.indexOf(trackId) + 1
-    window.xleth?.window?.openNodeEditor(key, pos || null)
-  }, [key, master, trackId, trackOrder])
-
   if (!master && trackId == null) return null
 
   return (
     <div className="effect-chain-panel">
-      {/* Mode toggle */}
       <div className="effect-chain-mode-row">
         <button
-          className="effect-chain-mode-btn active"
-          disabled
+          className={panelViewState.chainButtonClassName}
+          onClick={handleChainMode}
+          disabled={panelViewState.chainButtonDisabled}
+          title="Show Mixer Chain rack"
         >
           CHAIN
         </button>
         <button
-          className="effect-chain-mode-btn"
+          className={panelViewState.nodeButtonClassName}
           onClick={handleNodeMode}
-          title="Open Node Editor window"
+          disabled={panelViewState.nodeButtonDisabled}
+          title={panelViewState.nodeButtonTitle}
         >
           NODE
         </button>
       </div>
 
-      {/* Effect list */}
-      <div className="effect-chain-list">
-        {displayChain.length === 0 ? (
-          <div className="effect-chain-empty">No effects</div>
-        ) : (
-          displayChain.map((fx, idx) => (
-            <EffectModule
-              key={fx.nodeId === -1 ? `pending-${fx.pluginId}-${idx}` : fx.nodeId}
-              effect={fx}
-              index={idx}
-              storeKey={key}
-              onDragStart={handleDragStart}
-              onDragOver={handleDragOver}
-            />
-          ))
-        )}
-      </div>
+      {showingGraphShell ? (
+        <EffectChainGraphShell chainLabel={chainLabel} />
+      ) : (
+        <>
+          <div className="effect-chain-list" role="listbox" aria-label={chainLabel}>
+            {displayChain.length === 0 ? (
+              <div className="effect-chain-empty">No effects</div>
+            ) : (
+              displayChain.map((fx, idx) => (
+                <EffectModule
+                  key={fx.nodeId === -1 ? `pending-${fx.pluginId}-${idx}` : fx.nodeId}
+                  effect={fx}
+                  index={idx}
+                  storeKey={key}
+                  onDragStart={handleDragStart}
+                  onDragOver={handleDragOver}
+                />
+              ))
+            )}
+          </div>
 
-      {/* Add button */}
-      <div className="effect-chain-footer">
-        <button
-          ref={addBtnRef}
-          className="effect-chain-add-btn"
-          disabled={chain.length >= 100}
-          onClick={handleAddClick}
-          title="Add effect"
-        >
-          +
-        </button>
-      </div>
+          <div className="effect-chain-footer">
+            <button
+              ref={addBtnRef}
+              className="effect-chain-add-btn"
+              disabled={chain.length >= 100}
+              onClick={handleAddClick}
+              title="Add effect"
+              aria-label="Add effect"
+            >
+              +
+            </button>
+          </div>
+        </>
+      )}
 
       {addMenuPos && (
         <TrackContextMenu
