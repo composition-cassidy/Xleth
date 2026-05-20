@@ -60,6 +60,16 @@
       "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 280 },
       "preMaximizeState": null
     },
+    "fxGraph": {
+      "id": "fxGraph",
+      "hidden": true,
+      "focused": false,
+      "zIndex": 0,
+      "mode": "floating",
+      "floating": { "x": 360, "y": 120, "width": 980, "height": 640 },
+      "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 280 },
+      "preMaximizeState": null
+    },
     "nodeEditor": {
       "id": "nodeEditor",
       "hidden": true,

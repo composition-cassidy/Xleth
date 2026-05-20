@@ -5,6 +5,7 @@ import { AppShell } from '../AppShell';
 import { PanelFrame, getPanelFrameRenderPath } from '../components/PanelFrame';
 import { Titlebar } from '../components/Titlebar';
 import { TopBarToggles } from '../components/TopBarToggles';
+import { FxGraphPanelContent } from '../panels/FxGraphPanel';
 import NodeEditorPanel from '../panels/NodeEditorPanel';
 import {
   createInitialPanelStates,
@@ -117,6 +118,31 @@ describe('PanelFrame render paths', () => {
 
     expect(html).not.toContain('Toggle Node Editor');
     expect(html).not.toContain('Node Editor (F11)');
+  });
+
+  it('registers fxGraph as the safe active FX Graph workspace shell', () => {
+    expect(PANEL_IDS).toContain('fxGraph');
+    expect(PANEL_CATALOG.fxGraph.title).toBe('FX Graph');
+    expect(PANEL_CATALOG.fxGraph.typeColorToken).toBe('--theme-panel-node');
+    expect(PANEL_CATALOG.fxGraph.fKey).toBe('F11');
+    expect(PANEL_CATALOG_ORDER.map((entry) => entry.id)).toContain('fxGraph');
+
+    const html = renderToStaticMarkup(<TopBarToggles />);
+
+    expect(html).toContain('Toggle FX Graph');
+    expect(html).toContain('FX Graph (F11)');
+    expect(html).not.toContain('Toggle Node Editor');
+  });
+
+  it('renders the safe FX Graph shell without legacy editor affordances', () => {
+    const html = renderToStaticMarkup(<FxGraphPanelContent />);
+
+    expect(html).toContain('FX Graph Workspace');
+    expect(html).toContain('No track selected');
+    expect(html).toContain('Routing editor coming in a later phase');
+    expect(html).toContain('Mixer Chain remains active');
+    expect(html).not.toContain('NodeEditor');
+    expect(html).not.toContain('react-flow');
   });
 
   it('renders only the nodeEditor quarantine placeholder when reached by stale layout state', () => {

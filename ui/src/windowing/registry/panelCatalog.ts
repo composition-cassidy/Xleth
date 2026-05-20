@@ -17,6 +17,7 @@ export const PANEL_IDS = [
   'preview',
   'mixer',
   'gridSettings',
+  'fxGraph',
   'nodeEditor',
   'sampler',
 ] as const;
@@ -108,6 +109,15 @@ export const PANEL_CATALOG = {
     icon: Grid3x3,
     fKey: 'F10',
     defaultFloating: { x: 300, y: 120, width: 520, height: 720 },
+    keepAliveWhenHidden: false,
+  },
+  fxGraph: {
+    id: 'fxGraph',
+    title: 'FX Graph',
+    typeColorToken: '--theme-panel-node',
+    icon: Workflow,
+    fKey: 'F11',
+    defaultFloating: { x: 360, y: 120, width: 980, height: 640 },
     keepAliveWhenHidden: false,
   },
   nodeEditor: {

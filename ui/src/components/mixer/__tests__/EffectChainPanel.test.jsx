@@ -99,33 +99,56 @@ describe('EffectChainPanel compact rack rendering', () => {
     expect(panelModule.syncSelectedEffectChainNode(123, [{ nodeId: -1, pluginId: 'delay' }])).toBeNull()
   })
 
-  it('exposes a graphShell panel branch with inert workspace status only', async () => {
+  it('keeps stale graphShell view state from replacing the editable Mixer Chain', async () => {
     const { panelModule } = await loadEffectChainPanelFixture()
     const viewState = panelModule.getEffectChainPanelViewState('graphShell')
     const html = renderToStaticMarkup(
       <panelModule.EffectChainGraphShell chainLabel="Track effect chain" />
     )
 
-    expect(viewState.showingGraphShell).toBe(true)
+    expect(viewState.showingGraphShell).toBe(false)
+    expect(viewState.chainButtonClassName).toContain('active')
     expect(viewState.chainButtonDisabled).toBe(false)
-    expect(viewState.nodeButtonDisabled).toBe(true)
+    expect(viewState.nodeButtonDisabled).toBe(false)
     expect(html).toContain('FX Graph')
-    expect(html).toContain('Workspace Coming Soon')
-    expect(html).toContain('FX Graph workspace coming soon')
+    expect(html).toContain('Workspace Ready')
+    expect(html).toContain('Open FX Graph workspace')
     expect(html).not.toContain('Track Input')
     expect(html).not.toContain('effect-chain-graph-preview')
     expect(html).not.toContain('effect-chain-graph-connector')
   })
 
-  it('routes NODE through the graph shell helper instead of openNodeEditor', async () => {
-    const { panelModule } = await loadEffectChainPanelFixture()
+  it('routes NODE through the fxGraph windowing panel instead of openNodeEditor', async () => {
+    const { panelModule, useEffectChainStore } = await loadEffectChainPanelFixture()
     const setFxPanelView = vi.fn()
+    const panelRegistry = { openPanel: vi.fn() }
+    useEffectChainStore.setState({ fxModes: { '7': 'chain' } })
 
-    panelModule.showEffectChainGraphShell({ setFxPanelView, storeKey: '7' })
+    panelModule.showEffectChainGraphShell({ setFxPanelView, storeKey: '7', panelRegistry })
 
-    expect(setFxPanelView).toHaveBeenCalledWith('7', 'graphShell')
+    expect(panelRegistry.openPanel).toHaveBeenCalledWith('fxGraph')
+    expect(setFxPanelView).not.toHaveBeenCalled()
+    expect(useEffectChainStore.getState().fxModes['7']).toBe('chain')
     expect(window.xleth.window.openNodeEditor).not.toHaveBeenCalled()
     expect(panelModule.FX_GRAPH_SHELL_BUTTON_TITLE).not.toContain('Node Editor')
+  })
+
+  it('renders the editable chain when fxMode is chain even after graphShell view state exists', async () => {
+    const { EffectChainPanel, useEffectChainStore, useVstStore } = await loadEffectChainPanelFixture()
+    useEffectChainStore.setState({
+      chains: { '7': [] },
+      fxModes: { '7': 'chain' },
+      fxPanelViews: { '7': 'graphShell' },
+    })
+    useVstStore.setState({ plugins: [] })
+
+    const html = renderToStaticMarkup(<EffectChainPanel trackId={7} />)
+
+    expect(html).toContain('+ Add effect')
+    expect(html).toContain('effect-chain-mode-btn active')
+    expect(html).not.toContain('effect-chain-shell')
+    expect(html).not.toContain('Workspace Ready')
+    expect(useEffectChainStore.getState().fxModes['7']).toBe('chain')
   })
 
   it('keeps the graph shell status free of graph preview and chain editing affordances', async () => {
@@ -140,7 +163,7 @@ describe('EffectChainPanel compact rack rendering', () => {
     )
 
     expect(html).toContain('FX Graph')
-    expect(html).toContain('FX Graph workspace coming soon')
+    expect(html).toContain('Open FX Graph workspace')
     expect(html).not.toContain('Track Input')
     expect(html).not.toContain('Track Output')
     expect(html).not.toContain('Xleth EQ')
@@ -165,7 +188,7 @@ describe('EffectChainPanel compact rack rendering', () => {
     expect(viewState.graphModeActive).toBe(true)
     expect(viewState.showingGraphShell).toBe(false)
     expect(viewState.chainButtonDisabled).toBe(true)
-    expect(viewState.nodeButtonDisabled).toBe(true)
+    expect(viewState.nodeButtonDisabled).toBe(false)
     expect(html).toContain('FX Graph Active')
     expect(html).toContain('Chain Locked')
     expect(html).toContain('Mixer Chain slot editing is locked')

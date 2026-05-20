@@ -48,11 +48,14 @@ describe('KeyboardManager', () => {
     expect(usePanelRegistry.getState().panels.timeline.hidden).toBe(true);
   });
 
-  it('F11 does not open the quarantined legacy nodeEditor panel', () => {
+  it('F11 opens the safe fxGraph shell without opening quarantined nodeEditor', () => {
+    expect(usePanelRegistry.getState().panels.fxGraph.hidden).toBe(true);
     expect(usePanelRegistry.getState().panels.nodeEditor.hidden).toBe(true);
 
     handleKeyEvent(keyEvent('F11'));
 
+    expect(usePanelRegistry.getState().panels.fxGraph.hidden).toBe(false);
+    expect(usePanelRegistry.getState().panels.fxGraph.focused).toBe(true);
     expect(usePanelRegistry.getState().panels.nodeEditor.hidden).toBe(true);
   });
 

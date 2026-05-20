@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import useEffectChainStore, { resolveFxMode, resolveFxPanelView } from '../../stores/effectChainStore.js'
 import useVstStore from '../../stores/vstStore.js'
+import { usePanelRegistry } from '../../windowing/registry/PanelRegistry'
 import EffectModule from './EffectModule.jsx'
 import TrackContextMenu from '../timeline/TrackContextMenu.jsx'
 
@@ -57,13 +58,13 @@ const EFFECT_CATEGORIES = [
 const EMPTY_CHAIN = []
 export const VISIBLE_LIMIT = 4
 export const FX_GRAPH_ENTRY_TITLE = 'FX Graph'
-export const FX_GRAPH_ENTRY_LABEL = 'Workspace Coming Soon'
-export const FX_GRAPH_ENTRY_MESSAGE = 'FX Graph will open in a separate workspace when safety work is complete.'
+export const FX_GRAPH_ENTRY_LABEL = 'Workspace Ready'
+export const FX_GRAPH_ENTRY_MESSAGE = 'Open the FX Graph workspace to view graph status. Mixer Chain remains active.'
 export const FX_GRAPH_ACTIVE_TITLE = 'FX Graph Active'
 export const FX_GRAPH_ACTIVE_LABEL = 'Chain Locked'
 export const FX_GRAPH_ACTIVE_MESSAGE = 'This track is owned by FX Graph routing. Mixer Chain slot editing is locked.'
 export const FX_GRAPH_SHELL_BUTTON_TITLE =
-  'Show FX Graph workspace status. The legacy graph editor is disabled.'
+  'Open FX Graph workspace. The legacy graph editor is disabled.'
 
 export function isSelectableEffectChainNode(effect) {
   return Number.isInteger(effect?.nodeId) && effect.nodeId !== -1
@@ -117,26 +118,34 @@ export function showEffectChainRack({ setFxPanelView, storeKey }) {
   setFxPanelView(storeKey, 'chain')
 }
 
-export function showEffectChainGraphShell({ setFxPanelView, storeKey }) {
-  setFxPanelView(storeKey, 'graphShell')
+export function openFxGraphWorkspace(panelRegistry = usePanelRegistry.getState()) {
+  panelRegistry.openPanel('fxGraph')
+}
+
+export function showEffectChainGraphShell({ panelRegistry = usePanelRegistry.getState() } = {}) {
+  openFxGraphWorkspace(panelRegistry)
 }
 
 export function getEffectChainPanelViewState(fxPanelView, fxMode = 'chain') {
   const graphModeActive = fxMode === 'graph'
-  const showingGraphShell = !graphModeActive && fxPanelView === 'graphShell'
+  const showingGraphShell = false
 
   return {
     showingGraphShell,
     graphModeActive,
-    chainButtonClassName: `effect-chain-mode-btn${showingGraphShell || graphModeActive ? '' : ' active'}`,
-    chainButtonDisabled: graphModeActive || !showingGraphShell,
-    nodeButtonClassName: `effect-chain-mode-btn${showingGraphShell || graphModeActive ? ' active' : ''}`,
-    nodeButtonDisabled: graphModeActive || showingGraphShell,
+    chainButtonClassName: `effect-chain-mode-btn${graphModeActive ? '' : ' active'}`,
+    chainButtonDisabled: graphModeActive,
+    nodeButtonClassName: `effect-chain-mode-btn${graphModeActive ? ' active' : ''}`,
+    nodeButtonDisabled: false,
     nodeButtonTitle: FX_GRAPH_SHELL_BUTTON_TITLE,
   }
 }
 
-export function EffectChainGraphShell({ active = false, chainLabel }) {
+export function EffectChainGraphShell({
+  active = false,
+  chainLabel,
+  onOpenWorkspace = () => openFxGraphWorkspace(),
+}) {
   return (
     <div className="effect-chain-shell" role="note" aria-label={`${chainLabel} graph shell`}>
       <div className="effect-chain-shell-header">
@@ -153,10 +162,10 @@ export function EffectChainGraphShell({ active = false, chainLabel }) {
       <button
         className="effect-chain-shell-action"
         type="button"
-        disabled
-        title="FX Graph workspace is not enabled in this phase"
+        onClick={onOpenWorkspace}
+        title="Open FX Graph workspace"
       >
-        FX Graph workspace coming soon
+        Open FX Graph workspace
       </button>
     </div>
   )
@@ -216,7 +225,7 @@ export default function EffectChainPanel({ trackId, master }) {
 
   const displayChain = dragOrder ?? chain
   const panelViewState = getEffectChainPanelViewState(fxPanelView, fxMode)
-  const { showingGraphShell, graphModeActive } = panelViewState
+  const { graphModeActive } = panelViewState
 
   useEffect(() => {
     fetchChain(key)
@@ -369,8 +378,8 @@ export default function EffectChainPanel({ trackId, master }) {
 
   const handleNodeMode = useCallback(() => {
     clearFloatingState()
-    showEffectChainGraphShell({ setFxPanelView, storeKey: key })
-  }, [clearFloatingState, key, setFxPanelView])
+    showEffectChainGraphShell()
+  }, [clearFloatingState])
 
   if (!master && trackId == null) return null
 
@@ -414,7 +423,7 @@ export default function EffectChainPanel({ trackId, master }) {
         </button>
       </div>
 
-      {showingGraphShell || graphModeActive ? (
+      {graphModeActive ? (
         <EffectChainGraphShell active={graphModeActive} chainLabel={chainLabel} />
       ) : (
         <>

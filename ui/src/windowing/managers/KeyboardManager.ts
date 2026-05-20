@@ -172,6 +172,7 @@ function registerDefaultBindings(): void {
   registerBinding('F8', () => usePanelRegistry.getState().togglePanel('preview'));
   registerBinding('F9', () => usePanelRegistry.getState().togglePanel('mixer'));
   registerBinding('F10', () => usePanelRegistry.getState().togglePanel('gridSettings'));
+  registerBinding('F11', () => usePanelRegistry.getState().togglePanel('fxGraph'));
   registerBinding('F12', () => usePanelRegistry.getState().togglePanel('sampler'));
   registerBinding('Escape', () => {
     if (cancelResizeIfActive()) return;
