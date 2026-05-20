@@ -751,6 +751,19 @@ bool Timeline::setTrackVideoHoldLastFrame(int trackId, bool hold) {
     return true;
 }
 
+bool Timeline::setTrackFxMode(int trackId, TrackFxMode mode) {
+    auto it = m_tracks.find(trackId);
+    if (it == m_tracks.end()) {
+        std::cout << "[Timeline] ERROR setTrackFxMode: trackId="
+                  << trackId << " not found\n";
+        return false;
+    }
+    it->second.fxMode = mode;
+    std::cout << "[Timeline] Set track id=" << trackId
+              << " fxMode=" << trackFxModeToString(mode) << "\n";
+    return true;
+}
+
 bool Timeline::setTrackCornerRadius(int trackId, float radius) {
     auto it = m_tracks.find(trackId);
     if (it == m_tracks.end()) {

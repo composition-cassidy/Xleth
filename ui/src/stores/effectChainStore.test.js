@@ -65,6 +65,56 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(audio.getEffectChain).toHaveBeenCalledWith(7)
   })
 
+  it('resolves only exact graph strings as graph fxMode', async () => {
+    const { DEFAULT_FX_MODE, resolveFxMode } = await loadEffectChainStoreFixture()
+
+    expect(resolveFxMode(undefined, '7')).toBe(DEFAULT_FX_MODE)
+    expect(resolveFxMode({ '7': null }, '7')).toBe(DEFAULT_FX_MODE)
+    expect(resolveFxMode({ '7': '' }, '7')).toBe(DEFAULT_FX_MODE)
+    expect(resolveFxMode({ '7': 'invalid' }, '7')).toBe(DEFAULT_FX_MODE)
+    expect(resolveFxMode({ '7': 'chain' }, '7')).toBe(DEFAULT_FX_MODE)
+    expect(resolveFxMode({ '7': 'graph' }, '7')).toBe('graph')
+    expect(resolveFxMode({ '7': 'Graph' }, '7')).toBe(DEFAULT_FX_MODE)
+    expect(resolveFxMode({ '7': 'GRAPH' }, '7')).toBe(DEFAULT_FX_MODE)
+  })
+
+  it('hydrates fxModes from mixed timeline tracks and treats master as chain', async () => {
+    const {
+      default: useEffectChainStore,
+      buildFxModesFromTracks,
+      resolveFxMode,
+    } = await loadEffectChainStoreFixture()
+    const tracks = [
+      { id: 7, fxMode: 'graph' },
+      { id: 8, fxMode: 'chain' },
+      { id: 9, fxMode: 'Graph' },
+      { id: 10 },
+    ]
+
+    expect(buildFxModesFromTracks(tracks)).toEqual({
+      '7': 'graph',
+      '8': 'chain',
+      '9': 'chain',
+      '10': 'chain',
+    })
+
+    useEffectChainStore.setState({
+      fxModes: { '7': 'chain', '8': 'graph', master: 'graph' },
+      fxPanelViews: { '7': 'graphShell', master: 'graphShell' },
+    })
+    useEffectChainStore.getState().hydrateFxModesFromTracks(tracks)
+
+    const state = useEffectChainStore.getState()
+    expect(state.fxModes).toEqual({
+      '7': 'graph',
+      '8': 'chain',
+      '9': 'chain',
+      '10': 'chain',
+    })
+    expect(state.fxPanelViews).toEqual({})
+    expect(resolveFxMode(state.fxModes, 'master')).toBe('chain')
+  })
+
   it('keeps add, remove, move, and bypass mutations working in chain mode', async () => {
     const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
     const baseChain = [
@@ -118,6 +168,29 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(useEffectChainStore.getState().chains['7']).toEqual(chainAfterBypass)
   })
 
+  it('keeps chain mode editable even if a legacy chain payload has topology metadata', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const legacyTopologyChain = [
+      { ...makeEffect(11, 'compressor', 0), outputs: [12] },
+      { ...makeEffect(12, 'delay', 1), inputs: [11] },
+    ]
+    const chainAfterAdd = [
+      ...legacyTopologyChain,
+      makeEffect(13, 'reverb', 2),
+    ]
+    audio.getEffectChain.mockResolvedValueOnce(JSON.stringify(chainAfterAdd))
+
+    useEffectChainStore.setState({
+      chains: { '7': legacyTopologyChain },
+      fxModes: { '7': 'chain' },
+    })
+
+    await expect(useEffectChainStore.getState().addEffect('7', 'reverb')).resolves.toBe(true)
+
+    expect(audio.addEffect).toHaveBeenCalledWith(7, 'reverb', 2)
+    expect(useEffectChainStore.getState().chains['7']).toEqual(chainAfterAdd)
+  })
+
   it('blocks chain mutations when fxMode is graph', async () => {
     const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
     const baseChain = [
@@ -165,5 +238,31 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(state.fxPanelViews['7']).toBe('chain')
     expect(state.chains['7']).toEqual(refreshedChain)
     expect(audio.getEffectChain).toHaveBeenCalledWith(7)
+  })
+
+  it('hydrates graph-owned tracks after project load without activating graph editing', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const refreshedChain = [makeEffect(11, 'compressor', 0)]
+
+    window.xleth.timeline = {
+      getTracks: vi.fn(async () => [{ id: 7, fxMode: 'graph' }]),
+    }
+    audio.getEffectChain.mockResolvedValueOnce(JSON.stringify(refreshedChain))
+
+    useEffectChainStore.setState({
+      chains: { '7': [makeEffect(11, 'compressor', 0)] },
+      fxModes: { '7': 'chain' },
+      fxPanelViews: { '7': 'graphShell' },
+    })
+
+    projectLoadedHandler()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    const state = useEffectChainStore.getState()
+    expect(state.fxModes['7']).toBe('graph')
+    expect(state.fxPanelViews).toEqual({})
+    expect(window.xleth.timeline.getTracks).toHaveBeenCalled()
+    expect(window.xleth.onGraphChanged).toHaveBeenCalled()
   })
 })

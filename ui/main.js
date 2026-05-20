@@ -641,6 +641,9 @@ ipcMain.handle('xleth:timeline:setTrackSolo',
 ipcMain.handle('xleth:timeline:setTrackName',
   safeHandler((_, trackId, name) => callWorker('timeline_setTrackName', [trackId, name])));
 
+ipcMain.handle('xleth:timeline:setTrackFxMode',
+  safeHandler((_, trackId, mode) => callWorker('timeline_setTrackFxMode', [trackId, mode])));
+
 ipcMain.handle('xleth:timeline:setPatternName',
   safeHandler((_, patternId, name) => callWorker('timeline_setPatternName', [patternId, name])));
 

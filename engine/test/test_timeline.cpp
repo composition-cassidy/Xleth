@@ -339,6 +339,101 @@ static void testVideoFlipConfigMigration() {
     }
 }
 
+static void testTrackFxModePersistence() {
+    std::cout << "[16] Track fxMode persistence\n";
+
+    CHECK(trackFxModeToString(TrackFxMode::Chain) == "chain",
+          "TrackFxMode::Chain serializes to chain");
+    CHECK(trackFxModeToString(TrackFxMode::Graph) == "graph",
+          "TrackFxMode::Graph serializes to graph");
+    CHECK(stringToTrackFxMode("chain") == TrackFxMode::Chain,
+          "chain parses as TrackFxMode::Chain");
+    CHECK(stringToTrackFxMode("graph") == TrackFxMode::Graph,
+          "graph parses as TrackFxMode::Graph");
+    CHECK(stringToTrackFxMode("Graph") == TrackFxMode::Chain,
+          "non-exact Graph parses as chain");
+    CHECK(stringToTrackFxMode("invalid") == TrackFxMode::Chain,
+          "invalid fxMode parses as chain");
+
+    {
+        TrackInfo t;
+        nlohmann::json saved = t;
+        CHECK(saved.contains("fxMode"), "default track JSON writes fxMode");
+        CHECK(saved["fxMode"].get<std::string>() == "chain",
+              "default track JSON writes fxMode=chain");
+    }
+
+    {
+        TrackInfo t;
+        t.fxMode = TrackFxMode::Graph;
+        nlohmann::json saved = t;
+        CHECK(saved["fxMode"].get<std::string>() == "graph",
+              "graph track JSON writes fxMode=graph");
+        TrackInfo loaded = saved.get<TrackInfo>();
+        CHECK(loaded.fxMode == TrackFxMode::Graph,
+              "graph track JSON reloads as graph");
+    }
+
+    {
+        nlohmann::json missing = makeMinimalTrackJson("None");
+        missing.erase("fxMode");
+        TrackInfo loaded = missing.get<TrackInfo>();
+        CHECK(loaded.fxMode == TrackFxMode::Chain,
+              "missing fxMode loads as chain");
+
+        nlohmann::json invalid = makeMinimalTrackJson("None");
+        invalid["fxMode"] = "invalid";
+        TrackInfo invalidLoaded = invalid.get<TrackInfo>();
+        CHECK(invalidLoaded.fxMode == TrackFxMode::Chain,
+              "invalid fxMode loads as chain");
+
+        nlohmann::json nullMode = makeMinimalTrackJson("None");
+        nullMode["fxMode"] = nullptr;
+        TrackInfo nullLoaded = nullMode.get<TrackInfo>();
+        CHECK(nullLoaded.fxMode == TrackFxMode::Chain,
+              "null fxMode loads as chain");
+    }
+
+    {
+        Timeline tl;
+        TrackInfo chainTrack;
+        chainTrack.name = "Chain";
+        chainTrack.order = 0;
+        const int chainId = tl.addTrack(chainTrack);
+
+        TrackInfo graphTrack;
+        graphTrack.name = "Graph";
+        graphTrack.order = 1;
+        graphTrack.fxMode = TrackFxMode::Graph;
+        const int graphId = tl.addTrack(graphTrack);
+
+        nlohmann::json saved = tl.toJSON();
+        CHECK(saved["tracks"].size() == 2, "mixed-mode project writes two tracks");
+        CHECK(saved["tracks"][0]["fxMode"].get<std::string>() == "chain",
+              "mixed-mode project writes chain track");
+        CHECK(saved["tracks"][1]["fxMode"].get<std::string>() == "graph",
+              "mixed-mode project writes graph track");
+
+        Timeline loaded;
+        CHECK(loaded.fromJSON(saved), "mixed-mode project reloads");
+        CHECK(loaded.getTrack(chainId)->fxMode == TrackFxMode::Chain,
+              "mixed-mode reload preserves chain");
+        CHECK(loaded.getTrack(graphId)->fxMode == TrackFxMode::Graph,
+              "mixed-mode reload preserves graph");
+
+        for (auto& trackJson : saved["tracks"]) {
+            trackJson.erase("fxMode");
+        }
+
+        Timeline oldProject;
+        CHECK(oldProject.fromJSON(saved), "old project without fxMode fields reloads");
+        CHECK(oldProject.getTrack(chainId)->fxMode == TrackFxMode::Chain,
+              "old project chain track defaults to chain");
+        CHECK(oldProject.getTrack(graphId)->fxMode == TrackFxMode::Chain,
+              "old project graphless track defaults to chain");
+    }
+}
+
 int main() {
     std::cout << "=== Xleth Timeline Test Suite (Phase 1) ===\n\n";
 
@@ -697,6 +792,7 @@ int main() {
 
     // ── [15] VideoFlipConfig migration round-trip ─────────────────────────────
     testVideoFlipConfigMigration();
+    testTrackFxModePersistence();
 
     // ── [16] Track color metadata persistence (Pass 6D) ───────────────────────
     {

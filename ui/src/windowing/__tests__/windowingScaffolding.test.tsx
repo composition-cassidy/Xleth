@@ -1,4 +1,6 @@
 import React from 'react';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { AppShell } from '../AppShell';
@@ -13,6 +15,10 @@ import {
   type PanelState,
 } from '../registry/PanelRegistry';
 import { PANEL_CATALOG, PANEL_CATALOG_ORDER, PANEL_IDS, type PanelId } from '../registry/panelCatalog';
+
+function readUiSource(relativePath: string) {
+  return readFileSync(path.resolve(process.cwd(), 'src', relativePath), 'utf8');
+}
 
 function resetRegistry() {
   usePanelRegistry.setState({ panels: createInitialPanelStates() });
@@ -120,6 +126,13 @@ describe('PanelFrame render paths', () => {
     expect(html).not.toContain('Node Editor (F11)');
   });
 
+  it('keeps active production window paths from mounting the quarantined nodeEditor panel', () => {
+    const appShellSource = readUiSource('windowing/AppShell.tsx');
+    expect(appShellSource).toContain("production: [");
+    expect(appShellSource).not.toMatch(/production:\s*\[[\s\S]*['"]nodeEditor['"]/);
+    expect(PANEL_CATALOG_ORDER.map((entry) => entry.id)).not.toContain('nodeEditor');
+  });
+
   it('registers fxGraph as the safe active FX Graph workspace shell', () => {
     expect(PANEL_IDS).toContain('fxGraph');
     expect(PANEL_CATALOG.fxGraph.title).toBe('FX Graph');
@@ -145,15 +158,25 @@ describe('PanelFrame render paths', () => {
     expect(html).not.toContain('react-flow');
   });
 
+  it('keeps the FX Graph shell free of live NodeEditor and nodeGraphStore imports', () => {
+    const fxGraphPanelSource = readUiSource('windowing/panels/FxGraphPanel.tsx');
+    expect(fxGraphPanelSource).not.toContain('NodeEditor');
+    expect(fxGraphPanelSource).not.toContain('nodeGraphStore');
+    expect(fxGraphPanelSource).not.toContain('react-flow');
+  });
+
   it('renders only the nodeEditor quarantine placeholder when reached by stale layout state', () => {
     usePanelRegistry.getState().openPanel('nodeEditor');
 
     const html = renderToStaticMarkup(<NodeEditorPanel />);
+    const nodeEditorPanelSource = readUiSource('windowing/panels/NodeEditorPanel.tsx');
 
     expect(html).toContain('Legacy Node Editor Disabled');
     expect(html).toContain('FX Graph will return in a separate workspace');
     expect(html).not.toContain('react-flow');
     expect(html).not.toContain('NodeEditor');
+    expect(nodeEditorPanelSource).not.toContain('NodeEditor.jsx');
+    expect(nodeEditorPanelSource).not.toContain('nodeGraphStore');
   });
 
   it('returns empty markup for hidden, docked, and maximized phase 1 stubs', () => {

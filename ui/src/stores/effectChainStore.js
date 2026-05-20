@@ -26,7 +26,18 @@ function parseChain(raw) {
 }
 
 export function resolveFxMode(fxModes = {}, key) {
+  if (key === 'master') return DEFAULT_FX_MODE
   return fxModes?.[key] === 'graph' ? 'graph' : DEFAULT_FX_MODE
+}
+
+export function buildFxModesFromTracks(tracks = []) {
+  if (!Array.isArray(tracks)) return {}
+  return tracks.reduce((nextFxModes, track) => {
+    if (track?.id == null) return nextFxModes
+    const key = String(track.id)
+    nextFxModes[key] = track.fxMode === 'graph' ? 'graph' : DEFAULT_FX_MODE
+    return nextFxModes
+  }, {})
 }
 
 export function resolveFxPanelView(fxPanelViews = {}, key) {
@@ -69,8 +80,16 @@ const useEffectChainStore = create((set, get) => ({
     }
   },
 
+  hydrateFxModesFromTracks: (tracks) => {
+    set({
+      fxModes: buildFxModesFromTracks(tracks),
+      fxPanelViews: {},
+    })
+  },
+
   setFxMode: (key, mode) => {
-    const nextMode = mode === 'graph' ? 'graph' : DEFAULT_FX_MODE
+    // FX ownership transfer undo/redo is intentionally deferred to FXG.2.
+    const nextMode = key !== 'master' && mode === 'graph' ? 'graph' : DEFAULT_FX_MODE
     set((state) => ({ fxModes: { ...state.fxModes, [key]: nextMode } }))
   },
 
@@ -216,6 +235,14 @@ window.xleth?.onProjectLoaded?.(() => {
   for (const key of Object.keys(chains)) {
     fetchChain(key)
   }
+
+  window.xleth?.timeline?.getTracks?.()
+    ?.then?.((tracks) => {
+      useEffectChainStore.getState().hydrateFxModesFromTracks(tracks)
+    })
+    ?.catch?.((e) => {
+      console.warn('[effectChainStore] fxMode hydration failed:', e?.message)
+    })
 })
 
 export default useEffectChainStore

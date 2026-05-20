@@ -23,6 +23,8 @@ export const PANEL_IDS = [
 ] as const;
 
 export type PanelId = (typeof PANEL_IDS)[number];
+// The legacy nodeEditor panel remains quarantined: NodeEditor.jsx can mutate
+// live graph topology and must not return before graphState and FXG.2C gates.
 export const QUARANTINED_PANEL_IDS = ['nodeEditor'] as const;
 export const ACTIVE_PANEL_IDS = PANEL_IDS.filter(
   (id): id is Exclude<PanelId, (typeof QUARANTINED_PANEL_IDS)[number]> => (

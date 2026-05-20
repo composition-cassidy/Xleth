@@ -229,6 +229,7 @@ void to_json(nlohmann::json& j, const TrackInfo& t) {
         {"videoOpacity",      t.videoOpacity},
         {"videoZOrder",       t.videoZOrder},
         {"type",              trackTypeToString(t.type)},
+        {"fxMode",            trackFxModeToString(t.fxMode)},
         {"videoHoldLastFrame", t.videoHoldLastFrame}
     };
     // videoFlipConfig is a nested object — append after the flat initializer.
@@ -365,6 +366,9 @@ void from_json(const nlohmann::json& j, TrackInfo& t) {
 
     // Backward-compat fields for the pattern/sampler extension.
     t.type              = stringToTrackType(j.value("type", std::string("Clip")));
+    t.fxMode            = (j.contains("fxMode") && j.at("fxMode").is_string())
+        ? stringToTrackFxMode(j.at("fxMode").get<std::string>())
+        : TrackFxMode::Chain;
     // Legacy fields (assignedRegionId, assignedPatternId) read and discarded
     // for backward compatibility — pattern tracks no longer bind to a region.
     (void)j.value("assignedRegionId",  -1);

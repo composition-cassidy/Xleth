@@ -892,6 +892,16 @@ struct PatternBlock {
 
 enum class TrackColorMode { Auto, PaletteSlot, Custom };
 
+enum class TrackFxMode { Chain, Graph };
+
+inline std::string trackFxModeToString(TrackFxMode m) {
+    return m == TrackFxMode::Graph ? "graph" : "chain";
+}
+
+inline TrackFxMode stringToTrackFxMode(const std::string& s) {
+    return s == "graph" ? TrackFxMode::Graph : TrackFxMode::Chain;
+}
+
 inline std::string trackColorModeToString(TrackColorMode m) {
     switch (m) {
         case TrackColorMode::PaletteSlot: return "paletteSlot";
@@ -989,6 +999,10 @@ struct TrackInfo {
     TrackColorMode trackColorMode   = TrackColorMode::Auto;
     int            trackColorSlot   = 0;   // 1..16 when PaletteSlot; 0 = unassigned
     std::string    trackColorCustom = "";  // "#RRGGBB" when Custom; empty otherwise
+
+    // Per-track FX ownership. Chain is the default FL-style workflow; Graph is
+    // optional ownership for the future separate FX Graph workspace.
+    TrackFxMode    fxMode           = TrackFxMode::Chain;
 };
 
 inline std::string trackTypeToString(TrackInfo::Type t) {

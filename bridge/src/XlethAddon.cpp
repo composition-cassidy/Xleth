@@ -1456,6 +1456,7 @@ static Napi::Object trackToJs(Napi::Env env, const TrackInfo& t) {
     o.Set("visualOnly",        Napi::Boolean::New(env, t.visualOnly));
     o.Set("order",             Napi::Number::New(env, t.order));
     o.Set("type",              Napi::String::New(env, trackTypeToString(t.type)));
+    o.Set("fxMode",            Napi::String::New(env, trackFxModeToString(t.fxMode)));
     // videoFlipMode: derived from videoFlipConfig for UI backward compatibility
     // until Phase 5 replaces the context-menu submenu with the v2 Flip Properties panel.
     o.Set("videoFlipMode", Napi::String::New(env, videoFlipConfigToLegacyMode(t.videoFlipConfig)));
@@ -4339,6 +4340,31 @@ void Timeline_SetTrackName(const Napi::CallbackInfo& info)
         std::make_unique<SetTrackNameCommand>(trackId, name, *g_timeline),
         *g_timeline);
     log.done(std::to_string(trackId) + "=\"" + name + "\"");
+}
+
+// timeline_setTrackFxMode(trackId, mode) -> true on success, false for unknown track.
+// Undo/redo for FX ownership transfer is intentionally deferred to FXG.2.
+Napi::Value Timeline_SetTrackFxMode(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsString()) {
+        Napi::TypeError::New(env, "timeline_setTrackFxMode(trackId: number, mode: 'chain'|'graph')")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    const int trackId = info[0].As<Napi::Number>().Int32Value();
+    const std::string modeString = info[1].As<Napi::String>().Utf8Value();
+    const TrackFxMode mode = stringToTrackFxMode(modeString);
+    BridgeCallLog log("timeline.setTrackFxMode");
+
+    const bool ok = g_timeline->setTrackFxMode(trackId, mode);
+    log.done(ok ? trackFxModeToString(mode) : "track-not-found");
+    return Napi::Boolean::New(env, ok);
 }
 
 // timeline_setPatternName(patternId, name) — undo-tracked rename
@@ -12498,6 +12524,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("timeline_setTrackVisualOnly", Napi::Function::New(env, Timeline_SetTrackVisualOnly));
     exports.Set("timeline_setTrackSolo",       Napi::Function::New(env, Timeline_SetTrackSolo));
     exports.Set("timeline_setTrackName", Napi::Function::New(env, Timeline_SetTrackName));
+    exports.Set("timeline_setTrackFxMode", Napi::Function::New(env, Timeline_SetTrackFxMode));
     exports.Set("timeline_setPatternName",   Napi::Function::New(env, Timeline_SetPatternName));
     exports.Set("timeline_setPatternRegion", Napi::Function::New(env, Timeline_SetPatternRegion));
     exports.Set("timeline_addClip",          Napi::Function::New(env, Timeline_AddClip));
