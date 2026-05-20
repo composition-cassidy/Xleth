@@ -1,6 +1,7 @@
 export const GRAPH_STATE_SCHEMA_VERSION = 1
 
 const DEFAULT_VIEWPORT = Object.freeze({ x: 0, y: 0, zoom: 1 })
+const DEFAULT_NODE_POSITION = Object.freeze({ x: 0, y: 0 })
 const MIN_VIEWPORT_ZOOM = 0.1
 const MAX_VIEWPORT_ZOOM = 4
 
@@ -72,6 +73,29 @@ function defaultViewportWithWarnings(raw, trackId, warnings) {
   }
 }
 
+function nodePositionWithWarnings(raw, trackId, warnings, nodeId) {
+  if (raw == null) return undefined
+  if (!isPlainObject(raw)) {
+    warnings.push(makeWarning('invalidNodePosition', trackId, 'invalid graphState node position; using defaults', { nodeId }))
+    return { ...DEFAULT_NODE_POSITION }
+  }
+
+  const hasValidX = Number.isFinite(raw.x)
+  const hasValidY = Number.isFinite(raw.y)
+  if (!hasValidX || !hasValidY) {
+    warnings.push(makeWarning('invalidNodePosition', trackId, 'invalid graphState node position fields; using safe defaults', { nodeId }))
+  }
+
+  return {
+    x: hasValidX ? raw.x : DEFAULT_NODE_POSITION.x,
+    y: hasValidY ? raw.y : DEFAULT_NODE_POSITION.y,
+  }
+}
+
+function withNodePosition(node, position) {
+  return position == null ? node : { ...node, position }
+}
+
 function validateEffectNodeData(node, trackId, warnings) {
   if (!isPlainObject(node.data)) {
     return { ok: false, reason: 'invalid_effect_node_data' }
@@ -117,6 +141,8 @@ function normalizeNode(node, trackId, warnings) {
     return { ok: false, reason: 'invalid_node_type' }
   }
 
+  const position = nodePositionWithWarnings(node.position, trackId, warnings, node.id)
+
   if (!NODE_TYPES.has(node.type)) {
     warnings.push(makeWarning('unknownNodeType', trackId, 'unknown graphState node type preserved as unknown', {
       nodeId: node.id,
@@ -124,14 +150,14 @@ function normalizeNode(node, trackId, warnings) {
     }))
     return {
       ok: true,
-      node: {
+      node: withNodePosition({
         id: node.id,
         type: 'unknown',
         data: {
           _preservedType: node.type,
           _preservedData: isPlainObject(node.data) ? cloneJson(node.data) : {},
         },
-      },
+      }, position),
     }
   }
 
@@ -140,21 +166,21 @@ function normalizeNode(node, trackId, warnings) {
     if (!effectData.ok) return effectData
     return {
       ok: true,
-      node: {
+      node: withNodePosition({
         id: node.id,
         type: 'effect',
         data: effectData.data,
-      },
+      }, position),
     }
   }
 
   return {
     ok: true,
-    node: {
+    node: withNodePosition({
       id: node.id,
       type: node.type,
       data: isPlainObject(node.data) ? cloneJson(node.data) : {},
-    },
+    }, position),
   }
 }
 

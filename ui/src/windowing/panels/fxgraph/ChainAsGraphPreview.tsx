@@ -1,4 +1,5 @@
 import React from 'react';
+import { resolveChainEffectDisplayName } from '../../../fxgraph/chainToGraphState.js';
 
 export interface ChainEffect {
   nodeId?: number;
@@ -23,40 +24,11 @@ interface ChainAsGraphPreviewProps {
   vstPlugins?: VstPluginMeta[];
 }
 
-const STOCK_EFFECT_LABELS: Record<string, string> = {
-  testgain: 'Test Gain',
-  compressor: 'Compressor',
-  limiter: 'Limiter',
-  overdone: 'Overdone',
-  transientproc: 'Transient Proc',
-  xletheq: 'Xleth EQ',
-  xlethfilter: 'Xleth Filter',
-  distortion: 'Distortion',
-  waveshaper: 'Waveshaper',
-  uniflange: 'UniFlange',
-  chorus: 'Chorus',
-  flanger: 'Flanger',
-  phaser: 'Phaser',
-  phanjer: 'Phanjer',
-  delay: 'Delay',
-  reverb: 'Reverb',
-  smartbalance: 'Smart Balance',
-  resonancesuppressor: 'Resonance Suppressor',
-};
-
 export function resolvePreviewEffectLabel(
   effect: ChainEffect,
   vstPlugins: VstPluginMeta[] = [],
 ) {
-  const explicitLabel = effect.displayName || effect.label || effect.name;
-  if (explicitLabel) return explicitLabel;
-
-  const pluginId = effect.pluginId ?? '';
-  const stockLabel = STOCK_EFFECT_LABELS[pluginId];
-  if (stockLabel) return stockLabel;
-
-  const vstMeta = vstPlugins.find((plugin) => plugin.id === pluginId);
-  return vstMeta?.name || pluginId || 'Effect';
+  return resolveChainEffectDisplayName(effect, vstPlugins);
 }
 
 function PreviewConnector() {

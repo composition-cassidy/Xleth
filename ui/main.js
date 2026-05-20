@@ -644,6 +644,9 @@ ipcMain.handle('xleth:timeline:setTrackName',
 ipcMain.handle('xleth:timeline:setTrackFxMode',
   safeHandler((_, trackId, mode) => callWorker('timeline_setTrackFxMode', [trackId, mode])));
 
+ipcMain.handle('xleth:timeline:setTrackGraphState',
+  safeHandler((_, trackId, graphState) => callWorker('timeline_setTrackGraphState', [trackId, graphState])));
+
 ipcMain.handle('xleth:timeline:setPatternName',
   safeHandler((_, patternId, name) => callWorker('timeline_setPatternName', [patternId, name])));
 

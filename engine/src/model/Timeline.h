@@ -133,6 +133,7 @@ public:
     bool setTrackVideoFlipConfig(int trackId, const VideoFlipConfig& config);
     bool setTrackVideoHoldLastFrame(int trackId, bool hold);
     bool setTrackFxMode(int trackId, TrackFxMode mode);
+    bool setTrackGraphState(int trackId, const nlohmann::json& graphState);
     bool setTrackCornerRadius(int trackId, float radius);
     bool setTrackGapScaleOverride(int trackId, float gapScale);
     bool setTrackSubdivisionFactor(int trackId, int factor);

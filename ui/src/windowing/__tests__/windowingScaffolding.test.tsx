@@ -173,14 +173,14 @@ describe('PanelFrame render paths', () => {
     expect(html).not.toContain('FX Graph Mode Active');
   });
 
-  it('shows the Use Graph Mode action only for a selected chain-mode track', () => {
+  it('shows the chain conversion action only for a selected chain-mode track', () => {
     const html = renderToStaticMarkup(
       <FxGraphPanelContent trackId={7} trackLabel="Lead Vox" fxMode="chain" />,
     );
 
     expect(html).toContain('Lead Vox');
-    expect(html).toContain('Use Graph Mode');
-    expect(html).toContain('This will lock Mixer Chain editing for this track.');
+    expect(html).toContain('Convert Chain to FX Graph');
+    expect(html).toContain('This creates a read-only graphState snapshot from the current Mixer Chain.');
     expect(html).toContain('Preview only. Mixer Chain still owns routing.');
     expect(html).not.toContain('FX Graph Mode Active');
   });
@@ -239,20 +239,21 @@ describe('PanelFrame render paths', () => {
     expect(html).not.toContain('effect-module-bypass');
   });
 
-  it('keeps graph-mode tracks dormant and hides the active Use Graph Mode action', () => {
+  it('keeps graph-mode tracks dormant and hides the active conversion action', () => {
     const html = renderToStaticMarkup(
       <FxGraphPanelContent
         trackId={7}
         trackLabel="Lead Vox"
         fxMode="graph"
+        graphStateStatus="valid"
         chain={[{ nodeId: 1, pluginId: 'compressor', position: 0 }]}
       />,
     );
 
     expect(html).toContain('FX Graph Mode Active');
-    expect(html).toContain('Mixer Chain editing is locked for this track.');
+    expect(html).toContain('A read-only graphState snapshot has been created for this track.');
     expect(html).toContain('Editable graph routing is coming in a later phase.');
-    expect(html).not.toContain('>Use Graph Mode<');
+    expect(html).not.toContain('>Convert Chain to FX Graph<');
     expect(html).not.toContain('Track Input');
     expect(html).not.toContain('Compressor');
     expect(html).not.toContain('xleth-chain-graph-preview');
@@ -265,7 +266,7 @@ describe('PanelFrame render paths', () => {
 
     expect(html).toContain('MASTER');
     expect(html).toContain('Master track FX stay in Mixer Chain mode in this phase.');
-    expect(html).not.toContain('Use Graph Mode');
+    expect(html).not.toContain('Convert Chain to FX Graph');
     expect(html).not.toContain('Track Input');
   });
 
@@ -284,98 +285,120 @@ describe('PanelFrame render paths', () => {
 
     const html = renderToStaticMarkup(<FxGraphPanel />);
 
-    expect(html).toContain('Use Graph Mode');
+    expect(html).toContain('Convert Chain to FX Graph');
     expect(html).toContain('Track Input');
     expect(useEffectChainStore.getState().fxModes['7']).toBe('chain');
   });
 
   it('canceling graph-mode confirmation leaves state and bridge untouched', async () => {
-    const setFxMode = vi.fn();
-    const persistFxMode = vi.fn();
+    const convertChainToGraphMode = vi.fn();
     const cancel = vi.fn();
 
     cancel();
 
-    expect(setFxMode).not.toHaveBeenCalled();
-    expect(persistFxMode).not.toHaveBeenCalled();
+    expect(convertChainToGraphMode).not.toHaveBeenCalled();
   });
 
-  it('confirming graph mode updates renderer state and persists through the timeline bridge', async () => {
-    const setFxMode = vi.fn();
-    const persistFxMode = vi.fn(async () => true);
+  it('confirming graph mode calls the conversion action', async () => {
+    const convertChainToGraphMode = vi.fn(async () => ({ ok: true }));
 
     const ok = await activateFxGraphMode({
       trackId: 7,
       currentFxMode: 'chain',
-      setFxMode,
-      persistFxMode,
+      convertChainToGraphMode,
       warn: vi.fn(),
     });
 
     expect(ok).toBe(true);
-    expect(setFxMode).toHaveBeenCalledWith('7', 'graph');
-    expect(persistFxMode).toHaveBeenCalledWith(7, 'graph');
+    expect(convertChainToGraphMode).toHaveBeenCalledWith(7, { warn: expect.any(Function) });
   });
 
-  it('uses window.xleth.timeline.setTrackFxMode as the default persistence path', async () => {
+  it('uses graphState and fxMode timeline setters as the default persistence path', async () => {
+    const { default: useEffectChainStore } = await import('../../stores/effectChainStore.js');
     const previousWindow = (globalThis as any).window;
+    const setTrackGraphState = vi.fn(async () => true);
     const setTrackFxMode = vi.fn(async () => true);
     (globalThis as any).window = {
       xleth: {
-        timeline: { setTrackFxMode },
+        timeline: { setTrackGraphState, setTrackFxMode },
       },
     };
+    useEffectChainStore.setState({
+      chains: { '7': [{ nodeId: 11, pluginId: 'compressor', position: 0 }] },
+      fxModes: { '7': 'chain' },
+      graphStates: { '7': null },
+      graphStateStatuses: {},
+    });
 
     try {
       await activateFxGraphMode({
         trackId: 7,
         currentFxMode: 'chain',
-        setFxMode: vi.fn(),
         warn: vi.fn(),
       });
     } finally {
       (globalThis as any).window = previousWindow;
     }
 
+    expect(setTrackGraphState).toHaveBeenCalledWith(7, expect.objectContaining({
+      schemaVersion: 1,
+      trackId: '7',
+    }));
     expect(setTrackFxMode).toHaveBeenCalledWith(7, 'graph');
+    expect(useEffectChainStore.getState().fxModes['7']).toBe('graph');
+    expect(useEffectChainStore.getState().graphStateStatuses['7'].status).toBe('valid');
   });
 
   it('reverts renderer state when graph-mode persistence fails', async () => {
-    const setFxMode = vi.fn();
+    const { default: useEffectChainStore } = await import('../../stores/effectChainStore.js');
+    const previousWindow = (globalThis as any).window;
+    const setTrackGraphState = vi.fn(async () => true);
+    const setTrackFxMode = vi.fn(async () => false);
     const warn = vi.fn();
-
-    const ok = await activateFxGraphMode({
-      trackId: 7,
-      currentFxMode: 'chain',
-      setFxMode,
-      persistFxMode: vi.fn(async () => false),
-      warn,
+    (globalThis as any).window = {
+      xleth: {
+        timeline: { setTrackGraphState, setTrackFxMode },
+      },
+    };
+    useEffectChainStore.setState({
+      chains: { '7': [{ nodeId: 11, pluginId: 'compressor', position: 0 }] },
+      fxModes: { '7': 'chain' },
+      graphStates: { '7': null },
+      graphStateStatuses: {},
     });
 
+    let ok = false;
+    try {
+      ok = await activateFxGraphMode({
+        trackId: 7,
+        currentFxMode: 'chain',
+        warn,
+      });
+    } finally {
+      (globalThis as any).window = previousWindow;
+    }
+
     expect(ok).toBe(false);
-    expect(setFxMode).toHaveBeenNthCalledWith(1, '7', 'graph');
-    expect(setFxMode).toHaveBeenNthCalledWith(2, '7', 'chain');
+    expect(useEffectChainStore.getState().fxModes['7']).toBe('chain');
+    expect(useEffectChainStore.getState().graphStates['7']).toBeNull();
+    expect(setTrackGraphState).toHaveBeenCalledTimes(2);
     expect(warn).toHaveBeenCalled();
   });
 
   it('does not activate graph mode for master or already graph-owned tracks', async () => {
-    const setFxMode = vi.fn();
-    const persistFxMode = vi.fn();
+    const convertChainToGraphMode = vi.fn();
 
     await activateFxGraphMode({
       trackId: 'master',
-      setFxMode,
-      persistFxMode,
+      convertChainToGraphMode,
     });
     await activateFxGraphMode({
       trackId: 7,
       currentFxMode: 'graph',
-      setFxMode,
-      persistFxMode,
+      convertChainToGraphMode,
     });
 
-    expect(setFxMode).not.toHaveBeenCalled();
-    expect(persistFxMode).not.toHaveBeenCalled();
+    expect(convertChainToGraphMode).not.toHaveBeenCalled();
   });
 
   it('keeps the FX Graph shell free of live NodeEditor and nodeGraphStore imports', () => {

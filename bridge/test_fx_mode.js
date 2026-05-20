@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 function findAddon() {
-  for (const config of ['Debug', 'Release']) {
+  for (const config of ['Release', 'Debug']) {
     const addonPath = path.resolve(__dirname, 'build', config, 'xleth_native.node');
     if (fs.existsSync(addonPath)) return addonPath;
   }
@@ -51,6 +51,26 @@ try {
   ok(addon.timeline_setTrackFxMode(trackId, 'invalid') === true, 'invalid fxMode safely clamps');
   ok(trackById(trackId).fxMode === 'chain', 'invalid fxMode payload is chain');
 
+  const graphState = {
+    schemaVersion: 1,
+    trackId: String(trackId),
+    nodes: 'renderer-owned opaque payload',
+    edges: [{ sourceNodeId: 'not validated in bridge' }],
+  };
+  ok(addon.timeline_setTrackGraphState(trackId, graphState) === true, 'set graphState returns true');
+  const storedGraphState = trackById(trackId).graphState;
+  ok(
+    storedGraphState.schemaVersion === graphState.schemaVersion &&
+      storedGraphState.trackId === graphState.trackId &&
+      storedGraphState.nodes === graphState.nodes &&
+      storedGraphState.edges[0].sourceNodeId === graphState.edges[0].sourceNodeId,
+    'track payload includes opaque graphState'
+  );
+
+  ok(addon.timeline_setTrackGraphState(trackId, null) === true, 'clear graphState returns true');
+  ok(!Object.prototype.hasOwnProperty.call(trackById(trackId), 'graphState'), 'missing graphState is omitted safely');
+
+  ok(addon.timeline_setTrackGraphState(999999, graphState) === false, 'missing track graphState returns false');
   ok(addon.timeline_setTrackFxMode(999999, 'graph') === false, 'missing track returns false');
 
   addon.shutdown();

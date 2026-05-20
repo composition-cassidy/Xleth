@@ -4432,6 +4432,30 @@ Napi::Value Timeline_SetTrackFxMode(const Napi::CallbackInfo& info)
     return Napi::Boolean::New(env, ok);
 }
 
+// timeline_setTrackGraphState(trackId, graphState) -> true on success.
+// Renderer owns graphState semantics; the engine stores this JSON opaquely.
+Napi::Value Timeline_SetTrackGraphState(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber()) {
+        Napi::TypeError::New(env, "timeline_setTrackGraphState(trackId: number, graphState: any)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    const int trackId = info[0].As<Napi::Number>().Int32Value();
+    const nlohmann::json graphState = napiToJson(info[1]);
+    BridgeCallLog log("timeline.setTrackGraphState");
+
+    const bool ok = g_timeline->setTrackGraphState(trackId, graphState);
+    log.done(ok ? "stored" : "track-not-found");
+    return Napi::Boolean::New(env, ok);
+}
+
 // timeline_setPatternName(patternId, name) — undo-tracked rename
 void Timeline_SetPatternName(const Napi::CallbackInfo& info)
 {
@@ -12590,6 +12614,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("timeline_setTrackSolo",       Napi::Function::New(env, Timeline_SetTrackSolo));
     exports.Set("timeline_setTrackName", Napi::Function::New(env, Timeline_SetTrackName));
     exports.Set("timeline_setTrackFxMode", Napi::Function::New(env, Timeline_SetTrackFxMode));
+    exports.Set("timeline_setTrackGraphState", Napi::Function::New(env, Timeline_SetTrackGraphState));
     exports.Set("timeline_setPatternName",   Napi::Function::New(env, Timeline_SetPatternName));
     exports.Set("timeline_setPatternRegion", Napi::Function::New(env, Timeline_SetPatternRegion));
     exports.Set("timeline_addClip",          Napi::Function::New(env, Timeline_AddClip));

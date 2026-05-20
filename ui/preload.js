@@ -116,6 +116,7 @@ window.xleth = ({
     setTrackSolo:       (trackId, solo)       => invoke('xleth:timeline:setTrackSolo', trackId, solo),
     setTrackName:     (trackId, name)       => invoke('xleth:timeline:setTrackName', trackId, name),
     setTrackFxMode:   (trackId, mode)       => invoke('xleth:timeline:setTrackFxMode', trackId, mode),
+    setTrackGraphState: (trackId, graphState) => invoke('xleth:timeline:setTrackGraphState', trackId, graphState),
     setPatternName:   (patternId, name)     => invoke('xleth:timeline:setPatternName', patternId, name),
     setPatternRegion: (patternId, regionId) => invoke('xleth:timeline:setPatternRegion', patternId, regionId),
     convertToPatternTrack: (trackId)        => invoke('xleth:timeline:convertToPatternTrack', trackId),

@@ -52,6 +52,7 @@ async function loadEffectChainStoreFixture() {
 
 describe('effectChainStore FX mode safety gate', () => {
   let audio
+  let timeline
   let projectLoadedHandler = null
 
   beforeEach(() => {
@@ -70,10 +71,15 @@ describe('effectChainStore FX mode safety gate', () => {
       setEffectBypass: vi.fn(async () => true),
       setMasterEffectBypass: vi.fn(async () => true),
     }
+    timeline = {
+      setTrackGraphState: vi.fn(async () => true),
+      setTrackFxMode: vi.fn(async () => true),
+    }
 
     globalThis.window = {
       xleth: {
         audio,
+        timeline,
         onGraphChanged: vi.fn(() => () => {}),
         onProjectLoaded: vi.fn((callback) => {
           projectLoadedHandler = callback
@@ -357,6 +363,142 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(audio.moveEffect).not.toHaveBeenCalled()
     expect(audio.setEffectBypass).not.toHaveBeenCalled()
     expect(useEffectChainStore.getState().chains['7']).toEqual(baseChain)
+  })
+
+  it('converts chain mode to graphState and graph fxMode atomically in renderer state', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const baseChain = [
+      makeEffect(11, 'compressor', 0),
+      makeEffect(12, 'delay', 1, true),
+    ]
+    useEffectChainStore.setState({
+      chains: { '7': baseChain },
+      fxModes: { '7': 'chain' },
+      graphStates: { '7': null },
+    })
+
+    const result = await useEffectChainStore.getState().convertChainToGraphMode(7, {
+      warn: vi.fn(),
+    })
+
+    const state = useEffectChainStore.getState()
+    expect(result.ok).toBe(true)
+    expect(state.fxModes['7']).toBe('graph')
+    expect(state.graphStateStatuses['7'].status).toBe('valid')
+    expect(state.graphStates['7']).toMatchObject({
+      schemaVersion: 1,
+      trackId: '7',
+      viewport: { x: 0, y: 0, zoom: 1 },
+    })
+    expect(state.graphStates['7'].nodes.filter((node) => node.type === 'effect')).toHaveLength(2)
+    expect(state.chains['7']).toEqual(baseChain)
+    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, state.graphStates['7'])
+    expect(timeline.setTrackFxMode).toHaveBeenCalledWith(7, 'graph')
+    expect(timeline.setTrackGraphState.mock.invocationCallOrder[0])
+      .toBeLessThan(timeline.setTrackFxMode.mock.invocationCallOrder[0])
+  })
+
+  it('rejects master, missing, and already graph-mode conversion without persistence', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    useEffectChainStore.setState({
+      chains: { '7': [makeEffect(11, 'compressor', 0)] },
+      fxModes: { '7': 'graph' },
+    })
+
+    await expect(useEffectChainStore.getState().convertChainToGraphMode('master')).resolves.toMatchObject({
+      ok: false,
+      reason: 'master_track',
+    })
+    await expect(useEffectChainStore.getState().convertChainToGraphMode(null)).resolves.toMatchObject({
+      ok: false,
+      reason: 'no_track',
+    })
+    await expect(useEffectChainStore.getState().convertChainToGraphMode(7)).resolves.toMatchObject({
+      ok: false,
+      reason: 'already_graph',
+    })
+
+    expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+    expect(timeline.setTrackFxMode).not.toHaveBeenCalled()
+  })
+
+  it('validation failure leaves fxMode and graphState unchanged', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const existingGraphState = makeValidGraphState('7')
+    const warn = vi.fn()
+    useEffectChainStore.setState({
+      chains: { '7': [makeEffect(11, 'compressor', 0)] },
+      fxModes: { '7': 'chain' },
+      graphStates: { '7': existingGraphState },
+      graphStateStatuses: { '7': { status: 'valid', graphState: existingGraphState, warnings: [] } },
+    })
+
+    const result = await useEffectChainStore.getState().convertChainToGraphMode(7, {
+      validateGraphState: () => ({
+        status: 'invalid',
+        graphState: null,
+        reason: 'test_invalid_graph_state',
+        warnings: [],
+      }),
+      warn,
+    })
+
+    const state = useEffectChainStore.getState()
+    expect(result).toMatchObject({ ok: false, reason: 'test_invalid_graph_state' })
+    expect(state.fxModes['7']).toBe('chain')
+    expect(state.graphStates['7']).toBe(existingGraphState)
+    expect(state.graphStateStatuses['7'].status).toBe('valid')
+    expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+    expect(timeline.setTrackFxMode).not.toHaveBeenCalled()
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('[FXG]'), expect.objectContaining({
+      trackId: '7',
+      reason: 'test_invalid_graph_state',
+    }))
+  })
+
+  it('rolls back persisted graphState if fxMode persistence fails', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const existingGraphState = makeValidGraphState('7')
+    timeline.setTrackFxMode.mockResolvedValueOnce(false)
+    useEffectChainStore.setState({
+      chains: { '7': [makeEffect(11, 'compressor', 0)] },
+      fxModes: { '7': 'chain' },
+      graphStates: { '7': existingGraphState },
+      graphStateStatuses: { '7': { status: 'valid', graphState: existingGraphState, warnings: [] } },
+    })
+
+    const result = await useEffectChainStore.getState().convertChainToGraphMode(7, {
+      warn: vi.fn(),
+    })
+
+    const state = useEffectChainStore.getState()
+    expect(result).toMatchObject({ ok: false, reason: 'persistence_failed' })
+    expect(state.fxModes['7']).toBe('chain')
+    expect(state.graphStates['7']).toBe(existingGraphState)
+    expect(state.graphStateStatuses['7'].status).toBe('valid')
+    expect(timeline.setTrackGraphState).toHaveBeenCalledTimes(2)
+    expect(timeline.setTrackGraphState).toHaveBeenNthCalledWith(2, 7, existingGraphState)
+  })
+
+  it('does not commit a partial renderer state when graphState persistence fails', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    timeline.setTrackGraphState.mockResolvedValueOnce(false)
+    useEffectChainStore.setState({
+      chains: { '7': [makeEffect(11, 'compressor', 0)] },
+      fxModes: { '7': 'chain' },
+      graphStates: { '7': null },
+    })
+
+    const result = await useEffectChainStore.getState().convertChainToGraphMode(7, {
+      warn: vi.fn(),
+    })
+
+    const state = useEffectChainStore.getState()
+    expect(result).toMatchObject({ ok: false, reason: 'persistence_failed' })
+    expect(state.fxModes['7']).toBe('chain')
+    expect(state.graphStates['7']).toBeNull()
+    expect(state.graphStateStatuses['7']).toBeUndefined()
+    expect(timeline.setTrackFxMode).not.toHaveBeenCalled()
   })
 
   it('resets renderer-only mode and panel view state on project load', async () => {

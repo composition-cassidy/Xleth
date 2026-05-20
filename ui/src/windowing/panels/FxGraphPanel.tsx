@@ -12,45 +12,45 @@ import ChainAsGraphPreview, {
 
 const USE_GRAPH_MODE_TITLE = 'Use FX Graph Mode for this track?';
 const USE_GRAPH_MODE_MESSAGE =
-  'The Mixer Chain will be locked for this track. Graph editing will be enabled in a later phase.';
+  'This converts the current Mixer Chain into a read-only FX Graph snapshot and locks Mixer Chain editing for this track.';
 
 export interface FxGraphPanelContentProps {
   trackId?: number | 'master' | null;
   trackLabel?: string;
   fxMode?: 'chain' | 'graph';
+  graphStateStatus?: 'valid' | 'missing' | 'invalid' | 'future';
   chain?: ChainEffect[];
   vstPlugins?: VstPluginMeta[];
   onRequestGraphMode?: () => void;
+  conversionError?: string | null;
 }
 
 interface ActivateFxGraphModeOptions {
   trackId: number | 'master' | null | undefined;
   currentFxMode?: 'chain' | 'graph';
-  setFxMode: (key: string, mode: 'chain' | 'graph') => void;
-  persistFxMode?: (trackId: number, mode: 'chain' | 'graph') => Promise<unknown> | unknown;
+  convertChainToGraphMode?: (
+    trackId: number,
+    options?: { warn?: (...args: unknown[]) => void },
+  ) => Promise<boolean | { ok?: boolean; reason?: string }> | boolean | { ok?: boolean; reason?: string };
   warn?: (...args: unknown[]) => void;
 }
 
 export async function activateFxGraphMode({
   trackId,
   currentFxMode = 'chain',
-  setFxMode,
-  persistFxMode = (globalThis.window as any)?.xleth?.timeline?.setTrackFxMode,
+  convertChainToGraphMode = useEffectChainStore.getState().convertChainToGraphMode,
   warn = console.warn,
 }: ActivateFxGraphModeOptions) {
   if (typeof trackId !== 'number' || currentFxMode === 'graph') return false;
 
-  const key = String(trackId);
-  setFxMode(key, 'graph');
-
   try {
-    if (typeof persistFxMode !== 'function') throw new Error('timeline.setTrackFxMode unavailable');
-    const ok = await persistFxMode?.(trackId, 'graph');
-    if (ok === false) throw new Error('timeline.setTrackFxMode returned false');
-    return true;
+    if (typeof convertChainToGraphMode !== 'function') {
+      throw new Error('effectChainStore.convertChainToGraphMode unavailable');
+    }
+    const result = await convertChainToGraphMode(trackId, { warn });
+    return result === true || Boolean(result && typeof result === 'object' && result.ok === true);
   } catch (e) {
-    setFxMode(key, currentFxMode);
-    warn?.('[FxGraphPanel] setTrackFxMode failed:', e instanceof Error ? e.message : e);
+    warn?.('[FXG] chain-to-graph conversion failed:', e instanceof Error ? e.message : e);
     return false;
   }
 }
@@ -59,13 +59,16 @@ export function FxGraphPanelContent({
   trackId = null,
   trackLabel,
   fxMode = 'chain',
+  graphStateStatus,
   chain = [],
   vstPlugins = [],
   onRequestGraphMode,
+  conversionError = null,
 }: FxGraphPanelContentProps) {
   const hasTrack = Boolean(trackLabel);
   const isMaster = trackId === 'master';
   const graphModeActive = hasTrack && fxMode === 'graph';
+  const graphStateAvailable = graphModeActive && graphStateStatus === 'valid';
   const canUseGraphMode = hasTrack && !isMaster && fxMode === 'chain';
   const showChainPreview = hasTrack && !isMaster && fxMode === 'chain';
   const statusText = graphModeActive
@@ -95,11 +98,16 @@ export function FxGraphPanelContent({
                 type="button"
                 onClick={onRequestGraphMode}
               >
-                Use Graph Mode
+                Convert Chain to FX Graph
               </button>
               <p className="xleth-fx-graph-panel__mode-copy">
-                This will lock Mixer Chain editing for this track.
+                This creates a read-only graphState snapshot from the current Mixer Chain.
               </p>
+              {conversionError && (
+                <p className="xleth-fx-graph-panel__mode-copy" role="alert">
+                  {conversionError}
+                </p>
+              )}
             </div>
           )}
 
@@ -113,7 +121,9 @@ export function FxGraphPanelContent({
                 FX Graph Mode Active
               </div>
               <p className="xleth-fx-graph-panel__mode-copy">
-                Mixer Chain editing is locked for this track.
+                {graphStateAvailable
+                  ? 'A read-only graphState snapshot has been created for this track.'
+                  : 'Saved graphState is unavailable. Mixer Chain editing remains locked.'}
               </p>
               <p className="xleth-fx-graph-panel__mode-copy">
                 Editable graph routing is coming in a later phase.
@@ -156,6 +166,7 @@ export function FxGraphPanelContent({
 
 export default function FxGraphPanel() {
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [conversionError, setConversionError] = useState<string | null>(null);
   const renderingWithoutDom = typeof document === 'undefined';
   const reactiveFocusedTrackId = useTimelineFocusStore((state) => state.focusedTrackId);
   const focusState = renderingWithoutDom ? useTimelineFocusStore.getState() : null;
@@ -175,13 +186,19 @@ export default function FxGraphPanel() {
     ? resolveFxMode(effectChainState.fxModes, String(selectedTrack.id))
     : reactiveFxMode;
   const selectedStoreKey = selectedTrack?.id == null ? null : String(selectedTrack.id);
+  const reactiveGraphStateStatus = useEffectChainStore((state) => (
+    selectedStoreKey == null ? undefined : state.graphStateStatuses[selectedStoreKey]?.status
+  ));
+  const graphStateStatus = effectChainState && selectedStoreKey != null
+    ? effectChainState.graphStateStatuses[selectedStoreKey]?.status
+    : reactiveGraphStateStatus;
   const reactiveChain = useEffectChainStore((state) => (
     selectedStoreKey == null ? [] : state.chains[selectedStoreKey] ?? []
   ));
   const selectedChain = effectChainState && selectedStoreKey != null
     ? effectChainState.chains[selectedStoreKey] ?? []
     : reactiveChain;
-  const setFxMode = useEffectChainStore((state) => state.setFxMode);
+  const convertChainToGraphMode = useEffectChainStore((state) => state.convertChainToGraphMode);
   const fetchChain = useEffectChainStore((state) => state.fetchChain);
   const reactiveVstPlugins = useVstStore((state) => state.plugins);
   const vstState = renderingWithoutDom ? useVstStore.getState() : null;
@@ -195,14 +212,19 @@ export default function FxGraphPanel() {
     fetchChain(selectedStoreKey);
   }, [fetchChain, selectedStoreKey]);
 
+  useEffect(() => {
+    setConversionError(null);
+  }, [selectedStoreKey]);
+
   const handleConfirmGraphMode = useCallback(async () => {
     setConfirmOpen(false);
-    await activateFxGraphMode({
+    const ok = await activateFxGraphMode({
       trackId: selectedTrack?.id,
       currentFxMode: fxMode,
-      setFxMode,
+      convertChainToGraphMode,
     });
-  }, [fxMode, selectedTrack?.id, setFxMode]);
+    setConversionError(ok ? null : 'Conversion failed. Mixer Chain remains active.');
+  }, [convertChainToGraphMode, fxMode, selectedTrack?.id]);
 
   const handleCancelGraphMode = useCallback(() => {
     setConfirmOpen(false);
@@ -214,15 +236,17 @@ export default function FxGraphPanel() {
         trackId={selectedTrack?.id ?? null}
         trackLabel={selectedTrackLabel}
         fxMode={fxMode}
+        graphStateStatus={graphStateStatus}
         chain={selectedChain}
         vstPlugins={vstPlugins}
         onRequestGraphMode={() => setConfirmOpen(true)}
+        conversionError={conversionError}
       />
       {confirmOpen && (
         <ConfirmConvertDialog
           title={USE_GRAPH_MODE_TITLE}
           message={USE_GRAPH_MODE_MESSAGE}
-          confirmLabel="Use Graph Mode"
+          confirmLabel="Convert Chain to FX Graph"
           cancelLabel="Cancel"
           danger={false}
           onConfirm={handleConfirmGraphMode}

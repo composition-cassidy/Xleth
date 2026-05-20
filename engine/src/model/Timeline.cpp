@@ -764,6 +764,25 @@ bool Timeline::setTrackFxMode(int trackId, TrackFxMode mode) {
     return true;
 }
 
+bool Timeline::setTrackGraphState(int trackId, const nlohmann::json& graphState) {
+    auto it = m_tracks.find(trackId);
+    if (it == m_tracks.end()) {
+        std::cout << "[Timeline] ERROR setTrackGraphState: trackId="
+                  << trackId << " not found\n";
+        return false;
+    }
+    if (graphState.is_null()) {
+        it->second.hasGraphState = false;
+        it->second.graphState = nlohmann::json();
+    } else {
+        it->second.hasGraphState = true;
+        it->second.graphState = graphState;
+    }
+    std::cout << "[Timeline] Set track id=" << trackId
+              << " graphState=" << (it->second.hasGraphState ? "present" : "cleared") << "\n";
+    return true;
+}
+
 bool Timeline::setTrackCornerRadius(int trackId, float radius) {
     auto it = m_tracks.find(trackId);
     if (it == m_tracks.end()) {

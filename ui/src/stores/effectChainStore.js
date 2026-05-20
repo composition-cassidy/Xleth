@@ -5,7 +5,8 @@ import useDistortionStore from './distortionStore.js'
 import useWaveshaperStore from './waveshaperStore.js'
 import useDelayStore from './delayStore.js'
 import useChorusStore from './chorusStore.js'
-import { loadGraphState } from '../fxgraph/graphState.js'
+import { createGraphStateFromChain } from '../fxgraph/chainToGraphState.js'
+import { loadGraphState, validateGraphState } from '../fxgraph/graphState.js'
 
 export const DEFAULT_FX_MODE = 'chain'
 export const DEFAULT_FX_PANEL_VIEW = 'chain'
@@ -92,6 +93,28 @@ function isChainFxMode(state, key) {
   return resolveFxMode(state.fxModes, key) === DEFAULT_FX_MODE
 }
 
+function normalizeNormalTrackKey(trackId) {
+  if (trackId === 'master') return null
+  if (typeof trackId === 'number' && Number.isFinite(trackId)) return String(trackId)
+  if (typeof trackId === 'string' && trackId.trim() !== '' && trackId !== 'master') {
+    const numericTrackId = Number(trackId)
+    if (Number.isFinite(numericTrackId)) return String(trackId)
+  }
+  return null
+}
+
+function defaultTimelineApi() {
+  return globalThis.window?.xleth?.timeline ?? {}
+}
+
+function warnFxgConversion(warn, trackId, reason, details = {}) {
+  warn?.(`[FXG] chain-to-graph conversion failed for track ${trackId}: ${reason}`, {
+    trackId: String(trackId),
+    reason,
+    ...details,
+  })
+}
+
 const useEffectChainStore = create((set, get) => ({
   // { [key: "master" | String(trackId)]: [{nodeId, pluginId, position, bypassed}] }
   chains: {},
@@ -131,6 +154,102 @@ const useEffectChainStore = create((set, get) => ({
   setFxPanelView: (key, view) => {
     const nextView = view === 'graphShell' ? 'graphShell' : DEFAULT_FX_PANEL_VIEW
     set((state) => ({ fxPanelViews: { ...state.fxPanelViews, [key]: nextView } }))
+  },
+
+  convertChainToGraphMode: async (trackId, options = {}) => {
+    const key = normalizeNormalTrackKey(trackId)
+    if (key == null) {
+      return { ok: false, reason: trackId === 'master' ? 'master_track' : 'no_track' }
+    }
+
+    const state = get()
+    const currentFxMode = resolveFxMode(state.fxModes, key)
+    if (currentFxMode === 'graph') {
+      return { ok: false, reason: 'already_graph' }
+    }
+
+    const warn = options.warn ?? console.warn
+    const createGraphState = options.createGraphState ?? createGraphStateFromChain
+    const validate = options.validateGraphState ?? validateGraphState
+    const timeline = defaultTimelineApi()
+    const persistGraphState = options.persistGraphState ?? timeline.setTrackGraphState
+    const persistFxMode = options.persistFxMode ?? timeline.setTrackFxMode
+    const previousGraphState = state.graphStates[key] ?? null
+    const previousGraphStateStatus = state.graphStateStatuses[key] ??
+      loadGraphState(previousGraphState, key, { logWarnings: false })
+    const chain = state.chains[key] ?? []
+
+    const rawGraphState = createGraphState({
+      trackId: key,
+      effects: chain,
+      idFactory: options.idFactory,
+      vstPlugins: options.vstPlugins,
+    })
+    const validation = validate(rawGraphState, key)
+
+    if (validation.status !== 'valid') {
+      warnFxgConversion(warn, key, validation.reason ?? validation.status, {
+        warnings: validation.warnings,
+      })
+      return {
+        ok: false,
+        reason: validation.reason ?? 'invalid_graph_state',
+        status: validation,
+      }
+    }
+
+    let graphStatePersisted = false
+    try {
+      if (typeof persistGraphState !== 'function') {
+        throw new Error('timeline.setTrackGraphState unavailable')
+      }
+      const graphOk = await persistGraphState(Number(key), validation.graphState)
+      if (graphOk === false) {
+        throw new Error('timeline.setTrackGraphState returned false')
+      }
+      graphStatePersisted = true
+
+      if (typeof persistFxMode !== 'function') {
+        throw new Error('timeline.setTrackFxMode unavailable')
+      }
+      const modeOk = await persistFxMode(Number(key), 'graph')
+      if (modeOk === false) {
+        throw new Error('timeline.setTrackFxMode returned false')
+      }
+    } catch (e) {
+      if (graphStatePersisted && typeof persistGraphState === 'function') {
+        try {
+          await persistGraphState(Number(key), previousGraphState)
+        } catch (rollbackError) {
+          warnFxgConversion(warn, key, 'graphState rollback failed', {
+            error: rollbackError?.message ?? rollbackError,
+          })
+        }
+      }
+
+      warnFxgConversion(warn, key, 'persistence_failed', {
+        error: e?.message ?? e,
+      })
+      return {
+        ok: false,
+        reason: 'persistence_failed',
+        error: e,
+      }
+    }
+
+    set((currentState) => ({
+      fxModes: { ...currentState.fxModes, [key]: 'graph' },
+      graphStates: { ...currentState.graphStates, [key]: validation.graphState },
+      graphStateStatuses: { ...currentState.graphStateStatuses, [key]: validation },
+    }))
+
+    return {
+      ok: true,
+      graphState: validation.graphState,
+      status: validation,
+      previousGraphState,
+      previousGraphStateStatus,
+    }
   },
 
   fetchChain: async (key) => {
