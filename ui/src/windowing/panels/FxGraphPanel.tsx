@@ -1,9 +1,14 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import useEffectChainStore, { resolveFxMode } from '../../stores/effectChainStore.js';
 import useMixerStore from '../../stores/mixerStore.js';
 import useTimelineFocusStore from '../../stores/timelineFocusStore.js';
+import useVstStore from '../../stores/vstStore.js';
 import ConfirmConvertDialog from '../../components/timeline/ConfirmConvertDialog.jsx';
 import { PanelFrame } from '../components/PanelFrame';
+import ChainAsGraphPreview, {
+  type ChainEffect,
+  type VstPluginMeta,
+} from './fxgraph/ChainAsGraphPreview';
 
 const USE_GRAPH_MODE_TITLE = 'Use FX Graph Mode for this track?';
 const USE_GRAPH_MODE_MESSAGE =
@@ -13,6 +18,8 @@ export interface FxGraphPanelContentProps {
   trackId?: number | 'master' | null;
   trackLabel?: string;
   fxMode?: 'chain' | 'graph';
+  chain?: ChainEffect[];
+  vstPlugins?: VstPluginMeta[];
   onRequestGraphMode?: () => void;
 }
 
@@ -52,12 +59,15 @@ export function FxGraphPanelContent({
   trackId = null,
   trackLabel,
   fxMode = 'chain',
+  chain = [],
+  vstPlugins = [],
   onRequestGraphMode,
 }: FxGraphPanelContentProps) {
   const hasTrack = Boolean(trackLabel);
   const isMaster = trackId === 'master';
   const graphModeActive = hasTrack && fxMode === 'graph';
   const canUseGraphMode = hasTrack && !isMaster && fxMode === 'chain';
+  const showChainPreview = hasTrack && !isMaster && fxMode === 'chain';
   const statusText = graphModeActive
     ? 'FX Graph owns this track'
     : 'Mixer Chain remains active';
@@ -76,7 +86,7 @@ export function FxGraphPanelContent({
         </div>
       </header>
 
-      <div className="xleth-fx-graph-panel__surface" aria-label="FX Graph workspace placeholder">
+      <div className="xleth-fx-graph-panel__surface" aria-label="FX Graph workspace">
         <div className="xleth-fx-graph-panel__surface-inner">
           {canUseGraphMode && (
             <div className="xleth-fx-graph-panel__mode-action">
@@ -93,6 +103,10 @@ export function FxGraphPanelContent({
             </div>
           )}
 
+          {showChainPreview && (
+            <ChainAsGraphPreview chain={chain} vstPlugins={vstPlugins} />
+          )}
+
           {graphModeActive && (
             <div className="xleth-fx-graph-panel__mode-active" role="status">
               <div className="xleth-fx-graph-panel__mode-active-title">
@@ -100,6 +114,9 @@ export function FxGraphPanelContent({
               </div>
               <p className="xleth-fx-graph-panel__mode-copy">
                 Mixer Chain editing is locked for this track.
+              </p>
+              <p className="xleth-fx-graph-panel__mode-copy">
+                Editable graph routing is coming in a later phase.
               </p>
             </div>
           )}
@@ -110,12 +127,27 @@ export function FxGraphPanelContent({
             </p>
           )}
 
-          <div className="xleth-fx-graph-panel__surface-title">
-            Routing editor coming in a later phase
-          </div>
-          <p className="xleth-fx-graph-panel__surface-copy">
-            This workspace is available for FX Graph status, but graph routing is not active or editable yet.
-          </p>
+          {!hasTrack && (
+            <>
+              <div className="xleth-fx-graph-panel__surface-title">
+                Select a mixer track to preview its chain
+              </div>
+              <p className="xleth-fx-graph-panel__surface-copy">
+                FX Graph status and read-only chain previews appear here for normal mixer tracks.
+              </p>
+            </>
+          )}
+
+          {isMaster && (
+            <>
+              <div className="xleth-fx-graph-panel__surface-title">
+                Master track stays chain-only
+              </div>
+              <p className="xleth-fx-graph-panel__surface-copy">
+                Master FX remain owned by the Mixer Chain in this phase.
+              </p>
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -142,10 +174,26 @@ export default function FxGraphPanel() {
   const fxMode = effectChainState && selectedTrack?.id != null
     ? resolveFxMode(effectChainState.fxModes, String(selectedTrack.id))
     : reactiveFxMode;
+  const selectedStoreKey = selectedTrack?.id == null ? null : String(selectedTrack.id);
+  const reactiveChain = useEffectChainStore((state) => (
+    selectedStoreKey == null ? [] : state.chains[selectedStoreKey] ?? []
+  ));
+  const selectedChain = effectChainState && selectedStoreKey != null
+    ? effectChainState.chains[selectedStoreKey] ?? []
+    : reactiveChain;
   const setFxMode = useEffectChainStore((state) => state.setFxMode);
+  const fetchChain = useEffectChainStore((state) => state.fetchChain);
+  const reactiveVstPlugins = useVstStore((state) => state.plugins);
+  const vstState = renderingWithoutDom ? useVstStore.getState() : null;
+  const vstPlugins = vstState ? vstState.plugins : reactiveVstPlugins;
   const selectedTrackLabel = selectedTrack
     ? selectedTrack.name || `Track ${selectedTrack.id}`
     : undefined;
+
+  useEffect(() => {
+    if (selectedStoreKey == null) return;
+    fetchChain(selectedStoreKey);
+  }, [fetchChain, selectedStoreKey]);
 
   const handleConfirmGraphMode = useCallback(async () => {
     setConfirmOpen(false);
@@ -166,6 +214,8 @@ export default function FxGraphPanel() {
         trackId={selectedTrack?.id ?? null}
         trackLabel={selectedTrackLabel}
         fxMode={fxMode}
+        chain={selectedChain}
+        vstPlugins={vstPlugins}
         onRequestGraphMode={() => setConfirmOpen(true)}
       />
       {confirmOpen && (

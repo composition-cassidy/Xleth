@@ -152,11 +152,25 @@ describe('PanelFrame render paths', () => {
 
     expect(html).toContain('FX Graph Workspace');
     expect(html).toContain('No track selected');
-    expect(html).toContain('Routing editor coming in a later phase');
+    expect(html).toContain('Select a mixer track to preview its chain');
     expect(html).toContain('Mixer Chain remains active');
+    expect(html).not.toContain('Track Input');
     expect(html).not.toContain('Use Graph Mode');
     expect(html).not.toContain('NodeEditor');
     expect(html).not.toContain('react-flow');
+  });
+
+  it('renders an empty chain-mode selected track as Track Input to Track Output', () => {
+    const html = renderToStaticMarkup(
+      <FxGraphPanelContent trackId={7} trackLabel="Lead Vox" fxMode="chain" chain={[]} />,
+    );
+
+    expect(html).toContain('Read-only Mixer Chain graph preview');
+    expect(html).toContain('Preview only. Mixer Chain still owns routing.');
+    expect(html).toContain('Track Input');
+    expect(html).toContain('-&gt;');
+    expect(html).toContain('Track Output');
+    expect(html).not.toContain('FX Graph Mode Active');
   });
 
   it('shows the Use Graph Mode action only for a selected chain-mode track', () => {
@@ -167,21 +181,81 @@ describe('PanelFrame render paths', () => {
     expect(html).toContain('Lead Vox');
     expect(html).toContain('Use Graph Mode');
     expect(html).toContain('This will lock Mixer Chain editing for this track.');
-    expect(html).toContain('Routing editor coming in a later phase');
+    expect(html).toContain('Preview only. Mixer Chain still owns routing.');
     expect(html).not.toContain('FX Graph Mode Active');
+  });
+
+  it('renders one effect label between Track Input and Track Output in chain mode', () => {
+    const html = renderToStaticMarkup(
+      <FxGraphPanelContent
+        trackId={7}
+        trackLabel="Lead Vox"
+        fxMode="chain"
+        chain={[{ nodeId: 1, pluginId: 'compressor', position: 0 }]}
+      />,
+    );
+
+    expect(html).toContain('Track Input');
+    expect(html).toContain('Compressor');
+    expect(html).toContain('Track Output');
+    expect(html.indexOf('Track Input')).toBeLessThan(html.indexOf('Compressor'));
+    expect(html.indexOf('Compressor')).toBeLessThan(html.indexOf('Track Output'));
+  });
+
+  it('renders multiple chain effects in their Mixer Chain order', () => {
+    const html = renderToStaticMarkup(
+      <FxGraphPanelContent
+        trackId={7}
+        trackLabel="Lead Vox"
+        fxMode="chain"
+        chain={[
+          { nodeId: 1, pluginId: 'xletheq', position: 0 },
+          { nodeId: 2, pluginId: 'third-party-delay', position: 1 },
+          { nodeId: 3, pluginId: 'reverb', position: 2 },
+        ]}
+        vstPlugins={[{ id: 'third-party-delay', name: 'Space Echo' }]}
+      />,
+    );
+
+    expect(html.indexOf('Track Input')).toBeLessThan(html.indexOf('Xleth EQ'));
+    expect(html.indexOf('Xleth EQ')).toBeLessThan(html.indexOf('Space Echo'));
+    expect(html.indexOf('Space Echo')).toBeLessThan(html.indexOf('Reverb'));
+    expect(html.indexOf('Reverb')).toBeLessThan(html.indexOf('Track Output'));
+  });
+
+  it('renders bypassed effects as non-interactive status markers', () => {
+    const html = renderToStaticMarkup(
+      <FxGraphPanelContent
+        trackId={7}
+        trackLabel="Lead Vox"
+        fxMode="chain"
+        chain={[{ nodeId: 1, pluginId: 'delay', position: 0, bypassed: true }]}
+      />,
+    );
+
+    expect(html).toContain('Delay');
+    expect(html).toContain('Bypassed');
+    expect(html).not.toContain('Bypass effect');
+    expect(html).not.toContain('effect-module-bypass');
   });
 
   it('keeps graph-mode tracks dormant and hides the active Use Graph Mode action', () => {
     const html = renderToStaticMarkup(
-      <FxGraphPanelContent trackId={7} trackLabel="Lead Vox" fxMode="graph" />,
+      <FxGraphPanelContent
+        trackId={7}
+        trackLabel="Lead Vox"
+        fxMode="graph"
+        chain={[{ nodeId: 1, pluginId: 'compressor', position: 0 }]}
+      />,
     );
 
     expect(html).toContain('FX Graph Mode Active');
     expect(html).toContain('Mixer Chain editing is locked for this track.');
-    expect(html).toContain('Routing editor coming in a later phase');
+    expect(html).toContain('Editable graph routing is coming in a later phase.');
     expect(html).not.toContain('>Use Graph Mode<');
     expect(html).not.toContain('Track Input');
-    expect(html).not.toContain('effect-chain-graph-preview');
+    expect(html).not.toContain('Compressor');
+    expect(html).not.toContain('xleth-chain-graph-preview');
   });
 
   it('keeps the master track chain-only in this phase', () => {
@@ -192,6 +266,7 @@ describe('PanelFrame render paths', () => {
     expect(html).toContain('MASTER');
     expect(html).toContain('Master track FX stay in Mixer Chain mode in this phase.');
     expect(html).not.toContain('Use Graph Mode');
+    expect(html).not.toContain('Track Input');
   });
 
   it('opening the FX Graph panel does not change fxMode', async () => {
@@ -210,6 +285,7 @@ describe('PanelFrame render paths', () => {
     const html = renderToStaticMarkup(<FxGraphPanel />);
 
     expect(html).toContain('Use Graph Mode');
+    expect(html).toContain('Track Input');
     expect(useEffectChainStore.getState().fxModes['7']).toBe('chain');
   });
 
@@ -304,9 +380,22 @@ describe('PanelFrame render paths', () => {
 
   it('keeps the FX Graph shell free of live NodeEditor and nodeGraphStore imports', () => {
     const fxGraphPanelSource = readUiSource('windowing/panels/FxGraphPanel.tsx');
+    const chainPreviewSource = readUiSource('windowing/panels/fxgraph/ChainAsGraphPreview.tsx');
     expect(fxGraphPanelSource).not.toContain('NodeEditor');
     expect(fxGraphPanelSource).not.toContain('nodeGraphStore');
     expect(fxGraphPanelSource).not.toContain('react-flow');
+    expect(chainPreviewSource).not.toContain('NodeEditor');
+    expect(chainPreviewSource).not.toContain('nodeGraphStore');
+    expect(chainPreviewSource).not.toContain('react-flow');
+    expect(chainPreviewSource).not.toMatch(/on(Mouse|Click|ContextMenu|Key|Drag)/);
+  });
+
+  it('keeps mixer strip source free of graph preview rendering', () => {
+    const mixerStripSource = readUiSource('components/mixer/MixerStrip.jsx');
+
+    expect(mixerStripSource).not.toContain('xleth-chain-graph-preview');
+    expect(mixerStripSource).not.toContain('ChainAsGraphPreview');
+    expect(mixerStripSource).not.toContain('NodeEditor');
   });
 
   it('renders only the nodeEditor quarantine placeholder when reached by stale layout state', () => {
