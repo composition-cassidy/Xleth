@@ -434,6 +434,140 @@ static void testTrackFxModePersistence() {
     }
 }
 
+static nlohmann::json makeOpaqueGraphState(const std::string& trackId,
+                                           int schemaVersion = 1) {
+    return nlohmann::json{
+        {"schemaVersion", schemaVersion},
+        {"trackId", trackId},
+        {"nodes", nlohmann::json::array({
+            {{"id", "input"}, {"type", "trackInput"}},
+            {{"id", "output"}, {"type", "trackOutput"}}
+        })},
+        {"edges", nlohmann::json::array({
+            {
+                {"id", "edge-1"},
+                {"sourceNodeId", "input"},
+                {"sourcePort", "audio"},
+                {"targetNodeId", "output"},
+                {"targetPort", "audio"},
+                {"type", "audio"}
+            }
+        })},
+        {"viewport", {{"x", 10.0}, {"y", 20.0}, {"zoom", 1.5}}}
+    };
+}
+
+static void testGraphStateOpaquePersistence() {
+    std::cout << "[17] Track graphState opaque persistence\n";
+
+    {
+        TrackInfo t;
+        t.id = 7;
+        t.fxMode = TrackFxMode::Graph;
+        t.hasGraphState = true;
+        t.graphState = makeOpaqueGraphState("7");
+
+        nlohmann::json saved = t;
+        CHECK(saved.contains("graphState"),
+              "track JSON writes graphState when present");
+        CHECK(saved["graphState"] == t.graphState,
+              "track JSON writes graphState unchanged");
+
+        TrackInfo loaded = saved.get<TrackInfo>();
+        CHECK(loaded.hasGraphState,
+              "track JSON reload marks graphState present");
+        CHECK(loaded.graphState == t.graphState,
+              "track JSON reload preserves graphState unchanged");
+    }
+
+    {
+        TrackInfo t;
+        nlohmann::json saved = t;
+        CHECK(!saved.contains("graphState"),
+              "absent graphState is not written as a fake document");
+
+        TrackInfo loaded = saved.get<TrackInfo>();
+        CHECK(!loaded.hasGraphState,
+              "missing graphState reloads as absent");
+        CHECK(loaded.graphState.is_null(),
+              "missing graphState leaves opaque JSON null");
+    }
+
+    {
+        nlohmann::json j = makeMinimalTrackJson("None");
+        j["graphState"] = nullptr;
+
+        TrackInfo loaded = j.get<TrackInfo>();
+        CHECK(loaded.hasGraphState,
+              "null graphState reloads as present opaque JSON");
+        CHECK(loaded.graphState.is_null(),
+              "null graphState stays null");
+
+        nlohmann::json saved = loaded;
+        CHECK(saved.contains("graphState") && saved["graphState"].is_null(),
+              "null graphState saves without crashing");
+    }
+
+    {
+        nlohmann::json invalidGraphState = {
+            {"schemaVersion", 1},
+            {"trackId", "7"},
+            {"nodes", "invalid"},
+            {"edges", nlohmann::json::array()}
+        };
+        nlohmann::json j = makeMinimalTrackJson("None");
+        j["id"] = 7;
+        j["graphState"] = invalidGraphState;
+
+        TrackInfo loaded = j.get<TrackInfo>();
+        nlohmann::json saved = loaded;
+        CHECK(saved["graphState"] == invalidGraphState,
+              "invalid graphState object round-trips opaquely");
+    }
+
+    {
+        nlohmann::json futureGraphState = makeOpaqueGraphState("7", 99);
+        futureGraphState["futureField"] = {{"kept", true}};
+        nlohmann::json j = makeMinimalTrackJson("None");
+        j["id"] = 7;
+        j["graphState"] = futureGraphState;
+
+        TrackInfo loaded = j.get<TrackInfo>();
+        nlohmann::json saved = loaded;
+        CHECK(saved["graphState"] == futureGraphState,
+              "future graphState object round-trips opaquely");
+    }
+
+    {
+        Timeline tl;
+        TrackInfo track;
+        track.name = "Graph";
+        track.fxMode = TrackFxMode::Graph;
+        const int trackId = tl.addTrack(track);
+        TrackInfo* stored = tl.getTrackMutable(trackId);
+        CHECK(stored != nullptr, "getTrackMutable returned graph test track");
+        if (!stored) return;
+        stored->hasGraphState = true;
+        stored->graphState = makeOpaqueGraphState(std::to_string(trackId));
+
+        nlohmann::json saved = tl.toJSON();
+        CHECK(saved["tracks"][0]["graphState"] == stored->graphState,
+              "timeline saves track graphState unchanged");
+
+        Timeline loaded;
+        CHECK(loaded.fromJSON(saved), "timeline reload with graphState succeeds");
+        const TrackInfo* loadedTrack = loaded.getTrack(trackId);
+        CHECK(loadedTrack != nullptr, "loaded graphState track exists");
+        if (!loadedTrack) return;
+        CHECK(loadedTrack->hasGraphState,
+              "timeline reload preserves graphState presence");
+        CHECK(loadedTrack->graphState == stored->graphState,
+              "timeline reload preserves graphState JSON unchanged");
+        CHECK(loadedTrack->fxMode == TrackFxMode::Graph,
+              "timeline reload keeps fxMode engine-persisted");
+    }
+}
+
 int main() {
     std::cout << "=== Xleth Timeline Test Suite (Phase 1) ===\n\n";
 
@@ -793,6 +927,7 @@ int main() {
     // ── [15] VideoFlipConfig migration round-trip ─────────────────────────────
     testVideoFlipConfigMigration();
     testTrackFxModePersistence();
+    testGraphStateOpaquePersistence();
 
     // ── [16] Track color metadata persistence (Pass 6D) ───────────────────────
     {

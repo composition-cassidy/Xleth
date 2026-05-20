@@ -5,6 +5,7 @@ import useDistortionStore from './distortionStore.js'
 import useWaveshaperStore from './waveshaperStore.js'
 import useDelayStore from './delayStore.js'
 import useChorusStore from './chorusStore.js'
+import { loadGraphState } from '../fxgraph/graphState.js'
 
 export const DEFAULT_FX_MODE = 'chain'
 export const DEFAULT_FX_PANEL_VIEW = 'chain'
@@ -41,6 +42,32 @@ export function buildFxModesFromTracks(tracks = []) {
   }, {})
 }
 
+export function buildGraphStateHydrationFromTracks(tracks = [], options = {}) {
+  const graphStates = {}
+  const graphStateStatuses = {}
+  if (!Array.isArray(tracks)) return { graphStates, graphStateStatuses }
+
+  const logger = options.logger ?? console.warn
+  const logWarnings = options.logWarnings ?? true
+
+  for (const track of tracks) {
+    if (track?.id == null) continue
+    const key = String(track.id)
+    if (key === 'master') continue
+
+    const fxMode = track.fxMode === 'graph' ? 'graph' : DEFAULT_FX_MODE
+    const rawGraphState = Object.prototype.hasOwnProperty.call(track, 'graphState')
+      ? track.graphState
+      : undefined
+    const result = loadGraphState(rawGraphState, key, { fxMode, logger, logWarnings })
+
+    graphStates[key] = result.status === 'valid' ? result.graphState : null
+    graphStateStatuses[key] = result
+  }
+
+  return { graphStates, graphStateStatuses }
+}
+
 export function resolveFxPanelView(fxPanelViews = {}, key) {
   return fxPanelViews?.[key] === 'graphShell' ? 'graphShell' : DEFAULT_FX_PANEL_VIEW
 }
@@ -72,6 +99,10 @@ const useEffectChainStore = create((set, get) => ({
   fxModes: {},
   // { [key: "master" | String(trackId)]: "chain" | "graphShell" }
   fxPanelViews: {},
+  // { [key: String(trackId)]: GraphState | null }
+  graphStates: {},
+  // { [key: String(trackId)]: loadGraphState result }
+  graphStateStatuses: {},
 
   ensureFxState: (key) => {
     const { fxModes, fxPanelViews } = get()
@@ -82,9 +113,12 @@ const useEffectChainStore = create((set, get) => ({
   },
 
   hydrateFxModesFromTracks: (tracks) => {
+    const { graphStates, graphStateStatuses } = buildGraphStateHydrationFromTracks(tracks)
     set({
       fxModes: buildFxModesFromTracks(tracks),
       fxPanelViews: {},
+      graphStates,
+      graphStateStatuses,
     })
   },
 
@@ -221,6 +255,8 @@ globalThis.window?.xleth?.onProjectLoaded?.(() => {
   useEffectChainStore.setState({
     fxModes: {},
     fxPanelViews: {},
+    graphStates: {},
+    graphStateStatuses: {},
   })
 
   // Close all open effect editor panels

@@ -234,6 +234,8 @@ void to_json(nlohmann::json& j, const TrackInfo& t) {
     };
     // videoFlipConfig is a nested object — append after the flat initializer.
     j["videoFlipConfig"] = videoFlipConfigToJson(t.videoFlipConfig);
+    if (t.hasGraphState)
+        j["graphState"] = t.graphState;
 
     // ── Visual compositor effect settings (Prompt 11 persistence) ────────
     j["gapScaleOverride"] = t.gapScaleOverride;
@@ -369,6 +371,13 @@ void from_json(const nlohmann::json& j, TrackInfo& t) {
     t.fxMode            = (j.contains("fxMode") && j.at("fxMode").is_string())
         ? stringToTrackFxMode(j.at("fxMode").get<std::string>())
         : TrackFxMode::Chain;
+    if (j.contains("graphState")) {
+        t.hasGraphState = true;
+        t.graphState = j.at("graphState");
+    } else {
+        t.hasGraphState = false;
+        t.graphState = nlohmann::json();
+    }
     // Legacy fields (assignedRegionId, assignedPatternId) read and discarded
     // for backward compatibility — pattern tracks no longer bind to a region.
     (void)j.value("assignedRegionId",  -1);

@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
 
@@ -1003,6 +1004,11 @@ struct TrackInfo {
     // Per-track FX ownership. Chain is the default FL-style workflow; Graph is
     // optional ownership for the future separate FX Graph workspace.
     TrackFxMode    fxMode           = TrackFxMode::Chain;
+
+    // Opaque renderer-owned FX graph document. The engine persists this JSON
+    // without parsing, migrating, or executing it.
+    bool           hasGraphState    = false;
+    nlohmann::json graphState       = nlohmann::json();
 };
 
 inline std::string trackTypeToString(TrackInfo::Type t) {

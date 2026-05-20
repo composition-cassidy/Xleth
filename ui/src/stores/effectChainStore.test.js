@@ -4,6 +4,48 @@ function makeEffect(nodeId, pluginId, position, bypassed = false) {
   return { nodeId, pluginId, position, bypassed }
 }
 
+function makeValidGraphState(trackId = '7') {
+  return {
+    schemaVersion: 1,
+    trackId,
+    nodes: [
+      { id: 'input', type: 'trackInput' },
+      {
+        id: 'fx-1',
+        type: 'effect',
+        data: {
+          effectInstanceId: 'effect-1',
+          pluginId: 'stock:eq',
+          displayName: 'EQ',
+          bypass: false,
+          missing: false,
+          crashed: false,
+          sourceChainSlotIndex: 0,
+        },
+      },
+      { id: 'output', type: 'trackOutput' },
+    ],
+    edges: [
+      {
+        id: 'edge-1',
+        sourceNodeId: 'input',
+        sourcePort: 'audio',
+        targetNodeId: 'fx-1',
+        targetPort: 'audioIn',
+        type: 'audio',
+      },
+      {
+        id: 'edge-2',
+        sourceNodeId: 'fx-1',
+        sourcePort: 'audioOut',
+        targetNodeId: 'output',
+        targetPort: 'audio',
+        type: 'audio',
+      },
+    ],
+  }
+}
+
 async function loadEffectChainStoreFixture() {
   return import('./effectChainStore.js')
 }
@@ -113,6 +155,107 @@ describe('effectChainStore FX mode safety gate', () => {
     })
     expect(state.fxPanelViews).toEqual({})
     expect(resolveFxMode(state.fxModes, 'master')).toBe('chain')
+  })
+
+  it('hydrates chain-mode tracks without graphState as null graphState', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+
+    useEffectChainStore.getState().hydrateFxModesFromTracks([{ id: 7, fxMode: 'chain' }])
+
+    const state = useEffectChainStore.getState()
+    expect(state.fxModes['7']).toBe('chain')
+    expect(state.graphStates['7']).toBeNull()
+    expect(state.graphStateStatuses['7'].status).toBe('missing')
+  })
+
+  it('hydrates graph-mode tracks with valid graphState', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const graphState = makeValidGraphState('7')
+
+    useEffectChainStore.getState().hydrateFxModesFromTracks([
+      { id: 7, fxMode: 'graph', graphState },
+    ])
+
+    const state = useEffectChainStore.getState()
+    expect(state.fxModes['7']).toBe('graph')
+    expect(state.graphStateStatuses['7'].status).toBe('valid')
+    expect(state.graphStates['7']).toMatchObject({
+      schemaVersion: 1,
+      trackId: '7',
+      viewport: { x: 0, y: 0, zoom: 1 },
+    })
+  })
+
+  it('marks graph-mode tracks with missing graphState as missing without throwing', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+
+    expect(() => {
+      useEffectChainStore.getState().hydrateFxModesFromTracks([{ id: 7, fxMode: 'graph' }])
+    }).not.toThrow()
+
+    const state = useEffectChainStore.getState()
+    expect(state.fxModes['7']).toBe('graph')
+    expect(state.graphStates['7']).toBeNull()
+    expect(state.graphStateStatuses['7'].status).toBe('missing')
+    expect(state.graphStateStatuses['7'].warnings[0].code).toBe('missingGraphState')
+  })
+
+  it('marks invalid graphState as invalid without throwing', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+
+    expect(() => {
+      useEffectChainStore.getState().hydrateFxModesFromTracks([
+        { id: 7, fxMode: 'graph', graphState: { schemaVersion: 1, trackId: '7', nodes: [], edges: 'nope' } },
+      ])
+    }).not.toThrow()
+
+    const state = useEffectChainStore.getState()
+    expect(state.graphStates['7']).toBeNull()
+    expect(state.graphStateStatuses['7']).toMatchObject({
+      status: 'invalid',
+      reason: 'invalid_edges',
+    })
+  })
+
+  it('preserves dormant graphState for chain-mode tracks', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const graphState = makeValidGraphState('7')
+
+    useEffectChainStore.getState().hydrateFxModesFromTracks([
+      { id: 7, fxMode: 'chain', graphState },
+    ])
+
+    const state = useEffectChainStore.getState()
+    expect(state.fxModes['7']).toBe('chain')
+    expect(state.graphStateStatuses['7'].status).toBe('valid')
+    expect(state.graphStates['7']?.nodes).toHaveLength(3)
+  })
+
+  it('ignores master graphState during hydration', async () => {
+    const {
+      default: useEffectChainStore,
+      buildGraphStateHydrationFromTracks,
+    } = await loadEffectChainStoreFixture()
+
+    expect(buildGraphStateHydrationFromTracks([
+      { id: 'master', fxMode: 'graph', graphState: makeValidGraphState('master') },
+    ], { logWarnings: false })).toEqual({
+      graphStates: {},
+      graphStateStatuses: {},
+    })
+
+    useEffectChainStore.setState({
+      fxModes: { master: 'graph' },
+      fxPanelViews: { master: 'graphShell' },
+      graphStates: { master: makeValidGraphState('master') },
+    })
+    useEffectChainStore.getState().hydrateFxModesFromTracks([
+      { id: 'master', fxMode: 'graph', graphState: makeValidGraphState('master') },
+    ])
+
+    const state = useEffectChainStore.getState()
+    expect(state.graphStates.master).toBeUndefined()
+    expect(state.graphStateStatuses.master).toBeUndefined()
   })
 
   it('keeps add, remove, move, and bypass mutations working in chain mode', async () => {
@@ -262,6 +405,7 @@ describe('effectChainStore FX mode safety gate', () => {
     const state = useEffectChainStore.getState()
     expect(state.fxModes['7']).toBe('graph')
     expect(state.fxPanelViews).toEqual({})
+    expect(state.graphStateStatuses['7'].status).toBe('missing')
     expect(window.xleth.timeline.getTracks).toHaveBeenCalled()
     expect(window.xleth.onGraphChanged).toHaveBeenCalled()
   })

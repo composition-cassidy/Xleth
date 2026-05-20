@@ -396,8 +396,58 @@ int main() {
               "status.error is non-empty for missing file");
     }
 
-    // ── Test 5: clean up temp directory ───────────────────────────────────────
-    std::cout << "\n[5] cleanup\n";
+    // Test 5: graphState/effectChains opaque co-existence.
+    // graphState is renderer-owned track JSON. ProjectManager must persist it
+    // alongside, but separate from, effectChains.
+    std::cout << "\n[5] graphState and effectChains round-trip separately\n";
+    {
+        TrackInfo* graphTrack = tl.getTrackMutable(trkId);
+        REQUIRE(graphTrack != nullptr, "graphState test track exists");
+        graphTrack->fxMode = TrackFxMode::Graph;
+        graphTrack->hasGraphState = true;
+        graphTrack->graphState = {
+            {"schemaVersion", 1},
+            {"trackId", std::to_string(trkId)},
+            {"nodes", json::array({
+                {{"id", "input"}, {"type", "trackInput"}},
+                {{"id", "output"}, {"type", "trackOutput"}}
+            })},
+            {"edges", json::array()},
+            {"invalidRendererField", json::array({"kept", true})}
+        };
+
+        json effectChains = json::object({
+            {
+                std::to_string(trkId),
+                {
+                    {"nodes", json::array({
+                        {{"nodeId", 11}, {"pluginId", "stock:eq"}, {"position", 0}}
+                    })}
+                }
+            }
+        });
+
+        ProjectManager pm4;
+        REQUIRE(pm4.createProject(tempDir, "GraphStateRoundTrip"),
+                "createProject for graphState round-trip returned false");
+        REQUIRE(pm4.saveProject(tl, effectChains),
+                "saveProject with graphState returned false");
+
+        ProjectManager pm5;
+        auto loaded = pm5.loadProject(tempDir);
+        REQUIRE(loaded.has_value(), "loadProject with graphState returned nullopt");
+        const TrackInfo* loadedTrack = loaded->getTrack(trkId);
+        REQUIRE(loadedTrack != nullptr, "loaded graphState track exists");
+        CHECK(loadedTrack->hasGraphState,
+              "project load preserves graphState presence");
+        CHECK(loadedTrack->graphState == graphTrack->graphState,
+              "project load preserves graphState unchanged");
+        CHECK(pm5.getLoadedEffectChains() == effectChains,
+              "effectChains round-trip unchanged with graphState present");
+    }
+
+    // Test 6: clean up temp directory.
+    std::cout << "\n[6] cleanup\n";
     {
         fs::remove_all(tempDir);
         CHECK(!fs::exists(tempDir), "temp directory removed successfully");

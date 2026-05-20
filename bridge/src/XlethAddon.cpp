@@ -1444,6 +1444,65 @@ static Napi::Object clipToJs(Napi::Env env, const Clip& c) {
     return o;
 }
 
+static Napi::Value opaqueJsonToNapi(Napi::Env env, const nlohmann::json& value) {
+    if (value.is_null())
+        return env.Null();
+    if (value.is_boolean())
+        return Napi::Boolean::New(env, value.get<bool>());
+    if (value.is_number_integer())
+        return Napi::Number::New(env, static_cast<double>(value.get<int64_t>()));
+    if (value.is_number_unsigned())
+        return Napi::Number::New(env, static_cast<double>(value.get<uint64_t>()));
+    if (value.is_number_float())
+        return Napi::Number::New(env, value.get<double>());
+    if (value.is_string())
+        return Napi::String::New(env, value.get<std::string>());
+    if (value.is_array()) {
+        Napi::Array arr = Napi::Array::New(env, value.size());
+        for (std::size_t i = 0; i < value.size(); ++i)
+            arr.Set(static_cast<uint32_t>(i), opaqueJsonToNapi(env, value[i]));
+        return arr;
+    }
+
+    Napi::Object obj = Napi::Object::New(env);
+    for (auto it = value.begin(); it != value.end(); ++it)
+        obj.Set(it.key(), opaqueJsonToNapi(env, it.value()));
+    return obj;
+}
+
+static nlohmann::json napiToJson(const Napi::Value& value) {
+    if (value.IsNull() || value.IsUndefined())
+        return nullptr;
+    if (value.IsBoolean())
+        return value.As<Napi::Boolean>().Value();
+    if (value.IsNumber())
+        return value.As<Napi::Number>().DoubleValue();
+    if (value.IsString())
+        return value.As<Napi::String>().Utf8Value();
+    if (value.IsArray()) {
+        Napi::Array arr = value.As<Napi::Array>();
+        nlohmann::json out = nlohmann::json::array();
+        const uint32_t len = arr.Length();
+        for (uint32_t i = 0; i < len; ++i)
+            out.push_back(napiToJson(arr.Get(i)));
+        return out;
+    }
+    if (value.IsObject()) {
+        Napi::Object obj = value.As<Napi::Object>();
+        Napi::Array keys = obj.GetPropertyNames();
+        nlohmann::json out = nlohmann::json::object();
+        const uint32_t len = keys.Length();
+        for (uint32_t i = 0; i < len; ++i) {
+            Napi::Value keyValue = keys.Get(i);
+            if (!keyValue.IsString()) continue;
+            const std::string key = keyValue.As<Napi::String>().Utf8Value();
+            out[key] = napiToJson(obj.Get(key.c_str()));
+        }
+        return out;
+    }
+    return nullptr;
+}
+
 static Napi::Object trackToJs(Napi::Env env, const TrackInfo& t) {
     Napi::Object o = Napi::Object::New(env);
     o.Set("id",                Napi::Number::New(env, t.id));
@@ -1457,6 +1516,8 @@ static Napi::Object trackToJs(Napi::Env env, const TrackInfo& t) {
     o.Set("order",             Napi::Number::New(env, t.order));
     o.Set("type",              Napi::String::New(env, trackTypeToString(t.type)));
     o.Set("fxMode",            Napi::String::New(env, trackFxModeToString(t.fxMode)));
+    if (t.hasGraphState)
+        o.Set("graphState", opaqueJsonToNapi(env, t.graphState));
     // videoFlipMode: derived from videoFlipConfig for UI backward compatibility
     // until Phase 5 replaces the context-menu submenu with the v2 Flip Properties panel.
     o.Set("videoFlipMode", Napi::String::New(env, videoFlipConfigToLegacyMode(t.videoFlipConfig)));
@@ -1824,6 +1885,10 @@ static TrackInfo jsToTrack(const Napi::Object& o) {
         t.order  = o.Get("order").As<Napi::Number>().Int32Value();
     if (o.Has("videoHoldLastFrame") && o.Get("videoHoldLastFrame").IsBoolean())
         t.videoHoldLastFrame = o.Get("videoHoldLastFrame").As<Napi::Boolean>().Value();
+    if (o.Has("graphState")) {
+        t.hasGraphState = true;
+        t.graphState = napiToJson(o.Get("graphState"));
+    }
     // Pass 6D + 6F — track color metadata. Sanitize: invalid mode/slot/custom
     // → Auto. New tracks created without these fields default to Auto via
     // TrackInfo's member initializers, so callers may simply omit them.
