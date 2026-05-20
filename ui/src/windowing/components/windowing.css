@@ -349,6 +349,28 @@
   font-size: 12px;
 }
 
+.xleth-windowing-quarantine-panel {
+  display: grid;
+  align-content: center;
+  gap: 8px;
+  height: 100%;
+  padding: 24px;
+  background: var(--theme-bg-primary);
+  color: var(--theme-text-muted);
+}
+
+.xleth-windowing-quarantine-panel__title {
+  color: var(--theme-text);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.xleth-windowing-quarantine-panel__body {
+  max-width: 520px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 /* -- Phase 4: App wrapper ----------------------------------- */
 
 .xleth-windowing-app {

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
-import useEffectChainStore, { resolveFxPanelView } from '../../stores/effectChainStore.js'
+import useEffectChainStore, { resolveFxMode, resolveFxPanelView } from '../../stores/effectChainStore.js'
 import useVstStore from '../../stores/vstStore.js'
 import EffectModule from './EffectModule.jsx'
 import TrackContextMenu from '../timeline/TrackContextMenu.jsx'
@@ -56,18 +56,14 @@ const EFFECT_CATEGORIES = [
 
 const EMPTY_CHAIN = []
 export const VISIBLE_LIMIT = 4
-export const FX_GRAPH_SHELL_TITLE = 'FX Graph Shell'
-export const FX_GRAPH_PREVIEW_LABEL = 'Preview Only'
-export const FX_GRAPH_SHELL_MESSAGE = 'This read-only preview mirrors the current Mixer Chain order without mutating routing.'
-export const FX_GRAPH_SHELL_NOTE = 'Editable FX Graph conversion is not implemented yet. The track still uses the normal Mixer Chain.'
+export const FX_GRAPH_ENTRY_TITLE = 'FX Graph'
+export const FX_GRAPH_ENTRY_LABEL = 'Workspace Coming Soon'
+export const FX_GRAPH_ENTRY_MESSAGE = 'FX Graph will open in a separate workspace when safety work is complete.'
+export const FX_GRAPH_ACTIVE_TITLE = 'FX Graph Active'
+export const FX_GRAPH_ACTIVE_LABEL = 'Chain Locked'
+export const FX_GRAPH_ACTIVE_MESSAGE = 'This track is owned by FX Graph routing. Mixer Chain slot editing is locked.'
 export const FX_GRAPH_SHELL_BUTTON_TITLE =
-  'Open FX Graph shell preview. Graph editing and chain-to-graph conversion are not implemented yet.'
-
-const STOCK_EFFECT_NAMES = EFFECT_CATEGORIES
-  .flatMap((category) => category.submenu)
-  .reduce((names, effect) => ({ ...names, [effect.id]: effect.label }), {
-    testgain: 'Test Gain',
-  })
+  'Show FX Graph workspace status. The legacy graph editor is disabled.'
 
 export function isSelectableEffectChainNode(effect) {
   return Number.isInteger(effect?.nodeId) && effect.nodeId !== -1
@@ -125,64 +121,43 @@ export function showEffectChainGraphShell({ setFxPanelView, storeKey }) {
   setFxPanelView(storeKey, 'graphShell')
 }
 
-export function getEffectChainPanelViewState(fxPanelView) {
-  const showingGraphShell = fxPanelView === 'graphShell'
+export function getEffectChainPanelViewState(fxPanelView, fxMode = 'chain') {
+  const graphModeActive = fxMode === 'graph'
+  const showingGraphShell = !graphModeActive && fxPanelView === 'graphShell'
 
   return {
     showingGraphShell,
-    chainButtonClassName: `effect-chain-mode-btn${showingGraphShell ? '' : ' active'}`,
-    chainButtonDisabled: !showingGraphShell,
-    nodeButtonClassName: `effect-chain-mode-btn${showingGraphShell ? ' active' : ''}`,
-    nodeButtonDisabled: showingGraphShell,
+    graphModeActive,
+    chainButtonClassName: `effect-chain-mode-btn${showingGraphShell || graphModeActive ? '' : ' active'}`,
+    chainButtonDisabled: graphModeActive || !showingGraphShell,
+    nodeButtonClassName: `effect-chain-mode-btn${showingGraphShell || graphModeActive ? ' active' : ''}`,
+    nodeButtonDisabled: graphModeActive || showingGraphShell,
     nodeButtonTitle: FX_GRAPH_SHELL_BUTTON_TITLE,
   }
 }
 
-export function resolveEffectChainPreviewName(effect, vstPlugins = []) {
-  if (effect?.name) return effect.name
-  if (effect?.displayName) return effect.displayName
-  if (effect?.pluginName) return effect.pluginName
-  if (STOCK_EFFECT_NAMES[effect?.pluginId]) return STOCK_EFFECT_NAMES[effect.pluginId]
-
-  const vstPlugin = vstPlugins.find((plugin) => plugin.id === effect?.pluginId)
-  return vstPlugin?.name ?? effect?.pluginId ?? 'Unknown Effect'
-}
-
-export function buildEffectChainPreviewNodes(chain = [], vstPlugins = []) {
-  return [
-    { id: 'track-input', label: 'Track Input', type: 'terminal' },
-    ...chain.map((effect, index) => ({
-      id: effect.nodeId === -1 ? `pending-${effect.pluginId}-${index}` : `effect-${effect.nodeId}`,
-      label: resolveEffectChainPreviewName(effect, vstPlugins),
-      type: 'effect',
-    })),
-    { id: 'track-output', label: 'Track Output', type: 'terminal' },
-  ]
-}
-
-export function EffectChainGraphShell({ chain, chainLabel, vstPlugins = [] }) {
-  const previewNodes = buildEffectChainPreviewNodes(chain, vstPlugins)
-
+export function EffectChainGraphShell({ active = false, chainLabel }) {
   return (
     <div className="effect-chain-shell" role="note" aria-label={`${chainLabel} graph shell`}>
       <div className="effect-chain-shell-header">
-        <div className="effect-chain-shell-title">{FX_GRAPH_SHELL_TITLE}</div>
-        <div className="effect-chain-shell-badge">{FX_GRAPH_PREVIEW_LABEL}</div>
+        <div className="effect-chain-shell-title">
+          {active ? FX_GRAPH_ACTIVE_TITLE : FX_GRAPH_ENTRY_TITLE}
+        </div>
+        <div className="effect-chain-shell-badge">
+          {active ? FX_GRAPH_ACTIVE_LABEL : FX_GRAPH_ENTRY_LABEL}
+        </div>
       </div>
-      <div className="effect-chain-graph-preview" aria-label={`${chainLabel} read-only serial preview`}>
-        {previewNodes.map((node, index) => (
-          <React.Fragment key={node.id}>
-            <div className={`effect-chain-graph-node effect-chain-graph-node--${node.type}`}>
-              {node.label}
-            </div>
-            {index < previewNodes.length - 1 && (
-              <div className="effect-chain-graph-connector" aria-hidden="true" />
-            )}
-          </React.Fragment>
-        ))}
-      </div>
-      <p className="effect-chain-shell-copy">{FX_GRAPH_SHELL_MESSAGE}</p>
-      <p className="effect-chain-shell-copy">{FX_GRAPH_SHELL_NOTE}</p>
+      <p className="effect-chain-shell-copy">
+        {active ? FX_GRAPH_ACTIVE_MESSAGE : FX_GRAPH_ENTRY_MESSAGE}
+      </p>
+      <button
+        className="effect-chain-shell-action"
+        type="button"
+        disabled
+        title="FX Graph workspace is not enabled in this phase"
+      >
+        FX Graph workspace coming soon
+      </button>
     </div>
   )
 }
@@ -221,6 +196,7 @@ export default function EffectChainPanel({ trackId, master }) {
   const key = master ? 'master' : String(trackId)
 
   const chain = useEffectChainStore((state) => state.chains[key] ?? EMPTY_CHAIN)
+  const fxMode = useEffectChainStore((state) => resolveFxMode(state.fxModes, key))
   const fxPanelView = useEffectChainStore((state) => resolveFxPanelView(state.fxPanelViews, key))
   const fetchChain = useEffectChainStore((state) => state.fetchChain)
   const addEffect = useEffectChainStore((state) => state.addEffect)
@@ -239,8 +215,8 @@ export default function EffectChainPanel({ trackId, master }) {
   const fullChainPopoverRef = useRef(null)
 
   const displayChain = dragOrder ?? chain
-  const panelViewState = getEffectChainPanelViewState(fxPanelView)
-  const { showingGraphShell } = panelViewState
+  const panelViewState = getEffectChainPanelViewState(fxPanelView, fxMode)
+  const { showingGraphShell, graphModeActive } = panelViewState
 
   useEffect(() => {
     fetchChain(key)
@@ -438,8 +414,8 @@ export default function EffectChainPanel({ trackId, master }) {
         </button>
       </div>
 
-      {showingGraphShell ? (
-        <EffectChainGraphShell chain={chain} chainLabel={chainLabel} vstPlugins={vstPlugins} />
+      {showingGraphShell || graphModeActive ? (
+        <EffectChainGraphShell active={graphModeActive} chainLabel={chainLabel} />
       ) : (
         <>
           <div className="effect-chain-list" role="listbox" aria-label={chainLabel}>

@@ -127,7 +127,6 @@ const SHELL_PANEL_IDS: Record<AppShellMode, PanelId[]> = {
     'sampleSelector',
     'preview',
     'gridSettings',
-    'nodeEditor',
     'sampler',
   ],
   'phase-6b-demo': [
@@ -137,7 +136,6 @@ const SHELL_PANEL_IDS: Record<AppShellMode, PanelId[]> = {
     'sampleSelector',
     'preview',
     'gridSettings',
-    'nodeEditor',
     'sampler',
   ],
   production: [
@@ -147,7 +145,6 @@ const SHELL_PANEL_IDS: Record<AppShellMode, PanelId[]> = {
     'sampleSelector',
     'preview',
     'gridSettings',
-    'nodeEditor',
     'sampler',
   ],
 };

@@ -99,20 +99,22 @@ describe('EffectChainPanel compact rack rendering', () => {
     expect(panelModule.syncSelectedEffectChainNode(123, [{ nodeId: -1, pluginId: 'delay' }])).toBeNull()
   })
 
-  it('exposes a graphShell panel branch with read-only preview copy', async () => {
+  it('exposes a graphShell panel branch with inert workspace status only', async () => {
     const { panelModule } = await loadEffectChainPanelFixture()
     const viewState = panelModule.getEffectChainPanelViewState('graphShell')
     const html = renderToStaticMarkup(
-      <panelModule.EffectChainGraphShell chain={[]} chainLabel="Track effect chain" />
+      <panelModule.EffectChainGraphShell chainLabel="Track effect chain" />
     )
 
     expect(viewState.showingGraphShell).toBe(true)
     expect(viewState.chainButtonDisabled).toBe(false)
     expect(viewState.nodeButtonDisabled).toBe(true)
-    expect(html).toContain('FX Graph Shell')
-    expect(html).toContain('Preview Only')
-    expect(html).toContain('This read-only preview mirrors the current Mixer Chain order without mutating routing.')
-    expect(html).toContain('Editable FX Graph conversion is not implemented yet.')
+    expect(html).toContain('FX Graph')
+    expect(html).toContain('Workspace Coming Soon')
+    expect(html).toContain('FX Graph workspace coming soon')
+    expect(html).not.toContain('Track Input')
+    expect(html).not.toContain('effect-chain-graph-preview')
+    expect(html).not.toContain('effect-chain-graph-connector')
   })
 
   it('routes NODE through the graph shell helper instead of openNodeEditor', async () => {
@@ -126,64 +128,24 @@ describe('EffectChainPanel compact rack rendering', () => {
     expect(panelModule.FX_GRAPH_SHELL_BUTTON_TITLE).not.toContain('Node Editor')
   })
 
-  it('renders Track Input directly connected to Track Output for an empty graph shell preview', async () => {
-    const { panelModule } = await loadEffectChainPanelFixture()
-    const html = renderToStaticMarkup(
-      <panelModule.EffectChainGraphShell chain={[]} chainLabel="Track effect chain" />
-    )
-
-    expect(html).toContain('Track Input')
-    expect(html).toContain('Track Output')
-    expect(html.match(/effect-chain-graph-connector/g)).toHaveLength(1)
-    expect(html).not.toContain('effect-module')
-    expect(html).not.toContain('effect-chain-add-btn')
-    expect(html).not.toContain('effect-chain-empty-btn')
-  })
-
-  it('shows current chain slots in order in the read-only graph shell preview', async () => {
-    const { panelModule } = await loadEffectChainPanelFixture()
-    const chain = [
-      { nodeId: 1, pluginId: 'xletheq', position: 0 },
-      { nodeId: 2, pluginId: 'overdone', position: 1 },
-      { nodeId: 3, pluginId: 'delay', position: 2 },
-    ]
-    const html = renderToStaticMarkup(
-      <panelModule.EffectChainGraphShell chain={chain} chainLabel="Track effect chain" />
-    )
-
-    expect(html).toContain('Track Input')
-    expect(html).toContain('Xleth EQ')
-    expect(html).toContain('Overdone')
-    expect(html).toContain('Delay')
-    expect(html).toContain('Track Output')
-    expect(html.indexOf('Track Input')).toBeLessThan(html.indexOf('Xleth EQ'))
-    expect(html.indexOf('Xleth EQ')).toBeLessThan(html.indexOf('Overdone'))
-    expect(html.indexOf('Overdone')).toBeLessThan(html.indexOf('Delay'))
-    expect(html.indexOf('Delay')).toBeLessThan(html.indexOf('Track Output'))
-    expect(html.match(/effect-chain-graph-connector/g)).toHaveLength(4)
-  })
-
-  it('keeps the graph shell preview free of chain editing affordances', async () => {
+  it('keeps the graph shell status free of graph preview and chain editing affordances', async () => {
     const { panelModule } = await loadEffectChainPanelFixture()
     const chain = [
       { nodeId: 1, pluginId: 'xletheq', position: 0 },
       { nodeId: 2, pluginId: 'third-party-delay', position: 1 },
     ]
-    const vstPlugins = [{ id: 'third-party-delay', name: 'Space Echo', vendor: 'Acme' }]
 
     const html = renderToStaticMarkup(
-      <panelModule.EffectChainGraphShell
-        chain={chain}
-        chainLabel="Track effect chain"
-        vstPlugins={vstPlugins}
-      />
+      <panelModule.EffectChainGraphShell chain={chain} chainLabel="Track effect chain" />
     )
 
-    expect(html).toContain('FX Graph Shell')
-    expect(html).toContain('Track Input')
-    expect(html).toContain('Xleth EQ')
-    expect(html).toContain('Space Echo')
-    expect(html).toContain('Track Output')
+    expect(html).toContain('FX Graph')
+    expect(html).toContain('FX Graph workspace coming soon')
+    expect(html).not.toContain('Track Input')
+    expect(html).not.toContain('Track Output')
+    expect(html).not.toContain('Xleth EQ')
+    expect(html).not.toContain('Space Echo')
+    expect(html).not.toContain('effect-chain-graph-preview')
     expect(html).not.toContain('+ Add effect')
     expect(html).not.toContain('effect-chain-add-btn')
     expect(html).not.toContain('effect-chain-overflow')
@@ -191,5 +153,24 @@ describe('EffectChainPanel compact rack rendering', () => {
     expect(html).not.toContain('effect-module-bypass')
     expect(html).not.toContain('Open plugin editor')
     expect(window.xleth.window.openNodeEditor).not.toHaveBeenCalled()
+  })
+
+  it('resolves fxMode graph to locked status instead of editable chain state', async () => {
+    const { panelModule } = await loadEffectChainPanelFixture()
+    const viewState = panelModule.getEffectChainPanelViewState('chain', 'graph')
+    const html = renderToStaticMarkup(
+      <panelModule.EffectChainGraphShell active chainLabel="Track effect chain" />
+    )
+
+    expect(viewState.graphModeActive).toBe(true)
+    expect(viewState.showingGraphShell).toBe(false)
+    expect(viewState.chainButtonDisabled).toBe(true)
+    expect(viewState.nodeButtonDisabled).toBe(true)
+    expect(html).toContain('FX Graph Active')
+    expect(html).toContain('Chain Locked')
+    expect(html).toContain('Mixer Chain slot editing is locked')
+    expect(html).not.toContain('effect-module')
+    expect(html).not.toContain('effect-chain-add-btn')
+    expect(html).not.toContain('effect-chain-graph-preview')
   })
 })

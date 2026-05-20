@@ -22,6 +22,12 @@ export const PANEL_IDS = [
 ] as const;
 
 export type PanelId = (typeof PANEL_IDS)[number];
+export const QUARANTINED_PANEL_IDS = ['nodeEditor'] as const;
+export const ACTIVE_PANEL_IDS = PANEL_IDS.filter(
+  (id): id is Exclude<PanelId, (typeof QUARANTINED_PANEL_IDS)[number]> => (
+    !QUARANTINED_PANEL_IDS.includes(id as (typeof QUARANTINED_PANEL_IDS)[number])
+  ),
+);
 
 export type PanelTypeColorToken =
   | '--theme-panel-timeline'
@@ -124,7 +130,7 @@ export const PANEL_CATALOG = {
   },
 } satisfies Record<PanelId, PanelCatalogEntry>;
 
-export const PANEL_CATALOG_ORDER = PANEL_IDS.map((id) => PANEL_CATALOG[id]);
+export const PANEL_CATALOG_ORDER = ACTIVE_PANEL_IDS.map((id) => PANEL_CATALOG[id]);
 
 export function panelTypeColorVar(id: PanelId): string {
   return `var(${PANEL_CATALOG[id].typeColorToken})`;

@@ -5,12 +5,13 @@ import { AppShell } from '../AppShell';
 import { PanelFrame, getPanelFrameRenderPath } from '../components/PanelFrame';
 import { Titlebar } from '../components/Titlebar';
 import { TopBarToggles } from '../components/TopBarToggles';
+import NodeEditorPanel from '../panels/NodeEditorPanel';
 import {
   createInitialPanelStates,
   usePanelRegistry,
   type PanelState,
 } from '../registry/PanelRegistry';
-import { PANEL_CATALOG, PANEL_IDS, type PanelId } from '../registry/panelCatalog';
+import { PANEL_CATALOG, PANEL_CATALOG_ORDER, PANEL_IDS, type PanelId } from '../registry/panelCatalog';
 
 function resetRegistry() {
   usePanelRegistry.setState({ panels: createInitialPanelStates() });
@@ -106,6 +107,27 @@ describe('PanelFrame render paths', () => {
     expect(html).toContain('Dock focused panel top: Timeline');
     expect(html).toContain('Dock focused panel bottom: Timeline');
     expect(html).toContain('Dock focused panel right: Timeline');
+  });
+
+  it('keeps the quarantined nodeEditor out of production toolbar catalog order', () => {
+    expect(PANEL_IDS).toContain('nodeEditor');
+    expect(PANEL_CATALOG_ORDER.map((entry) => entry.id)).not.toContain('nodeEditor');
+
+    const html = renderToStaticMarkup(<TopBarToggles />);
+
+    expect(html).not.toContain('Toggle Node Editor');
+    expect(html).not.toContain('Node Editor (F11)');
+  });
+
+  it('renders only the nodeEditor quarantine placeholder when reached by stale layout state', () => {
+    usePanelRegistry.getState().openPanel('nodeEditor');
+
+    const html = renderToStaticMarkup(<NodeEditorPanel />);
+
+    expect(html).toContain('Legacy Node Editor Disabled');
+    expect(html).toContain('FX Graph will return in a separate workspace');
+    expect(html).not.toContain('react-flow');
+    expect(html).not.toContain('NodeEditor');
   });
 
   it('returns empty markup for hidden, docked, and maximized phase 1 stubs', () => {

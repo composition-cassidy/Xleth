@@ -48,6 +48,14 @@ describe('KeyboardManager', () => {
     expect(usePanelRegistry.getState().panels.timeline.hidden).toBe(true);
   });
 
+  it('F11 does not open the quarantined legacy nodeEditor panel', () => {
+    expect(usePanelRegistry.getState().panels.nodeEditor.hidden).toBe(true);
+
+    handleKeyEvent(keyEvent('F11'));
+
+    expect(usePanelRegistry.getState().panels.nodeEditor.hidden).toBe(true);
+  });
+
   it('Escape restores focused maximized panel', () => {
     const registry = usePanelRegistry.getState();
     registry.maximizePanel('timeline');

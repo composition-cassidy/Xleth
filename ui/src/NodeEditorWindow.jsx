@@ -1,6 +1,4 @@
 import { useCallback, useEffect } from 'react'
-import NodeEditor from './components/mixer/NodeEditor.jsx'
-import '@xyflow/react/dist/style.css'
 
 export default function NodeEditorWindow({ storeKey, trackPos }) {
   const handleClose = useCallback(() => {
@@ -33,7 +31,14 @@ export default function NodeEditorWindow({ storeKey, trackPos }) {
         </button>
       </div>
       <div className="node-editor-window-body">
-        <NodeEditor storeKey={storeKey} />
+        <div className="node-editor-window-quarantine" role="note">
+          <div className="node-editor-window-quarantine-title">
+            Legacy Node Editor Disabled
+          </div>
+          <div className="node-editor-window-quarantine-copy">
+            FX Graph will return in a separate workspace after renderer and routing safety work is complete.
+          </div>
+        </div>
       </div>
     </div>
   )
