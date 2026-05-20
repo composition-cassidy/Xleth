@@ -2,12 +2,12 @@ import React from 'react';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShell } from '../AppShell';
 import { PanelFrame, getPanelFrameRenderPath } from '../components/PanelFrame';
 import { Titlebar } from '../components/Titlebar';
 import { TopBarToggles } from '../components/TopBarToggles';
-import { FxGraphPanelContent } from '../panels/FxGraphPanel';
+import FxGraphPanel, { FxGraphPanelContent, activateFxGraphMode } from '../panels/FxGraphPanel';
 import NodeEditorPanel from '../panels/NodeEditorPanel';
 import {
   createInitialPanelStates,
@@ -154,8 +154,152 @@ describe('PanelFrame render paths', () => {
     expect(html).toContain('No track selected');
     expect(html).toContain('Routing editor coming in a later phase');
     expect(html).toContain('Mixer Chain remains active');
+    expect(html).not.toContain('Use Graph Mode');
     expect(html).not.toContain('NodeEditor');
     expect(html).not.toContain('react-flow');
+  });
+
+  it('shows the Use Graph Mode action only for a selected chain-mode track', () => {
+    const html = renderToStaticMarkup(
+      <FxGraphPanelContent trackId={7} trackLabel="Lead Vox" fxMode="chain" />,
+    );
+
+    expect(html).toContain('Lead Vox');
+    expect(html).toContain('Use Graph Mode');
+    expect(html).toContain('This will lock Mixer Chain editing for this track.');
+    expect(html).toContain('Routing editor coming in a later phase');
+    expect(html).not.toContain('FX Graph Mode Active');
+  });
+
+  it('keeps graph-mode tracks dormant and hides the active Use Graph Mode action', () => {
+    const html = renderToStaticMarkup(
+      <FxGraphPanelContent trackId={7} trackLabel="Lead Vox" fxMode="graph" />,
+    );
+
+    expect(html).toContain('FX Graph Mode Active');
+    expect(html).toContain('Mixer Chain editing is locked for this track.');
+    expect(html).toContain('Routing editor coming in a later phase');
+    expect(html).not.toContain('>Use Graph Mode<');
+    expect(html).not.toContain('Track Input');
+    expect(html).not.toContain('effect-chain-graph-preview');
+  });
+
+  it('keeps the master track chain-only in this phase', () => {
+    const html = renderToStaticMarkup(
+      <FxGraphPanelContent trackId="master" trackLabel="MASTER" fxMode="chain" />,
+    );
+
+    expect(html).toContain('MASTER');
+    expect(html).toContain('Master track FX stay in Mixer Chain mode in this phase.');
+    expect(html).not.toContain('Use Graph Mode');
+  });
+
+  it('opening the FX Graph panel does not change fxMode', async () => {
+    const { default: useEffectChainStore } = await import('../../stores/effectChainStore.js');
+    const { default: useMixerStore } = await import('../../stores/mixerStore.js');
+    const { default: useTimelineFocusStore } = await import('../../stores/timelineFocusStore.js');
+
+    usePanelRegistry.getState().openPanel('fxGraph');
+    useMixerStore.setState({
+      tracks: { 7: { id: 7, name: 'Lead Vox' } },
+      trackOrder: [7],
+    });
+    useTimelineFocusStore.setState({ focusedTrackId: 7 });
+    useEffectChainStore.setState({ fxModes: { '7': 'chain' } });
+
+    const html = renderToStaticMarkup(<FxGraphPanel />);
+
+    expect(html).toContain('Use Graph Mode');
+    expect(useEffectChainStore.getState().fxModes['7']).toBe('chain');
+  });
+
+  it('canceling graph-mode confirmation leaves state and bridge untouched', async () => {
+    const setFxMode = vi.fn();
+    const persistFxMode = vi.fn();
+    const cancel = vi.fn();
+
+    cancel();
+
+    expect(setFxMode).not.toHaveBeenCalled();
+    expect(persistFxMode).not.toHaveBeenCalled();
+  });
+
+  it('confirming graph mode updates renderer state and persists through the timeline bridge', async () => {
+    const setFxMode = vi.fn();
+    const persistFxMode = vi.fn(async () => true);
+
+    const ok = await activateFxGraphMode({
+      trackId: 7,
+      currentFxMode: 'chain',
+      setFxMode,
+      persistFxMode,
+      warn: vi.fn(),
+    });
+
+    expect(ok).toBe(true);
+    expect(setFxMode).toHaveBeenCalledWith('7', 'graph');
+    expect(persistFxMode).toHaveBeenCalledWith(7, 'graph');
+  });
+
+  it('uses window.xleth.timeline.setTrackFxMode as the default persistence path', async () => {
+    const previousWindow = (globalThis as any).window;
+    const setTrackFxMode = vi.fn(async () => true);
+    (globalThis as any).window = {
+      xleth: {
+        timeline: { setTrackFxMode },
+      },
+    };
+
+    try {
+      await activateFxGraphMode({
+        trackId: 7,
+        currentFxMode: 'chain',
+        setFxMode: vi.fn(),
+        warn: vi.fn(),
+      });
+    } finally {
+      (globalThis as any).window = previousWindow;
+    }
+
+    expect(setTrackFxMode).toHaveBeenCalledWith(7, 'graph');
+  });
+
+  it('reverts renderer state when graph-mode persistence fails', async () => {
+    const setFxMode = vi.fn();
+    const warn = vi.fn();
+
+    const ok = await activateFxGraphMode({
+      trackId: 7,
+      currentFxMode: 'chain',
+      setFxMode,
+      persistFxMode: vi.fn(async () => false),
+      warn,
+    });
+
+    expect(ok).toBe(false);
+    expect(setFxMode).toHaveBeenNthCalledWith(1, '7', 'graph');
+    expect(setFxMode).toHaveBeenNthCalledWith(2, '7', 'chain');
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('does not activate graph mode for master or already graph-owned tracks', async () => {
+    const setFxMode = vi.fn();
+    const persistFxMode = vi.fn();
+
+    await activateFxGraphMode({
+      trackId: 'master',
+      setFxMode,
+      persistFxMode,
+    });
+    await activateFxGraphMode({
+      trackId: 7,
+      currentFxMode: 'graph',
+      setFxMode,
+      persistFxMode,
+    });
+
+    expect(setFxMode).not.toHaveBeenCalled();
+    expect(persistFxMode).not.toHaveBeenCalled();
   });
 
   it('keeps the FX Graph shell free of live NodeEditor and nodeGraphStore imports', () => {

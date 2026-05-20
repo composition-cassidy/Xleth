@@ -204,16 +204,24 @@ export function clampEffectChainPopoverPosition(position, size, viewport = {
 export default function EffectChainPanel({ trackId, master }) {
   const key = master ? 'master' : String(trackId)
 
-  const chain = useEffectChainStore((state) => state.chains[key] ?? EMPTY_CHAIN)
-  const fxMode = useEffectChainStore((state) => resolveFxMode(state.fxModes, key))
-  const fxPanelView = useEffectChainStore((state) => resolveFxPanelView(state.fxPanelViews, key))
+  const reactiveChain = useEffectChainStore((state) => state.chains[key] ?? EMPTY_CHAIN)
+  const reactiveFxMode = useEffectChainStore((state) => resolveFxMode(state.fxModes, key))
+  const reactiveFxPanelView = useEffectChainStore((state) => resolveFxPanelView(state.fxPanelViews, key))
   const fetchChain = useEffectChainStore((state) => state.fetchChain)
   const addEffect = useEffectChainStore((state) => state.addEffect)
   const moveEffect = useEffectChainStore((state) => state.moveEffect)
   const setFxPanelView = useEffectChainStore((state) => state.setFxPanelView)
 
-  const vstPlugins = useVstStore((state) => state.plugins)
+  const reactiveVstPlugins = useVstStore((state) => state.plugins)
   const fetchVst = useVstStore((state) => state.fetchPlugins)
+
+  const renderingWithoutDom = typeof document === 'undefined'
+  const effectChainState = renderingWithoutDom ? useEffectChainStore.getState() : null
+  const chain = effectChainState ? effectChainState.chains[key] ?? EMPTY_CHAIN : reactiveChain
+  const fxMode = effectChainState ? resolveFxMode(effectChainState.fxModes, key) : reactiveFxMode
+  const fxPanelView = effectChainState ? resolveFxPanelView(effectChainState.fxPanelViews, key) : reactiveFxPanelView
+  const vstState = renderingWithoutDom ? useVstStore.getState() : null
+  const vstPlugins = vstState ? vstState.plugins : reactiveVstPlugins
 
   const [dragOrder, setDragOrder] = useState(null)
   const [selectedNodeId, setSelectedNodeId] = useState(null)

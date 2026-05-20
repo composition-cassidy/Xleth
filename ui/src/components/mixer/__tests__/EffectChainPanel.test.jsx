@@ -196,4 +196,41 @@ describe('EffectChainPanel compact rack rendering', () => {
     expect(html).not.toContain('effect-chain-add-btn')
     expect(html).not.toContain('effect-chain-graph-preview')
   })
+
+  it('renders locked status-only mixer chain after fxMode switches to graph', async () => {
+    const { EffectChainPanel, useEffectChainStore, useVstStore } = await loadEffectChainPanelFixture()
+    useEffectChainStore.setState({
+      chains: {
+        '7': [
+          { nodeId: 44, pluginId: 'compressor', position: 0, bypassed: false },
+        ],
+      },
+      fxModes: { '7': 'chain' },
+    })
+    useVstStore.setState({ plugins: [] })
+
+    useEffectChainStore.getState().setFxMode('7', 'graph')
+    const html = renderToStaticMarkup(<EffectChainPanel trackId={7} />)
+
+    expect(html).toContain('FX Graph Active')
+    expect(html).toContain('Chain Locked')
+    expect(html).toContain('Mixer Chain slot editing is locked')
+    expect(html).toContain('Open FX Graph workspace')
+    expect(html).toContain('effect-chain-mode-btn active')
+    expect(html).not.toContain('+ Add effect')
+    expect(html).not.toContain('effect-chain-add-btn')
+    expect(html).not.toContain('effect-module')
+    expect(html).not.toContain('effect-chain-graph-preview')
+    expect(window.xleth.window.openNodeEditor).not.toHaveBeenCalled()
+  })
+
+  it('keeps NODE focused on the safe fxGraph workspace while graph mode is active', async () => {
+    const { panelModule } = await loadEffectChainPanelFixture()
+    const panelRegistry = { openPanel: vi.fn() }
+
+    panelModule.showEffectChainGraphShell({ panelRegistry })
+
+    expect(panelRegistry.openPanel).toHaveBeenCalledWith('fxGraph')
+    expect(window.xleth.window.openNodeEditor).not.toHaveBeenCalled()
+  })
 })

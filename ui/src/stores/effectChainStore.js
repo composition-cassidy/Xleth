@@ -13,8 +13,9 @@ export const DEFAULT_FX_PANEL_VIEW = 'chain'
 // key === 'master' -> masterFn(...args)
 // key === String(trackId) -> trackFn(Number(key), ...args)
 function ipc(key, trackFn, masterFn, ...args) {
-  if (key === 'master') return window.xleth?.audio?.[masterFn]?.(...args)
-  return window.xleth?.audio?.[trackFn]?.(Number(key), ...args)
+  const xleth = globalThis.window?.xleth
+  if (key === 'master') return xleth?.audio?.[masterFn]?.(...args)
+  return xleth?.audio?.[trackFn]?.(Number(key), ...args)
 }
 
 function parseChain(raw) {
@@ -207,14 +208,14 @@ const useEffectChainStore = create((set, get) => ({
 }))
 
 // Re-fetch chain when any window mutates the graph
-window.xleth?.onGraphChanged?.((key) => {
+globalThis.window?.xleth?.onGraphChanged?.((key) => {
   useEffectChainStore.getState().fetchChain(key)
 })
 
 // On project load, all AudioGraph nodeIds have been reassigned by fromJSON.
 // Close every open effect editor panel (they hold stale nodeIds in target)
 // and re-fetch every cached chain so the store has the new nodeIds.
-window.xleth?.onProjectLoaded?.(() => {
+globalThis.window?.xleth?.onProjectLoaded?.(() => {
   console.log('[effectChainStore] project-loaded - closing panels, refreshing all chains')
 
   useEffectChainStore.setState({
@@ -236,7 +237,7 @@ window.xleth?.onProjectLoaded?.(() => {
     fetchChain(key)
   }
 
-  window.xleth?.timeline?.getTracks?.()
+  globalThis.window?.xleth?.timeline?.getTracks?.()
     ?.then?.((tracks) => {
       useEffectChainStore.getState().hydrateFxModesFromTracks(tracks)
     })
