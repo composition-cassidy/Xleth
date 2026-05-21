@@ -588,6 +588,161 @@
   background: var(--theme-border-subtle);
 }
 
+.xleth-graph-state-preview {
+  display: grid;
+  gap: 14px;
+  width: min(100%, 1080px);
+  min-width: 0;
+  text-align: left;
+}
+
+.xleth-graph-state-preview__header {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  text-align: center;
+}
+
+.xleth-graph-state-preview__notice,
+.xleth-graph-state-preview__empty-title {
+  margin: 0;
+  color: var(--theme-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.xleth-graph-state-preview__empty-title {
+  color: var(--theme-text);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.xleth-graph-state-preview__viewport {
+  width: 100%;
+  min-width: 0;
+  overflow: auto;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--theme-chrome-radius-sm);
+  background: var(--theme-bg-surface);
+  pointer-events: none;
+}
+
+.xleth-graph-state-preview__canvas {
+  position: relative;
+  min-width: 100%;
+  min-height: 190px;
+}
+
+.xleth-graph-state-preview__edges,
+.xleth-graph-state-preview__nodes {
+  position: absolute;
+  inset: 0;
+}
+
+.xleth-graph-state-preview__edge {
+  fill: none;
+  stroke-linecap: round;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.xleth-graph-state-preview__edge--audio {
+  stroke: color-mix(in srgb, var(--theme-accent) 44%, var(--theme-border-strong));
+}
+
+.xleth-graph-state-preview__edge--unknown {
+  stroke: var(--theme-text-muted);
+  stroke-dasharray: 7 6;
+  opacity: 0.75;
+}
+
+.xleth-graph-state-preview__node {
+  position: absolute;
+  box-sizing: border-box;
+  display: grid;
+  align-content: center;
+  gap: 5px;
+  width: 172px;
+  min-height: 86px;
+  padding: 12px 14px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--theme-chrome-radius-sm);
+  background: var(--theme-bg-primary);
+  color: var(--theme-text);
+  box-shadow: var(--theme-depth-elevation-1-top-highlight);
+}
+
+.xleth-graph-state-preview__node--track-input,
+.xleth-graph-state-preview__node--track-output {
+  border-color: color-mix(in srgb, var(--theme-panel-node) 45%, var(--theme-border-subtle));
+}
+
+.xleth-graph-state-preview__node--effect {
+  border-color: color-mix(in srgb, var(--theme-accent) 34%, var(--theme-border-subtle));
+}
+
+.xleth-graph-state-preview__node--unknown {
+  border-style: dashed;
+  border-color: var(--theme-border-strong);
+}
+
+.xleth-graph-state-preview__node-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--theme-text);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.xleth-graph-state-preview__node-secondary,
+.xleth-graph-state-preview__node-meta {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--theme-text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.xleth-graph-state-preview__badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.xleth-graph-state-preview__badge {
+  padding: 3px 6px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--theme-chrome-radius-sm);
+  background: var(--theme-bg-hover);
+  color: var(--theme-text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.xleth-graph-state-preview__handle {
+  position: absolute;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--theme-border-strong);
+  border-radius: 999px;
+  background: var(--theme-bg-surface);
+  transform: translateY(-50%);
+}
+
+.xleth-graph-state-preview__handle--in {
+  left: -5px;
+}
+
+.xleth-graph-state-preview__handle--out {
+  right: -5px;
+}
+
 /* -- Phase 4: App wrapper ----------------------------------- */
 
 .xleth-windowing-app {

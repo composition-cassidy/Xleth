@@ -9,16 +9,22 @@ import ChainAsGraphPreview, {
   type ChainEffect,
   type VstPluginMeta,
 } from './fxgraph/ChainAsGraphPreview';
+import GraphStatePreview, {
+  type GraphStateDocument,
+} from './fxgraph/GraphStatePreview';
 
 const USE_GRAPH_MODE_TITLE = 'Use FX Graph Mode for this track?';
 const USE_GRAPH_MODE_MESSAGE =
   'This converts the current Mixer Chain into a read-only FX Graph snapshot and locks Mixer Chain editing for this track.';
+const REPLACE_GRAPH_MODE_MESSAGE =
+  'This creates/replaces graphState from the current Mixer Chain and locks Mixer Chain editing for this track.';
 
 export interface FxGraphPanelContentProps {
   trackId?: number | 'master' | null;
   trackLabel?: string;
   fxMode?: 'chain' | 'graph';
   graphStateStatus?: 'valid' | 'missing' | 'invalid' | 'future';
+  graphState?: GraphStateDocument | null;
   chain?: ChainEffect[];
   vstPlugins?: VstPluginMeta[];
   onRequestGraphMode?: () => void;
@@ -60,6 +66,7 @@ export function FxGraphPanelContent({
   trackLabel,
   fxMode = 'chain',
   graphStateStatus,
+  graphState = null,
   chain = [],
   vstPlugins = [],
   onRequestGraphMode,
@@ -67,13 +74,39 @@ export function FxGraphPanelContent({
 }: FxGraphPanelContentProps) {
   const hasTrack = Boolean(trackLabel);
   const isMaster = trackId === 'master';
-  const graphModeActive = hasTrack && fxMode === 'graph';
-  const graphStateAvailable = graphModeActive && graphStateStatus === 'valid';
+  const graphModeActive = hasTrack && !isMaster && fxMode === 'graph';
+  const effectiveGraphStateStatus = graphStateStatus ?? (graphState ? 'valid' : 'missing');
+  const hasValidGraphState = graphState != null && effectiveGraphStateStatus === 'valid';
+  const dormantGraphState = hasTrack && !isMaster && fxMode === 'chain' && hasValidGraphState;
+  const storedGraphStatePresent =
+    graphState != null ||
+    graphStateStatus === 'valid' ||
+    graphStateStatus === 'invalid' ||
+    graphStateStatus === 'future';
   const canUseGraphMode = hasTrack && !isMaster && fxMode === 'chain';
-  const showChainPreview = hasTrack && !isMaster && fxMode === 'chain';
+  const showChainPreview =
+    hasTrack && !isMaster && fxMode === 'chain' && !storedGraphStatePresent;
+  const showPersistedPreview = hasTrack && !isMaster && hasValidGraphState;
+  const showMissingGraphState =
+    hasTrack && !isMaster && graphModeActive && (
+      effectiveGraphStateStatus === 'missing' ||
+      (graphStateStatus === 'valid' && graphState == null)
+    );
+  const showInvalidGraphState =
+    hasTrack && !isMaster && effectiveGraphStateStatus === 'invalid';
+  const showFutureGraphState =
+    hasTrack && !isMaster && effectiveGraphStateStatus === 'future';
   const statusText = graphModeActive
     ? 'FX Graph owns this track'
+    : dormantGraphState
+      ? 'Dormant FX Graph saved'
     : 'Mixer Chain remains active';
+  const conversionCopy = storedGraphStatePresent
+    ? 'Mixer Chain owns routing. Confirming conversion will create/replace graphState from the current Mixer Chain.'
+    : 'This creates a read-only graphState snapshot from the current Mixer Chain.';
+  const previewNotice = dormantGraphState
+    ? 'Dormant graphState. Mixer Chain currently owns routing.'
+    : 'This preview is persisted graphState. Editing comes in a later phase.';
 
   return (
     <div className="xleth-fx-graph-panel" role="region" aria-label="FX Graph Workspace">
@@ -101,7 +134,7 @@ export function FxGraphPanelContent({
                 Convert Chain to FX Graph
               </button>
               <p className="xleth-fx-graph-panel__mode-copy">
-                This creates a read-only graphState snapshot from the current Mixer Chain.
+                {conversionCopy}
               </p>
               {conversionError && (
                 <p className="xleth-fx-graph-panel__mode-copy" role="alert">
@@ -115,18 +148,52 @@ export function FxGraphPanelContent({
             <ChainAsGraphPreview chain={chain} vstPlugins={vstPlugins} />
           )}
 
-          {graphModeActive && (
+          {showPersistedPreview && graphModeActive && (
             <div className="xleth-fx-graph-panel__mode-active" role="status">
               <div className="xleth-fx-graph-panel__mode-active-title">
                 FX Graph Mode Active
               </div>
               <p className="xleth-fx-graph-panel__mode-copy">
-                {graphStateAvailable
-                  ? 'A read-only graphState snapshot has been created for this track.'
-                  : 'Saved graphState is unavailable. Mixer Chain editing remains locked.'}
+                This preview is persisted graphState. Editing comes in a later phase.
               </p>
+            </div>
+          )}
+
+          {showPersistedPreview && (
+            <GraphStatePreview graphState={graphState} notice={previewNotice} />
+          )}
+
+          {showMissingGraphState && (
+            <div className="xleth-fx-graph-panel__mode-active" role="status">
+              <div className="xleth-fx-graph-panel__mode-active-title">
+                FX Graph Mode Active, but no graph data exists for this track.
+              </div>
               <p className="xleth-fx-graph-panel__mode-copy">
-                Editable graph routing is coming in a later phase.
+                This can happen with legacy projects.
+              </p>
+            </div>
+          )}
+
+          {showInvalidGraphState && (
+            <div className="xleth-fx-graph-panel__mode-active" role="alert">
+              <div className="xleth-fx-graph-panel__mode-active-title">
+                Graph routing data is invalid and could not be loaded.
+              </div>
+              {graphModeActive && (
+                <p className="xleth-fx-graph-panel__mode-copy">
+                  Mixer Chain editing remains locked.
+                </p>
+              )}
+            </div>
+          )}
+
+          {showFutureGraphState && (
+            <div className="xleth-fx-graph-panel__mode-active" role="status">
+              <div className="xleth-fx-graph-panel__mode-active-title">
+                This graphState version is not supported by this build.
+              </div>
+              <p className="xleth-fx-graph-panel__mode-copy">
+                The saved routing data is preserved but is not rendered as an active graph.
               </p>
             </div>
           )}
@@ -192,6 +259,12 @@ export default function FxGraphPanel() {
   const graphStateStatus = effectChainState && selectedStoreKey != null
     ? effectChainState.graphStateStatuses[selectedStoreKey]?.status
     : reactiveGraphStateStatus;
+  const reactiveGraphState = useEffectChainStore((state) => (
+    selectedStoreKey == null ? null : state.graphStates[selectedStoreKey] ?? null
+  ));
+  const graphState = effectChainState && selectedStoreKey != null
+    ? effectChainState.graphStates[selectedStoreKey] ?? null
+    : reactiveGraphState;
   const reactiveChain = useEffectChainStore((state) => (
     selectedStoreKey == null ? [] : state.chains[selectedStoreKey] ?? []
   ));
@@ -229,6 +302,10 @@ export default function FxGraphPanel() {
   const handleCancelGraphMode = useCallback(() => {
     setConfirmOpen(false);
   }, []);
+  const confirmGraphModeMessage =
+    graphStateStatus === 'valid' || graphStateStatus === 'invalid' || graphStateStatus === 'future'
+      ? REPLACE_GRAPH_MODE_MESSAGE
+      : USE_GRAPH_MODE_MESSAGE;
 
   return (
     <PanelFrame id="fxGraph">
@@ -237,6 +314,7 @@ export default function FxGraphPanel() {
         trackLabel={selectedTrackLabel}
         fxMode={fxMode}
         graphStateStatus={graphStateStatus}
+        graphState={graphState}
         chain={selectedChain}
         vstPlugins={vstPlugins}
         onRequestGraphMode={() => setConfirmOpen(true)}
@@ -245,7 +323,7 @@ export default function FxGraphPanel() {
       {confirmOpen && (
         <ConfirmConvertDialog
           title={USE_GRAPH_MODE_TITLE}
-          message={USE_GRAPH_MODE_MESSAGE}
+          message={confirmGraphModeMessage}
           confirmLabel="Convert Chain to FX Graph"
           cancelLabel="Cancel"
           danger={false}

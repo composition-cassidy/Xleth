@@ -20,6 +20,51 @@ function readUiSource(relativePath: string) {
   return readFileSync(path.resolve(process.cwd(), 'src', relativePath), 'utf8');
 }
 
+function makeFxGraphState(trackId = '7', overrides: Record<string, unknown> = {}) {
+  return {
+    schemaVersion: 1,
+    trackId,
+    nodes: [
+      { id: 'input', type: 'trackInput', position: { x: 0, y: 0 }, data: {} },
+      {
+        id: 'persisted-fx',
+        type: 'effect',
+        position: { x: 260, y: 0 },
+        data: {
+          effectInstanceId: 'persisted-fx-instance',
+          pluginId: 'persisted.eq',
+          displayName: 'Persisted EQ',
+          bypass: false,
+          missing: false,
+          crashed: false,
+          sourceChainSlotIndex: 0,
+        },
+      },
+      { id: 'output', type: 'trackOutput', position: { x: 520, y: 0 }, data: {} },
+    ],
+    edges: [
+      {
+        id: 'edge-1',
+        sourceNodeId: 'input',
+        sourcePort: 'audio',
+        targetNodeId: 'persisted-fx',
+        targetPort: 'audioIn',
+        type: 'audio',
+      },
+      {
+        id: 'edge-2',
+        sourceNodeId: 'persisted-fx',
+        sourcePort: 'audioOut',
+        targetNodeId: 'output',
+        targetPort: 'audio',
+        type: 'audio',
+      },
+    ],
+    viewport: { x: 0, y: 0, zoom: 1 },
+    ...overrides,
+  };
+}
+
 function resetRegistry() {
   usePanelRegistry.setState({ panels: createInitialPanelStates() });
 }
@@ -170,6 +215,7 @@ describe('PanelFrame render paths', () => {
     expect(html).toContain('Track Input');
     expect(html).toContain('-&gt;');
     expect(html).toContain('Track Output');
+    expect(html).not.toContain('Read-only persisted FX graph preview');
     expect(html).not.toContain('FX Graph Mode Active');
   });
 
@@ -223,6 +269,28 @@ describe('PanelFrame render paths', () => {
     expect(html.indexOf('Reverb')).toBeLessThan(html.indexOf('Track Output'));
   });
 
+  it('renders dormant persisted graphState in chain mode without switching ownership', () => {
+    const html = renderToStaticMarkup(
+      <FxGraphPanelContent
+        trackId={7}
+        trackLabel="Lead Vox"
+        fxMode="chain"
+        graphStateStatus="valid"
+        graphState={makeFxGraphState()}
+        chain={[{ nodeId: 11, pluginId: 'delay', position: 0 }]}
+      />,
+    );
+
+    expect(html).toContain('Dormant FX Graph saved');
+    expect(html).toContain('Dormant graphState. Mixer Chain currently owns routing.');
+    expect(html).toContain('Confirming conversion will create/replace graphState from the current Mixer Chain.');
+    expect(html).toContain('Read-only persisted FX graph preview');
+    expect(html).toContain('Persisted EQ');
+    expect(html).not.toContain('xleth-chain-graph-preview');
+    expect(html).not.toContain('FX Graph Mode Active');
+    expect(html).not.toContain('Delay');
+  });
+
   it('renders bypassed effects as non-interactive status markers', () => {
     const html = renderToStaticMarkup(
       <FxGraphPanelContent
@@ -239,21 +307,79 @@ describe('PanelFrame render paths', () => {
     expect(html).not.toContain('effect-module-bypass');
   });
 
-  it('keeps graph-mode tracks dormant and hides the active conversion action', () => {
+  it('renders persisted graphState in graph mode and hides the active conversion action', () => {
     const html = renderToStaticMarkup(
       <FxGraphPanelContent
         trackId={7}
         trackLabel="Lead Vox"
         fxMode="graph"
         graphStateStatus="valid"
+        graphState={makeFxGraphState()}
         chain={[{ nodeId: 1, pluginId: 'compressor', position: 0 }]}
       />,
     );
 
     expect(html).toContain('FX Graph Mode Active');
-    expect(html).toContain('A read-only graphState snapshot has been created for this track.');
-    expect(html).toContain('Editable graph routing is coming in a later phase.');
+    expect(html).toContain('This preview is persisted graphState. Editing comes in a later phase.');
+    expect(html).toContain('Read-only persisted FX graph preview');
+    expect(html).toContain('Track Input');
+    expect(html).toContain('Persisted EQ');
+    expect(html).toContain('Track Output');
     expect(html).not.toContain('>Convert Chain to FX Graph<');
+    expect(html).not.toContain('Compressor');
+    expect(html).not.toContain('xleth-chain-graph-preview');
+  });
+
+  it('renders a degraded graph-mode state when graphState is missing', () => {
+    const html = renderToStaticMarkup(
+      <FxGraphPanelContent
+        trackId={7}
+        trackLabel="Lead Vox"
+        fxMode="graph"
+        graphStateStatus="missing"
+        chain={[{ nodeId: 1, pluginId: 'compressor', position: 0 }]}
+      />,
+    );
+
+    expect(html).toContain('FX Graph Mode Active, but no graph data exists for this track.');
+    expect(html).toContain('This can happen with legacy projects.');
+    expect(html).not.toContain('>Convert Chain to FX Graph<');
+    expect(html).not.toContain('Track Input');
+    expect(html).not.toContain('Compressor');
+    expect(html).not.toContain('xleth-chain-graph-preview');
+  });
+
+  it('renders a safe graph-mode error when graphState is invalid', () => {
+    const html = renderToStaticMarkup(
+      <FxGraphPanelContent
+        trackId={7}
+        trackLabel="Lead Vox"
+        fxMode="graph"
+        graphStateStatus="invalid"
+        chain={[{ nodeId: 1, pluginId: 'compressor', position: 0 }]}
+      />,
+    );
+
+    expect(html).toContain('Graph routing data is invalid and could not be loaded.');
+    expect(html).toContain('Mixer Chain editing remains locked.');
+    expect(html).not.toContain('Track Input');
+    expect(html).not.toContain('Compressor');
+    expect(html).not.toContain('xleth-chain-graph-preview');
+  });
+
+  it('renders a safe unsupported-version state for future graphState', () => {
+    const html = renderToStaticMarkup(
+      <FxGraphPanelContent
+        trackId={7}
+        trackLabel="Lead Vox"
+        fxMode="graph"
+        graphStateStatus="future"
+        chain={[{ nodeId: 1, pluginId: 'compressor', position: 0 }]}
+      />,
+    );
+
+    expect(html).toContain('This graphState version is not supported by this build.');
+    expect(html).toContain('The saved routing data is preserved but is not rendered as an active graph.');
     expect(html).not.toContain('Track Input');
     expect(html).not.toContain('Compressor');
     expect(html).not.toContain('xleth-chain-graph-preview');
@@ -261,13 +387,20 @@ describe('PanelFrame render paths', () => {
 
   it('keeps the master track chain-only in this phase', () => {
     const html = renderToStaticMarkup(
-      <FxGraphPanelContent trackId="master" trackLabel="MASTER" fxMode="chain" />,
+      <FxGraphPanelContent
+        trackId="master"
+        trackLabel="MASTER"
+        fxMode="graph"
+        graphStateStatus="valid"
+        graphState={makeFxGraphState('master')}
+      />,
     );
 
     expect(html).toContain('MASTER');
     expect(html).toContain('Master track FX stay in Mixer Chain mode in this phase.');
     expect(html).not.toContain('Convert Chain to FX Graph');
     expect(html).not.toContain('Track Input');
+    expect(html).not.toContain('Read-only persisted FX graph preview');
   });
 
   it('opening the FX Graph panel does not change fxMode', async () => {
@@ -288,6 +421,7 @@ describe('PanelFrame render paths', () => {
     expect(html).toContain('Convert Chain to FX Graph');
     expect(html).toContain('Track Input');
     expect(useEffectChainStore.getState().fxModes['7']).toBe('chain');
+    expect(useEffectChainStore.getState().graphStates['7']).toBeUndefined();
   });
 
   it('canceling graph-mode confirmation leaves state and bridge untouched', async () => {
@@ -404,6 +538,7 @@ describe('PanelFrame render paths', () => {
   it('keeps the FX Graph shell free of live NodeEditor and nodeGraphStore imports', () => {
     const fxGraphPanelSource = readUiSource('windowing/panels/FxGraphPanel.tsx');
     const chainPreviewSource = readUiSource('windowing/panels/fxgraph/ChainAsGraphPreview.tsx');
+    const graphPreviewSource = readUiSource('windowing/panels/fxgraph/GraphStatePreview.tsx');
     expect(fxGraphPanelSource).not.toContain('NodeEditor');
     expect(fxGraphPanelSource).not.toContain('nodeGraphStore');
     expect(fxGraphPanelSource).not.toContain('react-flow');
@@ -411,6 +546,10 @@ describe('PanelFrame render paths', () => {
     expect(chainPreviewSource).not.toContain('nodeGraphStore');
     expect(chainPreviewSource).not.toContain('react-flow');
     expect(chainPreviewSource).not.toMatch(/on(Mouse|Click|ContextMenu|Key|Drag)/);
+    expect(graphPreviewSource).not.toContain('NodeEditor');
+    expect(graphPreviewSource).not.toContain('nodeGraphStore');
+    expect(graphPreviewSource).not.toContain('react-flow');
+    expect(graphPreviewSource).not.toMatch(/on(Mouse|Click|ContextMenu|Key|Drag)/);
   });
 
   it('keeps mixer strip source free of graph preview rendering', () => {
