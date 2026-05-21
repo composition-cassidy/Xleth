@@ -68,6 +68,10 @@ function countAttribute(html: string, attribute: string) {
   return (html.match(new RegExp(attribute, 'g')) ?? []).length;
 }
 
+function countText(html: string, text: string) {
+  return html.split(text).length - 1;
+}
+
 describe('GraphStatePreview', () => {
   it('renders valid Track Input to Track Output graphState with one static audio cable', () => {
     const html = renderToStaticMarkup(
@@ -86,10 +90,11 @@ describe('GraphStatePreview', () => {
     expect(html).toContain('Track Output');
     expect(countAttribute(html, 'data-edge-type="audio"')).toBe(1);
     expect(html).toContain('data-read-only="true"');
+    expect(countText(html, 'This preview is persisted graphState. Editing comes in a later phase.')).toBe(1);
     expect(html).not.toContain('data-editable');
   });
 
-  it('renders three effects in graphState order when saved positions are present', () => {
+  it('renders Track Input, three effects, and Track Output in graphState order when saved positions are present', () => {
     const html = renderToStaticMarkup(
       <GraphStatePreview
         graphState={graphState([
@@ -112,17 +117,21 @@ describe('GraphStatePreview', () => {
     expect(html.indexOf('Delay')).toBeLessThan(html.indexOf('Reverb'));
     expect(html.indexOf('Reverb')).toBeLessThan(html.indexOf('Track Output'));
     expect(countAttribute(html, 'data-edge-type="audio"')).toBe(4);
+    expect(countAttribute(html, 'data-node-type="trackOutput"')).toBe(1);
+    expect(html).toContain('data-preview-scroll-stage="true"');
   });
 
-  it('preserves saved node spacing in the preview model', () => {
-    const model = buildGraphStatePreviewModel(graphState([
+  it('normalizes saved node spacing for the read-only preview without mutating graphState', () => {
+    const sourceGraphState = graphState([
       inputNode({ x: 100, y: 20 }),
       effectNode('compressor', 'Compressor', 0, { x: 360, y: 20 }),
       outputNode({ x: 760, y: 20 }),
     ], [
       audioEdge('edge-1', 'input', 'compressor'),
       audioEdge('edge-2', 'compressor', 'output'),
-    ]));
+    ]);
+    const before = JSON.stringify(sourceGraphState);
+    const model = buildGraphStatePreviewModel(sourceGraphState);
 
     const input = model.nodes.find((node) => node.id === 'input');
     const compressor = model.nodes.find((node) => node.id === 'compressor');
@@ -131,8 +140,9 @@ describe('GraphStatePreview', () => {
     expect(input).toBeDefined();
     expect(compressor).toBeDefined();
     expect(output).toBeDefined();
-    expect((compressor?.x ?? 0) - (input?.x ?? 0)).toBe(260);
-    expect((output?.x ?? 0) - (compressor?.x ?? 0)).toBe(400);
+    expect((compressor?.x ?? 0) - (input?.x ?? 0)).toBeCloseTo(202.8);
+    expect((output?.x ?? 0) - (compressor?.x ?? 0)).toBeCloseTo(312);
+    expect(JSON.stringify(sourceGraphState)).toBe(before);
   });
 
   it('renders a bypass indicator for bypassed effects', () => {
@@ -231,6 +241,7 @@ describe('GraphStatePreview', () => {
     expect(html).toContain('Empty FX Graph');
     expect(html).toContain('Track Input');
     expect(html).toContain('Track Output');
+    expect(html).toContain('data-preview-scroll-stage="true"');
     expect(countAttribute(html, 'data-edge-type=')).toBe(0);
     expect(JSON.stringify(emptyGraphState)).toBe(before);
   });
@@ -266,5 +277,27 @@ describe('GraphStatePreview', () => {
       expect.stringContaining('graphState preview skipped edge'),
       expect.objectContaining({ edgeId: 'dangling' }),
     );
+  });
+
+  it('remains a non-interactive static preview without editing affordances', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([
+          inputNode(),
+          effectNode('limiter', 'Limiter', 0, { x: 260, y: 0 }),
+          outputNode({ x: 520, y: 0 }),
+        ], [
+          audioEdge('edge-1', 'input', 'limiter'),
+          audioEdge('edge-2', 'limiter', 'output'),
+        ])}
+      />,
+    );
+
+    expect(html).toContain('data-read-only="true"');
+    expect(html).not.toContain('draggable');
+    expect(html).not.toContain('contenteditable');
+    expect(html).not.toContain('<button');
+    expect(html).not.toContain('data-editable');
+    expect(html).not.toMatch(/on(Mouse|Click|ContextMenu|Key|Drag)/);
   });
 });

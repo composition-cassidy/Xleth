@@ -72,16 +72,20 @@ interface PreviewModelOptions {
 
 interface GraphStatePreviewProps {
   graphState?: GraphStateDocument | null;
-  notice?: string;
+  notice?: string | null;
 }
 
-const NODE_WIDTH = 172;
-const NODE_HEIGHT = 86;
-const PREVIEW_PADDING = 32;
-const FALLBACK_NODE_SPACING_X = 260;
-const FALLBACK_NODE_Y = 16;
-const MIN_CANVAS_WIDTH = 520;
-const MIN_CANVAS_HEIGHT = 190;
+const NODE_WIDTH = 148;
+const NODE_HEIGHT = 74;
+const PREVIEW_PADDING_X = 44;
+const PREVIEW_PADDING_Y = 24;
+const HANDLE_OUTSET = 8;
+const FALLBACK_NODE_SPACING_X = 204;
+const FALLBACK_NODE_Y = 0;
+const SAVED_POSITION_DISPLAY_SCALE_X = 0.78;
+const SAVED_POSITION_DISPLAY_SCALE_Y = 0.86;
+const MIN_CANVAS_WIDTH = 460;
+const MIN_CANVAS_HEIGHT = 144;
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
@@ -209,7 +213,7 @@ function makeVirtualAnchorNode(
     type,
     ...text,
     x,
-    y: PREVIEW_PADDING + FALLBACK_NODE_Y,
+    y: PREVIEW_PADDING_Y + FALLBACK_NODE_Y,
     width: NODE_WIDTH,
     height: NODE_HEIGHT,
     virtual: true,
@@ -219,11 +223,11 @@ function makeVirtualAnchorNode(
 function normalizePositionedNodes(nodes: GraphStateNode[]) {
   if (nodes.length === 0) {
     return [
-      makeVirtualAnchorNode('preview-empty-track-input', 'trackInput', PREVIEW_PADDING),
+      makeVirtualAnchorNode('preview-empty-track-input', 'trackInput', PREVIEW_PADDING_X),
       makeVirtualAnchorNode(
         'preview-empty-track-output',
         'trackOutput',
-        PREVIEW_PADDING + FALLBACK_NODE_SPACING_X,
+        PREVIEW_PADDING_X + FALLBACK_NODE_SPACING_X,
       ),
     ];
   }
@@ -249,6 +253,8 @@ function normalizePositionedNodes(nodes: GraphStateNode[]) {
   const minX = Math.min(...rawPositions.map((position) => position.x));
   const minY = Math.min(...rawPositions.map((position) => position.y));
   const positionById = new Map(rawPositions.map((position) => [position.id, position]));
+  const scaleX = allNodesHavePositions ? SAVED_POSITION_DISPLAY_SCALE_X : 1;
+  const scaleY = allNodesHavePositions ? SAVED_POSITION_DISPLAY_SCALE_Y : 1;
 
   return layoutNodes.map((node) => {
     const position = positionById.get(node.id) ?? { x: 0, y: 0 };
@@ -257,8 +263,8 @@ function normalizePositionedNodes(nodes: GraphStateNode[]) {
       id: node.id,
       type: resolvePreviewNodeType(node.type),
       ...text,
-      x: position.x - minX + PREVIEW_PADDING,
-      y: position.y - minY + PREVIEW_PADDING,
+      x: (position.x - minX) * scaleX + PREVIEW_PADDING_X,
+      y: (position.y - minY) * scaleY + PREVIEW_PADDING_Y,
       width: NODE_WIDTH,
       height: NODE_HEIGHT,
     };
@@ -325,15 +331,21 @@ export function buildGraphStatePreviewModel(
   const edges = sourceNodes.length === 0
     ? []
     : normalizePositionedEdges(sourceEdges, nodes, options);
-  const maxX = Math.max(...nodes.map((node) => node.x + node.width), MIN_CANVAS_WIDTH - PREVIEW_PADDING);
-  const maxY = Math.max(...nodes.map((node) => node.y + node.height), MIN_CANVAS_HEIGHT - PREVIEW_PADDING);
+  const maxX = Math.max(
+    ...nodes.map((node) => node.x + node.width),
+    MIN_CANVAS_WIDTH - PREVIEW_PADDING_X,
+  );
+  const maxY = Math.max(
+    ...nodes.map((node) => node.y + node.height),
+    MIN_CANVAS_HEIGHT - PREVIEW_PADDING_Y,
+  );
 
   return {
     empty: sourceNodes.length === 0 && sourceEdges.length === 0,
     nodes,
     edges,
-    width: Math.ceil(maxX + PREVIEW_PADDING),
-    height: Math.ceil(maxY + PREVIEW_PADDING),
+    width: Math.ceil(maxX + PREVIEW_PADDING_X + HANDLE_OUTSET),
+    height: Math.ceil(maxY + PREVIEW_PADDING_Y),
   };
 }
 
@@ -346,6 +358,8 @@ function GraphStatePreviewNode({ node }: { node: PositionedNode }) {
   const style: React.CSSProperties = {
     left: node.x,
     top: node.y,
+    width: node.width,
+    minHeight: node.height,
   };
 
   return (
@@ -403,6 +417,7 @@ export default function GraphStatePreview({
     width: model.width,
     height: model.height,
   };
+  const hasHeader = notice != null || model.empty;
 
   return (
     <section
@@ -410,37 +425,43 @@ export default function GraphStatePreview({
       aria-label="Read-only persisted FX graph preview"
       data-read-only="true"
     >
-      <div className="xleth-graph-state-preview__header">
-        <p className="xleth-graph-state-preview__notice">{notice}</p>
-        {model.empty && (
-          <p className="xleth-graph-state-preview__empty-title">Empty FX Graph</p>
-        )}
-      </div>
+      {hasHeader && (
+        <div className="xleth-graph-state-preview__header">
+          {notice != null && (
+            <p className="xleth-graph-state-preview__notice">{notice}</p>
+          )}
+          {model.empty && (
+            <p className="xleth-graph-state-preview__empty-title">Empty FX Graph</p>
+          )}
+        </div>
+      )}
       <div className="xleth-graph-state-preview__viewport">
-        <div className="xleth-graph-state-preview__canvas" style={canvasStyle}>
-          <svg
-            className="xleth-graph-state-preview__edges"
-            width={model.width}
-            height={model.height}
-            viewBox={`0 0 ${model.width} ${model.height}`}
-            role="img"
-            aria-label="Static graph cables"
-          >
-            {model.edges.map((edge) => (
-              <path
-                className={`xleth-graph-state-preview__edge xleth-graph-state-preview__edge--${edge.type}`}
-                data-edge-id={edge.id}
-                data-edge-type={edge.type}
-                key={edge.id}
-                d={edge.path}
-                aria-label={edge.label}
-              />
-            ))}
-          </svg>
-          <div className="xleth-graph-state-preview__nodes" role="list">
-            {model.nodes.map((node) => (
-              <GraphStatePreviewNode key={node.id} node={node} />
-            ))}
+        <div className="xleth-graph-state-preview__stage" data-preview-scroll-stage="true">
+          <div className="xleth-graph-state-preview__canvas" style={canvasStyle}>
+            <svg
+              className="xleth-graph-state-preview__edges"
+              width={model.width}
+              height={model.height}
+              viewBox={`0 0 ${model.width} ${model.height}`}
+              role="img"
+              aria-label="Static graph cables"
+            >
+              {model.edges.map((edge) => (
+                <path
+                  className={`xleth-graph-state-preview__edge xleth-graph-state-preview__edge--${edge.type}`}
+                  data-edge-id={edge.id}
+                  data-edge-type={edge.type}
+                  key={edge.id}
+                  d={edge.path}
+                  aria-label={edge.label}
+                />
+              ))}
+            </svg>
+            <div className="xleth-graph-state-preview__nodes" role="list">
+              {model.nodes.map((node) => (
+                <GraphStatePreviewNode key={node.id} node={node} />
+              ))}
+            </div>
           </div>
         </div>
       </div>

@@ -75,6 +75,10 @@ function consoleSpyMessages(spy: { mock: { calls: unknown[][] } }) {
     .join('\n');
 }
 
+function countText(html: string, text: string) {
+  return html.split(text).length - 1;
+}
+
 function expectNoFxGraphSnapshotLoopErrors(spy: { mock: { calls: unknown[][] } }) {
   const messages = consoleSpyMessages(spy);
   expect(messages).not.toContain('getSnapshot should be cached');
@@ -307,6 +311,7 @@ describe('PanelFrame render paths', () => {
 
     expect(html).toContain('Dormant FX Graph saved');
     expect(html).toContain('Dormant graphState. Mixer Chain currently owns routing.');
+    expect(countText(html, 'Dormant graphState. Mixer Chain currently owns routing.')).toBe(1);
     expect(html).toContain('Confirming conversion will create/replace graphState from the current Mixer Chain.');
     expect(html).toContain('Read-only persisted FX graph preview');
     expect(html).toContain('Persisted EQ');
@@ -345,6 +350,7 @@ describe('PanelFrame render paths', () => {
 
     expect(html).toContain('FX Graph Mode Active');
     expect(html).toContain('This preview is persisted graphState. Editing comes in a later phase.');
+    expect(countText(html, 'This preview is persisted graphState. Editing comes in a later phase.')).toBe(1);
     expect(html).toContain('Read-only persisted FX graph preview');
     expect(html).toContain('Track Input');
     expect(html).toContain('Persisted EQ');
@@ -517,6 +523,7 @@ describe('PanelFrame render paths', () => {
       const validHtml = renderToStaticMarkup(<FxGraphPanel />);
       expect(validHtml).toContain('FX Graph Mode Active');
       expect(validHtml).toContain('Persisted EQ');
+      expect(countText(validHtml, 'This preview is persisted graphState. Editing comes in a later phase.')).toBe(1);
 
       useEffectChainStore.setState({
         chains: {},

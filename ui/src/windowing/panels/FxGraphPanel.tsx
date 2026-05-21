@@ -169,7 +169,10 @@ export function FxGraphPanelContent({
           )}
 
           {showPersistedPreview && (
-            <GraphStatePreview graphState={graphState} notice={previewNotice} />
+            <GraphStatePreview
+              graphState={graphState}
+              notice={graphModeActive ? null : previewNotice}
+            />
           )}
 
           {showMissingGraphState && (
