@@ -18,6 +18,8 @@ const USE_GRAPH_MODE_MESSAGE =
   'This converts the current Mixer Chain into a read-only FX Graph snapshot and locks Mixer Chain editing for this track.';
 const REPLACE_GRAPH_MODE_MESSAGE =
   'This creates/replaces graphState from the current Mixer Chain and locks Mixer Chain editing for this track.';
+const EMPTY_CHAIN: ChainEffect[] = [];
+const EMPTY_VST_PLUGINS: VstPluginMeta[] = [];
 
 export interface FxGraphPanelContentProps {
   trackId?: number | 'master' | null;
@@ -29,6 +31,13 @@ export interface FxGraphPanelContentProps {
   vstPlugins?: VstPluginMeta[];
   onRequestGraphMode?: () => void;
   conversionError?: string | null;
+}
+
+export function selectFxGraphPanelChain(
+  chains: Record<string, ChainEffect[] | undefined>,
+  selectedStoreKey: string | null,
+) {
+  return selectedStoreKey == null ? EMPTY_CHAIN : chains[selectedStoreKey] ?? EMPTY_CHAIN;
 }
 
 interface ActivateFxGraphModeOptions {
@@ -67,8 +76,8 @@ export function FxGraphPanelContent({
   fxMode = 'chain',
   graphStateStatus,
   graphState = null,
-  chain = [],
-  vstPlugins = [],
+  chain = EMPTY_CHAIN,
+  vstPlugins = EMPTY_VST_PLUGINS,
   onRequestGraphMode,
   conversionError = null,
 }: FxGraphPanelContentProps) {
@@ -266,10 +275,10 @@ export default function FxGraphPanel() {
     ? effectChainState.graphStates[selectedStoreKey] ?? null
     : reactiveGraphState;
   const reactiveChain = useEffectChainStore((state) => (
-    selectedStoreKey == null ? [] : state.chains[selectedStoreKey] ?? []
+    selectFxGraphPanelChain(state.chains, selectedStoreKey)
   ));
-  const selectedChain = effectChainState && selectedStoreKey != null
-    ? effectChainState.chains[selectedStoreKey] ?? []
+  const selectedChain = effectChainState
+    ? selectFxGraphPanelChain(effectChainState.chains, selectedStoreKey)
     : reactiveChain;
   const convertChainToGraphMode = useEffectChainStore((state) => state.convertChainToGraphMode);
   const fetchChain = useEffectChainStore((state) => state.fetchChain);

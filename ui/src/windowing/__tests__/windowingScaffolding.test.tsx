@@ -7,7 +7,11 @@ import { AppShell } from '../AppShell';
 import { PanelFrame, getPanelFrameRenderPath } from '../components/PanelFrame';
 import { Titlebar } from '../components/Titlebar';
 import { TopBarToggles } from '../components/TopBarToggles';
-import FxGraphPanel, { FxGraphPanelContent, activateFxGraphMode } from '../panels/FxGraphPanel';
+import FxGraphPanel, {
+  FxGraphPanelContent,
+  activateFxGraphMode,
+  selectFxGraphPanelChain,
+} from '../panels/FxGraphPanel';
 import NodeEditorPanel from '../panels/NodeEditorPanel';
 import {
   createInitialPanelStates,
@@ -63,6 +67,18 @@ function makeFxGraphState(trackId = '7', overrides: Record<string, unknown> = {}
     viewport: { x: 0, y: 0, zoom: 1 },
     ...overrides,
   };
+}
+
+function consoleSpyMessages(spy: { mock: { calls: unknown[][] } }) {
+  return spy.mock.calls
+    .map((args) => args.map((arg) => String(arg)).join(' '))
+    .join('\n');
+}
+
+function expectNoFxGraphSnapshotLoopErrors(spy: { mock: { calls: unknown[][] } }) {
+  const messages = consoleSpyMessages(spy);
+  expect(messages).not.toContain('getSnapshot should be cached');
+  expect(messages).not.toContain('Maximum update depth exceeded');
 }
 
 function resetRegistry() {
@@ -203,6 +219,14 @@ describe('PanelFrame render paths', () => {
     expect(html).not.toContain('Use Graph Mode');
     expect(html).not.toContain('NodeEditor');
     expect(html).not.toContain('react-flow');
+  });
+
+  it('keeps FX Graph panel empty-chain selector snapshots stable', () => {
+    const chain = [{ nodeId: 1, pluginId: 'compressor', position: 0 }];
+
+    expect(selectFxGraphPanelChain({}, null)).toBe(selectFxGraphPanelChain({}, null));
+    expect(selectFxGraphPanelChain({}, '7')).toBe(selectFxGraphPanelChain({}, '7'));
+    expect(selectFxGraphPanelChain({ '7': chain }, '7')).toBe(chain);
   });
 
   it('renders an empty chain-mode selected track as Track Input to Track Output', () => {
@@ -403,10 +427,42 @@ describe('PanelFrame render paths', () => {
     expect(html).not.toContain('Read-only persisted FX graph preview');
   });
 
-  it('opening the FX Graph panel does not change fxMode', async () => {
+  it('renders startup FX Graph panel without selector-loop warnings', async () => {
     const { default: useEffectChainStore } = await import('../../stores/effectChainStore.js');
     const { default: useMixerStore } = await import('../../stores/mixerStore.js');
     const { default: useTimelineFocusStore } = await import('../../stores/timelineFocusStore.js');
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    usePanelRegistry.getState().openPanel('fxGraph');
+    useMixerStore.setState({
+      tracks: {},
+      trackOrder: [],
+    });
+    useTimelineFocusStore.setState({ focusedTrackId: null });
+    useEffectChainStore.setState({
+      chains: {},
+      fxModes: {},
+      fxPanelViews: {},
+      graphStates: {},
+      graphStateStatuses: {},
+    });
+
+    try {
+      const html = renderToStaticMarkup(<FxGraphPanel />);
+
+      expect(html).toContain('No track selected');
+      expect(html).toContain('Select a mixer track to preview its chain');
+      expectNoFxGraphSnapshotLoopErrors(errorSpy);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('opening the FX Graph panel on a chain track without graphState does not change fxMode', async () => {
+    const { default: useEffectChainStore } = await import('../../stores/effectChainStore.js');
+    const { default: useMixerStore } = await import('../../stores/mixerStore.js');
+    const { default: useTimelineFocusStore } = await import('../../stores/timelineFocusStore.js');
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
     usePanelRegistry.getState().openPanel('fxGraph');
     useMixerStore.setState({
@@ -414,14 +470,68 @@ describe('PanelFrame render paths', () => {
       trackOrder: [7],
     });
     useTimelineFocusStore.setState({ focusedTrackId: 7 });
-    useEffectChainStore.setState({ fxModes: { '7': 'chain' } });
+    useEffectChainStore.setState({
+      chains: {},
+      fxModes: { '7': 'chain' },
+      fxPanelViews: {},
+      graphStates: {},
+      graphStateStatuses: {},
+    });
 
-    const html = renderToStaticMarkup(<FxGraphPanel />);
+    try {
+      const html = renderToStaticMarkup(<FxGraphPanel />);
 
-    expect(html).toContain('Convert Chain to FX Graph');
-    expect(html).toContain('Track Input');
-    expect(useEffectChainStore.getState().fxModes['7']).toBe('chain');
-    expect(useEffectChainStore.getState().graphStates['7']).toBeUndefined();
+      expect(html).toContain('Convert Chain to FX Graph');
+      expect(html).toContain('Track Input');
+      expect(useEffectChainStore.getState().fxModes['7']).toBe('chain');
+      expect(useEffectChainStore.getState().graphStates['7']).toBeUndefined();
+      expectNoFxGraphSnapshotLoopErrors(errorSpy);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('renders graph-mode graphState and status fallback paths without selector-loop warnings', async () => {
+    const { default: useEffectChainStore } = await import('../../stores/effectChainStore.js');
+    const { default: useMixerStore } = await import('../../stores/mixerStore.js');
+    const { default: useTimelineFocusStore } = await import('../../stores/timelineFocusStore.js');
+    const persistedGraphState = makeFxGraphState();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    usePanelRegistry.getState().openPanel('fxGraph');
+    useMixerStore.setState({
+      tracks: { 7: { id: 7, name: 'Lead Vox' } },
+      trackOrder: [7],
+    });
+    useTimelineFocusStore.setState({ focusedTrackId: 7 });
+
+    try {
+      useEffectChainStore.setState({
+        chains: {},
+        fxModes: { '7': 'graph' },
+        fxPanelViews: {},
+        graphStates: { '7': persistedGraphState },
+        graphStateStatuses: { '7': { status: 'valid', graphState: persistedGraphState } },
+      });
+
+      const validHtml = renderToStaticMarkup(<FxGraphPanel />);
+      expect(validHtml).toContain('FX Graph Mode Active');
+      expect(validHtml).toContain('Persisted EQ');
+
+      useEffectChainStore.setState({
+        chains: {},
+        fxModes: { '7': 'graph' },
+        fxPanelViews: {},
+        graphStates: { '7': null },
+        graphStateStatuses: { '7': { status: 'future', graphState: null } },
+      });
+
+      const futureHtml = renderToStaticMarkup(<FxGraphPanel />);
+      expect(futureHtml).toContain('This graphState version is not supported by this build.');
+      expectNoFxGraphSnapshotLoopErrors(errorSpy);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it('canceling graph-mode confirmation leaves state and bridge untouched', async () => {
