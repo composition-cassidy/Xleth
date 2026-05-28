@@ -64,6 +64,8 @@ interface PositionedEdge {
   type: PreviewEdgeKind;
   label: string;
   path: string;
+  midX: number;
+  midY: number;
 }
 
 interface PreviewModel {
@@ -91,6 +93,10 @@ interface GraphStatePreviewProps {
   notice?: string | null;
   onNodePositionChange?: (nodeId: string, position: { x: number; y: number }) => void;
   onViewportChange?: (viewport: GraphStateViewport) => void;
+  onAddEffectNode?: () => void;
+  onRemoveNode?: (nodeId: string) => void;
+  onConnectNodes?: (sourceNodeId: string, targetNodeId: string) => void;
+  onDisconnectEdge?: (edgeId: string) => void;
 }
 
 const NODE_WIDTH = 148;
@@ -288,11 +294,21 @@ function normalizePositionedNodes(nodes: GraphStateNode[]) {
   });
 }
 
+function edgeEndpoints(source: PositionedNode, target: PositionedNode) {
+  return {
+    sourceX: source.type === 'trackOutput' ? source.x : source.x + source.width,
+    sourceY: source.y + source.height / 2,
+    targetX: target.type === 'trackInput' ? target.x + target.width : target.x,
+    targetY: target.y + target.height / 2,
+  };
+}
+
+function nodeOutPoint(node: PositionedNode) {
+  return { x: node.x + node.width, y: node.y + node.height / 2 };
+}
+
 function makeEdgePath(source: PositionedNode, target: PositionedNode) {
-  const sourceX = source.type === 'trackOutput' ? source.x : source.x + source.width;
-  const sourceY = source.y + source.height / 2;
-  const targetX = target.type === 'trackInput' ? target.x + target.width : target.x;
-  const targetY = target.y + target.height / 2;
+  const { sourceX, sourceY, targetX, targetY } = edgeEndpoints(source, target);
   const midpointX = sourceX + (targetX - sourceX) / 2;
 
   return [
@@ -325,6 +341,7 @@ function normalizePositionedEdges(
 
     const type: PreviewEdgeKind = edge.type === 'audio' ? 'audio' : 'unknown';
     const preservedType = edge._preservedType || edge.type;
+    const { sourceX, sourceY, targetX, targetY } = edgeEndpoints(source, target);
     positionedEdges.push({
       id: edge.id,
       type,
@@ -332,6 +349,8 @@ function normalizePositionedEdges(
         ? `Audio cable: ${source.label} to ${target.label}`
         : `Unsupported edge: ${preservedType}`,
       path: makeEdgePath(source, target),
+      midX: (sourceX + targetX) / 2,
+      midY: (sourceY + targetY) / 2,
     });
   }
 
@@ -386,17 +405,33 @@ function roundViewport(value: number) {
 function GraphStatePreviewNode({
   node,
   dragging,
+  connectEnabled,
+  connectActive,
+  canRemove,
   onPointerDown,
   onPointerMove,
   onPointerUp,
   onPointerCancel,
+  onConnectPointerDown,
+  onConnectPointerMove,
+  onConnectPointerUp,
+  onConnectPointerCancel,
+  onRemove,
 }: {
   node: PositionedNode;
   dragging: boolean;
+  connectEnabled: boolean;
+  connectActive: boolean;
+  canRemove: boolean;
   onPointerDown?: (event: React.PointerEvent<HTMLDivElement>, node: PositionedNode) => void;
   onPointerMove?: (event: React.PointerEvent<HTMLDivElement>) => void;
   onPointerUp?: (event: React.PointerEvent<HTMLDivElement>) => void;
   onPointerCancel?: (event: React.PointerEvent<HTMLDivElement>) => void;
+  onConnectPointerDown?: (event: React.PointerEvent<HTMLSpanElement>, node: PositionedNode) => void;
+  onConnectPointerMove?: (event: React.PointerEvent<HTMLSpanElement>) => void;
+  onConnectPointerUp?: (event: React.PointerEvent<HTMLSpanElement>) => void;
+  onConnectPointerCancel?: (event: React.PointerEvent<HTMLSpanElement>) => void;
+  onRemove?: (nodeId: string) => void;
 }) {
   const classType = node.type === 'trackInput'
     ? 'track-input'
@@ -409,6 +444,10 @@ function GraphStatePreviewNode({
     width: node.width,
     minHeight: node.height,
   };
+  const interactiveOut =
+    connectEnabled && !node.virtual && typeof onConnectPointerDown === 'function';
+  const showRemove =
+    canRemove && node.type === 'effect' && !node.virtual && typeof onRemove === 'function';
 
   return (
     <div
@@ -417,6 +456,7 @@ function GraphStatePreviewNode({
         `xleth-graph-state-preview__node--${classType}`,
         onPointerDown ? 'xleth-graph-state-preview__node--draggable' : '',
         dragging ? 'xleth-graph-state-preview__node--dragging' : '',
+        connectActive ? 'xleth-graph-state-preview__node--connect-source' : '',
       ].filter(Boolean).join(' ')}
       data-node-id={node.id}
       data-node-type={node.type}
@@ -437,10 +477,22 @@ function GraphStatePreviewNode({
         />
       )}
       {node.type !== 'trackOutput' && (
-        <span
-          className="xleth-graph-state-preview__handle xleth-graph-state-preview__handle--out"
-          aria-hidden="true"
-        />
+        interactiveOut ? (
+          <span
+            className="xleth-graph-state-preview__handle xleth-graph-state-preview__handle--out xleth-graph-state-preview__handle--connect-source"
+            data-connect-source="true"
+            aria-label={`Start a connection from ${node.label}`}
+            onPointerDown={(event) => onConnectPointerDown?.(event, node)}
+            onPointerMove={onConnectPointerMove}
+            onPointerUp={onConnectPointerUp}
+            onPointerCancel={onConnectPointerCancel}
+          />
+        ) : (
+          <span
+            className="xleth-graph-state-preview__handle xleth-graph-state-preview__handle--out"
+            aria-hidden="true"
+          />
+        )
       )}
       <span className="xleth-graph-state-preview__node-title">{node.label}</span>
       {node.secondaryText && (
@@ -458,6 +510,20 @@ function GraphStatePreviewNode({
           ))}
         </span>
       )}
+      {showRemove && (
+        <button
+          className="xleth-graph-state-preview__node-remove"
+          type="button"
+          aria-label={`Remove ${node.label}`}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            onRemove?.(node.id);
+          }}
+        >
+          Remove
+        </button>
+      )}
     </div>
   );
 }
@@ -467,8 +533,13 @@ export default function GraphStatePreview({
   notice = 'Persisted graphState. Routing edits come later.',
   onNodePositionChange,
   onViewportChange,
+  onAddEffectNode,
+  onRemoveNode,
+  onConnectNodes,
+  onDisconnectEdge,
 }: GraphStatePreviewProps) {
   const viewportRef = React.useRef<HTMLDivElement | null>(null);
+  const canvasRef = React.useRef<HTMLDivElement | null>(null);
   const dragRef = React.useRef<{
     pointerId: number;
     nodeId: string;
@@ -484,8 +555,11 @@ export default function GraphStatePreview({
     startViewportX: number;
     startViewportY: number;
   } | null>(null);
+  const connectRef = React.useRef<{ pointerId: number; sourceNodeId: string } | null>(null);
   const [draggingNodeId, setDraggingNodeId] = React.useState<string | null>(null);
   const [panning, setPanning] = React.useState(false);
+  const [connectingFromNodeId, setConnectingFromNodeId] = React.useState<string | null>(null);
+  const [connectPoint, setConnectPoint] = React.useState<{ x: number; y: number } | null>(null);
   const model = React.useMemo(
     () => buildGraphStatePreviewModel(graphState),
     [graphState],
@@ -503,6 +577,11 @@ export default function GraphStatePreview({
   const hasHeader = notice != null || model.empty;
   const canDragNodes = typeof onNodePositionChange === 'function';
   const canEditViewport = typeof onViewportChange === 'function';
+  const canAddNode = typeof onAddEffectNode === 'function';
+  const canRemoveNode = typeof onRemoveNode === 'function';
+  const canConnect = typeof onConnectNodes === 'function';
+  const canDisconnect = typeof onDisconnectEdge === 'function';
+  const showToolbar = canEditViewport || canAddNode;
 
   const finishDrag = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (dragRef.current?.pointerId === event.pointerId) {
@@ -608,6 +687,79 @@ export default function GraphStatePreview({
     });
   }, [onViewportChange, viewport.zoom]);
 
+  const toCanvasPoint = React.useCallback((clientX: number, clientY: number) => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return null;
+    return { x: clientX - rect.left, y: clientY - rect.top };
+  }, []);
+
+  const resetConnect = React.useCallback((event: React.PointerEvent<HTMLSpanElement>) => {
+    if (connectRef.current?.pointerId === event.pointerId) {
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+      connectRef.current = null;
+      setConnectingFromNodeId(null);
+      setConnectPoint(null);
+    }
+  }, []);
+
+  const handleConnectPointerDown = React.useCallback((
+    event: React.PointerEvent<HTMLSpanElement>,
+    node: PositionedNode,
+  ) => {
+    if (!canConnect || node.virtual || event.button !== 0) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    connectRef.current = { pointerId: event.pointerId, sourceNodeId: node.id };
+    setConnectingFromNodeId(node.id);
+    setConnectPoint(toCanvasPoint(event.clientX, event.clientY));
+  }, [canConnect, toCanvasPoint]);
+
+  const handleConnectPointerMove = React.useCallback((event: React.PointerEvent<HTMLSpanElement>) => {
+    const connect = connectRef.current;
+    if (!connect || connect.pointerId !== event.pointerId) return;
+
+    event.preventDefault();
+    setConnectPoint(toCanvasPoint(event.clientX, event.clientY));
+  }, [toCanvasPoint]);
+
+  const handleConnectPointerUp = React.useCallback((event: React.PointerEvent<HTMLSpanElement>) => {
+    const connect = connectRef.current;
+    if (!connect || connect.pointerId !== event.pointerId) return;
+
+    event.preventDefault();
+    const sourceNodeId = connect.sourceNodeId;
+    let targetNodeId: string | null = null;
+    if (typeof document !== 'undefined') {
+      const dropElement = document.elementFromPoint(event.clientX, event.clientY);
+      const targetNode = dropElement instanceof Element
+        ? dropElement.closest('[data-node-id]')
+        : null;
+      targetNodeId = targetNode?.getAttribute('data-node-id') ?? null;
+    }
+
+    resetConnect(event);
+
+    if (onConnectNodes && targetNodeId && targetNodeId !== sourceNodeId) {
+      onConnectNodes(sourceNodeId, targetNodeId);
+    }
+  }, [onConnectNodes, resetConnect]);
+
+  const connectingNode = connectingFromNodeId
+    ? model.nodes.find((node) => node.id === connectingFromNodeId)
+    : undefined;
+  const connectLinePath = connectingNode && connectPoint
+    ? (() => {
+        const start = nodeOutPoint(connectingNode);
+        const midpointX = start.x + (connectPoint.x - start.x) / 2;
+        return [
+          `M ${start.x} ${start.y}`,
+          `C ${midpointX} ${start.y}, ${midpointX} ${connectPoint.y}, ${connectPoint.x} ${connectPoint.y}`,
+        ].join(' ');
+      })()
+    : null;
+
   return (
     <section
       className="xleth-graph-state-preview"
@@ -616,7 +768,7 @@ export default function GraphStatePreview({
       data-draggable-nodes={canDragNodes ? 'true' : undefined}
       data-workspace-active={canEditViewport ? 'true' : undefined}
     >
-      {(hasHeader || canEditViewport) && (
+      {(hasHeader || showToolbar) && (
         <div className="xleth-graph-state-preview__chrome">
           {hasHeader && (
             <div className="xleth-graph-state-preview__header">
@@ -628,22 +780,35 @@ export default function GraphStatePreview({
               )}
             </div>
           )}
-          {canEditViewport && (
-            <div className="xleth-graph-state-preview__toolbar" aria-label="Graph workspace view controls">
-              <button
-                className="xleth-graph-state-preview__view-button"
-                type="button"
-                onClick={handleFitView}
-              >
-                Fit View
-              </button>
-              <button
-                className="xleth-graph-state-preview__view-button"
-                type="button"
-                onClick={handleResetView}
-              >
-                Reset View
-              </button>
+          {showToolbar && (
+            <div className="xleth-graph-state-preview__toolbar" aria-label="Graph workspace controls">
+              {canAddNode && (
+                <button
+                  className="xleth-graph-state-preview__action-button"
+                  type="button"
+                  onClick={onAddEffectNode}
+                >
+                  Add Effect Node
+                </button>
+              )}
+              {canEditViewport && (
+                <>
+                  <button
+                    className="xleth-graph-state-preview__view-button"
+                    type="button"
+                    onClick={handleFitView}
+                  >
+                    Fit View
+                  </button>
+                  <button
+                    className="xleth-graph-state-preview__view-button"
+                    type="button"
+                    onClick={handleResetView}
+                  >
+                    Reset View
+                  </button>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -661,8 +826,10 @@ export default function GraphStatePreview({
         <div className="xleth-graph-state-preview__stage" data-preview-scroll-stage="true">
           <div
             className="xleth-graph-state-preview__canvas"
+            ref={canvasRef}
             style={canvasStyle}
             data-node-dragging={draggingNodeId != null ? 'true' : undefined}
+            data-connecting={connectingFromNodeId != null ? 'true' : undefined}
           >
             <svg
               className="xleth-graph-state-preview__edges"
@@ -682,6 +849,13 @@ export default function GraphStatePreview({
                   aria-label={edge.label}
                 />
               ))}
+              {connectLinePath && (
+                <path
+                  className="xleth-graph-state-preview__edge xleth-graph-state-preview__edge--connecting"
+                  d={connectLinePath}
+                  aria-hidden="true"
+                />
+              )}
             </svg>
             <div className="xleth-graph-state-preview__nodes" role="list">
               {model.nodes.map((node) => (
@@ -689,13 +863,44 @@ export default function GraphStatePreview({
                   key={node.id}
                   node={node}
                   dragging={draggingNodeId === node.id}
+                  connectEnabled={canConnect}
+                  connectActive={connectingFromNodeId === node.id}
+                  canRemove={canRemoveNode}
                   onPointerDown={canDragNodes ? handleNodePointerDown : undefined}
                   onPointerMove={canDragNodes ? handleNodePointerMove : undefined}
                   onPointerUp={canDragNodes ? finishDrag : undefined}
                   onPointerCancel={canDragNodes ? finishDrag : undefined}
+                  onConnectPointerDown={canConnect ? handleConnectPointerDown : undefined}
+                  onConnectPointerMove={canConnect ? handleConnectPointerMove : undefined}
+                  onConnectPointerUp={canConnect ? handleConnectPointerUp : undefined}
+                  onConnectPointerCancel={canConnect ? resetConnect : undefined}
+                  onRemove={canRemoveNode ? onRemoveNode : undefined}
                 />
               ))}
             </div>
+            {canDisconnect && (
+              <div className="xleth-graph-state-preview__overlay" aria-label="Graph cable controls">
+                {model.edges
+                  .filter((edge) => edge.type === 'audio')
+                  .map((edge) => (
+                    <button
+                      key={edge.id}
+                      className="xleth-graph-state-preview__disconnect"
+                      type="button"
+                      style={{ left: edge.midX, top: edge.midY }}
+                      data-edge-id={edge.id}
+                      aria-label={`Disconnect ${edge.label}`}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onDisconnectEdge?.(edge.id);
+                      }}
+                    >
+                      {'×'}
+                    </button>
+                  ))}
+              </div>
+            )}
           </div>
         </div>
       </div>

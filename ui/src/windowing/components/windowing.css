@@ -839,6 +839,111 @@
   right: -5px;
 }
 
+.xleth-graph-state-preview__action-button {
+  padding: 6px 10px;
+  border: 1px solid color-mix(in srgb, var(--theme-accent) 45%, var(--theme-border-subtle));
+  border-radius: var(--theme-chrome-radius-sm);
+  background: color-mix(in srgb, var(--theme-accent) 16%, var(--theme-bg-surface));
+  color: var(--theme-text);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.xleth-graph-state-preview__action-button:hover {
+  border-color: var(--theme-accent);
+  background: color-mix(in srgb, var(--theme-accent) 26%, var(--theme-bg-surface));
+}
+
+.xleth-graph-state-preview__action-button:focus-visible {
+  outline: 1px solid var(--theme-border-focus);
+  outline-offset: 1px;
+}
+
+.xleth-graph-state-preview__handle--connect-source {
+  pointer-events: auto;
+  cursor: crosshair;
+  background: color-mix(in srgb, var(--theme-accent) 55%, var(--theme-bg-surface));
+  border-color: var(--theme-accent);
+}
+
+.xleth-graph-state-preview__handle--connect-source:hover {
+  background: var(--theme-accent);
+}
+
+.xleth-graph-state-preview__node--connect-source {
+  border-color: var(--theme-accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--theme-accent) 50%, transparent);
+}
+
+.xleth-graph-state-preview__node-remove {
+  justify-self: start;
+  margin-top: 2px;
+  padding: 2px 8px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--theme-chrome-radius-sm);
+  background: var(--theme-bg-surface);
+  color: var(--theme-text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.3;
+  text-transform: uppercase;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.xleth-graph-state-preview__node-remove:hover {
+  border-color: color-mix(in srgb, var(--theme-danger) 60%, var(--theme-border-subtle));
+  color: var(--theme-text);
+}
+
+.xleth-graph-state-preview__node-remove:focus-visible {
+  outline: 1px solid var(--theme-border-focus);
+  outline-offset: 1px;
+}
+
+.xleth-graph-state-preview__edge--connecting {
+  stroke: var(--theme-accent);
+  stroke-dasharray: 5 5;
+  opacity: 0.85;
+}
+
+.xleth-graph-state-preview__overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.xleth-graph-state-preview__disconnect {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--theme-border-strong);
+  border-radius: 999px;
+  background: var(--theme-bg-surface);
+  color: var(--theme-text-muted);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.xleth-graph-state-preview__disconnect:hover {
+  border-color: var(--theme-accent);
+  color: var(--theme-text);
+}
+
+.xleth-graph-state-preview__disconnect:focus-visible {
+  outline: 1px solid var(--theme-border-focus);
+  outline-offset: 1px;
+}
+
 /* -- Phase 4: App wrapper ----------------------------------- */
 
 .xleth-windowing-app {

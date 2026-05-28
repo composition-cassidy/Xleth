@@ -6,7 +6,14 @@ import useWaveshaperStore from './waveshaperStore.js'
 import useDelayStore from './delayStore.js'
 import useChorusStore from './chorusStore.js'
 import { createGraphStateFromChain } from '../fxgraph/chainToGraphState.js'
-import { loadGraphState, validateGraphState } from '../fxgraph/graphState.js'
+import {
+  loadGraphState,
+  validateGraphState,
+  addGraphEffectNode,
+  removeGraphNode,
+  connectGraphNodes,
+  disconnectGraphEdge,
+} from '../fxgraph/graphState.js'
 
 export const DEFAULT_FX_MODE = 'chain'
 export const DEFAULT_FX_PANEL_VIEW = 'chain'
@@ -153,6 +160,122 @@ function warnFxgConversion(warn, trackId, reason, details = {}) {
     reason,
     ...details,
   })
+}
+
+// FXG.2C-e — fxMode ownership gate for the FXG.2C-d topology guards.
+// These store actions are the layer responsible for enforcing fxMode === 'graph'
+// before any pure mutation helper runs. The helpers themselves are fxMode-blind.
+// Mutations stay renderer-side; engine graph execution is deferred to FXG.3.
+
+const GRAPH_MUTATION_GRID_COLUMNS = 3
+const GRAPH_MUTATION_GRID_ORIGIN_X = 80
+const GRAPH_MUTATION_GRID_ORIGIN_Y = 132
+const GRAPH_MUTATION_GRID_STEP_X = 180
+const GRAPH_MUTATION_GRID_STEP_Y = 96
+
+function generateGraphInstanceId(idFactory) {
+  if (typeof idFactory === 'function') {
+    const id = idFactory()
+    if (typeof id === 'string' && id.length > 0) return id
+  }
+  return globalThis.crypto?.randomUUID?.() ??
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+}
+
+// addGraphEffectNode's own fallback stacks new nodes on the trackOutput column,
+// so the store supplies an explicit staggered position derived from the current
+// effect-node count to avoid overlap.
+function computeNextEffectNodePosition(graphState) {
+  const effectCount = graphState.nodes.filter((node) => node.type === 'effect').length
+  const column = effectCount % GRAPH_MUTATION_GRID_COLUMNS
+  const row = Math.floor(effectCount / GRAPH_MUTATION_GRID_COLUMNS)
+  return {
+    x: GRAPH_MUTATION_GRID_ORIGIN_X + column * GRAPH_MUTATION_GRID_STEP_X,
+    y: GRAPH_MUTATION_GRID_ORIGIN_Y + row * GRAPH_MUTATION_GRID_STEP_Y,
+  }
+}
+
+function buildGraphEffectNodeDraft(graphState, nodeDraft, options = {}) {
+  const draft = nodeDraft != null && typeof nodeDraft === 'object' ? nodeDraft : {}
+  const effectInstanceId =
+    typeof draft.effectInstanceId === 'string' && draft.effectInstanceId.length > 0
+      ? draft.effectInstanceId
+      : generateGraphInstanceId(options.idFactory)
+  const pluginId =
+    typeof draft.pluginId === 'string' && draft.pluginId.length > 0
+      ? draft.pluginId
+      : 'placeholder'
+  const displayName =
+    typeof draft.displayName === 'string' && draft.displayName.length > 0
+      ? draft.displayName
+      : 'Effect Node'
+  const position = normalizeGraphNodePosition(draft.position) ?? computeNextEffectNodePosition(graphState)
+
+  return {
+    effectInstanceId,
+    pluginId,
+    displayName,
+    position,
+    bypass: draft.bypass === true,
+    missing: draft.missing === true,
+    crashed: draft.crashed === true,
+  }
+}
+
+// Reads graphState for a normal track only when graph mode owns it.
+// Reasons: 'master_track' | 'no_track' | 'not_graph_mode' | 'missing_graph_state'.
+function readGraphStateForMutation(state, trackId) {
+  const key = normalizeNormalTrackKey(trackId)
+  if (key == null) {
+    return { ok: false, reason: trackId === 'master' ? 'master_track' : 'no_track' }
+  }
+  if (resolveFxMode(state.fxModes, key) !== 'graph') {
+    return { ok: false, reason: 'not_graph_mode' }
+  }
+  const graphState = state.graphStates[key]
+  if (!graphState || !Array.isArray(graphState.nodes) || !Array.isArray(graphState.edges)) {
+    return { ok: false, reason: 'missing_graph_state' }
+  }
+  return { ok: true, key, graphState }
+}
+
+// Validates the post-mutation graphState, commits it to the store, and persists
+// best-effort. Persistence failures warn but do not fail the renderer-side edit.
+async function applyGraphStateMutation(set, key, nextGraphState, options = {}) {
+  const validate = options.validateGraphState ?? validateGraphState
+  const warn = options.warn ?? console.warn
+  const validation = validate(nextGraphState, key)
+  if (validation.status !== 'valid') {
+    warn?.('[FXG] graphState mutation rejected by validation', {
+      trackId: key,
+      reason: validation.reason ?? validation.status,
+      warnings: validation.warnings,
+    })
+    return { ok: false, reason: 'invalid_graph_state', status: validation }
+  }
+
+  set((currentState) => ({
+    graphStates: { ...currentState.graphStates, [key]: validation.graphState },
+    graphStateStatuses: { ...currentState.graphStateStatuses, [key]: validation },
+  }))
+
+  const timeline = defaultTimelineApi()
+  const persistGraphState = options.persistGraphState ?? timeline.setTrackGraphState
+  if (typeof persistGraphState === 'function') {
+    try {
+      const ok = await persistGraphState(Number(key), validation.graphState)
+      if (ok === false) {
+        warn?.('[FXG] graphState mutation persistence returned false', { trackId: key })
+      }
+    } catch (e) {
+      warn?.('[FXG] graphState mutation persistence failed', {
+        trackId: key,
+        error: e?.message ?? e,
+      })
+    }
+  }
+
+  return { ok: true, graphState: validation.graphState, status: validation }
 }
 
 const useEffectChainStore = create((set, get) => ({
@@ -441,6 +564,49 @@ const useEffectChainStore = create((set, get) => ({
     }
 
     return true
+  },
+
+  // FXG.2C-e graphState mutation actions. Renderer/data-model only.
+  // Each requires a normal track owned by graph mode; never touches effectChains.
+  addGraphEffectNodeForTrack: async (trackId, nodeDraft = {}, options = {}) => {
+    const access = readGraphStateForMutation(get(), trackId)
+    if (!access.ok) return access
+
+    const draft = buildGraphEffectNodeDraft(access.graphState, nodeDraft, options)
+    const mutation = addGraphEffectNode(access.graphState, draft, { idFactory: options.idFactory })
+    if (!mutation.ok) return mutation
+
+    return applyGraphStateMutation(set, access.key, mutation.graphState, options)
+  },
+
+  removeGraphNodeForTrack: async (trackId, nodeId, options = {}) => {
+    const access = readGraphStateForMutation(get(), trackId)
+    if (!access.ok) return access
+
+    const mutation = removeGraphNode(access.graphState, nodeId)
+    if (!mutation.ok) return mutation
+
+    return applyGraphStateMutation(set, access.key, mutation.graphState, options)
+  },
+
+  connectGraphNodesForTrack: async (trackId, connectionDraft, options = {}) => {
+    const access = readGraphStateForMutation(get(), trackId)
+    if (!access.ok) return access
+
+    const mutation = connectGraphNodes(access.graphState, connectionDraft, { idFactory: options.idFactory })
+    if (!mutation.ok) return mutation
+
+    return applyGraphStateMutation(set, access.key, mutation.graphState, options)
+  },
+
+  disconnectGraphEdgeForTrack: async (trackId, edgeId, options = {}) => {
+    const access = readGraphStateForMutation(get(), trackId)
+    if (!access.ok) return access
+
+    const mutation = disconnectGraphEdge(access.graphState, edgeId)
+    if (!mutation.ok) return mutation
+
+    return applyGraphStateMutation(set, access.key, mutation.graphState, options)
   },
 
   fetchChain: async (key) => {

@@ -22,6 +22,36 @@ const REPLACE_GRAPH_MODE_MESSAGE =
 const EMPTY_CHAIN: ChainEffect[] = [];
 const EMPTY_VST_PLUGINS: VstPluginMeta[] = [];
 
+const GRAPH_MUTATION_MESSAGES: Record<string, string> = {
+  protected_node: 'Track Input and Track Output cannot be removed.',
+  missing_node: 'That node no longer exists.',
+  missing_edge: 'That cable no longer exists.',
+  missing_source_node: 'The connection source no longer exists.',
+  missing_target_node: 'The connection target no longer exists.',
+  self_connection: 'A node cannot connect to itself.',
+  duplicate_edge: 'That connection already exists.',
+  cycle_detected: 'That connection would create a feedback loop.',
+  invalid_source_type: 'Track Output cannot be a connection source.',
+  invalid_target_type: 'Track Input cannot be a connection target.',
+  unknown_node_type: 'Unsupported nodes cannot be connected.',
+  invalid_graph_state: 'Graph edit could not be saved.',
+  invalid_node_draft: 'Could not create that effect node.',
+  invalid_connection_draft: 'Could not create that connection.',
+  master_track: 'Master track stays in Mixer Chain mode.',
+  no_track: 'Select a mixer track first.',
+  not_graph_mode: 'Switch this track to FX Graph mode first.',
+  missing_graph_state: 'No graph data exists for this track yet.',
+};
+
+export function describeGraphMutationResult(
+  result: { ok?: boolean; reason?: string } | null | undefined,
+): string | null {
+  if (result && result.ok) return null;
+  const reason = result?.reason;
+  if (reason && GRAPH_MUTATION_MESSAGES[reason]) return GRAPH_MUTATION_MESSAGES[reason];
+  return 'Graph edit was rejected.';
+}
+
 export interface FxGraphPanelContentProps {
   trackId?: number | 'master' | null;
   trackLabel?: string;
@@ -33,6 +63,11 @@ export interface FxGraphPanelContentProps {
   onRequestGraphMode?: () => void;
   onGraphNodePositionChange?: (nodeId: string, position: { x: number; y: number }) => void;
   onGraphViewportChange?: (viewport: GraphStateViewport) => void;
+  onAddGraphEffectNode?: () => void;
+  onRemoveGraphNode?: (nodeId: string) => void;
+  onConnectGraphNodes?: (sourceNodeId: string, targetNodeId: string) => void;
+  onDisconnectGraphEdge?: (edgeId: string) => void;
+  graphActionNotice?: string | null;
   conversionError?: string | null;
 }
 
@@ -84,6 +119,11 @@ export function FxGraphPanelContent({
   onRequestGraphMode,
   onGraphNodePositionChange,
   onGraphViewportChange,
+  onAddGraphEffectNode,
+  onRemoveGraphNode,
+  onConnectGraphNodes,
+  onDisconnectGraphEdge,
+  graphActionNotice = null,
   conversionError = null,
 }: FxGraphPanelContentProps) {
   const hasTrack = Boolean(trackLabel);
@@ -170,6 +210,11 @@ export function FxGraphPanelContent({
               <p className="xleth-fx-graph-panel__mode-copy">
                 Layout editing active. Routing edits come later.
               </p>
+              {graphActionNotice && (
+                <p className="xleth-fx-graph-panel__mode-copy" role="alert">
+                  {graphActionNotice}
+                </p>
+              )}
             </div>
           )}
 
@@ -179,6 +224,10 @@ export function FxGraphPanelContent({
               notice={graphModeActive ? null : previewNotice}
               onNodePositionChange={graphModeActive ? onGraphNodePositionChange : undefined}
               onViewportChange={graphModeActive ? onGraphViewportChange : undefined}
+              onAddEffectNode={graphModeActive ? onAddGraphEffectNode : undefined}
+              onRemoveNode={graphModeActive ? onRemoveGraphNode : undefined}
+              onConnectNodes={graphModeActive ? onConnectGraphNodes : undefined}
+              onDisconnectEdge={graphModeActive ? onDisconnectGraphEdge : undefined}
             />
           )}
 
@@ -253,6 +302,7 @@ export function FxGraphPanelContent({
 export default function FxGraphPanel() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [conversionError, setConversionError] = useState<string | null>(null);
+  const [graphActionNotice, setGraphActionNotice] = useState<string | null>(null);
   const renderingWithoutDom = typeof document === 'undefined';
   const reactiveFocusedTrackId = useTimelineFocusStore((state) => state.focusedTrackId);
   const focusState = renderingWithoutDom ? useTimelineFocusStore.getState() : null;
@@ -293,6 +343,10 @@ export default function FxGraphPanel() {
   const convertChainToGraphMode = useEffectChainStore((state) => state.convertChainToGraphMode);
   const setGraphStateNodePosition = useEffectChainStore((state) => state.setGraphStateNodePosition);
   const setGraphStateViewport = useEffectChainStore((state) => state.setGraphStateViewport);
+  const addGraphEffectNodeForTrack = useEffectChainStore((state) => state.addGraphEffectNodeForTrack);
+  const removeGraphNodeForTrack = useEffectChainStore((state) => state.removeGraphNodeForTrack);
+  const connectGraphNodesForTrack = useEffectChainStore((state) => state.connectGraphNodesForTrack);
+  const disconnectGraphEdgeForTrack = useEffectChainStore((state) => state.disconnectGraphEdgeForTrack);
   const fetchChain = useEffectChainStore((state) => state.fetchChain);
   const reactiveVstPlugins = useVstStore((state) => state.plugins);
   const vstState = renderingWithoutDom ? useVstStore.getState() : null;
@@ -308,6 +362,7 @@ export default function FxGraphPanel() {
 
   useEffect(() => {
     setConversionError(null);
+    setGraphActionNotice(null);
   }, [selectedStoreKey]);
 
   const handleConfirmGraphMode = useCallback(async () => {
@@ -337,6 +392,30 @@ export default function FxGraphPanel() {
     void setGraphStateViewport(selectedTrack.id, viewport);
   }, [fxMode, selectedTrack?.id, setGraphStateViewport]);
 
+  const handleAddGraphEffectNode = useCallback(async () => {
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    const result = await addGraphEffectNodeForTrack(selectedTrack.id, {});
+    setGraphActionNotice(describeGraphMutationResult(result));
+  }, [addGraphEffectNodeForTrack, fxMode, selectedTrack?.id]);
+
+  const handleRemoveGraphNode = useCallback(async (nodeId: string) => {
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    const result = await removeGraphNodeForTrack(selectedTrack.id, nodeId);
+    setGraphActionNotice(describeGraphMutationResult(result));
+  }, [fxMode, removeGraphNodeForTrack, selectedTrack?.id]);
+
+  const handleConnectGraphNodes = useCallback(async (sourceNodeId: string, targetNodeId: string) => {
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    const result = await connectGraphNodesForTrack(selectedTrack.id, { sourceNodeId, targetNodeId });
+    setGraphActionNotice(describeGraphMutationResult(result));
+  }, [connectGraphNodesForTrack, fxMode, selectedTrack?.id]);
+
+  const handleDisconnectGraphEdge = useCallback(async (edgeId: string) => {
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    const result = await disconnectGraphEdgeForTrack(selectedTrack.id, edgeId);
+    setGraphActionNotice(describeGraphMutationResult(result));
+  }, [disconnectGraphEdgeForTrack, fxMode, selectedTrack?.id]);
+
   const confirmGraphModeMessage =
     graphStateStatus === 'valid' || graphStateStatus === 'invalid' || graphStateStatus === 'future'
       ? REPLACE_GRAPH_MODE_MESSAGE
@@ -355,6 +434,11 @@ export default function FxGraphPanel() {
         onRequestGraphMode={() => setConfirmOpen(true)}
         onGraphNodePositionChange={handleGraphNodePositionChange}
         onGraphViewportChange={handleGraphViewportChange}
+        onAddGraphEffectNode={handleAddGraphEffectNode}
+        onRemoveGraphNode={handleRemoveGraphNode}
+        onConnectGraphNodes={handleConnectGraphNodes}
+        onDisconnectGraphEdge={handleDisconnectGraphEdge}
+        graphActionNotice={graphActionNotice}
         conversionError={conversionError}
       />
       {confirmOpen && (

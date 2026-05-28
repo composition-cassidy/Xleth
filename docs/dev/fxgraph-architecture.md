@@ -1,6 +1,6 @@
 # FX Graph Architecture
 
-Internal reference for the renderer-side graphState system. Updated through FXG.2C-d.
+Internal reference for the renderer-side graphState system. Updated through FXG.2C-e.
 
 ## Data model separation
 
@@ -39,11 +39,35 @@ These helpers are **topology guards only**. They enforce graph invariants (prote
 Protected node types (`PROTECTED_NODE_TYPES`): `trackInput`, `trackOutput`.
 These nodes cannot be removed. Future helpers must respect `isProtectedGraphNodeType`.
 
+## Store mutation actions (FXG.2C-e)
+
+`effectChainStore` wraps the pure helpers in four async actions that own `fxMode` enforcement:
+`addGraphEffectNodeForTrack`, `removeGraphNodeForTrack`, `connectGraphNodesForTrack`,
+`disconnectGraphEdgeForTrack`.
+
+Each action goes through `readGraphStateForMutation`, which rejects when the track is the
+master track (`master_track`), is not a normal track (`no_track`), is not owned by graph mode
+(`not_graph_mode`), or has no usable graphState (`missing_graph_state`). Only after that gate
+passes does the action call the topology guard, then `applyGraphStateMutation` to revalidate,
+commit to `graphStates`/`graphStateStatuses`, and best-effort persist via
+`timeline.setTrackGraphState`. Persistence failures warn but do not roll back the renderer edit;
+only a failed revalidation rejects with `invalid_graph_state`.
+
+Every action returns `{ ok: true, graphState, status }` or `{ ok: false, reason }`, where
+`reason` is a `GRAPH_MUTATION_REJECTION` code or one of the access codes above. The actions never
+touch `effectChains`.
+
+The FX Graph panel (`FxGraphPanel.tsx`) wires these actions to a minimal editing UI in
+`GraphStatePreview.tsx` — an "Add Effect Node" button, a per-effect remove button, drag-to-connect
+from a node's output handle, and disconnect buttons at audio-edge midpoints. Every affordance is
+gated on its callback prop, so the preview stays read-only whenever the panel is not in graph mode.
+Rejected mutations surface a non-blocking inline notice via `describeGraphMutationResult`.
+
 ## Engine execution boundary
 
-Effect nodes added via mutation helpers exist **only in renderer-side graphState**.
-No audio engine execution, `AudioGraph` routing, or bridge API involvement occurs until FXG.3.
-Engine graph execution is intentionally deferred.
+Effect nodes added via the mutation helpers, store actions, or editing UI exist **only in
+renderer-side graphState**. No audio engine execution, `AudioGraph` routing, or bridge API
+involvement occurs until FXG.3. Engine graph execution is intentionally deferred.
 
 ## Quarantine boundary
 

@@ -60,6 +60,60 @@ function makePositionedGraphState(trackId = '7', overrides = {}) {
   }
 }
 
+function graphWithoutEdges(trackId = '7') {
+  return { ...makePositionedGraphState(trackId), edges: [] }
+}
+
+function graphWithTwoEffects(trackId = '7') {
+  return {
+    schemaVersion: 1,
+    trackId,
+    nodes: [
+      { id: 'input', type: 'trackInput', data: {}, position: { x: 0, y: 0 } },
+      {
+        id: 'fx-1',
+        type: 'effect',
+        position: { x: 200, y: 0 },
+        data: {
+          effectInstanceId: 'effect-1',
+          pluginId: 'stock:eq',
+          displayName: 'EQ',
+          bypass: false,
+          missing: false,
+          crashed: false,
+          sourceChainSlotIndex: 0,
+        },
+      },
+      {
+        id: 'fx-2',
+        type: 'effect',
+        position: { x: 400, y: 0 },
+        data: {
+          effectInstanceId: 'effect-2',
+          pluginId: 'stock:delay',
+          displayName: 'Delay',
+          bypass: false,
+          missing: false,
+          crashed: false,
+          sourceChainSlotIndex: 1,
+        },
+      },
+      { id: 'output', type: 'trackOutput', data: {}, position: { x: 600, y: 0 } },
+    ],
+    edges: [
+      {
+        id: 'edge-1-2',
+        sourceNodeId: 'fx-1',
+        sourcePort: 'audioOut',
+        targetNodeId: 'fx-2',
+        targetPort: 'audioIn',
+        type: 'audio',
+      },
+    ],
+    viewport: { x: 0, y: 0, zoom: 1 },
+  }
+}
+
 async function loadEffectChainStoreFixture() {
   return import('./effectChainStore.js')
 }
@@ -832,5 +886,259 @@ describe('effectChainStore FX mode safety gate', () => {
       { x: 520, y: 0 },
     ])
     expect(state.graphStates['7'].viewport).toEqual({ x: -12, y: 24, zoom: 1.5 })
+  })
+
+  // --- FXG.2C-e graphState mutation actions ---
+
+  function seedGraphMode(useEffectChainStore, graphState, { baseChain = [makeEffect(11, 'compressor', 0)] } = {}) {
+    useEffectChainStore.setState({
+      chains: { '7': baseChain },
+      fxModes: { '7': 'graph' },
+      graphStates: { '7': graphState },
+      graphStateStatuses: { '7': { status: 'valid', graphState, warnings: [] } },
+    })
+    return baseChain
+  }
+
+  it('adds an effect node to a graph-owned track and persists without touching chains', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    let idCounter = 0
+    const idFactory = () => `gen-${idCounter++}`
+    const baseChain = seedGraphMode(useEffectChainStore, makePositionedGraphState('7'))
+
+    const result = await useEffectChainStore.getState().addGraphEffectNodeForTrack('7', {}, { idFactory })
+
+    expect(result.ok).toBe(true)
+    const next = useEffectChainStore.getState().graphStates['7']
+    const effects = next.nodes.filter((node) => node.type === 'effect')
+    expect(effects).toHaveLength(2)
+    const added = effects.find((node) => node.id !== 'fx-1')
+    expect(added).toMatchObject({
+      type: 'effect',
+      data: {
+        pluginId: 'placeholder',
+        displayName: 'Effect Node',
+        bypass: false,
+        missing: false,
+        crashed: false,
+        sourceChainSlotIndex: null,
+      },
+    })
+    expect(Number.isFinite(added.position.x) && Number.isFinite(added.position.y)).toBe(true)
+    // Existing node positions and viewport are preserved.
+    expect(next.nodes.find((node) => node.id === 'input').position).toEqual({ x: 0, y: 0 })
+    expect(next.nodes.find((node) => node.id === 'fx-1').position).toEqual({ x: 260, y: 0 })
+    expect(next.nodes.find((node) => node.id === 'output').position).toEqual({ x: 520, y: 0 })
+    expect(next.viewport).toEqual({ x: 0, y: 0, zoom: 1 })
+    // effectChains untouched.
+    expect(useEffectChainStore.getState().chains['7']).toBe(baseChain)
+    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next)
+    expect(timeline.setTrackFxMode).not.toHaveBeenCalled()
+    expect(audio.addEffect).not.toHaveBeenCalled()
+  })
+
+  it('honors an explicit effect node draft and position when adding', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, graphWithoutEdges('7'))
+
+    const result = await useEffectChainStore.getState().addGraphEffectNodeForTrack('7', {
+      effectInstanceId: 'inst-99',
+      pluginId: 'stock:reverb',
+      displayName: 'Reverb',
+      position: { x: 333, y: 222 },
+    })
+
+    expect(result.ok).toBe(true)
+    const added = useEffectChainStore.getState().graphStates['7'].nodes
+      .find((node) => node.data?.effectInstanceId === 'inst-99')
+    expect(added).toMatchObject({
+      type: 'effect',
+      position: { x: 333, y: 222 },
+      data: { pluginId: 'stock:reverb', displayName: 'Reverb', sourceChainSlotIndex: null },
+    })
+  })
+
+  it('blocks adding an effect node while Mixer Chain owns the track', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const graphState = makePositionedGraphState('7')
+    useEffectChainStore.setState({
+      chains: { '7': [makeEffect(11, 'compressor', 0)] },
+      fxModes: { '7': 'chain' },
+      graphStates: { '7': graphState },
+      graphStateStatuses: { '7': { status: 'valid', graphState, warnings: [] } },
+    })
+
+    await expect(
+      useEffectChainStore.getState().addGraphEffectNodeForTrack('7', {}),
+    ).resolves.toMatchObject({ ok: false, reason: 'not_graph_mode' })
+
+    expect(useEffectChainStore.getState().graphStates['7']).toBe(graphState)
+    expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+  })
+
+  it('blocks graph mutations on the master track', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+
+    await expect(
+      useEffectChainStore.getState().addGraphEffectNodeForTrack('master', {}),
+    ).resolves.toMatchObject({ ok: false, reason: 'master_track' })
+    await expect(
+      useEffectChainStore.getState().removeGraphNodeForTrack(null, 'fx-1'),
+    ).resolves.toMatchObject({ ok: false, reason: 'no_track' })
+
+    expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+  })
+
+  it('reports missing_graph_state when a graph-owned track has no graphState', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    useEffectChainStore.setState({
+      fxModes: { '7': 'graph' },
+      graphStates: { '7': null },
+    })
+
+    await expect(
+      useEffectChainStore.getState().addGraphEffectNodeForTrack('7', {}),
+    ).resolves.toMatchObject({ ok: false, reason: 'missing_graph_state' })
+
+    expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+  })
+
+  it('removes an effect node and its incident edges without touching chains', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const baseChain = seedGraphMode(useEffectChainStore, makePositionedGraphState('7'))
+
+    const result = await useEffectChainStore.getState().removeGraphNodeForTrack('7', 'fx-1')
+
+    expect(result.ok).toBe(true)
+    const next = useEffectChainStore.getState().graphStates['7']
+    expect(next.nodes.map((node) => node.id)).toEqual(['input', 'output'])
+    expect(next.edges).toEqual([])
+    expect(next.viewport).toEqual({ x: 0, y: 0, zoom: 1 })
+    expect(useEffectChainStore.getState().chains['7']).toBe(baseChain)
+    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next)
+  })
+
+  it('blocks removing protected trackInput and trackOutput nodes', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const graphState = makePositionedGraphState('7')
+    seedGraphMode(useEffectChainStore, graphState)
+
+    await expect(
+      useEffectChainStore.getState().removeGraphNodeForTrack('7', 'input'),
+    ).resolves.toMatchObject({ ok: false, reason: 'protected_node' })
+    await expect(
+      useEffectChainStore.getState().removeGraphNodeForTrack('7', 'output'),
+    ).resolves.toMatchObject({ ok: false, reason: 'protected_node' })
+
+    expect(useEffectChainStore.getState().graphStates['7']).toBe(graphState)
+    expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+  })
+
+  it('connects two nodes with a new audio edge and persists', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    let idCounter = 0
+    const idFactory = () => `edge-gen-${idCounter++}`
+    const baseChain = seedGraphMode(useEffectChainStore, graphWithoutEdges('7'))
+
+    const result = await useEffectChainStore.getState().connectGraphNodesForTrack('7', {
+      sourceNodeId: 'input',
+      targetNodeId: 'fx-1',
+    }, { idFactory })
+
+    expect(result.ok).toBe(true)
+    const next = useEffectChainStore.getState().graphStates['7']
+    expect(next.edges).toHaveLength(1)
+    expect(next.edges[0]).toMatchObject({
+      sourceNodeId: 'input',
+      sourcePort: 'audio',
+      targetNodeId: 'fx-1',
+      targetPort: 'audioIn',
+      type: 'audio',
+    })
+    expect(useEffectChainStore.getState().chains['7']).toBe(baseChain)
+    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next)
+  })
+
+  it('rejects self, duplicate, cycle, and invalid-endpoint connections', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+
+    seedGraphMode(useEffectChainStore, makePositionedGraphState('7'))
+    // makePositionedGraphState already has input -> fx-1 -> output.
+    await expect(
+      useEffectChainStore.getState().connectGraphNodesForTrack('7', { sourceNodeId: 'fx-1', targetNodeId: 'fx-1' }),
+    ).resolves.toMatchObject({ ok: false, reason: 'self_connection' })
+    await expect(
+      useEffectChainStore.getState().connectGraphNodesForTrack('7', { sourceNodeId: 'input', targetNodeId: 'fx-1' }),
+    ).resolves.toMatchObject({ ok: false, reason: 'duplicate_edge' })
+    await expect(
+      useEffectChainStore.getState().connectGraphNodesForTrack('7', { sourceNodeId: 'output', targetNodeId: 'fx-1' }),
+    ).resolves.toMatchObject({ ok: false, reason: 'invalid_source_type' })
+    await expect(
+      useEffectChainStore.getState().connectGraphNodesForTrack('7', { sourceNodeId: 'fx-1', targetNodeId: 'input' }),
+    ).resolves.toMatchObject({ ok: false, reason: 'invalid_target_type' })
+
+    seedGraphMode(useEffectChainStore, graphWithTwoEffects('7'))
+    await expect(
+      useEffectChainStore.getState().connectGraphNodesForTrack('7', { sourceNodeId: 'fx-2', targetNodeId: 'fx-1' }),
+    ).resolves.toMatchObject({ ok: false, reason: 'cycle_detected' })
+
+    expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+  })
+
+  it('disconnects an existing edge and rejects a missing edge', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const baseChain = seedGraphMode(useEffectChainStore, makePositionedGraphState('7'))
+
+    const result = await useEffectChainStore.getState().disconnectGraphEdgeForTrack('7', 'edge-1')
+    expect(result.ok).toBe(true)
+    const next = useEffectChainStore.getState().graphStates['7']
+    expect(next.edges.map((edge) => edge.id)).toEqual(['edge-2'])
+    expect(useEffectChainStore.getState().chains['7']).toBe(baseChain)
+    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next)
+
+    timeline.setTrackGraphState.mockClear()
+    await expect(
+      useEffectChainStore.getState().disconnectGraphEdgeForTrack('7', 'does-not-exist'),
+    ).resolves.toMatchObject({ ok: false, reason: 'missing_edge' })
+    expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+  })
+
+  it('keeps dormant graphState untouched for chain-mode disconnect attempts', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const graphState = makePositionedGraphState('7')
+    useEffectChainStore.setState({
+      fxModes: { '7': 'chain' },
+      graphStates: { '7': graphState },
+      graphStateStatuses: { '7': { status: 'valid', graphState, warnings: [] } },
+    })
+
+    await expect(
+      useEffectChainStore.getState().disconnectGraphEdgeForTrack('7', 'edge-1'),
+    ).resolves.toMatchObject({ ok: false, reason: 'not_graph_mode' })
+    await expect(
+      useEffectChainStore.getState().connectGraphNodesForTrack('7', { sourceNodeId: 'input', targetNodeId: 'output' }),
+    ).resolves.toMatchObject({ ok: false, reason: 'not_graph_mode' })
+
+    expect(useEffectChainStore.getState().graphStates['7']).toBe(graphState)
+    expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+  })
+
+  it('surfaces invalid_graph_state when validation rejects a mutation result', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const graphState = makePositionedGraphState('7')
+    const before = seedGraphMode(useEffectChainStore, graphState)
+    const warn = vi.fn()
+
+    const result = await useEffectChainStore.getState().addGraphEffectNodeForTrack('7', {}, {
+      validateGraphState: () => ({ status: 'invalid', graphState: null, reason: 'forced', warnings: [] }),
+      warn,
+    })
+
+    expect(result).toMatchObject({ ok: false, reason: 'invalid_graph_state' })
+    // Renderer state is not committed on validation failure.
+    expect(useEffectChainStore.getState().graphStates['7']).toBe(graphState)
+    expect(useEffectChainStore.getState().chains['7']).toBe(before)
+    expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('[FXG]'), expect.objectContaining({ trackId: '7' }))
   })
 })
