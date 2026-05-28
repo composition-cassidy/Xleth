@@ -34,6 +34,12 @@ export interface GraphStateDocument {
   };
 }
 
+export interface GraphStateViewport {
+  x: number;
+  y: number;
+  zoom?: number;
+}
+
 type PreviewNodeKind = 'trackInput' | 'trackOutput' | 'effect' | 'unknown';
 type PreviewEdgeKind = 'audio' | 'unknown';
 
@@ -50,8 +56,6 @@ interface PositionedNode {
   height: number;
   graphX: number;
   graphY: number;
-  dragScaleX: number;
-  dragScaleY: number;
   virtual?: boolean;
 }
 
@@ -68,6 +72,14 @@ interface PreviewModel {
   edges: PositionedEdge[];
   width: number;
   height: number;
+  bounds: {
+    minX: number;
+    minY: number;
+    maxX: number;
+    maxY: number;
+    width: number;
+    height: number;
+  };
 }
 
 interface PreviewModelOptions {
@@ -78,19 +90,19 @@ interface GraphStatePreviewProps {
   graphState?: GraphStateDocument | null;
   notice?: string | null;
   onNodePositionChange?: (nodeId: string, position: { x: number; y: number }) => void;
+  onViewportChange?: (viewport: GraphStateViewport) => void;
 }
 
 const NODE_WIDTH = 148;
 const NODE_HEIGHT = 74;
-const PREVIEW_PADDING_X = 44;
+const PREVIEW_PADDING_X = 24;
 const PREVIEW_PADDING_Y = 24;
 const HANDLE_OUTSET = 8;
 const FALLBACK_NODE_SPACING_X = 204;
 const FALLBACK_NODE_Y = 0;
-const SAVED_POSITION_DISPLAY_SCALE_X = 0.78;
-const SAVED_POSITION_DISPLAY_SCALE_Y = 0.86;
 const MIN_CANVAS_WIDTH = 460;
-const MIN_CANVAS_HEIGHT = 144;
+const MIN_CANVAS_HEIGHT = 240;
+const DEFAULT_VIEWPORT: GraphStateViewport = Object.freeze({ x: 0, y: 0, zoom: 1 });
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
@@ -218,13 +230,11 @@ function makeVirtualAnchorNode(
     type,
     ...text,
     x,
-    y: PREVIEW_PADDING_Y + FALLBACK_NODE_Y,
+    y: FALLBACK_NODE_Y,
     width: NODE_WIDTH,
     height: NODE_HEIGHT,
     graphX: x - PREVIEW_PADDING_X,
     graphY: FALLBACK_NODE_Y,
-    dragScaleX: 1,
-    dragScaleY: 1,
     virtual: true,
   };
 }
@@ -244,7 +254,7 @@ function normalizePositionedNodes(nodes: GraphStateNode[]) {
   const allNodesHavePositions = nodes.every(hasValidPosition);
   const layoutNodes = allNodesHavePositions ? nodes : fallbackNodeOrder(nodes);
   const rawPositions = layoutNodes.map((node, index) => {
-    if (hasValidPosition(node)) {
+    if (allNodesHavePositions && hasValidPosition(node)) {
       return {
         id: node.id,
         x: node.position.x as number,
@@ -259,11 +269,7 @@ function normalizePositionedNodes(nodes: GraphStateNode[]) {
     };
   });
 
-  const minX = Math.min(...rawPositions.map((position) => position.x));
-  const minY = Math.min(...rawPositions.map((position) => position.y));
   const positionById = new Map(rawPositions.map((position) => [position.id, position]));
-  const scaleX = allNodesHavePositions ? SAVED_POSITION_DISPLAY_SCALE_X : 1;
-  const scaleY = allNodesHavePositions ? SAVED_POSITION_DISPLAY_SCALE_Y : 1;
 
   return layoutNodes.map((node) => {
     const position = positionById.get(node.id) ?? { x: 0, y: 0 };
@@ -272,14 +278,12 @@ function normalizePositionedNodes(nodes: GraphStateNode[]) {
       id: node.id,
       type: resolvePreviewNodeType(node.type),
       ...text,
-      x: (position.x - minX) * scaleX + PREVIEW_PADDING_X,
-      y: (position.y - minY) * scaleY + PREVIEW_PADDING_Y,
+      x: position.x + PREVIEW_PADDING_X,
+      y: position.y + PREVIEW_PADDING_Y,
       width: NODE_WIDTH,
       height: NODE_HEIGHT,
       graphX: position.x,
       graphY: position.y,
-      dragScaleX: scaleX,
-      dragScaleY: scaleY,
     };
   });
 }
@@ -344,22 +348,39 @@ export function buildGraphStatePreviewModel(
   const edges = sourceNodes.length === 0
     ? []
     : normalizePositionedEdges(sourceEdges, nodes, options);
-  const maxX = Math.max(
-    ...nodes.map((node) => node.x + node.width),
-    MIN_CANVAS_WIDTH - PREVIEW_PADDING_X,
-  );
-  const maxY = Math.max(
-    ...nodes.map((node) => node.y + node.height),
-    MIN_CANVAS_HEIGHT - PREVIEW_PADDING_Y,
-  );
+  const minX = Math.min(...nodes.map((node) => node.x));
+  const minY = Math.min(...nodes.map((node) => node.y));
+  const maxX = Math.max(...nodes.map((node) => node.x + node.width));
+  const maxY = Math.max(...nodes.map((node) => node.y + node.height));
+  const bounds = {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    width: maxX - minX,
+    height: maxY - minY,
+  };
 
   return {
     empty: sourceNodes.length === 0 && sourceEdges.length === 0,
     nodes,
     edges,
-    width: Math.ceil(maxX + PREVIEW_PADDING_X + HANDLE_OUTSET),
-    height: Math.ceil(maxY + PREVIEW_PADDING_Y),
+    width: Math.ceil(Math.max(maxX + PREVIEW_PADDING_X + HANDLE_OUTSET, MIN_CANVAS_WIDTH)),
+    height: Math.ceil(Math.max(maxY + PREVIEW_PADDING_Y, MIN_CANVAS_HEIGHT)),
+    bounds,
   };
+}
+
+function normalizeViewport(viewport?: GraphStateDocument['viewport'] | null): GraphStateViewport {
+  return {
+    x: isFiniteNumber(viewport?.x) ? viewport.x : DEFAULT_VIEWPORT.x,
+    y: isFiniteNumber(viewport?.y) ? viewport.y : DEFAULT_VIEWPORT.y,
+    zoom: isFiniteNumber(viewport?.zoom) && viewport.zoom > 0 ? viewport.zoom : DEFAULT_VIEWPORT.zoom,
+  };
+}
+
+function roundViewport(value: number) {
+  return Math.round(value * 100) / 100;
 }
 
 function GraphStatePreviewNode({
@@ -443,9 +464,11 @@ function GraphStatePreviewNode({
 
 export default function GraphStatePreview({
   graphState = null,
-  notice = 'This preview is persisted graphState. Editing comes in a later phase.',
+  notice = 'Persisted graphState. Routing edits come later.',
   onNodePositionChange,
+  onViewportChange,
 }: GraphStatePreviewProps) {
+  const viewportRef = React.useRef<HTMLDivElement | null>(null);
   const dragRef = React.useRef<{
     pointerId: number;
     nodeId: string;
@@ -453,21 +476,33 @@ export default function GraphStatePreview({
     startClientY: number;
     startGraphX: number;
     startGraphY: number;
-    scaleX: number;
-    scaleY: number;
+  } | null>(null);
+  const panRef = React.useRef<{
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    startViewportX: number;
+    startViewportY: number;
   } | null>(null);
   const [draggingNodeId, setDraggingNodeId] = React.useState<string | null>(null);
+  const [panning, setPanning] = React.useState(false);
   const model = React.useMemo(
     () => buildGraphStatePreviewModel(graphState),
     [graphState],
+  );
+  const viewport = React.useMemo(
+    () => normalizeViewport(graphState?.viewport),
+    [graphState?.viewport],
   );
 
   const canvasStyle: React.CSSProperties = {
     width: model.width,
     height: model.height,
+    transform: `translate(${viewport.x}px, ${viewport.y}px)`,
   };
   const hasHeader = notice != null || model.empty;
   const canDragNodes = typeof onNodePositionChange === 'function';
+  const canEditViewport = typeof onViewportChange === 'function';
 
   const finishDrag = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (dragRef.current?.pointerId === event.pointerId) {
@@ -484,6 +519,7 @@ export default function GraphStatePreview({
     if (!canDragNodes || node.virtual || event.button !== 0) return;
 
     event.preventDefault();
+    event.stopPropagation();
     event.currentTarget.setPointerCapture?.(event.pointerId);
     dragRef.current = {
       pointerId: event.pointerId,
@@ -492,8 +528,6 @@ export default function GraphStatePreview({
       startClientY: event.clientY,
       startGraphX: node.graphX,
       startGraphY: node.graphY,
-      scaleX: node.dragScaleX || 1,
-      scaleY: node.dragScaleY || 1,
     };
     setDraggingNodeId(node.id);
   }, [canDragNodes]);
@@ -503,32 +537,127 @@ export default function GraphStatePreview({
     if (!drag || drag.pointerId !== event.pointerId || !onNodePositionChange) return;
 
     event.preventDefault();
-    const nextX = Math.max(0, drag.startGraphX + ((event.clientX - drag.startClientX) / drag.scaleX));
-    const nextY = Math.max(0, drag.startGraphY + ((event.clientY - drag.startClientY) / drag.scaleY));
+    const nextX = Math.max(0, drag.startGraphX + (event.clientX - drag.startClientX));
+    const nextY = Math.max(0, drag.startGraphY + (event.clientY - drag.startClientY));
     onNodePositionChange(drag.nodeId, {
       x: Math.round(nextX * 100) / 100,
       y: Math.round(nextY * 100) / 100,
     });
   }, [onNodePositionChange]);
 
+  const finishPan = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (panRef.current?.pointerId === event.pointerId) {
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+      panRef.current = null;
+      setPanning(false);
+    }
+  }, []);
+
+  const handleViewportPointerDown = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (!canEditViewport || event.button !== 0) return;
+    const target = event.target;
+    if (
+      typeof Element !== 'undefined' &&
+      target instanceof Element &&
+      target.closest('.xleth-graph-state-preview__node')
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    panRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startViewportX: viewport.x,
+      startViewportY: viewport.y,
+    };
+    setPanning(true);
+  }, [canEditViewport, viewport.x, viewport.y]);
+
+  const handleViewportPointerMove = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const pan = panRef.current;
+    if (!pan || pan.pointerId !== event.pointerId || !onViewportChange) return;
+
+    event.preventDefault();
+    onViewportChange({
+      x: roundViewport(pan.startViewportX + event.clientX - pan.startClientX),
+      y: roundViewport(pan.startViewportY + event.clientY - pan.startClientY),
+      zoom: viewport.zoom,
+    });
+  }, [onViewportChange, viewport.zoom]);
+
+  const handleFitView = React.useCallback(() => {
+    if (!onViewportChange) return;
+    const rect = viewportRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    onViewportChange({
+      x: roundViewport((rect.width - model.bounds.width) / 2 - model.bounds.minX),
+      y: roundViewport((rect.height - model.bounds.height) / 2 - model.bounds.minY),
+      zoom: viewport.zoom,
+    });
+  }, [model.bounds.height, model.bounds.minX, model.bounds.minY, model.bounds.width, onViewportChange, viewport.zoom]);
+
+  const handleResetView = React.useCallback(() => {
+    onViewportChange?.({
+      x: DEFAULT_VIEWPORT.x,
+      y: DEFAULT_VIEWPORT.y,
+      zoom: viewport.zoom,
+    });
+  }, [onViewportChange, viewport.zoom]);
+
   return (
     <section
       className="xleth-graph-state-preview"
-      aria-label="Read-only persisted FX graph preview"
+      aria-label={canEditViewport ? 'Persisted FX graph workspace' : 'Read-only persisted FX graph preview'}
       data-read-only="true"
       data-draggable-nodes={canDragNodes ? 'true' : undefined}
+      data-workspace-active={canEditViewport ? 'true' : undefined}
     >
-      {hasHeader && (
-        <div className="xleth-graph-state-preview__header">
-          {notice != null && (
-            <p className="xleth-graph-state-preview__notice">{notice}</p>
+      {(hasHeader || canEditViewport) && (
+        <div className="xleth-graph-state-preview__chrome">
+          {hasHeader && (
+            <div className="xleth-graph-state-preview__header">
+              {notice != null && (
+                <p className="xleth-graph-state-preview__notice">{notice}</p>
+              )}
+              {model.empty && (
+                <p className="xleth-graph-state-preview__empty-title">Empty FX Graph</p>
+              )}
+            </div>
           )}
-          {model.empty && (
-            <p className="xleth-graph-state-preview__empty-title">Empty FX Graph</p>
+          {canEditViewport && (
+            <div className="xleth-graph-state-preview__toolbar" aria-label="Graph workspace view controls">
+              <button
+                className="xleth-graph-state-preview__view-button"
+                type="button"
+                onClick={handleFitView}
+              >
+                Fit View
+              </button>
+              <button
+                className="xleth-graph-state-preview__view-button"
+                type="button"
+                onClick={handleResetView}
+              >
+                Reset View
+              </button>
+            </div>
           )}
         </div>
       )}
-      <div className="xleth-graph-state-preview__viewport">
+      <div
+        className="xleth-graph-state-preview__viewport"
+        ref={viewportRef}
+        data-pannable={canEditViewport ? 'true' : undefined}
+        data-panning={panning ? 'true' : undefined}
+        onPointerDown={canEditViewport ? handleViewportPointerDown : undefined}
+        onPointerMove={canEditViewport ? handleViewportPointerMove : undefined}
+        onPointerUp={canEditViewport ? finishPan : undefined}
+        onPointerCancel={canEditViewport ? finishPan : undefined}
+      >
         <div className="xleth-graph-state-preview__stage" data-preview-scroll-stage="true">
           <div
             className="xleth-graph-state-preview__canvas"

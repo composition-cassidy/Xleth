@@ -349,8 +349,8 @@ describe('PanelFrame render paths', () => {
     );
 
     expect(html).toContain('FX Graph Mode Active');
-    expect(html).toContain('This preview is persisted graphState. Editing comes in a later phase.');
-    expect(countText(html, 'This preview is persisted graphState. Editing comes in a later phase.')).toBe(1);
+    expect(html).toContain('Layout editing active. Routing edits come later.');
+    expect(countText(html, 'Layout editing active. Routing edits come later.')).toBe(1);
     expect(html).toContain('Read-only persisted FX graph preview');
     expect(html).toContain('Track Input');
     expect(html).toContain('Persisted EQ');
@@ -523,7 +523,7 @@ describe('PanelFrame render paths', () => {
       const validHtml = renderToStaticMarkup(<FxGraphPanel />);
       expect(validHtml).toContain('FX Graph Mode Active');
       expect(validHtml).toContain('Persisted EQ');
-      expect(countText(validHtml, 'This preview is persisted graphState. Editing comes in a later phase.')).toBe(1);
+      expect(countText(validHtml, 'Layout editing active. Routing edits come later.')).toBe(1);
 
       useEffectChainStore.setState({
         chains: {},
@@ -666,7 +666,7 @@ describe('PanelFrame render paths', () => {
     expect(graphPreviewSource).not.toContain('NodeEditor');
     expect(graphPreviewSource).not.toContain('nodeGraphStore');
     expect(graphPreviewSource).not.toContain('react-flow');
-    expect(graphPreviewSource).not.toMatch(/on(Mouse|Click|ContextMenu|Key|Drag)/);
+    expect(graphPreviewSource).not.toMatch(/on(Mouse|ContextMenu|Key|Drag)/);
   });
 
   it('keeps mixer strip source free of graph preview rendering', () => {

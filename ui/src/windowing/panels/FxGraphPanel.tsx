@@ -11,6 +11,7 @@ import ChainAsGraphPreview, {
 } from './fxgraph/ChainAsGraphPreview';
 import GraphStatePreview, {
   type GraphStateDocument,
+  type GraphStateViewport,
 } from './fxgraph/GraphStatePreview';
 
 const USE_GRAPH_MODE_TITLE = 'Use FX Graph Mode for this track?';
@@ -31,6 +32,7 @@ export interface FxGraphPanelContentProps {
   vstPlugins?: VstPluginMeta[];
   onRequestGraphMode?: () => void;
   onGraphNodePositionChange?: (nodeId: string, position: { x: number; y: number }) => void;
+  onGraphViewportChange?: (viewport: GraphStateViewport) => void;
   conversionError?: string | null;
 }
 
@@ -81,6 +83,7 @@ export function FxGraphPanelContent({
   vstPlugins = EMPTY_VST_PLUGINS,
   onRequestGraphMode,
   onGraphNodePositionChange,
+  onGraphViewportChange,
   conversionError = null,
 }: FxGraphPanelContentProps) {
   const hasTrack = Boolean(trackLabel);
@@ -117,7 +120,7 @@ export function FxGraphPanelContent({
     : 'This creates a read-only graphState snapshot from the current Mixer Chain.';
   const previewNotice = dormantGraphState
     ? 'Dormant graphState. Mixer Chain currently owns routing.'
-    : 'This preview is persisted graphState. Editing comes in a later phase.';
+    : 'Layout editing active. Routing edits come later.';
 
   return (
     <div className="xleth-fx-graph-panel" role="region" aria-label="FX Graph Workspace">
@@ -165,7 +168,7 @@ export function FxGraphPanelContent({
                 FX Graph Mode Active
               </div>
               <p className="xleth-fx-graph-panel__mode-copy">
-                This preview is persisted graphState. Editing comes in a later phase.
+                Layout editing active. Routing edits come later.
               </p>
             </div>
           )}
@@ -175,6 +178,7 @@ export function FxGraphPanelContent({
               graphState={graphState}
               notice={graphModeActive ? null : previewNotice}
               onNodePositionChange={graphModeActive ? onGraphNodePositionChange : undefined}
+              onViewportChange={graphModeActive ? onGraphViewportChange : undefined}
             />
           )}
 
@@ -288,6 +292,7 @@ export default function FxGraphPanel() {
     : reactiveChain;
   const convertChainToGraphMode = useEffectChainStore((state) => state.convertChainToGraphMode);
   const setGraphStateNodePosition = useEffectChainStore((state) => state.setGraphStateNodePosition);
+  const setGraphStateViewport = useEffectChainStore((state) => state.setGraphStateViewport);
   const fetchChain = useEffectChainStore((state) => state.fetchChain);
   const reactiveVstPlugins = useVstStore((state) => state.plugins);
   const vstState = renderingWithoutDom ? useVstStore.getState() : null;
@@ -327,6 +332,11 @@ export default function FxGraphPanel() {
     void setGraphStateNodePosition(selectedTrack.id, nodeId, position);
   }, [fxMode, selectedTrack?.id, setGraphStateNodePosition]);
 
+  const handleGraphViewportChange = useCallback((viewport: GraphStateViewport) => {
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    void setGraphStateViewport(selectedTrack.id, viewport);
+  }, [fxMode, selectedTrack?.id, setGraphStateViewport]);
+
   const confirmGraphModeMessage =
     graphStateStatus === 'valid' || graphStateStatus === 'invalid' || graphStateStatus === 'future'
       ? REPLACE_GRAPH_MODE_MESSAGE
@@ -344,6 +354,7 @@ export default function FxGraphPanel() {
         vstPlugins={vstPlugins}
         onRequestGraphMode={() => setConfirmOpen(true)}
         onGraphNodePositionChange={handleGraphNodePositionChange}
+        onGraphViewportChange={handleGraphViewportChange}
         conversionError={conversionError}
       />
       {confirmOpen && (

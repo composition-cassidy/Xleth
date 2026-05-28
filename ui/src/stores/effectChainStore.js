@@ -119,6 +119,30 @@ function normalizeGraphNodePosition(position) {
   }
 }
 
+function normalizeGraphStateViewport(viewport, currentViewport = {}) {
+  if (
+    viewport == null ||
+    typeof viewport !== 'object' ||
+    !Number.isFinite(viewport.x) ||
+    !Number.isFinite(viewport.y)
+  ) {
+    return null
+  }
+
+  const currentZoom = Number.isFinite(currentViewport?.zoom) && currentViewport.zoom > 0
+    ? currentViewport.zoom
+    : 1
+  const requestedZoom = Number.isFinite(viewport.zoom) && viewport.zoom > 0
+    ? viewport.zoom
+    : currentZoom
+
+  return {
+    x: viewport.x,
+    y: viewport.y,
+    zoom: Math.min(4, Math.max(0.1, requestedZoom)),
+  }
+}
+
 function defaultTimelineApi() {
   return globalThis.window?.xleth?.timeline ?? {}
 }
@@ -338,6 +362,79 @@ const useEffectChainStore = create((set, get) => ({
       warn?.('[FXG] graphState node position persistence failed', {
         trackId: key,
         nodeId,
+        error: e?.message ?? e,
+      })
+      return false
+    }
+
+    return true
+  },
+
+  setGraphStateViewport: async (trackId, viewport, options = {}) => {
+    const key = normalizeNormalTrackKey(trackId)
+    if (key == null) return false
+
+    const state = get()
+    if (resolveFxMode(state.fxModes, key) !== 'graph') return false
+
+    const graphState = state.graphStates[key]
+    if (!graphState || !Array.isArray(graphState.nodes) || !Array.isArray(graphState.edges)) {
+      return false
+    }
+
+    const nextViewport = normalizeGraphStateViewport(viewport, graphState.viewport)
+    if (nextViewport == null) return false
+
+    const currentViewport = normalizeGraphStateViewport(graphState.viewport ?? {
+      x: 0,
+      y: 0,
+      zoom: 1,
+    }, { zoom: 1 }) ?? { x: 0, y: 0, zoom: 1 }
+
+    if (
+      currentViewport.x === nextViewport.x &&
+      currentViewport.y === nextViewport.y &&
+      currentViewport.zoom === nextViewport.zoom
+    ) {
+      return true
+    }
+
+    const nextGraphState = {
+      ...graphState,
+      viewport: nextViewport,
+    }
+    const validate = options.validateGraphState ?? validateGraphState
+    const warn = options.warn ?? console.warn
+    const validation = validate(nextGraphState, key)
+    if (validation.status !== 'valid') {
+      warn?.('[FXG] graphState viewport update rejected', {
+        trackId: key,
+        reason: validation.reason ?? validation.status,
+        warnings: validation.warnings,
+      })
+      return false
+    }
+
+    set((currentState) => ({
+      graphStates: { ...currentState.graphStates, [key]: validation.graphState },
+      graphStateStatuses: { ...currentState.graphStateStatuses, [key]: validation },
+    }))
+
+    const timeline = defaultTimelineApi()
+    const persistGraphState = options.persistGraphState ?? timeline.setTrackGraphState
+    if (typeof persistGraphState !== 'function') return true
+
+    try {
+      const ok = await persistGraphState(Number(key), validation.graphState)
+      if (ok === false) {
+        warn?.('[FXG] graphState viewport persistence returned false', {
+          trackId: key,
+        })
+        return false
+      }
+    } catch (e) {
+      warn?.('[FXG] graphState viewport persistence failed', {
+        trackId: key,
         error: e?.message ?? e,
       })
       return false

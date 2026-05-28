@@ -457,6 +457,64 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
   })
 
+  it('updates graphState viewport without mutating nodes, edges, or chains', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const baseChain = [makeEffect(11, 'compressor', 0)]
+    const graphState = {
+      ...makeValidGraphState('7'),
+      nodes: [
+        { ...makeValidGraphState('7').nodes[0], position: { x: 0, y: 0 } },
+        { ...makeValidGraphState('7').nodes[1], position: { x: 260, y: 0 } },
+        { ...makeValidGraphState('7').nodes[2], position: { x: 520, y: 0 } },
+      ],
+      viewport: { x: 0, y: 0, zoom: 1 },
+    }
+
+    useEffectChainStore.setState({
+      chains: { '7': baseChain },
+      fxModes: { '7': 'graph' },
+      graphStates: { '7': graphState },
+      graphStateStatuses: { '7': { status: 'valid', graphState, warnings: [] } },
+    })
+
+    await expect(
+      useEffectChainStore.getState().setGraphStateViewport(7, { x: -120.5, y: 80.25 }),
+    ).resolves.toBe(true)
+
+    const state = useEffectChainStore.getState()
+    const nextGraphState = state.graphStates['7']
+    expect(nextGraphState.viewport).toEqual({ x: -120.5, y: 80.25, zoom: 1 })
+    expect(nextGraphState.nodes.map((node) => ({ id: node.id, position: node.position })))
+      .toEqual(graphState.nodes.map((node) => ({ id: node.id, position: node.position })))
+    expect(nextGraphState.edges).toEqual(graphState.edges)
+    expect(state.chains['7']).toBe(baseChain)
+    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, nextGraphState)
+    expect(timeline.setTrackFxMode).not.toHaveBeenCalled()
+    expect(audio.moveEffect).not.toHaveBeenCalled()
+  })
+
+  it('blocks graphState viewport updates while Mixer Chain owns the track', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const graphState = {
+      ...makeValidGraphState('7'),
+      viewport: { x: 0, y: 0, zoom: 1 },
+    }
+
+    useEffectChainStore.setState({
+      chains: { '7': [makeEffect(11, 'compressor', 0)] },
+      fxModes: { '7': 'chain' },
+      graphStates: { '7': graphState },
+      graphStateStatuses: { '7': { status: 'valid', graphState, warnings: [] } },
+    })
+
+    await expect(
+      useEffectChainStore.getState().setGraphStateViewport(7, { x: 25, y: 40 }),
+    ).resolves.toBe(false)
+
+    expect(useEffectChainStore.getState().graphStates['7']).toBe(graphState)
+    expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+  })
+
   it('rejects master, missing, and already graph-mode conversion without persistence', async () => {
     const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
     useEffectChainStore.setState({

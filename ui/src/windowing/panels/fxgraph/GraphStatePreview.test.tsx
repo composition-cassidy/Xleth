@@ -90,7 +90,7 @@ describe('GraphStatePreview', () => {
     expect(html).toContain('Track Output');
     expect(countAttribute(html, 'data-edge-type="audio"')).toBe(1);
     expect(html).toContain('data-read-only="true"');
-    expect(countText(html, 'This preview is persisted graphState. Editing comes in a later phase.')).toBe(1);
+    expect(countText(html, 'Persisted graphState. Routing edits come later.')).toBe(1);
     expect(html).not.toContain('data-editable');
   });
 
@@ -121,7 +121,7 @@ describe('GraphStatePreview', () => {
     expect(html).toContain('data-preview-scroll-stage="true"');
   });
 
-  it('normalizes saved node spacing for the read-only preview without mutating graphState', () => {
+  it('renders saved node spacing in workspace coordinates without mutating graphState', () => {
     const sourceGraphState = graphState([
       inputNode({ x: 100, y: 20 }),
       effectNode('compressor', 'Compressor', 0, { x: 360, y: 20 }),
@@ -140,8 +140,8 @@ describe('GraphStatePreview', () => {
     expect(input).toBeDefined();
     expect(compressor).toBeDefined();
     expect(output).toBeDefined();
-    expect((compressor?.x ?? 0) - (input?.x ?? 0)).toBeCloseTo(202.8);
-    expect((output?.x ?? 0) - (compressor?.x ?? 0)).toBeCloseTo(312);
+    expect((compressor?.x ?? 0) - (input?.x ?? 0)).toBeCloseTo(260);
+    expect((output?.x ?? 0) - (compressor?.x ?? 0)).toBeCloseTo(400);
     expect(JSON.stringify(sourceGraphState)).toBe(before);
   });
 
@@ -299,5 +299,32 @@ describe('GraphStatePreview', () => {
     expect(html).not.toContain('<button');
     expect(html).not.toContain('data-editable');
     expect(html).not.toMatch(/on(Mouse|Click|ContextMenu|Key|Drag)/);
+  });
+
+  it('renders view controls only when viewport editing is enabled', () => {
+    const editableHtml = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([
+          inputNode(),
+          effectNode('limiter', 'Limiter', 0, { x: 260, y: 0 }),
+          outputNode({ x: 520, y: 0 }),
+        ], [])}
+        onViewportChange={vi.fn()}
+      />,
+    );
+    const dormantHtml = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([
+          inputNode(),
+          outputNode(),
+        ], [])}
+      />,
+    );
+
+    expect(editableHtml).toContain('Fit View');
+    expect(editableHtml).toContain('Reset View');
+    expect(editableHtml).toContain('data-workspace-active="true"');
+    expect(dormantHtml).not.toContain('Fit View');
+    expect(dormantHtml).not.toContain('Reset View');
   });
 });

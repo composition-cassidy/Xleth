@@ -429,11 +429,12 @@
 
 .xleth-fx-graph-panel__surface-inner {
   display: grid;
-  align-content: center;
-  justify-items: center;
+  align-content: stretch;
+  justify-items: stretch;
   gap: 8px;
-  min-height: 240px;
+  min-height: 0;
   min-width: 0;
+  height: 100%;
   border: 1px dashed var(--theme-border-subtle);
   border-radius: var(--theme-chrome-border-radius);
   background:
@@ -443,12 +444,17 @@
   text-align: center;
 }
 
+.xleth-fx-graph-panel__surface-inner:has(.xleth-graph-state-preview) {
+  grid-template-rows: auto 1fr;
+}
+
 .xleth-fx-graph-panel__mode-action,
 .xleth-fx-graph-panel__mode-active {
   display: grid;
   justify-items: center;
   gap: 6px;
   margin-bottom: 8px;
+  align-self: center;
 }
 
 .xleth-fx-graph-panel__mode-button {
@@ -484,6 +490,8 @@
 }
 
 .xleth-fx-graph-panel__surface-title {
+  align-self: end;
+  justify-self: center;
   color: var(--theme-text);
   font-size: 14px;
   font-weight: 700;
@@ -491,6 +499,7 @@
 }
 
 .xleth-fx-graph-panel__surface-copy {
+  justify-self: center;
   max-width: 460px;
   margin: 0;
   font-size: 12px;
@@ -590,17 +599,30 @@
 
 .xleth-graph-state-preview {
   display: grid;
+  grid-template-rows: auto 1fr;
   gap: 10px;
-  width: min(100%, 920px);
+  width: 100%;
+  height: 100%;
+  min-height: 260px;
   min-width: 0;
+  align-self: stretch;
   text-align: left;
+}
+
+.xleth-graph-state-preview__chrome {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
 }
 
 .xleth-graph-state-preview__header {
   display: grid;
-  justify-items: center;
+  justify-items: start;
   gap: 6px;
-  text-align: center;
+  min-width: 0;
+  text-align: left;
 }
 
 .xleth-graph-state-preview__notice,
@@ -618,24 +640,70 @@
   font-weight: 700;
 }
 
-.xleth-graph-state-preview__viewport {
-  width: 100%;
+.xleth-graph-state-preview__toolbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
   min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
+}
+
+.xleth-graph-state-preview__view-button {
+  padding: 6px 10px;
   border: 1px solid var(--theme-border-subtle);
   border-radius: var(--theme-chrome-radius-sm);
   background: var(--theme-bg-surface);
+  color: var(--theme-text);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.xleth-graph-state-preview__view-button:hover {
+  border-color: var(--theme-border-strong);
+  background: var(--theme-bg-elevated);
+}
+
+.xleth-graph-state-preview__view-button:focus-visible {
+  outline: 1px solid var(--theme-border-focus);
+  outline-offset: 1px;
+}
+
+.xleth-graph-state-preview__viewport {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--theme-chrome-radius-sm);
+  background: var(--theme-bg-surface);
+  touch-action: none;
+}
+
+.xleth-graph-state-preview__viewport[data-pannable="true"] {
+  cursor: grab;
+}
+
+.xleth-graph-state-preview__viewport[data-panning="true"] {
+  cursor: grabbing;
+  user-select: none;
 }
 
 .xleth-graph-state-preview__stage {
-  width: max-content;
-  min-width: 100%;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 100%;
 }
 
 .xleth-graph-state-preview__canvas {
-  position: relative;
-  margin-inline: auto;
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  will-change: transform;
 }
 
 .xleth-graph-state-preview__edges,
@@ -647,6 +715,10 @@
 .xleth-graph-state-preview__nodes {
   position: absolute;
   inset: 0;
+}
+
+.xleth-graph-state-preview__edges {
+  overflow: visible;
 }
 
 .xleth-graph-state-preview__edge {
