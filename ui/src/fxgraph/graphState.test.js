@@ -1,10 +1,21 @@
 import { describe, expect, it } from 'vitest'
 import {
   GRAPH_STATE_SCHEMA_VERSION,
+  GRAPH_MUTATION_REJECTION,
+  PROTECTED_NODE_TYPES,
+  addGraphEffectNode,
+  canConnectGraphNodes,
+  canRemoveGraphNode,
+  connectGraphNodes,
   createEmptyGraphState,
+  disconnectGraphEdge,
+  hasEquivalentGraphEdge,
+  isProtectedGraphNodeType,
   loadGraphState,
+  removeGraphNode,
   saveGraphState,
   validateGraphState,
+  validateGraphStateForEditing,
 } from './graphState.js'
 
 function makeEffectNode(id = 'fx-1') {
@@ -366,5 +377,583 @@ describe('graphState schema validation', () => {
 
     expect(saved).toEqual(graphState)
     expect(saved).not.toBe(graphState)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// FXG.2C-d — graph mutation architecture guards
+// ---------------------------------------------------------------------------
+
+function makeGuardGraphState(overrides = {}) {
+  return {
+    schemaVersion: GRAPH_STATE_SCHEMA_VERSION,
+    trackId: '5',
+    nodes: [
+      { id: 'in', type: 'trackInput', position: { x: 0, y: 0 }, data: {} },
+      {
+        id: 'fx-a',
+        type: 'effect',
+        position: { x: 260, y: 0 },
+        data: {
+          effectInstanceId: 'inst-a',
+          pluginId: 'stock:eq',
+          displayName: 'EQ',
+          bypass: false,
+          missing: false,
+          crashed: false,
+          sourceChainSlotIndex: 0,
+        },
+      },
+      { id: 'out', type: 'trackOutput', position: { x: 520, y: 0 }, data: {} },
+    ],
+    edges: [
+      {
+        id: 'e-1',
+        sourceNodeId: 'in',
+        sourcePort: 'audio',
+        targetNodeId: 'fx-a',
+        targetPort: 'audioIn',
+        type: 'audio',
+      },
+      {
+        id: 'e-2',
+        sourceNodeId: 'fx-a',
+        sourcePort: 'audioOut',
+        targetNodeId: 'out',
+        targetPort: 'audio',
+        type: 'audio',
+      },
+    ],
+    viewport: { x: -10, y: 5, zoom: 1.5 },
+    customField: 'preserved',
+    ...overrides,
+  }
+}
+
+function makeNodeDraft(overrides = {}) {
+  return {
+    effectInstanceId: 'new-inst',
+    pluginId: 'stock:reverb',
+    displayName: 'Reverb',
+    bypass: false,
+    missing: false,
+    crashed: false,
+    ...overrides,
+  }
+}
+
+describe('graph mutation architecture guards', () => {
+  describe('PROTECTED_NODE_TYPES', () => {
+    it('is a frozen array containing trackInput and trackOutput', () => {
+      expect(Array.isArray(PROTECTED_NODE_TYPES)).toBe(true)
+      expect(Object.isFrozen(PROTECTED_NODE_TYPES)).toBe(true)
+      expect(PROTECTED_NODE_TYPES).toEqual(['trackInput', 'trackOutput'])
+    })
+  })
+
+  describe('isProtectedGraphNodeType', () => {
+    it('returns true for trackInput', () => {
+      expect(isProtectedGraphNodeType('trackInput')).toBe(true)
+    })
+
+    it('returns true for trackOutput', () => {
+      expect(isProtectedGraphNodeType('trackOutput')).toBe(true)
+    })
+
+    it('returns false for effect', () => {
+      expect(isProtectedGraphNodeType('effect')).toBe(false)
+    })
+
+    it('returns false for unknown', () => {
+      expect(isProtectedGraphNodeType('unknown')).toBe(false)
+    })
+
+    it('returns false for arbitrary strings', () => {
+      expect(isProtectedGraphNodeType('sidechain')).toBe(false)
+      expect(isProtectedGraphNodeType('')).toBe(false)
+    })
+  })
+
+  describe('validateGraphStateForEditing', () => {
+    it('rejects null', () => {
+      expect(validateGraphStateForEditing(null)).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.INVALID_GRAPH_STATE,
+      })
+    })
+
+    it('rejects non-object', () => {
+      expect(validateGraphStateForEditing('nope')).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.INVALID_GRAPH_STATE,
+      })
+    })
+
+    it('rejects when nodes is not an array', () => {
+      expect(validateGraphStateForEditing({ nodes: null, edges: [] })).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.INVALID_GRAPH_STATE,
+      })
+    })
+
+    it('rejects when edges is not an array', () => {
+      expect(validateGraphStateForEditing({ nodes: [], edges: null })).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.INVALID_GRAPH_STATE,
+      })
+    })
+
+    it('accepts a valid graphState', () => {
+      expect(validateGraphStateForEditing(makeGuardGraphState())).toEqual({ ok: true })
+    })
+  })
+
+  describe('hasEquivalentGraphEdge', () => {
+    it('returns false when no edges match', () => {
+      expect(hasEquivalentGraphEdge(makeGuardGraphState(), 'in', 'out')).toBe(false)
+    })
+
+    it('returns true when an equivalent edge exists', () => {
+      expect(hasEquivalentGraphEdge(makeGuardGraphState(), 'in', 'fx-a', 'audio')).toBe(true)
+    })
+
+    it('returns false when source differs', () => {
+      expect(hasEquivalentGraphEdge(makeGuardGraphState(), 'out', 'fx-a', 'audio')).toBe(false)
+    })
+
+    it('returns false when target differs', () => {
+      expect(hasEquivalentGraphEdge(makeGuardGraphState(), 'in', 'out', 'audio')).toBe(false)
+    })
+
+    it('returns false when edge type differs', () => {
+      expect(hasEquivalentGraphEdge(makeGuardGraphState(), 'in', 'fx-a', 'cv')).toBe(false)
+    })
+
+    it('returns false for null graphState', () => {
+      expect(hasEquivalentGraphEdge(null, 'in', 'fx-a')).toBe(false)
+    })
+  })
+
+  describe('canRemoveGraphNode', () => {
+    it('rejects when graphState is null', () => {
+      expect(canRemoveGraphNode(null, 'fx-a')).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.INVALID_GRAPH_STATE,
+      })
+    })
+
+    it('rejects when node does not exist', () => {
+      expect(canRemoveGraphNode(makeGuardGraphState(), 'missing-id')).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.MISSING_NODE,
+      })
+    })
+
+    it('rejects protected trackInput', () => {
+      expect(canRemoveGraphNode(makeGuardGraphState(), 'in')).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.PROTECTED_NODE,
+      })
+    })
+
+    it('rejects protected trackOutput', () => {
+      expect(canRemoveGraphNode(makeGuardGraphState(), 'out')).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.PROTECTED_NODE,
+      })
+    })
+
+    it('accepts removing an effect node', () => {
+      expect(canRemoveGraphNode(makeGuardGraphState(), 'fx-a')).toEqual({ ok: true })
+    })
+  })
+
+  describe('canConnectGraphNodes', () => {
+    it('rejects when graphState is null', () => {
+      expect(canConnectGraphNodes(null, 'in', 'out')).toMatchObject({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.INVALID_GRAPH_STATE,
+      })
+    })
+
+    it('rejects missing source node', () => {
+      expect(canConnectGraphNodes(makeGuardGraphState(), 'missing', 'out')).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.MISSING_SOURCE_NODE,
+      })
+    })
+
+    it('rejects missing target node', () => {
+      expect(canConnectGraphNodes(makeGuardGraphState(), 'in', 'missing')).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.MISSING_TARGET_NODE,
+      })
+    })
+
+    it('rejects self-connection', () => {
+      expect(canConnectGraphNodes(makeGuardGraphState(), 'fx-a', 'fx-a')).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.SELF_CONNECTION,
+      })
+    })
+
+    it('rejects trackOutput as source', () => {
+      expect(canConnectGraphNodes(makeGuardGraphState(), 'out', 'fx-a')).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.INVALID_SOURCE_TYPE,
+      })
+    })
+
+    it('rejects trackInput as target', () => {
+      expect(canConnectGraphNodes(makeGuardGraphState(), 'fx-a', 'in')).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.INVALID_TARGET_TYPE,
+      })
+    })
+
+    it('rejects unknown source node type', () => {
+      const gs = makeGuardGraphState({
+        nodes: [
+          { id: 'in', type: 'trackInput', position: { x: 0, y: 0 }, data: {} },
+          { id: 'mystery', type: 'unknown', position: { x: 260, y: 0 }, data: { _preservedType: 'sidechain', _preservedData: {} } },
+          { id: 'out', type: 'trackOutput', position: { x: 520, y: 0 }, data: {} },
+        ],
+        edges: [],
+      })
+      expect(canConnectGraphNodes(gs, 'mystery', 'out')).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.UNKNOWN_NODE_TYPE,
+      })
+    })
+
+    it('rejects unknown target node type', () => {
+      const gs = makeGuardGraphState({
+        nodes: [
+          { id: 'in', type: 'trackInput', position: { x: 0, y: 0 }, data: {} },
+          { id: 'mystery', type: 'unknown', position: { x: 260, y: 0 }, data: { _preservedType: 'sidechain', _preservedData: {} } },
+          { id: 'out', type: 'trackOutput', position: { x: 520, y: 0 }, data: {} },
+        ],
+        edges: [],
+      })
+      expect(canConnectGraphNodes(gs, 'in', 'mystery')).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.UNKNOWN_NODE_TYPE,
+      })
+    })
+
+    it('rejects duplicate equivalent edge', () => {
+      expect(canConnectGraphNodes(makeGuardGraphState(), 'in', 'fx-a')).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.DUPLICATE_EDGE,
+      })
+    })
+
+    it('rejects a connection that would create a cycle', () => {
+      const fxBNode = {
+        id: 'fx-b',
+        type: 'effect',
+        position: { x: 390, y: 0 },
+        data: {
+          effectInstanceId: 'inst-b',
+          pluginId: 'stock:comp',
+          displayName: 'Comp',
+          bypass: false,
+          missing: false,
+          crashed: false,
+          sourceChainSlotIndex: null,
+        },
+      }
+      const gs = makeGuardGraphState({
+        nodes: [
+          { id: 'in', type: 'trackInput', position: { x: 0, y: 0 }, data: {} },
+          makeGuardGraphState().nodes[1],  // fx-a
+          fxBNode,
+          { id: 'out', type: 'trackOutput', position: { x: 650, y: 0 }, data: {} },
+        ],
+        edges: [
+          {
+            id: 'e-fwd',
+            sourceNodeId: 'fx-a',
+            sourcePort: 'audioOut',
+            targetNodeId: 'fx-b',
+            targetPort: 'audioIn',
+            type: 'audio',
+          },
+        ],
+      })
+      // fx-b → fx-a would form a cycle (fx-a → fx-b already exists)
+      expect(canConnectGraphNodes(gs, 'fx-b', 'fx-a')).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.CYCLE_DETECTED,
+      })
+    })
+
+    it('accepts a valid linear connection from trackInput to effect', () => {
+      const gs = makeGuardGraphState({ edges: [] })
+      expect(canConnectGraphNodes(gs, 'in', 'fx-a')).toEqual({ ok: true })
+    })
+
+    it('accepts a valid linear connection from effect to trackOutput', () => {
+      const gs = makeGuardGraphState({ edges: [] })
+      expect(canConnectGraphNodes(gs, 'fx-a', 'out')).toEqual({ ok: true })
+    })
+  })
+
+  describe('addGraphEffectNode', () => {
+    it('rejects null graphState', () => {
+      expect(addGraphEffectNode(null, makeNodeDraft())).toMatchObject({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.INVALID_GRAPH_STATE,
+      })
+    })
+
+    it('rejects invalid nodeDraft (missing effectInstanceId)', () => {
+      expect(addGraphEffectNode(makeGuardGraphState(), { ...makeNodeDraft(), effectInstanceId: '' })).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.INVALID_NODE_DRAFT,
+      })
+    })
+
+    it('rejects invalid nodeDraft (missing pluginId)', () => {
+      expect(addGraphEffectNode(makeGuardGraphState(), { ...makeNodeDraft(), pluginId: '' })).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.INVALID_NODE_DRAFT,
+      })
+    })
+
+    it('rejects non-object nodeDraft', () => {
+      expect(addGraphEffectNode(makeGuardGraphState(), null)).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.INVALID_NODE_DRAFT,
+      })
+    })
+
+    it('adds a node with the correct type and data shape', () => {
+      const result = addGraphEffectNode(makeGuardGraphState(), makeNodeDraft())
+
+      expect(result.ok).toBe(true)
+      const newNode = result.graphState.nodes.at(-1)
+      expect(newNode.type).toBe('effect')
+      expect(newNode.data.effectInstanceId).toBe('new-inst')
+      expect(newNode.data.pluginId).toBe('stock:reverb')
+      expect(newNode.data.displayName).toBe('Reverb')
+      expect(newNode.data.bypass).toBe(false)
+      expect(newNode.data.missing).toBe(false)
+      expect(newNode.data.crashed).toBe(false)
+      expect(newNode.data.sourceChainSlotIndex).toBeNull()
+    })
+
+    it('auto-positions the new node before trackOutput', () => {
+      const result = addGraphEffectNode(makeGuardGraphState(), makeNodeDraft())
+
+      expect(result.ok).toBe(true)
+      const newNode = result.graphState.nodes.at(-1)
+      // trackOutput is at index 2 (0-based), so insertIndex=2, x = 2*260 = 520
+      expect(newNode.position).toEqual({ x: 520, y: 0 })
+    })
+
+    it('uses provided position when valid', () => {
+      const result = addGraphEffectNode(
+        makeGuardGraphState(),
+        { ...makeNodeDraft(), position: { x: 100, y: 50 } },
+      )
+
+      expect(result.ok).toBe(true)
+      expect(result.graphState.nodes.at(-1).position).toEqual({ x: 100, y: 50 })
+    })
+
+    it('preserves viewport, existing nodes, and extra graphState fields', () => {
+      const gs = makeGuardGraphState()
+      const result = addGraphEffectNode(gs, makeNodeDraft())
+
+      expect(result.ok).toBe(true)
+      expect(result.graphState.viewport).toEqual(gs.viewport)
+      expect(result.graphState.customField).toBe('preserved')
+      expect(result.graphState.nodes).toHaveLength(gs.nodes.length + 1)
+      expect(result.graphState.edges).toHaveLength(gs.edges.length)
+    })
+
+    it('does not mutate the input graphState', () => {
+      const gs = makeGuardGraphState()
+      const originalNodeCount = gs.nodes.length
+      addGraphEffectNode(gs, makeNodeDraft())
+
+      expect(gs.nodes).toHaveLength(originalNodeCount)
+    })
+
+    it('uses provided idFactory for the node id', () => {
+      let counter = 0
+      const idFactory = () => `fixed-id-${counter++}`
+      const result = addGraphEffectNode(makeGuardGraphState(), makeNodeDraft(), { idFactory })
+
+      expect(result.ok).toBe(true)
+      expect(result.graphState.nodes.at(-1).id).toBe('fixed-id-0')
+    })
+  })
+
+  describe('removeGraphNode', () => {
+    it('rejects removing trackInput', () => {
+      expect(removeGraphNode(makeGuardGraphState(), 'in')).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.PROTECTED_NODE,
+      })
+    })
+
+    it('rejects removing trackOutput', () => {
+      expect(removeGraphNode(makeGuardGraphState(), 'out')).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.PROTECTED_NODE,
+      })
+    })
+
+    it('rejects removing a missing node', () => {
+      expect(removeGraphNode(makeGuardGraphState(), 'no-such-node')).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.MISSING_NODE,
+      })
+    })
+
+    it('removes an effect node and its incident edges', () => {
+      const result = removeGraphNode(makeGuardGraphState(), 'fx-a')
+
+      expect(result.ok).toBe(true)
+      expect(result.graphState.nodes.find((n) => n.id === 'fx-a')).toBeUndefined()
+      expect(result.graphState.edges.every(
+        (e) => e.sourceNodeId !== 'fx-a' && e.targetNodeId !== 'fx-a',
+      )).toBe(true)
+    })
+
+    it('preserves other nodes, viewport, and extra fields', () => {
+      const gs = makeGuardGraphState()
+      const result = removeGraphNode(gs, 'fx-a')
+
+      expect(result.ok).toBe(true)
+      expect(result.graphState.nodes.find((n) => n.id === 'in')).toBeDefined()
+      expect(result.graphState.nodes.find((n) => n.id === 'out')).toBeDefined()
+      expect(result.graphState.viewport).toEqual(gs.viewport)
+      expect(result.graphState.customField).toBe('preserved')
+    })
+
+    it('does not mutate the input graphState', () => {
+      const gs = makeGuardGraphState()
+      const originalNodeCount = gs.nodes.length
+      removeGraphNode(gs, 'fx-a')
+
+      expect(gs.nodes).toHaveLength(originalNodeCount)
+    })
+  })
+
+  describe('connectGraphNodes', () => {
+    it('rejects a non-object connectionDraft', () => {
+      expect(connectGraphNodes(makeGuardGraphState(), null)).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.INVALID_CONNECTION_DRAFT,
+      })
+    })
+
+    it('delegates topology rejections to canConnectGraphNodes', () => {
+      expect(connectGraphNodes(makeGuardGraphState(), { sourceNodeId: 'fx-a', targetNodeId: 'fx-a' })).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.SELF_CONNECTION,
+      })
+    })
+
+    it('infers ports for trackInput → effect using existing convention', () => {
+      const gs = makeGuardGraphState({ edges: [] })
+      const result = connectGraphNodes(gs, { sourceNodeId: 'in', targetNodeId: 'fx-a' })
+
+      expect(result.ok).toBe(true)
+      const newEdge = result.graphState.edges.at(-1)
+      expect(newEdge.sourcePort).toBe('audio')
+      expect(newEdge.targetPort).toBe('audioIn')
+      expect(newEdge.type).toBe('audio')
+    })
+
+    it('infers ports for effect → trackOutput using existing convention', () => {
+      const gs = makeGuardGraphState({ edges: [] })
+      const result = connectGraphNodes(gs, { sourceNodeId: 'fx-a', targetNodeId: 'out' })
+
+      expect(result.ok).toBe(true)
+      const newEdge = result.graphState.edges.at(-1)
+      expect(newEdge.sourcePort).toBe('audioOut')
+      expect(newEdge.targetPort).toBe('audio')
+    })
+
+    it('preserves viewport, nodes, and extra graphState fields', () => {
+      const gs = makeGuardGraphState({ edges: [] })
+      const result = connectGraphNodes(gs, { sourceNodeId: 'in', targetNodeId: 'fx-a' })
+
+      expect(result.ok).toBe(true)
+      expect(result.graphState.nodes).toHaveLength(gs.nodes.length)
+      expect(result.graphState.viewport).toEqual(gs.viewport)
+      expect(result.graphState.customField).toBe('preserved')
+    })
+
+    it('does not mutate the input graphState', () => {
+      const gs = makeGuardGraphState({ edges: [] })
+      const originalEdgeCount = gs.edges.length
+      connectGraphNodes(gs, { sourceNodeId: 'in', targetNodeId: 'fx-a' })
+
+      expect(gs.edges).toHaveLength(originalEdgeCount)
+    })
+
+    it('uses provided idFactory for the edge id', () => {
+      const gs = makeGuardGraphState({ edges: [] })
+      const idFactory = () => 'my-edge-id'
+      const result = connectGraphNodes(gs, { sourceNodeId: 'in', targetNodeId: 'fx-a' }, { idFactory })
+
+      expect(result.ok).toBe(true)
+      expect(result.graphState.edges.at(-1).id).toBe('my-edge-id')
+    })
+  })
+
+  describe('disconnectGraphEdge', () => {
+    it('rejects null graphState', () => {
+      expect(disconnectGraphEdge(null, 'e-1')).toMatchObject({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.INVALID_GRAPH_STATE,
+      })
+    })
+
+    it('rejects empty edgeId', () => {
+      expect(disconnectGraphEdge(makeGuardGraphState(), '')).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.MISSING_EDGE,
+      })
+    })
+
+    it('rejects a non-existent edgeId', () => {
+      expect(disconnectGraphEdge(makeGuardGraphState(), 'no-such-edge')).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.MISSING_EDGE,
+      })
+    })
+
+    it('removes the correct edge by id', () => {
+      const result = disconnectGraphEdge(makeGuardGraphState(), 'e-1')
+
+      expect(result.ok).toBe(true)
+      expect(result.graphState.edges.find((e) => e.id === 'e-1')).toBeUndefined()
+      expect(result.graphState.edges.find((e) => e.id === 'e-2')).toBeDefined()
+    })
+
+    it('preserves nodes, other edges, viewport, and extra fields', () => {
+      const gs = makeGuardGraphState()
+      const result = disconnectGraphEdge(gs, 'e-1')
+
+      expect(result.ok).toBe(true)
+      expect(result.graphState.nodes).toHaveLength(gs.nodes.length)
+      expect(result.graphState.edges).toHaveLength(gs.edges.length - 1)
+      expect(result.graphState.viewport).toEqual(gs.viewport)
+      expect(result.graphState.customField).toBe('preserved')
+    })
+
+    it('does not mutate the input graphState', () => {
+      const gs = makeGuardGraphState()
+      const originalEdgeCount = gs.edges.length
+      disconnectGraphEdge(gs, 'e-1')
+
+      expect(gs.edges).toHaveLength(originalEdgeCount)
+    })
   })
 })

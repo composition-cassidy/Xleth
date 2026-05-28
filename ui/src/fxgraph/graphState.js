@@ -445,3 +445,249 @@ export function saveGraphState(graphState) {
   if (graphState == null) return null
   return cloneJson(graphState)
 }
+
+// ---------------------------------------------------------------------------
+// FXG.2C-d — Graph mutation architecture guards
+//
+// These helpers are topology guards for renderer-side graphState only.
+// They do NOT enforce fxMode ownership. FXG.2C-e store actions must check
+// fxMode === 'graph' before calling any mutation helper.
+//
+// Effect nodes added via mutation helpers exist in renderer-side graphState
+// only. No audio engine execution or bridge API involvement until FXG.3.
+// ---------------------------------------------------------------------------
+
+function generateMutationId(idFactory) {
+  if (typeof idFactory === 'function') {
+    const id = idFactory()
+    if (typeof id === 'string' && id.length > 0) return id
+  }
+  return globalThis.crypto?.randomUUID?.() ??
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+}
+
+// Mirrors chainToGraphState.js port convention (lines 189-191) exactly.
+function inferSourcePort(nodeType) {
+  if (nodeType === 'trackInput') return 'audio'
+  if (nodeType === 'effect') return 'audioOut'
+  return 'audio'
+}
+
+function inferTargetPort(nodeType) {
+  if (nodeType === 'trackOutput') return 'audio'
+  if (nodeType === 'effect') return 'audioIn'
+  return 'audio'
+}
+
+export const PROTECTED_NODE_TYPES = Object.freeze(['trackInput', 'trackOutput'])
+const PROTECTED_NODE_TYPES_SET = new Set(PROTECTED_NODE_TYPES)
+
+export const GRAPH_MUTATION_REJECTION = Object.freeze({
+  PROTECTED_NODE: 'protected_node',
+  MISSING_NODE: 'missing_node',
+  MISSING_EDGE: 'missing_edge',
+  MISSING_SOURCE_NODE: 'missing_source_node',
+  MISSING_TARGET_NODE: 'missing_target_node',
+  SELF_CONNECTION: 'self_connection',
+  DUPLICATE_EDGE: 'duplicate_edge',
+  CYCLE_DETECTED: 'cycle_detected',
+  INVALID_SOURCE_TYPE: 'invalid_source_type',
+  INVALID_TARGET_TYPE: 'invalid_target_type',
+  UNKNOWN_NODE_TYPE: 'unknown_node_type',
+  INVALID_GRAPH_STATE: 'invalid_graph_state',
+  INVALID_NODE_DRAFT: 'invalid_node_draft',
+  INVALID_CONNECTION_DRAFT: 'invalid_connection_draft',
+})
+
+export function isProtectedGraphNodeType(type) {
+  return PROTECTED_NODE_TYPES_SET.has(type)
+}
+
+export function validateGraphStateForEditing(graphState) {
+  if (
+    graphState == null ||
+    !isPlainObject(graphState) ||
+    !Array.isArray(graphState.nodes) ||
+    !Array.isArray(graphState.edges)
+  ) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_GRAPH_STATE }
+  }
+  return { ok: true }
+}
+
+export function hasEquivalentGraphEdge(graphState, sourceNodeId, targetNodeId, edgeType = 'audio') {
+  if (!Array.isArray(graphState?.edges)) return false
+  return graphState.edges.some(
+    (edge) =>
+      edge.sourceNodeId === sourceNodeId &&
+      edge.targetNodeId === targetNodeId &&
+      edge.type === edgeType,
+  )
+}
+
+export function canRemoveGraphNode(graphState, nodeId) {
+  const editCheck = validateGraphStateForEditing(graphState)
+  if (!editCheck.ok) return editCheck
+
+  const node = graphState.nodes.find((n) => n.id === nodeId)
+  if (!node) return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_NODE }
+  if (isProtectedGraphNodeType(node.type)) return { ok: false, reason: GRAPH_MUTATION_REJECTION.PROTECTED_NODE }
+
+  return { ok: true }
+}
+
+export function canConnectGraphNodes(graphState, sourceNodeId, targetNodeId, options = {}) {
+  const editCheck = validateGraphStateForEditing(graphState)
+  if (!editCheck.ok) return editCheck
+
+  const edgeType = options.edgeType ?? 'audio'
+  const sourceNode = graphState.nodes.find((n) => n.id === sourceNodeId)
+  const targetNode = graphState.nodes.find((n) => n.id === targetNodeId)
+
+  if (!sourceNode) return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_SOURCE_NODE }
+  if (!targetNode) return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_TARGET_NODE }
+  if (sourceNodeId === targetNodeId) return { ok: false, reason: GRAPH_MUTATION_REJECTION.SELF_CONNECTION }
+  if (sourceNode.type === 'trackOutput') return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_SOURCE_TYPE }
+  if (targetNode.type === 'trackInput') return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_TARGET_TYPE }
+  if (sourceNode.type === 'unknown') return { ok: false, reason: GRAPH_MUTATION_REJECTION.UNKNOWN_NODE_TYPE }
+  if (targetNode.type === 'unknown') return { ok: false, reason: GRAPH_MUTATION_REJECTION.UNKNOWN_NODE_TYPE }
+
+  if (hasEquivalentGraphEdge(graphState, sourceNodeId, targetNodeId, edgeType)) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.DUPLICATE_EDGE }
+  }
+
+  const hypotheticalEdge = {
+    id: '__hypothetical__',
+    sourceNodeId,
+    sourcePort: inferSourcePort(sourceNode.type),
+    targetNodeId,
+    targetPort: inferTargetPort(targetNode.type),
+    type: edgeType,
+  }
+  if (hasAudioCycle(graphState.nodes, [...graphState.edges, hypotheticalEdge])) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.CYCLE_DETECTED }
+  }
+
+  return { ok: true }
+}
+
+export function addGraphEffectNode(graphState, nodeDraft, options = {}) {
+  const editCheck = validateGraphStateForEditing(graphState)
+  if (!editCheck.ok) return editCheck
+
+  if (
+    !isPlainObject(nodeDraft) ||
+    typeof nodeDraft.effectInstanceId !== 'string' ||
+    nodeDraft.effectInstanceId.length === 0 ||
+    typeof nodeDraft.pluginId !== 'string' ||
+    nodeDraft.pluginId.length === 0 ||
+    typeof nodeDraft.displayName !== 'string'
+  ) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_NODE_DRAFT }
+  }
+
+  let position = nodeDraft.position
+  if (
+    !isPlainObject(position) ||
+    !Number.isFinite(position.x) ||
+    !Number.isFinite(position.y)
+  ) {
+    const outputIndex = graphState.nodes.findIndex((n) => n.type === 'trackOutput')
+    const insertIndex = outputIndex >= 0 ? outputIndex : graphState.nodes.length
+    position = { x: insertIndex * FALLBACK_NODE_SPACING_X, y: FALLBACK_NODE_Y }
+  }
+
+  const newNode = {
+    id: generateMutationId(options.idFactory),
+    type: 'effect',
+    position: { x: position.x, y: position.y },
+    data: {
+      effectInstanceId: nodeDraft.effectInstanceId,
+      pluginId: nodeDraft.pluginId,
+      displayName: nodeDraft.displayName,
+      bypass: nodeDraft.bypass === true,
+      missing: nodeDraft.missing === true,
+      crashed: nodeDraft.crashed === true,
+      sourceChainSlotIndex: null,
+    },
+  }
+
+  return {
+    ok: true,
+    graphState: {
+      ...graphState,
+      nodes: [...graphState.nodes, newNode],
+    },
+  }
+}
+
+export function removeGraphNode(graphState, nodeId) {
+  const canRemove = canRemoveGraphNode(graphState, nodeId)
+  if (!canRemove.ok) return canRemove
+
+  return {
+    ok: true,
+    graphState: {
+      ...graphState,
+      nodes: graphState.nodes.filter((n) => n.id !== nodeId),
+      edges: graphState.edges.filter(
+        (e) => e.sourceNodeId !== nodeId && e.targetNodeId !== nodeId,
+      ),
+    },
+  }
+}
+
+export function connectGraphNodes(graphState, connectionDraft, options = {}) {
+  if (!isPlainObject(connectionDraft)) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_CONNECTION_DRAFT }
+  }
+
+  const { sourceNodeId, targetNodeId } = connectionDraft
+  const edgeType = connectionDraft.edgeType ?? 'audio'
+
+  const canConnect = canConnectGraphNodes(graphState, sourceNodeId, targetNodeId, { edgeType })
+  if (!canConnect.ok) return canConnect
+
+  const sourceNode = graphState.nodes.find((n) => n.id === sourceNodeId)
+  const targetNode = graphState.nodes.find((n) => n.id === targetNodeId)
+
+  const sourcePort = connectionDraft.sourcePort ?? inferSourcePort(sourceNode.type)
+  const targetPort = connectionDraft.targetPort ?? inferTargetPort(targetNode.type)
+
+  const newEdge = {
+    id: generateMutationId(options.idFactory),
+    sourceNodeId,
+    sourcePort,
+    targetNodeId,
+    targetPort,
+    type: edgeType,
+  }
+
+  return {
+    ok: true,
+    graphState: {
+      ...graphState,
+      edges: [...graphState.edges, newEdge],
+    },
+  }
+}
+
+export function disconnectGraphEdge(graphState, edgeId) {
+  const editCheck = validateGraphStateForEditing(graphState)
+  if (!editCheck.ok) return editCheck
+
+  if (typeof edgeId !== 'string' || edgeId.length === 0) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_EDGE }
+  }
+
+  const edgeExists = graphState.edges.some((e) => e.id === edgeId)
+  if (!edgeExists) return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_EDGE }
+
+  return {
+    ok: true,
+    graphState: {
+      ...graphState,
+      edges: graphState.edges.filter((e) => e.id !== edgeId),
+    },
+  }
+}
