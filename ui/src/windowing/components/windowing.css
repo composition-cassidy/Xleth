@@ -636,7 +636,6 @@
 .xleth-graph-state-preview__canvas {
   position: relative;
   margin-inline: auto;
-  pointer-events: none;
 }
 
 .xleth-graph-state-preview__edges,
@@ -681,6 +680,21 @@
   background: var(--theme-bg-primary);
   color: var(--theme-text);
   box-shadow: var(--theme-depth-elevation-1-top-highlight);
+}
+
+.xleth-graph-state-preview__node--draggable {
+  cursor: grab;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.xleth-graph-state-preview__node--dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+
+.xleth-graph-state-preview__canvas[data-node-dragging="true"] {
+  user-select: none;
 }
 
 .xleth-graph-state-preview__node--track-input,

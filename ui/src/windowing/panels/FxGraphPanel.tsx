@@ -30,6 +30,7 @@ export interface FxGraphPanelContentProps {
   chain?: ChainEffect[];
   vstPlugins?: VstPluginMeta[];
   onRequestGraphMode?: () => void;
+  onGraphNodePositionChange?: (nodeId: string, position: { x: number; y: number }) => void;
   conversionError?: string | null;
 }
 
@@ -79,6 +80,7 @@ export function FxGraphPanelContent({
   chain = EMPTY_CHAIN,
   vstPlugins = EMPTY_VST_PLUGINS,
   onRequestGraphMode,
+  onGraphNodePositionChange,
   conversionError = null,
 }: FxGraphPanelContentProps) {
   const hasTrack = Boolean(trackLabel);
@@ -172,6 +174,7 @@ export function FxGraphPanelContent({
             <GraphStatePreview
               graphState={graphState}
               notice={graphModeActive ? null : previewNotice}
+              onNodePositionChange={graphModeActive ? onGraphNodePositionChange : undefined}
             />
           )}
 
@@ -284,6 +287,7 @@ export default function FxGraphPanel() {
     ? selectFxGraphPanelChain(effectChainState.chains, selectedStoreKey)
     : reactiveChain;
   const convertChainToGraphMode = useEffectChainStore((state) => state.convertChainToGraphMode);
+  const setGraphStateNodePosition = useEffectChainStore((state) => state.setGraphStateNodePosition);
   const fetchChain = useEffectChainStore((state) => state.fetchChain);
   const reactiveVstPlugins = useVstStore((state) => state.plugins);
   const vstState = renderingWithoutDom ? useVstStore.getState() : null;
@@ -314,6 +318,15 @@ export default function FxGraphPanel() {
   const handleCancelGraphMode = useCallback(() => {
     setConfirmOpen(false);
   }, []);
+
+  const handleGraphNodePositionChange = useCallback((
+    nodeId: string,
+    position: { x: number; y: number },
+  ) => {
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    void setGraphStateNodePosition(selectedTrack.id, nodeId, position);
+  }, [fxMode, selectedTrack?.id, setGraphStateNodePosition]);
+
   const confirmGraphModeMessage =
     graphStateStatus === 'valid' || graphStateStatus === 'invalid' || graphStateStatus === 'future'
       ? REPLACE_GRAPH_MODE_MESSAGE
@@ -330,6 +343,7 @@ export default function FxGraphPanel() {
         chain={selectedChain}
         vstPlugins={vstPlugins}
         onRequestGraphMode={() => setConfirmOpen(true)}
+        onGraphNodePositionChange={handleGraphNodePositionChange}
         conversionError={conversionError}
       />
       {confirmOpen && (

@@ -398,6 +398,65 @@ describe('effectChainStore FX mode safety gate', () => {
       .toBeLessThan(timeline.setTrackFxMode.mock.invocationCallOrder[0])
   })
 
+  it('updates only one graphState node position and persists through the graphState path', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const baseChain = [makeEffect(11, 'compressor', 0)]
+    const graphState = {
+      ...makeValidGraphState('7'),
+      nodes: [
+        { ...makeValidGraphState('7').nodes[0], position: { x: 0, y: 0 } },
+        { ...makeValidGraphState('7').nodes[1], position: { x: 260, y: 0 } },
+        { ...makeValidGraphState('7').nodes[2], position: { x: 520, y: 0 } },
+      ],
+      viewport: { x: 0, y: 0, zoom: 1 },
+    }
+
+    useEffectChainStore.setState({
+      chains: { '7': baseChain },
+      fxModes: { '7': 'graph' },
+      graphStates: { '7': graphState },
+      graphStateStatuses: { '7': { status: 'valid', graphState, warnings: [] } },
+    })
+
+    await expect(
+      useEffectChainStore.getState().setGraphStateNodePosition(7, 'fx-1', { x: 333.25, y: 44.5 }),
+    ).resolves.toBe(true)
+
+    const state = useEffectChainStore.getState()
+    const nextGraphState = state.graphStates['7']
+    expect(nextGraphState.nodes.find((node) => node.id === 'fx-1')?.position)
+      .toEqual({ x: 333.25, y: 44.5 })
+    expect(nextGraphState.nodes.find((node) => node.id === 'input')?.position)
+      .toEqual({ x: 0, y: 0 })
+    expect(nextGraphState.nodes.find((node) => node.id === 'output')?.position)
+      .toEqual({ x: 520, y: 0 })
+    expect(nextGraphState.edges).toEqual(graphState.edges)
+    expect(nextGraphState.viewport).toEqual(graphState.viewport)
+    expect(nextGraphState.trackId).toBe('7')
+    expect(state.chains['7']).toBe(baseChain)
+    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, nextGraphState)
+    expect(timeline.setTrackFxMode).not.toHaveBeenCalled()
+    expect(audio.moveEffect).not.toHaveBeenCalled()
+  })
+
+  it('blocks graphState node position updates while Mixer Chain owns the track', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const graphState = makeValidGraphState('7')
+
+    useEffectChainStore.setState({
+      fxModes: { '7': 'chain' },
+      graphStates: { '7': graphState },
+      graphStateStatuses: { '7': { status: 'valid', graphState, warnings: [] } },
+    })
+
+    await expect(
+      useEffectChainStore.getState().setGraphStateNodePosition(7, 'fx-1', { x: 100, y: 20 }),
+    ).resolves.toBe(false)
+
+    expect(useEffectChainStore.getState().graphStates['7']).toBe(graphState)
+    expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+  })
+
   it('rejects master, missing, and already graph-mode conversion without persistence', async () => {
     const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
     useEffectChainStore.setState({

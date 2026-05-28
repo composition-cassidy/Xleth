@@ -103,6 +103,22 @@ function normalizeNormalTrackKey(trackId) {
   return null
 }
 
+function normalizeGraphNodePosition(position) {
+  if (
+    position == null ||
+    typeof position !== 'object' ||
+    !Number.isFinite(position.x) ||
+    !Number.isFinite(position.y)
+  ) {
+    return null
+  }
+
+  return {
+    x: Math.max(0, position.x),
+    y: Math.max(0, position.y),
+  }
+}
+
 function defaultTimelineApi() {
   return globalThis.window?.xleth?.timeline ?? {}
 }
@@ -250,6 +266,84 @@ const useEffectChainStore = create((set, get) => ({
       previousGraphState,
       previousGraphStateStatus,
     }
+  },
+
+  setGraphStateNodePosition: async (trackId, nodeId, position, options = {}) => {
+    const key = normalizeNormalTrackKey(trackId)
+    const nextPosition = normalizeGraphNodePosition(position)
+    if (key == null || typeof nodeId !== 'string' || nodeId.length === 0 || nextPosition == null) {
+      return false
+    }
+
+    const state = get()
+    if (resolveFxMode(state.fxModes, key) !== 'graph') return false
+
+    const graphState = state.graphStates[key]
+    if (!graphState || !Array.isArray(graphState.nodes)) return false
+
+    let foundNode = false
+    let changed = false
+    const nextNodes = graphState.nodes.map((node) => {
+      if (node.id !== nodeId) return node
+      foundNode = true
+      if (node.position?.x === nextPosition.x && node.position?.y === nextPosition.y) {
+        return node
+      }
+      changed = true
+      return {
+        ...node,
+        position: nextPosition,
+      }
+    })
+
+    if (!foundNode) return false
+    if (!changed) return true
+
+    const nextGraphState = {
+      ...graphState,
+      nodes: nextNodes,
+    }
+    const validate = options.validateGraphState ?? validateGraphState
+    const warn = options.warn ?? console.warn
+    const validation = validate(nextGraphState, key)
+    if (validation.status !== 'valid') {
+      warn?.('[FXG] graphState node position update rejected', {
+        trackId: key,
+        nodeId,
+        reason: validation.reason ?? validation.status,
+        warnings: validation.warnings,
+      })
+      return false
+    }
+
+    set((currentState) => ({
+      graphStates: { ...currentState.graphStates, [key]: validation.graphState },
+      graphStateStatuses: { ...currentState.graphStateStatuses, [key]: validation },
+    }))
+
+    const timeline = defaultTimelineApi()
+    const persistGraphState = options.persistGraphState ?? timeline.setTrackGraphState
+    if (typeof persistGraphState !== 'function') return true
+
+    try {
+      const ok = await persistGraphState(Number(key), validation.graphState)
+      if (ok === false) {
+        warn?.('[FXG] graphState node position persistence returned false', {
+          trackId: key,
+          nodeId,
+        })
+        return false
+      }
+    } catch (e) {
+      warn?.('[FXG] graphState node position persistence failed', {
+        trackId: key,
+        nodeId,
+        error: e?.message ?? e,
+      })
+      return false
+    }
+
+    return true
   },
 
   fetchChain: async (key) => {

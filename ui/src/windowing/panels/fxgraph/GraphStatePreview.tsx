@@ -48,6 +48,10 @@ interface PositionedNode {
   y: number;
   width: number;
   height: number;
+  graphX: number;
+  graphY: number;
+  dragScaleX: number;
+  dragScaleY: number;
   virtual?: boolean;
 }
 
@@ -73,6 +77,7 @@ interface PreviewModelOptions {
 interface GraphStatePreviewProps {
   graphState?: GraphStateDocument | null;
   notice?: string | null;
+  onNodePositionChange?: (nodeId: string, position: { x: number; y: number }) => void;
 }
 
 const NODE_WIDTH = 148;
@@ -216,6 +221,10 @@ function makeVirtualAnchorNode(
     y: PREVIEW_PADDING_Y + FALLBACK_NODE_Y,
     width: NODE_WIDTH,
     height: NODE_HEIGHT,
+    graphX: x - PREVIEW_PADDING_X,
+    graphY: FALLBACK_NODE_Y,
+    dragScaleX: 1,
+    dragScaleY: 1,
     virtual: true,
   };
 }
@@ -235,7 +244,7 @@ function normalizePositionedNodes(nodes: GraphStateNode[]) {
   const allNodesHavePositions = nodes.every(hasValidPosition);
   const layoutNodes = allNodesHavePositions ? nodes : fallbackNodeOrder(nodes);
   const rawPositions = layoutNodes.map((node, index) => {
-    if (allNodesHavePositions && hasValidPosition(node)) {
+    if (hasValidPosition(node)) {
       return {
         id: node.id,
         x: node.position.x as number,
@@ -267,6 +276,10 @@ function normalizePositionedNodes(nodes: GraphStateNode[]) {
       y: (position.y - minY) * scaleY + PREVIEW_PADDING_Y,
       width: NODE_WIDTH,
       height: NODE_HEIGHT,
+      graphX: position.x,
+      graphY: position.y,
+      dragScaleX: scaleX,
+      dragScaleY: scaleY,
     };
   });
 }
@@ -349,7 +362,21 @@ export function buildGraphStatePreviewModel(
   };
 }
 
-function GraphStatePreviewNode({ node }: { node: PositionedNode }) {
+function GraphStatePreviewNode({
+  node,
+  dragging,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  onPointerCancel,
+}: {
+  node: PositionedNode;
+  dragging: boolean;
+  onPointerDown?: (event: React.PointerEvent<HTMLDivElement>, node: PositionedNode) => void;
+  onPointerMove?: (event: React.PointerEvent<HTMLDivElement>) => void;
+  onPointerUp?: (event: React.PointerEvent<HTMLDivElement>) => void;
+  onPointerCancel?: (event: React.PointerEvent<HTMLDivElement>) => void;
+}) {
   const classType = node.type === 'trackInput'
     ? 'track-input'
     : node.type === 'trackOutput'
@@ -364,13 +391,23 @@ function GraphStatePreviewNode({ node }: { node: PositionedNode }) {
 
   return (
     <div
-      className={`xleth-graph-state-preview__node xleth-graph-state-preview__node--${classType}`}
+      className={[
+        'xleth-graph-state-preview__node',
+        `xleth-graph-state-preview__node--${classType}`,
+        onPointerDown ? 'xleth-graph-state-preview__node--draggable' : '',
+        dragging ? 'xleth-graph-state-preview__node--dragging' : '',
+      ].filter(Boolean).join(' ')}
       data-node-id={node.id}
       data-node-type={node.type}
       data-preview-virtual={node.virtual ? 'true' : undefined}
       role="listitem"
       aria-label={node.label}
+      aria-grabbed={onPointerDown ? dragging : undefined}
       style={style}
+      onPointerDown={onPointerDown ? (event) => onPointerDown(event, node) : undefined}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
     >
       {node.type !== 'trackInput' && (
         <span
@@ -407,7 +444,19 @@ function GraphStatePreviewNode({ node }: { node: PositionedNode }) {
 export default function GraphStatePreview({
   graphState = null,
   notice = 'This preview is persisted graphState. Editing comes in a later phase.',
+  onNodePositionChange,
 }: GraphStatePreviewProps) {
+  const dragRef = React.useRef<{
+    pointerId: number;
+    nodeId: string;
+    startClientX: number;
+    startClientY: number;
+    startGraphX: number;
+    startGraphY: number;
+    scaleX: number;
+    scaleY: number;
+  } | null>(null);
+  const [draggingNodeId, setDraggingNodeId] = React.useState<string | null>(null);
   const model = React.useMemo(
     () => buildGraphStatePreviewModel(graphState),
     [graphState],
@@ -418,12 +467,56 @@ export default function GraphStatePreview({
     height: model.height,
   };
   const hasHeader = notice != null || model.empty;
+  const canDragNodes = typeof onNodePositionChange === 'function';
+
+  const finishDrag = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (dragRef.current?.pointerId === event.pointerId) {
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+      dragRef.current = null;
+      setDraggingNodeId(null);
+    }
+  }, []);
+
+  const handleNodePointerDown = React.useCallback((
+    event: React.PointerEvent<HTMLDivElement>,
+    node: PositionedNode,
+  ) => {
+    if (!canDragNodes || node.virtual || event.button !== 0) return;
+
+    event.preventDefault();
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    dragRef.current = {
+      pointerId: event.pointerId,
+      nodeId: node.id,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startGraphX: node.graphX,
+      startGraphY: node.graphY,
+      scaleX: node.dragScaleX || 1,
+      scaleY: node.dragScaleY || 1,
+    };
+    setDraggingNodeId(node.id);
+  }, [canDragNodes]);
+
+  const handleNodePointerMove = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId || !onNodePositionChange) return;
+
+    event.preventDefault();
+    const nextX = Math.max(0, drag.startGraphX + ((event.clientX - drag.startClientX) / drag.scaleX));
+    const nextY = Math.max(0, drag.startGraphY + ((event.clientY - drag.startClientY) / drag.scaleY));
+    onNodePositionChange(drag.nodeId, {
+      x: Math.round(nextX * 100) / 100,
+      y: Math.round(nextY * 100) / 100,
+    });
+  }, [onNodePositionChange]);
 
   return (
     <section
       className="xleth-graph-state-preview"
       aria-label="Read-only persisted FX graph preview"
       data-read-only="true"
+      data-draggable-nodes={canDragNodes ? 'true' : undefined}
     >
       {hasHeader && (
         <div className="xleth-graph-state-preview__header">
@@ -437,7 +530,11 @@ export default function GraphStatePreview({
       )}
       <div className="xleth-graph-state-preview__viewport">
         <div className="xleth-graph-state-preview__stage" data-preview-scroll-stage="true">
-          <div className="xleth-graph-state-preview__canvas" style={canvasStyle}>
+          <div
+            className="xleth-graph-state-preview__canvas"
+            style={canvasStyle}
+            data-node-dragging={draggingNodeId != null ? 'true' : undefined}
+          >
             <svg
               className="xleth-graph-state-preview__edges"
               width={model.width}
@@ -459,7 +556,15 @@ export default function GraphStatePreview({
             </svg>
             <div className="xleth-graph-state-preview__nodes" role="list">
               {model.nodes.map((node) => (
-                <GraphStatePreviewNode key={node.id} node={node} />
+                <GraphStatePreviewNode
+                  key={node.id}
+                  node={node}
+                  dragging={draggingNodeId === node.id}
+                  onPointerDown={canDragNodes ? handleNodePointerDown : undefined}
+                  onPointerMove={canDragNodes ? handleNodePointerMove : undefined}
+                  onPointerUp={canDragNodes ? finishDrag : undefined}
+                  onPointerCancel={canDragNodes ? finishDrag : undefined}
+                />
               ))}
             </div>
           </div>
