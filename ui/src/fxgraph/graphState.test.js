@@ -139,6 +139,7 @@ describe('graphState schema validation', () => {
         _preservedType: 'sidechainMagic',
         _preservedData: { gain: 0.5 },
       },
+      position: { x: 260, y: 0 },
     })
     expect(result.warnings[0].code).toBe('unknownNodeType')
   })
@@ -205,6 +206,92 @@ describe('graphState schema validation', () => {
     expect(result.graphState.edges).toHaveLength(2)
   })
 
+  it('preserves valid node positions during normalization', () => {
+    const result = validateGraphState(makeValidGraphState({
+      nodes: [
+        { id: 'input', type: 'trackInput', position: { x: 12.5, y: 4 } },
+        { ...makeEffectNode(), position: { x: 314.25, y: 99.5 } },
+        { id: 'output', type: 'trackOutput', position: { x: 640, y: 8 } },
+      ],
+    }), '7')
+
+    expect(result.status).toBe('valid')
+    expect(result.graphState.nodes.map((node) => [node.id, node.position])).toEqual([
+      ['input', { x: 12.5, y: 4 }],
+      ['fx-1', { x: 314.25, y: 99.5 }],
+      ['output', { x: 640, y: 8 }],
+    ])
+  })
+
+  it('assigns deterministic positions when node positions are missing', () => {
+    const result = validateGraphState(makeValidGraphState(), '7')
+
+    expect(result.status).toBe('valid')
+    expect(result.graphState.nodes.map((node) => [node.id, node.position])).toEqual([
+      ['input', { x: 0, y: 0 }],
+      ['fx-1', { x: 260, y: 0 }],
+      ['output', { x: 520, y: 0 }],
+    ])
+    expect(result.warnings).toEqual([])
+  })
+
+  it('repairs invalid node positions without regenerating node or edge IDs', () => {
+    const raw = makeValidGraphState({
+      nodes: [
+        { id: 'input', type: 'trackInput', position: null },
+        { ...makeEffectNode(), position: { x: Number.NaN, y: 42 } },
+        { id: 'output', type: 'trackOutput', position: { x: 'bad', y: undefined } },
+      ],
+    })
+    const result = validateGraphState(raw, '7')
+
+    expect(result.status).toBe('valid')
+    expect(result.graphState.nodes.map((node) => node.id)).toEqual(['input', 'fx-1', 'output'])
+    expect(result.graphState.edges.map((edge) => edge.id)).toEqual(['edge-1', 'edge-2'])
+    expect(result.graphState.nodes.map((node) => node.position)).toEqual([
+      { x: 0, y: 0 },
+      { x: 260, y: 0 },
+      { x: 520, y: 0 },
+    ])
+    expect(result.warnings.map((warning) => warning.code)).toEqual([
+      'invalidNodePosition',
+      'invalidNodePosition',
+      'invalidNodePosition',
+    ])
+  })
+
+  it('preserves extra graphState and node data fields while normalizing layout', () => {
+    const result = validateGraphState(makeValidGraphState({
+      layoutMetadata: { source: 'test' },
+      nodes: [
+        { id: 'input', type: 'trackInput', data: { protected: true } },
+        {
+          ...makeEffectNode(),
+          data: {
+            ...makeEffectNode().data,
+            lane: 'upper',
+          },
+        },
+        { id: 'output', type: 'trackOutput', data: { protected: true } },
+      ],
+    }), '7')
+
+    expect(result.status).toBe('valid')
+    expect(result.graphState.layoutMetadata).toEqual({ source: 'test' })
+    expect(result.graphState.nodes[0].data).toEqual({ protected: true })
+    expect(result.graphState.nodes[1].data.lane).toBe('upper')
+    expect(result.graphState.nodes[2].data).toEqual({ protected: true })
+  })
+
+  it('preserves a valid viewport during normalization', () => {
+    const result = validateGraphState(makeValidGraphState({
+      viewport: { x: -44.5, y: 22.25, zoom: 2.5 },
+    }), '7')
+
+    expect(result.status).toBe('valid')
+    expect(result.graphState.viewport).toEqual({ x: -44.5, y: 22.25, zoom: 2.5 })
+  })
+
   it('defaults viewport when absent', () => {
     const result = validateGraphState(makeValidGraphState(), '7')
 
@@ -221,6 +308,15 @@ describe('graphState schema validation', () => {
 
     expect(invalidZoom.graphState.viewport).toEqual({ x: 0, y: 12, zoom: 1 })
     expect(clampedZoom.graphState.viewport).toEqual({ x: 4, y: 8, zoom: 4 })
+  })
+
+  it('repairs partial viewport data with deterministic defaults', () => {
+    const result = validateGraphState(makeValidGraphState({
+      viewport: { x: -12 },
+    }), '7')
+
+    expect(result.status).toBe('valid')
+    expect(result.graphState.viewport).toEqual({ x: -12, y: 0, zoom: 1 })
   })
 
   it('marks audio cycles invalid', () => {
@@ -262,7 +358,10 @@ describe('graphState schema validation', () => {
   })
 
   it('saveGraphState returns a JSON clone', () => {
-    const graphState = createEmptyGraphState('7')
+    const graphState = {
+      ...createEmptyGraphState('7'),
+      viewport: { x: -12, y: 34, zoom: 1.5 },
+    }
     const saved = saveGraphState(graphState)
 
     expect(saved).toEqual(graphState)

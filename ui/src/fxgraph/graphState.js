@@ -1,7 +1,8 @@
 export const GRAPH_STATE_SCHEMA_VERSION = 1
 
 const DEFAULT_VIEWPORT = Object.freeze({ x: 0, y: 0, zoom: 1 })
-const DEFAULT_NODE_POSITION = Object.freeze({ x: 0, y: 0 })
+const FALLBACK_NODE_SPACING_X = 260
+const FALLBACK_NODE_Y = 0
 const MIN_VIEWPORT_ZOOM = 0.1
 const MAX_VIEWPORT_ZOOM = 4
 
@@ -73,27 +74,35 @@ function defaultViewportWithWarnings(raw, trackId, warnings) {
   }
 }
 
-function nodePositionWithWarnings(raw, trackId, warnings, nodeId) {
-  if (raw == null) return undefined
+function fallbackNodePosition(index) {
+  return {
+    x: index * FALLBACK_NODE_SPACING_X,
+    y: FALLBACK_NODE_Y,
+  }
+}
+
+function nodePositionWithWarnings(raw, fallbackPosition, trackId, warnings, nodeId, hasPosition) {
+  if (!hasPosition) return fallbackPosition
   if (!isPlainObject(raw)) {
     warnings.push(makeWarning('invalidNodePosition', trackId, 'invalid graphState node position; using defaults', { nodeId }))
-    return { ...DEFAULT_NODE_POSITION }
+    return fallbackPosition
   }
 
   const hasValidX = Number.isFinite(raw.x)
   const hasValidY = Number.isFinite(raw.y)
   if (!hasValidX || !hasValidY) {
     warnings.push(makeWarning('invalidNodePosition', trackId, 'invalid graphState node position fields; using safe defaults', { nodeId }))
+    return fallbackPosition
   }
 
   return {
-    x: hasValidX ? raw.x : DEFAULT_NODE_POSITION.x,
-    y: hasValidY ? raw.y : DEFAULT_NODE_POSITION.y,
+    x: raw.x,
+    y: raw.y,
   }
 }
 
 function withNodePosition(node, position) {
-  return position == null ? node : { ...node, position }
+  return { ...node, position }
 }
 
 function validateEffectNodeData(node, trackId, warnings) {
@@ -121,6 +130,7 @@ function validateEffectNodeData(node, trackId, warnings) {
   return {
     ok: true,
     data: {
+      ...cloneJson(data),
       effectInstanceId: data.effectInstanceId,
       pluginId: data.pluginId,
       displayName: data.displayName,
@@ -132,7 +142,7 @@ function validateEffectNodeData(node, trackId, warnings) {
   }
 }
 
-function normalizeNode(node, trackId, warnings) {
+function normalizeNode(node, trackId, warnings, fallbackPosition) {
   if (!isPlainObject(node)) return { ok: false, reason: 'invalid_node' }
   if (typeof node.id !== 'string' || node.id.length === 0) {
     return { ok: false, reason: 'invalid_node_id' }
@@ -141,7 +151,14 @@ function normalizeNode(node, trackId, warnings) {
     return { ok: false, reason: 'invalid_node_type' }
   }
 
-  const position = nodePositionWithWarnings(node.position, trackId, warnings, node.id)
+  const position = nodePositionWithWarnings(
+    node.position,
+    fallbackPosition,
+    trackId,
+    warnings,
+    node.id,
+    Object.prototype.hasOwnProperty.call(node, 'position'),
+  )
 
   if (!NODE_TYPES.has(node.type)) {
     warnings.push(makeWarning('unknownNodeType', trackId, 'unknown graphState node type preserved as unknown', {
@@ -295,8 +312,8 @@ function validateVersionOneGraphState(raw, expectedTrackId, options) {
   let trackInputCount = 0
   let trackOutputCount = 0
 
-  for (const node of raw.nodes) {
-    const normalized = normalizeNode(node, trackId, warnings)
+  for (let index = 0; index < raw.nodes.length; index += 1) {
+    const normalized = normalizeNode(raw.nodes[index], trackId, warnings, fallbackNodePosition(index))
     if (!normalized.ok) return invalid(normalized.reason, warnings)
     if (nodeIds.has(normalized.node.id)) {
       warnings.push(makeWarning('duplicateNodeId', trackId, 'duplicate graphState node id', { nodeId: normalized.node.id }))
@@ -335,6 +352,7 @@ function validateVersionOneGraphState(raw, expectedTrackId, options) {
   }
 
   const graphState = {
+    ...cloneJson(raw),
     schemaVersion: GRAPH_STATE_SCHEMA_VERSION,
     trackId,
     nodes,
