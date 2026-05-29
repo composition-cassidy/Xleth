@@ -45,6 +45,17 @@ const GRAPH_MUTATION_MESSAGES: Record<string, string> = {
   missing_graph_state: 'No graph data exists for this track yet.',
 };
 
+const GRAPH_RUNTIME_MESSAGES: Record<string, string> = {
+  nonlinear_deferred: 'Parallel routing comes in FXG.3-d. Audio is using safe passthrough.',
+  effect_not_active: 'Effect is not active yet.',
+  missing_effect_mapping: 'Effect is not active yet.',
+  missing_effect_instance_id: 'Effect is not active yet.',
+  engine_unavailable: 'Graph routing sync failed.',
+  engine_sync_failed: 'Graph routing sync failed.',
+  apply_failed: 'Graph routing sync failed.',
+  no_linear_path: 'Graph routing sync failed.',
+};
+
 export function describeGraphMutationResult(
   result: { ok?: boolean; reason?: string } | null | undefined,
 ): string | null {
@@ -52,6 +63,16 @@ export function describeGraphMutationResult(
   const reason = result?.reason;
   if (reason && GRAPH_MUTATION_MESSAGES[reason]) return GRAPH_MUTATION_MESSAGES[reason];
   return 'Graph edit was rejected.';
+}
+
+export function describeGraphRuntimeStatus(
+  status: { ok?: boolean; reason?: string } | null | undefined,
+): string {
+  if (status?.ok === true) return 'Linear graph routing active.';
+  const reason = status?.reason;
+  if (reason && GRAPH_RUNTIME_MESSAGES[reason]) return GRAPH_RUNTIME_MESSAGES[reason];
+  if (status) return 'Graph routing sync failed.';
+  return 'Linear graph routing is enabled for supported paths.';
 }
 
 export interface FxGraphPanelContentProps {
@@ -70,6 +91,7 @@ export interface FxGraphPanelContentProps {
   onConnectGraphNodes?: (sourceNodeId: string, targetNodeId: string) => void;
   onDisconnectGraphEdge?: (edgeId: string) => void;
   onEditGraphNode?: (nodeId: string) => void;
+  graphRuntimeStatus?: { ok?: boolean; reason?: string } | null;
   graphActionNotice?: string | null;
   conversionError?: string | null;
 }
@@ -127,6 +149,7 @@ export function FxGraphPanelContent({
   onConnectGraphNodes,
   onDisconnectGraphEdge,
   onEditGraphNode,
+  graphRuntimeStatus = null,
   graphActionNotice = null,
   conversionError = null,
 }: FxGraphPanelContentProps) {
@@ -164,7 +187,7 @@ export function FxGraphPanelContent({
     : 'This creates a read-only graphState snapshot from the current Mixer Chain.';
   const previewNotice = dormantGraphState
     ? 'Dormant graphState. Mixer Chain currently owns routing.'
-    : 'Layout editing active. Routing edits come later.';
+    : describeGraphRuntimeStatus(graphRuntimeStatus);
 
   return (
     <div className="xleth-fx-graph-panel" role="region" aria-label="FX Graph Workspace">
@@ -212,7 +235,7 @@ export function FxGraphPanelContent({
                 FX Graph Mode Active
               </div>
               <p className="xleth-fx-graph-panel__mode-copy">
-                Layout editing active. Routing edits come later.
+                {describeGraphRuntimeStatus(graphRuntimeStatus)}
               </p>
               {graphActionNotice && (
                 <p className="xleth-fx-graph-panel__mode-copy" role="alert">
@@ -347,6 +370,12 @@ export default function FxGraphPanel() {
   const graphEngineNodeIds = effectChainState && selectedStoreKey != null
     ? effectChainState.graphEngineNodeIds[selectedStoreKey] ?? EMPTY_GRAPH_ENGINE_NODE_IDS
     : reactiveGraphEngineNodeIds;
+  const reactiveGraphRuntimeStatus = useEffectChainStore((state) => (
+    selectedStoreKey == null ? null : state.graphRuntimeStatuses[selectedStoreKey] ?? null
+  ));
+  const graphRuntimeStatus = effectChainState && selectedStoreKey != null
+    ? effectChainState.graphRuntimeStatuses[selectedStoreKey] ?? null
+    : reactiveGraphRuntimeStatus;
   const reactiveChain = useEffectChainStore((state) => (
     selectFxGraphPanelChain(state.chains, selectedStoreKey)
   ));
@@ -513,6 +542,7 @@ export default function FxGraphPanel() {
         onConnectGraphNodes={handleConnectGraphNodes}
         onDisconnectGraphEdge={handleDisconnectGraphEdge}
         onEditGraphNode={handleEditGraphNode}
+        graphRuntimeStatus={graphRuntimeStatus}
         graphActionNotice={graphActionNotice}
         conversionError={conversionError}
       />

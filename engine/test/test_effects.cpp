@@ -6,6 +6,7 @@
 
 #include "audio/TestGainEffect.h"
 #include "audio/EffectChainManager.h"
+#include "audio/MixEngine.h"
 #include "audio/XlethEQEffect.h"
 #include "audio/XlethDistortionEffect.h"
 #include "audio/XlethResonanceSuppressorEffect.h"
@@ -23,6 +24,7 @@
 #include <cstring>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -825,6 +827,214 @@ static void testGraphOwnedEffectHydration()
           "graphFromJSON should rebuild graph-owned effectInstanceId lookup");
     CHECK(restored.addGraphNode("inst-reverb", "reverb") == restoredNodeId,
           "re-adding a restored effectInstanceId should return the existing engine node");
+}
+
+static void testLinearGraphTopologySync()
+{
+    std::cout << "  [linear graph topology sync]\n";
+
+    constexpr double kSampleRate = 44100.0;
+    constexpr int    kBlockSize  = 256;
+
+    auto ioNode = [](const std::string& nodeId, const std::string& type) {
+        return nlohmann::json{{"nodeId", nodeId}, {"type", type}};
+    };
+    auto effectNode = [](const std::string& nodeId,
+                         const std::string& effectInstanceId,
+                         const std::string& pluginId = "testgain",
+                         bool missing = false) {
+        return nlohmann::json{
+            {"nodeId", nodeId},
+            {"type", "effect"},
+            {"effectInstanceId", effectInstanceId},
+            {"pluginId", pluginId},
+            {"missing", missing},
+        };
+    };
+    auto edge = [](const std::string& id,
+                   const std::string& source,
+                   const std::string& dest) {
+        return nlohmann::json{
+            {"edgeId", id},
+            {"sourceNodeId", source},
+            {"targetNodeId", dest},
+            {"sourcePort", source == "input" ? "audio" : "audioOut"},
+            {"targetPort", dest == "output" ? "audio" : "audioIn"},
+            {"type", "audio"},
+        };
+    };
+    auto topology = [&](nlohmann::json nodes, nlohmann::json edges) {
+        return nlohmann::json{
+            {"phase", "FXG.3-c-b"},
+            {"trackId", "7"},
+            {"nodes", std::move(nodes)},
+            {"edges", std::move(edges)},
+        };
+    };
+    auto hasConnection = [](const nlohmann::json& saved, int source, int dest) {
+        if (!saved.contains("connections") || !saved["connections"].is_array())
+            return false;
+        for (const auto& conn : saved["connections"])
+        {
+            if (conn.value("source", -1) == source && conn.value("dest", -1) == dest)
+                return true;
+        }
+        return false;
+    };
+
+    EffectChainManager chain;
+    chain.init(kSampleRate, kBlockSize);
+
+    const auto direct = topology(
+        nlohmann::json::array({
+            ioNode("input", "trackInput"),
+            ioNode("output", "trackOutput"),
+        }),
+        nlohmann::json::array({
+            edge("direct", "input", "output"),
+        }));
+    const auto directResult = chain.syncLinearGraphTopology(direct);
+    CHECK(directResult.value("ok", false),
+          "Track Input -> Track Output should sync as passthrough");
+    CHECK(directResult.value("pathEffectCount", -1) == 0,
+          "direct passthrough should report zero active effects");
+    CHECK(directResult.value("appliedConnectionCount", -1) == 1,
+          "direct passthrough should report one applied logical edge");
+
+    juce::AudioBuffer<float> buf(2, kBlockSize);
+    juce::MidiBuffer midi;
+    fillBuffer(buf, 0.25f);
+    chain.processBlock(buf, kBlockSize, midi);
+    CHECK_NEAR(meanAbs(buf), 0.25f, 0.001f,
+               "direct graph topology should pass audio through");
+
+    const int fxA = chain.addGraphNode("inst-a", "testgain");
+    const int fxB = chain.addGraphNode("inst-b", "testgain");
+    CHECK(fxA >= 0 && fxB >= 0 && fxA != fxB,
+          "graph-owned testgain nodes should instantiate");
+    CHECK(chain.setEffectParameter(fxA, "gain", 2.0f),
+          "graph-owned effect A gain should be settable");
+    CHECK(chain.setEffectParameter(fxB, "gain", 2.0f),
+          "graph-owned effect B gain should be settable");
+
+    const auto linearAB = topology(
+        nlohmann::json::array({
+            ioNode("input", "trackInput"),
+            effectNode("fx-a", "inst-a"),
+            effectNode("fx-b", "inst-b"),
+            ioNode("output", "trackOutput"),
+        }),
+        nlohmann::json::array({
+            edge("e1", "input", "fx-a"),
+            edge("e2", "fx-a", "fx-b"),
+            edge("e3", "fx-b", "output"),
+        }));
+    const auto linearResult = chain.syncLinearGraphTopology(linearAB);
+    CHECK(linearResult.value("ok", false),
+          "Track Input -> Effect A -> Effect B -> Track Output should sync");
+    CHECK(linearResult.value("pathEffectCount", -1) == 2,
+          "linear sync should report both active effects");
+    CHECK(linearResult["pathEffectInstanceIds"] == nlohmann::json::array({"inst-a", "inst-b"}),
+          "linear sync should preserve graph edge effect order");
+
+    auto saved = chain.graphToJSON();
+    CHECK(hasConnection(saved, fxA, fxB),
+          "linear sync should wire Effect A before Effect B");
+
+    for (int pass = 0; pass < 8; ++pass)
+    {
+        fillBuffer(buf, 0.10f);
+        chain.processBlock(buf, kBlockSize, midi);
+    }
+    CHECK(meanAbs(buf) > 0.30f,
+          "linear graph-owned effects should process the audio path");
+
+    const auto linearBA = topology(
+        nlohmann::json::array({
+            ioNode("input", "trackInput"),
+            effectNode("fx-a", "inst-a"),
+            effectNode("fx-b", "inst-b"),
+            ioNode("output", "trackOutput"),
+        }),
+        nlohmann::json::array({
+            edge("e1", "input", "fx-b"),
+            edge("e2", "fx-b", "fx-a"),
+            edge("e3", "fx-a", "output"),
+        }));
+    const auto reversedResult = chain.syncLinearGraphTopology(linearBA);
+    CHECK(reversedResult.value("ok", false),
+          "rewiring a supported linear graph should resync successfully");
+    saved = chain.graphToJSON();
+    CHECK(hasConnection(saved, fxB, fxA) && !hasConnection(saved, fxA, fxB),
+          "rewiring should replace the previous graph-owned execution order");
+
+    const auto secondSync = chain.syncLinearGraphTopology(linearBA);
+    CHECK(secondSync.value("ok", false),
+          "linear graph sync should be idempotent");
+
+    const auto missingMapping = topology(
+        nlohmann::json::array({
+            ioNode("input", "trackInput"),
+            effectNode("fx-missing", "inst-missing"),
+            ioNode("output", "trackOutput"),
+        }),
+        nlohmann::json::array({
+            edge("e1", "input", "fx-missing"),
+            edge("e2", "fx-missing", "output"),
+        }));
+    const auto missingResult = chain.syncLinearGraphTopology(missingMapping);
+    CHECK(!missingResult.value("ok", true)
+              && missingResult.value("reason", std::string{}) == "missing_effect_mapping",
+          "active effect without graph-owned engine mapping should be rejected");
+    CHECK(missingResult.value("fallbackApplied", false),
+          "missing mapping should apply safe passthrough fallback");
+
+    const auto placeholderActive = topology(
+        nlohmann::json::array({
+            ioNode("input", "trackInput"),
+            effectNode("fx-placeholder", "inst-placeholder", "placeholder"),
+            ioNode("output", "trackOutput"),
+        }),
+        nlohmann::json::array({
+            edge("e1", "input", "fx-placeholder"),
+            edge("e2", "fx-placeholder", "output"),
+        }));
+    const auto placeholderResult = chain.syncLinearGraphTopology(placeholderActive);
+    CHECK(!placeholderResult.value("ok", true)
+              && placeholderResult.value("reason", std::string{}) == "effect_not_active",
+          "active placeholder/data-only effect should be rejected safely");
+
+    CHECK(chain.syncLinearGraphTopology(linearAB).value("ok", false),
+          "test should restore a supported route before nonlinear fallback");
+    const auto nonlinear = topology(
+        nlohmann::json::array({
+            ioNode("input", "trackInput"),
+            effectNode("fx-a", "inst-a"),
+            effectNode("fx-b", "inst-b"),
+            ioNode("output", "trackOutput"),
+        }),
+        nlohmann::json::array({
+            edge("e1", "input", "fx-a"),
+            edge("e2", "input", "fx-b"),
+            edge("e3", "fx-a", "output"),
+            edge("e4", "fx-b", "output"),
+        }));
+    const auto nonlinearResult = chain.syncLinearGraphTopology(nonlinear);
+    CHECK(!nonlinearResult.value("ok", true)
+              && nonlinearResult.value("reason", std::string{}) == "nonlinear_deferred",
+          "parallel fan-out/fan-in should be deferred to FXG.3-d");
+    saved = chain.graphToJSON();
+    CHECK(saved.contains("connections") && saved["connections"].empty(),
+          "nonlinear fallback should remove stale previous linear routing");
+    CHECK(chain.getGraphNodeEngineId("inst-a") == fxA
+              && chain.getGraphNodeEngineId("inst-b") == fxB,
+          "safe fallback should keep graph-owned processors alive");
+
+    auto mixer = std::make_unique<MixEngine>();
+    const auto masterResult = mixer->syncLinearGraphTopology(-1, direct);
+    CHECK(!masterResult.value("ok", true)
+              && masterResult.value("reason", std::string{}) == "master_track",
+          "MixEngine should reject master-track linear graph sync");
 }
 
 static void testBypass()
@@ -3697,6 +3907,7 @@ int main()
     testSmoothedGain();
     testMetering();
     testSerializationRoundTrip();
+    testLinearGraphTopologySync();
     testGraphOwnedEffectHydration();
     testBypass();
     testJSONHelpers();

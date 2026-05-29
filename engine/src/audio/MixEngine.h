@@ -516,6 +516,7 @@ public:
                                            const nlohmann::json& graphEffectNodes);
     bool removeGraphEffectNode(int trackId, const std::string& effectInstanceId);
     int  getGraphEffectEngineNodeId(int trackId, const std::string& effectInstanceId) const;
+    nlohmann::json syncLinearGraphTopology(int trackId, const nlohmann::json& topology);
 
     // ── Effect parameter / meter access (main thread only) ──────────────
     // Per-track: returns "[]" / false / "[0,0,0,0]" if chain/node not found.

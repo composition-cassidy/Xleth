@@ -570,7 +570,7 @@ function GraphStatePreviewNode({
 
 export default function GraphStatePreview({
   graphState = null,
-  notice = 'Persisted graphState. Routing edits come later.',
+  notice = 'Persisted graphState. Linear routing is enabled for supported paths.',
   onNodePositionChange,
   onViewportChange,
   onAddEffectNode,

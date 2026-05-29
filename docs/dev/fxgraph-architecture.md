@@ -1,6 +1,6 @@
 # FX Graph Architecture
 
-Internal reference for the renderer-side graphState system. Updated through FXG.3-c-a.
+Internal reference for the renderer-side graphState system. Updated through FXG.3-c-b.
 
 ## Data model separation
 
@@ -56,9 +56,10 @@ commit to `graphStates`/`graphStateStatuses`, and best-effort persist via
 `timeline.setTrackGraphState`. Persistence failures warn but do not roll back the renderer edit;
 only a failed revalidation rejects with `invalid_graph_state`.
 
-Every action returns `{ ok: true, graphState, status }` or `{ ok: false, reason }`, where
-`reason` is a `GRAPH_MUTATION_REJECTION` code or one of the access codes above. The actions never
-touch `effectChains`.
+Every routing-affecting action returns `{ ok: true, graphState, status, runtimeSync }` or
+`{ ok: false, reason }`, where `reason` is a `GRAPH_MUTATION_REJECTION` code or one of the access
+codes above. The actions never touch `effectChains`. Layout-only actions (`setGraphStateNodePosition`,
+`setGraphStateViewport`) persist graphState but do not sync audio routing.
 
 The FX Graph panel (`FxGraphPanel.tsx`) wires these actions to a minimal editing UI in
 `GraphStatePreview.tsx`: an Add Effect Node button, a per-effect remove button, drag-to-connect
@@ -84,7 +85,8 @@ Lifecycle:
 - Engine: `EffectChainManager::addGraphNode/removeGraphNode/getGraphNodeEngineId/hasGraphNode`
   keep an `effectInstanceId -> APG uid` map and use the low-level `AudioGraph::addNode/removeNode`
   (never `addEffect/moveEffect`), so graph-owned nodes never touch the linear chain. Nodes are
-  created disconnected; graphState edges are not yet synced into the engine.
+  created independently from chain slots and are connected only by the FXG.3-c-b linear topology
+  sync described below.
 - MixEngine: `addGraphEffectNode/removeGraphEffectNode/getGraphEffectEngineNodeId` forward
   per-track and reject the master track (master stays chain-only).
 - Bridge: `audio_addGraphEffectNode`, `audio_removeGraphEffectNode`,
@@ -103,10 +105,10 @@ The Edit button on graph effect nodes resolves
 Mixer Chain via the shared `effectEditorOpeners.js` helper. The graphState `node.id` is never
 passed to an editor store.
 
-## Project-load hydration (FXG.3-c-a)
+## Project-load hydration (FXG.3-c-a / FXG.3-c-b)
 
 FXG.3-c-a reconstructs graph-owned effect processors after project load from renderer-owned
-`graphState`, without syncing graph cables into audio routing.
+`graphState`. FXG.3-c-b then reapplies the supported linear routing sync for graph-mode tracks.
 
 Load sequence:
 - `hydrateFxModesFromTracks` restores per-track `fxMode`, `graphStates`, and
@@ -124,24 +126,46 @@ Load sequence:
 - The renderer merges the returned `effectInstanceId -> engineNodeId` mapping into
   `graphEngineNodeIds`. Failures are reported and do not remove graphState nodes or mutate
   `effectChains`.
+- After hydration, graph-mode normal tracks call `audio_syncLinearGraphTopology` with a sanitized
+  topology payload so the engine can rebuild the single supported linear path. Runtime sync status
+  is session-only (`graphRuntimeStatuses`) and is never serialized into project data.
 
 `EffectChainManager::graphToJSON` now additively writes `effectInstanceId` only on graph-owned
 AudioGraph nodes. `graphFromJSON` tolerates older projects where the field is absent and rebuilds
 the runtime mapping when the field exists. The renderer hydration path remains the reliable source
 for projects whose graph-owned engine nodes were not serialized with `effectInstanceId`.
 
-## Still deferred after FXG.3-c-a
+## Linear graph execution (FXG.3-c-b)
 
-- Graph routing execution: cables (`graphState` edges) still do not affect audio. Graph-owned
-  nodes are instantiated but unrouted (silent). Linear/parallel execution is FXG.3-c-b / FXG.3-d.
-- Connect/disconnect remain graphState-only and never sync edges to the engine.
+FXG.3-c-b is the first phase where `graphState` audio cables affect runtime routing, but only for
+normal tracks in `fxMode === "graph"` and only for one linear audio path:
+
+- supported: `Track Input -> Track Output`
+- supported: `Track Input -> Effect -> Track Output`
+- supported: `Track Input -> Effect A -> Effect B -> Track Output`
+
+The renderer sends only the runtime topology needed by the engine: graph node ids, effect
+`effectInstanceId`s/plugin ids, and audio edges. The engine resolves
+`node.id -> effectInstanceId -> engineNodeId` and rebuilds AudioGraph connections with graph-owned
+processors. It never passes renderer `node.id` values to AudioGraph connection APIs.
+
+Unsupported nonlinear topologies return `{ ok: false, reason: "nonlinear_deferred" }` and apply a
+safe passthrough fallback so stale previous linear routing cannot remain active while the UI shows a
+parallel graph. Graph-owned processors stay alive, graphState is not rolled back, and `effectChains`
+are not mutated.
+
+## Still deferred after FXG.3-c-b
+
+- Parallel fan-out/fan-in execution, branch summing, merge gain, and parallel PDC validation remain
+  deferred to FXG.3-d.
+- Feedback loops, modulation, buses, graph-to-chain return, parameter pinning, and graph latency UI
+  remain deferred.
 
 ## Engine execution boundary
 
-Graph cables (`graphState` edges) added via the mutation helpers, store actions, or editing UI
-still do not affect audio routing. FXG.3-c-a creates or reconstructs real graph-owned engine
-processors but leaves them unrouted; `AudioGraph` connection sync from `graphState` edges is
-deferred to FXG.3-c-b (linear) and FXG.3-d (parallel).
+Graph cables (`graphState` edges) added via mutation helpers, store actions, or editing UI affect
+audio only through the FXG.3-c-b linear sync API. Chain mode and `effectChains` remain untouched.
+`AudioGraph` connection sync for nonlinear graphs is still deferred to FXG.3-d.
 
 ## Quarantine boundary
 

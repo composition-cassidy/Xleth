@@ -17,6 +17,10 @@ import {
   validateGraphState,
   validateGraphStateForEditing,
 } from './graphState.js'
+import {
+  analyzeLinearGraphTopology,
+  buildLinearGraphTopologyPayload,
+} from './linearGraphTopology.js'
 
 function makeEffectNode(id = 'fx-1') {
   return {
@@ -377,6 +381,217 @@ describe('graphState schema validation', () => {
 
     expect(saved).toEqual(graphState)
     expect(saved).not.toBe(graphState)
+  })
+})
+
+describe('FXG.3-c-b linear graph topology payload', () => {
+  it('marks Track Input to Track Output as supported', () => {
+    const graphState = makeValidGraphState({
+      nodes: [
+        { id: 'input', type: 'trackInput' },
+        { id: 'output', type: 'trackOutput' },
+      ],
+      edges: [
+        {
+          id: 'edge-direct',
+          sourceNodeId: 'input',
+          sourcePort: 'audio',
+          targetNodeId: 'output',
+          targetPort: 'audio',
+          type: 'audio',
+        },
+      ],
+    })
+
+    expect(analyzeLinearGraphTopology(graphState)).toMatchObject({
+      ok: true,
+      reason: 'linear_supported',
+      pathNodeIds: ['input', 'output'],
+      effectNodeIds: [],
+    })
+  })
+
+  it('marks Track Input to Effect to Track Output as supported', () => {
+    expect(analyzeLinearGraphTopology(makeValidGraphState())).toMatchObject({
+      ok: true,
+      reason: 'linear_supported',
+      pathNodeIds: ['input', 'fx-1', 'output'],
+      effectNodeIds: ['fx-1'],
+      pathEffectInstanceIds: ['effect-1'],
+    })
+  })
+
+  it('marks Track Input to Effect A to Effect B to Track Output as supported', () => {
+    const fxB = makeEffectNode('fx-2')
+    fxB.data = {
+      ...fxB.data,
+      effectInstanceId: 'effect-2',
+      pluginId: 'stock:delay',
+      displayName: 'Delay',
+    }
+
+    const graphState = makeValidGraphState({
+      nodes: [
+        { id: 'input', type: 'trackInput' },
+        makeEffectNode('fx-1'),
+        fxB,
+        { id: 'output', type: 'trackOutput' },
+      ],
+      edges: [
+        {
+          id: 'edge-1',
+          sourceNodeId: 'input',
+          sourcePort: 'audio',
+          targetNodeId: 'fx-1',
+          targetPort: 'audioIn',
+          type: 'audio',
+        },
+        {
+          id: 'edge-2',
+          sourceNodeId: 'fx-1',
+          sourcePort: 'audioOut',
+          targetNodeId: 'fx-2',
+          targetPort: 'audioIn',
+          type: 'audio',
+        },
+        {
+          id: 'edge-3',
+          sourceNodeId: 'fx-2',
+          sourcePort: 'audioOut',
+          targetNodeId: 'output',
+          targetPort: 'audio',
+          type: 'audio',
+        },
+      ],
+    })
+
+    expect(analyzeLinearGraphTopology(graphState)).toMatchObject({
+      ok: true,
+      reason: 'linear_supported',
+      pathNodeIds: ['input', 'fx-1', 'fx-2', 'output'],
+      effectNodeIds: ['fx-1', 'fx-2'],
+      pathEffectInstanceIds: ['effect-1', 'effect-2'],
+    })
+  })
+
+  it('marks active fan-out as nonlinear_deferred', () => {
+    const graphState = makeValidGraphState({
+      edges: [
+        ...makeValidGraphState().edges,
+        {
+          id: 'edge-parallel',
+          sourceNodeId: 'input',
+          sourcePort: 'audio',
+          targetNodeId: 'output',
+          targetPort: 'audio',
+          type: 'audio',
+        },
+      ],
+    })
+
+    expect(analyzeLinearGraphTopology(graphState)).toMatchObject({
+      ok: false,
+      reason: 'nonlinear_deferred',
+    })
+  })
+
+  it('marks active fan-in as nonlinear_deferred', () => {
+    const fxB = makeEffectNode('fx-2')
+    fxB.data = {
+      ...fxB.data,
+      effectInstanceId: 'effect-2',
+      pluginId: 'stock:delay',
+    }
+
+    const graphState = makeValidGraphState({
+      nodes: [
+        { id: 'input', type: 'trackInput' },
+        makeEffectNode('fx-1'),
+        fxB,
+        { id: 'output', type: 'trackOutput' },
+      ],
+      edges: [
+        {
+          id: 'edge-1',
+          sourceNodeId: 'input',
+          sourcePort: 'audio',
+          targetNodeId: 'fx-1',
+          targetPort: 'audioIn',
+          type: 'audio',
+        },
+        {
+          id: 'edge-2',
+          sourceNodeId: 'fx-1',
+          sourcePort: 'audioOut',
+          targetNodeId: 'output',
+          targetPort: 'audio',
+          type: 'audio',
+        },
+        {
+          id: 'edge-3',
+          sourceNodeId: 'fx-2',
+          sourcePort: 'audioOut',
+          targetNodeId: 'output',
+          targetPort: 'audio',
+          type: 'audio',
+        },
+      ],
+    })
+
+    expect(analyzeLinearGraphTopology(graphState)).toMatchObject({
+      ok: false,
+      reason: 'nonlinear_deferred',
+    })
+  })
+
+  it('ignores disconnected effect nodes when the active path is linear', () => {
+    const disconnected = makeEffectNode('fx-disconnected')
+    disconnected.data = {
+      ...disconnected.data,
+      effectInstanceId: 'effect-disconnected',
+      pluginId: 'stock:chorus',
+    }
+
+    const graphState = makeValidGraphState({
+      nodes: [
+        ...makeValidGraphState().nodes,
+        disconnected,
+      ],
+    })
+
+    const payload = buildLinearGraphTopologyPayload(graphState)
+    expect(payload.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ nodeId: 'fx-disconnected', effectInstanceId: 'effect-disconnected' }),
+    ]))
+    expect(analyzeLinearGraphTopology(graphState)).toMatchObject({
+      ok: true,
+      reason: 'linear_supported',
+      effectNodeIds: ['fx-1'],
+    })
+  })
+
+  it('rejects missing Track Input or Track Output', () => {
+    expect(analyzeLinearGraphTopology(makeValidGraphState({
+      nodes: [
+        makeEffectNode('fx-1'),
+        { id: 'output', type: 'trackOutput' },
+      ],
+      edges: [],
+    }))).toMatchObject({
+      ok: false,
+      reason: 'invalid_track_io_multiplicity',
+    })
+
+    expect(analyzeLinearGraphTopology(makeValidGraphState({
+      nodes: [
+        { id: 'input', type: 'trackInput' },
+        makeEffectNode('fx-1'),
+      ],
+      edges: [],
+    }))).toMatchObject({
+      ok: false,
+      reason: 'invalid_track_io_multiplicity',
+    })
   })
 })
 

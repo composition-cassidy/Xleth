@@ -123,6 +123,12 @@ public:
     // True iff effectInstanceId currently maps to a graph-owned processor.
     bool hasGraphNode(const std::string& effectInstanceId) const;
 
+    // FXG.3-c-b: validate a renderer graphState topology payload, resolve
+    // active effectInstanceIds to engine node IDs, and apply only the supported
+    // single linear Track Input -> effects -> Track Output path. Unsupported
+    // topology falls back to safe passthrough without deleting graph-owned nodes.
+    nlohmann::json syncLinearGraphTopology(const nlohmann::json& topology);
+
     // ── Effect parameter / meter access (main-thread only) ─────────────
     std::string getEffectParameters(int nodeId) const;
     bool        setEffectParameter (int nodeId, const std::string& paramId, float value);

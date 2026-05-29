@@ -2,6 +2,9 @@
 #include "audio/AudioGraph.h"
 #include "audio/PluginRegistry.h"
 
+#include <unordered_map>
+#include <unordered_set>
+
 // ─── Lifecycle ──────────────────────────────────────────────────────────────
 
 EffectChainManager::EffectChainManager()
@@ -164,6 +167,190 @@ int EffectChainManager::getGraphNodeEngineId(const std::string& effectInstanceId
 bool EffectChainManager::hasGraphNode(const std::string& effectInstanceId) const
 {
     return graphNodeIds_.count(effectInstanceId) > 0;
+}
+
+nlohmann::json EffectChainManager::syncLinearGraphTopology(const nlohmann::json& topology)
+{
+    struct RuntimeNode
+    {
+        std::string id;
+        std::string type;
+        std::string effectInstanceId;
+        std::string pluginId;
+        bool missing = false;
+    };
+
+    auto baseResult = [] {
+        return nlohmann::json{
+            {"ok", false},
+            {"phase", "FXG.3-c-b"},
+            {"pathEffectCount", 0},
+            {"appliedConnectionCount", 0},
+            {"fallbackApplied", false},
+        };
+    };
+
+    auto fail = [&](const std::string& reason) {
+        nlohmann::json result = baseResult();
+        result["reason"] = reason;
+        result["fallback"] = "passthrough";
+        const bool fallbackApplied = graph_ ? graph_->clearConnectionsForPassthrough() : false;
+        result["fallbackApplied"] = fallbackApplied;
+        return result;
+    };
+
+    if (!graph_) return fail("engine_unavailable");
+    if (!topology.is_object()) return fail("invalid_topology");
+    if (!topology.contains("nodes") || !topology["nodes"].is_array())
+        return fail("invalid_nodes");
+    if (!topology.contains("edges") || !topology["edges"].is_array())
+        return fail("invalid_edges");
+
+    std::unordered_map<std::string, RuntimeNode> nodes;
+    std::string trackInputId;
+    std::string trackOutputId;
+    int trackInputCount = 0;
+    int trackOutputCount = 0;
+
+    for (const auto& nodeJson : topology["nodes"])
+    {
+        if (!nodeJson.is_object()) return fail("invalid_node");
+
+        const std::string nodeId =
+            nodeJson.contains("nodeId") && nodeJson["nodeId"].is_string()
+                ? nodeJson["nodeId"].get<std::string>()
+                : std::string{};
+        const std::string type =
+            nodeJson.contains("type") && nodeJson["type"].is_string()
+                ? nodeJson["type"].get<std::string>()
+                : std::string{};
+
+        if (nodeId.empty() || type.empty()) return fail("invalid_node");
+        if (nodes.count(nodeId) > 0) return fail("duplicate_node_id");
+
+        RuntimeNode node;
+        node.id = nodeId;
+        node.type = type;
+        node.effectInstanceId =
+            nodeJson.contains("effectInstanceId") && nodeJson["effectInstanceId"].is_string()
+                ? nodeJson["effectInstanceId"].get<std::string>()
+                : std::string{};
+        node.pluginId =
+            nodeJson.contains("pluginId") && nodeJson["pluginId"].is_string()
+                ? nodeJson["pluginId"].get<std::string>()
+                : std::string{};
+        node.missing = nodeJson.value("missing", false);
+
+        if (type == "trackInput")
+        {
+            ++trackInputCount;
+            trackInputId = nodeId;
+        }
+        else if (type == "trackOutput")
+        {
+            ++trackOutputCount;
+            trackOutputId = nodeId;
+        }
+
+        nodes.emplace(nodeId, std::move(node));
+    }
+
+    if (trackInputCount != 1 || trackOutputCount != 1)
+        return fail("invalid_track_io_multiplicity");
+
+    std::unordered_map<std::string, std::vector<std::string>> outgoing;
+    std::unordered_map<std::string, std::vector<std::string>> incoming;
+    for (const auto& [nodeId, node] : nodes)
+    {
+        outgoing[nodeId];
+        incoming[nodeId];
+    }
+
+    for (const auto& edgeJson : topology["edges"])
+    {
+        if (!edgeJson.is_object()) return fail("invalid_edge");
+
+        const std::string edgeType =
+            edgeJson.contains("type") && edgeJson["type"].is_string()
+                ? edgeJson["type"].get<std::string>()
+                : std::string{};
+        if (edgeType != "audio") continue;
+
+        const std::string sourceNodeId =
+            edgeJson.contains("sourceNodeId") && edgeJson["sourceNodeId"].is_string()
+                ? edgeJson["sourceNodeId"].get<std::string>()
+                : std::string{};
+        const std::string targetNodeId =
+            edgeJson.contains("targetNodeId") && edgeJson["targetNodeId"].is_string()
+                ? edgeJson["targetNodeId"].get<std::string>()
+                : std::string{};
+
+        if (sourceNodeId.empty() || targetNodeId.empty()) return fail("invalid_edge");
+        if (nodes.count(sourceNodeId) == 0 || nodes.count(targetNodeId) == 0)
+            return fail("invalid_edge_reference");
+
+        outgoing[sourceNodeId].push_back(targetNodeId);
+        incoming[targetNodeId].push_back(sourceNodeId);
+    }
+
+    std::vector<std::string> pathGraphNodeIds;
+    std::unordered_set<std::string> visited;
+    std::string current = trackInputId;
+    visited.insert(current);
+
+    while (current != trackOutputId)
+    {
+        const auto& nextIds = outgoing[current];
+        if (nextIds.empty()) return fail("no_linear_path");
+        if (nextIds.size() > 1) return fail("nonlinear_deferred");
+        if (current != trackInputId && incoming[current].size() > 1)
+            return fail("nonlinear_deferred");
+
+        const std::string next = nextIds.front();
+        if (!visited.insert(next).second) return fail("cycle_detected");
+        if (incoming[next].size() > 1) return fail("nonlinear_deferred");
+
+        const auto nodeIt = nodes.find(next);
+        if (nodeIt == nodes.end()) return fail("invalid_edge_reference");
+        if (next != trackOutputId)
+        {
+            if (nodeIt->second.type != "effect") return fail("unsupported_node_type");
+            pathGraphNodeIds.push_back(next);
+        }
+        current = next;
+    }
+
+    std::vector<int> engineNodePath;
+    nlohmann::json pathEffectInstanceIds = nlohmann::json::array();
+    nlohmann::json pathEngineNodeIds = nlohmann::json::array();
+    engineNodePath.reserve(pathGraphNodeIds.size());
+
+    for (const auto& graphNodeId : pathGraphNodeIds)
+    {
+        const auto& node = nodes.at(graphNodeId);
+        if (node.pluginId.empty() || node.pluginId == "placeholder" || node.missing)
+            return fail("effect_not_active");
+        if (node.effectInstanceId.empty()) return fail("missing_effect_instance_id");
+
+        auto mapped = graphNodeIds_.find(node.effectInstanceId);
+        if (mapped == graphNodeIds_.end() || mapped->second < 0)
+            return fail("missing_effect_mapping");
+
+        engineNodePath.push_back(mapped->second);
+        pathEffectInstanceIds.push_back(node.effectInstanceId);
+        pathEngineNodeIds.push_back(mapped->second);
+    }
+
+    if (!graph_->replaceConnectionsWithLinearPath(engineNodePath))
+        return fail("apply_failed");
+
+    nlohmann::json result = baseResult();
+    result["ok"] = true;
+    result["pathEffectCount"] = static_cast<int>(engineNodePath.size());
+    result["appliedConnectionCount"] = static_cast<int>(engineNodePath.size()) + 1;
+    result["pathEffectInstanceIds"] = pathEffectInstanceIds;
+    result["pathEngineNodeIds"] = pathEngineNodeIds;
+    return result;
 }
 
 // --- Graph-owned project-load hydration --------------------------------------

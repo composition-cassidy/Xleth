@@ -554,33 +554,33 @@ to chain mode but driven by `graphState`.
 Track Input → effect_a → effect_b → Track Output
 ```
 
-**Strategy:** After `graphState` mutations are applied, if the graph is linear, compute
-the ordered effect sequence from `graphState` edges and call `EffectChainManager::moveEffect`
-or rebuild the linear chain from the current `graphState` node order. Alternatively, use
-`AudioGraph::addConnection` / `removeConnection` to match `graphState` edges exactly.
-
-The simpler approach: on any `graphState` mutation in graph mode, call a bridge API that
-rebuilds the `AudioGraph` connections from the `graphState` topology.
+**Strategy:** After `graphState` mutations are applied, send a sanitized topology payload to a
+linear-only bridge API. The engine validates the single Track Input to Track Output path, resolves
+`graphState node.id -> effectInstanceId -> engineNodeId`, and rebuilds `AudioGraph` connections
+with graph-owned processors. It must not call chain `addEffect`, `moveEffect`, or mutate chain
+slots.
 
 **Renderer files likely touched:**
 - `ui/src/stores/effectChainStore.js` — after successful `applyGraphStateMutation`, call
-  bridge `syncGraphStateToEngine(trackId, graphState)` if graph mode is active
-- `FxGraphPanel.tsx` — no change; mutations already go through store
+  `syncLinearGraphTopology(trackId, topology)` if graph mode is active. Do not call it for
+  layout-only node position or viewport changes.
+- `FxGraphPanel.tsx` - surface a small runtime status without persisting it into graphState
 
 **Bridge files likely touched:**
-- `ui/main.js` — add `xleth:audio:syncGraphStateToEngine(trackId, topologyJson)` IPC handler
+- `ui/main.js` - add `xleth:audio:syncLinearGraphTopology(trackId, topologyJson)` IPC handler
 
 **Engine files likely touched:**
-- `EffectChainManager` — add `syncFromGraphTopology(topologyJson)` that:
-  1. Validates incoming node/edge list
-  2. Calls `AudioGraph::removeConnection` for all current connections
-  3. Calls `AudioGraph::addConnection` for all edges in the new topology
-  (AudioGraph's debounced APG rebuild handles the rest)
+- `EffectChainManager` - add `syncLinearGraphTopology(topologyJson)` that:
+  1. Validates incoming node/edge list and rejects nonlinear active paths.
+  2. Ignores disconnected effect nodes.
+  3. Resolves active effect nodes through the graph-owned `effectInstanceId -> engineNodeId` map.
+  4. Replaces graph-owned runtime connections with `Track Input -> effects -> Track Output`.
+  5. Applies safe passthrough on unsupported topology so stale old routing cannot remain active.
 
 **Tests needed:**
-- Engine: `syncFromGraphTopology` produces correct linear chain in `AudioGraph`
+- Engine: `syncLinearGraphTopology` produces correct linear chain in `AudioGraph`
 - Engine: linear audio passes through correctly (signal integrity test)
-- Renderer: `syncGraphStateToEngine` called after every graph mutation in graph mode
+- Renderer: `syncLinearGraphTopology` called after routing-affecting graph mutations in graph mode
 
 **Manual smoke tests:**
 - Switch to graph mode with 2 effects connected linearly → audio still processes both effects
@@ -604,8 +604,8 @@ Track Input ──→ Compressor A ───────────────
              └→ Flanger ──→ Compressor B ──→ ┘
 ```
 
-**Strategy:** `AudioGraph` already supports this via JUCE APG. The only engine-side work
-is ensuring `syncFromGraphTopology` correctly handles non-linear topologies. JUCE sums
+**Strategy:** `AudioGraph` already supports this via JUCE APG. FXG.3-d should introduce a
+parallel-capable topology sync separate from the FXG.3-c-b linear-only contract. JUCE sums
 multiple inputs into a node natively. PDC at the merge node is handled by
 `computePDC()` inserting `DelayCompensationProcessor` nodes.
 
@@ -626,12 +626,13 @@ the same.
 - None beyond FXG.3-c changes (fan-out/fan-in is already expressible via existing UI)
 
 **Bridge files likely touched:**
-- `ui/main.js` — `syncGraphStateToEngine` must now handle non-linear topologies without
-  error (passthrough change: bridge passes topology as-is to engine)
+- `ui/main.js` - expose the parallel-capable graph topology sync without implying FXG.3-c-b
+  linear sync supports fan-out/fan-in.
 
 **Engine files likely touched:**
-- `EffectChainManager::syncFromGraphTopology` — handle multi-source, multi-destination
-  edges (no special case; `AudioGraph::addConnection` already handles these)
+- `EffectChainManager` - add or extend a parallel-capable sync path for multi-source,
+  multi-destination edges (no chain slot mutation; `AudioGraph::addConnection` already handles
+  these)
 - Verify `AudioGraph::computePDC()` correctly inserts delay nodes at merge points when
   parallel branches have different cumulative latencies (existing but untested code path)
 
@@ -886,7 +887,8 @@ Built largely as planned, with these concrete decisions:
 
 #### Implementation note (FXG.3-c-a, shipped)
 
-FXG.3-c-a fills the save/load hydration gap without enabling graph cable execution:
+FXG.3-c-a fills the save/load hydration gap; FXG.3-c-b builds on it by syncing supported
+linear graph cables after graph-owned processors are hydrated:
 
 1. **Engine** - `EffectChainManager::hydrateGraphNodes` and
    `MixEngine::hydrateGraphEffectNodes` accept minimal renderer graphState metadata
@@ -905,8 +907,8 @@ FXG.3-c-a fills the save/load hydration gap without enabling graph cable executi
    placeholders, missing nodes, protected nodes, and nodes without `effectInstanceId`, then merges
    successful mappings into the session-only `graphEngineNodeIds` cache. Failures do not remove
    graphState nodes or mutate `effectChains`.
-5. **Routing** - graphState connect/disconnect still do not call engine routing sync. Graph-owned
-   processors are live/editor-addressable but disconnected until FXG.3-c-b.
+5. **Routing** - FXG.3-c-b calls the explicit linear topology sync after hydration and after
+   routing-affecting graph mutations. The sync is linear-only and does not mutate chain slots.
 
 ---
 
@@ -915,14 +917,32 @@ FXG.3-c-a fills the save/load hydration gap without enabling graph cable executi
 **Goal:** Single linear chain in graph mode routes audio correctly via graph topology.
 
 **Commit scope:**
-1. Engine: `EffectChainManager::syncFromGraphTopology(topologyJson)` — rebuilds
-   `AudioGraph` connections from provided topology.
-2. Bridge: `xleth:audio:syncGraphStateToEngine(trackId, topologyJson)` IPC handler.
-3. Renderer: `effectChainStore.js` `applyGraphStateMutation` — after persist, call
-   `syncGraphStateToEngine` if graph mode active.
+1. Engine: `EffectChainManager::syncLinearGraphTopology(topologyJson)` rebuilds supported
+   linear `AudioGraph` connections from provided topology.
+2. Bridge: `xleth:audio:syncLinearGraphTopology(trackId, topologyJson)` IPC handler.
+3. Renderer: `effectChainStore.js` `applyGraphStateMutation` calls
+   `syncLinearGraphTopology` after routing-affecting graph-mode edits and after hydration.
 4. Tests: signal integrity test for linear graph execution.
 
 **Prompt:** `FXG.3-c-b wire linear graph execution into engine`
+
+#### Implementation note (FXG.3-c-b, shipped)
+
+FXG.3-c-b enables runtime execution only for one linear audio path on graph-mode normal tracks:
+
+1. **Topology** - exactly one Track Input and one Track Output, with a single directed active path.
+   Disconnected effect nodes are ignored; active fan-out, fan-in, cycles, unknown nodes,
+   placeholders, and missing active mappings are rejected.
+2. **Identity** - the renderer sends graph node ids and `effectInstanceId`s; the engine resolves
+   `effectInstanceId -> engineNodeId` through the graph-owned map. Renderer `node.id` values are
+   never passed to AudioGraph connection APIs.
+3. **Safe fallback** - unsupported nonlinear topologies return `nonlinear_deferred` and clear the
+   previous graph-owned route to safe passthrough, leaving processors and graphState intact.
+4. **Separation** - the sync path never calls chain `addEffect`/`moveEffect`, never mutates
+   `effectChains`, and leaves chain-mode behavior unchanged.
+5. **Status** - renderer runtime sync status is session-only (`graphRuntimeStatuses`) and only used
+   for small UI feedback such as "Parallel routing comes in FXG.3-d. Audio is using safe
+   passthrough."
 
 ---
 
@@ -933,7 +953,8 @@ FXG.3-c-a fills the save/load hydration gap without enabling graph cable executi
 **Commit scope:**
 1. Engine: verify `computePDC()` correct for non-linear graphs (add targeted test).
 2. Engine: verify `MergeProcessor` or direct JUCE APG multi-input handles fan-in.
-3. Bridge: `syncGraphStateToEngine` handles non-linear topologies without change.
+3. Bridge: a future parallel-capable graph topology sync handles non-linear topologies without
+   reusing the FXG.3-c-b linear-only contract.
 4. Tests: two-branch PDC alignment test, amplitude sum test.
 5. Documentation: note that branch summing is additive, no auto-normalization.
 

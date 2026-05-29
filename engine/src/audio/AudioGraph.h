@@ -72,6 +72,14 @@ public:
     // Uses 50 ms debounced rebuild.
     bool removeConnection(int sourceNodeId, int destNodeId);
 
+    // Replace all runtime connections with input -> ordered nodes -> output.
+    // An empty path leaves the graph in safe passthrough.
+    bool replaceConnectionsWithLinearPath(const std::vector<int>& orderedNodeIds);
+
+    // Clear all runtime connections; rebuildAPGConnections wires direct
+    // input -> output passthrough when no logical connections remain.
+    bool clearConnectionsForPassthrough();
+
     // ── Wire properties (main thread) ───────────────────────────────────
 
     // Set wire gain (0.0–2.0). Returns false if connection not found.
@@ -308,6 +316,9 @@ private:
 
     // Recompute linearOrder_ from adjacency lists.
     void updateLinearOrder();
+
+    // Remove every logical connection and any helper gain/delay nodes.
+    void clearAllConnections();
 
     // ── Adjacency helpers ───────────────────────────────────────────────
 

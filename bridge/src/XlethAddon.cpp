@@ -10165,6 +10165,33 @@ Napi::Value Audio_HydrateGraphEffectNodes(const Napi::CallbackInfo& info)
     return opaqueJsonToNapi(env, result);
 }
 
+// audio_syncLinearGraphTopology(trackId, topology) -> { ok, reason?, ... }
+Napi::Value Audio_SyncLinearGraphTopology(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !audioEngine) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsObject()) {
+        Napi::TypeError::New(env, "audio_syncLinearGraphTopology(trackId: number, topology: object)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    const int trackId = info[0].As<Napi::Number>().Int32Value();
+    const nlohmann::json topology = napiToJson(info[1]);
+    BridgeCallLog log("audio.syncLinearGraphTopology");
+
+    nlohmann::json result =
+        audioEngine->getMixEngine().syncLinearGraphTopology(trackId, topology);
+    audioEngine->refreshLivePresentationLatency();
+    log.done(std::to_string(trackId) + " ok="
+             + std::string(result.value("ok", false) ? "true" : "false")
+             + " reason=" + result.value("reason", std::string{}));
+    return opaqueJsonToNapi(env, result);
+}
+
 Napi::Value Audio_AddMasterConnection(const Napi::CallbackInfo& info)
 {
     Napi::Env env = info.Env();
@@ -12945,6 +12972,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("audio_removeGraphEffectNode",       Napi::Function::New(env, Audio_RemoveGraphEffectNode));
     exports.Set("audio_getGraphEffectEngineNodeId",  Napi::Function::New(env, Audio_GetGraphEffectEngineNodeId));
     exports.Set("audio_hydrateGraphEffectNodes",     Napi::Function::New(env, Audio_HydrateGraphEffectNodes));
+    exports.Set("audio_syncLinearGraphTopology",     Napi::Function::New(env, Audio_SyncLinearGraphTopology));
     exports.Set("audio_addMasterConnection",     Napi::Function::New(env, Audio_AddMasterConnection));
     exports.Set("audio_removeMasterConnection",  Napi::Function::New(env, Audio_RemoveMasterConnection));
     exports.Set("audio_setMasterWireGain",       Napi::Function::New(env, Audio_SetMasterWireGain));

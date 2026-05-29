@@ -6,6 +6,7 @@ import useWaveshaperStore from './waveshaperStore.js'
 import useDelayStore from './delayStore.js'
 import useChorusStore from './chorusStore.js'
 import { createGraphStateFromChain } from '../fxgraph/chainToGraphState.js'
+import { buildLinearGraphTopologyPayload } from '../fxgraph/linearGraphTopology.js'
 import {
   loadGraphState,
   validateGraphState,
@@ -231,6 +232,23 @@ function normalizeGraphHydrationResult(result) {
 // is wiped on project load. The bridge remains the authoritative resolver via
 // getGraphEffectEngineNodeId; this cache only records what we instantiated so
 // removeGraphNodeForTrack knows which nodes are engine-backed.
+function normalizeGraphRuntimeSyncResult(result) {
+  return {
+    ok: result?.ok === true,
+    reason: typeof result?.reason === 'string' && result.reason.length > 0
+      ? result.reason
+      : (result?.ok === true ? 'linear_supported' : 'engine_sync_failed'),
+    phase: typeof result?.phase === 'string' ? result.phase : 'FXG.3-c-b',
+    fallback: typeof result?.fallback === 'string' ? result.fallback : undefined,
+    fallbackApplied: result?.fallbackApplied === true,
+    pathEffectCount: Number.isInteger(result?.pathEffectCount) ? result.pathEffectCount : 0,
+    appliedConnectionCount: Number.isInteger(result?.appliedConnectionCount)
+      ? result.appliedConnectionCount
+      : 0,
+    updatedAt: Date.now(),
+  }
+}
+
 function getSessionEngineNodeId(state, key, effectInstanceId) {
   if (typeof effectInstanceId !== 'string' || effectInstanceId.length === 0) return null
   return normalizeEngineNodeId(state.graphEngineNodeIds?.[key]?.[effectInstanceId])
@@ -268,6 +286,17 @@ function clearSessionEngineNodeId(set, key, effectInstanceId) {
   })
 }
 
+function setGraphRuntimeStatus(set, key, result) {
+  const status = normalizeGraphRuntimeSyncResult(result)
+  set((state) => ({
+    graphRuntimeStatuses: {
+      ...state.graphRuntimeStatuses,
+      [key]: status,
+    },
+  }))
+  return status
+}
+
 function warnFxgConversion(warn, trackId, reason, details = {}) {
   warn?.(`[FXG] chain-to-graph conversion failed for track ${trackId}: ${reason}`, {
     trackId: String(trackId),
@@ -279,7 +308,8 @@ function warnFxgConversion(warn, trackId, reason, details = {}) {
 // FXG.2C-e — fxMode ownership gate for the FXG.2C-d topology guards.
 // These store actions are the layer responsible for enforcing fxMode === 'graph'
 // before any pure mutation helper runs. The helpers themselves are fxMode-blind.
-// Mutations stay renderer-side; engine graph execution is deferred to FXG.3.
+// Mutations commit graphState first; FXG.3-c-b then syncs only supported
+// linear graph-mode routing to the engine.
 
 const GRAPH_MUTATION_GRID_COLUMNS = 3
 const GRAPH_MUTATION_GRID_ORIGIN_X = 80
@@ -353,6 +383,41 @@ function readGraphStateForMutation(state, trackId) {
   return { ok: true, key, graphState }
 }
 
+async function syncLinearGraphRuntimeForTrack(set, key, graphState, options = {}) {
+  const warn = options.warn ?? console.warn
+  const audio = defaultAudioApi()
+  const syncLinearGraphTopology =
+    options.syncLinearGraphTopology ?? audio.syncLinearGraphTopology
+
+  if (typeof syncLinearGraphTopology !== 'function') {
+    return setGraphRuntimeStatus(set, key, {
+      ok: false,
+      reason: 'engine_unavailable',
+      phase: 'FXG.3-c-b',
+      fallback: 'none',
+      fallbackApplied: false,
+    })
+  }
+
+  const payload = buildLinearGraphTopologyPayload(graphState)
+  try {
+    const result = await syncLinearGraphTopology(Number(key), payload)
+    return setGraphRuntimeStatus(set, key, result)
+  } catch (e) {
+    warn?.('[FXG] linear graph routing sync failed', {
+      trackId: key,
+      error: e?.message ?? e,
+    })
+    return setGraphRuntimeStatus(set, key, {
+      ok: false,
+      reason: 'engine_sync_failed',
+      phase: 'FXG.3-c-b',
+      fallback: 'unknown',
+      fallbackApplied: false,
+    })
+  }
+}
+
 // Validates the post-mutation graphState, commits it to the store, and persists
 // best-effort. Persistence failures warn but do not fail the renderer-side edit.
 async function applyGraphStateMutation(set, key, nextGraphState, options = {}) {
@@ -389,7 +454,9 @@ async function applyGraphStateMutation(set, key, nextGraphState, options = {}) {
     }
   }
 
-  return { ok: true, graphState: validation.graphState, status: validation }
+  const runtimeSync = await syncLinearGraphRuntimeForTrack(set, key, validation.graphState, options)
+
+  return { ok: true, graphState: validation.graphState, status: validation, runtimeSync }
 }
 
 async function hydrateGraphEngineNodesForTrack(key, graphState, options = {}) {
@@ -468,6 +535,9 @@ const useEffectChainStore = create((set, get) => ({
   // { [key: String(trackId)]: { [effectInstanceId]: engineNodeId } }
   // Session-only graph-owned engine node cache (FXG.3-b). Never persisted.
   graphEngineNodeIds: {},
+  // { [key: String(trackId)]: { ok, reason, updatedAt } }
+  // Session-only FXG.3-c-b runtime routing sync status. Never persisted.
+  graphRuntimeStatuses: {},
 
   ensureFxState: (key) => {
     const { fxModes, fxPanelViews } = get()
@@ -487,6 +557,7 @@ const useEffectChainStore = create((set, get) => ({
       // Engine uids are session-transient; FXG.3-c-a repopulates this via
       // hydrateGraphEffectInstancesForLoadedProject after graphState loads.
       graphEngineNodeIds: {},
+      graphRuntimeStatuses: {},
     })
   },
 
@@ -503,6 +574,8 @@ const useEffectChainStore = create((set, get) => ({
       const result = await hydrateGraphEngineNodesForTrack(key, graphState, options)
       results[key] = result
       const mapping = mergeSessionEngineNodeIds(set, key, result.mapping)
+      const runtimeSync = await syncLinearGraphRuntimeForTrack(set, key, graphState, options)
+      results[key] = { ...result, runtimeSync }
 
       if (!result.ok || result.failures.length > 0) {
         warn?.('[FXG] graph-owned effect hydration incomplete', {
@@ -776,9 +849,9 @@ const useEffectChainStore = create((set, get) => ({
     return true
   },
 
-  // FXG.3-b graphState mutation actions. Graph effect lifecycle owns separate
+  // FXG.3-c-b graphState mutation actions. Graph effect lifecycle owns separate
   // graph-owned engine processors (never effectChains). Each requires a normal
-  // track owned by graph mode. Connect/disconnect stay graphState-only.
+  // track owned by graph mode. Routing edits sync supported linear topology.
   addGraphEffectNodeForTrack: async (trackId, nodeDraft = {}, options = {}) => {
     const access = readGraphStateForMutation(get(), trackId)
     if (!access.ok) return access
@@ -1017,6 +1090,7 @@ globalThis.window?.xleth?.onProjectLoaded?.(() => {
     graphStates: {},
     graphStateStatuses: {},
     graphEngineNodeIds: {},
+    graphRuntimeStatuses: {},
   })
 
   // Close all open effect editor panels

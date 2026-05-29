@@ -359,6 +359,55 @@ bool AudioGraph::removeConnection(int sourceNodeId, int destNodeId)
 
 // ─── Wire properties ────────────────────────────────────────────────────────
 
+bool AudioGraph::replaceConnectionsWithLinearPath(const std::vector<int>& orderedNodeIds)
+{
+    if (!graph_) return false;
+
+    std::unordered_set<int> seen;
+    for (int nodeId : orderedNodeIds)
+    {
+        if (!nodes_.count(nodeId)) return false;
+        if (!seen.insert(nodeId).second) return false;
+    }
+
+    clearAllConnections();
+
+    const int inUid = static_cast<int>(inputNode_.uid);
+    const int outUid = static_cast<int>(outputNode_.uid);
+    int previous = inUid;
+
+    for (int nodeId : orderedNodeIds)
+    {
+        GraphConnection conn;
+        conn.sourceNodeId = previous;
+        conn.destNodeId = nodeId;
+        connections_[{previous, nodeId}] = conn;
+        addAdj(previous, nodeId);
+        previous = nodeId;
+    }
+
+    if (!orderedNodeIds.empty())
+    {
+        GraphConnection conn;
+        conn.sourceNodeId = previous;
+        conn.destNodeId = outUid;
+        connections_[{previous, outUid}] = conn;
+        addAdj(previous, outUid);
+    }
+
+    updateLinearOrder();
+    rebuildImmediate();
+    return true;
+}
+
+bool AudioGraph::clearConnectionsForPassthrough()
+{
+    if (!graph_) return false;
+    clearAllConnections();
+    rebuildImmediate();
+    return true;
+}
+
 bool AudioGraph::setWireGain(int sourceNodeId, int destNodeId, float gain)
 {
     WireId wid{sourceNodeId, destNodeId};
@@ -1974,6 +2023,38 @@ void AudioGraph::updateLinearOrder()
 }
 
 // ─── Adjacency helpers ──────────────────────────────────────────────────────
+
+void AudioGraph::clearAllConnections()
+{
+    if (graph_)
+    {
+        for (const auto& [wid, conn] : connections_)
+        {
+            if (conn.wire.gainNodeId.uid != 0)
+                graph_->removeNode(conn.wire.gainNodeId);
+            if (conn.wire.delayNodeId.uid != 0)
+                graph_->removeNode(conn.wire.delayNodeId);
+        }
+    }
+
+    connections_.clear();
+    adjForward_.clear();
+    adjReverse_.clear();
+    linearOrder_.clear();
+
+    const int inUid = static_cast<int>(inputNode_.uid);
+    const int outUid = static_cast<int>(outputNode_.uid);
+    adjForward_[inUid];
+    adjReverse_[inUid];
+    adjForward_[outUid];
+    adjReverse_[outUid];
+    for (const auto& entry : nodes_)
+    {
+        const int uid = entry.first;
+        adjForward_[uid];
+        adjReverse_[uid];
+    }
+}
 
 void AudioGraph::addAdj(int src, int dst)
 {

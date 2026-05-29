@@ -341,6 +341,7 @@ window.xleth = ({
     removeGraphEffectNode:     (trackId, effectInstanceId)           => invoke('xleth:audio:removeGraphEffectNode', trackId, effectInstanceId),
     getGraphEffectEngineNodeId:(trackId, effectInstanceId)           => invoke('xleth:audio:getGraphEffectEngineNodeId', trackId, effectInstanceId),
     hydrateGraphEffectNodes:   (trackId, graphEffectNodes)           => invoke('xleth:audio:hydrateGraphEffectNodes', trackId, graphEffectNodes),
+    syncLinearGraphTopology:   (trackId, topology)                   => invoke('xleth:audio:syncLinearGraphTopology', trackId, topology),
     addMasterConnection:    (srcId, dstId)                 => invoke('xleth:audio:addMasterConnection', srcId, dstId),
     removeMasterConnection: (srcId, dstId)                 => invoke('xleth:audio:removeMasterConnection', srcId, dstId),
     setMasterWireGain:      (srcId, dstId, gain)           => invoke('xleth:audio:setMasterWireGain', srcId, dstId, gain),

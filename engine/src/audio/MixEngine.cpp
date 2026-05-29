@@ -2834,6 +2834,35 @@ int MixEngine::getGraphEffectEngineNodeId(int trackId, const std::string& effect
 
 // ── Graph-mode routing (master) ─────────────────────────────────────────────
 
+nlohmann::json MixEngine::syncLinearGraphTopology(int trackId, const nlohmann::json& topology)
+{
+    if (trackId < 0)
+    {
+        return {
+            {"ok", false},
+            {"phase", "FXG.3-c-b"},
+            {"reason", "master_track"},
+            {"fallback", "none"},
+            {"fallbackApplied", false},
+            {"pathEffectCount", 0},
+            {"appliedConnectionCount", 0},
+        };
+    }
+
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+    auto& chain = effectChains_[trackId];
+    if (!chain)
+    {
+        chain = std::make_unique<EffectChainManager>();
+        chain->setPluginRegistry(pluginRegistry_.get());
+        chain->init(preparedSampleRate_, preparedBlockSize_);
+    }
+
+    nlohmann::json result = chain->syncLinearGraphTopology(topology);
+    pendingLatencyCompensationReset_.store(true, std::memory_order_release);
+    return result;
+}
+
 bool MixEngine::addMasterConnection(int sourceNodeId, int destNodeId)
 {
     std::lock_guard<std::mutex> lock(chainsMutex_);

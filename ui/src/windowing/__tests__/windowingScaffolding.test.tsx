@@ -349,8 +349,8 @@ describe('PanelFrame render paths', () => {
     );
 
     expect(html).toContain('FX Graph Mode Active');
-    expect(html).toContain('Layout editing active. Routing edits come later.');
-    expect(countText(html, 'Layout editing active. Routing edits come later.')).toBe(1);
+    expect(html).toContain('Linear graph routing is enabled for supported paths.');
+    expect(countText(html, 'Linear graph routing is enabled for supported paths.')).toBe(1);
     expect(html).toContain('Read-only persisted FX graph preview');
     expect(html).toContain('Track Input');
     expect(html).toContain('Persisted EQ');
@@ -523,7 +523,7 @@ describe('PanelFrame render paths', () => {
       const validHtml = renderToStaticMarkup(<FxGraphPanel />);
       expect(validHtml).toContain('FX Graph Mode Active');
       expect(validHtml).toContain('Persisted EQ');
-      expect(countText(validHtml, 'Layout editing active. Routing edits come later.')).toBe(1);
+      expect(countText(validHtml, 'Linear graph routing is enabled for supported paths.')).toBe(1);
 
       useEffectChainStore.setState({
         chains: {},

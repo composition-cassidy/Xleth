@@ -1660,6 +1660,10 @@ ipcMain.handle('xleth:audio:hydrateGraphEffectNodes',
   safeHandler((_, trackId, graphEffectNodes) =>
     callWorker('audio_hydrateGraphEffectNodes', [trackId, graphEffectNodes])));
 
+ipcMain.handle('xleth:audio:syncLinearGraphTopology',
+  safeHandler((_, trackId, topology) =>
+    callWorker('audio_syncLinearGraphTopology', [trackId, topology])));
+
 ipcMain.handle('xleth:audio:addMasterConnection',
   graphHandler(masterKey, (_, srcId, dstId) => callWorker('audio_addMasterConnection', [srcId, dstId])));
 

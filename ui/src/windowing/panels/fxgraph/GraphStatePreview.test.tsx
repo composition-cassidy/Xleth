@@ -90,7 +90,7 @@ describe('GraphStatePreview', () => {
     expect(html).toContain('Track Output');
     expect(countAttribute(html, 'data-edge-type="audio"')).toBe(1);
     expect(html).toContain('data-read-only="true"');
-    expect(countText(html, 'Persisted graphState. Routing edits come later.')).toBe(1);
+    expect(countText(html, 'Persisted graphState. Linear routing is enabled for supported paths.')).toBe(1);
     expect(html).not.toContain('data-editable');
   });
 

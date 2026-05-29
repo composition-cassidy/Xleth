@@ -152,6 +152,12 @@ describe('effectChainStore FX mode safety gate', () => {
         skipped: [],
         failures: [],
       })),
+      syncLinearGraphTopology: vi.fn(async () => ({
+        ok: true,
+        phase: 'FXG.3-c-b',
+        pathEffectCount: 1,
+        appliedConnectionCount: 2,
+      })),
     }
     timeline = {
       setTrackGraphState: vi.fn(async () => true),
@@ -447,6 +453,7 @@ describe('effectChainStore FX mode safety gate', () => {
     await useEffectChainStore.getState().setBypass('7', 13, true)
     expect(audio.setEffectBypass).toHaveBeenCalledWith(7, 13, true)
     expect(useEffectChainStore.getState().chains['7']).toEqual(chainAfterBypass)
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
   })
 
   it('keeps chain mode editable even if a legacy chain payload has topology metadata', async () => {
@@ -470,6 +477,7 @@ describe('effectChainStore FX mode safety gate', () => {
 
     expect(audio.addEffect).toHaveBeenCalledWith(7, 'reverb', 2)
     expect(useEffectChainStore.getState().chains['7']).toEqual(chainAfterAdd)
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
   })
 
   it('blocks chain mutations when fxMode is graph', async () => {
@@ -494,6 +502,7 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(audio.removeEffect).not.toHaveBeenCalled()
     expect(audio.moveEffect).not.toHaveBeenCalled()
     expect(audio.setEffectBypass).not.toHaveBeenCalled()
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
     expect(useEffectChainStore.getState().chains['7']).toEqual(baseChain)
   })
 
@@ -569,6 +578,7 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, nextGraphState)
     expect(timeline.setTrackFxMode).not.toHaveBeenCalled()
     expect(audio.moveEffect).not.toHaveBeenCalled()
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
   })
 
   it('repairs missing sibling positions during node layout writes without mutating chains', async () => {
@@ -604,6 +614,7 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(state.chains['7']).toBe(baseChain)
     expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, nextGraphState)
     expect(audio.moveEffect).not.toHaveBeenCalled()
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
   })
 
   it('blocks graphState node position updates while Mixer Chain owns the track', async () => {
@@ -622,6 +633,7 @@ describe('effectChainStore FX mode safety gate', () => {
 
     expect(useEffectChainStore.getState().graphStates['7']).toBe(graphState)
     expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
   })
 
   it('updates graphState viewport without mutating nodes, edges, or chains', async () => {
@@ -658,6 +670,7 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, nextGraphState)
     expect(timeline.setTrackFxMode).not.toHaveBeenCalled()
     expect(audio.moveEffect).not.toHaveBeenCalled()
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
   })
 
   it('repairs invalid stored viewport during viewport writes without mutating chains', async () => {
@@ -689,6 +702,7 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(state.chains['7']).toBe(baseChain)
     expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, nextGraphState)
     expect(audio.moveEffect).not.toHaveBeenCalled()
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
   })
 
   it('blocks graphState viewport updates while Mixer Chain owns the track', async () => {
@@ -890,6 +904,8 @@ describe('effectChainStore FX mode safety gate', () => {
     await Promise.resolve()
     await Promise.resolve()
     await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
 
     const state = useEffectChainStore.getState()
     expect(state.fxModes['7']).toBe('graph')
@@ -909,7 +925,12 @@ describe('effectChainStore FX mode safety gate', () => {
         displayName: 'EQ',
       },
     ])
+    expect(audio.syncLinearGraphTopology).toHaveBeenCalledWith(7, expect.objectContaining({
+      phase: 'FXG.3-c-b',
+      trackId: '7',
+    }))
     expect(state.graphEngineNodeIds['7']['effect-1']).toEqual(expect.any(Number))
+    expect(state.graphRuntimeStatuses['7']).toMatchObject({ ok: true, reason: 'linear_supported' })
   })
 
   it('builds a minimal graph effect hydration payload and skips non-runtime nodes', async () => {
@@ -1003,7 +1024,14 @@ describe('effectChainStore FX mode safety gate', () => {
         displayName: 'EQ',
       },
     ])
+    expect(audio.syncLinearGraphTopology).toHaveBeenCalledTimes(1)
+    expect(audio.syncLinearGraphTopology).toHaveBeenCalledWith(7, expect.objectContaining({
+      nodes: expect.arrayContaining([
+        expect.objectContaining({ nodeId: 'fx-1', effectInstanceId: 'effect-1' }),
+      ]),
+    }))
     expect(useEffectChainStore.getState().graphEngineNodeIds['7']).toEqual({ 'effect-1': 777 })
+    expect(useEffectChainStore.getState().graphRuntimeStatuses['7']).toMatchObject({ ok: true })
     expect(useEffectChainStore.getState().chains['7']).toBe(baseChain)
   })
 
@@ -1084,6 +1112,13 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next)
     expect(timeline.setTrackFxMode).not.toHaveBeenCalled()
     expect(audio.addEffect).not.toHaveBeenCalled()
+    expect(audio.syncLinearGraphTopology).toHaveBeenCalledWith(7, expect.objectContaining({
+      phase: 'FXG.3-c-b',
+      nodes: expect.arrayContaining([
+        expect.objectContaining({ nodeId: 'fx-1', effectInstanceId: 'effect-1' }),
+      ]),
+    }))
+    expect(result.runtimeSync).toMatchObject({ ok: true, reason: 'linear_supported' })
   })
 
   it('honors an explicit effect node draft and position when adding', async () => {
@@ -1105,6 +1140,7 @@ describe('effectChainStore FX mode safety gate', () => {
       position: { x: 333, y: 222 },
       data: { pluginId: 'stock:reverb', displayName: 'Reverb', sourceChainSlotIndex: null },
     })
+    expect(audio.syncLinearGraphTopology).toHaveBeenCalled()
   })
 
   it('blocks adding an effect node while Mixer Chain owns the track', async () => {
@@ -1136,6 +1172,7 @@ describe('effectChainStore FX mode safety gate', () => {
     ).resolves.toMatchObject({ ok: false, reason: 'no_track' })
 
     expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
   })
 
   it('reports missing_graph_state when a graph-owned track has no graphState', async () => {
@@ -1150,6 +1187,7 @@ describe('effectChainStore FX mode safety gate', () => {
     ).resolves.toMatchObject({ ok: false, reason: 'missing_graph_state' })
 
     expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
   })
 
   it('removes an effect node and its incident edges without touching chains', async () => {
@@ -1165,6 +1203,15 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(next.viewport).toEqual({ x: 0, y: 0, zoom: 1 })
     expect(useEffectChainStore.getState().chains['7']).toBe(baseChain)
     expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next)
+    expect(audio.syncLinearGraphTopology).toHaveBeenCalledWith(7, expect.objectContaining({
+      phase: 'FXG.3-c-b',
+      nodes: expect.arrayContaining([
+        expect.objectContaining({ nodeId: 'input', type: 'trackInput' }),
+        expect.objectContaining({ nodeId: 'output', type: 'trackOutput' }),
+      ]),
+      edges: [],
+    }))
+    expect(result.runtimeSync).toMatchObject({ ok: true, reason: 'linear_supported' })
   })
 
   it('blocks removing protected trackInput and trackOutput nodes', async () => {
@@ -1181,6 +1228,7 @@ describe('effectChainStore FX mode safety gate', () => {
 
     expect(useEffectChainStore.getState().graphStates['7']).toBe(graphState)
     expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
   })
 
   it('connects two nodes with a new audio edge and persists', async () => {
@@ -1206,6 +1254,17 @@ describe('effectChainStore FX mode safety gate', () => {
     })
     expect(useEffectChainStore.getState().chains['7']).toBe(baseChain)
     expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next)
+    expect(audio.syncLinearGraphTopology).toHaveBeenCalledWith(7, expect.objectContaining({
+      phase: 'FXG.3-c-b',
+      edges: expect.arrayContaining([
+        expect.objectContaining({
+          sourceNodeId: 'input',
+          targetNodeId: 'fx-1',
+          type: 'audio',
+        }),
+      ]),
+    }))
+    expect(result.runtimeSync).toMatchObject({ ok: true, reason: 'linear_supported' })
   })
 
   it('rejects self, duplicate, cycle, and invalid-endpoint connections', async () => {
@@ -1232,6 +1291,7 @@ describe('effectChainStore FX mode safety gate', () => {
     ).resolves.toMatchObject({ ok: false, reason: 'cycle_detected' })
 
     expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
   })
 
   it('disconnects an existing edge and rejects a missing edge', async () => {
@@ -1244,12 +1304,22 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(next.edges.map((edge) => edge.id)).toEqual(['edge-2'])
     expect(useEffectChainStore.getState().chains['7']).toBe(baseChain)
     expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next)
+    expect(audio.syncLinearGraphTopology).toHaveBeenCalledTimes(1)
+    expect(audio.syncLinearGraphTopology).toHaveBeenCalledWith(7, expect.objectContaining({
+      phase: 'FXG.3-c-b',
+      edges: expect.arrayContaining([
+        expect.objectContaining({ edgeId: 'edge-2', sourceNodeId: 'fx-1', targetNodeId: 'output' }),
+      ]),
+    }))
+    expect(result.runtimeSync).toMatchObject({ ok: true, reason: 'linear_supported' })
 
     timeline.setTrackGraphState.mockClear()
+    audio.syncLinearGraphTopology.mockClear()
     await expect(
       useEffectChainStore.getState().disconnectGraphEdgeForTrack('7', 'does-not-exist'),
     ).resolves.toMatchObject({ ok: false, reason: 'missing_edge' })
     expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
   })
 
   it('keeps dormant graphState untouched for chain-mode disconnect attempts', async () => {
@@ -1270,6 +1340,7 @@ describe('effectChainStore FX mode safety gate', () => {
 
     expect(useEffectChainStore.getState().graphStates['7']).toBe(graphState)
     expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
   })
 
   it('surfaces invalid_graph_state when validation rejects a mutation result', async () => {
@@ -1288,6 +1359,7 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(useEffectChainStore.getState().graphStates['7']).toBe(graphState)
     expect(useEffectChainStore.getState().chains['7']).toBe(before)
     expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('[FXG]'), expect.objectContaining({ trackId: '7' }))
   })
 
@@ -1404,7 +1476,7 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
   })
 
-  it('keeps connect and disconnect graphState-only with no engine routing or lifecycle calls', async () => {
+  it('syncs linear routing after connect and disconnect without graph-owned lifecycle calls', async () => {
     const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
     seedGraphMode(useEffectChainStore, graphWithoutEdges('7'))
 
@@ -1418,11 +1490,53 @@ describe('effectChainStore FX mode safety gate', () => {
     const disconnectResult = await useEffectChainStore.getState().disconnectGraphEdgeForTrack('7', edgeId)
     expect(disconnectResult.ok).toBe(true)
 
-    // No engine routing sync, no graph-owned lifecycle calls from edge edits.
+    // Edge edits rebuild supported FXG.3-c-b routing, but they do not create
+    // or destroy graph-owned processors.
+    expect(audio.syncLinearGraphTopology).toHaveBeenCalledTimes(2)
+    expect(connectResult.runtimeSync).toMatchObject({ ok: true, reason: 'linear_supported' })
+    expect(disconnectResult.runtimeSync).toMatchObject({ ok: true, reason: 'linear_supported' })
     expect(audio.addConnection).toBeUndefined()
     expect(audio.hydrateGraphEffectNodes).not.toHaveBeenCalled()
     expect(audio.addGraphEffectNode).not.toHaveBeenCalled()
     expect(audio.removeGraphEffectNode).not.toHaveBeenCalled()
+  })
+
+  it('surfaces nonlinear deferred sync without rolling back graphState or mutating chains', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const baseChain = seedGraphMode(useEffectChainStore, makePositionedGraphState('7'))
+    audio.syncLinearGraphTopology.mockResolvedValueOnce({
+      ok: false,
+      phase: 'FXG.3-c-b',
+      reason: 'nonlinear_deferred',
+      fallback: 'passthrough',
+      fallbackApplied: true,
+    })
+
+    const result = await useEffectChainStore.getState().connectGraphNodesForTrack('7', {
+      sourceNodeId: 'input',
+      targetNodeId: 'output',
+    }, { idFactory: () => 'parallel-edge' })
+
+    expect(result.ok).toBe(true)
+    expect(result.runtimeSync).toMatchObject({
+      ok: false,
+      reason: 'nonlinear_deferred',
+      fallback: 'passthrough',
+      fallbackApplied: true,
+    })
+
+    const state = useEffectChainStore.getState()
+    expect(state.graphStates['7'].edges.map((edge) => edge.id)).toEqual([
+      'edge-1',
+      'edge-2',
+      'parallel-edge',
+    ])
+    expect(state.graphRuntimeStatuses['7']).toMatchObject({
+      ok: false,
+      reason: 'nonlinear_deferred',
+      fallbackApplied: true,
+    })
+    expect(state.chains['7']).toBe(baseChain)
   })
 
   it('clears the session engine node cache on project load', async () => {
@@ -1430,6 +1544,7 @@ describe('effectChainStore FX mode safety gate', () => {
     useEffectChainStore.setState({
       chains: { '7': [makeEffect(11, 'compressor', 0)] },
       graphEngineNodeIds: { '7': { 'effect-1': 210 } },
+      graphRuntimeStatuses: { '7': { ok: true, reason: 'linear_supported' } },
     })
 
     projectLoadedHandler()
@@ -1437,5 +1552,6 @@ describe('effectChainStore FX mode safety gate', () => {
     await Promise.resolve()
 
     expect(useEffectChainStore.getState().graphEngineNodeIds).toEqual({})
+    expect(useEffectChainStore.getState().graphRuntimeStatuses).toEqual({})
   })
 })
