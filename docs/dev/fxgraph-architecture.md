@@ -74,3 +74,10 @@ involvement occurs until FXG.3. Engine graph execution is intentionally deferred
 `NodeEditor.jsx` is quarantined — it must not be imported by any active FX Graph panel.
 `nodeGraphStore.js` is unused — it must not be imported by any active FX Graph panel.
 Both are confirmed excluded by `windowingScaffolding.test.tsx`.
+
+## Runtime architecture (FXG.3+)
+
+See [`fxgraph-runtime-architecture-audit.md`](fxgraph-runtime-architecture-audit.md)
+for the full FXG.3-a audit: chain effect ownership, engine effect lifecycle, audio
+execution model, graph-owned effect instance proposal, Edit button path, phased engine
+execution plan, risk analysis, and recommended implementation sequence.
