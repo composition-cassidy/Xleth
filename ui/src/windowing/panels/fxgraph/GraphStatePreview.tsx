@@ -50,6 +50,10 @@ interface PositionedNode {
   secondaryText: string | null;
   metaText: string | null;
   badges: string[];
+  // True only for effect nodes backed by a real (non-placeholder, non-missing)
+  // plugin — the heuristic that enables the Edit button. The actual engine-node
+  // resolution still happens asynchronously in the panel's edit handler.
+  editable: boolean;
   x: number;
   y: number;
   width: number;
@@ -97,6 +101,7 @@ interface GraphStatePreviewProps {
   onRemoveNode?: (nodeId: string) => void;
   onConnectNodes?: (sourceNodeId: string, targetNodeId: string) => void;
   onDisconnectEdge?: (edgeId: string) => void;
+  onEditNode?: (nodeId: string) => void;
 }
 
 const NODE_WIDTH = 148;
@@ -177,6 +182,7 @@ function resolveNodeText(node: GraphStateNode) {
       secondaryText: null,
       metaText: null,
       badges: [] as string[],
+      editable: false,
     };
   }
 
@@ -186,6 +192,7 @@ function resolveNodeText(node: GraphStateNode) {
       secondaryText: null,
       metaText: null,
       badges: [] as string[],
+      editable: false,
     };
   }
 
@@ -193,10 +200,11 @@ function resolveNodeText(node: GraphStateNode) {
     const displayName = readString(data, 'displayName') || 'Effect';
     const pluginId = readString(data, 'pluginId');
     const sourceSlot = readInteger(data, 'sourceChainSlotIndex');
+    const missing = readBoolean(data, 'missing');
     const badges: string[] = [];
 
     if (readBoolean(data, 'bypass')) badges.push('Bypassed');
-    if (readBoolean(data, 'missing')) badges.push('Missing');
+    if (missing) badges.push('Missing');
     if (readBoolean(data, 'crashed')) badges.push('Crashed');
 
     return {
@@ -204,6 +212,8 @@ function resolveNodeText(node: GraphStateNode) {
       secondaryText: pluginId && pluginId !== displayName ? pluginId : null,
       metaText: sourceSlot == null ? null : `Chain slot ${sourceSlot + 1}`,
       badges,
+      // Placeholder / data-only / missing nodes have no engine processor to open.
+      editable: pluginId.length > 0 && pluginId !== 'placeholder' && !missing,
     };
   }
 
@@ -222,6 +232,7 @@ function resolveNodeText(node: GraphStateNode) {
       : 'Unsupported node type',
     metaText: null,
     badges: ['Unknown'],
+    editable: false,
   };
 }
 
@@ -408,6 +419,7 @@ function GraphStatePreviewNode({
   connectEnabled,
   connectActive,
   canRemove,
+  canEdit,
   onPointerDown,
   onPointerMove,
   onPointerUp,
@@ -417,12 +429,14 @@ function GraphStatePreviewNode({
   onConnectPointerUp,
   onConnectPointerCancel,
   onRemove,
+  onEdit,
 }: {
   node: PositionedNode;
   dragging: boolean;
   connectEnabled: boolean;
   connectActive: boolean;
   canRemove: boolean;
+  canEdit: boolean;
   onPointerDown?: (event: React.PointerEvent<HTMLDivElement>, node: PositionedNode) => void;
   onPointerMove?: (event: React.PointerEvent<HTMLDivElement>) => void;
   onPointerUp?: (event: React.PointerEvent<HTMLDivElement>) => void;
@@ -432,6 +446,7 @@ function GraphStatePreviewNode({
   onConnectPointerUp?: (event: React.PointerEvent<HTMLSpanElement>) => void;
   onConnectPointerCancel?: (event: React.PointerEvent<HTMLSpanElement>) => void;
   onRemove?: (nodeId: string) => void;
+  onEdit?: (nodeId: string) => void;
 }) {
   const classType = node.type === 'trackInput'
     ? 'track-input'
@@ -448,6 +463,10 @@ function GraphStatePreviewNode({
     connectEnabled && !node.virtual && typeof onConnectPointerDown === 'function';
   const showRemove =
     canRemove && node.type === 'effect' && !node.virtual && typeof onRemove === 'function';
+  // Edit appears on every real effect node; placeholder/data-only nodes show a
+  // disabled "not active yet" state so the affordance is discoverable but inert.
+  const showEdit =
+    canEdit && node.type === 'effect' && !node.virtual && typeof onEdit === 'function';
 
   return (
     <div
@@ -510,19 +529,40 @@ function GraphStatePreviewNode({
           ))}
         </span>
       )}
-      {showRemove && (
-        <button
-          className="xleth-graph-state-preview__node-remove"
-          type="button"
-          aria-label={`Remove ${node.label}`}
-          onPointerDown={(event) => event.stopPropagation()}
-          onClick={(event) => {
-            event.stopPropagation();
-            onRemove?.(node.id);
-          }}
-        >
-          Remove
-        </button>
+      {(showEdit || showRemove) && (
+        <span className="xleth-graph-state-preview__node-actions">
+          {showEdit && (
+            <button
+              className="xleth-graph-state-preview__node-edit"
+              type="button"
+              disabled={!node.editable}
+              data-active={node.editable ? 'true' : undefined}
+              aria-label={node.editable ? `Edit ${node.label}` : `${node.label} is not active yet`}
+              title={node.editable ? 'Open effect editor' : 'Effect is not active yet'}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                if (node.editable) onEdit?.(node.id);
+              }}
+            >
+              Edit
+            </button>
+          )}
+          {showRemove && (
+            <button
+              className="xleth-graph-state-preview__node-remove"
+              type="button"
+              aria-label={`Remove ${node.label}`}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                onRemove?.(node.id);
+              }}
+            >
+              Remove
+            </button>
+          )}
+        </span>
       )}
     </div>
   );
@@ -537,6 +577,7 @@ export default function GraphStatePreview({
   onRemoveNode,
   onConnectNodes,
   onDisconnectEdge,
+  onEditNode,
 }: GraphStatePreviewProps) {
   const viewportRef = React.useRef<HTMLDivElement | null>(null);
   const canvasRef = React.useRef<HTMLDivElement | null>(null);
@@ -579,6 +620,7 @@ export default function GraphStatePreview({
   const canEditViewport = typeof onViewportChange === 'function';
   const canAddNode = typeof onAddEffectNode === 'function';
   const canRemoveNode = typeof onRemoveNode === 'function';
+  const canEditNode = typeof onEditNode === 'function';
   const canConnect = typeof onConnectNodes === 'function';
   const canDisconnect = typeof onDisconnectEdge === 'function';
   const showToolbar = canEditViewport || canAddNode;
@@ -866,6 +908,7 @@ export default function GraphStatePreview({
                   connectEnabled={canConnect}
                   connectActive={connectingFromNodeId === node.id}
                   canRemove={canRemoveNode}
+                  canEdit={canEditNode}
                   onPointerDown={canDragNodes ? handleNodePointerDown : undefined}
                   onPointerMove={canDragNodes ? handleNodePointerMove : undefined}
                   onPointerUp={canDragNodes ? finishDrag : undefined}
@@ -875,6 +918,7 @@ export default function GraphStatePreview({
                   onConnectPointerUp={canConnect ? handleConnectPointerUp : undefined}
                   onConnectPointerCancel={canConnect ? resetConnect : undefined}
                   onRemove={canRemoveNode ? onRemoveNode : undefined}
+                  onEdit={canEditNode ? onEditNode : undefined}
                 />
               ))}
             </div>

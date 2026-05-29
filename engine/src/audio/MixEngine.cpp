@@ -2728,6 +2728,67 @@ bool MixEngine::isGraphLinear(int trackId) const
     return it->second->isGraphLinear();
 }
 
+// ── Graph-owned effect instance lifecycle (FXG.3-b) ─────────────────────────
+// Master track stays chain-only — reject trackId < 0 (master sentinel).
+// Auto-init the per-track chain on first add (mirrors addEffect) so graph mode
+// gets its own EffectChainManager. These never call addEffect/moveEffect.
+
+int MixEngine::addGraphEffectNode(int trackId, const std::string& effectInstanceId,
+                                  const std::string& pluginId)
+{
+    if (trackId < 0) return -1;  // master track is chain-only
+
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+    auto& chain = effectChains_[trackId];
+    if (!chain)
+    {
+        chain = std::make_unique<EffectChainManager>();
+        chain->setPluginRegistry(pluginRegistry_.get());
+        chain->init(preparedSampleRate_, preparedBlockSize_);
+    }
+    const int nodeId = chain->addGraphNode(effectInstanceId, pluginId);
+    if (nodeId >= 0)
+        pendingLatencyCompensationReset_.store(true, std::memory_order_release);
+    return nodeId;
+}
+
+bool MixEngine::removeGraphEffectNode(int trackId, const std::string& effectInstanceId)
+{
+    if (trackId < 0) return false;  // master track is chain-only
+
+    // Resolve the engine node id under the lock, then release it before closing
+    // any open editor. closePluginEditor takes chainsMutex_ itself, so holding
+    // it here would deadlock; this mirrors removeEffect's close-before-destroy.
+    int nodeId = -1;
+    {
+        std::lock_guard<std::mutex> lock(chainsMutex_);
+        auto it = effectChains_.find(trackId);
+        if (it == effectChains_.end() || !it->second) return false;
+        nodeId = it->second->getGraphNodeEngineId(effectInstanceId);
+    }
+    if (nodeId < 0) return false;
+
+    closePluginEditor(trackId, nodeId);
+
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+    auto it = effectChains_.find(trackId);
+    if (it == effectChains_.end() || !it->second) return false;
+    const bool ok = it->second->removeGraphNode(effectInstanceId);
+    if (ok)
+        pendingLatencyCompensationReset_.store(true, std::memory_order_release);
+    return ok;
+}
+
+int MixEngine::getGraphEffectEngineNodeId(int trackId, const std::string& effectInstanceId) const
+{
+    if (trackId < 0) return -1;  // master track is chain-only
+
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+    auto it = effectChains_.find(trackId);
+    if (it == effectChains_.end() || !it->second) return -1;
+    return it->second->getGraphNodeEngineId(effectInstanceId);
+}
+
 // ── Graph-mode routing (master) ─────────────────────────────────────────────
 
 bool MixEngine::addMasterConnection(int sourceNodeId, int destNodeId)

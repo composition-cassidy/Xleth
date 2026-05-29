@@ -877,6 +877,45 @@
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--theme-accent) 50%, transparent);
 }
 
+.xleth-graph-state-preview__node-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.xleth-graph-state-preview__node-edit {
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--theme-accent) 45%, var(--theme-border-subtle));
+  border-radius: var(--theme-chrome-radius-sm);
+  background: color-mix(in srgb, var(--theme-accent) 16%, var(--theme-bg-surface));
+  color: var(--theme-text);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.3;
+  text-transform: uppercase;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.xleth-graph-state-preview__node-edit:hover {
+  border-color: var(--theme-accent);
+  background: color-mix(in srgb, var(--theme-accent) 26%, var(--theme-bg-surface));
+}
+
+.xleth-graph-state-preview__node-edit:focus-visible {
+  outline: 1px solid var(--theme-border-focus);
+  outline-offset: 1px;
+}
+
+.xleth-graph-state-preview__node-edit:disabled {
+  border-color: var(--theme-border-subtle);
+  background: var(--theme-bg-surface);
+  color: var(--theme-text-muted);
+  cursor: not-allowed;
+}
+
 .xleth-graph-state-preview__node-remove {
   justify-self: start;
   margin-top: 2px;

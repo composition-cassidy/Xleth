@@ -853,6 +853,34 @@ as chain mode. No change to audio routing.
 
 **Prompt:** `FXG.3-b add graph-owned effect instances and Edit button path`
 
+#### Implementation note (FXG.3-b, shipped)
+
+Built largely as planned, with these concrete decisions:
+
+1. **Engine** — `EffectChainManager::addGraphNode/removeGraphNode/getGraphNodeEngineId/hasGraphNode`
+   with a private `graphNodeIds_` map (`effectInstanceId → APG uid`). Uses the low-level
+   `AudioGraph::addNode/removeNode` (not `addEffect`), so graph-owned nodes never mutate the
+   linear chain. `MixEngine::addGraphEffectNode/removeGraphEffectNode/getGraphEffectEngineNodeId`
+   forward per-track, auto-init the per-track chain, reject the master track, and close any open
+   editor before destroying a node (mirrors `removeEffect`'s ordering, lock released first).
+2. **`AudioGraph::toJSON` was NOT extended with `effectInstanceId`.** Full serialization round-trip
+   proved more invasive than warranted for FXG.3-b (it also needs load-time reconciliation /
+   processor re-instantiation, which the audit defers). The `effectInstanceId → engineNodeId`
+   mapping is therefore **session-only**: it is rebuilt each session and wiped on project load.
+   **Required FXG.3-c follow-up:** persist `effectInstanceId` in `AudioGraph::toJSON` node entries
+   and re-instantiate graph-owned processors on project load so they survive save/load.
+3. **Bridge** — `audio_addGraphEffectNode`/`audio_removeGraphEffectNode`/`audio_getGraphEffectEngineNodeId`
+   (+ `xleth:audio:*` IPC via `safeHandler`, no `graph:changed` broadcast, + `window.xleth.audio.*`).
+4. **Store** — `addGraphEffectNodeForTrack` instantiates before commit (fail-fast + rollback);
+   placeholder nodes stay renderer-only; `removeGraphNodeForTrack` destroys the processor before
+   commit (fail-fast). Session-only `graphEngineNodeIds` cache mirrors what was instantiated.
+5. **Editor opener** — extracted shared `ui/src/components/mixer/effectEditorOpeners.js`
+   (`EFFECT_EDITORS`, `PLUGIN_NAMES`, `openEffectEditorByEngineNode`); `EffectModule.jsx` and
+   `FxGraphPanel.tsx` both use it. Chain behavior unchanged.
+6. **Edit button** lives on `GraphStatePreview` effect nodes (tokenized, disabled for
+   placeholder/missing); `FxGraphPanel.handleEditGraphNode` resolves `node.id → effectInstanceId
+   → engineNodeId` via the bridge and never passes `node.id` to an editor store.
+
 ---
 
 ### FXG.3-c: Linear graph execution parity

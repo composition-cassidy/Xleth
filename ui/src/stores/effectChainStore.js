@@ -154,6 +154,53 @@ function defaultTimelineApi() {
   return globalThis.window?.xleth?.timeline ?? {}
 }
 
+function defaultAudioApi() {
+  return globalThis.window?.xleth?.audio ?? {}
+}
+
+// A graph effect node is engine-backed only when it carries a real pluginId.
+// Placeholder/data-only nodes (pluginId === 'placeholder') stay renderer-only
+// and must never trigger engine instantiation.
+function isInstantiablePluginId(pluginId) {
+  return typeof pluginId === 'string' && pluginId.length > 0 && pluginId !== 'placeholder'
+}
+
+// Engine APG uids are non-negative integers. Anything else (null, -1, NaN,
+// failure sentinels) means "no engine node".
+function normalizeEngineNodeId(value) {
+  return Number.isInteger(value) && value >= 0 ? value : null
+}
+
+// ── Session-only effectInstanceId → engineNodeId cache (FXG.3-b) ───────────
+// graphEngineNodeIds mirrors the engine's transient map for the current
+// session. It is NOT persisted (engine uids are reassigned each session) and
+// is wiped on project load. The bridge remains the authoritative resolver via
+// getGraphEffectEngineNodeId; this cache only records what we instantiated so
+// removeGraphNodeForTrack knows which nodes are engine-backed.
+function getSessionEngineNodeId(state, key, effectInstanceId) {
+  if (typeof effectInstanceId !== 'string' || effectInstanceId.length === 0) return null
+  return normalizeEngineNodeId(state.graphEngineNodeIds?.[key]?.[effectInstanceId])
+}
+
+function setSessionEngineNodeId(set, key, effectInstanceId, engineNodeId) {
+  set((state) => ({
+    graphEngineNodeIds: {
+      ...state.graphEngineNodeIds,
+      [key]: { ...(state.graphEngineNodeIds[key] ?? {}), [effectInstanceId]: engineNodeId },
+    },
+  }))
+}
+
+function clearSessionEngineNodeId(set, key, effectInstanceId) {
+  set((state) => {
+    const trackMap = state.graphEngineNodeIds[key]
+    if (!trackMap || !(effectInstanceId in trackMap)) return {}
+    const nextTrackMap = { ...trackMap }
+    delete nextTrackMap[effectInstanceId]
+    return { graphEngineNodeIds: { ...state.graphEngineNodeIds, [key]: nextTrackMap } }
+  })
+}
+
 function warnFxgConversion(warn, trackId, reason, details = {}) {
   warn?.(`[FXG] chain-to-graph conversion failed for track ${trackId}: ${reason}`, {
     trackId: String(trackId),
@@ -289,6 +336,9 @@ const useEffectChainStore = create((set, get) => ({
   graphStates: {},
   // { [key: String(trackId)]: loadGraphState result }
   graphStateStatuses: {},
+  // { [key: String(trackId)]: { [effectInstanceId]: engineNodeId } }
+  // Session-only graph-owned engine node cache (FXG.3-b). Never persisted.
+  graphEngineNodeIds: {},
 
   ensureFxState: (key) => {
     const { fxModes, fxPanelViews } = get()
@@ -305,6 +355,9 @@ const useEffectChainStore = create((set, get) => ({
       fxPanelViews: {},
       graphStates,
       graphStateStatuses,
+      // Engine uids are session-transient; graph-owned processor hydration is a
+      // FXG.3-c follow-up, so the cache starts empty after each load.
+      graphEngineNodeIds: {},
     })
   },
 
@@ -566,8 +619,9 @@ const useEffectChainStore = create((set, get) => ({
     return true
   },
 
-  // FXG.2C-e graphState mutation actions. Renderer/data-model only.
-  // Each requires a normal track owned by graph mode; never touches effectChains.
+  // FXG.3-b graphState mutation actions. Graph effect lifecycle owns separate
+  // graph-owned engine processors (never effectChains). Each requires a normal
+  // track owned by graph mode. Connect/disconnect stay graphState-only.
   addGraphEffectNodeForTrack: async (trackId, nodeDraft = {}, options = {}) => {
     const access = readGraphStateForMutation(get(), trackId)
     if (!access.ok) return access
@@ -576,7 +630,47 @@ const useEffectChainStore = create((set, get) => ({
     const mutation = addGraphEffectNode(access.graphState, draft, { idFactory: options.idFactory })
     if (!mutation.ok) return mutation
 
-    return applyGraphStateMutation(set, access.key, mutation.graphState, options)
+    // Real pluginId → instantiate a graph-owned engine processor BEFORE
+    // committing graphState (fail-fast: never persist a node we could not back).
+    // Placeholder/data-only nodes stay renderer-only with no engine processor.
+    let engineNodeId = null
+    if (isInstantiablePluginId(draft.pluginId)) {
+      const instantiate = options.instantiateGraphEngineNode ?? defaultAudioApi().addGraphEffectNode
+      if (typeof instantiate !== 'function') {
+        return { ok: false, reason: 'engine_unavailable' }
+      }
+      try {
+        engineNodeId = normalizeEngineNodeId(
+          await instantiate(Number(access.key), draft.effectInstanceId, draft.pluginId),
+        )
+      } catch (e) {
+        ;(options.warn ?? console.warn)?.('[FXG] graph-owned engine instantiation failed', {
+          trackId: access.key,
+          effectInstanceId: draft.effectInstanceId,
+          error: e?.message ?? e,
+        })
+        return { ok: false, reason: 'engine_instantiation_failed' }
+      }
+      if (engineNodeId == null) {
+        return { ok: false, reason: 'engine_instantiation_failed' }
+      }
+    }
+
+    const applied = await applyGraphStateMutation(set, access.key, mutation.graphState, options)
+    if (!applied.ok) {
+      // Roll back the processor we just created so the engine does not leak a
+      // node that never made it into the persisted graphState.
+      if (engineNodeId != null) {
+        const removeNode = options.removeGraphEngineNode ?? defaultAudioApi().removeGraphEffectNode
+        try { await removeNode?.(Number(access.key), draft.effectInstanceId) } catch { /* best effort */ }
+      }
+      return applied
+    }
+
+    if (engineNodeId != null) {
+      setSessionEngineNodeId(set, access.key, draft.effectInstanceId, engineNodeId)
+    }
+    return { ...applied, effectInstanceId: draft.effectInstanceId, engineNodeId }
   },
 
   removeGraphNodeForTrack: async (trackId, nodeId, options = {}) => {
@@ -586,7 +680,39 @@ const useEffectChainStore = create((set, get) => ({
     const mutation = removeGraphNode(access.graphState, nodeId)
     if (!mutation.ok) return mutation
 
-    return applyGraphStateMutation(set, access.key, mutation.graphState, options)
+    // Engine-backed nodes (real pluginId we instantiated this session) must have
+    // their graph-owned processor destroyed BEFORE the graphState removal is
+    // committed. Fail-fast on engine removal failure so the renderer and engine
+    // never diverge. Placeholder/uninstantiated nodes skip the engine entirely.
+    const removedNode = access.graphState.nodes.find((n) => n.id === nodeId)
+    const effectInstanceId = removedNode?.data?.effectInstanceId
+    const engineNodeId = getSessionEngineNodeId(get(), access.key, effectInstanceId)
+    const isEngineBacked = engineNodeId != null
+
+    if (isEngineBacked) {
+      const removeNode = options.removeGraphEngineNode ?? defaultAudioApi().removeGraphEffectNode
+      if (typeof removeNode !== 'function') {
+        return { ok: false, reason: 'engine_unavailable' }
+      }
+      let removedOk = false
+      try {
+        removedOk = (await removeNode(Number(access.key), effectInstanceId)) !== false
+      } catch (e) {
+        ;(options.warn ?? console.warn)?.('[FXG] graph-owned engine removal failed', {
+          trackId: access.key,
+          effectInstanceId,
+          error: e?.message ?? e,
+        })
+        return { ok: false, reason: 'engine_removal_failed' }
+      }
+      if (!removedOk) return { ok: false, reason: 'engine_removal_failed' }
+    }
+
+    const applied = await applyGraphStateMutation(set, access.key, mutation.graphState, options)
+    if (applied.ok && isEngineBacked) {
+      clearSessionEngineNodeId(set, access.key, effectInstanceId)
+    }
+    return applied
   },
 
   connectGraphNodesForTrack: async (trackId, connectionDraft, options = {}) => {
@@ -733,6 +859,7 @@ globalThis.window?.xleth?.onProjectLoaded?.(() => {
     fxPanelViews: {},
     graphStates: {},
     graphStateStatuses: {},
+    graphEngineNodeIds: {},
   })
 
   // Close all open effect editor panels

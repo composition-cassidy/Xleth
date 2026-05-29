@@ -327,4 +327,88 @@ describe('GraphStatePreview', () => {
     expect(dormantHtml).not.toContain('Fit View');
     expect(dormantHtml).not.toContain('Reset View');
   });
+
+  // --- FXG.3-b Edit button ---
+
+  it('renders an enabled Edit button on real effect nodes when onEditNode is provided', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([
+          inputNode(),
+          effectNode('limiter', 'Limiter', 0, { x: 260, y: 0 }),
+          outputNode({ x: 520, y: 0 }),
+        ], [])}
+        onEditNode={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('xleth-graph-state-preview__node-edit');
+    expect(html).toContain('aria-label="Edit Limiter"');
+    expect(html).toContain('data-active="true"');
+    // The only buttons present are Edit buttons; a real effect node's is enabled.
+    expect(html).not.toContain('disabled');
+  });
+
+  it('does not render an Edit button on Track Input or Track Output', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([
+          inputNode(),
+          effectNode('limiter', 'Limiter', 0, { x: 260, y: 0 }),
+          outputNode({ x: 520, y: 0 }),
+        ], [])}
+        onEditNode={vi.fn()}
+      />,
+    );
+
+    expect(html).not.toContain('Edit Track Input');
+    expect(html).not.toContain('Edit Track Output');
+  });
+
+  it('disables the Edit button for placeholder/data-only effect nodes', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([
+          inputNode(),
+          effectNode('ph', 'Effect Node', 0, { x: 260, y: 0 }, { pluginId: 'placeholder' }),
+          outputNode({ x: 520, y: 0 }),
+        ], [])}
+        onEditNode={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('xleth-graph-state-preview__node-edit');
+    expect(html).toContain('disabled');
+    expect(html).toContain('is not active yet');
+  });
+
+  it('disables the Edit button for missing effect nodes', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([
+          inputNode(),
+          effectNode('rv', 'Reverb', 0, { x: 260, y: 0 }, { missing: true }),
+          outputNode({ x: 520, y: 0 }),
+        ], [])}
+        onEditNode={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('xleth-graph-state-preview__node-edit');
+    expect(html).toContain('disabled');
+  });
+
+  it('renders no Edit button in read-only mode (onEditNode omitted)', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([
+          inputNode(),
+          effectNode('limiter', 'Limiter', 0, { x: 260, y: 0 }),
+          outputNode({ x: 520, y: 0 }),
+        ], [])}
+      />,
+    );
+
+    expect(html).not.toContain('xleth-graph-state-preview__node-edit');
+  });
 });

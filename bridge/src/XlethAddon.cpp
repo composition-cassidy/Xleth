@@ -10047,6 +10047,91 @@ Napi::Value Audio_IsGraphLinear(const Napi::CallbackInfo& info)
     return Napi::Boolean::New(env, audioEngine->getMixEngine().isGraphLinear(trackId));
 }
 
+// ── Graph-owned effect instances (FXG.3-b) ──────────────────────────────────
+// FX Graph mode owns effect instances keyed by a stable string effectInstanceId.
+// These are separate from the chain add/remove APIs and never rewire the linear
+// chain. Master track (trackId < 0) is rejected — master stays chain-only.
+
+// audio_addGraphEffectNode(trackId, effectInstanceId, pluginId) → number engineNodeId (-1 on failure)
+Napi::Value Audio_AddGraphEffectNode(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !audioEngine) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsString() || !info[2].IsString()) {
+        Napi::TypeError::New(env, "audio_addGraphEffectNode(trackId: number, effectInstanceId: string, pluginId: string)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int trackId                  = info[0].As<Napi::Number>().Int32Value();
+    const std::string effectInstanceId = info[1].As<Napi::String>().Utf8Value();
+    const std::string pluginId         = info[2].As<Napi::String>().Utf8Value();
+    if (trackId < 0) {
+        Napi::TypeError::New(env, "audio_addGraphEffectNode: graph-owned effects are not supported on the master track")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    BridgeCallLog log("audio.addGraphEffectNode");
+
+    const int nodeId = audioEngine->getMixEngine().addGraphEffectNode(trackId, effectInstanceId, pluginId);
+    if (nodeId >= 0) audioEngine->refreshLivePresentationLatency();
+    log.done(std::to_string(trackId) + " " + effectInstanceId + " " + pluginId
+             + " → " + std::to_string(nodeId));
+    return Napi::Number::New(env, nodeId);
+}
+
+// audio_removeGraphEffectNode(trackId, effectInstanceId) → bool
+Napi::Value Audio_RemoveGraphEffectNode(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !audioEngine) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsString()) {
+        Napi::TypeError::New(env, "audio_removeGraphEffectNode(trackId: number, effectInstanceId: string)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int trackId                  = info[0].As<Napi::Number>().Int32Value();
+    const std::string effectInstanceId = info[1].As<Napi::String>().Utf8Value();
+    if (trackId < 0) {
+        Napi::TypeError::New(env, "audio_removeGraphEffectNode: graph-owned effects are not supported on the master track")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    BridgeCallLog log("audio.removeGraphEffectNode");
+
+    const bool ok = audioEngine->getMixEngine().removeGraphEffectNode(trackId, effectInstanceId);
+    if (ok) audioEngine->refreshLivePresentationLatency();
+    log.done(std::to_string(trackId) + " " + effectInstanceId + " ok=" + (ok ? "true" : "false"));
+    return Napi::Boolean::New(env, ok);
+}
+
+// audio_getGraphEffectEngineNodeId(trackId, effectInstanceId) → number | null
+Napi::Value Audio_GetGraphEffectEngineNodeId(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !audioEngine) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsString()) {
+        Napi::TypeError::New(env, "audio_getGraphEffectEngineNodeId(trackId: number, effectInstanceId: string)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int trackId                  = info[0].As<Napi::Number>().Int32Value();
+    const std::string effectInstanceId = info[1].As<Napi::String>().Utf8Value();
+    if (trackId < 0) return env.Null();  // master track is chain-only
+
+    const int nodeId = audioEngine->getMixEngine().getGraphEffectEngineNodeId(trackId, effectInstanceId);
+    if (nodeId < 0) return env.Null();
+    return Napi::Number::New(env, nodeId);
+}
+
 // ── Master graph-mode routing ────────────────────────────────────────────────
 
 Napi::Value Audio_AddMasterConnection(const Napi::CallbackInfo& info)
@@ -12824,6 +12909,10 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("audio_getGraphTopology",        Napi::Function::New(env, Audio_GetGraphTopology));
     exports.Set("audio_setNodePosition",         Napi::Function::New(env, Audio_SetNodePosition));
     exports.Set("audio_isGraphLinear",           Napi::Function::New(env, Audio_IsGraphLinear));
+    // ── Graph-owned effect instances (FXG.3-b) ───────────────────────────────
+    exports.Set("audio_addGraphEffectNode",          Napi::Function::New(env, Audio_AddGraphEffectNode));
+    exports.Set("audio_removeGraphEffectNode",       Napi::Function::New(env, Audio_RemoveGraphEffectNode));
+    exports.Set("audio_getGraphEffectEngineNodeId",  Napi::Function::New(env, Audio_GetGraphEffectEngineNodeId));
     exports.Set("audio_addMasterConnection",     Napi::Function::New(env, Audio_AddMasterConnection));
     exports.Set("audio_removeMasterConnection",  Napi::Function::New(env, Audio_RemoveMasterConnection));
     exports.Set("audio_setMasterWireGain",       Napi::Function::New(env, Audio_SetMasterWireGain));

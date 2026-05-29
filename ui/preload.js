@@ -334,6 +334,12 @@ window.xleth = ({
     getGraphTopology:       (trackId)                      => invoke('xleth:audio:getGraphTopology', trackId),
     setNodePosition:        (trackId, nodeId, x, y)        => invoke('xleth:audio:setNodePosition', trackId, nodeId, x, y),
     isGraphLinear:          (trackId)                      => invoke('xleth:audio:isGraphLinear', trackId),
+    // ── Graph-owned effect instances (FXG.3-b) ─────────────────────────
+    // Stable effectInstanceId ↔ transient engine nodeId. Separate from the
+    // chain add/remove APIs above; never rewires the linear chain.
+    addGraphEffectNode:        (trackId, effectInstanceId, pluginId) => invoke('xleth:audio:addGraphEffectNode', trackId, effectInstanceId, pluginId),
+    removeGraphEffectNode:     (trackId, effectInstanceId)           => invoke('xleth:audio:removeGraphEffectNode', trackId, effectInstanceId),
+    getGraphEffectEngineNodeId:(trackId, effectInstanceId)           => invoke('xleth:audio:getGraphEffectEngineNodeId', trackId, effectInstanceId),
     addMasterConnection:    (srcId, dstId)                 => invoke('xleth:audio:addMasterConnection', srcId, dstId),
     removeMasterConnection: (srcId, dstId)                 => invoke('xleth:audio:removeMasterConnection', srcId, dstId),
     setMasterWireGain:      (srcId, dstId, gain)           => invoke('xleth:audio:setMasterWireGain', srcId, dstId, gain),

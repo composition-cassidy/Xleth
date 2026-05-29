@@ -6,6 +6,7 @@
 #include <memory>
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 class AudioGraph;
@@ -86,6 +87,36 @@ public:
     // True iff graph is a single linear path (chain mode).
     bool isGraphLinear() const;
 
+    // ── Graph-owned effect instance lifecycle (FXG.3-b, main thread) ─────
+    //
+    // FX Graph mode owns effect instances keyed by a stable string
+    // effectInstanceId (assigned by the renderer, persisted with graphState).
+    // These use the low-level AudioGraph addNode/removeNode so they NEVER
+    // mutate the linear chain topology: no auto-wiring, no position reorder,
+    // no moveEffect. Graph routing is not applied here — graph-owned nodes are
+    // created disconnected (silent) until FXG.3-c wires graphState edges into
+    // the engine.
+    //
+    // The effectInstanceId → engine APG uid map is session-only in FXG.3-b;
+    // it is rebuilt from scratch each session and is not persisted. Round-trip
+    // serialization of effectInstanceId is a FXG.3-c follow-up.
+
+    // Instantiate a graph-owned processor for effectInstanceId. Returns the APG
+    // NodeID uid, or -1 on failure (empty/placeholder pluginId, unknown plugin,
+    // or graph full). Idempotent: re-adding a known effectInstanceId returns the
+    // existing engine uid without creating a second processor.
+    int  addGraphNode(const std::string& effectInstanceId, const std::string& pluginId);
+
+    // Destroy the graph-owned processor for effectInstanceId and drop the
+    // mapping. Returns false if effectInstanceId is unknown.
+    bool removeGraphNode(const std::string& effectInstanceId);
+
+    // Resolve effectInstanceId to its current-session engine APG uid, or -1.
+    int  getGraphNodeEngineId(const std::string& effectInstanceId) const;
+
+    // True iff effectInstanceId currently maps to a graph-owned processor.
+    bool hasGraphNode(const std::string& effectInstanceId) const;
+
     // ── Effect parameter / meter access (main-thread only) ─────────────
     std::string getEffectParameters(int nodeId) const;
     bool        setEffectParameter (int nodeId, const std::string& paramId, float value);
@@ -145,4 +176,8 @@ public:
 
 private:
     std::unique_ptr<AudioGraph> graph_;
+
+    // Graph-owned effect instances: stable effectInstanceId → APG uid.
+    // Session-only (not serialized in FXG.3-b). Never used by chain-mode APIs.
+    std::unordered_map<std::string, int> graphNodeIds_;
 };

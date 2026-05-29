@@ -1,6 +1,6 @@
 # FX Graph Architecture
 
-Internal reference for the renderer-side graphState system. Updated through FXG.2C-e.
+Internal reference for the renderer-side graphState system. Updated through FXG.3-b.
 
 ## Data model separation
 
@@ -63,11 +63,60 @@ from a node's output handle, and disconnect buttons at audio-edge midpoints. Eve
 gated on its callback prop, so the preview stays read-only whenever the panel is not in graph mode.
 Rejected mutations surface a non-blocking inline notice via `describeGraphMutationResult`.
 
+## Graph-owned effect instances (FXG.3-b)
+
+Graph effect nodes are now backed by real **graph-owned engine processors**, separate from
+`effectChains`. This is "Option A" / "Option 2" from the runtime audit: graph mode owns its
+own effect-instance lifecycle; it does not wrap or hide processors inside the linear chain.
+
+Three distinct IDs, never collapsed:
+
+| ID | Type | Scope | Purpose |
+|----|------|-------|---------|
+| `node.id` | UUID string | graphState | Graph topology identity (edge source/target) |
+| `effectInstanceId` | UUID string | persisted with graphState | Stable cross-session effect identity in `node.data.effectInstanceId` |
+| `engineNodeId` | integer (APG uid) | per-session | Transient JUCE node id; reused by the existing editor paths as `nodeId` |
+
+Lifecycle:
+- **Engine** — `EffectChainManager::addGraphNode/removeGraphNode/getGraphNodeEngineId/hasGraphNode`
+  keep an `effectInstanceId → APG uid` map and use the low-level `AudioGraph::addNode/removeNode`
+  (never `addEffect/moveEffect`), so graph-owned nodes never touch the linear chain. Nodes are
+  created **disconnected** — graphState edges are not yet synced into the engine.
+- **MixEngine** — `addGraphEffectNode/removeGraphEffectNode/getGraphEffectEngineNodeId`
+  forward per-track and reject the master track (master stays chain-only).
+- **Bridge** — `audio_addGraphEffectNode`, `audio_removeGraphEffectNode`,
+  `audio_getGraphEffectEngineNodeId` (and the matching `xleth:audio:*` IPC + `window.xleth.audio.*`)
+  are separate from the chain APIs and never call chain add/remove internally.
+- **Store** — `addGraphEffectNodeForTrack` instantiates a graph-owned processor for a real
+  `pluginId` *before* committing graphState (fail-fast; rolls the processor back if the commit
+  is rejected). Placeholder/data-only nodes (`pluginId === 'placeholder'`) stay renderer-only.
+  `removeGraphNodeForTrack` destroys the engine processor before committing the removal and
+  fails fast if engine removal fails. A session-only `graphEngineNodeIds`
+  (`{ [key]: { [effectInstanceId]: engineNodeId } }`) cache records what we instantiated; it is
+  never persisted and is wiped on project load.
+
+The Edit button on graph effect nodes resolves `node.id → effectInstanceId →
+getGraphEffectEngineNodeId → engineNodeId`, then opens the **same** stock/plugin editor path as
+Mixer Chain via the shared `effectEditorOpeners.js` helper. The graphState `node.id` is never
+passed to an editor store. See [`fxgraph-runtime-architecture-audit.md`](fxgraph-runtime-architecture-audit.md)
+section 7.
+
+### Still deferred after FXG.3-b
+
+- **Graph routing execution** — cables (`graphState` edges) still do not affect audio. Graph-owned
+  nodes are instantiated but unrouted (silent). Linear/parallel execution is FXG.3-c / FXG.3-d.
+- **Serialization round-trip of `effectInstanceId`** — the `effectInstanceId → engineNodeId`
+  mapping is **session-only**. `AudioGraph::toJSON` does not yet carry `effectInstanceId`, and
+  graph-owned processors are not re-instantiated on project load. This is a required FXG.3-c
+  follow-up; until then, graph-owned engine processors do not survive a save/load cycle.
+- Connect/disconnect remain graphState-only and never sync edges to the engine.
+
 ## Engine execution boundary
 
-Effect nodes added via the mutation helpers, store actions, or editing UI exist **only in
-renderer-side graphState**. No audio engine execution, `AudioGraph` routing, or bridge API
-involvement occurs until FXG.3. Engine graph execution is intentionally deferred.
+Graph cables (`graphState` edges) added via the mutation helpers, store actions, or editing UI
+still do **not** affect audio routing. FXG.3-b creates real graph-owned engine processors but
+leaves them unrouted; `AudioGraph` connection sync from `graphState` edges is deferred to
+FXG.3-c (linear) and FXG.3-d (parallel).
 
 ## Quarantine boundary
 

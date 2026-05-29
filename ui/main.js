@@ -1639,6 +1639,23 @@ ipcMain.handle('xleth:audio:setNodePosition',
 ipcMain.handle('xleth:audio:isGraphLinear',
   safeHandler((_, trackId) => callWorker('audio_isGraphLinear', [trackId])));
 
+// ── Graph-owned effect instances (FXG.3-b) ──────────────────────────────────
+// Separate from the chain add/remove handlers. These create/destroy graph-owned
+// engine processors keyed by a stable effectInstanceId and never rewire the
+// linear chain. safeHandler (no graph:changed broadcast) — graphState
+// persistence keeps the renderer in sync; a chain re-fetch is not wanted here.
+ipcMain.handle('xleth:audio:addGraphEffectNode',
+  safeHandler((_, trackId, effectInstanceId, pluginId) =>
+    callWorker('audio_addGraphEffectNode', [trackId, effectInstanceId, pluginId])));
+
+ipcMain.handle('xleth:audio:removeGraphEffectNode',
+  safeHandler((_, trackId, effectInstanceId) =>
+    callWorker('audio_removeGraphEffectNode', [trackId, effectInstanceId])));
+
+ipcMain.handle('xleth:audio:getGraphEffectEngineNodeId',
+  safeHandler((_, trackId, effectInstanceId) =>
+    callWorker('audio_getGraphEffectEngineNodeId', [trackId, effectInstanceId])));
+
 ipcMain.handle('xleth:audio:addMasterConnection',
   graphHandler(masterKey, (_, srcId, dstId) => callWorker('audio_addMasterConnection', [srcId, dstId])));
 

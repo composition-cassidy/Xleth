@@ -4,6 +4,7 @@ import useMixerStore from '../../stores/mixerStore.js';
 import useTimelineFocusStore from '../../stores/timelineFocusStore.js';
 import useVstStore from '../../stores/vstStore.js';
 import ConfirmConvertDialog from '../../components/timeline/ConfirmConvertDialog.jsx';
+import { openEffectEditorByEngineNode } from '../../components/mixer/effectEditorOpeners.js';
 import { PanelFrame } from '../components/PanelFrame';
 import ChainAsGraphPreview, {
   type ChainEffect,
@@ -67,6 +68,7 @@ export interface FxGraphPanelContentProps {
   onRemoveGraphNode?: (nodeId: string) => void;
   onConnectGraphNodes?: (sourceNodeId: string, targetNodeId: string) => void;
   onDisconnectGraphEdge?: (edgeId: string) => void;
+  onEditGraphNode?: (nodeId: string) => void;
   graphActionNotice?: string | null;
   conversionError?: string | null;
 }
@@ -123,6 +125,7 @@ export function FxGraphPanelContent({
   onRemoveGraphNode,
   onConnectGraphNodes,
   onDisconnectGraphEdge,
+  onEditGraphNode,
   graphActionNotice = null,
   conversionError = null,
 }: FxGraphPanelContentProps) {
@@ -228,6 +231,7 @@ export function FxGraphPanelContent({
               onRemoveNode={graphModeActive ? onRemoveGraphNode : undefined}
               onConnectNodes={graphModeActive ? onConnectGraphNodes : undefined}
               onDisconnectEdge={graphModeActive ? onDisconnectGraphEdge : undefined}
+              onEditNode={graphModeActive ? onEditGraphNode : undefined}
             />
           )}
 
@@ -416,6 +420,62 @@ export default function FxGraphPanel() {
     setGraphActionNotice(describeGraphMutationResult(result));
   }, [disconnectGraphEdgeForTrack, fxMode, selectedTrack?.id]);
 
+  // Resolve a graphState topology node.id → effectInstanceId → engine nodeId,
+  // then open the SAME stock/plugin editor path Mixer Chain uses. The graph
+  // node.id is never passed to an editor store — only the engine nodeId is.
+  const handleEditGraphNode = useCallback(async (nodeId: string) => {
+    setGraphActionNotice(null);
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    const trackId = selectedTrack.id;
+
+    const node = graphState?.nodes?.find((candidate) => candidate.id === nodeId);
+    if (!node || node.type !== 'effect') {
+      setGraphActionNotice('That node can no longer be edited.');
+      return;
+    }
+
+    const data = (node.data ?? {}) as { effectInstanceId?: unknown; pluginId?: unknown };
+    const effectInstanceId = typeof data.effectInstanceId === 'string' ? data.effectInstanceId : '';
+    const pluginId = typeof data.pluginId === 'string' ? data.pluginId : '';
+
+    if (!effectInstanceId) {
+      setGraphActionNotice('This effect has no instance id yet.');
+      return;
+    }
+    if (!pluginId || pluginId === 'placeholder') {
+      setGraphActionNotice('Effect is not active yet.');
+      return;
+    }
+
+    const audio = (window as typeof window & { xleth?: { audio?: any } }).xleth?.audio;
+
+    let engineNodeId: number | null = null;
+    try {
+      const resolved = await audio?.getGraphEffectEngineNodeId?.(trackId, effectInstanceId);
+      engineNodeId = Number.isInteger(resolved) && resolved >= 0 ? resolved : null;
+    } catch {
+      engineNodeId = null;
+    }
+    if (engineNodeId == null) {
+      setGraphActionNotice('Effect is not active yet.');
+      return;
+    }
+
+    const result = openEffectEditorByEngineNode({
+      pluginId,
+      engineNodeId,
+      storeKey: String(trackId),
+      audio,
+    });
+    if (!result.ok) {
+      setGraphActionNotice(
+        result.reason === 'editor_unavailable'
+          ? 'No editor is available for this effect.'
+          : 'Could not open the effect editor.',
+      );
+    }
+  }, [fxMode, graphState, selectedTrack?.id]);
+
   const confirmGraphModeMessage =
     graphStateStatus === 'valid' || graphStateStatus === 'invalid' || graphStateStatus === 'future'
       ? REPLACE_GRAPH_MODE_MESSAGE
@@ -438,6 +498,7 @@ export default function FxGraphPanel() {
         onRemoveGraphNode={handleRemoveGraphNode}
         onConnectGraphNodes={handleConnectGraphNodes}
         onDisconnectGraphEdge={handleDisconnectGraphEdge}
+        onEditGraphNode={handleEditGraphNode}
         graphActionNotice={graphActionNotice}
         conversionError={conversionError}
       />

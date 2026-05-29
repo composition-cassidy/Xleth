@@ -121,12 +121,14 @@ async function loadEffectChainStoreFixture() {
 describe('effectChainStore FX mode safety gate', () => {
   let audio
   let timeline
+  let graphEngineNodeSeq = 200
   let projectLoadedHandler = null
 
   beforeEach(() => {
     vi.resetModules()
     projectLoadedHandler = null
 
+    graphEngineNodeSeq = 200
     audio = {
       getEffectChain: vi.fn(async () => '[]'),
       getMasterEffectChain: vi.fn(async () => '[]'),
@@ -138,6 +140,10 @@ describe('effectChainStore FX mode safety gate', () => {
       moveMasterEffect: vi.fn(async () => true),
       setEffectBypass: vi.fn(async () => true),
       setMasterEffectBypass: vi.fn(async () => true),
+      // FXG.3-b graph-owned engine lifecycle
+      addGraphEffectNode: vi.fn(async () => graphEngineNodeSeq++),
+      removeGraphEffectNode: vi.fn(async () => true),
+      getGraphEffectEngineNodeId: vi.fn(async () => null),
     }
     timeline = {
       setTrackGraphState: vi.fn(async () => true),
@@ -1140,5 +1146,152 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(useEffectChainStore.getState().chains['7']).toBe(before)
     expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('[FXG]'), expect.objectContaining({ trackId: '7' }))
+  })
+
+  // --- FXG.3-b graph-owned engine instance lifecycle ---
+
+  it('instantiates a graph-owned engine processor for a real pluginId and records the session nodeId', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    audio.addGraphEffectNode.mockResolvedValueOnce(321)
+    seedGraphMode(useEffectChainStore, graphWithoutEdges('7'))
+
+    const result = await useEffectChainStore.getState().addGraphEffectNodeForTrack('7', {
+      effectInstanceId: 'inst-real',
+      pluginId: 'reverb',
+      displayName: 'Reverb',
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result).toMatchObject({ effectInstanceId: 'inst-real', engineNodeId: 321 })
+    expect(audio.addGraphEffectNode).toHaveBeenCalledWith(7, 'inst-real', 'reverb')
+    // Session-only engineNodeId cache is updated; chains untouched.
+    expect(useEffectChainStore.getState().graphEngineNodeIds['7']['inst-real']).toBe(321)
+    expect(audio.addEffect).not.toHaveBeenCalled()
+    expect(timeline.setTrackGraphState).toHaveBeenCalled()
+  })
+
+  it('does not instantiate an engine processor for a placeholder/data-only node', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, graphWithoutEdges('7'))
+
+    const result = await useEffectChainStore.getState().addGraphEffectNodeForTrack('7', {})
+
+    expect(result.ok).toBe(true)
+    expect(result.engineNodeId).toBeNull()
+    expect(audio.addGraphEffectNode).not.toHaveBeenCalled()
+    expect(audio.addEffect).not.toHaveBeenCalled()
+    expect(useEffectChainStore.getState().graphEngineNodeIds['7']).toBeUndefined()
+  })
+
+  it('fails fast without committing graphState when engine instantiation fails', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    audio.addGraphEffectNode.mockResolvedValueOnce(-1)
+    const graphState = graphWithoutEdges('7')
+    seedGraphMode(useEffectChainStore, graphState)
+
+    const result = await useEffectChainStore.getState().addGraphEffectNodeForTrack('7', {
+      effectInstanceId: 'inst-fail',
+      pluginId: 'reverb',
+      displayName: 'Reverb',
+    })
+
+    expect(result).toMatchObject({ ok: false, reason: 'engine_instantiation_failed' })
+    expect(useEffectChainStore.getState().graphStates['7']).toBe(graphState)
+    expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+    expect(useEffectChainStore.getState().graphEngineNodeIds['7']).toBeUndefined()
+  })
+
+  it('rolls back the engine processor if graphState validation rejects the add', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    audio.addGraphEffectNode.mockResolvedValueOnce(900)
+    seedGraphMode(useEffectChainStore, graphWithoutEdges('7'))
+
+    const result = await useEffectChainStore.getState().addGraphEffectNodeForTrack('7', {
+      effectInstanceId: 'inst-rollback',
+      pluginId: 'reverb',
+      displayName: 'Reverb',
+    }, {
+      validateGraphState: () => ({ status: 'invalid', graphState: null, reason: 'forced', warnings: [] }),
+      warn: vi.fn(),
+    })
+
+    expect(result).toMatchObject({ ok: false, reason: 'invalid_graph_state' })
+    expect(audio.addGraphEffectNode).toHaveBeenCalledWith(7, 'inst-rollback', 'reverb')
+    expect(audio.removeGraphEffectNode).toHaveBeenCalledWith(7, 'inst-rollback')
+    expect(useEffectChainStore.getState().graphEngineNodeIds['7']).toBeUndefined()
+  })
+
+  it('removes the graph-owned engine processor for an engine-backed node and clears the cache', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, makePositionedGraphState('7'))
+    useEffectChainStore.setState({ graphEngineNodeIds: { '7': { 'effect-1': 210 } } })
+
+    const result = await useEffectChainStore.getState().removeGraphNodeForTrack('7', 'fx-1')
+
+    expect(result.ok).toBe(true)
+    expect(audio.removeGraphEffectNode).toHaveBeenCalledWith(7, 'effect-1')
+    expect(useEffectChainStore.getState().graphEngineNodeIds['7']['effect-1']).toBeUndefined()
+    expect(audio.removeEffect).not.toHaveBeenCalled()
+    expect(timeline.setTrackGraphState).toHaveBeenCalled()
+  })
+
+  it('does not call engine removal for a node with no session engine processor', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, makePositionedGraphState('7'))
+
+    const result = await useEffectChainStore.getState().removeGraphNodeForTrack('7', 'fx-1')
+
+    expect(result.ok).toBe(true)
+    expect(audio.removeGraphEffectNode).not.toHaveBeenCalled()
+    expect(audio.removeEffect).not.toHaveBeenCalled()
+  })
+
+  it('fails fast and keeps graphState intact when engine removal fails', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    audio.removeGraphEffectNode.mockResolvedValueOnce(false)
+    const graphState = makePositionedGraphState('7')
+    seedGraphMode(useEffectChainStore, graphState)
+    useEffectChainStore.setState({ graphEngineNodeIds: { '7': { 'effect-1': 210 } } })
+
+    const result = await useEffectChainStore.getState().removeGraphNodeForTrack('7', 'fx-1')
+
+    expect(result).toMatchObject({ ok: false, reason: 'engine_removal_failed' })
+    expect(useEffectChainStore.getState().graphStates['7']).toBe(graphState)
+    expect(useEffectChainStore.getState().graphEngineNodeIds['7']['effect-1']).toBe(210)
+    expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+  })
+
+  it('keeps connect and disconnect graphState-only with no engine routing or lifecycle calls', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, graphWithoutEdges('7'))
+
+    const connectResult = await useEffectChainStore.getState().connectGraphNodesForTrack('7', {
+      sourceNodeId: 'input',
+      targetNodeId: 'fx-1',
+    })
+    expect(connectResult.ok).toBe(true)
+
+    const edgeId = useEffectChainStore.getState().graphStates['7'].edges[0].id
+    const disconnectResult = await useEffectChainStore.getState().disconnectGraphEdgeForTrack('7', edgeId)
+    expect(disconnectResult.ok).toBe(true)
+
+    // No engine routing sync, no graph-owned lifecycle calls from edge edits.
+    expect(audio.addConnection).toBeUndefined()
+    expect(audio.addGraphEffectNode).not.toHaveBeenCalled()
+    expect(audio.removeGraphEffectNode).not.toHaveBeenCalled()
+  })
+
+  it('clears the session engine node cache on project load', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    useEffectChainStore.setState({
+      chains: { '7': [makeEffect(11, 'compressor', 0)] },
+      graphEngineNodeIds: { '7': { 'effect-1': 210 } },
+    })
+
+    projectLoadedHandler()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(useEffectChainStore.getState().graphEngineNodeIds).toEqual({})
   })
 })

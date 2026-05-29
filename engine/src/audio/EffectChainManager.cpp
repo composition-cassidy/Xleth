@@ -116,6 +116,56 @@ bool EffectChainManager::isGraphLinear() const
     return graph_->isGraphLinear();
 }
 
+// ─── Graph-owned effect instance lifecycle (FXG.3-b) ──────────────────────────
+//
+// Uses the low-level AudioGraph addNode/removeNode (NOT addEffect/removeEffect)
+// so graph-owned nodes never touch the linear chain ordering. Nodes are created
+// disconnected; graphState edges are not synced into the engine until FXG.3-c.
+
+int EffectChainManager::addGraphNode(const std::string& effectInstanceId,
+                                     const std::string& pluginId)
+{
+    if (!graph_ || effectInstanceId.empty()) return -1;
+
+    // Reject placeholder / data-only instantiation cleanly. The renderer also
+    // gates this, but defend the engine boundary too. (createEffect would fail
+    // for "placeholder" anyway; rejecting here avoids an empty-name registry
+    // lookup and keeps the contract explicit.)
+    if (pluginId.empty() || pluginId == "placeholder") return -1;
+
+    // Idempotent: a known effectInstanceId keeps its existing engine node.
+    auto existing = graphNodeIds_.find(effectInstanceId);
+    if (existing != graphNodeIds_.end()) return existing->second;
+
+    const int nodeId = graph_->addNode(pluginId);
+    if (nodeId < 0) return -1;
+
+    graphNodeIds_[effectInstanceId] = nodeId;
+    return nodeId;
+}
+
+bool EffectChainManager::removeGraphNode(const std::string& effectInstanceId)
+{
+    if (!graph_) return false;
+    auto it = graphNodeIds_.find(effectInstanceId);
+    if (it == graphNodeIds_.end()) return false;
+
+    const bool ok = graph_->removeNode(it->second);
+    graphNodeIds_.erase(it);
+    return ok;
+}
+
+int EffectChainManager::getGraphNodeEngineId(const std::string& effectInstanceId) const
+{
+    auto it = graphNodeIds_.find(effectInstanceId);
+    return it == graphNodeIds_.end() ? -1 : it->second;
+}
+
+bool EffectChainManager::hasGraphNode(const std::string& effectInstanceId) const
+{
+    return graphNodeIds_.count(effectInstanceId) > 0;
+}
+
 // ─── Effect parameter / meter access ────────────────────────────────────────
 
 std::string EffectChainManager::getEffectParameters(int nodeId) const

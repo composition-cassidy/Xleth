@@ -502,6 +502,19 @@ public:
     std::string getGraphTopology(int trackId) const;
     bool isGraphLinear(int trackId) const;
 
+    // ── Graph-owned effect instance lifecycle (FXG.3-b, main thread) ────
+    // FX Graph mode owns effect instances keyed by a stable effectInstanceId.
+    // These forward to EffectChainManager's graph-owned lifecycle (low-level
+    // AudioGraph addNode/removeNode) and never mutate the linear chain. Not
+    // valid on the master track (master stays chain-only).
+    //   addGraphEffectNode    → APG uid, or -1 on failure.
+    //   removeGraphEffectNode → true if an instance was destroyed.
+    //   getGraphEffectEngineNodeId → APG uid, or -1 if unknown.
+    int  addGraphEffectNode(int trackId, const std::string& effectInstanceId,
+                            const std::string& pluginId);
+    bool removeGraphEffectNode(int trackId, const std::string& effectInstanceId);
+    int  getGraphEffectEngineNodeId(int trackId, const std::string& effectInstanceId) const;
+
     // ── Effect parameter / meter access (main thread only) ──────────────
     // Per-track: returns "[]" / false / "[0,0,0,0]" if chain/node not found.
     std::string getEffectParameters(int trackId, int nodeId) const;
