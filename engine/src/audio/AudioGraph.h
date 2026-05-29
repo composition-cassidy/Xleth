@@ -160,6 +160,8 @@ public:
 
     nlohmann::json toJSON() const;
     bool fromJSON(const nlohmann::json& j);
+    bool fromJSON(const nlohmann::json& j,
+                  std::unordered_map<int, int>* oldToNewNodeIds);
 
     // ── Audio thread ────────────────────────────────────────────────────
     void processBlock(juce::AudioBuffer<float>& buffer, int numSamples,

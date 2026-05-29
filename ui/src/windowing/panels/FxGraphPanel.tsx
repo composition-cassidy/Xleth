@@ -22,6 +22,7 @@ const REPLACE_GRAPH_MODE_MESSAGE =
   'This creates/replaces graphState from the current Mixer Chain and locks Mixer Chain editing for this track.';
 const EMPTY_CHAIN: ChainEffect[] = [];
 const EMPTY_VST_PLUGINS: VstPluginMeta[] = [];
+const EMPTY_GRAPH_ENGINE_NODE_IDS: Record<string, number> = {};
 
 const GRAPH_MUTATION_MESSAGES: Record<string, string> = {
   protected_node: 'Track Input and Track Output cannot be removed.',
@@ -338,6 +339,14 @@ export default function FxGraphPanel() {
   const graphState = effectChainState && selectedStoreKey != null
     ? effectChainState.graphStates[selectedStoreKey] ?? null
     : reactiveGraphState;
+  const reactiveGraphEngineNodeIds = useEffectChainStore((state) => (
+    selectedStoreKey == null
+      ? EMPTY_GRAPH_ENGINE_NODE_IDS
+      : state.graphEngineNodeIds[selectedStoreKey] ?? EMPTY_GRAPH_ENGINE_NODE_IDS
+  ));
+  const graphEngineNodeIds = effectChainState && selectedStoreKey != null
+    ? effectChainState.graphEngineNodeIds[selectedStoreKey] ?? EMPTY_GRAPH_ENGINE_NODE_IDS
+    : reactiveGraphEngineNodeIds;
   const reactiveChain = useEffectChainStore((state) => (
     selectFxGraphPanelChain(state.chains, selectedStoreKey)
   ));
@@ -449,10 +458,15 @@ export default function FxGraphPanel() {
 
     const audio = (window as typeof window & { xleth?: { audio?: any } }).xleth?.audio;
 
-    let engineNodeId: number | null = null;
+    let engineNodeId: number | null = Number.isInteger(graphEngineNodeIds?.[effectInstanceId])
+      && graphEngineNodeIds[effectInstanceId] >= 0
+      ? graphEngineNodeIds[effectInstanceId]
+      : null;
     try {
-      const resolved = await audio?.getGraphEffectEngineNodeId?.(trackId, effectInstanceId);
-      engineNodeId = Number.isInteger(resolved) && resolved >= 0 ? resolved : null;
+      if (engineNodeId == null) {
+        const resolved = await audio?.getGraphEffectEngineNodeId?.(trackId, effectInstanceId);
+        engineNodeId = Number.isInteger(resolved) && resolved >= 0 ? resolved : null;
+      }
     } catch {
       engineNodeId = null;
     }
@@ -474,7 +488,7 @@ export default function FxGraphPanel() {
           : 'Could not open the effect editor.',
       );
     }
-  }, [fxMode, graphState, selectedTrack?.id]);
+  }, [fxMode, graphEngineNodeIds, graphState, selectedTrack?.id]);
 
   const confirmGraphModeMessage =
     graphStateStatus === 'valid' || graphStateStatus === 'invalid' || graphStateStatus === 'future'

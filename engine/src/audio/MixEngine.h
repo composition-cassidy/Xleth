@@ -512,6 +512,8 @@ public:
     //   getGraphEffectEngineNodeId → APG uid, or -1 if unknown.
     int  addGraphEffectNode(int trackId, const std::string& effectInstanceId,
                             const std::string& pluginId);
+    nlohmann::json hydrateGraphEffectNodes(int trackId,
+                                           const nlohmann::json& graphEffectNodes);
     bool removeGraphEffectNode(int trackId, const std::string& effectInstanceId);
     int  getGraphEffectEngineNodeId(int trackId, const std::string& effectInstanceId) const;
 

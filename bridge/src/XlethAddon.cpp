@@ -10134,6 +10134,37 @@ Napi::Value Audio_GetGraphEffectEngineNodeId(const Napi::CallbackInfo& info)
 
 // ── Master graph-mode routing ────────────────────────────────────────────────
 
+// audio_hydrateGraphEffectNodes(trackId, graphEffectNodes) -> { ok, mapping, skipped, failures }
+Napi::Value Audio_HydrateGraphEffectNodes(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !audioEngine) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsArray()) {
+        Napi::TypeError::New(env, "audio_hydrateGraphEffectNodes(trackId: number, graphEffectNodes: array)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    const int trackId = info[0].As<Napi::Number>().Int32Value();
+    const nlohmann::json graphEffectNodes = napiToJson(info[1]);
+    BridgeCallLog log("audio.hydrateGraphEffectNodes");
+
+    nlohmann::json result =
+        audioEngine->getMixEngine().hydrateGraphEffectNodes(trackId, graphEffectNodes);
+    const bool ok = result.value("ok", false);
+    const std::size_t mappedCount =
+        result.contains("mapping") && result["mapping"].is_object()
+            ? result["mapping"].size()
+            : 0;
+    if (ok && mappedCount > 0)
+        audioEngine->refreshLivePresentationLatency();
+    log.done(std::to_string(trackId) + " mapped=" + std::to_string(mappedCount));
+    return opaqueJsonToNapi(env, result);
+}
+
 Napi::Value Audio_AddMasterConnection(const Napi::CallbackInfo& info)
 {
     Napi::Env env = info.Env();
@@ -12913,6 +12944,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("audio_addGraphEffectNode",          Napi::Function::New(env, Audio_AddGraphEffectNode));
     exports.Set("audio_removeGraphEffectNode",       Napi::Function::New(env, Audio_RemoveGraphEffectNode));
     exports.Set("audio_getGraphEffectEngineNodeId",  Napi::Function::New(env, Audio_GetGraphEffectEngineNodeId));
+    exports.Set("audio_hydrateGraphEffectNodes",     Napi::Function::New(env, Audio_HydrateGraphEffectNodes));
     exports.Set("audio_addMasterConnection",     Napi::Function::New(env, Audio_AddMasterConnection));
     exports.Set("audio_removeMasterConnection",  Napi::Function::New(env, Audio_RemoveMasterConnection));
     exports.Set("audio_setMasterWireGain",       Napi::Function::New(env, Audio_SetMasterWireGain));

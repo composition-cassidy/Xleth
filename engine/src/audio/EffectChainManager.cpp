@@ -166,6 +166,94 @@ bool EffectChainManager::hasGraphNode(const std::string& effectInstanceId) const
     return graphNodeIds_.count(effectInstanceId) > 0;
 }
 
+// --- Graph-owned project-load hydration --------------------------------------
+
+nlohmann::json EffectChainManager::hydrateGraphNodes(const nlohmann::json& graphEffectNodes)
+{
+    nlohmann::json result = {
+        {"ok", true},
+        {"mapping", nlohmann::json::object()},
+        {"skipped", nlohmann::json::array()},
+        {"failures", nlohmann::json::array()},
+    };
+
+    if (!graphEffectNodes.is_array())
+    {
+        result["ok"] = false;
+        result["reason"] = "invalid_nodes";
+        return result;
+    }
+
+    auto makeDiag = [](const nlohmann::json& node,
+                       const std::string& reason,
+                       const std::string& effectInstanceId = {},
+                       const std::string& pluginId = {}) {
+        nlohmann::json diag;
+        diag["reason"] = reason;
+        if (!effectInstanceId.empty())
+            diag["effectInstanceId"] = effectInstanceId;
+        if (!pluginId.empty())
+            diag["pluginId"] = pluginId;
+        if (node.is_object())
+        {
+            if (node.contains("graphNodeId") && node["graphNodeId"].is_string())
+                diag["graphNodeId"] = node["graphNodeId"].get<std::string>();
+            if (node.contains("displayName") && node["displayName"].is_string())
+                diag["displayName"] = node["displayName"].get<std::string>();
+        }
+        return diag;
+    };
+
+    for (const auto& node : graphEffectNodes)
+    {
+        if (!node.is_object())
+        {
+            result["failures"].push_back(makeDiag(node, "invalid_node"));
+            continue;
+        }
+
+        const std::string effectInstanceId =
+            node.contains("effectInstanceId") && node["effectInstanceId"].is_string()
+                ? node["effectInstanceId"].get<std::string>()
+                : std::string{};
+        const std::string pluginId =
+            node.contains("pluginId") && node["pluginId"].is_string()
+                ? node["pluginId"].get<std::string>()
+                : std::string{};
+
+        if (effectInstanceId.empty())
+        {
+            result["failures"].push_back(
+                makeDiag(node, "invalid_effect_instance_id", effectInstanceId, pluginId));
+            continue;
+        }
+        if (pluginId.empty())
+        {
+            result["failures"].push_back(
+                makeDiag(node, "invalid_plugin_id", effectInstanceId, pluginId));
+            continue;
+        }
+        if (pluginId == "placeholder")
+        {
+            result["skipped"].push_back(
+                makeDiag(node, "placeholder_plugin", effectInstanceId, pluginId));
+            continue;
+        }
+
+        const int nodeId = addGraphNode(effectInstanceId, pluginId);
+        if (nodeId < 0)
+        {
+            result["failures"].push_back(
+                makeDiag(node, "instantiation_failed", effectInstanceId, pluginId));
+            continue;
+        }
+
+        result["mapping"][effectInstanceId] = nodeId;
+    }
+
+    return result;
+}
+
 // ─── Effect parameter / meter access ────────────────────────────────────────
 
 std::string EffectChainManager::getEffectParameters(int nodeId) const
@@ -262,12 +350,54 @@ nlohmann::json EffectChainManager::getMissingNodesJSON() const
 
 nlohmann::json EffectChainManager::graphToJSON() const
 {
-    return graph_->toJSON();
+    nlohmann::json out = graph_->toJSON();
+    if (!out.contains("nodes") || !out["nodes"].is_array() || graphNodeIds_.empty())
+        return out;
+
+    std::unordered_map<int, std::string> engineNodeToEffectInstance;
+    for (const auto& [effectInstanceId, engineNodeId] : graphNodeIds_)
+        engineNodeToEffectInstance[engineNodeId] = effectInstanceId;
+
+    for (auto& node : out["nodes"])
+    {
+        if (!node.is_object()) continue;
+        const int engineNodeId = node.value("nodeId", -1);
+        auto it = engineNodeToEffectInstance.find(engineNodeId);
+        if (it != engineNodeToEffectInstance.end())
+            node["effectInstanceId"] = it->second;
+    }
+
+    return out;
 }
 
 bool EffectChainManager::graphFromJSON(const nlohmann::json& j)
 {
-    return graph_->fromJSON(j);
+    graphNodeIds_.clear();
+
+    std::unordered_map<int, int> oldToNewNodeIds;
+    const bool ok = graph_->fromJSON(j, &oldToNewNodeIds);
+    if (!ok) return false;
+
+    if (!j.contains("nodes") || !j["nodes"].is_array())
+        return true;
+
+    for (const auto& node : j["nodes"])
+    {
+        if (!node.is_object()) continue;
+        const std::string effectInstanceId =
+            node.contains("effectInstanceId") && node["effectInstanceId"].is_string()
+                ? node["effectInstanceId"].get<std::string>()
+                : std::string{};
+        if (effectInstanceId.empty() || graphNodeIds_.count(effectInstanceId) > 0)
+            continue;
+
+        const int oldNodeId = node.value("nodeId", -1);
+        auto mapped = oldToNewNodeIds.find(oldNodeId);
+        if (mapped != oldToNewNodeIds.end() && mapped->second >= 0)
+            graphNodeIds_[effectInstanceId] = mapped->second;
+    }
+
+    return true;
 }
 
 // ─── Audio thread ───────────────────────────────────────────────────────────

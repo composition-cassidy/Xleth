@@ -1656,6 +1656,10 @@ ipcMain.handle('xleth:audio:getGraphEffectEngineNodeId',
   safeHandler((_, trackId, effectInstanceId) =>
     callWorker('audio_getGraphEffectEngineNodeId', [trackId, effectInstanceId])));
 
+ipcMain.handle('xleth:audio:hydrateGraphEffectNodes',
+  safeHandler((_, trackId, graphEffectNodes) =>
+    callWorker('audio_hydrateGraphEffectNodes', [trackId, graphEffectNodes])));
+
 ipcMain.handle('xleth:audio:addMasterConnection',
   graphHandler(masterKey, (_, srcId, dstId) => callWorker('audio_addMasterConnection', [srcId, dstId])));
 

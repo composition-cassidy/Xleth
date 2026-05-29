@@ -2752,6 +2752,49 @@ int MixEngine::addGraphEffectNode(int trackId, const std::string& effectInstance
     return nodeId;
 }
 
+nlohmann::json MixEngine::hydrateGraphEffectNodes(int trackId,
+                                                  const nlohmann::json& graphEffectNodes)
+{
+    nlohmann::json rejected = {
+        {"ok", false},
+        {"mapping", nlohmann::json::object()},
+        {"skipped", nlohmann::json::array()},
+        {"failures", nlohmann::json::array()},
+    };
+
+    if (trackId < 0)
+    {
+        rejected["reason"] = "master_track";
+        return rejected;
+    }
+    if (!graphEffectNodes.is_array())
+    {
+        rejected["reason"] = "invalid_nodes";
+        return rejected;
+    }
+    if (graphEffectNodes.empty())
+    {
+        rejected["ok"] = true;
+        rejected.erase("reason");
+        return rejected;
+    }
+
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+    auto& chain = effectChains_[trackId];
+    if (!chain)
+    {
+        chain = std::make_unique<EffectChainManager>();
+        chain->setPluginRegistry(pluginRegistry_.get());
+        chain->init(preparedSampleRate_, preparedBlockSize_);
+    }
+
+    const int beforeCount = chain->getEffectCount();
+    nlohmann::json result = chain->hydrateGraphNodes(graphEffectNodes);
+    if (chain->getEffectCount() > beforeCount)
+        pendingLatencyCompensationReset_.store(true, std::memory_order_release);
+    return result;
+}
+
 bool MixEngine::removeGraphEffectNode(int trackId, const std::string& effectInstanceId)
 {
     if (trackId < 0) return false;  // master track is chain-only

@@ -1012,6 +1012,12 @@ nlohmann::json AudioGraph::toJSON() const
 
 bool AudioGraph::fromJSON(const nlohmann::json& j)
 {
+    return fromJSON(j, nullptr);
+}
+
+bool AudioGraph::fromJSON(const nlohmann::json& j,
+                          std::unordered_map<int, int>* oldToNewNodeIds)
+{
     if (!graph_) return false;
 
     // Clear existing graph (keep I/O nodes)
@@ -1245,6 +1251,9 @@ bool AudioGraph::fromJSON(const nlohmann::json& j)
             addAdj(mappedSrc, mappedDst);
         }
     }
+
+    if (oldToNewNodeIds != nullptr)
+        *oldToNewNodeIds = oldToNew;
 
     updateLinearOrder();
     rebuildImmediate();

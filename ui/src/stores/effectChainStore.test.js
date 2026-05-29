@@ -144,6 +144,14 @@ describe('effectChainStore FX mode safety gate', () => {
       addGraphEffectNode: vi.fn(async () => graphEngineNodeSeq++),
       removeGraphEffectNode: vi.fn(async () => true),
       getGraphEffectEngineNodeId: vi.fn(async () => null),
+      hydrateGraphEffectNodes: vi.fn(async (_trackId, graphEffectNodes = []) => ({
+        ok: true,
+        mapping: Object.fromEntries(
+          graphEffectNodes.map((node) => [node.effectInstanceId, graphEngineNodeSeq++]),
+        ),
+        skipped: [],
+        failures: [],
+      })),
     }
     timeline = {
       setTrackGraphState: vi.fn(async () => true),
@@ -881,6 +889,7 @@ describe('effectChainStore FX mode safety gate', () => {
     projectLoadedHandler()
     await Promise.resolve()
     await Promise.resolve()
+    await Promise.resolve()
 
     const state = useEffectChainStore.getState()
     expect(state.fxModes['7']).toBe('graph')
@@ -892,6 +901,140 @@ describe('effectChainStore FX mode safety gate', () => {
       { x: 520, y: 0 },
     ])
     expect(state.graphStates['7'].viewport).toEqual({ x: -12, y: 24, zoom: 1.5 })
+    expect(audio.hydrateGraphEffectNodes).toHaveBeenCalledWith(7, [
+      {
+        effectInstanceId: 'effect-1',
+        pluginId: 'stock:eq',
+        graphNodeId: 'fx-1',
+        displayName: 'EQ',
+      },
+    ])
+    expect(state.graphEngineNodeIds['7']['effect-1']).toEqual(expect.any(Number))
+  })
+
+  it('builds a minimal graph effect hydration payload and skips non-runtime nodes', async () => {
+    const { buildGraphEffectNodeHydrationPayload } = await loadEffectChainStoreFixture()
+    const graphState = {
+      ...makePositionedGraphState('7'),
+      nodes: [
+        { id: 'input', type: 'trackInput', data: {} },
+        {
+          id: 'real',
+          type: 'effect',
+          data: {
+            effectInstanceId: 'inst-real',
+            pluginId: 'reverb',
+            displayName: 'Reverb',
+          },
+        },
+        {
+          id: 'placeholder',
+          type: 'effect',
+          data: {
+            effectInstanceId: 'inst-placeholder',
+            pluginId: 'placeholder',
+            displayName: 'Effect Node',
+          },
+        },
+        {
+          id: 'no-instance',
+          type: 'effect',
+          data: { pluginId: 'delay', displayName: 'Delay' },
+        },
+        {
+          id: 'missing',
+          type: 'effect',
+          data: {
+            effectInstanceId: 'inst-missing',
+            pluginId: 'third-party-missing',
+            displayName: 'Missing Plugin',
+            missing: true,
+          },
+        },
+        { id: 'output', type: 'trackOutput', data: {} },
+      ],
+    }
+
+    expect(buildGraphEffectNodeHydrationPayload(graphState)).toEqual([
+      {
+        effectInstanceId: 'inst-real',
+        pluginId: 'reverb',
+        graphNodeId: 'real',
+        displayName: 'Reverb',
+      },
+    ])
+  })
+
+  it('hydrates only graph-mode graphState effects and rebuilds the session engine cache', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const graphState = makePositionedGraphState('7')
+    const chainModeGraphState = makePositionedGraphState('8')
+    const baseChain = [makeEffect(11, 'compressor', 0)]
+    audio.hydrateGraphEffectNodes.mockResolvedValueOnce({
+      ok: true,
+      mapping: { 'effect-1': 777 },
+      skipped: [],
+      failures: [],
+    })
+
+    useEffectChainStore.setState({
+      chains: { '7': baseChain, '8': [makeEffect(12, 'delay', 0)] },
+      fxModes: { '7': 'graph', '8': 'chain', master: 'graph' },
+      graphStates: {
+        '7': graphState,
+        '8': chainModeGraphState,
+        master: makePositionedGraphState('master'),
+      },
+      graphStateStatuses: {
+        '7': { status: 'valid', graphState },
+        '8': { status: 'valid', graphState: chainModeGraphState },
+      },
+    })
+
+    const result = await useEffectChainStore.getState().hydrateGraphEffectInstancesForLoadedProject()
+
+    expect(result.ok).toBe(true)
+    expect(audio.hydrateGraphEffectNodes).toHaveBeenCalledTimes(1)
+    expect(audio.hydrateGraphEffectNodes).toHaveBeenCalledWith(7, [
+      {
+        effectInstanceId: 'effect-1',
+        pluginId: 'stock:eq',
+        graphNodeId: 'fx-1',
+        displayName: 'EQ',
+      },
+    ])
+    expect(useEffectChainStore.getState().graphEngineNodeIds['7']).toEqual({ 'effect-1': 777 })
+    expect(useEffectChainStore.getState().chains['7']).toBe(baseChain)
+  })
+
+  it('keeps graphState intact when graph-owned hydration reports failures', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const warn = vi.fn()
+    const graphState = makePositionedGraphState('7')
+    audio.hydrateGraphEffectNodes.mockResolvedValueOnce({
+      ok: false,
+      reason: 'partial_failure',
+      mapping: {},
+      skipped: [],
+      failures: [{ effectInstanceId: 'effect-1', pluginId: 'stock:eq', reason: 'instantiation_failed' }],
+    })
+
+    useEffectChainStore.setState({
+      fxModes: { '7': 'graph' },
+      graphStates: { '7': graphState },
+      graphStateStatuses: { '7': { status: 'valid', graphState } },
+      graphEngineNodeIds: {},
+    })
+
+    const result = await useEffectChainStore.getState().hydrateGraphEffectInstancesForLoadedProject({ warn })
+
+    expect(result.ok).toBe(false)
+    expect(useEffectChainStore.getState().graphStates['7']).toBe(graphState)
+    expect(useEffectChainStore.getState().graphEngineNodeIds).toEqual({})
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('hydration incomplete'), expect.objectContaining({
+      trackId: '7',
+      reason: 'partial_failure',
+    }))
   })
 
   // --- FXG.2C-e graphState mutation actions ---
@@ -1277,6 +1420,7 @@ describe('effectChainStore FX mode safety gate', () => {
 
     // No engine routing sync, no graph-owned lifecycle calls from edge edits.
     expect(audio.addConnection).toBeUndefined()
+    expect(audio.hydrateGraphEffectNodes).not.toHaveBeenCalled()
     expect(audio.addGraphEffectNode).not.toHaveBeenCalled()
     expect(audio.removeGraphEffectNode).not.toHaveBeenCalled()
   })

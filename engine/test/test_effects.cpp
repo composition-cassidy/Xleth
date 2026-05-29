@@ -758,6 +758,75 @@ static void testSerializationRoundTrip()
     CHECK_NEAR(restored, kGain, 0.01f, "restored gain should be ≈ 3");
 }
 
+static void testGraphOwnedEffectHydration()
+{
+    std::cout << "  [graph-owned effect hydration]\n";
+
+    EffectChainManager chain;
+    chain.init(44100.0, 256);
+
+    nlohmann::json payload = nlohmann::json::array({
+        {
+            {"effectInstanceId", "inst-reverb"},
+            {"pluginId", "reverb"},
+            {"graphNodeId", "fx-reverb"},
+            {"displayName", "Reverb"},
+        },
+        {
+            {"effectInstanceId", "inst-placeholder"},
+            {"pluginId", "placeholder"},
+            {"graphNodeId", "fx-placeholder"},
+        },
+        {
+            {"effectInstanceId", ""},
+            {"pluginId", "delay"},
+            {"graphNodeId", "fx-invalid"},
+        },
+    });
+
+    const auto hydrated = chain.hydrateGraphNodes(payload);
+    CHECK(hydrated.value("ok", false), "graph-owned hydration should report ok for per-node failures");
+    CHECK(hydrated["mapping"].contains("inst-reverb"),
+          "graph-owned hydration should map real effectInstanceId");
+    CHECK(hydrated["skipped"].size() == 1,
+          "graph-owned hydration should skip placeholder plugins");
+    CHECK(hydrated["failures"].size() == 1,
+          "graph-owned hydration should report invalid effectInstanceId");
+
+    const int firstNodeId = hydrated["mapping"]["inst-reverb"].get<int>();
+    CHECK(firstNodeId >= 0, "graph-owned hydration should create an engine node");
+    CHECK(chain.getGraphNodeEngineId("inst-reverb") == firstNodeId,
+          "graph-owned hydration should rebuild the runtime lookup");
+
+    const auto secondHydration = chain.hydrateGraphNodes(nlohmann::json::array({
+        {{"effectInstanceId", "inst-reverb"}, {"pluginId", "reverb"}},
+    }));
+    CHECK(secondHydration["mapping"]["inst-reverb"].get<int>() == firstNodeId,
+          "graph-owned hydration should be idempotent for duplicate effectInstanceId");
+
+    const auto saved = chain.graphToJSON();
+    CHECK(saved.contains("connections") && saved["connections"].empty(),
+          "graph-owned hydration should not connect graph edges");
+
+    bool serializedEffectInstanceId = false;
+    for (const auto& node : saved["nodes"])
+    {
+        if (node.value("effectInstanceId", std::string{}) == "inst-reverb")
+            serializedEffectInstanceId = true;
+    }
+    CHECK(serializedEffectInstanceId,
+          "graph-owned serialization should persist effectInstanceId additively");
+
+    EffectChainManager restored;
+    restored.init(44100.0, 256);
+    CHECK(restored.graphFromJSON(saved), "graphFromJSON should accept graph-owned effectInstanceId");
+    const int restoredNodeId = restored.getGraphNodeEngineId("inst-reverb");
+    CHECK(restoredNodeId >= 0,
+          "graphFromJSON should rebuild graph-owned effectInstanceId lookup");
+    CHECK(restored.addGraphNode("inst-reverb", "reverb") == restoredNodeId,
+          "re-adding a restored effectInstanceId should return the existing engine node");
+}
+
 static void testBypass()
 {
     std::cout << "  [bypass]\n";
@@ -3628,6 +3697,7 @@ int main()
     testSmoothedGain();
     testMetering();
     testSerializationRoundTrip();
+    testGraphOwnedEffectHydration();
     testBypass();
     testJSONHelpers();
     testDistortionModesDiffer();

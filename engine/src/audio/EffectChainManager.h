@@ -97,15 +97,21 @@ public:
     // created disconnected (silent) until FXG.3-c wires graphState edges into
     // the engine.
     //
-    // The effectInstanceId → engine APG uid map is session-only in FXG.3-b;
-    // it is rebuilt from scratch each session and is not persisted. Round-trip
-    // serialization of effectInstanceId is a FXG.3-c follow-up.
+    // The effectInstanceId → engine APG uid map is session-only at runtime;
+    // FXG.3-c-a rebuilds it from graphState hydration after load and also
+    // serializes effectInstanceId additively on graph-owned AudioGraph nodes.
 
     // Instantiate a graph-owned processor for effectInstanceId. Returns the APG
     // NodeID uid, or -1 on failure (empty/placeholder pluginId, unknown plugin,
     // or graph full). Idempotent: re-adding a known effectInstanceId returns the
     // existing engine uid without creating a second processor.
     int  addGraphNode(const std::string& effectInstanceId, const std::string& pluginId);
+
+    // Recreate graph-owned processors from renderer graphState metadata after
+    // project load. Input is an array of objects containing effectInstanceId,
+    // pluginId, and optional graphNodeId/displayName diagnostics. Returns:
+    // { ok, mapping, skipped, failures }. Does not connect graph edges.
+    nlohmann::json hydrateGraphNodes(const nlohmann::json& graphEffectNodes);
 
     // Destroy the graph-owned processor for effectInstanceId and drop the
     // mapping. Returns false if effectInstanceId is unknown.
@@ -178,6 +184,8 @@ private:
     std::unique_ptr<AudioGraph> graph_;
 
     // Graph-owned effect instances: stable effectInstanceId → APG uid.
-    // Session-only (not serialized in FXG.3-b). Never used by chain-mode APIs.
+    // Session-only at runtime. Serialized additively on graph-owned nodes so a
+    // loaded AudioGraph can rebuild the runtime mapping without treating
+    // graphState node ids as engine ids. Never used by chain-mode APIs.
     std::unordered_map<std::string, int> graphNodeIds_;
 };

@@ -171,6 +171,60 @@ function normalizeEngineNodeId(value) {
   return Number.isInteger(value) && value >= 0 ? value : null
 }
 
+export function buildGraphEffectNodeHydrationPayload(graphState) {
+  if (!graphState || !Array.isArray(graphState.nodes)) return []
+
+  return graphState.nodes.reduce((payload, node) => {
+    if (!node || node.type !== 'effect') return payload
+
+    const data = node.data ?? {}
+    const effectInstanceId =
+      typeof data.effectInstanceId === 'string' && data.effectInstanceId.length > 0
+        ? data.effectInstanceId
+        : ''
+    const pluginId =
+      typeof data.pluginId === 'string' && data.pluginId.length > 0
+        ? data.pluginId
+        : ''
+
+    if (!effectInstanceId || !isInstantiablePluginId(pluginId) || data.missing === true) {
+      return payload
+    }
+
+    const entry = {
+      effectInstanceId,
+      pluginId,
+      graphNodeId: typeof node.id === 'string' ? node.id : '',
+    }
+    if (typeof data.displayName === 'string' && data.displayName.length > 0) {
+      entry.displayName = data.displayName
+    }
+    payload.push(entry)
+    return payload
+  }, [])
+}
+
+function normalizeGraphHydrationMapping(mapping) {
+  if (!mapping || typeof mapping !== 'object') return {}
+  return Object.entries(mapping).reduce((next, [effectInstanceId, engineNodeId]) => {
+    if (typeof effectInstanceId !== 'string' || effectInstanceId.length === 0) return next
+    const normalized = normalizeEngineNodeId(engineNodeId)
+    if (normalized != null) next[effectInstanceId] = normalized
+    return next
+  }, {})
+}
+
+function normalizeGraphHydrationResult(result) {
+  const mapping = normalizeGraphHydrationMapping(result?.mapping)
+  return {
+    ok: result?.ok !== false,
+    reason: result?.reason,
+    mapping,
+    skipped: Array.isArray(result?.skipped) ? result.skipped : [],
+    failures: Array.isArray(result?.failures) ? result.failures : [],
+  }
+}
+
 // ── Session-only effectInstanceId → engineNodeId cache (FXG.3-b) ───────────
 // graphEngineNodeIds mirrors the engine's transient map for the current
 // session. It is NOT persisted (engine uids are reassigned each session) and
@@ -189,6 +243,19 @@ function setSessionEngineNodeId(set, key, effectInstanceId, engineNodeId) {
       [key]: { ...(state.graphEngineNodeIds[key] ?? {}), [effectInstanceId]: engineNodeId },
     },
   }))
+}
+
+function mergeSessionEngineNodeIds(set, key, mapping) {
+  const normalized = normalizeGraphHydrationMapping(mapping)
+  if (Object.keys(normalized).length === 0) return normalized
+
+  set((state) => ({
+    graphEngineNodeIds: {
+      ...state.graphEngineNodeIds,
+      [key]: { ...(state.graphEngineNodeIds[key] ?? {}), ...normalized },
+    },
+  }))
+  return normalized
 }
 
 function clearSessionEngineNodeId(set, key, effectInstanceId) {
@@ -325,6 +392,68 @@ async function applyGraphStateMutation(set, key, nextGraphState, options = {}) {
   return { ok: true, graphState: validation.graphState, status: validation }
 }
 
+async function hydrateGraphEngineNodesForTrack(key, graphState, options = {}) {
+  const warn = options.warn ?? console.warn
+  const payload = buildGraphEffectNodeHydrationPayload(graphState)
+  if (payload.length === 0) {
+    return { ok: true, mapping: {}, skipped: [], failures: [] }
+  }
+
+  const audio = defaultAudioApi()
+  const hydrate = options.hydrateGraphEngineNodes ?? audio.hydrateGraphEffectNodes
+  if (typeof hydrate === 'function') {
+    try {
+      return normalizeGraphHydrationResult(await hydrate(Number(key), payload))
+    } catch (e) {
+      warn?.('[FXG] graph-owned engine hydration failed', {
+        trackId: key,
+        error: e?.message ?? e,
+      })
+      return {
+        ok: false,
+        reason: 'engine_hydration_failed',
+        mapping: {},
+        skipped: [],
+        failures: payload.map((node) => ({ ...node, reason: 'engine_hydration_failed' })),
+      }
+    }
+  }
+
+  const instantiate = options.instantiateGraphEngineNode ?? audio.addGraphEffectNode
+  if (typeof instantiate !== 'function') {
+    return {
+      ok: false,
+      reason: 'engine_unavailable',
+      mapping: {},
+      skipped: [],
+      failures: payload.map((node) => ({ ...node, reason: 'engine_unavailable' })),
+    }
+  }
+
+  const mapping = {}
+  const failures = []
+  for (const node of payload) {
+    try {
+      const engineNodeId = normalizeEngineNodeId(
+        await instantiate(Number(key), node.effectInstanceId, node.pluginId),
+      )
+      if (engineNodeId == null) {
+        failures.push({ ...node, reason: 'engine_instantiation_failed' })
+      } else {
+        mapping[node.effectInstanceId] = engineNodeId
+      }
+    } catch (e) {
+      failures.push({
+        ...node,
+        reason: 'engine_instantiation_failed',
+        error: e?.message ?? e,
+      })
+    }
+  }
+
+  return { ok: failures.length === 0, mapping, skipped: [], failures }
+}
+
 const useEffectChainStore = create((set, get) => ({
   // { [key: "master" | String(trackId)]: [{nodeId, pluginId, position, bypassed}] }
   chains: {},
@@ -355,10 +484,38 @@ const useEffectChainStore = create((set, get) => ({
       fxPanelViews: {},
       graphStates,
       graphStateStatuses,
-      // Engine uids are session-transient; graph-owned processor hydration is a
-      // FXG.3-c follow-up, so the cache starts empty after each load.
+      // Engine uids are session-transient; FXG.3-c-a repopulates this via
+      // hydrateGraphEffectInstancesForLoadedProject after graphState loads.
       graphEngineNodeIds: {},
     })
+  },
+
+  hydrateGraphEffectInstancesForLoadedProject: async (options = {}) => {
+    const state = get()
+    const warn = options.warn ?? console.warn
+    const results = {}
+
+    for (const [key, graphState] of Object.entries(state.graphStates)) {
+      if (key === 'master') continue
+      if (resolveFxMode(state.fxModes, key) !== 'graph') continue
+      if (!graphState || !Array.isArray(graphState.nodes) || !Array.isArray(graphState.edges)) continue
+
+      const result = await hydrateGraphEngineNodesForTrack(key, graphState, options)
+      results[key] = result
+      const mapping = mergeSessionEngineNodeIds(set, key, result.mapping)
+
+      if (!result.ok || result.failures.length > 0) {
+        warn?.('[FXG] graph-owned effect hydration incomplete', {
+          trackId: key,
+          reason: result.reason,
+          mapped: Object.keys(mapping).length,
+          failures: result.failures,
+        })
+      }
+    }
+
+    const ok = Object.values(results).every((result) => result.ok !== false)
+    return { ok, results }
   },
 
   setFxMode: (key, mode) => {
@@ -877,8 +1034,9 @@ globalThis.window?.xleth?.onProjectLoaded?.(() => {
   }
 
   globalThis.window?.xleth?.timeline?.getTracks?.()
-    ?.then?.((tracks) => {
+    ?.then?.(async (tracks) => {
       useEffectChainStore.getState().hydrateFxModesFromTracks(tracks)
+      await useEffectChainStore.getState().hydrateGraphEffectInstancesForLoadedProject()
     })
     ?.catch?.((e) => {
       console.warn('[effectChainStore] fxMode hydration failed:', e?.message)

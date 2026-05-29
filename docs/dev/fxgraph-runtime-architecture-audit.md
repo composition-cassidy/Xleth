@@ -714,10 +714,11 @@ processor — Edit button hangs, parameter calls return garbage, session inconsi
 engine processors, leaving the session in a split state.
 
 **Mitigations:**
-- On `onProjectLoaded`, after chain hydration, bridge must also hydrate graph-owned
-  processors. This is a FXG.3-b deliverable.
-- If engine instantiation fails for a node, mark the node as `missing: true` in
-  `graphState` (consistent with how chain missing-plugin nodes are handled today).
+- On `onProjectLoaded`, after graphState/fxMode hydration, FXG.3-c-a calls the explicit
+  graph-owned hydrate API for normal graph-mode tracks and rebuilds the session mapping.
+- If engine instantiation fails for a node, leave graphState visible and unresolved for this
+  session; the Edit action resolves to "Effect is not active yet" instead of passing a graph
+  topology id to an editor store.
 - The `isNodeMissing` / `tryResolvePlugin` machinery in `AudioGraph` already handles
   missing plugins at load time.
 
@@ -883,7 +884,33 @@ Built largely as planned, with these concrete decisions:
 
 ---
 
-### FXG.3-c: Linear graph execution parity
+#### Implementation note (FXG.3-c-a, shipped)
+
+FXG.3-c-a fills the save/load hydration gap without enabling graph cable execution:
+
+1. **Engine** - `EffectChainManager::hydrateGraphNodes` and
+   `MixEngine::hydrateGraphEffectNodes` accept minimal renderer graphState metadata
+   (`effectInstanceId`, `pluginId`, optional diagnostics) and use graph-owned `addGraphNode`
+   semantics. Hydration is idempotent, rejects master tracks through `MixEngine`, skips
+   placeholders, reports per-node failures, and never calls chain `addEffect` / `moveEffect`.
+2. **Serialization** - `EffectChainManager::graphToJSON` additively writes
+   `effectInstanceId` only for graph-owned nodes. `graphFromJSON` tolerates missing fields for
+   older projects and rebuilds the runtime `effectInstanceId -> engineNodeId` map when the field
+   exists.
+3. **Bridge** - `audio_hydrateGraphEffectNodes` plus matching
+   `xleth:audio:hydrateGraphEffectNodes` IPC and `window.xleth.audio.hydrateGraphEffectNodes`
+   expose the batch hydration path separately from chain APIs.
+4. **Store** - `hydrateGraphEffectInstancesForLoadedProject` runs after
+   `hydrateFxModesFromTracks` in `onProjectLoaded`, only for normal graph-mode tracks. It skips
+   placeholders, missing nodes, protected nodes, and nodes without `effectInstanceId`, then merges
+   successful mappings into the session-only `graphEngineNodeIds` cache. Failures do not remove
+   graphState nodes or mutate `effectChains`.
+5. **Routing** - graphState connect/disconnect still do not call engine routing sync. Graph-owned
+   processors are live/editor-addressable but disconnected until FXG.3-c-b.
+
+---
+
+### FXG.3-c-b: Linear graph execution parity
 
 **Goal:** Single linear chain in graph mode routes audio correctly via graph topology.
 
@@ -895,7 +922,7 @@ Built largely as planned, with these concrete decisions:
    `syncGraphStateToEngine` if graph mode active.
 4. Tests: signal integrity test for linear graph execution.
 
-**Prompt:** `FXG.3-c wire linear graph execution into engine`
+**Prompt:** `FXG.3-c-b wire linear graph execution into engine`
 
 ---
 
