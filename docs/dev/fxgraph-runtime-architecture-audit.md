@@ -960,6 +960,53 @@ FXG.3-c-b enables runtime execution only for one linear audio path on graph-mode
 
 **Prompt:** `FXG.3-d enable parallel fan-out/fan-in graph execution`
 
+#### Implementation note (FXG.3-c-b-r1 + FXG.3-d, shipped)
+
+FXG.3-c-b-r1 repaired a stale-chain leak regression and FXG.3-d added parallel execution in the
+same change.
+
+1. **Diagnosed root cause.** Graph mode left the original chain route audible. Trigger: the dev
+   runtime loads `xleth_native.node` from `bridge/build/Release` (`ui/runtimePaths.js`), and that
+   Release build was stale (missing `audio_syncLinearGraphTopology`); `ui/addon-worker.js` swallows
+   unknown methods as `{ result: null, notImplemented: true }`, the renderer normalized `null` to
+   `engine_sync_failed`, so the engine was never reached and the chain wiring was never cleared.
+   Latent fault: `convertChainToGraphMode` flipped `fxMode` to graph but never triggered an entry
+   sync and never backed the converted effects — ownership transfer never happened, so the system
+   was fail-OPEN to stale chain routing.
+2. **Fail-closed ownership.** In graph mode the engine graph sync owns the whole connection space:
+   it clears all connections (chain + graph) and rebuilds only the graph-owned route. Critical
+   mechanic: `AudioGraph::rebuildAPGConnections` auto-wires Track Input→Track Output when no logical
+   connections remain (empty Mixer Chain passthrough), which is passthrough — NOT silence. So the
+   new `AudioGraph::clearConnectionsToSilence()` sets a `muteOutput_` flag that suppresses that
+   auto-passthrough, giving true silence for the disconnected-output and fail-closed cases. The flag
+   is reset by `clearAllConnections`, so any later rebuild restores normal behavior.
+3. **General DAG routing.** `AudioGraph::replaceConnectionsWithGraph(edges)` wires an arbitrary
+   acyclic edge set (linear becomes a special case); JUCE's APG sums fan-in natively.
+   `EffectChainManager::syncGraphTopology` validates a single Track Input/Output, rejects cycles and
+   unmapped/placeholder active effects fail-closed, computes the active subgraph (nodes on a path
+   Input→Output so disconnected nodes are ignored), and reports
+   `graph_routing_active` / `parallel_graph_routing_active` / `graph_output_disconnected`.
+   `syncLinearGraphTopology` is kept as a delegate.
+4. **Adoption on conversion.** `EffectChainManager::adoptGraphNodes` registers existing chain
+   processors as graph-owned (`effectInstanceId → existing chain engineNodeId`), preserving
+   parameter state. `convertChainToGraphMode` builds the mapping from `sourceChainSlotIndex`, calls
+   `audio_adoptGraphEffectNodes`, then triggers the entry sync. No processor is created/destroyed and
+   `effectChains` are never mutated.
+5. **Bridge / renderer.** New `audio_syncGraphTopology` and `audio_adoptGraphEffectNodes`
+   (XlethAddon → MixEngine forwarders → EffectChainManager), `xleth:audio:*` IPC, and
+   `window.xleth.audio.*`. The renderer prefers `syncGraphTopology` (falls back to the linear
+   symbol), carries the `mode` field, and the FX Graph panel reports "Graph routing active." /
+   "Parallel graph routing active." / "Graph output is disconnected." / "Graph routing sync failed.
+   Rebuild the audio engine."
+6. **Additive summing.** Parallel branches sum additively (no auto-normalization). PDC at merge
+   points uses the existing `computePDC()`.
+7. **Native proof.** `engine/test/test_effects.cpp testGraphRuntimeOwnership` proves a prior chain
+   route goes silent once graph mode owns routing, adoption preserves a processor's gain, and a
+   disconnected effect does not contribute; `testLinearGraphTopologySync` now asserts fan-out/fan-in
+   sums additively (~1.0 from two 0.25→0.5 branches).
+8. **Deferred.** Graph→chain return (no switch-back UI; no `rebuildChainRouting`), per-branch gain
+   UI, and latency display remain deferred.
+
 ---
 
 ### FXG.3-e or later: Polish, latency, performance

@@ -123,11 +123,28 @@ public:
     // True iff effectInstanceId currently maps to a graph-owned processor.
     bool hasGraphNode(const std::string& effectInstanceId) const;
 
-    // FXG.3-c-b: validate a renderer graphState topology payload, resolve
-    // active effectInstanceIds to engine node IDs, and apply only the supported
-    // single linear Track Input -> effects -> Track Output path. Unsupported
-    // topology falls back to safe passthrough without deleting graph-owned nodes.
+    // FXG.3-d: validate a renderer graphState topology payload, resolve active
+    // effectInstanceIds to engine node IDs, and rebuild the track's runtime
+    // routing from graphState alone. Graph mode is the SOLE owner of the
+    // connection space here: every call clears all prior connections (chain or
+    // graph) and rebuilds only the graph-owned route. Supports linear AND
+    // parallel fan-out/fan-in (JUCE APG sums multiple inputs). Fail-closed:
+    //   - no complete Track Input -> Track Output path  -> silence (ok, "disconnected")
+    //   - missing/placeholder/unmapped active effect    -> silence (ok=false, reason)
+    //   - cycle / invalid payload                        -> silence (ok=false, reason)
+    // Graph-owned processors and effectChains are never mutated.
+    nlohmann::json syncGraphTopology(const nlohmann::json& topology);
+
+    // Backward-compatible alias. Delegates to syncGraphTopology (which now also
+    // handles parallel topologies). Retained so existing callers/tests compile.
     nlohmann::json syncLinearGraphTopology(const nlohmann::json& topology);
+
+    // FXG.3-d adoption: register already-allocated chain processors as
+    // graph-owned, preserving their parameter state, when a Mixer Chain is
+    // converted to a graph. Input: array of { effectInstanceId, engineNodeId }.
+    // Idempotent; skips entries whose engineNodeId is not a live effect node.
+    // Returns { ok, adopted, skipped }. Never creates or destroys processors.
+    nlohmann::json adoptGraphNodes(const nlohmann::json& mapping);
 
     // ── Effect parameter / meter access (main-thread only) ─────────────
     std::string getEffectParameters(int nodeId) const;

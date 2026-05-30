@@ -46,12 +46,12 @@ const GRAPH_MUTATION_MESSAGES: Record<string, string> = {
 };
 
 const GRAPH_RUNTIME_MESSAGES: Record<string, string> = {
-  nonlinear_deferred: 'Parallel routing comes in FXG.3-d. Audio is using safe passthrough.',
   effect_not_active: 'Effect is not active yet.',
   missing_effect_mapping: 'Effect is not active yet.',
   missing_effect_instance_id: 'Effect is not active yet.',
-  engine_unavailable: 'Graph routing sync failed.',
-  engine_sync_failed: 'Graph routing sync failed.',
+  cycle_detected: 'Graph has a feedback loop. Output muted.',
+  engine_unavailable: 'Graph routing sync failed. Rebuild the audio engine.',
+  engine_sync_failed: 'Graph routing sync failed. Rebuild the audio engine.',
   apply_failed: 'Graph routing sync failed.',
   no_linear_path: 'Graph routing sync failed.',
 };
@@ -66,13 +66,21 @@ export function describeGraphMutationResult(
 }
 
 export function describeGraphRuntimeStatus(
-  status: { ok?: boolean; reason?: string } | null | undefined,
+  status: { ok?: boolean; reason?: string; mode?: string } | null | undefined,
 ): string {
-  if (status?.ok === true) return 'Linear graph routing active.';
+  if (status?.ok === true) {
+    if (status.reason === 'graph_output_disconnected' || status.mode === 'disconnected') {
+      return 'Graph output is disconnected.';
+    }
+    if (status.reason === 'parallel_graph_routing_active' || status.mode === 'parallel') {
+      return 'Parallel graph routing active.';
+    }
+    return 'Graph routing active.';
+  }
   const reason = status?.reason;
   if (reason && GRAPH_RUNTIME_MESSAGES[reason]) return GRAPH_RUNTIME_MESSAGES[reason];
   if (status) return 'Graph routing sync failed.';
-  return 'Linear graph routing is enabled for supported paths.';
+  return 'Graph routing is enabled for connected paths.';
 }
 
 export interface FxGraphPanelContentProps {
@@ -91,7 +99,7 @@ export interface FxGraphPanelContentProps {
   onConnectGraphNodes?: (sourceNodeId: string, targetNodeId: string) => void;
   onDisconnectGraphEdge?: (edgeId: string) => void;
   onEditGraphNode?: (nodeId: string) => void;
-  graphRuntimeStatus?: { ok?: boolean; reason?: string } | null;
+  graphRuntimeStatus?: { ok?: boolean; reason?: string; mode?: string } | null;
   graphActionNotice?: string | null;
   conversionError?: string | null;
 }

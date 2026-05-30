@@ -342,6 +342,9 @@ window.xleth = ({
     getGraphEffectEngineNodeId:(trackId, effectInstanceId)           => invoke('xleth:audio:getGraphEffectEngineNodeId', trackId, effectInstanceId),
     hydrateGraphEffectNodes:   (trackId, graphEffectNodes)           => invoke('xleth:audio:hydrateGraphEffectNodes', trackId, graphEffectNodes),
     syncLinearGraphTopology:   (trackId, topology)                   => invoke('xleth:audio:syncLinearGraphTopology', trackId, topology),
+    // FXG.3-d: general graph routing (linear + parallel) + chain→graph adoption.
+    syncGraphTopology:         (trackId, topology)                   => invoke('xleth:audio:syncGraphTopology', trackId, topology),
+    adoptGraphEffectNodes:     (trackId, mapping)                    => invoke('xleth:audio:adoptGraphEffectNodes', trackId, mapping),
     addMasterConnection:    (srcId, dstId)                 => invoke('xleth:audio:addMasterConnection', srcId, dstId),
     removeMasterConnection: (srcId, dstId)                 => invoke('xleth:audio:removeMasterConnection', srcId, dstId),
     setMasterWireGain:      (srcId, dstId, gain)           => invoke('xleth:audio:setMasterWireGain', srcId, dstId, gain),

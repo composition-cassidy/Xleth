@@ -1664,6 +1664,16 @@ ipcMain.handle('xleth:audio:syncLinearGraphTopology',
   safeHandler((_, trackId, topology) =>
     callWorker('audio_syncLinearGraphTopology', [trackId, topology])));
 
+// FXG.3-d: general graph-mode runtime routing (linear OR parallel) + chain
+// processor adoption on chain→graph conversion.
+ipcMain.handle('xleth:audio:syncGraphTopology',
+  safeHandler((_, trackId, topology) =>
+    callWorker('audio_syncGraphTopology', [trackId, topology])));
+
+ipcMain.handle('xleth:audio:adoptGraphEffectNodes',
+  safeHandler((_, trackId, mapping) =>
+    callWorker('audio_adoptGraphEffectNodes', [trackId, mapping])));
+
 ipcMain.handle('xleth:audio:addMasterConnection',
   graphHandler(masterKey, (_, srcId, dstId) => callWorker('audio_addMasterConnection', [srcId, dstId])));
 

@@ -2834,13 +2834,13 @@ int MixEngine::getGraphEffectEngineNodeId(int trackId, const std::string& effect
 
 // ── Graph-mode routing (master) ─────────────────────────────────────────────
 
-nlohmann::json MixEngine::syncLinearGraphTopology(int trackId, const nlohmann::json& topology)
+nlohmann::json MixEngine::syncGraphTopology(int trackId, const nlohmann::json& topology)
 {
     if (trackId < 0)
     {
         return {
             {"ok", false},
-            {"phase", "FXG.3-c-b"},
+            {"phase", "FXG.3-d"},
             {"reason", "master_track"},
             {"fallback", "none"},
             {"fallbackApplied", false},
@@ -2858,9 +2858,43 @@ nlohmann::json MixEngine::syncLinearGraphTopology(int trackId, const nlohmann::j
         chain->init(preparedSampleRate_, preparedBlockSize_);
     }
 
-    nlohmann::json result = chain->syncLinearGraphTopology(topology);
+    nlohmann::json result = chain->syncGraphTopology(topology);
     pendingLatencyCompensationReset_.store(true, std::memory_order_release);
     return result;
+}
+
+nlohmann::json MixEngine::syncLinearGraphTopology(int trackId, const nlohmann::json& topology)
+{
+    // Backward-compatible alias; syncGraphTopology now also handles parallel
+    // (fan-out/fan-in) topologies.
+    return syncGraphTopology(trackId, topology);
+}
+
+nlohmann::json MixEngine::adoptGraphEffectNodes(int trackId, const nlohmann::json& mapping)
+{
+    if (trackId < 0)
+    {
+        return {
+            {"ok", false},
+            {"reason", "master_track"},
+            {"adopted", nlohmann::json::object()},
+            {"skipped", nlohmann::json::array()},
+        };
+    }
+
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+    auto it = effectChains_.find(trackId);
+    if (it == effectChains_.end() || !it->second)
+    {
+        return {
+            {"ok", false},
+            {"reason", "no_chain"},
+            {"adopted", nlohmann::json::object()},
+            {"skipped", nlohmann::json::array()},
+        };
+    }
+
+    return it->second->adoptGraphNodes(mapping);
 }
 
 bool MixEngine::addMasterConnection(int sourceNodeId, int destNodeId)

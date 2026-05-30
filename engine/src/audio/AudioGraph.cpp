@@ -400,10 +400,62 @@ bool AudioGraph::replaceConnectionsWithLinearPath(const std::vector<int>& ordere
     return true;
 }
 
+bool AudioGraph::replaceConnectionsWithGraph(const std::vector<std::pair<int, int>>& edges)
+{
+    if (!graph_) return false;
+
+    const int inUid  = static_cast<int>(inputNode_.uid);
+    const int outUid = static_cast<int>(outputNode_.uid);
+    auto validEndpoint = [&](int id) {
+        return id == inUid || id == outUid || nodes_.count(id) > 0;
+    };
+
+    // Validate every endpoint before mutating so a bad payload can't leave a
+    // half-built graph. Self-loops are rejected outright.
+    for (const auto& [src, dst] : edges)
+    {
+        if (src == dst) return false;
+        if (!validEndpoint(src) || !validEndpoint(dst)) return false;
+    }
+
+    clearAllConnections();
+
+    for (const auto& [src, dst] : edges)
+    {
+        WireId wid{src, dst};
+        if (connections_.count(wid)) continue;        // dedupe repeated edges
+        if (wouldCreateCycle(src, dst))               // caller pre-validates; defend anyway
+        {
+            clearAllConnections();
+            rebuildImmediate();
+            return false;
+        }
+
+        GraphConnection conn;
+        conn.sourceNodeId = src;
+        conn.destNodeId   = dst;
+        connections_[wid] = conn;
+        addAdj(src, dst);
+    }
+
+    updateLinearOrder();
+    rebuildImmediate();
+    return true;
+}
+
 bool AudioGraph::clearConnectionsForPassthrough()
 {
     if (!graph_) return false;
     clearAllConnections();
+    rebuildImmediate();
+    return true;
+}
+
+bool AudioGraph::clearConnectionsToSilence()
+{
+    if (!graph_) return false;
+    clearAllConnections();      // resets muteOutput_ to false
+    muteOutput_ = true;         // suppress the empty-graph passthrough
     rebuildImmediate();
     return true;
 }
@@ -1937,7 +1989,9 @@ void AudioGraph::rebuildAPGConnections()
     }
 
     // 4. If graph is empty (no effect nodes, no connections), wire input → output
-    if (connections_.empty())
+    //    passthrough — UNLESS graph mode has requested fail-closed silence, in
+    //    which case Track Output is left unconnected so no stale route leaks.
+    if (connections_.empty() && !muteOutput_)
     {
         for (int ch = 0; ch < 2; ++ch)
             graph_->addConnection({{inputNode_, ch}, {outputNode_, ch}});
@@ -2041,6 +2095,7 @@ void AudioGraph::clearAllConnections()
     adjForward_.clear();
     adjReverse_.clear();
     linearOrder_.clear();
+    muteOutput_ = false;   // any rebuild restores normal empty-graph passthrough
 
     const int inUid = static_cast<int>(inputNode_.uid);
     const int outUid = static_cast<int>(outputNode_.uid);

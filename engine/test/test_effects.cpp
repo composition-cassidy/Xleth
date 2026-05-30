@@ -1005,8 +1005,9 @@ static void testLinearGraphTopologySync()
           "active placeholder/data-only effect should be rejected safely");
 
     CHECK(chain.syncLinearGraphTopology(linearAB).value("ok", false),
-          "test should restore a supported route before nonlinear fallback");
-    const auto nonlinear = topology(
+          "test should restore a supported route before the parallel sync");
+    // FXG.3-d: fan-out from input + fan-in to output executes as a parallel DAG.
+    const auto parallel = topology(
         nlohmann::json::array({
             ioNode("input", "trackInput"),
             effectNode("fx-a", "inst-a"),
@@ -1019,22 +1020,197 @@ static void testLinearGraphTopologySync()
             edge("e3", "fx-a", "output"),
             edge("e4", "fx-b", "output"),
         }));
-    const auto nonlinearResult = chain.syncLinearGraphTopology(nonlinear);
-    CHECK(!nonlinearResult.value("ok", true)
-              && nonlinearResult.value("reason", std::string{}) == "nonlinear_deferred",
-          "parallel fan-out/fan-in should be deferred to FXG.3-d");
+    const auto parallelResult = chain.syncGraphTopology(parallel);
+    CHECK(parallelResult.value("ok", false)
+              && parallelResult.value("mode", std::string{}) == "parallel",
+          "FXG.3-d: fan-out/fan-in should route as parallel, not be deferred");
+    CHECK(parallelResult.value("reason", std::string{}) == "parallel_graph_routing_active",
+          "parallel routing should report parallel_graph_routing_active");
     saved = chain.graphToJSON();
-    CHECK(saved.contains("connections") && saved["connections"].empty(),
-          "nonlinear fallback should remove stale previous linear routing");
+    CHECK(saved.contains("connections") && !saved["connections"].empty(),
+          "parallel sync should wire both branches (not fall back to silence)");
     CHECK(chain.getGraphNodeEngineId("inst-a") == fxA
               && chain.getGraphNodeEngineId("inst-b") == fxB,
-          "safe fallback should keep graph-owned processors alive");
+          "parallel routing should keep graph-owned processors alive");
+
+    // Both branches carry gain 2.0, so 0.25 fans out to 0.5 + 0.5 and JUCE's
+    // APG sums them to ~1.0 at Track Output (additive, no normalization).
+    for (int pass = 0; pass < 12; ++pass)
+    {
+        fillBuffer(buf, 0.25f);
+        chain.processBlock(buf, kBlockSize, midi);
+    }
+    CHECK(meanAbs(buf) > 0.85f && meanAbs(buf) < 1.15f,
+          "parallel branches should sum additively at Track Output (~1.0)");
 
     auto mixer = std::make_unique<MixEngine>();
     const auto masterResult = mixer->syncLinearGraphTopology(-1, direct);
     CHECK(!masterResult.value("ok", true)
               && masterResult.value("reason", std::string{}) == "master_track",
           "MixEngine should reject master-track linear graph sync");
+}
+
+// FXG.3-d / FXG.3-c-b-r1: graph mode must OWN the runtime route — no stale
+// chain leakage, adoption preserves processor state, disconnected nodes stay
+// silent.
+static void testGraphRuntimeOwnership()
+{
+    std::cout << "  [graph runtime ownership]\n";
+
+    constexpr double kSampleRate = 44100.0;
+    constexpr int    kBlockSize  = 256;
+
+    auto ioNode = [](const std::string& nodeId, const std::string& type) {
+        return nlohmann::json{{"nodeId", nodeId}, {"type", type}};
+    };
+    auto effectNode = [](const std::string& nodeId, const std::string& effectInstanceId,
+                         const std::string& pluginId = "testgain") {
+        return nlohmann::json{
+            {"nodeId", nodeId}, {"type", "effect"},
+            {"effectInstanceId", effectInstanceId}, {"pluginId", pluginId},
+            {"missing", false},
+        };
+    };
+    auto edge = [](const std::string& id, const std::string& source, const std::string& dest) {
+        return nlohmann::json{
+            {"edgeId", id}, {"sourceNodeId", source}, {"targetNodeId", dest},
+            {"sourcePort", source == "input" ? "audio" : "audioOut"},
+            {"targetPort", dest == "output" ? "audio" : "audioIn"},
+            {"type", "audio"},
+        };
+    };
+    auto topology = [&](nlohmann::json nodes, nlohmann::json edges) {
+        return nlohmann::json{
+            {"phase", "FXG.3-d"}, {"trackId", "7"},
+            {"nodes", std::move(nodes)}, {"edges", std::move(edges)},
+        };
+    };
+
+    juce::MidiBuffer midi;
+
+    // ── 1. Stale chain routing must NOT leak once graph mode owns the track ──
+    {
+        EffectChainManager chain;
+        chain.init(kSampleRate, kBlockSize);
+
+        const int chainNode = chain.addEffect("testgain", 0);
+        CHECK(chainNode >= 0, "chain effect should instantiate via addEffect");
+        CHECK(chain.setEffectParameter(chainNode, "gain", 2.0f), "chain gain should be settable");
+
+        juce::AudioBuffer<float> buf(2, kBlockSize);
+        for (int pass = 0; pass < 8; ++pass)
+        {
+            fillBuffer(buf, 0.25f);
+            chain.processBlock(buf, kBlockSize, midi);
+        }
+        CHECK(meanAbs(buf) > 0.40f, "chain route should be audible BEFORE graph mode takes over");
+
+        // Graph mode syncs a topology with no Track Input -> Track Output path.
+        const auto disconnected = topology(
+            nlohmann::json::array({
+                ioNode("input", "trackInput"),
+                ioNode("output", "trackOutput"),
+            }),
+            nlohmann::json::array());
+        const auto res = chain.syncGraphTopology(disconnected);
+        CHECK(res.value("ok", false)
+                  && res.value("mode", std::string{}) == "disconnected"
+                  && res.value("reason", std::string{}) == "graph_output_disconnected",
+              "empty graph should report disconnected output as valid silence");
+
+        for (int pass = 0; pass < 8; ++pass)
+        {
+            fillBuffer(buf, 0.25f);
+            chain.processBlock(buf, kBlockSize, midi);
+        }
+        CHECK_NEAR(meanAbs(buf), 0.0f, 0.001f,
+                   "FXG.3-c-b-r1: stale chain route must be silent once graph mode owns routing");
+    }
+
+    // ── 2. Adoption registers chain processors as graph-owned, preserving state ──
+    {
+        EffectChainManager chain;
+        chain.init(kSampleRate, kBlockSize);
+
+        const int chainNode = chain.addEffect("testgain", 0);
+        CHECK(chain.setEffectParameter(chainNode, "gain", 2.0f), "chain gain should be settable");
+
+        const nlohmann::json mapping = nlohmann::json::array({
+            {{"effectInstanceId", "inst-adopt"}, {"engineNodeId", chainNode}},
+        });
+        const auto adoptRes = chain.adoptGraphNodes(mapping);
+        CHECK(adoptRes.value("ok", false), "adoptGraphNodes should succeed for a live node");
+        CHECK(chain.getGraphNodeEngineId("inst-adopt") == chainNode,
+              "adopted effectInstanceId should map to the EXISTING chain processor");
+
+        const auto linear = topology(
+            nlohmann::json::array({
+                ioNode("input", "trackInput"),
+                effectNode("fx", "inst-adopt"),
+                ioNode("output", "trackOutput"),
+            }),
+            nlohmann::json::array({
+                edge("e1", "input", "fx"),
+                edge("e2", "fx", "output"),
+            }));
+        const auto res = chain.syncGraphTopology(linear);
+        CHECK(res.value("ok", false) && res.value("mode", std::string{}) == "linear",
+              "adopted effect should route linearly");
+
+        juce::AudioBuffer<float> buf(2, kBlockSize);
+        for (int pass = 0; pass < 8; ++pass)
+        {
+            fillBuffer(buf, 0.25f);
+            chain.processBlock(buf, kBlockSize, midi);
+        }
+        CHECK_NEAR(meanAbs(buf), 0.5f, 0.03f,
+                   "adopted effect should process with its PRESERVED gain (0.25 * 2.0)");
+
+        const nlohmann::json bad = nlohmann::json::array({
+            {{"effectInstanceId", "inst-bad"}, {"engineNodeId", 999999}},
+        });
+        const auto badRes = chain.adoptGraphNodes(bad);
+        CHECK(badRes.value("ok", false) && badRes["adopted"].empty()
+                  && !badRes["skipped"].empty(),
+              "adoption should skip an unknown engine node id");
+    }
+
+    // ── 3. A disconnected effect node must not contribute to output ──────────
+    {
+        EffectChainManager chain;
+        chain.init(kSampleRate, kBlockSize);
+
+        const int fxA = chain.addGraphNode("inst-a", "testgain");
+        const int fxB = chain.addGraphNode("inst-b", "testgain");
+        CHECK(fxA >= 0 && fxB >= 0, "graph-owned nodes should instantiate");
+        chain.setEffectParameter(fxA, "gain", 2.0f);
+        chain.setEffectParameter(fxB, "gain", 2.0f);
+
+        // input -> fx-a -> output ; fx-b is allocated but wired to nothing.
+        const auto t = topology(
+            nlohmann::json::array({
+                ioNode("input", "trackInput"),
+                effectNode("fx-a", "inst-a"),
+                effectNode("fx-b", "inst-b"),
+                ioNode("output", "trackOutput"),
+            }),
+            nlohmann::json::array({
+                edge("e1", "input", "fx-a"),
+                edge("e2", "fx-a", "output"),
+            }));
+        const auto res = chain.syncGraphTopology(t);
+        CHECK(res.value("ok", false) && res.value("pathEffectCount", -1) == 1,
+              "only the connected effect should be on the active path");
+
+        juce::AudioBuffer<float> buf(2, kBlockSize);
+        for (int pass = 0; pass < 8; ++pass)
+        {
+            fillBuffer(buf, 0.25f);
+            chain.processBlock(buf, kBlockSize, midi);
+        }
+        CHECK_NEAR(meanAbs(buf), 0.5f, 0.03f,
+                   "disconnected fx-b must not add to output (only 0.25 * 2.0)");
+    }
 }
 
 static void testBypass()
@@ -3908,6 +4084,7 @@ int main()
     testMetering();
     testSerializationRoundTrip();
     testLinearGraphTopologySync();
+    testGraphRuntimeOwnership();
     testGraphOwnedEffectHydration();
     testBypass();
     testJSONHelpers();

@@ -10192,6 +10192,67 @@ Napi::Value Audio_SyncLinearGraphTopology(const Napi::CallbackInfo& info)
     return opaqueJsonToNapi(env, result);
 }
 
+// audio_syncGraphTopology(trackId, topology) -> { ok, mode?, reason?, ... }
+// FXG.3-d: rebuild graph-mode runtime routing (linear OR parallel) from a
+// renderer graphState topology. Graph mode owns the connection space; the
+// engine clears prior chain/graph wiring and fail-closes to silence.
+Napi::Value Audio_SyncGraphTopology(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !audioEngine) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsObject()) {
+        Napi::TypeError::New(env, "audio_syncGraphTopology(trackId: number, topology: object)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    const int trackId = info[0].As<Napi::Number>().Int32Value();
+    const nlohmann::json topology = napiToJson(info[1]);
+    BridgeCallLog log("audio.syncGraphTopology");
+
+    nlohmann::json result =
+        audioEngine->getMixEngine().syncGraphTopology(trackId, topology);
+    audioEngine->refreshLivePresentationLatency();
+    log.done(std::to_string(trackId) + " ok="
+             + std::string(result.value("ok", false) ? "true" : "false")
+             + " mode=" + result.value("mode", std::string{})
+             + " reason=" + result.value("reason", std::string{}));
+    return opaqueJsonToNapi(env, result);
+}
+
+// audio_adoptGraphEffectNodes(trackId, mapping) -> { ok, adopted, skipped }
+// FXG.3-d: register already-allocated chain processors as graph-owned (preserves
+// parameter state) when a Mixer Chain is converted to a graph.
+Napi::Value Audio_AdoptGraphEffectNodes(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !audioEngine) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsArray()) {
+        Napi::TypeError::New(env, "audio_adoptGraphEffectNodes(trackId: number, mapping: array)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    const int trackId = info[0].As<Napi::Number>().Int32Value();
+    const nlohmann::json mapping = napiToJson(info[1]);
+    BridgeCallLog log("audio.adoptGraphEffectNodes");
+
+    nlohmann::json result =
+        audioEngine->getMixEngine().adoptGraphEffectNodes(trackId, mapping);
+    const std::size_t adoptedCount =
+        result.contains("adopted") && result["adopted"].is_object()
+            ? result["adopted"].size()
+            : 0;
+    log.done(std::to_string(trackId) + " adopted=" + std::to_string(adoptedCount));
+    return opaqueJsonToNapi(env, result);
+}
+
 Napi::Value Audio_AddMasterConnection(const Napi::CallbackInfo& info)
 {
     Napi::Env env = info.Env();
@@ -12973,6 +13034,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("audio_getGraphEffectEngineNodeId",  Napi::Function::New(env, Audio_GetGraphEffectEngineNodeId));
     exports.Set("audio_hydrateGraphEffectNodes",     Napi::Function::New(env, Audio_HydrateGraphEffectNodes));
     exports.Set("audio_syncLinearGraphTopology",     Napi::Function::New(env, Audio_SyncLinearGraphTopology));
+    // ── Graph runtime routing + adoption (FXG.3-d) ───────────────────────────
+    exports.Set("audio_syncGraphTopology",           Napi::Function::New(env, Audio_SyncGraphTopology));
+    exports.Set("audio_adoptGraphEffectNodes",       Napi::Function::New(env, Audio_AdoptGraphEffectNodes));
     exports.Set("audio_addMasterConnection",     Napi::Function::New(env, Audio_AddMasterConnection));
     exports.Set("audio_removeMasterConnection",  Napi::Function::New(env, Audio_RemoveMasterConnection));
     exports.Set("audio_setMasterWireGain",       Napi::Function::New(env, Audio_SetMasterWireGain));

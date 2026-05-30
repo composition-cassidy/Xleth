@@ -154,9 +154,16 @@ describe('effectChainStore FX mode safety gate', () => {
       })),
       syncLinearGraphTopology: vi.fn(async () => ({
         ok: true,
-        phase: 'FXG.3-c-b',
+        phase: 'FXG.3-d',
+        mode: 'linear',
+        reason: 'graph_routing_active',
         pathEffectCount: 1,
         appliedConnectionCount: 2,
+      })),
+      adoptGraphEffectNodes: vi.fn(async (_trackId, mapping = []) => ({
+        ok: true,
+        adopted: Object.fromEntries(mapping.map((m) => [m.effectInstanceId, m.engineNodeId])),
+        skipped: [],
       })),
     }
     timeline = {
@@ -537,6 +544,22 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(timeline.setTrackFxMode).toHaveBeenCalledWith(7, 'graph')
     expect(timeline.setTrackGraphState.mock.invocationCallOrder[0])
       .toBeLessThan(timeline.setTrackFxMode.mock.invocationCallOrder[0])
+
+    // FXG.3-d ownership transfer: conversion adopts the existing chain
+    // processors as graph-owned (by chain-slot engine nodeId, preserving state)
+    // and hands routing ownership to the engine so the old chain route dies.
+    expect(audio.adoptGraphEffectNodes).toHaveBeenCalledWith(7, expect.arrayContaining([
+      expect.objectContaining({ engineNodeId: 11 }),
+      expect.objectContaining({ engineNodeId: 12 }),
+    ]))
+    expect(audio.syncLinearGraphTopology).toHaveBeenCalledWith(7, expect.objectContaining({
+      trackId: '7',
+    }))
+    expect(result.runtimeSync).toMatchObject({ ok: true, reason: 'graph_routing_active' })
+    // The adopted engine node ids land in the session-only cache.
+    expect(Object.values(state.graphEngineNodeIds['7'] ?? {})).toEqual(
+      expect.arrayContaining([11, 12]),
+    )
   })
 
   it('updates only one graphState node position and persists through the graphState path', async () => {
@@ -930,7 +953,7 @@ describe('effectChainStore FX mode safety gate', () => {
       trackId: '7',
     }))
     expect(state.graphEngineNodeIds['7']['effect-1']).toEqual(expect.any(Number))
-    expect(state.graphRuntimeStatuses['7']).toMatchObject({ ok: true, reason: 'linear_supported' })
+    expect(state.graphRuntimeStatuses['7']).toMatchObject({ ok: true, reason: 'graph_routing_active' })
   })
 
   it('builds a minimal graph effect hydration payload and skips non-runtime nodes', async () => {
@@ -1118,7 +1141,7 @@ describe('effectChainStore FX mode safety gate', () => {
         expect.objectContaining({ nodeId: 'fx-1', effectInstanceId: 'effect-1' }),
       ]),
     }))
-    expect(result.runtimeSync).toMatchObject({ ok: true, reason: 'linear_supported' })
+    expect(result.runtimeSync).toMatchObject({ ok: true, reason: 'graph_routing_active' })
   })
 
   it('honors an explicit effect node draft and position when adding', async () => {
@@ -1211,7 +1234,7 @@ describe('effectChainStore FX mode safety gate', () => {
       ]),
       edges: [],
     }))
-    expect(result.runtimeSync).toMatchObject({ ok: true, reason: 'linear_supported' })
+    expect(result.runtimeSync).toMatchObject({ ok: true, reason: 'graph_routing_active' })
   })
 
   it('blocks removing protected trackInput and trackOutput nodes', async () => {
@@ -1264,7 +1287,7 @@ describe('effectChainStore FX mode safety gate', () => {
         }),
       ]),
     }))
-    expect(result.runtimeSync).toMatchObject({ ok: true, reason: 'linear_supported' })
+    expect(result.runtimeSync).toMatchObject({ ok: true, reason: 'graph_routing_active' })
   })
 
   it('rejects self, duplicate, cycle, and invalid-endpoint connections', async () => {
@@ -1311,7 +1334,7 @@ describe('effectChainStore FX mode safety gate', () => {
         expect.objectContaining({ edgeId: 'edge-2', sourceNodeId: 'fx-1', targetNodeId: 'output' }),
       ]),
     }))
-    expect(result.runtimeSync).toMatchObject({ ok: true, reason: 'linear_supported' })
+    expect(result.runtimeSync).toMatchObject({ ok: true, reason: 'graph_routing_active' })
 
     timeline.setTrackGraphState.mockClear()
     audio.syncLinearGraphTopology.mockClear()
@@ -1493,22 +1516,26 @@ describe('effectChainStore FX mode safety gate', () => {
     // Edge edits rebuild supported FXG.3-c-b routing, but they do not create
     // or destroy graph-owned processors.
     expect(audio.syncLinearGraphTopology).toHaveBeenCalledTimes(2)
-    expect(connectResult.runtimeSync).toMatchObject({ ok: true, reason: 'linear_supported' })
-    expect(disconnectResult.runtimeSync).toMatchObject({ ok: true, reason: 'linear_supported' })
+    expect(connectResult.runtimeSync).toMatchObject({ ok: true, reason: 'graph_routing_active' })
+    expect(disconnectResult.runtimeSync).toMatchObject({ ok: true, reason: 'graph_routing_active' })
     expect(audio.addConnection).toBeUndefined()
     expect(audio.hydrateGraphEffectNodes).not.toHaveBeenCalled()
     expect(audio.addGraphEffectNode).not.toHaveBeenCalled()
     expect(audio.removeGraphEffectNode).not.toHaveBeenCalled()
   })
 
-  it('surfaces nonlinear deferred sync without rolling back graphState or mutating chains', async () => {
+  it('surfaces a fail-closed sync status without rolling back graphState or mutating chains', async () => {
     const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
     const baseChain = seedGraphMode(useEffectChainStore, makePositionedGraphState('7'))
+    // FXG.3-d: when the engine cannot resolve an active effect it fail-closes to
+    // silence (never stale chain). The renderer must surface that status while
+    // keeping the renderer-side edit and effectChains intact.
     audio.syncLinearGraphTopology.mockResolvedValueOnce({
       ok: false,
-      phase: 'FXG.3-c-b',
-      reason: 'nonlinear_deferred',
-      fallback: 'passthrough',
+      phase: 'FXG.3-d',
+      mode: 'none',
+      reason: 'missing_effect_mapping',
+      fallback: 'silence',
       fallbackApplied: true,
     })
 
@@ -1520,8 +1547,8 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(result.ok).toBe(true)
     expect(result.runtimeSync).toMatchObject({
       ok: false,
-      reason: 'nonlinear_deferred',
-      fallback: 'passthrough',
+      reason: 'missing_effect_mapping',
+      fallback: 'silence',
       fallbackApplied: true,
     })
 
@@ -1533,7 +1560,7 @@ describe('effectChainStore FX mode safety gate', () => {
     ])
     expect(state.graphRuntimeStatuses['7']).toMatchObject({
       ok: false,
-      reason: 'nonlinear_deferred',
+      reason: 'missing_effect_mapping',
       fallbackApplied: true,
     })
     expect(state.chains['7']).toBe(baseChain)
@@ -1544,7 +1571,7 @@ describe('effectChainStore FX mode safety gate', () => {
     useEffectChainStore.setState({
       chains: { '7': [makeEffect(11, 'compressor', 0)] },
       graphEngineNodeIds: { '7': { 'effect-1': 210 } },
-      graphRuntimeStatuses: { '7': { ok: true, reason: 'linear_supported' } },
+      graphRuntimeStatuses: { '7': { ok: true, reason: 'graph_routing_active' } },
     })
 
     projectLoadedHandler()

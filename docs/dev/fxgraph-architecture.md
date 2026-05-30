@@ -1,6 +1,6 @@
 # FX Graph Architecture
 
-Internal reference for the renderer-side graphState system. Updated through FXG.3-c-b.
+Internal reference for the renderer-side graphState system. Updated through FXG.3-d.
 
 ## Data model separation
 
@@ -152,20 +152,77 @@ processors. It never passes renderer `node.id` values to AudioGraph connection A
 Unsupported nonlinear topologies return `{ ok: false, reason: "nonlinear_deferred" }` and apply a
 safe passthrough fallback so stale previous linear routing cannot remain active while the UI shows a
 parallel graph. Graph-owned processors stay alive, graphState is not rolled back, and `effectChains`
-are not mutated.
+are not mutated. (Superseded by FXG.3-d below — parallel topologies now execute.)
 
-## Still deferred after FXG.3-c-b
+## Graph runtime ownership repair + parallel execution (FXG.3-c-b-r1 / FXG.3-d)
 
-- Parallel fan-out/fan-in execution, branch summing, merge gain, and parallel PDC validation remain
-  deferred to FXG.3-d.
-- Feedback loops, modulation, buses, graph-to-chain return, parameter pinning, and graph latency UI
-  remain deferred.
+### Diagnosed root cause of the stale-chain leak
+
+FXG.3-c-b shipped with a regression: in graph mode the audio still followed the original converted
+chain order even when the graph routed nothing to Track Output, and the panel showed "Graph routing
+sync failed." Two layers were responsible:
+
+1. **Stale native addon (trigger).** The dev runtime loads `xleth_native.node` from
+   `bridge/build/Release` (`ui/runtimePaths.js`). That Release build predated FXG.3-c-b, so it did
+   not export `audio_syncLinearGraphTopology`. The worker (`ui/addon-worker.js`) silently returns
+   `{ result: null, notImplemented: true }` for unknown methods, the renderer normalized that `null`
+   to `engine_sync_failed`, and **the engine was never reached** — so the chain wiring was never
+   cleared and stayed audible.
+2. **Fail-open ownership (latent).** Conversion (`convertChainToGraphMode`) flipped `fxMode` to
+   graph but never triggered an entry sync and never backed the converted effect nodes with engine
+   processors. The chain route was only ever torn down as a side effect of a *successful* mutation
+   sync, so any failed/unreached sync left the old route live.
+
+### Fail-closed ownership model
+
+In `fxMode === "graph"`, the engine graph sync is the **sole owner** of the track's connection
+space. Every graph-mode entry and routing mutation sends the full topology; the engine clears all
+connections (chain + previous graph) and rebuilds **only** the graph-owned route. Outcomes:
+
+| Topology | Behavior | Status (`reason` / `mode`) |
+|----------|----------|----------------------------|
+| No Track Input→Output path | silence (output left unconnected) | `graph_output_disconnected` / `disconnected`, ok |
+| Track Input→Track Output | passthrough | `graph_routing_active` / `passthrough`, ok |
+| Input→Effect→…→Output | processed in order | `graph_routing_active` / `linear`, ok |
+| Fan-out / fan-in | branches summed additively (JUCE APG) | `parallel_graph_routing_active` / `parallel`, ok |
+| Disconnected effect node | allocated, not wired to output, silent | reported on the active path only |
+| Missing mapping / placeholder / cycle / invalid | fail-closed to silence | `missing_effect_mapping` etc., ok=false |
+
+Key engine mechanic: `AudioGraph::rebuildAPGConnections` auto-wires Track Input→Track Output when no
+logical connections remain (needed for an empty Mixer Chain). That is **passthrough, not silence**,
+so graph-mode fail-closed and disconnected-output paths use the new
+`AudioGraph::clearConnectionsToSilence()` (sets `muteOutput_`, suppressing the auto-passthrough) so
+Track Output truly receives nothing. Any subsequent rebuild clears the flag. The engine sync
+(`EffectChainManager::syncGraphTopology`) resolves `effectInstanceId → engineNodeId`, builds the
+active subgraph (nodes on a path Input→Output), and calls
+`AudioGraph::replaceConnectionsWithGraph(edges)` for the general DAG. Renderer `node.id` values are
+never passed to AudioGraph.
+
+### Conversion adoption (preserves effect settings)
+
+`convertChainToGraphMode` now adopts the existing chain processors as graph-owned via
+`audio_adoptGraphEffectNodes` (`EffectChainManager::adoptGraphNodes`): each converted effect node is
+mapped `effectInstanceId → existing chain engineNodeId` (matched through `sourceChainSlotIndex`),
+preserving parameter state without re-instantiation. It then triggers the entry sync so graph mode
+owns routing immediately. Adoption never creates/destroys processors and never mutates `effectChains`.
+
+### Parallel summing
+
+Multiple branches reaching Track Output are summed additively by JUCE's `AudioProcessorGraph`. This
+can raise level (two identity branches → +6 dB); there is **no** automatic normalization. PDC at
+merge points is handled by `AudioGraph::computePDC()`.
+
+### Still deferred after FXG.3-d
+
+- Graph→chain return (no switch-back UI exists; `setFxMode` stays a renderer flip; no
+  `rebuildChainRouting`), per-branch wet/dry or merge-gain UI, latency display.
+- Feedback loops, modulation, buses, parameter pinning remain deferred.
 
 ## Engine execution boundary
 
-Graph cables (`graphState` edges) added via mutation helpers, store actions, or editing UI affect
-audio only through the FXG.3-c-b linear sync API. Chain mode and `effectChains` remain untouched.
-`AudioGraph` connection sync for nonlinear graphs is still deferred to FXG.3-d.
+Graph cables (`graphState` edges) affect audio only through the graph sync API
+(`audio_syncGraphTopology`, with `audio_syncLinearGraphTopology` retained as a delegate). The sync
+never calls chain `addEffect`/`moveEffect` and never mutates `effectChains`; chain mode is unchanged.
 
 ## Quarantine boundary
 

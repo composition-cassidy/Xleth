@@ -2,8 +2,11 @@
 #include "audio/AudioGraph.h"
 #include "audio/PluginRegistry.h"
 
+#include <functional>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
+#include <vector>
 
 // ─── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -169,7 +172,7 @@ bool EffectChainManager::hasGraphNode(const std::string& effectInstanceId) const
     return graphNodeIds_.count(effectInstanceId) > 0;
 }
 
-nlohmann::json EffectChainManager::syncLinearGraphTopology(const nlohmann::json& topology)
+nlohmann::json EffectChainManager::syncGraphTopology(const nlohmann::json& topology)
 {
     struct RuntimeNode
     {
@@ -183,18 +186,22 @@ nlohmann::json EffectChainManager::syncLinearGraphTopology(const nlohmann::json&
     auto baseResult = [] {
         return nlohmann::json{
             {"ok", false},
-            {"phase", "FXG.3-c-b"},
+            {"phase", "FXG.3-d"},
+            {"mode", "none"},
             {"pathEffectCount", 0},
             {"appliedConnectionCount", 0},
             {"fallbackApplied", false},
         };
     };
 
+    // Fail-closed: clear ALL connections so neither stale chain nor stale graph
+    // routing can remain audible. With no connections, Track Output has no
+    // inputs and the track is silent.
     auto fail = [&](const std::string& reason) {
         nlohmann::json result = baseResult();
         result["reason"] = reason;
-        result["fallback"] = "passthrough";
-        const bool fallbackApplied = graph_ ? graph_->clearConnectionsForPassthrough() : false;
+        result["fallback"] = "silence";
+        const bool fallbackApplied = graph_ ? graph_->clearConnectionsToSilence() : false;
         result["fallbackApplied"] = fallbackApplied;
         return result;
     };
@@ -206,6 +213,7 @@ nlohmann::json EffectChainManager::syncLinearGraphTopology(const nlohmann::json&
     if (!topology.contains("edges") || !topology["edges"].is_array())
         return fail("invalid_edges");
 
+    // ── Parse nodes ──────────────────────────────────────────────────────
     std::unordered_map<std::string, RuntimeNode> nodes;
     std::string trackInputId;
     std::string trackOutputId;
@@ -258,6 +266,7 @@ nlohmann::json EffectChainManager::syncLinearGraphTopology(const nlohmann::json&
     if (trackInputCount != 1 || trackOutputCount != 1)
         return fail("invalid_track_io_multiplicity");
 
+    // ── Parse audio edges (deduped) into adjacency ───────────────────────
     std::unordered_map<std::string, std::vector<std::string>> outgoing;
     std::unordered_map<std::string, std::vector<std::string>> incoming;
     for (const auto& [nodeId, node] : nodes)
@@ -265,6 +274,8 @@ nlohmann::json EffectChainManager::syncLinearGraphTopology(const nlohmann::json&
         outgoing[nodeId];
         incoming[nodeId];
     }
+    std::unordered_set<std::string> seenEdges;
+    std::vector<std::pair<std::string, std::string>> audioEdges;
 
     for (const auto& edgeJson : topology["edges"])
     {
@@ -288,46 +299,84 @@ nlohmann::json EffectChainManager::syncLinearGraphTopology(const nlohmann::json&
         if (sourceNodeId.empty() || targetNodeId.empty()) return fail("invalid_edge");
         if (nodes.count(sourceNodeId) == 0 || nodes.count(targetNodeId) == 0)
             return fail("invalid_edge_reference");
+        if (sourceNodeId == targetNodeId) return fail("cycle_detected");
+
+        const std::string key = sourceNodeId + "\x1f" + targetNodeId;
+        if (!seenEdges.insert(key).second) continue;   // dedupe repeated cables
 
         outgoing[sourceNodeId].push_back(targetNodeId);
         incoming[targetNodeId].push_back(sourceNodeId);
+        audioEdges.emplace_back(sourceNodeId, targetNodeId);
     }
 
-    std::vector<std::string> pathGraphNodeIds;
-    std::unordered_set<std::string> visited;
-    std::string current = trackInputId;
-    visited.insert(current);
-
-    while (current != trackOutputId)
+    // ── Reject cycles (DFS white/gray/black over the directed audio graph) ─
     {
-        const auto& nextIds = outgoing[current];
-        if (nextIds.empty()) return fail("no_linear_path");
-        if (nextIds.size() > 1) return fail("nonlinear_deferred");
-        if (current != trackInputId && incoming[current].size() > 1)
-            return fail("nonlinear_deferred");
-
-        const std::string next = nextIds.front();
-        if (!visited.insert(next).second) return fail("cycle_detected");
-        if (incoming[next].size() > 1) return fail("nonlinear_deferred");
-
-        const auto nodeIt = nodes.find(next);
-        if (nodeIt == nodes.end()) return fail("invalid_edge_reference");
-        if (next != trackOutputId)
-        {
-            if (nodeIt->second.type != "effect") return fail("unsupported_node_type");
-            pathGraphNodeIds.push_back(next);
-        }
-        current = next;
+        std::unordered_map<std::string, int> color;   // 0 white, 1 gray, 2 black
+        std::function<bool(const std::string&)> dfs = [&](const std::string& u) -> bool {
+            color[u] = 1;
+            for (const auto& v : outgoing[u])
+            {
+                const int c = color[v];
+                if (c == 1) return true;                  // back-edge → cycle
+                if (c == 0 && dfs(v)) return true;
+            }
+            color[u] = 2;
+            return false;
+        };
+        for (const auto& [nodeId, node] : nodes)
+            if (color[nodeId] == 0 && dfs(nodeId))
+                return fail("cycle_detected");
     }
 
-    std::vector<int> engineNodePath;
-    nlohmann::json pathEffectInstanceIds = nlohmann::json::array();
-    nlohmann::json pathEngineNodeIds = nlohmann::json::array();
-    engineNodePath.reserve(pathGraphNodeIds.size());
+    // ── Active set = nodes on a path Track Input → Track Output ───────────
+    auto bfs = [](const std::string& start,
+                  const std::unordered_map<std::string, std::vector<std::string>>& adj) {
+        std::unordered_set<std::string> seen;
+        std::vector<std::string> stack{start};
+        seen.insert(start);
+        while (!stack.empty())
+        {
+            const std::string cur = stack.back();
+            stack.pop_back();
+            auto it = adj.find(cur);
+            if (it == adj.end()) continue;
+            for (const auto& nxt : it->second)
+                if (seen.insert(nxt).second) stack.push_back(nxt);
+        }
+        return seen;
+    };
+    const auto reachableFromInput = bfs(trackInputId, outgoing);
+    const auto canReachOutput     = bfs(trackOutputId, incoming);
 
-    for (const auto& graphNodeId : pathGraphNodeIds)
+    std::unordered_set<std::string> active;
+    for (const auto& [nodeId, node] : nodes)
+        if (reachableFromInput.count(nodeId) && canReachOutput.count(nodeId))
+            active.insert(nodeId);
+
+    // No complete Input → Output path: intentional silence (valid graph state).
+    if (active.count(trackInputId) == 0 || active.count(trackOutputId) == 0)
+    {
+        graph_->clearConnectionsToSilence();
+        nlohmann::json result = baseResult();
+        result["ok"] = true;
+        result["mode"] = "disconnected";
+        result["reason"] = "graph_output_disconnected";
+        return result;
+    }
+
+    // ── Validate active nodes + resolve effect mappings ──────────────────
+    std::unordered_map<std::string, int> graphIdToEngineId;
+    graphIdToEngineId[trackInputId]  = graph_->getInputNodeId();
+    graphIdToEngineId[trackOutputId] = graph_->getOutputNodeId();
+    nlohmann::json activeEffectInstanceIds = nlohmann::json::array();
+    int effectCount = 0;
+
+    for (const auto& graphNodeId : active)
     {
         const auto& node = nodes.at(graphNodeId);
+        if (node.type == "trackInput" || node.type == "trackOutput") continue;
+        if (node.type != "effect") return fail("unsupported_node_type");
+
         if (node.pluginId.empty() || node.pluginId == "placeholder" || node.missing)
             return fail("effect_not_active");
         if (node.effectInstanceId.empty()) return fail("missing_effect_instance_id");
@@ -336,20 +385,123 @@ nlohmann::json EffectChainManager::syncLinearGraphTopology(const nlohmann::json&
         if (mapped == graphNodeIds_.end() || mapped->second < 0)
             return fail("missing_effect_mapping");
 
-        engineNodePath.push_back(mapped->second);
-        pathEffectInstanceIds.push_back(node.effectInstanceId);
-        pathEngineNodeIds.push_back(mapped->second);
+        graphIdToEngineId[graphNodeId] = mapped->second;
+        activeEffectInstanceIds.push_back(node.effectInstanceId);
+        ++effectCount;
     }
 
-    if (!graph_->replaceConnectionsWithLinearPath(engineNodePath))
+    // ── Build engine edges (active subgraph only) + detect parallelism ────
+    std::vector<std::pair<int, int>> engineEdges;
+    std::unordered_map<std::string, int> activeOutDeg;
+    std::unordered_map<std::string, int> activeInDeg;
+    for (const auto& [src, dst] : audioEdges)
+    {
+        if (active.count(src) == 0 || active.count(dst) == 0) continue;
+        engineEdges.emplace_back(graphIdToEngineId.at(src), graphIdToEngineId.at(dst));
+        ++activeOutDeg[src];
+        ++activeInDeg[dst];
+    }
+
+    bool parallel = false;
+    for (const auto& [id, deg] : activeOutDeg) if (deg > 1) parallel = true;
+    for (const auto& [id, deg] : activeInDeg)  if (deg > 1) parallel = true;
+
+    if (!graph_->replaceConnectionsWithGraph(engineEdges))
         return fail("apply_failed");
+
+    // ── Ordered effect list for the linear/passthrough case ──────────────
+    nlohmann::json pathEffectInstanceIds = nlohmann::json::array();
+    if (!parallel)
+    {
+        std::string cursor = trackInputId;
+        std::unordered_set<std::string> walked{cursor};
+        while (cursor != trackOutputId)
+        {
+            const std::string* nextActive = nullptr;
+            for (const auto& nxt : outgoing[cursor])
+                if (active.count(nxt)) { nextActive = &nxt; break; }
+            if (!nextActive) break;
+            cursor = *nextActive;
+            if (!walked.insert(cursor).second) break;
+            const auto& node = nodes.at(cursor);
+            if (node.type == "effect") pathEffectInstanceIds.push_back(node.effectInstanceId);
+        }
+    }
 
     nlohmann::json result = baseResult();
     result["ok"] = true;
-    result["pathEffectCount"] = static_cast<int>(engineNodePath.size());
-    result["appliedConnectionCount"] = static_cast<int>(engineNodePath.size()) + 1;
-    result["pathEffectInstanceIds"] = pathEffectInstanceIds;
-    result["pathEngineNodeIds"] = pathEngineNodeIds;
+    result["mode"] = (effectCount == 0) ? "passthrough" : (parallel ? "parallel" : "linear");
+    result["reason"] = parallel ? "parallel_graph_routing_active" : "graph_routing_active";
+    result["pathEffectCount"] = effectCount;
+    result["appliedConnectionCount"] = static_cast<int>(engineEdges.size());
+    result["activeEffectInstanceIds"] = activeEffectInstanceIds;
+    if (!parallel) result["pathEffectInstanceIds"] = pathEffectInstanceIds;
+    return result;
+}
+
+nlohmann::json EffectChainManager::syncLinearGraphTopology(const nlohmann::json& topology)
+{
+    return syncGraphTopology(topology);
+}
+
+nlohmann::json EffectChainManager::adoptGraphNodes(const nlohmann::json& mapping)
+{
+    nlohmann::json result = {
+        {"ok", true},
+        {"adopted", nlohmann::json::object()},
+        {"skipped", nlohmann::json::array()},
+    };
+
+    if (!graph_)
+    {
+        result["ok"] = false;
+        result["reason"] = "engine_unavailable";
+        return result;
+    }
+    if (!mapping.is_array())
+    {
+        result["ok"] = false;
+        result["reason"] = "invalid_mapping";
+        return result;
+    }
+
+    for (const auto& entry : mapping)
+    {
+        if (!entry.is_object())
+        {
+            result["skipped"].push_back({{"reason", "invalid_entry"}});
+            continue;
+        }
+
+        const std::string effectInstanceId =
+            entry.contains("effectInstanceId") && entry["effectInstanceId"].is_string()
+                ? entry["effectInstanceId"].get<std::string>()
+                : std::string{};
+        const int engineNodeId =
+            entry.contains("engineNodeId") && entry["engineNodeId"].is_number_integer()
+                ? entry["engineNodeId"].get<int>()
+                : -1;
+
+        if (effectInstanceId.empty() || engineNodeId < 0)
+        {
+            result["skipped"].push_back({{"reason", "invalid_entry"},
+                                         {"effectInstanceId", effectInstanceId}});
+            continue;
+        }
+        if (!graph_->hasNode(engineNodeId))
+        {
+            result["skipped"].push_back({{"reason", "unknown_engine_node"},
+                                         {"effectInstanceId", effectInstanceId}});
+            continue;
+        }
+
+        // Idempotent: register (or re-register) the existing processor as
+        // graph-owned. Never creates or destroys a processor, so the chain
+        // effect's parameter state is preserved.
+        graphNodeIds_[effectInstanceId] = engineNodeId;
+        result["adopted"][effectInstanceId] = engineNodeId;
+    }
+
     return result;
 }
 

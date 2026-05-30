@@ -518,6 +518,17 @@ public:
     int  getGraphEffectEngineNodeId(int trackId, const std::string& effectInstanceId) const;
     nlohmann::json syncLinearGraphTopology(int trackId, const nlohmann::json& topology);
 
+    // FXG.3-d: rebuild a normal track's runtime routing from a graphState
+    // topology (linear OR parallel). Graph mode owns the connection space:
+    // every call clears prior chain/graph wiring and rebuilds only the
+    // graph-owned route, fail-closed to silence. Rejects the master track.
+    nlohmann::json syncGraphTopology(int trackId, const nlohmann::json& topology);
+
+    // FXG.3-d: adopt already-allocated chain processors as graph-owned when a
+    // Mixer Chain is converted to a graph (preserves parameter state). Input:
+    // array of { effectInstanceId, engineNodeId }. Rejects the master track.
+    nlohmann::json adoptGraphEffectNodes(int trackId, const nlohmann::json& mapping);
+
     // ── Effect parameter / meter access (main thread only) ──────────────
     // Per-track: returns "[]" / false / "[0,0,0,0]" if chain/node not found.
     std::string getEffectParameters(int trackId, int nodeId) const;

@@ -9,6 +9,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 class XlethEffectBase;
@@ -76,9 +77,24 @@ public:
     // An empty path leaves the graph in safe passthrough.
     bool replaceConnectionsWithLinearPath(const std::vector<int>& orderedNodeIds);
 
+    // Replace all runtime connections with an arbitrary acyclic edge set
+    // (fan-out / fan-in supported; JUCE APG sums multiple inputs natively).
+    // Each pair is {sourceNodeId, destNodeId} in engine uid space (I/O or
+    // effect uids). Clears all prior connections first, so an empty edge set
+    // leaves the graph silent (no input -> output path). Returns false if any
+    // endpoint is unknown or an edge would create a cycle (caller fail-closes).
+    bool replaceConnectionsWithGraph(const std::vector<std::pair<int, int>>& edges);
+
     // Clear all runtime connections; rebuildAPGConnections wires direct
     // input -> output passthrough when no logical connections remain.
     bool clearConnectionsForPassthrough();
+
+    // Clear all runtime connections AND suppress the empty-graph passthrough so
+    // Track Output receives nothing (true silence). Used by graph mode to
+    // fail-closed when there is no valid Track Input -> Track Output route, so
+    // the old chain route can never leak. Any subsequent connection rebuild
+    // (replaceConnectionsWith*, addEffect, addConnection) restores passthrough.
+    bool clearConnectionsToSilence();
 
     // ── Wire properties (main thread) ───────────────────────────────────
 
@@ -114,6 +130,10 @@ public:
 
     // True iff graph is a single linear path (every node has <=1 in, <=1 out).
     bool isGraphLinear() const;
+
+    // True iff nodeId is a currently-allocated effect node (excludes I/O nodes
+    // and helper gain/delay nodes). Used to validate graph-node adoption.
+    bool hasNode(int nodeId) const { return nodes_.count(nodeId) > 0; }
 
     // ── Effect parameter / meter access (main-thread only) ─────────────
     // Retrieve the XlethEffectBase for a node.  Returns nullptr if the nodeId
@@ -289,6 +309,11 @@ private:
     juce::MidiBuffer emptyMidi_;
     int outputLatencySamples_ = 0;
     std::atomic<std::uint64_t> latencyEpoch_{0};
+
+    // When true, rebuildAPGConnections does NOT auto-wire the empty-graph
+    // input -> output passthrough; Track Output is left unconnected (silence).
+    // Set only by clearConnectionsToSilence; cleared by clearAllConnections.
+    bool muteOutput_ = false;
 
     // ── Debounce state ──────────────────────────────────────────────────
 

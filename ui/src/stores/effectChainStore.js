@@ -237,8 +237,10 @@ function normalizeGraphRuntimeSyncResult(result) {
     ok: result?.ok === true,
     reason: typeof result?.reason === 'string' && result.reason.length > 0
       ? result.reason
-      : (result?.ok === true ? 'linear_supported' : 'engine_sync_failed'),
-    phase: typeof result?.phase === 'string' ? result.phase : 'FXG.3-c-b',
+      : (result?.ok === true ? 'graph_routing_active' : 'engine_sync_failed'),
+    // FXG.3-d: 'linear' | 'parallel' | 'passthrough' | 'disconnected' | 'none'.
+    mode: typeof result?.mode === 'string' ? result.mode : undefined,
+    phase: typeof result?.phase === 'string' ? result.phase : 'FXG.3-d',
     fallback: typeof result?.fallback === 'string' ? result.fallback : undefined,
     fallbackApplied: result?.fallbackApplied === true,
     pathEffectCount: Number.isInteger(result?.pathEffectCount) ? result.pathEffectCount : 0,
@@ -383,17 +385,20 @@ function readGraphStateForMutation(state, trackId) {
   return { ok: true, key, graphState }
 }
 
-async function syncLinearGraphRuntimeForTrack(set, key, graphState, options = {}) {
+async function syncGraphRuntimeForTrack(set, key, graphState, options = {}) {
   const warn = options.warn ?? console.warn
   const audio = defaultAudioApi()
-  const syncLinearGraphTopology =
-    options.syncLinearGraphTopology ?? audio.syncLinearGraphTopology
+  // FXG.3-d: prefer the general graph sync (linear + parallel). Fall back to the
+  // legacy linear symbol so older injected APIs / addons keep working.
+  const syncGraphTopology =
+    options.syncGraphTopology ?? options.syncLinearGraphTopology ??
+    audio.syncGraphTopology ?? audio.syncLinearGraphTopology
 
-  if (typeof syncLinearGraphTopology !== 'function') {
+  if (typeof syncGraphTopology !== 'function') {
     return setGraphRuntimeStatus(set, key, {
       ok: false,
       reason: 'engine_unavailable',
-      phase: 'FXG.3-c-b',
+      phase: 'FXG.3-d',
       fallback: 'none',
       fallbackApplied: false,
     })
@@ -401,21 +406,45 @@ async function syncLinearGraphRuntimeForTrack(set, key, graphState, options = {}
 
   const payload = buildLinearGraphTopologyPayload(graphState)
   try {
-    const result = await syncLinearGraphTopology(Number(key), payload)
+    const result = await syncGraphTopology(Number(key), payload)
     return setGraphRuntimeStatus(set, key, result)
   } catch (e) {
-    warn?.('[FXG] linear graph routing sync failed', {
+    warn?.('[FXG] graph routing sync failed', {
       trackId: key,
       error: e?.message ?? e,
     })
     return setGraphRuntimeStatus(set, key, {
       ok: false,
       reason: 'engine_sync_failed',
-      phase: 'FXG.3-c-b',
+      phase: 'FXG.3-d',
       fallback: 'unknown',
       fallbackApplied: false,
     })
   }
+}
+
+// FXG.3-d: when a Mixer Chain is converted to a graph, the converted effect
+// nodes already correspond to live engine processors (the chain slots). Build a
+// { effectInstanceId, engineNodeId } adoption mapping so graph mode can take
+// ownership of those processors WITHOUT re-instantiating them — preserving each
+// effect's parameter state. `sourceChainSlotIndex` (set by createGraphStateFromChain)
+// indexes back into the original chain slot array, whose slots carry the engine nodeId.
+function buildChainAdoptionMapping(graphState, chainSlots) {
+  const slots = Array.isArray(chainSlots) ? chainSlots : []
+  const nodes = Array.isArray(graphState?.nodes) ? graphState.nodes : []
+  const mapping = []
+  for (const node of nodes) {
+    if (node?.type !== 'effect') continue
+    const data = node.data ?? {}
+    const effectInstanceId = data.effectInstanceId
+    if (typeof effectInstanceId !== 'string' || effectInstanceId.length === 0) continue
+    if (data.pluginId === 'placeholder') continue
+    if (!Number.isInteger(data.sourceChainSlotIndex)) continue
+    const engineNodeId = normalizeEngineNodeId(slots[data.sourceChainSlotIndex]?.nodeId)
+    if (engineNodeId == null) continue
+    mapping.push({ effectInstanceId, engineNodeId })
+  }
+  return mapping
 }
 
 // Validates the post-mutation graphState, commits it to the store, and persists
@@ -454,7 +483,7 @@ async function applyGraphStateMutation(set, key, nextGraphState, options = {}) {
     }
   }
 
-  const runtimeSync = await syncLinearGraphRuntimeForTrack(set, key, validation.graphState, options)
+  const runtimeSync = await syncGraphRuntimeForTrack(set, key, validation.graphState, options)
 
   return { ok: true, graphState: validation.graphState, status: validation, runtimeSync }
 }
@@ -574,7 +603,7 @@ const useEffectChainStore = create((set, get) => ({
       const result = await hydrateGraphEngineNodesForTrack(key, graphState, options)
       results[key] = result
       const mapping = mergeSessionEngineNodeIds(set, key, result.mapping)
-      const runtimeSync = await syncLinearGraphRuntimeForTrack(set, key, graphState, options)
+      const runtimeSync = await syncGraphRuntimeForTrack(set, key, graphState, options)
       results[key] = { ...result, runtimeSync }
 
       if (!result.ok || result.failures.length > 0) {
@@ -689,10 +718,32 @@ const useEffectChainStore = create((set, get) => ({
       graphStateStatuses: { ...currentState.graphStateStatuses, [key]: validation },
     }))
 
+    // FXG.3-d ownership transfer: adopt the existing chain processors as
+    // graph-owned (preserving their settings), then sync the runtime so graph
+    // mode owns routing and the old chain route stops feeding Track Output.
+    const audio = defaultAudioApi()
+    const adoptGraphEffectNodes = options.adoptGraphEffectNodes ?? audio.adoptGraphEffectNodes
+    const adoptionMapping = buildChainAdoptionMapping(validation.graphState, chain)
+    if (adoptionMapping.length > 0 && typeof adoptGraphEffectNodes === 'function') {
+      try {
+        const adoptResult = await adoptGraphEffectNodes(Number(key), adoptionMapping)
+        if (adoptResult?.adopted && typeof adoptResult.adopted === 'object') {
+          mergeSessionEngineNodeIds(set, key, adoptResult.adopted)
+        }
+      } catch (e) {
+        // Do not abort: the entry sync below still clears any stale chain route
+        // (fail-closed silence), so graph mode never leaks the old route.
+        warnFxgConversion(warn, key, 'graph_adoption_failed', { error: e?.message ?? e })
+      }
+    }
+
+    const runtimeSync = await syncGraphRuntimeForTrack(set, key, validation.graphState, options)
+
     return {
       ok: true,
       graphState: validation.graphState,
       status: validation,
+      runtimeSync,
       previousGraphState,
       previousGraphStateStatus,
     }
