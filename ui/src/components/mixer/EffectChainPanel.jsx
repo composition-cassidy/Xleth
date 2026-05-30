@@ -4,56 +4,16 @@ import useVstStore from '../../stores/vstStore.js'
 import { usePanelRegistry } from '../../windowing/registry/PanelRegistry'
 import EffectModule from './EffectModule.jsx'
 import TrackContextMenu from '../timeline/TrackContextMenu.jsx'
+import {
+  EFFECT_CATEGORIES,
+  NO_SCANNED_PLUGINS_LABEL,
+  formatVstPluginLabel,
+  sortRackVstPlugins,
+} from './effectCatalog.js'
 
-const EFFECT_CATEGORIES = [
-  {
-    label: 'Dynamics',
-    submenu: [
-      { label: 'Compressor', id: 'compressor' },
-      { label: 'Limiter', id: 'limiter' },
-      { label: 'Overdone', id: 'overdone' },
-      { label: 'Transient Proc', id: 'transientproc' },
-      { label: 'Resonance Suppressor', id: 'resonancesuppressor' },
-    ],
-  },
-  {
-    label: 'EQ & Filter',
-    submenu: [
-      { label: 'Xleth EQ', id: 'xletheq' },
-      { label: 'Xleth Filter', id: 'xlethfilter' },
-    ],
-  },
-  {
-    label: 'Distortion',
-    submenu: [
-      { label: 'Distortion', id: 'distortion' },
-      { label: 'Waveshaper', id: 'waveshaper' },
-    ],
-  },
-  {
-    label: 'Modulation',
-    submenu: [
-      { label: 'UniFlange', id: 'uniflange' },
-      { label: 'Chorus', id: 'chorus' },
-      { label: 'Flanger', id: 'flanger' },
-      { label: 'Phaser', id: 'phaser' },
-      { label: 'Phanjer', id: 'phanjer' },
-    ],
-  },
-  {
-    label: 'Time',
-    submenu: [
-      { label: 'Delay', id: 'delay' },
-      { label: 'Reverb', id: 'reverb' },
-    ],
-  },
-  {
-    label: 'Utility',
-    submenu: [
-      { label: 'Smart Balance', id: 'smartbalance' },
-    ],
-  },
-]
+// Re-exported so existing importers keep their path. The catalog itself now
+// lives in effectCatalog.js, shared with the FX Graph add-effect picker.
+export { EFFECT_CATEGORIES, sortRackVstPlugins }
 
 const EMPTY_CHAIN = []
 export const VISIBLE_LIMIT = 4
@@ -85,20 +45,12 @@ export function shouldShowEffectChainOverflow(chainLength, visibleLimit = VISIBL
   return chainLength > visibleLimit
 }
 
-export function sortRackVstPlugins(vstPlugins) {
-  return [...vstPlugins].sort((a, b) => {
-    const byName = (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' })
-    if (byName !== 0) return byName
-    return (a.vendor || '').localeCompare(b.vendor || '', undefined, { sensitivity: 'base' })
-  })
-}
-
 export function buildEffectChainMenuItems({ addEffect, storeKey, vstPlugins }) {
   const sortedVstPlugins = sortRackVstPlugins(vstPlugins)
   const vstSubmenu = sortedVstPlugins.length === 0
-    ? [{ label: 'No plugins scanned - open VST Browser to scan', disabled: true }]
+    ? [{ label: NO_SCANNED_PLUGINS_LABEL, disabled: true }]
     : sortedVstPlugins.map((plugin) => ({
-        label: plugin.name + (plugin.vendor ? ` - ${plugin.vendor}` : ''),
+        label: formatVstPluginLabel(plugin),
         onClick: () => addEffect(storeKey, plugin.id),
       }))
 

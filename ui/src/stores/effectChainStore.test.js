@@ -1408,6 +1408,40 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(timeline.setTrackGraphState).toHaveBeenCalled()
   })
 
+  // FXG.3-e — the FX Graph picker calls addGraphEffectNodeForTrack with just a
+  // { pluginId, displayName } selection (no caller-supplied effectInstanceId).
+  it('creates a graph-owned stock node from a picker selection and never touches chains', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    audio.addGraphEffectNode.mockResolvedValueOnce(777)
+    let idCounter = 0
+    const idFactory = () => `picked-${idCounter++}`
+    const baseChain = seedGraphMode(useEffectChainStore, graphWithoutEdges('7'))
+
+    const result = await useEffectChainStore.getState().addGraphEffectNodeForTrack(
+      '7',
+      { pluginId: 'reverb', displayName: 'Reverb' },
+      { idFactory },
+    )
+
+    expect(result.ok).toBe(true)
+    // The store generated a stable effectInstanceId for the picked effect.
+    const effectInstanceId = result.effectInstanceId
+    expect(typeof effectInstanceId).toBe('string')
+    expect(effectInstanceId.length).toBeGreaterThan(0)
+    expect(result.engineNodeId).toBe(777)
+
+    const node = useEffectChainStore.getState().graphStates['7'].nodes
+      .find((candidate) => candidate.data?.effectInstanceId === effectInstanceId)
+    expect(node).toBeDefined()
+    expect(node.data).toMatchObject({ pluginId: 'reverb', displayName: 'Reverb', missing: false })
+
+    // Graph-owned engine instantiation + session mapping; chains untouched.
+    expect(audio.addGraphEffectNode).toHaveBeenCalledWith(7, effectInstanceId, 'reverb')
+    expect(useEffectChainStore.getState().graphEngineNodeIds['7'][effectInstanceId]).toBe(777)
+    expect(useEffectChainStore.getState().chains['7']).toBe(baseChain)
+    expect(audio.addEffect).not.toHaveBeenCalled()
+  })
+
   it('does not instantiate an engine processor for a placeholder/data-only node', async () => {
     const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
     seedGraphMode(useEffectChainStore, graphWithoutEdges('7'))

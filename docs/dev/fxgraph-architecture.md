@@ -105,6 +105,26 @@ The Edit button on graph effect nodes resolves
 Mixer Chain via the shared `effectEditorOpeners.js` helper. The graphState `node.id` is never
 passed to an editor store.
 
+## Add Effect Node picker (FXG.3-e)
+
+The Add Effect Node button opens a real effect picker (`FxGraphEffectPicker.tsx`) instead of
+dropping a placeholder. The picker reuses the **same catalog source as the Mixer Chain** —
+`components/mixer/effectCatalog.js` (`EFFECT_CATEGORIES` stock list + `sortRackVstPlugins` over the
+shared `useVstStore` scan) — so both add flows expose identical stock and scanned VST/plugin
+entries with no duplicate registry or second scanner. `EffectChainPanel.jsx` re-exports
+`EFFECT_CATEGORIES`/`sortRackVstPlugins` from that module for back-compat.
+
+The picker only chooses *what* to add. Selecting an effect calls
+`addGraphEffectNodeForTrack(trackId, { pluginId, displayName })`, which keeps graph-owned storage
+and runtime ownership: it requires `fxMode === "graph"`, generates the `effectInstanceId`,
+instantiates the graph-owned engine processor first, then commits graphState and records the
+session `effectInstanceId → engineNodeId` mapping. Chain slots, `effectChains`, and chain routing
+are never involved. On engine failure the add fails fast (or rolls back the processor if the commit
+is rejected) so graphState and the session mapping are never left corrupt; the panel shows a
+tokenized inline notice via `describeGraphMutationResult`. Placeholder creation remains available
+as an internal/dev fallback (`addGraphEffectNodeForTrack(trackId, {})`) but is no longer the
+user-facing path.
+
 ## Project-load hydration (FXG.3-c-a / FXG.3-c-b)
 
 FXG.3-c-a reconstructs graph-owned effect processors after project load from renderer-owned

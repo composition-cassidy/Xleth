@@ -14,6 +14,9 @@ import GraphStatePreview, {
   type GraphStateDocument,
   type GraphStateViewport,
 } from './fxgraph/GraphStatePreview';
+import FxGraphEffectPicker, {
+  type FxEffectPickerSelection,
+} from './fxgraph/FxGraphEffectPicker';
 
 const USE_GRAPH_MODE_TITLE = 'Use FX Graph Mode for this track?';
 const USE_GRAPH_MODE_MESSAGE =
@@ -43,6 +46,10 @@ const GRAPH_MUTATION_MESSAGES: Record<string, string> = {
   no_track: 'Select a mixer track first.',
   not_graph_mode: 'Switch this track to FX Graph mode first.',
   missing_graph_state: 'No graph data exists for this track yet.',
+  // FXG.3-e graph-owned engine failures — rolled back, graph left usable.
+  engine_unavailable: 'Audio engine is unavailable. The graph is unchanged.',
+  engine_instantiation_failed: 'Could not create that effect. The graph is unchanged.',
+  engine_removal_failed: 'Could not remove that effect cleanly. The graph is unchanged.',
 };
 
 const GRAPH_RUNTIME_MESSAGES: Record<string, string> = {
@@ -337,6 +344,7 @@ export function FxGraphPanelContent({
 
 export default function FxGraphPanel() {
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [conversionError, setConversionError] = useState<string | null>(null);
   const [graphActionNotice, setGraphActionNotice] = useState<string | null>(null);
   const renderingWithoutDom = typeof document === 'undefined';
@@ -413,7 +421,13 @@ export default function FxGraphPanel() {
   useEffect(() => {
     setConversionError(null);
     setGraphActionNotice(null);
+    setPickerOpen(false);
   }, [selectedStoreKey]);
+
+  // Close the picker if this track stops being graph-owned underneath us.
+  useEffect(() => {
+    if (fxMode !== 'graph') setPickerOpen(false);
+  }, [fxMode]);
 
   const handleConfirmGraphMode = useCallback(async () => {
     setConfirmOpen(false);
@@ -442,9 +456,30 @@ export default function FxGraphPanel() {
     void setGraphStateViewport(selectedTrack.id, viewport);
   }, [fxMode, selectedTrack?.id, setGraphStateViewport]);
 
-  const handleAddGraphEffectNode = useCallback(async () => {
+  // FXG.3-e — the Add Effect Node button no longer drops a placeholder. It opens
+  // the picker, which lists the same stock + scanned-VST catalog the Mixer Chain
+  // exposes. Selecting an effect creates a real graph-owned effect node.
+  const handleOpenAddEffectPicker = useCallback(() => {
     if (selectedTrack?.id == null || fxMode !== 'graph') return;
-    const result = await addGraphEffectNodeForTrack(selectedTrack.id, {});
+    setGraphActionNotice(null);
+    setPickerOpen(true);
+  }, [fxMode, selectedTrack?.id]);
+
+  const handleCancelAddEffectPicker = useCallback(() => {
+    setPickerOpen(false);
+  }, []);
+
+  const handleSelectGraphEffect = useCallback(async (selection: FxEffectPickerSelection) => {
+    setPickerOpen(false);
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    // Real pluginId + displayName → graph-owned node + graph-owned engine
+    // processor + session effectInstanceId→engineNodeId mapping. The store
+    // instantiates the engine processor first and rolls back the graphState
+    // commit on failure, so a failed add never corrupts the graph or chains.
+    const result = await addGraphEffectNodeForTrack(selectedTrack.id, {
+      pluginId: selection.pluginId,
+      displayName: selection.displayName,
+    });
     setGraphActionNotice(describeGraphMutationResult(result));
   }, [addGraphEffectNodeForTrack, fxMode, selectedTrack?.id]);
 
@@ -545,7 +580,7 @@ export default function FxGraphPanel() {
         onRequestGraphMode={() => setConfirmOpen(true)}
         onGraphNodePositionChange={handleGraphNodePositionChange}
         onGraphViewportChange={handleGraphViewportChange}
-        onAddGraphEffectNode={handleAddGraphEffectNode}
+        onAddGraphEffectNode={handleOpenAddEffectPicker}
         onRemoveGraphNode={handleRemoveGraphNode}
         onConnectGraphNodes={handleConnectGraphNodes}
         onDisconnectGraphEdge={handleDisconnectGraphEdge}
@@ -563,6 +598,13 @@ export default function FxGraphPanel() {
           danger={false}
           onConfirm={handleConfirmGraphMode}
           onCancel={handleCancelGraphMode}
+        />
+      )}
+      {pickerOpen && fxMode === 'graph' && selectedTrack?.id != null && (
+        <FxGraphEffectPicker
+          vstPlugins={vstPlugins}
+          onSelect={handleSelectGraphEffect}
+          onCancel={handleCancelAddEffectPicker}
         />
       )}
     </PanelFrame>

@@ -1,0 +1,213 @@
+/* FXG.3-e — FX Graph add-effect picker.
+ * Tokenized only; no hardcoded production colors. Mirrors the modal token
+ * vocabulary used by confirm-dialog and the graph-state preview controls. */
+
+.xleth-fx-graph-effect-picker {
+  position: fixed;
+  inset: 0;
+  z-index: 9200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.xleth-fx-graph-effect-picker__backdrop {
+  position: absolute;
+  inset: 0;
+  background: var(--theme-overlay-medium);
+}
+
+.xleth-fx-graph-effect-picker__dialog {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(420px, calc(100vw - 32px));
+  max-height: min(540px, calc(100vh - 48px));
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-md, 8px);
+  background: var(--theme-bg-tertiary);
+  box-shadow: var(--theme-modal-shadow);
+  color: var(--theme-text);
+}
+
+.xleth-fx-graph-effect-picker__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--theme-border-subtle);
+}
+
+.xleth-fx-graph-effect-picker__title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--theme-text);
+}
+
+.xleth-fx-graph-effect-picker__close {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--theme-chrome-radius-sm);
+  background: var(--theme-bg-surface);
+  color: var(--theme-text-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.xleth-fx-graph-effect-picker__close:hover {
+  border-color: var(--theme-border-strong);
+  color: var(--theme-text);
+}
+
+.xleth-fx-graph-effect-picker__close:focus-visible {
+  outline: 1px solid var(--theme-border-focus);
+  outline-offset: 1px;
+}
+
+.xleth-fx-graph-effect-picker__search {
+  padding: 12px 14px 8px;
+}
+
+.xleth-fx-graph-effect-picker__search-input {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--theme-chrome-radius-sm);
+  background: var(--theme-bg-surface);
+  color: var(--theme-text);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.xleth-fx-graph-effect-picker__search-input::placeholder {
+  color: var(--theme-text-muted);
+}
+
+.xleth-fx-graph-effect-picker__search-input:focus-visible {
+  outline: none;
+  border-color: var(--theme-accent);
+  box-shadow: 0 0 0 1px var(--theme-focus-ring);
+}
+
+.xleth-fx-graph-effect-picker__list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 14px 12px;
+}
+
+.xleth-fx-graph-effect-picker__empty,
+.xleth-fx-graph-effect-picker__group-empty {
+  margin: 4px 0;
+  color: var(--theme-text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.xleth-fx-graph-effect-picker__group {
+  margin-top: 10px;
+}
+
+.xleth-fx-graph-effect-picker__group:first-child {
+  margin-top: 2px;
+}
+
+.xleth-fx-graph-effect-picker__group-label {
+  margin-bottom: 4px;
+  color: var(--theme-text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.xleth-fx-graph-effect-picker__options {
+  display: grid;
+  gap: 4px;
+}
+
+.xleth-fx-graph-effect-picker__option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--theme-chrome-radius-sm);
+  background: var(--theme-bg-surface);
+  color: var(--theme-text);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: left;
+  cursor: pointer;
+}
+
+.xleth-fx-graph-effect-picker__option:hover {
+  border-color: color-mix(in srgb, var(--theme-accent) 45%, var(--theme-border-subtle));
+  background: color-mix(in srgb, var(--theme-accent) 12%, var(--theme-bg-surface));
+}
+
+.xleth-fx-graph-effect-picker__option:focus-visible {
+  outline: 1px solid var(--theme-border-focus);
+  outline-offset: 1px;
+}
+
+.xleth-fx-graph-effect-picker__option-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.xleth-fx-graph-effect-picker__option-tag {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--theme-chrome-radius-sm);
+  background: var(--theme-bg-hover);
+  color: var(--theme-text-muted);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.xleth-fx-graph-effect-picker__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--theme-border-subtle);
+}
+
+.xleth-fx-graph-effect-picker__cancel {
+  padding: 6px 14px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--theme-chrome-radius-sm);
+  background: transparent;
+  color: var(--theme-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.xleth-fx-graph-effect-picker__cancel:hover {
+  background: var(--theme-bg-surface);
+  color: var(--theme-text);
+}
+
+.xleth-fx-graph-effect-picker__cancel:focus-visible {
+  outline: 1px solid var(--theme-border-focus);
+  outline-offset: 1px;
+}
