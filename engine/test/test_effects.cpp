@@ -1135,8 +1135,11 @@ static void testGraphRuntimeOwnership()
         const int chainNode = chain.addEffect("testgain", 0);
         CHECK(chain.setEffectParameter(chainNode, "gain", 2.0f), "chain gain should be settable");
 
+        // engineNodeId is sent as a JSON double on purpose: the bridge's
+        // napiToJson encodes every JS number as a double, so adoptGraphNodes must
+        // accept number_float (not just number_integer) or it skips everything.
         const nlohmann::json mapping = nlohmann::json::array({
-            {{"effectInstanceId", "inst-adopt"}, {"engineNodeId", chainNode}},
+            {{"effectInstanceId", "inst-adopt"}, {"engineNodeId", static_cast<double>(chainNode)}},
         });
         const auto adoptRes = chain.adoptGraphNodes(mapping);
         CHECK(adoptRes.value("ok", false), "adoptGraphNodes should succeed for a live node");

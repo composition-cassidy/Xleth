@@ -477,9 +477,13 @@ nlohmann::json EffectChainManager::adoptGraphNodes(const nlohmann::json& mapping
             entry.contains("effectInstanceId") && entry["effectInstanceId"].is_string()
                 ? entry["effectInstanceId"].get<std::string>()
                 : std::string{};
+        // NOTE: accept any JSON number, not just is_number_integer(). The bridge's
+        // napiToJson stores every JS number as a double, so a renderer-sent
+        // engineNodeId arrives as 3.0 (number_float), which is_number_integer()
+        // would reject — silently skipping every adoption.
         const int engineNodeId =
-            entry.contains("engineNodeId") && entry["engineNodeId"].is_number_integer()
-                ? entry["engineNodeId"].get<int>()
+            entry.contains("engineNodeId") && entry["engineNodeId"].is_number()
+                ? static_cast<int>(entry["engineNodeId"].get<double>())
                 : -1;
 
         if (effectInstanceId.empty() || engineNodeId < 0)
