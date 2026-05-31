@@ -8,6 +8,7 @@ import { registerWorkAreaRect } from './managers/DragManager';
 import * as KeyboardManager from './managers/KeyboardManager';
 import { usePanelRegistry } from './registry/PanelRegistry';
 import { PANEL_CATALOG, type PanelId } from './registry/panelCatalog';
+import EffectEditorHost from '../components/mixer/EffectEditorHost.jsx';
 import './components/windowing.css';
 
 const TimelinePanel = React.lazy(() => import('./panels/TimelinePanel'));
@@ -214,6 +215,13 @@ export function AppShell({ mode = 'single' }: WindowingAppShellProps) {
         </div>
         <DockRegion side="right" renderPanel={rendersRealPanels ? renderPhase6bPanel : undefined} />
       </div>
+      {/* Global stock-effect editor host. Lives at the windowing root — a
+          transform-free container — and OUTSIDE every PanelFrame subtree, so
+          stock effect editors (Parametric EQ, Compressor, …) float over the
+          full workspace and are never clipped/trapped by a floating panel's
+          `transform`. The Mixer Chain and FX Graph only *request* editors via
+          their effect stores; this host owns the editors' mounting. */}
+      {rendersRealPanels ? <EffectEditorHost /> : null}
     </div>
   );
 }

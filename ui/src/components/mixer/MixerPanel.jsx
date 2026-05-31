@@ -5,20 +5,11 @@ import { timelineEvents } from '../../timelineEvents.js'
 import { clearAllMeterTelemetry, mergeMeterTelemetry } from './meterTelemetry.js'
 import MixerStrip from './MixerStrip.jsx'
 import MasterStrip from './MasterStrip.jsx'
-import EqPanel from './EqPanel.jsx'
-import CompressorPanel from './CompressorPanel.jsx'
-import LimiterPanel from './LimiterPanel.jsx'
-import DistortionPanel from './DistortionPanel.jsx'
-import WaveshaperPanel from './WaveshaperPanel.jsx'
-import DelayPanel from './DelayPanel.jsx'
-import ChorusPanel from './ChorusPanel.jsx'
-import FlangerPanel from './FlangerPanel.jsx'
-import PhaserPanel from './PhaserPanel.jsx'
-import OTTPanel from './OTTPanel.jsx'
-import ReverbPanel from './ReverbPanel.jsx'
-import TransientProcPanel from './TransientProcPanel.jsx'
-import SmartBalancePanel from './SmartBalancePanel.jsx'
-import ResonanceSuppressorPanel from './ResonanceSuppressorPanel.jsx'
+// Stock effect editor panels are NOT rendered here. They live in the global
+// EffectEditorHost (mounted at the app root) so they are never a DOM descendant
+// of the Mixer's floating PanelFrame and cannot be clipped/trapped by it.
+// The Mixer only *requests* an editor via the effect store's open() (see
+// EffectModule.jsx / effectEditorOpeners.js).
 import VstBrowser from './VstBrowser.jsx'
 import ScanProgressBar from './ScanProgressBar.jsx'
 
@@ -83,20 +74,6 @@ export default function MixerPanel() {
 
   return (
     <div className="mixer-panel" style={{ position: 'relative' }}>
-      <EqPanel />
-      <CompressorPanel />
-      <LimiterPanel />
-      <DistortionPanel />
-      <WaveshaperPanel />
-      <DelayPanel />
-      <ChorusPanel />
-      <FlangerPanel />
-      <PhaserPanel />
-      <OTTPanel />
-      <ReverbPanel />
-      <TransientProcPanel />
-      <SmartBalancePanel />
-      <ResonanceSuppressorPanel />
       <VstBrowser />
       <div className="mixer-toolbar">
         <button
