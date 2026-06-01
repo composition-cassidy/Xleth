@@ -17,7 +17,10 @@ import GraphStatePreview, {
 import FxGraphEffectPicker, {
   type FxEffectPickerSelection,
 } from './fxgraph/FxGraphEffectPicker';
-import GraphNodeParameterInspector from './fxgraph/GraphNodeParameterInspector';
+import type {
+  GraphEffectParameterDescriptor,
+  GraphParameterResult,
+} from './fxgraph/graphParameterUtils';
 import { register as registerKeyboardBinding } from '../managers/KeyboardManager';
 
 const USE_GRAPH_MODE_TITLE = 'Use FX Graph Mode for this track?';
@@ -52,6 +55,7 @@ const GRAPH_MUTATION_MESSAGES: Record<string, string> = {
   invalid_graph_state: 'Graph edit could not be saved.',
   invalid_node_draft: 'Could not create that effect node.',
   invalid_connection_draft: 'Could not create that connection.',
+  invalid_parameter_port: 'Could not expose that parameter.',
   master_track: 'Master track stays in Mixer Chain mode.',
   no_track: 'Select a mixer track first.',
   not_graph_mode: 'Switch this track to FX Graph mode first.',
@@ -118,6 +122,12 @@ export interface FxGraphPanelContentProps {
   onConnectGraphNodes?: (sourceNodeId: string, targetNodeId: string) => void;
   onDisconnectGraphEdge?: (edgeId: string) => void;
   onEditGraphNode?: (nodeId: string) => void;
+  onToggleParameterPort?: (nodeId: string, parameter: GraphEffectParameterDescriptor) => void;
+  fetchGraphEffectParameters?: (
+    trackId: number | string,
+    effectInstanceId: string,
+    options?: { graphNodeId?: string },
+  ) => Promise<GraphParameterResult> | GraphParameterResult;
   canUndoGraphEdit?: boolean;
   canRedoGraphEdit?: boolean;
   onUndoGraphEdit?: () => void;
@@ -180,6 +190,8 @@ export function FxGraphPanelContent({
   onConnectGraphNodes,
   onDisconnectGraphEdge,
   onEditGraphNode,
+  onToggleParameterPort,
+  fetchGraphEffectParameters,
   canUndoGraphEdit = false,
   canRedoGraphEdit = false,
   onUndoGraphEdit,
@@ -291,6 +303,9 @@ export function FxGraphPanelContent({
               onConnectNodes={graphModeActive ? onConnectGraphNodes : undefined}
               onDisconnectEdge={graphModeActive ? onDisconnectGraphEdge : undefined}
               onEditNode={graphModeActive ? onEditGraphNode : undefined}
+              trackId={graphModeActive ? trackId : null}
+              fetchGraphEffectParameters={graphModeActive ? fetchGraphEffectParameters : undefined}
+              onToggleParameterPort={graphModeActive ? onToggleParameterPort : undefined}
               canUndoGraphEdit={graphModeActive && canUndoGraphEdit}
               canRedoGraphEdit={graphModeActive && canRedoGraphEdit}
               onUndoGraphEdit={graphModeActive ? onUndoGraphEdit : undefined}
@@ -449,6 +464,8 @@ export default function FxGraphPanel() {
   const removeGraphNodeForTrack = useEffectChainStore((state) => state.removeGraphNodeForTrack);
   const connectGraphNodesForTrack = useEffectChainStore((state) => state.connectGraphNodesForTrack);
   const disconnectGraphEdgeForTrack = useEffectChainStore((state) => state.disconnectGraphEdgeForTrack);
+  const toggleGraphNodeParameterPortForTrack = useEffectChainStore((state) => state.toggleGraphNodeParameterPortForTrack);
+  const fetchGraphEffectParameters = useEffectChainStore((state) => state.fetchGraphEffectParameters);
   const undoGraphEditForTrack = useEffectChainStore((state) => state.undoGraphEditForTrack);
   const redoGraphEditForTrack = useEffectChainStore((state) => state.redoGraphEditForTrack);
   const fetchChain = useEffectChainStore((state) => state.fetchChain);
@@ -653,6 +670,16 @@ export default function FxGraphPanel() {
     }
   }, [fxMode, graphEngineNodeIds, graphState, selectedTrack?.id]);
 
+  const handleToggleParameterPort = useCallback(async (
+    nodeId: string,
+    parameter: GraphEffectParameterDescriptor,
+  ) => {
+    setGraphActionNotice(null);
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    const result = await toggleGraphNodeParameterPortForTrack(selectedTrack.id, nodeId, parameter);
+    setGraphActionNotice(describeGraphMutationResult(result));
+  }, [fxMode, selectedTrack?.id, toggleGraphNodeParameterPortForTrack]);
+
   const confirmGraphModeMessage =
     graphStateStatus === 'valid' || graphStateStatus === 'invalid' || graphStateStatus === 'future'
       ? REPLACE_GRAPH_MODE_MESSAGE
@@ -676,6 +703,8 @@ export default function FxGraphPanel() {
         onConnectGraphNodes={handleConnectGraphNodes}
         onDisconnectGraphEdge={handleDisconnectGraphEdge}
         onEditGraphNode={handleEditGraphNode}
+        onToggleParameterPort={handleToggleParameterPort}
+        fetchGraphEffectParameters={fetchGraphEffectParameters}
         canUndoGraphEdit={canUndoGraphEdit}
         canRedoGraphEdit={canRedoGraphEdit}
         onUndoGraphEdit={handleUndoGraphEdit}
@@ -684,9 +713,6 @@ export default function FxGraphPanel() {
         graphActionNotice={graphActionNotice}
         conversionError={conversionError}
       />
-      {fxMode === 'graph' && typeof selectedTrack?.id === 'number' && graphState != null && (
-        <GraphNodeParameterInspector trackId={selectedTrack.id} graphState={graphState} />
-      )}
       {confirmOpen && (
         <ConfirmConvertDialog
           title={USE_GRAPH_MODE_TITLE}

@@ -138,6 +138,146 @@ function validateEffectNodeData(node, trackId, warnings) {
       missing: data.missing,
       crashed: data.crashed,
       sourceChainSlotIndex: data.sourceChainSlotIndex,
+      exposedParameterPorts: normalizeExposedParameterPorts(
+        data.exposedParameterPorts,
+        trackId,
+        warnings,
+        node.id,
+      ),
+    },
+  }
+}
+
+function normalizeNullableBoolean(value) {
+  return typeof value === 'boolean' ? value : null
+}
+
+function normalizeExposedParameterPort(raw, trackId, warnings, nodeId) {
+  if (!isPlainObject(raw)) {
+    warnings.push(makeWarning('invalidExposedParameterPort', trackId, 'invalid exposed parameter port dropped', { nodeId }))
+    return null
+  }
+
+  const parameterId = typeof raw.parameterId === 'string' ? raw.parameterId.trim() : ''
+  if (!parameterId) {
+    warnings.push(makeWarning('invalidExposedParameterPort', trackId, 'exposed parameter port missing parameterId', { nodeId }))
+    return null
+  }
+
+  const parameterIndex = Number.isInteger(raw.parameterIndex) && raw.parameterIndex >= 0
+    ? raw.parameterIndex
+    : null
+  const nameSnapshot = typeof raw.nameSnapshot === 'string' && raw.nameSnapshot.trim().length > 0
+    ? raw.nameSnapshot.trim()
+    : parameterId
+  const labelSnapshot = typeof raw.labelSnapshot === 'string' && raw.labelSnapshot.trim().length > 0
+    ? raw.labelSnapshot.trim()
+    : null
+
+  return {
+    parameterId,
+    parameterIndex,
+    nameSnapshot,
+    labelSnapshot,
+    parameterIdIsFallback: raw.parameterIdIsFallback === true,
+    automatable: normalizeNullableBoolean(raw.automatable),
+    readOnly: normalizeNullableBoolean(raw.readOnly),
+  }
+}
+
+export function normalizeExposedParameterPorts(rawPorts, trackId = '', warnings = [], nodeId = '') {
+  if (rawPorts == null) return []
+  if (!Array.isArray(rawPorts)) {
+    warnings.push(makeWarning('invalidExposedParameterPorts', trackId, 'exposedParameterPorts must be an array', { nodeId }))
+    return []
+  }
+
+  const seen = new Set()
+  const ports = []
+  for (const rawPort of rawPorts) {
+    const port = normalizeExposedParameterPort(rawPort, trackId, warnings, nodeId)
+    if (!port) continue
+    if (seen.has(port.parameterId)) {
+      warnings.push(makeWarning('duplicateExposedParameterPort', trackId, 'duplicate exposed parameter port dropped', {
+        nodeId,
+        parameterId: port.parameterId,
+      }))
+      continue
+    }
+    seen.add(port.parameterId)
+    ports.push(port)
+  }
+  return ports
+}
+
+export function buildExposedParameterPort(parameterDescriptor) {
+  if (!isPlainObject(parameterDescriptor)) return null
+  const parameterId = typeof parameterDescriptor.parameterId === 'string'
+    ? parameterDescriptor.parameterId.trim()
+    : ''
+  if (!parameterId) return null
+
+  const name =
+    typeof parameterDescriptor.name === 'string' && parameterDescriptor.name.trim().length > 0
+      ? parameterDescriptor.name.trim()
+      : parameterId
+  const label =
+    typeof parameterDescriptor.unit === 'string' && parameterDescriptor.unit.trim().length > 0
+      ? parameterDescriptor.unit.trim()
+      : null
+
+  return {
+    parameterId,
+    parameterIndex:
+      Number.isInteger(parameterDescriptor.parameterIndex) && parameterDescriptor.parameterIndex >= 0
+        ? parameterDescriptor.parameterIndex
+        : null,
+    nameSnapshot: name,
+    labelSnapshot: label,
+    parameterIdIsFallback: parameterDescriptor.parameterIdIsFallback === true,
+    automatable: normalizeNullableBoolean(parameterDescriptor.automatable),
+    readOnly: normalizeNullableBoolean(parameterDescriptor.readOnly),
+  }
+}
+
+export function toggleExposedParameterPort(graphState, nodeId, parameterDescriptor) {
+  const editCheck = validateGraphStateForEditing(graphState)
+  if (!editCheck.ok) return editCheck
+  if (typeof nodeId !== 'string' || nodeId.length === 0) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_NODE }
+  }
+
+  const node = graphState.nodes.find((candidate) => candidate.id === nodeId)
+  if (!node) return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_NODE }
+  if (isProtectedGraphNodeType(node.type)) return { ok: false, reason: GRAPH_MUTATION_REJECTION.PROTECTED_NODE }
+  if (node.type !== 'effect') return { ok: false, reason: GRAPH_MUTATION_REJECTION.UNKNOWN_NODE_TYPE }
+
+  const port = buildExposedParameterPort(parameterDescriptor)
+  if (!port) return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_PARAMETER_PORT }
+
+  const currentPorts = normalizeExposedParameterPorts(node.data?.exposedParameterPorts)
+  const alreadyExposed = currentPorts.some((candidate) => candidate.parameterId === port.parameterId)
+  const nextPorts = alreadyExposed
+    ? currentPorts.filter((candidate) => candidate.parameterId !== port.parameterId)
+    : [...currentPorts, port]
+
+  return {
+    ok: true,
+    exposed: !alreadyExposed,
+    parameterPort: port,
+    graphState: {
+      ...graphState,
+      nodes: graphState.nodes.map((candidate) => (
+        candidate.id === nodeId
+          ? {
+              ...candidate,
+              data: {
+                ...(candidate.data ?? {}),
+                exposedParameterPorts: nextPorts,
+              },
+            }
+          : candidate
+      )),
     },
   }
 }
@@ -497,6 +637,7 @@ export const GRAPH_MUTATION_REJECTION = Object.freeze({
   INVALID_GRAPH_STATE: 'invalid_graph_state',
   INVALID_NODE_DRAFT: 'invalid_node_draft',
   INVALID_CONNECTION_DRAFT: 'invalid_connection_draft',
+  INVALID_PARAMETER_PORT: 'invalid_parameter_port',
 })
 
 export function isProtectedGraphNodeType(type) {

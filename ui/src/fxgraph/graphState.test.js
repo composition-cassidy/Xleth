@@ -4,6 +4,7 @@ import {
   GRAPH_MUTATION_REJECTION,
   PROTECTED_NODE_TYPES,
   addGraphEffectNode,
+  buildExposedParameterPort,
   canConnectGraphNodes,
   canRemoveGraphNode,
   connectGraphNodes,
@@ -14,6 +15,7 @@ import {
   loadGraphState,
   removeGraphNode,
   saveGraphState,
+  toggleExposedParameterPort,
   validateGraphState,
   validateGraphStateForEditing,
 } from './graphState.js'
@@ -296,6 +298,93 @@ describe('graphState schema validation', () => {
     expect(result.graphState.nodes[0].data).toEqual({ protected: true })
     expect(result.graphState.nodes[1].data.lane).toBe('upper')
     expect(result.graphState.nodes[2].data).toEqual({ protected: true })
+  })
+
+  it('defaults missing exposedParameterPorts to an empty array on effect nodes', () => {
+    const result = validateGraphState(makeValidGraphState(), '7')
+
+    expect(result.status).toBe('valid')
+    expect(result.graphState.nodes.find((node) => node.id === 'fx-1').data.exposedParameterPorts)
+      .toEqual([])
+  })
+
+  it('normalizes exposedParameterPorts and preserves only small target snapshots', () => {
+    const result = validateGraphState(makeValidGraphState({
+      nodes: [
+        { id: 'input', type: 'trackInput' },
+        {
+          ...makeEffectNode(),
+          data: {
+            ...makeEffectNode().data,
+            exposedParameterPorts: [
+              {
+                parameterId: 'mix',
+                parameterIndex: 2,
+                nameSnapshot: 'Mix',
+                labelSnapshot: '%',
+                parameterIdIsFallback: false,
+                automatable: true,
+                readOnly: false,
+                normalizedValue: 0.5,
+              },
+            ],
+          },
+        },
+        { id: 'output', type: 'trackOutput' },
+      ],
+    }), '7')
+
+    expect(result.status).toBe('valid')
+    expect(result.graphState.nodes[1].data.exposedParameterPorts).toEqual([
+      {
+        parameterId: 'mix',
+        parameterIndex: 2,
+        nameSnapshot: 'Mix',
+        labelSnapshot: '%',
+        parameterIdIsFallback: false,
+        automatable: true,
+        readOnly: false,
+      },
+    ])
+  })
+
+  it('drops malformed and duplicate exposedParameterPorts safely', () => {
+    const result = validateGraphState(makeValidGraphState({
+      nodes: [
+        { id: 'input', type: 'trackInput' },
+        {
+          ...makeEffectNode(),
+          data: {
+            ...makeEffectNode().data,
+            exposedParameterPorts: [
+              null,
+              { parameterId: '', nameSnapshot: 'Missing id' },
+              { parameterId: 'gain', parameterIndex: 'bad', nameSnapshot: '' },
+              { parameterId: 'gain', parameterIndex: 4, nameSnapshot: 'Gain duplicate' },
+            ],
+          },
+        },
+        { id: 'output', type: 'trackOutput' },
+      ],
+    }), '7')
+
+    expect(result.status).toBe('valid')
+    expect(result.graphState.nodes[1].data.exposedParameterPorts).toEqual([
+      {
+        parameterId: 'gain',
+        parameterIndex: null,
+        nameSnapshot: 'gain',
+        labelSnapshot: null,
+        parameterIdIsFallback: false,
+        automatable: null,
+        readOnly: null,
+      },
+    ])
+    expect(result.warnings.map((warning) => warning.code)).toEqual([
+      'invalidExposedParameterPort',
+      'invalidExposedParameterPort',
+      'duplicateExposedParameterPort',
+    ])
   })
 
   it('preserves a valid viewport during normalization', () => {
@@ -1055,6 +1144,84 @@ describe('graph mutation architecture guards', () => {
       removeGraphNode(gs, 'fx-a')
 
       expect(gs.nodes).toHaveLength(originalNodeCount)
+    })
+  })
+
+  describe('toggleExposedParameterPort', () => {
+    it('builds a compact exposed parameter port from a live descriptor', () => {
+      expect(buildExposedParameterPort({
+        parameterId: 'feedback',
+        parameterIndex: 7,
+        name: 'Feedback',
+        unit: '%',
+        parameterIdIsFallback: true,
+        automatable: true,
+        readOnly: false,
+        normalizedValue: 0.4,
+      })).toEqual({
+        parameterId: 'feedback',
+        parameterIndex: 7,
+        nameSnapshot: 'Feedback',
+        labelSnapshot: '%',
+        parameterIdIsFallback: true,
+        automatable: true,
+        readOnly: false,
+      })
+    })
+
+    it('toggles a writable parameter as an exposed input port without mutating the graphState', () => {
+      const gs = makeGuardGraphState()
+      const result = toggleExposedParameterPort(gs, 'fx-a', {
+        parameterId: 'mix',
+        parameterIndex: 1,
+        name: 'Mix',
+        automatable: true,
+        readOnly: false,
+      })
+
+      expect(result.ok).toBe(true)
+      expect(result.exposed).toBe(true)
+      expect(result.graphState).not.toBe(gs)
+      expect(gs.nodes[1].data.exposedParameterPorts).toBeUndefined()
+      expect(result.graphState.nodes[1].data.exposedParameterPorts).toEqual([
+        {
+          parameterId: 'mix',
+          parameterIndex: 1,
+          nameSnapshot: 'Mix',
+          labelSnapshot: null,
+          parameterIdIsFallback: false,
+          automatable: true,
+          readOnly: false,
+        },
+      ])
+    })
+
+    it('toggles an already exposed parameter off', () => {
+      const exposed = toggleExposedParameterPort(makeGuardGraphState(), 'fx-a', {
+        parameterId: 'mix',
+        parameterIndex: 1,
+        name: 'Mix',
+      })
+      const hidden = toggleExposedParameterPort(exposed.graphState, 'fx-a', {
+        parameterId: 'mix',
+        parameterIndex: 1,
+        name: 'Mix',
+      })
+
+      expect(hidden.ok).toBe(true)
+      expect(hidden.exposed).toBe(false)
+      expect(hidden.graphState.nodes[1].data.exposedParameterPorts).toEqual([])
+    })
+
+    it('rejects protected I/O nodes and malformed descriptors', () => {
+      expect(toggleExposedParameterPort(makeGuardGraphState(), 'in', {
+        parameterId: 'mix',
+        parameterIndex: 1,
+      })).toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.PROTECTED_NODE })
+      expect(toggleExposedParameterPort(makeGuardGraphState(), 'fx-a', {
+        parameterId: '',
+        parameterIndex: 1,
+      })).toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_PARAMETER_PORT })
     })
   })
 

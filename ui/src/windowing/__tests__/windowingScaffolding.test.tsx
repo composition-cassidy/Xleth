@@ -355,9 +355,46 @@ describe('PanelFrame render paths', () => {
     expect(html).toContain('Track Input');
     expect(html).toContain('Persisted EQ');
     expect(html).toContain('Track Output');
+    expect(html).not.toContain('Effect Parameters');
+    expect(html).not.toContain('xleth-fx-graph-params');
     expect(html).not.toContain('>Convert Chain to FX Graph<');
     expect(html).not.toContain('Compressor');
     expect(html).not.toContain('xleth-chain-graph-preview');
+  });
+
+  it('renders graph history controls only for active graph mode', () => {
+    const graphHtml = renderToStaticMarkup(
+      <FxGraphPanelContent
+        trackId={7}
+        trackLabel="Lead Vox"
+        fxMode="graph"
+        graphStateStatus="valid"
+        graphState={makeFxGraphState()}
+        canUndoGraphEdit={false}
+        canRedoGraphEdit
+        onUndoGraphEdit={vi.fn()}
+        onRedoGraphEdit={vi.fn()}
+      />,
+    );
+    const chainHtml = renderToStaticMarkup(
+      <FxGraphPanelContent
+        trackId={7}
+        trackLabel="Lead Vox"
+        fxMode="chain"
+        graphStateStatus="valid"
+        graphState={makeFxGraphState()}
+        canUndoGraphEdit
+        canRedoGraphEdit
+        onUndoGraphEdit={vi.fn()}
+        onRedoGraphEdit={vi.fn()}
+      />,
+    );
+
+    expect(graphHtml).toContain('aria-label="Undo graph edit"');
+    expect(graphHtml).toContain('aria-label="Redo graph edit"');
+    expect(countText(graphHtml, 'disabled')).toBe(1);
+    expect(chainHtml).not.toContain('Undo graph edit');
+    expect(chainHtml).not.toContain('Redo graph edit');
   });
 
   it('renders a degraded graph-mode state when graphState is missing', () => {
@@ -659,6 +696,10 @@ describe('PanelFrame render paths', () => {
     expect(fxGraphPanelSource).not.toContain('NodeEditor');
     expect(fxGraphPanelSource).not.toContain('nodeGraphStore');
     expect(fxGraphPanelSource).not.toContain('react-flow');
+    expect(fxGraphPanelSource).toContain("scope: 'panel:fxGraph'");
+    expect(fxGraphPanelSource).toContain("'Ctrl+y'");
+    expect(fxGraphPanelSource).toContain("'Ctrl+Shift+z'");
+    expect(fxGraphPanelSource).not.toContain('window.xleth.undo');
     expect(chainPreviewSource).not.toContain('NodeEditor');
     expect(chainPreviewSource).not.toContain('nodeGraphStore');
     expect(chainPreviewSource).not.toContain('react-flow');
@@ -666,7 +707,24 @@ describe('PanelFrame render paths', () => {
     expect(graphPreviewSource).not.toContain('NodeEditor');
     expect(graphPreviewSource).not.toContain('nodeGraphStore');
     expect(graphPreviewSource).not.toContain('react-flow');
-    expect(graphPreviewSource).not.toMatch(/on(Mouse|ContextMenu|Key|Drag)/);
+    expect(graphPreviewSource).not.toMatch(/ReactFlow|useReactFlow|from ['"]@xyflow/);
+    expect(fxGraphPanelSource).not.toContain('GraphNodeParameterInspector');
+  });
+
+  it('keeps graph node drags as preview-only movement until pointer up', () => {
+    const graphPreviewSource = readUiSource('windowing/panels/fxgraph/GraphStatePreview.tsx');
+    const moveStart = graphPreviewSource.indexOf('const handleNodePointerMove');
+    const moveEnd = graphPreviewSource.indexOf('const finishPan', moveStart);
+    const moveSource = graphPreviewSource.slice(moveStart, moveEnd);
+    const finishStart = graphPreviewSource.indexOf('const finishDrag');
+    const finishEnd = graphPreviewSource.indexOf('const cancelDrag', finishStart);
+    const finishSource = graphPreviewSource.slice(finishStart, finishEnd);
+
+    expect(graphPreviewSource).toContain('nodePositionOverrides');
+    expect(moveSource).toContain('setDragPreviewPosition');
+    expect(moveSource).not.toContain('onNodePositionChange(');
+    expect(finishSource).toContain('onNodePositionChange(drag.nodeId');
+    expect(finishSource).toContain('setDragPreviewPosition(null)');
   });
 
   it('keeps mixer strip source free of graph preview rendering', () => {

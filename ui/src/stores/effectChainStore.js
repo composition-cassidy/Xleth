@@ -14,6 +14,7 @@ import {
   removeGraphNode,
   connectGraphNodes,
   disconnectGraphEdge,
+  toggleExposedParameterPort,
 } from '../fxgraph/graphState.js'
 
 export const DEFAULT_FX_MODE = 'chain'
@@ -537,12 +538,17 @@ async function applyGraphStateMutation(set, key, nextGraphState, options = {}) {
 const GRAPH_HISTORY_STACK_LIMIT = 100
 
 function graphRuntimeTopologyChanged(beforeGraphState, afterGraphState) {
+  const runtimeRelevantNodeData = (data) => {
+    if (!data || typeof data !== 'object') return null
+    const { exposedParameterPorts, ...rest } = data
+    return rest
+  }
   const structuralSnapshot = (graphState) => ({
     nodes: Array.isArray(graphState?.nodes)
       ? graphState.nodes.map((node) => ({
         id: node?.id,
         type: node?.type,
-        data: node?.data ?? null,
+        data: runtimeRelevantNodeData(node?.data),
       }))
       : [],
     edges: Array.isArray(graphState?.edges) ? graphState.edges : [],
@@ -1448,6 +1454,38 @@ const useEffectChainStore = create((set, get) => ({
   // effectInstanceId (NEVER by graphState node id and NEVER by engine node id),
   // and never mutate effectChains or graphState. They are pure engine queries —
   // the renderer holds the descriptor list in local UI state, nothing persists.
+  // FXG.4-b persists only exposed parameter port choices. It skips runtime sync
+  // because no modulation, automation, or macro execution exists in this phase.
+  toggleGraphNodeParameterPortForTrack: async (trackId, nodeId, parameterDescriptor, options = {}) => {
+    const access = readGraphStateForMutation(get(), trackId)
+    if (!access.ok) return access
+
+    const mutation = toggleExposedParameterPort(access.graphState, nodeId, parameterDescriptor)
+    if (!mutation.ok) return mutation
+
+    const applied = await applyGraphStateMutation(
+      set,
+      access.key,
+      mutation.graphState,
+      { ...options, syncRuntime: false },
+    )
+    if (applied.ok) {
+      recordGraphEditTransaction(
+        set,
+        access.key,
+        mutation.exposed ? 'expose_parameter_port' : 'unexpose_parameter_port',
+        access.graphState,
+        applied.graphState,
+      )
+    }
+    return {
+      ...applied,
+      exposed: mutation.exposed,
+      parameterPort: mutation.parameterPort,
+    }
+  },
+
+  // FXG.4-a live descriptor read/write APIs remain pure engine queries.
   fetchGraphEffectParameters: async (trackId, effectInstanceId, options = {}) => {
     const key = normalizeNormalTrackKey(trackId)
     if (key == null) {

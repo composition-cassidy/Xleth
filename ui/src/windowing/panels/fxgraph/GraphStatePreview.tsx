@@ -1,4 +1,10 @@
 import React from 'react';
+import {
+  describeParamFailure,
+  isWritableParameter,
+  type GraphEffectParameterDescriptor,
+  type GraphParameterResult,
+} from './graphParameterUtils';
 
 export interface GraphStateNodePosition {
   x?: unknown;
@@ -10,6 +16,16 @@ export interface GraphStateNode {
   type: string;
   position?: GraphStateNodePosition;
   data?: Record<string, unknown>;
+}
+
+export interface GraphExposedParameterPort {
+  parameterId: string;
+  parameterIndex: number | null;
+  nameSnapshot: string;
+  labelSnapshot: string | null;
+  parameterIdIsFallback: boolean;
+  automatable: boolean | null;
+  readOnly: boolean | null;
 }
 
 export interface GraphStateEdge {
@@ -50,6 +66,8 @@ interface PositionedNode {
   secondaryText: string | null;
   metaText: string | null;
   badges: string[];
+  effectInstanceId: string | null;
+  parameterPorts: GraphExposedParameterPort[];
   // True only for effect nodes backed by a real (non-placeholder, non-missing)
   // plugin — the heuristic that enables the Edit button. The actual engine-node
   // resolution still happens asynchronously in the panel's edit handler.
@@ -103,6 +121,16 @@ interface GraphStatePreviewProps {
   onConnectNodes?: (sourceNodeId: string, targetNodeId: string) => void;
   onDisconnectEdge?: (edgeId: string) => void;
   onEditNode?: (nodeId: string) => void;
+  trackId?: number | string | null;
+  fetchGraphEffectParameters?: (
+    trackId: number | string,
+    effectInstanceId: string,
+    options?: { graphNodeId?: string },
+  ) => Promise<GraphParameterResult> | GraphParameterResult;
+  onToggleParameterPort?: (
+    nodeId: string,
+    parameter: GraphEffectParameterDescriptor,
+  ) => Promise<unknown> | unknown;
   canUndoGraphEdit?: boolean;
   canRedoGraphEdit?: boolean;
   onUndoGraphEdit?: () => void;
@@ -111,6 +139,7 @@ interface GraphStatePreviewProps {
 
 const NODE_WIDTH = 148;
 const NODE_HEIGHT = 74;
+const PARAMETER_PORT_ROW_HEIGHT = 18;
 const PREVIEW_PADDING_X = 24;
 const PREVIEW_PADDING_Y = 24;
 const HANDLE_OUTSET = 8;
@@ -140,6 +169,38 @@ function readBoolean(data: Record<string, unknown> | undefined, key: string) {
 function readInteger(data: Record<string, unknown> | undefined, key: string) {
   const value = data?.[key];
   return typeof value === 'number' && Number.isInteger(value) ? value : null;
+}
+
+function readExposedParameterPorts(data: Record<string, unknown> | undefined): GraphExposedParameterPort[] {
+  const rawPorts = data?.exposedParameterPorts;
+  if (!Array.isArray(rawPorts)) return [];
+  const seen = new Set<string>();
+  const ports: GraphExposedParameterPort[] = [];
+  for (const rawPort of rawPorts) {
+    if (rawPort == null || typeof rawPort !== 'object' || Array.isArray(rawPort)) continue;
+    const port = rawPort as Record<string, unknown>;
+    const parameterId = typeof port.parameterId === 'string' ? port.parameterId.trim() : '';
+    if (!parameterId || seen.has(parameterId)) continue;
+    seen.add(parameterId);
+    const nameSnapshot = typeof port.nameSnapshot === 'string' && port.nameSnapshot.trim().length > 0
+      ? port.nameSnapshot.trim()
+      : parameterId;
+    const labelSnapshot = typeof port.labelSnapshot === 'string' && port.labelSnapshot.trim().length > 0
+      ? port.labelSnapshot.trim()
+      : null;
+    ports.push({
+      parameterId,
+      parameterIndex: Number.isInteger(port.parameterIndex) && (port.parameterIndex as number) >= 0
+        ? port.parameterIndex as number
+        : null,
+      nameSnapshot,
+      labelSnapshot,
+      parameterIdIsFallback: port.parameterIdIsFallback === true,
+      automatable: typeof port.automatable === 'boolean' ? port.automatable : null,
+      readOnly: typeof port.readOnly === 'boolean' ? port.readOnly : null,
+    });
+  }
+  return ports;
 }
 
 function resolvePreviewNodeType(type: string): PreviewNodeKind {
@@ -196,6 +257,8 @@ function resolveNodeText(node: GraphStateNode) {
       secondaryText: null,
       metaText: null,
       badges: [] as string[],
+      effectInstanceId: null,
+      parameterPorts: [] as GraphExposedParameterPort[],
       editable: false,
     };
   }
@@ -206,6 +269,8 @@ function resolveNodeText(node: GraphStateNode) {
       secondaryText: null,
       metaText: null,
       badges: [] as string[],
+      effectInstanceId: null,
+      parameterPorts: [] as GraphExposedParameterPort[],
       editable: false,
     };
   }
@@ -214,6 +279,7 @@ function resolveNodeText(node: GraphStateNode) {
     const displayName = readString(data, 'displayName') || 'Effect';
     const pluginId = readString(data, 'pluginId');
     const sourceSlot = readInteger(data, 'sourceChainSlotIndex');
+    const effectInstanceId = readString(data, 'effectInstanceId');
     const missing = readBoolean(data, 'missing');
     const badges: string[] = [];
 
@@ -226,6 +292,8 @@ function resolveNodeText(node: GraphStateNode) {
       secondaryText: pluginId && pluginId !== displayName ? pluginId : null,
       metaText: sourceSlot == null ? null : `Chain slot ${sourceSlot + 1}`,
       badges,
+      effectInstanceId,
+      parameterPorts: readExposedParameterPorts(data),
       // Placeholder / data-only / missing nodes have no engine processor to open.
       editable: pluginId.length > 0 && pluginId !== 'placeholder' && !missing,
     };
@@ -246,6 +314,8 @@ function resolveNodeText(node: GraphStateNode) {
       : 'Unsupported node type',
     metaText: null,
     badges: ['Unknown'],
+    effectInstanceId: null,
+    parameterPorts: [] as GraphExposedParameterPort[],
     editable: false,
   };
 }
@@ -268,6 +338,10 @@ function makeVirtualAnchorNode(
     graphY: FALLBACK_NODE_Y,
     virtual: true,
   };
+}
+
+function nodeHeightForPorts(portCount: number) {
+  return NODE_HEIGHT + Math.max(0, portCount) * PARAMETER_PORT_ROW_HEIGHT;
 }
 
 function normalizePositionedNodes(nodes: GraphStateNode[], options: PreviewModelOptions = {}) {
@@ -321,7 +395,7 @@ function normalizePositionedNodes(nodes: GraphStateNode[], options: PreviewModel
       x: position.x + PREVIEW_PADDING_X,
       y: position.y + PREVIEW_PADDING_Y,
       width: NODE_WIDTH,
-      height: NODE_HEIGHT,
+      height: nodeHeightForPorts(text.parameterPorts.length),
       graphX: position.x,
       graphY: position.y,
     };
@@ -436,7 +510,7 @@ function roundViewport(value: number) {
   return Math.round(value * 100) / 100;
 }
 
-function GraphStatePreviewNode({
+export function GraphStatePreviewNode({
   node,
   dragging,
   connectEnabled,
@@ -451,6 +525,7 @@ function GraphStatePreviewNode({
   onConnectPointerMove,
   onConnectPointerUp,
   onConnectPointerCancel,
+  onNodeContextMenu,
   onRemove,
   onEdit,
 }: {
@@ -468,6 +543,7 @@ function GraphStatePreviewNode({
   onConnectPointerMove?: (event: React.PointerEvent<HTMLSpanElement>) => void;
   onConnectPointerUp?: (event: React.PointerEvent<HTMLSpanElement>) => void;
   onConnectPointerCancel?: (event: React.PointerEvent<HTMLSpanElement>) => void;
+  onNodeContextMenu?: (event: React.MouseEvent<HTMLDivElement>, node: PositionedNode) => void;
   onRemove?: (nodeId: string) => void;
   onEdit?: (nodeId: string) => void;
 }) {
@@ -490,6 +566,8 @@ function GraphStatePreviewNode({
   // disabled "not active yet" state so the affordance is discoverable but inert.
   const showEdit =
     canEdit && node.type === 'effect' && !node.virtual && typeof onEdit === 'function';
+  const canOpenContextMenu =
+    node.type === 'effect' && !node.virtual && typeof onNodeContextMenu === 'function';
 
   return (
     <div
@@ -511,6 +589,7 @@ function GraphStatePreviewNode({
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
+      onContextMenu={canOpenContextMenu ? (event) => onNodeContextMenu?.(event, node) : undefined}
     >
       {node.type !== 'trackInput' && (
         <span
@@ -548,6 +627,24 @@ function GraphStatePreviewNode({
           {node.badges.map((badge) => (
             <span className="xleth-graph-state-preview__badge" key={badge}>
               {badge}
+            </span>
+          ))}
+        </span>
+      )}
+      {node.parameterPorts.length > 0 && (
+        <span className="xleth-graph-state-preview__parameter-ports" role="list" aria-label={`${node.label} parameter inputs`}>
+          {node.parameterPorts.map((port) => (
+            <span
+              className="xleth-graph-state-preview__parameter-port"
+              role="listitem"
+              key={port.parameterId}
+              title={port.nameSnapshot}
+              data-parameter-port-id={port.parameterId}
+            >
+              <span className="xleth-graph-state-preview__parameter-port-dot" aria-hidden="true" />
+              <span className="xleth-graph-state-preview__parameter-port-label">
+                {port.nameSnapshot}
+              </span>
             </span>
           ))}
         </span>
@@ -591,6 +688,154 @@ function GraphStatePreviewNode({
   );
 }
 
+export function filterExposeParameterDescriptors(
+  parameters: GraphEffectParameterDescriptor[],
+  search: string,
+) {
+  const needle = search.trim().toLowerCase();
+  if (!needle) return parameters;
+  return parameters.filter((parameter) => {
+    const label = parameter.name || parameter.parameterId;
+    return `${label} ${parameter.parameterId}`.toLowerCase().includes(needle);
+  });
+}
+
+export function GraphParameterContextMenu({
+  node,
+  x,
+  y,
+  loading = false,
+  result = null,
+  search = '',
+  canEdit,
+  canRemove,
+  onSearchChange,
+  onToggleParameter,
+  onEdit,
+  onRemove,
+}: {
+  node: PositionedNode;
+  x: number;
+  y: number;
+  loading?: boolean;
+  result?: GraphParameterResult | null;
+  search?: string;
+  canEdit: boolean;
+  canRemove: boolean;
+  onSearchChange?: (value: string) => void;
+  onToggleParameter?: (parameter: GraphEffectParameterDescriptor) => void;
+  onEdit?: () => void;
+  onRemove?: () => void;
+}) {
+  const parameters = result?.ok ? result.parameters ?? [] : [];
+  const filteredParameters = filterExposeParameterDescriptors(parameters, search);
+  const exposedIds = new Set(node.parameterPorts.map((port) => port.parameterId));
+  const showSearch = parameters.length > 0 || search.length > 0;
+
+  return (
+    <div
+      className="xleth-graph-state-preview__context-menu"
+      role="menu"
+      aria-label={`${node.label} node menu`}
+      style={{ left: x, top: y }}
+      onPointerDown={(event) => event.stopPropagation()}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+    >
+      <div className="xleth-graph-state-preview__context-title">{node.label}</div>
+      <button
+        className="xleth-graph-state-preview__context-item"
+        type="button"
+        role="menuitem"
+        disabled={!canEdit || !node.editable}
+        onClick={onEdit}
+      >
+        Edit
+      </button>
+      <button
+        className="xleth-graph-state-preview__context-item"
+        type="button"
+        role="menuitem"
+        disabled={!canRemove}
+        onClick={onRemove}
+      >
+        Remove
+      </button>
+
+      <div className="xleth-graph-state-preview__context-section">
+        <div className="xleth-graph-state-preview__context-section-title">
+          Expose Parameter
+        </div>
+        {showSearch && (
+          <input
+            className="xleth-graph-state-preview__parameter-search"
+            type="search"
+            aria-label="Search parameters"
+            placeholder="Search parameters"
+            value={search}
+            onChange={(event) => onSearchChange?.(event.target.value)}
+          />
+        )}
+        {loading && (
+          <div className="xleth-graph-state-preview__context-empty" role="status">
+            Loading parameters...
+          </div>
+        )}
+        {!loading && result?.ok === false && (
+          <div className="xleth-graph-state-preview__context-empty" role="alert">
+            {describeParamFailure(result.reason)}
+          </div>
+        )}
+        {!loading && result?.ok && parameters.length === 0 && (
+          <div className="xleth-graph-state-preview__context-empty">
+            This effect exposes no parameters.
+          </div>
+        )}
+        {!loading && result?.ok && parameters.length > 0 && filteredParameters.length === 0 && (
+          <div className="xleth-graph-state-preview__context-empty">
+            No parameters match.
+          </div>
+        )}
+        {!loading && result?.ok && filteredParameters.length > 0 && (
+          <div className="xleth-graph-state-preview__parameter-list" role="group" aria-label="Exposed Parameters">
+            {filteredParameters.map((parameter) => {
+              const label = parameter.name || parameter.parameterId;
+              const writable = isWritableParameter(parameter);
+              const exposed = exposedIds.has(parameter.parameterId);
+              return (
+                <button
+                  className={`xleth-graph-state-preview__parameter-item${exposed ? ' xleth-graph-state-preview__parameter-item--exposed' : ''}`}
+                  type="button"
+                  role="menuitemcheckbox"
+                  aria-checked={exposed}
+                  disabled={!writable}
+                  key={parameter.parameterId}
+                  title={label}
+                  onClick={() => onToggleParameter?.(parameter)}
+                >
+                  <span className="xleth-graph-state-preview__parameter-check" aria-hidden="true">
+                    {exposed ? 'On' : ''}
+                  </span>
+                  <span className="xleth-graph-state-preview__parameter-name">
+                    {label}
+                  </span>
+                  {!writable && (
+                    <span className="xleth-graph-state-preview__parameter-state">
+                      Read-only
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function GraphStatePreview({
   graphState = null,
   notice = 'Persisted graphState. Linear routing is enabled for supported paths.',
@@ -601,6 +846,9 @@ export default function GraphStatePreview({
   onConnectNodes,
   onDisconnectEdge,
   onEditNode,
+  trackId = null,
+  fetchGraphEffectParameters,
+  onToggleParameterPort,
   canUndoGraphEdit = false,
   canRedoGraphEdit = false,
   onUndoGraphEdit,
@@ -635,6 +883,14 @@ export default function GraphStatePreview({
   const [panning, setPanning] = React.useState(false);
   const [connectingFromNodeId, setConnectingFromNodeId] = React.useState<string | null>(null);
   const [connectPoint, setConnectPoint] = React.useState<{ x: number; y: number } | null>(null);
+  const [contextMenu, setContextMenu] = React.useState<{
+    node: PositionedNode;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [parameterResult, setParameterResult] = React.useState<GraphParameterResult | null>(null);
+  const [parameterLoading, setParameterLoading] = React.useState(false);
+  const [parameterSearch, setParameterSearch] = React.useState('');
   const model = React.useMemo(
     () => buildGraphStatePreviewModel(
       graphState,
@@ -662,9 +918,109 @@ export default function GraphStatePreview({
   const canEditNode = typeof onEditNode === 'function';
   const canConnect = typeof onConnectNodes === 'function';
   const canDisconnect = typeof onDisconnectEdge === 'function';
+  const canExposeParameters =
+    trackId != null &&
+    typeof fetchGraphEffectParameters === 'function' &&
+    typeof onToggleParameterPort === 'function';
   const canUseGraphHistory =
     typeof onUndoGraphEdit === 'function' || typeof onRedoGraphEdit === 'function';
   const showToolbar = canEditViewport || canAddNode || canUseGraphHistory;
+
+  const closeContextMenu = React.useCallback(() => {
+    setContextMenu(null);
+    setParameterResult(null);
+    setParameterLoading(false);
+    setParameterSearch('');
+  }, []);
+
+  React.useEffect(() => {
+    if (!contextMenu) return undefined;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (
+        typeof Element !== 'undefined' &&
+        target instanceof Element &&
+        target.closest('.xleth-graph-state-preview__context-menu')
+      ) {
+        return;
+      }
+      closeContextMenu();
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeContextMenu();
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [closeContextMenu, contextMenu]);
+
+  React.useEffect(() => {
+    if (!contextMenu || !canExposeParameters || !fetchGraphEffectParameters || trackId == null) {
+      return undefined;
+    }
+    const effectInstanceId = contextMenu.node.effectInstanceId;
+    if (!effectInstanceId) {
+      setParameterResult({ ok: false, reason: 'missing_effect_instance_id' });
+      return undefined;
+    }
+
+    let cancelled = false;
+    setParameterLoading(true);
+    setParameterResult(null);
+    setParameterSearch('');
+    Promise.resolve(fetchGraphEffectParameters(trackId, effectInstanceId, {
+      graphNodeId: contextMenu.node.id,
+    })).then((result) => {
+      if (cancelled) return;
+      setParameterResult(result);
+    }).catch(() => {
+      if (cancelled) return;
+      setParameterResult({ ok: false, reason: 'engine_error' });
+    }).finally(() => {
+      if (!cancelled) setParameterLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [canExposeParameters, contextMenu, fetchGraphEffectParameters, trackId]);
+
+  const handleNodeContextMenu = React.useCallback((
+    event: React.MouseEvent<HTMLDivElement>,
+    node: PositionedNode,
+  ) => {
+    if (node.type !== 'effect' || node.virtual) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setContextMenu({
+      node,
+      x: event.clientX,
+      y: event.clientY,
+    });
+  }, []);
+
+  const handleContextEdit = React.useCallback(() => {
+    const node = contextMenu?.node;
+    closeContextMenu();
+    if (node?.editable) onEditNode?.(node.id);
+  }, [closeContextMenu, contextMenu?.node, onEditNode]);
+
+  const handleContextRemove = React.useCallback(() => {
+    const node = contextMenu?.node;
+    closeContextMenu();
+    if (node) onRemoveNode?.(node.id);
+  }, [closeContextMenu, contextMenu?.node, onRemoveNode]);
+
+  const handleToggleParameter = React.useCallback((parameter: GraphEffectParameterDescriptor) => {
+    const node = contextMenu?.node;
+    closeContextMenu();
+    if (!node) return;
+    void Promise.resolve(onToggleParameterPort?.(node.id, parameter));
+  }, [closeContextMenu, contextMenu?.node, onToggleParameterPort]);
 
   const finishDrag = React.useCallback((
     event: React.PointerEvent<HTMLDivElement>,
@@ -1009,6 +1365,7 @@ export default function GraphStatePreview({
                   onConnectPointerMove={canConnect ? handleConnectPointerMove : undefined}
                   onConnectPointerUp={canConnect ? handleConnectPointerUp : undefined}
                   onConnectPointerCancel={canConnect ? resetConnect : undefined}
+                  onNodeContextMenu={canExposeParameters ? handleNodeContextMenu : undefined}
                   onRemove={canRemoveNode ? onRemoveNode : undefined}
                   onEdit={canEditNode ? onEditNode : undefined}
                 />
@@ -1036,6 +1393,22 @@ export default function GraphStatePreview({
                     </button>
                   ))}
               </div>
+            )}
+            {contextMenu && (
+              <GraphParameterContextMenu
+                node={contextMenu.node}
+                x={contextMenu.x}
+                y={contextMenu.y}
+                loading={parameterLoading}
+                result={parameterResult}
+                search={parameterSearch}
+                canEdit={canEditNode}
+                canRemove={canRemoveNode}
+                onSearchChange={setParameterSearch}
+                onToggleParameter={canExposeParameters ? handleToggleParameter : undefined}
+                onEdit={handleContextEdit}
+                onRemove={handleContextRemove}
+              />
             )}
           </div>
         </div>

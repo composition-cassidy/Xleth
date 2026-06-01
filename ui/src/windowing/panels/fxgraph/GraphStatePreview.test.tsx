@@ -2,7 +2,10 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import GraphStatePreview, {
+  GraphParameterContextMenu,
+  GraphStatePreviewNode,
   buildGraphStatePreviewModel,
+  filterExposeParameterDescriptors,
   type GraphStateDocument,
   type GraphStateEdge,
   type GraphStateNode,
@@ -213,6 +216,35 @@ describe('GraphStatePreview', () => {
 
     expect(html).toContain('Crashy Delay');
     expect(html).toContain('Crashed');
+  });
+
+  it('renders exposed parameter ports as compact effect-node input targets', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([
+          inputNode(),
+          effectNode('delay', 'Delay', 0, { x: 260, y: 0 }, {
+            exposedParameterPorts: [
+              {
+                parameterId: 'feedback',
+                parameterIndex: 3,
+                nameSnapshot: 'Feedback',
+                labelSnapshot: '%',
+                parameterIdIsFallback: false,
+                automatable: true,
+                readOnly: false,
+              },
+            ],
+          }),
+          outputNode({ x: 520, y: 0 }),
+        ], [])}
+      />,
+    );
+
+    expect(html).toContain('xleth-graph-state-preview__parameter-port');
+    expect(html).toContain('data-parameter-port-id="feedback"');
+    expect(html).toContain('Feedback');
+    expect(html).toContain('Delay parameter inputs');
   });
 
   it('renders unknown nodes with an unsupported indicator without crashing', () => {
@@ -460,6 +492,157 @@ describe('GraphStatePreview', () => {
     );
 
     expect(html).not.toContain('xleth-graph-state-preview__node-edit');
+  });
+
+  // --- FXG.4-b parameter port exposure menu ---
+
+  it('wires right-click context opening for effect nodes only', () => {
+    const model = buildGraphStatePreviewModel(graphState([
+      inputNode(),
+      effectNode('limiter', 'Limiter', 0, { x: 260, y: 0 }),
+      outputNode({ x: 520, y: 0 }),
+    ], []));
+    const effect = model.nodes.find((node) => node.id === 'limiter');
+    const input = model.nodes.find((node) => node.id === 'input');
+    const onNodeContextMenu = vi.fn();
+    const event = {
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    } as unknown as React.MouseEvent<HTMLDivElement>;
+
+    const effectElement = GraphStatePreviewNode({
+      node: effect!,
+      dragging: false,
+      connectEnabled: false,
+      connectActive: false,
+      canRemove: true,
+      canEdit: true,
+      onNodeContextMenu,
+    });
+    effectElement.props.onContextMenu(event);
+    expect(onNodeContextMenu).toHaveBeenCalledWith(event, effect);
+
+    const inputElement = GraphStatePreviewNode({
+      node: input!,
+      dragging: false,
+      connectEnabled: false,
+      connectActive: false,
+      canRemove: true,
+      canEdit: true,
+      onNodeContextMenu,
+    });
+    expect(inputElement.props.onContextMenu).toBeUndefined();
+  });
+
+  it('renders loading, error, empty, and searchable parameter exposure menu states', () => {
+    const node = buildGraphStatePreviewModel(graphState([
+      inputNode(),
+      effectNode('delay', 'Delay', 0, { x: 260, y: 0 }, {
+        exposedParameterPorts: [
+          {
+            parameterId: 'feedback',
+            parameterIndex: 1,
+            nameSnapshot: 'Feedback',
+            labelSnapshot: null,
+            parameterIdIsFallback: false,
+            automatable: true,
+            readOnly: false,
+          },
+        ],
+      }),
+      outputNode({ x: 520, y: 0 }),
+    ], [])).nodes.find((candidate) => candidate.id === 'delay')!;
+
+    const loadingHtml = renderToStaticMarkup(
+      <GraphParameterContextMenu
+        node={node}
+        x={12}
+        y={24}
+        loading
+        canEdit
+        canRemove
+      />,
+    );
+    const errorHtml = renderToStaticMarkup(
+      <GraphParameterContextMenu
+        node={node}
+        x={12}
+        y={24}
+        result={{ ok: false, reason: 'plugin_missing' }}
+        canEdit
+        canRemove
+      />,
+    );
+    const emptyHtml = renderToStaticMarkup(
+      <GraphParameterContextMenu
+        node={node}
+        x={12}
+        y={24}
+        result={{ ok: true, parameters: [] }}
+        canEdit
+        canRemove
+      />,
+    );
+    const listHtml = renderToStaticMarkup(
+      <GraphParameterContextMenu
+        node={node}
+        x={12}
+        y={24}
+        search="feed"
+        result={{
+          ok: true,
+          parameters: [
+            { parameterId: 'feedback', parameterIndex: 1, name: 'Feedback', automatable: true, readOnly: false },
+            { parameterId: 'mix', parameterIndex: 2, name: 'Mix', automatable: true, readOnly: false },
+            { parameterId: 'meter', parameterIndex: 3, name: 'Meter', automatable: false, readOnly: true },
+          ],
+        }}
+        canEdit
+        canRemove
+      />,
+    );
+
+    expect(loadingHtml).toContain('Loading parameters...');
+    expect(errorHtml).toContain('This plugin is unavailable. Parameters cannot be read.');
+    expect(emptyHtml).toContain('This effect exposes no parameters.');
+    expect(listHtml).toContain('Expose Parameter');
+    expect(listHtml).toContain('Search parameters');
+    expect(listHtml).toContain('Feedback');
+    expect(listHtml).not.toContain('Mix');
+    expect(listHtml).toContain('aria-checked="true"');
+    expect(filterExposeParameterDescriptors([
+      { parameterId: 'feedback', parameterIndex: 1, name: 'Feedback' },
+      { parameterId: 'mix', parameterIndex: 2, name: 'Mix' },
+    ], 'mix')).toEqual([
+      { parameterId: 'mix', parameterIndex: 2, name: 'Mix' },
+    ]);
+  });
+
+  it('marks read-only parameters disabled in the exposure menu', () => {
+    const node = buildGraphStatePreviewModel(graphState([
+      inputNode(),
+      effectNode('meter', 'Meter', 0, { x: 260, y: 0 }),
+      outputNode({ x: 520, y: 0 }),
+    ], [])).nodes.find((candidate) => candidate.id === 'meter')!;
+    const html = renderToStaticMarkup(
+      <GraphParameterContextMenu
+        node={node}
+        x={12}
+        y={24}
+        result={{
+          ok: true,
+          parameters: [
+            { parameterId: 'meter', parameterIndex: 3, name: 'Meter', automatable: false, readOnly: true },
+          ],
+        }}
+        canEdit
+        canRemove
+      />,
+    );
+
+    expect(html).toContain('Meter');
+    expect(html).toContain('Read-only');
+    expect(html).toContain('disabled');
   });
 
   // --- FXG.3-l workspace polish guards ---

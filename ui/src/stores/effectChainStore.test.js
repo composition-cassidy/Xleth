@@ -21,6 +21,7 @@ function makeValidGraphState(trackId = '7') {
           missing: false,
           crashed: false,
           sourceChainSlotIndex: 0,
+          exposedParameterPorts: [],
         },
       },
       { id: 'output', type: 'trackOutput' },
@@ -1413,6 +1414,110 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
     expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('[FXG]'), expect.objectContaining({ trackId: '7' }))
+  })
+
+  it('toggles exposed graph parameter ports as graphState edits without touching chains or runtime routing', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const baseChain = seedGraphMode(useEffectChainStore, makePositionedGraphState('7'))
+
+    const expose = await useEffectChainStore.getState().toggleGraphNodeParameterPortForTrack('7', 'fx-1', {
+      parameterId: 'feedback',
+      parameterIndex: 3,
+      name: 'Feedback',
+      unit: '%',
+      automatable: true,
+      readOnly: false,
+      normalizedValue: 0.7,
+    })
+
+    expect(expose.ok).toBe(true)
+    expect(expose.exposed).toBe(true)
+    let state = useEffectChainStore.getState()
+    const exposedPorts = state.graphStates['7'].nodes.find((node) => node.id === 'fx-1').data.exposedParameterPorts
+    expect(exposedPorts).toEqual([
+      {
+        parameterId: 'feedback',
+        parameterIndex: 3,
+        nameSnapshot: 'Feedback',
+        labelSnapshot: '%',
+        parameterIdIsFallback: false,
+        automatable: true,
+        readOnly: false,
+      },
+    ])
+    expect(state.chains['7']).toBe(baseChain)
+    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, state.graphStates['7'])
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+    expect(audio.addEffect).not.toHaveBeenCalled()
+    expect(state.graphHistories['7'].undoStack).toHaveLength(1)
+    expect(state.graphHistories['7'].undoStack[0]).toMatchObject({ label: 'expose_parameter_port' })
+
+    timeline.setTrackGraphState.mockClear()
+    const unexpose = await useEffectChainStore.getState().toggleGraphNodeParameterPortForTrack('7', 'fx-1', {
+      parameterId: 'feedback',
+      parameterIndex: 3,
+      name: 'Feedback',
+    })
+    state = useEffectChainStore.getState()
+    expect(unexpose.ok).toBe(true)
+    expect(unexpose.exposed).toBe(false)
+    expect(state.graphStates['7'].nodes.find((node) => node.id === 'fx-1').data.exposedParameterPorts)
+      .toEqual([])
+    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, state.graphStates['7'])
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+    expect(state.chains['7']).toBe(baseChain)
+  })
+
+  it('undoes and redoes exposed parameter ports without runtime sync', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const baseChain = seedGraphMode(useEffectChainStore, makePositionedGraphState('7'))
+
+    await useEffectChainStore.getState().toggleGraphNodeParameterPortForTrack('7', 'fx-1', {
+      parameterId: 'mix',
+      parameterIndex: 1,
+      name: 'Mix',
+      automatable: true,
+      readOnly: false,
+    })
+    audio.syncLinearGraphTopology.mockClear()
+
+    const undo = await useEffectChainStore.getState().undoGraphEditForTrack('7')
+    expect(undo.ok).toBe(true)
+    let state = useEffectChainStore.getState()
+    expect(state.graphStates['7'].nodes.find((node) => node.id === 'fx-1').data.exposedParameterPorts)
+      .toEqual([])
+    expect(state.graphHistories['7'].redoStack).toHaveLength(1)
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+
+    const redo = await useEffectChainStore.getState().redoGraphEditForTrack('7')
+    expect(redo.ok).toBe(true)
+    state = useEffectChainStore.getState()
+    expect(state.graphStates['7'].nodes.find((node) => node.id === 'fx-1').data.exposedParameterPorts[0])
+      .toMatchObject({ parameterId: 'mix', nameSnapshot: 'Mix' })
+    expect(state.graphHistories['7'].redoStack).toHaveLength(0)
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+    expect(state.chains['7']).toBe(baseChain)
+  })
+
+  it('rejects exposed parameter port edits outside graph ownership', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const graphState = makePositionedGraphState('7')
+    useEffectChainStore.setState({
+      fxModes: { '7': 'chain' },
+      graphStates: { '7': graphState },
+      graphStateStatuses: { '7': { status: 'valid', graphState, warnings: [] } },
+    })
+
+    await expect(
+      useEffectChainStore.getState().toggleGraphNodeParameterPortForTrack('7', 'fx-1', {
+        parameterId: 'mix',
+        parameterIndex: 1,
+      }),
+    ).resolves.toMatchObject({ ok: false, reason: 'not_graph_mode' })
+
+    expect(useEffectChainStore.getState().graphStates['7']).toBe(graphState)
+    expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
   })
 
   // --- FXG.3-b graph-owned engine instance lifecycle ---

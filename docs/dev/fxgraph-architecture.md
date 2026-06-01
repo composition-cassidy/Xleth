@@ -1,6 +1,6 @@
 # FX Graph Architecture
 
-Internal reference for the renderer-side graphState system. Updated through FXG.4-a.
+Internal reference for the renderer-side graphState system. Updated through FXG.4-b.
 
 ## Data model separation
 
@@ -261,7 +261,7 @@ merge points is handled by `AudioGraph::computePDC()`.
   `rebuildChainRouting`), per-branch wet/dry or merge-gain UI, latency display.
 - Feedback loops, modulation, buses, parameter pinning remain deferred.
 
-## Graph effect parameter exposure (FXG.4-a)
+## Graph effect parameter exposure (FXG.4-a / FXG.4-b)
 
 A single graph-owned descriptor layer exposes parameter metadata and current
 **normalized [0.0, 1.0]** values for any graph-owned effect node — stock or
@@ -302,10 +302,22 @@ third-party — without going through Mixer Chain slot editing.
   `fxMode === 'graph'`, addressed by `effectInstanceId`. These are pure engine
   queries: they never mutate `effectChains` or `graphState`, and no parameter
   snapshot is persisted (descriptors are discovered live from the processor).
-- **UI.** `GraphNodeParameterInspector` is a minimal read-mostly panel: it lists
-  parameters for a selected graph-owned effect node and offers a normalized
-  slider for writable parameters. Read-only / non-automatable parameters show a
-  value with no slider.
+- **UI discovery (FXG.4-a).** The descriptor/read/write surface remains available
+  to graph-owned nodes, but it is no longer mounted as a default full-panel
+  slider rack in the FX Graph shell.
+- **Port exposure (FXG.4-b).** Right-clicking a graph effect node opens a compact
+  node menu with Edit, Remove, and Expose Parameter controls. The menu fetches
+  live descriptors from the graph-owned processor, filters/searches them in the
+  renderer, disables read-only or non-automatable descriptors, and toggles only
+  persisted graph data. A toggled parameter is stored on the effect node as
+  `node.data.exposedParameterPorts[]` with a compact snapshot:
+  `parameterId`, optional `parameterIndex`, display-name/unit snapshots, fallback
+  identity flag, and nullable `automatable` / `readOnly` flags. Normalized
+  values are not persisted.
+- **Port rendering.** Exposed parameters render as compact parameter-input rows
+  on the graph node. They are visual/future connection targets only in FXG.4-b;
+  toggling them does not call runtime topology sync, does not write parameter
+  values, and does not mutate Mixer Chain `effectChains`.
 - **Still deferred.** No automation lanes, modulation, LFOs, envelopes, peak
   followers, macros, buses, parameter pinning, gestures, sample-accurate
   automation, or generic plugin-editor replacement. Mixer Chain behavior is
