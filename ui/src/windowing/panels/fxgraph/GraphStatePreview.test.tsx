@@ -5,7 +5,9 @@ import GraphStatePreview, {
   GraphParameterContextMenu,
   GraphStatePreviewNode,
   buildGraphStatePreviewModel,
+  connectHighlightedParameterDropTarget,
   filterExposeParameterDescriptors,
+  resolveParameterDropTargetFromElement,
   type GraphStateDocument,
   type GraphStateEdge,
   type GraphStateNode,
@@ -100,6 +102,16 @@ function findElementByClass(element: React.ReactElement, className: string): Rea
     if (nested) return nested;
   }
   return null;
+}
+
+function makeClosestElement(
+  attributes: Record<string, string | null>,
+  closestBySelector: Record<string, unknown> = {},
+) {
+  return {
+    getAttribute: (name: string) => attributes[name] ?? null,
+    closest: (selector: string) => closestBySelector[selector] ?? null,
+  };
 }
 
 describe('GraphStatePreview', () => {
@@ -245,7 +257,7 @@ describe('GraphStatePreview', () => {
     expect(html).toContain('Crashed');
   });
 
-  it('renders exposed parameter ports as compact effect-node input targets', () => {
+  it('renders exposed parameter ports in a distinct parameter lane beside the audio input', () => {
     const html = renderToStaticMarkup(
       <GraphStatePreview
         graphState={graphState([
@@ -268,6 +280,9 @@ describe('GraphStatePreview', () => {
       />,
     );
 
+    expect(html).toContain('xleth-graph-state-preview__handle--in');
+    expect(html).toContain('xleth-graph-state-preview__parameter-section');
+    expect(html).toContain('Parameters');
     expect(html).toContain('xleth-graph-state-preview__parameter-port');
     // Stable compound port id: gpp:{graphNodeId}:{parameterId}
     expect(html).toContain('data-parameter-port-id="gpp:delay:feedback"');
@@ -923,6 +938,31 @@ describe('GraphStatePreview', () => {
     });
   }
 
+  function effectWithPorts(): GraphStateNode {
+    return effectNode('eq', 'EQ', 0, { x: 260, y: 0 }, {
+      exposedParameterPorts: [
+        {
+          parameterId: 'b0_q',
+          parameterIndexFallback: 2,
+          nameSnapshot: 'B0 Q',
+          labelSnapshot: null,
+          parameterIdIsFallback: false,
+          automatable: true,
+          readOnly: false,
+        },
+        {
+          parameterId: 'b2_q',
+          parameterIndexFallback: 14,
+          nameSnapshot: 'B2 Q',
+          labelSnapshot: null,
+          parameterIdIsFallback: false,
+          automatable: true,
+          readOnly: false,
+        },
+      ],
+    });
+  }
+
   function parameterEdge(
     id: string,
     macroNodeId: string,
@@ -1037,5 +1077,111 @@ describe('GraphStatePreview', () => {
 
     handle.props.onPointerDown({ button: 0 });
     expect(onConnectPointerDown).toHaveBeenCalledWith({ button: 0 }, macro);
+  });
+
+  it('highlights the exact hovered parameter input target', () => {
+    const eq = buildGraphStatePreviewModel(graphState([
+      effectWithPorts(),
+    ], [])).nodes.find((candidate) => candidate.id === 'eq')!;
+
+    const b2Html = renderToStaticMarkup(
+      <GraphStatePreviewNode
+        node={eq}
+        dragging={false}
+        connectEnabled={false}
+        connectParameterEnabled
+        connectActive={false}
+        hoveredParameterPortId="gpp:eq:b2_q"
+        canRemove={false}
+        canEdit={false}
+      />,
+    );
+
+    expect(b2Html).toContain('data-parameter-port-id="gpp:eq:b2_q"');
+    expect(b2Html).toContain('data-drop-target-hovered="true"');
+    expect(countAttribute(b2Html, 'data-drop-target-hovered="true"')).toBe(1);
+    expect(b2Html).toContain('aria-label="EQ parameter input: B2 Q"');
+
+    const b0Html = renderToStaticMarkup(
+      <GraphStatePreviewNode
+        node={eq}
+        dragging={false}
+        connectEnabled={false}
+        connectParameterEnabled
+        connectActive={false}
+        hoveredParameterPortId="gpp:eq:b0_q"
+        canRemove={false}
+        canEdit={false}
+      />,
+    );
+
+    expect(b0Html).toContain('data-parameter-port-id="gpp:eq:b0_q"');
+    expect(countAttribute(b0Html, 'data-drop-target-hovered="true"')).toBe(1);
+  });
+
+  it('clears the parameter target highlight when no valid parameter is hovered', () => {
+    const eq = buildGraphStatePreviewModel(graphState([
+      effectWithPorts(),
+    ], [])).nodes.find((candidate) => candidate.id === 'eq')!;
+
+    const html = renderToStaticMarkup(
+      <GraphStatePreviewNode
+        node={eq}
+        dragging={false}
+        connectEnabled={false}
+        connectParameterEnabled
+        connectActive={false}
+        hoveredParameterPortId={null}
+        canRemove={false}
+        canEdit={false}
+      />,
+    );
+
+    expect(html).toContain('data-parameter-port-id="gpp:eq:b2_q"');
+    expect(html).not.toContain('data-drop-target-hovered="true"');
+  });
+
+  it('resolves parameter drop targets from the exact hovered port metadata', () => {
+    const nodeElement = makeClosestElement({ 'data-node-id': 'eq' });
+    const portElement = makeClosestElement({
+      'data-parameter-id': 'b2_q',
+      'data-parameter-port-id': 'gpp:eq:b2_q',
+    }, {
+      '[data-node-id]': nodeElement,
+    });
+    const labelElement = makeClosestElement({}, {
+      '[data-parameter-port-type="parameter-input"][data-parameter-port-id]': portElement,
+    });
+
+    expect(resolveParameterDropTargetFromElement(labelElement as Element, 'macro-a')).toEqual({
+      nodeId: 'eq',
+      parameterId: 'b2_q',
+      portId: 'gpp:eq:b2_q',
+    });
+  });
+
+  it('rejects invalid parameter drops before creating a parameter edge', () => {
+    const onConnect = vi.fn();
+    const audioHandle = makeClosestElement({}, {
+      '[data-parameter-port-type="parameter-input"][data-parameter-port-id]': null,
+    });
+
+    const target = resolveParameterDropTargetFromElement(audioHandle as Element, 'macro-a');
+
+    expect(target).toBeNull();
+    expect(connectHighlightedParameterDropTarget('macro-a', target, onConnect)).toBe(false);
+    expect(onConnect).not.toHaveBeenCalled();
+  });
+
+  it('connects macro release through the highlighted parameter target metadata', () => {
+    const onConnect = vi.fn();
+    const target = {
+      nodeId: 'eq',
+      parameterId: 'b2_q',
+      portId: 'gpp:eq:b2_q',
+    };
+
+    expect(connectHighlightedParameterDropTarget('macro-a', target, onConnect)).toBe(true);
+    expect(onConnect).toHaveBeenCalledWith('macro-a', 'eq', 'b2_q');
   });
 });

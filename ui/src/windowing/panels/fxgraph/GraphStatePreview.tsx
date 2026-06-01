@@ -117,6 +117,12 @@ interface PreviewModelOptions {
   nodePositionOverrides?: Record<string, { x: number; y: number }> | Map<string, { x: number; y: number }>;
 }
 
+export interface ParameterDropTarget {
+  nodeId: string;
+  parameterId: string;
+  portId: string;
+}
+
 interface GraphStatePreviewProps {
   graphState?: GraphStateDocument | null;
   notice?: string | null;
@@ -150,6 +156,10 @@ interface GraphStatePreviewProps {
 const NODE_WIDTH = 148;
 const NODE_HEIGHT = 74;
 const PARAMETER_PORT_ROW_HEIGHT = 18;
+const PARAMETER_PORT_SECTION_TOP = 8;
+const PARAMETER_PORT_SECTION_BOTTOM = 10;
+const PARAMETER_PORT_SECTION_HEADER = 12;
+const PARAMETER_PORT_SECTION_ROW_GAP = 4;
 const PREVIEW_PADDING_X = 24;
 const PREVIEW_PADDING_Y = 24;
 const HANDLE_OUTSET = 8;
@@ -381,8 +391,17 @@ function makeVirtualAnchorNode(
   };
 }
 
+function parameterPortSectionHeight(portCount: number) {
+  if (portCount <= 0) return 0;
+  return PARAMETER_PORT_SECTION_TOP
+    + PARAMETER_PORT_SECTION_HEADER
+    + (portCount * PARAMETER_PORT_ROW_HEIGHT)
+    + Math.max(0, portCount - 1) * PARAMETER_PORT_SECTION_ROW_GAP
+    + PARAMETER_PORT_SECTION_BOTTOM;
+}
+
 function nodeHeightForPorts(portCount: number) {
-  return NODE_HEIGHT + Math.max(0, portCount) * PARAMETER_PORT_ROW_HEIGHT;
+  return NODE_HEIGHT + parameterPortSectionHeight(portCount);
 }
 
 function nodeHeightForText(text: ReturnType<typeof resolveNodeText>) {
@@ -473,10 +492,9 @@ function makeEdgePath(source: PositionedNode, target: PositionedNode) {
   return makeCurvePath(sourceX, sourceY, targetX, targetY);
 }
 
-// FXG.4-e/f — parameter edges land on a specific exposed parameter input port. The
-// ports render in a stack at the bottom of the target node, so the anchor is
-// approximated from the node's bottom edge using the port row height. Falls back to
-// the node's left-middle when the parameter is not (or no longer) exposed.
+// FXG.4-e/f — parameter edges land on a specific exposed parameter input port.
+// The ports render in a dedicated lane below the audio path, so the anchor matches
+// the lane row instead of the node's audio input handle.
 function parameterPortAnchor(node: PositionedNode, parameterId: string | null) {
   const ports = node.parameterPorts;
   const count = ports.length;
@@ -484,10 +502,41 @@ function parameterPortAnchor(node: PositionedNode, parameterId: string | null) {
   if (count === 0 || index < 0) {
     return { x: node.x, y: node.y + node.height / 2 };
   }
-  const bottomPadding = 10;
-  const portsBottom = node.y + node.height - bottomPadding;
-  const y = portsBottom - (count - index - 0.5) * PARAMETER_PORT_ROW_HEIGHT;
+  const sectionTop = node.y + NODE_HEIGHT + PARAMETER_PORT_SECTION_TOP;
+  const rowsTop = sectionTop + PARAMETER_PORT_SECTION_HEADER;
+  const y = rowsTop
+    + index * (PARAMETER_PORT_ROW_HEIGHT + PARAMETER_PORT_SECTION_ROW_GAP)
+    + PARAMETER_PORT_ROW_HEIGHT / 2;
   return { x: node.x, y };
+}
+
+export function resolveParameterDropTargetFromElement(
+  element: Element | null,
+  sourceNodeId?: string | null,
+): ParameterDropTarget | null {
+  if (!element || typeof element.closest !== 'function') return null;
+  const portElement = element.closest('[data-parameter-port-type="parameter-input"][data-parameter-port-id]');
+  if (!portElement) return null;
+  const parameterId = portElement.getAttribute('data-parameter-id');
+  const portId = portElement.getAttribute('data-parameter-port-id');
+  const nodeElement = portElement.closest('[data-node-id]');
+  const nodeId = nodeElement?.getAttribute('data-node-id') ?? null;
+  if (!nodeId || !parameterId || !portId || nodeId === sourceNodeId) return null;
+  return { nodeId, parameterId, portId };
+}
+
+export function connectHighlightedParameterDropTarget(
+  sourceNodeId: string,
+  target: ParameterDropTarget | null,
+  onConnect?: (macroNodeId: string, targetNodeId: string, parameterId: string) => void,
+) {
+  if (!target || !onConnect) return false;
+  onConnect(sourceNodeId, target.nodeId, target.parameterId);
+  return true;
+}
+
+function isElementLike(element: Element | null): element is Element {
+  return !!element && typeof element.closest === 'function';
 }
 
 function readEdgeParameterId(edge: GraphStateEdge, targetNodeId: string): string | null {
@@ -610,6 +659,7 @@ export function GraphStatePreviewNode({
   connectEnabled,
   connectParameterEnabled = false,
   connectActive,
+  hoveredParameterPortId = null,
   canRemove,
   canEdit,
   onPointerDown,
@@ -631,6 +681,7 @@ export function GraphStatePreviewNode({
   connectEnabled: boolean;
   connectParameterEnabled?: boolean;
   connectActive: boolean;
+  hoveredParameterPortId?: string | null;
   canRemove: boolean;
   canEdit: boolean;
   onPointerDown?: (event: React.PointerEvent<HTMLDivElement>, node: PositionedNode) => void;
@@ -692,9 +743,11 @@ export function GraphStatePreviewNode({
         onPointerDown ? 'xleth-graph-state-preview__node--draggable' : '',
         dragging ? 'xleth-graph-state-preview__node--dragging' : '',
         connectActive ? 'xleth-graph-state-preview__node--connect-source' : '',
+        hoveredParameterPortId ? 'xleth-graph-state-preview__node--parameter-drop-target' : '',
       ].filter(Boolean).join(' ')}
       data-node-id={node.id}
       data-node-type={node.type}
+      data-parameter-drop-node={hoveredParameterPortId ? 'true' : undefined}
       data-preview-virtual={node.virtual ? 'true' : undefined}
       role="listitem"
       aria-label={node.label}
@@ -814,23 +867,37 @@ export function GraphStatePreviewNode({
         </span>
       )}
       {node.parameterPorts.length > 0 && (
-        <span className="xleth-graph-state-preview__parameter-ports" role="list" aria-label={`${node.label} parameter inputs`}>
-          {node.parameterPorts.map((port) => (
-            <span
-              className="xleth-graph-state-preview__parameter-port"
-              role="listitem"
-              key={port.parameterId}
-              title={port.nameSnapshot}
-              data-parameter-port-id={`gpp:${node.id}:${port.parameterId}`}
-              data-parameter-id={port.parameterId}
-              data-parameter-port-type="parameter-input"
-            >
-              <span className="xleth-graph-state-preview__parameter-port-dot" aria-hidden="true" />
-              <span className="xleth-graph-state-preview__parameter-port-label">
-                {port.nameSnapshot}
-              </span>
-            </span>
-          ))}
+        <span className="xleth-graph-state-preview__parameter-section">
+          <span className="xleth-graph-state-preview__parameter-section-label">
+            Parameters
+          </span>
+          <span className="xleth-graph-state-preview__parameter-ports" role="list" aria-label={`${node.label} parameter inputs`}>
+            {node.parameterPorts.map((port) => {
+              const portId = `gpp:${node.id}:${port.parameterId}`;
+              const hovered = hoveredParameterPortId === portId;
+              return (
+                <span
+                  className={[
+                    'xleth-graph-state-preview__parameter-port',
+                    hovered ? 'xleth-graph-state-preview__parameter-port--hovered' : '',
+                  ].filter(Boolean).join(' ')}
+                  role="listitem"
+                  key={port.parameterId}
+                  title={port.nameSnapshot}
+                  aria-label={`${node.label} parameter input: ${port.nameSnapshot}`}
+                  data-parameter-port-id={portId}
+                  data-parameter-id={port.parameterId}
+                  data-parameter-port-type="parameter-input"
+                  data-drop-target-hovered={hovered ? 'true' : undefined}
+                >
+                  <span className="xleth-graph-state-preview__parameter-port-dot" aria-hidden="true" />
+                  <span className="xleth-graph-state-preview__parameter-port-label">
+                    {port.nameSnapshot}
+                  </span>
+                </span>
+              );
+            })}
+          </span>
         </span>
       )}
       {(showEdit || showRemove) && (
@@ -1089,6 +1156,7 @@ export default function GraphStatePreview({
     sourceNodeId: string;
     sourceKind: 'audio' | 'macro';
   } | null>(null);
+  const hoveredParameterTargetRef = React.useRef<ParameterDropTarget | null>(null);
   const [draggingNodeId, setDraggingNodeId] = React.useState<string | null>(null);
   const [dragPreviewPosition, setDragPreviewPosition] = React.useState<{
     nodeId: string;
@@ -1098,6 +1166,7 @@ export default function GraphStatePreview({
   const [panning, setPanning] = React.useState(false);
   const [connectingFromNodeId, setConnectingFromNodeId] = React.useState<string | null>(null);
   const [connectPoint, setConnectPoint] = React.useState<{ x: number; y: number } | null>(null);
+  const [hoveredParameterTarget, setHoveredParameterTarget] = React.useState<ParameterDropTarget | null>(null);
   const [contextMenu, setContextMenu] = React.useState<{
     node: PositionedNode;
     x: number;
@@ -1380,9 +1449,25 @@ export default function GraphStatePreview({
     if (connectRef.current?.pointerId === event.pointerId) {
       event.currentTarget.releasePointerCapture?.(event.pointerId);
       connectRef.current = null;
+      hoveredParameterTargetRef.current = null;
       setConnectingFromNodeId(null);
       setConnectPoint(null);
+      setHoveredParameterTarget(null);
     }
+  }, []);
+
+  const updateHoveredParameterTarget = React.useCallback((event: React.PointerEvent<HTMLSpanElement>) => {
+    const connect = connectRef.current;
+    if (!connect || connect.pointerId !== event.pointerId || connect.sourceKind !== 'macro') return;
+
+    const dropElement = typeof document !== 'undefined'
+      ? document.elementFromPoint(event.clientX, event.clientY)
+      : null;
+    const nextTarget = resolveParameterDropTargetFromElement(dropElement, connect.sourceNodeId);
+    const previous = hoveredParameterTargetRef.current;
+    if (previous?.portId === nextTarget?.portId) return;
+    hoveredParameterTargetRef.current = nextTarget;
+    setHoveredParameterTarget(nextTarget);
   }, []);
 
   const handleConnectPointerDown = React.useCallback((
@@ -1401,8 +1486,10 @@ export default function GraphStatePreview({
       sourceNodeId: node.id,
       sourceKind: isMacro ? 'macro' : 'audio',
     };
+    hoveredParameterTargetRef.current = null;
     setConnectingFromNodeId(node.id);
     setConnectPoint(toCanvasPoint(event.clientX, event.clientY));
+    setHoveredParameterTarget(null);
   }, [canConnect, canConnectParameters, toCanvasPoint]);
 
   const handleConnectPointerMove = React.useCallback((event: React.PointerEvent<HTMLSpanElement>) => {
@@ -1411,7 +1498,8 @@ export default function GraphStatePreview({
 
     event.preventDefault();
     setConnectPoint(toCanvasPoint(event.clientX, event.clientY));
-  }, [toCanvasPoint]);
+    updateHoveredParameterTarget(event);
+  }, [toCanvasPoint, updateHoveredParameterTarget]);
 
   const handleConnectPointerUp = React.useCallback((event: React.PointerEvent<HTMLSpanElement>) => {
     const connect = connectRef.current;
@@ -1424,36 +1512,28 @@ export default function GraphStatePreview({
       : null;
 
     // Macro controlOut → exposed parameter input port creates a parameter edge.
-    // The drop must land on a parameter port; node bodies and audio handles no-op.
+    // The drop must land on the highlighted parameter port; node bodies and audio
+    // handles no-op.
     if (connect.sourceKind === 'macro') {
-      let targetNodeId: string | null = null;
-      let parameterId: string | null = null;
-      if (dropElement instanceof Element) {
-        const portElement = dropElement.closest('[data-parameter-port-id]');
-        if (portElement) {
-          parameterId = portElement.getAttribute('data-parameter-id');
-          const nodeElement = portElement.closest('[data-node-id]');
-          targetNodeId = nodeElement?.getAttribute('data-node-id') ?? null;
-        }
-      }
+      const target = hoveredParameterTargetRef.current;
 
       resetConnect(event);
 
-      if (onConnectMacroToParameter && targetNodeId && parameterId && targetNodeId !== sourceNodeId) {
-        onConnectMacroToParameter(sourceNodeId, targetNodeId, parameterId);
-      }
+      connectHighlightedParameterDropTarget(sourceNodeId, target, onConnectMacroToParameter);
       return;
     }
 
-    // Audio out → node body creates an audio edge (unchanged behavior).
-    const targetNode = dropElement instanceof Element
+    // Audio out → node body creates an audio edge. Parameter ports are not valid
+    // audio targets, even though they sit inside effect nodes.
+    const parameterDropTarget = resolveParameterDropTargetFromElement(dropElement, sourceNodeId);
+    const targetNode = isElementLike(dropElement)
       ? dropElement.closest('[data-node-id]')
       : null;
     const targetNodeId = targetNode?.getAttribute('data-node-id') ?? null;
 
     resetConnect(event);
 
-    if (onConnectNodes && targetNodeId && targetNodeId !== sourceNodeId) {
+    if (!parameterDropTarget && onConnectNodes && targetNodeId && targetNodeId !== sourceNodeId) {
       onConnectNodes(sourceNodeId, targetNodeId);
     }
   }, [onConnectMacroToParameter, onConnectNodes, resetConnect]);
@@ -1461,13 +1541,19 @@ export default function GraphStatePreview({
   const connectingNode = connectingFromNodeId
     ? model.nodes.find((node) => node.id === connectingFromNodeId)
     : undefined;
-  const connectLinePath = connectingNode && connectPoint
+  const hoveredParameterNode = hoveredParameterTarget
+    ? model.nodes.find((node) => node.id === hoveredParameterTarget.nodeId)
+    : undefined;
+  const displayedConnectPoint = hoveredParameterNode
+    ? parameterPortAnchor(hoveredParameterNode, hoveredParameterTarget?.parameterId ?? null)
+    : connectPoint;
+  const connectLinePath = connectingNode && displayedConnectPoint
     ? (() => {
         const start = nodeOutPoint(connectingNode);
-        const midpointX = start.x + (connectPoint.x - start.x) / 2;
+        const midpointX = start.x + (displayedConnectPoint.x - start.x) / 2;
         return [
           `M ${start.x} ${start.y}`,
-          `C ${midpointX} ${start.y}, ${midpointX} ${connectPoint.y}, ${connectPoint.x} ${connectPoint.y}`,
+          `C ${midpointX} ${start.y}, ${midpointX} ${displayedConnectPoint.y}, ${displayedConnectPoint.x} ${displayedConnectPoint.y}`,
         ].join(' ');
       })()
     : null;
@@ -1575,6 +1661,8 @@ export default function GraphStatePreview({
             style={canvasStyle}
             data-node-dragging={draggingNodeId != null ? 'true' : undefined}
             data-connecting={connectingFromNodeId != null ? 'true' : undefined}
+            data-connecting-kind={connectRef.current?.sourceKind ?? undefined}
+            data-parameter-drop-target={hoveredParameterTarget?.portId ?? undefined}
           >
             <svg
               className="xleth-graph-state-preview__edges"
@@ -1611,6 +1699,7 @@ export default function GraphStatePreview({
                   connectEnabled={canConnect}
                   connectParameterEnabled={canConnectParameters}
                   connectActive={connectingFromNodeId === node.id}
+                  hoveredParameterPortId={hoveredParameterTarget?.nodeId === node.id ? hoveredParameterTarget.portId : null}
                   canRemove={canRemoveNode}
                   canEdit={canEditNode}
                   onPointerDown={canDragNodes ? handleNodePointerDown : undefined}
