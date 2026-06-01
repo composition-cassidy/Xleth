@@ -22,6 +22,9 @@ export interface GraphEffectParameterDescriptor {
   parameterId: string;
   parameterIndex: number;
   parameterIdIsFallback?: boolean;
+  pluginId?: string;
+  effectKind?: string;
+  pluginFormat?: string;
   name?: string;
   unit?: string;
   normalizedValue?: number;
@@ -48,6 +51,23 @@ export interface EffectNodeOption {
   label: string;
 }
 
+export interface GraphParameterExposureContext {
+  pluginId?: string | null;
+  effectKind?: string | null;
+  pluginFormat?: string | null;
+  resultPluginId?: string | null;
+}
+
+export interface GraphExposeParameterMenuItem {
+  parameter: GraphEffectParameterDescriptor;
+  label: string;
+}
+
+export interface GraphExposeParameterMenuGroup {
+  groupLabel: string | null;
+  parameters: GraphExposeParameterMenuItem[];
+}
+
 const PARAM_FAILURE_MESSAGES: Record<string, string> = {
   not_graph_mode: 'Switch this track to FX Graph mode first.',
   missing_effect_instance_id: 'Select an effect node.',
@@ -68,6 +88,93 @@ export function describeParamFailure(reason: string | undefined): string {
 
 export function isWritableParameter(param: GraphEffectParameterDescriptor): boolean {
   return param.automatable !== false && param.readOnly !== true;
+}
+
+const STOCK_EQ_PLUGIN_IDS = new Set(['xletheq', 'stock:eq', 'eq']);
+const EQ_EXPOSURE_CONTROLS = [
+  { suffix: 'freq', label: 'Frequency' },
+  { suffix: 'gain', label: 'Gain' },
+  { suffix: 'q', label: 'Q' },
+  { suffix: 'type', label: 'Type' },
+  { suffix: 'enabled', label: 'Enabled' },
+] as const;
+const EQ_EXPOSURE_BANDS = [0, 1, 2] as const;
+
+function normalizeIdentity(value: unknown) {
+  return typeof value === 'string' && value.trim().length > 0
+    ? value.trim().toLowerCase()
+    : '';
+}
+
+export function isStockEqExposureContext(context: GraphParameterExposureContext = {}): boolean {
+  const effectKind = normalizeIdentity(context.effectKind);
+  const pluginFormat = normalizeIdentity(context.pluginFormat);
+  if (effectKind === 'plugin' || (pluginFormat.length > 0 && pluginFormat !== 'stock')) {
+    return false;
+  }
+
+  const pluginIds = [
+    normalizeIdentity(context.pluginId),
+    normalizeIdentity(context.resultPluginId),
+  ];
+  return pluginIds.some((pluginId) => STOCK_EQ_PLUGIN_IDS.has(pluginId));
+}
+
+function matchesExposureSearch(
+  item: GraphExposeParameterMenuItem,
+  groupLabel: string | null,
+  search: string,
+) {
+  const needle = search.trim().toLowerCase();
+  if (!needle) return true;
+  const parameter = item.parameter;
+  return [
+    groupLabel,
+    item.label,
+    parameter.name,
+    parameter.parameterId,
+  ].filter(Boolean).join(' ').toLowerCase().includes(needle);
+}
+
+export function buildExposeParameterMenuGroups(
+  parameters: GraphEffectParameterDescriptor[],
+  context: GraphParameterExposureContext = {},
+  search = '',
+): GraphExposeParameterMenuGroup[] {
+  const source = Array.isArray(parameters) ? parameters : [];
+
+  if (isStockEqExposureContext(context)) {
+    const byParameterId = new Map(
+      source
+        .filter((parameter) => typeof parameter.parameterId === 'string' && parameter.parameterId.length > 0)
+        .map((parameter) => [parameter.parameterId, parameter]),
+    );
+
+    return EQ_EXPOSURE_BANDS
+      .map((bandIndex) => {
+        const groupLabel = `Band ${bandIndex}`;
+        const menuItems = EQ_EXPOSURE_CONTROLS
+          .map(({ suffix, label }) => {
+            const parameter = byParameterId.get(`b${bandIndex}_${suffix}`);
+            return parameter ? { parameter, label } : null;
+          })
+          .filter((item): item is GraphExposeParameterMenuItem => item != null)
+          .filter((item) => matchesExposureSearch(item, groupLabel, search));
+        return { groupLabel, parameters: menuItems };
+      })
+      .filter((group) => group.parameters.length > 0);
+  }
+
+  const menuItems = source
+    .map((parameter) => ({
+      parameter,
+      label: parameter.name || parameter.parameterId,
+    }))
+    .filter((item) => matchesExposureSearch(item, null, search));
+
+  return menuItems.length > 0
+    ? [{ groupLabel: null, parameters: menuItems }]
+    : [];
 }
 
 export function collectEffectNodeOptions(graphState: GraphStateDocument | null): EffectNodeOption[] {

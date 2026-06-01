@@ -10,6 +10,7 @@ import GraphStatePreview, {
   type GraphStateEdge,
   type GraphStateNode,
 } from './GraphStatePreview';
+import { buildExposeParameterMenuGroups } from './graphParameterUtils';
 
 function inputNode(position = { x: 0, y: 0 }): GraphStateNode {
   return { id: 'input', type: 'trackInput', position, data: {} };
@@ -747,6 +748,120 @@ describe('GraphStatePreview', () => {
     expect(html).toContain('Meter');
     expect(html).toContain('Read-only');
     expect(html).toContain('disabled');
+  });
+
+  it('curates the Xleth EQ exposure menu to three normal editable bands with friendly labels', () => {
+    const node = buildGraphStatePreviewModel(graphState([
+      inputNode(),
+      effectNode('eq', 'Parametric EQ', 0, { x: 260, y: 0 }, { pluginId: 'xletheq' }),
+      outputNode({ x: 520, y: 0 }),
+    ], [])).nodes.find((candidate) => candidate.id === 'eq')!;
+    const parameters = [
+      { parameterId: 'b0_freq', parameterIndex: 0, name: 'B0 Freq', automatable: true, readOnly: false },
+      { parameterId: 'b0_gain', parameterIndex: 1, name: 'B0 Gain', automatable: true, readOnly: false },
+      { parameterId: 'b0_q', parameterIndex: 2, name: 'B0 Q', automatable: true, readOnly: false },
+      { parameterId: 'b0_type', parameterIndex: 3, name: 'B0 Type', automatable: true, readOnly: false },
+      { parameterId: 'b0_enabled', parameterIndex: 4, name: 'B0 Enabled', automatable: true, readOnly: false },
+      { parameterId: 'b0_spec_sens', parameterIndex: 5, name: 'B0 Spec Sens', automatable: true, readOnly: false },
+      { parameterId: 'b0_dyn_attack', parameterIndex: 6, name: 'B0 Dyn Attack', automatable: true, readOnly: false },
+      { parameterId: 'b1_freq', parameterIndex: 7, name: 'B1 Freq', automatable: true, readOnly: false },
+      { parameterId: 'b1_gain', parameterIndex: 8, name: 'B1 Gain', automatable: true, readOnly: false },
+      { parameterId: 'b1_q', parameterIndex: 9, name: 'B1 Q', automatable: true, readOnly: false },
+      { parameterId: 'b1_type', parameterIndex: 10, name: 'B1 Type', automatable: true, readOnly: false },
+      { parameterId: 'b1_enabled', parameterIndex: 11, name: 'B1 Enabled', automatable: true, readOnly: false },
+      { parameterId: 'b2_freq', parameterIndex: 12, name: 'B2 Freq', automatable: true, readOnly: false },
+      { parameterId: 'b2_gain', parameterIndex: 13, name: 'B2 Gain', automatable: true, readOnly: false },
+      { parameterId: 'b2_q', parameterIndex: 14, name: 'B2 Q', automatable: true, readOnly: false },
+      { parameterId: 'b2_type', parameterIndex: 15, name: 'B2 Type', automatable: true, readOnly: false },
+      { parameterId: 'b2_enabled', parameterIndex: 16, name: 'B2 Enabled', automatable: true, readOnly: false },
+      { parameterId: 'b3_freq', parameterIndex: 17, name: 'B3 Freq', automatable: true, readOnly: false },
+      { parameterId: 'linphase', parameterIndex: 18, name: 'Linear Phase', automatable: true, readOnly: false },
+    ];
+    const html = renderToStaticMarkup(
+      <GraphParameterContextMenu
+        node={node}
+        x={12}
+        y={24}
+        result={{
+          ok: true,
+          effectKind: 'stock',
+          pluginFormat: 'stock',
+          pluginId: 'xletheq',
+          parameters,
+        }}
+        canEdit
+        canRemove
+      />,
+    );
+
+    expect(html).toContain('Band 0');
+    expect(html).toContain('Band 1');
+    expect(html).toContain('Band 2');
+    expect(html).toContain('Frequency');
+    expect(html).toContain('Gain');
+    expect(html).toContain('Q');
+    expect(html).toContain('Type');
+    expect(html).toContain('Enabled');
+    expect(countText(html, 'role="menuitemcheckbox"')).toBe(15);
+    expect(html).not.toContain('B0 Spec Sens');
+    expect(html).not.toContain('B0 Dyn Attack');
+    expect(html).not.toContain('B3 Freq');
+    expect(html).not.toContain('Linear Phase');
+  });
+
+  it('keeps curated EQ menu items bound to their original parameter descriptors', () => {
+    const b0Freq = {
+      parameterId: 'b0_freq',
+      parameterIndex: 42,
+      parameterIdIsFallback: false,
+      name: 'B0 Freq',
+      unit: 'Hz',
+      automatable: true,
+      readOnly: false,
+    };
+    const groups = buildExposeParameterMenuGroups([
+      b0Freq,
+      { parameterId: 'b0_spec_sens', parameterIndex: 43, name: 'B0 Spec Sens' },
+    ], {
+      pluginId: 'xletheq',
+      effectKind: 'stock',
+      pluginFormat: 'stock',
+      resultPluginId: 'xletheq',
+    });
+
+    expect(groups).toEqual([
+      {
+        groupLabel: 'Band 0',
+        parameters: [{ parameter: b0Freq, label: 'Frequency' }],
+      },
+    ]);
+    expect(groups[0].parameters[0].parameter).toBe(b0Freq);
+  });
+
+  it('does not apply the EQ whitelist to plugins or non-EQ stock effects', () => {
+    const parameters = [
+      { parameterId: 'b0_spec_sens', parameterIndex: 0, name: 'B0 Spec Sens' },
+      { parameterId: 'vendor_attack', parameterIndex: 1, name: 'Vendor Attack' },
+    ];
+
+    expect(buildExposeParameterMenuGroups(parameters, {
+      pluginId: 'xletheq',
+      effectKind: 'plugin',
+      pluginFormat: 'vst3',
+      resultPluginId: 'xletheq',
+    })[0].parameters.map((item) => item.parameter.parameterId)).toEqual([
+      'b0_spec_sens',
+      'vendor_attack',
+    ]);
+    expect(buildExposeParameterMenuGroups(parameters, {
+      pluginId: 'delay',
+      effectKind: 'stock',
+      pluginFormat: 'stock',
+      resultPluginId: 'delay',
+    })[0].parameters.map((item) => item.parameter.parameterId)).toEqual([
+      'b0_spec_sens',
+      'vendor_attack',
+    ]);
   });
 
   // --- FXG.3-l workspace polish guards ---

@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  buildExposeParameterMenuGroups,
   describeParamFailure,
   isWritableParameter,
   type GraphEffectParameterDescriptor,
@@ -70,6 +71,7 @@ interface PositionedNode {
   metaText: string | null;
   badges: string[];
   effectInstanceId: string | null;
+  pluginId: string | null;
   parameterPorts: GraphExposedParameterPort[];
   macroValue: number | null;
   // True only for effect nodes backed by a real (non-placeholder, non-missing)
@@ -275,6 +277,7 @@ function resolveNodeText(node: GraphStateNode) {
       metaText: null,
       badges: [] as string[],
       effectInstanceId: null,
+      pluginId: null,
       parameterPorts: [] as GraphExposedParameterPort[],
       macroValue: null,
       editable: false,
@@ -288,6 +291,7 @@ function resolveNodeText(node: GraphStateNode) {
       metaText: null,
       badges: [] as string[],
       effectInstanceId: null,
+      pluginId: null,
       parameterPorts: [] as GraphExposedParameterPort[],
       macroValue: null,
       editable: false,
@@ -312,6 +316,7 @@ function resolveNodeText(node: GraphStateNode) {
       metaText: sourceSlot == null ? null : `Chain slot ${sourceSlot + 1}`,
       badges,
       effectInstanceId,
+      pluginId,
       parameterPorts: readExposedParameterPorts(data),
       macroValue: null,
       // Placeholder / data-only / missing nodes have no engine processor to open.
@@ -326,6 +331,7 @@ function resolveNodeText(node: GraphStateNode) {
       metaText: null,
       badges: [] as string[],
       effectInstanceId: null,
+      pluginId: null,
       parameterPorts: [] as GraphExposedParameterPort[],
       macroValue: readNormalizedValue(data, 'normalizedValue'),
       editable: false,
@@ -348,6 +354,7 @@ function resolveNodeText(node: GraphStateNode) {
     metaText: null,
     badges: ['Unknown'],
     effectInstanceId: null,
+    pluginId: null,
     parameterPorts: [] as GraphExposedParameterPort[],
     macroValue: null,
     editable: false,
@@ -905,9 +912,18 @@ export function GraphParameterContextMenu({
   onRemove?: () => void;
 }) {
   const parameters = result?.ok ? result.parameters ?? [] : [];
-  const filteredParameters = filterExposeParameterDescriptors(parameters, search);
+  const parameterGroups = buildExposeParameterMenuGroups(parameters, {
+    pluginId: node.pluginId,
+    effectKind: result?.effectKind,
+    pluginFormat: result?.pluginFormat,
+    resultPluginId: result?.pluginId,
+  }, search);
+  const visibleParameterCount = parameterGroups.reduce(
+    (count, group) => count + group.parameters.length,
+    0,
+  );
   const exposedIds = new Set(node.parameterPorts.map((port) => port.parameterId));
-  const showSearch = parameters.length > 0 || search.length > 0;
+  const showSearch = visibleParameterCount > 0 || search.length > 0;
 
   return (
     <div
@@ -965,47 +981,61 @@ export function GraphParameterContextMenu({
             {describeParamFailure(result.reason)}
           </div>
         )}
-        {!loading && result?.ok && parameters.length === 0 && (
+        {!loading && result?.ok && visibleParameterCount === 0 && search.length === 0 && (
           <div className="xleth-graph-state-preview__context-empty">
             This effect exposes no parameters.
           </div>
         )}
-        {!loading && result?.ok && parameters.length > 0 && filteredParameters.length === 0 && (
+        {!loading && result?.ok && visibleParameterCount === 0 && search.length > 0 && (
           <div className="xleth-graph-state-preview__context-empty">
             No parameters match.
           </div>
         )}
-        {!loading && result?.ok && filteredParameters.length > 0 && (
+        {!loading && result?.ok && visibleParameterCount > 0 && (
           <div className="xleth-graph-state-preview__parameter-list" role="group" aria-label="Exposed Parameters">
-            {filteredParameters.map((parameter) => {
-              const label = parameter.name || parameter.parameterId;
-              const writable = isWritableParameter(parameter);
-              const exposed = exposedIds.has(parameter.parameterId);
-              return (
-                <button
-                  className={`xleth-graph-state-preview__parameter-item${exposed ? ' xleth-graph-state-preview__parameter-item--exposed' : ''}`}
-                  type="button"
-                  role="menuitemcheckbox"
-                  aria-checked={exposed}
-                  disabled={!writable}
-                  key={parameter.parameterId}
-                  title={label}
-                  onClick={() => onToggleParameter?.(parameter)}
-                >
-                  <span className="xleth-graph-state-preview__parameter-check" aria-hidden="true">
-                    {exposed ? 'On' : ''}
-                  </span>
-                  <span className="xleth-graph-state-preview__parameter-name">
-                    {label}
-                  </span>
-                  {!writable && (
-                    <span className="xleth-graph-state-preview__parameter-state">
-                      Read-only
-                    </span>
-                  )}
-                </button>
-              );
-            })}
+            {parameterGroups.map((group) => (
+              <div
+                className="xleth-graph-state-preview__parameter-group"
+                role="group"
+                aria-label={group.groupLabel ?? 'Parameters'}
+                key={group.groupLabel ?? 'parameters'}
+              >
+                {group.groupLabel && (
+                  <div className="xleth-graph-state-preview__parameter-group-title">
+                    {group.groupLabel}
+                  </div>
+                )}
+                {group.parameters.map((item) => {
+                  const parameter = item.parameter;
+                  const writable = isWritableParameter(parameter);
+                  const exposed = exposedIds.has(parameter.parameterId);
+                  return (
+                    <button
+                      className={`xleth-graph-state-preview__parameter-item${exposed ? ' xleth-graph-state-preview__parameter-item--exposed' : ''}`}
+                      type="button"
+                      role="menuitemcheckbox"
+                      aria-checked={exposed}
+                      disabled={!writable}
+                      key={parameter.parameterId}
+                      title={parameter.name || item.label}
+                      onClick={() => onToggleParameter?.(parameter)}
+                    >
+                      <span className="xleth-graph-state-preview__parameter-check" aria-hidden="true">
+                        {exposed ? 'On' : ''}
+                      </span>
+                      <span className="xleth-graph-state-preview__parameter-name">
+                        {item.label}
+                      </span>
+                      {!writable && (
+                        <span className="xleth-graph-state-preview__parameter-state">
+                          Read-only
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
           </div>
         )}
       </div>

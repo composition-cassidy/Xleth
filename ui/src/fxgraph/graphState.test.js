@@ -1555,6 +1555,32 @@ describe('FXG.4-c exposed parameter port normalization', () => {
     expect(ports).toHaveLength(1)
     expect(ports[0].parameterIndexFallback).toBe(1)
   })
+
+  it('preserves existing exposed internal EQ ports during normalization', () => {
+    const ports = normalizeExposedParameterPorts([
+      {
+        parameterId: 'b0_dyn_attack',
+        parameterIndexFallback: 6,
+        nameSnapshot: 'B0 Dyn Attack',
+        labelSnapshot: 'ms',
+        parameterIdIsFallback: false,
+        automatable: true,
+        readOnly: false,
+      },
+    ])
+
+    expect(ports).toEqual([
+      {
+        parameterId: 'b0_dyn_attack',
+        parameterIndexFallback: 6,
+        nameSnapshot: 'B0 Dyn Attack',
+        labelSnapshot: 'ms',
+        parameterIdIsFallback: false,
+        automatable: true,
+        readOnly: false,
+      },
+    ])
+  })
 })
 
 describe('FXG.4-c edge schema', () => {
@@ -1974,6 +2000,52 @@ describe('FXG.4-e/f parameter link mapping', () => {
       expect(JSON.stringify(edge)).not.toContain('engineNodeId')
       // Source graphState is not mutated.
       expect(gs.edges.some((e) => e.id === 'p-new')).toBe(false)
+    })
+
+    it('links a Macro to a curated Xleth EQ parameter id without changing target identity', () => {
+      const gs = makeMacroParamGraphState()
+      const fx = gs.nodes.find((node) => node.id === 'fx-a')
+      fx.data = {
+        ...fx.data,
+        pluginId: 'xletheq',
+        displayName: 'Xleth EQ',
+        exposedParameterPorts: [
+          {
+            parameterId: 'b0_freq',
+            parameterIndexFallback: 0,
+            nameSnapshot: 'B0 Freq',
+            labelSnapshot: 'Hz',
+            parameterIdIsFallback: false,
+            automatable: true,
+            readOnly: false,
+          },
+        ],
+      }
+
+      const result = connectMacroToParameter(gs, {
+        sourceNodeId: 'macro-a',
+        targetNodeId: 'fx-a',
+        parameterId: 'b0_freq',
+      }, { idFactory: () => 'p-eq-freq' })
+
+      expect(result.ok).toBe(true)
+      const edge = result.graphState.edges.at(-1)
+      expect(edge.targetPort).toBe('gpp:fx-a:b0_freq')
+      expect(edge.targetParameter).toMatchObject({
+        kind: 'graph-parameter',
+        graphNodeId: 'fx-a',
+        effectInstanceId: 'inst-a',
+        pluginId: 'xletheq',
+        parameterId: 'b0_freq',
+        parameterIndexFallback: 0,
+        nameSnapshot: 'B0 Freq',
+        labelSnapshot: 'Hz',
+      })
+
+      const writes = collectMacroParameterWrites(result.graphState, 'macro-a', 0.25)
+      expect(writes.writes).toEqual([
+        { edgeId: 'p-eq-freq', effectInstanceId: 'inst-a', parameterId: 'b0_freq', value: 0.25 },
+      ])
     })
 
     it('rejects an effect node as a parameter source (audio output cannot drive a parameter)', () => {

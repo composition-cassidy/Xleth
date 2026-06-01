@@ -314,6 +314,15 @@ third-party — without going through Mixer Chain slot editing.
   `parameterId`, optional `parameterIndex`, display-name/unit snapshots, fallback
   identity flag, and nullable `automatable` / `readOnly` flags. Normalized
   values are not persisted.
+- **Stock EQ exposure curation (FXG.4-b-r1).** FXG.4-a continues exposing raw
+  stock/plugin descriptors from the backend, including Xleth EQ internal dynamic,
+  spectral, and analysis parameters. The normal FX Graph Expose Parameter menu
+  adds a renderer-only product curation layer for stock Xleth EQ / Parametric EQ
+  nodes (`pluginId: xletheq`): only Band 0, Band 1, and Band 2 `Frequency`,
+  `Gain`, `Q`, `Type`, and `Enabled` are offered. The menu keeps the original
+  descriptor identity when a curated parameter is exposed, existing exposed ports
+  are not deleted automatically, and third-party plugin parameter enumeration is
+  unchanged.
 - **Port rendering.** Exposed parameters render as compact parameter-input rows
   on the graph node. They are visual/future connection targets only in FXG.4-b;
   toggling them does not call runtime topology sync, does not write parameter
