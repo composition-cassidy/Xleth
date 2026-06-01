@@ -90,6 +90,7 @@ interface PreviewModel {
 
 interface PreviewModelOptions {
   warn?: (...args: unknown[]) => void;
+  nodePositionOverrides?: Record<string, { x: number; y: number }> | Map<string, { x: number; y: number }>;
 }
 
 interface GraphStatePreviewProps {
@@ -102,6 +103,10 @@ interface GraphStatePreviewProps {
   onConnectNodes?: (sourceNodeId: string, targetNodeId: string) => void;
   onDisconnectEdge?: (edgeId: string) => void;
   onEditNode?: (nodeId: string) => void;
+  canUndoGraphEdit?: boolean;
+  canRedoGraphEdit?: boolean;
+  onUndoGraphEdit?: () => void;
+  onRedoGraphEdit?: () => void;
 }
 
 const NODE_WIDTH = 148;
@@ -170,6 +175,15 @@ function fallbackNodeOrder(nodes: GraphStateNode[]) {
 
 function hasValidPosition(node: GraphStateNode) {
   return isFiniteNumber(node.position?.x) && isFiniteNumber(node.position?.y);
+}
+
+function readPositionOverride(
+  overrides: PreviewModelOptions['nodePositionOverrides'] | undefined,
+  nodeId: string,
+) {
+  const override = overrides instanceof Map ? overrides.get(nodeId) : overrides?.[nodeId];
+  if (!override || !isFiniteNumber(override.x) || !isFiniteNumber(override.y)) return null;
+  return { x: override.x, y: override.y };
 }
 
 function resolveNodeText(node: GraphStateNode) {
@@ -256,7 +270,7 @@ function makeVirtualAnchorNode(
   };
 }
 
-function normalizePositionedNodes(nodes: GraphStateNode[]) {
+function normalizePositionedNodes(nodes: GraphStateNode[], options: PreviewModelOptions = {}) {
   if (nodes.length === 0) {
     return [
       makeVirtualAnchorNode('preview-empty-track-input', 'trackInput', PREVIEW_PADDING_X),
@@ -271,6 +285,15 @@ function normalizePositionedNodes(nodes: GraphStateNode[]) {
   const allNodesHavePositions = nodes.every(hasValidPosition);
   const layoutNodes = allNodesHavePositions ? nodes : fallbackNodeOrder(nodes);
   const rawPositions = layoutNodes.map((node, index) => {
+    const override = readPositionOverride(options.nodePositionOverrides, node.id);
+    if (override) {
+      return {
+        id: node.id,
+        x: override.x,
+        y: override.y,
+      };
+    }
+
     if (allNodesHavePositions && hasValidPosition(node)) {
       return {
         id: node.id,
@@ -374,7 +397,7 @@ export function buildGraphStatePreviewModel(
 ): PreviewModel {
   const sourceNodes = Array.isArray(graphState?.nodes) ? graphState.nodes : [];
   const sourceEdges = Array.isArray(graphState?.edges) ? graphState.edges : [];
-  const nodes = normalizePositionedNodes(sourceNodes);
+  const nodes = normalizePositionedNodes(sourceNodes, options);
   const edges = sourceNodes.length === 0
     ? []
     : normalizePositionedEdges(sourceEdges, nodes, options);
@@ -578,6 +601,10 @@ export default function GraphStatePreview({
   onConnectNodes,
   onDisconnectEdge,
   onEditNode,
+  canUndoGraphEdit = false,
+  canRedoGraphEdit = false,
+  onUndoGraphEdit,
+  onRedoGraphEdit,
 }: GraphStatePreviewProps) {
   const viewportRef = React.useRef<HTMLDivElement | null>(null);
   const canvasRef = React.useRef<HTMLDivElement | null>(null);
@@ -588,6 +615,8 @@ export default function GraphStatePreview({
     startClientY: number;
     startGraphX: number;
     startGraphY: number;
+    currentGraphX: number;
+    currentGraphY: number;
   } | null>(null);
   const panRef = React.useRef<{
     pointerId: number;
@@ -598,12 +627,22 @@ export default function GraphStatePreview({
   } | null>(null);
   const connectRef = React.useRef<{ pointerId: number; sourceNodeId: string } | null>(null);
   const [draggingNodeId, setDraggingNodeId] = React.useState<string | null>(null);
+  const [dragPreviewPosition, setDragPreviewPosition] = React.useState<{
+    nodeId: string;
+    x: number;
+    y: number;
+  } | null>(null);
   const [panning, setPanning] = React.useState(false);
   const [connectingFromNodeId, setConnectingFromNodeId] = React.useState<string | null>(null);
   const [connectPoint, setConnectPoint] = React.useState<{ x: number; y: number } | null>(null);
   const model = React.useMemo(
-    () => buildGraphStatePreviewModel(graphState),
-    [graphState],
+    () => buildGraphStatePreviewModel(
+      graphState,
+      dragPreviewPosition
+        ? { nodePositionOverrides: { [dragPreviewPosition.nodeId]: dragPreviewPosition } }
+        : undefined,
+    ),
+    [dragPreviewPosition, graphState],
   );
   const viewport = React.useMemo(
     () => normalizeViewport(graphState?.viewport),
@@ -623,15 +662,37 @@ export default function GraphStatePreview({
   const canEditNode = typeof onEditNode === 'function';
   const canConnect = typeof onConnectNodes === 'function';
   const canDisconnect = typeof onDisconnectEdge === 'function';
-  const showToolbar = canEditViewport || canAddNode;
+  const canUseGraphHistory =
+    typeof onUndoGraphEdit === 'function' || typeof onRedoGraphEdit === 'function';
+  const showToolbar = canEditViewport || canAddNode || canUseGraphHistory;
 
-  const finishDrag = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    if (dragRef.current?.pointerId === event.pointerId) {
-      event.currentTarget.releasePointerCapture?.(event.pointerId);
-      dragRef.current = null;
-      setDraggingNodeId(null);
+  const finishDrag = React.useCallback((
+    event: React.PointerEvent<HTMLDivElement>,
+    commitPosition = true,
+  ) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    dragRef.current = null;
+    setDraggingNodeId(null);
+    setDragPreviewPosition(null);
+
+    if (
+      commitPosition &&
+      onNodePositionChange &&
+      (drag.currentGraphX !== drag.startGraphX || drag.currentGraphY !== drag.startGraphY)
+    ) {
+      onNodePositionChange(drag.nodeId, {
+        x: drag.currentGraphX,
+        y: drag.currentGraphY,
+      });
     }
-  }, []);
+  }, [onNodePositionChange]);
+
+  const cancelDrag = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    finishDrag(event, false);
+  }, [finishDrag]);
 
   const handleNodePointerDown = React.useCallback((
     event: React.PointerEvent<HTMLDivElement>,
@@ -649,6 +710,8 @@ export default function GraphStatePreview({
       startClientY: event.clientY,
       startGraphX: node.graphX,
       startGraphY: node.graphY,
+      currentGraphX: node.graphX,
+      currentGraphY: node.graphY,
     };
     setDraggingNodeId(node.id);
   }, [canDragNodes]);
@@ -660,9 +723,14 @@ export default function GraphStatePreview({
     event.preventDefault();
     const nextX = Math.max(0, drag.startGraphX + (event.clientX - drag.startClientX));
     const nextY = Math.max(0, drag.startGraphY + (event.clientY - drag.startClientY));
-    onNodePositionChange(drag.nodeId, {
-      x: Math.round(nextX * 100) / 100,
-      y: Math.round(nextY * 100) / 100,
+    const roundedX = Math.round(nextX * 100) / 100;
+    const roundedY = Math.round(nextY * 100) / 100;
+    drag.currentGraphX = roundedX;
+    drag.currentGraphY = roundedY;
+    setDragPreviewPosition({
+      nodeId: drag.nodeId,
+      x: roundedX,
+      y: roundedY,
     });
   }, [onNodePositionChange]);
 
@@ -824,6 +892,30 @@ export default function GraphStatePreview({
           )}
           {showToolbar && (
             <div className="xleth-graph-state-preview__toolbar" aria-label="Graph workspace controls">
+              {canUseGraphHistory && (
+                <>
+                  <button
+                    className="xleth-graph-state-preview__view-button"
+                    type="button"
+                    disabled={!canUndoGraphEdit}
+                    aria-label="Undo graph edit"
+                    title="Undo graph edit"
+                    onClick={onUndoGraphEdit}
+                  >
+                    Undo
+                  </button>
+                  <button
+                    className="xleth-graph-state-preview__view-button"
+                    type="button"
+                    disabled={!canRedoGraphEdit}
+                    aria-label="Redo graph edit"
+                    title="Redo graph edit"
+                    onClick={onRedoGraphEdit}
+                  >
+                    Redo
+                  </button>
+                </>
+              )}
               {canAddNode && (
                 <button
                   className="xleth-graph-state-preview__action-button"
@@ -912,7 +1004,7 @@ export default function GraphStatePreview({
                   onPointerDown={canDragNodes ? handleNodePointerDown : undefined}
                   onPointerMove={canDragNodes ? handleNodePointerMove : undefined}
                   onPointerUp={canDragNodes ? finishDrag : undefined}
-                  onPointerCancel={canDragNodes ? finishDrag : undefined}
+                  onPointerCancel={canDragNodes ? cancelDrag : undefined}
                   onConnectPointerDown={canConnect ? handleConnectPointerDown : undefined}
                   onConnectPointerMove={canConnect ? handleConnectPointerMove : undefined}
                   onConnectPointerUp={canConnect ? handleConnectPointerUp : undefined}

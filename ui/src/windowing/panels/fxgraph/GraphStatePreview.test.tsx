@@ -145,6 +145,31 @@ describe('GraphStatePreview', () => {
     expect(JSON.stringify(sourceGraphState)).toBe(before);
   });
 
+  it('applies transient node position overrides without mutating graphState', () => {
+    const sourceGraphState = graphState([
+      inputNode({ x: 0, y: 0 }),
+      effectNode('limiter', 'Limiter', 0, { x: 260, y: 0 }),
+      outputNode({ x: 520, y: 0 }),
+    ], [
+      audioEdge('edge-1', 'input', 'limiter'),
+      audioEdge('edge-2', 'limiter', 'output'),
+    ]);
+    const before = JSON.stringify(sourceGraphState);
+
+    const normal = buildGraphStatePreviewModel(sourceGraphState);
+    const preview = buildGraphStatePreviewModel(sourceGraphState, {
+      nodePositionOverrides: { limiter: { x: 380, y: 120 } },
+    });
+
+    expect(JSON.stringify(sourceGraphState)).toBe(before);
+    expect(preview.nodes.find((node) => node.id === 'limiter')?.graphX).toBe(380);
+    expect(preview.nodes.find((node) => node.id === 'limiter')?.graphY).toBe(120);
+    expect(preview.edges.find((edge) => edge.id === 'edge-1')?.path)
+      .not.toBe(normal.edges.find((edge) => edge.id === 'edge-1')?.path);
+    expect(preview.edges.find((edge) => edge.id === 'edge-2')?.path)
+      .not.toBe(normal.edges.find((edge) => edge.id === 'edge-2')?.path);
+  });
+
   it('renders a bypass indicator for bypassed effects', () => {
     const html = renderToStaticMarkup(
       <GraphStatePreview
@@ -328,6 +353,31 @@ describe('GraphStatePreview', () => {
     expect(dormantHtml).not.toContain('Reset View');
   });
 
+  it('renders Undo and Redo controls only when graph history callbacks are provided', () => {
+    const sourceGraphState = graphState([
+      inputNode(),
+      outputNode(),
+    ], []);
+    const historyHtml = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={sourceGraphState}
+        canUndoGraphEdit={false}
+        canRedoGraphEdit
+        onUndoGraphEdit={vi.fn()}
+        onRedoGraphEdit={vi.fn()}
+      />,
+    );
+    const dormantHtml = renderToStaticMarkup(<GraphStatePreview graphState={sourceGraphState} />);
+
+    expect(historyHtml).toContain('aria-label="Undo graph edit"');
+    expect(historyHtml).toContain('aria-label="Redo graph edit"');
+    expect(historyHtml).toContain('Undo');
+    expect(historyHtml).toContain('Redo');
+    expect(countText(historyHtml, 'disabled')).toBe(1);
+    expect(dormantHtml).not.toContain('Undo graph edit');
+    expect(dormantHtml).not.toContain('Redo graph edit');
+  });
+
   // --- FXG.3-b Edit button ---
 
   it('renders an enabled Edit button on real effect nodes when onEditNode is provided', () => {
@@ -410,5 +460,46 @@ describe('GraphStatePreview', () => {
     );
 
     expect(html).not.toContain('xleth-graph-state-preview__node-edit');
+  });
+
+  // --- FXG.3-l workspace polish guards ---
+
+  it('never renders a Remove control on protected Track Input or Track Output nodes', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([
+          inputNode(),
+          effectNode('limiter', 'Limiter', 0, { x: 260, y: 0 }),
+          outputNode({ x: 520, y: 0 }),
+        ], [])}
+        onRemoveNode={vi.fn()}
+        onEditNode={vi.fn()}
+      />,
+    );
+
+    // The effect node is removable...
+    expect(html).toContain('aria-label="Remove Limiter"');
+    // ...but the protected routing endpoints never expose a remove affordance.
+    expect(html).not.toContain('aria-label="Remove Track Input"');
+    expect(html).not.toContain('aria-label="Remove Track Output"');
+  });
+
+  it('keeps an accessible edge-delete button in the DOM when disconnect is enabled', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([
+          inputNode(),
+          outputNode(),
+        ], [
+          audioEdge('input-output', 'input', 'output'),
+        ])}
+        onDisconnectEdge={vi.fn()}
+      />,
+    );
+
+    // Edge delete is hidden until hover/focus via CSS, but the control must stay
+    // in the DOM and remain a labelled, keyboard-reachable button.
+    expect(html).toContain('xleth-graph-state-preview__disconnect');
+    expect(html).toContain('aria-label="Disconnect Audio cable: Track Input to Track Output"');
   });
 });

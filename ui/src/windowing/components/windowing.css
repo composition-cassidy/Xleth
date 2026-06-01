@@ -37,6 +37,13 @@
   background: var(--theme-bg-primary);
 }
 
+.xleth-backdrop-native-acrylic .xleth-windowing-app,
+.xleth-backdrop-native-acrylic .xleth-windowing-shell,
+.xleth-backdrop-native-acrylic .xleth-center-column,
+.xleth-backdrop-native-acrylic .xleth-floating-work-area {
+  background: transparent;
+}
+
 .xleth-dock-region {
   position: relative;
   display: flex;
@@ -664,6 +671,14 @@
   background: var(--theme-bg-elevated);
 }
 
+.xleth-graph-state-preview__view-button:disabled {
+  border-color: var(--theme-border-subtle);
+  background: var(--theme-bg-surface);
+  color: var(--theme-text-muted);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 .xleth-graph-state-preview__view-button:focus-visible {
   outline: 1px solid var(--theme-border-focus);
   outline-offset: 1px;
@@ -677,7 +692,17 @@
   overflow: hidden;
   border: 1px solid var(--theme-border-subtle);
   border-radius: var(--theme-chrome-radius-sm);
-  background: var(--theme-bg-surface);
+  /* FXG.3-l — subtle tokenized dot-grid so the canvas reads as a workspace
+   * surface, not a flat empty rectangle. color-mix keeps the dots faint and
+   * adapts to light/dark themes; no hardcoded colors. */
+  background-color: var(--theme-bg-surface);
+  background-image: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--theme-text) 10%, transparent) 1px,
+    transparent 1.5px
+  );
+  background-size: 22px 22px;
+  background-position: 0 0;
   touch-action: none;
 }
 
@@ -771,7 +796,10 @@
 
 .xleth-graph-state-preview__node--track-input,
 .xleth-graph-state-preview__node--track-output {
-  border-color: color-mix(in srgb, var(--theme-panel-node) 45%, var(--theme-border-subtle));
+  /* FXG.3-l — protected routing endpoints read as distinct from processor
+   * nodes via a tinted surface plus a stronger endpoint border. */
+  border-color: color-mix(in srgb, var(--theme-panel-node) 60%, var(--theme-border-subtle));
+  background: color-mix(in srgb, var(--theme-panel-node) 14%, var(--theme-bg-primary));
 }
 
 .xleth-graph-state-preview__node--effect {
@@ -969,6 +997,19 @@
   font-weight: 700;
   line-height: 1;
   transform: translate(-50%, -50%);
+  /* FXG.3-l — edge delete controls stay out of the way until the pointer is on
+   * the canvas (hover) or the control is focused, so cables read cleanly
+   * instead of being peppered with always-on buttons. They remain in the DOM
+   * and fully keyboard-reachable. */
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.xleth-graph-state-preview__stage:hover .xleth-graph-state-preview__disconnect,
+.xleth-graph-state-preview__overlay:focus-within .xleth-graph-state-preview__disconnect,
+.xleth-graph-state-preview__disconnect:focus-visible {
+  opacity: 1;
   pointer-events: auto;
   cursor: pointer;
 }
