@@ -798,7 +798,7 @@ export function GraphStatePreviewNode({
   const showEdit =
     canEdit && node.type === 'effect' && !node.virtual && typeof onEdit === 'function';
   const canOpenContextMenu =
-    node.type === 'effect' && !node.virtual && typeof onNodeContextMenu === 'function';
+    (node.type === 'effect' || node.type === 'macro') && !node.virtual && typeof onNodeContextMenu === 'function';
   const macroPercent = node.macroValue == null ? null : Math.round(node.macroValue * 100);
   const commitMacroValue = (event: React.SyntheticEvent<HTMLInputElement>) => {
     const nextValue = Number(event.currentTarget.value);
