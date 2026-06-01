@@ -846,6 +846,14 @@
   opacity: 0.75;
 }
 
+/* FXG.4-e/f — Macro -> Parameter links read as control cables, distinct from
+ * audio cables: warning-tinted (matching macro nodes/ports) and dashed. */
+.xleth-graph-state-preview__edge--parameter {
+  stroke: color-mix(in srgb, var(--theme-warning) 64%, var(--theme-border-strong));
+  stroke-dasharray: 4 4;
+  stroke-width: 1.5;
+}
+
 .xleth-graph-state-preview__node {
   position: absolute;
   box-sizing: border-box;
@@ -875,6 +883,14 @@
 
 .xleth-graph-state-preview__canvas[data-node-dragging="true"] {
   user-select: none;
+}
+
+/* FXG.4-e/f — exposed parameter ports are display-only at rest, but become drop
+ * targets while a connection is in progress so a Macro controlOut can be linked to
+ * them. document.elementFromPoint needs them hit-testable to resolve the drop. */
+.xleth-graph-state-preview__canvas[data-connecting="true"] .xleth-graph-state-preview__parameter-port {
+  pointer-events: auto;
+  cursor: copy;
 }
 
 .xleth-graph-state-preview__node--track-input,
@@ -1076,6 +1092,18 @@
   background: var(--theme-accent);
 }
 
+/* Macro controlOut as a parameter-link drag source keeps its warning identity
+ * (it links to parameters, not audio) while gaining the connect affordance. */
+.xleth-graph-state-preview__handle--connect-parameter-source {
+  cursor: crosshair;
+  border-color: color-mix(in srgb, var(--theme-warning) 70%, var(--theme-border-strong));
+  background: color-mix(in srgb, var(--theme-warning) 55%, var(--theme-bg-surface));
+}
+
+.xleth-graph-state-preview__handle--connect-parameter-source:hover {
+  background: var(--theme-warning);
+}
+
 .xleth-graph-state-preview__node--connect-source {
   border-color: var(--theme-accent);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--theme-accent) 50%, transparent);
@@ -1193,6 +1221,14 @@
 .xleth-graph-state-preview__disconnect:hover {
   border-color: var(--theme-accent);
   color: var(--theme-text);
+}
+
+.xleth-graph-state-preview__disconnect--parameter {
+  border-color: color-mix(in srgb, var(--theme-warning) 50%, var(--theme-border-strong));
+}
+
+.xleth-graph-state-preview__disconnect--parameter:hover {
+  border-color: var(--theme-warning);
 }
 
 .xleth-graph-state-preview__disconnect:focus-visible {

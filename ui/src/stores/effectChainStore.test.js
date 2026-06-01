@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { connectMacroToParameter } from '../fxgraph/graphState.js'
 
 function makeEffect(nodeId, pluginId, position, bypassed = false) {
   return { nodeId, pluginId, position, bypassed }
@@ -113,6 +114,50 @@ function graphWithTwoEffects(trackId = '7') {
     ],
     viewport: { x: 0, y: 0, zoom: 1 },
   }
+}
+
+// FXG.4-e/f — a positioned graph with a Macro node plus an effect node that
+// exposes a writable 'mix' parameter port, so Macro -> Parameter links can be made.
+function makeMacroLinkGraphState(trackId = '7', { readOnly = false } = {}) {
+  const base = makePositionedGraphState(trackId)
+  return {
+    ...base,
+    nodes: [
+      base.nodes[0],
+      {
+        ...base.nodes[1],
+        data: {
+          ...base.nodes[1].data,
+          exposedParameterPorts: [
+            {
+              parameterId: 'mix',
+              parameterIndexFallback: 1,
+              nameSnapshot: 'Mix',
+              labelSnapshot: '%',
+              parameterIdIsFallback: false,
+              automatable: !readOnly,
+              readOnly,
+            },
+          ],
+        },
+      },
+      { id: 'macro-a', type: 'macro', position: { x: 80, y: 228 }, data: { label: 'Macro 1', normalizedValue: 0.5 } },
+      base.nodes[2],
+    ],
+    edges: base.edges,
+  }
+}
+
+// Builds the graph above and pre-links Macro -> fx-1 'mix' with an optional mapping,
+// returning a graphState ready to seed for drive-only tests.
+function makeLinkedMacroGraphState(trackId = '7', mapping) {
+  const linked = connectMacroToParameter(makeMacroLinkGraphState(trackId), {
+    sourceNodeId: 'macro-a',
+    targetNodeId: 'fx-1',
+    parameterId: 'mix',
+    mapping,
+  }, { idFactory: () => 'p-mix' })
+  return linked.graphState
 }
 
 async function loadEffectChainStoreFixture() {
@@ -1334,6 +1379,173 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(state.graphHistories['7'].redoStack).toHaveLength(0)
     expect(state.chains['7']).toBe(baseChain)
     expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+  })
+
+  it('links a Macro controlOut to an exposed parameter port, persists, and drives immediately', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const baseChain = seedGraphMode(useEffectChainStore, makeMacroLinkGraphState('7'))
+
+    const result = await useEffectChainStore.getState().connectMacroToParameterForTrack('7', {
+      sourceNodeId: 'macro-a',
+      targetNodeId: 'fx-1',
+      parameterId: 'mix',
+    }, { idFactory: () => 'p-mix' })
+
+    expect(result.ok).toBe(true)
+    const state = useEffectChainStore.getState()
+    const next = state.graphStates['7']
+    const edge = next.edges.find((e) => e.id === 'p-mix')
+    expect(edge).toMatchObject({
+      sourceNodeId: 'macro-a',
+      sourcePort: 'controlOut',
+      targetNodeId: 'fx-1',
+      targetPort: 'gpp:fx-1:mix',
+      type: 'parameter',
+    })
+    expect(edge.targetParameter.kind).toBe('graph-parameter')
+    expect(edge.mapping).toMatchObject({ enabled: true, sourceMin: 0, sourceMax: 1, targetMin: 0, targetMax: 1 })
+    // Parameter edges never persist a raw engine node id.
+    expect(JSON.stringify(next.edges)).not.toContain('engineNodeId')
+    // Persisted, undoable, no audio sync, chains untouched.
+    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next)
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+    expect(state.chains['7']).toBe(baseChain)
+    expect(state.graphHistories['7'].undoStack.at(-1)).toMatchObject({ label: 'connect_macro_to_parameter' })
+    // Drove the parameter from the macro's current value (0.5 → 0.5 default mapping).
+    expect(audio.setGraphEffectParameterNormalized).toHaveBeenCalledWith(7, 'effect-1', 'mix', 0.5)
+  })
+
+  it('rejects invalid Macro -> Parameter links without corrupting graphState', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const graphState = makeMacroLinkGraphState('7', { readOnly: true })
+    const baseChain = seedGraphMode(useEffectChainStore, graphState)
+
+    const readOnly = await useEffectChainStore.getState().connectMacroToParameterForTrack('7', {
+      sourceNodeId: 'macro-a',
+      targetNodeId: 'fx-1',
+      parameterId: 'mix',
+    })
+    expect(readOnly).toMatchObject({ ok: false, reason: 'parameter_read_only' })
+
+    const notExposed = await useEffectChainStore.getState().connectMacroToParameterForTrack('7', {
+      sourceNodeId: 'macro-a',
+      targetNodeId: 'fx-1',
+      parameterId: 'gain',
+    })
+    expect(notExposed).toMatchObject({ ok: false, reason: 'parameter_not_exposed' })
+
+    const state = useEffectChainStore.getState()
+    expect(state.graphStates['7']).toBe(graphState)
+    expect(state.graphStates['7'].edges.every((e) => e.type === 'audio')).toBe(true)
+    expect(audio.setGraphEffectParameterNormalized).not.toHaveBeenCalled()
+    expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+    expect(state.chains['7']).toBe(baseChain)
+  })
+
+  it('drives connected parameters when the Macro value changes through FXG.4-a APIs', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const baseChain = seedGraphMode(useEffectChainStore, makeLinkedMacroGraphState('7'))
+
+    const result = await useEffectChainStore.getState().updateGraphMacroValueForTrack('7', 'macro-a', 0.8)
+
+    expect(result.ok).toBe(true)
+    expect(audio.setGraphEffectParameterNormalized).toHaveBeenCalledWith(7, 'effect-1', 'mix', 0.8)
+    // Control-rate drive only: no audio topology sync, chains untouched.
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+    expect(useEffectChainStore.getState().chains['7']).toBe(baseChain)
+    expect(useEffectChainStore.getState().graphStates['7'].nodes.find((n) => n.id === 'macro-a').data.normalizedValue).toBe(0.8)
+  })
+
+  it('drives an inverted mapping', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, makeLinkedMacroGraphState('7', { targetMin: 1, targetMax: 0 }))
+
+    await useEffectChainStore.getState().updateGraphMacroValueForTrack('7', 'macro-a', 0.25)
+
+    const calls = audio.setGraphEffectParameterNormalized.mock.calls.filter((c) => c[2] === 'mix')
+    expect(calls.at(-1)[0]).toBe(7)
+    expect(calls.at(-1)[1]).toBe('effect-1')
+    expect(calls.at(-1)[3]).toBeCloseTo(0.75)
+  })
+
+  it('drives multiple outgoing parameter edges to multiple targets', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const twoFx = graphWithTwoEffects('7')
+    const withPorts = {
+      ...twoFx,
+      nodes: [
+        twoFx.nodes[0],
+        { ...twoFx.nodes[1], data: { ...twoFx.nodes[1].data, exposedParameterPorts: [
+          { parameterId: 'gain', parameterIndexFallback: 0, nameSnapshot: 'Gain', labelSnapshot: null, parameterIdIsFallback: false, automatable: true, readOnly: false },
+        ] } },
+        { ...twoFx.nodes[2], data: { ...twoFx.nodes[2].data, exposedParameterPorts: [
+          { parameterId: 'mix', parameterIndexFallback: 1, nameSnapshot: 'Mix', labelSnapshot: null, parameterIdIsFallback: false, automatable: true, readOnly: false },
+        ] } },
+        twoFx.nodes[3],
+        { id: 'macro-a', type: 'macro', position: { x: 80, y: 240 }, data: { label: 'Macro 1', normalizedValue: 0 } },
+      ],
+      edges: [
+        ...twoFx.edges,
+        { id: 'edge-in-1', sourceNodeId: 'input', sourcePort: 'audio', targetNodeId: 'fx-1', targetPort: 'audioIn', type: 'audio' },
+        { id: 'edge-2-out', sourceNodeId: 'fx-2', sourcePort: 'audioOut', targetNodeId: 'output', targetPort: 'audio', type: 'audio' },
+      ],
+    }
+    const linkA = connectMacroToParameter(withPorts, {
+      sourceNodeId: 'macro-a', targetNodeId: 'fx-1', parameterId: 'gain',
+    }, { idFactory: () => 'p-gain' })
+    const linkB = connectMacroToParameter(linkA.graphState, {
+      sourceNodeId: 'macro-a', targetNodeId: 'fx-2', parameterId: 'mix', mapping: { targetMin: 0.25, targetMax: 0 },
+    }, { idFactory: () => 'p-mix' })
+    seedGraphMode(useEffectChainStore, linkB.graphState)
+
+    await useEffectChainStore.getState().updateGraphMacroValueForTrack('7', 'macro-a', 1)
+
+    const calls = audio.setGraphEffectParameterNormalized.mock.calls
+    expect(calls).toContainEqual([7, 'effect-1', 'gain', 1])
+    const mixCall = calls.find((c) => c[1] === 'effect-2' && c[2] === 'mix')
+    expect(mixCall[3]).toBeCloseTo(0)
+  })
+
+  it('does not write disabled mappings and a failed write does not corrupt graphState', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+
+    // Disabled mapping: no write at all.
+    seedGraphMode(useEffectChainStore, makeLinkedMacroGraphState('7', { enabled: false }))
+    await useEffectChainStore.getState().updateGraphMacroValueForTrack('7', 'macro-a', 0.6)
+    expect(audio.setGraphEffectParameterNormalized).not.toHaveBeenCalled()
+
+    // Failing engine write: macro value still commits, graphState intact.
+    audio.setGraphEffectParameterNormalized.mockImplementationOnce(async () =>
+      JSON.stringify({ ok: false, reason: 'processor_unavailable' }))
+    seedGraphMode(useEffectChainStore, makeLinkedMacroGraphState('7'))
+    const result = await useEffectChainStore.getState().updateGraphMacroValueForTrack('7', 'macro-a', 0.9)
+    expect(result.ok).toBe(true)
+    const macro = useEffectChainStore.getState().graphStates['7'].nodes.find((n) => n.id === 'macro-a')
+    expect(macro.data.normalizedValue).toBe(0.9)
+  })
+
+  it('removing a parameter edge is one undo step and does not sync audio topology', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, makeLinkedMacroGraphState('7'))
+
+    const result = await useEffectChainStore.getState().disconnectGraphEdgeForTrack('7', 'p-mix')
+    expect(result.ok).toBe(true)
+    const state = useEffectChainStore.getState()
+    expect(state.graphStates['7'].edges.some((e) => e.id === 'p-mix')).toBe(false)
+    expect(state.graphHistories['7'].undoStack.at(-1)).toMatchObject({ label: 'disconnect_graph_edge' })
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+  })
+
+  it('does not write any engine parameters for audio-only graph edits', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, graphWithoutEdges('7'))
+
+    await useEffectChainStore.getState().connectGraphNodesForTrack('7', {
+      sourceNodeId: 'input',
+      targetNodeId: 'fx-1',
+    })
+
+    expect(audio.setGraphEffectParameterNormalized).not.toHaveBeenCalled()
   })
 
   it('removes a macro node without graph effect engine removal or runtime sync', async () => {

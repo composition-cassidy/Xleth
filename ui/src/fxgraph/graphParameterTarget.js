@@ -81,6 +81,57 @@ export function createGraphParameterTarget({ trackId, graphNode, effectInstanceI
 }
 
 // ---------------------------------------------------------------------------
+// Target creation from a persisted exposed parameter port (FXG.4-e)
+//
+// Builds a GraphParameterTarget from an exposed parameter port already stored on
+// an effect node (the shape produced by graphState.normalizeExposedParameterPorts:
+// parameterId, parameterIndexFallback, nameSnapshot, labelSnapshot, ...). Used when
+// a Macro is linked to an exposed port and no live descriptor is on hand. trackId is
+// intentionally never set here because the target is persisted inside the edge.
+// ---------------------------------------------------------------------------
+
+export function createGraphParameterTargetFromExposedPort({ graphNode, effectInstanceId, exposedPort } = {}) {
+  if (!isPlainObject(graphNode)) return null
+  if (!isPlainObject(exposedPort)) return null
+
+  const graphNodeId = normalizeNonEmptyString(graphNode.id)
+  if (!graphNodeId) return null
+
+  const resolvedEffectInstanceId =
+    normalizeNonEmptyString(effectInstanceId) ?? normalizeNonEmptyString(graphNode.data?.effectInstanceId)
+  if (!resolvedEffectInstanceId) return null
+
+  const parameterId = normalizeNonEmptyString(exposedPort.parameterId)
+  if (!parameterId) return null
+
+  const parameterIndexFallback =
+    Number.isInteger(exposedPort.parameterIndexFallback) && exposedPort.parameterIndexFallback >= 0
+      ? exposedPort.parameterIndexFallback
+      : null
+
+  const parameterIdIsFallback = exposedPort.parameterIdIsFallback === true
+
+  // Fallback parameterId requires a finite, non-negative integer index.
+  if (parameterIdIsFallback && parameterIndexFallback === null) return null
+
+  const target = {
+    kind: KIND,
+    graphNodeId,
+    effectInstanceId: resolvedEffectInstanceId,
+    parameterId,
+    parameterIndexFallback,
+    parameterIdIsFallback,
+    nameSnapshot: normalizeNonEmptyString(exposedPort.nameSnapshot) ?? parameterId,
+    labelSnapshot: normalizeNonEmptyString(exposedPort.labelSnapshot) ?? null,
+  }
+
+  const pluginId = normalizeNonEmptyString(graphNode.data?.pluginId)
+  if (pluginId) target.pluginId = pluginId
+
+  return target
+}
+
+// ---------------------------------------------------------------------------
 // Normalization
 //
 // Repairs or drops malformed target data arriving from storage or unknown sources.

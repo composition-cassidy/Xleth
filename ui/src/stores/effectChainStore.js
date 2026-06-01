@@ -14,7 +14,10 @@ import {
   addGraphMacroNode,
   removeGraphNode,
   connectGraphNodes,
+  connectMacroToParameter,
   disconnectGraphEdge,
+  collectMacroParameterWrites,
+  isParameterEdge,
   updateGraphMacroValue,
   renameGraphMacroNode,
   toggleExposedParameterPort,
@@ -866,6 +869,61 @@ async function hydrateGraphEngineNodesForTrack(key, graphState, options = {}) {
   return { ok: failures.length === 0, mapping, skipped: [], failures }
 }
 
+// FXG.4-f default runtime drive. After a macro value changes (or a link is
+// created/hydrated), evaluate the macro's enabled outgoing parameter edges and
+// push each mapped normalized value through the FXG.4-a
+// setGraphEffectParameterNormalized store action (engine-addressed by stable
+// effectInstanceId). This is control-rate, renderer-side drive only — no audio
+// topology change, no effectChains mutation, no engine node ids. One failed write
+// never aborts the others, and writes for audio-only edges never happen because
+// collectMacroParameterWrites only walks parameter edges sourced by the macro.
+async function driveMacroParameterEdges(get, key, graphState, macroNodeId, value, options = {}) {
+  const { writes, skipped } = collectMacroParameterWrites(graphState, macroNodeId, value)
+  if (writes.length === 0) return { ok: true, writes: [], skipped, results: [] }
+
+  const setParameter = options.driveSetGraphEffectParameterNormalized
+    ?? get().setGraphEffectParameterNormalized
+  const warn = options.warn ?? console.warn
+  const results = []
+  for (const write of writes) {
+    try {
+      const result = await setParameter(
+        Number(key),
+        write.effectInstanceId,
+        write.parameterId,
+        write.value,
+        options,
+      )
+      results.push({ ...write, result })
+    } catch (e) {
+      warn?.('[FXG] macro parameter drive write failed', {
+        trackId: key,
+        effectInstanceId: write.effectInstanceId,
+        parameterId: write.parameterId,
+        error: e?.message ?? e,
+      })
+      results.push({ ...write, result: { ok: false, reason: 'engine_error' } })
+    }
+  }
+  return { ok: true, writes, skipped, results }
+}
+
+// FXG.4-f — after project-load hydration, apply each macro's current value to its
+// connected parameters so a freshly loaded graph reflects saved macro positions.
+// Runs only after graph-owned effect processors are instantiated; unavailable
+// targets fail safely without corrupting graphState.
+async function driveAllMacroParameterEdges(get, key, graphState, options = {}) {
+  const macroNodes = Array.isArray(graphState?.nodes)
+    ? graphState.nodes.filter((node) => node?.type === 'macro')
+    : []
+  const drives = []
+  for (const macro of macroNodes) {
+    const value = Number.isFinite(macro.data?.normalizedValue) ? macro.data.normalizedValue : 0
+    drives.push(await driveMacroParameterEdges(get, key, graphState, macro.id, value, options))
+  }
+  return drives
+}
+
 const useEffectChainStore = create((set, get) => ({
   // { [key: "master" | String(trackId)]: [{nodeId, pluginId, position, bypassed}] }
   chains: {},
@@ -925,7 +983,10 @@ const useEffectChainStore = create((set, get) => ({
       results[key] = result
       const mapping = mergeSessionEngineNodeIds(set, key, result.mapping)
       const runtimeSync = await syncGraphRuntimeForTrack(set, key, graphState, options)
-      results[key] = { ...result, runtimeSync }
+      // FXG.4-f — apply saved macro values to connected parameters now that the
+      // graph-owned effect processors exist. Best-effort; never blocks hydration.
+      const macroDrives = await driveAllMacroParameterEdges(get, key, graphState, options)
+      results[key] = { ...result, runtimeSync, macroDrives }
 
       if (!result.ok || result.failures.length > 0) {
         warn?.('[FXG] graph-owned effect hydration incomplete', {
@@ -1433,6 +1494,17 @@ const useEffectChainStore = create((set, get) => ({
         access.graphState,
         applied.graphState,
       )
+      // FXG.4-f — drive connected parameters from the new macro value. Best-effort:
+      // failed/unavailable target writes do not roll back the committed graphState.
+      const drive = await driveMacroParameterEdges(
+        get,
+        access.key,
+        applied.graphState,
+        nodeId,
+        value,
+        options,
+      )
+      return { ...applied, drive }
     }
     return applied
   },
@@ -1543,10 +1615,19 @@ const useEffectChainStore = create((set, get) => ({
     const access = readGraphStateForMutation(get(), trackId)
     if (!access.ok) return access
 
+    // Parameter edge removal never changes audio routing, so skip the engine
+    // topology sync for it. Audio edge removal keeps the default sync.
+    const removingParameterEdge = isParameterEdge(access.graphState, edgeId)
+
     const mutation = disconnectGraphEdge(access.graphState, edgeId)
     if (!mutation.ok) return mutation
 
-    const applied = await applyGraphStateMutation(set, access.key, mutation.graphState, options)
+    const applied = await applyGraphStateMutation(
+      set,
+      access.key,
+      mutation.graphState,
+      removingParameterEdge ? { ...options, syncRuntime: false } : options,
+    )
     if (applied.ok) {
       recordGraphEditTransaction(
         set,
@@ -1557,6 +1638,54 @@ const useEffectChainStore = create((set, get) => ({
       )
     }
     return applied
+  },
+
+  // FXG.4-e/f — link a Macro controlOut to an exposed parameter input port. The
+  // parameter edge persists the FXG.4-c GraphParameterTarget + a default linear
+  // mapping. It is not an audio edge, so it never syncs audio topology and never
+  // touches effectChains. After committing, the new link is immediately driven from
+  // the macro's current value so the parameter reflects the link straight away.
+  connectMacroToParameterForTrack: async (trackId, connectionDraft, options = {}) => {
+    const access = readGraphStateForMutation(get(), trackId)
+    if (!access.ok) return access
+
+    const mutation = connectMacroToParameter(access.graphState, connectionDraft, {
+      idFactory: options.idFactory,
+    })
+    if (!mutation.ok) return mutation
+
+    const applied = await applyGraphStateMutation(
+      set,
+      access.key,
+      mutation.graphState,
+      { ...options, syncRuntime: false },
+    )
+    if (!applied.ok) return applied
+
+    recordGraphEditTransaction(
+      set,
+      access.key,
+      'connect_macro_to_parameter',
+      access.graphState,
+      applied.graphState,
+    )
+
+    const macroNode = applied.graphState.nodes.find(
+      (node) => node.id === connectionDraft?.sourceNodeId,
+    )
+    const macroValue = Number.isFinite(macroNode?.data?.normalizedValue)
+      ? macroNode.data.normalizedValue
+      : 0
+    const drive = await driveMacroParameterEdges(
+      get,
+      access.key,
+      applied.graphState,
+      connectionDraft?.sourceNodeId,
+      macroValue,
+      options,
+    )
+
+    return { ...applied, edge: mutation.edge, drive }
   },
 
   // ── FXG.4-a graph-owned effect parameter descriptors ──────────────────────

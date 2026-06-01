@@ -789,4 +789,138 @@ describe('GraphStatePreview', () => {
     expect(html).toContain('xleth-graph-state-preview__disconnect');
     expect(html).toContain('aria-label="Disconnect Audio cable: Track Input to Track Output"');
   });
+
+  // ── FXG.4-e/f Macro -> Parameter links ────────────────────────────────────
+
+  function effectWithPort(id = 'delay', parameterId = 'feedback'): GraphStateNode {
+    return effectNode(id, 'Delay', 0, { x: 260, y: 0 }, {
+      exposedParameterPorts: [
+        {
+          parameterId,
+          parameterIndexFallback: 0,
+          nameSnapshot: 'Feedback',
+          labelSnapshot: null,
+          parameterIdIsFallback: false,
+          automatable: true,
+          readOnly: false,
+        },
+      ],
+    });
+  }
+
+  function parameterEdge(
+    id: string,
+    macroNodeId: string,
+    targetNodeId: string,
+    parameterId: string,
+  ): GraphStateEdge {
+    return {
+      id,
+      sourceNodeId: macroNodeId,
+      sourcePort: 'controlOut',
+      targetNodeId,
+      targetPort: `gpp:${targetNodeId}:${parameterId}`,
+      type: 'parameter',
+      targetParameter: { parameterId },
+    };
+  }
+
+  it('builds a parameter edge in the preview model with its own curved path', () => {
+    const model = buildGraphStatePreviewModel(graphState([
+      inputNode(),
+      effectWithPort('delay', 'feedback'),
+      macroNode('macro-a', 'Energy', 0.5, { x: 80, y: 220 }),
+      outputNode({ x: 520, y: 0 }),
+    ], [
+      parameterEdge('p-1', 'macro-a', 'delay', 'feedback'),
+    ]));
+
+    const edge = model.edges.find((candidate) => candidate.id === 'p-1');
+    expect(edge?.type).toBe('parameter');
+    expect(edge?.path.startsWith('M ')).toBe(true);
+    expect(edge?.label).toContain('feedback');
+  });
+
+  it('renders parameter edges visually distinct and exposes a parameter id on each port', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([
+          inputNode(),
+          effectWithPort('delay', 'feedback'),
+          macroNode('macro-a', 'Energy', 0.5, { x: 80, y: 220 }),
+          outputNode({ x: 520, y: 0 }),
+        ], [
+          parameterEdge('p-1', 'macro-a', 'delay', 'feedback'),
+        ])}
+        onDisconnectEdge={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('data-edge-type="parameter"');
+    expect(html).toContain('xleth-graph-state-preview__edge--parameter');
+    expect(html).toContain('data-parameter-id="feedback"');
+    // The parameter edge gets its own delete affordance.
+    expect(html).toContain('xleth-graph-state-preview__disconnect--parameter');
+  });
+
+  it('makes the Macro controlOut a parameter-link drag source when linking is enabled', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([
+          inputNode(),
+          effectWithPort('delay', 'feedback'),
+          macroNode('macro-a', 'Energy', 0.4, { x: 80, y: 220 }),
+          outputNode({ x: 520, y: 0 }),
+        ], [])}
+        onConnectMacroToParameter={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('data-connect-source="true"');
+    expect(html).toContain('data-connect-source-kind="macro"');
+    // The control-out identity is preserved on the interactive handle.
+    expect(html).toContain('data-control-output="true"');
+    expect(html).toContain('xleth-graph-state-preview__handle--connect-parameter-source');
+  });
+
+  it('leaves the Macro controlOut static when parameter linking is not enabled', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([
+          inputNode(),
+          macroNode('macro-a', 'Energy', 0.4, { x: 80, y: 220 }),
+          outputNode({ x: 520, y: 0 }),
+        ], [])}
+      />,
+    );
+
+    expect(html).toContain('data-control-output="true"');
+    expect(html).not.toContain('data-connect-source-kind="macro"');
+    expect(html).not.toContain('xleth-graph-state-preview__handle--connect-parameter-source');
+  });
+
+  it('routes a Macro controlOut handle pointer-down through the connect handler', () => {
+    const macro = buildGraphStatePreviewModel(graphState([
+      macroNode('macro-a', 'Energy', 0.4),
+    ], [])).nodes.find((candidate) => candidate.id === 'macro-a')!;
+    const onConnectPointerDown = vi.fn();
+    const element = GraphStatePreviewNode({
+      node: macro,
+      dragging: false,
+      connectEnabled: false,
+      connectParameterEnabled: true,
+      connectActive: false,
+      canRemove: false,
+      canEdit: false,
+      onConnectPointerDown,
+    });
+
+    const handle = findElementByClass(element, 'xleth-graph-state-preview__handle--connect-parameter-source')!;
+    expect(handle).toBeTruthy();
+    expect(handle.props['data-connect-source-kind']).toBe('macro');
+    expect(handle.props['data-control-port-id']).toBe('macro:macro-a:controlOut');
+
+    handle.props.onPointerDown({ button: 0 });
+    expect(onConnectPointerDown).toHaveBeenCalledWith({ button: 0 }, macro);
+  });
 });

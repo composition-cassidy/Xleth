@@ -4,19 +4,28 @@ import {
   GRAPH_MACRO_NODE_TYPE,
   GRAPH_MACRO_OUTPUT_PORT,
   GRAPH_MUTATION_REJECTION,
+  GRAPH_PARAMETER_CURVE_LINEAR,
   PROTECTED_NODE_TYPES,
   addGraphEffectNode,
   addGraphMacroNode,
   buildExposedParameterPort,
   canConnectGraphNodes,
+  canConnectMacroToParameter,
   canRemoveGraphNode,
+  collectMacroParameterWrites,
   connectGraphNodes,
+  connectMacroToParameter,
   createEmptyGraphState,
+  defaultParameterMapping,
   disconnectGraphEdge,
+  disconnectParameterEdge,
+  evaluateLinearParameterMapping,
   hasEquivalentGraphEdge,
+  isParameterEdge,
   isProtectedGraphNodeType,
   loadGraphState,
   normalizeExposedParameterPorts,
+  normalizeParameterMapping,
   renameGraphMacroNode,
   removeGraphNode,
   saveGraphState,
@@ -1721,5 +1730,462 @@ describe('FXG.4-c edge schema', () => {
     }), '7')
 
     expect(result.status).toBe('valid')
+  })
+})
+
+function makeMacroParamGraphState(overrides = {}) {
+  return {
+    schemaVersion: GRAPH_STATE_SCHEMA_VERSION,
+    trackId: '9',
+    nodes: [
+      { id: 'in', type: 'trackInput', position: { x: 0, y: 0 }, data: {} },
+      {
+        id: 'fx-a',
+        type: 'effect',
+        position: { x: 260, y: 0 },
+        data: {
+          effectInstanceId: 'inst-a',
+          pluginId: 'stock:reverb',
+          displayName: 'Reverb',
+          bypass: false,
+          missing: false,
+          crashed: false,
+          sourceChainSlotIndex: 0,
+          exposedParameterPorts: [
+            {
+              parameterId: 'mix',
+              parameterIndexFallback: 1,
+              nameSnapshot: 'Mix',
+              labelSnapshot: '%',
+              parameterIdIsFallback: false,
+              automatable: true,
+              readOnly: false,
+            },
+            {
+              parameterId: 'size',
+              parameterIndexFallback: 2,
+              nameSnapshot: 'Size',
+              labelSnapshot: null,
+              parameterIdIsFallback: false,
+              automatable: true,
+              readOnly: true,
+            },
+          ],
+        },
+      },
+      { id: 'macro-a', type: GRAPH_MACRO_NODE_TYPE, position: { x: 80, y: 200 }, data: { label: 'Macro 1', normalizedValue: 0.5 } },
+      { id: 'out', type: 'trackOutput', position: { x: 520, y: 0 }, data: {} },
+    ],
+    edges: [
+      { id: 'e-1', sourceNodeId: 'in', sourcePort: 'audio', targetNodeId: 'fx-a', targetPort: 'audioIn', type: 'audio' },
+      { id: 'e-2', sourceNodeId: 'fx-a', sourcePort: 'audioOut', targetNodeId: 'out', targetPort: 'audio', type: 'audio' },
+    ],
+    viewport: { x: 0, y: 0, zoom: 1 },
+    ...overrides,
+  }
+}
+
+describe('FXG.4-e/f parameter link mapping', () => {
+  describe('normalizeParameterMapping / defaultParameterMapping', () => {
+    it('returns enabled linear defaults spanning the full range', () => {
+      expect(defaultParameterMapping()).toEqual({
+        enabled: true,
+        sourceMin: 0,
+        sourceMax: 1,
+        targetMin: 0,
+        targetMax: 1,
+        curve: { type: GRAPH_PARAMETER_CURVE_LINEAR },
+      })
+      expect(normalizeParameterMapping(undefined)).toEqual(defaultParameterMapping())
+      expect(normalizeParameterMapping(null)).toEqual(defaultParameterMapping())
+      expect(normalizeParameterMapping('bogus')).toEqual(defaultParameterMapping())
+    })
+
+    it('clamps every range field to [0,1] and repairs an unknown curve to linear', () => {
+      const mapping = normalizeParameterMapping({
+        enabled: true,
+        sourceMin: -3,
+        sourceMax: 9,
+        targetMin: -1,
+        targetMax: 5,
+        curve: { type: 'bezier', points: [{ x: 0, y: 0 }] },
+      })
+      expect(mapping).toEqual({
+        enabled: true,
+        sourceMin: 0,
+        sourceMax: 1,
+        targetMin: 0,
+        targetMax: 1,
+        curve: { type: GRAPH_PARAMETER_CURVE_LINEAR },
+      })
+      expect(mapping.curve).not.toHaveProperty('points')
+    })
+
+    it('preserves targetMin greater than targetMax for inverted mapping', () => {
+      const mapping = normalizeParameterMapping({ targetMin: 1, targetMax: 0 })
+      expect(mapping.targetMin).toBe(1)
+      expect(mapping.targetMax).toBe(0)
+    })
+
+    it('only enabled === false disables the mapping', () => {
+      expect(normalizeParameterMapping({ enabled: false }).enabled).toBe(false)
+      expect(normalizeParameterMapping({ enabled: 0 }).enabled).toBe(true)
+      expect(normalizeParameterMapping({}).enabled).toBe(true)
+    })
+  })
+
+  describe('evaluateLinearParameterMapping', () => {
+    it('maps the full default range linearly', () => {
+      const mapping = defaultParameterMapping()
+      expect(evaluateLinearParameterMapping(mapping, 0)).toEqual({ enabled: true, value: 0 })
+      expect(evaluateLinearParameterMapping(mapping, 0.5)).toEqual({ enabled: true, value: 0.5 })
+      expect(evaluateLinearParameterMapping(mapping, 1)).toEqual({ enabled: true, value: 1 })
+    })
+
+    it('maps custom target ranges and clamps the macro input', () => {
+      const mapping = normalizeParameterMapping({ targetMin: 0.5, targetMax: 1 })
+      expect(evaluateLinearParameterMapping(mapping, 0).value).toBeCloseTo(0.5)
+      expect(evaluateLinearParameterMapping(mapping, 1).value).toBeCloseTo(1)
+      expect(evaluateLinearParameterMapping(mapping, 2).value).toBeCloseTo(1)
+      expect(evaluateLinearParameterMapping(mapping, -1).value).toBeCloseTo(0.5)
+    })
+
+    it('supports inverted target ranges', () => {
+      const mapping = normalizeParameterMapping({ targetMin: 0.25, targetMax: 0 })
+      expect(evaluateLinearParameterMapping(mapping, 0).value).toBeCloseTo(0.25)
+      expect(evaluateLinearParameterMapping(mapping, 1).value).toBeCloseTo(0)
+      expect(evaluateLinearParameterMapping(mapping, 0.5).value).toBeCloseTo(0.125)
+    })
+
+    it('respects a partial source range', () => {
+      const mapping = normalizeParameterMapping({ sourceMin: 0.25, sourceMax: 0.75 })
+      expect(evaluateLinearParameterMapping(mapping, 0.25).value).toBeCloseTo(0)
+      expect(evaluateLinearParameterMapping(mapping, 0.5).value).toBeCloseTo(0.5)
+      expect(evaluateLinearParameterMapping(mapping, 0.75).value).toBeCloseTo(1)
+    })
+
+    it('treats a zero-width source span as a step without dividing by zero', () => {
+      const mapping = normalizeParameterMapping({ sourceMin: 0.5, sourceMax: 0.5 })
+      expect(evaluateLinearParameterMapping(mapping, 0.4).value).toBe(0)
+      expect(evaluateLinearParameterMapping(mapping, 0.5).value).toBe(1)
+      expect(evaluateLinearParameterMapping(mapping, 0.6).value).toBe(1)
+    })
+
+    it('returns a null value for disabled mappings', () => {
+      expect(evaluateLinearParameterMapping({ enabled: false }, 0.7)).toEqual({ enabled: false, value: null })
+    })
+  })
+
+  describe('parameter edge normalization through loadGraphState', () => {
+    it('adds a default mapping to a parameter edge that has none', () => {
+      const gs = makeMacroParamGraphState({
+        edges: [
+          ...makeMacroParamGraphState().edges,
+          {
+            id: 'p-1',
+            sourceNodeId: 'macro-a',
+            sourcePort: GRAPH_MACRO_OUTPUT_PORT,
+            targetNodeId: 'fx-a',
+            targetPort: 'gpp:fx-a:mix',
+            type: 'parameter',
+          },
+        ],
+      })
+      const result = validateGraphState(gs, '9')
+      expect(result.status).toBe('valid')
+      const edge = result.graphState.edges.find((e) => e.id === 'p-1')
+      expect(edge.mapping).toEqual(defaultParameterMapping())
+    })
+
+    it('repairs a malformed mapping and preserves inverted target ranges and clamps', () => {
+      const gs = makeMacroParamGraphState({
+        edges: [
+          ...makeMacroParamGraphState().edges,
+          {
+            id: 'p-1',
+            sourceNodeId: 'macro-a',
+            sourcePort: GRAPH_MACRO_OUTPUT_PORT,
+            targetNodeId: 'fx-a',
+            targetPort: 'gpp:fx-a:mix',
+            type: 'parameter',
+            mapping: { enabled: true, sourceMin: -1, sourceMax: 4, targetMin: 1, targetMax: 0, curve: { type: 'bezier' } },
+          },
+        ],
+      })
+      const result = validateGraphState(gs, '9')
+      const edge = result.graphState.edges.find((e) => e.id === 'p-1')
+      expect(edge.mapping).toEqual({
+        enabled: true,
+        sourceMin: 0,
+        sourceMax: 1,
+        targetMin: 1,
+        targetMax: 0,
+        curve: { type: GRAPH_PARAMETER_CURVE_LINEAR },
+      })
+    })
+
+    it('does not attach a mapping to audio edges', () => {
+      const result = validateGraphState(makeMacroParamGraphState(), '9')
+      const audioEdge = result.graphState.edges.find((e) => e.id === 'e-1')
+      expect(audioEdge.type).toBe('audio')
+      expect(audioEdge).not.toHaveProperty('mapping')
+    })
+  })
+
+  describe('canConnectMacroToParameter / connectMacroToParameter', () => {
+    it('validates a Macro -> exposed parameter link and builds a stable target', () => {
+      const gs = makeMacroParamGraphState()
+      const check = canConnectMacroToParameter(gs, {
+        sourceNodeId: 'macro-a',
+        targetNodeId: 'fx-a',
+        parameterId: 'mix',
+      })
+      expect(check.ok).toBe(true)
+      expect(check.targetPort).toBe('gpp:fx-a:mix')
+      expect(check.target).toMatchObject({
+        kind: 'graph-parameter',
+        graphNodeId: 'fx-a',
+        effectInstanceId: 'inst-a',
+        parameterId: 'mix',
+      })
+    })
+
+    it('creates a parameter edge with controlOut source, gpp target port, target identity, and default mapping', () => {
+      const gs = makeMacroParamGraphState()
+      const result = connectMacroToParameter(gs, {
+        sourceNodeId: 'macro-a',
+        targetNodeId: 'fx-a',
+        parameterId: 'mix',
+      }, { idFactory: () => 'p-new' })
+
+      expect(result.ok).toBe(true)
+      const edge = result.graphState.edges.at(-1)
+      expect(edge).toMatchObject({
+        id: 'p-new',
+        sourceNodeId: 'macro-a',
+        sourcePort: GRAPH_MACRO_OUTPUT_PORT,
+        targetNodeId: 'fx-a',
+        targetPort: 'gpp:fx-a:mix',
+        type: 'parameter',
+      })
+      expect(edge.mapping).toEqual(defaultParameterMapping())
+      expect(edge.targetParameter.kind).toBe('graph-parameter')
+      // No raw engine node id is ever persisted on the target identity.
+      expect(JSON.stringify(edge)).not.toContain('engineNodeId')
+      // Source graphState is not mutated.
+      expect(gs.edges.some((e) => e.id === 'p-new')).toBe(false)
+    })
+
+    it('rejects an effect node as a parameter source (audio output cannot drive a parameter)', () => {
+      const gs = makeMacroParamGraphState()
+      expect(canConnectMacroToParameter(gs, {
+        sourceNodeId: 'fx-a',
+        targetNodeId: 'fx-a',
+        parameterId: 'mix',
+      })).toMatchObject({ ok: false, reason: GRAPH_MUTATION_REJECTION.SELF_CONNECTION })
+
+      const gsTwoFx = makeMacroParamGraphState({
+        nodes: [
+          ...makeMacroParamGraphState().nodes,
+          {
+            id: 'fx-b',
+            type: 'effect',
+            position: { x: 390, y: 0 },
+            data: {
+              effectInstanceId: 'inst-b',
+              pluginId: 'stock:delay',
+              displayName: 'Delay',
+              bypass: false,
+              missing: false,
+              crashed: false,
+              sourceChainSlotIndex: 1,
+              exposedParameterPorts: [],
+            },
+          },
+        ],
+      })
+      expect(canConnectMacroToParameter(gsTwoFx, {
+        sourceNodeId: 'fx-b',
+        targetNodeId: 'fx-a',
+        parameterId: 'mix',
+      })).toMatchObject({ ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_SOURCE_TYPE })
+    })
+
+    it('rejects protected Track I/O and macro nodes as parameter targets', () => {
+      const gs = makeMacroParamGraphState()
+      expect(canConnectMacroToParameter(gs, {
+        sourceNodeId: 'macro-a',
+        targetNodeId: 'out',
+        parameterId: 'mix',
+      })).toMatchObject({ ok: false, reason: GRAPH_MUTATION_REJECTION.PROTECTED_NODE })
+
+      const gsTwoMacros = makeMacroParamGraphState({
+        nodes: [
+          ...makeMacroParamGraphState().nodes,
+          { id: 'macro-b', type: GRAPH_MACRO_NODE_TYPE, position: { x: 80, y: 320 }, data: { label: 'Macro 2', normalizedValue: 0 } },
+        ],
+      })
+      expect(canConnectMacroToParameter(gsTwoMacros, {
+        sourceNodeId: 'macro-a',
+        targetNodeId: 'macro-b',
+        parameterId: 'mix',
+      })).toMatchObject({ ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_TARGET_TYPE })
+    })
+
+    it('rejects a parameter that is not exposed and a read-only parameter', () => {
+      const gs = makeMacroParamGraphState()
+      expect(canConnectMacroToParameter(gs, {
+        sourceNodeId: 'macro-a',
+        targetNodeId: 'fx-a',
+        parameterId: 'unexposed',
+      })).toMatchObject({ ok: false, reason: GRAPH_MUTATION_REJECTION.PARAMETER_NOT_EXPOSED })
+
+      expect(canConnectMacroToParameter(gs, {
+        sourceNodeId: 'macro-a',
+        targetNodeId: 'fx-a',
+        parameterId: 'size',
+      })).toMatchObject({ ok: false, reason: GRAPH_MUTATION_REJECTION.PARAMETER_READ_ONLY })
+    })
+
+    it('rejects a target effect node that is missing an effectInstanceId', () => {
+      const gs = makeMacroParamGraphState()
+      gs.nodes.find((n) => n.id === 'fx-a').data.effectInstanceId = ''
+      expect(canConnectMacroToParameter(gs, {
+        sourceNodeId: 'macro-a',
+        targetNodeId: 'fx-a',
+        parameterId: 'mix',
+      })).toMatchObject({ ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_EFFECT_INSTANCE })
+    })
+
+    it('dedupes a Macro -> same target parameter link', () => {
+      const gs = makeMacroParamGraphState()
+      const first = connectMacroToParameter(gs, {
+        sourceNodeId: 'macro-a',
+        targetNodeId: 'fx-a',
+        parameterId: 'mix',
+      }, { idFactory: () => 'p-1' })
+      expect(first.ok).toBe(true)
+      const second = connectMacroToParameter(first.graphState, {
+        sourceNodeId: 'macro-a',
+        targetNodeId: 'fx-a',
+        parameterId: 'mix',
+      }, { idFactory: () => 'p-2' })
+      expect(second).toMatchObject({ ok: false, reason: GRAPH_MUTATION_REJECTION.DUPLICATE_EDGE })
+    })
+  })
+
+  describe('isParameterEdge / disconnectParameterEdge', () => {
+    it('identifies and removes only parameter edges', () => {
+      const linked = connectMacroToParameter(makeMacroParamGraphState(), {
+        sourceNodeId: 'macro-a',
+        targetNodeId: 'fx-a',
+        parameterId: 'mix',
+      }, { idFactory: () => 'p-1' })
+      const gs = linked.graphState
+
+      expect(isParameterEdge(gs, 'p-1')).toBe(true)
+      expect(isParameterEdge(gs, 'e-1')).toBe(false)
+
+      const removed = disconnectParameterEdge(gs, 'p-1')
+      expect(removed.ok).toBe(true)
+      expect(removed.graphState.edges.some((e) => e.id === 'p-1')).toBe(false)
+
+      // Refuses to remove an audio edge through the parameter-specific path.
+      expect(disconnectParameterEdge(gs, 'e-1')).toMatchObject({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.MISSING_EDGE,
+      })
+    })
+  })
+
+  describe('collectMacroParameterWrites', () => {
+    function makeLinkedGraph(mapping) {
+      const linked = connectMacroToParameter(makeMacroParamGraphState(), {
+        sourceNodeId: 'macro-a',
+        targetNodeId: 'fx-a',
+        parameterId: 'mix',
+        mapping,
+      }, { idFactory: () => 'p-mix' })
+      return linked.graphState
+    }
+
+    it('produces a normalized write for an enabled linear edge', () => {
+      const gs = makeLinkedGraph()
+      const { writes } = collectMacroParameterWrites(gs, 'macro-a', 0.5)
+      expect(writes).toEqual([
+        { edgeId: 'p-mix', effectInstanceId: 'inst-a', parameterId: 'mix', value: 0.5 },
+      ])
+    })
+
+    it('applies inverted target ranges', () => {
+      const gs = makeLinkedGraph({ targetMin: 1, targetMax: 0 })
+      const { writes } = collectMacroParameterWrites(gs, 'macro-a', 0.25)
+      expect(writes).toHaveLength(1)
+      expect(writes[0].value).toBeCloseTo(0.75)
+    })
+
+    it('skips disabled edges', () => {
+      const gs = makeLinkedGraph({ enabled: false })
+      const result = collectMacroParameterWrites(gs, 'macro-a', 0.8)
+      expect(result.writes).toEqual([])
+      expect(result.skipped).toEqual([{ edgeId: 'p-mix', reason: 'disabled' }])
+    })
+
+    it('writes multiple outgoing edges to multiple targets', () => {
+      const gsTwoFx = makeMacroParamGraphState({
+        nodes: [
+          ...makeMacroParamGraphState().nodes,
+          {
+            id: 'fx-b',
+            type: 'effect',
+            position: { x: 390, y: 0 },
+            data: {
+              effectInstanceId: 'inst-b',
+              pluginId: 'stock:delay',
+              displayName: 'Delay',
+              bypass: false,
+              missing: false,
+              crashed: false,
+              sourceChainSlotIndex: 1,
+              exposedParameterPorts: [
+                { parameterId: 'feedback', parameterIndexFallback: 0, nameSnapshot: 'Feedback', labelSnapshot: null, parameterIdIsFallback: false, automatable: true, readOnly: false },
+              ],
+            },
+          },
+        ],
+      })
+      const a = connectMacroToParameter(gsTwoFx, {
+        sourceNodeId: 'macro-a', targetNodeId: 'fx-a', parameterId: 'mix',
+      }, { idFactory: () => 'p-a' })
+      const b = connectMacroToParameter(a.graphState, {
+        sourceNodeId: 'macro-a', targetNodeId: 'fx-b', parameterId: 'feedback', mapping: { targetMin: 0.25, targetMax: 0 },
+      }, { idFactory: () => 'p-b' })
+
+      const { writes } = collectMacroParameterWrites(b.graphState, 'macro-a', 1)
+      expect(writes).toHaveLength(2)
+      expect(writes.find((w) => w.effectInstanceId === 'inst-a')).toMatchObject({ parameterId: 'mix', value: 1 })
+      expect(writes.find((w) => w.effectInstanceId === 'inst-b')).toMatchObject({ parameterId: 'feedback', value: 0 })
+    })
+
+    it('skips an edge whose target identity is missing or malformed', () => {
+      const gs = makeLinkedGraph()
+      delete gs.edges.find((e) => e.id === 'p-mix').targetParameter
+      const result = collectMacroParameterWrites(gs, 'macro-a', 0.5)
+      expect(result.writes).toEqual([])
+      expect(result.skipped).toEqual([{ edgeId: 'p-mix', reason: 'invalid_target' }])
+    })
+
+    it('skips an edge whose exposed parameter port no longer exists', () => {
+      const gs = makeLinkedGraph()
+      gs.nodes.find((n) => n.id === 'fx-a').data.exposedParameterPorts = []
+      const result = collectMacroParameterWrites(gs, 'macro-a', 0.5)
+      expect(result.writes).toEqual([])
+      expect(result.skipped).toEqual([{ edgeId: 'p-mix', reason: 'missing_exposed_port' }])
+    })
+
+    it('returns nothing for a non-macro source node', () => {
+      const gs = makeLinkedGraph()
+      expect(collectMacroParameterWrites(gs, 'fx-a', 0.5)).toEqual({ writes: [], skipped: [] })
+    })
   })
 })

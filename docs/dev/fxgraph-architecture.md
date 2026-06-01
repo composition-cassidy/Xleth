@@ -1,6 +1,6 @@
 # FX Graph Architecture
 
-Internal reference for the renderer-side graphState system. Updated through FXG.4-d.
+Internal reference for the renderer-side graphState system. Updated through FXG.4-e/f.
 
 ## Data model separation
 
@@ -403,11 +403,12 @@ reads `raw.parameterIndexFallback ?? raw.parameterIndex`.
 
 The graphState edge schema now recognizes `type: 'parameter'` edges. Audio topology helpers
 (`linearGraphTopology.js`, `hasAudioCycle`) already filter by `edge.type === 'audio'`, so
-parameter edges are correctly ignored by all audio routing paths. `connectGraphNodes` rejects
-any attempt to create a non-audio edge via the user-facing connect path.
+parameter edges are correctly ignored by all audio routing paths. `connectGraphNodes` (the audio
+connect path) still rejects any attempt to create a non-audio edge; parameter edges are created
+through the dedicated `connectMacroToParameter` path added in FXG.4-e/f (see below).
 
-Parameter edges are data-model only until modulation runtime exists. No engine runtime sync
-treats parameter edges as audio routing.
+No engine runtime sync treats parameter edges as audio routing. They are never passed into the
+engine audio graph.
 
 ## Macro Control Nodes (FXG.4-d)
 
@@ -435,6 +436,99 @@ Macro-to-parameter links, LFO nodes, envelope nodes, peak follower nodes, automa
 modulation execution, sample-accurate automation, smoothing, min/max depth scaling, polarity,
 Bezier mapping, buses, or graph-to-chain return. Mixer Chain behavior is unchanged.
 `effectChains` are not mutated.
+
+## Macro-to-Parameter Links + Default Runtime Drive (FXG.4-e/f)
+
+FXG.4-e/f makes the first working macro modulation path:
+
+```
+Macro normalizedValue
+  -> parameter edge mapping (default linear)
+  -> exposed GraphParameterTarget (FXG.4-c)
+  -> setGraphEffectParameterNormalized (FXG.4-a)
+  -> stock/VST parameter change
+```
+
+### Parameter edge shape
+
+A Macro `controlOut` port links to an exposed parameter input port as a `type: 'parameter'`
+edge. The edge persists the FXG.4-c `GraphParameterTarget` plus a per-link `mapping` object:
+
+```js
+{
+  id, type: 'parameter',
+  sourceNodeId: macroNodeId, sourcePort: 'controlOut',
+  targetNodeId: effectNodeId, targetPort: 'gpp:{effectNodeId}:{parameterId}',
+  targetParameter: GraphParameterTarget,   // no raw engineNodeId is ever stored
+  mapping: {
+    enabled: true,
+    sourceMin: 0.0, sourceMax: 1.0,
+    targetMin: 0.0, targetMax: 1.0,
+    curve: { type: 'linear' },
+  },
+}
+```
+
+The mapping lives on the **edge**, not the macro, so one macro can drive many parameters with
+different ranges/polarity. Every numeric field clamps to `[0,1]`. `targetMin > targetMax` is
+preserved (inverted mapping). `curve.type` only accepts `linear` in this phase; anything else
+repairs to `linear`. The object is shaped so FXG.4-g can add `curve.type === 'bezier'` + control
+points without a schema migration. `normalizeParameterMapping` repairs malformed mappings and
+`loadGraphState` attaches a default mapping to any parameter edge missing one. Audio edges never
+get a mapping field.
+
+### Linking helpers (`ui/src/fxgraph/graphState.js`)
+
+- `canConnectMacroToParameter(graphState, { sourceNodeId, targetNodeId, parameterId })` — validates:
+  source is a macro; target is an effect (Track I/O and macros rejected); the parameter is exposed,
+  writable, and the target carries an `effectInstanceId`; and the link is not a self-link or
+  duplicate.
+- `connectMacroToParameter(...)` — builds the parameter edge with `controlOut` source, a
+  `gpp:` target port, the built `GraphParameterTarget`, and a default linear mapping.
+- `disconnectParameterEdge(graphState, edgeId)` / `isParameterEdge(graphState, edgeId)` — parameter-
+  specific edge removal/identification (refuses to drop audio edges).
+- `evaluateLinearParameterMapping(mapping, macroValue)` — `t = clamp((v - sourceMin)/(sourceMax - sourceMin), 0, 1)`,
+  `value = clamp(targetMin + t*(targetMax - targetMin), 0, 1)`. A zero-width source span steps
+  instead of dividing by zero. Disabled mappings return `{ enabled: false, value: null }`.
+- `collectMacroParameterWrites(graphState, macroNodeId, macroValue)` — pure resolver returning the
+  `{ effectInstanceId, parameterId, value }` writes the macro's enabled outgoing parameter edges
+  produce. Disabled, malformed, unresolved, or read-only edges are reported under `skipped`.
+
+### Store actions (`ui/src/stores/effectChainStore.js`)
+
+- `connectMacroToParameterForTrack(trackId, { sourceNodeId, targetNodeId, parameterId })` — graph-mode
+  gated, persists via `timeline.setTrackGraphState`, records one undo step
+  (`connect_macro_to_parameter`), skips audio runtime sync, then drives the new link from the macro's
+  current value.
+- `updateGraphMacroValueForTrack` — after committing the macro value it calls
+  `driveMacroParameterEdges`, which turns each `collectMacroParameterWrites` entry into a FXG.4-a
+  `setGraphEffectParameterNormalized(trackId, effectInstanceId, parameterId, value)` call. One failed
+  write never aborts the others and never rolls back the committed `graphState`.
+- `disconnectGraphEdgeForTrack` — detects parameter edges and skips audio runtime sync for them
+  (audio edge removal still syncs).
+- Project-load hydration applies each macro's saved value to its connected parameters after
+  graph-owned effect processors are instantiated (best-effort; unavailable targets fail safely).
+
+This is **control-rate, renderer-side drive only**: no audio topology change, no `effectChains`
+mutation, no Mixer Chain slot indexes, no raw engine node ids, no parallel parameter system. The
+macro stays a clean `0..1` source. Audio topology (`linearGraphTopology.js`, `hasAudioCycle`) and the
+engine audio graph continue to ignore parameter edges and macro nodes entirely.
+
+### UI (`GraphStatePreview.tsx`, `FxGraphPanel.tsx`)
+
+The Macro `controlOut` handle becomes a drag source when `onConnectMacroToParameter` is provided;
+dragging it onto an exposed parameter input port (resolved via `data-parameter-id`) creates a
+parameter edge. Audio drag sources still only create audio edges, and audio output cannot land on a
+parameter port (parameter edges are port-level; audio edges are node-level). Parameter edges render
+as warning-tinted dashed cables — distinct from solid audio cables — and reuse the existing edge
+delete affordance. Tokenized status messages cover read-only / not-exposed / unavailable failures.
+
+### Still deferred after FXG.4-e/f
+
+Per-link Bezier curve editor (FXG.4-g), automation clips, LFO/envelope/peak-follower nodes, buses,
+graph-to-chain return, audio-rate or sample-accurate modulation, smoothing, and depth scaling.
+Mapping range editing in the UI is also deferred — the mapping data and runtime drive exist, but
+this phase ships only the default linear mapping with no per-edge range editor.
 
 ## Engine execution boundary
 

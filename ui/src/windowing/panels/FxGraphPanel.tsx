@@ -57,6 +57,11 @@ const GRAPH_MUTATION_MESSAGES: Record<string, string> = {
   invalid_connection_draft: 'Could not create that connection.',
   invalid_parameter_port: 'Could not expose that parameter.',
   invalid_macro_value: 'Macro value must be between 0 and 1.',
+  // FXG.4-e/f Macro -> Parameter link validation
+  invalid_parameter_target: 'That parameter cannot be linked.',
+  missing_effect_instance: 'Effect is not active yet.',
+  parameter_not_exposed: 'Expose that parameter on the effect first.',
+  parameter_read_only: 'Read-only parameter cannot be driven.',
   master_track: 'Master track stays in Mixer Chain mode.',
   no_track: 'Select a mixer track first.',
   not_graph_mode: 'Switch this track to FX Graph mode first.',
@@ -122,6 +127,7 @@ export interface FxGraphPanelContentProps {
   onAddGraphMacroNode?: () => void;
   onRemoveGraphNode?: (nodeId: string) => void;
   onConnectGraphNodes?: (sourceNodeId: string, targetNodeId: string) => void;
+  onConnectGraphMacroToParameter?: (macroNodeId: string, targetNodeId: string, parameterId: string) => void;
   onDisconnectGraphEdge?: (edgeId: string) => void;
   onEditGraphNode?: (nodeId: string) => void;
   onUpdateGraphMacroValue?: (nodeId: string, value: number) => void;
@@ -193,6 +199,7 @@ export function FxGraphPanelContent({
   onAddGraphMacroNode,
   onRemoveGraphNode,
   onConnectGraphNodes,
+  onConnectGraphMacroToParameter,
   onDisconnectGraphEdge,
   onEditGraphNode,
   onUpdateGraphMacroValue,
@@ -309,6 +316,7 @@ export function FxGraphPanelContent({
               onAddMacroNode={graphModeActive ? onAddGraphMacroNode : undefined}
               onRemoveNode={graphModeActive ? onRemoveGraphNode : undefined}
               onConnectNodes={graphModeActive ? onConnectGraphNodes : undefined}
+              onConnectMacroToParameter={graphModeActive ? onConnectGraphMacroToParameter : undefined}
               onDisconnectEdge={graphModeActive ? onDisconnectGraphEdge : undefined}
               onEditNode={graphModeActive ? onEditGraphNode : undefined}
               onUpdateMacroValue={graphModeActive ? onUpdateGraphMacroValue : undefined}
@@ -474,6 +482,7 @@ export default function FxGraphPanel() {
   const addGraphMacroNodeForTrack = useEffectChainStore((state) => state.addGraphMacroNodeForTrack);
   const removeGraphNodeForTrack = useEffectChainStore((state) => state.removeGraphNodeForTrack);
   const connectGraphNodesForTrack = useEffectChainStore((state) => state.connectGraphNodesForTrack);
+  const connectMacroToParameterForTrack = useEffectChainStore((state) => state.connectMacroToParameterForTrack);
   const disconnectGraphEdgeForTrack = useEffectChainStore((state) => state.disconnectGraphEdgeForTrack);
   const updateGraphMacroValueForTrack = useEffectChainStore((state) => state.updateGraphMacroValueForTrack);
   const renameGraphMacroNodeForTrack = useEffectChainStore((state) => state.renameGraphMacroNodeForTrack);
@@ -589,6 +598,20 @@ export default function FxGraphPanel() {
     const result = await connectGraphNodesForTrack(selectedTrack.id, { sourceNodeId, targetNodeId });
     setGraphActionNotice(describeGraphMutationResult(result));
   }, [connectGraphNodesForTrack, fxMode, selectedTrack?.id]);
+
+  const handleConnectGraphMacroToParameter = useCallback(async (
+    macroNodeId: string,
+    targetNodeId: string,
+    parameterId: string,
+  ) => {
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    const result = await connectMacroToParameterForTrack(selectedTrack.id, {
+      sourceNodeId: macroNodeId,
+      targetNodeId,
+      parameterId,
+    });
+    setGraphActionNotice(describeGraphMutationResult(result));
+  }, [connectMacroToParameterForTrack, fxMode, selectedTrack?.id]);
 
   const handleDisconnectGraphEdge = useCallback(async (edgeId: string) => {
     if (selectedTrack?.id == null || fxMode !== 'graph') return;
@@ -733,6 +756,7 @@ export default function FxGraphPanel() {
         onAddGraphMacroNode={handleAddGraphMacroNode}
         onRemoveGraphNode={handleRemoveGraphNode}
         onConnectGraphNodes={handleConnectGraphNodes}
+        onConnectGraphMacroToParameter={handleConnectGraphMacroToParameter}
         onDisconnectGraphEdge={handleDisconnectGraphEdge}
         onEditGraphNode={handleEditGraphNode}
         onUpdateGraphMacroValue={handleUpdateGraphMacroValue}

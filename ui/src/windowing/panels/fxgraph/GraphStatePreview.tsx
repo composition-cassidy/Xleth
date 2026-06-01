@@ -36,6 +36,9 @@ export interface GraphStateEdge {
   targetPort: string;
   type: string;
   _preservedType?: string;
+  // FXG.4-e/f — parameter edges carry the target identity + per-link mapping.
+  targetParameter?: { parameterId?: string } | null;
+  mapping?: unknown;
 }
 
 export interface GraphStateDocument {
@@ -57,7 +60,7 @@ export interface GraphStateViewport {
 }
 
 type PreviewNodeKind = 'trackInput' | 'trackOutput' | 'effect' | 'macro' | 'unknown';
-type PreviewEdgeKind = 'audio' | 'unknown';
+type PreviewEdgeKind = 'audio' | 'parameter' | 'unknown';
 
 interface PositionedNode {
   id: string;
@@ -121,6 +124,7 @@ interface GraphStatePreviewProps {
   onAddMacroNode?: () => void;
   onRemoveNode?: (nodeId: string) => void;
   onConnectNodes?: (sourceNodeId: string, targetNodeId: string) => void;
+  onConnectMacroToParameter?: (macroNodeId: string, targetNodeId: string, parameterId: string) => void;
   onDisconnectEdge?: (edgeId: string) => void;
   onEditNode?: (nodeId: string) => void;
   onUpdateMacroValue?: (nodeId: string, value: number) => void;
@@ -449,14 +453,46 @@ function nodeOutPoint(node: PositionedNode) {
   return { x: node.x + node.width, y: node.y + node.height / 2 };
 }
 
-function makeEdgePath(source: PositionedNode, target: PositionedNode) {
-  const { sourceX, sourceY, targetX, targetY } = edgeEndpoints(source, target);
+function makeCurvePath(sourceX: number, sourceY: number, targetX: number, targetY: number) {
   const midpointX = sourceX + (targetX - sourceX) / 2;
-
   return [
     `M ${sourceX} ${sourceY}`,
     `C ${midpointX} ${sourceY}, ${midpointX} ${targetY}, ${targetX} ${targetY}`,
   ].join(' ');
+}
+
+function makeEdgePath(source: PositionedNode, target: PositionedNode) {
+  const { sourceX, sourceY, targetX, targetY } = edgeEndpoints(source, target);
+  return makeCurvePath(sourceX, sourceY, targetX, targetY);
+}
+
+// FXG.4-e/f — parameter edges land on a specific exposed parameter input port. The
+// ports render in a stack at the bottom of the target node, so the anchor is
+// approximated from the node's bottom edge using the port row height. Falls back to
+// the node's left-middle when the parameter is not (or no longer) exposed.
+function parameterPortAnchor(node: PositionedNode, parameterId: string | null) {
+  const ports = node.parameterPorts;
+  const count = ports.length;
+  const index = parameterId ? ports.findIndex((port) => port.parameterId === parameterId) : -1;
+  if (count === 0 || index < 0) {
+    return { x: node.x, y: node.y + node.height / 2 };
+  }
+  const bottomPadding = 10;
+  const portsBottom = node.y + node.height - bottomPadding;
+  const y = portsBottom - (count - index - 0.5) * PARAMETER_PORT_ROW_HEIGHT;
+  return { x: node.x, y };
+}
+
+function readEdgeParameterId(edge: GraphStateEdge, targetNodeId: string): string | null {
+  const fromTarget = edge.targetParameter?.parameterId;
+  if (typeof fromTarget === 'string' && fromTarget.length > 0) return fromTarget;
+  const port = edge.targetPort;
+  const prefix = `gpp:${targetNodeId}:`;
+  if (typeof port === 'string' && port.startsWith(prefix)) {
+    const id = port.slice(prefix.length);
+    return id.length > 0 ? id : null;
+  }
+  return null;
 }
 
 function normalizePositionedEdges(
@@ -477,6 +513,23 @@ function normalizePositionedEdges(
         edgeId: edge.id,
         sourceNodeId: edge.sourceNodeId,
         targetNodeId: edge.targetNodeId,
+      });
+      continue;
+    }
+
+    if (edge.type === 'parameter') {
+      const parameterId = readEdgeParameterId(edge, target.id);
+      const start = nodeOutPoint(source);
+      const end = parameterPortAnchor(target, parameterId);
+      positionedEdges.push({
+        id: edge.id,
+        type: 'parameter',
+        label: parameterId
+          ? `Macro link: ${source.label} to ${target.label} ${parameterId}`
+          : `Macro link: ${source.label} to ${target.label}`,
+        path: makeCurvePath(start.x, start.y, end.x, end.y),
+        midX: (start.x + end.x) / 2,
+        midY: (start.y + end.y) / 2,
       });
       continue;
     }
@@ -548,6 +601,7 @@ export function GraphStatePreviewNode({
   node,
   dragging,
   connectEnabled,
+  connectParameterEnabled = false,
   connectActive,
   canRemove,
   canEdit,
@@ -568,6 +622,7 @@ export function GraphStatePreviewNode({
   node: PositionedNode;
   dragging: boolean;
   connectEnabled: boolean;
+  connectParameterEnabled?: boolean;
   connectActive: boolean;
   canRemove: boolean;
   canEdit: boolean;
@@ -590,14 +645,21 @@ export function GraphStatePreviewNode({
     : node.type === 'trackOutput'
       ? 'track-output'
       : node.type;
+  const isMacro = node.type === 'macro';
   const style: React.CSSProperties = {
     left: node.x,
     top: node.y,
     width: node.width,
     minHeight: node.height,
   };
-  const interactiveOut =
-    connectEnabled && node.type !== 'macro' && !node.virtual && typeof onConnectPointerDown === 'function';
+  // Audio sources (effect/trackInput) drag from the out handle to create audio
+  // edges. Macro controlOut drags to an exposed parameter port to create a
+  // parameter edge — a separate, gated affordance.
+  const interactiveAudioOut =
+    connectEnabled && !isMacro && !node.virtual && typeof onConnectPointerDown === 'function';
+  const interactiveMacroOut =
+    connectParameterEnabled && isMacro && !node.virtual && typeof onConnectPointerDown === 'function';
+  const interactiveOut = interactiveAudioOut || interactiveMacroOut;
   const showRemove =
     canRemove && (node.type === 'effect' || node.type === 'macro') && !node.virtual && typeof onRemove === 'function';
   // Edit appears on every real effect node; placeholder/data-only nodes show a
@@ -646,9 +708,21 @@ export function GraphStatePreviewNode({
       {node.type !== 'trackOutput' && (
         interactiveOut ? (
           <span
-            className="xleth-graph-state-preview__handle xleth-graph-state-preview__handle--out xleth-graph-state-preview__handle--connect-source"
+            className={[
+              'xleth-graph-state-preview__handle',
+              'xleth-graph-state-preview__handle--out',
+              'xleth-graph-state-preview__handle--connect-source',
+              isMacro ? 'xleth-graph-state-preview__handle--control-out' : '',
+              isMacro ? 'xleth-graph-state-preview__handle--connect-parameter-source' : '',
+            ].filter(Boolean).join(' ')}
             data-connect-source="true"
-            aria-label={`Start a connection from ${node.label}`}
+            data-connect-source-kind={isMacro ? 'macro' : 'audio'}
+            data-control-output={isMacro ? 'true' : undefined}
+            data-control-port-id={isMacro ? `macro:${node.id}:controlOut` : undefined}
+            data-control-port-type={isMacro ? 'macro-output' : undefined}
+            aria-label={isMacro
+              ? `Link ${node.label} to a parameter port`
+              : `Start a connection from ${node.label}`}
             onPointerDown={(event) => onConnectPointerDown?.(event, node)}
             onPointerMove={onConnectPointerMove}
             onPointerUp={onConnectPointerUp}
@@ -659,11 +733,11 @@ export function GraphStatePreviewNode({
             className={[
               'xleth-graph-state-preview__handle',
               'xleth-graph-state-preview__handle--out',
-              node.type === 'macro' ? 'xleth-graph-state-preview__handle--control-out' : '',
+              isMacro ? 'xleth-graph-state-preview__handle--control-out' : '',
             ].filter(Boolean).join(' ')}
-            data-control-output={node.type === 'macro' ? 'true' : undefined}
-            data-control-port-id={node.type === 'macro' ? `macro:${node.id}:controlOut` : undefined}
-            data-control-port-type={node.type === 'macro' ? 'macro-output' : undefined}
+            data-control-output={isMacro ? 'true' : undefined}
+            data-control-port-id={isMacro ? `macro:${node.id}:controlOut` : undefined}
+            data-control-port-type={isMacro ? 'macro-output' : undefined}
             aria-hidden="true"
           />
         )
@@ -741,6 +815,7 @@ export function GraphStatePreviewNode({
               key={port.parameterId}
               title={port.nameSnapshot}
               data-parameter-port-id={`gpp:${node.id}:${port.parameterId}`}
+              data-parameter-id={port.parameterId}
               data-parameter-port-type="parameter-input"
             >
               <span className="xleth-graph-state-preview__parameter-port-dot" aria-hidden="true" />
@@ -947,6 +1022,7 @@ export default function GraphStatePreview({
   onAddMacroNode,
   onRemoveNode,
   onConnectNodes,
+  onConnectMacroToParameter,
   onDisconnectEdge,
   onEditNode,
   onUpdateMacroValue,
@@ -978,7 +1054,11 @@ export default function GraphStatePreview({
     startViewportX: number;
     startViewportY: number;
   } | null>(null);
-  const connectRef = React.useRef<{ pointerId: number; sourceNodeId: string } | null>(null);
+  const connectRef = React.useRef<{
+    pointerId: number;
+    sourceNodeId: string;
+    sourceKind: 'audio' | 'macro';
+  } | null>(null);
   const [draggingNodeId, setDraggingNodeId] = React.useState<string | null>(null);
   const [dragPreviewPosition, setDragPreviewPosition] = React.useState<{
     nodeId: string;
@@ -1023,6 +1103,7 @@ export default function GraphStatePreview({
   const canRemoveNode = typeof onRemoveNode === 'function';
   const canEditNode = typeof onEditNode === 'function';
   const canConnect = typeof onConnectNodes === 'function';
+  const canConnectParameters = typeof onConnectMacroToParameter === 'function';
   const canDisconnect = typeof onDisconnectEdge === 'function';
   const canExposeParameters =
     trackId != null &&
@@ -1278,15 +1359,21 @@ export default function GraphStatePreview({
     event: React.PointerEvent<HTMLSpanElement>,
     node: PositionedNode,
   ) => {
-    if (!canConnect || node.virtual || event.button !== 0) return;
+    const isMacro = node.type === 'macro';
+    const allowed = isMacro ? canConnectParameters : canConnect;
+    if (!allowed || node.virtual || event.button !== 0) return;
 
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture?.(event.pointerId);
-    connectRef.current = { pointerId: event.pointerId, sourceNodeId: node.id };
+    connectRef.current = {
+      pointerId: event.pointerId,
+      sourceNodeId: node.id,
+      sourceKind: isMacro ? 'macro' : 'audio',
+    };
     setConnectingFromNodeId(node.id);
     setConnectPoint(toCanvasPoint(event.clientX, event.clientY));
-  }, [canConnect, toCanvasPoint]);
+  }, [canConnect, canConnectParameters, toCanvasPoint]);
 
   const handleConnectPointerMove = React.useCallback((event: React.PointerEvent<HTMLSpanElement>) => {
     const connect = connectRef.current;
@@ -1302,21 +1389,44 @@ export default function GraphStatePreview({
 
     event.preventDefault();
     const sourceNodeId = connect.sourceNodeId;
-    let targetNodeId: string | null = null;
-    if (typeof document !== 'undefined') {
-      const dropElement = document.elementFromPoint(event.clientX, event.clientY);
-      const targetNode = dropElement instanceof Element
-        ? dropElement.closest('[data-node-id]')
-        : null;
-      targetNodeId = targetNode?.getAttribute('data-node-id') ?? null;
+    const dropElement = typeof document !== 'undefined'
+      ? document.elementFromPoint(event.clientX, event.clientY)
+      : null;
+
+    // Macro controlOut → exposed parameter input port creates a parameter edge.
+    // The drop must land on a parameter port; node bodies and audio handles no-op.
+    if (connect.sourceKind === 'macro') {
+      let targetNodeId: string | null = null;
+      let parameterId: string | null = null;
+      if (dropElement instanceof Element) {
+        const portElement = dropElement.closest('[data-parameter-port-id]');
+        if (portElement) {
+          parameterId = portElement.getAttribute('data-parameter-id');
+          const nodeElement = portElement.closest('[data-node-id]');
+          targetNodeId = nodeElement?.getAttribute('data-node-id') ?? null;
+        }
+      }
+
+      resetConnect(event);
+
+      if (onConnectMacroToParameter && targetNodeId && parameterId && targetNodeId !== sourceNodeId) {
+        onConnectMacroToParameter(sourceNodeId, targetNodeId, parameterId);
+      }
+      return;
     }
+
+    // Audio out → node body creates an audio edge (unchanged behavior).
+    const targetNode = dropElement instanceof Element
+      ? dropElement.closest('[data-node-id]')
+      : null;
+    const targetNodeId = targetNode?.getAttribute('data-node-id') ?? null;
 
     resetConnect(event);
 
     if (onConnectNodes && targetNodeId && targetNodeId !== sourceNodeId) {
       onConnectNodes(sourceNodeId, targetNodeId);
     }
-  }, [onConnectNodes, resetConnect]);
+  }, [onConnectMacroToParameter, onConnectNodes, resetConnect]);
 
   const connectingNode = connectingFromNodeId
     ? model.nodes.find((node) => node.id === connectingFromNodeId)
@@ -1469,6 +1579,7 @@ export default function GraphStatePreview({
                   node={node}
                   dragging={draggingNodeId === node.id}
                   connectEnabled={canConnect}
+                  connectParameterEnabled={canConnectParameters}
                   connectActive={connectingFromNodeId === node.id}
                   canRemove={canRemoveNode}
                   canEdit={canEditNode}
@@ -1476,10 +1587,10 @@ export default function GraphStatePreview({
                   onPointerMove={canDragNodes ? handleNodePointerMove : undefined}
                   onPointerUp={canDragNodes ? finishDrag : undefined}
                   onPointerCancel={canDragNodes ? cancelDrag : undefined}
-                  onConnectPointerDown={canConnect ? handleConnectPointerDown : undefined}
-                  onConnectPointerMove={canConnect ? handleConnectPointerMove : undefined}
-                  onConnectPointerUp={canConnect ? handleConnectPointerUp : undefined}
-                  onConnectPointerCancel={canConnect ? resetConnect : undefined}
+                  onConnectPointerDown={canConnect || canConnectParameters ? handleConnectPointerDown : undefined}
+                  onConnectPointerMove={canConnect || canConnectParameters ? handleConnectPointerMove : undefined}
+                  onConnectPointerUp={canConnect || canConnectParameters ? handleConnectPointerUp : undefined}
+                  onConnectPointerCancel={canConnect || canConnectParameters ? resetConnect : undefined}
                   onNodeContextMenu={canExposeParameters ? handleNodeContextMenu : undefined}
                   onRemove={canRemoveNode ? onRemoveNode : undefined}
                   onEdit={canEditNode ? onEditNode : undefined}
@@ -1491,14 +1602,15 @@ export default function GraphStatePreview({
             {canDisconnect && (
               <div className="xleth-graph-state-preview__overlay" aria-label="Graph cable controls">
                 {model.edges
-                  .filter((edge) => edge.type === 'audio')
+                  .filter((edge) => edge.type === 'audio' || edge.type === 'parameter')
                   .map((edge) => (
                     <button
                       key={edge.id}
-                      className="xleth-graph-state-preview__disconnect"
+                      className={`xleth-graph-state-preview__disconnect xleth-graph-state-preview__disconnect--${edge.type}`}
                       type="button"
                       style={{ left: edge.midX, top: edge.midY }}
                       data-edge-id={edge.id}
+                      data-edge-type={edge.type}
                       aria-label={`Disconnect ${edge.label}`}
                       onPointerDown={(event) => event.stopPropagation()}
                       onClick={(event) => {

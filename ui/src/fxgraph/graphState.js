@@ -1,3 +1,10 @@
+import {
+  buildGraphParameterPortId,
+  createGraphParameterTargetFromExposedPort,
+  normalizeGraphParameterTarget,
+  resolveGraphParameterTarget,
+} from './graphParameterTarget.js'
+
 export const GRAPH_STATE_SCHEMA_VERSION = 1
 
 const DEFAULT_VIEWPORT = Object.freeze({ x: 0, y: 0, zoom: 1 })
@@ -8,6 +15,11 @@ const MAX_VIEWPORT_ZOOM = 4
 
 export const GRAPH_MACRO_NODE_TYPE = 'macro'
 export const GRAPH_MACRO_OUTPUT_PORT = 'controlOut'
+
+// FXG.4-e/f — the only mapping curve supported in this phase. The mapping object
+// is shaped so FXG.4-g can add per-link Bezier curves (curve.type === 'bezier' +
+// control points) without a schema migration.
+export const GRAPH_PARAMETER_CURVE_LINEAR = 'linear'
 
 const NODE_TYPES = new Set(['trackInput', 'trackOutput', 'effect', GRAPH_MACRO_NODE_TYPE])
 const EDGE_TYPES = new Set(['audio', 'parameter'])
@@ -111,6 +123,62 @@ function withNodePosition(node, position) {
 function clampMacroNormalizedValue(value) {
   if (!Number.isFinite(value)) return 0
   return Math.min(1, Math.max(0, value))
+}
+
+// ---------------------------------------------------------------------------
+// FXG.4-e/f — parameter link mapping
+//
+// Each Macro -> Parameter edge owns its own mapping object so one macro can drive
+// many parameters with different ranges/polarity. Every numeric field clamps to
+// [0,1]. targetMin > targetMax is intentionally preserved to allow an inverted
+// mapping. The mapping is the only place runtime drive reads from; the macro stays
+// a clean 0..1 source.
+// ---------------------------------------------------------------------------
+
+function clampUnitValue(value, fallback) {
+  if (!Number.isFinite(value)) return fallback
+  return Math.min(1, Math.max(0, value))
+}
+
+export function normalizeParameterMapping(rawMapping) {
+  const raw = isPlainObject(rawMapping) ? rawMapping : {}
+  const rawCurve = isPlainObject(raw.curve) ? raw.curve : {}
+  return {
+    enabled: raw.enabled !== false,
+    sourceMin: clampUnitValue(raw.sourceMin, 0),
+    sourceMax: clampUnitValue(raw.sourceMax, 1),
+    targetMin: clampUnitValue(raw.targetMin, 0),
+    targetMax: clampUnitValue(raw.targetMax, 1),
+    // Only linear exists in this phase; any other/missing value repairs to linear.
+    curve: { type: rawCurve.type === GRAPH_PARAMETER_CURVE_LINEAR ? GRAPH_PARAMETER_CURVE_LINEAR : GRAPH_PARAMETER_CURVE_LINEAR },
+  }
+}
+
+export function defaultParameterMapping() {
+  return normalizeParameterMapping(undefined)
+}
+
+// Evaluates a (linear) parameter mapping against a macro value in [0,1].
+// Returns { enabled, value }. value is null when the mapping is disabled.
+//   t = clamp((macroValue - sourceMin) / (sourceMax - sourceMin), 0, 1)
+//   value = clamp(targetMin + t * (targetMax - targetMin), 0, 1)
+// A degenerate source span (sourceMin >= sourceMax) does not divide-by-zero: it
+// steps to targetMin below the threshold and targetMax at/above it.
+export function evaluateLinearParameterMapping(rawMapping, macroValue) {
+  const mapping = normalizeParameterMapping(rawMapping)
+  if (!mapping.enabled) return { enabled: false, value: null }
+
+  const value = clampUnitValue(macroValue, 0)
+  const span = mapping.sourceMax - mapping.sourceMin
+  let t
+  if (span <= 0) {
+    t = value < mapping.sourceMin ? 0 : 1
+  } else {
+    t = Math.min(1, Math.max(0, (value - mapping.sourceMin) / span))
+  }
+
+  const mapped = mapping.targetMin + t * (mapping.targetMax - mapping.targetMin)
+  return { enabled: true, value: Math.min(1, Math.max(0, mapped)) }
 }
 
 function normalizeMacroLabel(value, fallback = 'Macro') {
@@ -462,8 +530,14 @@ function normalizeEdge(edge, nodeIds, nodeById, trackId, warnings) {
   // Parameter edges carry an optional targetParameter identity.
   // Stored as-is without deep validation here — graphParameterTarget.js
   // owns normalization of the target shape when it is read back.
-  if (edge.type === 'parameter' && isPlainObject(edge.targetParameter)) {
-    normalizedEdge.targetParameter = cloneJson(edge.targetParameter)
+  if (edge.type === 'parameter') {
+    if (isPlainObject(edge.targetParameter)) {
+      normalizedEdge.targetParameter = cloneJson(edge.targetParameter)
+    }
+    // FXG.4-e/f — every parameter edge carries a clamped/repaired mapping object so
+    // runtime drive always has well-formed defaults. Malformed mappings repair to
+    // the default linear mapping rather than dropping the edge.
+    normalizedEdge.mapping = normalizeParameterMapping(edge.mapping)
   }
 
   return { ok: true, edge: normalizedEdge }
@@ -713,6 +787,11 @@ export const GRAPH_MUTATION_REJECTION = Object.freeze({
   INVALID_CONNECTION_DRAFT: 'invalid_connection_draft',
   INVALID_PARAMETER_PORT: 'invalid_parameter_port',
   INVALID_MACRO_VALUE: 'invalid_macro_value',
+  // FXG.4-e/f — Macro -> Parameter link validation
+  INVALID_PARAMETER_TARGET: 'invalid_parameter_target',
+  MISSING_EFFECT_INSTANCE: 'missing_effect_instance',
+  PARAMETER_NOT_EXPOSED: 'parameter_not_exposed',
+  PARAMETER_READ_ONLY: 'parameter_read_only',
 })
 
 export function isProtectedGraphNodeType(type) {
@@ -1020,4 +1099,214 @@ export function disconnectGraphEdge(graphState, edgeId) {
       edges: graphState.edges.filter((e) => e.id !== edgeId),
     },
   }
+}
+
+// ---------------------------------------------------------------------------
+// FXG.4-e/f — Macro -> Parameter links
+//
+// A parameter edge connects a Macro `controlOut` port to an exposed parameter
+// input port on an effect node. It is NOT an audio edge: audio topology and cycle
+// detection ignore it (they filter `edge.type === 'audio'`), and the engine audio
+// graph never receives it. The edge persists the FXG.4-c GraphParameterTarget plus
+// a per-link mapping object. The macro normalizedValue stays the clean source.
+// ---------------------------------------------------------------------------
+
+function readEffectInstanceId(node) {
+  const value = node?.data?.effectInstanceId
+  return typeof value === 'string' && value.length > 0 ? value : ''
+}
+
+export function canConnectMacroToParameter(graphState, connectionDraft) {
+  const editCheck = validateGraphStateForEditing(graphState)
+  if (!editCheck.ok) return editCheck
+
+  if (!isPlainObject(connectionDraft)) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_CONNECTION_DRAFT }
+  }
+
+  const { sourceNodeId, targetNodeId } = connectionDraft
+  const parameterId = typeof connectionDraft.parameterId === 'string'
+    ? connectionDraft.parameterId.trim()
+    : ''
+
+  const sourceNode = graphState.nodes.find((n) => n.id === sourceNodeId)
+  const targetNode = graphState.nodes.find((n) => n.id === targetNodeId)
+
+  if (!sourceNode) return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_SOURCE_NODE }
+  if (!targetNode) return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_TARGET_NODE }
+  if (sourceNodeId === targetNodeId) return { ok: false, reason: GRAPH_MUTATION_REJECTION.SELF_CONNECTION }
+
+  // Source must be a macro control node. Effect nodes cannot source parameter edges.
+  if (sourceNode.type !== GRAPH_MACRO_NODE_TYPE) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_SOURCE_TYPE }
+  }
+  // Target must be an effect node. Protected Track I/O and macro nodes are invalid targets.
+  if (isProtectedGraphNodeType(targetNode.type)) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.PROTECTED_NODE }
+  }
+  if (targetNode.type !== 'effect') {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_TARGET_TYPE }
+  }
+
+  if (!parameterId) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_PARAMETER_TARGET }
+  }
+
+  const effectInstanceId = readEffectInstanceId(targetNode)
+  if (!effectInstanceId) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_EFFECT_INSTANCE }
+  }
+
+  const exposedPorts = normalizeExposedParameterPorts(targetNode.data?.exposedParameterPorts)
+  const exposedPort = exposedPorts.find((port) => port.parameterId === parameterId)
+  if (!exposedPort) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.PARAMETER_NOT_EXPOSED }
+  }
+  // Read-only / non-automatable parameters cannot be driven.
+  if (exposedPort.readOnly === true || exposedPort.automatable === false) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.PARAMETER_READ_ONLY }
+  }
+
+  const target = createGraphParameterTargetFromExposedPort({
+    graphNode: targetNode,
+    effectInstanceId,
+    exposedPort,
+  })
+  if (!target) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_PARAMETER_TARGET }
+  }
+
+  const targetPort = buildGraphParameterPortId(targetNodeId, parameterId)
+  if (!targetPort) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_PARAMETER_TARGET }
+  }
+
+  // Dedupe: one Macro may only drive a given parameter on a given node once.
+  const duplicate = graphState.edges.some(
+    (edge) =>
+      edge.type === 'parameter' &&
+      edge.sourceNodeId === sourceNodeId &&
+      edge.targetNodeId === targetNodeId &&
+      edge.targetPort === targetPort,
+  )
+  if (duplicate) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.DUPLICATE_EDGE }
+  }
+
+  return { ok: true, target, targetPort, exposedPort }
+}
+
+export function connectMacroToParameter(graphState, connectionDraft, options = {}) {
+  const check = canConnectMacroToParameter(graphState, connectionDraft)
+  if (!check.ok) return check
+
+  const newEdge = {
+    id: generateMutationId(options.idFactory),
+    sourceNodeId: connectionDraft.sourceNodeId,
+    sourcePort: GRAPH_MACRO_OUTPUT_PORT,
+    targetNodeId: connectionDraft.targetNodeId,
+    targetPort: check.targetPort,
+    type: 'parameter',
+    targetParameter: check.target,
+    mapping: normalizeParameterMapping(connectionDraft.mapping),
+  }
+
+  return {
+    ok: true,
+    edge: newEdge,
+    graphState: {
+      ...graphState,
+      edges: [...graphState.edges, newEdge],
+    },
+  }
+}
+
+export function isParameterEdge(graphState, edgeId) {
+  if (!Array.isArray(graphState?.edges)) return false
+  return graphState.edges.some((edge) => edge.id === edgeId && edge.type === 'parameter')
+}
+
+// Removes a parameter edge specifically. Returns MISSING_EDGE when the id does not
+// resolve to a parameter edge (so callers do not accidentally drop an audio edge).
+export function disconnectParameterEdge(graphState, edgeId) {
+  const editCheck = validateGraphStateForEditing(graphState)
+  if (!editCheck.ok) return editCheck
+
+  if (typeof edgeId !== 'string' || edgeId.length === 0) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_EDGE }
+  }
+  if (!isParameterEdge(graphState, edgeId)) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_EDGE }
+  }
+
+  return {
+    ok: true,
+    graphState: {
+      ...graphState,
+      edges: graphState.edges.filter((edge) => edge.id !== edgeId),
+    },
+  }
+}
+
+// Pure runtime-drive resolver. Given a macro node id and a macro value, returns the
+// set of normalized parameter writes its enabled outgoing parameter edges produce.
+// Edges that are disabled, malformed, unresolved, or read-only are reported under
+// `skipped` instead of throwing. The store turns each write into a FXG.4-a
+// setGraphEffectParameterNormalized call.
+export function collectMacroParameterWrites(graphState, macroNodeId, macroValue) {
+  const writes = []
+  const skipped = []
+
+  if (
+    !isPlainObject(graphState) ||
+    !Array.isArray(graphState.nodes) ||
+    !Array.isArray(graphState.edges)
+  ) {
+    return { writes, skipped }
+  }
+
+  const macroNode = graphState.nodes.find((node) => node.id === macroNodeId)
+  if (!macroNode || macroNode.type !== GRAPH_MACRO_NODE_TYPE) {
+    return { writes, skipped }
+  }
+
+  const value = Number.isFinite(macroValue)
+    ? macroValue
+    : clampMacroNormalizedValue(macroNode.data?.normalizedValue)
+
+  for (const edge of graphState.edges) {
+    if (edge.type !== 'parameter') continue
+    if (edge.sourceNodeId !== macroNodeId) continue
+
+    const evaluation = evaluateLinearParameterMapping(edge.mapping, value)
+    if (!evaluation.enabled) {
+      skipped.push({ edgeId: edge.id, reason: 'disabled' })
+      continue
+    }
+
+    const target = normalizeGraphParameterTarget(edge.targetParameter)
+    if (!target) {
+      skipped.push({ edgeId: edge.id, reason: 'invalid_target' })
+      continue
+    }
+
+    const resolution = resolveGraphParameterTarget(graphState, target)
+    if (resolution.status !== 'ok') {
+      skipped.push({ edgeId: edge.id, reason: resolution.status })
+      continue
+    }
+    if (resolution.exposedPort?.readOnly === true || resolution.exposedPort?.automatable === false) {
+      skipped.push({ edgeId: edge.id, reason: 'read_only' })
+      continue
+    }
+
+    writes.push({
+      edgeId: edge.id,
+      effectInstanceId: target.effectInstanceId,
+      parameterId: target.parameterId,
+      value: evaluation.value,
+    })
+  }
+
+  return { writes, skipped }
 }
