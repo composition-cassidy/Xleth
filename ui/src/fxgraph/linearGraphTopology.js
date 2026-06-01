@@ -1,4 +1,5 @@
 const RUNTIME_NODE_TYPES = new Set(['trackInput', 'trackOutput', 'effect', 'unknown'])
+const CONTROL_NODE_TYPES = new Set(['macro'])
 
 function readString(value) {
   return typeof value === 'string' && value.length > 0 ? value : ''
@@ -10,7 +11,7 @@ function normalizeRuntimeNodeType(type) {
 
 export function buildLinearGraphTopologyPayload(graphState) {
   const nodes = Array.isArray(graphState?.nodes)
-    ? graphState.nodes.map((node) => {
+    ? graphState.nodes.filter((node) => !CONTROL_NODE_TYPES.has(node?.type)).map((node) => {
       const data = node?.data ?? {}
       const entry = {
         nodeId: readString(node?.id),

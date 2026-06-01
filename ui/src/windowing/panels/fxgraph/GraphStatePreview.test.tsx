@@ -43,6 +43,20 @@ function effectNode(
   };
 }
 
+function macroNode(
+  id = 'macro-a',
+  label = 'Macro 1',
+  normalizedValue = 0.42,
+  position = { x: 260, y: 120 },
+): GraphStateNode {
+  return {
+    id,
+    type: 'macro',
+    position,
+    data: { label, normalizedValue },
+  };
+}
+
 function audioEdge(id: string, sourceNodeId: string, targetNodeId: string): GraphStateEdge {
   return {
     id,
@@ -73,6 +87,18 @@ function countAttribute(html: string, attribute: string) {
 
 function countText(html: string, text: string) {
   return html.split(text).length - 1;
+}
+
+function findElementByClass(element: React.ReactElement, className: string): React.ReactElement | null {
+  const children = React.Children.toArray(element.props.children);
+  for (const child of children) {
+    if (!React.isValidElement(child)) continue;
+    const childClass = String(child.props.className ?? '');
+    if (childClass.includes(className)) return child;
+    const nested = findElementByClass(child, className);
+    if (nested) return nested;
+  }
+  return null;
 }
 
 describe('GraphStatePreview', () => {
@@ -249,6 +275,63 @@ describe('GraphStatePreview', () => {
     expect(html).toContain('Delay parameter inputs');
   });
 
+  it('renders macro nodes with value controls and a distinct control output port', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([
+          inputNode(),
+          macroNode('macro-a', 'Energy', 0.37),
+          outputNode({ x: 520, y: 0 }),
+        ], [])}
+        onUpdateMacroValue={vi.fn()}
+        onRenameMacroNode={vi.fn()}
+        onRemoveNode={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('data-node-type="macro"');
+    expect(html).toContain('xleth-graph-state-preview__node--macro');
+    expect(html).toContain('Energy');
+    expect(html).toContain('37%');
+    expect(html).toContain('type="range"');
+    expect(html).toContain('data-control-output="true"');
+    expect(html).toContain('data-control-port-id="macro:macro-a:controlOut"');
+    expect(html).toContain('data-control-port-type="macro-output"');
+    expect(html).toContain('aria-label="Remove Energy"');
+    expect(html).not.toContain('Edit Energy');
+    expect(html).not.toContain('Energy parameter inputs');
+    expect(html).not.toContain('data-connect-source="true"');
+  });
+
+  it('commits macro value and rename edits from the node controls', () => {
+    const node = buildGraphStatePreviewModel(graphState([
+      inputNode(),
+      macroNode('macro-a', 'Macro 1', 0.25),
+      outputNode({ x: 520, y: 0 }),
+    ], [])).nodes.find((candidate) => candidate.id === 'macro-a')!;
+    const onMacroValueCommit = vi.fn();
+    const onMacroRenameCommit = vi.fn();
+    const element = GraphStatePreviewNode({
+      node,
+      dragging: false,
+      connectEnabled: true,
+      connectActive: false,
+      canRemove: true,
+      canEdit: true,
+      onMacroValueCommit,
+      onMacroRenameCommit,
+    });
+
+    const slider = findElementByClass(element, 'xleth-graph-state-preview__macro-slider')!;
+    slider.props.onPointerUp({ currentTarget: { value: '0.75' } });
+    const label = findElementByClass(element, 'xleth-graph-state-preview__macro-label')!;
+    label.props.onBlur({ currentTarget: { value: 'Drive' } });
+
+    expect(onMacroValueCommit).toHaveBeenCalledWith('macro-a', 0.75);
+    expect(onMacroRenameCommit).toHaveBeenCalledWith('macro-a', 'Drive');
+    expect(element.props.onContextMenu).toBeUndefined();
+  });
+
   it('renders unknown nodes with an unsupported indicator without crashing', () => {
     const html = renderToStaticMarkup(
       <GraphStatePreview
@@ -385,6 +468,25 @@ describe('GraphStatePreview', () => {
     expect(editableHtml).toContain('data-workspace-active="true"');
     expect(dormantHtml).not.toContain('Fit View');
     expect(dormantHtml).not.toContain('Reset View');
+  });
+
+  it('renders Add Macro only when its action is provided', () => {
+    const sourceGraphState = graphState([
+      inputNode(),
+      outputNode(),
+    ], []);
+    const editableHtml = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={sourceGraphState}
+        onAddEffectNode={vi.fn()}
+        onAddMacroNode={vi.fn()}
+      />,
+    );
+    const readOnlyHtml = renderToStaticMarkup(<GraphStatePreview graphState={sourceGraphState} />);
+
+    expect(editableHtml).toContain('Add Effect Node');
+    expect(editableHtml).toContain('Add Macro');
+    expect(readOnlyHtml).not.toContain('Add Macro');
   });
 
   it('renders Undo and Redo controls only when graph history callbacks are provided', () => {

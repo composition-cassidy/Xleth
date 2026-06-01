@@ -1243,6 +1243,131 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
   })
 
+  it('adds a macro node to a graph-owned track and persists without touching chains or engine APIs', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    let idCounter = 0
+    const idFactory = () => `macro-gen-${idCounter++}`
+    const baseChain = seedGraphMode(useEffectChainStore, makePositionedGraphState('7'))
+
+    const result = await useEffectChainStore.getState().addGraphMacroNodeForTrack('7', {
+      label: '  Macro Drive  ',
+      normalizedValue: 0.4,
+    }, { idFactory })
+
+    expect(result.ok).toBe(true)
+    const state = useEffectChainStore.getState()
+    const next = state.graphStates['7']
+    const macro = next.nodes.find((node) => node.id === 'macro-gen-0')
+    expect(macro).toMatchObject({
+      type: 'macro',
+      data: { label: 'Macro Drive', normalizedValue: 0.4 },
+    })
+    expect(Number.isFinite(macro.position.x) && Number.isFinite(macro.position.y)).toBe(true)
+    expect(state.chains['7']).toBe(baseChain)
+    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next)
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+    expect(audio.addGraphEffectNode).not.toHaveBeenCalled()
+    expect(audio.setGraphEffectParameterNormalized).not.toHaveBeenCalled()
+    expect(state.graphHistories['7'].undoStack[0]).toMatchObject({ label: 'add_graph_macro_node' })
+  })
+
+  it('blocks adding a macro node while Mixer Chain owns the track', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const graphState = makePositionedGraphState('7')
+    useEffectChainStore.setState({
+      fxModes: { '7': 'chain' },
+      graphStates: { '7': graphState },
+      graphStateStatuses: { '7': { status: 'valid', graphState, warnings: [] } },
+    })
+
+    await expect(
+      useEffectChainStore.getState().addGraphMacroNodeForTrack('7', {}),
+    ).resolves.toMatchObject({ ok: false, reason: 'not_graph_mode' })
+
+    expect(useEffectChainStore.getState().graphStates['7']).toBe(graphState)
+    expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+  })
+
+  it('updates and renames macro nodes with undo/redo without runtime sync', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const graphState = makePositionedGraphState('7', {
+      nodes: [
+        ...makePositionedGraphState('7').nodes,
+        { id: 'macro-a', type: 'macro', position: { x: 80, y: 228 }, data: { label: 'Macro 1', normalizedValue: 0.1 } },
+      ],
+    })
+    const baseChain = seedGraphMode(useEffectChainStore, graphState)
+
+    const valueResult = await useEffectChainStore.getState().updateGraphMacroValueForTrack('7', 'macro-a', 1.5)
+    const renameResult = await useEffectChainStore.getState().renameGraphMacroNodeForTrack('7', 'macro-a', '  Energy  ')
+    let state = useEffectChainStore.getState()
+    let macro = state.graphStates['7'].nodes.find((node) => node.id === 'macro-a')
+    expect(valueResult.ok).toBe(true)
+    expect(renameResult.ok).toBe(true)
+    expect(macro.data).toMatchObject({ label: 'Energy', normalizedValue: 1 })
+    expect(state.graphHistories['7'].undoStack.map((entry) => entry.label)).toEqual([
+      'update_graph_macro_value',
+      'rename_graph_macro_node',
+    ])
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+    expect(audio.setGraphEffectParameterNormalized).not.toHaveBeenCalled()
+
+    const undoRename = await useEffectChainStore.getState().undoGraphEditForTrack('7')
+    expect(undoRename.ok).toBe(true)
+    state = useEffectChainStore.getState()
+    macro = state.graphStates['7'].nodes.find((node) => node.id === 'macro-a')
+    expect(macro.data).toMatchObject({ label: 'Macro 1', normalizedValue: 1 })
+
+    const undoValue = await useEffectChainStore.getState().undoGraphEditForTrack('7')
+    expect(undoValue.ok).toBe(true)
+    state = useEffectChainStore.getState()
+    macro = state.graphStates['7'].nodes.find((node) => node.id === 'macro-a')
+    expect(macro.data).toMatchObject({ label: 'Macro 1', normalizedValue: 0.1 })
+
+    const redoValue = await useEffectChainStore.getState().redoGraphEditForTrack('7')
+    expect(redoValue.ok).toBe(true)
+    expect(useEffectChainStore.getState().graphHistories['7'].redoStack).toHaveLength(1)
+
+    await useEffectChainStore.getState().renameGraphMacroNodeForTrack('7', 'macro-a', 'Fresh')
+    state = useEffectChainStore.getState()
+    expect(state.graphHistories['7'].redoStack).toHaveLength(0)
+    expect(state.chains['7']).toBe(baseChain)
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+  })
+
+  it('removes a macro node without graph effect engine removal or runtime sync', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const graphState = makePositionedGraphState('7', {
+      nodes: [
+        ...makePositionedGraphState('7').nodes,
+        { id: 'macro-a', type: 'macro', position: { x: 80, y: 228 }, data: { label: 'Macro 1', normalizedValue: 0.1 } },
+      ],
+      edges: [
+        ...makePositionedGraphState('7').edges,
+        {
+          id: 'macro-param',
+          sourceNodeId: 'macro-a',
+          sourcePort: 'controlOut',
+          targetNodeId: 'fx-1',
+          targetPort: 'param:mix',
+          type: 'parameter',
+        },
+      ],
+    })
+    const baseChain = seedGraphMode(useEffectChainStore, graphState)
+
+    const result = await useEffectChainStore.getState().removeGraphNodeForTrack('7', 'macro-a')
+
+    expect(result.ok).toBe(true)
+    const state = useEffectChainStore.getState()
+    expect(state.graphStates['7'].nodes.find((node) => node.id === 'macro-a')).toBeUndefined()
+    expect(state.graphStates['7'].edges.find((edge) => edge.id === 'macro-param')).toBeUndefined()
+    expect(state.chains['7']).toBe(baseChain)
+    expect(audio.removeGraphEffectNode).not.toHaveBeenCalled()
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+  })
+
   it('removes an effect node and its incident edges without touching chains', async () => {
     const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
     const baseChain = seedGraphMode(useEffectChainStore, makePositionedGraphState('7'))

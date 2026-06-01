@@ -11,9 +11,12 @@ import {
   loadGraphState,
   validateGraphState,
   addGraphEffectNode,
+  addGraphMacroNode,
   removeGraphNode,
   connectGraphNodes,
   disconnectGraphEdge,
+  updateGraphMacroValue,
+  renameGraphMacroNode,
   toggleExposedParameterPort,
 } from '../fxgraph/graphState.js'
 
@@ -381,6 +384,16 @@ function computeNextEffectNodePosition(graphState) {
   }
 }
 
+function computeNextMacroNodePosition(graphState) {
+  const macroCount = graphState.nodes.filter((node) => node.type === 'macro').length
+  const column = macroCount % GRAPH_MUTATION_GRID_COLUMNS
+  const row = Math.floor(macroCount / GRAPH_MUTATION_GRID_COLUMNS)
+  return {
+    x: GRAPH_MUTATION_GRID_ORIGIN_X + column * GRAPH_MUTATION_GRID_STEP_X,
+    y: GRAPH_MUTATION_GRID_ORIGIN_Y + (row + 1) * GRAPH_MUTATION_GRID_STEP_Y,
+  }
+}
+
 function buildGraphEffectNodeDraft(graphState, nodeDraft, options = {}) {
   const draft = nodeDraft != null && typeof nodeDraft === 'object' ? nodeDraft : {}
   const effectInstanceId =
@@ -405,6 +418,16 @@ function buildGraphEffectNodeDraft(graphState, nodeDraft, options = {}) {
     bypass: draft.bypass === true,
     missing: draft.missing === true,
     crashed: draft.crashed === true,
+  }
+}
+
+function buildGraphMacroNodeDraft(graphState, nodeDraft = {}) {
+  const draft = nodeDraft != null && typeof nodeDraft === 'object' ? nodeDraft : {}
+  const position = normalizeGraphNodePosition(draft.position) ?? computeNextMacroNodePosition(graphState)
+  return {
+    label: draft.label,
+    normalizedValue: draft.normalizedValue,
+    position,
   }
 }
 
@@ -545,13 +568,19 @@ function graphRuntimeTopologyChanged(beforeGraphState, afterGraphState) {
   }
   const structuralSnapshot = (graphState) => ({
     nodes: Array.isArray(graphState?.nodes)
-      ? graphState.nodes.map((node) => ({
+      ? graphState.nodes.filter((node) => node?.type !== 'macro').map((node) => ({
         id: node?.id,
         type: node?.type,
         data: runtimeRelevantNodeData(node?.data),
       }))
       : [],
-    edges: Array.isArray(graphState?.edges) ? graphState.edges : [],
+    edges: Array.isArray(graphState?.edges)
+      ? graphState.edges.filter((edge) => {
+        const source = graphState.nodes?.find((node) => node?.id === edge?.sourceNodeId)
+        const target = graphState.nodes?.find((node) => node?.id === edge?.targetNodeId)
+        return source?.type !== 'macro' && target?.type !== 'macro'
+      })
+      : [],
   })
   return JSON.stringify(structuralSnapshot(beforeGraphState)) !==
     JSON.stringify(structuralSnapshot(afterGraphState))
@@ -1357,6 +1386,82 @@ const useEffectChainStore = create((set, get) => ({
     return { ...applied, effectInstanceId: draft.effectInstanceId, engineNodeId }
   },
 
+  addGraphMacroNodeForTrack: async (trackId, nodeDraft = {}, options = {}) => {
+    const access = readGraphStateForMutation(get(), trackId)
+    if (!access.ok) return access
+
+    const draft = buildGraphMacroNodeDraft(access.graphState, nodeDraft)
+    const mutation = addGraphMacroNode(access.graphState, draft, { idFactory: options.idFactory })
+    if (!mutation.ok) return mutation
+
+    const applied = await applyGraphStateMutation(
+      set,
+      access.key,
+      mutation.graphState,
+      { ...options, syncRuntime: false },
+    )
+    if (applied.ok) {
+      recordGraphEditTransaction(
+        set,
+        access.key,
+        'add_graph_macro_node',
+        access.graphState,
+        applied.graphState,
+      )
+    }
+    return applied
+  },
+
+  updateGraphMacroValueForTrack: async (trackId, nodeId, value, options = {}) => {
+    const access = readGraphStateForMutation(get(), trackId)
+    if (!access.ok) return access
+
+    const mutation = updateGraphMacroValue(access.graphState, nodeId, value)
+    if (!mutation.ok) return mutation
+
+    const applied = await applyGraphStateMutation(
+      set,
+      access.key,
+      mutation.graphState,
+      { ...options, syncRuntime: false },
+    )
+    if (applied.ok) {
+      recordGraphEditTransaction(
+        set,
+        access.key,
+        'update_graph_macro_value',
+        access.graphState,
+        applied.graphState,
+      )
+    }
+    return applied
+  },
+
+  renameGraphMacroNodeForTrack: async (trackId, nodeId, label, options = {}) => {
+    const access = readGraphStateForMutation(get(), trackId)
+    if (!access.ok) return access
+
+    const mutation = renameGraphMacroNode(access.graphState, nodeId, label)
+    if (!mutation.ok) return mutation
+
+    const applied = await applyGraphStateMutation(
+      set,
+      access.key,
+      mutation.graphState,
+      { ...options, syncRuntime: false },
+    )
+    if (applied.ok) {
+      recordGraphEditTransaction(
+        set,
+        access.key,
+        'rename_graph_macro_node',
+        access.graphState,
+        applied.graphState,
+      )
+    }
+    return applied
+  },
+
   removeGraphNodeForTrack: async (trackId, nodeId, options = {}) => {
     const access = readGraphStateForMutation(get(), trackId)
     if (!access.ok) return access
@@ -1372,6 +1477,7 @@ const useEffectChainStore = create((set, get) => ({
     const effectInstanceId = removedNode?.data?.effectInstanceId
     const engineNodeId = getSessionEngineNodeId(get(), access.key, effectInstanceId)
     const isEngineBacked = engineNodeId != null
+    const isMacroNode = removedNode?.type === 'macro'
 
     if (isEngineBacked) {
       const removeNode = options.removeGraphEngineNode ?? defaultAudioApi().removeGraphEffectNode
@@ -1392,7 +1498,12 @@ const useEffectChainStore = create((set, get) => ({
       if (!removedOk) return { ok: false, reason: 'engine_removal_failed' }
     }
 
-    const applied = await applyGraphStateMutation(set, access.key, mutation.graphState, options)
+    const applied = await applyGraphStateMutation(
+      set,
+      access.key,
+      mutation.graphState,
+      isMacroNode ? { ...options, syncRuntime: false } : options,
+    )
     if (applied.ok && isEngineBacked) {
       clearSessionEngineNodeId(set, access.key, effectInstanceId)
     }

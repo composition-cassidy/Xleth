@@ -889,6 +889,11 @@
   border-color: color-mix(in srgb, var(--theme-accent) 34%, var(--theme-border-subtle));
 }
 
+.xleth-graph-state-preview__node--macro {
+  border-color: color-mix(in srgb, var(--theme-warning) 44%, var(--theme-border-subtle));
+  background: color-mix(in srgb, var(--theme-warning) 9%, var(--theme-bg-primary));
+}
+
 .xleth-graph-state-preview__node--unknown {
   border-style: dashed;
   border-color: var(--theme-border-strong);
@@ -951,6 +956,48 @@
   white-space: nowrap;
 }
 
+.xleth-graph-state-preview__macro-label {
+  min-width: 0;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--theme-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.25;
+  pointer-events: auto;
+}
+
+.xleth-graph-state-preview__macro-label:focus-visible {
+  outline: 1px solid var(--theme-border-focus);
+  outline-offset: 2px;
+}
+
+.xleth-graph-state-preview__macro-control {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.xleth-graph-state-preview__macro-value {
+  color: var(--theme-text);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.xleth-graph-state-preview__macro-slider {
+  min-width: 0;
+  width: 100%;
+  accent-color: var(--theme-warning);
+  pointer-events: auto;
+}
+
 .xleth-graph-state-preview__badges {
   display: flex;
   flex-wrap: wrap;
@@ -986,6 +1033,14 @@
 
 .xleth-graph-state-preview__handle--out {
   right: -5px;
+}
+
+.xleth-graph-state-preview__handle--control-out {
+  width: 10px;
+  height: 10px;
+  border-color: color-mix(in srgb, var(--theme-warning) 70%, var(--theme-border-strong));
+  background: color-mix(in srgb, var(--theme-warning) 36%, var(--theme-bg-surface));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme-warning) 15%, transparent);
 }
 
 .xleth-graph-state-preview__action-button {

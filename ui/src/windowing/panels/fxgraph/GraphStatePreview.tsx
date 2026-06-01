@@ -56,7 +56,7 @@ export interface GraphStateViewport {
   zoom?: number;
 }
 
-type PreviewNodeKind = 'trackInput' | 'trackOutput' | 'effect' | 'unknown';
+type PreviewNodeKind = 'trackInput' | 'trackOutput' | 'effect' | 'macro' | 'unknown';
 type PreviewEdgeKind = 'audio' | 'unknown';
 
 interface PositionedNode {
@@ -68,6 +68,7 @@ interface PositionedNode {
   badges: string[];
   effectInstanceId: string | null;
   parameterPorts: GraphExposedParameterPort[];
+  macroValue: number | null;
   // True only for effect nodes backed by a real (non-placeholder, non-missing)
   // plugin — the heuristic that enables the Edit button. The actual engine-node
   // resolution still happens asynchronously in the panel's edit handler.
@@ -117,10 +118,13 @@ interface GraphStatePreviewProps {
   onNodePositionChange?: (nodeId: string, position: { x: number; y: number }) => void;
   onViewportChange?: (viewport: GraphStateViewport) => void;
   onAddEffectNode?: () => void;
+  onAddMacroNode?: () => void;
   onRemoveNode?: (nodeId: string) => void;
   onConnectNodes?: (sourceNodeId: string, targetNodeId: string) => void;
   onDisconnectEdge?: (edgeId: string) => void;
   onEditNode?: (nodeId: string) => void;
+  onUpdateMacroValue?: (nodeId: string, value: number) => void;
+  onRenameMacroNode?: (nodeId: string, label: string) => void;
   trackId?: number | string | null;
   fetchGraphEffectParameters?: (
     trackId: number | string,
@@ -171,6 +175,13 @@ function readInteger(data: Record<string, unknown> | undefined, key: string) {
   return typeof value === 'number' && Number.isInteger(value) ? value : null;
 }
 
+function readNormalizedValue(data: Record<string, unknown> | undefined, key: string) {
+  const value = data?.[key];
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.min(1, Math.max(0, value))
+    : 0;
+}
+
 function readExposedParameterPorts(data: Record<string, unknown> | undefined): GraphExposedParameterPort[] {
   const rawPorts = data?.exposedParameterPorts;
   if (!Array.isArray(rawPorts)) return [];
@@ -206,7 +217,7 @@ function readExposedParameterPorts(data: Record<string, unknown> | undefined): G
 }
 
 function resolvePreviewNodeType(type: string): PreviewNodeKind {
-  if (type === 'trackInput' || type === 'trackOutput' || type === 'effect') {
+  if (type === 'trackInput' || type === 'trackOutput' || type === 'effect' || type === 'macro') {
     return type;
   }
   return 'unknown';
@@ -261,6 +272,7 @@ function resolveNodeText(node: GraphStateNode) {
       badges: [] as string[],
       effectInstanceId: null,
       parameterPorts: [] as GraphExposedParameterPort[],
+      macroValue: null,
       editable: false,
     };
   }
@@ -273,6 +285,7 @@ function resolveNodeText(node: GraphStateNode) {
       badges: [] as string[],
       effectInstanceId: null,
       parameterPorts: [] as GraphExposedParameterPort[],
+      macroValue: null,
       editable: false,
     };
   }
@@ -296,8 +309,22 @@ function resolveNodeText(node: GraphStateNode) {
       badges,
       effectInstanceId,
       parameterPorts: readExposedParameterPorts(data),
+      macroValue: null,
       // Placeholder / data-only / missing nodes have no engine processor to open.
       editable: pluginId.length > 0 && pluginId !== 'placeholder' && !missing,
+    };
+  }
+
+  if (type === 'macro') {
+    return {
+      label: readString(data, 'label') || readString(data, 'name') || 'Macro',
+      secondaryText: 'Control source',
+      metaText: null,
+      badges: [] as string[],
+      effectInstanceId: null,
+      parameterPorts: [] as GraphExposedParameterPort[],
+      macroValue: readNormalizedValue(data, 'normalizedValue'),
+      editable: false,
     };
   }
 
@@ -318,6 +345,7 @@ function resolveNodeText(node: GraphStateNode) {
     badges: ['Unknown'],
     effectInstanceId: null,
     parameterPorts: [] as GraphExposedParameterPort[],
+    macroValue: null,
     editable: false,
   };
 }
@@ -344,6 +372,10 @@ function makeVirtualAnchorNode(
 
 function nodeHeightForPorts(portCount: number) {
   return NODE_HEIGHT + Math.max(0, portCount) * PARAMETER_PORT_ROW_HEIGHT;
+}
+
+function nodeHeightForText(text: ReturnType<typeof resolveNodeText>) {
+  return nodeHeightForPorts(text.parameterPorts.length) + (text.macroValue == null ? 0 : 38);
 }
 
 function normalizePositionedNodes(nodes: GraphStateNode[], options: PreviewModelOptions = {}) {
@@ -397,7 +429,7 @@ function normalizePositionedNodes(nodes: GraphStateNode[], options: PreviewModel
       x: position.x + PREVIEW_PADDING_X,
       y: position.y + PREVIEW_PADDING_Y,
       width: NODE_WIDTH,
-      height: nodeHeightForPorts(text.parameterPorts.length),
+      height: nodeHeightForText(text),
       graphX: position.x,
       graphY: position.y,
     };
@@ -530,6 +562,8 @@ export function GraphStatePreviewNode({
   onNodeContextMenu,
   onRemove,
   onEdit,
+  onMacroValueCommit,
+  onMacroRenameCommit,
 }: {
   node: PositionedNode;
   dragging: boolean;
@@ -548,6 +582,8 @@ export function GraphStatePreviewNode({
   onNodeContextMenu?: (event: React.MouseEvent<HTMLDivElement>, node: PositionedNode) => void;
   onRemove?: (nodeId: string) => void;
   onEdit?: (nodeId: string) => void;
+  onMacroValueCommit?: (nodeId: string, value: number) => void;
+  onMacroRenameCommit?: (nodeId: string, label: string) => void;
 }) {
   const classType = node.type === 'trackInput'
     ? 'track-input'
@@ -561,15 +597,23 @@ export function GraphStatePreviewNode({
     minHeight: node.height,
   };
   const interactiveOut =
-    connectEnabled && !node.virtual && typeof onConnectPointerDown === 'function';
+    connectEnabled && node.type !== 'macro' && !node.virtual && typeof onConnectPointerDown === 'function';
   const showRemove =
-    canRemove && node.type === 'effect' && !node.virtual && typeof onRemove === 'function';
+    canRemove && (node.type === 'effect' || node.type === 'macro') && !node.virtual && typeof onRemove === 'function';
   // Edit appears on every real effect node; placeholder/data-only nodes show a
   // disabled "not active yet" state so the affordance is discoverable but inert.
   const showEdit =
     canEdit && node.type === 'effect' && !node.virtual && typeof onEdit === 'function';
   const canOpenContextMenu =
     node.type === 'effect' && !node.virtual && typeof onNodeContextMenu === 'function';
+  const macroPercent = node.macroValue == null ? null : Math.round(node.macroValue * 100);
+  const commitMacroValue = (event: React.SyntheticEvent<HTMLInputElement>) => {
+    const nextValue = Number(event.currentTarget.value);
+    if (Number.isFinite(nextValue)) onMacroValueCommit?.(node.id, nextValue);
+  };
+  const commitMacroLabel = (event: React.SyntheticEvent<HTMLInputElement>) => {
+    onMacroRenameCommit?.(node.id, event.currentTarget.value);
+  };
 
   return (
     <div
@@ -593,7 +637,7 @@ export function GraphStatePreviewNode({
       onPointerCancel={onPointerCancel}
       onContextMenu={canOpenContextMenu ? (event) => onNodeContextMenu?.(event, node) : undefined}
     >
-      {node.type !== 'trackInput' && (
+      {node.type !== 'trackInput' && node.type !== 'macro' && (
         <span
           className="xleth-graph-state-preview__handle xleth-graph-state-preview__handle--in"
           aria-hidden="true"
@@ -612,14 +656,69 @@ export function GraphStatePreviewNode({
           />
         ) : (
           <span
-            className="xleth-graph-state-preview__handle xleth-graph-state-preview__handle--out"
+            className={[
+              'xleth-graph-state-preview__handle',
+              'xleth-graph-state-preview__handle--out',
+              node.type === 'macro' ? 'xleth-graph-state-preview__handle--control-out' : '',
+            ].filter(Boolean).join(' ')}
+            data-control-output={node.type === 'macro' ? 'true' : undefined}
+            data-control-port-id={node.type === 'macro' ? `macro:${node.id}:controlOut` : undefined}
+            data-control-port-type={node.type === 'macro' ? 'macro-output' : undefined}
             aria-hidden="true"
           />
         )
       )}
-      <span className="xleth-graph-state-preview__node-title">{node.label}</span>
+      {node.type === 'macro' && typeof onMacroRenameCommit === 'function' ? (
+        <input
+          className="xleth-graph-state-preview__macro-label"
+          type="text"
+          aria-label={`Rename ${node.label}`}
+          defaultValue={node.label}
+          onPointerDown={(event) => event.stopPropagation()}
+          onBlur={commitMacroLabel}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.currentTarget.blur();
+            } else if (event.key === 'Escape') {
+              event.currentTarget.value = node.label;
+              event.currentTarget.blur();
+            }
+          }}
+        />
+      ) : (
+        <span className="xleth-graph-state-preview__node-title">{node.label}</span>
+      )}
       {node.secondaryText && (
         <span className="xleth-graph-state-preview__node-secondary">{node.secondaryText}</span>
+      )}
+      {node.type === 'macro' && node.macroValue != null && (
+        <span className="xleth-graph-state-preview__macro-control">
+          <span className="xleth-graph-state-preview__macro-value">
+            {macroPercent}%
+          </span>
+          <input
+            className="xleth-graph-state-preview__macro-slider"
+            type="range"
+            min="0"
+            max="1"
+            step="0.01"
+            defaultValue={node.macroValue}
+            aria-label={`${node.label} macro value`}
+            onPointerDown={(event) => event.stopPropagation()}
+            onPointerUp={commitMacroValue}
+            onBlur={commitMacroValue}
+            onKeyUp={(event) => {
+              if (
+                event.key === 'Enter' ||
+                event.key.startsWith('Arrow') ||
+                event.key === 'Home' ||
+                event.key === 'End'
+              ) {
+                commitMacroValue(event);
+              }
+            }}
+          />
+        </span>
       )}
       {node.metaText && (
         <span className="xleth-graph-state-preview__node-meta">{node.metaText}</span>
@@ -845,10 +944,13 @@ export default function GraphStatePreview({
   onNodePositionChange,
   onViewportChange,
   onAddEffectNode,
+  onAddMacroNode,
   onRemoveNode,
   onConnectNodes,
   onDisconnectEdge,
   onEditNode,
+  onUpdateMacroValue,
+  onRenameMacroNode,
   trackId = null,
   fetchGraphEffectParameters,
   onToggleParameterPort,
@@ -917,6 +1019,7 @@ export default function GraphStatePreview({
   const canDragNodes = typeof onNodePositionChange === 'function';
   const canEditViewport = typeof onViewportChange === 'function';
   const canAddNode = typeof onAddEffectNode === 'function';
+  const canAddMacro = typeof onAddMacroNode === 'function';
   const canRemoveNode = typeof onRemoveNode === 'function';
   const canEditNode = typeof onEditNode === 'function';
   const canConnect = typeof onConnectNodes === 'function';
@@ -927,7 +1030,7 @@ export default function GraphStatePreview({
     typeof onToggleParameterPort === 'function';
   const canUseGraphHistory =
     typeof onUndoGraphEdit === 'function' || typeof onRedoGraphEdit === 'function';
-  const showToolbar = canEditViewport || canAddNode || canUseGraphHistory;
+  const showToolbar = canEditViewport || canAddNode || canAddMacro || canUseGraphHistory;
 
   const closeContextMenu = React.useCallback(() => {
     setContextMenu(null);
@@ -1284,6 +1387,15 @@ export default function GraphStatePreview({
                   Add Effect Node
                 </button>
               )}
+              {canAddMacro && (
+                <button
+                  className="xleth-graph-state-preview__action-button xleth-graph-state-preview__action-button--macro"
+                  type="button"
+                  onClick={onAddMacroNode}
+                >
+                  Add Macro
+                </button>
+              )}
               {canEditViewport && (
                 <>
                   <button
@@ -1371,6 +1483,8 @@ export default function GraphStatePreview({
                   onNodeContextMenu={canExposeParameters ? handleNodeContextMenu : undefined}
                   onRemove={canRemoveNode ? onRemoveNode : undefined}
                   onEdit={canEditNode ? onEditNode : undefined}
+                  onMacroValueCommit={onUpdateMacroValue}
+                  onMacroRenameCommit={onRenameMacroNode}
                 />
               ))}
             </div>

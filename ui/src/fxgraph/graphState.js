@@ -6,7 +6,10 @@ const FALLBACK_NODE_Y = 0
 const MIN_VIEWPORT_ZOOM = 0.1
 const MAX_VIEWPORT_ZOOM = 4
 
-const NODE_TYPES = new Set(['trackInput', 'trackOutput', 'effect'])
+export const GRAPH_MACRO_NODE_TYPE = 'macro'
+export const GRAPH_MACRO_OUTPUT_PORT = 'controlOut'
+
+const NODE_TYPES = new Set(['trackInput', 'trackOutput', 'effect', GRAPH_MACRO_NODE_TYPE])
 const EDGE_TYPES = new Set(['audio', 'parameter'])
 
 function isPlainObject(value) {
@@ -103,6 +106,42 @@ function nodePositionWithWarnings(raw, fallbackPosition, trackId, warnings, node
 
 function withNodePosition(node, position) {
   return { ...node, position }
+}
+
+function clampMacroNormalizedValue(value) {
+  if (!Number.isFinite(value)) return 0
+  return Math.min(1, Math.max(0, value))
+}
+
+function normalizeMacroLabel(value, fallback = 'Macro') {
+  const label = typeof value === 'string' ? value.trim() : ''
+  return label.length > 0 ? label : fallback
+}
+
+function defaultMacroLabel(graphState) {
+  const macroCount = Array.isArray(graphState?.nodes)
+    ? graphState.nodes.filter((node) => node?.type === GRAPH_MACRO_NODE_TYPE).length
+    : 0
+  return `Macro ${macroCount + 1}`
+}
+
+function validateMacroNodeData(node, _graphState, trackId, warnings) {
+  const fallbackLabel = 'Macro'
+  const rawData = isPlainObject(node.data) ? node.data : {}
+  const label = normalizeMacroLabel(rawData.label ?? rawData.name, fallbackLabel)
+  const normalizedValue = clampMacroNormalizedValue(rawData.normalizedValue)
+
+  if (!isPlainObject(node.data)) {
+    warnings.push(makeWarning('invalidMacroNodeData', trackId, 'invalid macro node data; using defaults', { nodeId: node.id }))
+  } else if (label !== rawData.label || normalizedValue !== rawData.normalizedValue) {
+    warnings.push(makeWarning('repairedMacroNodeData', trackId, 'macro node data repaired', { nodeId: node.id }))
+  }
+
+  return {
+    ...cloneJson(rawData),
+    label,
+    normalizedValue,
+  }
 }
 
 function validateEffectNodeData(node, trackId, warnings) {
@@ -283,7 +322,7 @@ export function toggleExposedParameterPort(graphState, nodeId, parameterDescript
   }
 }
 
-function normalizeNode(node, trackId, warnings, fallbackPosition) {
+function normalizeNode(node, trackId, warnings, fallbackPosition, rawGraphState) {
   if (!isPlainObject(node)) return { ok: false, reason: 'invalid_node' }
   if (typeof node.id !== 'string' || node.id.length === 0) {
     return { ok: false, reason: 'invalid_node_id' }
@@ -332,6 +371,17 @@ function normalizeNode(node, trackId, warnings, fallbackPosition) {
     }
   }
 
+  if (node.type === GRAPH_MACRO_NODE_TYPE) {
+    return {
+      ok: true,
+      node: withNodePosition({
+        id: node.id,
+        type: GRAPH_MACRO_NODE_TYPE,
+        data: validateMacroNodeData(node, rawGraphState, trackId, warnings),
+      }, position),
+    }
+  }
+
   return {
     ok: true,
     node: withNodePosition({
@@ -342,7 +392,7 @@ function normalizeNode(node, trackId, warnings, fallbackPosition) {
   }
 }
 
-function normalizeEdge(edge, nodeIds, trackId, warnings) {
+function normalizeEdge(edge, nodeIds, nodeById, trackId, warnings) {
   if (!isPlainObject(edge)) return { ok: false, reason: 'invalid_edge' }
   if (typeof edge.id !== 'string' || edge.id.length === 0) {
     return { ok: false, reason: 'invalid_edge_id' }
@@ -384,6 +434,20 @@ function normalizeEdge(edge, nodeIds, trackId, warnings) {
         _preservedType: edge.type,
       },
     }
+  }
+
+  const sourceNodeType = nodeById.get(edge.sourceNodeId)?.type
+  const targetNodeType = nodeById.get(edge.targetNodeId)?.type
+  if (
+    edge.type === 'audio' &&
+    (sourceNodeType === GRAPH_MACRO_NODE_TYPE || targetNodeType === GRAPH_MACRO_NODE_TYPE)
+  ) {
+    warnings.push(makeWarning('invalidMacroAudioEdge', trackId, 'audio edge involving macro node dropped', {
+      edgeId: edge.id,
+      sourceNodeId: edge.sourceNodeId,
+      targetNodeId: edge.targetNodeId,
+    }))
+    return { ok: false, reason: 'invalid_macro_audio_edge', drop: true }
   }
 
   const normalizedEdge = {
@@ -460,7 +524,7 @@ function validateVersionOneGraphState(raw, expectedTrackId, options) {
   let trackOutputCount = 0
 
   for (let index = 0; index < raw.nodes.length; index += 1) {
-    const normalized = normalizeNode(raw.nodes[index], trackId, warnings, fallbackNodePosition(index))
+    const normalized = normalizeNode(raw.nodes[index], trackId, warnings, fallbackNodePosition(index), raw)
     if (!normalized.ok) return invalid(normalized.reason, warnings)
     if (nodeIds.has(normalized.node.id)) {
       warnings.push(makeWarning('duplicateNodeId', trackId, 'duplicate graphState node id', { nodeId: normalized.node.id }))
@@ -482,8 +546,10 @@ function validateVersionOneGraphState(raw, expectedTrackId, options) {
 
   const edges = []
   const edgeIds = new Set()
+  const nodeById = new Map(nodes.map((node) => [node.id, node]))
   for (const edge of raw.edges) {
-    const normalized = normalizeEdge(edge, nodeIds, trackId, warnings)
+    const normalized = normalizeEdge(edge, nodeIds, nodeById, trackId, warnings)
+    if (!normalized.ok && normalized.drop) continue
     if (!normalized.ok) return invalid(normalized.reason, warnings)
     if (edgeIds.has(normalized.edge.id)) {
       warnings.push(makeWarning('duplicateEdgeId', trackId, 'duplicate graphState edge id', { edgeId: normalized.edge.id }))
@@ -617,6 +683,7 @@ function generateMutationId(idFactory) {
 function inferSourcePort(nodeType) {
   if (nodeType === 'trackInput') return 'audio'
   if (nodeType === 'effect') return 'audioOut'
+  if (nodeType === GRAPH_MACRO_NODE_TYPE) return GRAPH_MACRO_OUTPUT_PORT
   return 'audio'
 }
 
@@ -645,6 +712,7 @@ export const GRAPH_MUTATION_REJECTION = Object.freeze({
   INVALID_NODE_DRAFT: 'invalid_node_draft',
   INVALID_CONNECTION_DRAFT: 'invalid_connection_draft',
   INVALID_PARAMETER_PORT: 'invalid_parameter_port',
+  INVALID_MACRO_VALUE: 'invalid_macro_value',
 })
 
 export function isProtectedGraphNodeType(type) {
@@ -699,6 +767,12 @@ export function canConnectGraphNodes(graphState, sourceNodeId, targetNodeId, opt
   if (targetNode.type === 'trackInput') return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_TARGET_TYPE }
   if (sourceNode.type === 'unknown') return { ok: false, reason: GRAPH_MUTATION_REJECTION.UNKNOWN_NODE_TYPE }
   if (targetNode.type === 'unknown') return { ok: false, reason: GRAPH_MUTATION_REJECTION.UNKNOWN_NODE_TYPE }
+  if (edgeType === 'audio' && sourceNode.type === GRAPH_MACRO_NODE_TYPE) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_SOURCE_TYPE }
+  }
+  if (edgeType === 'audio' && targetNode.type === GRAPH_MACRO_NODE_TYPE) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_TARGET_TYPE }
+  }
 
   if (hasEquivalentGraphEdge(graphState, sourceNodeId, targetNodeId, edgeType)) {
     return { ok: false, reason: GRAPH_MUTATION_REJECTION.DUPLICATE_EDGE }
@@ -765,6 +839,108 @@ export function addGraphEffectNode(graphState, nodeDraft, options = {}) {
     graphState: {
       ...graphState,
       nodes: [...graphState.nodes, newNode],
+    },
+  }
+}
+
+export function addGraphMacroNode(graphState, nodeDraft = {}, options = {}) {
+  const editCheck = validateGraphStateForEditing(graphState)
+  if (!editCheck.ok) return editCheck
+
+  const draft = isPlainObject(nodeDraft) ? nodeDraft : {}
+  let position = draft.position
+  if (
+    !isPlainObject(position) ||
+    !Number.isFinite(position.x) ||
+    !Number.isFinite(position.y)
+  ) {
+    const outputIndex = graphState.nodes.findIndex((n) => n.type === 'trackOutput')
+    const insertIndex = outputIndex >= 0 ? outputIndex : graphState.nodes.length
+    position = { x: insertIndex * FALLBACK_NODE_SPACING_X, y: FALLBACK_NODE_Y }
+  }
+
+  const newNode = {
+    id: generateMutationId(options.idFactory),
+    type: GRAPH_MACRO_NODE_TYPE,
+    position: { x: position.x, y: position.y },
+    data: {
+      label: normalizeMacroLabel(draft.label ?? draft.name, defaultMacroLabel(graphState)),
+      normalizedValue: clampMacroNormalizedValue(draft.normalizedValue),
+    },
+  }
+
+  return {
+    ok: true,
+    graphState: {
+      ...graphState,
+      nodes: [...graphState.nodes, newNode],
+    },
+  }
+}
+
+export function updateGraphMacroValue(graphState, nodeId, value) {
+  const editCheck = validateGraphStateForEditing(graphState)
+  if (!editCheck.ok) return editCheck
+  if (typeof nodeId !== 'string' || nodeId.length === 0) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_NODE }
+  }
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_MACRO_VALUE }
+  }
+
+  const node = graphState.nodes.find((candidate) => candidate.id === nodeId)
+  if (!node) return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_NODE }
+  if (node.type !== GRAPH_MACRO_NODE_TYPE) return { ok: false, reason: GRAPH_MUTATION_REJECTION.UNKNOWN_NODE_TYPE }
+
+  const normalizedValue = clampMacroNormalizedValue(value)
+  return {
+    ok: true,
+    graphState: {
+      ...graphState,
+      nodes: graphState.nodes.map((candidate) => (
+        candidate.id === nodeId
+          ? {
+              ...candidate,
+              data: {
+                ...(candidate.data ?? {}),
+                label: normalizeMacroLabel(candidate.data?.label, defaultMacroLabel(graphState)),
+                normalizedValue,
+              },
+            }
+          : candidate
+      )),
+    },
+  }
+}
+
+export function renameGraphMacroNode(graphState, nodeId, label) {
+  const editCheck = validateGraphStateForEditing(graphState)
+  if (!editCheck.ok) return editCheck
+  if (typeof nodeId !== 'string' || nodeId.length === 0) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_NODE }
+  }
+
+  const node = graphState.nodes.find((candidate) => candidate.id === nodeId)
+  if (!node) return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_NODE }
+  if (node.type !== GRAPH_MACRO_NODE_TYPE) return { ok: false, reason: GRAPH_MUTATION_REJECTION.UNKNOWN_NODE_TYPE }
+
+  const nextLabel = normalizeMacroLabel(label, defaultMacroLabel(graphState))
+  return {
+    ok: true,
+    graphState: {
+      ...graphState,
+      nodes: graphState.nodes.map((candidate) => (
+        candidate.id === nodeId
+          ? {
+              ...candidate,
+              data: {
+                ...(candidate.data ?? {}),
+                label: nextLabel,
+                normalizedValue: clampMacroNormalizedValue(candidate.data?.normalizedValue),
+              },
+            }
+          : candidate
+      )),
     },
   }
 }

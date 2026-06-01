@@ -56,6 +56,7 @@ const GRAPH_MUTATION_MESSAGES: Record<string, string> = {
   invalid_node_draft: 'Could not create that effect node.',
   invalid_connection_draft: 'Could not create that connection.',
   invalid_parameter_port: 'Could not expose that parameter.',
+  invalid_macro_value: 'Macro value must be between 0 and 1.',
   master_track: 'Master track stays in Mixer Chain mode.',
   no_track: 'Select a mixer track first.',
   not_graph_mode: 'Switch this track to FX Graph mode first.',
@@ -118,10 +119,13 @@ export interface FxGraphPanelContentProps {
   onGraphNodePositionChange?: (nodeId: string, position: { x: number; y: number }) => void;
   onGraphViewportChange?: (viewport: GraphStateViewport) => void;
   onAddGraphEffectNode?: () => void;
+  onAddGraphMacroNode?: () => void;
   onRemoveGraphNode?: (nodeId: string) => void;
   onConnectGraphNodes?: (sourceNodeId: string, targetNodeId: string) => void;
   onDisconnectGraphEdge?: (edgeId: string) => void;
   onEditGraphNode?: (nodeId: string) => void;
+  onUpdateGraphMacroValue?: (nodeId: string, value: number) => void;
+  onRenameGraphMacroNode?: (nodeId: string, label: string) => void;
   onToggleParameterPort?: (nodeId: string, parameter: GraphEffectParameterDescriptor) => void;
   fetchGraphEffectParameters?: (
     trackId: number | string,
@@ -186,10 +190,13 @@ export function FxGraphPanelContent({
   onGraphNodePositionChange,
   onGraphViewportChange,
   onAddGraphEffectNode,
+  onAddGraphMacroNode,
   onRemoveGraphNode,
   onConnectGraphNodes,
   onDisconnectGraphEdge,
   onEditGraphNode,
+  onUpdateGraphMacroValue,
+  onRenameGraphMacroNode,
   onToggleParameterPort,
   fetchGraphEffectParameters,
   canUndoGraphEdit = false,
@@ -299,10 +306,13 @@ export function FxGraphPanelContent({
               onNodePositionChange={graphModeActive ? onGraphNodePositionChange : undefined}
               onViewportChange={graphModeActive ? onGraphViewportChange : undefined}
               onAddEffectNode={graphModeActive ? onAddGraphEffectNode : undefined}
+              onAddMacroNode={graphModeActive ? onAddGraphMacroNode : undefined}
               onRemoveNode={graphModeActive ? onRemoveGraphNode : undefined}
               onConnectNodes={graphModeActive ? onConnectGraphNodes : undefined}
               onDisconnectEdge={graphModeActive ? onDisconnectGraphEdge : undefined}
               onEditNode={graphModeActive ? onEditGraphNode : undefined}
+              onUpdateMacroValue={graphModeActive ? onUpdateGraphMacroValue : undefined}
+              onRenameMacroNode={graphModeActive ? onRenameGraphMacroNode : undefined}
               trackId={graphModeActive ? trackId : null}
               fetchGraphEffectParameters={graphModeActive ? fetchGraphEffectParameters : undefined}
               onToggleParameterPort={graphModeActive ? onToggleParameterPort : undefined}
@@ -461,9 +471,12 @@ export default function FxGraphPanel() {
   const setGraphStateNodePosition = useEffectChainStore((state) => state.setGraphStateNodePosition);
   const setGraphStateViewport = useEffectChainStore((state) => state.setGraphStateViewport);
   const addGraphEffectNodeForTrack = useEffectChainStore((state) => state.addGraphEffectNodeForTrack);
+  const addGraphMacroNodeForTrack = useEffectChainStore((state) => state.addGraphMacroNodeForTrack);
   const removeGraphNodeForTrack = useEffectChainStore((state) => state.removeGraphNodeForTrack);
   const connectGraphNodesForTrack = useEffectChainStore((state) => state.connectGraphNodesForTrack);
   const disconnectGraphEdgeForTrack = useEffectChainStore((state) => state.disconnectGraphEdgeForTrack);
+  const updateGraphMacroValueForTrack = useEffectChainStore((state) => state.updateGraphMacroValueForTrack);
+  const renameGraphMacroNodeForTrack = useEffectChainStore((state) => state.renameGraphMacroNodeForTrack);
   const toggleGraphNodeParameterPortForTrack = useEffectChainStore((state) => state.toggleGraphNodeParameterPortForTrack);
   const fetchGraphEffectParameters = useEffectChainStore((state) => state.fetchGraphEffectParameters);
   const undoGraphEditForTrack = useEffectChainStore((state) => state.undoGraphEditForTrack);
@@ -547,11 +560,29 @@ export default function FxGraphPanel() {
     setGraphActionNotice(describeGraphMutationResult(result));
   }, [addGraphEffectNodeForTrack, fxMode, selectedTrack?.id]);
 
+  const handleAddGraphMacroNode = useCallback(async () => {
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    const result = await addGraphMacroNodeForTrack(selectedTrack.id);
+    setGraphActionNotice(describeGraphMutationResult(result));
+  }, [addGraphMacroNodeForTrack, fxMode, selectedTrack?.id]);
+
   const handleRemoveGraphNode = useCallback(async (nodeId: string) => {
     if (selectedTrack?.id == null || fxMode !== 'graph') return;
     const result = await removeGraphNodeForTrack(selectedTrack.id, nodeId);
     setGraphActionNotice(describeGraphMutationResult(result));
   }, [fxMode, removeGraphNodeForTrack, selectedTrack?.id]);
+
+  const handleUpdateGraphMacroValue = useCallback(async (nodeId: string, value: number) => {
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    const result = await updateGraphMacroValueForTrack(selectedTrack.id, nodeId, value);
+    setGraphActionNotice(describeGraphMutationResult(result));
+  }, [fxMode, selectedTrack?.id, updateGraphMacroValueForTrack]);
+
+  const handleRenameGraphMacroNode = useCallback(async (nodeId: string, label: string) => {
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    const result = await renameGraphMacroNodeForTrack(selectedTrack.id, nodeId, label);
+    setGraphActionNotice(describeGraphMutationResult(result));
+  }, [fxMode, renameGraphMacroNodeForTrack, selectedTrack?.id]);
 
   const handleConnectGraphNodes = useCallback(async (sourceNodeId: string, targetNodeId: string) => {
     if (selectedTrack?.id == null || fxMode !== 'graph') return;
@@ -699,10 +730,13 @@ export default function FxGraphPanel() {
         onGraphNodePositionChange={handleGraphNodePositionChange}
         onGraphViewportChange={handleGraphViewportChange}
         onAddGraphEffectNode={handleOpenAddEffectPicker}
+        onAddGraphMacroNode={handleAddGraphMacroNode}
         onRemoveGraphNode={handleRemoveGraphNode}
         onConnectGraphNodes={handleConnectGraphNodes}
         onDisconnectGraphEdge={handleDisconnectGraphEdge}
         onEditGraphNode={handleEditGraphNode}
+        onUpdateGraphMacroValue={handleUpdateGraphMacroValue}
+        onRenameGraphMacroNode={handleRenameGraphMacroNode}
         onToggleParameterPort={handleToggleParameterPort}
         fetchGraphEffectParameters={fetchGraphEffectParameters}
         canUndoGraphEdit={canUndoGraphEdit}

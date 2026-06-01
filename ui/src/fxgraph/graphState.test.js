@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
   GRAPH_STATE_SCHEMA_VERSION,
+  GRAPH_MACRO_NODE_TYPE,
+  GRAPH_MACRO_OUTPUT_PORT,
   GRAPH_MUTATION_REJECTION,
   PROTECTED_NODE_TYPES,
   addGraphEffectNode,
+  addGraphMacroNode,
   buildExposedParameterPort,
   canConnectGraphNodes,
   canRemoveGraphNode,
@@ -14,9 +17,11 @@ import {
   isProtectedGraphNodeType,
   loadGraphState,
   normalizeExposedParameterPorts,
+  renameGraphMacroNode,
   removeGraphNode,
   saveGraphState,
   toggleExposedParameterPort,
+  updateGraphMacroValue,
   validateGraphState,
   validateGraphStateForEditing,
 } from './graphState.js'
@@ -299,6 +304,55 @@ describe('graphState schema validation', () => {
     expect(result.graphState.nodes[0].data).toEqual({ protected: true })
     expect(result.graphState.nodes[1].data.lane).toBe('upper')
     expect(result.graphState.nodes[2].data).toEqual({ protected: true })
+  })
+
+  it('normalizes macro nodes with repaired labels and clamped values', () => {
+    const result = validateGraphState(makeValidGraphState({
+      nodes: [
+        { id: 'input', type: 'trackInput' },
+        { id: 'macro-a', type: GRAPH_MACRO_NODE_TYPE, data: { label: '  Macro Wow  ', normalizedValue: 1.5, lane: 'top' } },
+        { id: 'macro-b', type: GRAPH_MACRO_NODE_TYPE, data: { label: '   ', normalizedValue: -0.2 } },
+        { id: 'output', type: 'trackOutput' },
+      ],
+      edges: [],
+    }), '7')
+
+    expect(result.status).toBe('valid')
+    expect(result.graphState.nodes[1]).toMatchObject({
+      id: 'macro-a',
+      type: GRAPH_MACRO_NODE_TYPE,
+      data: { label: 'Macro Wow', normalizedValue: 1, lane: 'top' },
+    })
+    expect(result.graphState.nodes[2]).toMatchObject({
+      id: 'macro-b',
+      type: GRAPH_MACRO_NODE_TYPE,
+      data: { label: 'Macro', normalizedValue: 0 },
+    })
+    expect(saveGraphState(result.graphState).nodes[1].data.normalizedValue).toBe(1)
+  })
+
+  it('drops malformed saved audio edges involving macro nodes', () => {
+    const result = validateGraphState(makeValidGraphState({
+      nodes: [
+        { id: 'input', type: 'trackInput' },
+        { id: 'macro-a', type: GRAPH_MACRO_NODE_TYPE, data: { label: 'Macro 1', normalizedValue: 0.5 } },
+        { id: 'output', type: 'trackOutput' },
+      ],
+      edges: [
+        {
+          id: 'bad-audio',
+          sourceNodeId: 'macro-a',
+          sourcePort: GRAPH_MACRO_OUTPUT_PORT,
+          targetNodeId: 'output',
+          targetPort: 'audio',
+          type: 'audio',
+        },
+      ],
+    }), '7')
+
+    expect(result.status).toBe('valid')
+    expect(result.graphState.edges).toEqual([])
+    expect(result.warnings.map((warning) => warning.code)).toContain('invalidMacroAudioEdge')
   })
 
   it('defaults missing exposedParameterPorts to an empty array on effect nodes', () => {
@@ -769,6 +823,10 @@ describe('graph mutation architecture guards', () => {
       expect(isProtectedGraphNodeType('effect')).toBe(false)
     })
 
+    it('returns false for macro', () => {
+      expect(isProtectedGraphNodeType(GRAPH_MACRO_NODE_TYPE)).toBe(false)
+    })
+
     it('returns false for unknown', () => {
       expect(isProtectedGraphNodeType('unknown')).toBe(false)
     })
@@ -871,6 +929,16 @@ describe('graph mutation architecture guards', () => {
     it('accepts removing an effect node', () => {
       expect(canRemoveGraphNode(makeGuardGraphState(), 'fx-a')).toEqual({ ok: true })
     })
+
+    it('accepts removing a macro node', () => {
+      const gs = makeGuardGraphState({
+        nodes: [
+          ...makeGuardGraphState().nodes,
+          { id: 'macro-a', type: GRAPH_MACRO_NODE_TYPE, position: { x: 80, y: 120 }, data: { label: 'Macro 1', normalizedValue: 0 } },
+        ],
+      })
+      expect(canRemoveGraphNode(gs, 'macro-a')).toEqual({ ok: true })
+    })
   })
 
   describe('canConnectGraphNodes', () => {
@@ -943,6 +1011,29 @@ describe('graph mutation architecture guards', () => {
       expect(canConnectGraphNodes(gs, 'in', 'mystery')).toEqual({
         ok: false,
         reason: GRAPH_MUTATION_REJECTION.UNKNOWN_NODE_TYPE,
+      })
+    })
+
+    it('rejects macro endpoints for audio connections', () => {
+      const gs = makeGuardGraphState({
+        nodes: [
+          ...makeGuardGraphState().nodes,
+          { id: 'macro-a', type: GRAPH_MACRO_NODE_TYPE, position: { x: 80, y: 120 }, data: { label: 'Macro 1', normalizedValue: 0.25 } },
+        ],
+        edges: [],
+      })
+
+      expect(canConnectGraphNodes(gs, 'macro-a', 'out')).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.INVALID_SOURCE_TYPE,
+      })
+      expect(canConnectGraphNodes(gs, 'in', 'macro-a')).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.INVALID_TARGET_TYPE,
+      })
+      expect(connectGraphNodes(gs, { sourceNodeId: 'macro-a', targetNodeId: 'out' })).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.INVALID_SOURCE_TYPE,
       })
     })
 
@@ -1093,6 +1184,78 @@ describe('graph mutation architecture guards', () => {
 
       expect(result.ok).toBe(true)
       expect(result.graphState.nodes.at(-1).id).toBe('fixed-id-0')
+    })
+  })
+
+  describe('macro node helpers', () => {
+    it('adds a normalized macro node without mutating the input graphState', () => {
+      const gs = makeGuardGraphState()
+      const result = addGraphMacroNode(gs, {
+        label: '  Brightness  ',
+        normalizedValue: 2,
+        position: { x: 123, y: 456 },
+      }, { idFactory: () => 'macro-new' })
+
+      expect(result.ok).toBe(true)
+      expect(result.graphState.nodes.at(-1)).toEqual({
+        id: 'macro-new',
+        type: GRAPH_MACRO_NODE_TYPE,
+        position: { x: 123, y: 456 },
+        data: { label: 'Brightness', normalizedValue: 1 },
+      })
+      expect(gs.nodes.find((node) => node.id === 'macro-new')).toBeUndefined()
+    })
+
+    it('defaults macro label, value, and position deterministically', () => {
+      const result = addGraphMacroNode(makeGuardGraphState(), {}, { idFactory: () => 'macro-default' })
+
+      expect(result.ok).toBe(true)
+      expect(result.graphState.nodes.at(-1)).toMatchObject({
+        id: 'macro-default',
+        type: GRAPH_MACRO_NODE_TYPE,
+        position: { x: 520, y: 0 },
+        data: { label: 'Macro 1', normalizedValue: 0 },
+      })
+    })
+
+    it('updates macro values with clamping and rejects non-macro nodes', () => {
+      const added = addGraphMacroNode(makeGuardGraphState(), {}, { idFactory: () => 'macro-a' })
+      const updated = updateGraphMacroValue(added.graphState, 'macro-a', 1.25)
+
+      expect(updated.ok).toBe(true)
+      expect(updated.graphState.nodes.find((node) => node.id === 'macro-a').data.normalizedValue).toBe(1)
+      expect(updateGraphMacroValue(added.graphState, 'fx-a', 0.5)).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.UNKNOWN_NODE_TYPE,
+      })
+      expect(updateGraphMacroValue(added.graphState, 'macro-a', Number.NaN)).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.INVALID_MACRO_VALUE,
+      })
+    })
+
+    it('renames macro nodes and removes them with incident edges', () => {
+      const added = addGraphMacroNode(makeGuardGraphState(), {}, { idFactory: () => 'macro-a' })
+      const renamed = renameGraphMacroNode(added.graphState, 'macro-a', '  Energy  ')
+      const removed = removeGraphNode({
+        ...renamed.graphState,
+        edges: [
+          {
+            id: 'param-edge',
+            sourceNodeId: 'macro-a',
+            sourcePort: GRAPH_MACRO_OUTPUT_PORT,
+            targetNodeId: 'fx-a',
+            targetPort: 'param:mix',
+            type: 'parameter',
+          },
+        ],
+      }, 'macro-a')
+
+      expect(renamed.ok).toBe(true)
+      expect(renamed.graphState.nodes.find((node) => node.id === 'macro-a').data.label).toBe('Energy')
+      expect(removed.ok).toBe(true)
+      expect(removed.graphState.nodes.find((node) => node.id === 'macro-a')).toBeUndefined()
+      expect(removed.graphState.edges).toEqual([])
     })
   })
 
@@ -1501,6 +1664,25 @@ describe('FXG.4-c edge schema', () => {
 
     expect(analysis.ok).toBe(true)
     expect(analysis.effectNodeIds).toEqual(['fx-1'])
+  })
+
+  it('audio routing topology excludes macro control nodes', () => {
+    const graphState = makeValidGraphState({
+      nodes: [
+        { id: 'input', type: 'trackInput' },
+        { id: 'macro-a', type: GRAPH_MACRO_NODE_TYPE, data: { label: 'Macro 1', normalizedValue: 0.5 } },
+        makeEffectNode('fx-1'),
+        { id: 'output', type: 'trackOutput' },
+      ],
+    })
+
+    const payload = buildLinearGraphTopologyPayload(graphState)
+    expect(payload.nodes.map((node) => node.nodeId)).toEqual(['input', 'fx-1', 'output'])
+    expect(payload.nodes.find((node) => node.nodeId === 'macro-a')).toBeUndefined()
+    expect(analyzeLinearGraphTopology(graphState)).toMatchObject({
+      ok: true,
+      effectNodeIds: ['fx-1'],
+    })
   })
 
   it('connectGraphNodes rejects non-audio edge type from the user connect path', () => {

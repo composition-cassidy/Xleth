@@ -397,6 +397,32 @@ describe('PanelFrame render paths', () => {
     expect(chainHtml).not.toContain('Redo graph edit');
   });
 
+  it('renders Add Macro only for active editable graph mode', () => {
+    const graphHtml = renderToStaticMarkup(
+      <FxGraphPanelContent
+        trackId={7}
+        trackLabel="Lead Vox"
+        fxMode="graph"
+        graphStateStatus="valid"
+        graphState={makeFxGraphState()}
+        onAddGraphMacroNode={vi.fn()}
+      />,
+    );
+    const chainHtml = renderToStaticMarkup(
+      <FxGraphPanelContent
+        trackId={7}
+        trackLabel="Lead Vox"
+        fxMode="chain"
+        graphStateStatus="valid"
+        graphState={makeFxGraphState()}
+        onAddGraphMacroNode={vi.fn()}
+      />,
+    );
+
+    expect(graphHtml).toContain('Add Macro');
+    expect(chainHtml).not.toContain('Add Macro');
+  });
+
   it('renders a degraded graph-mode state when graphState is missing', () => {
     const html = renderToStaticMarkup(
       <FxGraphPanelContent

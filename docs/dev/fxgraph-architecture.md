@@ -1,6 +1,6 @@
 # FX Graph Architecture
 
-Internal reference for the renderer-side graphState system. Updated through FXG.4-c.
+Internal reference for the renderer-side graphState system. Updated through FXG.4-d.
 
 ## Data model separation
 
@@ -21,8 +21,8 @@ These two systems are intentionally independent and must never be merged or cros
 Version: `GRAPH_STATE_SCHEMA_VERSION = 1` (see `graphState.js`).
 Fields: `schemaVersion`, `trackId`, `nodes`, `edges`, `viewport`, plus any extra fields preserved for forward compatibility.
 
-Node types: `trackInput`, `trackOutput`, `effect`, `unknown` (load-only fallback).
-Edge types: `audio`, `unknown` (load-only fallback).
+Node types: `trackInput`, `trackOutput`, `effect`, `macro`, `unknown` (load-only fallback).
+Edge types: `audio`, `parameter`, `unknown` (load-only fallback).
 
 Port naming convention (mirrors `chainToGraphState.js` lines 189-191):
 - `trackInput` output -> `'audio'`
@@ -409,11 +409,32 @@ any attempt to create a non-audio edge via the user-facing connect path.
 Parameter edges are data-model only until modulation runtime exists. No engine runtime sync
 treats parameter edges as audio routing.
 
-### Still deferred after FXG.4-c
+## Macro Control Nodes (FXG.4-d)
 
-No macro nodes, LFO nodes, envelope nodes, peak follower nodes, automation clips, modulation
-execution, sample-accurate automation, smoothing, min/max depth scaling, polarity, or
-graph-to-chain return. Mixer Chain behavior is unchanged. `effectChains` are not mutated.
+FXG.4-d adds Macro nodes as graph-owned normalized control sources. A macro node is stored only in
+`graphState` with a repaired display `label` and `normalizedValue` clamped to `[0.0, 1.0]`. Macro
+nodes are not protected I/O nodes, can be moved/removed like other editable graph nodes, and
+participate in graph-owned undo/redo. They do not have `effectInstanceId`, plugin metadata, raw
+engine ids, parameter target lists, modulation mapping, Bezier curves, or automation clip ids.
+
+The FX Graph workspace renders Macro nodes as distinct control nodes with one visible
+`controlOut` output port and compact value editing. Macro edits persist through
+`timeline.setTrackGraphState` but skip audio runtime sync and never call graph effect parameter
+write APIs. Macro nodes are excluded from topology payloads, rejected as audio edge endpoints, and
+do not participate in graph-owned effect hydration or processor lifecycle.
+
+FXG.4-d intentionally stops at visible graph-owned control sources. Macro-to-parameter linking,
+default linear parameter driving, per-link Bezier mapping, automation clips, LFOs, envelopes, peak
+followers, buses, and graph-to-chain return remain deferred. FXG.4-e/f will connect Macro outputs
+to exposed parameter ports through the FXG.4-c `GraphParameterTarget` contract and add the first
+parameter-driving behavior.
+
+### Still deferred after FXG.4-d
+
+Macro-to-parameter links, LFO nodes, envelope nodes, peak follower nodes, automation clips,
+modulation execution, sample-accurate automation, smoothing, min/max depth scaling, polarity,
+Bezier mapping, buses, or graph-to-chain return. Mixer Chain behavior is unchanged.
+`effectChains` are not mutated.
 
 ## Engine execution boundary
 
