@@ -19,6 +19,7 @@ import { getGlobalStretchMethodLabel } from '../constants/globalStretchMethods.j
 import { labelHexColor } from '../constants/labels.js'
 import { normalizeTrackCustomColor } from './timeline/trackColorResolver.js'
 import { subscribe } from '../transportStore.js'
+import { startMacroAutomationPlayback } from '../fxgraph/macroAutomationPlayback.js'
 import { playheadClock } from '../services/PlayheadClock.js'
 import { editCursor } from '../services/EditCursor.js'
 import { timelineEvents } from '../timelineEvents.js'
@@ -1475,6 +1476,12 @@ export default function TimelineView({
       }
     }
   }), [])
+
+  // FXG.4-h — drive parent-attached macro automation lanes at control rate. The
+  // controller subscribes to the same transport poller and evaluates each graph-mode
+  // track's macro automation at the current tick, then drives the macro's connected
+  // parameter edges. Mounted once for the app session; no audio-thread work.
+  useEffect(() => startMacroAutomationPlayback(), [])
 
   // ── PlayheadClock 60fps auto-scroll ─────────────────────────────────────────
   // Playhead drawing is handled by TimelineCanvas and TimelineRuler directly.

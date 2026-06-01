@@ -4,6 +4,11 @@ import {
   normalizeGraphParameterTarget,
   resolveGraphParameterTarget,
 } from './graphParameterTarget.js'
+// FXG.4-h — parent-attached macro automation lanes are normalized on load so
+// persistence round-trips and old projects (no field) load as []. This import is
+// call-time only (used inside validateVersionOneGraphState); macroAutomation.js in
+// turn only reuses FXG.4-g curve functions at call time, so the cycle is safe.
+import { normalizeMacroAutomationLanes } from './macroAutomation.js'
 
 export const GRAPH_STATE_SCHEMA_VERSION = 1
 
@@ -753,6 +758,14 @@ function validateVersionOneGraphState(raw, expectedTrackId, options) {
     return invalid('cycle_detected', warnings)
   }
 
+  // FXG.4-h — normalize parent-attached macro automation lanes. Lanes bind to a
+  // macroNodeId that must exist as a macro node in this graph; lanes for a missing
+  // macro are preserved but flagged targetUnavailable (orphaned), never deleted.
+  const macroNodeIds = new Set(
+    nodes.filter((node) => node.type === GRAPH_MACRO_NODE_TYPE).map((node) => node.id),
+  )
+  const macroAutomationLanes = normalizeMacroAutomationLanes(raw.macroAutomationLanes, macroNodeIds)
+
   const graphState = {
     ...cloneJson(raw),
     schemaVersion: GRAPH_STATE_SCHEMA_VERSION,
@@ -760,6 +773,7 @@ function validateVersionOneGraphState(raw, expectedTrackId, options) {
     nodes,
     edges,
     viewport: defaultViewportWithWarnings(raw.viewport, trackId, warnings),
+    macroAutomationLanes,
   }
 
   return { status: 'valid', graphState, warnings }
@@ -772,6 +786,7 @@ export function createEmptyGraphState(trackId) {
     nodes: [],
     edges: [],
     viewport: { ...DEFAULT_VIEWPORT },
+    macroAutomationLanes: [],
   }
 }
 

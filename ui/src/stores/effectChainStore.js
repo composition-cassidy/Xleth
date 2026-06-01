@@ -23,6 +23,23 @@ import {
   toggleExposedParameterPort,
   updateParameterEdgeMapping,
 } from '../fxgraph/graphState.js'
+import {
+  showMacroAutomationLane,
+  hideMacroAutomationLane,
+  removeMacroAutomationLane,
+  createMacroAutomationClip,
+  moveMacroAutomationClip,
+  resizeMacroAutomationClip,
+  toggleMacroAutomationClipLoop,
+  deleteMacroAutomationClip,
+  pasteMacroAutomationClip,
+  buildMacroAutomationClipCopyPayload,
+  addMacroAutomationPoint,
+  moveMacroAutomationPoint,
+  deleteMacroAutomationPoint,
+  setMacroAutomationPointCurve,
+  evaluateMacroAutomationForMacro,
+} from '../fxgraph/macroAutomation.js'
 
 export const DEFAULT_FX_MODE = 'chain'
 export const DEFAULT_FX_PANEL_VIEW = 'chain'
@@ -632,6 +649,29 @@ function recordGraphEditTransaction(set, key, type, beforeGraphState, afterGraph
   })
 }
 
+// FXG.4-h — shared wrapper for macro automation lane/clip/point mutations. Gates on
+// graph mode, runs the pure macroAutomation helper, commits + persists graphState
+// without any audio runtime sync, and records a graph-owned undo transaction. The
+// returned object carries through the helper's laneId/clipId for the caller.
+async function runMacroAutomationMutation(set, get, trackId, label, options, mutationFn) {
+  const access = readGraphStateForMutation(get(), trackId)
+  if (!access.ok) return access
+
+  const mutation = mutationFn(access.graphState)
+  if (!mutation.ok) return mutation
+
+  const applied = await applyGraphStateMutation(
+    set,
+    access.key,
+    mutation.graphState,
+    { ...options, syncRuntime: false },
+  )
+  if (!applied.ok) return applied
+
+  recordGraphEditTransaction(set, access.key, label, access.graphState, applied.graphState)
+  return { ...applied, laneId: mutation.laneId, clipId: mutation.clipId }
+}
+
 function clearGraphHistoryForTrack(set, key) {
   set((state) => {
     if (!state.graphHistories?.[key]) return {}
@@ -946,6 +986,10 @@ const useEffectChainStore = create((set, get) => ({
   // Session-only FX Graph edit history. Never persisted and never shared with
   // Mixer Chain / native undo history.
   graphHistories: {},
+  // FXG.4-h — session-only last-applied macro automation values, keyed by
+  // { [key: String(trackId)]: { [macroNodeId]: value } }. Used purely to suppress
+  // redundant control-rate drive calls during playback. Never persisted.
+  macroAutomationLastValues: {},
 
   ensureFxState: (key) => {
     const { fxModes, fxPanelViews } = get()
@@ -967,6 +1011,7 @@ const useEffectChainStore = create((set, get) => ({
       graphEngineNodeIds: {},
       graphRuntimeStatuses: {},
       graphHistories: {},
+      macroAutomationLastValues: {},
     })
   },
 
@@ -1729,6 +1774,121 @@ const useEffectChainStore = create((set, get) => ({
 
     return applied
   },
+
+  // ── FXG.4-h parent-attached macro automation lanes ────────────────────────
+  // Lanes/clips live inside the owning track's graphState (the only renderer
+  // channel that round-trips with the project without native changes) under
+  // `macroAutomationLanes`. Each action is graph-mode gated, persists via
+  // timeline.setTrackGraphState, records a graph-owned undo transaction, and
+  // NEVER syncs audio runtime or touches effectChains — automation only drives a
+  // Macro node's normalizedValue, which then flows through the existing FXG.4-e/f/g
+  // macro→parameter edge path. Generic timeline clips/lanes are untouched.
+  showMacroAutomationLaneForTrack: (trackId, macroNodeId, options = {}) =>
+    runMacroAutomationMutation(set, get, trackId, 'show_macro_automation_lane', options, (graphState) =>
+      showMacroAutomationLane(graphState, macroNodeId, options)),
+
+  hideMacroAutomationLaneForTrack: (trackId, macroNodeId, options = {}) =>
+    runMacroAutomationMutation(set, get, trackId, 'hide_macro_automation_lane', options, (graphState) =>
+      hideMacroAutomationLane(graphState, macroNodeId)),
+
+  removeMacroAutomationLaneForTrack: (trackId, macroNodeId, options = {}) =>
+    runMacroAutomationMutation(set, get, trackId, 'remove_macro_automation_lane', options, (graphState) =>
+      removeMacroAutomationLane(graphState, macroNodeId)),
+
+  createMacroAutomationClipForTrack: (trackId, macroNodeId, clipDraft = {}, options = {}) =>
+    runMacroAutomationMutation(set, get, trackId, 'create_macro_automation_clip', options, (graphState) =>
+      createMacroAutomationClip(graphState, macroNodeId, clipDraft, options)),
+
+  moveMacroAutomationClipForTrack: (trackId, clipId, newStartTick, options = {}) =>
+    runMacroAutomationMutation(set, get, trackId, 'move_macro_automation_clip', options, (graphState) =>
+      moveMacroAutomationClip(graphState, clipId, newStartTick)),
+
+  resizeMacroAutomationClipForTrack: (trackId, clipId, patch, options = {}) =>
+    runMacroAutomationMutation(set, get, trackId, 'resize_macro_automation_clip', options, (graphState) =>
+      resizeMacroAutomationClip(graphState, clipId, patch)),
+
+  toggleMacroAutomationClipLoopForTrack: (trackId, clipId, loopEnabled, options = {}) =>
+    runMacroAutomationMutation(set, get, trackId, 'toggle_macro_automation_clip_loop', options, (graphState) =>
+      toggleMacroAutomationClipLoop(graphState, clipId, loopEnabled)),
+
+  deleteMacroAutomationClipForTrack: (trackId, clipId, options = {}) =>
+    runMacroAutomationMutation(set, get, trackId, 'delete_macro_automation_clip', options, (graphState) =>
+      deleteMacroAutomationClip(graphState, clipId)),
+
+  // Copy/paste is lane-compatible only: the destination macroNodeId must match the
+  // payload's source macro. Cross-macro / cross-track / macro<->normal-lane pastes
+  // are rejected (INCOMPATIBLE_LANE) — automation clips never silently retarget.
+  pasteMacroAutomationClipForTrack: (trackId, macroNodeId, clipPayload, options = {}) =>
+    runMacroAutomationMutation(set, get, trackId, 'paste_macro_automation_clip', options, (graphState) =>
+      pasteMacroAutomationClip(graphState, macroNodeId, clipPayload, options)),
+
+  buildMacroAutomationClipCopyPayload: (trackId, clipId) => {
+    const access = readGraphStateForMutation(get(), trackId)
+    if (!access.ok) return null
+    return buildMacroAutomationClipCopyPayload(access.graphState, clipId)
+  },
+
+  addMacroAutomationPointForTrack: (trackId, clipId, pointDraft, options = {}) =>
+    runMacroAutomationMutation(set, get, trackId, 'add_macro_automation_point', options, (graphState) =>
+      addMacroAutomationPoint(graphState, clipId, pointDraft)),
+
+  moveMacroAutomationPointForTrack: (trackId, clipId, pointIndex, patch, options = {}) =>
+    runMacroAutomationMutation(set, get, trackId, 'move_macro_automation_point', options, (graphState) =>
+      moveMacroAutomationPoint(graphState, clipId, pointIndex, patch)),
+
+  deleteMacroAutomationPointForTrack: (trackId, clipId, pointIndex, options = {}) =>
+    runMacroAutomationMutation(set, get, trackId, 'delete_macro_automation_point', options, (graphState) =>
+      deleteMacroAutomationPoint(graphState, clipId, pointIndex)),
+
+  setMacroAutomationPointCurveForTrack: (trackId, clipId, pointIndex, curve, options = {}) =>
+    runMacroAutomationMutation(set, get, trackId, 'set_macro_automation_point_curve', options, (graphState) =>
+      setMacroAutomationPointCurve(graphState, clipId, pointIndex, curve)),
+
+  // Control-rate playback evaluation. For every graph-mode track, evaluate each
+  // macro's automation lane at the given global tick and, when a clip is in effect
+  // (or holding), drive the macro's connected parameter edges with the evaluated
+  // value via the existing FXG.4-e/f path. The persisted macro normalizedValue and
+  // graphState are NOT mutated — this is runtime drive only, so playback never
+  // dirties the project or churns React graphState. Redundant writes are suppressed
+  // by comparing against the session macroAutomationLastValues cache.
+  applyMacroAutomationAtTick: async (globalTick, options = {}) => {
+    if (!Number.isFinite(globalTick)) return { ok: false, reason: 'invalid_tick' }
+    const state = get()
+    const epsilon = Number.isFinite(options.epsilon) ? options.epsilon : 1e-4
+    const driven = []
+
+    for (const [key, graphState] of Object.entries(state.graphStates)) {
+      if (key === 'master') continue
+      if (resolveFxMode(state.fxModes, key) !== 'graph') continue
+      if (!graphState || !Array.isArray(graphState.nodes)) continue
+      const lanes = Array.isArray(graphState.macroAutomationLanes) ? graphState.macroAutomationLanes : []
+      if (lanes.length === 0) continue
+
+      for (const node of graphState.nodes) {
+        if (node.type !== 'macro') continue
+        const fallback = Number.isFinite(node.data?.normalizedValue) ? node.data.normalizedValue : 0
+        const evaluation = evaluateMacroAutomationForMacro(graphState, node.id, globalTick, fallback)
+        if (!evaluation.hasAutomation) continue
+
+        const last = get().macroAutomationLastValues?.[key]?.[node.id]
+        if (last != null && Math.abs(last - evaluation.value) <= epsilon) continue
+
+        set((current) => ({
+          macroAutomationLastValues: {
+            ...current.macroAutomationLastValues,
+            [key]: { ...(current.macroAutomationLastValues?.[key] ?? {}), [node.id]: evaluation.value },
+          },
+        }))
+        await driveMacroParameterEdges(get, key, graphState, node.id, evaluation.value, options)
+        driven.push({ trackId: key, macroNodeId: node.id, value: evaluation.value })
+      }
+    }
+    return { ok: true, driven }
+  },
+
+  // Clears the session last-applied cache so the next tick re-drives every macro
+  // (used on transport stop/seek/project-load). Does not change any value itself.
+  resetMacroAutomationRuntime: () => set({ macroAutomationLastValues: {} }),
 
   // ── FXG.4-a graph-owned effect parameter descriptors ──────────────────────
   // Read/write normalized [0,1] parameters for a graph-owned effect node. These

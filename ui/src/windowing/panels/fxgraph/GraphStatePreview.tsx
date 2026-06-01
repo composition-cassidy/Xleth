@@ -88,6 +88,25 @@ export interface GraphStateEdge {
   mapping?: unknown;
 }
 
+export interface GraphMacroAutomationClip {
+  clipId: string;
+  startTick: number;
+  lengthTicks: number;
+  loopEnabled: boolean;
+  points: { tick: number; value: number; curve?: string }[];
+  name?: string;
+  colorToken?: string;
+}
+
+export interface GraphMacroAutomationLane {
+  laneId: string;
+  macroNodeId: string;
+  target: string;
+  visible: boolean;
+  clips: GraphMacroAutomationClip[];
+  targetUnavailable?: boolean;
+}
+
 export interface GraphStateDocument {
   schemaVersion: number;
   trackId: string;
@@ -98,6 +117,8 @@ export interface GraphStateDocument {
     y?: number;
     zoom?: number;
   };
+  // FXG.4-h — parent-attached macro automation lanes (one per macro node).
+  macroAutomationLanes?: GraphMacroAutomationLane[];
 }
 
 export interface GraphStateViewport {
@@ -199,6 +220,10 @@ interface GraphStatePreviewProps {
   onRedoGraphEdit?: () => void;
   // FXG.4-g — per-link Bezier mapping editor
   onUpdateParameterEdgeMapping?: (edgeId: string, mappingPatch: unknown) => void;
+  // FXG.4-h — parent-attached macro automation lane actions (macro nodes only)
+  onShowMacroAutomationLane?: (macroNodeId: string) => void;
+  onHideMacroAutomationLane?: (macroNodeId: string) => void;
+  onCreateMacroAutomationClip?: (macroNodeId: string) => void;
 }
 
 const NODE_WIDTH = 148;
@@ -1253,6 +1278,10 @@ export function GraphParameterContextMenu({
   onToggleParameter,
   onEdit,
   onRemove,
+  macroAutomation = null,
+  onShowAutomationLane,
+  onHideAutomationLane,
+  onCreateAutomationClip,
 }: {
   node: PositionedNode;
   x: number;
@@ -1266,7 +1295,76 @@ export function GraphParameterContextMenu({
   onToggleParameter?: (parameter: GraphEffectParameterDescriptor) => void;
   onEdit?: () => void;
   onRemove?: () => void;
+  // FXG.4-h — macro automation lane state + actions (macro nodes only)
+  macroAutomation?: { exists: boolean; visible: boolean; clipCount: number } | null;
+  onShowAutomationLane?: () => void;
+  onHideAutomationLane?: () => void;
+  onCreateAutomationClip?: () => void;
 }) {
+  // FXG.4-h — Macro nodes get an Automation menu instead of the effect parameter
+  // exposure menu. The lane is parent-attached (lives in this track's graphState);
+  // these actions show/hide it and create automation clips bound to this macro.
+  if (node.type === 'macro') {
+    const laneVisible = macroAutomation?.exists ? macroAutomation.visible : false;
+    return (
+      <div
+        className="xleth-graph-state-preview__context-menu"
+        role="menu"
+        aria-label={`${node.label} node menu`}
+        style={{ left: x, top: y }}
+        onPointerDown={(event) => event.stopPropagation()}
+        onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }}
+      >
+        <div className="xleth-graph-state-preview__context-title">{node.label}</div>
+        <button
+          className="xleth-graph-state-preview__context-item"
+          type="button"
+          role="menuitem"
+          disabled={!canRemove}
+          onClick={onRemove}
+        >
+          Remove
+        </button>
+        <div className="xleth-graph-state-preview__context-section">
+          <div className="xleth-graph-state-preview__context-section-title">
+            Automation
+          </div>
+          <button
+            className="xleth-graph-state-preview__context-item"
+            type="button"
+            role="menuitemcheckbox"
+            aria-checked={laneVisible}
+            disabled={!onShowAutomationLane && !onHideAutomationLane}
+            onClick={laneVisible ? onHideAutomationLane : onShowAutomationLane}
+          >
+            <span className="xleth-graph-state-preview__parameter-check" aria-hidden="true">
+              {laneVisible ? 'On' : ''}
+            </span>
+            <span className="xleth-graph-state-preview__parameter-name">
+              {laneVisible ? 'Hide Automation Lane' : 'Show Automation Lane'}
+            </span>
+          </button>
+          <button
+            className="xleth-graph-state-preview__context-item"
+            type="button"
+            role="menuitem"
+            disabled={!onCreateAutomationClip}
+            onClick={onCreateAutomationClip}
+          >
+            Create Automation Clip
+          </button>
+          {macroAutomation?.exists && (
+            <div className="xleth-graph-state-preview__context-empty">
+              {macroAutomation.clipCount === 1
+                ? '1 automation clip'
+                : `${macroAutomation.clipCount} automation clips`}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   const parameters = result?.ok ? result.parameters ?? [] : [];
   const parameterGroups = buildExposeParameterMenuGroups(parameters, {
     pluginId: node.pluginId,
@@ -1421,6 +1519,9 @@ export default function GraphStatePreview({
   onUndoGraphEdit,
   onRedoGraphEdit,
   onUpdateParameterEdgeMapping,
+  onShowMacroAutomationLane,
+  onHideMacroAutomationLane,
+  onCreateMacroAutomationClip,
 }: GraphStatePreviewProps) {
   const viewportRef = React.useRef<HTMLDivElement | null>(null);
   const canvasRef = React.useRef<HTMLDivElement | null>(null);
@@ -1504,6 +1605,12 @@ export default function GraphStatePreview({
     trackId != null &&
     typeof fetchGraphEffectParameters === 'function' &&
     typeof onToggleParameterPort === 'function';
+  // FXG.4-h — macro automation context-menu actions are available when the panel
+  // wires any of the lane callbacks (graph mode only).
+  const canMacroAutomation =
+    typeof onShowMacroAutomationLane === 'function' ||
+    typeof onHideMacroAutomationLane === 'function' ||
+    typeof onCreateMacroAutomationClip === 'function';
   const canUseGraphHistory =
     typeof onUndoGraphEdit === 'function' || typeof onRedoGraphEdit === 'function';
   const showToolbar = canEditViewport || canAddNode || canAddMacro || canUseGraphHistory;
@@ -1599,7 +1706,11 @@ export default function GraphStatePreview({
     event: React.MouseEvent<HTMLDivElement>,
     node: PositionedNode,
   ) => {
-    if (node.type !== 'effect' || node.virtual) return;
+    // FXG.4-h — effect nodes open the parameter-exposure menu; macro nodes open the
+    // automation menu. Other node types (Track I/O) have no menu.
+    const isEffect = node.type === 'effect';
+    const isMacro = node.type === 'macro';
+    if ((!isEffect && !isMacro) || node.virtual) return;
     event.preventDefault();
     event.stopPropagation();
     setContextMenu({
@@ -1608,6 +1719,24 @@ export default function GraphStatePreview({
       y: event.clientY,
     });
   }, []);
+
+  const handleShowAutomationLane = React.useCallback(() => {
+    const node = contextMenu?.node;
+    closeContextMenu();
+    if (node) onShowMacroAutomationLane?.(node.id);
+  }, [closeContextMenu, contextMenu?.node, onShowMacroAutomationLane]);
+
+  const handleHideAutomationLane = React.useCallback(() => {
+    const node = contextMenu?.node;
+    closeContextMenu();
+    if (node) onHideMacroAutomationLane?.(node.id);
+  }, [closeContextMenu, contextMenu?.node, onHideMacroAutomationLane]);
+
+  const handleCreateAutomationClip = React.useCallback(() => {
+    const node = contextMenu?.node;
+    closeContextMenu();
+    if (node) onCreateMacroAutomationClip?.(node.id);
+  }, [closeContextMenu, contextMenu?.node, onCreateMacroAutomationClip]);
 
   const handleContextEdit = React.useCallback(() => {
     const node = contextMenu?.node;
@@ -2030,7 +2159,7 @@ export default function GraphStatePreview({
                   onConnectPointerMove={canConnect || canConnectParameters ? handleConnectPointerMove : undefined}
                   onConnectPointerUp={canConnect || canConnectParameters ? handleConnectPointerUp : undefined}
                   onConnectPointerCancel={canConnect || canConnectParameters ? resetConnect : undefined}
-                  onNodeContextMenu={canExposeParameters ? handleNodeContextMenu : undefined}
+                  onNodeContextMenu={(canExposeParameters || canMacroAutomation) ? handleNodeContextMenu : undefined}
                   onRemove={canRemoveNode ? onRemoveNode : undefined}
                   onEdit={canEditNode ? onEditNode : undefined}
                   onMacroValueCommit={onUpdateMacroValue}
@@ -2109,6 +2238,20 @@ export default function GraphStatePreview({
               onToggleParameter={canExposeParameters ? handleToggleParameter : undefined}
               onEdit={handleContextEdit}
               onRemove={handleContextRemove}
+              macroAutomation={(() => {
+                if (contextMenu.node.type !== 'macro') return null;
+                const lane = Array.isArray(graphState?.macroAutomationLanes)
+                  ? graphState.macroAutomationLanes.find((l) => l.macroNodeId === contextMenu.node.id)
+                  : undefined;
+                return {
+                  exists: !!lane,
+                  visible: lane ? lane.visible !== false : false,
+                  clipCount: lane ? lane.clips.length : 0,
+                };
+              })()}
+              onShowAutomationLane={onShowMacroAutomationLane ? handleShowAutomationLane : undefined}
+              onHideAutomationLane={onHideMacroAutomationLane ? handleHideAutomationLane : undefined}
+              onCreateAutomationClip={onCreateMacroAutomationClip ? handleCreateAutomationClip : undefined}
             />
           )}
           {mappingEditorState && canEditMappings && (() => {

@@ -143,6 +143,9 @@ export interface FxGraphPanelContentProps {
   onUndoGraphEdit?: () => void;
   onRedoGraphEdit?: () => void;
   onUpdateParameterEdgeMapping?: (edgeId: string, mappingPatch: unknown) => void;
+  onShowMacroAutomationLane?: (macroNodeId: string) => void;
+  onHideMacroAutomationLane?: (macroNodeId: string) => void;
+  onCreateMacroAutomationClip?: (macroNodeId: string) => void;
   graphRuntimeStatus?: { ok?: boolean; reason?: string; mode?: string } | null;
   graphActionNotice?: string | null;
   conversionError?: string | null;
@@ -212,6 +215,9 @@ export function FxGraphPanelContent({
   onUndoGraphEdit,
   onRedoGraphEdit,
   onUpdateParameterEdgeMapping,
+  onShowMacroAutomationLane,
+  onHideMacroAutomationLane,
+  onCreateMacroAutomationClip,
   graphRuntimeStatus = null,
   graphActionNotice = null,
   conversionError = null,
@@ -331,6 +337,9 @@ export function FxGraphPanelContent({
               onUndoGraphEdit={graphModeActive ? onUndoGraphEdit : undefined}
               onRedoGraphEdit={graphModeActive ? onRedoGraphEdit : undefined}
               onUpdateParameterEdgeMapping={graphModeActive ? onUpdateParameterEdgeMapping : undefined}
+              onShowMacroAutomationLane={graphModeActive ? onShowMacroAutomationLane : undefined}
+              onHideMacroAutomationLane={graphModeActive ? onHideMacroAutomationLane : undefined}
+              onCreateMacroAutomationClip={graphModeActive ? onCreateMacroAutomationClip : undefined}
             />
           )}
 
@@ -489,6 +498,9 @@ export default function FxGraphPanel() {
   const disconnectGraphEdgeForTrack = useEffectChainStore((state) => state.disconnectGraphEdgeForTrack);
   const updateGraphMacroValueForTrack = useEffectChainStore((state) => state.updateGraphMacroValueForTrack);
   const renameGraphMacroNodeForTrack = useEffectChainStore((state) => state.renameGraphMacroNodeForTrack);
+  const showMacroAutomationLaneForTrack = useEffectChainStore((state) => state.showMacroAutomationLaneForTrack);
+  const hideMacroAutomationLaneForTrack = useEffectChainStore((state) => state.hideMacroAutomationLaneForTrack);
+  const createMacroAutomationClipForTrack = useEffectChainStore((state) => state.createMacroAutomationClipForTrack);
   const toggleGraphNodeParameterPortForTrack = useEffectChainStore((state) => state.toggleGraphNodeParameterPortForTrack);
   const updateGraphParameterEdgeMappingForTrack = useEffectChainStore((state) => state.updateGraphParameterEdgeMappingForTrack);
   const fetchGraphEffectParameters = useEffectChainStore((state) => state.fetchGraphEffectParameters);
@@ -596,6 +608,36 @@ export default function FxGraphPanel() {
     const result = await renameGraphMacroNodeForTrack(selectedTrack.id, nodeId, label);
     setGraphActionNotice(describeGraphMutationResult(result));
   }, [fxMode, renameGraphMacroNodeForTrack, selectedTrack?.id]);
+
+  // FXG.4-h — parent-attached macro automation lane actions from the macro node menu.
+  const handleShowMacroAutomationLane = useCallback(async (macroNodeId: string) => {
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    const result = await showMacroAutomationLaneForTrack(selectedTrack.id, macroNodeId);
+    setGraphActionNotice(describeGraphMutationResult(result));
+  }, [fxMode, selectedTrack?.id, showMacroAutomationLaneForTrack]);
+
+  const handleHideMacroAutomationLane = useCallback(async (macroNodeId: string) => {
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    const result = await hideMacroAutomationLaneForTrack(selectedTrack.id, macroNodeId);
+    setGraphActionNotice(describeGraphMutationResult(result));
+  }, [fxMode, hideMacroAutomationLaneForTrack, selectedTrack?.id]);
+
+  const handleCreateMacroAutomationClip = useCallback(async (macroNodeId: string) => {
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    // Place the new clip after the last clip already on this macro's lane so the
+    // default action never overlaps (same-lane overlap is rejected in v1). One bar
+    // long at PPQ 960 (4 beats = 3840 ticks).
+    const lane = graphState?.macroAutomationLanes?.find((l) => l.macroNodeId === macroNodeId);
+    const startTick = lane && lane.clips.length > 0
+      ? Math.max(...lane.clips.map((c) => c.startTick + c.lengthTicks))
+      : 0;
+    const result = await createMacroAutomationClipForTrack(
+      selectedTrack.id,
+      macroNodeId,
+      { startTick, lengthTicks: 3840 },
+    );
+    setGraphActionNotice(describeGraphMutationResult(result));
+  }, [createMacroAutomationClipForTrack, fxMode, graphState?.macroAutomationLanes, selectedTrack?.id]);
 
   const handleUpdateParameterEdgeMapping = useCallback(async (edgeId: string, mappingPatch: unknown) => {
     if (selectedTrack?.id == null || fxMode !== 'graph') return;
@@ -777,6 +819,9 @@ export default function FxGraphPanel() {
         onUndoGraphEdit={handleUndoGraphEdit}
         onRedoGraphEdit={handleRedoGraphEdit}
         onUpdateParameterEdgeMapping={handleUpdateParameterEdgeMapping}
+        onShowMacroAutomationLane={handleShowMacroAutomationLane}
+        onHideMacroAutomationLane={handleHideMacroAutomationLane}
+        onCreateMacroAutomationClip={handleCreateMacroAutomationClip}
         graphRuntimeStatus={graphRuntimeStatus}
         graphActionNotice={graphActionNotice}
         conversionError={conversionError}

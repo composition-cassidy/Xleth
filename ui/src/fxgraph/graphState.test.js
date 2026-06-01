@@ -2585,4 +2585,66 @@ describe('FXG.4-g Bezier mapping', () => {
       expect(w1.writes[0].value).toBeCloseTo(0)
     })
   })
+
+  // FXG.4-h — parent-attached macro automation lanes round-trip through load/save.
+  describe('macroAutomationLanes integration', () => {
+    function graphWithMacro(extra = {}) {
+      return {
+        schemaVersion: GRAPH_STATE_SCHEMA_VERSION,
+        trackId: '7',
+        nodes: [
+          { id: 'in', type: 'trackInput', position: { x: 0, y: 0 }, data: {} },
+          { id: 'M1', type: 'macro', position: { x: 100, y: 0 }, data: { label: 'Macro 1', normalizedValue: 0.5 } },
+          { id: 'out', type: 'trackOutput', position: { x: 200, y: 0 }, data: {} },
+        ],
+        edges: [],
+        ...extra,
+      }
+    }
+
+    it('defaults to [] for old projects without the field', () => {
+      const result = loadGraphState(graphWithMacro(), '7')
+      expect(result.status).toBe('valid')
+      expect(result.graphState.macroAutomationLanes).toEqual([])
+    })
+
+    it('createEmptyGraphState seeds an empty lane array', () => {
+      expect(createEmptyGraphState('7').macroAutomationLanes).toEqual([])
+    })
+
+    it('preserves lanes/clips/loop across save → load round-trip', () => {
+      const raw = graphWithMacro({
+        macroAutomationLanes: [{
+          laneId: 'L1',
+          macroNodeId: 'M1',
+          visible: true,
+          clips: [{
+            clipId: 'C1',
+            startTick: 480,
+            lengthTicks: 960,
+            loopEnabled: true,
+            points: [{ tick: 0, value: 0.2 }, { tick: 960, value: 0.9 }],
+          }],
+        }],
+      })
+      const loaded = loadGraphState(raw, '7')
+      expect(loaded.status).toBe('valid')
+      const saved = saveGraphState(loaded.graphState)
+      const reloaded = loadGraphState(saved, '7')
+      const lane = reloaded.graphState.macroAutomationLanes[0]
+      expect(lane.macroNodeId).toBe('M1')
+      expect(lane.clips[0].loopEnabled).toBe(true)
+      expect(lane.clips[0].points).toHaveLength(2)
+      expect(lane.clips[0].points[1].value).toBeCloseTo(0.9)
+    })
+
+    it('flags a lane whose macro no longer exists as orphaned (never crashes)', () => {
+      const raw = graphWithMacro({
+        macroAutomationLanes: [{ laneId: 'L1', macroNodeId: 'GONE', clips: [] }],
+      })
+      const loaded = loadGraphState(raw, '7')
+      expect(loaded.status).toBe('valid')
+      expect(loaded.graphState.macroAutomationLanes[0].targetUnavailable).toBe(true)
+    })
+  })
 })

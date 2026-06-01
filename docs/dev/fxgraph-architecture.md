@@ -539,6 +539,116 @@ graph-to-chain return, audio-rate or sample-accurate modulation, smoothing, and 
 Mapping range editing in the UI is also deferred — the mapping data and runtime drive exist, but
 this phase ships only the default linear mapping with no per-edge range editor.
 
+## Parent-Attached Macro Automation Lanes (FXG.4-h)
+
+FXG.4-h adds timeline automation for a Macro node's `normalizedValue`. The automation is
+**parent-attached**: lanes are not free-floating timeline tracks — they belong to one parent track
+and one macro node, and they visually behave like child lanes shown below that parent track.
+
+### Runtime flow
+
+```
+playback tick
+  -> evaluate the active automation clip on the parent track's macro lane
+  -> produce Macro normalizedValue 0.0..1.0
+  -> existing Macro -> Parameter edges apply per-link mapping/Bezier (FXG.4-e/f/g)
+  -> setGraphEffectParameterNormalized writes the stock/VST parameter (FXG.4-a)
+```
+
+The automation clip **never** writes plugin parameters directly. It only sets the Macro value at
+runtime; the existing macro→parameter edge path does the rest. This is control-rate / timeline-rate
+(not sample-accurate, not on the audio thread), matching the renderer-side FXG.4-e/f macro drive.
+
+### Data ownership and binding
+
+Timeline clip data normally lives in the C++ engine. Because FXG.4-h is renderer-only (no native /
+bridge / main / preload changes), and because the only renderer channel that round-trips with the
+project is `graphState` (persisted per track via `timeline.setTrackGraphState`) — which is also where
+the Macro node itself lives — macro automation lanes/clips are stored as a top-level
+`graphState.macroAutomationLanes` array. This is **not** generic timeline data and never mixes with
+audio/video/sample clips. The Macro node stays a clean `0..1` source; automation is a sibling field,
+never stored on the node.
+
+Lane identity (binds to):
+
+```
+{ parentTrackId: graphState.trackId, macroNodeId, target: 'normalizedValue' }
+```
+
+Clip identity (binds to):
+
+```
+{ parentTrackId, macroNodeId, laneId, clipId, startTick, lengthTicks, points, loopEnabled }
+```
+
+`parentTrackId` is always the owning `graphState.trackId` — never stored redundantly (single source
+of truth), exposed via `getMacroAutomationClipBinding`. Raw engine node ids and plugin parameter
+targets are never stored on automation clips.
+
+### Lane / clip rules
+
+- One lane per macro node; multiple macro lanes may live under one parent track.
+- Clips on the **same lane** may **not** overlap (rejected in v1, `clip_overlap`); load-time
+  normalization drops later overlappers (earliest wins).
+- Clips on **different** macro lanes (or different tracks) may overlap freely — they drive different
+  macros.
+- A clip holds ≥2 points (`{ tick, value, curve }`); `tick` is clip-local, `value` is `0..1`.
+  Segments are linear by default; a point's `curve: 'bezier'` shapes its outgoing segment using the
+  FXG.4-g ease curve.
+- **Empty space holds the last value.** After a clip ends at e.g. 80%, the macro stays at 80% until a
+  later clip on the same lane takes over. With no earlier clip, the macro's saved/manual value is
+  used. Clip end never snaps to 0.0 or to a default.
+- **Loop is in-bounds only.** `loopEnabled` repeats the material between the first and last automation
+  point, but only while playback is inside the clip's own `[startTick, startTick+lengthTicks)` region.
+  Outside the clip the loop does nothing. Automation clips are not LFOs.
+- **Copy/paste is lane-compatible only.** A clip may only be pasted into the same macro's lane on the
+  same track. Cross-macro, cross-track, and macro↔normal-lane pastes are rejected
+  (`incompatible_lane`). Automation clips never silently retarget.
+
+### Missing target handling
+
+If a Macro node is deleted, its lane is **preserved but flagged** `targetUnavailable: true` (orphaned)
+on the next `loadGraphState` — user data is never auto-deleted. Evaluation skips orphaned lanes, so a
+missing macro is never driven and never crashes. The user may explicitly remove the lane.
+
+### Modules
+
+- `ui/src/fxgraph/macroAutomation.js` — pure model: normalization (called from
+  `loadGraphState`), lane/clip/point mutation helpers (`showMacroAutomationLane`,
+  `createMacroAutomationClip`, `move/resize/delete/paste`, point editing), overlap detection, and
+  evaluation (`evaluateMacroAutomationForMacro`, hold-last-value, in-bounds loop). Reuses FXG.4-g
+  `evaluateBezierCurve`/`createDefaultBezierCurve` at call time.
+- `ui/src/stores/effectChainStore.js` — graph-mode-gated store actions
+  (`showMacroAutomationLaneForTrack`, `createMacroAutomationClipForTrack`, …) that persist via
+  `timeline.setTrackGraphState`, record graph-owned undo transactions, and never sync audio runtime.
+  `applyMacroAutomationAtTick(globalTick)` evaluates every graph-mode track's lanes and drives the
+  macro→parameter edges through the existing FXG.4-e/f path; the session-only
+  `macroAutomationLastValues` cache suppresses redundant control-rate writes (no graphState churn).
+- `ui/src/fxgraph/macroAutomationPlayback.js` — subscribes to the shared transport poller, converts
+  position→tick (`positionMsToTick`, PPQ 960), and calls `applyMacroAutomationAtTick` each update,
+  resetting the cache on play/stop transitions. Mounted once from `TimelineView`.
+- UI: right-clicking a Macro node in the FX Graph (`GraphStatePreview.tsx`/`FxGraphPanel.tsx`) opens
+  an Automation menu — Show/Hide Automation Lane (checkable) and Create Automation Clip — bound to
+  the exact parent track + macro node. No hardcoded colors; uses existing tokenized menu styles.
+
+### Persistence / undo
+
+Lanes and clips persist with the project through the existing graphState round-trip. Old projects
+without the field load as `[]`. All lane/clip/point edits participate in graph-owned undo/redo via
+`recordGraphEditTransaction` (snapshot-based, session-only). Runtime playback never dirties the
+project or the persisted macro value.
+
+### Deferred after FXG.4-h
+
+On-timeline-canvas child-lane rendering and on-canvas interactive clip drag/resize/point editing are
+deferred: the timeline body is a single fixed-`TRACK_HEIGHT`-per-track canvas (≈64 coupling sites),
+so variable-height parent+child lane groups are a separate, larger refactor. The lane/clip/point
+lifecycle, binding, overlap rules, copy/paste compatibility, loop, hold-last-value, persistence,
+undo/redo, and playback drive are all real and exercised by tests; lane/clip creation is driven from
+the FX Graph macro context menu. Also still deferred: direct plugin-parameter automation clips,
+LFOs/envelopes/peak followers, buses, sample-accurate automation, and graph-to-chain return. Mixer
+Chain behavior is unchanged and `effectChains` are not mutated.
+
 ## Engine execution boundary
 
 Graph cables (`graphState` edges) affect audio only through the graph sync API

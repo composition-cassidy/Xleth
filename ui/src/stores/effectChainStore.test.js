@@ -2423,6 +2423,145 @@ describe('effectChainStore FX mode safety gate', () => {
     const result = await useEffectChainStore.getState().fetchGraphEffectParameters('7', 'effect-1')
     expect(result).toEqual({ ok: false, reason: 'engine_unavailable' })
   })
+
+  // ── FXG.4-h parent-attached macro automation lanes ────────────────────────
+  describe('macro automation lanes', () => {
+    const idFactory = () => 'fixed-clip-id'
+
+    it('creates a lane + clip bound to the parent track and macro, persists, records undo, no audio sync', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      seedGraphMode(useEffectChainStore, makeMacroLinkGraphState('7'))
+
+      const result = await useEffectChainStore.getState()
+        .createMacroAutomationClipForTrack('7', 'macro-a', { startTick: 0, lengthTicks: 960 }, { idFactory })
+
+      expect(result.ok).toBe(true)
+      const state = useEffectChainStore.getState()
+      const lane = state.graphStates['7'].macroAutomationLanes[0]
+      expect(lane.macroNodeId).toBe('macro-a')
+      expect(lane.clips[0].startTick).toBe(0)
+      expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, state.graphStates['7'])
+      expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+      expect(state.graphHistories['7'].undoStack.at(-1)).toMatchObject({ label: 'create_macro_automation_clip' })
+    })
+
+    it('supports multiple macro lanes under one parent track', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      const gs = makeMacroLinkGraphState('7')
+      gs.nodes.push({ id: 'macro-b', type: 'macro', position: { x: 80, y: 320 }, data: { label: 'Macro 2', normalizedValue: 0.2 } })
+      seedGraphMode(useEffectChainStore, gs)
+
+      await useEffectChainStore.getState().showMacroAutomationLaneForTrack('7', 'macro-a')
+      await useEffectChainStore.getState().showMacroAutomationLaneForTrack('7', 'macro-b')
+
+      const lanes = useEffectChainStore.getState().graphStates['7'].macroAutomationLanes
+      expect(lanes.map((l) => l.macroNodeId).sort()).toEqual(['macro-a', 'macro-b'])
+    })
+
+    it('rejects same-lane overlapping clips', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      seedGraphMode(useEffectChainStore, makeMacroLinkGraphState('7'))
+      await useEffectChainStore.getState()
+        .createMacroAutomationClipForTrack('7', 'macro-a', { startTick: 0, lengthTicks: 960 })
+      const overlap = await useEffectChainStore.getState()
+        .createMacroAutomationClipForTrack('7', 'macro-a', { startTick: 480, lengthTicks: 960 })
+      expect(overlap).toMatchObject({ ok: false, reason: 'clip_overlap' })
+    })
+
+    it('hide keeps clips; gated to graph mode', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      seedGraphMode(useEffectChainStore, makeMacroLinkGraphState('7'))
+      const created = await useEffectChainStore.getState()
+        .createMacroAutomationClipForTrack('7', 'macro-a', { startTick: 0, lengthTicks: 960 })
+      await useEffectChainStore.getState().hideMacroAutomationLaneForTrack('7', 'macro-a')
+      const lane = useEffectChainStore.getState().graphStates['7'].macroAutomationLanes[0]
+      expect(lane.visible).toBe(false)
+      expect(lane.clips.some((c) => c.clipId === created.clipId)).toBe(true)
+
+      useEffectChainStore.setState({ fxModes: { '7': 'chain' } })
+      const blocked = await useEffectChainStore.getState()
+        .createMacroAutomationClipForTrack('7', 'macro-a', { startTick: 2000, lengthTicks: 480 })
+      expect(blocked).toMatchObject({ ok: false, reason: 'not_graph_mode' })
+    })
+
+    it('copy/paste is lane-compatible only', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      const gs = makeMacroLinkGraphState('7')
+      gs.nodes.push({ id: 'macro-b', type: 'macro', position: { x: 80, y: 320 }, data: { label: 'Macro 2', normalizedValue: 0 } })
+      seedGraphMode(useEffectChainStore, gs)
+
+      const created = await useEffectChainStore.getState()
+        .createMacroAutomationClipForTrack('7', 'macro-a', { startTick: 0, lengthTicks: 480 })
+      const payload = useEffectChainStore.getState().buildMacroAutomationClipCopyPayload('7', created.clipId)
+      expect(payload.sourceMacroNodeId).toBe('macro-a')
+
+      const wrongLane = await useEffectChainStore.getState()
+        .pasteMacroAutomationClipForTrack('7', 'macro-b', payload, { startTick: 0 })
+      expect(wrongLane).toMatchObject({ ok: false, reason: 'incompatible_lane' })
+
+      const sameLane = await useEffectChainStore.getState()
+        .pasteMacroAutomationClipForTrack('7', 'macro-a', payload, { startTick: 1000 })
+      expect(sameLane.ok).toBe(true)
+      expect(useEffectChainStore.getState().graphStates['7'].macroAutomationLanes
+        .find((l) => l.macroNodeId === 'macro-a').clips).toHaveLength(2)
+    })
+
+    it('removing a macro node orphans its lane safely (no crash, evaluation skips)', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      seedGraphMode(useEffectChainStore, makeMacroLinkGraphState('7'))
+      await useEffectChainStore.getState()
+        .createMacroAutomationClipForTrack('7', 'macro-a', { startTick: 0, lengthTicks: 960 })
+
+      const removed = await useEffectChainStore.getState().removeGraphNodeForTrack('7', 'macro-a')
+      expect(removed.ok).toBe(true)
+      const lane = useEffectChainStore.getState().graphStates['7'].macroAutomationLanes[0]
+      expect(lane.targetUnavailable).toBe(true)
+
+      // Playback evaluation must not drive a missing macro.
+      audio.setGraphEffectParameterNormalized.mockClear()
+      const applied = await useEffectChainStore.getState().applyMacroAutomationAtTick(480)
+      expect(applied.ok).toBe(true)
+      expect(applied.driven).toHaveLength(0)
+    })
+
+    it('applyMacroAutomationAtTick drives the macro parameter edge, not the plugin directly', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      seedGraphMode(useEffectChainStore, makeLinkedMacroGraphState('7'))
+      // Build a ramp clip 0→1 over local ticks 0..960 covering global ticks 0..960.
+      const created = await useEffectChainStore.getState()
+        .createMacroAutomationClipForTrack('7', 'macro-a', { startTick: 0, lengthTicks: 960 })
+      await useEffectChainStore.getState()
+        .moveMacroAutomationPointForTrack('7', created.clipId, 0, { value: 0 })
+      await useEffectChainStore.getState()
+        .moveMacroAutomationPointForTrack('7', created.clipId, 1, { value: 1 })
+
+      audio.setGraphEffectParameterNormalized.mockClear()
+      const result = await useEffectChainStore.getState().applyMacroAutomationAtTick(480)
+      expect(result.driven).toHaveLength(1)
+      expect(result.driven[0]).toMatchObject({ trackId: '7', macroNodeId: 'macro-a' })
+      // The drive goes through setGraphEffectParameterNormalized for the linked 'mix' param.
+      expect(audio.setGraphEffectParameterNormalized).toHaveBeenCalledWith(7, 'effect-1', 'mix', expect.any(Number))
+    })
+
+    it('applyMacroAutomationAtTick suppresses redundant drives via the last-value cache', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      seedGraphMode(useEffectChainStore, makeLinkedMacroGraphState('7'))
+      // Flat clip → same value at every tick.
+      await useEffectChainStore.getState()
+        .createMacroAutomationClipForTrack('7', 'macro-a', { startTick: 0, lengthTicks: 960, value: 0.5 })
+
+      audio.setGraphEffectParameterNormalized.mockClear()
+      await useEffectChainStore.getState().applyMacroAutomationAtTick(100)
+      const firstCalls = audio.setGraphEffectParameterNormalized.mock.calls.length
+      expect(firstCalls).toBeGreaterThan(0)
+      await useEffectChainStore.getState().applyMacroAutomationAtTick(200) // same flat value
+      expect(audio.setGraphEffectParameterNormalized.mock.calls.length).toBe(firstCalls)
+
+      useEffectChainStore.getState().resetMacroAutomationRuntime()
+      await useEffectChainStore.getState().applyMacroAutomationAtTick(300)
+      expect(audio.setGraphEffectParameterNormalized.mock.calls.length).toBeGreaterThan(firstCalls)
+    })
+  })
 })
 
 // ---------------------------------------------------------------------------
