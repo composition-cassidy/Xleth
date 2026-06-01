@@ -6831,23 +6831,34 @@ html.fx-drag-active * {
   flex: 1;
   min-height: 0;
   flex-direction: column;
-  gap: 4px;
+  justify-content: space-between;
+  gap: 6px;
   padding: 6px;
   border: 1px solid var(--theme-border-subtle);
   border-radius: var(--radius-sm);
   background: var(--theme-bg-surface);
-  overflow: hidden;
+  overflow: visible;
+}
+
+.effect-chain-shell--active {
+  background: var(--theme-accent-bg-subtle);
+  border-color: var(--theme-accent);
 }
 
 .effect-chain-shell-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
+  gap: 4px;
   min-height: 14px;
+  min-width: 0;
 }
 
 .effect-chain-shell-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.05em;
@@ -6856,8 +6867,11 @@ html.fx-drag-active * {
 }
 
 .effect-chain-shell-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   flex-shrink: 0;
-  padding: 2px 5px;
+  padding: 2px 4px;
   border: 1px solid var(--theme-accent);
   border-radius: 2px;
   color: var(--theme-accent);
@@ -6868,15 +6882,16 @@ html.fx-drag-active * {
   text-transform: uppercase;
 }
 
-.effect-chain-shell-copy {
-  margin: 0;
-  font-size: 8px;
-  line-height: 1.25;
-  color: var(--theme-text-subtle);
+.effect-chain-shell-status-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: currentColor;
 }
 
 .effect-chain-shell-action {
-  align-self: flex-start;
+  align-self: stretch;
+  min-height: 20px;
   padding: 3px 6px;
   border: 1px solid var(--theme-border-subtle);
   border-radius: var(--radius-sm);
@@ -6885,6 +6900,15 @@ html.fx-drag-active * {
   font-size: 8px;
   font-weight: 700;
   line-height: 1;
+  cursor: pointer;
+  text-transform: uppercase;
+  transition: border-color var(--transition-fast), color var(--transition-fast), background var(--transition-fast);
+}
+
+.effect-chain-shell-action:hover {
+  border-color: var(--theme-accent);
+  color: var(--theme-text);
+  background: var(--theme-bg-primary);
 }
 
 .effect-chain-empty-btn {

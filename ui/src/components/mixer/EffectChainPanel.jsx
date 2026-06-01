@@ -18,11 +18,12 @@ export { EFFECT_CATEGORIES, sortRackVstPlugins }
 const EMPTY_CHAIN = []
 export const VISIBLE_LIMIT = 4
 export const FX_GRAPH_ENTRY_TITLE = 'FX Graph'
-export const FX_GRAPH_ENTRY_LABEL = 'Workspace Ready'
+export const FX_GRAPH_ENTRY_LABEL = 'Ready'
 export const FX_GRAPH_ENTRY_MESSAGE = 'Open the FX Graph workspace to view graph status. Mixer Chain remains active.'
-export const FX_GRAPH_ACTIVE_TITLE = 'FX Graph Active'
-export const FX_GRAPH_ACTIVE_LABEL = 'Chain Locked'
-export const FX_GRAPH_ACTIVE_MESSAGE = 'This track is owned by FX Graph routing. Mixer Chain slot editing is locked.'
+export const FX_GRAPH_ACTIVE_TITLE = 'FX Graph'
+export const FX_GRAPH_ACTIVE_LABEL = 'Active'
+export const FX_GRAPH_ACTIVE_MESSAGE =
+  'FX Graph owns this track. Open the graph workspace to edit routing and effects.'
 export const FX_GRAPH_SHELL_BUTTON_TITLE =
   'Open FX Graph workspace. The legacy graph editor is disabled.'
 
@@ -98,26 +99,34 @@ export function EffectChainGraphShell({
   chainLabel,
   onOpenWorkspace = () => openFxGraphWorkspace(),
 }) {
+  const title = active ? FX_GRAPH_ACTIVE_TITLE : FX_GRAPH_ENTRY_TITLE
+  const status = active ? FX_GRAPH_ACTIVE_LABEL : FX_GRAPH_ENTRY_LABEL
+  const helpText = active ? FX_GRAPH_ACTIVE_MESSAGE : FX_GRAPH_ENTRY_MESSAGE
+
   return (
-    <div className="effect-chain-shell" role="note" aria-label={`${chainLabel} graph shell`}>
+    <div
+      className={`effect-chain-shell${active ? ' effect-chain-shell--active' : ''}`}
+      role={active ? 'status' : 'note'}
+      aria-label={`${chainLabel}: ${helpText}`}
+      title={helpText}
+    >
       <div className="effect-chain-shell-header">
         <div className="effect-chain-shell-title">
-          {active ? FX_GRAPH_ACTIVE_TITLE : FX_GRAPH_ENTRY_TITLE}
+          {title}
         </div>
         <div className="effect-chain-shell-badge">
-          {active ? FX_GRAPH_ACTIVE_LABEL : FX_GRAPH_ENTRY_LABEL}
+          <span className="effect-chain-shell-status-dot" aria-hidden="true" />
+          {status}
         </div>
       </div>
-      <p className="effect-chain-shell-copy">
-        {active ? FX_GRAPH_ACTIVE_MESSAGE : FX_GRAPH_ENTRY_MESSAGE}
-      </p>
       <button
         className="effect-chain-shell-action"
         type="button"
         onClick={onOpenWorkspace}
-        title="Open FX Graph workspace"
+        title={helpText}
+        aria-label={`Open FX Graph workspace for ${chainLabel}. ${helpText}`}
       >
-        Open FX Graph workspace
+        Open
       </button>
     </div>
   )
