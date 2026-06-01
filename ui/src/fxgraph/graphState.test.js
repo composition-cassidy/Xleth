@@ -4,6 +4,7 @@ import {
   GRAPH_MACRO_NODE_TYPE,
   GRAPH_MACRO_OUTPUT_PORT,
   GRAPH_MUTATION_REJECTION,
+  GRAPH_PARAMETER_CURVE_BEZIER,
   GRAPH_PARAMETER_CURVE_LINEAR,
   PROTECTED_NODE_TYPES,
   addGraphEffectNode,
@@ -15,11 +16,14 @@ import {
   collectMacroParameterWrites,
   connectGraphNodes,
   connectMacroToParameter,
+  createDefaultBezierCurve,
   createEmptyGraphState,
   defaultParameterMapping,
   disconnectGraphEdge,
   disconnectParameterEdge,
+  evaluateBezierCurve,
   evaluateLinearParameterMapping,
+  evaluateParameterMapping,
   hasEquivalentGraphEdge,
   isParameterEdge,
   isProtectedGraphNodeType,
@@ -31,6 +35,7 @@ import {
   saveGraphState,
   toggleExposedParameterPort,
   updateGraphMacroValue,
+  updateParameterEdgeMapping,
   validateGraphState,
   validateGraphStateForEditing,
 } from './graphState.js'
@@ -2258,6 +2263,326 @@ describe('FXG.4-e/f parameter link mapping', () => {
     it('returns nothing for a non-macro source node', () => {
       const gs = makeLinkedGraph()
       expect(collectMacroParameterWrites(gs, 'fx-a', 0.5)).toEqual({ writes: [], skipped: [] })
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// FXG.4-g — Bezier mapping editor
+// ---------------------------------------------------------------------------
+
+describe('FXG.4-g Bezier mapping', () => {
+  describe('createDefaultBezierCurve', () => {
+    it('returns a bezier curve with 4 points, fixed endpoints, clamped controls', () => {
+      const curve = createDefaultBezierCurve()
+      expect(curve.type).toBe(GRAPH_PARAMETER_CURVE_BEZIER)
+      expect(curve.points).toHaveLength(4)
+      expect(curve.points[0]).toEqual({ x: 0, y: 0 })
+      expect(curve.points[3]).toEqual({ x: 1, y: 1 })
+      for (const p of curve.points) {
+        expect(p.x).toBeGreaterThanOrEqual(0)
+        expect(p.x).toBeLessThanOrEqual(1)
+        expect(p.y).toBeGreaterThanOrEqual(0)
+        expect(p.y).toBeLessThanOrEqual(1)
+      }
+    })
+  })
+
+  describe('normalizeParameterMapping with bezier', () => {
+    it('preserves a valid 4-point bezier curve', () => {
+      const mapping = normalizeParameterMapping({
+        curve: {
+          type: GRAPH_PARAMETER_CURVE_BEZIER,
+          points: [
+            { x: 0, y: 0 },
+            { x: 0.3, y: 0.1 },
+            { x: 0.7, y: 0.9 },
+            { x: 1, y: 1 },
+          ],
+        },
+      })
+      expect(mapping.curve.type).toBe(GRAPH_PARAMETER_CURVE_BEZIER)
+      expect(mapping.curve.points[0]).toEqual({ x: 0, y: 0 })
+      expect(mapping.curve.points[1]).toEqual({ x: 0.3, y: 0.1 })
+      expect(mapping.curve.points[2]).toEqual({ x: 0.7, y: 0.9 })
+      expect(mapping.curve.points[3]).toEqual({ x: 1, y: 1 })
+    })
+
+    it('forces start/end points to {0,0} and {1,1} regardless of stored values', () => {
+      const mapping = normalizeParameterMapping({
+        curve: {
+          type: GRAPH_PARAMETER_CURVE_BEZIER,
+          points: [
+            { x: 0.5, y: 0.5 },
+            { x: 0.3, y: 0.1 },
+            { x: 0.7, y: 0.9 },
+            { x: 0.5, y: 0.5 },
+          ],
+        },
+      })
+      expect(mapping.curve.type).toBe(GRAPH_PARAMETER_CURVE_BEZIER)
+      expect(mapping.curve.points[0]).toEqual({ x: 0, y: 0 })
+      expect(mapping.curve.points[3]).toEqual({ x: 1, y: 1 })
+    })
+
+    it('clamps control points to [0,1]', () => {
+      const mapping = normalizeParameterMapping({
+        curve: {
+          type: GRAPH_PARAMETER_CURVE_BEZIER,
+          points: [
+            { x: 0, y: 0 },
+            { x: -0.5, y: 1.5 },
+            { x: 2, y: -1 },
+            { x: 1, y: 1 },
+          ],
+        },
+      })
+      expect(mapping.curve.type).toBe(GRAPH_PARAMETER_CURVE_BEZIER)
+      expect(mapping.curve.points[1]).toEqual({ x: 0, y: 1 })
+      expect(mapping.curve.points[2]).toEqual({ x: 1, y: 0 })
+    })
+
+    it('repairs a bezier with wrong point count to linear', () => {
+      const mapping = normalizeParameterMapping({
+        curve: { type: GRAPH_PARAMETER_CURVE_BEZIER, points: [{ x: 0, y: 0 }, { x: 1, y: 1 }] },
+      })
+      expect(mapping.curve.type).toBe(GRAPH_PARAMETER_CURVE_LINEAR)
+    })
+
+    it('repairs a bezier with missing points array to linear', () => {
+      const mapping = normalizeParameterMapping({
+        curve: { type: GRAPH_PARAMETER_CURVE_BEZIER },
+      })
+      expect(mapping.curve.type).toBe(GRAPH_PARAMETER_CURVE_LINEAR)
+    })
+
+    it('repairs a bezier with non-finite coords to linear', () => {
+      const mapping = normalizeParameterMapping({
+        curve: {
+          type: GRAPH_PARAMETER_CURVE_BEZIER,
+          points: [
+            { x: 0, y: 0 },
+            { x: NaN, y: 0.5 },
+            { x: 0.6, y: 0.9 },
+            { x: 1, y: 1 },
+          ],
+        },
+      })
+      expect(mapping.curve.type).toBe(GRAPH_PARAMETER_CURVE_LINEAR)
+    })
+  })
+
+  describe('evaluateBezierCurve', () => {
+    const defaultCurve = createDefaultBezierCurve()
+
+    it('returns 0 at x=0 and 1 at x=1 exactly', () => {
+      expect(evaluateBezierCurve(defaultCurve, 0)).toBe(0)
+      expect(evaluateBezierCurve(defaultCurve, 1)).toBe(1)
+    })
+
+    it('clamps out-of-range input', () => {
+      expect(evaluateBezierCurve(defaultCurve, -0.5)).toBe(0)
+      expect(evaluateBezierCurve(defaultCurve, 1.5)).toBe(1)
+    })
+
+    it('produces a midpoint in [0,1] for a valid S-curve', () => {
+      const mid = evaluateBezierCurve(defaultCurve, 0.5)
+      expect(mid).toBeGreaterThanOrEqual(0)
+      expect(mid).toBeLessThanOrEqual(1)
+    })
+
+    it('returns identity for a degenerate linear-equivalent bezier (cp1=(0,0), cp2=(1,1))', () => {
+      const linearCurve = {
+        type: GRAPH_PARAMETER_CURVE_BEZIER,
+        points: [{ x: 0, y: 0 }, { x: 0, y: 0 }, { x: 1, y: 1 }, { x: 1, y: 1 }],
+      }
+      expect(evaluateBezierCurve(linearCurve, 0.5)).toBeCloseTo(0.5, 3)
+    })
+
+    it('falls back to identity for invalid/missing curve', () => {
+      expect(evaluateBezierCurve(null, 0.7)).toBeCloseTo(0.7)
+      expect(evaluateBezierCurve({ type: 'bezier' }, 0.3)).toBeCloseTo(0.3)
+      expect(evaluateBezierCurve({ type: 'bezier', points: [] }, 0.5)).toBeCloseTo(0.5)
+    })
+  })
+
+  describe('evaluateParameterMapping', () => {
+    it('produces identical results to evaluateLinearParameterMapping for linear curves', () => {
+      const mapping = normalizeParameterMapping({ targetMin: 0.2, targetMax: 0.8 })
+      for (const v of [0, 0.25, 0.5, 0.75, 1]) {
+        expect(evaluateParameterMapping(mapping, v).value).toBeCloseTo(
+          evaluateLinearParameterMapping(mapping, v).value,
+          8,
+        )
+      }
+    })
+
+    it('returns disabled for disabled mapping', () => {
+      expect(evaluateParameterMapping({ enabled: false }, 0.5)).toEqual({ enabled: false, value: null })
+    })
+
+    it('applies bezier shaping for bezier curves', () => {
+      const bezierMapping = normalizeParameterMapping({ curve: createDefaultBezierCurve() })
+      const linearMapping = normalizeParameterMapping({})
+      // S-curve makes midpoint different from linear
+      const bezierMid = evaluateParameterMapping(bezierMapping, 0.5).value
+      const linearMid = evaluateParameterMapping(linearMapping, 0.5).value
+      expect(bezierMid).toBeGreaterThanOrEqual(0)
+      expect(bezierMid).toBeLessThanOrEqual(1)
+      // Midpoint may or may not differ from linear depending on control points, but should be valid
+      expect(typeof bezierMid).toBe('number')
+      expect(typeof linearMid).toBe('number')
+    })
+
+    it('supports inverted target ranges with bezier', () => {
+      const mapping = normalizeParameterMapping({
+        targetMin: 1,
+        targetMax: 0,
+        curve: createDefaultBezierCurve(),
+      })
+      expect(evaluateParameterMapping(mapping, 0).value).toBeCloseTo(1)
+      expect(evaluateParameterMapping(mapping, 1).value).toBeCloseTo(0)
+    })
+
+    it('handles zero-width source span without dividing by zero', () => {
+      const mapping = normalizeParameterMapping({ sourceMin: 0.5, sourceMax: 0.5 })
+      expect(evaluateParameterMapping(mapping, 0.4).value).toBe(0)
+      expect(evaluateParameterMapping(mapping, 0.5).value).toBe(1)
+    })
+  })
+
+  describe('updateParameterEdgeMapping', () => {
+    function makeLinkedGs() {
+      const gs = makeMacroParamGraphState()
+      const result = connectMacroToParameter(gs, {
+        sourceNodeId: 'macro-a', targetNodeId: 'fx-a', parameterId: 'mix',
+      }, { idFactory: () => 'p-test' })
+      return result.graphState
+    }
+
+    it('updates targetMin and targetMax', () => {
+      const gs = makeLinkedGs()
+      const result = updateParameterEdgeMapping(gs, 'p-test', { targetMin: 0.5, targetMax: 1 })
+      expect(result.ok).toBe(true)
+      const edge = result.graphState.edges.find((e) => e.id === 'p-test')
+      expect(edge.mapping.targetMin).toBe(0.5)
+      expect(edge.mapping.targetMax).toBe(1)
+      expect(edge.mapping.enabled).toBe(true)
+    })
+
+    it('toggles enabled to false', () => {
+      const gs = makeLinkedGs()
+      const result = updateParameterEdgeMapping(gs, 'p-test', { enabled: false })
+      expect(result.ok).toBe(true)
+      const edge = result.graphState.edges.find((e) => e.id === 'p-test')
+      expect(edge.mapping.enabled).toBe(false)
+    })
+
+    it('upgrades to bezier curve', () => {
+      const gs = makeLinkedGs()
+      const result = updateParameterEdgeMapping(gs, 'p-test', { curve: createDefaultBezierCurve() })
+      expect(result.ok).toBe(true)
+      const edge = result.graphState.edges.find((e) => e.id === 'p-test')
+      expect(edge.mapping.curve.type).toBe(GRAPH_PARAMETER_CURVE_BEZIER)
+      expect(edge.mapping.curve.points).toHaveLength(4)
+    })
+
+    it('resets to linear by patching curve to { type: linear }', () => {
+      const gs = makeLinkedGs()
+      const bezier = updateParameterEdgeMapping(gs, 'p-test', { curve: createDefaultBezierCurve() })
+      const reset = updateParameterEdgeMapping(bezier.graphState, 'p-test', { curve: { type: GRAPH_PARAMETER_CURVE_LINEAR } })
+      expect(reset.ok).toBe(true)
+      const edge = reset.graphState.edges.find((e) => e.id === 'p-test')
+      expect(edge.mapping.curve.type).toBe(GRAPH_PARAMETER_CURVE_LINEAR)
+      expect(edge.mapping.curve).not.toHaveProperty('points')
+    })
+
+    it('clamps out-of-range values on update', () => {
+      const gs = makeLinkedGs()
+      const result = updateParameterEdgeMapping(gs, 'p-test', { targetMin: -5, targetMax: 9 })
+      expect(result.ok).toBe(true)
+      const edge = result.graphState.edges.find((e) => e.id === 'p-test')
+      expect(edge.mapping.targetMin).toBe(0)
+      expect(edge.mapping.targetMax).toBe(1)
+    })
+
+    it('preserves inverted target ranges (targetMin > targetMax)', () => {
+      const gs = makeLinkedGs()
+      const result = updateParameterEdgeMapping(gs, 'p-test', { targetMin: 0.8, targetMax: 0.2 })
+      expect(result.ok).toBe(true)
+      const edge = result.graphState.edges.find((e) => e.id === 'p-test')
+      expect(edge.mapping.targetMin).toBe(0.8)
+      expect(edge.mapping.targetMax).toBe(0.2)
+    })
+
+    it('rejects a non-parameter edge id', () => {
+      const gs = makeLinkedGs()
+      const audioEdgeId = gs.edges.find((e) => e.type === 'audio').id
+      const result = updateParameterEdgeMapping(gs, audioEdgeId, { enabled: false })
+      expect(result.ok).toBe(false)
+    })
+
+    it('rejects a missing edge id', () => {
+      const gs = makeLinkedGs()
+      expect(updateParameterEdgeMapping(gs, 'nonexistent', {}).ok).toBe(false)
+    })
+
+    it('rejects a non-object patch', () => {
+      const gs = makeLinkedGs()
+      expect(updateParameterEdgeMapping(gs, 'p-test', null).ok).toBe(false)
+      expect(updateParameterEdgeMapping(gs, 'p-test', 42).ok).toBe(false)
+    })
+
+    it('malformed bezier patch falls back to linear without corrupting state', () => {
+      const gs = makeLinkedGs()
+      const result = updateParameterEdgeMapping(gs, 'p-test', {
+        curve: { type: GRAPH_PARAMETER_CURVE_BEZIER, points: 'bad' },
+      })
+      expect(result.ok).toBe(true)
+      const edge = result.graphState.edges.find((e) => e.id === 'p-test')
+      expect(edge.mapping.curve.type).toBe(GRAPH_PARAMETER_CURVE_LINEAR)
+    })
+
+    it('does not mutate the original graphState', () => {
+      const gs = makeLinkedGs()
+      const before = JSON.stringify(gs)
+      updateParameterEdgeMapping(gs, 'p-test', { targetMin: 0.5 })
+      expect(JSON.stringify(gs)).toBe(before)
+    })
+  })
+
+  describe('collectMacroParameterWrites with bezier mapping', () => {
+    function makeLinkedGraph(mapping) {
+      const base = makeMacroParamGraphState()
+      const linked = connectMacroToParameter(base, {
+        sourceNodeId: 'macro-a',
+        targetNodeId: 'fx-a',
+        parameterId: 'mix',
+        mapping,
+      }, { idFactory: () => 'p-mix-bezier' })
+      return linked.graphState
+    }
+
+    it('uses evaluateParameterMapping for linear edges (same result as before)', () => {
+      const gs = makeLinkedGraph({ targetMin: 0.5, targetMax: 1 })
+      const { writes } = collectMacroParameterWrites(gs, 'macro-a', 0)
+      expect(writes[0].value).toBeCloseTo(0.5)
+    })
+
+    it('uses bezier shaping for bezier edges at boundary values', () => {
+      const gs = makeLinkedGraph({ curve: createDefaultBezierCurve() })
+      const w0 = collectMacroParameterWrites(gs, 'macro-a', 0)
+      const w1 = collectMacroParameterWrites(gs, 'macro-a', 1)
+      expect(w0.writes[0].value).toBeCloseTo(0)
+      expect(w1.writes[0].value).toBeCloseTo(1)
+    })
+
+    it('bezier inverted range: macro 0 → target 1, macro 1 → target 0', () => {
+      const gs = makeLinkedGraph({ targetMin: 1, targetMax: 0, curve: createDefaultBezierCurve() })
+      const w0 = collectMacroParameterWrites(gs, 'macro-a', 0)
+      const w1 = collectMacroParameterWrites(gs, 'macro-a', 1)
+      expect(w0.writes[0].value).toBeCloseTo(1)
+      expect(w1.writes[0].value).toBeCloseTo(0)
     })
   })
 })

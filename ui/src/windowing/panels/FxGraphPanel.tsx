@@ -142,6 +142,7 @@ export interface FxGraphPanelContentProps {
   canRedoGraphEdit?: boolean;
   onUndoGraphEdit?: () => void;
   onRedoGraphEdit?: () => void;
+  onUpdateParameterEdgeMapping?: (edgeId: string, mappingPatch: unknown) => void;
   graphRuntimeStatus?: { ok?: boolean; reason?: string; mode?: string } | null;
   graphActionNotice?: string | null;
   conversionError?: string | null;
@@ -210,6 +211,7 @@ export function FxGraphPanelContent({
   canRedoGraphEdit = false,
   onUndoGraphEdit,
   onRedoGraphEdit,
+  onUpdateParameterEdgeMapping,
   graphRuntimeStatus = null,
   graphActionNotice = null,
   conversionError = null,
@@ -328,6 +330,7 @@ export function FxGraphPanelContent({
               canRedoGraphEdit={graphModeActive && canRedoGraphEdit}
               onUndoGraphEdit={graphModeActive ? onUndoGraphEdit : undefined}
               onRedoGraphEdit={graphModeActive ? onRedoGraphEdit : undefined}
+              onUpdateParameterEdgeMapping={graphModeActive ? onUpdateParameterEdgeMapping : undefined}
             />
           )}
 
@@ -487,6 +490,7 @@ export default function FxGraphPanel() {
   const updateGraphMacroValueForTrack = useEffectChainStore((state) => state.updateGraphMacroValueForTrack);
   const renameGraphMacroNodeForTrack = useEffectChainStore((state) => state.renameGraphMacroNodeForTrack);
   const toggleGraphNodeParameterPortForTrack = useEffectChainStore((state) => state.toggleGraphNodeParameterPortForTrack);
+  const updateGraphParameterEdgeMappingForTrack = useEffectChainStore((state) => state.updateGraphParameterEdgeMappingForTrack);
   const fetchGraphEffectParameters = useEffectChainStore((state) => state.fetchGraphEffectParameters);
   const undoGraphEditForTrack = useEffectChainStore((state) => state.undoGraphEditForTrack);
   const redoGraphEditForTrack = useEffectChainStore((state) => state.redoGraphEditForTrack);
@@ -592,6 +596,11 @@ export default function FxGraphPanel() {
     const result = await renameGraphMacroNodeForTrack(selectedTrack.id, nodeId, label);
     setGraphActionNotice(describeGraphMutationResult(result));
   }, [fxMode, renameGraphMacroNodeForTrack, selectedTrack?.id]);
+
+  const handleUpdateParameterEdgeMapping = useCallback(async (edgeId: string, mappingPatch: unknown) => {
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    void updateGraphParameterEdgeMappingForTrack(selectedTrack.id, edgeId, mappingPatch);
+  }, [fxMode, selectedTrack?.id, updateGraphParameterEdgeMappingForTrack]);
 
   const handleConnectGraphNodes = useCallback(async (sourceNodeId: string, targetNodeId: string) => {
     if (selectedTrack?.id == null || fxMode !== 'graph') return;
@@ -767,6 +776,7 @@ export default function FxGraphPanel() {
         canRedoGraphEdit={canRedoGraphEdit}
         onUndoGraphEdit={handleUndoGraphEdit}
         onRedoGraphEdit={handleRedoGraphEdit}
+        onUpdateParameterEdgeMapping={handleUpdateParameterEdgeMapping}
         graphRuntimeStatus={graphRuntimeStatus}
         graphActionNotice={graphActionNotice}
         conversionError={conversionError}

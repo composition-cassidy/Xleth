@@ -21,6 +21,7 @@ import {
   updateGraphMacroValue,
   renameGraphMacroNode,
   toggleExposedParameterPort,
+  updateParameterEdgeMapping,
 } from '../fxgraph/graphState.js'
 
 export const DEFAULT_FX_MODE = 'chain'
@@ -1686,6 +1687,47 @@ const useEffectChainStore = create((set, get) => ({
     )
 
     return { ...applied, edge: mutation.edge, drive }
+  },
+
+  // FXG.4-g — update the mapping on a Macro -> Parameter edge. Updates persist to
+  // graphState, participate in graph-owned undo/redo, and immediately re-drive the
+  // source macro so the parameter reflects the new mapping live. Does NOT change audio
+  // topology, does NOT touch effectChains, does NOT sync the graph runtime. The drive
+  // is best-effort: a failed target write does not roll back the mapping change.
+  updateGraphParameterEdgeMappingForTrack: async (trackId, edgeId, mappingPatch, options = {}) => {
+    const access = readGraphStateForMutation(get(), trackId)
+    if (!access.ok) return access
+
+    const mutation = updateParameterEdgeMapping(access.graphState, edgeId, mappingPatch)
+    if (!mutation.ok) return mutation
+
+    const applied = await applyGraphStateMutation(
+      set,
+      access.key,
+      mutation.graphState,
+      { ...options, syncRuntime: false },
+    )
+    if (!applied.ok) return applied
+
+    recordGraphEditTransaction(
+      set,
+      access.key,
+      'update_parameter_edge_mapping',
+      access.graphState,
+      applied.graphState,
+    )
+
+    // Re-drive the source macro so the parameter immediately reflects the new mapping.
+    const edge = applied.graphState.edges.find((e) => e.id === edgeId)
+    if (edge) {
+      const macroNode = applied.graphState.nodes.find((n) => n.id === edge.sourceNodeId)
+      const macroValue = Number.isFinite(macroNode?.data?.normalizedValue)
+        ? macroNode.data.normalizedValue
+        : 0
+      await driveMacroParameterEdges(get, access.key, applied.graphState, edge.sourceNodeId, macroValue, options)
+    }
+
+    return applied
   },
 
   // ── FXG.4-a graph-owned effect parameter descriptors ──────────────────────

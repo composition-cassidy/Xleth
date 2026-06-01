@@ -805,13 +805,14 @@ cut abruptly.
 ### Undo/redo
 
 **Risk:** `graphState` mutations are persisted immediately via `timeline.setTrackGraphState`.
-There is no undo stack for graph mutations today. Engine state and renderer state can
-diverge if the user wants to undo.
+Engine state and renderer state can diverge if undo/redo replays graphState without graph-owned
+runtime lifecycle reconciliation.
 
 **Mitigation:**
-- Undo/redo is deferred beyond FXG.3-e.
-- For FXG.3-b/c/d, document that graph mutations are not undoable.
-- Do not add `undo/redo` infrastructure in FXG.3 phases without a separate scoped phase.
+- FXG.3-h adds session-only, per-track graph history in `effectChainStore.graphHistories`.
+- Undo/redo remains separate from Mixer Chain history, `effectChains`, and native undo IPC.
+- Snapshot replay uses graph-owned reconciliation: instantiate target-only real effects, remove
+  current-only engine-backed effects, update the session mapping, and only then commit graphState.
 
 ### Crash safety if plugin/editor fails
 
@@ -1017,6 +1018,64 @@ same change.
 - Latency display in graph panel
 - Undo/redo infrastructure
 - Mute/solo interaction audit
+
+---
+
+### FXG.4-g: Per-link Bezier mapping editor (shipped)
+
+**Prompt:** `FXG.4-g add bezier mapping editor`
+
+Each Macro → Parameter edge now owns a full mapping configuration:
+
+```
+{
+  enabled: boolean,
+  sourceMin: 0.0..1.0,   // source clamping (rare use)
+  sourceMax: 0.0..1.0,
+  targetMin: 0.0..1.0,   // inverted (targetMin > targetMax) is valid
+  targetMax: 0.0..1.0,
+  curve: { type: "linear" }
+       | { type: "bezier", points: [{x,y}×4] }
+}
+```
+
+#### Architecture
+
+- **Macro node** stays a clean normalized control source (`normalizedValue` 0..1).  
+  The macro itself carries no curve or range data.
+- **Parameter edge** is the mapping/range/curve brain. Each edge independently configures  
+  how its macro source value maps to the target parameter's normalized range.
+- **Target parameter** receives only the final normalized 0..1 write via FXG.4-a `setGraphEffectParameterNormalized`.
+
+#### Bezier curve
+
+- Four-point cubic Bezier: `points[0] = {0,0}` (fixed), `points[1]` (CP1, editable),  
+  `points[2]` (CP2, editable), `points[3] = {1,1}` (fixed).
+- Evaluation: binary subdivision (32 iterations) finds `t` such that `B_x(t) ≈ sourceT`,  
+  then returns `B_y(t)` clamped to [0,1].
+- Malformed curve data (wrong point count, non-finite coords) repairs to linear silently.
+- Old parameter edges without curve data load as linear (backward compatible).
+
+#### Mutation path
+
+- `graphState.js` — `updateParameterEdgeMapping(graphState, edgeId, patch)` merges and renormalizes.
+- `effectChainStore.js` — `updateGraphParameterEdgeMappingForTrack` commits to graphState, records undo,  
+  and re-drives the source macro to reflect the new mapping live.
+- `GraphStatePreview.tsx` — `ParameterEdgeMappingEditor` renders the SVG bezier editor + range inputs.
+- `FxGraphPanel.tsx` — wires `handleUpdateParameterEdgeMapping` to the store action.
+
+#### UI
+
+- Parameter edge overlay gains a `~` button (class `edge-edit`) 22px left of the disconnect button.
+- Clicking opens `ParameterEdgeMappingEditor` as a fixed popover at client coordinates.
+- Escape or click-outside closes the editor.
+- Bezier control points are draggable SVG circles; draft updates are local until pointer-up (one undo step per drag).
+- Range sliders commit on pointer-up; number inputs commit on blur.
+
+#### Not implemented
+
+Automation clips, LFOs, envelopes, peak followers, buses, graph-to-chain return, sample-accurate  
+automation, audio-rate modulation, and new native engine modulation runtime are **not** part of FXG.4-g.
 
 ---
 

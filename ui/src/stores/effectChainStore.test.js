@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { connectMacroToParameter } from '../fxgraph/graphState.js'
+import { connectMacroToParameter, createDefaultBezierCurve, GRAPH_PARAMETER_CURVE_BEZIER } from '../fxgraph/graphState.js'
 
 function makeEffect(nodeId, pluginId, position, bypassed = false) {
   return { nodeId, pluginId, position, bypassed }
@@ -2422,5 +2422,125 @@ describe('effectChainStore FX mode safety gate', () => {
 
     const result = await useEffectChainStore.getState().fetchGraphEffectParameters('7', 'effect-1')
     expect(result).toEqual({ ok: false, reason: 'engine_unavailable' })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// FXG.4-g updateGraphParameterEdgeMappingForTrack
+// ---------------------------------------------------------------------------
+
+describe('effectChainStore updateGraphParameterEdgeMappingForTrack', () => {
+  let audio
+  let timeline
+
+  beforeEach(() => {
+    vi.resetModules()
+    audio = {
+      getEffectChain: vi.fn(async () => '[]'),
+      getMasterEffectChain: vi.fn(async () => '[]'),
+      addEffect: vi.fn(async () => true),
+      addMasterEffect: vi.fn(async () => true),
+      removeEffect: vi.fn(async () => true),
+      removeMasterEffect: vi.fn(async () => true),
+      moveEffect: vi.fn(async () => true),
+      moveMasterEffect: vi.fn(async () => true),
+      setEffectBypass: vi.fn(async () => true),
+      setMasterEffectBypass: vi.fn(async () => true),
+      instantiateGraphEffect: vi.fn(async () => JSON.stringify({ ok: true, engineNodeId: 99 })),
+      removeGraphEffect: vi.fn(async () => JSON.stringify({ ok: true })),
+      syncLinearGraphTopology: vi.fn(async () => ({ ok: true })),
+      syncGraphTopology: vi.fn(async () => ({ ok: true })),
+      setGraphEffectParameterNormalized: vi.fn(async () => ({ ok: true })),
+      getGraphEffectParameters: vi.fn(async () => '{"ok":false,"reason":"not_used"}'),
+    }
+    timeline = {
+      setTrackGraphState: vi.fn(async () => true),
+    }
+    globalThis.window = { xleth: { audio, timeline } }
+  })
+
+  afterEach(() => {
+    delete globalThis.window
+  })
+
+  function seedGraphMode(store, gs) {
+    store.setState({
+      fxModes: { [gs.trackId]: 'graph' },
+      graphStates: { [gs.trackId]: gs },
+      graphHistories: {},
+    })
+  }
+
+  it('updates targetMin/targetMax and records an undo entry', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, makeLinkedMacroGraphState())
+
+    const result = await useEffectChainStore.getState().updateGraphParameterEdgeMappingForTrack(
+      '7', 'p-mix', { targetMin: 0.5, targetMax: 1 },
+    )
+    expect(result.ok).toBe(true)
+
+    const gs = useEffectChainStore.getState().graphStates['7']
+    const edge = gs.edges.find((e) => e.id === 'p-mix')
+    expect(edge.mapping.targetMin).toBe(0.5)
+    expect(edge.mapping.targetMax).toBe(1)
+
+    const history = useEffectChainStore.getState().graphHistories['7']
+    expect(history.undoStack.at(-1)).toMatchObject({ label: 'update_parameter_edge_mapping' })
+  })
+
+  it('upgrades a linear edge to bezier and re-drives the parameter', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, makeLinkedMacroGraphState())
+
+    await useEffectChainStore.getState().updateGraphParameterEdgeMappingForTrack(
+      '7', 'p-mix', { curve: createDefaultBezierCurve() },
+    )
+
+    const gs = useEffectChainStore.getState().graphStates['7']
+    const edge = gs.edges.find((e) => e.id === 'p-mix')
+    expect(edge.mapping.curve.type).toBe(GRAPH_PARAMETER_CURVE_BEZIER)
+    // The drive should have written through setGraphEffectParameterNormalized
+    expect(audio.setGraphEffectParameterNormalized).toHaveBeenCalled()
+  })
+
+  it('resets to linear when curve patch is { type: linear }', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, makeLinkedMacroGraphState(
+      '7',
+      { curve: createDefaultBezierCurve() },
+    ))
+
+    await useEffectChainStore.getState().updateGraphParameterEdgeMappingForTrack(
+      '7', 'p-mix', { curve: { type: 'linear' } },
+    )
+
+    const gs = useEffectChainStore.getState().graphStates['7']
+    const edge = gs.edges.find((e) => e.id === 'p-mix')
+    expect(edge.mapping.curve.type).toBe('linear')
+  })
+
+  it('fails gracefully for a non-parameter edge', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, makeLinkedMacroGraphState())
+
+    const audioEdgeId = useEffectChainStore.getState().graphStates['7'].edges
+      .find((e) => e.type === 'audio').id
+    const result = await useEffectChainStore.getState().updateGraphParameterEdgeMappingForTrack(
+      '7', audioEdgeId, { enabled: false },
+    )
+    expect(result.ok).toBe(false)
+  })
+
+  it('does not mutate effectChains', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, makeLinkedMacroGraphState())
+    const chainsBefore = useEffectChainStore.getState().chains
+
+    await useEffectChainStore.getState().updateGraphParameterEdgeMappingForTrack(
+      '7', 'p-mix', { targetMin: 0.3 },
+    )
+
+    expect(useEffectChainStore.getState().chains).toBe(chainsBefore)
   })
 })

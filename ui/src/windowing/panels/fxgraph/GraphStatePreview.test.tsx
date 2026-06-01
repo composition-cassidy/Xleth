@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import GraphStatePreview, {
   GraphParameterContextMenu,
   GraphStatePreviewNode,
+  ParameterEdgeMappingEditor,
   buildGraphStatePreviewModel,
   connectHighlightedParameterDropTarget,
   filterExposeParameterDescriptors,
@@ -13,6 +14,7 @@ import GraphStatePreview, {
   type GraphStateNode,
 } from './GraphStatePreview';
 import { buildExposeParameterMenuGroups } from './graphParameterUtils';
+import { createDefaultBezierCurve, GRAPH_PARAMETER_CURVE_BEZIER, GRAPH_PARAMETER_CURVE_LINEAR } from '../../../fxgraph/graphState.js';
 
 function inputNode(position = { x: 0, y: 0 }): GraphStateNode {
   return { id: 'input', type: 'trackInput', position, data: {} };
@@ -1183,5 +1185,283 @@ describe('GraphStatePreview', () => {
 
     expect(connectHighlightedParameterDropTarget('macro-a', target, onConnect)).toBe(true);
     expect(onConnect).toHaveBeenCalledWith('macro-a', 'eq', 'b2_q');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FXG.4-g — Bezier Mapping Editor UI
+// ---------------------------------------------------------------------------
+
+function makeParameterEdge(mapping?: unknown): GraphStateEdge {
+  return {
+    id: 'p-edge',
+    sourceNodeId: 'macro-1',
+    sourcePort: 'controlOut',
+    targetNodeId: 'eq-1',
+    targetPort: 'gpp:eq-1:mix',
+    type: 'parameter',
+    targetParameter: { parameterId: 'mix', nameSnapshot: 'Mix' } as Record<string, unknown>,
+    mapping: mapping ?? { enabled: true, sourceMin: 0, sourceMax: 1, targetMin: 0, targetMax: 1, curve: { type: 'linear' } },
+  };
+}
+
+describe('FXG.4-g ParameterEdgeMappingEditor', () => {
+  it('renders source and target labels', () => {
+    const html = renderToStaticMarkup(
+      <ParameterEdgeMappingEditor
+        edgeId="p-edge"
+        edge={makeParameterEdge()}
+        sourceLabel="Macro 1"
+        targetLabel="EQ / Mix"
+        x={100}
+        y={100}
+        onUpdate={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(html).toContain('Macro 1');
+    expect(html).toContain('EQ / Mix');
+  });
+
+  it('renders enabled checkbox checked for an enabled mapping', () => {
+    const html = renderToStaticMarkup(
+      <ParameterEdgeMappingEditor
+        edgeId="p-edge"
+        edge={makeParameterEdge({ enabled: true })}
+        sourceLabel="M1"
+        targetLabel="EQ"
+        x={0}
+        y={0}
+        onUpdate={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(html).toContain('checked');
+  });
+
+  it('renders Linear and Bezier curve tab buttons', () => {
+    const html = renderToStaticMarkup(
+      <ParameterEdgeMappingEditor
+        edgeId="p-edge"
+        edge={makeParameterEdge()}
+        sourceLabel="M1"
+        targetLabel="EQ"
+        x={0}
+        y={0}
+        onUpdate={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(html).toContain('Linear');
+    expect(html).toContain('Bezier');
+  });
+
+  it('marks Linear tab active for a linear mapping', () => {
+    const html = renderToStaticMarkup(
+      <ParameterEdgeMappingEditor
+        edgeId="p-edge"
+        edge={makeParameterEdge({ curve: { type: GRAPH_PARAMETER_CURVE_LINEAR } })}
+        sourceLabel="M1"
+        targetLabel="EQ"
+        x={0}
+        y={0}
+        onUpdate={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(html).toContain('curve-tab--active');
+    expect(html).toMatch(/curve-tab--active[^>]*>Linear/);
+  });
+
+  it('marks Bezier tab active for a bezier mapping', () => {
+    const html = renderToStaticMarkup(
+      <ParameterEdgeMappingEditor
+        edgeId="p-edge"
+        edge={makeParameterEdge({ curve: createDefaultBezierCurve() })}
+        sourceLabel="M1"
+        targetLabel="EQ"
+        x={0}
+        y={0}
+        onUpdate={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(html).toMatch(/curve-tab--active[^>]*>Bezier/);
+  });
+
+  it('renders the bezier SVG with control point circles for a bezier mapping', () => {
+    const html = renderToStaticMarkup(
+      <ParameterEdgeMappingEditor
+        edgeId="p-edge"
+        edge={makeParameterEdge({ curve: createDefaultBezierCurve() })}
+        sourceLabel="M1"
+        targetLabel="EQ"
+        x={0}
+        y={0}
+        onUpdate={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(html).toContain('mapping-editor-bezier-svg');
+    expect(html).toContain('mapping-editor-bezier-cp');
+  });
+
+  it('does not render bezier control point circles for a linear mapping', () => {
+    const html = renderToStaticMarkup(
+      <ParameterEdgeMappingEditor
+        edgeId="p-edge"
+        edge={makeParameterEdge({ curve: { type: GRAPH_PARAMETER_CURVE_LINEAR } })}
+        sourceLabel="M1"
+        targetLabel="EQ"
+        x={0}
+        y={0}
+        onUpdate={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(html).not.toContain('mapping-editor-bezier-cp');
+  });
+
+  it('renders preview values section', () => {
+    const html = renderToStaticMarkup(
+      <ParameterEdgeMappingEditor
+        edgeId="p-edge"
+        edge={makeParameterEdge()}
+        sourceLabel="M1"
+        targetLabel="EQ"
+        x={0}
+        y={0}
+        onUpdate={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(html).toContain('mapping-editor-preview');
+    expect(html).toContain('0%:');
+    expect(html).toContain('50%:');
+    expect(html).toContain('100%:');
+  });
+
+  it('renders a close button', () => {
+    const html = renderToStaticMarkup(
+      <ParameterEdgeMappingEditor
+        edgeId="p-edge"
+        edge={makeParameterEdge()}
+        sourceLabel="M1"
+        targetLabel="EQ"
+        x={0}
+        y={0}
+        onUpdate={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(html).toContain('mapping-editor-close');
+  });
+
+  it('does not render for audio edges (mapping editor only shown for parameter edges)', () => {
+    // The edit-mapping affordance does not appear for audio edges even when
+    // onUpdateParameterEdgeMapping is provided — only parameter edges get it.
+    const audioEdgeDocument: GraphStateDocument = {
+      schemaVersion: 1,
+      trackId: '7',
+      nodes: [
+        inputNode(),
+        effectNode('eq', 'EQ', 0, { x: 260, y: 0 }),
+        outputNode({ x: 520, y: 0 }),
+      ],
+      edges: [
+        { id: 'a-1', sourceNodeId: 'input', sourcePort: 'audio', targetNodeId: 'eq', targetPort: 'audioIn', type: 'audio' },
+        { id: 'a-2', sourceNodeId: 'eq', sourcePort: 'audioOut', targetNodeId: 'output', targetPort: 'audio', type: 'audio' },
+      ],
+    };
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={audioEdgeDocument}
+        onDisconnectEdge={vi.fn()}
+        onUpdateParameterEdgeMapping={vi.fn()}
+        notice={null}
+      />,
+    );
+    expect(html).not.toContain('mapping-editor-bezier-svg');
+    expect(html).not.toContain('edge-edit');
+  });
+});
+
+describe('FXG.4-g GraphStatePreview mapping editor integration', () => {
+  function makeMacroParameterGraph(): GraphStateDocument {
+    return {
+      schemaVersion: 1,
+      trackId: '7',
+      nodes: [
+        inputNode(),
+        {
+          id: 'eq-1',
+          type: 'effect',
+          position: { x: 200, y: 0 },
+          data: {
+            effectInstanceId: 'inst-1',
+            pluginId: 'stock:eq',
+            displayName: 'EQ',
+            bypass: false,
+            missing: false,
+            crashed: false,
+            sourceChainSlotIndex: null,
+            exposedParameterPorts: [
+              { parameterId: 'mix', parameterIndexFallback: 0, nameSnapshot: 'Mix', labelSnapshot: null, parameterIdIsFallback: false, automatable: true, readOnly: false },
+            ],
+          },
+        },
+        { id: 'macro-1', type: 'macro', position: { x: 100, y: 100 }, data: { label: 'Macro 1', normalizedValue: 0.5 } },
+        outputNode({ x: 400, y: 0 }),
+      ],
+      edges: [
+        { id: 'a1', sourceNodeId: 'input', sourcePort: 'audio', targetNodeId: 'eq-1', targetPort: 'audioIn', type: 'audio' },
+        { id: 'a2', sourceNodeId: 'eq-1', sourcePort: 'audioOut', targetNodeId: 'output', targetPort: 'audio', type: 'audio' },
+        {
+          id: 'p1',
+          sourceNodeId: 'macro-1',
+          sourcePort: 'controlOut',
+          targetNodeId: 'eq-1',
+          targetPort: 'gpp:eq-1:mix',
+          type: 'parameter',
+          targetParameter: { kind: 'graph-parameter', graphNodeId: 'eq-1', effectInstanceId: 'inst-1', parameterId: 'mix', nameSnapshot: 'Mix', parameterIndexFallback: 0, parameterIdIsFallback: false },
+          mapping: { enabled: true, sourceMin: 0, sourceMax: 1, targetMin: 0, targetMax: 1, curve: { type: 'linear' } },
+        },
+      ],
+    };
+  }
+
+  it('renders an edit mapping button for parameter edges when onUpdateParameterEdgeMapping is provided', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={makeMacroParameterGraph()}
+        onDisconnectEdge={vi.fn()}
+        onUpdateParameterEdgeMapping={vi.fn()}
+        notice={null}
+      />,
+    );
+    expect(html).toContain('edge-edit');
+  });
+
+  it('does not render an edit mapping button when onUpdateParameterEdgeMapping is absent', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={makeMacroParameterGraph()}
+        onDisconnectEdge={vi.fn()}
+        notice={null}
+      />,
+    );
+    expect(html).not.toContain('edge-edit');
+  });
+
+  it('edit mapping button is accessible with proper aria-label', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={makeMacroParameterGraph()}
+        onDisconnectEdge={vi.fn()}
+        onUpdateParameterEdgeMapping={vi.fn()}
+        notice={null}
+      />,
+    );
+    expect(html).toContain('aria-label="Edit mapping for');
   });
 });

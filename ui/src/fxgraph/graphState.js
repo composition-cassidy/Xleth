@@ -16,10 +16,16 @@ const MAX_VIEWPORT_ZOOM = 4
 export const GRAPH_MACRO_NODE_TYPE = 'macro'
 export const GRAPH_MACRO_OUTPUT_PORT = 'controlOut'
 
-// FXG.4-e/f — the only mapping curve supported in this phase. The mapping object
-// is shaped so FXG.4-g can add per-link Bezier curves (curve.type === 'bezier' +
-// control points) without a schema migration.
+// FXG.4-e/f — base mapping curve type.
 export const GRAPH_PARAMETER_CURVE_LINEAR = 'linear'
+
+// FXG.4-g — per-link Bezier mapping. The curve holds 4 points:
+//   points[0] = {x:0, y:0}  fixed start (always forced on normalization)
+//   points[1] = {x, y}      first control point (editable, clamped to [0,1])
+//   points[2] = {x, y}      second control point (editable, clamped to [0,1])
+//   points[3] = {x:1, y:1}  fixed end (always forced on normalization)
+// A malformed bezier (wrong point count, non-finite coords) repairs to linear.
+export const GRAPH_PARAMETER_CURVE_BEZIER = 'bezier'
 
 const NODE_TYPES = new Set(['trackInput', 'trackOutput', 'effect', GRAPH_MACRO_NODE_TYPE])
 const EDGE_TYPES = new Set(['audio', 'parameter'])
@@ -140,18 +146,101 @@ function clampUnitValue(value, fallback) {
   return Math.min(1, Math.max(0, value))
 }
 
+function normalizeBezierPoints(rawPoints) {
+  if (!Array.isArray(rawPoints) || rawPoints.length !== 4) return null
+  const pts = []
+  for (const raw of rawPoints) {
+    if (!isPlainObject(raw)) return null
+    if (!Number.isFinite(raw.x) || !Number.isFinite(raw.y)) return null
+    pts.push({
+      x: Math.min(1, Math.max(0, raw.x)),
+      y: Math.min(1, Math.max(0, raw.y)),
+    })
+  }
+  // Force fixed endpoints regardless of what was stored.
+  pts[0] = { x: 0, y: 0 }
+  pts[3] = { x: 1, y: 1 }
+  return pts
+}
+
 export function normalizeParameterMapping(rawMapping) {
   const raw = isPlainObject(rawMapping) ? rawMapping : {}
   const rawCurve = isPlainObject(raw.curve) ? raw.curve : {}
+
+  let curve
+  if (rawCurve.type === GRAPH_PARAMETER_CURVE_BEZIER) {
+    const points = normalizeBezierPoints(rawCurve.points)
+    curve = points
+      ? { type: GRAPH_PARAMETER_CURVE_BEZIER, points }
+      : { type: GRAPH_PARAMETER_CURVE_LINEAR }
+  } else {
+    curve = { type: GRAPH_PARAMETER_CURVE_LINEAR }
+  }
+
   return {
     enabled: raw.enabled !== false,
     sourceMin: clampUnitValue(raw.sourceMin, 0),
     sourceMax: clampUnitValue(raw.sourceMax, 1),
     targetMin: clampUnitValue(raw.targetMin, 0),
     targetMax: clampUnitValue(raw.targetMax, 1),
-    // Only linear exists in this phase; any other/missing value repairs to linear.
-    curve: { type: rawCurve.type === GRAPH_PARAMETER_CURVE_LINEAR ? GRAPH_PARAMETER_CURVE_LINEAR : GRAPH_PARAMETER_CURVE_LINEAR },
+    curve,
   }
+}
+
+// FXG.4-g — returns the default bezier curve: a gentle S-shape with both
+// control points on the x-axis endpoints, creating an ease-in/ease-out feel.
+export function createDefaultBezierCurve() {
+  return {
+    type: GRAPH_PARAMETER_CURVE_BEZIER,
+    points: [
+      { x: 0, y: 0 },
+      { x: 0.4, y: 0 },
+      { x: 0.6, y: 1 },
+      { x: 1, y: 1 },
+    ],
+  }
+}
+
+// FXG.4-g — evaluates a cubic Bezier curve at a given source value xTarget in [0,1].
+// Finds t such that bezierX(t) ≈ xTarget via binary subdivision, then returns bezierY(t).
+// Falls back to identity (shapedT = xTarget) when the curve is invalid.
+export function evaluateBezierCurve(curve, xTarget) {
+  const x = clampUnitValue(xTarget, 0)
+  if (x === 0) return 0
+  if (x === 1) return 1
+
+  if (!isPlainObject(curve) || !Array.isArray(curve.points) || curve.points.length !== 4) return x
+
+  const p1 = curve.points[1]
+  const p2 = curve.points[2]
+  const cp1x = Number.isFinite(p1?.x) ? p1.x : 0.4
+  const cp1y = Number.isFinite(p1?.y) ? p1.y : 0
+  const cp2x = Number.isFinite(p2?.x) ? p2.x : 0.6
+  const cp2y = Number.isFinite(p2?.y) ? p2.y : 1
+
+  // Cubic bezier with P0=(0,0), P3=(1,1):
+  //   B_x(t) = 3*(1-t)^2*t*cp1x + 3*(1-t)*t^2*cp2x + t^3
+  //   B_y(t) = 3*(1-t)^2*t*cp1y + 3*(1-t)*t^2*cp2y + t^3
+  const bx = (t) => {
+    const s = 1 - t
+    return 3 * s * s * t * cp1x + 3 * s * t * t * cp2x + t * t * t
+  }
+  const by = (t) => {
+    const s = 1 - t
+    return 3 * s * s * t * cp1y + 3 * s * t * t * cp2y + t * t * t
+  }
+
+  // Binary subdivision: find t_curve such that bx(t_curve) ≈ x (32 iterations → ~3e-10 precision).
+  let lo = 0
+  let hi = 1
+  for (let i = 0; i < 32; i++) {
+    const mid = (lo + hi) * 0.5
+    if (bx(mid) < x) lo = mid
+    else hi = mid
+    if (hi - lo < 1e-9) break
+  }
+
+  return Math.min(1, Math.max(0, by((lo + hi) * 0.5)))
 }
 
 export function defaultParameterMapping() {
@@ -178,6 +267,32 @@ export function evaluateLinearParameterMapping(rawMapping, macroValue) {
   }
 
   const mapped = mapping.targetMin + t * (mapping.targetMax - mapping.targetMin)
+  return { enabled: true, value: Math.min(1, Math.max(0, mapped)) }
+}
+
+// FXG.4-g — evaluates any parameter mapping (linear or bezier) against a macro value.
+// For linear curves, produces identical results to evaluateLinearParameterMapping.
+// For bezier curves, applies Bezier shaping after source-range normalization and
+// before target-range interpolation. Inverted target ranges (targetMin > targetMax)
+// are preserved correctly. Disabled mappings return { enabled: false, value: null }.
+export function evaluateParameterMapping(rawMapping, macroValue) {
+  const mapping = normalizeParameterMapping(rawMapping)
+  if (!mapping.enabled) return { enabled: false, value: null }
+
+  const value = clampUnitValue(macroValue, 0)
+  const span = mapping.sourceMax - mapping.sourceMin
+  let t
+  if (span <= 0) {
+    t = value < mapping.sourceMin ? 0 : 1
+  } else {
+    t = Math.min(1, Math.max(0, (value - mapping.sourceMin) / span))
+  }
+
+  const shapedT = mapping.curve.type === GRAPH_PARAMETER_CURVE_BEZIER
+    ? evaluateBezierCurve(mapping.curve, t)
+    : t
+
+  const mapped = mapping.targetMin + shapedT * (mapping.targetMax - mapping.targetMin)
   return { enabled: true, value: Math.min(1, Math.max(0, mapped)) }
 }
 
@@ -792,6 +907,8 @@ export const GRAPH_MUTATION_REJECTION = Object.freeze({
   MISSING_EFFECT_INSTANCE: 'missing_effect_instance',
   PARAMETER_NOT_EXPOSED: 'parameter_not_exposed',
   PARAMETER_READ_ONLY: 'parameter_read_only',
+  // FXG.4-g — mapping editor mutation validation
+  INVALID_PARAMETER_EDGE: 'invalid_parameter_edge',
 })
 
 export function isProtectedGraphNodeType(type) {
@@ -1278,7 +1395,7 @@ export function collectMacroParameterWrites(graphState, macroNodeId, macroValue)
     if (edge.type !== 'parameter') continue
     if (edge.sourceNodeId !== macroNodeId) continue
 
-    const evaluation = evaluateLinearParameterMapping(edge.mapping, value)
+    const evaluation = evaluateParameterMapping(edge.mapping, value)
     if (!evaluation.enabled) {
       skipped.push({ edgeId: edge.id, reason: 'disabled' })
       continue
@@ -1309,4 +1426,41 @@ export function collectMacroParameterWrites(graphState, macroNodeId, macroValue)
   }
 
   return { writes, skipped }
+}
+
+// FXG.4-g — update a parameter edge's mapping in place.
+// Merges mappingPatch into the edge's current mapping and renormalizes. The patch
+// may include any subset of { enabled, sourceMin, sourceMax, targetMin, targetMax, curve }.
+// Setting curve to { type: 'linear' } resets the curve to linear; setting curve to
+// { type: 'bezier', points: [...] } switches to bezier. Malformed bezier patches fall
+// back to linear rather than dropping the edge. Returns { ok, graphState } or
+// { ok: false, reason }.
+export function updateParameterEdgeMapping(graphState, edgeId, mappingPatch) {
+  const editCheck = validateGraphStateForEditing(graphState)
+  if (!editCheck.ok) return editCheck
+
+  if (typeof edgeId !== 'string' || edgeId.length === 0) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_EDGE }
+  }
+  if (!isPlainObject(mappingPatch)) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_PARAMETER_EDGE }
+  }
+
+  const edge = graphState.edges.find((e) => e.id === edgeId)
+  if (!edge) return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_EDGE }
+  if (edge.type !== 'parameter') return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_PARAMETER_EDGE }
+
+  const currentMapping = isPlainObject(edge.mapping) ? edge.mapping : {}
+  const mergedMapping = { ...currentMapping, ...mappingPatch }
+  const normalizedMapping = normalizeParameterMapping(mergedMapping)
+
+  return {
+    ok: true,
+    graphState: {
+      ...graphState,
+      edges: graphState.edges.map((e) =>
+        e.id === edgeId ? { ...e, mapping: normalizedMapping } : e,
+      ),
+    },
+  }
 }

@@ -6,6 +6,52 @@ import {
   type GraphEffectParameterDescriptor,
   type GraphParameterResult,
 } from './graphParameterUtils';
+import {
+  evaluateParameterMapping,
+  createDefaultBezierCurve,
+  GRAPH_PARAMETER_CURVE_BEZIER,
+} from '../../../fxgraph/graphState.js';
+
+// FXG.4-g — Bezier mapping editor types.
+type BezierPoint = { x: number; y: number };
+interface ParsedMapping {
+  enabled: boolean;
+  sourceMin: number;
+  sourceMax: number;
+  targetMin: number;
+  targetMax: number;
+  curve: { type: 'linear' } | { type: 'bezier'; points: BezierPoint[] };
+}
+
+function clampUnit(v: number) { return Math.min(1, Math.max(0, v)); }
+
+function parseMappingFromEdge(raw: unknown): ParsedMapping {
+  const m = raw !== null && typeof raw === 'object' && !Array.isArray(raw)
+    ? (raw as Record<string, unknown>)
+    : {};
+  const rawCurve = m.curve !== null && typeof m.curve === 'object' && !Array.isArray(m.curve)
+    ? (m.curve as Record<string, unknown>)
+    : {};
+
+  const num = (v: unknown, fallback: number) =>
+    typeof v === 'number' && Number.isFinite(v) ? clampUnit(v) : fallback;
+
+  let curve: ParsedMapping['curve'];
+  if (rawCurve.type === GRAPH_PARAMETER_CURVE_BEZIER && Array.isArray(rawCurve.points) && rawCurve.points.length === 4) {
+    curve = { type: 'bezier', points: rawCurve.points as BezierPoint[] };
+  } else {
+    curve = { type: 'linear' };
+  }
+
+  return {
+    enabled: m.enabled !== false,
+    sourceMin: num(m.sourceMin, 0),
+    sourceMax: num(m.sourceMax, 1),
+    targetMin: num(m.targetMin, 0),
+    targetMax: num(m.targetMax, 1),
+    curve,
+  };
+}
 
 export interface GraphStateNodePosition {
   x?: unknown;
@@ -151,6 +197,8 @@ interface GraphStatePreviewProps {
   canRedoGraphEdit?: boolean;
   onUndoGraphEdit?: () => void;
   onRedoGraphEdit?: () => void;
+  // FXG.4-g — per-link Bezier mapping editor
+  onUpdateParameterEdgeMapping?: (edgeId: string, mappingPatch: unknown) => void;
 }
 
 const NODE_WIDTH = 148;
@@ -939,6 +987,247 @@ export function GraphStatePreviewNode({
   );
 }
 
+// FXG.4-g — bezier SVG canvas dimensions.
+const BEZ_W = 220;
+const BEZ_H = 110;
+
+export function ParameterEdgeMappingEditor({
+  edgeId,
+  edge,
+  sourceLabel,
+  targetLabel,
+  x,
+  y,
+  onUpdate,
+  onClose,
+}: {
+  edgeId: string;
+  edge: GraphStateEdge;
+  sourceLabel: string;
+  targetLabel: string;
+  x: number;
+  y: number;
+  onUpdate: (edgeId: string, patch: unknown) => void;
+  onClose: () => void;
+}) {
+  const mapping = parseMappingFromEdge(edge.mapping);
+  const isBezier = mapping.curve.type === 'bezier';
+  const bezierPoints = isBezier
+    ? (mapping.curve as { type: 'bezier'; points: BezierPoint[] }).points
+    : null;
+
+  // Draft bezier points updated live during drag; committed on pointer up.
+  const [draftPoints, setDraftPoints] = React.useState<BezierPoint[] | null>(null);
+  const draggingRef = React.useRef<{ pointerId: number; which: 1 | 2 } | null>(null);
+  const svgRef = React.useRef<SVGSVGElement | null>(null);
+
+  // Points used for SVG rendering: draft during drag, committed otherwise.
+  const displayPoints = draftPoints ?? bezierPoints;
+
+  // Bezier SVG coordinate helpers (flip y: value 0 = bottom, 1 = top).
+  const toSvgX = (vx: number) => vx * BEZ_W;
+  const toSvgY = (vy: number) => (1 - vy) * BEZ_H;
+  const toValX = (sx: number) => clampUnit(sx / BEZ_W);
+  const toValY = (sy: number) => clampUnit(1 - sy / BEZ_H);
+
+  const cp1 = displayPoints?.[1] ?? { x: 0.4, y: 0 };
+  const cp2 = displayPoints?.[2] ?? { x: 0.6, y: 1 };
+  const p0 = `0 ${BEZ_H}`;
+  const p3 = `${BEZ_W} 0`;
+  const cp1svgX = toSvgX(cp1.x); const cp1svgY = toSvgY(cp1.y);
+  const cp2svgX = toSvgX(cp2.x); const cp2svgY = toSvgY(cp2.y);
+  const bezierPathD = isBezier && displayPoints
+    ? `M ${p0} C ${cp1svgX} ${cp1svgY}, ${cp2svgX} ${cp2svgY}, ${p3}`
+    : `M ${p0} L ${p3}`;
+
+  const preview0 = evaluateParameterMapping(edge.mapping, 0);
+  const preview50 = evaluateParameterMapping(edge.mapping, 0.5);
+  const preview100 = evaluateParameterMapping(edge.mapping, 1);
+  const fmtPct = (v: number | null) => v == null ? '—' : `${Math.round(v * 100)}%`;
+
+  const handleStartDrag = (which: 1 | 2) => (event: React.PointerEvent<SVGCircleElement>) => {
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    draggingRef.current = { pointerId: event.pointerId, which };
+    setDraftPoints(displayPoints ? [...displayPoints] : null);
+  };
+
+  const handleDragMove = (event: React.PointerEvent<SVGSVGElement>) => {
+    const drag = draggingRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const svgX = event.clientX - rect.left;
+    const svgY = event.clientY - rect.top;
+    const vx = toValX(svgX);
+    const vy = toValY(svgY);
+    setDraftPoints((prev) => {
+      const pts = prev ? [...prev] : [{ x: 0, y: 0 }, { x: 0.4, y: 0 }, { x: 0.6, y: 1 }, { x: 1, y: 1 }];
+      const next = pts.map((p) => ({ ...p }));
+      next[drag.which] = { x: vx, y: vy };
+      return next;
+    });
+  };
+
+  const handleDragEnd = (event: React.PointerEvent<SVGSVGElement>) => {
+    const drag = draggingRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    const pts = draftPoints;
+    draggingRef.current = null;
+    setDraftPoints(null);
+    if (pts) {
+      onUpdate(edgeId, { curve: { type: 'bezier', points: pts } });
+    }
+  };
+
+  return (
+    <div
+      className="xleth-graph-state-preview__mapping-editor"
+      role="dialog"
+      aria-label={`Edit mapping: ${sourceLabel} to ${targetLabel}`}
+      style={{ left: x, top: y }}
+      onPointerDown={(e) => e.stopPropagation()}
+      onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}
+      data-mapping-editor-id={edgeId}
+    >
+      <div className="xleth-graph-state-preview__mapping-editor-header">
+        <span className="xleth-graph-state-preview__mapping-editor-title" title={`${sourceLabel} → ${targetLabel}`}>
+          {sourceLabel} <span aria-hidden="true">→</span> {targetLabel}
+        </span>
+        <button
+          className="xleth-graph-state-preview__mapping-editor-close"
+          type="button"
+          aria-label="Close mapping editor"
+          onClick={onClose}
+        >×</button>
+      </div>
+
+      <label className="xleth-graph-state-preview__mapping-editor-enabled">
+        <input
+          type="checkbox"
+          defaultChecked={mapping.enabled}
+          onChange={(e) => onUpdate(edgeId, { enabled: e.target.checked })}
+        />
+        Enabled
+      </label>
+
+      <div className="xleth-graph-state-preview__mapping-editor-section">
+        <div className="xleth-graph-state-preview__mapping-editor-section-title">Output Range</div>
+        <div className="xleth-graph-state-preview__mapping-editor-range-row">
+          <span className="xleth-graph-state-preview__mapping-editor-range-label">Min</span>
+          <input
+            className="xleth-graph-state-preview__mapping-editor-range-slider"
+            type="range" min="0" max="1" step="0.01" defaultValue={mapping.targetMin}
+            aria-label="Target min"
+            onPointerUp={(e) => onUpdate(edgeId, { targetMin: parseFloat((e.target as HTMLInputElement).value) })}
+          />
+          <input
+            className="xleth-graph-state-preview__mapping-editor-range-num"
+            type="number" min="0" max="1" step="0.01" defaultValue={mapping.targetMin}
+            aria-label="Target min value"
+            onBlur={(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) onUpdate(edgeId, { targetMin: clampUnit(v) }); }}
+          />
+        </div>
+        <div className="xleth-graph-state-preview__mapping-editor-range-row">
+          <span className="xleth-graph-state-preview__mapping-editor-range-label">Max</span>
+          <input
+            className="xleth-graph-state-preview__mapping-editor-range-slider"
+            type="range" min="0" max="1" step="0.01" defaultValue={mapping.targetMax}
+            aria-label="Target max"
+            onPointerUp={(e) => onUpdate(edgeId, { targetMax: parseFloat((e.target as HTMLInputElement).value) })}
+          />
+          <input
+            className="xleth-graph-state-preview__mapping-editor-range-num"
+            type="number" min="0" max="1" step="0.01" defaultValue={mapping.targetMax}
+            aria-label="Target max value"
+            onBlur={(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) onUpdate(edgeId, { targetMax: clampUnit(v) }); }}
+          />
+        </div>
+      </div>
+
+      <div className="xleth-graph-state-preview__mapping-editor-section">
+        <div className="xleth-graph-state-preview__mapping-editor-section-title">Curve</div>
+        <div className="xleth-graph-state-preview__mapping-editor-curve-tabs" role="group" aria-label="Curve type">
+          <button
+            className={`xleth-graph-state-preview__mapping-editor-curve-tab${!isBezier ? ' xleth-graph-state-preview__mapping-editor-curve-tab--active' : ''}`}
+            type="button"
+            aria-pressed={!isBezier}
+            onClick={() => onUpdate(edgeId, { curve: { type: 'linear' } })}
+          >Linear</button>
+          <button
+            className={`xleth-graph-state-preview__mapping-editor-curve-tab${isBezier ? ' xleth-graph-state-preview__mapping-editor-curve-tab--active' : ''}`}
+            type="button"
+            aria-pressed={isBezier}
+            onClick={() => { if (!isBezier) onUpdate(edgeId, { curve: createDefaultBezierCurve() }); }}
+          >Bezier</button>
+        </div>
+
+        <svg
+          ref={svgRef}
+          className="xleth-graph-state-preview__mapping-editor-bezier-svg"
+          width={BEZ_W}
+          height={BEZ_H}
+          aria-label="Curve editor"
+          role="img"
+          onPointerMove={isBezier ? handleDragMove : undefined}
+          onPointerUp={isBezier ? handleDragEnd : undefined}
+          onPointerCancel={isBezier ? handleDragEnd : undefined}
+        >
+          {/* Grid */}
+          <line x1={BEZ_W * 0.25} y1="0" x2={BEZ_W * 0.25} y2={BEZ_H} className="xleth-graph-state-preview__mapping-editor-bezier-grid" />
+          <line x1={BEZ_W * 0.5}  y1="0" x2={BEZ_W * 0.5}  y2={BEZ_H} className="xleth-graph-state-preview__mapping-editor-bezier-grid" />
+          <line x1={BEZ_W * 0.75} y1="0" x2={BEZ_W * 0.75} y2={BEZ_H} className="xleth-graph-state-preview__mapping-editor-bezier-grid" />
+          <line x1="0" y1={BEZ_H * 0.25} x2={BEZ_W} y2={BEZ_H * 0.25} className="xleth-graph-state-preview__mapping-editor-bezier-grid" />
+          <line x1="0" y1={BEZ_H * 0.5}  x2={BEZ_W} y2={BEZ_H * 0.5}  className="xleth-graph-state-preview__mapping-editor-bezier-grid" />
+          <line x1="0" y1={BEZ_H * 0.75} x2={BEZ_W} y2={BEZ_H * 0.75} className="xleth-graph-state-preview__mapping-editor-bezier-grid" />
+          {/* Curve path */}
+          <path d={bezierPathD} className="xleth-graph-state-preview__mapping-editor-bezier-path" />
+          {/* Control handles (bezier only) */}
+          {isBezier && displayPoints && (
+            <>
+              <line x1="0" y1={BEZ_H} x2={cp1svgX} y2={cp1svgY} className="xleth-graph-state-preview__mapping-editor-bezier-handle-line" />
+              <line x1={BEZ_W} y1="0" x2={cp2svgX} y2={cp2svgY} className="xleth-graph-state-preview__mapping-editor-bezier-handle-line" />
+              <circle
+                cx={cp1svgX} cy={cp1svgY} r={6}
+                className="xleth-graph-state-preview__mapping-editor-bezier-cp"
+                aria-label="Control point 1 (drag to shape curve)"
+                style={{ cursor: 'grab' }}
+                onPointerDown={handleStartDrag(1)}
+              />
+              <circle
+                cx={cp2svgX} cy={cp2svgY} r={6}
+                className="xleth-graph-state-preview__mapping-editor-bezier-cp"
+                aria-label="Control point 2 (drag to shape curve)"
+                style={{ cursor: 'grab' }}
+                onPointerDown={handleStartDrag(2)}
+              />
+            </>
+          )}
+          {/* Fixed endpoint markers */}
+          <circle cx="0" cy={BEZ_H} r={3} className="xleth-graph-state-preview__mapping-editor-bezier-endpoint" />
+          <circle cx={BEZ_W} cy="0" r={3} className="xleth-graph-state-preview__mapping-editor-bezier-endpoint" />
+        </svg>
+      </div>
+
+      <div className="xleth-graph-state-preview__mapping-editor-preview" aria-label="Mapping preview">
+        <span className="xleth-graph-state-preview__mapping-editor-preview-item">
+          <span className="xleth-graph-state-preview__mapping-editor-preview-label">0%:</span>
+          {fmtPct(preview0.value)}
+        </span>
+        <span className="xleth-graph-state-preview__mapping-editor-preview-item">
+          <span className="xleth-graph-state-preview__mapping-editor-preview-label">50%:</span>
+          {fmtPct(preview50.value)}
+        </span>
+        <span className="xleth-graph-state-preview__mapping-editor-preview-item">
+          <span className="xleth-graph-state-preview__mapping-editor-preview-label">100%:</span>
+          {fmtPct(preview100.value)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export function filterExposeParameterDescriptors(
   parameters: GraphEffectParameterDescriptor[],
   search: string,
@@ -1131,6 +1420,7 @@ export default function GraphStatePreview({
   canRedoGraphEdit = false,
   onUndoGraphEdit,
   onRedoGraphEdit,
+  onUpdateParameterEdgeMapping,
 }: GraphStatePreviewProps) {
   const viewportRef = React.useRef<HTMLDivElement | null>(null);
   const canvasRef = React.useRef<HTMLDivElement | null>(null);
@@ -1175,6 +1465,11 @@ export default function GraphStatePreview({
   const [parameterResult, setParameterResult] = React.useState<GraphParameterResult | null>(null);
   const [parameterLoading, setParameterLoading] = React.useState(false);
   const [parameterSearch, setParameterSearch] = React.useState('');
+  const [mappingEditorState, setMappingEditorState] = React.useState<{
+    edgeId: string;
+    x: number;
+    y: number;
+  } | null>(null);
   const model = React.useMemo(
     () => buildGraphStatePreviewModel(
       graphState,
@@ -1204,6 +1499,7 @@ export default function GraphStatePreview({
   const canConnect = typeof onConnectNodes === 'function';
   const canConnectParameters = typeof onConnectMacroToParameter === 'function';
   const canDisconnect = typeof onDisconnectEdge === 'function';
+  const canEditMappings = typeof onUpdateParameterEdgeMapping === 'function';
   const canExposeParameters =
     trackId != null &&
     typeof fetchGraphEffectParameters === 'function' &&
@@ -1244,6 +1540,30 @@ export default function GraphStatePreview({
       document.removeEventListener('keydown', handleKeyDown);
     };
   }, [closeContextMenu, contextMenu]);
+
+  React.useEffect(() => {
+    if (!mappingEditorState) return undefined;
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (
+        typeof Element !== 'undefined' &&
+        target instanceof Element &&
+        target.closest('.xleth-graph-state-preview__mapping-editor')
+      ) {
+        return;
+      }
+      setMappingEditorState(null);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMappingEditorState(null);
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [mappingEditorState]);
 
   React.useEffect(() => {
     if (!contextMenu || !canExposeParameters || !fetchGraphEffectParameters || trackId == null) {
@@ -1718,27 +2038,59 @@ export default function GraphStatePreview({
                 />
               ))}
             </div>
-            {canDisconnect && (
+            {(canDisconnect || canEditMappings) && (
               <div className="xleth-graph-state-preview__overlay" aria-label="Graph cable controls">
                 {model.edges
                   .filter((edge) => edge.type === 'audio' || edge.type === 'parameter')
                   .map((edge) => (
-                    <button
-                      key={edge.id}
-                      className={`xleth-graph-state-preview__disconnect xleth-graph-state-preview__disconnect--${edge.type}`}
-                      type="button"
-                      style={{ left: edge.midX, top: edge.midY }}
-                      data-edge-id={edge.id}
-                      data-edge-type={edge.type}
-                      aria-label={`Disconnect ${edge.label}`}
-                      onPointerDown={(event) => event.stopPropagation()}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onDisconnectEdge?.(edge.id);
-                      }}
-                    >
-                      {'×'}
-                    </button>
+                    <React.Fragment key={edge.id}>
+                      {canDisconnect && (
+                        <button
+                          className={`xleth-graph-state-preview__disconnect xleth-graph-state-preview__disconnect--${edge.type}`}
+                          type="button"
+                          style={{ left: edge.midX, top: edge.midY }}
+                          data-edge-id={edge.id}
+                          data-edge-type={edge.type}
+                          aria-label={`Disconnect ${edge.label}`}
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onDisconnectEdge?.(edge.id);
+                          }}
+                        >
+                          {'×'}
+                        </button>
+                      )}
+                      {edge.type === 'parameter' && canEditMappings && (
+                        <button
+                          className={[
+                            'xleth-graph-state-preview__disconnect',
+                            'xleth-graph-state-preview__disconnect--parameter',
+                            'xleth-graph-state-preview__edge-edit',
+                            mappingEditorState?.edgeId === edge.id
+                              ? 'xleth-graph-state-preview__edge-edit--open'
+                              : '',
+                          ].filter(Boolean).join(' ')}
+                          type="button"
+                          style={{ left: edge.midX - 22, top: edge.midY }}
+                          data-edge-id={edge.id}
+                          data-edge-type={edge.type}
+                          aria-label={`Edit mapping for ${edge.label}`}
+                          aria-pressed={mappingEditorState?.edgeId === edge.id}
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setMappingEditorState((prev) =>
+                              prev?.edgeId === edge.id
+                                ? null
+                                : { edgeId: edge.id, x: event.clientX + 12, y: event.clientY - 20 },
+                            );
+                          }}
+                        >
+                          {'~'}
+                        </button>
+                      )}
+                    </React.Fragment>
                   ))}
               </div>
             )}
@@ -1759,6 +2111,32 @@ export default function GraphStatePreview({
               onRemove={handleContextRemove}
             />
           )}
+          {mappingEditorState && canEditMappings && (() => {
+            const meEdge = graphState?.edges?.find((e) => e.id === mappingEditorState.edgeId);
+            if (!meEdge || meEdge.type !== 'parameter') return null;
+            const sourceNode = model.nodes.find((n) => n.id === meEdge.sourceNodeId);
+            const targetNode = model.nodes.find((n) => n.id === meEdge.targetNodeId);
+            const srcLabel = sourceNode?.label ?? 'Macro';
+            const paramId =
+              (meEdge.targetParameter as Record<string, unknown> | null | undefined)?.nameSnapshot as string
+              ?? (meEdge.targetParameter as Record<string, unknown> | null | undefined)?.parameterId as string
+              ?? 'Parameter';
+            const tgtLabel = targetNode ? `${targetNode.label} / ${paramId}` : paramId;
+            return (
+              <ParameterEdgeMappingEditor
+                edgeId={mappingEditorState.edgeId}
+                edge={meEdge}
+                sourceLabel={srcLabel}
+                targetLabel={tgtLabel}
+                x={mappingEditorState.x}
+                y={mappingEditorState.y}
+                onUpdate={(edgeId, patch) => {
+                  void Promise.resolve(onUpdateParameterEdgeMapping?.(edgeId, patch));
+                }}
+                onClose={() => setMappingEditorState(null)}
+              />
+            );
+          })()}
         </div>
       </div>
     </section>
