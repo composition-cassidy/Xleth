@@ -597,6 +597,58 @@ nlohmann::json EffectChainManager::hydrateGraphNodes(const nlohmann::json& graph
     return result;
 }
 
+// ─── FXG.4-a graph-owned effect parameter descriptors ───────────────────────
+
+nlohmann::json EffectChainManager::getGraphEffectParameters(const std::string& effectInstanceId) const
+{
+    const int nodeId = getGraphNodeEngineId(effectInstanceId);
+    if (nodeId < 0)
+        return { {"ok", false}, {"reason", "unknown_effect_instance"},
+                 {"effectInstanceId", effectInstanceId} };
+    if (graph_->isNodeMissing(nodeId))
+        return { {"ok", false}, {"reason", "plugin_missing"}, {"unavailable", true},
+                 {"effectInstanceId", effectInstanceId}, {"engineNodeId", nodeId} };
+
+    nlohmann::json out = graph_->getGraphEffectParameterDescriptors(nodeId);
+    out["effectInstanceId"] = effectInstanceId;
+    return out;
+}
+
+nlohmann::json EffectChainManager::getGraphEffectParameterValue(const std::string& effectInstanceId,
+                                                                const std::string& parameterId) const
+{
+    const int nodeId = getGraphNodeEngineId(effectInstanceId);
+    if (nodeId < 0)
+        return { {"ok", false}, {"reason", "unknown_effect_instance"},
+                 {"effectInstanceId", effectInstanceId} };
+    if (graph_->isNodeMissing(nodeId))
+        return { {"ok", false}, {"reason", "plugin_missing"}, {"unavailable", true},
+                 {"effectInstanceId", effectInstanceId}, {"engineNodeId", nodeId} };
+
+    nlohmann::json out = graph_->getGraphEffectParameterValue(nodeId, parameterId);
+    out["effectInstanceId"] = effectInstanceId;
+    out["parameterId"]      = parameterId;
+    return out;
+}
+
+nlohmann::json EffectChainManager::setGraphEffectParameterNormalized(const std::string& effectInstanceId,
+                                                                     const std::string& parameterId,
+                                                                     float normalizedValue)
+{
+    const int nodeId = getGraphNodeEngineId(effectInstanceId);
+    if (nodeId < 0)
+        return { {"ok", false}, {"reason", "unknown_effect_instance"},
+                 {"effectInstanceId", effectInstanceId} };
+    if (graph_->isNodeMissing(nodeId))
+        return { {"ok", false}, {"reason", "plugin_missing"}, {"unavailable", true},
+                 {"effectInstanceId", effectInstanceId}, {"engineNodeId", nodeId} };
+
+    nlohmann::json out = graph_->setGraphEffectParameterNormalized(nodeId, parameterId, normalizedValue);
+    out["effectInstanceId"] = effectInstanceId;
+    out["parameterId"]      = parameterId;
+    return out;
+}
+
 // ─── Effect parameter / meter access ────────────────────────────────────────
 
 std::string EffectChainManager::getEffectParameters(int nodeId) const

@@ -36,6 +36,45 @@ function parseChain(raw) {
   return Array.isArray(raw) ? raw : []
 }
 
+function cloneJson(value) {
+  if (value == null) return value
+  return JSON.parse(JSON.stringify(value))
+}
+
+// FXG.4-a: clamp a renderer-supplied normalized parameter value into [0, 1].
+// Returns null for non-finite input so callers can reject before hitting IPC.
+function clampNormalizedValue(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null
+  return Math.min(1, Math.max(0, value))
+}
+
+// FXG.4-a: the engine returns graph parameter descriptors as a JSON string
+// ({ ok, ... } / reason). Normalize the bridge response into a plain object the
+// store/UI can consume without re-parsing or crashing on malformed payloads.
+function normalizeGraphParameterResult(raw) {
+  let parsed = raw
+  if (typeof raw === 'string') {
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      return { ok: false, reason: 'invalid_engine_response' }
+    }
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    return { ok: false, reason: 'invalid_engine_response' }
+  }
+  if (parsed.ok === true) {
+    return { ...parsed, ok: true }
+  }
+  return {
+    ...parsed,
+    ok: false,
+    reason: typeof parsed.reason === 'string' && parsed.reason.length > 0
+      ? parsed.reason
+      : 'engine_error',
+  }
+}
+
 export function resolveFxMode(fxModes = {}, key) {
   if (key === 'master') return DEFAULT_FX_MODE
   return fxModes?.[key] === 'graph' ? 'graph' : DEFAULT_FX_MODE
@@ -447,21 +486,8 @@ function buildChainAdoptionMapping(graphState, chainSlots) {
   return mapping
 }
 
-// Validates the post-mutation graphState, commits it to the store, and persists
-// best-effort. Persistence failures warn but do not fail the renderer-side edit.
-async function applyGraphStateMutation(set, key, nextGraphState, options = {}) {
-  const validate = options.validateGraphState ?? validateGraphState
+async function commitValidatedGraphState(set, key, validation, options = {}) {
   const warn = options.warn ?? console.warn
-  const validation = validate(nextGraphState, key)
-  if (validation.status !== 'valid') {
-    warn?.('[FXG] graphState mutation rejected by validation', {
-      trackId: key,
-      reason: validation.reason ?? validation.status,
-      warnings: validation.warnings,
-    })
-    return { ok: false, reason: 'invalid_graph_state', status: validation }
-  }
-
   set((currentState) => ({
     graphStates: { ...currentState.graphStates, [key]: validation.graphState },
     graphStateStatuses: { ...currentState.graphStateStatuses, [key]: validation },
@@ -483,9 +509,264 @@ async function applyGraphStateMutation(set, key, nextGraphState, options = {}) {
     }
   }
 
-  const runtimeSync = await syncGraphRuntimeForTrack(set, key, validation.graphState, options)
+  const runtimeSync = options.syncRuntime === false
+    ? undefined
+    : await syncGraphRuntimeForTrack(set, key, validation.graphState, options)
 
   return { ok: true, graphState: validation.graphState, status: validation, runtimeSync }
+}
+
+// Validates the post-mutation graphState, commits it to the store, and persists
+// best-effort. Persistence failures warn but do not fail the renderer-side edit.
+async function applyGraphStateMutation(set, key, nextGraphState, options = {}) {
+  const validate = options.validateGraphState ?? validateGraphState
+  const warn = options.warn ?? console.warn
+  const validation = validate(nextGraphState, key)
+  if (validation.status !== 'valid') {
+    warn?.('[FXG] graphState mutation rejected by validation', {
+      trackId: key,
+      reason: validation.reason ?? validation.status,
+      warnings: validation.warnings,
+    })
+    return { ok: false, reason: 'invalid_graph_state', status: validation }
+  }
+
+  return commitValidatedGraphState(set, key, validation, options)
+}
+
+const GRAPH_HISTORY_STACK_LIMIT = 100
+
+function graphRuntimeTopologyChanged(beforeGraphState, afterGraphState) {
+  const structuralSnapshot = (graphState) => ({
+    nodes: Array.isArray(graphState?.nodes)
+      ? graphState.nodes.map((node) => ({
+        id: node?.id,
+        type: node?.type,
+        data: node?.data ?? null,
+      }))
+      : [],
+    edges: Array.isArray(graphState?.edges) ? graphState.edges : [],
+  })
+  return JSON.stringify(structuralSnapshot(beforeGraphState)) !==
+    JSON.stringify(structuralSnapshot(afterGraphState))
+}
+
+function normalizeGraphHistory(history) {
+  return {
+    undoStack: Array.isArray(history?.undoStack) ? history.undoStack : [],
+    redoStack: Array.isArray(history?.redoStack) ? history.redoStack : [],
+  }
+}
+
+function capGraphHistoryStack(stack) {
+  return stack.length > GRAPH_HISTORY_STACK_LIMIT
+    ? stack.slice(stack.length - GRAPH_HISTORY_STACK_LIMIT)
+    : stack
+}
+
+function createGraphEditTransaction(type, key, beforeGraphState, afterGraphState) {
+  return {
+    type,
+    label: type,
+    trackId: key,
+    beforeGraphState: cloneJson(beforeGraphState),
+    afterGraphState: cloneJson(afterGraphState),
+  }
+}
+
+function recordGraphEditTransaction(set, key, type, beforeGraphState, afterGraphState) {
+  if (!beforeGraphState || !afterGraphState) return
+  if (JSON.stringify(beforeGraphState) === JSON.stringify(afterGraphState)) return
+
+  const transaction = createGraphEditTransaction(type, key, beforeGraphState, afterGraphState)
+  set((state) => {
+    const history = normalizeGraphHistory(state.graphHistories?.[key])
+    return {
+      graphHistories: {
+        ...state.graphHistories,
+        [key]: {
+          undoStack: capGraphHistoryStack([...history.undoStack, transaction]),
+          redoStack: [],
+        },
+      },
+    }
+  })
+}
+
+function clearGraphHistoryForTrack(set, key) {
+  set((state) => {
+    if (!state.graphHistories?.[key]) return {}
+    const nextHistories = { ...state.graphHistories }
+    delete nextHistories[key]
+    return { graphHistories: nextHistories }
+  })
+}
+
+function collectInstantiableGraphEffectNodes(graphState) {
+  const nodes = Array.isArray(graphState?.nodes) ? graphState.nodes : []
+  return nodes.reduce((map, node) => {
+    if (node?.type !== 'effect') return map
+    const data = node.data ?? {}
+    const effectInstanceId =
+      typeof data.effectInstanceId === 'string' && data.effectInstanceId.length > 0
+        ? data.effectInstanceId
+        : ''
+    const pluginId =
+      typeof data.pluginId === 'string' && data.pluginId.length > 0
+        ? data.pluginId
+        : ''
+    if (!effectInstanceId || !isInstantiablePluginId(pluginId) || data.missing === true) {
+      return map
+    }
+    if (!map.has(effectInstanceId)) {
+      map.set(effectInstanceId, {
+        effectInstanceId,
+        pluginId,
+        graphNodeId: typeof node.id === 'string' ? node.id : '',
+      })
+    }
+    return map
+  }, new Map())
+}
+
+async function rollbackCreatedGraphEffects(key, effectInstanceIds, options = {}) {
+  if (effectInstanceIds.length === 0) return
+  const removeNode = options.removeGraphEngineNode ?? defaultAudioApi().removeGraphEffectNode
+  if (typeof removeNode !== 'function') return
+  const warn = options.warn ?? console.warn
+  for (const effectInstanceId of effectInstanceIds) {
+    try {
+      await removeNode(Number(key), effectInstanceId)
+    } catch (e) {
+      warn?.('[FXG] graph history processor rollback failed', {
+        trackId: key,
+        effectInstanceId,
+        error: e?.message ?? e,
+      })
+    }
+  }
+}
+
+async function instantiateGraphEffectForHistory(key, entry, options = {}) {
+  const instantiate = options.instantiateGraphEngineNode ?? defaultAudioApi().addGraphEffectNode
+  if (typeof instantiate !== 'function') return { ok: false, reason: 'engine_unavailable' }
+  try {
+    const engineNodeId = normalizeEngineNodeId(
+      await instantiate(Number(key), entry.effectInstanceId, entry.pluginId),
+    )
+    if (engineNodeId == null) return { ok: false, reason: 'engine_instantiation_failed' }
+    return { ok: true, engineNodeId }
+  } catch (e) {
+    ;(options.warn ?? console.warn)?.('[FXG] graph history engine instantiation failed', {
+      trackId: key,
+      effectInstanceId: entry.effectInstanceId,
+      error: e?.message ?? e,
+    })
+    return { ok: false, reason: 'engine_instantiation_failed' }
+  }
+}
+
+async function removeGraphEffectForHistory(key, effectInstanceId, options = {}) {
+  const removeNode = options.removeGraphEngineNode ?? defaultAudioApi().removeGraphEffectNode
+  if (typeof removeNode !== 'function') return { ok: false, reason: 'engine_unavailable' }
+  try {
+    const removedOk = (await removeNode(Number(key), effectInstanceId)) !== false
+    return removedOk
+      ? { ok: true }
+      : { ok: false, reason: 'engine_removal_failed' }
+  } catch (e) {
+    ;(options.warn ?? console.warn)?.('[FXG] graph history engine removal failed', {
+      trackId: key,
+      effectInstanceId,
+      error: e?.message ?? e,
+    })
+    return { ok: false, reason: 'engine_removal_failed' }
+  }
+}
+
+async function reconcileGraphEngineNodesForHistory(set, get, key, currentGraphState, targetGraphState, options = {}) {
+  const currentEffects = collectInstantiableGraphEffectNodes(currentGraphState)
+  const targetEffects = collectInstantiableGraphEffectNodes(targetGraphState)
+  const createdMappings = {}
+  const createdEffectInstanceIds = []
+  const removedEffectInstanceIds = []
+
+  for (const entry of targetEffects.values()) {
+    if (currentEffects.has(entry.effectInstanceId)) continue
+    if (getSessionEngineNodeId(get(), key, entry.effectInstanceId) != null) continue
+
+    const result = await instantiateGraphEffectForHistory(key, entry, options)
+    if (!result.ok) {
+      await rollbackCreatedGraphEffects(key, createdEffectInstanceIds, options)
+      return result
+    }
+    createdMappings[entry.effectInstanceId] = result.engineNodeId
+    createdEffectInstanceIds.push(entry.effectInstanceId)
+  }
+
+  for (const entry of currentEffects.values()) {
+    if (targetEffects.has(entry.effectInstanceId)) continue
+    if (getSessionEngineNodeId(get(), key, entry.effectInstanceId) == null) continue
+
+    const result = await removeGraphEffectForHistory(key, entry.effectInstanceId, options)
+    if (!result.ok) {
+      await rollbackCreatedGraphEffects(key, createdEffectInstanceIds, options)
+      return result
+    }
+    removedEffectInstanceIds.push(entry.effectInstanceId)
+  }
+
+  return { ok: true, createdMappings, removedEffectInstanceIds }
+}
+
+async function applyGraphHistoryTransition(set, get, key, targetGraphState, options = {}) {
+  const access = readGraphStateForMutation(get(), key)
+  if (!access.ok) return access
+
+  const validate = options.validateGraphState ?? validateGraphState
+  const warn = options.warn ?? console.warn
+  const validation = validate(targetGraphState, key)
+  if (validation.status !== 'valid') {
+    warn?.('[FXG] graph history target rejected by validation', {
+      trackId: key,
+      reason: validation.reason ?? validation.status,
+      warnings: validation.warnings,
+    })
+    return { ok: false, reason: 'invalid_graph_state', status: validation }
+  }
+
+  const lifecycle = await reconcileGraphEngineNodesForHistory(
+    set,
+    get,
+    key,
+    access.graphState,
+    validation.graphState,
+    options,
+  )
+  if (!lifecycle.ok) return lifecycle
+
+  const shouldSyncRuntime = graphRuntimeTopologyChanged(access.graphState, validation.graphState)
+  const applied = await commitValidatedGraphState(set, key, validation, {
+    ...options,
+    syncRuntime: false,
+  })
+
+  if (Object.keys(lifecycle.createdMappings).length > 0) {
+    mergeSessionEngineNodeIds(set, key, lifecycle.createdMappings)
+  }
+  for (const effectInstanceId of lifecycle.removedEffectInstanceIds) {
+    clearSessionEngineNodeId(set, key, effectInstanceId)
+  }
+
+  const runtimeSync = shouldSyncRuntime
+    ? await syncGraphRuntimeForTrack(set, key, validation.graphState, options)
+    : undefined
+
+  return {
+    ...applied,
+    runtimeSync,
+    lifecycle,
+  }
 }
 
 async function hydrateGraphEngineNodesForTrack(key, graphState, options = {}) {
@@ -567,6 +848,10 @@ const useEffectChainStore = create((set, get) => ({
   // { [key: String(trackId)]: { ok, reason, updatedAt } }
   // Session-only FXG.3-c-b runtime routing sync status. Never persisted.
   graphRuntimeStatuses: {},
+  // { [key: String(trackId)]: { undoStack, redoStack } }
+  // Session-only FX Graph edit history. Never persisted and never shared with
+  // Mixer Chain / native undo history.
+  graphHistories: {},
 
   ensureFxState: (key) => {
     const { fxModes, fxPanelViews } = get()
@@ -587,6 +872,7 @@ const useEffectChainStore = create((set, get) => ({
       // hydrateGraphEffectInstancesForLoadedProject after graphState loads.
       graphEngineNodeIds: {},
       graphRuntimeStatuses: {},
+      graphHistories: {},
     })
   },
 
@@ -623,7 +909,14 @@ const useEffectChainStore = create((set, get) => ({
   setFxMode: (key, mode) => {
     // FX ownership transfer undo/redo is intentionally deferred to FXG.2.
     const nextMode = key !== 'master' && mode === 'graph' ? 'graph' : DEFAULT_FX_MODE
-    set((state) => ({ fxModes: { ...state.fxModes, [key]: nextMode } }))
+    set((state) => {
+      const nextHistories = { ...state.graphHistories }
+      delete nextHistories[key]
+      return {
+        fxModes: { ...state.fxModes, [key]: nextMode },
+        graphHistories: nextHistories,
+      }
+    })
   },
 
   setFxPanelView: (key, view) => {
@@ -716,6 +1009,7 @@ const useEffectChainStore = create((set, get) => ({
       fxModes: { ...currentState.fxModes, [key]: 'graph' },
       graphStates: { ...currentState.graphStates, [key]: validation.graphState },
       graphStateStatuses: { ...currentState.graphStateStatuses, [key]: validation },
+      graphHistories: { ...currentState.graphHistories, [key]: { undoStack: [], redoStack: [] } },
     }))
 
     // FXG.3-d ownership transfer: adopt the existing chain processors as
@@ -804,7 +1098,10 @@ const useEffectChainStore = create((set, get) => ({
 
     const timeline = defaultTimelineApi()
     const persistGraphState = options.persistGraphState ?? timeline.setTrackGraphState
-    if (typeof persistGraphState !== 'function') return true
+    if (typeof persistGraphState !== 'function') {
+      recordGraphEditTransaction(set, key, 'move_graph_node', graphState, validation.graphState)
+      return true
+    }
 
     try {
       const ok = await persistGraphState(Number(key), validation.graphState)
@@ -824,6 +1121,7 @@ const useEffectChainStore = create((set, get) => ({
       return false
     }
 
+    recordGraphEditTransaction(set, key, 'move_graph_node', graphState, validation.graphState)
     return true
   },
 
@@ -900,6 +1198,98 @@ const useEffectChainStore = create((set, get) => ({
     return true
   },
 
+  canUndoGraphEdit: (trackId) => {
+    const key = normalizeNormalTrackKey(trackId)
+    if (key == null) return false
+    const state = get()
+    if (resolveFxMode(state.fxModes, key) !== 'graph') return false
+    return normalizeGraphHistory(state.graphHistories?.[key]).undoStack.length > 0
+  },
+
+  canRedoGraphEdit: (trackId) => {
+    const key = normalizeNormalTrackKey(trackId)
+    if (key == null) return false
+    const state = get()
+    if (resolveFxMode(state.fxModes, key) !== 'graph') return false
+    return normalizeGraphHistory(state.graphHistories?.[key]).redoStack.length > 0
+  },
+
+  undoGraphEditForTrack: async (trackId, options = {}) => {
+    const access = readGraphStateForMutation(get(), trackId)
+    if (!access.ok) return access
+
+    const history = normalizeGraphHistory(get().graphHistories?.[access.key])
+    const transaction = history.undoStack[history.undoStack.length - 1]
+    if (!transaction) return { ok: false, reason: 'nothing_to_undo' }
+
+    const applied = await applyGraphHistoryTransition(
+      set,
+      get,
+      access.key,
+      transaction.beforeGraphState,
+      options,
+    )
+    if (!applied.ok) return applied
+
+    set((state) => {
+      const currentHistory = normalizeGraphHistory(state.graphHistories?.[access.key])
+      const undoStack = [...currentHistory.undoStack]
+      const popped = undoStack.pop()
+      return {
+        graphHistories: {
+          ...state.graphHistories,
+          [access.key]: {
+            undoStack,
+            redoStack: capGraphHistoryStack([
+              ...currentHistory.redoStack,
+              popped ?? transaction,
+            ]),
+          },
+        },
+      }
+    })
+
+    return { ...applied, transaction }
+  },
+
+  redoGraphEditForTrack: async (trackId, options = {}) => {
+    const access = readGraphStateForMutation(get(), trackId)
+    if (!access.ok) return access
+
+    const history = normalizeGraphHistory(get().graphHistories?.[access.key])
+    const transaction = history.redoStack[history.redoStack.length - 1]
+    if (!transaction) return { ok: false, reason: 'nothing_to_redo' }
+
+    const applied = await applyGraphHistoryTransition(
+      set,
+      get,
+      access.key,
+      transaction.afterGraphState,
+      options,
+    )
+    if (!applied.ok) return applied
+
+    set((state) => {
+      const currentHistory = normalizeGraphHistory(state.graphHistories?.[access.key])
+      const redoStack = [...currentHistory.redoStack]
+      const popped = redoStack.pop()
+      return {
+        graphHistories: {
+          ...state.graphHistories,
+          [access.key]: {
+            undoStack: capGraphHistoryStack([
+              ...currentHistory.undoStack,
+              popped ?? transaction,
+            ]),
+            redoStack,
+          },
+        },
+      }
+    })
+
+    return { ...applied, transaction }
+  },
+
   // FXG.3-c-b graphState mutation actions. Graph effect lifecycle owns separate
   // graph-owned engine processors (never effectChains). Each requires a normal
   // track owned by graph mode. Routing edits sync supported linear topology.
@@ -951,6 +1341,13 @@ const useEffectChainStore = create((set, get) => ({
     if (engineNodeId != null) {
       setSessionEngineNodeId(set, access.key, draft.effectInstanceId, engineNodeId)
     }
+    recordGraphEditTransaction(
+      set,
+      access.key,
+      'add_graph_effect_node',
+      access.graphState,
+      applied.graphState,
+    )
     return { ...applied, effectInstanceId: draft.effectInstanceId, engineNodeId }
   },
 
@@ -993,6 +1390,15 @@ const useEffectChainStore = create((set, get) => ({
     if (applied.ok && isEngineBacked) {
       clearSessionEngineNodeId(set, access.key, effectInstanceId)
     }
+    if (applied.ok) {
+      recordGraphEditTransaction(
+        set,
+        access.key,
+        'remove_graph_node',
+        access.graphState,
+        applied.graphState,
+      )
+    }
     return applied
   },
 
@@ -1003,7 +1409,17 @@ const useEffectChainStore = create((set, get) => ({
     const mutation = connectGraphNodes(access.graphState, connectionDraft, { idFactory: options.idFactory })
     if (!mutation.ok) return mutation
 
-    return applyGraphStateMutation(set, access.key, mutation.graphState, options)
+    const applied = await applyGraphStateMutation(set, access.key, mutation.graphState, options)
+    if (applied.ok) {
+      recordGraphEditTransaction(
+        set,
+        access.key,
+        'connect_graph_nodes',
+        access.graphState,
+        applied.graphState,
+      )
+    }
+    return applied
   },
 
   disconnectGraphEdgeForTrack: async (trackId, edgeId, options = {}) => {
@@ -1013,7 +1429,139 @@ const useEffectChainStore = create((set, get) => ({
     const mutation = disconnectGraphEdge(access.graphState, edgeId)
     if (!mutation.ok) return mutation
 
-    return applyGraphStateMutation(set, access.key, mutation.graphState, options)
+    const applied = await applyGraphStateMutation(set, access.key, mutation.graphState, options)
+    if (applied.ok) {
+      recordGraphEditTransaction(
+        set,
+        access.key,
+        'disconnect_graph_edge',
+        access.graphState,
+        applied.graphState,
+      )
+    }
+    return applied
+  },
+
+  // ── FXG.4-a graph-owned effect parameter descriptors ──────────────────────
+  // Read/write normalized [0,1] parameters for a graph-owned effect node. These
+  // are gated by fxMode === 'graph', address the engine by the stable
+  // effectInstanceId (NEVER by graphState node id and NEVER by engine node id),
+  // and never mutate effectChains or graphState. They are pure engine queries —
+  // the renderer holds the descriptor list in local UI state, nothing persists.
+  fetchGraphEffectParameters: async (trackId, effectInstanceId, options = {}) => {
+    const key = normalizeNormalTrackKey(trackId)
+    if (key == null) {
+      return { ok: false, reason: trackId === 'master' ? 'master_track' : 'no_track' }
+    }
+    if (resolveFxMode(get().fxModes, key) !== 'graph') {
+      return { ok: false, reason: 'not_graph_mode' }
+    }
+    if (typeof effectInstanceId !== 'string' || effectInstanceId.length === 0) {
+      return { ok: false, reason: 'missing_effect_instance_id' }
+    }
+
+    const audio = defaultAudioApi()
+    const getParameters = options.getGraphEffectParameters ?? audio.getGraphEffectParameters
+    if (typeof getParameters !== 'function') {
+      return { ok: false, reason: 'engine_unavailable' }
+    }
+
+    try {
+      const raw = await getParameters(Number(key), effectInstanceId)
+      const result = normalizeGraphParameterResult(raw)
+      if (typeof options.graphNodeId === 'string' && options.graphNodeId.length > 0) {
+        result.graphNodeId = options.graphNodeId
+      }
+      return result
+    } catch (e) {
+      ;(options.warn ?? console.warn)?.('[FXG] graph effect parameter fetch failed', {
+        trackId: key,
+        effectInstanceId,
+        error: e?.message ?? e,
+      })
+      return { ok: false, reason: 'engine_error' }
+    }
+  },
+
+  getGraphEffectParameterValue: async (trackId, effectInstanceId, parameterId, options = {}) => {
+    const key = normalizeNormalTrackKey(trackId)
+    if (key == null) {
+      return { ok: false, reason: trackId === 'master' ? 'master_track' : 'no_track' }
+    }
+    if (resolveFxMode(get().fxModes, key) !== 'graph') {
+      return { ok: false, reason: 'not_graph_mode' }
+    }
+    if (typeof effectInstanceId !== 'string' || effectInstanceId.length === 0) {
+      return { ok: false, reason: 'missing_effect_instance_id' }
+    }
+    if (typeof parameterId !== 'string' || parameterId.length === 0) {
+      return { ok: false, reason: 'missing_parameter_id' }
+    }
+
+    const audio = defaultAudioApi()
+    const getValue = options.getGraphEffectParameterValue ?? audio.getGraphEffectParameterValue
+    if (typeof getValue !== 'function') {
+      return { ok: false, reason: 'engine_unavailable' }
+    }
+
+    try {
+      const raw = await getValue(Number(key), effectInstanceId, parameterId)
+      return normalizeGraphParameterResult(raw)
+    } catch (e) {
+      ;(options.warn ?? console.warn)?.('[FXG] graph effect parameter value fetch failed', {
+        trackId: key,
+        effectInstanceId,
+        parameterId,
+        error: e?.message ?? e,
+      })
+      return { ok: false, reason: 'engine_error' }
+    }
+  },
+
+  setGraphEffectParameterNormalized: async (
+    trackId,
+    effectInstanceId,
+    parameterId,
+    normalizedValue,
+    options = {},
+  ) => {
+    const key = normalizeNormalTrackKey(trackId)
+    if (key == null) {
+      return { ok: false, reason: trackId === 'master' ? 'master_track' : 'no_track' }
+    }
+    if (resolveFxMode(get().fxModes, key) !== 'graph') {
+      return { ok: false, reason: 'not_graph_mode' }
+    }
+    if (typeof effectInstanceId !== 'string' || effectInstanceId.length === 0) {
+      return { ok: false, reason: 'missing_effect_instance_id' }
+    }
+    if (typeof parameterId !== 'string' || parameterId.length === 0) {
+      return { ok: false, reason: 'missing_parameter_id' }
+    }
+    const clamped = clampNormalizedValue(normalizedValue)
+    if (clamped == null) {
+      return { ok: false, reason: 'invalid_value' }
+    }
+
+    const audio = defaultAudioApi()
+    const setParameter =
+      options.setGraphEffectParameterNormalized ?? audio.setGraphEffectParameterNormalized
+    if (typeof setParameter !== 'function') {
+      return { ok: false, reason: 'engine_unavailable' }
+    }
+
+    try {
+      const raw = await setParameter(Number(key), effectInstanceId, parameterId, clamped)
+      return normalizeGraphParameterResult(raw)
+    } catch (e) {
+      ;(options.warn ?? console.warn)?.('[FXG] graph effect parameter set failed', {
+        trackId: key,
+        effectInstanceId,
+        parameterId,
+        error: e?.message ?? e,
+      })
+      return { ok: false, reason: 'engine_error' }
+    }
   },
 
   fetchChain: async (key) => {
@@ -1142,6 +1690,7 @@ globalThis.window?.xleth?.onProjectLoaded?.(() => {
     graphStateStatuses: {},
     graphEngineNodeIds: {},
     graphRuntimeStatuses: {},
+    graphHistories: {},
   })
 
   // Close all open effect editor panels

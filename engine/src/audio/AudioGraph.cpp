@@ -26,6 +26,7 @@
 #include "audio/DelayCompensationProcessor.h"
 #include "audio/GuardedPluginWrapper.h"
 #include "audio/PluginCrashGuard.h"
+#include "audio/GraphEffectParameters.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -2284,6 +2285,185 @@ juce::String AudioGraph::getPluginFilePath(int nodeId) const
     auto it = vstDescriptions_.find(nodeId);
     if (it == vstDescriptions_.end()) return {};
     return it->second.fileOrIdentifier;
+}
+
+// ─── FXG.4-a graph-owned parameter descriptor + normalized read/write ───────
+//
+// One unified path for stock effects (APVTS, the single source of truth) and
+// third-party plugins (host-facing AudioProcessorParameter objects asked of the
+// hosted processor — never scraped from a native editor). All values normalized
+// [0, 1]; stable parameterId preferred, "#<index>" fallback flagged. Plugin
+// calls run behind the SEH guard so a faulting plugin fails safely.
+
+nlohmann::json AudioGraph::getGraphEffectParameterDescriptors(int nodeId) const
+{
+    auto* self = const_cast<AudioGraph*>(this);
+
+    // Stock effect: enumerate from its own APVTS.
+    if (auto* effect = self->getEffect(nodeId))
+    {
+        return {
+            {"ok", true},
+            {"engineNodeId", nodeId},
+            {"effectKind", "stock"},
+            {"pluginFormat", "stock"},
+            {"pluginId", effect->getPluginId()},
+            {"parameters", xleth::audio::buildGraphEffectParameterDescriptors(*effect, true)},
+        };
+    }
+
+    // Third-party plugin: enumerate from the hosted inner processor.
+    auto* proc = self->getProcessor(nodeId);
+    auto* guarded = dynamic_cast<GuardedPluginWrapper*>(proc);
+    auto* inner = guarded ? guarded->getInner() : nullptr;
+    if (inner == nullptr)
+        return { {"ok", false}, {"reason", "processor_unavailable"}, {"engineNodeId", nodeId} };
+    if (guarded->isCrashed())
+        return { {"ok", false}, {"reason", "plugin_crashed"}, {"engineNodeId", nodeId} };
+
+    nlohmann::json params;
+    const bool ok = xleth::pluginGuardCall([&] {
+        params = xleth::audio::buildGraphEffectParameterDescriptors(*inner, false);
+    });
+    if (!ok)
+        return { {"ok", false}, {"reason", "plugin_unavailable"}, {"engineNodeId", nodeId} };
+
+    nlohmann::json out = {
+        {"ok", true},
+        {"engineNodeId", nodeId},
+        {"effectKind", "plugin"},
+        {"pluginFormat", "plugin"},
+        {"pluginId", ""},
+        {"parameters", std::move(params)},
+    };
+    auto it = vstDescriptions_.find(nodeId);
+    if (it != vstDescriptions_.end())
+    {
+        const auto& desc = it->second;
+        out["pluginFormat"] = desc.pluginFormatName.toLowerCase().toStdString();
+        out["pluginId"]     = desc.fileOrIdentifier.toStdString();
+        out["pluginName"]   = desc.name.toStdString();
+    }
+    return out;
+}
+
+nlohmann::json AudioGraph::getGraphEffectParameterValue(int nodeId,
+                                                        const std::string& parameterId) const
+{
+    auto* self = const_cast<AudioGraph*>(this);
+
+    if (auto* effect = self->getEffect(nodeId))
+    {
+        const int index = xleth::audio::resolveGraphEffectParameterIndex(*effect, parameterId, true);
+        if (index < 0)
+            return { {"ok", false}, {"reason", "unknown_parameter"}, {"engineNodeId", nodeId} };
+        auto* param = effect->getParameters()[index];
+        return {
+            {"ok", true},
+            {"engineNodeId", nodeId},
+            {"parameterIndex", index},
+            {"normalizedValue", param->getValue()},
+            {"displayValue", param->getCurrentValueAsText().toStdString()},
+        };
+    }
+
+    auto* proc = self->getProcessor(nodeId);
+    auto* guarded = dynamic_cast<GuardedPluginWrapper*>(proc);
+    auto* inner = guarded ? guarded->getInner() : nullptr;
+    if (inner == nullptr)
+        return { {"ok", false}, {"reason", "processor_unavailable"}, {"engineNodeId", nodeId} };
+    if (guarded->isCrashed())
+        return { {"ok", false}, {"reason", "plugin_crashed"}, {"engineNodeId", nodeId} };
+
+    nlohmann::json out;
+    bool resolved = false;
+    const bool ok = xleth::pluginGuardCall([&] {
+        const int index = xleth::audio::resolveGraphEffectParameterIndex(*inner, parameterId, false);
+        if (index < 0)
+            return;
+        auto* param = inner->getParameters()[index];
+        out["parameterIndex"]  = index;
+        out["normalizedValue"] = param->getValue();
+        out["displayValue"]    = param->getCurrentValueAsText().toStdString();
+        resolved = true;
+    });
+    if (!ok)
+        return { {"ok", false}, {"reason", "plugin_unavailable"}, {"engineNodeId", nodeId} };
+    if (!resolved)
+        return { {"ok", false}, {"reason", "unknown_parameter"}, {"engineNodeId", nodeId} };
+    out["ok"]           = true;
+    out["engineNodeId"] = nodeId;
+    return out;
+}
+
+nlohmann::json AudioGraph::setGraphEffectParameterNormalized(int nodeId,
+                                                             const std::string& parameterId,
+                                                             float normalizedValue)
+{
+    normalizedValue = std::clamp(normalizedValue, 0.0f, 1.0f);
+
+    // Stock effect: route through the established stock setter (denormalized)
+    // so smoothing targets, onParameterValueChanged, and latency recompute fire
+    // exactly as Mixer Chain edits do — only the input is normalized here.
+    if (auto* effect = getEffect(nodeId))
+    {
+        const int index = xleth::audio::resolveGraphEffectParameterIndex(*effect, parameterId, true);
+        if (index < 0)
+            return { {"ok", false}, {"reason", "unknown_parameter"}, {"engineNodeId", nodeId} };
+        auto* rp = dynamic_cast<juce::RangedAudioParameter*>(effect->getParameters()[index]);
+        if (rp == nullptr)
+            return { {"ok", false}, {"reason", "unknown_parameter"}, {"engineNodeId", nodeId} };
+
+        const float denorm = rp->convertFrom0to1(normalizedValue);
+        const int beforeLatency = effect->getLatencySamples();
+        if (!effect->setParameterValue(rp->paramID.toStdString(), denorm))
+            return { {"ok", false}, {"reason", "set_failed"}, {"engineNodeId", nodeId} };
+        if (effect->getLatencySamples() != beforeLatency)
+            rebuildImmediate();
+
+        return {
+            {"ok", true},
+            {"engineNodeId", nodeId},
+            {"parameterIndex", index},
+            {"normalizedValue", rp->getValue()},
+        };
+    }
+
+    auto* proc = getProcessor(nodeId);
+    auto* guarded = dynamic_cast<GuardedPluginWrapper*>(proc);
+    auto* inner = guarded ? guarded->getInner() : nullptr;
+    if (guarded == nullptr || inner == nullptr)
+        return { {"ok", false}, {"reason", "processor_unavailable"}, {"engineNodeId", nodeId} };
+    if (guarded->isCrashed())
+        return { {"ok", false}, {"reason", "plugin_crashed"}, {"engineNodeId", nodeId} };
+
+    int index = -1;
+    const bool resolvedOk = xleth::pluginGuardCall([&] {
+        index = xleth::audio::resolveGraphEffectParameterIndex(*inner, parameterId, false);
+    });
+    if (!resolvedOk)
+        return { {"ok", false}, {"reason", "plugin_unavailable"}, {"engineNodeId", nodeId} };
+    if (index < 0)
+        return { {"ok", false}, {"reason", "unknown_parameter"}, {"engineNodeId", nodeId} };
+
+    // Reuse the SEH-guarded, range-clamping third-party setter; the resolved
+    // index is the most robust token it accepts.
+    if (!guarded->setWrappedParameterValue(std::to_string(index), normalizedValue))
+        return { {"ok", false}, {"reason", "set_failed"}, {"engineNodeId", nodeId} };
+    if (guarded->refreshReportedLatency())
+        rebuildImmediate();
+
+    float readback = normalizedValue;
+    (void) xleth::pluginGuardCall([&] {
+        if (index >= 0 && index < inner->getParameters().size())
+            readback = inner->getParameters()[index]->getValue();
+    });
+    return {
+        {"ok", true},
+        {"engineNodeId", nodeId},
+        {"parameterIndex", index},
+        {"normalizedValue", readback},
+    };
 }
 
 // ─── Factory ────────────────────────────────────────────────────────────────

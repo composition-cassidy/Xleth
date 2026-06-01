@@ -144,6 +144,33 @@ describe('effectChainStore FX mode safety gate', () => {
       addGraphEffectNode: vi.fn(async () => graphEngineNodeSeq++),
       removeGraphEffectNode: vi.fn(async () => true),
       getGraphEffectEngineNodeId: vi.fn(async () => null),
+      // FXG.4-a graph-owned parameter descriptors (engine returns JSON strings)
+      getGraphEffectParameters: vi.fn(async (trackId, effectInstanceId) => JSON.stringify({
+        ok: true,
+        trackId,
+        effectInstanceId,
+        effectKind: 'stock',
+        pluginFormat: 'stock',
+        pluginId: 'delay',
+        parameters: [
+          {
+            parameterId: 'feedback', parameterIndex: 0, parameterIdIsFallback: false,
+            name: 'Feedback', unit: '%', normalizedValue: 0.5, defaultNormalizedValue: 0.4,
+            automatable: true, readOnly: false, discrete: false, boolean: false,
+            numSteps: 0, displayValue: '50%',
+          },
+          {
+            parameterId: 'mix', parameterIndex: 1, parameterIdIsFallback: false,
+            name: 'Mix', unit: '%', normalizedValue: 0.25, defaultNormalizedValue: 1.0,
+            automatable: true, readOnly: false, discrete: false, boolean: false,
+            numSteps: 0, displayValue: '25%',
+          },
+        ],
+      })),
+      getGraphEffectParameterValue: vi.fn(async (trackId, effectInstanceId, parameterId) =>
+        JSON.stringify({ ok: true, trackId, effectInstanceId, parameterId, parameterIndex: 0, normalizedValue: 0.5, displayValue: '50%' })),
+      setGraphEffectParameterNormalized: vi.fn(async (trackId, effectInstanceId, parameterId, value) =>
+        JSON.stringify({ ok: true, trackId, effectInstanceId, parameterId, parameterIndex: 0, normalizedValue: Math.min(1, Math.max(0, value)) })),
       hydrateGraphEffectNodes: vi.fn(async (_trackId, graphEffectNodes = []) => ({
         ok: true,
         mapping: Object.fromEntries(
@@ -1091,11 +1118,13 @@ describe('effectChainStore FX mode safety gate', () => {
   // --- FXG.2C-e graphState mutation actions ---
 
   function seedGraphMode(useEffectChainStore, graphState, { baseChain = [makeEffect(11, 'compressor', 0)] } = {}) {
+    const key = String(graphState.trackId ?? '7')
     useEffectChainStore.setState({
-      chains: { '7': baseChain },
-      fxModes: { '7': 'graph' },
-      graphStates: { '7': graphState },
-      graphStateStatuses: { '7': { status: 'valid', graphState, warnings: [] } },
+      chains: { [key]: baseChain },
+      fxModes: { [key]: 'graph' },
+      graphStates: { [key]: graphState },
+      graphStateStatuses: { [key]: { status: 'valid', graphState, warnings: [] } },
+      graphHistories: {},
     })
     return baseChain
   }
@@ -1600,12 +1629,257 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(state.chains['7']).toBe(baseChain)
   })
 
+  // --- FXG.3-h graph-owned session history ---
+
+  it('undoes and redoes a final graph node move without syncing runtime or touching chains', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const baseChain = seedGraphMode(useEffectChainStore, makePositionedGraphState('7'))
+
+    await expect(
+      useEffectChainStore.getState().setGraphStateNodePosition(7, 'fx-1', { x: 333, y: 44 }),
+    ).resolves.toBe(true)
+
+    let state = useEffectChainStore.getState()
+    expect(state.graphStates['7'].nodes.find((node) => node.id === 'fx-1')?.position)
+      .toEqual({ x: 333, y: 44 })
+    expect(state.graphHistories['7'].undoStack).toHaveLength(1)
+    expect(state.graphHistories['7'].undoStack[0]).toMatchObject({ label: 'move_graph_node' })
+    expect(useEffectChainStore.getState().canUndoGraphEdit(7)).toBe(true)
+
+    timeline.setTrackGraphState.mockClear()
+    audio.syncLinearGraphTopology.mockClear()
+    const undo = await useEffectChainStore.getState().undoGraphEditForTrack(7)
+    expect(undo.ok).toBe(true)
+    state = useEffectChainStore.getState()
+    expect(state.graphStates['7'].nodes.find((node) => node.id === 'fx-1')?.position)
+      .toEqual({ x: 260, y: 0 })
+    expect(state.graphHistories['7'].undoStack).toHaveLength(0)
+    expect(state.graphHistories['7'].redoStack).toHaveLength(1)
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+    expect(state.chains['7']).toBe(baseChain)
+
+    const redo = await useEffectChainStore.getState().redoGraphEditForTrack(7)
+    expect(redo.ok).toBe(true)
+    state = useEffectChainStore.getState()
+    expect(state.graphStates['7'].nodes.find((node) => node.id === 'fx-1')?.position)
+      .toEqual({ x: 333, y: 44 })
+    expect(state.graphHistories['7'].undoStack).toHaveLength(1)
+    expect(state.graphHistories['7'].redoStack).toHaveLength(0)
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+    expect(state.chains['7']).toBe(baseChain)
+  })
+
+  it('undoes and redoes graph add lifecycle while restoring effectInstance mappings', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const baseChain = seedGraphMode(useEffectChainStore, graphWithoutEdges('7'))
+    audio.addGraphEffectNode.mockResolvedValueOnce(321)
+
+    const add = await useEffectChainStore.getState().addGraphEffectNodeForTrack('7', {
+      effectInstanceId: 'inst-add',
+      pluginId: 'stock:reverb',
+      displayName: 'Reverb',
+    }, { idFactory: () => 'fx-add' })
+    expect(add.ok).toBe(true)
+    expect(useEffectChainStore.getState().graphEngineNodeIds['7']['inst-add']).toBe(321)
+
+    audio.syncLinearGraphTopology.mockClear()
+    const undo = await useEffectChainStore.getState().undoGraphEditForTrack('7')
+    expect(undo.ok).toBe(true)
+    let state = useEffectChainStore.getState()
+    expect(state.graphStates['7'].nodes.some((node) => node.data?.effectInstanceId === 'inst-add')).toBe(false)
+    expect(state.graphEngineNodeIds['7']['inst-add']).toBeUndefined()
+    expect(audio.removeGraphEffectNode).toHaveBeenCalledWith(7, 'inst-add')
+    expect(audio.syncLinearGraphTopology).toHaveBeenCalledTimes(1)
+
+    audio.addGraphEffectNode.mockResolvedValueOnce(654)
+    audio.syncLinearGraphTopology.mockClear()
+    const redo = await useEffectChainStore.getState().redoGraphEditForTrack('7')
+    expect(redo.ok).toBe(true)
+    state = useEffectChainStore.getState()
+    expect(state.graphStates['7'].nodes.some((node) => node.data?.effectInstanceId === 'inst-add')).toBe(true)
+    expect(state.graphEngineNodeIds['7']['inst-add']).toBe(654)
+    expect(audio.addGraphEffectNode).toHaveBeenLastCalledWith(7, 'inst-add', 'stock:reverb')
+    expect(audio.syncLinearGraphTopology).toHaveBeenCalledTimes(1)
+    expect(state.chains['7']).toBe(baseChain)
+  })
+
+  it('undoes and redoes graph remove lifecycle while restoring edges and mappings', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const baseChain = seedGraphMode(useEffectChainStore, makePositionedGraphState('7'))
+    useEffectChainStore.setState({ graphEngineNodeIds: { '7': { 'effect-1': 210 } } })
+
+    const remove = await useEffectChainStore.getState().removeGraphNodeForTrack('7', 'fx-1')
+    expect(remove.ok).toBe(true)
+    expect(useEffectChainStore.getState().graphStates['7'].edges).toEqual([])
+    expect(useEffectChainStore.getState().graphEngineNodeIds['7']['effect-1']).toBeUndefined()
+    expect(audio.removeGraphEffectNode).toHaveBeenCalledWith(7, 'effect-1')
+
+    audio.addGraphEffectNode.mockResolvedValueOnce(777)
+    audio.syncLinearGraphTopology.mockClear()
+    const undo = await useEffectChainStore.getState().undoGraphEditForTrack('7')
+    expect(undo.ok).toBe(true)
+    let state = useEffectChainStore.getState()
+    expect(state.graphStates['7'].nodes.map((node) => node.id)).toEqual(['input', 'fx-1', 'output'])
+    expect(state.graphStates['7'].edges.map((edge) => edge.id)).toEqual(['edge-1', 'edge-2'])
+    expect(state.graphEngineNodeIds['7']['effect-1']).toBe(777)
+    expect(audio.addGraphEffectNode).toHaveBeenLastCalledWith(7, 'effect-1', 'stock:eq')
+    expect(audio.syncLinearGraphTopology).toHaveBeenCalledTimes(1)
+
+    audio.syncLinearGraphTopology.mockClear()
+    const redo = await useEffectChainStore.getState().redoGraphEditForTrack('7')
+    expect(redo.ok).toBe(true)
+    state = useEffectChainStore.getState()
+    expect(state.graphStates['7'].nodes.map((node) => node.id)).toEqual(['input', 'output'])
+    expect(state.graphStates['7'].edges).toEqual([])
+    expect(state.graphEngineNodeIds['7']['effect-1']).toBeUndefined()
+    expect(audio.removeGraphEffectNode).toHaveBeenLastCalledWith(7, 'effect-1')
+    expect(audio.syncLinearGraphTopology).toHaveBeenCalledTimes(1)
+    expect(state.chains['7']).toBe(baseChain)
+  })
+
+  it('undoes and redoes connect and disconnect edits with topology resync', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, graphWithoutEdges('7'))
+
+    const connect = await useEffectChainStore.getState().connectGraphNodesForTrack('7', {
+      sourceNodeId: 'input',
+      targetNodeId: 'fx-1',
+    }, { idFactory: () => 'edge-history' })
+    expect(connect.ok).toBe(true)
+
+    audio.syncLinearGraphTopology.mockClear()
+    const undoConnect = await useEffectChainStore.getState().undoGraphEditForTrack('7')
+    expect(undoConnect.ok).toBe(true)
+    expect(useEffectChainStore.getState().graphStates['7'].edges).toEqual([])
+    expect(audio.syncLinearGraphTopology).toHaveBeenCalledTimes(1)
+
+    audio.syncLinearGraphTopology.mockClear()
+    const redoConnect = await useEffectChainStore.getState().redoGraphEditForTrack('7')
+    expect(redoConnect.ok).toBe(true)
+    expect(useEffectChainStore.getState().graphStates['7'].edges.map((edge) => edge.id))
+      .toEqual(['edge-history'])
+    expect(audio.syncLinearGraphTopology).toHaveBeenCalledTimes(1)
+
+    seedGraphMode(useEffectChainStore, makePositionedGraphState('7'))
+    const disconnect = await useEffectChainStore.getState().disconnectGraphEdgeForTrack('7', 'edge-1')
+    expect(disconnect.ok).toBe(true)
+
+    audio.syncLinearGraphTopology.mockClear()
+    const undoDisconnect = await useEffectChainStore.getState().undoGraphEditForTrack('7')
+    expect(undoDisconnect.ok).toBe(true)
+    expect(useEffectChainStore.getState().graphStates['7'].edges.map((edge) => edge.id))
+      .toEqual(['edge-1', 'edge-2'])
+    expect(audio.syncLinearGraphTopology).toHaveBeenCalledTimes(1)
+
+    audio.syncLinearGraphTopology.mockClear()
+    const redoDisconnect = await useEffectChainStore.getState().redoGraphEditForTrack('7')
+    expect(redoDisconnect.ok).toBe(true)
+    expect(useEffectChainStore.getState().graphStates['7'].edges.map((edge) => edge.id))
+      .toEqual(['edge-2'])
+    expect(audio.syncLinearGraphTopology).toHaveBeenCalledTimes(1)
+  })
+
+  it('clears redo after a new graph edit and keeps histories track scoped', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const graph7 = makePositionedGraphState('7')
+    const graph8 = makePositionedGraphState('8')
+    useEffectChainStore.setState({
+      chains: {
+        '7': [makeEffect(11, 'compressor', 0)],
+        '8': [makeEffect(12, 'delay', 0)],
+      },
+      fxModes: { '7': 'graph', '8': 'graph' },
+      graphStates: { '7': graph7, '8': graph8 },
+      graphStateStatuses: {
+        '7': { status: 'valid', graphState: graph7, warnings: [] },
+        '8': { status: 'valid', graphState: graph8, warnings: [] },
+      },
+      graphHistories: {},
+    })
+
+    await useEffectChainStore.getState().setGraphStateNodePosition(7, 'fx-1', { x: 300, y: 10 })
+    await useEffectChainStore.getState().undoGraphEditForTrack(7)
+    expect(useEffectChainStore.getState().graphHistories['7'].redoStack).toHaveLength(1)
+
+    await useEffectChainStore.getState().setGraphStateNodePosition(7, 'fx-1', { x: 340, y: 20 })
+    expect(useEffectChainStore.getState().graphHistories['7'].redoStack).toHaveLength(0)
+
+    await useEffectChainStore.getState().setGraphStateNodePosition(8, 'fx-1', { x: 420, y: 30 })
+    const state = useEffectChainStore.getState()
+    expect(state.graphHistories['7'].undoStack).toHaveLength(1)
+    expect(state.graphHistories['8'].undoStack).toHaveLength(1)
+    expect(state.graphStates['7'].nodes.find((node) => node.id === 'fx-1')?.position)
+      .toEqual({ x: 340, y: 20 })
+    expect(state.graphStates['8'].nodes.find((node) => node.id === 'fx-1')?.position)
+      .toEqual({ x: 420, y: 30 })
+  })
+
+  it('rejects graph history in chain mode without mutating graphState, history, or chains', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const graphState = makePositionedGraphState('7')
+    const chain = [makeEffect(11, 'compressor', 0)]
+    const graphHistories = {
+      '7': {
+        undoStack: [{ label: 'move_graph_node', beforeGraphState: graphState, afterGraphState: graphState }],
+        redoStack: [],
+      },
+    }
+    useEffectChainStore.setState({
+      chains: { '7': chain },
+      fxModes: { '7': 'chain' },
+      graphStates: { '7': graphState },
+      graphStateStatuses: { '7': { status: 'valid', graphState, warnings: [] } },
+      graphHistories,
+    })
+
+    await expect(useEffectChainStore.getState().undoGraphEditForTrack('7'))
+      .resolves.toMatchObject({ ok: false, reason: 'not_graph_mode' })
+    await expect(useEffectChainStore.getState().redoGraphEditForTrack('7'))
+      .resolves.toMatchObject({ ok: false, reason: 'not_graph_mode' })
+    expect(useEffectChainStore.getState().canUndoGraphEdit('7')).toBe(false)
+    expect(useEffectChainStore.getState().graphStates['7']).toBe(graphState)
+    expect(useEffectChainStore.getState().graphHistories).toBe(graphHistories)
+    expect(useEffectChainStore.getState().chains['7']).toBe(chain)
+    expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+  })
+
+  it('keeps graphState, mappings, and stacks sane when redo creation fails', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, graphWithoutEdges('7'))
+    audio.addGraphEffectNode.mockResolvedValueOnce(321)
+
+    const add = await useEffectChainStore.getState().addGraphEffectNodeForTrack('7', {
+      effectInstanceId: 'redo-fail',
+      pluginId: 'stock:reverb',
+      displayName: 'Reverb',
+    }, { idFactory: () => 'fx-redo-fail' })
+    expect(add.ok).toBe(true)
+
+    await expect(useEffectChainStore.getState().undoGraphEditForTrack('7'))
+      .resolves.toMatchObject({ ok: true })
+    const beforeRedo = useEffectChainStore.getState().graphStates['7']
+    expect(beforeRedo.nodes.some((node) => node.data?.effectInstanceId === 'redo-fail')).toBe(false)
+    expect(useEffectChainStore.getState().graphHistories['7'].redoStack).toHaveLength(1)
+
+    audio.addGraphEffectNode.mockResolvedValueOnce(-1)
+    const redo = await useEffectChainStore.getState().redoGraphEditForTrack('7')
+    expect(redo).toMatchObject({ ok: false, reason: 'engine_instantiation_failed' })
+
+    const state = useEffectChainStore.getState()
+    expect(state.graphStates['7']).toBe(beforeRedo)
+    expect(state.graphEngineNodeIds['7']['redo-fail']).toBeUndefined()
+    expect(state.graphHistories['7'].undoStack).toHaveLength(0)
+    expect(state.graphHistories['7'].redoStack).toHaveLength(1)
+  })
+
   it('clears the session engine node cache on project load', async () => {
     const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
     useEffectChainStore.setState({
       chains: { '7': [makeEffect(11, 'compressor', 0)] },
       graphEngineNodeIds: { '7': { 'effect-1': 210 } },
       graphRuntimeStatuses: { '7': { ok: true, reason: 'graph_routing_active' } },
+      graphHistories: { '7': { undoStack: [{ label: 'move_graph_node' }], redoStack: [] } },
     })
 
     projectLoadedHandler()
@@ -1614,5 +1888,97 @@ describe('effectChainStore FX mode safety gate', () => {
 
     expect(useEffectChainStore.getState().graphEngineNodeIds).toEqual({})
     expect(useEffectChainStore.getState().graphRuntimeStatuses).toEqual({})
+    expect(useEffectChainStore.getState().graphHistories).toEqual({})
+  })
+
+  // --- FXG.4-a graph-owned effect parameter descriptors ---
+
+  it('fetches graph effect parameters in graph mode without touching effectChains', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const baseChain = seedGraphMode(useEffectChainStore, graphWithTwoEffects('7'))
+
+    const result = await useEffectChainStore.getState().fetchGraphEffectParameters('7', 'effect-1')
+
+    expect(result.ok).toBe(true)
+    expect(result.parameters).toHaveLength(2)
+    expect(result.parameters[0]).toMatchObject({ parameterId: 'feedback', normalizedValue: 0.5 })
+    // Addressed by the stable effectInstanceId — never a graphState node id.
+    expect(audio.getGraphEffectParameters).toHaveBeenCalledWith(7, 'effect-1')
+    // effectChains and graphState are left untouched by a parameter read.
+    expect(useEffectChainStore.getState().chains['7']).toBe(baseChain)
+    expect(audio.addEffect).not.toHaveBeenCalled()
+    expect(audio.removeEffect).not.toHaveBeenCalled()
+  })
+
+  it('rejects graph parameter mutation while the track is in chain mode', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    // Track '7' defaults to chain mode (no seedGraphMode).
+    const result = await useEffectChainStore.getState()
+      .setGraphEffectParameterNormalized('7', 'effect-1', 'feedback', 0.5)
+
+    expect(result).toEqual({ ok: false, reason: 'not_graph_mode' })
+    expect(audio.setGraphEffectParameterNormalized).not.toHaveBeenCalled()
+  })
+
+  it('sets a normalized value by effectInstanceId and clamps out-of-range input', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const baseChain = seedGraphMode(useEffectChainStore, graphWithTwoEffects('7'))
+
+    const result = await useEffectChainStore.getState()
+      .setGraphEffectParameterNormalized('7', 'effect-2', 'mix', 2.0)
+
+    expect(result.ok).toBe(true)
+    expect(result.normalizedValue).toBe(1)
+    // Clamped to [0,1] and addressed by effectInstanceId 'effect-2' (NOT the
+    // graphState node id 'fx-2', NOT an engine node id number).
+    expect(audio.setGraphEffectParameterNormalized).toHaveBeenCalledWith(7, 'effect-2', 'mix', 1)
+    const [, instanceArg] = audio.setGraphEffectParameterNormalized.mock.calls[0]
+    expect(instanceArg).toBe('effect-2')
+    expect(typeof instanceArg).toBe('string')
+    // No chain mutation from a graph parameter write.
+    expect(useEffectChainStore.getState().chains['7']).toBe(baseChain)
+    expect(audio.addEffect).not.toHaveBeenCalled()
+  })
+
+  it('rejects graph parameter reads on the master track and with no instance id', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, graphWithTwoEffects('7'))
+
+    const master = await useEffectChainStore.getState().fetchGraphEffectParameters('master', 'effect-1')
+    expect(master).toEqual({ ok: false, reason: 'master_track' })
+
+    const noInstance = await useEffectChainStore.getState().fetchGraphEffectParameters('7', '')
+    expect(noInstance).toEqual({ ok: false, reason: 'missing_effect_instance_id' })
+    expect(audio.getGraphEffectParameters).not.toHaveBeenCalled()
+  })
+
+  it('surfaces an unavailable plugin parameter list safely', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, graphWithTwoEffects('7'))
+    audio.getGraphEffectParameters.mockResolvedValueOnce(
+      JSON.stringify({ ok: false, reason: 'plugin_missing', unavailable: true }),
+    )
+
+    const result = await useEffectChainStore.getState().fetchGraphEffectParameters('7', 'effect-1')
+    expect(result.ok).toBe(false)
+    expect(result.reason).toBe('plugin_missing')
+  })
+
+  it('fails safely when the engine returns a malformed parameter payload', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, graphWithTwoEffects('7'))
+    audio.getGraphEffectParameters.mockResolvedValueOnce('not json {{{')
+
+    const result = await useEffectChainStore.getState().fetchGraphEffectParameters('7', 'effect-1')
+    expect(result).toEqual({ ok: false, reason: 'invalid_engine_response' })
+  })
+
+  it('reports engine_unavailable when the bridge API is missing', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, graphWithTwoEffects('7'))
+    delete window.xleth.audio.getGraphEffectParameters
+
+    const result = await useEffectChainStore.getState().fetchGraphEffectParameters('7', 'effect-1')
+    expect(result).toEqual({ ok: false, reason: 'engine_unavailable' })
   })
 })

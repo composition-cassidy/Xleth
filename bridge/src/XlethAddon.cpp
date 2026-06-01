@@ -10132,6 +10132,84 @@ Napi::Value Audio_GetGraphEffectEngineNodeId(const Napi::CallbackInfo& info)
     return Napi::Number::New(env, nodeId);
 }
 
+// ── Graph-owned effect parameter descriptors (FXG.4-a) ──────────────────────
+// Unified, graph-owned normalized [0,1] parameter access for stock effects and
+// host-discovered third-party plugin parameters. Renderer-facing identity is
+// (trackId, effectInstanceId, parameterId) — engine node ids stay internal.
+// All three return a JSON string ({ ok, ... } / reason).
+
+// audio_getGraphEffectParameters(trackId, effectInstanceId) → JSON string
+Napi::Value Audio_GetGraphEffectParameters(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !audioEngine) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsString()) {
+        Napi::TypeError::New(env, "audio_getGraphEffectParameters(trackId: number, effectInstanceId: string)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int trackId                  = info[0].As<Napi::Number>().Int32Value();
+    const std::string effectInstanceId = info[1].As<Napi::String>().Utf8Value();
+
+    const std::string json =
+        audioEngine->getMixEngine().getGraphEffectParameters(trackId, effectInstanceId);
+    return Napi::String::New(env, json);
+}
+
+// audio_getGraphEffectParameterValue(trackId, effectInstanceId, parameterId) → JSON string
+Napi::Value Audio_GetGraphEffectParameterValue(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !audioEngine) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsString() || !info[2].IsString()) {
+        Napi::TypeError::New(env,
+            "audio_getGraphEffectParameterValue(trackId: number, effectInstanceId: string, parameterId: string)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int trackId                  = info[0].As<Napi::Number>().Int32Value();
+    const std::string effectInstanceId = info[1].As<Napi::String>().Utf8Value();
+    const std::string parameterId      = info[2].As<Napi::String>().Utf8Value();
+
+    const std::string json = audioEngine->getMixEngine()
+        .getGraphEffectParameterValue(trackId, effectInstanceId, parameterId);
+    return Napi::String::New(env, json);
+}
+
+// audio_setGraphEffectParameterNormalized(trackId, effectInstanceId, parameterId, normalizedValue) → JSON string
+Napi::Value Audio_SetGraphEffectParameterNormalized(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !audioEngine) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 4 || !info[0].IsNumber() || !info[1].IsString()
+                           || !info[2].IsString() || !info[3].IsNumber()) {
+        Napi::TypeError::New(env,
+            "audio_setGraphEffectParameterNormalized(trackId: number, effectInstanceId: string, parameterId: string, normalizedValue: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int trackId                  = info[0].As<Napi::Number>().Int32Value();
+    const std::string effectInstanceId = info[1].As<Napi::String>().Utf8Value();
+    const std::string parameterId      = info[2].As<Napi::String>().Utf8Value();
+    const double normalizedValue       = info[3].As<Napi::Number>().DoubleValue();
+    BridgeCallLog log("audio.setGraphEffectParameterNormalized");
+
+    const std::string json = audioEngine->getMixEngine()
+        .setGraphEffectParameterNormalized(trackId, effectInstanceId, parameterId, normalizedValue);
+    audioEngine->refreshLivePresentationLatency();
+    log.done(std::to_string(trackId) + " " + effectInstanceId + " " + parameterId);
+    return Napi::String::New(env, json);
+}
+
 // ── Master graph-mode routing ────────────────────────────────────────────────
 
 // audio_hydrateGraphEffectNodes(trackId, graphEffectNodes) -> { ok, mapping, skipped, failures }
@@ -13032,6 +13110,10 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("audio_addGraphEffectNode",          Napi::Function::New(env, Audio_AddGraphEffectNode));
     exports.Set("audio_removeGraphEffectNode",       Napi::Function::New(env, Audio_RemoveGraphEffectNode));
     exports.Set("audio_getGraphEffectEngineNodeId",  Napi::Function::New(env, Audio_GetGraphEffectEngineNodeId));
+    // ── Graph-owned effect parameter descriptors (FXG.4-a) ───────────────────
+    exports.Set("audio_getGraphEffectParameters",        Napi::Function::New(env, Audio_GetGraphEffectParameters));
+    exports.Set("audio_getGraphEffectParameterValue",    Napi::Function::New(env, Audio_GetGraphEffectParameterValue));
+    exports.Set("audio_setGraphEffectParameterNormalized", Napi::Function::New(env, Audio_SetGraphEffectParameterNormalized));
     exports.Set("audio_hydrateGraphEffectNodes",     Napi::Function::New(env, Audio_HydrateGraphEffectNodes));
     exports.Set("audio_syncLinearGraphTopology",     Napi::Function::New(env, Audio_SyncLinearGraphTopology));
     // ── Graph runtime routing + adoption (FXG.3-d) ───────────────────────────

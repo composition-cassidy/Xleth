@@ -146,6 +146,21 @@ public:
     // Returns { ok, adopted, skipped }. Never creates or destroys processors.
     nlohmann::json adoptGraphNodes(const nlohmann::json& mapping);
 
+    // ── FXG.4-a graph-owned effect parameter descriptors (main thread) ──
+    // Resolve a graph-owned effectInstanceId to its engine node and return a
+    // unified normalized [0,1] parameter view (stock APVTS or host-discovered
+    // plugin parameters). Operate ONLY on graph-owned effect instances; never
+    // touch chain-slot editing. Fail safely with a `reason`:
+    //   unknown_effect_instance — effectInstanceId not mapped to a live node
+    //   plugin_missing          — node holds a missing-plugin placeholder
+    //   processor_unavailable / plugin_unavailable / unknown_parameter / set_failed
+    nlohmann::json getGraphEffectParameters(const std::string& effectInstanceId) const;
+    nlohmann::json getGraphEffectParameterValue(const std::string& effectInstanceId,
+                                                const std::string& parameterId) const;
+    nlohmann::json setGraphEffectParameterNormalized(const std::string& effectInstanceId,
+                                                     const std::string& parameterId,
+                                                     float normalizedValue);
+
     // ── Effect parameter / meter access (main-thread only) ─────────────
     std::string getEffectParameters(int nodeId) const;
     bool        setEffectParameter (int nodeId, const std::string& paramId, float value);

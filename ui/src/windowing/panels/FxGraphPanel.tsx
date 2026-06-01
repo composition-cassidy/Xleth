@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import useEffectChainStore, { resolveFxMode } from '../../stores/effectChainStore.js';
 import useMixerStore from '../../stores/mixerStore.js';
 import useTimelineFocusStore from '../../stores/timelineFocusStore.js';
@@ -17,6 +17,8 @@ import GraphStatePreview, {
 import FxGraphEffectPicker, {
   type FxEffectPickerSelection,
 } from './fxgraph/FxGraphEffectPicker';
+import GraphNodeParameterInspector from './fxgraph/GraphNodeParameterInspector';
+import { register as registerKeyboardBinding } from '../managers/KeyboardManager';
 
 const USE_GRAPH_MODE_TITLE = 'Use FX Graph Mode for this track?';
 const USE_GRAPH_MODE_MESSAGE =
@@ -26,6 +28,14 @@ const REPLACE_GRAPH_MODE_MESSAGE =
 const EMPTY_CHAIN: ChainEffect[] = [];
 const EMPTY_VST_PLUGINS: VstPluginMeta[] = [];
 const EMPTY_GRAPH_ENGINE_NODE_IDS: Record<string, number> = {};
+const FX_GRAPH_HISTORY_KEY_COMBOS = [
+  'Ctrl+z',
+  'Ctrl+Z',
+  'Ctrl+y',
+  'Ctrl+Y',
+  'Ctrl+Shift+z',
+  'Ctrl+Shift+Z',
+];
 
 const GRAPH_MUTATION_MESSAGES: Record<string, string> = {
   protected_node: 'Track Input and Track Output cannot be removed.',
@@ -50,6 +60,8 @@ const GRAPH_MUTATION_MESSAGES: Record<string, string> = {
   engine_unavailable: 'Audio engine is unavailable. The graph is unchanged.',
   engine_instantiation_failed: 'Could not create that effect. The graph is unchanged.',
   engine_removal_failed: 'Could not remove that effect cleanly. The graph is unchanged.',
+  nothing_to_undo: 'Nothing to undo for this graph.',
+  nothing_to_redo: 'Nothing to redo for this graph.',
 };
 
 const GRAPH_RUNTIME_MESSAGES: Record<string, string> = {
@@ -106,6 +118,10 @@ export interface FxGraphPanelContentProps {
   onConnectGraphNodes?: (sourceNodeId: string, targetNodeId: string) => void;
   onDisconnectGraphEdge?: (edgeId: string) => void;
   onEditGraphNode?: (nodeId: string) => void;
+  canUndoGraphEdit?: boolean;
+  canRedoGraphEdit?: boolean;
+  onUndoGraphEdit?: () => void;
+  onRedoGraphEdit?: () => void;
   graphRuntimeStatus?: { ok?: boolean; reason?: string; mode?: string } | null;
   graphActionNotice?: string | null;
   conversionError?: string | null;
@@ -164,6 +180,10 @@ export function FxGraphPanelContent({
   onConnectGraphNodes,
   onDisconnectGraphEdge,
   onEditGraphNode,
+  canUndoGraphEdit = false,
+  canRedoGraphEdit = false,
+  onUndoGraphEdit,
+  onRedoGraphEdit,
   graphRuntimeStatus = null,
   graphActionNotice = null,
   conversionError = null,
@@ -271,6 +291,10 @@ export function FxGraphPanelContent({
               onConnectNodes={graphModeActive ? onConnectGraphNodes : undefined}
               onDisconnectEdge={graphModeActive ? onDisconnectGraphEdge : undefined}
               onEditNode={graphModeActive ? onEditGraphNode : undefined}
+              canUndoGraphEdit={graphModeActive && canUndoGraphEdit}
+              canRedoGraphEdit={graphModeActive && canRedoGraphEdit}
+              onUndoGraphEdit={graphModeActive ? onUndoGraphEdit : undefined}
+              onRedoGraphEdit={graphModeActive ? onRedoGraphEdit : undefined}
             />
           )}
 
@@ -392,6 +416,26 @@ export default function FxGraphPanel() {
   const graphRuntimeStatus = effectChainState && selectedStoreKey != null
     ? effectChainState.graphRuntimeStatuses[selectedStoreKey] ?? null
     : reactiveGraphRuntimeStatus;
+  const reactiveCanUndoGraphEdit = useEffectChainStore((state) => (
+    selectedStoreKey == null
+      ? false
+      : (state.graphHistories?.[selectedStoreKey]?.undoStack?.length ?? 0) > 0
+  ));
+  const reactiveCanRedoGraphEdit = useEffectChainStore((state) => (
+    selectedStoreKey == null
+      ? false
+      : (state.graphHistories?.[selectedStoreKey]?.redoStack?.length ?? 0) > 0
+  ));
+  const canUndoGraphEdit = fxMode === 'graph' && (
+    effectChainState && selectedStoreKey != null
+      ? (effectChainState.graphHistories?.[selectedStoreKey]?.undoStack?.length ?? 0) > 0
+      : reactiveCanUndoGraphEdit
+  );
+  const canRedoGraphEdit = fxMode === 'graph' && (
+    effectChainState && selectedStoreKey != null
+      ? (effectChainState.graphHistories?.[selectedStoreKey]?.redoStack?.length ?? 0) > 0
+      : reactiveCanRedoGraphEdit
+  );
   const reactiveChain = useEffectChainStore((state) => (
     selectFxGraphPanelChain(state.chains, selectedStoreKey)
   ));
@@ -405,6 +449,8 @@ export default function FxGraphPanel() {
   const removeGraphNodeForTrack = useEffectChainStore((state) => state.removeGraphNodeForTrack);
   const connectGraphNodesForTrack = useEffectChainStore((state) => state.connectGraphNodesForTrack);
   const disconnectGraphEdgeForTrack = useEffectChainStore((state) => state.disconnectGraphEdgeForTrack);
+  const undoGraphEditForTrack = useEffectChainStore((state) => state.undoGraphEditForTrack);
+  const redoGraphEditForTrack = useEffectChainStore((state) => state.redoGraphEditForTrack);
   const fetchChain = useEffectChainStore((state) => state.fetchChain);
   const reactiveVstPlugins = useVstStore((state) => state.plugins);
   const vstState = renderingWithoutDom ? useVstStore.getState() : null;
@@ -412,6 +458,7 @@ export default function FxGraphPanel() {
   const selectedTrackLabel = selectedTrack
     ? selectedTrack.name || `Track ${selectedTrack.id}`
     : undefined;
+  const fxGraphHistoryKeyHandlerRef = useRef<((event: KeyboardEvent) => void) | null>(null);
 
   useEffect(() => {
     if (selectedStoreKey == null) return;
@@ -501,6 +548,50 @@ export default function FxGraphPanel() {
     setGraphActionNotice(describeGraphMutationResult(result));
   }, [disconnectGraphEdgeForTrack, fxMode, selectedTrack?.id]);
 
+  const runGraphHistoryAction = useCallback(async (kind: 'undo' | 'redo') => {
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    const action = kind === 'undo' ? undoGraphEditForTrack : redoGraphEditForTrack;
+    const result = await action(selectedTrack.id);
+    setGraphActionNotice(describeGraphMutationResult(result));
+  }, [fxMode, redoGraphEditForTrack, selectedTrack?.id, undoGraphEditForTrack]);
+
+  const handleUndoGraphEdit = useCallback(() => {
+    void runGraphHistoryAction('undo');
+  }, [runGraphHistoryAction]);
+
+  const handleRedoGraphEdit = useCallback(() => {
+    void runGraphHistoryAction('redo');
+  }, [runGraphHistoryAction]);
+
+  fxGraphHistoryKeyHandlerRef.current = (event: KeyboardEvent) => {
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    const key = String(event.key || '').toLowerCase();
+    const wantsUndo = key === 'z' && !event.shiftKey;
+    const wantsRedo = key === 'y' || (key === 'z' && event.shiftKey);
+    if (!wantsUndo && !wantsRedo) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    void runGraphHistoryAction(wantsUndo ? 'undo' : 'redo');
+  };
+
+  useEffect(() => {
+    const dispatchGraphHistoryShortcut = (event: KeyboardEvent) => {
+      fxGraphHistoryKeyHandlerRef.current?.(event);
+      return event.defaultPrevented ? 'handled' : undefined;
+    };
+    const unsubscribers = FX_GRAPH_HISTORY_KEY_COMBOS.map((combo) => (
+      registerKeyboardBinding({
+        scope: 'panel:fxGraph',
+        combo,
+        handler: dispatchGraphHistoryShortcut,
+      })
+    ));
+    return () => {
+      unsubscribers.forEach((unsubscribe) => unsubscribe());
+    };
+  }, []);
+
   // Resolve a graphState topology node.id → effectInstanceId → engine nodeId,
   // then open the SAME stock/plugin editor path Mixer Chain uses. The graph
   // node.id is never passed to an editor store — only the engine nodeId is.
@@ -585,10 +676,17 @@ export default function FxGraphPanel() {
         onConnectGraphNodes={handleConnectGraphNodes}
         onDisconnectGraphEdge={handleDisconnectGraphEdge}
         onEditGraphNode={handleEditGraphNode}
+        canUndoGraphEdit={canUndoGraphEdit}
+        canRedoGraphEdit={canRedoGraphEdit}
+        onUndoGraphEdit={handleUndoGraphEdit}
+        onRedoGraphEdit={handleRedoGraphEdit}
         graphRuntimeStatus={graphRuntimeStatus}
         graphActionNotice={graphActionNotice}
         conversionError={conversionError}
       />
+      {fxMode === 'graph' && typeof selectedTrack?.id === 'number' && graphState != null && (
+        <GraphNodeParameterInspector trackId={selectedTrack.id} graphState={graphState} />
+      )}
       {confirmOpen && (
         <ConfirmConvertDialog
           title={USE_GRAPH_MODE_TITLE}

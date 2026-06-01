@@ -340,6 +340,12 @@ window.xleth = ({
     addGraphEffectNode:        (trackId, effectInstanceId, pluginId) => invoke('xleth:audio:addGraphEffectNode', trackId, effectInstanceId, pluginId),
     removeGraphEffectNode:     (trackId, effectInstanceId)           => invoke('xleth:audio:removeGraphEffectNode', trackId, effectInstanceId),
     getGraphEffectEngineNodeId:(trackId, effectInstanceId)           => invoke('xleth:audio:getGraphEffectEngineNodeId', trackId, effectInstanceId),
+    // FXG.4-a: graph-owned effect parameter descriptors (normalized [0,1]).
+    // Prefer stable (trackId, effectInstanceId, parameterId) identity; engine
+    // node ids are never surfaced to the renderer here.
+    getGraphEffectParameters:        (trackId, effectInstanceId)                          => invoke('xleth:audio:getGraphEffectParameters', trackId, effectInstanceId),
+    getGraphEffectParameterValue:    (trackId, effectInstanceId, parameterId)             => invoke('xleth:audio:getGraphEffectParameterValue', trackId, effectInstanceId, parameterId),
+    setGraphEffectParameterNormalized:(trackId, effectInstanceId, parameterId, value)     => invoke('xleth:audio:setGraphEffectParameterNormalized', trackId, effectInstanceId, parameterId, value),
     hydrateGraphEffectNodes:   (trackId, graphEffectNodes)           => invoke('xleth:audio:hydrateGraphEffectNodes', trackId, graphEffectNodes),
     syncLinearGraphTopology:   (trackId, topology)                   => invoke('xleth:audio:syncLinearGraphTopology', trackId, topology),
     // FXG.3-d: general graph routing (linear + parallel) + chain→graph adoption.

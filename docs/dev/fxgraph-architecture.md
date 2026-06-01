@@ -1,6 +1,6 @@
 # FX Graph Architecture
 
-Internal reference for the renderer-side graphState system. Updated through FXG.3-d.
+Internal reference for the renderer-side graphState system. Updated through FXG.4-a.
 
 ## Data model separation
 
@@ -66,6 +66,29 @@ The FX Graph panel (`FxGraphPanel.tsx`) wires these actions to a minimal editing
 from a node's output handle, and disconnect buttons at audio-edge midpoints. Every affordance is
 gated on its callback prop, so the preview stays read-only whenever the panel is not in graph mode.
 Rejected mutations surface a non-blocking inline notice via `describeGraphMutationResult`.
+
+## Graph edit history (FXG.3-h)
+
+FX Graph undo/redo is session-only and owned by `effectChainStore.graphHistories`, keyed by normal
+track id: `{ [trackId]: { undoStack, redoStack } }`. Transactions store cloned
+`beforeGraphState`/`afterGraphState` snapshots and labels for graph edits only:
+`move_graph_node`, `add_graph_effect_node`, `remove_graph_node`, `connect_graph_nodes`, and
+`disconnect_graph_edge`. Stacks are capped at 100 entries per track, redo is cleared by any new edit
+after undo, and all histories are wiped on project load and graph-mode hydration. No history is
+serialized into project data.
+
+Undo/redo applies snapshots through graph-owned runtime reconciliation, never Mixer Chain APIs. The
+store diffs current vs target effect nodes by stable `effectInstanceId`, creates target-only real
+graph effects before committing, removes current-only engine-backed graph effects before committing,
+rolls back newly created processors if creation fails, and leaves graphState/history unchanged on any
+lifecycle failure. After a successful commit it updates the session `effectInstanceId -> engineNodeId`
+cache and syncs runtime topology only when graph nodes or edges changed. Layout moves persist
+graphState but do not resync runtime.
+
+Graph history is scoped to normal tracks in `fxMode === "graph"`. Master tracks, chain-mode tracks,
+`effectChains`, native undo IPC, and Mixer Chain history are intentionally separate. The FX Graph
+panel exposes compact Undo/Redo controls only while graph mode is active and registers
+`Ctrl+Z`/`Ctrl+Y`/`Ctrl+Shift+Z` through `KeyboardManager` with `scope: "panel:fxGraph"`.
 
 ## Graph-owned effect instances (FXG.3-b / FXG.3-c-a)
 
@@ -237,6 +260,56 @@ merge points is handled by `AudioGraph::computePDC()`.
 - Graph→chain return (no switch-back UI exists; `setFxMode` stays a renderer flip; no
   `rebuildChainRouting`), per-branch wet/dry or merge-gain UI, latency display.
 - Feedback loops, modulation, buses, parameter pinning remain deferred.
+
+## Graph effect parameter exposure (FXG.4-a)
+
+A single graph-owned descriptor layer exposes parameter metadata and current
+**normalized [0.0, 1.0]** values for any graph-owned effect node — stock or
+third-party — without going through Mixer Chain slot editing.
+
+- **One descriptor, two sources.** Stock effects enumerate from their own APVTS
+  (the single source of truth for ranges/defaults — no duplicated parameter
+  definitions). Third-party plugins enumerate the hosted processor's host-facing
+  `juce::AudioProcessorParameter` objects. Plugin parameters are **asked of the
+  processor, never scraped from a native editor UI**, and all reads/sets run
+  behind the existing SEH plugin guard so a faulting plugin fails safely.
+- **Stable identity preferred.** Each descriptor carries a `parameterId`
+  (APVTS `paramID` for stock; `AudioPluginInstance::HostedParameter` id for
+  plugins) plus a `parameterIndex`. When no stable id exists the engine emits a
+  `#<index>` fallback flagged with `parameterIdIsFallback`, so later FXG.4-c
+  automation can target the most stable identity available. Descriptors also
+  report `automatable`, `readOnly`, `discrete`, `boolean`, `numSteps`,
+  `defaultNormalizedValue`, `unit`, and `displayValue` where known.
+- **Identity resolution.** Renderer-facing identity is
+  `(trackId, effectInstanceId, parameterId)`. The engine resolves
+  `effectInstanceId → engine node id` via the per-track graph map (FXG.3-b/3-c);
+  `graphState` node ids and raw engine node ids are never used as the
+  renderer-facing parameter address.
+- **Engine surface.** `MixEngine` →
+  `getGraphEffectParameters` / `getGraphEffectParameterValue` /
+  `setGraphEffectParameterNormalized` (track-scoped, master rejected) delegate to
+  `EffectChainManager` (resolves the instance, fails closed on
+  `unknown_effect_instance` / `plugin_missing`) and `AudioGraph` (builds the
+  descriptor via `GraphEffectParameters`). Stock writes route through the
+  established `setParameterValue` (denormalized) so smoothing/latency side
+  effects match chain edits; plugin writes reuse the guarded
+  `setWrappedParameterValue`. Set values are clamped to `[0, 1]`.
+- **Bridge / IPC / store.** Exposed as `audio_getGraphEffectParameters`,
+  `audio_getGraphEffectParameterValue`, `audio_setGraphEffectParameterNormalized`
+  (JSON-string results) through the addon, Electron `xleth:audio:*` handlers, and
+  preload. `effectChainStore` adds `fetchGraphEffectParameters` /
+  `getGraphEffectParameterValue` / `setGraphEffectParameterNormalized`, gated by
+  `fxMode === 'graph'`, addressed by `effectInstanceId`. These are pure engine
+  queries: they never mutate `effectChains` or `graphState`, and no parameter
+  snapshot is persisted (descriptors are discovered live from the processor).
+- **UI.** `GraphNodeParameterInspector` is a minimal read-mostly panel: it lists
+  parameters for a selected graph-owned effect node and offers a normalized
+  slider for writable parameters. Read-only / non-automatable parameters show a
+  value with no slider.
+- **Still deferred.** No automation lanes, modulation, LFOs, envelopes, peak
+  followers, macros, buses, parameter pinning, gestures, sample-accurate
+  automation, or generic plugin-editor replacement. Mixer Chain behavior is
+  unchanged.
 
 ## Engine execution boundary
 

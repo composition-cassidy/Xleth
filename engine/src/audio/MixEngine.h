@@ -529,6 +529,18 @@ public:
     // array of { effectInstanceId, engineNodeId }. Rejects the master track.
     nlohmann::json adoptGraphEffectNodes(int trackId, const nlohmann::json& mapping);
 
+    // ── FXG.4-a graph-owned effect parameter descriptors (main thread) ──
+    // Operate on graph-owned effect instances keyed by a stable effectInstanceId
+    // (resolved to the engine node via the per-track graph map). Rejects the
+    // master track (chain-only). Return a JSON string: { ok, ... } with a
+    // `reason` on failure. Never touch chain-slot editing or effectChains state.
+    std::string getGraphEffectParameters(int trackId, const std::string& effectInstanceId) const;
+    std::string getGraphEffectParameterValue(int trackId, const std::string& effectInstanceId,
+                                             const std::string& parameterId) const;
+    std::string setGraphEffectParameterNormalized(int trackId, const std::string& effectInstanceId,
+                                                  const std::string& parameterId,
+                                                  double normalizedValue);
+
     // ── Effect parameter / meter access (main thread only) ──────────────
     // Per-track: returns "[]" / false / "[0,0,0,0]" if chain/node not found.
     std::string getEffectParameters(int trackId, int nodeId) const;

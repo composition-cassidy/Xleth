@@ -2948,6 +2948,65 @@ bool MixEngine::isMasterGraphLinear() const
 
 // ── Effect parameter / meter access ─────────────────────────────────────────
 
+// ─── FXG.4-a graph-owned effect parameter descriptors ───────────────────────
+
+std::string MixEngine::getGraphEffectParameters(int trackId, const std::string& effectInstanceId) const
+{
+    if (trackId < 0)
+        return nlohmann::json({ {"ok", false}, {"reason", "master_track"},
+                                {"effectInstanceId", effectInstanceId} }).dump();
+
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+    auto it = effectChains_.find(trackId);
+    if (it == effectChains_.end() || !it->second)
+        return nlohmann::json({ {"ok", false}, {"reason", "track_not_found"},
+                                {"trackId", trackId}, {"effectInstanceId", effectInstanceId} }).dump();
+
+    nlohmann::json out = it->second->getGraphEffectParameters(effectInstanceId);
+    out["trackId"] = trackId;
+    return out.dump();
+}
+
+std::string MixEngine::getGraphEffectParameterValue(int trackId, const std::string& effectInstanceId,
+                                                    const std::string& parameterId) const
+{
+    if (trackId < 0)
+        return nlohmann::json({ {"ok", false}, {"reason", "master_track"},
+                                {"effectInstanceId", effectInstanceId} }).dump();
+
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+    auto it = effectChains_.find(trackId);
+    if (it == effectChains_.end() || !it->second)
+        return nlohmann::json({ {"ok", false}, {"reason", "track_not_found"},
+                                {"trackId", trackId}, {"effectInstanceId", effectInstanceId} }).dump();
+
+    nlohmann::json out = it->second->getGraphEffectParameterValue(effectInstanceId, parameterId);
+    out["trackId"] = trackId;
+    return out.dump();
+}
+
+std::string MixEngine::setGraphEffectParameterNormalized(int trackId, const std::string& effectInstanceId,
+                                                         const std::string& parameterId,
+                                                         double normalizedValue)
+{
+    if (trackId < 0)
+        return nlohmann::json({ {"ok", false}, {"reason", "master_track"},
+                                {"effectInstanceId", effectInstanceId} }).dump();
+
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+    auto it = effectChains_.find(trackId);
+    if (it == effectChains_.end() || !it->second)
+        return nlohmann::json({ {"ok", false}, {"reason", "track_not_found"},
+                                {"trackId", trackId}, {"effectInstanceId", effectInstanceId} }).dump();
+
+    nlohmann::json out = it->second->setGraphEffectParameterNormalized(
+        effectInstanceId, parameterId, static_cast<float>(normalizedValue));
+    out["trackId"] = trackId;
+    if (out.value("ok", false))
+        pendingLatencyCompensationReset_.store(true, std::memory_order_release);
+    return out.dump();
+}
+
 std::string MixEngine::getEffectParameters(int trackId, int nodeId) const
 {
     if (trackId == -1) return getMasterEffectParameters(nodeId);

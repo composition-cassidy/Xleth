@@ -1656,6 +1656,20 @@ ipcMain.handle('xleth:audio:getGraphEffectEngineNodeId',
   safeHandler((_, trackId, effectInstanceId) =>
     callWorker('audio_getGraphEffectEngineNodeId', [trackId, effectInstanceId])));
 
+// FXG.4-a: graph-owned effect parameter descriptors. Renderer-facing identity
+// is (trackId, effectInstanceId, parameterId); engine node ids stay internal.
+ipcMain.handle('xleth:audio:getGraphEffectParameters',
+  safeHandler((_, trackId, effectInstanceId) =>
+    callWorker('audio_getGraphEffectParameters', [trackId, effectInstanceId])));
+
+ipcMain.handle('xleth:audio:getGraphEffectParameterValue',
+  safeHandler((_, trackId, effectInstanceId, parameterId) =>
+    callWorker('audio_getGraphEffectParameterValue', [trackId, effectInstanceId, parameterId])));
+
+ipcMain.handle('xleth:audio:setGraphEffectParameterNormalized',
+  safeHandler((_, trackId, effectInstanceId, parameterId, normalizedValue) =>
+    callWorker('audio_setGraphEffectParameterNormalized', [trackId, effectInstanceId, parameterId, normalizedValue])));
+
 ipcMain.handle('xleth:audio:hydrateGraphEffectNodes',
   safeHandler((_, trackId, graphEffectNodes) =>
     callWorker('audio_hydrateGraphEffectNodes', [trackId, graphEffectNodes])));

@@ -248,6 +248,7 @@ add_library(XlethEngineCore STATIC
     src/audio/SampleProcessor.cpp
     src/audio/EffectChainManager.cpp
     src/audio/AudioGraph.cpp
+    src/audio/GraphEffectParameters.cpp
     src/audio/GuardedPluginWrapper.cpp
     src/audio/NamedAudioRing.cpp
     src/audio/WaveformMipmap.cpp
@@ -1020,6 +1021,41 @@ target_compile_definitions(test_reverb PRIVATE
     JUCE_USE_WINDOWS_MEDIA_FORMAT=0
     JUCE_STANDALONE_APPLICATION=1
 )
+
+# ── test_graph_effect_parameters ─────────────────────────────────────────────
+# FXG.4-a: unified graph-owned parameter descriptor + normalized read/write
+# foundation. Exercises stock (APVTS) enumeration, normalized clamping,
+# parameterIndex fallback resolution, fail-safe error paths, and MixEngine
+# track routing / master rejection. Third-party plugin enumeration shares the
+# same descriptor path but needs scanned VST3 fixtures, so it is not unit-tested.
+add_executable(test_graph_effect_parameters
+    test/test_graph_effect_parameters.cpp
+)
+
+target_link_libraries(test_graph_effect_parameters PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_graph_effect_parameters PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+target_link_options(test_graph_effect_parameters PRIVATE /STACK:8388608)
 
 # ── test_frame_cache ─────────────────────────────────────────────────────────
 # Verifies the render-pipeline LRU FrameCache with real D3D11 textures.

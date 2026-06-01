@@ -165,6 +165,17 @@ public:
     // Returns JSON meter array ("[0,0,0,0,0,0,0,0]" if nodeId invalid).
     std::string getEffectMeter(int nodeId) const;
 
+    // ── FXG.4-a graph-owned parameter descriptors (main-thread only) ────
+    // Unified normalized [0,1] parameter access for stock effects (APVTS) and
+    // third-party plugins (host-facing AudioProcessorParameter objects, asked
+    // of the hosted processor — never scraped from a native editor). Plugin
+    // calls run behind the SEH guard. All three return a structured JSON object
+    // with { ok, ... } and a `reason` on failure.
+    nlohmann::json getGraphEffectParameterDescriptors(int nodeId) const;
+    nlohmann::json getGraphEffectParameterValue(int nodeId, const std::string& parameterId) const;
+    nlohmann::json setGraphEffectParameterNormalized(int nodeId, const std::string& parameterId,
+                                                     float normalizedValue);
+
     // ── Missing-plugin support ──────────────────────────────────────────
 
     // True iff nodeId holds a PassthroughProcessor (plugin was not found at load time).
