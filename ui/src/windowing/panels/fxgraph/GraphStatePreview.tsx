@@ -1394,23 +1394,23 @@ export default function GraphStatePreview({
                   ))}
               </div>
             )}
-            {contextMenu && (
-              <GraphParameterContextMenu
-                node={contextMenu.node}
-                x={contextMenu.x}
-                y={contextMenu.y}
-                loading={parameterLoading}
-                result={parameterResult}
-                search={parameterSearch}
-                canEdit={canEditNode}
-                canRemove={canRemoveNode}
-                onSearchChange={setParameterSearch}
-                onToggleParameter={canExposeParameters ? handleToggleParameter : undefined}
-                onEdit={handleContextEdit}
-                onRemove={handleContextRemove}
-              />
-            )}
           </div>
+          {contextMenu && (
+            <GraphParameterContextMenu
+              node={contextMenu.node}
+              x={contextMenu.x}
+              y={contextMenu.y}
+              loading={parameterLoading}
+              result={parameterResult}
+              search={parameterSearch}
+              canEdit={canEditNode}
+              canRemove={canRemoveNode}
+              onSearchChange={setParameterSearch}
+              onToggleParameter={canExposeParameters ? handleToggleParameter : undefined}
+              onEdit={handleContextEdit}
+              onRemove={handleContextRemove}
+            />
+          )}
         </div>
       </div>
     </section>
