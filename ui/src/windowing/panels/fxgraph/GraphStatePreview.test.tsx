@@ -227,7 +227,7 @@ describe('GraphStatePreview', () => {
             exposedParameterPorts: [
               {
                 parameterId: 'feedback',
-                parameterIndex: 3,
+                parameterIndexFallback: 3,
                 nameSnapshot: 'Feedback',
                 labelSnapshot: '%',
                 parameterIdIsFallback: false,
@@ -242,7 +242,9 @@ describe('GraphStatePreview', () => {
     );
 
     expect(html).toContain('xleth-graph-state-preview__parameter-port');
-    expect(html).toContain('data-parameter-port-id="feedback"');
+    // Stable compound port id: gpp:{graphNodeId}:{parameterId}
+    expect(html).toContain('data-parameter-port-id="gpp:delay:feedback"');
+    expect(html).toContain('data-parameter-port-type="parameter-input"');
     expect(html).toContain('Feedback');
     expect(html).toContain('Delay parameter inputs');
   });

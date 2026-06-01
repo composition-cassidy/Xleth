@@ -1437,7 +1437,7 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(exposedPorts).toEqual([
       {
         parameterId: 'feedback',
-        parameterIndex: 3,
+        parameterIndexFallback: 3,
         nameSnapshot: 'Feedback',
         labelSnapshot: '%',
         parameterIdIsFallback: false,

@@ -20,7 +20,7 @@ export interface GraphStateNode {
 
 export interface GraphExposedParameterPort {
   parameterId: string;
-  parameterIndex: number | null;
+  parameterIndexFallback: number | null;
   nameSnapshot: string;
   labelSnapshot: string | null;
   parameterIdIsFallback: boolean;
@@ -188,10 +188,12 @@ function readExposedParameterPorts(data: Record<string, unknown> | undefined): G
     const labelSnapshot = typeof port.labelSnapshot === 'string' && port.labelSnapshot.trim().length > 0
       ? port.labelSnapshot.trim()
       : null;
+    // Read parameterIndexFallback first (FXG.4-c), fall back to parameterIndex (FXG.4-b).
+    const rawIndex = port.parameterIndexFallback ?? port.parameterIndex;
     ports.push({
       parameterId,
-      parameterIndex: Number.isInteger(port.parameterIndex) && (port.parameterIndex as number) >= 0
-        ? port.parameterIndex as number
+      parameterIndexFallback: Number.isInteger(rawIndex) && (rawIndex as number) >= 0
+        ? rawIndex as number
         : null,
       nameSnapshot,
       labelSnapshot,
@@ -639,7 +641,8 @@ export function GraphStatePreviewNode({
               role="listitem"
               key={port.parameterId}
               title={port.nameSnapshot}
-              data-parameter-port-id={port.parameterId}
+              data-parameter-port-id={`gpp:${node.id}:${port.parameterId}`}
+              data-parameter-port-type="parameter-input"
             >
               <span className="xleth-graph-state-preview__parameter-port-dot" aria-hidden="true" />
               <span className="xleth-graph-state-preview__parameter-port-label">

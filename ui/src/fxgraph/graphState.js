@@ -7,7 +7,7 @@ const MIN_VIEWPORT_ZOOM = 0.1
 const MAX_VIEWPORT_ZOOM = 4
 
 const NODE_TYPES = new Set(['trackInput', 'trackOutput', 'effect'])
-const EDGE_TYPES = new Set(['audio'])
+const EDGE_TYPES = new Set(['audio', 'parameter'])
 
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -164,9 +164,10 @@ function normalizeExposedParameterPort(raw, trackId, warnings, nodeId) {
     return null
   }
 
-  const parameterIndex = Number.isInteger(raw.parameterIndex) && raw.parameterIndex >= 0
-    ? raw.parameterIndex
-    : null
+  // Read parameterIndexFallback first (FXG.4-c field name), fall back to parameterIndex
+  // (FXG.4-b field name) so old saved graphs upgrade silently.
+  const rawIndex = raw.parameterIndexFallback ?? raw.parameterIndex
+  const parameterIndexFallback = Number.isInteger(rawIndex) && rawIndex >= 0 ? rawIndex : null
   const nameSnapshot = typeof raw.nameSnapshot === 'string' && raw.nameSnapshot.trim().length > 0
     ? raw.nameSnapshot.trim()
     : parameterId
@@ -176,7 +177,7 @@ function normalizeExposedParameterPort(raw, trackId, warnings, nodeId) {
 
   return {
     parameterId,
-    parameterIndex,
+    parameterIndexFallback,
     nameSnapshot,
     labelSnapshot,
     parameterIdIsFallback: raw.parameterIdIsFallback === true,
@@ -228,7 +229,7 @@ export function buildExposedParameterPort(parameterDescriptor) {
 
   return {
     parameterId,
-    parameterIndex:
+    parameterIndexFallback:
       Number.isInteger(parameterDescriptor.parameterIndex) && parameterDescriptor.parameterIndex >= 0
         ? parameterDescriptor.parameterIndex
         : null,
@@ -385,17 +386,23 @@ function normalizeEdge(edge, nodeIds, trackId, warnings) {
     }
   }
 
-  return {
-    ok: true,
-    edge: {
-      id: edge.id,
-      sourceNodeId: edge.sourceNodeId,
-      sourcePort: edge.sourcePort,
-      targetNodeId: edge.targetNodeId,
-      targetPort: edge.targetPort,
-      type: edge.type,
-    },
+  const normalizedEdge = {
+    id: edge.id,
+    sourceNodeId: edge.sourceNodeId,
+    sourcePort: edge.sourcePort,
+    targetNodeId: edge.targetNodeId,
+    targetPort: edge.targetPort,
+    type: edge.type,
   }
+
+  // Parameter edges carry an optional targetParameter identity.
+  // Stored as-is without deep validation here — graphParameterTarget.js
+  // owns normalization of the target shape when it is read back.
+  if (edge.type === 'parameter' && isPlainObject(edge.targetParameter)) {
+    normalizedEdge.targetParameter = cloneJson(edge.targetParameter)
+  }
+
+  return { ok: true, edge: normalizedEdge }
 }
 
 function hasAudioCycle(nodes, edges) {
@@ -784,7 +791,13 @@ export function connectGraphNodes(graphState, connectionDraft, options = {}) {
   }
 
   const { sourceNodeId, targetNodeId } = connectionDraft
+  // Parameter edges are data-model only until modulation runtime exists.
+  // User-facing graph connections are always audio; reject any attempt to
+  // create a parameter edge through the normal connect path.
   const edgeType = connectionDraft.edgeType ?? 'audio'
+  if (edgeType !== 'audio') {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_CONNECTION_DRAFT }
+  }
 
   const canConnect = canConnectGraphNodes(graphState, sourceNodeId, targetNodeId, { edgeType })
   if (!canConnect.ok) return canConnect

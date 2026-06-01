@@ -13,6 +13,7 @@ import {
   hasEquivalentGraphEdge,
   isProtectedGraphNodeType,
   loadGraphState,
+  normalizeExposedParameterPorts,
   removeGraphNode,
   saveGraphState,
   toggleExposedParameterPort,
@@ -338,7 +339,7 @@ describe('graphState schema validation', () => {
     expect(result.graphState.nodes[1].data.exposedParameterPorts).toEqual([
       {
         parameterId: 'mix',
-        parameterIndex: 2,
+        parameterIndexFallback: 2,
         nameSnapshot: 'Mix',
         labelSnapshot: '%',
         parameterIdIsFallback: false,
@@ -372,7 +373,7 @@ describe('graphState schema validation', () => {
     expect(result.graphState.nodes[1].data.exposedParameterPorts).toEqual([
       {
         parameterId: 'gain',
-        parameterIndex: null,
+        parameterIndexFallback: null,
         nameSnapshot: 'gain',
         labelSnapshot: null,
         parameterIdIsFallback: false,
@@ -1160,7 +1161,7 @@ describe('graph mutation architecture guards', () => {
         normalizedValue: 0.4,
       })).toEqual({
         parameterId: 'feedback',
-        parameterIndex: 7,
+        parameterIndexFallback: 7,
         nameSnapshot: 'Feedback',
         labelSnapshot: '%',
         parameterIdIsFallback: true,
@@ -1186,7 +1187,7 @@ describe('graph mutation architecture guards', () => {
       expect(result.graphState.nodes[1].data.exposedParameterPorts).toEqual([
         {
           parameterId: 'mix',
-          parameterIndex: 1,
+          parameterIndexFallback: 1,
           nameSnapshot: 'Mix',
           labelSnapshot: null,
           parameterIdIsFallback: false,
@@ -1337,5 +1338,206 @@ describe('graph mutation architecture guards', () => {
 
       expect(gs.edges).toHaveLength(originalEdgeCount)
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// FXG.4-c — Parameter Target Binding Contract
+// ---------------------------------------------------------------------------
+
+describe('FXG.4-c exposed parameter port normalization', () => {
+  it('upgrades old FXG.4-b parameterIndex field to parameterIndexFallback silently', () => {
+    const ports = normalizeExposedParameterPorts([
+      { parameterId: 'mix', parameterIndex: 3, nameSnapshot: 'Mix' },
+    ])
+
+    expect(ports).toHaveLength(1)
+    expect(ports[0].parameterIndexFallback).toBe(3)
+    expect(ports[0]).not.toHaveProperty('parameterIndex')
+  })
+
+  it('prefers parameterIndexFallback over parameterIndex when both are present', () => {
+    const ports = normalizeExposedParameterPorts([
+      { parameterId: 'gain', parameterIndexFallback: 5, parameterIndex: 2, nameSnapshot: 'Gain' },
+    ])
+
+    expect(ports[0].parameterIndexFallback).toBe(5)
+  })
+
+  it('sets parameterIndexFallback to null when index is absent or invalid', () => {
+    const ports = normalizeExposedParameterPorts([
+      { parameterId: 'freq', nameSnapshot: 'Freq' },
+      { parameterId: 'q', parameterIndex: 'bad', nameSnapshot: 'Q' },
+    ])
+
+    expect(ports[0].parameterIndexFallback).toBeNull()
+    expect(ports[1].parameterIndexFallback).toBeNull()
+  })
+
+  it('deduplicates by parameterId, keeping only the first occurrence', () => {
+    const ports = normalizeExposedParameterPorts([
+      { parameterId: 'mix', parameterIndexFallback: 1, nameSnapshot: 'Mix' },
+      { parameterId: 'mix', parameterIndexFallback: 99, nameSnapshot: 'Mix duplicate' },
+    ])
+
+    expect(ports).toHaveLength(1)
+    expect(ports[0].parameterIndexFallback).toBe(1)
+  })
+})
+
+describe('FXG.4-c edge schema', () => {
+  it('old audio edges normalize without a kind field collision', () => {
+    const result = validateGraphState(makeValidGraphState(), '7')
+
+    expect(result.status).toBe('valid')
+    const edge = result.graphState.edges[0]
+    expect(edge.type).toBe('audio')
+  })
+
+  it('unknown edge types are preserved as unknown without disrupting audio edges', () => {
+    const result = validateGraphState(makeValidGraphState({
+      edges: [
+        {
+          id: 'edge-unknown',
+          sourceNodeId: 'input',
+          sourcePort: 'audio',
+          targetNodeId: 'output',
+          targetPort: 'audio',
+          type: 'cv',
+        },
+      ],
+    }), '7')
+
+    expect(result.status).toBe('valid')
+    expect(result.graphState.edges[0].type).toBe('unknown')
+    expect(result.graphState.edges[0]._preservedType).toBe('cv')
+  })
+
+  it('parameter edges normalize safely as type parameter without becoming unknown', () => {
+    const result = validateGraphState(makeValidGraphState({
+      nodes: [
+        { id: 'input', type: 'trackInput' },
+        { id: 'output', type: 'trackOutput' },
+      ],
+      edges: [
+        {
+          id: 'p-edge-1',
+          sourceNodeId: 'input',
+          sourcePort: 'audio',
+          targetNodeId: 'output',
+          targetPort: 'audio',
+          type: 'parameter',
+        },
+      ],
+    }), '7')
+
+    expect(result.status).toBe('valid')
+    const edge = result.graphState.edges[0]
+    expect(edge.type).toBe('parameter')
+    expect(edge).not.toHaveProperty('_preservedType')
+  })
+
+  it('parameter edges with targetParameter are preserved through normalization', () => {
+    const targetParam = {
+      kind: 'graph-parameter',
+      graphNodeId: 'output',
+      effectInstanceId: 'inst-1',
+      parameterId: 'mix',
+      parameterIndexFallback: null,
+      parameterIdIsFallback: false,
+      nameSnapshot: 'Mix',
+      labelSnapshot: null,
+    }
+    const result = validateGraphState(makeValidGraphState({
+      nodes: [
+        { id: 'input', type: 'trackInput' },
+        { id: 'output', type: 'trackOutput' },
+      ],
+      edges: [
+        {
+          id: 'p-edge-1',
+          sourceNodeId: 'input',
+          sourcePort: 'audio',
+          targetNodeId: 'output',
+          targetPort: 'audio',
+          type: 'parameter',
+          targetParameter: targetParam,
+        },
+      ],
+    }), '7')
+
+    expect(result.status).toBe('valid')
+    expect(result.graphState.edges[0].targetParameter).toEqual(targetParam)
+  })
+
+  it('audio routing topology ignores parameter edges', () => {
+    const fxB = makeEffectNode('fx-2')
+    fxB.data = { ...fxB.data, effectInstanceId: 'effect-2', pluginId: 'stock:delay', displayName: 'Delay' }
+    const graphState = makeValidGraphState({
+      nodes: [
+        { id: 'input', type: 'trackInput' },
+        makeEffectNode('fx-1'),
+        fxB,
+        { id: 'output', type: 'trackOutput' },
+      ],
+      edges: [
+        {
+          id: 'e-1', sourceNodeId: 'input', sourcePort: 'audio',
+          targetNodeId: 'fx-1', targetPort: 'audioIn', type: 'audio',
+        },
+        {
+          id: 'e-2', sourceNodeId: 'fx-1', sourcePort: 'audioOut',
+          targetNodeId: 'output', targetPort: 'audio', type: 'audio',
+        },
+        {
+          id: 'p-edge', sourceNodeId: 'fx-2', sourcePort: 'audio',
+          targetNodeId: 'fx-1', targetPort: 'audioIn', type: 'parameter',
+        },
+      ],
+    })
+
+    const { analyzeLinearGraphTopology } = require('./linearGraphTopology.js')
+    const analysis = analyzeLinearGraphTopology(graphState)
+
+    expect(analysis.ok).toBe(true)
+    expect(analysis.effectNodeIds).toEqual(['fx-1'])
+  })
+
+  it('connectGraphNodes rejects non-audio edge type from the user connect path', () => {
+    const gs = makeGuardGraphState({ edges: [] })
+    const result = connectGraphNodes(gs, {
+      sourceNodeId: 'in',
+      targetNodeId: 'fx-a',
+      edgeType: 'parameter',
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toBe(GRAPH_MUTATION_REJECTION.INVALID_CONNECTION_DRAFT)
+  })
+
+  it('connectGraphNodes defaults to audio and creates only audio edges', () => {
+    const gs = makeGuardGraphState({ edges: [] })
+    const result = connectGraphNodes(gs, { sourceNodeId: 'in', targetNodeId: 'fx-a' })
+
+    expect(result.ok).toBe(true)
+    expect(result.graphState.edges.at(-1).type).toBe('audio')
+  })
+
+  it('hasAudioCycle ignores parameter edges so parameter edges do not create false cycle detection', () => {
+    const result = validateGraphState(makeValidGraphState({
+      edges: [
+        ...makeValidGraphState().edges,
+        {
+          id: 'p-back',
+          sourceNodeId: 'fx-1',
+          sourcePort: 'audioOut',
+          targetNodeId: 'input',
+          targetPort: 'audio',
+          type: 'parameter',
+        },
+      ],
+    }), '7')
+
+    expect(result.status).toBe('valid')
   })
 })

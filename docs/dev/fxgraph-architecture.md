@@ -1,6 +1,6 @@
 # FX Graph Architecture
 
-Internal reference for the renderer-side graphState system. Updated through FXG.4-b.
+Internal reference for the renderer-side graphState system. Updated through FXG.4-c.
 
 ## Data model separation
 
@@ -322,6 +322,98 @@ third-party — without going through Mixer Chain slot editing.
   followers, macros, buses, parameter pinning, gestures, sample-accurate
   automation, or generic plugin-editor replacement. Mixer Chain behavior is
   unchanged.
+
+## Parameter Target Binding Contract (FXG.4-c)
+
+FXG.4-c defines a stable identity shape — `GraphParameterTarget` — for exposed graph
+parameter ports. Future macro, LFO, envelope, peak-follower, and automation clip sources
+connect to exposed parameter ports through this contract, not through fragile UI labels or raw
+parameter indices.
+
+### Target shape
+
+```ts
+{
+  kind: 'graph-parameter',
+  graphNodeId: string,          // graphState node id (never raw engineNodeId)
+  effectInstanceId: string,     // persisted cross-session effect identity
+  parameterId: string,          // stable APVTS/host-parameter id (preferred)
+  parameterIndexFallback: number | null,  // fallback when no stable id is available
+  parameterIdIsFallback: boolean,         // true when parameterId is a '#<index>' string
+  nameSnapshot: string,         // display name at expose time (fallback UI only)
+  labelSnapshot: string | null, // unit label at expose time (fallback UI only)
+  pluginId?: string,
+  effectKind?: string,
+  pluginFormat?: string,
+  trackId?: string,             // optional; omit in persisted shape, supply for runtime keys
+}
+```
+
+### Key rules
+
+- `graphNodeId` + `effectInstanceId` + `parameterId` form the stable, persisted identity.
+- Raw `engineNodeId` (APG uid) is **never stored in a target**. It is session-only.
+- `parameterIdIsFallback: true` requires a non-null, non-negative integer `parameterIndexFallback`.
+- Normalized values are not stored in the target contract.
+- Full descriptor metadata is not stored; only small display snapshots needed for fallback UI.
+
+### Persisted target key
+
+`graph-param:{graphNodeId}:{effectInstanceId}:{parameterId}` — track-agnostic, stable across
+sessions. Use `getGraphParameterTargetRuntimeKey(trackId, target)` for cross-track uniqueness
+in store/runtime paths (never persisted).
+
+### Port binding id
+
+`gpp:{graphNodeId}:{parameterId}` — scoped compound DOM id used as `data-parameter-port-id`
+on exposed port elements. Globally unique within the graph.
+
+### Exposed port shape (FXG.4-b, renamed field in FXG.4-c)
+
+Stored in `node.data.exposedParameterPorts[]`:
+
+```js
+{
+  parameterId: string,
+  parameterIndexFallback: number | null,  // renamed from parameterIndex in FXG.4-b
+  parameterIdIsFallback: boolean,
+  nameSnapshot: string,
+  labelSnapshot: string | null,
+  automatable: boolean | null,
+  readOnly: boolean | null,
+}
+```
+
+Old graphs saved with `parameterIndex` upgrade silently: `normalizeExposedParameterPort`
+reads `raw.parameterIndexFallback ?? raw.parameterIndex`.
+
+### Helpers (`ui/src/fxgraph/graphParameterTarget.js`)
+
+- `createGraphParameterTarget({ trackId?, graphNode, effectInstanceId, descriptor })`
+- `normalizeGraphParameterTarget(raw)` — repairs/drops malformed target data
+- `isGraphParameterTarget(value)` — type guard
+- `getGraphParameterTargetKey(target)` — persisted stable key
+- `getGraphParameterTargetRuntimeKey(trackId, target)` — runtime key including trackId
+- `buildGraphParameterPortId(graphNodeId, parameterId)` — stable port DOM id
+- `doesTargetMatchExposedPort(target, exposedPort)` — match check
+- `resolveGraphParameterTarget(graphState, target)` — graphState-only resolution:
+  returns `ok | missing_node | missing_effect_instance | missing_exposed_port | invalid_target`
+
+### Parameter edge contract (data-model only)
+
+The graphState edge schema now recognizes `type: 'parameter'` edges. Audio topology helpers
+(`linearGraphTopology.js`, `hasAudioCycle`) already filter by `edge.type === 'audio'`, so
+parameter edges are correctly ignored by all audio routing paths. `connectGraphNodes` rejects
+any attempt to create a non-audio edge via the user-facing connect path.
+
+Parameter edges are data-model only until modulation runtime exists. No engine runtime sync
+treats parameter edges as audio routing.
+
+### Still deferred after FXG.4-c
+
+No macro nodes, LFO nodes, envelope nodes, peak follower nodes, automation clips, modulation
+execution, sample-accurate automation, smoothing, min/max depth scaling, polarity, or
+graph-to-chain return. Mixer Chain behavior is unchanged. `effectChains` are not mutated.
 
 ## Engine execution boundary
 

@@ -1,5 +1,23 @@
 import type { GraphStateDocument } from './GraphStatePreview';
 
+// FXG.4-c — stable identity shape for an exposed graph parameter port.
+// Future macro, LFO, envelope, and automation sources bind to this contract.
+// Raw engineNodeId is never stored here.
+export interface GraphParameterTarget {
+  kind: 'graph-parameter';
+  graphNodeId: string;
+  effectInstanceId: string;
+  pluginId?: string;
+  effectKind?: string;
+  pluginFormat?: string;
+  parameterId: string;
+  parameterIndexFallback: number | null;
+  parameterIdIsFallback: boolean;
+  nameSnapshot: string;
+  labelSnapshot: string | null;
+  trackId?: string;
+}
+
 export interface GraphEffectParameterDescriptor {
   parameterId: string;
   parameterIndex: number;
