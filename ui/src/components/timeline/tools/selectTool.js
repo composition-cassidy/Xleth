@@ -30,7 +30,23 @@ export function createSelectTool(deps) {
     patternBlocksRef, patternsRef, selectedBlockIdsRef,
     setSelectedBlockIds,
     onMovePatternBlock, onResizePatternBlock, onResizePatternBlockLeft,
+    // FXG.4-h-r1: derived row layout so macro automation child lanes shift the
+    // track-index↔Y mapping. Optional — falls back to contiguous geometry.
+    trackLayoutRef,
   } = deps
+
+  // Resolve a Y coordinate to a track index (lane bands map to their parent
+  // track) and a track index back to its Y top, via the row layout when present.
+  function idxAtY(y) {
+    const layout = trackLayoutRef?.current
+    if (layout && typeof layout.trackIndexAtY === 'function') return layout.trackIndexAtY(y)
+    return Math.floor(y / TRACK_HEIGHT)
+  }
+  function topOf(trackIndex) {
+    const layout = trackLayoutRef?.current
+    if (layout && typeof layout.trackTop === 'function') return layout.trackTop(trackIndex)
+    return trackIndex * TRACK_HEIGHT
+  }
 
   // Helper: toggle cursor-state classes on the container (CSS does the rest)
   function setDragClass(name) {
@@ -128,7 +144,7 @@ export function createSelectTool(deps) {
 
   function updateEdgeHover(localX, localY) {
     const beat = pixelToBeat(localX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-    const trackIndex = Math.floor(localY / TRACK_HEIGHT)
+    const trackIndex = idxAtY(localY)
     const tracks = tracksRef.current
     const track = tracks?.[trackIndex]
     if (track?.type === 'Pattern') {
@@ -158,7 +174,7 @@ export function createSelectTool(deps) {
       lastModifiers = { alt: e.altKey, shift: e.shiftKey, ctrl: e.ctrlKey }
 
       const beat = pixelToBeat(localX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-      const trackIndex = Math.floor(localY / TRACK_HEIGHT)
+      const trackIndex = idxAtY(localY)
       const tracks = tracksRef.current
       const track = tracks?.[trackIndex]
 
@@ -430,7 +446,7 @@ export function createSelectTool(deps) {
       if (dragMode === 'move' && dragBlock) {
         const beatDelta = pixelToBeat(dragCurrentX, scrollOffsetRef.current, pixelsPerBeatRef.current)
           - pixelToBeat(dragOriginX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-        const newTrackIndex = Math.floor(dragCurrentY / TRACK_HEIGHT)
+        const newTrackIndex = idxAtY(dragCurrentY)
         const tracks = tracksRef.current
         const clampedTrackIdx = Math.max(0, Math.min(newTrackIndex, tracks.length - 1))
         const trackDelta = clampedTrackIdx - dragBlockOrigTrackIdx
@@ -488,7 +504,7 @@ export function createSelectTool(deps) {
       if (dragMode === 'move' && dragClip) {
         const beatDelta = pixelToBeat(dragCurrentX, scrollOffsetRef.current, pixelsPerBeatRef.current)
           - pixelToBeat(dragOriginX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-        const newTrackIndex = Math.floor(dragCurrentY / TRACK_HEIGHT)
+        const newTrackIndex = idxAtY(dragCurrentY)
         const tracks = tracksRef.current
         const clampedTrackIdx = Math.max(0, Math.min(newTrackIndex, tracks.length - 1))
         const trackDelta = clampedTrackIdx - dragClipOrigTrackIdx
@@ -558,7 +574,7 @@ export function createSelectTool(deps) {
           const clipX1 = beatToPixel(clipBeat, scrollOffset, ppb)
           const clipX2 = beatToPixel(clipEnd, scrollOffset, ppb)
           const trackIdx = tracks.findIndex((t) => t.id === clip.trackId)
-          const clipY1 = trackIdx * TRACK_HEIGHT
+          const clipY1 = topOf(trackIdx)
           const clipY2 = clipY1 + TRACK_HEIGHT
           if (clipX2 >= x1 && clipX1 <= x2 && clipY2 >= y1 && clipY1 <= y2) {
             clipIds.add(clip.id)
@@ -571,7 +587,7 @@ export function createSelectTool(deps) {
           const bX1 = beatToPixel(bBeat, scrollOffset, ppb)
           const bX2 = beatToPixel(bEnd, scrollOffset, ppb)
           const trackIdx = tracks.findIndex((t) => t.id === b.trackId)
-          const bY1 = trackIdx * TRACK_HEIGHT
+          const bY1 = topOf(trackIdx)
           const bY2 = bY1 + TRACK_HEIGHT
           if (bX2 >= x1 && bX1 <= x2 && bY2 >= y1 && bY1 <= y2) {
             blockIds.add(b.id)
@@ -596,7 +612,7 @@ export function createSelectTool(deps) {
     onContextMenu(localX, localY, e) {
       e.preventDefault()
       const beat = pixelToBeat(localX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-      const trackIndex = Math.floor(localY / TRACK_HEIGHT)
+      const trackIndex = idxAtY(localY)
       const tracks = tracksRef.current
       const track = tracks?.[trackIndex]
       if (track?.type === 'Pattern') {
@@ -625,7 +641,7 @@ export function createSelectTool(deps) {
       if (dragMode === 'move' && dragBlock) {
         const beatDelta = pixelToBeat(dragCurrentX, scrollOffset, ppb)
           - pixelToBeat(dragOriginX, scrollOffset, ppb)
-        const newTrackIndex = Math.floor(dragCurrentY / TRACK_HEIGHT)
+        const newTrackIndex = idxAtY(dragCurrentY)
         const tracks = tracksRef.current
         const clampedTrackIdx = Math.max(0, Math.min(newTrackIndex, (tracks?.length || 1) - 1))
         const trackDelta = clampedTrackIdx - dragBlockOrigTrackIdx
@@ -646,7 +662,7 @@ export function createSelectTool(deps) {
             trackIndex: previewTrackIdx,
             durationBeats: block.durationTicks / PPQ,
             color: labelHexColor(region?.label),
-          })
+          }, trackLayoutRef?.current)
         }
       }
 
@@ -664,7 +680,7 @@ export function createSelectTool(deps) {
           trackIndex: trackIdx,
           durationBeats: newDurationBeats,
           color: labelHexColor(region?.label),
-        })
+        }, trackLayoutRef?.current)
       }
 
       if (dragMode === 'resize-left' && dragBlock) {
@@ -684,14 +700,14 @@ export function createSelectTool(deps) {
           trackIndex: trackIdx,
           durationBeats: newDurationBeats,
           color: labelHexColor(region?.label),
-        })
+        }, trackLayoutRef?.current)
       }
 
       // ── Clip drag previews ───────────────────────────────────────────
       if (dragMode === 'move' && dragClip) {
         const beatDelta = pixelToBeat(dragCurrentX, scrollOffset, ppb)
           - pixelToBeat(dragOriginX, scrollOffset, ppb)
-        const newTrackIndex = Math.floor(dragCurrentY / TRACK_HEIGHT)
+        const newTrackIndex = idxAtY(dragCurrentY)
         const tracks = tracksRef.current
         const clampedTrackIdx = Math.max(0, Math.min(newTrackIndex, (tracks?.length || 1) - 1))
         const trackDelta = clampedTrackIdx - dragClipOrigTrackIdx
@@ -709,7 +725,7 @@ export function createSelectTool(deps) {
             trackIndex: newTrkIdx,
             durationBeats: clip.durationTicks / PPQ,
             color: labelHexColor(region?.label),
-          })
+          }, trackLayoutRef?.current)
         }
       }
 
@@ -730,7 +746,7 @@ export function createSelectTool(deps) {
           trackIndex: trackIdx,
           durationBeats: newDurationBeats,
           color: labelHexColor(region?.label),
-        })
+        }, trackLayoutRef?.current)
         if (lastModifiers.shift) {
           const ratio = (newDurationBeats * PPQ / dragClipOrigDuration) * dragClipOrigStretchRatio
           const ratioText = ratio.toFixed(2) + '×'
@@ -739,7 +755,7 @@ export function createSelectTool(deps) {
           ctx.font = '11px system-ui, sans-serif'
           ctx.fillStyle = tokenValue('--theme-fg-inverse')
           ctx.textAlign = 'right'
-          ctx.fillText(ratioText, edgePx - 4, (trackIdx + 0.5) * TRACK_HEIGHT - 2)
+          ctx.fillText(ratioText, edgePx - 4, topOf(trackIdx) + TRACK_HEIGHT * 0.5 - 2)
           ctx.restore()
         }
       }
@@ -764,7 +780,7 @@ export function createSelectTool(deps) {
           trackIndex: trackIdx,
           durationBeats: newDurationBeats,
           color: labelHexColor(region?.label),
-        })
+        }, trackLayoutRef?.current)
         if (lastModifiers.shift) {
           const newDurTicks = newDurationBeats * PPQ
           const ratio = (newDurTicks / dragClipOrigDuration) * dragClipOrigStretchRatio
@@ -774,7 +790,7 @@ export function createSelectTool(deps) {
           ctx.font = '11px system-ui, sans-serif'
           ctx.fillStyle = tokenValue('--theme-fg-inverse')
           ctx.textAlign = 'left'
-          ctx.fillText(ratioText, edgePx + 4, (trackIdx + 0.5) * TRACK_HEIGHT - 2)
+          ctx.fillText(ratioText, edgePx + 4, topOf(trackIdx) + TRACK_HEIGHT * 0.5 - 2)
           ctx.restore()
         }
       }

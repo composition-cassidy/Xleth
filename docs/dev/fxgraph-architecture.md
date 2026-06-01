@@ -638,16 +638,46 @@ without the field load as `[]`. All lane/clip/point edits participate in graph-o
 `recordGraphEditTransaction` (snapshot-based, session-only). Runtime playback never dirties the
 project or the persisted macro value.
 
-### Deferred after FXG.4-h
+### Real timeline child lanes (FXG.4-h-r1)
 
-On-timeline-canvas child-lane rendering and on-canvas interactive clip drag/resize/point editing are
-deferred: the timeline body is a single fixed-`TRACK_HEIGHT`-per-track canvas (≈64 coupling sites),
-so variable-height parent+child lane groups are a separate, larger refactor. The lane/clip/point
-lifecycle, binding, overlap rules, copy/paste compatibility, loop, hold-last-value, persistence,
-undo/redo, and playback drive are all real and exercised by tests; lane/clip creation is driven from
-the FX Graph macro context menu. Also still deferred: direct plugin-parameter automation clips,
-LFOs/envelopes/peak followers, buses, sample-accurate automation, and graph-to-chain return. Mixer
-Chain behavior is unchanged and `effectChains` are not mutated.
+FXG.4-h-r1 replaces the temporary FXG.4-h-fix amber overlay strips with **real timeline macro
+automation child lanes**: each visible lane renders in its own vertical band directly below its
+parent track, with its own left-header label and its own clip area. The overlay-strip approach is
+**not** the product UX and has been removed.
+
+- **Derived flattened row model** — `ui/src/components/timeline/timelineRowLayout.js`
+  (`buildTimelineRows` / `buildTrackLayout`) replaces the old `trackIndex * TRACK_HEIGHT` assumption.
+  It returns ordered rows `{ rowType: 'track' | 'macroAutomation', trackId | parentTrackId,
+  macroNodeId, laneId, y, height, … }`; parent track rows keep the exact `TRACK_HEIGHT` they always
+  had, and each visible macro lane *inserts* `MACRO_LANE_HEIGHT` of space, pushing later tracks down.
+  The layout view exposes `trackTop(idx)`, `trackIndexAtY(y)` (lane bands resolve to their parent
+  track — child lanes never host normal clips), `macroRowAtY`, and `totalHeight`. A track with no
+  lanes produces the original contiguous geometry, so old projects are unaffected.
+- **Canvas geometry** — `timelineDrawing.js`, `clipGeometry.js`, `TimelineCanvas.jsx`, and the four
+  tools (`select`/`pencil`/`split`/`delete`) consult the layout (threaded as an optional
+  `trackLayout`/`trackLayoutRef`, defaulting to contiguous geometry) for every `trackIndex↔Y`
+  conversion, so audio/pattern clip drawing, hit-testing, drag/resize, rubber-band, and the FX badge
+  layer all stay correct once lanes shift the rows.
+- **Lane layer** — `ui/src/components/timeline/MacroAutomationLanes.jsx` renders the lanes as a DOM
+  layer inside `.timeline-canvas-scroll`, sized to `totalHeight` so it scrolls/zooms with the canvas
+  using the same `(tick/PPQ - scrollOffset) * pixelsPerBeat` math. Each clip shows its body, bounds,
+  a lane-contained curve preview (`<polyline>`), draggable automation points, a loop indicator when
+  `loopEnabled`, and a safe greyed "macro unavailable" state for orphaned lanes. Interactive v1:
+  select, move (same lane only), resize start/end, add/move/delete point, loop toggle, and
+  copy/paste (compatible same-macro lane only) — all routed through the existing effectChainStore
+  macro automation actions, so the FXG.4-h compatibility/overlap rules and the macro→parameter-edge
+  runtime path are unchanged. Geometry math is isolated in
+  `ui/src/components/timeline/macroLaneGeometry.js` (pure, unit-tested).
+- **Left header** — `TrackHeaderList.jsx` renders a compact "<Macro> Automation" label row under each
+  parent track header (indented, parent-colored left border, with a hide affordance), matching the
+  canvas lane heights so the header column stays row-aligned.
+- Clips remain bound to `parentTrackId` (the owning `graphState.trackId`) + `macroNodeId`; they
+  cannot float to arbitrary timeline lanes. Styling uses theme tokens / CSS variables only — no
+  hardcoded production colors.
+
+Still deferred: direct plugin-parameter automation clips, LFOs/envelopes/peak followers, buses,
+sample-accurate automation, and graph-to-chain return. Mixer Chain behavior is unchanged and
+`effectChains` are not mutated.
 
 ## Engine execution boundary
 

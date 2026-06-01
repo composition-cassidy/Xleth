@@ -1,8 +1,9 @@
-import { useCallback, useRef, useState, useEffect } from 'react'
-import { Plus } from 'lucide-react'
+import { useCallback, useMemo, useRef, useState, useEffect } from 'react'
+import { Plus, EyeOff, Sliders } from 'lucide-react'
 import TrackHeader from './TrackHeader.jsx'
 import TrackColorPopover from './TrackColorPopover.jsx'
 import { RULER_HEIGHT, HEADER_WIDTH } from '../../constants/timeline.js'
+import { MACRO_LANE_HEIGHT } from './timelineRowLayout.js'
 import { resolveAutoTrackColor, normalizeTrackPalette, TRACK_PALETTE_FALLBACK } from './trackColorResolver.js'
 import { tokenValue } from '../../theming/tokenValue.ts'
 
@@ -13,8 +14,23 @@ export default function TrackHeaderList({
   onSetTrackColor,
   scrollContainerRef,
   width = HEADER_WIDTH,
+  // FXG.4-h-r1: macro automation child-lane rows (from the derived row layout),
+  // rendered as compact labels directly below their parent track header so the
+  // header column stays vertically aligned with the canvas lane bands.
+  macroRows = [],
+  onHideMacroLane,
 }) {
   const dragIndexRef = useRef(null)
+
+  // Group lane rows by parent track for O(1) lookup while mapping tracks.
+  const lanesByTrack = useMemo(() => {
+    const map = new Map()
+    for (const row of macroRows) {
+      if (!map.has(row.parentTrackId)) map.set(row.parentTrackId, [])
+      map.get(row.parentTrackId).push(row)
+    }
+    return map
+  }, [macroRows])
 
   const [openColorPickerId, setOpenColorPickerId] = useState(null)
   const [colorPickerAnchorRect, setColorPickerAnchorRect] = useState(null)
@@ -98,26 +114,49 @@ export default function TrackHeaderList({
             if (patId != null && patId >= 0) currentPattern = patterns?.[patId] || null
           }
           const trackColor = resolveAutoTrackColor(track, i, trackPalette, TRACK_PALETTE_FALLBACK[i % 16])
+          const laneRows = lanesByTrack.get(track.id) ?? []
           return (
-            <TrackHeader
-              key={track.id}
-              track={track}
-              index={i}
-              trackColor={trackColor}
-              currentPattern={currentPattern}
-              isFocused={focusedTrackId === track.id}
-              onMute={onMute}
-              onSolo={onSolo}
-              onVisualOnly={onVisualOnly}
-              onRename={onRename}
-              onRemove={onRemove}
-              onRequestContextMenu={onRequestContextMenu}
-              onFocus={onFocusTrack}
-              onDragStart={onDragStart}
-              onDragOver={onDragOver}
-              onDrop={onDrop}
-              onOpenColorPicker={handleOpenColorPicker}
-            />
+            <div key={track.id} className="track-header-group">
+              <TrackHeader
+                track={track}
+                index={i}
+                trackColor={trackColor}
+                currentPattern={currentPattern}
+                isFocused={focusedTrackId === track.id}
+                onMute={onMute}
+                onSolo={onSolo}
+                onVisualOnly={onVisualOnly}
+                onRename={onRename}
+                onRemove={onRemove}
+                onRequestContextMenu={onRequestContextMenu}
+                onFocus={onFocusTrack}
+                onDragStart={onDragStart}
+                onDragOver={onDragOver}
+                onDrop={onDrop}
+                onOpenColorPicker={handleOpenColorPicker}
+              />
+              {laneRows.map((lane) => (
+                <div
+                  key={lane.id}
+                  className={`track-header-macro-lane${lane.targetUnavailable ? ' track-header-macro-lane--orphan' : ''}`}
+                  style={{ height: MACRO_LANE_HEIGHT, borderLeftColor: trackColor }}
+                  title={lane.label}
+                >
+                  <Sliders size={10} className="track-header-macro-lane-icon" strokeWidth={2} />
+                  <span className="track-header-macro-lane-label">{lane.label}</span>
+                  {onHideMacroLane && (
+                    <button
+                      className="track-header-macro-lane-hide"
+                      title="Hide automation lane"
+                      aria-label="Hide automation lane"
+                      onClick={() => onHideMacroLane(lane.parentTrackId, lane.macroNodeId)}
+                    >
+                      <EyeOff size={10} strokeWidth={2} />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
           )
         })}
 

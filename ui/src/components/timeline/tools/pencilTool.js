@@ -17,7 +17,17 @@ export function createPencilTool(deps) {
     // Pattern block deps
     patternBlocksRef, patternsRef, currentPatternIdByTrackRef,
     onCreatePatternBlock, onDeletePatternBlock,
+    // FXG.4-h-r1: row layout so lane bands resolve to their parent track.
+    trackLayoutRef,
   } = deps
+
+  // Resolve a Y to a track index via the row layout when present (lane bands map
+  // to their parent track — child lanes never accept drawn audio/pattern clips).
+  function idxAtY(y) {
+    const layout = trackLayoutRef?.current
+    if (layout && typeof layout.trackIndexAtY === 'function') return layout.trackIndexAtY(y)
+    return Math.floor(y / TRACK_HEIGHT)
+  }
 
   let ghost = null // { beat, trackIndex, durationBeats, color, name }
 
@@ -58,7 +68,7 @@ export function createPencilTool(deps) {
   return {
     onMouseDown(localX, localY, e) {
       const beat = pixelToBeat(localX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-      const trackIndex = Math.floor(localY / TRACK_HEIGHT)
+      const trackIndex = idxAtY(localY)
       const tracks = tracksRef.current
       if (!tracks || trackIndex < 0 || trackIndex >= tracks.length) return
 
@@ -128,7 +138,7 @@ export function createPencilTool(deps) {
 
     onMouseMove(localX, localY, e) {
       const beat = pixelToBeat(localX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-      const trackIndex = Math.floor(localY / TRACK_HEIGHT)
+      const trackIndex = idxAtY(localY)
       const tracks = tracksRef.current
 
       if (!tracks || trackIndex < 0 || trackIndex >= tracks.length) {
@@ -159,7 +169,7 @@ export function createPencilTool(deps) {
     onContextMenu(localX, localY, e) {
       e.preventDefault()
       const beat = pixelToBeat(localX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-      const trackIndex = Math.floor(localY / TRACK_HEIGHT)
+      const trackIndex = idxAtY(localY)
       const tracks = tracksRef.current
       const track = tracks?.[trackIndex]
       if (track?.type === 'Pattern') {
@@ -178,7 +188,7 @@ export function createPencilTool(deps) {
     },
 
     drawOverlay(ctx, w, h, viewState) {
-      drawGhostPreview(ctx, w, h, viewState.scrollOffset, viewState.pixelsPerBeat, ghost)
+      drawGhostPreview(ctx, w, h, viewState.scrollOffset, viewState.pixelsPerBeat, ghost, null, trackLayoutRef?.current)
     },
 
     cleanup() {

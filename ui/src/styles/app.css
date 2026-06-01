@@ -2425,12 +2425,121 @@ html[data-xleth-backdrop="native-acrylic"] #root {
   cursor: crosshair;
 }
 
-/* FXG.4-h — macro automation clip pills overlaid on the timeline canvas */
-.macro-automation-clip-pill {
-  background: rgba(251, 146, 60, 0.72);
-  border-top: 1px solid rgba(251, 146, 60, 0.95);
-  border-radius: 2px;
+/* FXG.4-h-r1 — real macro automation child lanes (replaces the overlay pills).
+   The layer sits inside .timeline-canvas-scroll, sized to the full content
+   height so it scrolls/zooms with the canvas. Empty areas pass pointer events
+   through to the canvas; clips/points/handles opt back in. Theme tokens only. */
+.macro-automation-lanes-layer {
+  pointer-events: none;
+  z-index: 6;
+}
+.macro-automation-lane {
+  pointer-events: auto;
   box-sizing: border-box;
+}
+.macro-automation-lane--orphan {
+  opacity: 0.55;
+}
+.macro-automation-lane-orphan-tag {
+  position: absolute;
+  left: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 9px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  color: var(--theme-semantic-warning-text, var(--theme-text-tertiary));
+  pointer-events: none;
+}
+.macro-automation-clip {
+  box-sizing: border-box;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 3px;
+  background: var(--theme-surface-overlay, rgba(0, 0, 0, 0.28));
+  cursor: grab;
+  overflow: hidden;
+}
+.macro-automation-clip.is-selected {
+  border-color: var(--theme-border-focus);
+  box-shadow: inset 0 0 0 1px var(--theme-border-focus);
+}
+.macro-automation-clip.is-looped {
+  border-style: dashed;
+}
+.macro-automation-clip-curve polyline {
+  stroke: var(--theme-border-focus);
+  stroke-width: 1.5;
+}
+.macro-automation-point {
+  padding: 0;
+  border: 1px solid var(--theme-border-focus);
+  border-radius: 50%;
+  background: var(--theme-bg-secondary, var(--theme-bg-primary));
+  cursor: ns-resize;
+  pointer-events: auto;
+}
+.macro-automation-point:hover {
+  background: var(--theme-border-focus);
+}
+.macro-automation-clip-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  cursor: ew-resize;
+  background: transparent;
+}
+.macro-automation-clip-handle--left { left: 0; }
+.macro-automation-clip-handle--right { right: 0; }
+.macro-automation-clip.is-selected .macro-automation-clip-handle {
+  background: var(--theme-border-focus);
+}
+.macro-automation-clip-loop {
+  position: absolute;
+  top: 2px;
+  right: 3px;
+  display: inline-flex;
+  color: var(--theme-text-secondary);
+  pointer-events: none;
+}
+
+/* Left-header macro automation child-lane label rows */
+.track-header-macro-lane {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px 0 18px;
+  box-sizing: border-box;
+  border-left: 3px solid var(--theme-border-subtle);
+  border-bottom: 1px solid var(--theme-border-subtle);
+  background: var(--theme-bg-secondary, var(--theme-bg-primary));
+  color: var(--theme-text-secondary);
+}
+.track-header-macro-lane--orphan { opacity: 0.6; }
+.track-header-macro-lane-icon { color: var(--theme-text-tertiary); flex: 0 0 auto; }
+.track-header-macro-lane-label {
+  flex: 1 1 auto;
+  font-size: 10px;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.track-header-macro-lane-hide {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border: none;
+  background: transparent;
+  color: var(--theme-text-tertiary);
+  cursor: pointer;
+  border-radius: 3px;
+}
+.track-header-macro-lane-hide:hover {
+  color: var(--theme-text);
+  background: var(--theme-surface-overlay, rgba(0, 0, 0, 0.2));
 }
 
 .timeline-canvas-layer {

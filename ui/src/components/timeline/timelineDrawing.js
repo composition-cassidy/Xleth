@@ -124,6 +124,19 @@ function _bezierGain(xNorm, x1, y1, x2, y2) {
   return 3 * omt * omt * t * y1 + 3 * omt * t * t * y2 + t * t * t
 }
 
+// ── Track row geometry ───────────────────────────────────────────────────────
+// FXG.4-h-r1: macro automation child lanes insert vertical space below their
+// parent track, so a track's Y top is no longer `index * TRACK_HEIGHT`. When a
+// `trackLayout` (see timelineRowLayout.js) is threaded in, draw paths resolve the
+// shifted top through it; without one they fall back to the contiguous geometry
+// so callers/tests that don't use lanes are unaffected.
+function _trackTop(trackIndex, trackLayout) {
+  if (trackLayout && typeof trackLayout.trackTop === 'function') {
+    return trackLayout.trackTop(trackIndex)
+  }
+  return trackIndex * TRACK_HEIGHT
+}
+
 // ── Grid (background layer) ──────────────────────────────────────────────────
 
 function _clipFadePercent(clip, percentKey, ticksKey) {
@@ -147,7 +160,7 @@ function _normalizedClipFadePercents(clip) {
   return { fadeInPercent, fadeOutPercent }
 }
 
-export function drawGrid(ctx, w, h, scrollOffset, ppb, trackCount, tracks = null, palette = null) {
+export function drawGrid(ctx, w, h, scrollOffset, ppb, trackCount, tracks = null, palette = null, trackLayout = null) {
   ctx.clearRect(0, 0, w, h)
   const p = palette ?? resolveTimelinePalette()
 
@@ -160,21 +173,43 @@ export function drawGrid(ctx, w, h, scrollOffset, ppb, trackCount, tracks = null
     for (let i = 0; i < tracks.length; i++) {
       const t = tracks[i]
       if (t?.type !== 'Pattern') continue
-      const y = i * TRACK_HEIGHT
+      const y = _trackTop(i, trackLayout)
       if (y >= h) break
       ctx.fillRect(0, y, w, TRACK_HEIGHT)
     }
   }
 
-  // Track separator lines (horizontal)
+  // FXG.4-h-r1: faint band fill behind each macro automation child lane so the
+  // lane reads as attached, bounded space even before the DOM lane layer paints.
+  if (trackLayout && Array.isArray(trackLayout.rows)) {
+    ctx.fillStyle = withAlpha(p.laneSeparator, 0.10)
+    for (const r of trackLayout.rows) {
+      if (r.rowType !== 'macroAutomation') continue
+      if (r.y >= h) break
+      ctx.fillRect(0, r.y, w, r.height)
+    }
+  }
+
+  // Track / lane separator lines (horizontal)
   ctx.strokeStyle = p.laneSeparator
   ctx.lineWidth = 1
   ctx.beginPath()
-  for (let i = 0; i <= trackCount; i++) {
-    const y = Math.round(i * TRACK_HEIGHT) + 0.5
-    if (y > h) break
-    ctx.moveTo(0, y)
-    ctx.lineTo(w, y)
+  if (trackLayout && Array.isArray(trackLayout.rows)) {
+    for (const r of trackLayout.rows) {
+      const y = Math.round(r.y) + 0.5
+      if (y > h) break
+      ctx.moveTo(0, y)
+      ctx.lineTo(w, y)
+    }
+    const bottom = Math.round(trackLayout.totalHeight) + 0.5
+    if (bottom <= h) { ctx.moveTo(0, bottom); ctx.lineTo(w, bottom) }
+  } else {
+    for (let i = 0; i <= trackCount; i++) {
+      const y = Math.round(i * TRACK_HEIGHT) + 0.5
+      if (y > h) break
+      ctx.moveTo(0, y)
+      ctx.lineTo(w, y)
+    }
   }
   ctx.stroke()
 
@@ -638,7 +673,7 @@ function drawMetadataChips(ctx, chips, area, palette, { handleReserveRight = 0, 
   }
 }
 
-export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, regions, selectedClipIds, waveformCache, hiResCache, clipPeakCache, bpm, mutedTrackIds, palette = null, timelineDisplaySettings = null, trackColorById = null) {
+export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, regions, selectedClipIds, waveformCache, hiResCache, clipPeakCache, bpm, mutedTrackIds, palette = null, timelineDisplaySettings = null, trackColorById = null, trackLayout = null) {
   ctx.clearRect(0, 0, w, h)
   if (!clips || clips.length === 0) return
   const p = palette ?? resolveTimelinePalette()
@@ -669,7 +704,7 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
 
     const trackIdx = trackIdToIndex[clip.trackId]
     if (trackIdx == null) continue
-    const y = trackIdx * TRACK_HEIGHT + CLIP_PAD
+    const y = _trackTop(trackIdx, trackLayout) + CLIP_PAD
 
     const region = regions[clip.regionId]
     const fallbackHex = labelHexColor(region?.label)
@@ -1017,7 +1052,7 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
 
 export function drawWorldSpinners(
   ctx, clips, trackIdToIndex, worldProcessingClips,
-  scrollOffset, ppb, spinAngle, accentColor
+  scrollOffset, ppb, spinAngle, accentColor, trackLayout = null
 ) {
   if (!worldProcessingClips?.size || !clips?.length) return
   const SPINNER_R   = 7    // radius → 14 px diameter
@@ -1040,7 +1075,7 @@ export function drawWorldSpinners(
     if (clipW < 20 || x + clipW < 0) continue
 
     const cx = x + clipW - SPINNER_PAD - SPINNER_R
-    const cy = (trackIdx + 1) * TRACK_HEIGHT - CLIP_PAD - SPINNER_PAD - SPINNER_R
+    const cy = _trackTop(trackIdx, trackLayout) + TRACK_HEIGHT - CLIP_PAD - SPINNER_PAD - SPINNER_R
 
     ctx.beginPath()
     ctx.arc(cx, cy, SPINNER_R, spinAngle, spinAngle + ARC_SPAN)
@@ -1051,7 +1086,7 @@ export function drawWorldSpinners(
 
 // ── Pattern Blocks (content layer) ──────────────────────────────────────────
 
-export function drawPatternBlocks(ctx, w, h, scrollOffset, ppb, blocks, trackIdToIndex, patterns, regions, selectedBlockIds, mutedTrackIds, palette = null, timelineDisplaySettings = null, trackColorById = null) {
+export function drawPatternBlocks(ctx, w, h, scrollOffset, ppb, blocks, trackIdToIndex, patterns, regions, selectedBlockIds, mutedTrackIds, palette = null, timelineDisplaySettings = null, trackColorById = null, trackLayout = null) {
   if (!blocks || blocks.length === 0) return
   const p = palette ?? resolveTimelinePalette()
   const ds = normalizeTimelineDisplaySettings(timelineDisplaySettings)
@@ -1074,7 +1109,7 @@ export function drawPatternBlocks(ctx, w, h, scrollOffset, ppb, blocks, trackIdT
 
     const trackIdx = trackIdToIndex[block.trackId]
     if (trackIdx == null) continue
-    const y = trackIdx * TRACK_HEIGHT + CLIP_PAD
+    const y = _trackTop(trackIdx, trackLayout) + CLIP_PAD
 
     const pattern = patterns?.[block.patternId]
     const region = pattern ? regions?.[pattern.regionId] : null
@@ -1258,14 +1293,14 @@ export function drawPatternBlocks(ctx, w, h, scrollOffset, ppb, blocks, trackIdT
 
 // ── Drop preview (drawn on overlay layer) ───────────────────────────────────
 
-export function drawDropPreview(ctx, w, h, scrollOffset, ppb, preview, palette = null) {
+export function drawDropPreview(ctx, w, h, scrollOffset, ppb, preview, palette = null, trackLayout = null) {
   if (!preview) return
   const p = palette ?? resolveTimelinePalette()
 
   const { beat, trackIndex, durationBeats, color, name } = preview
   const x = beatToPixel(beat, scrollOffset, ppb)
   const clipW = durationBeats * ppb
-  const y = trackIndex * TRACK_HEIGHT + CLIP_PAD
+  const y = _trackTop(trackIndex, trackLayout) + CLIP_PAD
   const clipH = TRACK_HEIGHT - CLIP_PAD * 2
 
   // Fill
@@ -1298,13 +1333,13 @@ export function drawDropPreview(ctx, w, h, scrollOffset, ppb, preview, palette =
 
 const GHOST_CLIP_PAD = 2
 
-export function drawGhostPreview(ctx, w, h, scrollOffset, ppb, ghost, palette = null) {
+export function drawGhostPreview(ctx, w, h, scrollOffset, ppb, ghost, palette = null, trackLayout = null) {
   if (!ghost) return
   const p = palette ?? resolveTimelinePalette()
   const { beat, trackIndex, durationBeats, color, name } = ghost
   const x = beatToPixel(beat, scrollOffset, ppb)
   const clipW = durationBeats * ppb
-  const y = trackIndex * TRACK_HEIGHT + GHOST_CLIP_PAD
+  const y = _trackTop(trackIndex, trackLayout) + GHOST_CLIP_PAD
   const clipH = TRACK_HEIGHT - GHOST_CLIP_PAD * 2
 
   if (x + clipW < 0 || x > w) return
@@ -1363,12 +1398,12 @@ export function drawSplitLine(ctx, w, h, scrollOffset, ppb, beat, palette = null
   ctx.setLineDash([])
 }
 
-export function drawMovePreview(ctx, w, h, scrollOffset, ppb, preview) {
+export function drawMovePreview(ctx, w, h, scrollOffset, ppb, preview, trackLayout = null) {
   if (!preview) return
   const { beat, trackIndex, durationBeats, color } = preview
   const x = beatToPixel(beat, scrollOffset, ppb)
   const clipW = durationBeats * ppb
-  const y = trackIndex * TRACK_HEIGHT + GHOST_CLIP_PAD
+  const y = _trackTop(trackIndex, trackLayout) + GHOST_CLIP_PAD
   const clipH = TRACK_HEIGHT - GHOST_CLIP_PAD * 2
 
   ctx.fillStyle = hexToRgba(color, 0.3)

@@ -12,7 +12,20 @@ export function createDeleteTool(deps) {
     redrawOverlay,
     // Pattern block deps
     patternBlocksRef, onDeletePatternBlock,
+    // FXG.4-h-r1: row layout so lane bands resolve to their parent track.
+    trackLayoutRef,
   } = deps
+
+  function idxAtY(y) {
+    const layout = trackLayoutRef?.current
+    if (layout && typeof layout.trackIndexAtY === 'function') return layout.trackIndexAtY(y)
+    return Math.floor(y / TRACK_HEIGHT)
+  }
+  function topOf(trackIndex) {
+    const layout = trackLayoutRef?.current
+    if (layout && typeof layout.trackTop === 'function') return layout.trackTop(trackIndex)
+    return trackIndex * TRACK_HEIGHT
+  }
 
   let isDragging = false
   let dragOriginX = 0, dragOriginY = 0
@@ -65,7 +78,7 @@ export function createDeleteTool(deps) {
       const trackIdx = tracks.findIndex((t) => t.id === clip.trackId)
       const trackType = tracks[trackIdx]?.type
       if (trackType === 'Pattern') continue // pattern tracks can't hold clips
-      const cY1 = trackIdx * TRACK_HEIGHT
+      const cY1 = topOf(trackIdx)
       const cY2 = cY1 + TRACK_HEIGHT
 
       if (cX2 >= rX1 && cX1 <= rX2 && cY2 >= rY1 && cY1 <= rY2) {
@@ -90,7 +103,7 @@ export function createDeleteTool(deps) {
       const bX1 = beatToPixel(bBeat, scrollOffset, ppb)
       const bX2 = beatToPixel(bEnd, scrollOffset, ppb)
       const trackIdx = tracks.findIndex((t) => t.id === b.trackId)
-      const bY1 = trackIdx * TRACK_HEIGHT
+      const bY1 = topOf(trackIdx)
       const bY2 = bY1 + TRACK_HEIGHT
       if (bX2 >= rX1 && bX1 <= rX2 && bY2 >= rY1 && bY1 <= rY2) {
         ids.add(b.id)
@@ -104,7 +117,7 @@ export function createDeleteTool(deps) {
       if (e.button !== 0) return
 
       const beat = pixelToBeat(localX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-      const trackIndex = Math.floor(localY / TRACK_HEIGHT)
+      const trackIndex = idxAtY(localY)
       const tracks = tracksRef.current
       const track = tracks?.[trackIndex]
 
@@ -166,7 +179,7 @@ export function createDeleteTool(deps) {
     onContextMenu(localX, localY, e) {
       e.preventDefault()
       const beat = pixelToBeat(localX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-      const trackIndex = Math.floor(localY / TRACK_HEIGHT)
+      const trackIndex = idxAtY(localY)
       const tracks = tracksRef.current
       const track = tracks?.[trackIndex]
       if (track?.type === 'Pattern') {

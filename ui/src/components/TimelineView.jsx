@@ -3,6 +3,8 @@ import { Layers, Plus } from 'lucide-react'
 import TrackHeaderList from './timeline/TrackHeaderList.jsx'
 import PatternListPanel from './timeline/PatternListPanel.jsx'
 import TimelineCanvas from './timeline/TimelineCanvas.jsx'
+import MacroAutomationLanes from './timeline/MacroAutomationLanes.jsx'
+import { buildTrackLayout } from './timeline/timelineRowLayout.js'
 import { tokenValue } from '../theming/tokenValue.ts'
 import TimelineRuler from './timeline/TimelineRuler.jsx'
 import TimelineScrollbar from './timeline/TimelineScrollbar.jsx'
@@ -677,54 +679,6 @@ function normalizeClipFadeFields(clip) {
   return { ...clip, ...fades }
 }
 
-// FXG.4-h — renders macro automation lane clips as thin strips at the bottom
-// of each parent track row, using the same (tick/PPQ - scrollOffset)*ppb math
-// the canvas uses so clips align perfectly with audio clip positions.
-const MACRO_LANE_H = 14
-const MACRO_LANE_GAP = 2
-
-function MacroAutomationLanesOverlay({ tracks, graphStates, pixelsPerBeat, scrollOffset }) {
-  const entries = useMemo(() => {
-    const out = []
-    tracks.forEach((track, trackIndex) => {
-      const gs = graphStates[String(track.id)]
-      if (!gs?.macroAutomationLanes?.length) return
-      let visibleLaneIndex = 0
-      gs.macroAutomationLanes.forEach((lane) => {
-        if (!lane.visible || lane.targetUnavailable) return
-        const macroNode = gs.nodes?.find((n) => n.id === lane.macroNodeId)
-        const laneName = macroNode?.label ?? 'Macro'
-        lane.clips.forEach((clip) => {
-          const rawLeft = (clip.startTick / PPQ - scrollOffset) * pixelsPerBeat
-          const rawWidth = Math.max(4, (clip.lengthTicks / PPQ) * pixelsPerBeat)
-          const left = Math.max(0, rawLeft)
-          const width = Math.max(0, rawLeft + rawWidth - left)
-          const top = trackIndex * TRACK_HEIGHT
-            + TRACK_HEIGHT - MACRO_LANE_H - MACRO_LANE_GAP
-            - visibleLaneIndex * (MACRO_LANE_H + MACRO_LANE_GAP)
-          if (width > 0) out.push({ key: `${lane.id}-${clip.id}`, left, width, top, laneName })
-        })
-        visibleLaneIndex++
-      })
-    })
-    return out
-  }, [tracks, graphStates, pixelsPerBeat, scrollOffset])
-
-  if (entries.length === 0) return null
-  return (
-    <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 5 }}>
-      {entries.map(({ key, left, width, top, laneName }) => (
-        <div
-          key={key}
-          title={laneName}
-          className="macro-automation-clip-pill"
-          style={{ position: 'absolute', left, top, width, height: MACRO_LANE_H }}
-        />
-      ))}
-    </div>
-  )
-}
-
 export default function TimelineView({
   activeSampleId,
   currentPatternIdByTrack = {},
@@ -761,6 +715,17 @@ export default function TimelineView({
 
   // ── Track state ────────────────────────────────────────────────────────────
   const [tracks, setTracks] = useState([])
+
+  // FXG.4-h-r1: derive the flattened timeline row model (track rows + macro
+  // automation child-lane rows). Threaded into the canvas geometry, hit-testing,
+  // the left header, and the macro lane layer so all four share one source of
+  // truth for where each row sits. Recomputes only when tracks or graphStates
+  // change — tracks with no lanes produce the original contiguous geometry.
+  const trackLayout = useMemo(
+    () => buildTrackLayout({ tracks, graphStates }),
+    [tracks, graphStates],
+  )
+
   const [contextMenu, setContextMenu] = useState(null)
   // Phase G.4: compact quick-FX popover anchored to a clip's on-canvas FX badge
   const [quickFxMenu, setQuickFxMenu] = useState(null)  // { clipId, x, y } | null
@@ -3875,6 +3840,9 @@ export default function TimelineView({
               onSetTrackColor={handleSetTrackColor}
               scrollContainerRef={scrollContainerRef}
               width={timelineTrackHeaderWidth}
+              macroRows={trackLayout.macroRows}
+              onHideMacroLane={(trackId, macroNodeId) =>
+                useEffectChainStore.getState().hideMacroAutomationLaneForTrack?.(trackId, macroNodeId)}
             />
 
             {/* Resize handle — 4px drag zone between header column and canvas */}
@@ -3943,6 +3911,7 @@ export default function TimelineView({
                   }}
                   scrollOffset={scrollOffset}
                   pixelsPerBeat={pixelsPerBeat}
+                  trackLayout={trackLayout}
                   setSelectedClipIds={setSelectedClipIds}
                   onFocusTrack={setFocusedTrackId}
                   pencilTemplateRef={pencilTemplateRef}
@@ -3966,11 +3935,12 @@ export default function TimelineView({
                   }}
                   timelineDisplaySettings={timelineDisplaySettings}
                 />
-                <MacroAutomationLanesOverlay
-                  tracks={tracks}
+                <MacroAutomationLanes
+                  trackLayout={trackLayout}
                   graphStates={graphStates}
                   pixelsPerBeat={pixelsPerBeat}
                   scrollOffset={scrollOffset}
+                  snapGranularity={snapGranularity}
                 />
               </div>
               <TimelineScrollbar

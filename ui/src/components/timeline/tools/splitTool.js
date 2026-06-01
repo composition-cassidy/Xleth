@@ -16,7 +16,15 @@ export function createSplitTool(deps) {
     redrawOverlay,
     // Pattern block deps
     patternBlocksRef, onSplitPatternBlock,
+    // FXG.4-h-r1: row layout so lane bands resolve to their parent track.
+    trackLayoutRef,
   } = deps
+
+  function idxAtY(y) {
+    const layout = trackLayoutRef?.current
+    if (layout && typeof layout.trackIndexAtY === 'function') return layout.trackIndexAtY(y)
+    return Math.floor(y / TRACK_HEIGHT)
+  }
 
   let splitBeat = null
 
@@ -53,7 +61,7 @@ export function createSplitTool(deps) {
       if (e.button !== 0) return
 
       const beat = pixelToBeat(localX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-      const trackIndex = Math.floor(localY / TRACK_HEIGHT)
+      const trackIndex = idxAtY(localY)
       const tracks = tracksRef.current
       const track = tracks?.[trackIndex]
       const modifiers = { alt: e.altKey, shift: e.shiftKey, ctrl: e.ctrlKey }

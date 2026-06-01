@@ -42,6 +42,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     onOpenClipFxQuickMenu,
     scrollOffset,    // state value — used for badge re-positioning on scroll
     pixelsPerBeat,   // state value — used for badge re-positioning on zoom
+    trackLayout,     // FXG.4-h-r1: derived row layout (track + macro lane rows)
   },
   ref
 ) {
@@ -65,6 +66,11 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   const selectedBlockIdsRef = useRef(selectedBlockIds)
   const currentPatternIdByTrackRef = useRef(currentPatternIdByTrack)
   const timelineDisplaySettingsRef = useRef(timelineDisplaySettings)
+
+  // FXG.4-h-r1: hold the derived row layout in a ref so the canvas hot draw
+  // path + tools read the current track/lane geometry without re-creating tools.
+  const trackLayoutRef = useRef(trackLayout)
+  trackLayoutRef.current = trackLayout
 
   clipsRef.current = clips
   regionsRef.current = regions
@@ -155,7 +161,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     const dpr = window.devicePixelRatio || 1
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     const palette = resolveTimelinePalette()
-    drawGrid(ctx, w, h, scrollOffsetRef.current, pixelsPerBeatRef.current, trackCount, tracksRef.current, palette)
+    drawGrid(ctx, w, h, scrollOffsetRef.current, pixelsPerBeatRef.current, trackCount, tracksRef.current, palette, trackLayoutRef.current)
     const dt = performance.now() - t0
     if (dt > 16) console.warn(`[Timeline] WARNING grid redraw took ${dt.toFixed(1)}ms (reason: ${reason})`)
   }
@@ -179,7 +185,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       clipsRef.current, tidx, regionsRef.current,
       selectedRef.current, waveformCacheRef?.current, hiResCacheRef?.current, clipPeakCacheRef?.current, bpmRef?.current,
       mutedTrackIds, palette,
-      timelineDisplaySettingsRef.current, trackColorById
+      timelineDisplaySettingsRef.current, trackColorById, trackLayoutRef.current
     )
     drawPatternBlocks(
       ctx, w, h,
@@ -187,7 +193,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       patternBlocksRef.current, tidx,
       patternsRef.current, regionsRef.current,
       selectedBlockIdsRef.current, mutedTrackIds, palette,
-      timelineDisplaySettingsRef.current, trackColorById
+      timelineDisplaySettingsRef.current, trackColorById, trackLayoutRef.current
     )
     const wpc = worldProcessingClipsRef.current
     if (wpc?.size) {
@@ -196,7 +202,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       drawWorldSpinners(
         ctx, clipsRef.current, tidx, wpc,
         scrollOffsetRef.current, pixelsPerBeatRef.current,
-        spinAngleRef.current, accentColor
+        spinAngleRef.current, accentColor, trackLayoutRef.current
       )
     }
   }
@@ -245,7 +251,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       clipsRef, tracksRef, regionsRef, selectedRef,
       pixelsPerBeatRef, scrollOffsetRef, bpmRef,
       activeSampleIdRef, stickyNoteLengthRef, pencilTemplateRef,
-      snapGranularityRef,
+      snapGranularityRef, trackLayoutRef,
       onCreateClip, onDeleteClip, onMoveClip, onResizeClip, onResizeClipLeft,
       onStretchClip, onStretchClipLeft,
       onSplitClip,
@@ -331,6 +337,15 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     trackIdToIndexRef.current = map
   }, [tracks])
 
+  // ── Redraw when the row layout changes (macro lane add/remove/visibility) ──
+  // The container's minHeight tracks totalHeight, but a visibility toggle that
+  // leaves height unchanged still shifts track tops, so force a grid+content
+  // repaint on any layout identity change.
+  useEffect(() => {
+    redrawGrid('track-layout')
+    redrawContent('track-layout')
+  }, [trackLayout])
+
   // ── WORLD spinner rAF loop ────────────────────────────────────────────────
   // Runs at ~60fps only while at least one clip is being WORLD-processed.
 
@@ -373,6 +388,20 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     return { localX: e.clientX - rect.left, localY: e.clientY - rect.top }
   }, [])
 
+  // FXG.4-h-r1: resolve a local Y to a track index through the row layout so
+  // macro automation lane bands map to their parent track (clips never land on a
+  // lane). Falls back to contiguous geometry when no layout is present.
+  const trackIndexAtLocalY = useCallback((localY) => {
+    const layout = trackLayoutRef.current
+    if (layout && typeof layout.trackIndexAtY === 'function') return layout.trackIndexAtY(localY)
+    return Math.floor(localY / TRACK_HEIGHT)
+  }, [])
+  const trackTopOf = useCallback((trackIndex) => {
+    const layout = trackLayoutRef.current
+    if (layout && typeof layout.trackTop === 'function') return layout.trackTop(trackIndex)
+    return trackIndex * TRACK_HEIGHT
+  }, [])
+
   // ── Mouse event handlers (dispatched to active tool) ──────────────────────
 
   const handleMouseDown = useCallback((e) => {
@@ -384,7 +413,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     // selection logic stays untouched downstream.
     if (e.button === 0 && onFocusTrack) {
       const tks = tracksRef.current
-      const trackIdx = Math.floor(pos.localY / TRACK_HEIGHT)
+      const trackIdx = trackIndexAtLocalY(pos.localY)
       if (tks && trackIdx >= 0 && trackIdx < tks.length) {
         onFocusTrack(tks[trackIdx].id)
       }
@@ -394,7 +423,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     if (e.button === 1) {
       e.preventDefault() // prevent browser auto-scroll
       const beat = pixelToBeat(pos.localX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-      const trackIndex = Math.floor(pos.localY / TRACK_HEIGHT)
+      const trackIndex = trackIndexAtLocalY(pos.localY)
       const clips = clipsRef.current
       const tks = tracksRef.current
       if (!clips || !tks || trackIndex < 0 || trackIndex >= tks.length) return
@@ -465,7 +494,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     const pos = getLocalXY(e)
     if (!pos) return
     const beat = pixelToBeat(pos.localX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-    const trackIndex = Math.floor(pos.localY / TRACK_HEIGHT)
+    const trackIndex = trackIndexAtLocalY(pos.localY)
     const tks = tracksRef.current
     const blocks = patternBlocksRef.current
     if (!tks || !blocks || trackIndex < 0 || trackIndex >= tks.length) return
@@ -481,7 +510,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
         // block, start an inline rename instead of opening the Piano Roll.
         const bStartPx = beatToPixel(bBeat, scrollOffsetRef.current, pixelsPerBeatRef.current)
         const bEndPx   = beatToPixel(bEnd,  scrollOffsetRef.current, pixelsPerBeatRef.current)
-        const blockY   = trackIndex * TRACK_HEIGHT
+        const blockY   = trackTopOf(trackIndex)
         const labelX1  = bStartPx + 6
         const labelX2  = bEndPx - 6
         const labelY1  = blockY + 3
@@ -511,7 +540,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     // Focus shift before any menu opens — keeps right-click paste consistent
     if (onFocusTrack) {
       const tks = tracksRef.current
-      const trackIdx = Math.floor(pos.localY / TRACK_HEIGHT)
+      const trackIdx = trackIndexAtLocalY(pos.localY)
       if (tks && trackIdx >= 0 && trackIdx < tks.length) {
         onFocusTrack(tks[trackIdx].id)
       }
@@ -547,17 +576,17 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     const out = []
     for (const clip of clips) {
       if (!clipHasFxIntent(clip)) continue
-      const rect = getClipRect(clip, trackIdToIndex, scrollOffset, pixelsPerBeat)
+      const rect = getClipRect(clip, trackIdToIndex, scrollOffset, pixelsPerBeat, trackLayout)
       if (!rect) continue
       if (rect.w < 56) continue
       out.push({ id: clip.id, rect })
     }
     return out
-  }, [clips, tracks, scrollOffset, pixelsPerBeat, onOpenClipFxQuickMenu])
+  }, [clips, tracks, scrollOffset, pixelsPerBeat, onOpenClipFxQuickMenu, trackLayout])
 
   // ── Canvas content height tracks the number of tracks ──────────────────────
 
-  const contentH = Math.max(trackCount * TRACK_HEIGHT, 200)
+  const contentH = Math.max(trackLayout?.totalHeight ?? trackCount * TRACK_HEIGHT, 200)
 
   return (
     <div
