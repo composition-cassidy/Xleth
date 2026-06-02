@@ -481,6 +481,22 @@ target_link_libraries(test_envelope_runtime PRIVATE
     XlethEngineModel
 )
 
+# ── test_envelope_voice_gain ──────────────────────────────────────────────────
+# EVC.6: the first *audible* Envelope phase. Covers the per-voice gain application
+# primitives (envelopeVoiceGainSettings / envelopeVoiceGainMultiplier) the Sampler
+# (note voices) and MixEngine (clip voices) multiply into existing per-voice gain:
+# trigger-source filtering (notes/clips/both), multiple controllers multiplying,
+# amount applied exactly once, per-voice independence (no combination), held vs.
+# release levels (position-pure), and the full graphState → parse → multiplier
+# path. Pure C++, model-only — links solely against XlethEngineModel.
+add_executable(test_envelope_voice_gain
+    test/test_envelope_voice_gain.cpp
+)
+
+target_link_libraries(test_envelope_voice_gain PRIVATE
+    XlethEngineModel
+)
+
 # ── test_video_flip_applier ───────────────────────────────────────────────────
 # Phase 3 single-call-site wrapper: chord detection + per-track resolver.
 # Includes SyncManager.h (which needs JUCE/FFmpeg transitively) so this test

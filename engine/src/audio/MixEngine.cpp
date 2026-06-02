@@ -3439,6 +3439,62 @@ void MixEngine::ensureTrackBuffers(int numSamples)
     trackBufferSize_ = numSamples;
 }
 
+// ── Envelope Controller definitions (EVC.6) ───────────────────────────────────
+
+void MixEngine::refreshEnvelopeDefinitions()
+{
+    if (timeline_ == nullptr) {
+        if (!trackEnvelopeDefs_.empty()) trackEnvelopeDefs_.clear();
+        return;
+    }
+
+    // Mark-and-sweep: which graph-mode tracks still exist this pass.
+    std::unordered_set<int> seen;
+
+    for (const TrackInfo* t : timeline_->getAllTracks())
+    {
+        if (t == nullptr) continue;
+        // Gate: only NORMAL tracks (the master never appears in getAllTracks) in
+        // graph mode with a graphState document participate. Chain-mode tracks and
+        // tracks without graphState never get Envelope definitions, so chain mode,
+        // the master, and no-envelope tracks behave byte-for-byte as before.
+        if (t->fxMode != TrackFxMode::Graph) continue;
+        if (!t->hasGraphState) continue;
+
+        seen.insert(t->id);
+        auto& entry = trackEnvelopeDefs_[t->id];
+        // Re-parse only when graphState actually changed (parsing/allocation is
+        // skipped on the steady-state path; a value compare is allocation-free).
+        if (entry.snapshot == t->graphState) continue;
+
+        entry.snapshot     = t->graphState;
+        entry.defs         = parseEnvelopeControllerDefinitions(t->graphState);
+        entry.noteSettings = envelopeVoiceGainSettings(
+            entry.defs, EnvelopeVoiceSourceKind::PatternNote);
+    }
+
+    // Drop entries for tracks that left graph mode, lost graphState, or vanished.
+    for (auto it = trackEnvelopeDefs_.begin(); it != trackEnvelopeDefs_.end(); )
+    {
+        if (seen.find(it->first) == seen.end())
+            it = trackEnvelopeDefs_.erase(it);
+        else
+            ++it;
+    }
+}
+
+void MixEngine::applyEnvelopeControllersToSampler(Sampler* sampler, int trackId)
+{
+    if (sampler == nullptr) return;
+    auto it = trackEnvelopeDefs_.find(trackId);
+    if (it == trackEnvelopeDefs_.end() || it->second.noteSettings.empty()) {
+        sampler->setEnvelopeControllers(nullptr, 0);   // chain mode / no envelope
+        return;
+    }
+    const auto& ns = it->second.noteSettings;
+    sampler->setEnvelopeControllers(ns.data(), static_cast<int>(ns.size()));
+}
+
 // ── Find active clips ────────────────────────────────────────────────────────
 
 void MixEngine::findActiveClips(int64_t bufferStart, int64_t bufferEnd,
@@ -3964,6 +4020,11 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     // Find clips active in this buffer window
     findActiveClips(bufStart, bufEnd, bpm, sampleRate);
 
+    // Refresh per-track Envelope Controller definitions (EVC.6) from graphState.
+    // Re-parses only graph-mode tracks whose graphState changed; a transparent
+    // no-op for chain-mode / no-envelope projects.
+    refreshEnvelopeDefinitions();
+
     // Determine which tracks are in use, and check for solo
     auto allTracks = timeline_->getAllTracks();
     bool anySolo = false;
@@ -4079,6 +4140,28 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
 
         // ── Per-clip bezier fade LUTs (stack-allocated, built once per clip) ──
         const int64_t clipLen = ac.clipEndSample - ac.clipStartSample;
+
+        // ── Envelope Controller per-clip gain (EVC.6) ────────────────────────
+        // Clip activity is position-pure (findActiveClips overlap), so the per-clip
+        // envelope phase is computed directly as elapsed = playhead - clipStart with
+        // the clip duration as the gate — automatically seek-/mid-clip-correct.
+        // Overlapping clips each compute their own elapsed, so they stay
+        // independent and never combine. The release tail (after gate end) is NOT
+        // audible because clip audio stops at clip end (documented limitation,
+        // EVC.6). Applied only to the per-sample read path below; the modulated
+        // (vibrato/scratch/stretch) reader path does not yet apply EVC (limitation).
+        const std::vector<EnvelopeControllerDefinition>* clipEnvDefs = nullptr;
+        {
+            auto envIt = trackEnvelopeDefs_.find(ac.clip->trackId);
+            if (envIt != trackEnvelopeDefs_.end()
+                && !envelopeVoiceGainSettings(
+                        envIt->second.defs,
+                        EnvelopeVoiceSourceKind::TimelineClip).empty())
+                clipEnvDefs = &envIt->second.defs;
+        }
+        const double clipGateMs = clipLen > 0
+            ? static_cast<double>(clipLen) * 1000.0 / sampleRate : 0.0;
+
         float fadeInPercent = ac.clip->fadeInPercent;
         float fadeOutPercent = ac.clip->fadeOutPercent;
         normalizeClipFadePercents(fadeInPercent, fadeOutPercent);
@@ -4162,6 +4245,17 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             // Velocity × per-side fade. User bezier curve takes priority on each
             // side independently; global Hann declick fills any side without one.
             float gain = ac.clip->velocity;
+
+            // EVC.6: multiply in the per-clip Envelope level (never replaces
+            // velocity or fades). Each clip occurrence uses its own elapsed/gate.
+            if (clipEnvDefs != nullptr)
+            {
+                const double elapsedMs =
+                    static_cast<double>(posInClip) * 1000.0 / sampleRate;
+                gain *= static_cast<float>(envelopeVoiceGainMultiplier(
+                    *clipEnvDefs, EnvelopeVoiceSourceKind::TimelineClip,
+                    elapsedMs, clipGateMs));
+            }
 
             // IN side
             if (fadeInSamples > 0 && posInClip < fadeInSamples)
@@ -4268,6 +4362,11 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         // Mirror visualOnly flag into the sampler so processBlock zeroes its output.
         apb.sampler->setVisualOnly(trackSlots[slot].info->visualOnly);
 
+        // EVC.6: apply this track's note-affecting Envelope curves to the sampler
+        // so newly-spawned and held voices multiply the per-voice envelope into
+        // their gain. No-op for chain-mode / no-envelope tracks.
+        applyEnvelopeControllersToSampler(apb.sampler, apb.block->trackId);
+
         // Additively render sampler voices into the track buffer.
         apb.sampler->processBlock(trackBuffers_[slot], numSamples, sampleRate);
     }
@@ -4292,6 +4391,9 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
 
         trackSlots[slot].hasReleasingVoices = true;
         sampler->setVisualOnly(trackSlots[slot].info->visualOnly);
+        // EVC.6: keep the envelope curves applied while the voice releases so the
+        // release tail is shaped by the Envelope as well.
+        applyEnvelopeControllersToSampler(sampler.get(), key.trackId);
         sampler->processBlock(trackBuffers_[slot], numSamples, sampleRate);
     }
 

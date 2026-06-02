@@ -971,3 +971,73 @@ called from audio rendering. EVC.6 adds the per-voice gain target application.
 - **Scope.** No `Sampler`/`MixEngine` audio output change, no per-voice gain application, no clip
   gain change, no `GraphParameterTarget` usage, no plugin-parameter output, no bridge/preload/main
   changes, no renderer/UI changes, no graphState mutation, no Mixer Chain or `effectChains` mutation.
+
+### EVC.6 — per-voice gain target (first audible Envelope phase)
+
+EVC.6 makes the Envelope Controller **audible for the first time**: it applies each per-voice
+Envelope level as an **additional per-voice gain multiplier** on the v1 target (`voiceGain`). It
+affects **only graph-mode normal tracks** (`fxMode === graph`) that have valid `type: "envelope"`
+nodes targeting `voiceGain`; chain-mode tracks, the master, and tracks with no Envelope node are
+byte-for-byte unchanged (the multiplier is a transparent `1.0`). Pattern notes and timeline clips
+are modulated **independently per occurrence** — chords, overlapping clips, and loop iterations
+each get their own envelope phase and are **never averaged/summed/combined**. Multiple Envelope
+nodes targeting `voiceGain` on one track **multiply** their per-voice gains together. It still does
+**not** use `GraphParameterTarget`, plugin parameters, parameter edges, macro automation, or global
+aggregation, and does not mutate graphState, the Mixer Chain, or `effectChains`.
+
+- **Application primitives (pure, model-level).** `engine/src/model/EnvelopeRuntime.h/.cpp` adds
+  `envelopeTriggerAffectsSource(events, sourceKind)` (Notes→note voices, Clips→clip voices,
+  NotesAndClips→both), `envelopeVoiceGainSettings(defs, sourceKind)` (the per-source filtered AHDSR
+  list handed to the Sampler), and `envelopeVoiceGainMultiplier(defs, sourceKind, elapsedMs,
+  gateLengthMs)` — the product of each applicable controller's amount-scaled level from the EVC.4b
+  `evaluateEnvelopeAhdsr` (no AHDSR math is duplicated). The multiplier is `1.0` when no controller
+  applies, each level is already `amount`-scaled (so `amount` is applied exactly once, never
+  doubled), and the product stays in `0..1`.
+- **Pattern-note voices (Sampler).** `Sampler::setEnvelopeControllers(settings, count)` stores up to
+  `kMaxEnvelopeControllers` resolved AHDSR curves (a fixed array — no audio-thread allocation). The
+  Sampler never sees graphState JSON or `EnvelopeControllerDefinition`, only resolved curves. Each
+  voice carries `evcElapsedSamples`/`evcGateSamples` and, in `processVoice`, multiplies the product
+  of `evaluateEnvelopeAhdsr` over those curves into its output **in lockstep with** (never replacing)
+  the region AHDSR, velocity, fades, declick, and LFO stages. The gate is the note duration: it is
+  captured the first sample the voice enters Release (the sample-accurate deferred noteOff), so the
+  Envelope releases when the note ends and the release tail shapes the voice's own release tail.
+  One voice owns one envelope automatically (chords/loops stay independent; voice steal frees both
+  together).
+- **Timeline-clip voices (MixEngine).** Clip activity is position-pure (`findActiveClips` overlap),
+  so the per-clip envelope phase is `elapsed = playhead − clipStart` with the clip duration as the
+  gate, multiplied into the existing per-clip gain (velocity × fades) in the per-sample clip read
+  path. Overlapping clips each compute their own elapsed and stay independent; mid-clip playback
+  starts apply the correct level deterministically (preview/export parity, since both run the same
+  `processBlock`).
+- **MixEngine plumbing.** `MixEngine::refreshEnvelopeDefinitions()` parses each graph-mode track's
+  `TrackInfo::graphState` into `EnvelopeControllerDefinition`s (cached per track; re-parsed only when
+  that track's graphState value actually changed, dropped when a track leaves graph mode or
+  vanishes). It is **engine-internal and read-only** — it never mutates graphState, never adds a
+  bridge/IPC path, and is not driven by the renderer (the renderer only persists definitions through
+  the existing `timeline.setTrackGraphState`). `applyEnvelopeControllersToSampler` pushes the
+  note-affecting curves onto each sampler before it renders.
+- **Trigger-source filtering.** A node's `triggerEvents` selects which voices it shapes: `notes`
+  affects only pattern-note voices, `clips` only timeline-clip voices, `notesAndClips` both. A
+  clip-triggered Envelope never touches notes and vice-versa.
+- **Honest limitations.**
+  - **Clip release tails are not audible.** Clip audio currently stops at clip end, so the Envelope
+    only shapes the clip's active region (attack/hold/decay/sustain); the release segment after the
+    gate cannot sound because there is no clip audio past the gate. Pattern-note voices *do* get an
+    audible release tail (the Sampler voice continues into its own release).
+  - **Mid-note (held-note) audio reconstruction is unchanged.** The pattern-note path is still
+    live-trigger-only (`triggerPatternNotes`): seeking into the middle of a held note does not
+    re-spawn the voice, so neither the note nor its Envelope is reconstructed mid-note. The Envelope
+    reconstruction model (EVC.4b/EVC.5) is ready and tested, but EVC.6 does not add pattern-note
+    voice reconstruction — it does not regress the existing behavior. Clip Envelopes *are* mid-clip
+    correct because clip activity is position-pure.
+  - **Modulated clip reader.** Clips rendered through the vibrato/scratch/stretch modulated reader
+    path do not yet apply EVC voiceGain (only the per-sample read path does); the common clip path
+    is covered.
+- **Tests.** `engine/test/test_envelope_voice_gain.cpp` (pure, model-only) covers the gain
+  primitives: trigger-source filtering (notes/clips/both), multiple controllers multiplying,
+  `amount` applied exactly once (equals the EVC.4b evaluator level), per-voice independence (no
+  shared/combined state), held vs. release levels (position-pure), the per-source settings filter,
+  and the full graphState → parse → multiplier path (including unsupported `target.kind` applying no
+  gain). `test_envelope_runtime`, `test_envelope_ahdsr`, and `test_envelope_voice_events` still pass;
+  `test_sampler` and `test_mix` (full audio engine) still pass, confirming chain-mode / no-envelope
+  audio is unchanged.

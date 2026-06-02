@@ -161,6 +161,40 @@ parseEnvelopeControllerDefinitions(const nlohmann::json& graphState) {
     return out;
 }
 
+// ─── EVC.6: per-voice gain application helpers ────────────────────────────────
+
+std::vector<EnvelopeAhdsrSettings> envelopeVoiceGainSettings(
+    const std::vector<EnvelopeControllerDefinition>& defs,
+    EnvelopeVoiceSourceKind                          sourceKind) {
+    std::vector<EnvelopeAhdsrSettings> out;
+    for (const EnvelopeControllerDefinition& def : defs) {
+        if (def.target != EnvelopeTargetKind::VoiceGain) continue;
+        if (!envelopeTriggerAffectsSource(def.triggerEvents, sourceKind)) continue;
+        out.push_back(def.settings.normalized());
+    }
+    return out;
+}
+
+double envelopeVoiceGainMultiplier(
+    const std::vector<EnvelopeControllerDefinition>& defs,
+    EnvelopeVoiceSourceKind                          sourceKind,
+    double                                           elapsedMs,
+    double                                           gateLengthMs) {
+    double gain = 1.0;
+    for (const EnvelopeControllerDefinition& def : defs) {
+        if (def.target != EnvelopeTargetKind::VoiceGain) continue;
+        if (!envelopeTriggerAffectsSource(def.triggerEvents, sourceKind)) continue;
+        // Each controller evaluates its OWN independent level for this voice's
+        // elapsed/gate (closed-form, EVC.4b). Multiply — never average/sum/max.
+        const EnvelopeAhdsrState st =
+            evaluateEnvelopeAhdsr(def.settings, elapsedMs, gateLengthMs);
+        gain *= st.normalizedLevel;
+    }
+    if (gain < 0.0) gain = 0.0;   // levels are 0..1, so the product is already
+    if (gain > 1.0) gain = 1.0;   // in 0..1; clamp defensively against rounding.
+    return gain;
+}
+
 // ─── Per-controller runtime binding ───────────────────────────────────────────
 
 namespace {

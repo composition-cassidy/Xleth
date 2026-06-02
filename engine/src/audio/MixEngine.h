@@ -6,6 +6,7 @@
 
 #include "model/TimelineTypes.h"
 #include "model/Timeline.h"
+#include "model/EnvelopeRuntime.h"
 #include "SampleBank.h"
 #include "Transport.h"
 #include "Sampler.h"
@@ -911,6 +912,32 @@ private:
     // Content-keyed WORLD vocoder cache, consulted by the WORLD branch of
     // ClipRenderJob (worker thread). Lifetime tied to MixEngine.
     std::unique_ptr<xleth::audio::WorldStretchCache> worldStretchCache_;
+
+    // ── Envelope Controller definitions per track (EVC.6) ────────────────────
+    // Parsed engine-side form of each graph-mode normal track's graphState
+    // Envelope nodes. The renderer persists Envelope node *definitions* in
+    // graphState (via timeline.setTrackGraphState); the engine parses them here,
+    // read-only — it never mutates graphState, never sends per-voice data over IPC,
+    // and never drives this from the renderer. Only graph-mode tracks with valid
+    // voiceGain Envelope nodes get an entry; chain-mode tracks and the master never
+    // do. `snapshot` lets refreshEnvelopeDefinitions() re-parse only when a track's
+    // graphState actually changed (parsing is otherwise skipped each block).
+    struct TrackEnvelopeDefs {
+        nlohmann::json                            snapshot;   // last-parsed graphState
+        std::vector<EnvelopeControllerDefinition> defs;       // all voiceGain controllers
+        std::vector<EnvelopeAhdsrSettings>        noteSettings; // pre-filtered: notes
+    };
+    std::unordered_map<int, TrackEnvelopeDefs> trackEnvelopeDefs_;
+
+    // Re-parse graph-mode tracks' Envelope definitions from TrackInfo.graphState
+    // when they change; drop entries for tracks that left graph mode or vanished.
+    // Engine-internal: reads timeline_ only, mutates nothing in the model.
+    void refreshEnvelopeDefinitions();
+
+    // Push a track's note-affecting Envelope curves onto a sampler before it
+    // renders (EVC.6). No-op (clears the sampler's controllers) when the track has
+    // no graph-mode voiceGain Envelope targeting notes.
+    void applyEnvelopeControllersToSampler(Sampler* sampler, int trackId);
 
     void findActiveClips(int64_t bufferStart, int64_t bufferEnd,
                          double bpm, double sampleRate);

@@ -145,6 +145,55 @@ struct EnvelopeControllerDefinition {
 std::vector<EnvelopeControllerDefinition>
 parseEnvelopeControllerDefinitions(const nlohmann::json& graphState);
 
+// ─── EVC.6: per-voice gain application helpers ────────────────────────────────
+// EVC.6 is the first *audible* Envelope phase: it applies the per-voice Envelope
+// level as an additional per-voice gain multiplier on the v1 target (voiceGain).
+// The helpers below are the pure, reusable core of that application. They are used
+// by MixEngine (clip voices) and, in pre-filtered form, by Sampler (note voices).
+// They duplicate no AHDSR math — every level comes from the EVC.4b
+// evaluateEnvelopeAhdsr evaluator. Voices stay independent: each caller passes its
+// own voice's elapsed/gate, so levels are never averaged/summed/combined across
+// voices — only multiplied per occurrence (audit §7, §11).
+
+// True when a controller's triggerEvents selector applies to a given source kind:
+//   Notes         → pattern-note voices only
+//   Clips         → timeline-clip voices only
+//   NotesAndClips → both
+inline bool envelopeTriggerAffectsSource(EnvelopeTriggerEvents ev,
+                                         EnvelopeVoiceSourceKind kind) {
+    switch (kind) {
+        case EnvelopeVoiceSourceKind::PatternNote:
+            return ev == EnvelopeTriggerEvents::Notes
+                || ev == EnvelopeTriggerEvents::NotesAndClips;
+        case EnvelopeVoiceSourceKind::TimelineClip:
+            return ev == EnvelopeTriggerEvents::Clips
+                || ev == EnvelopeTriggerEvents::NotesAndClips;
+    }
+    return false;
+}
+
+// Returns the normalized AHDSR settings of every controller whose triggerEvents
+// includes `sourceKind` (and target voiceGain — the only kind the parser keeps).
+// The per-voice gain for that source is the product of evaluateEnvelopeAhdsr over
+// these settings. Used to hand the note-affecting envelopes to the Sampler in a
+// graphState-free form (the Sampler never sees EnvelopeControllerDefinition).
+std::vector<EnvelopeAhdsrSettings> envelopeVoiceGainSettings(
+    const std::vector<EnvelopeControllerDefinition>& defs,
+    EnvelopeVoiceSourceKind                          sourceKind);
+
+// Combined per-voice gain multiplier at one elapsed/gate: the product of each
+// applicable controller's amount-scaled level (evaluateEnvelopeAhdsr). Returns
+// 1.0 when no controller applies, so multiplying it into an existing gain stage is
+// a transparent no-op. `elapsedMs` is time since the voice onset; `gateLengthMs`
+// is the note/clip duration (the gate — release begins at gate end). Each level is
+// already 0..1 and amount-scaled, so the product stays in 0..1 and is never
+// double-amount-scaled.
+double envelopeVoiceGainMultiplier(
+    const std::vector<EnvelopeControllerDefinition>& defs,
+    EnvelopeVoiceSourceKind                          sourceKind,
+    double                                           elapsedMs,
+    double                                           gateLengthMs);
+
 // ─── EnvelopeRuntimeVoiceState ────────────────────────────────────────────────
 // Coarse lifecycle of a runtime voice, derived from its AHDSR phase. Off voices
 // are cleaned up (never retained in the active map).

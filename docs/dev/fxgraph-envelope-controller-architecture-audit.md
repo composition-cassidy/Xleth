@@ -383,6 +383,30 @@ Rationale for the change: EVC.4b is split out because mid-note seek reconstructi
 no current equivalent on the pattern path, and conflating it with the live-runtime in EVC.5 would
 make both harder to test.
 
+**EVC.6 status (done).** The first **audible** Envelope phase: the per-voice Envelope level is
+applied as an additional per-voice **gain multiplier** on the v1 target (`voiceGain`), multiplied
+into (never replacing) the existing gain stages. Pure model-level primitives
+(`envelopeVoiceGainSettings`, `envelopeVoiceGainMultiplier`, `envelopeTriggerAffectsSource` in
+`engine/src/model/EnvelopeRuntime.h/.cpp`) reuse the EVC.4b `evaluateEnvelopeAhdsr` evaluator (no
+duplicated AHDSR math). Pattern-note voices apply it in `Sampler::processVoice` (curves handed in via
+`Sampler::setEnvelopeControllers` — the Sampler never sees graphState), gated by the note duration
+(release captured the sample the voice enters Release). Timeline-clip voices apply it position-purely
+in the `MixEngine` clip-mix per-sample path (`elapsed = playhead − clipStart`, clip duration as
+gate). `MixEngine::refreshEnvelopeDefinitions()` parses each `fxMode === graph` track's
+`TrackInfo::graphState` read-only (cached, re-parsed only on change) — no renderer drive, no IPC, no
+graphState mutation. Active **only** for graph-mode normal tracks with valid `voiceGain` Envelope
+nodes; chain mode, the master, and no-envelope tracks are unchanged. Voices stay independent (chords,
+overlapping clips, loop iterations never combine); multiple nodes multiply. It still does NOT use
+`GraphParameterTarget`, plugin parameters, parameter edges, macro automation, or global aggregation.
+**Limitations:** clip release tails are not audible (clip audio stops at clip end — only the active
+region is shaped); mid-note (held-note) audio reconstruction is unchanged (the pattern-note path is
+still live-trigger-only; the EVC.4b/EVC.5 reconstruction model is ready and tested but EVC.6 does not
+add pattern-note voice reconstruction and does not regress current behavior); the modulated
+(vibrato/scratch/stretch) clip reader path does not yet apply EVC. Tests:
+`engine/test/test_envelope_voice_gain.cpp` (pure), with `test_sampler`/`test_mix` confirming
+chain-mode audio is unchanged. See the "EVC.6 — per-voice gain target" section in
+[`fxgraph-architecture.md`](fxgraph-architecture.md).
+
 **EVC.5 status (done).** Implemented as a model-level runtime in `engine/src/model/EnvelopeRuntime.h/.cpp`:
 `parseEnvelopeControllerDefinitions(graphState)` extracts `type === "envelope"` nodes into
 engine-side `EnvelopeControllerDefinition`s (normalized AHDSR + voice/trigger/target descriptors,
