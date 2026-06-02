@@ -143,6 +143,51 @@ function normalizePoints(rawPoints, lengthTicks, fallbackValue) {
   return deduped
 }
 
+function normalizeEditedPoints(rawPoints, lengthTicks, fallbackValue) {
+  const maxTick = toPositiveInt(lengthTicks, DEFAULT_CLIP_LENGTH_TICKS)
+  const points = []
+  if (Array.isArray(rawPoints)) {
+    for (const raw of rawPoints) {
+      const point = normalizePoint(raw)
+      if (point) points.push({ ...point, tick: Math.min(maxTick, point.tick) })
+    }
+  }
+  points.sort((a, b) => a.tick - b.tick)
+
+  const deduped = []
+  for (const point of points) {
+    const last = deduped[deduped.length - 1]
+    if (last && last.tick === point.tick) {
+      deduped[deduped.length - 1] = point
+    } else {
+      deduped.push(point)
+    }
+  }
+
+  if (deduped.length === 0) {
+    const value = clamp01(fallbackValue, 0)
+    return [
+      { tick: 0, value, curve: MACRO_AUTOMATION_SEGMENT_LINEAR },
+      { tick: maxTick, value, curve: MACRO_AUTOMATION_SEGMENT_LINEAR },
+    ]
+  }
+  if (deduped.length === 1) {
+    const only = deduped[0]
+    return [
+      { tick: 0, value: only.value, curve: only.tick === 0 ? only.curve : MACRO_AUTOMATION_SEGMENT_LINEAR },
+      { tick: maxTick, value: only.value, curve: MACRO_AUTOMATION_SEGMENT_LINEAR },
+    ]
+  }
+  return deduped
+}
+
+function repairClipPointsForEdit(clip, fallbackValue = 0) {
+  return {
+    ...clip,
+    points: normalizeEditedPoints(clip.points, clip.lengthTicks, fallbackValue),
+  }
+}
+
 function normalizeClip(raw, idFactory) {
   if (!isPlainObject(raw)) return null
   const lengthTicks = toPositiveInt(raw.lengthTicks, DEFAULT_CLIP_LENGTH_TICKS)
@@ -473,7 +518,7 @@ export function createMacroAutomationClip(graphState, macroNodeId, clipDraft = {
     Number.isFinite(draft.value) ? draft.value : macroNode.data?.normalizedValue,
     0,
   )
-  const clip = normalizeClip(
+  const clip = repairClipPointsForEdit(normalizeClip(
     {
       clipId: typeof draft.clipId === 'string' ? draft.clipId : undefined,
       startTick,
@@ -485,7 +530,7 @@ export function createMacroAutomationClip(graphState, macroNodeId, clipDraft = {
       colorToken: draft.colorToken,
     },
     options.idFactory,
-  )
+  ), seedValue)
 
   const { lanes, lane } = ensureLane(graphState, macroNodeId, options.idFactory)
   if (!laneAcceptsClip(lane, clip)) {
@@ -542,7 +587,7 @@ export function resizeMacroAutomationClip(graphState, clipId, patch = {}) {
     const lengthTicks = patch.lengthTicks == null
       ? clip.lengthTicks
       : toPositiveInt(patch.lengthTicks, clip.lengthTicks)
-    const candidate = { ...clip, startTick, lengthTicks }
+    const candidate = repairClipPointsForEdit({ ...clip, startTick, lengthTicks }, clip.points.at(-1)?.value)
     if (!laneAcceptsClip(lane, candidate, clipId)) {
       return { ok: false, reason: MACRO_AUTOMATION_REJECTION.CLIP_OVERLAP }
     }
@@ -597,7 +642,7 @@ export function pasteMacroAutomationClip(graphState, macroNodeId, clipPayload, o
     options.startTick == null ? clipPayload.startTick : options.startTick,
     0,
   )
-  const clip = normalizeClip(
+  const clip = repairClipPointsForEdit(normalizeClip(
     {
       clipId: undefined, // a paste is always a fresh clip id
       startTick,
@@ -608,7 +653,7 @@ export function pasteMacroAutomationClip(graphState, macroNodeId, clipPayload, o
       colorToken: clipPayload.colorToken,
     },
     options.idFactory,
-  )
+  ), clipPayload.points?.at?.(-1)?.value)
 
   const { lanes, lane } = ensureLane(graphState, macroNodeId, options.idFactory)
   if (!laneAcceptsClip(lane, clip)) {
@@ -654,7 +699,7 @@ export function addMacroAutomationPoint(graphState, clipId, pointDraft = {}) {
       curve: pointDraft.curve,
     })
     if (!point) return { ok: false, reason: MACRO_AUTOMATION_REJECTION.INVALID_POINT }
-    const points = normalizePoints([...clip.points, point], clip.lengthTicks, point.value)
+    const points = normalizeEditedPoints([...clip.points, point], clip.lengthTicks, point.value)
     return { ok: true, clip: { ...clip, points } }
   })
 }
@@ -666,12 +711,12 @@ export function moveMacroAutomationPoint(graphState, clipId, pointIndex, patch =
     }
     const current = clip.points[pointIndex]
     const next = {
-      tick: patch.tick == null ? current.tick : toNonNegativeInt(patch.tick, current.tick),
+      tick: patch.tick == null ? current.tick : Math.min(clip.lengthTicks, toNonNegativeInt(patch.tick, current.tick)),
       value: patch.value == null ? current.value : clamp01(patch.value, current.value),
       curve: patch.curve == null ? current.curve : normalizeSegmentCurve(patch.curve),
     }
     const others = clip.points.filter((_, i) => i !== pointIndex)
-    const points = normalizePoints([...others, next], clip.lengthTicks, next.value)
+    const points = normalizeEditedPoints([...others, next], clip.lengthTicks, next.value)
     return { ok: true, clip: { ...clip, points } }
   })
 }
@@ -684,7 +729,11 @@ export function deleteMacroAutomationPoint(graphState, clipId, pointIndex) {
     if (clip.points.length <= 2) {
       return { ok: false, reason: MACRO_AUTOMATION_REJECTION.MIN_POINTS }
     }
-    const points = clip.points.filter((_, i) => i !== pointIndex)
+    const points = normalizeEditedPoints(
+      clip.points.filter((_, i) => i !== pointIndex),
+      clip.lengthTicks,
+      clip.points[pointIndex]?.value,
+    )
     return { ok: true, clip: { ...clip, points } }
   })
 }

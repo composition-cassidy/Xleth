@@ -6,13 +6,16 @@ import { PPQ } from '../../constants/timeline.js'
 import {
   LANE_CONTENT_PAD,
   clipPixelRect,
-  moveStartTick,
-  snapTick,
   pxDeltaToTickDelta,
+  snapAutomationPointTick,
+  snapClipEndTick,
+  snapClipStartTick,
   xToClipLocalTick,
   yToValue,
   valueToY,
   buildCurvePoints,
+  buildLoopGhostCurveSegments,
+  buildLoopRepeatDividers,
 } from './macroLaneGeometry.js'
 
 // FXG.4-h-r1 — Real macro automation child-lane layer (replaces the FXG.4-h-fix
@@ -82,7 +85,11 @@ export default function MacroAutomationLanes({
     const ppb = pixelsPerBeat
     dragRef.current = { kind: 'move' }
     beginDrag((me) => {
-      const next = moveStartTick(origStart, me.clientX - originX, ppb, modsFrom(me), snapGranularity)
+      const next = snapClipStartTick(
+        origStart + pxDeltaToTickDelta(me.clientX - originX, ppb),
+        modsFrom(me),
+        snapGranularity,
+      )
       if (next !== clip.startTick) {
         actions().moveMacroAutomationClipForTrack(row.parentTrackId, clip.clipId, next)
       }
@@ -103,14 +110,24 @@ export default function MacroAutomationLanes({
     beginDrag((me) => {
       const mods = modsFrom(me)
       if (edge === 'right') {
-        const end = snapTick(origStart + origLen + pxDeltaToTickDelta(me.clientX - originX, ppb), mods, snapGranularity)
-        const lengthTicks = Math.max(MIN_CLIP_TICKS, end - origStart)
+        const end = snapClipEndTick(
+          origEnd + pxDeltaToTickDelta(me.clientX - originX, ppb),
+          origStart,
+          MIN_CLIP_TICKS,
+          mods,
+          snapGranularity,
+        )
+        const lengthTicks = end - origStart
         actions().resizeMacroAutomationClipForTrack(row.parentTrackId, clip.clipId, { lengthTicks })
       } else {
-        let startTick = snapTick(origStart + pxDeltaToTickDelta(me.clientX - originX, ppb), mods, snapGranularity)
-        startTick = Math.min(startTick, origEnd - MIN_CLIP_TICKS)
-        startTick = Math.max(0, startTick)
-        const lengthTicks = Math.max(MIN_CLIP_TICKS, origEnd - startTick)
+        const startTick = snapClipStartTick(
+          origStart + pxDeltaToTickDelta(me.clientX - originX, ppb),
+          mods,
+          snapGranularity,
+          0,
+          origEnd - MIN_CLIP_TICKS,
+        )
+        const lengthTicks = origEnd - startTick
         actions().resizeMacroAutomationClipForTrack(row.parentTrackId, clip.clipId, { startTick, lengthTicks })
       }
     })
@@ -130,11 +147,14 @@ export default function MacroAutomationLanes({
     dragRef.current = { kind: 'point' }
     beginDrag((me) => {
       const rawLocal = xToClipLocalTick(me.clientX - (layerRect?.left ?? 0), clip, pixelsPerBeat, scrollOffset)
-      const tick = Math.min(Math.max(rawLocal, lowerTick), upperTick)
+      const tick = snapAutomationPointTick(rawLocal, clip, modsFrom(me), snapGranularity, PPQ, {
+        minTick: lowerTick,
+        maxTick: upperTick,
+      })
       const value = yToValue(me.clientY - laneTopClient, contentTop, contentH)
       actions().moveMacroAutomationPointForTrack(row.parentTrackId, clip.clipId, pointIndex, { tick, value })
     })
-  }, [beginDrag, pixelsPerBeat, scrollOffset])
+  }, [beginDrag, pixelsPerBeat, scrollOffset, snapGranularity])
 
   // ── Add point (double-click on clip body) ────────────────────────────────
   const addPointAt = useCallback((e, row, clip, contentTop, contentH) => {
@@ -142,10 +162,11 @@ export default function MacroAutomationLanes({
     e.preventDefault(); e.stopPropagation()
     const layerRect = layerRef.current?.getBoundingClientRect()
     const laneTopClient = (layerRect?.top ?? 0) + row.y
-    const tick = xToClipLocalTick(e.clientX - (layerRect?.left ?? 0), clip, pixelsPerBeat, scrollOffset)
+    const rawLocal = xToClipLocalTick(e.clientX - (layerRect?.left ?? 0), clip, pixelsPerBeat, scrollOffset)
+    const tick = snapAutomationPointTick(rawLocal, clip, modsFrom(e), snapGranularity)
     const value = yToValue(e.clientY - laneTopClient, contentTop, contentH)
     actions().addMacroAutomationPointForTrack(row.parentTrackId, clip.clipId, { tick, value })
-  }, [pixelsPerBeat, scrollOffset])
+  }, [pixelsPerBeat, scrollOffset, snapGranularity])
 
   // ── Context menus ─────────────────────────────────────────────────────────
   const openClipMenu = useCallback((e, row, clip) => {
@@ -166,12 +187,13 @@ export default function MacroAutomationLanes({
     e.preventDefault(); e.stopPropagation()
     const layerRect = layerRef.current?.getBoundingClientRect()
     const beat = (e.clientX - (layerRect?.left ?? 0)) / pixelsPerBeat + scrollOffset
+    const rawStartTick = Math.max(0, Math.round(beat * PPQ))
     setMenu({
       x: e.clientX, y: e.clientY, kind: 'lane',
       trackId: row.parentTrackId, macroNodeId: row.macroNodeId, laneId: row.laneId,
-      startTick: Math.max(0, Math.round(beat * PPQ)),
+      startTick: snapClipStartTick(rawStartTick, modsFrom(e), snapGranularity),
     })
-  }, [pixelsPerBeat, scrollOffset])
+  }, [pixelsPerBeat, scrollOffset, snapGranularity])
 
   const clipMenuItems = useMemo(() => {
     if (!menu) return []
@@ -235,6 +257,8 @@ export default function MacroAutomationLanes({
               if (left + width < 0 || left > 100000) return null
               const isSelected = selected?.clipId === clip.clipId
               const curve = buildCurvePoints(clip.points, clip, pixelsPerBeat, contentTop, contentH)
+              const ghostCurves = buildLoopGhostCurveSegments(clip.points, clip, pixelsPerBeat, contentTop, contentH)
+              const loopDividers = buildLoopRepeatDividers(clip.points, clip, pixelsPerBeat)
               return (
                 <div
                   key={clip.clipId}
@@ -251,16 +275,35 @@ export default function MacroAutomationLanes({
                     height={row.height}
                     style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}
                   >
-                    <polyline points={curve} fill="none" />
+                    {ghostCurves.map((points, i) => (
+                      <polyline
+                        key={`ghost-${i}`}
+                        className="macro-automation-clip-curve-ghost"
+                        points={points}
+                        fill="none"
+                      />
+                    ))}
+                    {loopDividers.map((x, i) => (
+                      <line
+                        key={`divider-${i}`}
+                        className="macro-automation-loop-divider"
+                        x1={x.toFixed(2)}
+                        x2={x.toFixed(2)}
+                        y1={contentTop}
+                        y2={contentTop + contentH}
+                      />
+                    ))}
+                    <polyline className="macro-automation-clip-curve-main" points={curve} fill="none" />
                   </svg>
                   {!row.targetUnavailable && clip.points.map((p, i) => {
                     const px = (p.tick / PPQ) * pixelsPerBeat
                     const py = valueToY(p.value, contentTop, contentH)
+                    const isLoopBoundary = clip.loopEnabled && (i === 0 || i === clip.points.length - 1)
                     return (
                       <button
                         key={i}
                         type="button"
-                        className="macro-automation-point"
+                        className={`macro-automation-point${isLoopBoundary ? ' macro-automation-point--loop-boundary' : ''}`}
                         style={{ position: 'absolute', left: px - POINT_HIT_R, top: py - POINT_HIT_R, width: POINT_HIT_R * 2, height: POINT_HIT_R * 2 }}
                         onPointerDown={(e) => startPointMove(e, row, clip, i, contentTop, contentH)}
                         onContextMenu={(e) => {

@@ -4,12 +4,18 @@ import {
   clipPixelRect,
   pxDeltaToTickDelta,
   snapTick,
+  snapTickToTimelineGrid,
+  snapClipStartTick,
+  snapClipEndTick,
+  snapAutomationPointTick,
   moveStartTick,
   xToClipLocalTick,
   yToValue,
   valueToY,
   clipLocalTickToX,
   buildCurvePoints,
+  buildLoopGhostCurveSegments,
+  buildLoopRepeatDividers,
 } from './macroLaneGeometry.js'
 
 const PPB = 40 // pixels per beat
@@ -40,6 +46,11 @@ describe('pxDeltaToTickDelta', () => {
 })
 
 describe('snapTick / moveStartTick', () => {
+  it('converts the 1/32 grid to 120 ticks at PPQ 960', () => {
+    expect(snapTickToTimelineGrid(61, '1/32', PPQ)).toBe(120)
+    expect(snapTickToTimelineGrid(181, '1/32', PPQ)).toBe(240)
+  })
+
   it('snaps to the 1/16 grid by default (rounds to nearest 240 ticks)', () => {
     expect(snapTick(250, {}, '1/16')).toBe(240)
     expect(snapTick(360, {}, '1/16')).toBe(480)
@@ -53,6 +64,16 @@ describe('snapTick / moveStartTick', () => {
     expect(moveStartTick(PPQ, PPB, PPB, {}, '1/16')).toBe(PPQ * 2)
     // never negative
     expect(moveStartTick(0, -PPB * 4, PPB, {}, '1/16')).toBe(0)
+  })
+
+  it('snapClipStartTick snaps clip move/paste start positions', () => {
+    expect(snapClipStartTick(121, {}, '1/32')).toBe(120)
+    expect(snapClipStartTick(59, { alt: true }, '1/32')).toBe(59)
+  })
+
+  it('snapClipEndTick snaps resize end while preserving a positive length', () => {
+    expect(snapClipEndTick(PPQ + 121, PPQ, 60, {}, '1/32')).toBe(PPQ + 120)
+    expect(snapClipEndTick(PPQ + 10, PPQ, 60, {}, '1/32')).toBe(PPQ + 60)
   })
 })
 
@@ -75,8 +96,20 @@ describe('point mapping', () => {
     expect(yToValue(top, top, h)).toBe(1)          // top → max
     expect(yToValue(top + h, top, h)).toBe(0)      // bottom → min
     expect(yToValue(top + h / 2, top, h)).toBeCloseTo(0.5, 5)
+    expect(yToValue(top + h * 0.37, top, h)).toBeCloseTo(0.63, 5)
     expect(valueToY(1, top, h)).toBe(top)
     expect(valueToY(0, top, h)).toBe(top + h)
+  })
+
+  it('snapAutomationPointTick snaps against absolute project tick before returning local tick', () => {
+    const offGridClip = { startTick: 100, lengthTicks: PPQ * 2 }
+    // local 50 -> absolute 150 -> 1/16 grid 240 -> local 140.
+    expect(snapAutomationPointTick(50, offGridClip, {}, '1/16')).toBe(140)
+  })
+
+  it('snapAutomationPointTick clamps snapped points inside clip bounds', () => {
+    expect(snapAutomationPointTick(PPQ * 9, clip, {}, '1/16')).toBe(clip.lengthTicks)
+    expect(snapAutomationPointTick(-PPQ, clip, {}, '1/16')).toBe(0)
   })
 
   it('clipLocalTickToX is the inverse of xToClipLocalTick', () => {
@@ -94,5 +127,31 @@ describe('point mapping', () => {
     const str = buildCurvePoints(points, clip, PPB, top, h)
     // first point: x=0, y=top (value 1); second: x=2*PPB, y=top+h (value 0)
     expect(str).toBe(`0.00,${top.toFixed(2)} ${(2 * PPB).toFixed(2)},${(top + h).toFixed(2)}`)
+  })
+})
+
+describe('loop ghost geometry', () => {
+  it('builds repeated ghost curve segments inside clip bounds', () => {
+    const clip = { startTick: 0, lengthTicks: PPQ * 4, loopEnabled: true }
+    const points = [
+      { tick: 0, value: 1 },
+      { tick: PPQ, value: 0 },
+    ]
+    const segments = buildLoopGhostCurveSegments(points, clip, PPB, 5, 20)
+    expect(segments).toHaveLength(3)
+    expect(segments[0]).toContain('40.00,5.00')
+    expect(segments[2]).toContain('160.00,25.00')
+  })
+
+  it('omits ghost segments for non-loop clips', () => {
+    const clip = { startTick: 0, lengthTicks: PPQ * 4, loopEnabled: false }
+    const points = [{ tick: 0, value: 1 }, { tick: PPQ, value: 0 }]
+    expect(buildLoopGhostCurveSegments(points, clip, PPB, 5, 20)).toEqual([])
+  })
+
+  it('builds repeat dividers only up to the clip end', () => {
+    const clip = { startTick: 0, lengthTicks: PPQ * 3, loopEnabled: true }
+    const points = [{ tick: 0, value: 1 }, { tick: PPQ, value: 0 }]
+    expect(buildLoopRepeatDividers(points, clip, PPB)).toEqual([40, 80])
   })
 })

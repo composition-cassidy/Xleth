@@ -1,6 +1,6 @@
 # FX Graph Architecture
 
-Internal reference for the renderer-side graphState system. Updated through FXG.4-e/f.
+Internal reference for the renderer-side graphState system. Updated through FXG.4-h-r2.
 
 ## Data model separation
 
@@ -674,6 +674,21 @@ parent track, with its own left-header label and its own clip area. The overlay-
 - Clips remain bound to `parentTrackId` (the owning `graphState.trackId`) + `macroNodeId`; they
   cannot float to arbitrary timeline lanes. Styling uses theme tokens / CSS variables only — no
   hardcoded production colors.
+
+### Snap and loop clip polish (FXG.4-h-r2)
+
+FXG.4-h-r2 aligns macro automation editing with the existing timeline snap system. Horizontal clip
+move, clip resize, paste placement, and automation point X edits snap to the active timeline
+`snapGranularity` at PPQ 960. Existing timeline modifier behavior is reused: `Alt` bypasses snap,
+`Shift` temporarily uses the 1/32 grid, and `Ctrl` temporarily uses the 1/8 grid. Automation point
+Y values remain smooth continuous normalized values in `[0.0, 1.0]`; no vertical stepping is added.
+
+Loop-enabled automation clips now render the authored curve as the primary editable curve, followed
+by subordinate ghost repetitions of the first-to-last-point loop segment within the same clip
+bounds. Repeat dividers and the compact loop indicator make the finite repeated region visible, but
+the curve is clipped at the clip end and never continues outside the clip. This visualization is not
+an infinite LFO: runtime semantics are unchanged, loop playback only applies inside the clip region,
+and empty lane space continues holding the last macro value.
 
 Still deferred: direct plugin-parameter automation clips, LFOs/envelopes/peak followers, buses,
 sample-accurate automation, and graph-to-chain return. Mixer Chain behavior is unchanged and

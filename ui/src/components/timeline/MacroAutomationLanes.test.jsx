@@ -27,8 +27,8 @@ function gs({ visible = true, targetUnavailable = false, loopEnabled = false, cl
           loopEnabled,
           points: [
             { tick: 0, value: 1, curve: 'linear' },
-            { tick: PPQ * 2, value: 0.25, curve: 'linear' },
-            { tick: PPQ * 4, value: 0.5, curve: 'linear' },
+            { tick: PPQ, value: 0.25, curve: 'linear' },
+            { tick: PPQ * 2, value: 0.5, curve: 'linear' },
           ],
         }],
       }],
@@ -62,16 +62,25 @@ describe('MacroAutomationLanes', () => {
 
   it('renders the curve polyline and one handle per automation point inside the clip', () => {
     const html = render(gs())
-    expect(html).toContain('<polyline')
+    expect(html).toContain('macro-automation-clip-curve-main')
     // three points → three draggable point handles
     const points = html.match(/macro-automation-point/g) ?? []
     expect(points.length).toBe(3)
   })
 
-  it('marks looped clips with the loop class + indicator', () => {
+  it('marks looped clips with the loop class + indicator and ghost repetitions', () => {
     const html = render(gs({ loopEnabled: true }))
     expect(html).toContain('is-looped')
     expect(html).toContain('macro-automation-clip-loop')
+    expect(html).toContain('macro-automation-clip-curve-ghost')
+    expect(html).toContain('macro-automation-loop-divider')
+    expect(html).toContain('macro-automation-point--loop-boundary')
+  })
+
+  it('does not render ghost repetitions for non-loop clips', () => {
+    const html = render(gs({ loopEnabled: false }))
+    expect(html).not.toContain('macro-automation-clip-curve-ghost')
+    expect(html).not.toContain('macro-automation-loop-divider')
   })
 
   it('renders nothing when the only lane is hidden', () => {

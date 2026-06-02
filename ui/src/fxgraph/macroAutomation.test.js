@@ -79,6 +79,25 @@ describe('normalizeMacroAutomationLanes', () => {
     expect(typeof clip.clipId).toBe('string')
   })
 
+  it('keeps old off-grid saved clips unchanged during load normalization', () => {
+    const lanes = normalizeMacroAutomationLanes(
+      [{
+        macroNodeId: 'M1',
+        clips: [{
+          clipId: 'off-grid',
+          startTick: 17,
+          lengthTicks: 481,
+          points: [{ tick: 13, value: 0.1 }, { tick: 379, value: 0.9 }],
+        }],
+      }],
+      new Set(['M1']),
+    )
+    const clip = lanes[0].clips[0]
+    expect(clip.startTick).toBe(17)
+    expect(clip.lengthTicks).toBe(481)
+    expect(clip.points.map((p) => p.tick)).toEqual([13, 379])
+  })
+
   it('drops same-lane overlapping clips on load (earliest wins)', () => {
     const lanes = normalizeMacroAutomationLanes(
       [{
@@ -232,6 +251,42 @@ describe('point editing', () => {
     // Cannot delete below 2 points.
     const tooFew = deleteMacroAutomationPoint(del.graphState, a.clipId, 0)
     expect(tooFew.reason).toBe(MACRO_AUTOMATION_REJECTION.MIN_POINTS)
+  })
+
+  it('repairs added and moved point ticks to stay inside clip bounds', () => {
+    let gs = graphWith([macroNode('M1', 0.5)])
+    const a = createMacroAutomationClip(gs, 'M1', { startTick: 0, lengthTicks: 1000 }, { idFactory })
+    gs = a.graphState
+
+    gs = addMacroAutomationPoint(gs, a.clipId, { tick: 2000, value: 0.77 }).graphState
+    expect(findClip(gs, a.clipId).clip.points.every((p) => p.tick >= 0 && p.tick <= 1000)).toBe(true)
+
+    gs = moveMacroAutomationPoint(gs, a.clipId, 0, { tick: 9999, value: 0.33 }).graphState
+    expect(findClip(gs, a.clipId).clip.points.every((p) => p.tick >= 0 && p.tick <= 1000)).toBe(true)
+  })
+
+  it('repairs duplicate edited point positions safely', () => {
+    let gs = graphWith([macroNode('M1', 0.5)])
+    const a = createMacroAutomationClip(gs, 'M1', { startTick: 0, lengthTicks: 1000 }, { idFactory })
+    gs = addMacroAutomationPoint(a.graphState, a.clipId, { tick: 500, value: 0.25 }).graphState
+
+    const moved = moveMacroAutomationPoint(gs, a.clipId, 1, { tick: 0, value: 0.75 })
+    expect(moved.ok).toBe(true)
+    const ticks = findClip(moved.graphState, a.clipId).clip.points.map((p) => p.tick)
+    expect(new Set(ticks).size).toBe(ticks.length)
+    expect(ticks.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('clamps points safely when resizing a clip shorter', () => {
+    let gs = graphWith([macroNode('M1', 0.5)])
+    const a = createMacroAutomationClip(gs, 'M1', {
+      startTick: 0,
+      lengthTicks: 1000,
+      points: [{ tick: 0, value: 0 }, { tick: 800, value: 1 }, { tick: 1000, value: 0.5 }],
+    }, { idFactory })
+    const resized = resizeMacroAutomationClip(a.graphState, a.clipId, { lengthTicks: 480 })
+    expect(resized.ok).toBe(true)
+    expect(findClip(resized.graphState, a.clipId).clip.points.every((p) => p.tick <= 480)).toBe(true)
   })
 })
 
