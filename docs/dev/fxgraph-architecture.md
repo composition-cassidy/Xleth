@@ -721,3 +721,43 @@ where timeline clips and pattern notes become playback voices, the existing per-
 `Sampler`, seek/export reconstruction requirements, the recommended graphState node shape and
 engine-side runtime, risk register, and the EVC.2–EVC.8 phase split. EVC output explicitly does
 **not** reuse the macro→`GraphParameterTarget`→plugin-parameter path.
+
+### EVC.2 — envelope node graphState schema (inert)
+
+EVC.2 adds the renderer-side data model for the Envelope Controller as a new graph node type,
+`type: 'envelope'`, a sibling to the Macro control node in `ui/src/fxgraph/graphState.js`. It is an
+**inert definition only** — this phase adds no UI, no runtime ADSR evaluation, no trigger-event
+contract, and no engine-side parsing.
+
+- **Per-voice by product model.** The persisted node describes a per-voice controller (see the
+  audit): pattern notes and timeline clips each spawn independent envelope voices that never
+  combine. The node stores this intent; it does not yet act on it.
+- **Stored data (closed schema).** `data` holds AHDSR (`attackMs`, `holdMs`, `decayMs`, `sustain`,
+  `releaseMs`), per-segment tension (`attackTension`, `decayTension`, `releaseTension`), `amount`,
+  `voiceMode` (`"poly"` default | `"mono"`), `maxVoices` (1..32), a `triggerSource`
+  (`{ kind: "parentTrack", events: "notes" | "clips" | "notesAndClips" }`), a `target`
+  (`{ kind: "voiceGain" }` only), and inert `monophonic` (`{ legato, glideMs }`) knobs. Normalization
+  clamps/repairs every field and forces the `triggerSource.kind`/`target.kind` enums; malformed or
+  missing data repairs to defaults without throwing. Parent ownership is `graphState.trackId` — the
+  parent track id is never stored redundantly on the node.
+- **Not an effect node.** Envelope nodes have no `effectInstanceId`, own no plugin metadata, hydrate
+  no graph-owned processor, and are excluded from the audio topology payload
+  (`buildLinearGraphTopologyPayload` treats `envelope` as a control node, like `macro`). Audio edges
+  touching an envelope node are dropped on load and rejected by `canConnectGraphNodes`.
+- **Not a modulation endpoint.** Envelope nodes are rejected as both source and target of
+  macro→parameter links; they never use `GraphParameterTarget` and never connect to an exposed
+  stock/VST plugin parameter.
+- **Helpers.** `normalizeEnvelopeNodeData`, `createDefaultEnvelopeNodeData`, `isEnvelopeGraphNode`,
+  `addGraphEnvelopeNode`, and `updateGraphEnvelopeNodeData` are pure/immutable and preserve unrelated
+  nodes/edges/graphState fields. Envelope nodes are not protected and are removable by
+  `removeGraphNode`.
+- **Store actions.** `addGraphEnvelopeNodeForTrack` and `updateGraphEnvelopeNodeDataForTrack` in
+  `effectChainStore.js` are gated on `fxMode === 'graph'` (rejecting master/missing/chain-mode/missing
+  graphState exactly like the macro actions), persist via `timeline.setTrackGraphState`, and record
+  graph-owned undo/redo transactions (`add_graph_envelope_node`, `update_graph_envelope_node`). They
+  perform no audio runtime sync, no graph effect hydration, never create/destroy graph-owned
+  processors, never call `setGraphEffectParameterNormalized`, and never mutate `effectChains` or
+  Mixer Chain state.
+
+Runtime (per-voice ADSR evaluation, voice/trigger contract, seek reconstruction, per-voice gain
+application) remains deferred to EVC.4 / EVC.5 / EVC.6.

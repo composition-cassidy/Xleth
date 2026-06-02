@@ -12,6 +12,8 @@ import {
   validateGraphState,
   addGraphEffectNode,
   addGraphMacroNode,
+  addGraphEnvelopeNode,
+  updateGraphEnvelopeNodeData,
   removeGraphNode,
   connectGraphNodes,
   connectMacroToParameter,
@@ -415,6 +417,18 @@ function computeNextMacroNodePosition(graphState) {
   }
 }
 
+// EVC.2 — stagger envelope nodes on their own grid row below the macro row so a
+// freshly added envelope node never overlaps existing nodes.
+function computeNextEnvelopeNodePosition(graphState) {
+  const envelopeCount = graphState.nodes.filter((node) => node.type === 'envelope').length
+  const column = envelopeCount % GRAPH_MUTATION_GRID_COLUMNS
+  const row = Math.floor(envelopeCount / GRAPH_MUTATION_GRID_COLUMNS)
+  return {
+    x: GRAPH_MUTATION_GRID_ORIGIN_X + column * GRAPH_MUTATION_GRID_STEP_X,
+    y: GRAPH_MUTATION_GRID_ORIGIN_Y + (row + 2) * GRAPH_MUTATION_GRID_STEP_Y,
+  }
+}
+
 function buildGraphEffectNodeDraft(graphState, nodeDraft, options = {}) {
   const draft = nodeDraft != null && typeof nodeDraft === 'object' ? nodeDraft : {}
   const effectInstanceId =
@@ -587,9 +601,11 @@ function graphRuntimeTopologyChanged(beforeGraphState, afterGraphState) {
     const { exposedParameterPorts, ...rest } = data
     return rest
   }
+  // EVC.2 — macro and envelope are control nodes with no audio topology impact.
+  const isControlNodeType = (type) => type === 'macro' || type === 'envelope'
   const structuralSnapshot = (graphState) => ({
     nodes: Array.isArray(graphState?.nodes)
-      ? graphState.nodes.filter((node) => node?.type !== 'macro').map((node) => ({
+      ? graphState.nodes.filter((node) => !isControlNodeType(node?.type)).map((node) => ({
         id: node?.id,
         type: node?.type,
         data: runtimeRelevantNodeData(node?.data),
@@ -599,7 +615,7 @@ function graphRuntimeTopologyChanged(beforeGraphState, afterGraphState) {
       ? graphState.edges.filter((edge) => {
         const source = graphState.nodes?.find((node) => node?.id === edge?.sourceNodeId)
         const target = graphState.nodes?.find((node) => node?.id === edge?.targetNodeId)
-        return source?.type !== 'macro' && target?.type !== 'macro'
+        return !isControlNodeType(source?.type) && !isControlNodeType(target?.type)
       })
       : [],
   })
@@ -1551,6 +1567,73 @@ const useEffectChainStore = create((set, get) => ({
         options,
       )
       return { ...applied, drive }
+    }
+    return applied
+  },
+
+  // EVC.2 — adds an inert graph-owned Envelope Controller node. Like the macro
+  // actions this is gated on graph mode (master/missing/chain-mode/missing
+  // graphState all reject), persists via timeline.setTrackGraphState, and records
+  // a graph-owned undo transaction. It performs NO audio runtime sync, NO graph
+  // effect hydration, creates/destroys NO graph-owned processors, never calls
+  // setGraphEffectParameterNormalized, and never touches effectChains/Mixer Chain.
+  // The envelope node does not execute in this phase — it is a persisted definition.
+  addGraphEnvelopeNodeForTrack: async (trackId, options = {}) => {
+    const access = readGraphStateForMutation(get(), trackId)
+    if (!access.ok) return access
+
+    const opts = options != null && typeof options === 'object' ? options : {}
+    const position = normalizeGraphNodePosition(opts.position)
+      ?? computeNextEnvelopeNodePosition(access.graphState)
+    const mutation = addGraphEnvelopeNode(access.graphState, {
+      idFactory: opts.idFactory,
+      data: opts.data,
+      position,
+    })
+    if (!mutation.ok) return mutation
+
+    const applied = await applyGraphStateMutation(
+      set,
+      access.key,
+      mutation.graphState,
+      { ...opts, syncRuntime: false },
+    )
+    if (applied.ok) {
+      recordGraphEditTransaction(
+        set,
+        access.key,
+        'add_graph_envelope_node',
+        access.graphState,
+        applied.graphState,
+      )
+    }
+    return applied
+  },
+
+  // EVC.2 — patches an existing envelope node's inert data. Same graph-mode gate,
+  // persistence, and undo recording as the add action; no audio runtime sync and
+  // no effectChains/Mixer Chain involvement.
+  updateGraphEnvelopeNodeDataForTrack: async (trackId, nodeId, patch, options = {}) => {
+    const access = readGraphStateForMutation(get(), trackId)
+    if (!access.ok) return access
+
+    const mutation = updateGraphEnvelopeNodeData(access.graphState, nodeId, patch)
+    if (!mutation.ok) return mutation
+
+    const applied = await applyGraphStateMutation(
+      set,
+      access.key,
+      mutation.graphState,
+      { ...options, syncRuntime: false },
+    )
+    if (applied.ok) {
+      recordGraphEditTransaction(
+        set,
+        access.key,
+        'update_graph_envelope_node',
+        access.graphState,
+        applied.graphState,
+      )
     }
     return applied
   },

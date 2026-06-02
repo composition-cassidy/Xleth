@@ -5,7 +5,11 @@ Investigation/foundation document for the per-voice Envelope Controller node. Th
 events, no parameter-edge behavior, no `effectChains` changes. Everything below is an audit finding
 or a recommendation for later phases.
 
-Status: EVC.0 passed. EVC.1 (this document) is the audit. Implementation begins at EVC.2.
+Status: EVC.0 passed. EVC.1 (this document) is the audit. EVC.2 implemented the inert renderer-side
+graphState schema for the `type: 'envelope'` node per §6 (normalization, pure helpers, graph-mode
+store actions, persistence, undo/redo) — no UI, no runtime, no trigger contract yet. See the
+"EVC.2 — envelope node graphState schema" section in
+[`fxgraph-architecture.md`](fxgraph-architecture.md).
 
 ---
 

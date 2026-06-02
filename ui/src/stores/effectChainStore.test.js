@@ -2424,6 +2424,163 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(result).toEqual({ ok: false, reason: 'engine_unavailable' })
   })
 
+  // ── EVC.2 graph-owned envelope controller node actions ────────────────────
+  describe('graph envelope node actions', () => {
+    it('rejects adding an envelope node while Mixer Chain owns the track', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      const graphState = makePositionedGraphState('7')
+      useEffectChainStore.setState({
+        fxModes: { '7': 'chain' },
+        graphStates: { '7': graphState },
+        graphStateStatuses: { '7': { status: 'valid', graphState, warnings: [] } },
+      })
+
+      await expect(
+        useEffectChainStore.getState().addGraphEnvelopeNodeForTrack('7'),
+      ).resolves.toMatchObject({ ok: false, reason: 'not_graph_mode' })
+
+      expect(useEffectChainStore.getState().graphStates['7']).toBe(graphState)
+      expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+      expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+    })
+
+    it('rejects adding an envelope node to the master track', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      await expect(
+        useEffectChainStore.getState().addGraphEnvelopeNodeForTrack('master'),
+      ).resolves.toMatchObject({ ok: false, reason: 'master_track' })
+      expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+    })
+
+    it('adds an envelope node in graph mode, persists, records undo, and touches no engine APIs', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      const baseChain = seedGraphMode(useEffectChainStore, makePositionedGraphState('7'))
+
+      const result = await useEffectChainStore.getState()
+        .addGraphEnvelopeNodeForTrack('7', { idFactory: () => 'env-gen-0' })
+
+      expect(result.ok).toBe(true)
+      const state = useEffectChainStore.getState()
+      const next = state.graphStates['7']
+      const env = next.nodes.find((node) => node.id === 'env-gen-0')
+      expect(env).toMatchObject({
+        type: 'envelope',
+        data: {
+          label: 'Envelope',
+          voiceMode: 'poly',
+          maxVoices: 32,
+          triggerSource: { kind: 'parentTrack', events: 'notesAndClips' },
+          target: { kind: 'voiceGain' },
+        },
+      })
+      expect(Number.isFinite(env.position.x) && Number.isFinite(env.position.y)).toBe(true)
+      // Persisted via setTrackGraphState; no audio sync; chains/effect APIs untouched.
+      expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next)
+      expect(state.chains['7']).toBe(baseChain)
+      expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+      expect(audio.addGraphEffectNode).not.toHaveBeenCalled()
+      expect(audio.hydrateGraphEffectNodes).not.toHaveBeenCalled()
+      expect(audio.setGraphEffectParameterNormalized).not.toHaveBeenCalled()
+      expect(state.graphHistories['7'].undoStack.at(-1)).toMatchObject({ label: 'add_graph_envelope_node' })
+    })
+
+    it('applies data overrides when adding an envelope node', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      seedGraphMode(useEffectChainStore, makePositionedGraphState('7'))
+
+      const result = await useEffectChainStore.getState().addGraphEnvelopeNodeForTrack('7', {
+        idFactory: () => 'env-a',
+        data: { label: 'Pluck', attackMs: 2, sustain: 0.2, voiceMode: 'mono', maxVoices: 4 },
+      })
+
+      expect(result.ok).toBe(true)
+      const env = useEffectChainStore.getState().graphStates['7'].nodes.find((n) => n.id === 'env-a')
+      expect(env.data).toMatchObject({ label: 'Pluck', attackMs: 2, sustain: 0.2, voiceMode: 'mono', maxVoices: 4 })
+    })
+
+    it('rejects updating an envelope node while Mixer Chain owns the track', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      const graphState = makePositionedGraphState('7', {
+        nodes: [
+          ...makePositionedGraphState('7').nodes,
+          { id: 'env-a', type: 'envelope', position: { x: 80, y: 420 }, data: {} },
+        ],
+      })
+      useEffectChainStore.setState({
+        fxModes: { '7': 'chain' },
+        graphStates: { '7': graphState },
+        graphStateStatuses: { '7': { status: 'valid', graphState, warnings: [] } },
+      })
+
+      await expect(
+        useEffectChainStore.getState().updateGraphEnvelopeNodeDataForTrack('7', 'env-a', { sustain: 0.5 }),
+      ).resolves.toMatchObject({ ok: false, reason: 'not_graph_mode' })
+      expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+    })
+
+    it('updates envelope data in graph mode, persists, records undo, and supports undo/redo', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      const graphState = makePositionedGraphState('7', {
+        nodes: [
+          ...makePositionedGraphState('7').nodes,
+          { id: 'env-a', type: 'envelope', position: { x: 80, y: 420 }, data: { sustain: 0.7 } },
+        ],
+      })
+      const baseChain = seedGraphMode(useEffectChainStore, graphState)
+
+      const result = await useEffectChainStore.getState()
+        .updateGraphEnvelopeNodeDataForTrack('7', 'env-a', { attackMs: 33, sustain: 0.42, voiceMode: 'mono' })
+
+      expect(result.ok).toBe(true)
+      let state = useEffectChainStore.getState()
+      let env = state.graphStates['7'].nodes.find((n) => n.id === 'env-a')
+      expect(env.data).toMatchObject({ attackMs: 33, sustain: 0.42, voiceMode: 'mono' })
+      expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, state.graphStates['7'])
+      expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+      expect(audio.setGraphEffectParameterNormalized).not.toHaveBeenCalled()
+      expect(state.chains['7']).toBe(baseChain)
+      expect(state.graphHistories['7'].undoStack.at(-1)).toMatchObject({ label: 'update_graph_envelope_node' })
+
+      const undo = await useEffectChainStore.getState().undoGraphEditForTrack('7')
+      expect(undo.ok).toBe(true)
+      state = useEffectChainStore.getState()
+      env = state.graphStates['7'].nodes.find((n) => n.id === 'env-a')
+      expect(env.data.sustain).toBe(0.7)
+      expect(env.data.voiceMode).toBe('poly')
+
+      const redo = await useEffectChainStore.getState().redoGraphEditForTrack('7')
+      expect(redo.ok).toBe(true)
+      env = useEffectChainStore.getState().graphStates['7'].nodes.find((n) => n.id === 'env-a')
+      expect(env.data.voiceMode).toBe('mono')
+      // Undo/redo of a control node never resyncs the audio topology.
+      expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+    })
+
+    it('rejects updating a non-envelope node', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      seedGraphMode(useEffectChainStore, makePositionedGraphState('7'))
+
+      await expect(
+        useEffectChainStore.getState().updateGraphEnvelopeNodeDataForTrack('7', 'fx-1', { sustain: 0.5 }),
+      ).resolves.toMatchObject({ ok: false, reason: 'unknown_node_type' })
+      expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+    })
+
+    it('never mutates effectChains for either envelope action', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      const baseChain = seedGraphMode(useEffectChainStore, makePositionedGraphState('7'))
+
+      await useEffectChainStore.getState().addGraphEnvelopeNodeForTrack('7', { idFactory: () => 'env-a' })
+      await useEffectChainStore.getState().updateGraphEnvelopeNodeDataForTrack('7', 'env-a', { amount: 0.25 })
+
+      const state = useEffectChainStore.getState()
+      expect(state.chains['7']).toBe(baseChain)
+      expect(audio.addEffect).not.toHaveBeenCalled()
+      expect(audio.removeEffect).not.toHaveBeenCalled()
+      expect(audio.moveEffect).not.toHaveBeenCalled()
+    })
+  })
+
   // ── FXG.4-h parent-attached macro automation lanes ────────────────────────
   describe('macro automation lanes', () => {
     const idFactory = () => 'fixed-clip-id'

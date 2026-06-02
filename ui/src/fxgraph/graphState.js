@@ -21,6 +21,13 @@ const MAX_VIEWPORT_ZOOM = 4
 export const GRAPH_MACRO_NODE_TYPE = 'macro'
 export const GRAPH_MACRO_OUTPUT_PORT = 'controlOut'
 
+// EVC.2 — Envelope Controller node. A graph-owned, per-voice control node that
+// is a sibling to the Macro node, NOT an effect node. It carries an inert AHDSR
+// definition that is persisted/normalized renderer-side only; runtime evaluation
+// is deferred to the engine in a later phase (EVC.4+). See
+// docs/dev/fxgraph-envelope-controller-architecture-audit.md.
+export const GRAPH_ENVELOPE_NODE_TYPE = 'envelope'
+
 // FXG.4-e/f — base mapping curve type.
 export const GRAPH_PARAMETER_CURVE_LINEAR = 'linear'
 
@@ -32,7 +39,13 @@ export const GRAPH_PARAMETER_CURVE_LINEAR = 'linear'
 // A malformed bezier (wrong point count, non-finite coords) repairs to linear.
 export const GRAPH_PARAMETER_CURVE_BEZIER = 'bezier'
 
-const NODE_TYPES = new Set(['trackInput', 'trackOutput', 'effect', GRAPH_MACRO_NODE_TYPE])
+const NODE_TYPES = new Set([
+  'trackInput',
+  'trackOutput',
+  'effect',
+  GRAPH_MACRO_NODE_TYPE,
+  GRAPH_ENVELOPE_NODE_TYPE,
+])
 const EDGE_TYPES = new Set(['audio', 'parameter'])
 
 function isPlainObject(value) {
@@ -332,6 +345,165 @@ function validateMacroNodeData(node, _graphState, trackId, warnings) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// EVC.2 — Envelope Controller node data model (inert, renderer-only)
+//
+// An envelope node owns an AHDSR per-voice controller definition. It is NOT an
+// effect node: it has no effectInstanceId, owns no plugin metadata, hydrates no
+// graph-owned processor, and never participates in audio topology sync. Parent
+// ownership is graphState.trackId — the parent track id is never stored
+// redundantly on the node (same single-source-of-truth rule as FXG.4-h macro
+// automation lanes). The node definition is persisted; it does NOT execute in
+// this phase and never routes through GraphParameterTarget or any exposed plugin
+// parameter. The data shape normalizes to a stable, closed schema; malformed or
+// missing fields repair to defaults without throwing.
+// ---------------------------------------------------------------------------
+
+const ENVELOPE_TRIGGER_EVENTS = new Set(['notes', 'clips', 'notesAndClips'])
+const ENVELOPE_MAX_VOICES_CAP = 32
+
+export const ENVELOPE_NODE_DEFAULTS = Object.freeze({
+  label: 'Envelope',
+  attackMs: 10,
+  holdMs: 0,
+  decayMs: 120,
+  sustain: 0.7,
+  releaseMs: 200,
+  attackTension: 0,
+  decayTension: 0,
+  releaseTension: 0,
+  amount: 1,
+  voiceMode: 'poly',
+  maxVoices: 32,
+  triggerEvents: 'notesAndClips',
+  legato: false,
+  glideMs: 0,
+})
+
+// ms fields must be finite numbers >= 0; anything else repairs to the default.
+function clampEnvelopeMs(value, fallback) {
+  return Number.isFinite(value) && value >= 0 ? value : fallback
+}
+
+// sustain/amount clamp to 0..1.
+function clampEnvelopeUnit(value, fallback) {
+  if (!Number.isFinite(value)) return fallback
+  return Math.min(1, Math.max(0, value))
+}
+
+// tension fields clamp to -1..1.
+function clampEnvelopeTension(value, fallback) {
+  if (!Number.isFinite(value)) return fallback
+  return Math.min(1, Math.max(-1, value))
+}
+
+// voiceMode repairs to "poly" unless it is exactly "mono".
+function normalizeEnvelopeVoiceMode(value) {
+  return value === 'mono' ? 'mono' : 'poly'
+}
+
+// maxVoices repairs to 32 when invalid, rounds to an integer, and clamps to 1..32.
+function normalizeEnvelopeMaxVoices(value) {
+  if (!Number.isFinite(value)) return ENVELOPE_NODE_DEFAULTS.maxVoices
+  const rounded = Math.round(value)
+  return Math.min(ENVELOPE_MAX_VOICES_CAP, Math.max(1, rounded))
+}
+
+// triggerSource.events repairs to "notesAndClips" unless "notes" or "clips".
+function normalizeEnvelopeTriggerEvents(value) {
+  return ENVELOPE_TRIGGER_EVENTS.has(value) ? value : ENVELOPE_NODE_DEFAULTS.triggerEvents
+}
+
+function normalizeEnvelopeLabel(value) {
+  const label = typeof value === 'string' ? value.trim() : ''
+  return label.length > 0 ? label : ENVELOPE_NODE_DEFAULTS.label
+}
+
+// Normalizes raw envelope node data into the stable closed schema. Missing or
+// malformed input repairs to defaults; provided values are clamped/repaired.
+// triggerSource.kind and target.kind are closed enums forced to their only valid
+// v1 values. Unknown extra fields are intentionally dropped (strict shape).
+export function normalizeEnvelopeNodeData(rawData) {
+  const raw = isPlainObject(rawData) ? rawData : {}
+  const rawTrigger = isPlainObject(raw.triggerSource) ? raw.triggerSource : {}
+  const rawMono = isPlainObject(raw.monophonic) ? raw.monophonic : {}
+
+  return {
+    label: normalizeEnvelopeLabel(raw.label),
+
+    attackMs: clampEnvelopeMs(raw.attackMs, ENVELOPE_NODE_DEFAULTS.attackMs),
+    holdMs: clampEnvelopeMs(raw.holdMs, ENVELOPE_NODE_DEFAULTS.holdMs),
+    decayMs: clampEnvelopeMs(raw.decayMs, ENVELOPE_NODE_DEFAULTS.decayMs),
+    sustain: clampEnvelopeUnit(raw.sustain, ENVELOPE_NODE_DEFAULTS.sustain),
+    releaseMs: clampEnvelopeMs(raw.releaseMs, ENVELOPE_NODE_DEFAULTS.releaseMs),
+
+    attackTension: clampEnvelopeTension(raw.attackTension, ENVELOPE_NODE_DEFAULTS.attackTension),
+    decayTension: clampEnvelopeTension(raw.decayTension, ENVELOPE_NODE_DEFAULTS.decayTension),
+    releaseTension: clampEnvelopeTension(raw.releaseTension, ENVELOPE_NODE_DEFAULTS.releaseTension),
+
+    amount: clampEnvelopeUnit(raw.amount, ENVELOPE_NODE_DEFAULTS.amount),
+
+    voiceMode: normalizeEnvelopeVoiceMode(raw.voiceMode),
+    maxVoices: normalizeEnvelopeMaxVoices(raw.maxVoices),
+
+    // triggerSource.kind must repair to "parentTrack"; parent ownership is
+    // graphState.trackId, never stored on the node.
+    triggerSource: {
+      kind: 'parentTrack',
+      events: normalizeEnvelopeTriggerEvents(rawTrigger.events),
+    },
+
+    // target.kind must repair to "voiceGain" (the only EVC v1 target). This is
+    // NOT a GraphParameterTarget and never references a plugin parameter.
+    target: {
+      kind: 'voiceGain',
+    },
+
+    // Future-only knobs, present but inert in v1.
+    monophonic: {
+      legato: rawMono.legato === true,
+      glideMs: clampEnvelopeMs(rawMono.glideMs, ENVELOPE_NODE_DEFAULTS.glideMs),
+    },
+  }
+}
+
+// Builds a fully-defaulted envelope node data object, applying optional overrides
+// through the same normalization (so overrides are clamped/repaired too).
+export function createDefaultEnvelopeNodeData(overrides = {}) {
+  return normalizeEnvelopeNodeData(isPlainObject(overrides) ? overrides : {})
+}
+
+// True only for graph-owned envelope nodes.
+export function isEnvelopeGraphNode(node) {
+  return isPlainObject(node) && node.type === GRAPH_ENVELOPE_NODE_TYPE
+}
+
+// Shallow-merges an update patch into current envelope data, honoring the nested
+// triggerSource / target / monophonic sub-objects, then re-normalizes.
+function mergeEnvelopeNodeData(currentData, patch) {
+  const merged = { ...currentData, ...patch }
+  if (isPlainObject(patch.triggerSource)) {
+    merged.triggerSource = { ...currentData.triggerSource, ...patch.triggerSource }
+  }
+  if (isPlainObject(patch.target)) {
+    merged.target = { ...currentData.target, ...patch.target }
+  }
+  if (isPlainObject(patch.monophonic)) {
+    merged.monophonic = { ...currentData.monophonic, ...patch.monophonic }
+  }
+  return merged
+}
+
+function validateEnvelopeNodeData(node, trackId, warnings) {
+  const normalized = normalizeEnvelopeNodeData(node.data)
+  if (!isPlainObject(node.data)) {
+    warnings.push(makeWarning('invalidEnvelopeNodeData', trackId, 'invalid envelope node data; using defaults', { nodeId: node.id }))
+  } else if (JSON.stringify(normalized) !== JSON.stringify(node.data)) {
+    warnings.push(makeWarning('repairedEnvelopeNodeData', trackId, 'envelope node data repaired', { nodeId: node.id }))
+  }
+  return normalized
+}
+
 function validateEffectNodeData(node, trackId, warnings) {
   if (!isPlainObject(node.data)) {
     return { ok: false, reason: 'invalid_effect_node_data' }
@@ -570,6 +742,17 @@ function normalizeNode(node, trackId, warnings, fallbackPosition, rawGraphState)
     }
   }
 
+  if (node.type === GRAPH_ENVELOPE_NODE_TYPE) {
+    return {
+      ok: true,
+      node: withNodePosition({
+        id: node.id,
+        type: GRAPH_ENVELOPE_NODE_TYPE,
+        data: validateEnvelopeNodeData(node, trackId, warnings),
+      }, position),
+    }
+  }
+
   return {
     ok: true,
     node: withNodePosition({
@@ -636,6 +819,20 @@ function normalizeEdge(edge, nodeIds, nodeById, trackId, warnings) {
       targetNodeId: edge.targetNodeId,
     }))
     return { ok: false, reason: 'invalid_macro_audio_edge', drop: true }
+  }
+
+  // EVC.2 — envelope nodes are control/voice-controller nodes; they never carry
+  // audio. Drop any audio edge touching an envelope node, mirroring macro nodes.
+  if (
+    edge.type === 'audio' &&
+    (sourceNodeType === GRAPH_ENVELOPE_NODE_TYPE || targetNodeType === GRAPH_ENVELOPE_NODE_TYPE)
+  ) {
+    warnings.push(makeWarning('invalidEnvelopeAudioEdge', trackId, 'audio edge involving envelope node dropped', {
+      edgeId: edge.id,
+      sourceNodeId: edge.sourceNodeId,
+      targetNodeId: edge.targetNodeId,
+    }))
+    return { ok: false, reason: 'invalid_envelope_audio_edge', drop: true }
   }
 
   const normalizedEdge = {
@@ -917,6 +1114,8 @@ export const GRAPH_MUTATION_REJECTION = Object.freeze({
   INVALID_CONNECTION_DRAFT: 'invalid_connection_draft',
   INVALID_PARAMETER_PORT: 'invalid_parameter_port',
   INVALID_MACRO_VALUE: 'invalid_macro_value',
+  // EVC.2 — envelope node data patch validation
+  INVALID_ENVELOPE_PATCH: 'invalid_envelope_patch',
   // FXG.4-e/f — Macro -> Parameter link validation
   INVALID_PARAMETER_TARGET: 'invalid_parameter_target',
   MISSING_EFFECT_INSTANCE: 'missing_effect_instance',
@@ -982,6 +1181,13 @@ export function canConnectGraphNodes(graphState, sourceNodeId, targetNodeId, opt
     return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_SOURCE_TYPE }
   }
   if (edgeType === 'audio' && targetNode.type === GRAPH_MACRO_NODE_TYPE) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_TARGET_TYPE }
+  }
+  // EVC.2 — envelope nodes carry no audio, same as macro nodes.
+  if (edgeType === 'audio' && sourceNode.type === GRAPH_ENVELOPE_NODE_TYPE) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_SOURCE_TYPE }
+  }
+  if (edgeType === 'audio' && targetNode.type === GRAPH_ENVELOPE_NODE_TYPE) {
     return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_TARGET_TYPE }
   }
 
@@ -1118,6 +1324,82 @@ export function updateGraphMacroValue(graphState, nodeId, value) {
                 normalizedValue,
               },
             }
+          : candidate
+      )),
+    },
+  }
+}
+
+// EVC.2 — adds an inert envelope control node to graphState. The node is created
+// with a stable generated id (idFactory pattern) and a finite position, defaulting
+// to the trackOutput column when none is supplied. It creates NO edges and is not
+// protected (removable by removeGraphNode). options: { idFactory?, position?, data? }
+// where data is an optional partial override of the envelope data (clamped/repaired).
+export function addGraphEnvelopeNode(graphState, options = {}) {
+  const editCheck = validateGraphStateForEditing(graphState)
+  if (!editCheck.ok) return editCheck
+
+  const opts = isPlainObject(options) ? options : {}
+  const data = createDefaultEnvelopeNodeData(opts.data)
+
+  let position = opts.position
+  if (
+    !isPlainObject(position) ||
+    !Number.isFinite(position.x) ||
+    !Number.isFinite(position.y)
+  ) {
+    const outputIndex = graphState.nodes.findIndex((n) => n.type === 'trackOutput')
+    const insertIndex = outputIndex >= 0 ? outputIndex : graphState.nodes.length
+    position = { x: insertIndex * FALLBACK_NODE_SPACING_X, y: FALLBACK_NODE_Y }
+  }
+
+  const newNode = {
+    id: generateMutationId(opts.idFactory),
+    type: GRAPH_ENVELOPE_NODE_TYPE,
+    position: { x: position.x, y: position.y },
+    data,
+  }
+
+  return {
+    ok: true,
+    graphState: {
+      ...graphState,
+      nodes: [...graphState.nodes, newNode],
+    },
+  }
+}
+
+// EVC.2 — updates an envelope node's data with a partial patch (immutably). Only
+// envelope nodes are eligible: a missing node returns MISSING_NODE and a non-
+// envelope node returns UNKNOWN_NODE_TYPE. The patch is merged over the current
+// (normalized) data and re-normalized, so unrelated envelope fields and all other
+// graphState fields/nodes are preserved.
+export function updateGraphEnvelopeNodeData(graphState, nodeId, patch) {
+  const editCheck = validateGraphStateForEditing(graphState)
+  if (!editCheck.ok) return editCheck
+  if (typeof nodeId !== 'string' || nodeId.length === 0) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_NODE }
+  }
+  if (!isPlainObject(patch)) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_ENVELOPE_PATCH }
+  }
+
+  const node = graphState.nodes.find((candidate) => candidate.id === nodeId)
+  if (!node) return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_NODE }
+  if (node.type !== GRAPH_ENVELOPE_NODE_TYPE) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.UNKNOWN_NODE_TYPE }
+  }
+
+  const currentData = normalizeEnvelopeNodeData(node.data)
+  const nextData = normalizeEnvelopeNodeData(mergeEnvelopeNodeData(currentData, patch))
+
+  return {
+    ok: true,
+    graphState: {
+      ...graphState,
+      nodes: graphState.nodes.map((candidate) => (
+        candidate.id === nodeId
+          ? { ...candidate, data: nextData }
           : candidate
       )),
     },

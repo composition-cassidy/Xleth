@@ -1,5 +1,7 @@
 const RUNTIME_NODE_TYPES = new Set(['trackInput', 'trackOutput', 'effect', 'unknown'])
-const CONTROL_NODE_TYPES = new Set(['macro'])
+// EVC.2 — envelope nodes are control/voice-controller nodes (like macro) and are
+// excluded from the audio topology payload entirely.
+const CONTROL_NODE_TYPES = new Set(['macro', 'envelope'])
 
 function readString(value) {
   return typeof value === 'string' && value.length > 0 ? value : ''

@@ -3,12 +3,19 @@ import {
   GRAPH_STATE_SCHEMA_VERSION,
   GRAPH_MACRO_NODE_TYPE,
   GRAPH_MACRO_OUTPUT_PORT,
+  GRAPH_ENVELOPE_NODE_TYPE,
   GRAPH_MUTATION_REJECTION,
   GRAPH_PARAMETER_CURVE_BEZIER,
   GRAPH_PARAMETER_CURVE_LINEAR,
+  ENVELOPE_NODE_DEFAULTS,
   PROTECTED_NODE_TYPES,
   addGraphEffectNode,
+  addGraphEnvelopeNode,
   addGraphMacroNode,
+  createDefaultEnvelopeNodeData,
+  isEnvelopeGraphNode,
+  normalizeEnvelopeNodeData,
+  updateGraphEnvelopeNodeData,
   buildExposedParameterPort,
   canConnectGraphNodes,
   canConnectMacroToParameter,
@@ -2645,6 +2652,404 @@ describe('FXG.4-g Bezier mapping', () => {
       const loaded = loadGraphState(raw, '7')
       expect(loaded.status).toBe('valid')
       expect(loaded.graphState.macroAutomationLanes[0].targetUnavailable).toBe(true)
+    })
+  })
+})
+
+// ── EVC.2 envelope controller node ──────────────────────────────────────────
+
+function makeEnvelopeNode(id = 'env-1', data = {}, position = { x: 80, y: 320 }) {
+  return { id, type: GRAPH_ENVELOPE_NODE_TYPE, position, data }
+}
+
+// A valid (input/effect/output) graph with one envelope node appended, so the
+// trackInput/trackOutput multiplicity invariant still holds.
+function makeGraphWithEnvelope(envOverrides = {}, position) {
+  const base = makeValidGraphState()
+  return {
+    ...base,
+    nodes: [...base.nodes, makeEnvelopeNode('env-1', envOverrides, position)],
+  }
+}
+
+describe('EVC.2 envelope node data normalization', () => {
+  it('normalizeEnvelopeNodeData applies all defaults for missing data', () => {
+    expect(normalizeEnvelopeNodeData(undefined)).toEqual({
+      label: 'Envelope',
+      attackMs: 10,
+      holdMs: 0,
+      decayMs: 120,
+      sustain: 0.7,
+      releaseMs: 200,
+      attackTension: 0,
+      decayTension: 0,
+      releaseTension: 0,
+      amount: 1,
+      voiceMode: 'poly',
+      maxVoices: 32,
+      triggerSource: { kind: 'parentTrack', events: 'notesAndClips' },
+      target: { kind: 'voiceGain' },
+      monophonic: { legato: false, glideMs: 0 },
+    })
+  })
+
+  it('createDefaultEnvelopeNodeData equals the documented defaults', () => {
+    const data = createDefaultEnvelopeNodeData()
+    expect(data.label).toBe(ENVELOPE_NODE_DEFAULTS.label)
+    expect(data.attackMs).toBe(ENVELOPE_NODE_DEFAULTS.attackMs)
+    expect(data.decayMs).toBe(ENVELOPE_NODE_DEFAULTS.decayMs)
+    expect(data.sustain).toBe(ENVELOPE_NODE_DEFAULTS.sustain)
+    expect(data.releaseMs).toBe(ENVELOPE_NODE_DEFAULTS.releaseMs)
+    expect(data.voiceMode).toBe('poly')
+    expect(data.maxVoices).toBe(32)
+    expect(data.triggerSource).toEqual({ kind: 'parentTrack', events: 'notesAndClips' })
+    expect(data.target).toEqual({ kind: 'voiceGain' })
+    expect(data.monophonic).toEqual({ legato: false, glideMs: 0 })
+  })
+
+  it('createDefaultEnvelopeNodeData applies clamped overrides', () => {
+    const data = createDefaultEnvelopeNodeData({
+      label: '  Pluck  ',
+      attackMs: 5,
+      sustain: 0.25,
+      voiceMode: 'mono',
+      maxVoices: 8,
+      triggerSource: { events: 'notes' },
+      monophonic: { legato: true, glideMs: 30 },
+    })
+    expect(data.label).toBe('Pluck')
+    expect(data.attackMs).toBe(5)
+    expect(data.sustain).toBe(0.25)
+    expect(data.voiceMode).toBe('mono')
+    expect(data.maxVoices).toBe(8)
+    expect(data.triggerSource).toEqual({ kind: 'parentTrack', events: 'notes' })
+    expect(data.monophonic).toEqual({ legato: true, glideMs: 30 })
+  })
+
+  it('clamps and repairs malformed values', () => {
+    const data = normalizeEnvelopeNodeData({
+      label: '   ',
+      attackMs: -10,
+      holdMs: Number.NaN,
+      decayMs: Infinity,
+      sustain: 5,
+      releaseMs: 'nope',
+      attackTension: 2,
+      decayTension: -3,
+      releaseTension: Number.NaN,
+      amount: -0.5,
+      voiceMode: 'duophonic',
+      maxVoices: 999,
+      triggerSource: { kind: 'somethingElse', events: 'bogus' },
+      target: { kind: 'pluginParam' },
+      monophonic: { legato: 'yes', glideMs: -4 },
+    })
+
+    expect(data.label).toBe('Envelope')
+    expect(data.attackMs).toBe(10) // negative → default
+    expect(data.holdMs).toBe(0)
+    expect(data.decayMs).toBe(120) // non-finite → default
+    expect(data.sustain).toBe(1) // clamped to 0..1
+    expect(data.releaseMs).toBe(200)
+    expect(data.attackTension).toBe(1) // clamped to -1..1
+    expect(data.decayTension).toBe(-1)
+    expect(data.releaseTension).toBe(0)
+    expect(data.amount).toBe(0)
+    expect(data.voiceMode).toBe('poly') // repaired
+    expect(data.maxVoices).toBe(32) // clamped to 1..32
+    expect(data.triggerSource).toEqual({ kind: 'parentTrack', events: 'notesAndClips' })
+    expect(data.target).toEqual({ kind: 'voiceGain' })
+    expect(data.monophonic).toEqual({ legato: false, glideMs: 0 })
+  })
+
+  it('clamps maxVoices to the 1..32 range and rounds fractions', () => {
+    expect(normalizeEnvelopeNodeData({ maxVoices: 0 }).maxVoices).toBe(1)
+    expect(normalizeEnvelopeNodeData({ maxVoices: -5 }).maxVoices).toBe(1)
+    expect(normalizeEnvelopeNodeData({ maxVoices: 16 }).maxVoices).toBe(16)
+    expect(normalizeEnvelopeNodeData({ maxVoices: 4.6 }).maxVoices).toBe(5)
+    expect(normalizeEnvelopeNodeData({ maxVoices: 64 }).maxVoices).toBe(32)
+  })
+
+  it('does not store a redundant parentTrackId on the node data', () => {
+    const data = normalizeEnvelopeNodeData({ parentTrackId: '7', triggerSource: { parentTrackId: '7' } })
+    expect(data).not.toHaveProperty('parentTrackId')
+    expect(data.triggerSource).not.toHaveProperty('parentTrackId')
+    expect(data.triggerSource).toEqual({ kind: 'parentTrack', events: 'notesAndClips' })
+  })
+
+  it('isEnvelopeGraphNode only matches envelope nodes', () => {
+    expect(isEnvelopeGraphNode(makeEnvelopeNode())).toBe(true)
+    expect(isEnvelopeGraphNode({ type: 'effect' })).toBe(false)
+    expect(isEnvelopeGraphNode({ type: GRAPH_MACRO_NODE_TYPE })).toBe(false)
+    expect(isEnvelopeGraphNode(null)).toBe(false)
+    expect(isEnvelopeGraphNode(undefined)).toBe(false)
+  })
+})
+
+describe('EVC.2 envelope node loadGraphState integration', () => {
+  it('preserves a valid envelope node through load', () => {
+    const result = validateGraphState(makeGraphWithEnvelope({
+      label: 'Lead Env',
+      attackMs: 4,
+      decayMs: 80,
+      sustain: 0.5,
+      releaseMs: 150,
+      voiceMode: 'mono',
+      maxVoices: 4,
+      triggerSource: { kind: 'parentTrack', events: 'notes' },
+      target: { kind: 'voiceGain' },
+      monophonic: { legato: true, glideMs: 20 },
+    }), '7')
+
+    expect(result.status).toBe('valid')
+    const env = result.graphState.nodes.find((n) => n.id === 'env-1')
+    expect(env.type).toBe(GRAPH_ENVELOPE_NODE_TYPE)
+    expect(env.data).toEqual({
+      label: 'Lead Env',
+      attackMs: 4,
+      holdMs: 0,
+      decayMs: 80,
+      sustain: 0.5,
+      releaseMs: 150,
+      attackTension: 0,
+      decayTension: 0,
+      releaseTension: 0,
+      amount: 1,
+      voiceMode: 'mono',
+      maxVoices: 4,
+      triggerSource: { kind: 'parentTrack', events: 'notes' },
+      target: { kind: 'voiceGain' },
+      monophonic: { legato: true, glideMs: 20 },
+    })
+  })
+
+  it('repairs a malformed envelope node to defaults instead of failing the load', () => {
+    const result = validateGraphState(makeGraphWithEnvelope({
+      sustain: 99,
+      voiceMode: 'invalid',
+      maxVoices: 'nope', // non-numeric → repairs to the default of 32
+      target: { kind: 'exposedPluginParam', effectInstanceId: 'effect-1', parameterId: 'mix' },
+    }), '7')
+
+    expect(result.status).toBe('valid')
+    const env = result.graphState.nodes.find((n) => n.id === 'env-1')
+    expect(env.data.sustain).toBe(1)
+    expect(env.data.voiceMode).toBe('poly')
+    expect(env.data.maxVoices).toBe(32)
+    // The target enum is forced to voiceGain — no plugin-parameter leakage.
+    expect(env.data.target).toEqual({ kind: 'voiceGain' })
+    expect(env.data.target).not.toHaveProperty('effectInstanceId')
+    expect(env.data.target).not.toHaveProperty('parameterId')
+  })
+
+  it('repairs an envelope node whose data is not an object', () => {
+    const result = validateGraphState(makeGraphWithEnvelope(null), '7')
+    expect(result.status).toBe('valid')
+    const env = result.graphState.nodes.find((n) => n.id === 'env-1')
+    expect(env.data).toEqual(createDefaultEnvelopeNodeData())
+  })
+
+  it('does not turn an envelope node into an effect node (no effectInstanceId required)', () => {
+    const result = validateGraphState(makeGraphWithEnvelope(), '7')
+    expect(result.status).toBe('valid')
+    const env = result.graphState.nodes.find((n) => n.id === 'env-1')
+    expect(env.type).toBe(GRAPH_ENVELOPE_NODE_TYPE)
+    expect(env.data).not.toHaveProperty('effectInstanceId')
+    expect(env.data).not.toHaveProperty('pluginId')
+    expect(env.data).not.toHaveProperty('exposedParameterPorts')
+  })
+
+  it('ignores envelope nodes in the audio topology payload', () => {
+    const result = validateGraphState(makeGraphWithEnvelope(), '7')
+    const payload = buildLinearGraphTopologyPayload(result.graphState)
+    expect(payload.nodes.some((node) => node.type === GRAPH_ENVELOPE_NODE_TYPE)).toBe(false)
+    expect(payload.nodes.some((node) => node.nodeId === 'env-1')).toBe(false)
+    // The linear input→effect→output path is still fully supported.
+    expect(analyzeLinearGraphTopology(result.graphState)).toMatchObject({ ok: true })
+  })
+
+  it('drops an audio edge that touches an envelope node', () => {
+    const withEdge = makeGraphWithEnvelope()
+    withEdge.edges = [
+      ...withEdge.edges,
+      {
+        id: 'bad-env-edge',
+        sourceNodeId: 'fx-1',
+        sourcePort: 'audioOut',
+        targetNodeId: 'env-1',
+        targetPort: 'audio',
+        type: 'audio',
+      },
+    ]
+    const result = validateGraphState(withEdge, '7')
+    expect(result.status).toBe('valid')
+    expect(result.graphState.edges.some((e) => e.id === 'bad-env-edge')).toBe(false)
+  })
+
+  it('leaves graphState without envelope nodes unchanged', () => {
+    const result = validateGraphState(makeValidGraphState(), '7')
+    expect(result.status).toBe('valid')
+    expect(result.graphState.nodes.some((n) => n.type === GRAPH_ENVELOPE_NODE_TYPE)).toBe(false)
+  })
+})
+
+describe('EVC.2 envelope node mutation helpers', () => {
+  it('addGraphEnvelopeNode appends a defaulted envelope node immutably', () => {
+    const gs = makeGuardGraphState()
+    const result = addGraphEnvelopeNode(gs, { idFactory: () => 'env-new' })
+
+    expect(result.ok).toBe(true)
+    const node = result.graphState.nodes.at(-1)
+    expect(node.id).toBe('env-new')
+    expect(node.type).toBe(GRAPH_ENVELOPE_NODE_TYPE)
+    expect(node.data).toEqual(createDefaultEnvelopeNodeData())
+    expect(Number.isFinite(node.position.x) && Number.isFinite(node.position.y)).toBe(true)
+    // Immutability + preservation of unrelated fields/nodes/edges.
+    expect(gs.nodes.some((n) => n.id === 'env-new')).toBe(false)
+    expect(result.graphState.customField).toBe('preserved')
+    expect(result.graphState.edges).toHaveLength(gs.edges.length)
+  })
+
+  it('addGraphEnvelopeNode applies data overrides and explicit position', () => {
+    const result = addGraphEnvelopeNode(makeGuardGraphState(), {
+      idFactory: () => 'env-a',
+      position: { x: 12, y: 34 },
+      data: { label: 'Bass', sustain: 0.3, maxVoices: 8 },
+    })
+    expect(result.ok).toBe(true)
+    const node = result.graphState.nodes.at(-1)
+    expect(node.position).toEqual({ x: 12, y: 34 })
+    expect(node.data.label).toBe('Bass')
+    expect(node.data.sustain).toBe(0.3)
+    expect(node.data.maxVoices).toBe(8)
+  })
+
+  it('addGraphEnvelopeNode rejects an invalid graphState', () => {
+    expect(addGraphEnvelopeNode(null)).toMatchObject({
+      ok: false,
+      reason: GRAPH_MUTATION_REJECTION.INVALID_GRAPH_STATE,
+    })
+  })
+
+  it('removeGraphNode can remove an envelope node (it is not protected)', () => {
+    const added = addGraphEnvelopeNode(makeGuardGraphState(), { idFactory: () => 'env-a' })
+    expect(canRemoveGraphNode(added.graphState, 'env-a')).toEqual({ ok: true })
+    const removed = removeGraphNode(added.graphState, 'env-a')
+    expect(removed.ok).toBe(true)
+    expect(removed.graphState.nodes.some((n) => n.id === 'env-a')).toBe(false)
+  })
+
+  it('updateGraphEnvelopeNodeData updates only the targeted envelope node', () => {
+    const added = addGraphEnvelopeNode(makeGuardGraphState(), { idFactory: () => 'env-a' })
+    const result = updateGraphEnvelopeNodeData(added.graphState, 'env-a', {
+      attackMs: 25,
+      sustain: 0.4,
+      triggerSource: { events: 'clips' },
+    })
+
+    expect(result.ok).toBe(true)
+    const node = result.graphState.nodes.find((n) => n.id === 'env-a')
+    expect(node.data.attackMs).toBe(25)
+    expect(node.data.sustain).toBe(0.4)
+    expect(node.data.triggerSource).toEqual({ kind: 'parentTrack', events: 'clips' })
+    // Unrelated envelope fields preserved.
+    expect(node.data.decayMs).toBe(ENVELOPE_NODE_DEFAULTS.decayMs)
+    expect(node.data.releaseMs).toBe(ENVELOPE_NODE_DEFAULTS.releaseMs)
+  })
+
+  it('updateGraphEnvelopeNodeData preserves unrelated nodes and graphState fields', () => {
+    const added = addGraphEnvelopeNode(makeGuardGraphState(), { idFactory: () => 'env-a' })
+    const before = added.graphState
+    const result = updateGraphEnvelopeNodeData(before, 'env-a', { amount: 0.5 })
+
+    expect(result.ok).toBe(true)
+    expect(result.graphState.customField).toBe('preserved')
+    expect(result.graphState.viewport).toEqual(before.viewport)
+    expect(result.graphState.nodes.find((n) => n.id === 'fx-a')).toEqual(
+      before.nodes.find((n) => n.id === 'fx-a'),
+    )
+    expect(result.graphState.edges).toEqual(before.edges)
+    // Input graphState not mutated.
+    expect(before.nodes.find((n) => n.id === 'env-a').data.amount).toBe(1)
+  })
+
+  it('updateGraphEnvelopeNodeData rejects non-envelope and missing nodes', () => {
+    const added = addGraphEnvelopeNode(makeGuardGraphState(), { idFactory: () => 'env-a' })
+    expect(updateGraphEnvelopeNodeData(added.graphState, 'fx-a', { amount: 0.5 })).toEqual({
+      ok: false,
+      reason: GRAPH_MUTATION_REJECTION.UNKNOWN_NODE_TYPE,
+    })
+    expect(updateGraphEnvelopeNodeData(added.graphState, 'missing', { amount: 0.5 })).toEqual({
+      ok: false,
+      reason: GRAPH_MUTATION_REJECTION.MISSING_NODE,
+    })
+    expect(updateGraphEnvelopeNodeData(added.graphState, 'env-a', null)).toEqual({
+      ok: false,
+      reason: GRAPH_MUTATION_REJECTION.INVALID_ENVELOPE_PATCH,
+    })
+  })
+})
+
+describe('EVC.2 envelope nodes are not macro modulation endpoints', () => {
+  // A graph with a macro node, an effect exposing a writable param, and an
+  // envelope node — so macro→parameter links can be attempted against the envelope.
+  function makeMacroEnvelopeGraph() {
+    const base = makeValidGraphState()
+    return {
+      ...base,
+      nodes: [
+        base.nodes[0],
+        {
+          ...base.nodes[1],
+          data: {
+            ...base.nodes[1].data,
+            exposedParameterPorts: [
+              {
+                parameterId: 'mix',
+                parameterIndexFallback: 1,
+                nameSnapshot: 'Mix',
+                labelSnapshot: '%',
+                parameterIdIsFallback: false,
+                automatable: true,
+                readOnly: false,
+              },
+            ],
+          },
+        },
+        { id: 'macro-a', type: GRAPH_MACRO_NODE_TYPE, position: { x: 80, y: 120 }, data: { label: 'Macro 1', normalizedValue: 0.5 } },
+        makeEnvelopeNode('env-1'),
+        base.nodes[2],
+      ],
+    }
+  }
+
+  it('rejects an envelope node as a macro→parameter source', () => {
+    const gs = validateGraphState(makeMacroEnvelopeGraph(), '7').graphState
+    expect(canConnectMacroToParameter(gs, {
+      sourceNodeId: 'env-1',
+      targetNodeId: 'fx-1',
+      parameterId: 'mix',
+    })).toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_SOURCE_TYPE })
+  })
+
+  it('rejects an envelope node as a macro→parameter target', () => {
+    const gs = validateGraphState(makeMacroEnvelopeGraph(), '7').graphState
+    expect(canConnectMacroToParameter(gs, {
+      sourceNodeId: 'macro-a',
+      targetNodeId: 'env-1',
+      parameterId: 'mix',
+    })).toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_TARGET_TYPE })
+  })
+
+  it('rejects audio connections to/from an envelope node', () => {
+    const gs = validateGraphState(makeMacroEnvelopeGraph(), '7').graphState
+    expect(canConnectGraphNodes(gs, 'env-1', 'output')).toEqual({
+      ok: false,
+      reason: GRAPH_MUTATION_REJECTION.INVALID_SOURCE_TYPE,
+    })
+    expect(canConnectGraphNodes(gs, 'input', 'env-1')).toEqual({
+      ok: false,
+      reason: GRAPH_MUTATION_REJECTION.INVALID_TARGET_TYPE,
     })
   })
 })
