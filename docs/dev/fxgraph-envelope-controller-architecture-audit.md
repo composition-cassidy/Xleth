@@ -7,8 +7,12 @@ or a recommendation for later phases.
 
 Status: EVC.0 passed. EVC.1 (this document) is the audit. EVC.2 implemented the inert renderer-side
 graphState schema for the `type: 'envelope'` node per §6 (normalization, pure helpers, graph-mode
-store actions, persistence, undo/redo) — no UI, no runtime, no trigger contract yet. See the
-"EVC.2 — envelope node graphState schema" section in
+store actions, persistence, undo/redo) — no UI, no runtime, no trigger contract yet. EVC.3 added the
+visible/editable envelope node UI in the active safe FX Graph (Add Envelope affordance, distinct node
+rendering, compact AHDSR/voice/trigger/amount editor, and an illustrative preview curve) — still
+renderer-only and non-audible, with no runtime ADSR, trigger contract, engine parsing, per-voice gain
+application, `GraphParameterTarget` usage, Mixer Chain mutation, or `effectChains` mutation. See the
+"EVC.2 — envelope node graphState schema" and "EVC.3 — envelope node UI" sections in
 [`fxgraph-architecture.md`](fxgraph-architecture.md).
 
 ---

@@ -125,6 +125,9 @@ export interface FxGraphPanelContentProps {
   onGraphViewportChange?: (viewport: GraphStateViewport) => void;
   onAddGraphEffectNode?: () => void;
   onAddGraphMacroNode?: () => void;
+  // EVC.3 — envelope node add/edit (graph mode only).
+  onAddGraphEnvelopeNode?: () => void;
+  onUpdateGraphEnvelope?: (nodeId: string, patch: Record<string, unknown>) => void;
   onRemoveGraphNode?: (nodeId: string) => void;
   onConnectGraphNodes?: (sourceNodeId: string, targetNodeId: string) => void;
   onConnectGraphMacroToParameter?: (macroNodeId: string, targetNodeId: string, parameterId: string) => void;
@@ -201,6 +204,8 @@ export function FxGraphPanelContent({
   onGraphViewportChange,
   onAddGraphEffectNode,
   onAddGraphMacroNode,
+  onAddGraphEnvelopeNode,
+  onUpdateGraphEnvelope,
   onRemoveGraphNode,
   onConnectGraphNodes,
   onConnectGraphMacroToParameter,
@@ -322,6 +327,8 @@ export function FxGraphPanelContent({
               onViewportChange={graphModeActive ? onGraphViewportChange : undefined}
               onAddEffectNode={graphModeActive ? onAddGraphEffectNode : undefined}
               onAddMacroNode={graphModeActive ? onAddGraphMacroNode : undefined}
+              onAddEnvelopeNode={graphModeActive ? onAddGraphEnvelopeNode : undefined}
+              onUpdateEnvelope={graphModeActive ? onUpdateGraphEnvelope : undefined}
               onRemoveNode={graphModeActive ? onRemoveGraphNode : undefined}
               onConnectNodes={graphModeActive ? onConnectGraphNodes : undefined}
               onConnectMacroToParameter={graphModeActive ? onConnectGraphMacroToParameter : undefined}
@@ -492,6 +499,8 @@ export default function FxGraphPanel() {
   const setGraphStateViewport = useEffectChainStore((state) => state.setGraphStateViewport);
   const addGraphEffectNodeForTrack = useEffectChainStore((state) => state.addGraphEffectNodeForTrack);
   const addGraphMacroNodeForTrack = useEffectChainStore((state) => state.addGraphMacroNodeForTrack);
+  const addGraphEnvelopeNodeForTrack = useEffectChainStore((state) => state.addGraphEnvelopeNodeForTrack);
+  const updateGraphEnvelopeNodeDataForTrack = useEffectChainStore((state) => state.updateGraphEnvelopeNodeDataForTrack);
   const removeGraphNodeForTrack = useEffectChainStore((state) => state.removeGraphNodeForTrack);
   const connectGraphNodesForTrack = useEffectChainStore((state) => state.connectGraphNodesForTrack);
   const connectMacroToParameterForTrack = useEffectChainStore((state) => state.connectMacroToParameterForTrack);
@@ -590,6 +599,25 @@ export default function FxGraphPanel() {
     const result = await addGraphMacroNodeForTrack(selectedTrack.id);
     setGraphActionNotice(describeGraphMutationResult(result));
   }, [addGraphMacroNodeForTrack, fxMode, selectedTrack?.id]);
+
+  // EVC.3 — add an inert per-voice Envelope node. Graph-mode gated; the EVC.2 store
+  // action persists graphState, records undo, and performs NO audio runtime sync.
+  const handleAddGraphEnvelopeNode = useCallback(async () => {
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    const result = await addGraphEnvelopeNodeForTrack(selectedTrack.id);
+    setGraphActionNotice(describeGraphMutationResult(result));
+  }, [addGraphEnvelopeNodeForTrack, fxMode, selectedTrack?.id]);
+
+  // EVC.3 — patch an envelope node's inert data. The store action clamps/repairs the
+  // patch through normalizeEnvelopeNodeData; it never touches effectChains or audio.
+  const handleUpdateGraphEnvelope = useCallback(async (
+    nodeId: string,
+    patch: Record<string, unknown>,
+  ) => {
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    const result = await updateGraphEnvelopeNodeDataForTrack(selectedTrack.id, nodeId, patch);
+    setGraphActionNotice(describeGraphMutationResult(result));
+  }, [fxMode, selectedTrack?.id, updateGraphEnvelopeNodeDataForTrack]);
 
   const handleRemoveGraphNode = useCallback(async (nodeId: string) => {
     if (selectedTrack?.id == null || fxMode !== 'graph') return;
@@ -805,6 +833,8 @@ export default function FxGraphPanel() {
         onGraphViewportChange={handleGraphViewportChange}
         onAddGraphEffectNode={handleOpenAddEffectPicker}
         onAddGraphMacroNode={handleAddGraphMacroNode}
+        onAddGraphEnvelopeNode={handleAddGraphEnvelopeNode}
+        onUpdateGraphEnvelope={handleUpdateGraphEnvelope}
         onRemoveGraphNode={handleRemoveGraphNode}
         onConnectGraphNodes={handleConnectGraphNodes}
         onConnectGraphMacroToParameter={handleConnectGraphMacroToParameter}

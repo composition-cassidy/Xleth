@@ -14,7 +14,14 @@ import GraphStatePreview, {
   type GraphStateNode,
 } from './GraphStatePreview';
 import { buildExposeParameterMenuGroups } from './graphParameterUtils';
-import { createDefaultBezierCurve, GRAPH_PARAMETER_CURVE_BEZIER, GRAPH_PARAMETER_CURVE_LINEAR } from '../../../fxgraph/graphState.js';
+import { createDefaultBezierCurve, GRAPH_PARAMETER_CURVE_BEZIER, GRAPH_PARAMETER_CURVE_LINEAR, normalizeEnvelopeNodeData } from '../../../fxgraph/graphState.js';
+import {
+  EnvelopeNumberField,
+  EnvelopeEditor,
+  buildEnvelopePreviewPoints,
+  describeEnvelopeAhdsr,
+  readEnvelopeNodeData,
+} from './EnvelopeEditor';
 
 function inputNode(position = { x: 0, y: 0 }): GraphStateNode {
   return { id: 'input', type: 'trackInput', position, data: {} };
@@ -1463,5 +1470,245 @@ describe('FXG.4-g GraphStatePreview mapping editor integration', () => {
       />,
     );
     expect(html).toContain('aria-label="Edit mapping for');
+  });
+});
+
+// EVC.3 — Envelope Controller node UI (renderer-only, inert).
+function findElementByAriaLabel(element: React.ReactElement, label: string): React.ReactElement | null {
+  const children = React.Children.toArray(element.props.children);
+  for (const child of children) {
+    if (!React.isValidElement(child)) continue;
+    if (child.props['aria-label'] === label) return child;
+    const nested = findElementByAriaLabel(child, label);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function envelopeNode(
+  id = 'env-a',
+  data: Record<string, unknown> = {},
+  position = { x: 260, y: 0 },
+): GraphStateNode {
+  return { id, type: 'envelope', position, data };
+}
+
+function envelopeGraph(data: Record<string, unknown> = {}): GraphStateDocument {
+  return graphState(
+    [inputNode(), envelopeNode('env-a', data), outputNode({ x: 560, y: 0 })],
+    [],
+  );
+}
+
+function renderEnvelopeNodeMarkup(
+  overrides: Partial<Parameters<typeof GraphStatePreviewNode>[0]> = {},
+) {
+  const node = buildGraphStatePreviewModel(envelopeGraph())
+    .nodes.find((candidate) => candidate.id === 'env-a')!;
+  return renderToStaticMarkup(
+    GraphStatePreviewNode({
+      node,
+      dragging: false,
+      connectEnabled: true,
+      connectParameterEnabled: true,
+      connectActive: false,
+      canRemove: true,
+      canEdit: true,
+      ...overrides,
+    }),
+  );
+}
+
+describe('GraphStatePreview envelope nodes (EVC.3)', () => {
+  it('renders an envelope node with label and per-voice identity', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview graphState={envelopeGraph({ label: 'Pluck Env' })} onUpdateEnvelope={vi.fn()} />,
+    );
+    expect(html).toContain('data-node-type="envelope"');
+    expect(html).toContain('xleth-graph-state-preview__node--envelope');
+    expect(html).toContain('Pluck Env');
+    expect(html).toContain('Per-Voice Envelope');
+  });
+
+  it('renders the AHDSR summary, Voice Gain target, and trigger source', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={envelopeGraph({ attackMs: 10, holdMs: 0, decayMs: 120, sustain: 0.7, releaseMs: 200, triggerSource: { events: 'notes' } })}
+        onUpdateEnvelope={vi.fn()}
+      />,
+    );
+    expect(html).toContain('AHDSR');
+    expect(html).toContain('A 10 ms');
+    expect(html).toContain('S 70%');
+    expect(html).toContain('Voice Gain');
+    expect(html).toContain('Notes');
+  });
+
+  it('renders the illustrative ADSR preview curve', () => {
+    const html = renderEnvelopeNodeMarkup({ onEnvelopeUpdate: vi.fn() });
+    expect(html).toContain('xleth-graph-state-preview__envelope-preview-curve');
+    expect(html).toContain('points=');
+    expect(html).toContain('Envelope preview curve');
+  });
+
+  it('exposes no audio handles, no macro controlOut, and no parameter ports', () => {
+    const html = renderEnvelopeNodeMarkup({ onEnvelopeUpdate: vi.fn() });
+    expect(html).not.toContain('xleth-graph-state-preview__handle--in');
+    expect(html).not.toContain('xleth-graph-state-preview__handle--out');
+    expect(html).not.toContain('data-control-output');
+    expect(html).not.toContain('data-control-port-type');
+    expect(html).not.toContain('data-parameter-port-type');
+    expect(html).not.toContain('data-connect-source');
+  });
+
+  it('stays draggable and removable like other editable nodes', () => {
+    const html = renderEnvelopeNodeMarkup({
+      onEnvelopeUpdate: vi.fn(),
+      onRemove: vi.fn(),
+      onPointerDown: vi.fn(),
+    });
+    expect(html).toContain('aria-label="Remove Envelope"');
+    expect(html).toContain('xleth-graph-state-preview__node--draggable');
+  });
+
+  it('renders the editor only when an update callback is provided (read-only otherwise)', () => {
+    const editableHtml = renderEnvelopeNodeMarkup({ onEnvelopeUpdate: vi.fn() });
+    const readOnlyHtml = renderEnvelopeNodeMarkup({ onEnvelopeUpdate: undefined });
+    expect(editableHtml).toContain('xleth-graph-state-preview__envelope-editor');
+    expect(editableHtml).toContain('aria-label="Attack ms"');
+    // Read-only still shows the summary + preview but no editing affordances.
+    expect(readOnlyHtml).toContain('xleth-graph-state-preview__envelope-preview-curve');
+    expect(readOnlyHtml).not.toContain('xleth-graph-state-preview__envelope-editor');
+    expect(readOnlyHtml).not.toContain('aria-label="Attack ms"');
+  });
+
+  it('renders Add Envelope only when its action is provided', () => {
+    const source = graphState([inputNode(), outputNode()], []);
+    const editableHtml = renderToStaticMarkup(
+      <GraphStatePreview graphState={source} onAddEnvelopeNode={vi.fn()} />,
+    );
+    const readOnlyHtml = renderToStaticMarkup(<GraphStatePreview graphState={source} />);
+    expect(editableHtml).toContain('Add Envelope');
+    expect(readOnlyHtml).not.toContain('Add Envelope');
+  });
+
+  it('commits an Attack edit through the envelope update callback', () => {
+    const onChange = vi.fn();
+    const element = EnvelopeNumberField({
+      label: 'Attack',
+      fieldKey: 'attackMs',
+      value: 10,
+      min: 0,
+      step: 1,
+      ariaLabel: 'Attack ms',
+      onChange,
+    });
+    const input = findElementByClass(element, 'xleth-graph-state-preview__envelope-input')!;
+    input.props.onBlur({ currentTarget: { value: '25' } });
+    expect(onChange).toHaveBeenCalledWith({ attackMs: 25 });
+  });
+
+  it('uses an uncontrolled input and skips committing non-numeric text', () => {
+    // The input is uncontrolled (defaultValue), so React never resets the field
+    // mid-type — typing "1." is never destroyed. On blur, only a genuinely
+    // non-numeric value (NaN) is skipped so the node data is never corrupted.
+    const onChange = vi.fn();
+    const element = EnvelopeNumberField({
+      label: 'Decay',
+      fieldKey: 'decayMs',
+      value: 120,
+      ariaLabel: 'Decay ms',
+      onChange,
+    });
+    const input = findElementByClass(element, 'xleth-graph-state-preview__envelope-input')!;
+    expect(input.props.defaultValue).toBe(120);
+    expect(input.props.value).toBeUndefined();
+    input.props.onBlur({ currentTarget: { value: 'abc' } });
+    input.props.onBlur({ currentTarget: { value: '-' } });
+    expect(onChange).not.toHaveBeenCalled();
+    input.props.onBlur({ currentTarget: { value: '15.5' } });
+    expect(onChange).toHaveBeenCalledWith({ decayMs: 15.5 });
+  });
+
+  it('clamps Sustain and Amount through the shared normalization path', () => {
+    // The editor commits raw values; clamping happens in normalizeEnvelopeNodeData,
+    // the same helper the store update action uses.
+    expect(normalizeEnvelopeNodeData({ sustain: 1.8 }).sustain).toBe(1);
+    expect(normalizeEnvelopeNodeData({ sustain: -0.4 }).sustain).toBe(0);
+    expect(normalizeEnvelopeNodeData({ amount: 5 }).amount).toBe(1);
+  });
+
+  it('changes voice mode through the editor select', () => {
+    const onChange = vi.fn();
+    const element = EnvelopeEditor({
+      nodeId: 'env-a',
+      data: readEnvelopeNodeData({ voiceMode: 'poly' }),
+      onChange,
+    });
+    const select = findElementByAriaLabel(element, 'Voice mode')!;
+    select.props.onChange({ target: { value: 'mono' } });
+    expect(onChange).toHaveBeenCalledWith({ voiceMode: 'mono' });
+  });
+
+  it('changes trigger source through the editor select', () => {
+    const onChange = vi.fn();
+    const element = EnvelopeEditor({
+      nodeId: 'env-a',
+      data: readEnvelopeNodeData({ triggerSource: { events: 'notesAndClips' } }),
+      onChange,
+    });
+    const select = findElementByAriaLabel(element, 'Trigger source')!;
+    select.props.onChange({ target: { value: 'clips' } });
+    expect(onChange).toHaveBeenCalledWith({ triggerSource: { events: 'clips' } });
+  });
+
+  it('builds illustrative A/H/D/S/R preview points with rise, plateaus, and fall', () => {
+    const data = readEnvelopeNodeData({ attackMs: 10, holdMs: 5, decayMs: 40, sustain: 0.5, releaseMs: 30 });
+    const points = buildEnvelopePreviewPoints(data, 100, 50);
+    expect(points).toHaveLength(6);
+    // Starts at bottom, rises to the top after attack, holds, decays to sustain.
+    expect(points[0].y).toBe(50);
+    expect(points[1].y).toBe(0);
+    expect(points[2].y).toBe(0);
+    expect(points[3].y).toBe(25);
+    expect(points[4].y).toBe(25);
+    // Ends back at the baseline after release.
+    expect(points[5].y).toBe(50);
+    // Monotonic non-decreasing in x across the whole curve.
+    for (let i = 1; i < points.length; i += 1) {
+      expect(points[i].x).toBeGreaterThanOrEqual(points[i - 1].x);
+    }
+  });
+
+  it('summarizes AHDSR purely from node data', () => {
+    const summary = describeEnvelopeAhdsr(readEnvelopeNodeData({ attackMs: 5, decayMs: 60, sustain: 0.4 }));
+    expect(summary).toContain('A 5 ms');
+    expect(summary).toContain('D 60 ms');
+    expect(summary).toContain('S 40%');
+  });
+
+  it('still renders effect and macro nodes alongside envelope nodes', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState(
+          [
+            inputNode(),
+            effectNode('comp', 'Compressor', 0, { x: 240, y: 0 }),
+            macroNode('macro-a', 'Drive', 0.5, { x: 240, y: 160 }),
+            envelopeNode('env-a', { label: 'Voice Env' }, { x: 240, y: 320 }),
+            outputNode({ x: 560, y: 0 }),
+          ],
+          [],
+        )}
+        onUpdateEnvelope={vi.fn()}
+        onUpdateMacroValue={vi.fn()}
+      />,
+    );
+    expect(html).toContain('data-node-type="effect"');
+    expect(html).toContain('data-node-type="macro"');
+    expect(html).toContain('data-node-type="envelope"');
+    expect(html).toContain('Compressor');
+    expect(html).toContain('Drive');
+    expect(html).toContain('Voice Env');
   });
 });

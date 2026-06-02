@@ -761,3 +761,40 @@ contract, and no engine-side parsing.
 
 Runtime (per-voice ADSR evaluation, voice/trigger contract, seek reconstruction, per-voice gain
 application) remains deferred to EVC.4 / EVC.5 / EVC.6.
+
+### EVC.3 — envelope node UI (visual/editable, still inert)
+
+EVC.3 makes the EVC.2 envelope node visible and editable in the active safe FX Graph UI. It is
+**renderer-only and non-audible** — no runtime ADSR evaluator, no trigger-event contract, no
+engine-side graphState parsing, no per-voice gain application, and no bridge/preload/main changes.
+
+- **Add affordance.** The FX Graph workspace toolbar gains an **Add Envelope** button next to Add
+  Effect / Add Macro, shown only when the panel is in `fxMode === 'graph'`. It calls the EVC.2 store
+  action `addGraphEnvelopeNodeForTrack`; outside graph mode the affordance is absent, and a rejected
+  add surfaces the existing non-blocking inline notice via `describeGraphMutationResult`. The add
+  performs no audio runtime sync, creates no processor, and never touches `effectChains`.
+- **Distinct node rendering.** Envelope nodes render in `GraphStatePreview.tsx` as graph-owned
+  per-voice controller nodes, visually distinct from effect (accent) and macro (warning) nodes via
+  the `--theme-success` token. Each node shows a header label, a `Per-Voice Envelope` subtitle, a
+  compact AHDSR summary, the current target (`Target: Voice Gain`), the trigger source
+  (Notes / Clips / Notes + Clips), the voice mode (Poly / Mono) with max voices, the amount, and a
+  small **illustrative** ADSR/AHDSR preview curve. The preview is computed from `node.data` only — it
+  never reads transport state, creates runtime voices, writes plugin parameters, or interacts with
+  macro automation playback. Per-segment tension is intentionally not drawn yet (no runtime support).
+- **Compact editor.** When graph mode is active, a compact inline editor (`EnvelopeEditor` in
+  `windowing/panels/fxgraph/EnvelopeEditor.tsx`) edits `label`, `attackMs`, `holdMs`, `decayMs`,
+  `sustain`, `releaseMs`, the three tensions, `amount`, `voiceMode`, `maxVoices`,
+  `triggerSource.events`, and the inert `monophonic.legato` / `monophonic.glideMs`. `target.kind` is
+  shown read-only (`Voice Gain`) because v1 has a single target. Inputs are uncontrolled
+  (`defaultValue`, commit on blur/change) so in-progress typing is never destroyed; every edit routes
+  through `updateGraphEnvelopeNodeDataForTrack`, which clamps/repairs via the EVC.2
+  `normalizeEnvelopeNodeData`. No clamping is duplicated in the UI. Read-only previews (no callback)
+  show only the summary + preview, with no editing affordances.
+- **No ports, no edges.** Envelope nodes expose **no** audio input/output handle, **no** parameter
+  input/output port, and **no** macro-style `controlOut` port, and they never participate in
+  drag-to-connect. They are draggable, removable (via the existing `removeGraphNode` path), persist
+  position, and participate in graph undo/redo through the EVC.2 store actions and existing graph
+  history — exactly like other editable graph nodes.
+
+No trigger contract, runtime ADSR, engine parsing, per-voice gain application, `GraphParameterTarget`
+usage, plugin-parameter output, Mixer Chain mutation, or `effectChains` mutation exists after EVC.3.

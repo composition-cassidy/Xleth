@@ -11,6 +11,12 @@ import {
   createDefaultBezierCurve,
   GRAPH_PARAMETER_CURVE_BEZIER,
 } from '../../../fxgraph/graphState.js';
+import {
+  EnvelopeNodeBody,
+  readEnvelopeNodeData,
+  type EnvelopeNodeData,
+  type EnvelopeNodePatch,
+} from './EnvelopeEditor';
 
 // FXG.4-g — Bezier mapping editor types.
 type BezierPoint = { x: number; y: number };
@@ -127,7 +133,7 @@ export interface GraphStateViewport {
   zoom?: number;
 }
 
-type PreviewNodeKind = 'trackInput' | 'trackOutput' | 'effect' | 'macro' | 'unknown';
+type PreviewNodeKind = 'trackInput' | 'trackOutput' | 'effect' | 'macro' | 'envelope' | 'unknown';
 type PreviewEdgeKind = 'audio' | 'parameter' | 'unknown';
 
 interface PositionedNode {
@@ -141,6 +147,8 @@ interface PositionedNode {
   pluginId: string | null;
   parameterPorts: GraphExposedParameterPort[];
   macroValue: number | null;
+  // EVC.3 — normalized envelope definition, present only on envelope nodes.
+  envelope: EnvelopeNodeData | null;
   // True only for effect nodes backed by a real (non-placeholder, non-missing)
   // plugin — the heuristic that enables the Edit button. The actual engine-node
   // resolution still happens asynchronously in the panel's edit handler.
@@ -197,6 +205,9 @@ interface GraphStatePreviewProps {
   onViewportChange?: (viewport: GraphStateViewport) => void;
   onAddEffectNode?: () => void;
   onAddMacroNode?: () => void;
+  // EVC.3 — envelope node add/edit affordances (graph mode only).
+  onAddEnvelopeNode?: () => void;
+  onUpdateEnvelope?: (nodeId: string, patch: EnvelopeNodePatch) => void;
   onRemoveNode?: (nodeId: string) => void;
   onConnectNodes?: (sourceNodeId: string, targetNodeId: string) => void;
   onConnectMacroToParameter?: (macroNodeId: string, targetNodeId: string, parameterId: string) => void;
@@ -228,6 +239,11 @@ interface GraphStatePreviewProps {
 
 const NODE_WIDTH = 148;
 const NODE_HEIGHT = 74;
+// EVC.3 — envelope nodes are wider (compact editor with several fields) and taller
+// (subtitle + summary + preview curve + editor). These drive layout/canvas bounds
+// only; envelope nodes carry no edges, so the height is an illustrative estimate.
+const ENVELOPE_NODE_WIDTH = 236;
+const ENVELOPE_NODE_CONTENT_HEIGHT = 300;
 const PARAMETER_PORT_ROW_HEIGHT = 18;
 const PARAMETER_PORT_SECTION_TOP = 8;
 const PARAMETER_PORT_SECTION_BOTTOM = 10;
@@ -306,7 +322,13 @@ function readExposedParameterPorts(data: Record<string, unknown> | undefined): G
 }
 
 function resolvePreviewNodeType(type: string): PreviewNodeKind {
-  if (type === 'trackInput' || type === 'trackOutput' || type === 'effect' || type === 'macro') {
+  if (
+    type === 'trackInput' ||
+    type === 'trackOutput' ||
+    type === 'effect' ||
+    type === 'macro' ||
+    type === 'envelope'
+  ) {
     return type;
   }
   return 'unknown';
@@ -363,6 +385,7 @@ function resolveNodeText(node: GraphStateNode) {
       pluginId: null,
       parameterPorts: [] as GraphExposedParameterPort[],
       macroValue: null,
+      envelope: null,
       editable: false,
     };
   }
@@ -377,6 +400,7 @@ function resolveNodeText(node: GraphStateNode) {
       pluginId: null,
       parameterPorts: [] as GraphExposedParameterPort[],
       macroValue: null,
+      envelope: null,
       editable: false,
     };
   }
@@ -402,6 +426,7 @@ function resolveNodeText(node: GraphStateNode) {
       pluginId,
       parameterPorts: readExposedParameterPorts(data),
       macroValue: null,
+      envelope: null,
       // Placeholder / data-only / missing nodes have no engine processor to open.
       editable: pluginId.length > 0 && pluginId !== 'placeholder' && !missing,
     };
@@ -417,6 +442,27 @@ function resolveNodeText(node: GraphStateNode) {
       pluginId: null,
       parameterPorts: [] as GraphExposedParameterPort[],
       macroValue: readNormalizedValue(data, 'normalizedValue'),
+      envelope: null,
+      editable: false,
+    };
+  }
+
+  if (type === 'envelope') {
+    // EVC.3 — render the persisted envelope definition. The node is a per-voice
+    // controller, not an effect or modulation endpoint: no effectInstanceId, no
+    // plugin metadata, no parameter ports, no macro value. The normalized data
+    // drives both the summary/preview and the compact editor.
+    const envelope = readEnvelopeNodeData(data);
+    return {
+      label: envelope.label,
+      secondaryText: 'Per-Voice Envelope',
+      metaText: null,
+      badges: [] as string[],
+      effectInstanceId: null,
+      pluginId: null,
+      parameterPorts: [] as GraphExposedParameterPort[],
+      macroValue: null,
+      envelope,
       editable: false,
     };
   }
@@ -440,6 +486,7 @@ function resolveNodeText(node: GraphStateNode) {
     pluginId: null,
     parameterPorts: [] as GraphExposedParameterPort[],
     macroValue: null,
+    envelope: null,
     editable: false,
   };
 }
@@ -478,7 +525,14 @@ function nodeHeightForPorts(portCount: number) {
 }
 
 function nodeHeightForText(text: ReturnType<typeof resolveNodeText>) {
+  if (text.envelope) {
+    return NODE_HEIGHT + ENVELOPE_NODE_CONTENT_HEIGHT;
+  }
   return nodeHeightForPorts(text.parameterPorts.length) + (text.macroValue == null ? 0 : 38);
+}
+
+function nodeWidthForType(type: PreviewNodeKind) {
+  return type === 'envelope' ? ENVELOPE_NODE_WIDTH : NODE_WIDTH;
 }
 
 function normalizePositionedNodes(nodes: GraphStateNode[], options: PreviewModelOptions = {}) {
@@ -525,13 +579,14 @@ function normalizePositionedNodes(nodes: GraphStateNode[], options: PreviewModel
   return layoutNodes.map((node) => {
     const position = positionById.get(node.id) ?? { x: 0, y: 0 };
     const text = resolveNodeText(node);
+    const previewType = resolvePreviewNodeType(node.type);
     return {
       id: node.id,
-      type: resolvePreviewNodeType(node.type),
+      type: previewType,
       ...text,
       x: position.x + PREVIEW_PADDING_X,
       y: position.y + PREVIEW_PADDING_Y,
-      width: NODE_WIDTH,
+      width: nodeWidthForType(previewType),
       height: nodeHeightForText(text),
       graphX: position.x,
       graphY: position.y,
@@ -748,6 +803,7 @@ export function GraphStatePreviewNode({
   onEdit,
   onMacroValueCommit,
   onMacroRenameCommit,
+  onEnvelopeUpdate,
 }: {
   node: PositionedNode;
   dragging: boolean;
@@ -770,6 +826,8 @@ export function GraphStatePreviewNode({
   onEdit?: (nodeId: string) => void;
   onMacroValueCommit?: (nodeId: string, value: number) => void;
   onMacroRenameCommit?: (nodeId: string, label: string) => void;
+  // EVC.3 — envelope node edit callback. When absent, the envelope renders read-only.
+  onEnvelopeUpdate?: (nodeId: string, patch: EnvelopeNodePatch) => void;
 }) {
   const classType = node.type === 'trackInput'
     ? 'track-input'
@@ -777,6 +835,10 @@ export function GraphStatePreviewNode({
       ? 'track-output'
       : node.type;
   const isMacro = node.type === 'macro';
+  // EVC.3 — envelope nodes are standalone per-voice controller definitions. They
+  // expose NO ports of any kind (no audio in/out, no macro controlOut, no parameter
+  // ports) and never participate in drag-to-connect.
+  const isEnvelope = node.type === 'envelope';
   const style: React.CSSProperties = {
     left: node.x,
     top: node.y,
@@ -787,12 +849,15 @@ export function GraphStatePreviewNode({
   // edges. Macro controlOut drags to an exposed parameter port to create a
   // parameter edge — a separate, gated affordance.
   const interactiveAudioOut =
-    connectEnabled && !isMacro && !node.virtual && typeof onConnectPointerDown === 'function';
+    connectEnabled && !isMacro && !isEnvelope && !node.virtual && typeof onConnectPointerDown === 'function';
   const interactiveMacroOut =
     connectParameterEnabled && isMacro && !node.virtual && typeof onConnectPointerDown === 'function';
   const interactiveOut = interactiveAudioOut || interactiveMacroOut;
   const showRemove =
-    canRemove && (node.type === 'effect' || node.type === 'macro') && !node.virtual && typeof onRemove === 'function';
+    canRemove &&
+    (node.type === 'effect' || node.type === 'macro' || node.type === 'envelope') &&
+    !node.virtual &&
+    typeof onRemove === 'function';
   // Edit appears on every real effect node; placeholder/data-only nodes show a
   // disabled "not active yet" state so the affordance is discoverable but inert.
   const showEdit =
@@ -832,13 +897,13 @@ export function GraphStatePreviewNode({
       onPointerCancel={onPointerCancel}
       onContextMenu={canOpenContextMenu ? (event) => onNodeContextMenu?.(event, node) : undefined}
     >
-      {node.type !== 'trackInput' && node.type !== 'macro' && (
+      {node.type !== 'trackInput' && node.type !== 'macro' && !isEnvelope && (
         <span
           className="xleth-graph-state-preview__handle xleth-graph-state-preview__handle--in"
           aria-hidden="true"
         />
       )}
-      {node.type !== 'trackOutput' && (
+      {node.type !== 'trackOutput' && !isEnvelope && (
         interactiveOut ? (
           <span
             className={[
@@ -897,6 +962,17 @@ export function GraphStatePreviewNode({
       )}
       {node.secondaryText && (
         <span className="xleth-graph-state-preview__node-secondary">{node.secondaryText}</span>
+      )}
+      {isEnvelope && node.envelope && (
+        <EnvelopeNodeBody
+          nodeId={node.id}
+          data={node.envelope}
+          onChange={
+            typeof onEnvelopeUpdate === 'function'
+              ? (patch) => onEnvelopeUpdate(node.id, patch)
+              : null
+          }
+        />
       )}
       {node.type === 'macro' && node.macroValue != null && (
         <span className="xleth-graph-state-preview__macro-control">
@@ -1504,6 +1580,8 @@ export default function GraphStatePreview({
   onViewportChange,
   onAddEffectNode,
   onAddMacroNode,
+  onAddEnvelopeNode,
+  onUpdateEnvelope,
   onRemoveNode,
   onConnectNodes,
   onConnectMacroToParameter,
@@ -1595,6 +1673,8 @@ export default function GraphStatePreview({
   const canEditViewport = typeof onViewportChange === 'function';
   const canAddNode = typeof onAddEffectNode === 'function';
   const canAddMacro = typeof onAddMacroNode === 'function';
+  const canAddEnvelope = typeof onAddEnvelopeNode === 'function';
+  const canEditEnvelope = typeof onUpdateEnvelope === 'function';
   const canRemoveNode = typeof onRemoveNode === 'function';
   const canEditNode = typeof onEditNode === 'function';
   const canConnect = typeof onConnectNodes === 'function';
@@ -1613,7 +1693,8 @@ export default function GraphStatePreview({
     typeof onCreateMacroAutomationClip === 'function';
   const canUseGraphHistory =
     typeof onUndoGraphEdit === 'function' || typeof onRedoGraphEdit === 'function';
-  const showToolbar = canEditViewport || canAddNode || canAddMacro || canUseGraphHistory;
+  const showToolbar =
+    canEditViewport || canAddNode || canAddMacro || canAddEnvelope || canUseGraphHistory;
 
   const closeContextMenu = React.useCallback(() => {
     setContextMenu(null);
@@ -2071,6 +2152,15 @@ export default function GraphStatePreview({
                   Add Macro
                 </button>
               )}
+              {canAddEnvelope && (
+                <button
+                  className="xleth-graph-state-preview__action-button xleth-graph-state-preview__action-button--envelope"
+                  type="button"
+                  onClick={onAddEnvelopeNode}
+                >
+                  Add Envelope
+                </button>
+              )}
               {canEditViewport && (
                 <>
                   <button
@@ -2164,6 +2254,7 @@ export default function GraphStatePreview({
                   onEdit={canEditNode ? onEditNode : undefined}
                   onMacroValueCommit={onUpdateMacroValue}
                   onMacroRenameCommit={onRenameMacroNode}
+                  onEnvelopeUpdate={canEditEnvelope ? onUpdateEnvelope : undefined}
                 />
               ))}
             </div>
