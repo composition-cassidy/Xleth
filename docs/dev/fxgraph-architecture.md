@@ -844,3 +844,69 @@ only: **not audible**, evaluates **no AHDSR**, applies **no per-voice gain**, an
 - **Scope.** No `Sampler`/`MixEngine` audio output change, no per-voice gain, no graphState runtime
   parsing, no `GraphParameterTarget` usage, no plugin-parameter output, no bridge/preload/main
   changes, no renderer/UI changes, no Mixer Chain or `effectChains` mutation.
+
+### EVC.4b — AHDSR phase/value evaluation + seek reconstruction (pure, non-audible)
+
+EVC.4b adds the **pure, closed-form** half of the per-voice Envelope model: an AHDSR evaluator that
+answers "what phase and normalized level is an envelope at, at an arbitrary elapsed time?" and
+reconstruction helpers that, given the EVC.4 voice occurrences, compute the **active/releasing**
+envelope voice states at any transport position. It is the foundation for EVC.5 (runtime) and EVC.6
+(per-voice gain application). It remains **not audible**: it evaluates levels only, applies **no
+per-voice gain**, drives **no Sampler voice**, parses **no graphState** at runtime, and is never
+called from audio rendering.
+
+- **Pure AHDSR model.** `engine/src/model/EnvelopeAhdsr.h/.cpp` defines `EnvelopeAhdsrSettings`
+  (engine-side mirror of the normalized EVC.2 data shape: `attackMs/holdMs/decayMs/sustain/
+  releaseMs` + per-segment `attack/decay/releaseTension` + `amount`, with EVC.2 defaults
+  10/0/120/0.7/200/0/0/0/1). `normalized()` repairs defensively — ms finite & ≥ 0, sustain/amount
+  clamped to 0..1, tension clamped to −1..+1, non-finite → default — so evaluation never divides by
+  zero or returns NaN/Inf. It does **not** parse graphState JSON in this phase; callers build the
+  struct directly.
+- **Closed-form evaluation.** `evaluateEnvelopeAhdsr(settings, elapsedMs, gateLengthMs)` returns an
+  `EnvelopeAhdsrState` (`phase`, amount-scaled `normalizedLevel`, `elapsedMs`, `gateElapsedMs`,
+  `releaseElapsedMs`, `releaseStartLevel`, `active`). Phases: `Off → Attack → Hold → Decay → Sustain
+  → Release → Off`. Before onset is `Off`/level 0; the gate is the duration, so **release begins at
+  gate end** and falls from the **actual level reached at gate end** (short notes/clips that end
+  mid-attack/hold/decay release from their real level, never an assumed sustain); release completion
+  is `Off`/level 0. Zero-duration stages are safe (zero attack → immediate 1, zero release →
+  immediate Off after gate end, zero decay → immediate sustain), and `amount` scales the result
+  (amount 0 → level 0). The tension shaping matches `Sampler::shapeTension` exactly
+  (`pow(t, pow(2, −tension·2))`), so the pure model and the existing per-voice Sampler envelope agree
+  on shape. `Sampler::advanceEnvelope`/`processVoice` are **not modified** — this is an independent
+  pure evaluator.
+- **Live vs. reconstruction enumeration (kept distinct).** The EVC.4 enumerators are
+  **live-trigger** (a note occurrence is produced only when its onset lands in the window). EVC.4b
+  adds parallel `…ForReconstruction` enumerators in `EnvelopeVoiceEvents.h/.cpp`
+  (`enumerateEnvelopeClipOccurrencesForReconstruction`,
+  `enumerateEnvelopePatternNoteOccurrencesForReconstruction`,
+  `enumerateEnvelopeVoiceOccurrencesForReconstruction`) that admit an occurrence when it is still
+  **sounding or releasing** at the window — i.e. its gate, extended by the release tail, overlaps
+  the window, even if its onset is in the past. The note path widens its candidate scan backward to
+  cover the longest note plus the release tail, then tests overlap against the original window; the
+  clip path extends each clip's gate end by the release tail. The EVC.4 live functions are
+  **unchanged** — both concepts coexist and are tested to stay distinct (a mid-note window returns
+  nothing from the live enumerator but the held note from the reconstruction enumerator; a released
+  clip within its tail is likewise absent live but present in reconstruction).
+- **Per-voice state reconstruction.** `reconstructEnvelopeVoiceStates(events, settings, queryTick,
+  bpm)` evaluates each occurrence's AHDSR at the query tick (one `EnvelopeReconstructedVoice` per
+  event, **including** `Off` voices); `reconstructActiveEnvelopeVoiceStates(...)` filters to active
+  voices (sounding or releasing). Each reconstructed voice couples the occurrence identity/metadata
+  (key, source kind/id, onset/gate-end ticks, pitch/velocity) to its `EnvelopeAhdsrState`. Voices
+  are **never combined** — exactly one reconstructed state per occurrence, so chords, overlapping
+  clips, and loop iterations each yield independent states. Querying before onset or after the
+  release tail omits the voice from the active set.
+- **Timing.** Tick domain is authoritative (960 PPQ, consistent with EVC.4). `envelopeTicksToMs`
+  converts a tick delta to elapsed ms via the same `TickTime::toSeconds` math MixEngine uses;
+  `envelopeReconstructionTailTicks` converts the release length back to ticks (rounded up) for the
+  reconstruction window. Phase evaluation is ms-based internally, with the tick→ms conversion
+  explicit and deterministic.
+- **Tests.** `engine/test/test_envelope_ahdsr.cpp` (pure, model-only, links solely against
+  `XlethEngineModel`) covers default normalization, every AHDSR phase, short-note release from the
+  actual level, zero attack/decay/release safety, amount scaling, malformed-input normalization, and
+  reconstruction edge cases (mid-clip, mid-note attack/sustain, during release, after release
+  omitted, same-tick chord independence, distinct loop iterations, overlapping clips, trigger-source
+  filtering, and live-vs-reconstruction distinctness for both notes and clips).
+- **Scope.** No `Sampler`/`MixEngine` audio output change, no runtime ADSR voice binding, no
+  per-voice gain application, no graphState runtime parsing, no `GraphParameterTarget` usage, no
+  plugin-parameter output, no bridge/preload/main changes, no renderer/UI changes, no clip-fade
+  change, no Mixer Chain or `effectChains` mutation.

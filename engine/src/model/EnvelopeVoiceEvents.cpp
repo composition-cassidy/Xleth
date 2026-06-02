@@ -1,6 +1,7 @@
 #include "EnvelopeVoiceEvents.h"
 
 #include <algorithm>
+#include <cmath>
 #include <unordered_map>
 
 // EnvelopeVoiceEvents — pure enumeration of per-voice Envelope trigger
@@ -221,5 +222,289 @@ std::vector<EnvelopeVoiceEvent> enumerateEnvelopeVoiceOccurrences(
     }
 
     std::sort(out.begin(), out.end(), envelopeVoiceEventLess);
+    return out;
+}
+
+// ═══ EVC.4b: seek/reconstruction model ════════════════════════════════════════
+
+// ─── Timing helpers ───────────────────────────────────────────────────────────
+
+double envelopeTicksToMs(int64_t tickDelta, double bpm) {
+    if (!(bpm > 0.0)) return 0.0;
+    // ticks / 960 = beats; beats * (60000 / bpm) = ms. Mirrors TickTime::toSeconds.
+    return (static_cast<double>(tickDelta) / 960.0) * (60000.0 / bpm);
+}
+
+int64_t envelopeReconstructionTailTicks(const EnvelopeAhdsrSettings& settings, double bpm) {
+    const EnvelopeAhdsrSettings s = settings.normalized();
+    if (!(bpm > 0.0) || s.releaseMs <= 0.0) return 0;
+    // ms → ticks (inverse of envelopeTicksToMs). Round up so the release tail is
+    // never under-counted (a voice exactly at the tail boundary stays included).
+    const double ticks = (s.releaseMs / (60000.0 / bpm)) * 960.0;
+    if (!std::isfinite(ticks) || ticks <= 0.0) return 0;
+    return static_cast<int64_t>(std::ceil(ticks));
+}
+
+// ─── Reconstruction clip occurrences ──────────────────────────────────────────
+
+std::vector<EnvelopeVoiceEvent> enumerateEnvelopeClipOccurrencesForReconstruction(
+    const std::vector<Clip>&   clips,
+    int                        parentTrackId,
+    const EnvelopeQueryWindow& window,
+    double                     bpm,
+    double                     sampleRate,
+    int64_t                    releaseTailTicks)
+{
+    std::vector<EnvelopeVoiceEvent> out;
+    if (window.isEmpty()) return out;
+
+    const int64_t tail = releaseTailTicks > 0 ? releaseTailTicks : 0;
+
+    for (const Clip& clip : clips) {
+        if (clip.trackId != parentTrackId) continue;
+
+        const int64_t onsetTick   = clip.position.ticks;
+        const int64_t rawGateEnd  = (clip.position + clip.duration).ticks;
+        const int64_t gateEndTick = rawGateEnd < onsetTick ? onsetTick : rawGateEnd;
+
+        // Reconstruction overlap: gate extended by the release tail overlaps the
+        // window, so a clip still in its release segment after its body ended is
+        // returned. A zero/negative-length clip is admitted by onset-in-window
+        // (matching the live enumerator's degenerate rule).
+        const bool degenerate = rawGateEnd <= onsetTick;
+        const bool overlaps = degenerate
+            ? (onsetTick >= window.startTick && onsetTick < window.endTick)
+            : (onsetTick < window.endTick && (gateEndTick + tail) > window.startTick);
+        if (!overlaps) continue;
+
+        EnvelopeVoiceEvent ev;
+        ev.trackId      = clip.trackId;
+        ev.sourceKind   = EnvelopeVoiceSourceKind::TimelineClip;
+        ev.sourceId     = clip.id;
+        ev.onsetTick    = onsetTick;
+        ev.gateEndTick  = gateEndTick;
+        ev.onsetSample   = onsetTick   <= 0 ? 0 : TickTime{onsetTick}.toSamples(bpm, sampleRate);
+        ev.gateEndSample = gateEndTick <= 0 ? 0 : TickTime{gateEndTick}.toSamples(bpm, sampleRate);
+        ev.loopIteration  = 0;
+        ev.pitch          = clip.pitchOffset;
+        ev.velocity       = clip.velocity;
+        ev.regionId       = clip.regionId;
+        ev.patternId      = -1;
+        ev.patternBlockId = -1;
+
+        ev.key.trackId        = clip.trackId;
+        ev.key.sourceKind     = EnvelopeVoiceSourceKind::TimelineClip;
+        ev.key.sourceId       = clip.id;
+        ev.key.onsetTick      = onsetTick;
+        ev.key.loopIteration  = 0;
+        ev.key.patternBlockId = -1;
+
+        out.push_back(ev);
+    }
+
+    std::sort(out.begin(), out.end(), envelopeVoiceEventLess);
+    return out;
+}
+
+// ─── Reconstruction pattern-note occurrences ──────────────────────────────────
+
+std::vector<EnvelopeVoiceEvent> enumerateEnvelopePatternNoteOccurrencesForReconstruction(
+    const std::vector<PatternBlock>& blocks,
+    const std::vector<Pattern>&      patterns,
+    int                              parentTrackId,
+    const EnvelopeQueryWindow&       window,
+    double                           bpm,
+    double                           sampleRate,
+    int64_t                          releaseTailTicks)
+{
+    std::vector<EnvelopeVoiceEvent> out;
+    if (window.isEmpty()) return out;
+
+    const int64_t tail = releaseTailTicks > 0 ? releaseTailTicks : 0;
+
+    std::unordered_map<int, const Pattern*> patternById;
+    patternById.reserve(patterns.size());
+    for (const Pattern& p : patterns) patternById[p.id] = &p;
+
+    for (const PatternBlock& block : blocks) {
+        if (block.trackId != parentTrackId) continue;
+
+        auto pit = patternById.find(block.patternId);
+        if (pit == patternById.end()) continue;
+        const Pattern* pattern = pit->second;
+        if (pattern == nullptr || pattern->regionId < 0) continue;
+
+        const int64_t patternLenTicks = pattern->length.ticks;
+        if (patternLenTicks <= 0) continue;
+
+        const int64_t blockPosTicks    = block.position.ticks;
+        const int64_t blockOffsetTicks = block.offset.ticks;
+        const int64_t blockEndTicks    = blockPosTicks + block.duration.ticks;
+
+        // Longest note in this pattern — the most a note's onset can precede the
+        // query window and still be sounding/releasing at it.
+        int64_t maxNoteDurTicks = 0;
+        for (const PatternNote& note : pattern->notes) {
+            if (note.isSlide) continue;
+            if (note.duration.ticks > maxNoteDurTicks) maxNoteDurTicks = note.duration.ticks;
+        }
+
+        // Widen the candidate scan backward so notes that onset before the window
+        // but remain active/releasing at it are found, then clamp to the block span
+        // (same intersection rule as the live enumerator).
+        const int64_t backTicks    = maxNoteDurTicks + tail;
+        const int64_t scanStart    = window.startTick - backTicks;
+        const int64_t windowStart  = std::max<int64_t>(scanStart,      blockPosTicks);
+        const int64_t windowEnd    = std::min<int64_t>(window.endTick, blockEndTicks);
+        if (windowEnd <= windowStart) continue;
+
+        const int64_t firstLoopIdx = std::max<int64_t>(
+            0, (windowStart - blockPosTicks + blockOffsetTicks) / patternLenTicks);
+        int64_t lastLoopIdx =
+            (windowEnd - blockPosTicks + blockOffsetTicks) / patternLenTicks;
+        if (!block.loopEnabled)
+            lastLoopIdx = std::min<int64_t>(lastLoopIdx, 0);
+
+        for (const PatternNote& note : pattern->notes) {
+            if (note.isSlide) continue;
+
+            for (int64_t L = firstLoopIdx; L <= lastLoopIdx; ++L) {
+                const int64_t absNoteOn = blockPosTicks - blockOffsetTicks
+                                          + L * patternLenTicks + note.position.ticks;
+
+                const int64_t rawNoteOff = absNoteOn + note.duration.ticks;
+                const int64_t absNoteOff = std::min<int64_t>(rawNoteOff, blockEndTicks);
+                const int64_t gateEndTick = absNoteOff < absNoteOn ? absNoteOn : absNoteOff;
+
+                // Reconstruction overlap against the ORIGINAL query window (not the
+                // widened scan): admit the occurrence if it is sounding or releasing
+                // at the window. Zero-length notes use onset-in-window (degenerate).
+                const bool degenerate = gateEndTick <= absNoteOn;
+                const bool overlaps = degenerate
+                    ? (absNoteOn >= window.startTick && absNoteOn < window.endTick)
+                    : (absNoteOn < window.endTick && (gateEndTick + tail) > window.startTick);
+                if (!overlaps) continue;
+
+                EnvelopeVoiceEvent ev;
+                ev.trackId      = block.trackId;
+                ev.sourceKind   = EnvelopeVoiceSourceKind::PatternNote;
+                ev.sourceId     = note.id;
+                ev.onsetTick    = absNoteOn;
+                ev.gateEndTick  = gateEndTick;
+                ev.onsetSample   = absNoteOn   <= 0 ? 0 : TickTime{absNoteOn}.toSamples(bpm, sampleRate);
+                ev.gateEndSample = gateEndTick <= 0 ? 0 : TickTime{gateEndTick}.toSamples(bpm, sampleRate);
+                ev.loopIteration  = L;
+                ev.pitch          = note.pitch;
+                ev.velocity       = note.velocity;
+                ev.regionId       = pattern->regionId;
+                ev.patternId      = pattern->id;
+                ev.patternBlockId = block.id;
+
+                ev.key.trackId        = block.trackId;
+                ev.key.sourceKind     = EnvelopeVoiceSourceKind::PatternNote;
+                ev.key.sourceId       = note.id;
+                ev.key.onsetTick      = absNoteOn;
+                ev.key.loopIteration  = L;
+                ev.key.patternBlockId = block.id;
+
+                out.push_back(ev);
+            }
+        }
+    }
+
+    std::sort(out.begin(), out.end(), envelopeVoiceEventLess);
+    return out;
+}
+
+// ─── Combined reconstruction enumeration ──────────────────────────────────────
+
+std::vector<EnvelopeVoiceEvent> enumerateEnvelopeVoiceOccurrencesForReconstruction(
+    const std::vector<Clip>&         clips,
+    const std::vector<PatternBlock>& blocks,
+    const std::vector<Pattern>&      patterns,
+    int                              parentTrackId,
+    EnvelopeTriggerEvents            events,
+    const EnvelopeQueryWindow&       window,
+    double                           bpm,
+    double                           sampleRate,
+    int64_t                          releaseTailTicks)
+{
+    std::vector<EnvelopeVoiceEvent> out;
+    if (window.isEmpty()) return out;
+
+    const bool wantNotes = events == EnvelopeTriggerEvents::Notes
+                        || events == EnvelopeTriggerEvents::NotesAndClips;
+    const bool wantClips = events == EnvelopeTriggerEvents::Clips
+                        || events == EnvelopeTriggerEvents::NotesAndClips;
+
+    if (wantNotes) {
+        auto notes = enumerateEnvelopePatternNoteOccurrencesForReconstruction(
+            blocks, patterns, parentTrackId, window, bpm, sampleRate, releaseTailTicks);
+        out.insert(out.end(), notes.begin(), notes.end());
+    }
+    if (wantClips) {
+        auto clipEvents = enumerateEnvelopeClipOccurrencesForReconstruction(
+            clips, parentTrackId, window, bpm, sampleRate, releaseTailTicks);
+        out.insert(out.end(), clipEvents.begin(), clipEvents.end());
+    }
+
+    std::sort(out.begin(), out.end(), envelopeVoiceEventLess);
+    return out;
+}
+
+// ─── Per-voice state reconstruction ───────────────────────────────────────────
+
+namespace {
+
+EnvelopeReconstructedVoice reconstructOne(const EnvelopeVoiceEvent&    ev,
+                                          const EnvelopeAhdsrSettings& settings,
+                                          int64_t                      queryTick,
+                                          double                       bpm) {
+    EnvelopeReconstructedVoice v;
+    v.key            = ev.key;
+    v.sourceKind     = ev.sourceKind;
+    v.trackId        = ev.trackId;
+    v.sourceId       = ev.sourceId;
+    v.onsetTick      = ev.onsetTick;
+    v.gateEndTick    = ev.gateEndTick;
+    v.queryTick      = queryTick;
+    v.pitch          = ev.pitch;
+    v.velocity       = ev.velocity;
+    v.regionId       = ev.regionId;
+    v.patternId      = ev.patternId;
+    v.patternBlockId = ev.patternBlockId;
+
+    const double elapsedMs    = envelopeTicksToMs(queryTick - ev.onsetTick, bpm);
+    const double gateLengthMs = envelopeTicksToMs(ev.gateLengthTicks(),     bpm);
+    v.env = evaluateEnvelopeAhdsr(settings, elapsedMs, gateLengthMs);
+    return v;
+}
+
+}  // namespace
+
+std::vector<EnvelopeReconstructedVoice> reconstructEnvelopeVoiceStates(
+    const std::vector<EnvelopeVoiceEvent>& events,
+    const EnvelopeAhdsrSettings&           settings,
+    int64_t                                queryTick,
+    double                                 bpm)
+{
+    std::vector<EnvelopeReconstructedVoice> out;
+    out.reserve(events.size());
+    for (const EnvelopeVoiceEvent& ev : events)
+        out.push_back(reconstructOne(ev, settings, queryTick, bpm));
+    return out;
+}
+
+std::vector<EnvelopeReconstructedVoice> reconstructActiveEnvelopeVoiceStates(
+    const std::vector<EnvelopeVoiceEvent>& events,
+    const EnvelopeAhdsrSettings&           settings,
+    int64_t                                queryTick,
+    double                                 bpm)
+{
+    std::vector<EnvelopeReconstructedVoice> out;
+    for (const EnvelopeVoiceEvent& ev : events) {
+        EnvelopeReconstructedVoice v = reconstructOne(ev, settings, queryTick, bpm);
+        if (v.env.active) out.push_back(std::move(v));
+    }
     return out;
 }

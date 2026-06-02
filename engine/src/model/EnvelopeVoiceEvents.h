@@ -31,6 +31,7 @@
 //                       reconstruction is deferred to EVC.4b). The full gate end is
 //                       still carried on each occurrence for later use.
 
+#include "EnvelopeAhdsr.h"
 #include "TimelineTypes.h"
 
 #include <cstdint>
@@ -212,3 +213,108 @@ std::vector<EnvelopeVoiceEvent> enumerateEnvelopeVoiceOccurrences(
     const EnvelopeQueryWindow&       window,
     double                           bpm,
     double                           sampleRate);
+
+// ─── EVC.4b: seek/reconstruction model ────────────────────────────────────────
+//
+// Two distinct enumeration concepts must stay separate (audit §3/§5):
+//
+//   • Live-trigger enumeration (the functions above): a note occurrence is
+//     produced only when its ONSET tick lands inside the query window — the
+//     "a note-on fired in this buffer" semantics of MixEngine::triggerPatternNotes.
+//     Clips are already overlap-based (position-pure) above.
+//   • Reconstruction enumeration (the *ForReconstruction functions below): a voice
+//     occurrence is produced when it is still SOUNDING or RELEASING at the query
+//     window — i.e. its gate (extended by the release tail) overlaps the window,
+//     even if its onset is in the past. This is what a mid-note/mid-clip seek needs.
+//
+// The reconstruction enumerators NEVER change live-trigger semantics; both sets of
+// functions coexist and are tested to stay distinct.
+
+// Release-tail length in ticks for a given AHDSR + tempo. Used to widen the
+// reconstruction window so a voice still in its release segment at the query is
+// included. 960 PPQ; rounds up so the tail is never under-counted.
+int64_t envelopeReconstructionTailTicks(const EnvelopeAhdsrSettings& settings, double bpm);
+
+// Elapsed milliseconds for a tick delta at `bpm` (960 PPQ). Deterministic; may be
+// negative (query before onset). The explicit tick→ms conversion used by
+// reconstruction so phase evaluation stays ms-based while timing stays tick-pure.
+double envelopeTicksToMs(int64_t tickDelta, double bpm);
+
+// Reconstruction clip occurrences: like enumerateEnvelopeClipOccurrences but the
+// overlap test extends each clip's gate end by `releaseTailTicks`, so a clip whose
+// body ended just before the query but is still in its release segment is returned.
+std::vector<EnvelopeVoiceEvent> enumerateEnvelopeClipOccurrencesForReconstruction(
+    const std::vector<Clip>&   clips,
+    int                        parentTrackId,
+    const EnvelopeQueryWindow& window,
+    double                     bpm,
+    double                     sampleRate,
+    int64_t                    releaseTailTicks);
+
+// Reconstruction pattern-note occurrences: same block/offset/loop math as the
+// live enumerator, but a note is admitted when its [onset, gateEnd+releaseTail)
+// overlaps the window (so held/releasing notes whose onset is in the past are
+// reconstructed). The candidate scan is widened backward to cover the longest note
+// plus the release tail. Live onset-in-window semantics are unaffected.
+std::vector<EnvelopeVoiceEvent> enumerateEnvelopePatternNoteOccurrencesForReconstruction(
+    const std::vector<PatternBlock>& blocks,
+    const std::vector<Pattern>&      patterns,
+    int                              parentTrackId,
+    const EnvelopeQueryWindow&       window,
+    double                           bpm,
+    double                           sampleRate,
+    int64_t                          releaseTailTicks);
+
+// Combined reconstruction enumeration honoring the trigger-source selector.
+std::vector<EnvelopeVoiceEvent> enumerateEnvelopeVoiceOccurrencesForReconstruction(
+    const std::vector<Clip>&         clips,
+    const std::vector<PatternBlock>& blocks,
+    const std::vector<Pattern>&      patterns,
+    int                              parentTrackId,
+    EnvelopeTriggerEvents            events,
+    const EnvelopeQueryWindow&       window,
+    double                           bpm,
+    double                           sampleRate,
+    int64_t                          releaseTailTicks);
+
+// ─── EnvelopeReconstructedVoice ───────────────────────────────────────────────
+// One reconstructed per-voice envelope state at a query position. Couples the
+// occurrence identity/metadata to the closed-form AHDSR state. Voices are NEVER
+// combined — there is exactly one of these per occurrence.
+
+struct EnvelopeReconstructedVoice {
+    EnvelopeVoiceOccurrenceKey key;
+
+    EnvelopeVoiceSourceKind sourceKind     = EnvelopeVoiceSourceKind::PatternNote;
+    int                     trackId        = -1;
+    int                     sourceId       = -1;
+    int64_t                 onsetTick      = 0;
+    int64_t                 gateEndTick    = 0;
+    int64_t                 queryTick      = 0;
+    int                     pitch          = 60;
+    float                   velocity       = 1.0f;
+    int                     regionId       = -1;
+    int                     patternId      = -1;
+    int                     patternBlockId = -1;
+
+    EnvelopeAhdsrState env;  // phase, normalizedLevel, active, ...
+};
+
+// Computes the reconstructed AHDSR state of every supplied occurrence at
+// `queryTick` (one result per event, INCLUDING Off voices — query before onset or
+// after the release tail). Order matches the input. Pure: no transport, no
+// graphState. Feed it the output of the *ForReconstruction enumerators.
+std::vector<EnvelopeReconstructedVoice> reconstructEnvelopeVoiceStates(
+    const std::vector<EnvelopeVoiceEvent>& events,
+    const EnvelopeAhdsrSettings&           settings,
+    int64_t                                queryTick,
+    double                                 bpm);
+
+// Same as above but filtered to active voices only (phase != Off): the voices that
+// are sounding or releasing at the query. This is the typical reconstruction entry
+// point — query before onset / after release omits the voice.
+std::vector<EnvelopeReconstructedVoice> reconstructActiveEnvelopeVoiceStates(
+    const std::vector<EnvelopeVoiceEvent>& events,
+    const EnvelopeAhdsrSettings&           settings,
+    int64_t                                queryTick,
+    double                                 bpm);

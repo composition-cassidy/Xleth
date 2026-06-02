@@ -20,10 +20,21 @@ patternBlockId)` and deterministic position-pure enumeration of pattern-note occ
 `XlethEngineModel`, mirroring the `VideoFlipResolver` precedent) with
 `engine/test/test_envelope_voice_events.cpp`. EVC.4 is **non-audible**: no runtime ADSR, no per-voice
 gain, no graphState runtime parsing, no `GraphParameterTarget`, no bridge/preload/main changes, no
-Mixer Chain or `effectChains` mutation. Full mid-note seek reconstruction remains deferred to EVC.4b.
-See the "EVC.2 — envelope node graphState schema", "EVC.3 — envelope node UI", and "EVC.4 —
-engine-side trigger/voice occurrence contract" sections in
-[`fxgraph-architecture.md`](fxgraph-architecture.md).
+Mixer Chain or `effectChains` mutation. EVC.4b then added the **pure AHDSR phase/value evaluator and
+seek/reconstruction model** per §5/§7: a closed-form `evaluateEnvelopeAhdsr` (Off/Attack/Hold/Decay/
+Sustain/Release, release from the actual gate-end level, zero-duration safe, `amount`-scaled, tension
+matching `Sampler::shapeTension`) in `engine/src/model/EnvelopeAhdsr.h/.cpp`, plus
+`…ForReconstruction` overlap enumerators and `reconstruct[Active]EnvelopeVoiceStates` in
+`EnvelopeVoiceEvents.h/.cpp` that compute the active/releasing per-voice envelope states at any
+transport position **without** replaying live triggers — keeping voices independent (chords,
+overlapping clips, loop iterations never combined) and keeping the EVC.4 live onset-in-window
+semantics distinct and unchanged. EVC.4b is still **non-audible**: no runtime ADSR voice binding, no
+per-voice gain, no graphState runtime parsing, no `GraphParameterTarget`, no bridge/preload/main
+changes, no Mixer Chain or `effectChains` mutation. It is tested by
+`engine/test/test_envelope_ahdsr.cpp`. EVC.5 (runtime) and EVC.6 (per-voice gain) consume it next.
+See the "EVC.2 — envelope node graphState schema", "EVC.3 — envelope node UI", "EVC.4 —
+engine-side trigger/voice occurrence contract", and "EVC.4b — AHDSR phase/value evaluation + seek
+reconstruction" sections in [`fxgraph-architecture.md`](fxgraph-architecture.md).
 
 ---
 

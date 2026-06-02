@@ -196,6 +196,7 @@ add_library(XlethEngineModel STATIC
     src/model/PatternBlock.cpp
     src/model/Timeline.cpp
     src/model/VideoFlipResolver.cpp
+    src/model/EnvelopeAhdsr.cpp
     src/model/EnvelopeVoiceEvents.cpp
     src/model/ClipModulationEvaluator.cpp
     src/model/ClipCompanionFxBuilder.cpp
@@ -444,6 +445,20 @@ add_executable(test_envelope_voice_events
 )
 
 target_link_libraries(test_envelope_voice_events PRIVATE
+    XlethEngineModel
+)
+
+# ── test_envelope_ahdsr ───────────────────────────────────────────────────────
+# EVC.4b: pure closed-form AHDSR phase/value evaluation + seek/reconstruction.
+# Covers attack/hold/decay/sustain/release phases, zero-duration safety, amount
+# scaling, malformed-input normalization, and per-voice reconstruction edge cases
+# (mid-clip, mid-note, release, post-release, chord, loop, overlap, trigger filter,
+# and live-vs-reconstruction enumeration distinctness). Pure C++, model-only.
+add_executable(test_envelope_ahdsr
+    test/test_envelope_ahdsr.cpp
+)
+
+target_link_libraries(test_envelope_ahdsr PRIVATE
     XlethEngineModel
 )
 
