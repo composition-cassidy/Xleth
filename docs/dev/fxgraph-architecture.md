@@ -712,3 +712,12 @@ See [`fxgraph-runtime-architecture-audit.md`](fxgraph-runtime-architecture-audit
 FXG.3-a audit: chain effect ownership, engine effect lifecycle, audio execution model,
 graph-owned effect instance proposal, Edit button path, phased engine execution plan, risk
 analysis, and recommended implementation sequence.
+
+## Envelope Controller (EVC, per-voice) — audit
+
+See [`fxgraph-envelope-controller-architecture-audit.md`](fxgraph-envelope-controller-architecture-audit.md)
+for the EVC.1 foundation audit: the per-voice (not global-parameter) Envelope Controller model,
+where timeline clips and pattern notes become playback voices, the existing per-voice AHDSR in
+`Sampler`, seek/export reconstruction requirements, the recommended graphState node shape and
+engine-side runtime, risk register, and the EVC.2–EVC.8 phase split. EVC output explicitly does
+**not** reuse the macro→`GraphParameterTarget`→plugin-parameter path.
