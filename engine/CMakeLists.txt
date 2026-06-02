@@ -196,6 +196,7 @@ add_library(XlethEngineModel STATIC
     src/model/PatternBlock.cpp
     src/model/Timeline.cpp
     src/model/VideoFlipResolver.cpp
+    src/model/EnvelopeVoiceEvents.cpp
     src/model/ClipModulationEvaluator.cpp
     src/model/ClipCompanionFxBuilder.cpp
     src/project/ProjectManager.cpp
@@ -431,6 +432,18 @@ add_executable(test_video_flip_resolver
 )
 
 target_link_libraries(test_video_flip_resolver PRIVATE
+    XlethEngineModel
+)
+
+# ── test_envelope_voice_events ────────────────────────────────────────────────
+# EVC.4: pure per-voice Envelope Controller trigger/voice occurrence contract.
+# Deterministic clip/note occurrence enumeration (no audio, no transport, no
+# graphState). Pure C++, model-only — links solely against XlethEngineModel.
+add_executable(test_envelope_voice_events
+    test/test_envelope_voice_events.cpp
+)
+
+target_link_libraries(test_envelope_voice_events PRIVATE
     XlethEngineModel
 )
 

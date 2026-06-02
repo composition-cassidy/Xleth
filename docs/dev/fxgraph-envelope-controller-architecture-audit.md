@@ -11,8 +11,18 @@ store actions, persistence, undo/redo) — no UI, no runtime, no trigger contrac
 visible/editable envelope node UI in the active safe FX Graph (Add Envelope affordance, distinct node
 rendering, compact AHDSR/voice/trigger/amount editor, and an illustrative preview curve) — still
 renderer-only and non-audible, with no runtime ADSR, trigger contract, engine parsing, per-voice gain
-application, `GraphParameterTarget` usage, Mixer Chain mutation, or `effectChains` mutation. See the
-"EVC.2 — envelope node graphState schema" and "EVC.3 — envelope node UI" sections in
+application, `GraphParameterTarget` usage, Mixer Chain mutation, or `effectChains` mutation. EVC.4
+implemented the **pure engine-side trigger/voice occurrence contract** per §3/§4/§6/§8: the
+engine-internal occurrence key `(trackId, sourceKind, sourceId, onsetTick, loopIteration,
+patternBlockId)` and deterministic position-pure enumeration of pattern-note occurrences (mirroring
+`MixEngine::triggerPatternNotes` onset/gate/loop math) and clip occurrences (overlap, like
+`findActiveClips`). It lives in `engine/src/model/EnvelopeVoiceEvents.h/.cpp` (pure
+`XlethEngineModel`, mirroring the `VideoFlipResolver` precedent) with
+`engine/test/test_envelope_voice_events.cpp`. EVC.4 is **non-audible**: no runtime ADSR, no per-voice
+gain, no graphState runtime parsing, no `GraphParameterTarget`, no bridge/preload/main changes, no
+Mixer Chain or `effectChains` mutation. Full mid-note seek reconstruction remains deferred to EVC.4b.
+See the "EVC.2 — envelope node graphState schema", "EVC.3 — envelope node UI", and "EVC.4 —
+engine-side trigger/voice occurrence contract" sections in
 [`fxgraph-architecture.md`](fxgraph-architecture.md).
 
 ---

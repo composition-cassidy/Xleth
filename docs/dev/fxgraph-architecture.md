@@ -798,3 +798,49 @@ engine-side graphState parsing, no per-voice gain application, and no bridge/pre
 
 No trigger contract, runtime ADSR, engine parsing, per-voice gain application, `GraphParameterTarget`
 usage, plugin-parameter output, Mixer Chain mutation, or `effectChains` mutation exists after EVC.3.
+
+### EVC.4 — engine-side trigger/voice occurrence contract (pure, non-audible)
+
+EVC.4 adds a **pure engine-side** model for enumerating the parent-track clip/note voice
+occurrences a per-voice Envelope node would later modulate. It is contract/model/test foundation
+only: **not audible**, evaluates **no AHDSR**, applies **no per-voice gain**, and parses
+**no graphState** at runtime. It prepares EVC.4b (seek/reconstruction) and EVC.5 (runtime).
+
+- **Location & purity.** The contract lives in `engine/src/model/EnvelopeVoiceEvents.h/.cpp` and is
+  compiled into the pure `XlethEngineModel` library (no JUCE, no audio thread, no transport, no
+  graphState). It mirrors the `VideoFlipResolver` determinism precedent (same inputs → same output,
+  always) rather than `src/audio/`, so the test (`engine/test/test_envelope_voice_events.cpp`)
+  links solely against `XlethEngineModel` and runs fast. Future EVC.5 runtime application (in/next
+  to `MixEngine`/`Sampler`) consumes this contract, exactly as `VideoFlipApplier` (render-side)
+  consumes the pure `VideoFlipResolver`.
+- **Occurrence identity.** `EnvelopeVoiceOccurrenceKey` is the stable engine-internal composite
+  `(trackId, sourceKind, sourceId, onsetTick, loopIteration, patternBlockId)` (the audit §4
+  candidate, extended with `patternBlockId`). It distinguishes overlapping clips, same-tick chord
+  notes, and the same note across loop iterations — chords are never collapsed. The key is
+  **engine-internal**: never exposed to the renderer/IPC, never serialized into graphState.
+- **Voice event.** `EnvelopeVoiceEvent` carries the key plus onset/gate-end in both tick (960-PPQ,
+  authoritative) and sample domains (derived via the same `TickTime::toSamples` conversion
+  MixEngine uses), `loopIteration`, `pitch` (MIDI for notes, semitone offset for clips — the
+  `SyncManager`/`VideoEvent` convention), `velocity`, `regionId`, `patternId`, and `patternBlockId`.
+  The gate is the duration: release begins at `gateEndTick`.
+- **Enumeration helpers (all pure).** `enumerateEnvelopeClipOccurrences`,
+  `enumerateEnvelopePatternNoteOccurrences`, and `enumerateEnvelopeVoiceOccurrences` read only the
+  supplied model data (clips / pattern blocks / patterns), a parent `trackId`, an
+  `EnvelopeTriggerEvents` selector (`notes` | `clips` | `notesAndClips`, mirroring the EVC.2
+  `triggerSource.events` schema), a half-open `EnvelopeQueryWindow` tick range, and tempo. They
+  never read live playback history or transport state. Output is a deterministically-sorted list
+  (onset → source kind → track → block → loop → pitch → source id), mirroring the `VideoFlipApplier`
+  tie-break precedent.
+- **Timing semantics.** Pattern-note onset/gate/loop math mirrors `MixEngine::triggerPatternNotes`
+  exactly: block position, block offset, loop iteration over pattern length, note offset, note
+  length, and the note-off clamp to the block end; `loopEnabled === false` plays only iteration 0;
+  zero-length patterns are skipped; slide notes (silent markers) produce no occurrence. A note
+  occurrence is produced when its onset tick falls inside the query window (**live-trigger
+  semantics** — held-note mid-window reconstruction is deferred to EVC.4b). Clip occurrences use
+  the position-pure **overlap** test from `MixEngine::findActiveClips`, so a mid-clip query still
+  returns the clip (clip activity is already seek-deterministic). The contract operates in the tick
+  domain for determinism (it omits the live path's ±2-sample-rounding tick widening, a realtime
+  artifact) and derives sample positions for downstream use.
+- **Scope.** No `Sampler`/`MixEngine` audio output change, no per-voice gain, no graphState runtime
+  parsing, no `GraphParameterTarget` usage, no plugin-parameter output, no bridge/preload/main
+  changes, no renderer/UI changes, no Mixer Chain or `effectChains` mutation.
