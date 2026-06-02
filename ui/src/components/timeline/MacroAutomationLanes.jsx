@@ -4,8 +4,11 @@ import ContextMenu from '../ContextMenu.jsx'
 import useEffectChainStore from '../../stores/effectChainStore.js'
 import { PPQ } from '../../constants/timeline.js'
 import {
+  AUTOMATION_POINT_HIT_RADIUS_PX,
   LANE_CONTENT_PAD,
+  buildSegmentLinePoints,
   clipPixelRect,
+  hitTestMacroAutomationClip,
   pxDeltaToTickDelta,
   snapAutomationPointTick,
   snapClipEndTick,
@@ -27,7 +30,7 @@ import {
 // automation actions, which enforce the FXG.4-h compatibility/overlap rules and
 // keep the macro→parameter-edge runtime path intact (no direct plugin params).
 
-const POINT_HIT_R = 5     // px radius for a draggable point handle
+const POINT_HIT_R = AUTOMATION_POINT_HIT_RADIUS_PX
 const MIN_CLIP_TICKS = 60 // matches model's positive-int floor for a clip
 
 // Module-level clipboard — a macro automation clip copy is only pasteable into a
@@ -39,16 +42,60 @@ function actions() {
   return useEffectChainStore.getState()
 }
 
+function targetKey(target) {
+  if (!target || target.kind === 'none') return 'none'
+  return [
+    target.kind,
+    target.clipId ?? '',
+    target.laneId ?? '',
+    target.pointIndex ?? '',
+    target.segmentIndex ?? '',
+  ].join(':')
+}
+
+function sameTarget(a, b) {
+  return targetKey(a) === targetKey(b)
+}
+
+export function macroAutomationClipClassName({ isSelected = false, loopEnabled = false, hoverTarget = null, clipId }) {
+  const classes = ['macro-automation-clip']
+  if (isSelected) classes.push('is-selected')
+  if (loopEnabled) classes.push('is-looped')
+  if (hoverTarget?.clipId === clipId) {
+    if (hoverTarget.kind === 'point') classes.push('is-hover-point')
+    else if (hoverTarget.kind === 'segment') classes.push('is-hover-segment')
+    else if (hoverTarget.kind === 'resize-start') classes.push('is-hover-resize-start')
+    else if (hoverTarget.kind === 'resize-end') classes.push('is-hover-resize-end')
+    else if (hoverTarget.kind === 'clip-body') classes.push('is-hover-body')
+  }
+  return classes.join(' ')
+}
+
+export function macroAutomationPointClassName({ isLoopBoundary = false, hoverTarget = null, clipId, pointIndex }) {
+  const classes = ['macro-automation-point']
+  if (isLoopBoundary) classes.push('macro-automation-point--loop-boundary')
+  if (
+    hoverTarget?.kind === 'point' &&
+    hoverTarget.clipId === clipId &&
+    hoverTarget.pointIndex === pointIndex
+  ) {
+    classes.push('is-hovered')
+  }
+  return classes.join(' ')
+}
+
 export default function MacroAutomationLanes({
   trackLayout,
   graphStates = {},
   pixelsPerBeat,
   scrollOffset,
   snapGranularity = '1/16',
+  initialHoverTarget = null,
 }) {
   const layerRef = useRef(null)
   const [selected, setSelected] = useState(null) // { trackId, laneId, clipId }
   const [menu, setMenu] = useState(null)          // { x, y, kind, trackId, macroNodeId, laneId, clipId }
+  const [hoverTarget, setHoverTarget] = useState(initialHoverTarget)
   const dragRef = useRef(null)
 
   const macroRows = trackLayout?.getMacroRows?.() ?? []
@@ -59,6 +106,32 @@ export default function MacroAutomationLanes({
     const lane = gs?.macroAutomationLanes?.find((l) => l.laneId === row.laneId) ?? null
     return { gs, lane }
   }, [graphStates])
+
+  const getClipEditTarget = useCallback((e, row, clip, contentTop, contentH) => {
+    const layerRect = layerRef.current?.getBoundingClientRect()
+    const laneTopClient = (layerRect?.top ?? 0) + row.y
+    const { left } = clipPixelRect(clip, pixelsPerBeat, scrollOffset)
+    return hitTestMacroAutomationClip({
+      clip,
+      laneId: row.laneId,
+      pointX: e.clientX - (layerRect?.left ?? 0) - left,
+      pointY: e.clientY - laneTopClient,
+      pixelsPerBeat,
+      contentTop,
+      contentHeight: contentH,
+      clipHeight: row.height,
+    })
+  }, [pixelsPerBeat, scrollOffset])
+
+  const updateClipHover = useCallback((e, row, clip, contentTop, contentH) => {
+    if (row.targetUnavailable || dragRef.current) return
+    const next = getClipEditTarget(e, row, clip, contentTop, contentH)
+    setHoverTarget((prev) => (sameTarget(prev, next) ? prev : next))
+  }, [getClipEditTarget])
+
+  const clearClipHover = useCallback((clipId) => {
+    setHoverTarget((prev) => (prev?.clipId === clipId ? null : prev))
+  }, [])
 
   // ── Shared window-drag plumbing ──────────────────────────────────────────
   const beginDrag = useCallback((onMove, onUp) => {
@@ -83,7 +156,7 @@ export default function MacroAutomationLanes({
     const originX = e.clientX
     const origStart = clip.startTick
     const ppb = pixelsPerBeat
-    dragRef.current = { kind: 'move' }
+    dragRef.current = { kind: 'move', target: { kind: 'clip-body', clipId: clip.clipId, laneId: row.laneId } }
     beginDrag((me) => {
       const next = snapClipStartTick(
         origStart + pxDeltaToTickDelta(me.clientX - originX, ppb),
@@ -106,7 +179,10 @@ export default function MacroAutomationLanes({
     const origLen = clip.lengthTicks
     const origEnd = origStart + origLen
     const ppb = pixelsPerBeat
-    dragRef.current = { kind: 'resize' }
+    dragRef.current = {
+      kind: 'resize',
+      target: { kind: edge === 'right' ? 'resize-end' : 'resize-start', clipId: clip.clipId, laneId: row.laneId },
+    }
     beginDrag((me) => {
       const mods = modsFrom(me)
       if (edge === 'right') {
@@ -144,7 +220,7 @@ export default function MacroAutomationLanes({
     // Keep ordering stable: clamp tick strictly between neighbours during the drag.
     const lowerTick = pointIndex > 0 ? points[pointIndex - 1].tick + 1 : 0
     const upperTick = pointIndex < points.length - 1 ? points[pointIndex + 1].tick - 1 : clip.lengthTicks
-    dragRef.current = { kind: 'point' }
+    dragRef.current = { kind: 'point', target: { kind: 'point', clipId: clip.clipId, laneId: row.laneId, pointIndex } }
     beginDrag((me) => {
       const rawLocal = xToClipLocalTick(me.clientX - (layerRect?.left ?? 0), clip, pixelsPerBeat, scrollOffset)
       const tick = snapAutomationPointTick(rawLocal, clip, modsFrom(me), snapGranularity, PPQ, {
@@ -169,14 +245,54 @@ export default function MacroAutomationLanes({
   }, [pixelsPerBeat, scrollOffset, snapGranularity])
 
   // ── Context menus ─────────────────────────────────────────────────────────
-  const openClipMenu = useCallback((e, row, clip) => {
+  const startSegmentInteraction = useCallback((e, row, clip, target) => {
+    if (e.button !== 0 || row.targetUnavailable) return
     e.preventDefault(); e.stopPropagation()
+    setSelected({ trackId: row.parentTrackId, laneId: row.laneId, clipId: clip.clipId })
+    setHoverTarget(target)
+  }, [])
+
+  const handleClipPointerDown = useCallback((e, row, clip, contentTop, contentH) => {
+    if (e.button !== 0 || row.targetUnavailable) return
+    const target = getClipEditTarget(e, row, clip, contentTop, contentH)
+    if (target.kind === 'point') {
+      startPointMove(e, row, clip, target.pointIndex, contentTop, contentH)
+    } else if (target.kind === 'segment') {
+      startSegmentInteraction(e, row, clip, target)
+    } else if (target.kind === 'resize-start') {
+      startClipResize(e, row, clip, 'left')
+    } else if (target.kind === 'resize-end') {
+      startClipResize(e, row, clip, 'right')
+    } else if (target.kind === 'clip-body') {
+      startClipMove(e, row, clip)
+    }
+  }, [getClipEditTarget, startClipMove, startClipResize, startPointMove, startSegmentInteraction])
+
+  const handleClipDoubleClick = useCallback((e, row, clip, contentTop, contentH) => {
+    if (row.targetUnavailable) return
+    const target = getClipEditTarget(e, row, clip, contentTop, contentH)
+    if (target.kind === 'point' || target.kind === 'resize-start' || target.kind === 'resize-end' || target.kind === 'none') {
+      e.preventDefault(); e.stopPropagation()
+      return
+    }
+    addPointAt(e, row, clip, contentTop, contentH)
+  }, [addPointAt, getClipEditTarget])
+
+  const openClipMenu = useCallback((e, row, clip, contentTop, contentH) => {
+    e.preventDefault(); e.stopPropagation()
+    const target = row.targetUnavailable
+      ? { kind: 'clip-body' }
+      : getClipEditTarget(e, row, clip, contentTop, contentH)
+    if (target.kind === 'point') {
+      actions().deleteMacroAutomationPointForTrack(row.parentTrackId, clip.clipId, target.pointIndex)
+      return
+    }
     setMenu({
       x: e.clientX, y: e.clientY, kind: 'clip',
       trackId: row.parentTrackId, macroNodeId: row.macroNodeId, laneId: row.laneId,
       clipId: clip.clipId, loopEnabled: clip.loopEnabled, targetUnavailable: row.targetUnavailable,
     })
-  }, [])
+  }, [getClipEditTarget])
 
   const openLaneMenu = useCallback((e, row) => {
     // Only when clicking the empty lane (not a clip), and only when a clip for
@@ -259,15 +375,26 @@ export default function MacroAutomationLanes({
               const curve = buildCurvePoints(clip.points, clip, pixelsPerBeat, contentTop, contentH)
               const ghostCurves = buildLoopGhostCurveSegments(clip.points, clip, pixelsPerBeat, contentTop, contentH)
               const loopDividers = buildLoopRepeatDividers(clip.points, clip, pixelsPerBeat)
+              const clipHoverTarget = hoverTarget?.clipId === clip.clipId ? hoverTarget : null
+              const hoverSegment = clipHoverTarget?.kind === 'segment'
+                ? buildSegmentLinePoints(clip.points, clipHoverTarget.segmentIndex, pixelsPerBeat, contentTop, contentH)
+                : ''
               return (
                 <div
                   key={clip.clipId}
-                  className={`macro-automation-clip${isSelected ? ' is-selected' : ''}${clip.loopEnabled ? ' is-looped' : ''}`}
+                  className={macroAutomationClipClassName({
+                    isSelected,
+                    loopEnabled: clip.loopEnabled,
+                    hoverTarget: clipHoverTarget,
+                    clipId: clip.clipId,
+                  })}
                   data-clip-id={clip.clipId}
-                  style={{ position: 'absolute', left, top: 0, width, height: row.height }}
-                  onPointerDown={(e) => startClipMove(e, row, clip)}
-                  onDoubleClick={(e) => addPointAt(e, row, clip, contentTop, contentH)}
-                  onContextMenu={(e) => openClipMenu(e, row, clip)}
+                  style={{ position: 'absolute', left, top: 0, width, height: row.height, cursor: clipHoverTarget?.cursor }}
+                  onPointerMove={(e) => updateClipHover(e, row, clip, contentTop, contentH)}
+                  onPointerLeave={() => clearClipHover(clip.clipId)}
+                  onPointerDown={(e) => handleClipPointerDown(e, row, clip, contentTop, contentH)}
+                  onDoubleClick={(e) => handleClipDoubleClick(e, row, clip, contentTop, contentH)}
+                  onContextMenu={(e) => openClipMenu(e, row, clip, contentTop, contentH)}
                 >
                   <svg
                     className="macro-automation-clip-curve"
@@ -294,6 +421,9 @@ export default function MacroAutomationLanes({
                       />
                     ))}
                     <polyline className="macro-automation-clip-curve-main" points={curve} fill="none" />
+                    {hoverSegment && (
+                      <polyline className="macro-automation-clip-curve-segment-hover" points={hoverSegment} fill="none" />
+                    )}
                   </svg>
                   {!row.targetUnavailable && clip.points.map((p, i) => {
                     const px = (p.tick / PPQ) * pixelsPerBeat
@@ -303,27 +433,21 @@ export default function MacroAutomationLanes({
                       <button
                         key={i}
                         type="button"
-                        className={`macro-automation-point${isLoopBoundary ? ' macro-automation-point--loop-boundary' : ''}`}
+                        className={macroAutomationPointClassName({
+                          isLoopBoundary,
+                          hoverTarget: clipHoverTarget,
+                          clipId: clip.clipId,
+                          pointIndex: i,
+                        })}
                         style={{ position: 'absolute', left: px - POINT_HIT_R, top: py - POINT_HIT_R, width: POINT_HIT_R * 2, height: POINT_HIT_R * 2 }}
-                        onPointerDown={(e) => startPointMove(e, row, clip, i, contentTop, contentH)}
-                        onContextMenu={(e) => {
-                          e.preventDefault(); e.stopPropagation()
-                          actions().deleteMacroAutomationPointForTrack(row.parentTrackId, clip.clipId, i)
-                        }}
                         aria-label={`Automation point ${i + 1}`}
                       />
                     )
                   })}
                   {!row.targetUnavailable && (
                     <>
-                      <span
-                        className="macro-automation-clip-handle macro-automation-clip-handle--left"
-                        onPointerDown={(e) => startClipResize(e, row, clip, 'left')}
-                      />
-                      <span
-                        className="macro-automation-clip-handle macro-automation-clip-handle--right"
-                        onPointerDown={(e) => startClipResize(e, row, clip, 'right')}
-                      />
+                      <span className="macro-automation-clip-handle macro-automation-clip-handle--left" />
+                      <span className="macro-automation-clip-handle macro-automation-clip-handle--right" />
                     </>
                   )}
                   {clip.loopEnabled && (

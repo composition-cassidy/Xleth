@@ -2457,11 +2457,18 @@ html[data-xleth-backdrop="native-acrylic"] #root {
   border-radius: 3px;
   background: var(--theme-surface-overlay, rgba(0, 0, 0, 0.28));
   cursor: grab;
-  overflow: hidden;
+  overflow: visible;
 }
 .macro-automation-clip.is-selected {
   border-color: var(--theme-border-focus);
   box-shadow: inset 0 0 0 1px var(--theme-border-focus);
+}
+.macro-automation-clip.is-hover-body {
+  background: var(--theme-surface-raised, var(--theme-surface-overlay));
+}
+.macro-automation-clip.is-hover-point,
+.macro-automation-clip.is-hover-segment {
+  border-color: var(--theme-border-focus);
 }
 .macro-automation-clip.is-looped {
   border-style: dashed;
@@ -2483,6 +2490,13 @@ html[data-xleth-backdrop="native-acrylic"] #root {
   stroke-dasharray: 3 3;
   opacity: var(--theme-macro-automation-loop-ghost-opacity, 0.34);
 }
+.macro-automation-clip-curve-segment-hover {
+  stroke: var(--theme-accent-active, var(--theme-border-focus));
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.86;
+}
 .macro-automation-loop-divider {
   stroke: var(--theme-border-focus);
   stroke-width: 1;
@@ -2494,10 +2508,11 @@ html[data-xleth-backdrop="native-acrylic"] #root {
   border: 1px solid var(--theme-border-focus);
   border-radius: 50%;
   background: var(--theme-bg-secondary, var(--theme-bg-primary));
-  cursor: ns-resize;
+  cursor: move;
   pointer-events: auto;
 }
-.macro-automation-point:hover {
+.macro-automation-point:hover,
+.macro-automation-point.is-hovered {
   background: var(--theme-border-focus);
 }
 .macro-automation-point--loop-boundary {
@@ -2508,13 +2523,16 @@ html[data-xleth-backdrop="native-acrylic"] #root {
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 4px;
+  width: 6px;
   cursor: ew-resize;
   background: transparent;
+  pointer-events: none;
 }
 .macro-automation-clip-handle--left { left: 0; }
 .macro-automation-clip-handle--right { right: 0; }
-.macro-automation-clip.is-selected .macro-automation-clip-handle {
+.macro-automation-clip.is-selected .macro-automation-clip-handle,
+.macro-automation-clip.is-hover-resize-start .macro-automation-clip-handle--left,
+.macro-automation-clip.is-hover-resize-end .macro-automation-clip-handle--right {
   background: var(--theme-border-focus);
 }
 .macro-automation-clip-loop {

@@ -16,6 +16,8 @@ import {
   buildCurvePoints,
   buildLoopGhostCurveSegments,
   buildLoopRepeatDividers,
+  buildSegmentLinePoints,
+  hitTestMacroAutomationClip,
 } from './macroLaneGeometry.js'
 
 const PPB = 40 // pixels per beat
@@ -127,6 +129,86 @@ describe('point mapping', () => {
     const str = buildCurvePoints(points, clip, PPB, top, h)
     // first point: x=0, y=top (value 1); second: x=2*PPB, y=top+h (value 0)
     expect(str).toBe(`0.00,${top.toFixed(2)} ${(2 * PPB).toFixed(2)},${(top + h).toFixed(2)}`)
+  })
+})
+
+describe('automation clip hit-testing priority', () => {
+  const top = 5
+  const h = 26
+  const clipHeight = 36
+  const clip = {
+    clipId: 'c-hit',
+    startTick: 0,
+    lengthTicks: PPQ * 4,
+    points: [
+      { tick: 0, value: 1 },
+      { tick: PPQ, value: 0 },
+      { tick: PPQ * 4, value: 0.5 },
+    ],
+  }
+
+  function hit(pointX, pointY, options = {}) {
+    return hitTestMacroAutomationClip({
+      clip,
+      laneId: 'lane-hit',
+      pointX,
+      pointY,
+      pixelsPerBeat: PPB,
+      contentTop: top,
+      contentHeight: h,
+      clipHeight,
+      ...options,
+    })
+  }
+
+  it('prioritizes the first point at clip start over resize-start', () => {
+    const target = hit(3, top)
+    expect(target).toMatchObject({ kind: 'point', clipId: 'c-hit', pointIndex: 0 })
+  })
+
+  it('prioritizes the first segment near clip start over resize-start', () => {
+    const x = 11
+    const yOnFirstSegment = top + h * (x / PPB)
+    const target = hit(x, yOnFirstSegment)
+    expect(target).toMatchObject({ kind: 'segment', clipId: 'c-hit', segmentIndex: 0 })
+  })
+
+  it('keeps segment priority deterministic when segment and resize widths overlap', () => {
+    const x = 11
+    const yOnFirstSegment = top + h * (x / PPB)
+    const target = hit(x, yOnFirstSegment, { resizeHitWidth: 14 })
+    expect(target).toMatchObject({ kind: 'segment', segmentIndex: 0 })
+  })
+
+  it('returns resize-start near the boundary when outside point and segment radii', () => {
+    const target = hit(3, top + h)
+    expect(target).toMatchObject({ kind: 'resize-start', clipId: 'c-hit' })
+  })
+
+  it('returns clip-body away from points, segments, and edges', () => {
+    const target = hit(100, top)
+    expect(target).toMatchObject({ kind: 'clip-body', clipId: 'c-hit' })
+  })
+
+  it('prioritizes the end point over resize-end', () => {
+    const endX = 4 * PPB
+    const endY = valueToY(0.5, top, h)
+    const target = hit(endX - 3, endY)
+    expect(target).toMatchObject({ kind: 'point', clipId: 'c-hit', pointIndex: 2 })
+  })
+
+  it('keeps resize-start available away from the first point and first segment', () => {
+    const target = hit(5, top + h - 1)
+    expect(target).toMatchObject({ kind: 'resize-start' })
+  })
+
+  it('returns none outside clip, point, and segment hit zones', () => {
+    const target = hit(-25, top + 10)
+    expect(target).toMatchObject({ kind: 'none' })
+  })
+
+  it('builds a segment hover line for the selected segment', () => {
+    expect(buildSegmentLinePoints(clip.points, 0, PPB, top, h)).toBe('0.00,5.00 40.00,31.00')
   })
 })
 

@@ -1,7 +1,10 @@
 import React from 'react'
 import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import MacroAutomationLanes from './MacroAutomationLanes.jsx'
+import MacroAutomationLanes, {
+  macroAutomationClipClassName,
+  macroAutomationPointClassName,
+} from './MacroAutomationLanes.jsx'
 import { buildTrackLayout } from './timelineRowLayout.js'
 import { PPQ } from '../../constants/timeline.js'
 
@@ -36,7 +39,7 @@ function gs({ visible = true, targetUnavailable = false, loopEnabled = false, cl
   }
 }
 
-function render(graphStates) {
+function render(graphStates, props = {}) {
   const trackLayout = layoutFor(graphStates)
   return renderToStaticMarkup(
     <MacroAutomationLanes
@@ -45,6 +48,7 @@ function render(graphStates) {
       pixelsPerBeat={40}
       scrollOffset={0}
       snapGranularity="1/16"
+      {...props}
     />,
   )
 }
@@ -94,5 +98,45 @@ describe('MacroAutomationLanes', () => {
     expect(html).toContain('macro unavailable')
     // orphan lanes are not editable → no point handles rendered
     expect(html).not.toContain('macro-automation-point')
+  })
+
+  it('applies point hover state to the hovered point and clip', () => {
+    const hoverTarget = { kind: 'point', clipId: 'c1', laneId: 'lane-m1', pointIndex: 0, cursor: 'move' }
+    const html = render(gs(), { initialHoverTarget: hoverTarget })
+    expect(html).toContain('is-hover-point')
+    expect(html).toContain('macro-automation-point is-hovered')
+  })
+
+  it('applies segment hover state and renders the segment hover overlay', () => {
+    const hoverTarget = { kind: 'segment', clipId: 'c1', laneId: 'lane-m1', segmentIndex: 0, cursor: 'crosshair' }
+    const html = render(gs(), { initialHoverTarget: hoverTarget })
+    expect(html).toContain('is-hover-segment')
+    expect(html).toContain('macro-automation-clip-curve-segment-hover')
+  })
+
+  it('applies resize-start hover state separately from point and segment hover', () => {
+    const hoverTarget = { kind: 'resize-start', clipId: 'c1', laneId: 'lane-m1', cursor: 'ew-resize' }
+    const html = render(gs(), { initialHoverTarget: hoverTarget })
+    expect(html).toContain('is-hover-resize-start')
+    expect(html).not.toContain('is-hover-point')
+    expect(html).not.toContain('is-hover-segment')
+  })
+
+  it('applies a distinct clip-body hover state', () => {
+    const hoverTarget = { kind: 'clip-body', clipId: 'c1', laneId: 'lane-m1', cursor: 'grab' }
+    const html = render(gs(), { initialHoverTarget: hoverTarget })
+    expect(html).toContain('is-hover-body')
+  })
+
+  it('maps hover targets to stable clip and point class names', () => {
+    expect(macroAutomationClipClassName({
+      clipId: 'c1',
+      hoverTarget: { kind: 'resize-start', clipId: 'c1' },
+    })).toBe('macro-automation-clip is-hover-resize-start')
+    expect(macroAutomationPointClassName({
+      clipId: 'c1',
+      pointIndex: 0,
+      hoverTarget: { kind: 'point', clipId: 'c1', pointIndex: 0 },
+    })).toBe('macro-automation-point is-hovered')
   })
 })

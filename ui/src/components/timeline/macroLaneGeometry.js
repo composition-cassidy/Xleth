@@ -11,6 +11,9 @@ import { PPQ, snapBeatToGrid } from '../../constants/timeline.js'
 // Vertical inset of the curve drawing area inside a lane row, leaving room for
 // the clip border / handles top and bottom.
 export const LANE_CONTENT_PAD = 5
+export const AUTOMATION_POINT_HIT_RADIUS_PX = 10
+export const AUTOMATION_SEGMENT_HIT_RADIUS_PX = 8
+export const AUTOMATION_RESIZE_HIT_WIDTH_PX = 6
 
 function clamp(v, lo, hi) {
   return v < lo ? lo : v > hi ? hi : v
@@ -132,6 +135,175 @@ export function valueToY(value, contentTop, contentHeight) {
   return contentTop + (1 - clamp(value, 0, 1)) * contentHeight
 }
 
+function automationPointToPixel(point, pixelsPerBeat, contentTop, contentHeight) {
+  return {
+    x: (finiteInt(point.tick, 0) / PPQ) * pixelsPerBeat,
+    y: valueToY(point.value, contentTop, contentHeight),
+  }
+}
+
+function emptyAutomationTarget(laneId = null) {
+  return { kind: 'none', laneId, cursor: 'default' }
+}
+
+function distanceSq(a, b) {
+  const dx = a.x - b.x
+  const dy = a.y - b.y
+  return dx * dx + dy * dy
+}
+
+function distanceToSegmentSq(point, a, b) {
+  const dx = b.x - a.x
+  const dy = b.y - a.y
+  const lenSq = dx * dx + dy * dy
+  if (lenSq <= 0) return distanceSq(point, a)
+  const t = clamp(((point.x - a.x) * dx + (point.y - a.y) * dy) / lenSq, 0, 1)
+  const projected = { x: a.x + t * dx, y: a.y + t * dy }
+  return distanceSq(point, projected)
+}
+
+export function findAutomationPointHit({
+  clip,
+  pointX,
+  pointY,
+  pixelsPerBeat,
+  contentTop,
+  contentHeight,
+  hitRadius = AUTOMATION_POINT_HIT_RADIUS_PX,
+  laneId = null,
+} = {}) {
+  const points = Array.isArray(clip?.points) ? clip.points : []
+  if (!Number.isFinite(pointX) || !Number.isFinite(pointY) || points.length === 0) {
+    return emptyAutomationTarget(laneId)
+  }
+
+  const pointer = { x: pointX, y: pointY }
+  const radiusSq = hitRadius * hitRadius
+  let best = null
+  for (let pointIndex = 0; pointIndex < points.length; pointIndex += 1) {
+    const point = points[pointIndex]
+    if (!Number.isFinite(point?.tick) || !Number.isFinite(point?.value)) continue
+    const px = automationPointToPixel(point, pixelsPerBeat, contentTop, contentHeight)
+    const d = distanceSq(pointer, px)
+    if (d <= radiusSq && (!best || d < best.distanceSq)) {
+      best = { pointIndex, distanceSq: d }
+    }
+  }
+  if (!best) return emptyAutomationTarget(laneId)
+  return {
+    kind: 'point',
+    clipId: clip.clipId,
+    laneId,
+    pointIndex: best.pointIndex,
+    cursor: 'move',
+  }
+}
+
+export function findAutomationSegmentHit({
+  clip,
+  pointX,
+  pointY,
+  pixelsPerBeat,
+  contentTop,
+  contentHeight,
+  hitRadius = AUTOMATION_SEGMENT_HIT_RADIUS_PX,
+  laneId = null,
+} = {}) {
+  const points = Array.isArray(clip?.points) ? clip.points : []
+  if (!Number.isFinite(pointX) || !Number.isFinite(pointY) || points.length < 2) {
+    return emptyAutomationTarget(laneId)
+  }
+
+  const pointer = { x: pointX, y: pointY }
+  const radiusSq = hitRadius * hitRadius
+  let best = null
+  for (let segmentIndex = 0; segmentIndex < points.length - 1; segmentIndex += 1) {
+    const a = points[segmentIndex]
+    const b = points[segmentIndex + 1]
+    if (
+      !Number.isFinite(a?.tick) ||
+      !Number.isFinite(a?.value) ||
+      !Number.isFinite(b?.tick) ||
+      !Number.isFinite(b?.value)
+    ) {
+      continue
+    }
+    const pa = automationPointToPixel(a, pixelsPerBeat, contentTop, contentHeight)
+    const pb = automationPointToPixel(b, pixelsPerBeat, contentTop, contentHeight)
+    const d = distanceToSegmentSq(pointer, pa, pb)
+    if (d <= radiusSq && (!best || d < best.distanceSq)) {
+      best = { segmentIndex, distanceSq: d }
+    }
+  }
+  if (!best) return emptyAutomationTarget(laneId)
+  return {
+    kind: 'segment',
+    clipId: clip.clipId,
+    laneId,
+    segmentIndex: best.segmentIndex,
+    cursor: 'crosshair',
+  }
+}
+
+export function hitTestMacroAutomationClip({
+  clip,
+  laneId = null,
+  pointX,
+  pointY,
+  pixelsPerBeat,
+  contentTop,
+  contentHeight,
+  clipHeight = Number.POSITIVE_INFINITY,
+  pointHitRadius = AUTOMATION_POINT_HIT_RADIUS_PX,
+  segmentHitRadius = AUTOMATION_SEGMENT_HIT_RADIUS_PX,
+  resizeHitWidth = AUTOMATION_RESIZE_HIT_WIDTH_PX,
+} = {}) {
+  if (!clip || !Number.isFinite(pointX) || !Number.isFinite(pointY)) {
+    return emptyAutomationTarget(laneId)
+  }
+
+  const pointTarget = findAutomationPointHit({
+    clip,
+    laneId,
+    pointX,
+    pointY,
+    pixelsPerBeat,
+    contentTop,
+    contentHeight,
+    hitRadius: pointHitRadius,
+  })
+  if (pointTarget.kind !== 'none') return pointTarget
+
+  const segmentTarget = findAutomationSegmentHit({
+    clip,
+    laneId,
+    pointX,
+    pointY,
+    pixelsPerBeat,
+    contentTop,
+    contentHeight,
+    hitRadius: segmentHitRadius,
+  })
+  if (segmentTarget.kind !== 'none') return segmentTarget
+
+  const clipWidth = Math.max(2, (positiveInt(clip.lengthTicks, 1) / PPQ) * pixelsPerBeat)
+  const insideClipBody =
+    pointX >= 0 &&
+    pointX <= clipWidth &&
+    pointY >= 0 &&
+    pointY <= clipHeight
+
+  if (!insideClipBody) return emptyAutomationTarget(laneId)
+
+  if (pointX <= resizeHitWidth) {
+    return { kind: 'resize-start', clipId: clip.clipId, laneId, cursor: 'ew-resize' }
+  }
+  if (pointX >= clipWidth - resizeHitWidth) {
+    return { kind: 'resize-end', clipId: clip.clipId, laneId, cursor: 'ew-resize' }
+  }
+  return { kind: 'clip-body', clipId: clip.clipId, laneId, cursor: 'grab' }
+}
+
 // Map a clip-local tick to a viewport X.
 export function clipLocalTickToX(localTick, clip, pixelsPerBeat, scrollOffset) {
   const globalBeat = (clip.startTick + localTick) / PPQ
@@ -152,6 +324,23 @@ export function buildCurvePoints(points, clip, pixelsPerBeat, contentTop, conten
       return `${x.toFixed(2)},${y.toFixed(2)}`
     })
     .join(' ')
+}
+
+export function buildSegmentLinePoints(points, segmentIndex, pixelsPerBeat, contentTop, contentHeight) {
+  if (!Array.isArray(points) || segmentIndex < 0 || segmentIndex >= points.length - 1) return ''
+  const a = points[segmentIndex]
+  const b = points[segmentIndex + 1]
+  if (
+    !Number.isFinite(a?.tick) ||
+    !Number.isFinite(a?.value) ||
+    !Number.isFinite(b?.tick) ||
+    !Number.isFinite(b?.value)
+  ) {
+    return ''
+  }
+  const pa = automationPointToPixel(a, pixelsPerBeat, contentTop, contentHeight)
+  const pb = automationPointToPixel(b, pixelsPerBeat, contentTop, contentHeight)
+  return `${pa.x.toFixed(2)},${pa.y.toFixed(2)} ${pb.x.toFixed(2)},${pb.y.toFixed(2)}`
 }
 
 function sortedPoints(points) {
