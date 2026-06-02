@@ -198,6 +198,7 @@ add_library(XlethEngineModel STATIC
     src/model/VideoFlipResolver.cpp
     src/model/EnvelopeAhdsr.cpp
     src/model/EnvelopeVoiceEvents.cpp
+    src/model/EnvelopeRuntime.cpp
     src/model/ClipModulationEvaluator.cpp
     src/model/ClipCompanionFxBuilder.cpp
     src/project/ProjectManager.cpp
@@ -459,6 +460,24 @@ add_executable(test_envelope_ahdsr
 )
 
 target_link_libraries(test_envelope_ahdsr PRIVATE
+    XlethEngineModel
+)
+
+# ── test_envelope_runtime ─────────────────────────────────────────────────────
+# EVC.5: engine-side Envelope Controller definition parsing (graphState → engine
+# descriptors) + per-voice runtime state binding. Covers tolerant graphState
+# parsing (repair/ignore rules, unsupported target/trigger kinds, malformed
+# nodes), and reconstruction-driven per-voice runtime voice binding/cleanup
+# (one note, chord, overlapping clips, loop iterations, trigger filtering,
+# mid-note/mid-clip/release/post-release, maxVoices steal policy, no voice
+# combination, and definition-change reset). Non-audible — evaluates levels only,
+# applies no per-voice gain. Pure C++, model-only — links solely against
+# XlethEngineModel (which provides nlohmann/json).
+add_executable(test_envelope_runtime
+    test/test_envelope_runtime.cpp
+)
+
+target_link_libraries(test_envelope_runtime PRIVATE
     XlethEngineModel
 )
 

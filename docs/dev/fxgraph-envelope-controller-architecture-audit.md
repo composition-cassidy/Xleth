@@ -383,6 +383,18 @@ Rationale for the change: EVC.4b is split out because mid-note seek reconstructi
 no current equivalent on the pattern path, and conflating it with the live-runtime in EVC.5 would
 make both harder to test.
 
+**EVC.5 status (done).** Implemented as a model-level runtime in `engine/src/model/EnvelopeRuntime.h/.cpp`:
+`parseEnvelopeControllerDefinitions(graphState)` extracts `type === "envelope"` nodes into
+engine-side `EnvelopeControllerDefinition`s (normalized AHDSR + voice/trigger/target descriptors,
+unsupported `target.kind`/`triggerSource.kind` ignored, malformed nodes skipped, parent track id not
+stored redundantly); `EnvelopeControllerRuntime`/`EnvelopeTrackRuntime` bind EVC.4b-reconstructed
+occurrences to **independent** per-voice runtime states, honor `maxVoices` with a deterministic steal
+policy (Off → oldest releasing → oldest active), and clean up finished voices. It reuses the EVC.4b
+evaluator/reconstruction (no duplicated AHDSR math) and leaves the EVC.4 live-trigger enumeration
+untouched. It is **non-audible** — no per-voice gain, no `Sampler`/clip output change, no graphState
+mutation, no `GraphParameterTarget`. MixEngine integration is intentionally deferred to EVC.6 (the
+hookup point is documented in `fxgraph-architecture.md`). Tests: `engine/test/test_envelope_runtime.cpp`.
+
 ---
 
 ## 9. Risk register

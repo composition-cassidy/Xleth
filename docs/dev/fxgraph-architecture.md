@@ -910,3 +910,64 @@ called from audio rendering.
   per-voice gain application, no graphState runtime parsing, no `GraphParameterTarget` usage, no
   plugin-parameter output, no bridge/preload/main changes, no renderer/UI changes, no clip-fade
   change, no Mixer Chain or `effectChains` mutation.
+
+### EVC.5 — engine-side definition parsing + per-voice runtime binding (non-audible)
+
+EVC.5 adds the engine-side **runtime binding layer** on top of EVC.4 (occurrence enumeration) and
+EVC.4b (closed-form AHDSR evaluator + reconstruction). It does two things: it **parses** Envelope
+node *definitions* out of a track's opaque graphState JSON into engine-side descriptors, and it
+**binds** per-voice occurrences to independent runtime voice states evaluated through the EVC.4b
+evaluator. It remains **not audible**: it evaluates levels only, applies **no per-voice gain**,
+drives **no Sampler voice**, touches **no clip gain**, parses graphState **read-only**, and is never
+called from audio rendering. EVC.6 adds the per-voice gain target application.
+
+- **Definition parsing.** `engine/src/model/EnvelopeRuntime.h/.cpp` adds
+  `parseEnvelopeControllerDefinitions(graphState)` — pure, read-only, never-throwing — which scans
+  `graphState.nodes[]` for `type === "envelope"` nodes and produces `EnvelopeControllerDefinition`
+  structs (`nodeId`, `label`, `EnvelopeAhdsrSettings`, `voiceMode` poly/mono, `maxVoices`,
+  `triggerEvents`, `target` = voiceGain, inert `monophonic{legato,glideMs}`). It mirrors the EVC.2
+  renderer repair rules: ms finite ≥ 0, sustain/amount clamped 0..1, tension clamped −1..+1 (via
+  `EnvelopeAhdsrSettings::normalized()`), `voiceMode` repairs to poly unless `"mono"`, `maxVoices`
+  rounds and clamps to 1..32, `triggerSource.events` repairs to notesAndClips unless notes/clips.
+  Nodes with an **unsupported `target.kind`** (anything but `voiceGain` — never a
+  `GraphParameterTarget`) or an **unsupported `triggerSource.kind`** (anything but `parentTrack`)
+  are **ignored**; malformed/typeless/idless nodes are skipped. The **parent track id is not stored
+  on the definition** — track binding comes from the owning track context (single-source-of-truth,
+  matching the renderer). The parser reads no `effectInstanceId`, no exposed parameter ports, no
+  macro automation, no `effectChains`; it is never exposed to renderer/IPC.
+- **Per-voice runtime binding.** `EnvelopeControllerRuntime` holds one definition + a map of live
+  `EnvelopeRuntimeVoice`s keyed by `EnvelopeVoiceOccurrenceKey`. `updateForQuery(clips, blocks,
+  patterns, parentTrackId, queryTick, bpm, sampleRate)` reconstructs every sounding/releasing
+  occurrence at the transport tick using the EVC.4b `enumerateEnvelopeVoiceOccurrencesForReconstruction`
+  + `reconstructEnvelopeVoiceStates` (the AHDSR math is **reused, never duplicated**, and the EVC.4
+  live-trigger enumeration is untouched), binds each to an **independent** runtime voice
+  (`currentPhase`, amount-scaled `currentLevel`, `state` Active/Releasing/Off, pitch/velocity), and
+  **cleans up** finished voices (Off / no-longer-enumerated occurrences are dropped). Voices are
+  **never combined** — chords, overlapping clips, and loop iterations each yield separate voices.
+- **maxVoices steal policy.** When the live voice count exceeds the definition's `maxVoices`, a
+  deterministic steal runs: prefer dropping already-Off voices (already excluded), then the oldest
+  *releasing* voice, then the oldest *active* voice (by `onsetTick`, with the occurrence-key total
+  order as a stable tie-break).
+- **Per-track runtime.** `EnvelopeTrackRuntime` owns all controller runtimes for a track keyed by
+  node id. `updateDefinitions(defs)` syncs the set — unchanged definitions carry their live voices
+  forward, a changed definition **resets** that controller's voices, removed controllers are
+  dropped. `evaluateAtPosition(...)` advances every controller at a tick. It is only meant to be fed
+  for tracks whose `fxMode === graph`; a chain-mode track or the master is never given definitions,
+  so it holds no controllers and produces no voices.
+- **Integration boundary (deferred to EVC.6).** EVC.5 is intentionally **model-level only** — it is
+  not yet wired into `MixEngine`. The future hookup point: when project/track data changes, parse
+  `TrackInfo::graphState` (already `nlohmann::json`) for each `fxMode === Graph` track and feed the
+  resulting definitions to a per-track `EnvelopeTrackRuntime`; during rendering, call
+  `evaluateAtPosition` at the block's transport position. EVC.6 then applies each voice's
+  `currentLevel` to **per-voice gain** (the first runtime target). Keeping EVC.5 model-only keeps
+  the test suite pure (links solely against `XlethEngineModel`) and avoids any audio-core risk.
+- **Tests.** `engine/test/test_envelope_runtime.cpp` (pure, model-only) covers parsing (valid node,
+  non-envelope/malformed nodes ignored, AHDSR/voiceMode/triggerEvents/maxVoices repair, unsupported
+  target/trigger kinds ignored, no `effectInstanceId` required, `GraphParameterTarget` never parsed)
+  and runtime binding (one note, same-tick chord, overlapping clips, distinct loop iterations,
+  notes-only/clips-only/notesAndClips filtering, mid-note and mid-clip reconstruction, query during
+  release keeps the voice, query after release cleans it up, deterministic `maxVoices` cap, no voice
+  combination, and definition-change reset/removal).
+- **Scope.** No `Sampler`/`MixEngine` audio output change, no per-voice gain application, no clip
+  gain change, no `GraphParameterTarget` usage, no plugin-parameter output, no bridge/preload/main
+  changes, no renderer/UI changes, no graphState mutation, no Mixer Chain or `effectChains` mutation.
