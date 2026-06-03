@@ -1230,6 +1230,22 @@
   min-width: 0;
 }
 
+/* EVC-R2-r3 — slide-note opt-in toggle. Reuses the envelope success accent and the
+   shared field-label typography so it stays consistent with the rest of the editor. */
+.xleth-graph-state-preview__envelope-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.xleth-graph-state-preview__envelope-checkbox-input {
+  flex: none;
+  accent-color: var(--theme-success);
+  pointer-events: auto;
+}
+
 .xleth-graph-state-preview__envelope-input,
 .xleth-graph-state-preview__envelope-select {
   min-width: 0;

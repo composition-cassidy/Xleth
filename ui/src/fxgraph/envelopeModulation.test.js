@@ -4,6 +4,7 @@ import {
   computeMsPerTick,
   normalizeEnvelopeRuntimeSettings,
   evaluateEnvelopeAdsrAtTime,
+  inferTriggerSourceKind,
   collectGateIntervals,
   resolveActiveGate,
   evaluateEnvelopeOutput,
@@ -15,14 +16,15 @@ import {
 // msPerTick: 1 means ms fields map 1:1 to ticks, so AHDSR durations are easy to reason
 // about (attackMs 10 -> attackTicks 10). The playback layer passes a live bpm-derived
 // msPerTick; here we pin it for deterministic assertions.
+//
+// EVC-R2-r3 — settings no longer carry a trigger-source selector or a retrigger mode.
+// The only trigger-related field is includeSlideNotes; it passes straight through.
 function settings(overrides = {}) {
-  // Accept a flat `triggerEvents` shorthand and map it onto the real triggerSource shape.
-  const { triggerEvents, ...rest } = overrides
-  const data = triggerEvents ? { ...rest, triggerSource: { events: triggerEvents } } : rest
-  return normalizeEnvelopeRuntimeSettings(data, { msPerTick: 1 })
+  return normalizeEnvelopeRuntimeSettings(overrides, { msPerTick: 1 })
 }
 
 const note = (startTick, endTick) => ({ kind: 'note', startTick, endTick })
+const slideNote = (startTick, endTick) => ({ kind: 'note', startTick, endTick, isSlide: true })
 const clip = (startTick, endTick) => ({ kind: 'clip', startTick, endTick })
 
 describe('computeMsPerTick', () => {
@@ -46,8 +48,17 @@ describe('normalizeEnvelopeRuntimeSettings', () => {
     expect(s.releaseTicks).toBe(200)
     expect(s.sustain).toBe(0.7)
     expect(s.amount).toBe(0.5)
-    expect(s.retriggerMode).toBe('restart')
-    expect(s.triggerEvents).toBe('notesAndClips')
+    // EVC-R2-r3 — no retrigger mode / trigger-source selector survives into settings.
+    expect(s).not.toHaveProperty('retriggerMode')
+    expect(s).not.toHaveProperty('triggerEvents')
+    expect(s.includeSlideNotes).toBe(false)
+  })
+
+  it('passes includeSlideNotes through (default false, true preserved)', () => {
+    expect(normalizeEnvelopeRuntimeSettings({}, { msPerTick: 1 }).includeSlideNotes).toBe(false)
+    expect(
+      normalizeEnvelopeRuntimeSettings({ includeSlideNotes: true }, { msPerTick: 1 }).includeSlideNotes,
+    ).toBe(true)
   })
 
   it('repairs negative / non-finite stages and amount to safe defaults', () => {
@@ -112,56 +123,97 @@ describe('evaluateEnvelopeAdsrAtTime', () => {
   })
 })
 
-describe('collectGateIntervals — trigger source filtering', () => {
-  const events = [note(0, 100), clip(200, 300)]
-
-  it('notes-only ignores clips', () => {
-    expect(collectGateIntervals(events, 'notes')).toEqual([{ startTick: 0, endTick: 100 }])
+describe('inferTriggerSourceKind (EVC-R2-r3)', () => {
+  it('returns "note" for a note-only list', () => {
+    expect(inferTriggerSourceKind([note(0, 100)])).toBe('note')
   })
 
-  it('clips-only ignores notes', () => {
-    expect(collectGateIntervals(events, 'clips')).toEqual([{ startTick: 200, endTick: 300 }])
+  it('returns "clip" for a clip-only list', () => {
+    expect(inferTriggerSourceKind([clip(0, 100)])).toBe('clip')
   })
 
-  it('notesAndClips uses both', () => {
-    expect(collectGateIntervals(events, 'notesAndClips')).toEqual([
+  it('prefers notes when both kinds appear (legacy/corrupt/mixed state)', () => {
+    // A normal track is one or the other; if both show up we deterministically pick notes.
+    expect(inferTriggerSourceKind([clip(0, 100), note(0, 100)])).toBe('note')
+  })
+
+  it('returns null for an empty or non-array list', () => {
+    expect(inferTriggerSourceKind([])).toBeNull()
+    expect(inferTriggerSourceKind(null)).toBeNull()
+    expect(inferTriggerSourceKind(undefined)).toBeNull()
+  })
+
+  it('treats slide notes as note content for inference (it is still a note track)', () => {
+    expect(inferTriggerSourceKind([slideNote(0, 100)])).toBe('note')
+  })
+})
+
+describe('collectGateIntervals — inferred source + slide filtering (EVC-R2-r3)', () => {
+  it('a note-track list yields note gates (and never clip gates for the same track)', () => {
+    // Both kinds present (mixed): notes win, clips are dropped — no double-triggering.
+    expect(collectGateIntervals([note(0, 100), clip(200, 300)])).toEqual([{ startTick: 0, endTick: 100 }])
+  })
+
+  it('a clip-track list yields clip gates', () => {
+    expect(collectGateIntervals([clip(200, 300)])).toEqual([{ startTick: 200, endTick: 300 }])
+  })
+
+  it('an empty list yields no intervals', () => {
+    expect(collectGateIntervals([])).toEqual([])
+  })
+
+  it('ignores slide notes by default', () => {
+    expect(collectGateIntervals([note(0, 100), slideNote(200, 300)])).toEqual([{ startTick: 0, endTick: 100 }])
+  })
+
+  it('includes slide notes when includeSlideNotes is true', () => {
+    expect(collectGateIntervals([note(0, 100), slideNote(200, 300)], { includeSlideNotes: true })).toEqual([
       { startTick: 0, endTick: 100 },
       { startTick: 200, endTick: 300 },
     ])
   })
 
+  it('a note track with only slide notes produces no gates by default', () => {
+    expect(collectGateIntervals([slideNote(0, 100)])).toEqual([])
+    expect(collectGateIntervals([slideNote(0, 100)], { includeSlideNotes: true })).toEqual([
+      { startTick: 0, endTick: 100 },
+    ])
+  })
+
+  it('slide filtering never affects clip gates', () => {
+    expect(collectGateIntervals([clip(0, 100)], { includeSlideNotes: false })).toEqual([{ startTick: 0, endTick: 100 }])
+  })
+
   it('drops invalid events and clamps missing ends to zero-length gates', () => {
     const messy = [{ kind: 'note', startTick: -1 }, { kind: 'note', startTick: 10 }, null, { kind: 'foo', startTick: 5 }]
-    expect(collectGateIntervals(messy, 'notes')).toEqual([{ startTick: 10, endTick: 10 }])
+    expect(collectGateIntervals(messy)).toEqual([{ startTick: 10, endTick: 10 }])
   })
 })
 
-describe('resolveActiveGate — gate regions, chords, retrigger modes', () => {
+describe('resolveActiveGate — gate regions, chords, restart-only (EVC-R2-r3)', () => {
   it('returns null before any gate begins', () => {
-    expect(resolveActiveGate([{ startTick: 100, endTick: 200 }], 50, 'restart')).toBeNull()
+    expect(resolveActiveGate([{ startTick: 100, endTick: 200 }], 50)).toBeNull()
   })
 
   it('same-tick chord collapses into one trigger', () => {
     // Two notes at the same start collapse: one region, one start tick.
     const intervals = [{ startTick: 0, endTick: 100 }, { startTick: 0, endTick: 100 }]
-    expect(resolveActiveGate(intervals, 50, 'restart')).toEqual({ gateStartTick: 0, gateEndTick: 100 })
+    expect(resolveActiveGate(intervals, 50)).toEqual({ gateStartTick: 0, gateEndTick: 100 })
   })
 
   it('overlapping notes keep the gate open until the last one ends', () => {
     const intervals = [{ startTick: 0, endTick: 100 }, { startTick: 50, endTick: 150 }]
-    // Still held at 120 (< 150): governing region end is 150.
-    const gate = resolveActiveGate(intervals, 120, 'legato')
-    expect(gate).toEqual({ gateStartTick: 0, gateEndTick: 150 })
+    // Still held at 120 (< 150): governing region end is 150. Restart picks the latest
+    // start <= 120, which is 50.
+    expect(resolveActiveGate(intervals, 120)).toEqual({ gateStartTick: 50, gateEndTick: 150 })
   })
 
-  it('restart re-attacks from the latest trigger start within the region', () => {
+  it('always restarts from the latest trigger start within the region (no legato)', () => {
     const intervals = [{ startTick: 0, endTick: 100 }, { startTick: 50, endTick: 150 }]
-    expect(resolveActiveGate(intervals, 60, 'restart')).toEqual({ gateStartTick: 50, gateEndTick: 150 })
-  })
-
-  it('legato does not restart while the gate is already active', () => {
-    const intervals = [{ startTick: 0, endTick: 100 }, { startTick: 50, endTick: 150 }]
-    expect(resolveActiveGate(intervals, 60, 'legato')).toEqual({ gateStartTick: 0, gateEndTick: 150 })
+    // A new trigger at 50 restarts the attack. Before that trigger (tick 40) the gate is
+    // still anchored at the first start (0). Legato hold-from-start no longer exists.
+    expect(resolveActiveGate(intervals, 60)).toEqual({ gateStartTick: 50, gateEndTick: 150 })
+    expect(resolveActiveGate(intervals, 40)).toEqual({ gateStartTick: 0, gateEndTick: 150 })
   })
 })
 
@@ -183,33 +235,41 @@ describe('evaluateEnvelopeOutput — one value per envelope node', () => {
     expect(evaluateEnvelopeOutput(s, events, 305).value).toBe(0)
   })
 
-  it('restart vs legato produce different values mid-overlap', () => {
+  it('always restarts on a new trigger (no legato mode)', () => {
     // Long attack so the phase is still rising at the query tick.
-    const restart = settings({ attackMs: 100, decayMs: 0, sustain: 1, retriggerMode: 'restart' })
-    const legato = settings({ attackMs: 100, decayMs: 0, sustain: 1, retriggerMode: 'legato' })
+    const s = settings({ attackMs: 100, decayMs: 0, sustain: 1 })
     const events = [note(0, 100), note(50, 150)]
-    expect(evaluateEnvelopeOutput(restart, events, 60).value).toBeCloseTo(0.1) // attack from 50
-    expect(evaluateEnvelopeOutput(legato, events, 60).value).toBeCloseTo(0.6) // attack from 0
+    // New trigger at 50 restarts the attack: tick 60 is 10 ticks into the second attack
+    // (0.1), NOT 0.6 as a legato hold-from-0 would have produced.
+    expect(evaluateEnvelopeOutput(s, events, 60).value).toBeCloseTo(0.1)
   })
 
   it('overlapping clip gates stay open until the last clip ends', () => {
-    const s = settings({ attackMs: 0, decayMs: 0, sustain: 1, releaseMs: 100, triggerEvents: 'clips' })
+    const s = settings({ attackMs: 0, decayMs: 0, sustain: 1, releaseMs: 100 })
     const events = [clip(0, 100), clip(50, 150)]
     expect(evaluateEnvelopeOutput(s, events, 120).value).toBeCloseTo(1) // still held (< 150)
     expect(evaluateEnvelopeOutput(s, events, 200).value).toBeCloseTo(0.5) // 50 ticks into release
   })
 
-  it('notes-only ignores clip triggers (and vice versa)', () => {
-    const notesOnly = settings({ attackMs: 0, decayMs: 0, sustain: 1, triggerEvents: 'notes' })
-    const clipsOnly = settings({ attackMs: 0, decayMs: 0, sustain: 1, triggerEvents: 'clips' })
-    const both = settings({ attackMs: 0, decayMs: 0, sustain: 1, triggerEvents: 'notesAndClips' })
+  it('infers note-track vs clip-track source from the event list', () => {
+    const s = settings({ attackMs: 0, decayMs: 0, sustain: 1 })
+    // Note-track content -> note triggers drive.
+    expect(evaluateEnvelopeOutput(s, [note(0, 100)], 50).value).toBeCloseTo(1)
+    // Clip-track content -> clip triggers drive.
+    expect(evaluateEnvelopeOutput(s, [clip(0, 100)], 50).value).toBeCloseTo(1)
+  })
 
-    expect(evaluateEnvelopeOutput(notesOnly, [clip(0, 100)], 50).value).toBe(0)
-    expect(evaluateEnvelopeOutput(notesOnly, [note(0, 100)], 50).value).toBeCloseTo(1)
-    expect(evaluateEnvelopeOutput(clipsOnly, [note(0, 100)], 50).value).toBe(0)
-    expect(evaluateEnvelopeOutput(clipsOnly, [clip(0, 100)], 50).value).toBeCloseTo(1)
-    expect(evaluateEnvelopeOutput(both, [note(0, 100)], 50).value).toBeCloseTo(1)
-    expect(evaluateEnvelopeOutput(both, [clip(0, 100)], 50).value).toBeCloseTo(1)
+  it('ignores slide-only notes by default but drives them when opted in', () => {
+    const off = settings({ attackMs: 0, decayMs: 0, sustain: 1 })
+    const on = settings({ attackMs: 0, decayMs: 0, sustain: 1, includeSlideNotes: true })
+    expect(evaluateEnvelopeOutput(off, [slideNote(0, 100)], 50).value).toBe(0)
+    expect(evaluateEnvelopeOutput(on, [slideNote(0, 100)], 50).value).toBeCloseTo(1)
+  })
+
+  it('normal notes still trigger when slide notes are excluded; clips are unaffected', () => {
+    const s = settings({ attackMs: 0, decayMs: 0, sustain: 1 })
+    expect(evaluateEnvelopeOutput(s, [note(0, 100), slideNote(20, 40)], 50).value).toBeCloseTo(1)
+    expect(evaluateEnvelopeOutput(s, [clip(0, 100)], 50).value).toBeCloseTo(1)
   })
 })
 

@@ -351,21 +351,23 @@ function validateMacroNodeData(node, _graphState, trackId, warnings) {
 }
 
 // ---------------------------------------------------------------------------
-// EVC.2 — Envelope Controller node data model (inert, renderer-only)
+// EVC.2 / EVC-R2-r3 — Envelope Controller node data model (renderer-only)
 //
-// An envelope node owns an AHDSR per-voice controller definition. It is NOT an
-// effect node: it has no effectInstanceId, owns no plugin metadata, hydrates no
-// graph-owned processor, and never participates in audio topology sync. Parent
-// ownership is graphState.trackId — the parent track id is never stored
-// redundantly on the node (same single-source-of-truth rule as FXG.4-h macro
-// automation lanes). The node definition is persisted; it does NOT execute in
-// this phase and never routes through GraphParameterTarget or any exposed plugin
-// parameter. The data shape normalizes to a stable, closed schema; malformed or
-// missing fields repair to defaults without throwing.
+// An envelope node owns an AHDSR controller definition. It is NOT an effect node:
+// it has no effectInstanceId, owns no plugin metadata, hydrates no graph-owned
+// processor, and never participates in audio topology sync. Parent ownership is
+// graphState.trackId — the parent track id is never stored redundantly on the node
+// (same single-source-of-truth rule as FXG.4-h macro automation lanes). The node is
+// a triggered parameter-modulation source whose links live on parameter edges
+// (GraphParameterTarget), not on the node.
+//
+// EVC-R2-r3 simplified the trigger model: the Envelope no longer stores a trigger
+// source selector or a retrigger mode. The trigger source (notes vs clips) is
+// inferred at runtime from the parent track's content type, and the Envelope always
+// restarts on a new trigger. The only added field is `includeSlideNotes` (default
+// false): slide notes are ignored unless the user opts in. The data shape normalizes
+// to a stable, closed schema; malformed or missing fields repair to defaults.
 // ---------------------------------------------------------------------------
-
-const ENVELOPE_TRIGGER_EVENTS = new Set(['notes', 'clips', 'notesAndClips'])
-const ENVELOPE_RETRIGGER_MODES = new Set(['restart', 'legato'])
 
 export const ENVELOPE_NODE_DEFAULTS = Object.freeze({
   label: 'Envelope',
@@ -378,8 +380,7 @@ export const ENVELOPE_NODE_DEFAULTS = Object.freeze({
   decayTension: 0,
   releaseTension: 0,
   amount: 1,
-  triggerEvents: 'notesAndClips',
-  retriggerMode: 'restart',
+  includeSlideNotes: false,
 })
 
 // ms fields must be finite numbers >= 0; anything else repairs to the default.
@@ -399,14 +400,11 @@ function clampEnvelopeTension(value, fallback) {
   return Math.min(1, Math.max(-1, value))
 }
 
-// triggerSource.events repairs to "notesAndClips" unless "notes" or "clips".
-function normalizeEnvelopeTriggerEvents(value) {
-  return ENVELOPE_TRIGGER_EVENTS.has(value) ? value : ENVELOPE_NODE_DEFAULTS.triggerEvents
-}
-
-// retriggerMode repairs to "restart" unless it is exactly "legato".
-function normalizeEnvelopeRetriggerMode(value) {
-  return ENVELOPE_RETRIGGER_MODES.has(value) ? value : ENVELOPE_NODE_DEFAULTS.retriggerMode
+// includeSlideNotes repairs to false unless the saved value is exactly boolean true.
+// (Old saved triggerSource/retriggerMode fields, and the retired per-voice fields, are
+// not normalized here at all — the closed schema below simply does not copy them.)
+function normalizeEnvelopeIncludeSlideNotes(value) {
+  return value === true
 }
 
 function normalizeEnvelopeLabel(value) {
@@ -416,14 +414,17 @@ function normalizeEnvelopeLabel(value) {
 
 // Normalizes raw envelope node data into the stable closed schema. Missing or
 // malformed input repairs to defaults; provided values are clamped/repaired.
-// EVC-R1 — the per-voice fields (voiceMode/maxVoices/monophonic) and the retired
-// `target: { kind: "voiceGain" }` are intentionally dropped on load: an Envelope is
-// now a triggered parameter-modulation source whose links live on parameter edges
-// (GraphParameterTarget), not on the node. triggerSource.kind is forced to
-// "parentTrack". Unknown extra fields are dropped (strict shape).
+//
+// EVC-R2-r3 — the returned object is a closed shape: only the fields below survive.
+// Anything else on the input is dropped, which covers every legacy/retired field:
+//   - triggerSource / triggerEvents — replaced by runtime track-content inference
+//   - retriggerMode — the Envelope is always restart-only now
+//   - the retired per-voice fields voiceMode / maxVoices / monophonic
+//   - the retired `target: { kind: "voiceGain" }`
+//   - a redundant parentTrackId (parent ownership stays graphState.trackId)
+// The only trigger-related field that persists is `includeSlideNotes` (default false).
 export function normalizeEnvelopeNodeData(rawData) {
   const raw = isPlainObject(rawData) ? rawData : {}
-  const rawTrigger = isPlainObject(raw.triggerSource) ? raw.triggerSource : {}
 
   return {
     label: normalizeEnvelopeLabel(raw.label),
@@ -440,17 +441,8 @@ export function normalizeEnvelopeNodeData(rawData) {
 
     amount: clampEnvelopeUnit(raw.amount, ENVELOPE_NODE_DEFAULTS.amount),
 
-    // triggerSource.kind must repair to "parentTrack"; parent ownership is
-    // graphState.trackId, never stored on the node.
-    triggerSource: {
-      kind: 'parentTrack',
-      events: normalizeEnvelopeTriggerEvents(rawTrigger.events),
-    },
-
-    // EVC-R1 — restart (default) re-attacks on a new trigger; legato holds the
-    // current phase. Old monophonic.legato is NOT auto-migrated to legato (explicit
-    // default avoids hidden behavior). Runtime trigger logic arrives in EVC-R2.
-    retriggerMode: normalizeEnvelopeRetriggerMode(raw.retriggerMode),
+    // EVC-R2-r3 — slide notes are ignored at runtime unless this opt-in is true.
+    includeSlideNotes: normalizeEnvelopeIncludeSlideNotes(raw.includeSlideNotes),
   }
 }
 
@@ -465,14 +457,11 @@ export function isEnvelopeGraphNode(node) {
   return isPlainObject(node) && node.type === GRAPH_ENVELOPE_NODE_TYPE
 }
 
-// Shallow-merges an update patch into current envelope data, honoring the nested
-// triggerSource sub-object, then re-normalizes.
+// Shallow-merges an update patch into current envelope data, then re-normalizes.
+// EVC-R2-r3 — the envelope schema is now flat (no nested triggerSource), so a plain
+// shallow spread is sufficient; normalization drops any stale/legacy keys in the patch.
 function mergeEnvelopeNodeData(currentData, patch) {
-  const merged = { ...currentData, ...patch }
-  if (isPlainObject(patch.triggerSource)) {
-    merged.triggerSource = { ...currentData.triggerSource, ...patch.triggerSource }
-  }
-  return merged
+  return { ...currentData, ...patch }
 }
 
 function validateEnvelopeNodeData(node, trackId, warnings) {

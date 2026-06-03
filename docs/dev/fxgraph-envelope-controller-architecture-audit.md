@@ -70,9 +70,26 @@
 > absolute start maps below tick 0 is still dropped by the non-negative-start guard. See the
 > "EVC-R2-r2" section in [`fxgraph-architecture.md`](fxgraph-architecture.md).
 >
+> **EVC-R2-r3 (done):** simplifies the Envelope **trigger semantics** to match the real Xleth track
+> model. The **Trigger Source** selector (Notes / Clips / Notes + Clips) is **removed** — a normal
+> track is either a pattern/MIDI-note track or a clip track, so the source is now **inferred** from
+> the parent track's content (note events ⇒ notes, clip events ⇒ clips; if both somehow appear,
+> notes win deterministically). **Retrigger Mode is removed** — the Envelope **always restarts** on a
+> new trigger (legato no longer exists). Same-tick chord starts still collapse into one trigger;
+> overlapping notes/clips still keep the gate open until the last one ends. **Slide notes are ignored
+> by default**; a new `includeSlideNotes` opt-in (default `false`, detected via the centralized
+> `isSlidePatternNote` / the `note.isSlide` flag) lets the user include them. The persisted node data
+> dropped `triggerSource` and `retriggerMode` and added `includeSlideNotes`; old saved values for the
+> removed fields (and the retired per-voice `voiceGain`/`voiceMode`/`maxVoices`/`monophonic` shape)
+> are dropped on load. The EVC-R2-r1 60 Hz `PlayheadClock` drive, the parameter-edge /
+> GraphParameterTarget path, and the EVC-R3 compact UI are unchanged. Runtime stays renderer-side /
+> control-rate (still not sample-accurate/audio-rate). **No engine/native, bridge/preload/main, or
+> package-lock changes; no per-voice branch revival; Macro runtime untouched.** See the "EVC-R2-r3"
+> section in [`fxgraph-architecture.md`](fxgraph-architecture.md).
+>
 > **Future work** is the sibling control sources (LFO, Peak Follower) and further modulation UX
 > ergonomics, not a return to per-voice `voiceGain`. See the corrected Envelope Controller
-> sections for EVC-R1, EVC-R2, EVC-R2-r1, EVC-R2-r2, and EVC-R3 in
+> sections for EVC-R1, EVC-R2, EVC-R2-r1, EVC-R2-r2, EVC-R2-r3, and EVC-R3 in
 > [`fxgraph-architecture.md`](fxgraph-architecture.md). Everything below is retained as
 > historical record and no longer reflects the product direction.
 

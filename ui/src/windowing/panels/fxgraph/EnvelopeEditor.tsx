@@ -18,8 +18,10 @@ export interface EnvelopeNodeData {
   decayTension: number;
   releaseTension: number;
   amount: number;
-  triggerSource: { kind: string; events: 'notes' | 'clips' | 'notesAndClips' };
-  retriggerMode: 'restart' | 'legato';
+  // EVC-R2-r3 — the trigger source (notes vs clips) is inferred from the parent track's
+  // content at runtime, and the Envelope is always restart-only, so neither is stored
+  // here. The only trigger-related field is the slide-note opt-in (default false).
+  includeSlideNotes: boolean;
 }
 
 export type EnvelopeNodePatch = Record<string, unknown>;
@@ -40,17 +42,6 @@ export interface EnvelopeGraphModel {
   handles: EnvelopeGraphHandlePoint[];
   totalMs: number;
 }
-
-const TRIGGER_LABELS: Record<EnvelopeNodeData['triggerSource']['events'], string> = {
-  notes: 'Notes',
-  clips: 'Clips',
-  notesAndClips: 'Notes + Clips',
-};
-
-const RETRIGGER_LABELS: Record<EnvelopeNodeData['retriggerMode'], string> = {
-  restart: 'Restart',
-  legato: 'Legato',
-};
 
 const PREVIEW_W = 196;
 const PREVIEW_H = 54;
@@ -91,14 +82,6 @@ function formatMs(value: number): string {
 
 function formatUnitPercent(value: number): string {
   return `${Math.round(clampUnit(value) * 100)}%`;
-}
-
-export function describeEnvelopeTrigger(data: EnvelopeNodeData): string {
-  return TRIGGER_LABELS[data.triggerSource.events] ?? 'Notes + Clips';
-}
-
-export function describeEnvelopeRetrigger(data: EnvelopeNodeData): string {
-  return RETRIGGER_LABELS[data.retriggerMode] ?? 'Restart';
 }
 
 export function describeEnvelopeAhdsr(data: EnvelopeNodeData): string {
@@ -431,8 +414,12 @@ export function EnvelopeNodeSummary({
   return (
     <span className="xleth-graph-state-preview__envelope-summary" aria-label="Envelope compact summary">
       <span className="xleth-graph-state-preview__envelope-pill-row">
-        <span className="xleth-graph-state-preview__envelope-pill">{describeEnvelopeTrigger(data)}</span>
-        <span className="xleth-graph-state-preview__envelope-pill">{describeEnvelopeRetrigger(data)}</span>
+        {/* EVC-R2-r3 — no Notes/Clips source pill (inferred from the track) and no
+            Restart/Legato pill (always restart). The slide-note opt-in is surfaced
+            only when enabled, since it is off by default. */}
+        {data.includeSlideNotes && (
+          <span className="xleth-graph-state-preview__envelope-pill">Slide</span>
+        )}
         <span className="xleth-graph-state-preview__envelope-pill">Amt {formatUnitPercent(data.amount)}</span>
         <span className="xleth-graph-state-preview__envelope-pill">{formatEnvelopeParameterCount(parameterCount)}</span>
       </span>
@@ -443,7 +430,12 @@ export function EnvelopeNodeSummary({
   );
 }
 
-export function TriggerSourceControl({
+// EVC-R2-r3 — the only trigger-related editing control. Trigger source (notes vs clips)
+// is inferred from the parent track and the Envelope is always restart-only, so the old
+// Trigger Source and Retrigger Mode selectors were removed entirely. This opt-in lets the
+// user include slide notes (ignored by default). When the editor is read-only (no
+// onChange), this control is never rendered (see EnvelopeEditor), so it is never editable.
+export function IncludeSlideNotesControl({
   data,
   onChange,
 }: {
@@ -451,43 +443,16 @@ export function TriggerSourceControl({
   onChange: (patch: EnvelopeNodePatch) => void;
 }) {
   return (
-    <label className="xleth-graph-state-preview__envelope-field">
-      <span className="xleth-graph-state-preview__envelope-field-label">Trigger Source</span>
-      <select
-        className="xleth-graph-state-preview__envelope-select"
-        value={data.triggerSource.events}
-        aria-label="Trigger source"
+    <label className="xleth-graph-state-preview__envelope-checkbox">
+      <input
+        className="xleth-graph-state-preview__envelope-checkbox-input"
+        type="checkbox"
+        checked={data.includeSlideNotes === true}
+        aria-label="Include slide notes"
         onPointerDown={(event) => event.stopPropagation()}
-        onChange={(event) => onChange({ triggerSource: { events: event.target.value } })}
-      >
-        <option value="notes">Notes</option>
-        <option value="clips">Clips</option>
-        <option value="notesAndClips">Notes + Clips</option>
-      </select>
-    </label>
-  );
-}
-
-export function RetriggerModeControl({
-  data,
-  onChange,
-}: {
-  data: EnvelopeNodeData;
-  onChange: (patch: EnvelopeNodePatch) => void;
-}) {
-  return (
-    <label className="xleth-graph-state-preview__envelope-field">
-      <span className="xleth-graph-state-preview__envelope-field-label">Retrigger Mode</span>
-      <select
-        className="xleth-graph-state-preview__envelope-select"
-        value={data.retriggerMode}
-        aria-label="Retrigger mode"
-        onPointerDown={(event) => event.stopPropagation()}
-        onChange={(event) => onChange({ retriggerMode: event.target.value })}
-      >
-        <option value="restart">Restart</option>
-        <option value="legato">Legato</option>
-      </select>
+        onChange={(event) => onChange({ includeSlideNotes: event.currentTarget.checked })}
+      />
+      <span className="xleth-graph-state-preview__envelope-field-label">Include slide notes</span>
     </label>
   );
 }
@@ -641,8 +606,7 @@ export function EnvelopeEditor({
         />
       </div>
       <div className="xleth-graph-state-preview__envelope-grid xleth-graph-state-preview__envelope-grid--modes">
-        <TriggerSourceControl data={data} onChange={onChange} />
-        <RetriggerModeControl data={data} onChange={onChange} />
+        <IncludeSlideNotesControl data={data} onChange={onChange} />
       </div>
       <button
         className="xleth-graph-state-preview__envelope-disclosure"

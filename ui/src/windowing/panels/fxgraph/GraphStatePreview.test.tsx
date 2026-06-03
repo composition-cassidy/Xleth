@@ -26,10 +26,9 @@ import {
   buildEnvelopePreviewPoints,
   describeEnvelopeAhdsr,
   formatEnvelopeParameterCount,
+  IncludeSlideNotesControl,
   mapEnvelopeGraphDragToPatch,
   readEnvelopeNodeData,
-  RetriggerModeControl,
-  TriggerSourceControl,
 } from './EnvelopeEditor';
 
 function inputNode(position = { x: 0, y: 0 }): GraphStateNode {
@@ -1541,24 +1540,36 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
     expect(html).not.toContain('Per-Voice Envelope');
   });
 
-  it('renders the AHDSR summary, retrigger, and trigger source (no per-voice fields)', () => {
+  it('renders the AHDSR summary with no trigger-source or retrigger pills (EVC-R2-r3)', () => {
     const html = renderToStaticMarkup(
       <GraphStatePreview
-        graphState={envelopeGraph({ attackMs: 10, holdMs: 0, decayMs: 120, sustain: 0.7, releaseMs: 200, triggerSource: { events: 'notes' }, retriggerMode: 'legato' })}
+        graphState={envelopeGraph({ attackMs: 10, holdMs: 0, decayMs: 120, sustain: 0.7, releaseMs: 200 })}
         onUpdateEnvelope={vi.fn()}
       />,
     );
     expect(html).toContain('AHDSR');
     expect(html).toContain('A 10 ms');
     expect(html).toContain('S 70%');
-    expect(html).toContain('Notes');
-    expect(html).toContain('Legato');
     expect(html).toContain('0 params');
+    // EVC-R2-r3 — the Notes/Clips/Notes+Clips source pill and the Restart/Legato pill are gone.
+    expect(html).not.toContain('Notes + Clips');
+    expect(html).not.toContain('Restart');
+    expect(html).not.toContain('Legato');
     // Retired per-voice labels must not appear.
     expect(html).not.toContain('Voice Gain');
     expect(html).not.toContain('Poly');
-    expect(html).not.toContain('max ');
     expect(html).not.toContain('Legato (mono)');
+  });
+
+  it('surfaces a Slide pill only when includeSlideNotes is enabled', () => {
+    const off = renderToStaticMarkup(
+      <GraphStatePreview graphState={envelopeGraph({ includeSlideNotes: false })} onUpdateEnvelope={vi.fn()} />,
+    );
+    const on = renderToStaticMarkup(
+      <GraphStatePreview graphState={envelopeGraph({ includeSlideNotes: true })} onUpdateEnvelope={vi.fn()} />,
+    );
+    expect(off).not.toContain('>Slide<');
+    expect(on).toContain('>Slide<');
   });
 
   it('summarizes outgoing envelope parameter connections compactly', () => {
@@ -1823,15 +1834,17 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
     expect(normalizeEnvelopeNodeData({ amount: 5 }).amount).toBe(1);
   });
 
-  it('changes retrigger mode through the editor select', () => {
-    const onChange = vi.fn();
-    const element = RetriggerModeControl({
-      data: readEnvelopeNodeData({ retriggerMode: 'restart' }),
-      onChange,
-    });
-    const select = findElementByAriaLabel(element, 'Retrigger mode')!;
-    select.props.onChange({ target: { value: 'legato' } });
-    expect(onChange).toHaveBeenCalledWith({ retriggerMode: 'legato' });
+  it('EVC-R2-r3 — the Trigger Source and Retrigger Mode selectors no longer render', () => {
+    const html = renderToStaticMarkup(
+      <EnvelopeEditor nodeId="env-a" data={readEnvelopeNodeData({})} onChange={vi.fn()} />,
+    );
+    expect(html).not.toContain('Trigger Source');
+    expect(html).not.toContain('aria-label="Trigger source"');
+    expect(html).not.toContain('Retrigger Mode');
+    expect(html).not.toContain('aria-label="Retrigger mode"');
+    // The Notes/Clips/Notes+Clips and Restart/Legato options are gone with the selects.
+    expect(html).not.toContain('Notes + Clips');
+    expect(html).not.toContain('>Legato<');
   });
 
   it('no longer renders the retired per-voice editor fields', () => {
@@ -1844,15 +1857,42 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
     expect(html).not.toContain('Mono glide ms');
   });
 
-  it('changes trigger source through the editor select', () => {
+  it('renders an Include slide notes checkbox in the expanded editor', () => {
+    const html = renderToStaticMarkup(
+      <EnvelopeEditor nodeId="env-a" data={readEnvelopeNodeData({})} onChange={vi.fn()} />,
+    );
+    expect(html).toContain('Include slide notes');
+    expect(html).toContain('aria-label="Include slide notes"');
+    expect(html).toContain('type="checkbox"');
+  });
+
+  it('Include slide notes checkbox updates envelope data through the callback', () => {
     const onChange = vi.fn();
-    const element = TriggerSourceControl({
-      data: readEnvelopeNodeData({ triggerSource: { events: 'notesAndClips' } }),
+    const element = IncludeSlideNotesControl({
+      data: readEnvelopeNodeData({ includeSlideNotes: false }),
       onChange,
     });
-    const select = findElementByAriaLabel(element, 'Trigger source')!;
-    select.props.onChange({ target: { value: 'clips' } });
-    expect(onChange).toHaveBeenCalledWith({ triggerSource: { events: 'clips' } });
+    const checkbox = findElementByAriaLabel(element, 'Include slide notes')!;
+    expect(checkbox.props.checked).toBe(false);
+    checkbox.props.onChange({ currentTarget: { checked: true } });
+    expect(onChange).toHaveBeenCalledWith({ includeSlideNotes: true });
+  });
+
+  it('reflects an enabled includeSlideNotes as a checked box', () => {
+    const element = IncludeSlideNotesControl({
+      data: readEnvelopeNodeData({ includeSlideNotes: true }),
+      onChange: vi.fn(),
+    });
+    const checkbox = findElementByAriaLabel(element, 'Include slide notes')!;
+    expect(checkbox.props.checked).toBe(true);
+  });
+
+  it('read-only mode (no onChange) does not expose the Include slide notes checkbox', () => {
+    const html = renderToStaticMarkup(
+      <EnvelopeNodeBody nodeId="env-a" data={readEnvelopeNodeData({ includeSlideNotes: true })} onChange={null} defaultExpanded />,
+    );
+    expect(html).not.toContain('aria-label="Include slide notes"');
+    expect(html).not.toContain('xleth-graph-state-preview__envelope-editor');
   });
 
   it('advanced disclosure hides and shows tension controls', () => {

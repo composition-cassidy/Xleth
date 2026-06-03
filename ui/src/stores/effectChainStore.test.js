@@ -194,8 +194,7 @@ function makeEnvelopeLinkGraphState(trackId = '7', { readOnly = false } = {}) {
         data: {
           label: 'Envelope',
           attackMs: 0, holdMs: 0, decayMs: 0, sustain: 1, releaseMs: 0,
-          amount: 1, triggerSource: { kind: 'parentTrack', events: 'notesAndClips' },
-          retriggerMode: 'restart',
+          amount: 1, includeSlideNotes: false,
         },
       },
       base.nodes[2],
@@ -1660,7 +1659,7 @@ describe('effectChainStore FX mode safety gate', () => {
         twoFx.nodes[3],
         {
           id: 'env-a', type: 'envelope', position: { x: 80, y: 240 },
-          data: { label: 'Envelope', attackMs: 0, holdMs: 0, decayMs: 0, sustain: 1, releaseMs: 0, amount: 1, triggerSource: { kind: 'parentTrack', events: 'notesAndClips' }, retriggerMode: 'restart' },
+          data: { label: 'Envelope', attackMs: 0, holdMs: 0, decayMs: 0, sustain: 1, releaseMs: 0, amount: 1, includeSlideNotes: false },
         },
       ],
       edges: [
@@ -2676,11 +2675,12 @@ describe('effectChainStore FX mode safety gate', () => {
         type: 'envelope',
         data: {
           label: 'Envelope',
-          triggerSource: { kind: 'parentTrack', events: 'notesAndClips' },
-          retriggerMode: 'restart',
+          includeSlideNotes: false,
         },
       })
-      // Retired per-voice shape is not persisted.
+      // EVC-R2-r3 — the removed selector/mode and the retired per-voice shape never persist.
+      expect(env.data).not.toHaveProperty('triggerSource')
+      expect(env.data).not.toHaveProperty('retriggerMode')
       expect(env.data).not.toHaveProperty('voiceMode')
       expect(env.data).not.toHaveProperty('target')
       expect(Number.isFinite(env.position.x) && Number.isFinite(env.position.y)).toBe(true)
@@ -2700,12 +2700,12 @@ describe('effectChainStore FX mode safety gate', () => {
 
       const result = await useEffectChainStore.getState().addGraphEnvelopeNodeForTrack('7', {
         idFactory: () => 'env-a',
-        data: { label: 'Pluck', attackMs: 2, sustain: 0.2, retriggerMode: 'legato' },
+        data: { label: 'Pluck', attackMs: 2, sustain: 0.2, includeSlideNotes: true },
       })
 
       expect(result.ok).toBe(true)
       const env = useEffectChainStore.getState().graphStates['7'].nodes.find((n) => n.id === 'env-a')
-      expect(env.data).toMatchObject({ label: 'Pluck', attackMs: 2, sustain: 0.2, retriggerMode: 'legato' })
+      expect(env.data).toMatchObject({ label: 'Pluck', attackMs: 2, sustain: 0.2, includeSlideNotes: true })
     })
 
     it('rejects updating an envelope node while Mixer Chain owns the track', async () => {
@@ -2739,12 +2739,12 @@ describe('effectChainStore FX mode safety gate', () => {
       const baseChain = seedGraphMode(useEffectChainStore, graphState)
 
       const result = await useEffectChainStore.getState()
-        .updateGraphEnvelopeNodeDataForTrack('7', 'env-a', { attackMs: 33, sustain: 0.42, retriggerMode: 'legato' })
+        .updateGraphEnvelopeNodeDataForTrack('7', 'env-a', { attackMs: 33, sustain: 0.42, includeSlideNotes: true })
 
       expect(result.ok).toBe(true)
       let state = useEffectChainStore.getState()
       let env = state.graphStates['7'].nodes.find((n) => n.id === 'env-a')
-      expect(env.data).toMatchObject({ attackMs: 33, sustain: 0.42, retriggerMode: 'legato' })
+      expect(env.data).toMatchObject({ attackMs: 33, sustain: 0.42, includeSlideNotes: true })
       expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, state.graphStates['7'])
       expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
       expect(audio.setGraphEffectParameterNormalized).not.toHaveBeenCalled()
@@ -2756,12 +2756,12 @@ describe('effectChainStore FX mode safety gate', () => {
       state = useEffectChainStore.getState()
       env = state.graphStates['7'].nodes.find((n) => n.id === 'env-a')
       expect(env.data.sustain).toBe(0.7)
-      expect(env.data.retriggerMode).toBe('restart')
+      expect(env.data.includeSlideNotes).toBe(false)
 
       const redo = await useEffectChainStore.getState().redoGraphEditForTrack('7')
       expect(redo.ok).toBe(true)
       env = useEffectChainStore.getState().graphStates['7'].nodes.find((n) => n.id === 'env-a')
-      expect(env.data.retriggerMode).toBe('legato')
+      expect(env.data.includeSlideNotes).toBe(true)
       // Undo/redo of a control node never resyncs the audio topology.
       expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
     })

@@ -753,6 +753,11 @@ analysis, and recommended implementation sequence.
 >   included when its gate overlaps the block window, not only when its onset falls inside it, so a
 >   note held into the window (block offset, or a long note from an earlier loop iteration) is seen
 >   and the ADSR is evaluated from the note's real start. See the "EVC-R2-r2" section below.
+> - **EVC-R2-r3** (done) — simplify Envelope **trigger semantics** to match the real track model:
+>   the Trigger Source selector and Retrigger Mode are removed; the source (notes vs clips) is
+>   inferred from the parent track's content; the Envelope always restarts on a new trigger; and
+>   slide notes are ignored unless a new `includeSlideNotes` opt-in (default off) is enabled. Timing,
+>   parameter-edge path, and EVC-R3 compact UI are unchanged. See the "EVC-R2-r3" section below.
 >
 > The EVC.1 audit and the EVC.4–EVC.6 sections below are retained as historical record; the
 > per-voice model they describe is **no longer the product target**.
@@ -966,6 +971,55 @@ loop iteration — was skipped, so the envelope saw no gate and read 0 / release
   within one note-length of the timeline origin combined with a positive `offsetTicks`) is still
   dropped downstream by `collectGateIntervals`' non-negative-start guard. This is a rare corner left
   as a documented limitation to keep the clip path's guard unchanged.
+- **Scope.** No engine/native code, no bridge/preload/main changes, no package-lock changes, no
+  retired per-voice EVC files revived, no Sampler/MixEngine changes, no Macro runtime change, no
+  `GraphParameterTarget`/mapping-format change, no stop/reset-policy change, no LFO work, no
+  `effectChains`/Mixer-Chain mutation, no graph-to-chain return, no React Flow, no
+  `NodeEditor.jsx`/`nodeGraphStore.js`.
+
+### EVC-R2-r3 — simplified trigger semantics (inferred source, restart-only, slide opt-in)
+
+EVC-R2-r3 aligns the Envelope's trigger model with the **real Xleth track model**: a track is either
+a **pattern/MIDI-note track** or a **clip track**, never both. The previous Trigger Source selector
+(Notes / Clips / Notes + Clips) and Retrigger Mode (Restart / Legato) implied choices the product
+does not actually have, so both are **removed** as active behavior.
+
+- **Trigger source is inferred, not selected.** `inferTriggerSourceKind(triggerEvents)`
+  (`ui/src/fxgraph/envelopeModulation.js`) reads the parent track's built trigger events and returns
+  `'note'`, `'clip'`, or `null`. A pattern (note) track contributes note events ⇒ notes drive; a clip
+  track contributes clip events ⇒ clips drive. If both kinds somehow appear (legacy/corrupt/mixed
+  state) notes win deterministically; if neither exists there are no triggers. `collectGateIntervals`
+  now applies this inference instead of a stored `triggerSource.events` mode, so a normal track never
+  produces both note and clip gates.
+- **Restart-only.** `resolveActiveGate` no longer takes a `retriggerMode`: every new valid trigger at
+  or before the query tick restarts the attack from the latest start within the gate region. Legato
+  (hold-from-region-start) is gone. Same-tick chord starts still collapse into one trigger
+  (`buildGateRegions`), and overlapping notes/clips still hold the gate open until the last one ends.
+- **Slide notes ignored by default; `includeSlideNotes` opt-in.** A pattern note marked
+  `note.isSlide === true` is a slide note. Detection is centralized in `isSlidePatternNote(note)`
+  (`ui/src/fxgraph/envelopePlayback.js`), which tags the built note event with `isSlide: true` (normal
+  notes omit the flag). `collectGateIntervals` drops slide-note gates unless the Envelope node's
+  `includeSlideNotes` is `true`. Normal notes always trigger; clip gates are never affected by the
+  opt-in. Existing slide-note playback elsewhere is untouched — the Envelope only reads the flag.
+- **Schema.** The persisted Envelope node data (`normalizeEnvelopeNodeData`,
+  `ui/src/fxgraph/graphState.js`) dropped `triggerSource` and `retriggerMode` and added
+  `includeSlideNotes` (default `false`; repairs to `false` unless exactly boolean `true`). The closed
+  shape silently drops old saved `triggerSource`/`retriggerMode` and the retired per-voice
+  `target:{kind:"voiceGain"}` / `voiceMode` / `maxVoices` / `monophonic` fields on load. Parent
+  ownership stays `graphState.trackId`; no `parentTrackId` is stored on the node.
+- **UI.** The compact node summary no longer shows a Notes/Clips source pill or a Restart/Legato pill;
+  a small `Slide` pill appears only when `includeSlideNotes` is on. The expanded editor replaced the
+  two selects with a single **Include slide notes** checkbox (`IncludeSlideNotesControl`,
+  `EnvelopeEditor.tsx`), tokenized with the existing envelope success accent. Read-only previews (no
+  `onChange`) never render the checkbox, so it is never editable outside graph-edit mode. The EVC-R3
+  compact layout, AHDSR graph, sliders, Advanced tension disclosure, and the draggable `controlOut`
+  handle are otherwise unchanged.
+- **Preserved.** The EVC-R2-r1 `PlayheadClock.onFrame` 60 Hz drive, latest-wins single-in-flight
+  guard, non-reactive last-value cache, single stop flush to 0, trailing-frame stop guard, and
+  identity-keyed trigger memoization are all unchanged. The Envelope `controlOut` port, the
+  Envelope→parameter edge shape, `GraphParameterTarget`, the per-link mapping format, and
+  `collectEnvelopeParameterWrites` / `setGraphEffectParameterNormalized` are unchanged. Runtime stays
+  renderer-side / control-rate — still **not** sample-accurate/audio-rate (the remaining limitation).
 - **Scope.** No engine/native code, no bridge/preload/main changes, no package-lock changes, no
   retired per-voice EVC files revived, no Sampler/MixEngine changes, no Macro runtime change, no
   `GraphParameterTarget`/mapping-format change, no stop/reset-policy change, no LFO work, no

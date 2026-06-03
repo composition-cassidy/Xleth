@@ -119,8 +119,7 @@ describe('held-over reconstruction → envelope evaluation (integration)', () =>
 
     // attack 1000 ticks (msPerTick = 1), linear 0 -> 1; sustain 1, no decay/release; amount 1.
     const settings = normalizeEnvelopeRuntimeSettings(
-      { attackMs: 1000, holdMs: 0, decayMs: 0, sustain: 1, releaseMs: 0, amount: 1,
-        triggerSource: { kind: 'parentTrack', events: 'notes' }, retriggerMode: 'restart' },
+      { attackMs: 1000, holdMs: 0, decayMs: 0, sustain: 1, releaseMs: 0, amount: 1 },
       { msPerTick: 1 },
     )
 
@@ -143,32 +142,71 @@ describe('held-over reconstruction → envelope evaluation (integration)', () =>
     }
     const events = buildPatternBlockNoteEvents(block, pattern)
     const settings = normalizeEnvelopeRuntimeSettings(
-      { attackMs: 0, holdMs: 0, decayMs: 0, sustain: 1, releaseMs: 1000, amount: 1,
-        triggerSource: { kind: 'parentTrack', events: 'notes' }, retriggerMode: 'legato' },
+      { attackMs: 0, holdMs: 0, decayMs: 0, sustain: 1, releaseMs: 1000, amount: 1 },
       { msPerTick: 1 },
     )
     // At tick 11000 (past the first note's end 10500 but inside the merged region end 11500)
-    // the gate is still held -> sustain 1, not releasing.
+    // the gate is still held -> sustain 1, not releasing. Restart-only does not affect this:
+    // the latest start <= 11000 is the second note, still inside its held span.
     expect(evaluateEnvelopeOutput(settings, events, 11000).value).toBeCloseTo(1, 5)
   })
 
-  it('honors the trigger source over built note + clip events', () => {
-    // One track with a clip gate [0, 5000) and a pattern note gate [1000, 6000).
+  // EVC-R2-r3 — there is no longer a trigger-source selector. A normal track is a note
+  // track OR a clip track, so the source is inferred from the built event kinds. A pattern
+  // (note) track infers notes; a clip track infers clips.
+  it('infers notes for a pattern (note) track and ignores any stray clip events', () => {
+    // Mixed legacy/corrupt content on one track: clip gate [0, 5000) and note gate
+    // [1000, 6000). Inference prefers notes deterministically, so the note gate governs.
     const clips = [{ trackId: 7, positionTicks: 0, durationTicks: 5000 }]
     const patternBlocks = [{ trackId: 7, patternId: 'p1', positionTicks: 1000, durationTicks: 5000, offsetTicks: 0, loopEnabled: false }]
     const patterns = { p1: { lengthTicks: 100000, notes: [{ positionTicks: 0, durationTicks: 5000 }] } }
     const events = buildTrackTriggerEvents({ clips, patternBlocks, patterns })['7']
 
-    const make = (mode) => normalizeEnvelopeRuntimeSettings(
-      { attackMs: 0, holdMs: 0, decayMs: 0, sustain: 1, releaseMs: 0, amount: 1,
-        triggerSource: { kind: 'parentTrack', events: mode }, retriggerMode: 'restart' },
+    const settings = normalizeEnvelopeRuntimeSettings(
+      { attackMs: 0, holdMs: 0, decayMs: 0, sustain: 1, releaseMs: 0, amount: 1 },
       { msPerTick: 1 },
     )
 
-    // At tick 5500: clip gate has ended (>=5000), note gate still open (<6000).
-    expect(evaluateEnvelopeOutput(make('notes'), events, 5500).value).toBeCloseTo(1, 5) // note seen
-    expect(evaluateEnvelopeOutput(make('clips'), events, 5500).value).toBeCloseTo(0, 5) // clip ended, note ignored
-    expect(evaluateEnvelopeOutput(make('notesAndClips'), events, 5500).value).toBeCloseTo(1, 5) // note seen
+    // At tick 5500: clip gate has ended (>=5000) but the note gate is still open (<6000).
+    // Inference picks notes -> still 1.
+    expect(evaluateEnvelopeOutput(settings, events, 5500).value).toBeCloseTo(1, 5)
+  })
+
+  it('infers clips for a clip track (no note content present)', () => {
+    const clips = [{ trackId: 7, positionTicks: 0, durationTicks: 5000 }]
+    const events = buildTrackTriggerEvents({ clips })['7']
+    const settings = normalizeEnvelopeRuntimeSettings(
+      { attackMs: 0, holdMs: 0, decayMs: 0, sustain: 1, releaseMs: 0, amount: 1 },
+      { msPerTick: 1 },
+    )
+    // Inside the clip gate -> 1; after it ends -> 0.
+    expect(evaluateEnvelopeOutput(settings, events, 2500).value).toBeCloseTo(1, 5)
+    expect(evaluateEnvelopeOutput(settings, events, 6000).value).toBeCloseTo(0, 5)
+  })
+
+  it('built note events carry isSlide so the modulation layer can drop slide notes', () => {
+    // A pattern with one normal note and one slide note. The slide note must be tagged so
+    // the Envelope ignores it by default and includes it only when opted in.
+    const patternBlocks = [{ trackId: 7, patternId: 'p1', positionTicks: 0, durationTicks: 100, offsetTicks: 0, loopEnabled: false }]
+    const patterns = {
+      p1: {
+        lengthTicks: 100,
+        notes: [
+          { positionTicks: 0, durationTicks: 20 },
+          { positionTicks: 50, durationTicks: 20, isSlide: true },
+        ],
+      },
+    }
+    const events = buildTrackTriggerEvents({ patternBlocks, patterns })['7']
+    expect(events).toContainEqual({ kind: 'note', startTick: 0, endTick: 20 })
+    expect(events).toContainEqual({ kind: 'note', startTick: 50, endTick: 70, isSlide: true })
+
+    const base = { attackMs: 0, holdMs: 0, decayMs: 0, sustain: 1, releaseMs: 0, amount: 1 }
+    const off = normalizeEnvelopeRuntimeSettings(base, { msPerTick: 1 })
+    const on = normalizeEnvelopeRuntimeSettings({ ...base, includeSlideNotes: true }, { msPerTick: 1 })
+    // Tick 60 sits inside the slide note's gate only. Ignored by default (0), driven when on.
+    expect(evaluateEnvelopeOutput(off, events, 60).value).toBeCloseTo(0, 5)
+    expect(evaluateEnvelopeOutput(on, events, 60).value).toBeCloseTo(1, 5)
   })
 })
 

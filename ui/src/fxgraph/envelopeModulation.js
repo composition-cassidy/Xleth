@@ -40,11 +40,6 @@ export const ENVELOPE_PHASE = Object.freeze({
   RELEASE: 'release',
 })
 
-// Trigger-source filter values mirror graphState's ENVELOPE_TRIGGER_EVENTS.
-const TRIGGER_EVENTS_NOTES = 'notes'
-const TRIGGER_EVENTS_CLIPS = 'clips'
-const TRIGGER_EVENTS_BOTH = 'notesAndClips'
-
 // Default tempo used only when the caller supplies neither msPerTick nor bpm. The
 // playback layer always passes a live bpm, so this only affects standalone/unit use.
 const DEFAULT_BPM = 120
@@ -92,8 +87,10 @@ export function normalizeEnvelopeRuntimeSettings(envelopeNodeData, context = {})
     releaseTicks: msToTicks(data.releaseMs),
     sustain: clamp01(data.sustain, 0),
     amount: clamp01(data.amount, 0),
-    retriggerMode: data.retriggerMode,
-    triggerEvents: data.triggerSource.events,
+    // EVC-R2-r3 — no retrigger mode (always restart) and no trigger-source selector
+    // (notes vs clips is inferred from the parent track's content at evaluation time).
+    // The only trigger-related setting is the slide-note opt-in.
+    includeSlideNotes: data.includeSlideNotes === true,
     msPerTick,
   }
 }
@@ -173,22 +170,47 @@ function resolvePhase(settings, gateStartTick, gateEndTick, queryTick) {
   return ENVELOPE_PHASE.SUSTAIN
 }
 
-// Filters a flat trigger-event list by the Envelope's trigger source, returning the
-// gate intervals [{ startTick, endTick }] it should respond to. An event is
-// { kind: 'note' | 'clip', startTick, endTick }; endTick is exclusive. Events with a
-// non-finite/negative start are dropped; a missing/short end is treated as a zero-length
-// gate (endTick = startTick).
-export function collectGateIntervals(triggerEvents, triggerEventsMode) {
+// EVC-R2-r3 — infers whether an Envelope is triggered by notes or clips from the parent
+// track's events. A normal Xleth track is either a pattern/MIDI-note track or a clip
+// track, never both, so the event kinds present in the list reflect the parent track's
+// content type. There is no user-facing source selector; this is the single source of
+// truth. Determinism for the legacy/corrupt/mixed case (both kinds present): prefer
+// notes — pattern data clearly present wins. Returns 'note' | 'clip' | null (no usable
+// triggers, e.g. an empty list or a track with neither notes nor clips).
+export function inferTriggerSourceKind(triggerEvents) {
+  if (!Array.isArray(triggerEvents)) return null
+  let hasNote = false
+  let hasClip = false
+  for (const event of triggerEvents) {
+    if (event == null || typeof event !== 'object') continue
+    if (event.kind === 'note') hasNote = true
+    else if (event.kind === 'clip') hasClip = true
+  }
+  if (hasNote) return 'note'
+  if (hasClip) return 'clip'
+  return null
+}
+
+// Reduces a flat trigger-event list to the gate intervals [{ startTick, endTick }] the
+// Envelope should respond to. An event is { kind: 'note' | 'clip', startTick, endTick,
+// isSlide? }; endTick is exclusive. Events with a non-finite/negative start are dropped;
+// a missing/short end is treated as a zero-length gate (endTick = startTick).
+//
+// EVC-R2-r3 — the kept kind is INFERRED from the events (see inferTriggerSourceKind), not
+// chosen by the user, so a track contributes either note gates or clip gates, never both.
+// Slide notes (event.isSlide === true) are ignored unless options.includeSlideNotes is
+// true; clip gates are unaffected by the slide opt-in.
+export function collectGateIntervals(triggerEvents, options = {}) {
   if (!Array.isArray(triggerEvents)) return []
-  const wantNotes = triggerEventsMode === TRIGGER_EVENTS_NOTES || triggerEventsMode === TRIGGER_EVENTS_BOTH
-  const wantClips = triggerEventsMode === TRIGGER_EVENTS_CLIPS || triggerEventsMode === TRIGGER_EVENTS_BOTH
+  const includeSlideNotes = options.includeSlideNotes === true
+  const kind = inferTriggerSourceKind(triggerEvents)
+  if (kind == null) return []
 
   const intervals = []
   for (const event of triggerEvents) {
     if (event == null || typeof event !== 'object') continue
-    if (event.kind === 'note' && !wantNotes) continue
-    if (event.kind === 'clip' && !wantClips) continue
-    if (event.kind !== 'note' && event.kind !== 'clip') continue
+    if (event.kind !== kind) continue
+    if (kind === 'note' && event.isSlide === true && !includeSlideNotes) continue
     const startTick = event.startTick
     if (!Number.isFinite(startTick) || startTick < 0) continue
     const endTick = Number.isFinite(event.endTick) && event.endTick > startTick ? event.endTick : startTick
@@ -228,11 +250,13 @@ function buildGateRegions(intervals) {
 //     ended at/before queryTick (its release tail may still be sounding).
 //   - gateEndTick = region end (release begins when the last note/clip in the region ends,
 //     so overlapping notes/clips keep the gate open until the last one ends).
-//   - gateStartTick = region start in 'legato' mode (a new trigger during an active gate
-//     does NOT restart); in 'restart' mode it is the latest trigger start at/<= queryTick
-//     within the region (a new trigger restarts the attack), or the region's last start
-//     once the region has fully ended.
-export function resolveActiveGate(intervals, queryTick, retriggerMode = 'restart') {
+//   - gateStartTick = the latest trigger start at/<= queryTick within the region, or the
+//     region's last start once the region has fully ended.
+//
+// EVC-R2-r3 — restart-only. There is no legato mode: a new valid trigger inside or after
+// the current gate always restarts the attack from the latest start. Same-tick chord
+// starts were already collapsed into one start by buildGateRegions, so they restart once.
+export function resolveActiveGate(intervals, queryTick) {
   const regions = buildGateRegions(intervals)
   if (regions.length === 0) return null
 
@@ -248,15 +272,9 @@ export function resolveActiveGate(intervals, queryTick, retriggerMode = 'restart
   }
   if (!governing) return null
 
-  let gateStartTick
-  if (retriggerMode === 'legato') {
-    gateStartTick = governing.start
-  } else {
-    let latest = governing.starts[0]
-    for (const start of governing.starts) {
-      if (start <= queryTick && start > latest) latest = start
-    }
-    gateStartTick = latest
+  let gateStartTick = governing.starts[0]
+  for (const start of governing.starts) {
+    if (start <= queryTick && start > gateStartTick) gateStartTick = start
   }
 
   return { gateStartTick, gateEndTick: governing.end }
@@ -266,8 +284,8 @@ export function resolveActiveGate(intervals, queryTick, retriggerMode = 'restart
 // parent-track trigger-event list, and a query tick, returns the single amount-scaled
 // 0..1 output plus the resolved gate + phase. One value per Envelope node.
 export function evaluateEnvelopeOutput(settings, triggerEvents, queryTick) {
-  const intervals = collectGateIntervals(triggerEvents, settings.triggerEvents)
-  const gate = resolveActiveGate(intervals, queryTick, settings.retriggerMode)
+  const intervals = collectGateIntervals(triggerEvents, { includeSlideNotes: settings.includeSlideNotes })
+  const gate = resolveActiveGate(intervals, queryTick)
   const gateStartTick = gate ? gate.gateStartTick : null
   const gateEndTick = gate ? gate.gateEndTick : null
   const raw = evaluateEnvelopeAdsrAtTime(settings, gateStartTick, gateEndTick, queryTick)

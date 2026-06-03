@@ -51,7 +51,18 @@ export const ENVELOPE_DRIVE_INTERVAL_MS = 1000 / 60
 // collapse and overlapping-gate merge happen later in envelopeModulation (buildGateRegions /
 // resolveActiveGate); this builder never collapses or de-duplicates notes.
 //
-// Returns [{ kind: 'note', startTick, endTick }].
+// EVC-R2-r3 — centralized slide-note detection. A pattern note is a slide note when its
+// `isSlide` flag is exactly true (PianoRollCanvas sets `isSlide: true` together with
+// slideCurveCx/slideCurveCy when a note is drawn in slide mode). The Envelope ignores
+// slide notes unless the node opts in via includeSlideNotes; this is the single place
+// that decides what counts as a slide note, so the rule stays consistent and testable.
+// It never mutates or alters slide-note playback elsewhere — it only tags the event.
+export function isSlidePatternNote(note) {
+  return note != null && typeof note === 'object' && note.isSlide === true
+}
+
+// Returns [{ kind: 'note', startTick, endTick }], with `isSlide: true` added only on
+// slide-note events (normal notes omit the flag).
 export function buildPatternBlockNoteEvents(block, pattern) {
   const events = []
   if (block == null || pattern == null) return events
@@ -103,7 +114,12 @@ export function buildPatternBlockNoteEvents(block, pattern) {
       const heldOverIntoWindow = tape < windowStart && tape + dur > windowStart
       if (!startsInWindow && !heldOverIntoWindow) continue
       const startTick = blockPos + (tape - windowStart)
-      events.push({ kind: 'note', startTick, endTick: startTick + dur })
+      // EVC-R2-r3 — tag slide notes so envelopeModulation can drop them unless the Envelope
+      // opts in. Only slide notes carry the flag; a normal note keeps its plain shape, so
+      // the absence of `isSlide` means "not a slide note" (the filter checks === true).
+      const event = { kind: 'note', startTick, endTick: startTick + dur }
+      if (isSlidePatternNote(note)) event.isSlide = true
+      events.push(event)
     }
   }
   return events

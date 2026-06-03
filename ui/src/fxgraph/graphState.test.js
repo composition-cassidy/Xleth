@@ -2689,9 +2689,35 @@ describe('EVC-R1 envelope node data normalization (parameter modulator)', () => 
       decayTension: 0,
       releaseTension: 0,
       amount: 1,
-      triggerSource: { kind: 'parentTrack', events: 'notesAndClips' },
-      retriggerMode: 'restart',
+      includeSlideNotes: false,
     })
+  })
+
+  it('EVC-R2-r3 defaults includeSlideNotes to false', () => {
+    expect(normalizeEnvelopeNodeData(undefined).includeSlideNotes).toBe(false)
+    expect(normalizeEnvelopeNodeData({}).includeSlideNotes).toBe(false)
+  })
+
+  it('EVC-R2-r3 keeps includeSlideNotes === true through normalization', () => {
+    expect(normalizeEnvelopeNodeData({ includeSlideNotes: true }).includeSlideNotes).toBe(true)
+  })
+
+  it('EVC-R2-r3 repairs a malformed includeSlideNotes to false', () => {
+    // Only an exact boolean true enables slide notes; anything else repairs to false.
+    expect(normalizeEnvelopeNodeData({ includeSlideNotes: 'true' }).includeSlideNotes).toBe(false)
+    expect(normalizeEnvelopeNodeData({ includeSlideNotes: 1 }).includeSlideNotes).toBe(false)
+    expect(normalizeEnvelopeNodeData({ includeSlideNotes: null }).includeSlideNotes).toBe(false)
+    expect(normalizeEnvelopeNodeData({ includeSlideNotes: false }).includeSlideNotes).toBe(false)
+  })
+
+  it('EVC-R2-r3 drops the old triggerSource and retriggerMode fields on load', () => {
+    const data = normalizeEnvelopeNodeData({
+      triggerSource: { kind: 'parentTrack', events: 'notes' },
+      retriggerMode: 'legato',
+    })
+    expect(data).not.toHaveProperty('triggerSource')
+    expect(data).not.toHaveProperty('retriggerMode')
+    expect(data).not.toHaveProperty('triggerEvents')
   })
 
   it('drops retired per-voice fields and the voiceGain target on load', () => {
@@ -2707,8 +2733,7 @@ describe('EVC-R1 envelope node data normalization (parameter modulator)', () => 
     expect(data).not.toHaveProperty('maxVoices')
     expect(data).not.toHaveProperty('target')
     expect(data).not.toHaveProperty('monophonic')
-    // Old monophonic.legato is NOT auto-migrated; retrigger stays the explicit default.
-    expect(data.retriggerMode).toBe('restart')
+    expect(data.includeSlideNotes).toBe(false)
     expect(data.label).toBe('Legacy')
   })
 
@@ -2720,23 +2745,25 @@ describe('EVC-R1 envelope node data normalization (parameter modulator)', () => 
     expect(data.sustain).toBe(ENVELOPE_NODE_DEFAULTS.sustain)
     expect(data.releaseMs).toBe(ENVELOPE_NODE_DEFAULTS.releaseMs)
     expect(data.amount).toBe(ENVELOPE_NODE_DEFAULTS.amount)
-    expect(data.triggerSource).toEqual({ kind: 'parentTrack', events: 'notesAndClips' })
-    expect(data.retriggerMode).toBe('restart')
+    expect(data.includeSlideNotes).toBe(ENVELOPE_NODE_DEFAULTS.includeSlideNotes)
+    expect(data.includeSlideNotes).toBe(false)
   })
 
-  it('createDefaultEnvelopeNodeData applies clamped overrides', () => {
+  it('createDefaultEnvelopeNodeData applies clamped overrides and drops retired fields', () => {
     const data = createDefaultEnvelopeNodeData({
       label: '  Pluck  ',
       attackMs: 5,
       sustain: 0.25,
+      includeSlideNotes: true,
       triggerSource: { events: 'notes' },
       retriggerMode: 'legato',
     })
     expect(data.label).toBe('Pluck')
     expect(data.attackMs).toBe(5)
     expect(data.sustain).toBe(0.25)
-    expect(data.triggerSource).toEqual({ kind: 'parentTrack', events: 'notes' })
-    expect(data.retriggerMode).toBe('legato')
+    expect(data.includeSlideNotes).toBe(true)
+    expect(data).not.toHaveProperty('triggerSource')
+    expect(data).not.toHaveProperty('retriggerMode')
   })
 
   it('clamps and repairs malformed values', () => {
@@ -2751,6 +2778,7 @@ describe('EVC-R1 envelope node data normalization (parameter modulator)', () => 
       decayTension: -3,
       releaseTension: Number.NaN,
       amount: -0.5,
+      includeSlideNotes: 'yes',
       triggerSource: { kind: 'somethingElse', events: 'bogus' },
       retriggerMode: 'glide',
     })
@@ -2765,22 +2793,14 @@ describe('EVC-R1 envelope node data normalization (parameter modulator)', () => 
     expect(data.decayTension).toBe(-1)
     expect(data.releaseTension).toBe(0)
     expect(data.amount).toBe(0)
-    expect(data.triggerSource).toEqual({ kind: 'parentTrack', events: 'notesAndClips' })
-    expect(data.retriggerMode).toBe('restart') // repaired
-  })
-
-  it('repairs retriggerMode to restart unless it is exactly legato', () => {
-    expect(normalizeEnvelopeNodeData({ retriggerMode: 'legato' }).retriggerMode).toBe('legato')
-    expect(normalizeEnvelopeNodeData({ retriggerMode: 'restart' }).retriggerMode).toBe('restart')
-    expect(normalizeEnvelopeNodeData({ retriggerMode: 'mono' }).retriggerMode).toBe('restart')
-    expect(normalizeEnvelopeNodeData({ retriggerMode: 42 }).retriggerMode).toBe('restart')
+    expect(data.includeSlideNotes).toBe(false) // non-boolean → false
+    expect(data).not.toHaveProperty('triggerSource') // dropped
+    expect(data).not.toHaveProperty('retriggerMode') // dropped
   })
 
   it('does not store a redundant parentTrackId on the node data', () => {
-    const data = normalizeEnvelopeNodeData({ parentTrackId: '7', triggerSource: { parentTrackId: '7' } })
+    const data = normalizeEnvelopeNodeData({ parentTrackId: '7' })
     expect(data).not.toHaveProperty('parentTrackId')
-    expect(data.triggerSource).not.toHaveProperty('parentTrackId')
-    expect(data.triggerSource).toEqual({ kind: 'parentTrack', events: 'notesAndClips' })
   })
 
   it('isEnvelopeGraphNode only matches envelope nodes', () => {
@@ -2800,6 +2820,8 @@ describe('EVC.2 envelope node loadGraphState integration', () => {
       decayMs: 80,
       sustain: 0.5,
       releaseMs: 150,
+      includeSlideNotes: true,
+      // EVC-R2-r3 — these legacy fields are dropped on load.
       triggerSource: { kind: 'parentTrack', events: 'notes' },
       retriggerMode: 'legato',
     }), '7')
@@ -2818,8 +2840,7 @@ describe('EVC.2 envelope node loadGraphState integration', () => {
       decayTension: 0,
       releaseTension: 0,
       amount: 1,
-      triggerSource: { kind: 'parentTrack', events: 'notes' },
-      retriggerMode: 'legato',
+      includeSlideNotes: true,
     })
   })
 
@@ -2840,7 +2861,8 @@ describe('EVC.2 envelope node loadGraphState integration', () => {
     expect(env.data).not.toHaveProperty('voiceMode')
     expect(env.data).not.toHaveProperty('maxVoices')
     expect(env.data).not.toHaveProperty('monophonic')
-    expect(env.data.retriggerMode).toBe('restart')
+    expect(env.data).not.toHaveProperty('retriggerMode')
+    expect(env.data.includeSlideNotes).toBe(false)
   })
 
   it('repairs an envelope node whose data is not an object', () => {
@@ -2915,14 +2937,14 @@ describe('EVC.2 envelope node mutation helpers', () => {
     const result = addGraphEnvelopeNode(makeGuardGraphState(), {
       idFactory: () => 'env-a',
       position: { x: 12, y: 34 },
-      data: { label: 'Bass', sustain: 0.3, retriggerMode: 'legato' },
+      data: { label: 'Bass', sustain: 0.3, includeSlideNotes: true },
     })
     expect(result.ok).toBe(true)
     const node = result.graphState.nodes.at(-1)
     expect(node.position).toEqual({ x: 12, y: 34 })
     expect(node.data.label).toBe('Bass')
     expect(node.data.sustain).toBe(0.3)
-    expect(node.data.retriggerMode).toBe('legato')
+    expect(node.data.includeSlideNotes).toBe(true)
   })
 
   it('addGraphEnvelopeNode rejects an invalid graphState', () => {
@@ -2945,14 +2967,14 @@ describe('EVC.2 envelope node mutation helpers', () => {
     const result = updateGraphEnvelopeNodeData(added.graphState, 'env-a', {
       attackMs: 25,
       sustain: 0.4,
-      triggerSource: { events: 'clips' },
+      includeSlideNotes: true,
     })
 
     expect(result.ok).toBe(true)
     const node = result.graphState.nodes.find((n) => n.id === 'env-a')
     expect(node.data.attackMs).toBe(25)
     expect(node.data.sustain).toBe(0.4)
-    expect(node.data.triggerSource).toEqual({ kind: 'parentTrack', events: 'clips' })
+    expect(node.data.includeSlideNotes).toBe(true)
     // Unrelated envelope fields preserved.
     expect(node.data.decayMs).toBe(ENVELOPE_NODE_DEFAULTS.decayMs)
     expect(node.data.releaseMs).toBe(ENVELOPE_NODE_DEFAULTS.releaseMs)
