@@ -739,8 +739,11 @@ analysis, and recommended implementation sequence.
 >   fields, added a `controlOut` port and Envelope→parameter edges (GraphParameterTarget,
 >   reusing the Macro wiring). Still **runtime-inert** (no parameter writes yet). See the
 >   "EVC-R1" section below.
-> - **EVC-R2** — implement the **triggered-ADSR runtime drive** for effect parameters
+> - **EVC-R2** (done) — implement the **triggered-ADSR runtime drive** for effect parameters
 >   (`setGraphEffectParameterNormalized` via `GraphParameterTarget`).
+> - **EVC-R3** (done) — polish the Envelope node UX into a compact modulation node:
+>   collapsed-by-default layout, slider-first AHDSR controls, and editable AHDSR graph handles.
+>   Runtime behavior remains EVC-R2 unchanged.
 >
 > The EVC.1 audit and the EVC.4–EVC.6 sections below are retained as historical record; the
 > per-voice model they describe is **no longer the product target**.
@@ -845,6 +848,30 @@ retired EVC.4–EVC.6 engine files; it never mutates Mixer Chain, `effectChains`
   per-voice EVC files revived, no Sampler/MixEngine changes, no new parameter-mapping format, no LFO
   work, no Macro regression, no `effectChains`/Mixer-Chain mutation, no graph-to-chain return, no
   React Flow, no `NodeEditor.jsx`/`nodeGraphStore.js`, no package-lock changes.
+
+### EVC-R3 — compact Envelope node UX polish
+
+EVC-R3 is **UI/UX polish only** for the corrected Envelope Modulator. It keeps the EVC-R2 runtime
+drive unchanged: one graph-owned Envelope node evaluates one triggered normalized ADSR value, then
+its existing parameter edges map that value to exposed stock/VST parameters through
+`GraphParameterTarget`. No runtime trigger, stop/reset, parameter-write, mapping, Mixer Chain, or
+`effectChains` behavior changes were introduced.
+
+- **Compact node body.** Envelope nodes now default to a shorter DAW-friendly layout: label +
+  `Envelope Modulator`, compact AHDSR graph, Trigger source, Retrigger mode, Amount, and outgoing
+  parameter count (`0 params`, `1 param`, `N params`). Read-only previews show only the compact
+  summary and graph.
+- **Expanded editing.** Editable graph-mode nodes expose an inline `Edit` affordance. The expanded
+  editor uses slider-first controls for Attack, Hold, Decay, Sustain, Release, and Amount, with
+  compact numeric fields retained for precision. Advanced tension fields are hidden behind an
+  Advanced disclosure.
+- **Editable AHDSR graph.** The visual graph is still AHDSR only: handles edit the existing
+  `attackMs`, `holdMs`, `decayMs`, `sustain`, and `releaseMs` fields. This is not MSEG, not
+  freehand drawing, not automation lanes, and not audio-rate/sample-accurate modulation.
+- **Scope.** No engine/native code, no bridge/preload/main changes, no package-lock changes, no
+  retired per-voice EVC files revived, no Sampler/MixEngine changes, no Macro regression, no
+  `effectChains`/Mixer-Chain mutation, no graph-to-chain return, no React Flow, no
+  `NodeEditor.jsx`/`nodeGraphStore.js`.
 
 ### EVC.2 — envelope node graphState schema (inert) — reworked by EVC-R1
 

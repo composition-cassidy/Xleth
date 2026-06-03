@@ -32,9 +32,19 @@
 > at runtime. See the "Envelope Controller (EVC) — corrected direction" → "EVC-R2" section of
 > [`fxgraph-architecture.md`](fxgraph-architecture.md).
 >
-> **Future work** is parameter-modulation UX polish (EVC-R3) and the sibling control sources
-> (LFO, Peak Follower) — **not** a return to per-voice `voiceGain`. See the "Envelope Controller
-> (EVC) — corrected direction" → "EVC-R1"/"EVC-R2" sections of
+> **EVC-R3 (done):** the Envelope node UX has been polished as a compact DAW-style modulation node.
+> The default node is collapsed and short, with an AHDSR graph, Trigger source, Retrigger mode,
+> Amount, and outgoing parameter count. Editable graph-mode nodes expose slider-first AHDSR/Amount
+> controls plus AHDSR graph handles that edit only the existing `attackMs`, `holdMs`, `decayMs`,
+> `sustain`, and `releaseMs` fields. Advanced tension controls are behind a disclosure. This is
+> **UI-only**: EVC-R2 runtime trigger evaluation, stop/reset flushing, parameter writes, mapping,
+> and `GraphParameterTarget` behavior are unchanged. It adds **no MSEG/freehand envelope, no
+> engine/native code, no bridge/preload/main changes, no Mixer Chain or `effectChains` mutation, and
+> no revival of retired per-voice EVC.4-EVC.6 files**.
+>
+> **Future work** is the sibling control sources (LFO, Peak Follower) and further modulation UX
+> ergonomics, not a return to per-voice `voiceGain`. See the corrected Envelope Controller
+> sections for EVC-R1, EVC-R2, and EVC-R3 in
 > [`fxgraph-architecture.md`](fxgraph-architecture.md). Everything below is retained as
 > historical record and no longer reflects the product direction.
 

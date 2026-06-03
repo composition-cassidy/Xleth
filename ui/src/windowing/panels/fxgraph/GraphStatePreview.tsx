@@ -149,6 +149,8 @@ interface PositionedNode {
   macroValue: number | null;
   // EVC.3 — normalized envelope definition, present only on envelope nodes.
   envelope: EnvelopeNodeData | null;
+  // EVC-R3 — compact envelope summary count of outgoing parameter links.
+  envelopeParameterEdgeCount: number;
   // True only for effect nodes backed by a real (non-placeholder, non-missing)
   // plugin — the heuristic that enables the Edit button. The actual engine-node
   // resolution still happens asynchronously in the panel's edit handler.
@@ -241,13 +243,10 @@ interface GraphStatePreviewProps {
 
 const NODE_WIDTH = 148;
 const NODE_HEIGHT = 74;
-// EVC.3 / EVC-R1 — envelope nodes are wider (compact editor with several fields)
-// and taller (subtitle + summary + preview curve + editor). EVC-R1 dropped the
-// per-voice fields (voice mode, max voices, legato/glide, target) so the node is
-// shorter than the EVC.3 estimate. These drive layout/canvas bounds only; the
-// height is an illustrative estimate.
+// EVC-R3 — envelope nodes are compact by default. The expanded editor can grow
+// visually, but this estimate keeps normal graph layouts dense.
 const ENVELOPE_NODE_WIDTH = 236;
-const ENVELOPE_NODE_CONTENT_HEIGHT = 244;
+const ENVELOPE_NODE_CONTENT_HEIGHT = 112;
 const PARAMETER_PORT_ROW_HEIGHT = 18;
 const PARAMETER_PORT_SECTION_TOP = 8;
 const PARAMETER_PORT_SECTION_BOTTOM = 10;
@@ -512,6 +511,7 @@ function makeVirtualAnchorNode(
     height: NODE_HEIGHT,
     graphX: x - PREVIEW_PADDING_X,
     graphY: FALLBACK_NODE_Y,
+    envelopeParameterEdgeCount: 0,
     virtual: true,
   };
 }
@@ -595,8 +595,30 @@ function normalizePositionedNodes(nodes: GraphStateNode[], options: PreviewModel
       height: nodeHeightForText(text),
       graphX: position.x,
       graphY: position.y,
+      envelopeParameterEdgeCount: 0,
     };
   });
+}
+
+function countEnvelopeParameterEdges(edges: GraphStateEdge[], nodes: PositionedNode[]) {
+  const envelopeNodeIds = new Set(
+    nodes.filter((node) => node.type === 'envelope').map((node) => node.id),
+  );
+  const counts = new Map<string, number>();
+  for (const edge of edges) {
+    if (edge.type !== 'parameter') continue;
+    if (edge.sourcePort !== 'controlOut') continue;
+    if (!envelopeNodeIds.has(edge.sourceNodeId)) continue;
+    counts.set(edge.sourceNodeId, (counts.get(edge.sourceNodeId) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function applyEnvelopeParameterEdgeCounts(nodes: PositionedNode[], edges: GraphStateEdge[]) {
+  const counts = countEnvelopeParameterEdges(edges, nodes);
+  return nodes.map((node) => node.type === 'envelope'
+    ? { ...node, envelopeParameterEdgeCount: counts.get(node.id) ?? 0 }
+    : node);
 }
 
 function edgeEndpoints(source: PositionedNode, target: PositionedNode) {
@@ -747,7 +769,10 @@ export function buildGraphStatePreviewModel(
 ): PreviewModel {
   const sourceNodes = Array.isArray(graphState?.nodes) ? graphState.nodes : [];
   const sourceEdges = Array.isArray(graphState?.edges) ? graphState.edges : [];
-  const nodes = normalizePositionedNodes(sourceNodes, options);
+  const nodes = applyEnvelopeParameterEdgeCounts(
+    normalizePositionedNodes(sourceNodes, options),
+    sourceEdges,
+  );
   const edges = sourceNodes.length === 0
     ? []
     : normalizePositionedEdges(sourceEdges, nodes, options);
@@ -978,6 +1003,7 @@ export function GraphStatePreviewNode({
         <EnvelopeNodeBody
           nodeId={node.id}
           data={node.envelope}
+          parameterCount={node.envelopeParameterEdgeCount}
           onChange={
             typeof onEnvelopeUpdate === 'function'
               ? (patch) => onEnvelopeUpdate(node.id, patch)
