@@ -265,8 +265,10 @@ const FALLBACK_NODE_Y = 0;
 const MIN_CANVAS_WIDTH = 460;
 const MIN_CANVAS_HEIGHT = 240;
 const DEFAULT_VIEWPORT: GraphStateViewport = Object.freeze({ x: 0, y: 0, zoom: 1 });
-const ZOOM_BUTTON_STEP = 1.15;
-const WHEEL_ZOOM_FACTOR = 1.12;
+const ZOOM_BUTTON_STEP = 1.1;
+// Continuous zoom sensitivity: Math.exp(-deltaY * k).
+// k=0.001 → ~10% per standard 100px wheel notch; trackpad frames are tiny so feel smooth.
+const WHEEL_ZOOM_SENSITIVITY = 0.001;
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
@@ -2074,11 +2076,11 @@ export default function GraphStatePreview({
   }, [onViewportChange, viewport]);
 
   const handleWheel = React.useCallback((event: React.WheelEvent<HTMLDivElement>) => {
-    if (!canEditViewport || !onViewportChange || !event.ctrlKey) return;
+    if (!canEditViewport || !onViewportChange) return;
     event.preventDefault();
     const rect = viewportRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const factor = event.deltaY < 0 ? WHEEL_ZOOM_FACTOR : 1 / WHEEL_ZOOM_FACTOR;
+    const factor = Math.exp(-event.deltaY * WHEEL_ZOOM_SENSITIVITY);
     const nextZoom = clampGraphZoom(viewport.zoom * factor);
     const cursor = { x: event.clientX, y: event.clientY };
     const next = zoomViewportAroundScreenPoint(viewport, cursor, nextZoom, rect);
