@@ -42,9 +42,23 @@
 > engine/native code, no bridge/preload/main changes, no Mixer Chain or `effectChains` mutation, and
 > no revival of retired per-voice EVC.4-EVC.6 files**.
 >
+> **EVC-R2-r1 (done):** the EVC-R2 runtime drove from the **200 ms transport poll**, which is
+> drift-correction-only — so a short ADSR lagged and stair-stepped like a slow random LFO. EVC-R2-r1
+> moves the parameter drive onto **`PlayheadClock` frame updates**, throttled to **60 Hz**
+> (`ENVELOPE_DRIVE_INTERVAL_MS`), and makes the transport subscription **lifecycle-only** (play/stop
+> detection + one stop flush to 0). It adds **latest-wins single-in-flight** async write discipline
+> (no overlapping passes; an older tick never lands after a newer one; the stop flush to 0 is always
+> the final write), a **non-reactive** module-level runtime cache (so 60 Hz drive does not churn
+> Zustand subscribers), and identity-keyed **memoized trigger events**. The ADSR math, trigger
+> reconstruction, and stop/reset semantics are unchanged. It remains renderer-side / control-rate
+> (now 60 Hz, still not sample-accurate); engine/control-block modulation stays future work. **No
+> engine/native, bridge/preload/main, or package-lock changes; no per-voice branch revival; Macro
+> automation untouched.** See the "EVC-R2-r1" section in
+> [`fxgraph-architecture.md`](fxgraph-architecture.md).
+>
 > **Future work** is the sibling control sources (LFO, Peak Follower) and further modulation UX
 > ergonomics, not a return to per-voice `voiceGain`. See the corrected Envelope Controller
-> sections for EVC-R1, EVC-R2, and EVC-R3 in
+> sections for EVC-R1, EVC-R2, EVC-R2-r1, and EVC-R3 in
 > [`fxgraph-architecture.md`](fxgraph-architecture.md). Everything below is retained as
 > historical record and no longer reflects the product direction.
 

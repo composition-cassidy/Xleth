@@ -744,6 +744,11 @@ analysis, and recommended implementation sequence.
 > - **EVC-R3** (done) — polish the Envelope node UX into a compact modulation node:
 >   collapsed-by-default layout, slider-first AHDSR controls, and editable AHDSR graph handles.
 >   Runtime behavior remains EVC-R2 unchanged.
+> - **EVC-R2-r1** (done) — repair Envelope **timing**: move the parameter drive off the 200 ms
+>   transport poll onto `PlayheadClock` frame updates (throttled to 60 Hz) with latest-wins
+>   single-in-flight write discipline and a non-reactive runtime cache. The transport
+>   subscription is now lifecycle-only (play/stop detection + one stop flush to 0). See the
+>   "EVC-R2-r1" section below.
 >
 > The EVC.1 audit and the EVC.4–EVC.6 sections below are retained as historical record; the
 > per-voice model they describe is **no longer the product target**.
@@ -856,6 +861,56 @@ drive unchanged: one graph-owned Envelope node evaluates one triggered normalize
 its existing parameter edges map that value to exposed stock/VST parameters through
 `GraphParameterTarget`. No runtime trigger, stop/reset, parameter-write, mapping, Mixer Chain, or
 `effectChains` behavior changes were introduced.
+
+### EVC-R2-r1 — envelope drive timing repair (PlayheadClock-driven, write-disciplined)
+
+EVC-R2's first cut drove the envelope from the **200 ms transport poller**. That poller is
+explicitly drift-correction-only (`transportStore.js`: `PlayheadClock` handles the 60 fps
+interpolation); writing the envelope once per 200 ms made a short ADSR lag and stair-step like a
+slow random LFO instead of a responsive envelope. EVC-R2-r1 fixes the **cadence and write
+discipline** — the ADSR math, trigger reconstruction, and stop/reset semantics from EVC-R2 are
+unchanged. No engine/native, bridge/preload/main, or package-lock changes; no per-voice branch
+revival; Macro automation is untouched.
+
+- **Two clocks, two responsibilities (`ui/src/fxgraph/envelopePlayback.js`).**
+  `startEnvelopePlayback` now subscribes to **both** the transport poller and
+  `PlayheadClock.onFrame`:
+  - *Transport lifecycle (poll).* Used only for play/stop transition detection. On a transition it
+    resets the runtime cache and invalidates the trigger-event cache; on **stop** it performs the
+    EVC-R2 one-shot flush that drives connected parameters to **0**. It no longer drives per tick.
+  - *High-rate drive (onFrame).* While playing, each frame converts the interpolated `positionMs`
+    to a tick (reusing `positionMsToTick`) and drives the envelope. It reuses the existing
+    `PlayheadClock` frame source TimelineView already runs for auto-scroll — **no second rAF loop
+    and no second poller**. Drive is throttled to a fixed `ENVELOPE_DRIVE_INTERVAL_MS = 1000 / 60`
+    (60 Hz) so high-refresh displays do not over-drive. Because onFrame supplies interpolated
+    positions, a late first transport poll no longer delays the envelope.
+- **Latest-wins, single-in-flight async discipline.** A drive pass is invoked synchronously but its
+  IPC writes are awaited. While one pass is in flight, newer frames overwrite a single `latest`
+  slot (older intermediate ticks are dropped, never replayed). When the in-flight pass resolves, the
+  newest pending tick drives next (only if still playing). This guarantees no overlapping passes and
+  that an older write never lands after a newer one. A stop arriving mid-flight defers the flush
+  until the in-flight write resolves, so the **0 flush is always the final write on stop**; a
+  trailing onFrame after stop is guarded by the playing check and never writes a stale non-zero value.
+- **Non-reactive runtime cache (`ui/src/stores/effectChainStore.js`).** The envelope last-applied
+  dedupe cache moved out of Zustand state into a module-level `envelopeRuntimeLastValues` Map. At
+  60 Hz, updating store state every frame would notify every subscriber and churn the main thread;
+  the Map updates with no `set()`. `resetEnvelopeModulationRuntime` clears the Map (no notification),
+  and project hydration clears it too. Macro's cache is unchanged.
+- **Memoized trigger events.** `buildTrackTriggerEvents` is now cached per controller, keyed by the
+  identity of the `{ clips, patternBlocks, patterns }` references TimelineView exposes (the wrapper
+  object is rebuilt each render, but those inner references are stable between edits). Unchanged data
+  reuses the built event map; any edit / project load / track change swaps a reference and rebuilds.
+- **Limitations (unchanged + clarified).** Still renderer-side / **control-rate**, now at 60 Hz
+  rather than 5 Hz — **not** sample-accurate or audio-rate. Trigger detection still depends on
+  renderer-accessible timeline/pattern data; tension is still not modelled at runtime. The
+  pattern-note held-over reconstruction gap noted in the EVC.1 audit is **not** addressed here. If
+  60 Hz renderer drive is ever insufficient, engine/control-block parameter modulation is the
+  future path — out of scope for this repair.
+- **Scope (unchanged constraints).** No engine/native code, no bridge/preload/main changes, no
+  per-voice EVC files revived, no Sampler/MixEngine changes, no `GraphParameterTarget`/mapping format
+  changes, no LFO work, no Macro runtime change, no `effectChains`/Mixer-Chain mutation, no
+  graph-to-chain return, no React Flow, no `NodeEditor.jsx`/`nodeGraphStore.js`, no package-lock
+  changes.
 
 - **Compact node body.** Envelope nodes now default to a shorter DAW-friendly layout: label +
   `Envelope Modulator`, compact AHDSR graph, Trigger source, Retrigger mode, Amount, and outgoing

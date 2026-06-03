@@ -1025,6 +1025,18 @@ async function driveEnvelopeParameterEdges(get, key, graphState, envelopeNodeId,
   return { ok: true, writes, skipped, results }
 }
 
+// EVC-R2-r1 — session-only, NON-REACTIVE last-applied Envelope output cache. Keyed by
+// `${trackKey}::${envelopeNodeId}` -> last driven normalized value. Used purely to suppress
+// redundant control-rate envelope writes. It is deliberately module-level (not Zustand state)
+// because the EVC-R2-r1 drive runs at 60 Hz off PlayheadClock.onFrame: storing it in the store
+// would notify every subscriber on every frame and churn the main thread. It is never persisted
+// and never read by React; tests assert behavior through the engine writes, not this holder.
+const envelopeRuntimeLastValues = new Map()
+const envelopeRuntimeKey = (trackKey, nodeId) => `${trackKey}::${nodeId}`
+function clearEnvelopeRuntimeCache() {
+  envelopeRuntimeLastValues.clear()
+}
+
 const useEffectChainStore = create((set, get) => ({
   // { [key: "master" | String(trackId)]: [{nodeId, pluginId, position, bypassed}] }
   chains: {},
@@ -1050,10 +1062,9 @@ const useEffectChainStore = create((set, get) => ({
   // { [key: String(trackId)]: { [macroNodeId]: value } }. Used purely to suppress
   // redundant control-rate drive calls during playback. Never persisted.
   macroAutomationLastValues: {},
-  // EVC-R2 — session-only last-applied envelope output values, keyed by
-  // { [key: String(trackId)]: { [envelopeNodeId]: value } }. Used purely to suppress
-  // redundant control-rate envelope drive calls during playback. Never persisted.
-  envelopeAutomationLastValues: {},
+  // EVC-R2-r1 — the Envelope last-applied output cache is NOT Zustand state; it lives in the
+  // module-level non-reactive `envelopeRuntimeLastValues` Map (see above) so 60 Hz drive does
+  // not notify subscribers. Cleared via resetEnvelopeModulationRuntime / project hydration.
 
   ensureFxState: (key) => {
     const { fxModes, fxPanelViews } = get()
@@ -1076,8 +1087,10 @@ const useEffectChainStore = create((set, get) => ({
       graphRuntimeStatuses: {},
       graphHistories: {},
       macroAutomationLastValues: {},
-      envelopeAutomationLastValues: {},
     })
+    // EVC-R2-r1 — envelope runtime cache is non-reactive module state; clear it on project
+    // hydration so a freshly loaded project never reuses a previous session's last values.
+    clearEnvelopeRuntimeCache()
   },
 
   hydrateGraphEffectInstancesForLoadedProject: async (options = {}) => {
@@ -2090,15 +2103,13 @@ const useEffectChainStore = create((set, get) => ({
         })
         const out = evaluateEnvelopeOutput(settings, events, globalTick)
 
-        const last = get().envelopeAutomationLastValues?.[key]?.[node.id]
+        // Non-reactive dedupe (EVC-R2-r1): updating the module-level holder instead of Zustand
+        // state avoids a store notification on every 60 Hz drive pass.
+        const cacheKey = envelopeRuntimeKey(key, node.id)
+        const last = envelopeRuntimeLastValues.get(cacheKey)
         if (last != null && Math.abs(last - out.value) <= epsilon) continue
 
-        set((current) => ({
-          envelopeAutomationLastValues: {
-            ...current.envelopeAutomationLastValues,
-            [key]: { ...(current.envelopeAutomationLastValues?.[key] ?? {}), [node.id]: out.value },
-          },
-        }))
+        envelopeRuntimeLastValues.set(cacheKey, out.value)
         await driveEnvelopeParameterEdges(get, key, graphState, node.id, out.value, options)
         driven.push({ trackId: key, envelopeNodeId: node.id, value: out.value, phase: out.phase })
       }
@@ -2107,9 +2118,11 @@ const useEffectChainStore = create((set, get) => ({
   },
 
   // Clears the session last-applied envelope cache so the next drive re-applies every
-  // envelope (used on transport stop/seek/project-load). Does not change any value itself;
-  // the playback controller follows a stop reset with one no-gate flush pass to drive 0.
-  resetEnvelopeModulationRuntime: () => set({ envelopeAutomationLastValues: {} }),
+  // envelope (used on transport stop/seek/project-load). The cache is the non-reactive
+  // module-level holder (EVC-R2-r1), so this clears it without a store notification. Does
+  // not change any value itself; the playback controller follows a stop reset with one
+  // no-gate flush pass to drive 0.
+  resetEnvelopeModulationRuntime: () => { clearEnvelopeRuntimeCache() },
 
   // ── FXG.4-a graph-owned effect parameter descriptors ──────────────────────
   // Read/write normalized [0,1] parameters for a graph-owned effect node. These

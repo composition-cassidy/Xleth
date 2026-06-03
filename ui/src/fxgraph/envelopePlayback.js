@@ -1,23 +1,36 @@
-// EVC-R2 — control-rate Envelope modulation playback controller.
+// EVC-R2 (timing repaired by EVC-R2-r1) — control-rate Envelope modulation playback controller.
 //
-// Subscribes to the shared transport poller and, on each tick WHILE PLAYING, reconstructs
-// each graph-mode track's parent-track trigger events (clips + pattern-block notes) and
-// asks the effectChainStore to evaluate every Envelope node's ADSR at the current tick and
-// drive the resulting normalized value through the existing Envelope -> Parameter edge path
-// (GraphParameterTarget + setGraphEffectParameterNormalized). Like macroAutomationPlayback,
-// this is renderer-side / control-rate (NOT sample-accurate, NOT on the audio thread):
-// graph parameter drive is already a renderer-side concern, so envelope runtime lives in
-// the same place and reuses the same transport subscription and position->tick conversion.
+// The Envelope runtime has two distinct responsibilities, deliberately driven by two
+// different clocks:
 //
-// Playback never mutates graphState or effectChains. Triggered envelopes only drive while
-// playing; on transport stop the controller resets the session runtime cache and performs
-// one flush pass with no active gates, which drives connected parameters to 0 so a held-
-// open envelope never leaves a parameter stuck.
+//   A. Transport lifecycle (the shared 200 ms transport poller). Used ONLY to detect
+//      play/stop transitions, reset the session runtime cache on a transition, and run a
+//      single stop flush that drives connected parameters to 0. It does NOT do per-tick
+//      parameter drive — at 200 ms granularity a short ADSR would stair-step.
+//
+//   B. High-rate drive (PlayheadClock.onFrame, ~60 fps interpolated playback position).
+//      While playing, this converts the interpolated positionMs to a tick and drives the
+//      Envelope -> Parameter edges. It reuses the existing PlayheadClock frame source that
+//      TimelineView already runs for auto-scroll (no second rAF loop, no second poller).
+//      Drive is throttled to ENVELOPE_DRIVE_INTERVAL_MS (60 Hz) so high-refresh displays
+//      do not over-drive, and is guarded by a latest-wins single-in-flight async discipline
+//      so a slow IPC write never overlaps itself or lets an older tick land after a newer one.
+//
+// Like macroAutomationPlayback this is renderer-side / control-rate (NOT sample-accurate,
+// NOT on the audio thread). Playback never mutates graphState or effectChains. The store's
+// applyEnvelopeModulationAtTick evaluates each Envelope's ADSR from actual reconstructed
+// event ticks (not poll ticks) and drives the value through GraphParameterTarget +
+// setGraphEffectParameterNormalized.
 
 import { subscribe as subscribeTransport } from '../transportStore.js'
 import useEffectChainStore from '../stores/effectChainStore.js'
+import { playheadClock } from '../services/PlayheadClock.js'
 import { positionMsToTick } from './macroAutomationPlayback.js'
 import { computeMsPerTick } from './envelopeModulation.js'
+
+// Fixed 60 Hz drive cadence. onFrame already fires ~60 fps, but high-refresh displays can
+// fire faster; this throttle keeps the envelope write rate bounded and deterministic.
+export const ENVELOPE_DRIVE_INTERVAL_MS = 1000 / 60
 
 // Pure: builds the parent-track trigger events for a single pattern block by expanding the
 // pattern's notes across the block's (possibly looped) window. Mirrors the timeline note
@@ -101,42 +114,162 @@ export function buildTrackTriggerEvents({ clips = [], patternBlocks = [], patter
 }
 
 // Starts the controller. Dependencies are injectable for testing. Returns an unsubscribe
-// function. `getTriggerData` returns { clips, patternBlocks, patterns } from the renderer
-// (TimelineView wires this to its live timeline state).
+// function that tears down BOTH the transport-lifecycle subscription and the onFrame drive.
+//
+// `getTriggerData` returns { clips, patternBlocks, patterns } from the renderer (TimelineView
+// wires this to its live timeline state). The returned object's *identity* is unstable (it is
+// rebuilt every render), but its inner clips/patternBlocks/patterns references are stable
+// between edits, so the trigger-event cache keys on those three references — it reuses the
+// built event map while the source data is unchanged and rebuilds when any reference changes
+// (an edit, a project load, or a track change). This keeps 60 Hz drive cheap on dense projects
+// without fragile deep versioning.
 export function startEnvelopePlayback(deps = {}) {
   const subscribe = deps.subscribe ?? subscribeTransport
+  const onFrame = deps.onFrame ?? ((cb) => playheadClock.onFrame(cb))
   const getStore = deps.getStore ?? (() => useEffectChainStore.getState())
   const getTriggerData = deps.getTriggerData ?? (() => ({}))
+  const getIsPlaying = deps.getIsPlaying ?? (() => playheadClock.isPlaying)
+  const now = deps.now ?? (() =>
+    (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now()))
   const options = deps.options ?? {}
+  const warn = options.warn ?? console.warn
+
   let lastIsPlaying = null
 
+  // ── Memoized trigger events (identity-keyed cache) ────────────────────────────
+  let triggerCache = { clips: null, patternBlocks: null, patterns: null, events: null, valid: false }
+  const invalidateTriggerCache = () => { triggerCache.valid = false }
+  const getTrackEvents = () => {
+    const data = getTriggerData() || {}
+    const clips = data.clips
+    const patternBlocks = data.patternBlocks
+    const patterns = data.patterns
+    if (
+      triggerCache.valid &&
+      triggerCache.clips === clips &&
+      triggerCache.patternBlocks === patternBlocks &&
+      triggerCache.patterns === patterns
+    ) {
+      return triggerCache.events
+    }
+    const events = buildTrackTriggerEvents(data)
+    triggerCache = { clips, patternBlocks, patterns, events, valid: true }
+    return events
+  }
+
+  // ── Latest-wins single-in-flight drive state ──────────────────────────────────
+  let inFlight = false           // a drive pass is awaiting its IPC writes
+  let latest = null              // newest { tick, msPerTick, bpm } not yet driven
+  let lastDriveTime = -Infinity  // last accepted frame time (throttle anchor)
+  let stopFlush = null           // a transport snapshot whose stop flush is deferred behind an in-flight pass
+
+  const driveStopFlush = (transport) => {
+    const store = getStore()
+    if (!store) return
+    store.resetEnvelopeModulationRuntime?.()
+    invalidateTriggerCache()
+    const tick = positionMsToTick(transport.positionMs, transport.bpm)
+    const msPerTick = computeMsPerTick(transport.bpm)
+    // One no-gate flush pass drives every connected parameter to 0. Invoked synchronously so
+    // the call is observable immediately; its promise is guarded against unhandled rejection.
+    const p = store.applyEnvelopeModulationAtTick?.(
+      tick, { ...options, trackEvents: {}, msPerTick, bpm: transport.bpm })
+    if (p && typeof p.catch === 'function') p.catch(() => {})
+  }
+
+  const pump = () => {
+    if (inFlight || latest == null) return
+    if (!getIsPlaying()) { latest = null; return }
+    const store = getStore()
+    const drive = store?.applyEnvelopeModulationAtTick
+    if (!drive) { latest = null; return }
+
+    const frame = latest
+    latest = null
+    inFlight = true
+
+    let result
+    try {
+      result = drive(frame.tick, {
+        ...options,
+        trackEvents: getTrackEvents(),
+        msPerTick: frame.msPerTick,
+        bpm: frame.bpm,
+      })
+    } catch (e) {
+      // Synchronous throw — should not happen (the store action never throws), but stay safe.
+      inFlight = false
+      warn?.('[FXG] envelope drive pass failed', e?.message ?? e)
+      return
+    }
+
+    Promise.resolve(result)
+      .catch((e) => { warn?.('[FXG] envelope drive pass failed', e?.message ?? e) })
+      .finally(() => {
+        inFlight = false
+        if (stopFlush) {
+          // A stop arrived mid-flight. The in-flight (non-zero) write has now completed, so the
+          // flush to 0 lands last — it is the final write on stop, as required.
+          const t = stopFlush
+          stopFlush = null
+          driveStopFlush(t)
+          return
+        }
+        // Latest-wins: if a newer frame arrived while we were in flight and we are still
+        // playing, drive the newest one now. Stale intermediate ticks are never replayed.
+        if (latest != null && getIsPlaying()) pump()
+      })
+  }
+
+  // ── B. High-rate drive path (PlayheadClock.onFrame) ───────────────────────────
+  const handleFrame = (positionMs, bpm) => {
+    if (!getIsPlaying()) return
+    const t = now()
+    if (t - lastDriveTime < ENVELOPE_DRIVE_INTERVAL_MS) return // throttle to 60 Hz
+    lastDriveTime = t
+    latest = {
+      tick: positionMsToTick(positionMs, bpm),
+      msPerTick: computeMsPerTick(bpm),
+      bpm,
+    }
+    pump()
+  }
+
+  // ── A. Transport lifecycle path (200 ms poller) ───────────────────────────────
   const handleTransport = (transport) => {
     if (!transport) return
     const store = getStore()
     if (!store) return
 
-    const playingChanged = transport.isPlaying !== lastIsPlaying
-    if (playingChanged) {
-      lastIsPlaying = transport.isPlaying
-      // On any play/stop transition, reset the session runtime cache so the next drive
-      // re-evaluates from the current position (handles seek-while-stopped and resume).
-      store.resetEnvelopeModulationRuntime?.()
-    }
-
-    const tick = positionMsToTick(transport.positionMs, transport.bpm)
-    const msPerTick = computeMsPerTick(transport.bpm)
+    if (transport.isPlaying === lastIsPlaying) return // lifecycle only — no per-tick drive here
+    lastIsPlaying = transport.isPlaying
 
     if (transport.isPlaying) {
-      const trackEvents = buildTrackTriggerEvents(getTriggerData())
-      // Fire-and-forget: the store dedupes redundant writes and never throws.
-      void store.applyEnvelopeModulationAtTick?.(tick, { ...options, trackEvents, msPerTick, bpm: transport.bpm })
-    } else if (playingChanged) {
-      // Stop transition: one flush pass with no active gates drives connected parameters
-      // to 0 so a triggered envelope never leaves a parameter stuck open. (The cache was
-      // just reset above, so this write is not suppressed.)
-      void store.applyEnvelopeModulationAtTick?.(tick, { ...options, trackEvents: {}, msPerTick, bpm: transport.bpm })
+      // Play transition: reset the session cache and drive-runtime so the next onFrame
+      // re-evaluates from the current position. Allow an immediate first drive.
+      store.resetEnvelopeModulationRuntime?.()
+      invalidateTriggerCache()
+      latest = null
+      lastDriveTime = -Infinity
+      return
+    }
+
+    // Stop transition. Drop any pending frame so no stale non-zero value is driven, then flush
+    // to 0 exactly once. If a drive is still in flight, defer the flush until it resolves so the
+    // 0 write is guaranteed to land last.
+    latest = null
+    if (inFlight) {
+      stopFlush = transport
+    } else {
+      driveStopFlush(transport)
     }
   }
 
-  return subscribe(handleTransport)
+  const unsubscribeTransport = subscribe(handleTransport)
+  const unsubscribeFrame = onFrame(handleFrame)
+
+  return () => {
+    if (typeof unsubscribeTransport === 'function') unsubscribeTransport()
+    if (typeof unsubscribeFrame === 'function') unsubscribeFrame()
+  }
 }

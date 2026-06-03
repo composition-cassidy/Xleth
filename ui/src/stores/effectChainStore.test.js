@@ -1726,8 +1726,9 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(audio.setGraphEffectParameterNormalized).toHaveBeenLastCalledWith(7, 'effect-1', 'mix', 1)
 
     // Reset + a no-gate flush pass (what the playback controller does on stop) -> writes 0.
+    // EVC-R2-r1: the runtime cache is now a non-reactive module-level holder, so reset behavior
+    // is asserted through the resulting engine write (0) rather than store state.
     useEffectChainStore.getState().resetEnvelopeModulationRuntime()
-    expect(useEffectChainStore.getState().envelopeAutomationLastValues).toEqual({})
     await useEffectChainStore.getState().applyEnvelopeModulationAtTick(500, { trackEvents: {}, msPerTick: 1 })
     expect(audio.setGraphEffectParameterNormalized).toHaveBeenLastCalledWith(7, 'effect-1', 'mix', 0)
   })
