@@ -1,6 +1,6 @@
 # FX Graph Architecture
 
-Internal reference for the renderer-side graphState system. Updated through FXG.4-h-r2.
+Internal reference for the renderer-side graphState system. Updated through FXG-VP.1.
 
 ## Data model separation
 
@@ -15,6 +15,20 @@ These two systems are intentionally independent and must never be merged or cros
 - A track is editable by exactly one mode at a time.
 - `effectChains` are owned by chain mode; `graphState` is owned by graph mode.
 - When `fxMode` is `"chain"`, `graphState` is dormant and must not be mutated.
+
+## FXG-VP.1 — Viewport Zoom and Pan
+
+Added a full viewport/camera model to the FX Graph UI (renderer-only, no engine/bridge changes).
+
+- **Viewport state**: `graphState.viewport = { x, y, zoom }`. Zoom range: [0.1, 4]. Default: `{ x:0, y:0, zoom:1 }`.
+- **Rendering transform**: A single CSS `translate(x, y) scale(zoom)` applied to the graph canvas layer (`transform-origin: 0 0`). Node positions remain in graph-space; zoom never mutates node positions.
+- **Controls**: `−` / `zoom%` / `+` toolbar buttons zoom around the viewport center; clicking the % label resets to 100%; `Fit View` zoom-fits all nodes; `Reset View` returns to `{ x:0, y:0, zoom:1 }`.
+- **Wheel zoom**: `Ctrl + mouse wheel` zooms around the cursor position. Plain wheel does not zoom.
+- **Pan**: Middle-mouse drag, Space + left-drag, or left-drag on background.
+- **Node drag**: Screen delta is divided by `viewport.zoom` to get graph-space delta: `graphDelta = screenDelta / zoom`.
+- **Port hit-testing**: `document.elementFromPoint()` operates in screen space — automatically correct under any zoom.
+- **Persistence**: Viewport persists via `setGraphStateViewport()` in `effectChainStore.js` without creating undo history.
+- **Pure helpers**: `ui/src/fxgraph/graphViewport.js` — `clampGraphZoom`, `screenToGraphPoint`, `graphToScreenPoint`, `zoomViewportAroundScreenPoint`, `panViewport`, `fitGraphViewport`.
 
 ## graphState schema
 

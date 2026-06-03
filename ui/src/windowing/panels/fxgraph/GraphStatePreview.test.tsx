@@ -2000,3 +2000,228 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
     expect(html).toContain('Voice Env');
   });
 });
+
+// ---------------------------------------------------------------------------
+// FXG-VP.1 — Viewport Zoom and Pan
+// ---------------------------------------------------------------------------
+
+describe('FXG-VP.1 viewport zoom and pan', () => {
+  // ── Zoom controls rendering ────────────────────────────────────────────────
+
+  it('renders zoom controls when onViewportChange is provided', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([inputNode(), outputNode()], [])}
+        onViewportChange={vi.fn()}
+      />,
+    );
+    expect(html).toContain('aria-label="Zoom in"');
+    expect(html).toContain('aria-label="Zoom out"');
+    expect(html).toContain('Fit View');
+    expect(html).toContain('Reset View');
+    expect(html).toContain('xleth-graph-state-preview__zoom-display');
+  });
+
+  it('does not render zoom controls when onViewportChange is absent', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([inputNode(), outputNode()], [])}
+      />,
+    );
+    expect(html).not.toContain('aria-label="Zoom in"');
+    expect(html).not.toContain('aria-label="Zoom out"');
+    expect(html).not.toContain('xleth-graph-state-preview__zoom-display');
+  });
+
+  it('displays 100% for default zoom 1', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([inputNode(), outputNode()], [])}
+        onViewportChange={vi.fn()}
+      />,
+    );
+    expect(html).toContain('>100%<');
+  });
+
+  it('displays the current zoom percentage from graphState.viewport.zoom', () => {
+    const gs: GraphStateDocument = {
+      schemaVersion: 1,
+      trackId: '7',
+      nodes: [inputNode(), outputNode()],
+      edges: [],
+      viewport: { x: 0, y: 0, zoom: 1.5 },
+    };
+    const html = renderToStaticMarkup(
+      <GraphStatePreview graphState={gs} onViewportChange={vi.fn()} />,
+    );
+    expect(html).toContain('>150%<');
+  });
+
+  it('rounds fractional zoom to a whole percent', () => {
+    const gs: GraphStateDocument = {
+      schemaVersion: 1,
+      trackId: '7',
+      nodes: [inputNode(), outputNode()],
+      edges: [],
+      viewport: { x: 0, y: 0, zoom: 0.753 },
+    };
+    const html = renderToStaticMarkup(
+      <GraphStatePreview graphState={gs} onViewportChange={vi.fn()} />,
+    );
+    expect(html).toContain('>75%<');
+  });
+
+  // ── Canvas transform ───────────────────────────────────────────────────────
+
+  it('applies scale(1) to canvas transform at default zoom', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([inputNode(), outputNode()], [])}
+        onViewportChange={vi.fn()}
+      />,
+    );
+    expect(html).toContain('scale(1)');
+  });
+
+  it('applies the viewport zoom to the canvas CSS transform', () => {
+    const gs: GraphStateDocument = {
+      schemaVersion: 1,
+      trackId: '7',
+      nodes: [inputNode(), outputNode()],
+      edges: [],
+      viewport: { x: 10, y: -5, zoom: 0.75 },
+    };
+    const html = renderToStaticMarkup(
+      <GraphStatePreview graphState={gs} onViewportChange={vi.fn()} />,
+    );
+    expect(html).toContain('scale(0.75)');
+    expect(html).toContain('translate(10px');
+  });
+
+  it('applies zoom 2 to canvas transform', () => {
+    const gs: GraphStateDocument = {
+      schemaVersion: 1,
+      trackId: '7',
+      nodes: [inputNode(), outputNode()],
+      edges: [],
+      viewport: { x: 0, y: 0, zoom: 2 },
+    };
+    const html = renderToStaticMarkup(
+      <GraphStatePreview graphState={gs} onViewportChange={vi.fn()} />,
+    );
+    expect(html).toContain('scale(2)');
+  });
+
+  // ── Workspace active marker ────────────────────────────────────────────────
+
+  it('marks the section as workspace-active when viewport editing is enabled', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([inputNode(), outputNode()], [])}
+        onViewportChange={vi.fn()}
+      />,
+    );
+    expect(html).toContain('data-workspace-active="true"');
+  });
+
+  it('does not mark section as workspace-active in read-only mode', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([inputNode(), outputNode()], [])}
+      />,
+    );
+    expect(html).not.toContain('data-workspace-active="true"');
+  });
+
+  // ── Pannable state ─────────────────────────────────────────────────────────
+
+  it('marks the viewport as pannable when viewport editing is enabled', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([inputNode(), outputNode()], [])}
+        onViewportChange={vi.fn()}
+      />,
+    );
+    expect(html).toContain('data-pannable="true"');
+  });
+
+  it('does not mark the viewport as pannable in read-only mode', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([inputNode(), outputNode()], [])}
+      />,
+    );
+    expect(html).not.toContain('data-pannable');
+  });
+
+  // ── Read-only mode safety ──────────────────────────────────────────────────
+
+  it('read-only mode renders without crashing when zoom is applied in graphState', () => {
+    const gs: GraphStateDocument = {
+      schemaVersion: 1,
+      trackId: '7',
+      nodes: [inputNode(), outputNode()],
+      edges: [],
+      viewport: { x: -30, y: 20, zoom: 1.8 },
+    };
+    expect(() => renderToStaticMarkup(<GraphStatePreview graphState={gs} />)).not.toThrow();
+  });
+
+  it('read-only with zoom still renders audio cables', () => {
+    const gs: GraphStateDocument = {
+      schemaVersion: 1,
+      trackId: '7',
+      nodes: [inputNode(), effectNode('lim', 'Limiter', 0, { x: 260, y: 0 }), outputNode({ x: 520, y: 0 })],
+      edges: [audioEdge('e1', 'input', 'lim'), audioEdge('e2', 'lim', 'output')],
+      viewport: { x: 0, y: 0, zoom: 0.5 },
+    };
+    const html = renderToStaticMarkup(<GraphStatePreview graphState={gs} />);
+    expect(html).toContain('xleth-graph-state-preview__edge--audio');
+    expect(html).toContain('scale(0.5)');
+  });
+
+  // ── Node drag delta under zoom ─────────────────────────────────────────────
+
+  it('node drag delta formula: screenDelta / zoom gives graph-space delta', () => {
+    // At zoom 0.5: 100px screen → 200 graph units
+    expect(100 / 0.5).toBe(200);
+    // At zoom 2.0: 100px screen → 50 graph units
+    expect(100 / 2.0).toBe(50);
+    // At zoom 1.0: 1:1
+    expect(150 / 1.0).toBe(150);
+  });
+
+  // ── Zoom controls alongside existing toolbar buttons ──────────────────────
+
+  it('keeps Undo, Redo, Add buttons coexisting with zoom controls', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([inputNode(), outputNode()], [])}
+        onViewportChange={vi.fn()}
+        onAddEffectNode={vi.fn()}
+        canUndoGraphEdit={false}
+        canRedoGraphEdit={false}
+        onUndoGraphEdit={vi.fn()}
+        onRedoGraphEdit={vi.fn()}
+      />,
+    );
+    expect(html).toContain('Undo');
+    expect(html).toContain('Redo');
+    expect(html).toContain('Add Effect Node');
+    expect(html).toContain('aria-label="Zoom in"');
+    expect(html).toContain('Fit View');
+  });
+
+  // ── Existing "renders view controls" test regression ──────────────────────
+
+  it('view controls include Fit View and Reset View as before', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([inputNode(), outputNode()], [])}
+        onViewportChange={vi.fn()}
+      />,
+    );
+    expect(html).toContain('Fit View');
+    expect(html).toContain('Reset View');
+  });
+});

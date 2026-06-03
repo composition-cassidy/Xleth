@@ -12,6 +12,11 @@ import {
   GRAPH_PARAMETER_CURVE_BEZIER,
 } from '../../../fxgraph/graphState.js';
 import {
+  clampGraphZoom,
+  fitGraphViewport,
+  zoomViewportAroundScreenPoint,
+} from '../../../fxgraph/graphViewport.js';
+import {
   EnvelopeNodeBody,
   readEnvelopeNodeData,
   type EnvelopeNodeData,
@@ -260,6 +265,8 @@ const FALLBACK_NODE_Y = 0;
 const MIN_CANVAS_WIDTH = 460;
 const MIN_CANVAS_HEIGHT = 240;
 const DEFAULT_VIEWPORT: GraphStateViewport = Object.freeze({ x: 0, y: 0, zoom: 1 });
+const ZOOM_BUTTON_STEP = 1.15;
+const WHEEL_ZOOM_FACTOR = 1.12;
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
@@ -1664,6 +1671,19 @@ export default function GraphStatePreview({
     sourceKind: 'audio' | 'macro' | 'envelope';
   } | null>(null);
   const hoveredParameterTargetRef = React.useRef<ParameterDropTarget | null>(null);
+  const spaceDownRef = React.useRef(false);
+
+  React.useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => { if (e.code === 'Space') spaceDownRef.current = true; };
+    const onKeyUp   = (e: KeyboardEvent) => { if (e.code === 'Space') spaceDownRef.current = false; };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup',   onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup',   onKeyUp);
+    };
+  }, []);
+
   const [draggingNodeId, setDraggingNodeId] = React.useState<string | null>(null);
   const [dragPreviewPosition, setDragPreviewPosition] = React.useState<{
     nodeId: string;
@@ -1704,7 +1724,7 @@ export default function GraphStatePreview({
   const canvasStyle: React.CSSProperties = {
     width: model.width,
     height: model.height,
-    transform: `translate(${viewport.x}px, ${viewport.y}px)`,
+    transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`,
   };
   const hasHeader = notice != null || model.empty;
   const canDragNodes = typeof onNodePositionChange === 'function';
@@ -1910,6 +1930,8 @@ export default function GraphStatePreview({
     node: PositionedNode,
   ) => {
     if (!canDragNodes || node.virtual || event.button !== 0) return;
+    // When Space is held the viewport pan handler takes over; let the event bubble.
+    if (spaceDownRef.current) return;
 
     event.preventDefault();
     event.stopPropagation();
@@ -1932,8 +1954,8 @@ export default function GraphStatePreview({
     if (!drag || drag.pointerId !== event.pointerId || !onNodePositionChange) return;
 
     event.preventDefault();
-    const nextX = Math.max(0, drag.startGraphX + (event.clientX - drag.startClientX));
-    const nextY = Math.max(0, drag.startGraphY + (event.clientY - drag.startClientY));
+    const nextX = Math.max(0, drag.startGraphX + (event.clientX - drag.startClientX) / viewport.zoom);
+    const nextY = Math.max(0, drag.startGraphY + (event.clientY - drag.startClientY) / viewport.zoom);
     const roundedX = Math.round(nextX * 100) / 100;
     const roundedY = Math.round(nextY * 100) / 100;
     drag.currentGraphX = roundedX;
@@ -1943,7 +1965,7 @@ export default function GraphStatePreview({
       x: roundedX,
       y: roundedY,
     });
-  }, [onNodePositionChange]);
+  }, [onNodePositionChange, viewport.zoom]);
 
   const finishPan = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (panRef.current?.pointerId === event.pointerId) {
@@ -1954,14 +1976,22 @@ export default function GraphStatePreview({
   }, []);
 
   const handleViewportPointerDown = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    if (!canEditViewport || event.button !== 0) return;
-    const target = event.target;
-    if (
-      typeof Element !== 'undefined' &&
-      target instanceof Element &&
-      target.closest('.xleth-graph-state-preview__node')
-    ) {
-      return;
+    if (!canEditViewport) return;
+    const isMiddle = event.button === 1;
+    const isLeft   = event.button === 0;
+    if (!isLeft && !isMiddle) return;
+
+    // Left-click without Space: skip if pointer is over a node (node drag takes over).
+    // Middle-click or Space+left always pans regardless of target.
+    if (isLeft && !spaceDownRef.current) {
+      const target = event.target;
+      if (
+        typeof Element !== 'undefined' &&
+        target instanceof Element &&
+        target.closest('.xleth-graph-state-preview__node')
+      ) {
+        return;
+      }
     }
 
     event.preventDefault();
@@ -1992,27 +2022,68 @@ export default function GraphStatePreview({
     if (!onViewportChange) return;
     const rect = viewportRef.current?.getBoundingClientRect();
     if (!rect) return;
-
+    const result = fitGraphViewport(model.nodes, { width: rect.width, height: rect.height });
     onViewportChange({
-      x: roundViewport((rect.width - model.bounds.width) / 2 - model.bounds.minX),
-      y: roundViewport((rect.height - model.bounds.height) / 2 - model.bounds.minY),
-      zoom: viewport.zoom,
+      x: roundViewport(result.x),
+      y: roundViewport(result.y),
+      zoom: result.zoom,
     });
-  }, [model.bounds.height, model.bounds.minX, model.bounds.minY, model.bounds.width, onViewportChange, viewport.zoom]);
+  }, [model.nodes, onViewportChange]);
 
   const handleResetView = React.useCallback(() => {
     onViewportChange?.({
       x: DEFAULT_VIEWPORT.x,
       y: DEFAULT_VIEWPORT.y,
-      zoom: viewport.zoom,
+      zoom: DEFAULT_VIEWPORT.zoom,
     });
-  }, [onViewportChange, viewport.zoom]);
+  }, [onViewportChange]);
 
   const toCanvasPoint = React.useCallback((clientX: number, clientY: number) => {
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return null;
-    return { x: clientX - rect.left, y: clientY - rect.top };
-  }, []);
+    return { x: (clientX - rect.left) / viewport.zoom, y: (clientY - rect.top) / viewport.zoom };
+  }, [viewport.zoom]);
+
+  const handleZoomIn = React.useCallback(() => {
+    if (!onViewportChange) return;
+    const rect = viewportRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const center = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    const nextZoom = clampGraphZoom(viewport.zoom * ZOOM_BUTTON_STEP);
+    const next = zoomViewportAroundScreenPoint(viewport, center, nextZoom, rect);
+    onViewportChange({ x: roundViewport(next.x), y: roundViewport(next.y), zoom: next.zoom });
+  }, [onViewportChange, viewport]);
+
+  const handleZoomOut = React.useCallback(() => {
+    if (!onViewportChange) return;
+    const rect = viewportRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const center = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    const nextZoom = clampGraphZoom(viewport.zoom / ZOOM_BUTTON_STEP);
+    const next = zoomViewportAroundScreenPoint(viewport, center, nextZoom, rect);
+    onViewportChange({ x: roundViewport(next.x), y: roundViewport(next.y), zoom: next.zoom });
+  }, [onViewportChange, viewport]);
+
+  const handleZoomReset = React.useCallback(() => {
+    if (!onViewportChange) return;
+    const rect = viewportRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const center = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    const next = zoomViewportAroundScreenPoint(viewport, center, 1, rect);
+    onViewportChange({ x: roundViewport(next.x), y: roundViewport(next.y), zoom: 1 });
+  }, [onViewportChange, viewport]);
+
+  const handleWheel = React.useCallback((event: React.WheelEvent<HTMLDivElement>) => {
+    if (!canEditViewport || !onViewportChange || !event.ctrlKey) return;
+    event.preventDefault();
+    const rect = viewportRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const factor = event.deltaY < 0 ? WHEEL_ZOOM_FACTOR : 1 / WHEEL_ZOOM_FACTOR;
+    const nextZoom = clampGraphZoom(viewport.zoom * factor);
+    const cursor = { x: event.clientX, y: event.clientY };
+    const next = zoomViewportAroundScreenPoint(viewport, cursor, nextZoom, rect);
+    onViewportChange({ x: roundViewport(next.x), y: roundViewport(next.y), zoom: next.zoom });
+  }, [canEditViewport, onViewportChange, viewport]);
 
   const resetConnect = React.useCallback((event: React.PointerEvent<HTMLSpanElement>) => {
     if (connectRef.current?.pointerId === event.pointerId) {
@@ -2215,6 +2286,30 @@ export default function GraphStatePreview({
                   <button
                     className="xleth-graph-state-preview__view-button"
                     type="button"
+                    onClick={handleZoomOut}
+                    aria-label="Zoom out"
+                  >
+                    {'−'}
+                  </button>
+                  <button
+                    className="xleth-graph-state-preview__zoom-display"
+                    type="button"
+                    onClick={handleZoomReset}
+                    title="Reset zoom to 100%"
+                  >
+                    {`${Math.round(viewport.zoom * 100)}%`}
+                  </button>
+                  <button
+                    className="xleth-graph-state-preview__view-button"
+                    type="button"
+                    onClick={handleZoomIn}
+                    aria-label="Zoom in"
+                  >
+                    {'+'}
+                  </button>
+                  <button
+                    className="xleth-graph-state-preview__view-button"
+                    type="button"
                     onClick={handleFitView}
                   >
                     Fit View
@@ -2241,6 +2336,7 @@ export default function GraphStatePreview({
         onPointerMove={canEditViewport ? handleViewportPointerMove : undefined}
         onPointerUp={canEditViewport ? finishPan : undefined}
         onPointerCancel={canEditViewport ? finishPan : undefined}
+        onWheel={canEditViewport ? handleWheel : undefined}
       >
         <div className="xleth-graph-state-preview__stage" data-preview-scroll-stage="true">
           <div

@@ -15,8 +15,8 @@ export const GRAPH_STATE_SCHEMA_VERSION = 1
 const DEFAULT_VIEWPORT = Object.freeze({ x: 0, y: 0, zoom: 1 })
 const FALLBACK_NODE_SPACING_X = 260
 const FALLBACK_NODE_Y = 0
-const MIN_VIEWPORT_ZOOM = 0.1
-const MAX_VIEWPORT_ZOOM = 4
+export const MIN_VIEWPORT_ZOOM = 0.1
+export const MAX_VIEWPORT_ZOOM = 4
 
 export const GRAPH_MACRO_NODE_TYPE = 'macro'
 export const GRAPH_MACRO_OUTPUT_PORT = 'controlOut'
