@@ -749,6 +749,10 @@ analysis, and recommended implementation sequence.
 >   single-in-flight write discipline and a non-reactive runtime cache. The transport
 >   subscription is now lifecycle-only (play/stop detection + one stop flush to 0). See the
 >   "EVC-R2-r1" section below.
+> - **EVC-R2-r2** (done) — repair pattern-note **held-over reconstruction**: a pattern note is now
+>   included when its gate overlaps the block window, not only when its onset falls inside it, so a
+>   note held into the window (block offset, or a long note from an earlier loop iteration) is seen
+>   and the ADSR is evaluated from the note's real start. See the "EVC-R2-r2" section below.
 >
 > The EVC.1 audit and the EVC.4–EVC.6 sections below are retained as historical record; the
 > per-voice model they describe is **no longer the product target**.
@@ -925,6 +929,46 @@ revival; Macro automation is untouched.
   freehand drawing, not automation lanes, and not audio-rate/sample-accurate modulation.
 - **Scope.** No engine/native code, no bridge/preload/main changes, no package-lock changes, no
   retired per-voice EVC files revived, no Sampler/MixEngine changes, no Macro regression, no
+  `effectChains`/Mixer-Chain mutation, no graph-to-chain return, no React Flow, no
+  `NodeEditor.jsx`/`nodeGraphStore.js`.
+
+### EVC-R2-r2 — pattern-note held-over reconstruction
+
+EVC-R2-r1 fixed the drive *cadence*; EVC-R2-r2 fixes the remaining *trigger reconstruction* gap the
+EVC.1 audit flagged. `buildPatternBlockNoteEvents` (`ui/src/fxgraph/envelopePlayback.js`) previously
+emitted a pattern note only when its onset (`tape`) fell inside the block window
+`[offsetTicks, offsetTicks + durationTicks)`. A note that **started before the window but was still
+held inside it** — a block scrolled by `offsetTicks`, or a long note carried over from an earlier
+loop iteration — was skipped, so the envelope saw no gate and read 0 / released early mid-held-note.
+
+- **Overlap inclusion, real start/end preserved.** A note is now emitted when its gate
+  `[tape, tape + durationTicks)` **overlaps** the window (half-open: `tape < windowEnd &&
+  tape + dur > windowStart`), in addition to the original onset-in-window case. The note's **real**
+  absolute start/end are kept — `startTick = blockPos + (tape - windowStart)` (which can be earlier
+  than the block's left edge) and `endTick = startTick + dur`. ADSR elapsed therefore stays
+  `queryTick - noteStartTick` and release still begins at the real note end.
+- **Earlier loop iterations.** When the block loops, the first scanned iteration is extended downward
+  by the longest note (`firstLoop = max(0, floor((windowStart - maxNoteDur) / patLen))`) so a note
+  begun in a prior iteration and still held into the window is reconstructed. The per-note overlap
+  test does the precise filtering; the extra iterations are cheap and emit no spurious events.
+  Loop-disabled blocks keep their original "iteration 0 only, remainder is empty space" semantics.
+- **No collapse/merge in the builder.** The builder still emits one event per note (same-tick chord
+  members stay separate); same-tick chord collapse and overlapping-gate merge remain in
+  `envelopeModulation` (`buildGateRegions` / `resolveActiveGate`). One Envelope node still yields one
+  value — no per-voice/per-note outputs.
+- **Clips unchanged.** Clip gates were already position-pure; clip event building, mid-clip
+  evaluation, overlap merge, and Notes/Clips/NotesAndClips filtering are untouched.
+- **Timing unchanged.** The EVC-R2-r1 `PlayheadClock.onFrame` 60 Hz drive, latest-wins
+  single-in-flight guard, non-reactive runtime cache, one stop flush to 0, trailing-frame stop guard,
+  and identity-keyed trigger memoization are all preserved. Runtime stays renderer-side /
+  control-rate (still **not** sample-accurate/audio-rate).
+- **Remaining edge.** A held-over note whose **real absolute start maps below tick 0** (a block
+  within one note-length of the timeline origin combined with a positive `offsetTicks`) is still
+  dropped downstream by `collectGateIntervals`' non-negative-start guard. This is a rare corner left
+  as a documented limitation to keep the clip path's guard unchanged.
+- **Scope.** No engine/native code, no bridge/preload/main changes, no package-lock changes, no
+  retired per-voice EVC files revived, no Sampler/MixEngine changes, no Macro runtime change, no
+  `GraphParameterTarget`/mapping-format change, no stop/reset-policy change, no LFO work, no
   `effectChains`/Mixer-Chain mutation, no graph-to-chain return, no React Flow, no
   `NodeEditor.jsx`/`nodeGraphStore.js`.
 

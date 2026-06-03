@@ -40,6 +40,17 @@ export const ENVELOPE_DRIVE_INTERVAL_MS = 1000 / 60
 //   - the pattern loops across that window unless block.loopEnabled === false (then only
 //     loop iteration 0 plays)
 //   - a visible note's absolute timeline start = block.positionTicks + (tape - windowStart)
+//
+// EVC-R2-r2 — held-over reconstruction. A note is emitted when its GATE overlaps the block
+// window, not only when its onset (tape) falls inside it. This recovers notes whose onset is
+// before windowStart (e.g. a block scrolled by offsetTicks, or a long note from an earlier
+// loop iteration) but whose duration sustains into the window — the case the renderer drive
+// otherwise skipped, leaving the envelope to read 0 / release early mid-held-note. The note's
+// REAL absolute start/end are preserved (startTick can be < blockPos): ADSR elapsed stays
+// `queryTick - noteStartTick` and release still begins at the real note end. Same-tick chord
+// collapse and overlapping-gate merge happen later in envelopeModulation (buildGateRegions /
+// resolveActiveGate); this builder never collapses or de-duplicates notes.
+//
 // Returns [{ kind: 'note', startTick, endTick }].
 export function buildPatternBlockNoteEvents(block, pattern) {
   const events = []
@@ -56,19 +67,42 @@ export function buildPatternBlockNoteEvents(block, pattern) {
   const windowStart = offsetTicks
   const windowEnd = offsetTicks + blockDur
 
+  const noteDur = (note) =>
+    (Number.isFinite(note?.durationTicks) ? Math.max(0, note.durationTicks) : 0)
+
   const blockLoopEnabled = block.loopEnabled !== false
-  const firstLoop = Math.floor(windowStart / patLen)
+  let firstLoop = Math.floor(windowStart / patLen)
   let lastLoop = Math.floor((windowEnd - 1) / patLen)
-  if (!blockLoopEnabled) lastLoop = Math.min(lastLoop, 0)
+  if (!blockLoopEnabled) {
+    // Loop disabled: only iteration 0 plays; the rest of the block is empty space. Keep the
+    // original first/last iteration bounds so disabled-loop semantics are unchanged.
+    lastLoop = Math.min(lastLoop, 0)
+  } else {
+    // Loop enabled: extend the first iteration downward by the longest note so a note that
+    // started in an earlier iteration but is still held into the window is reconstructed.
+    // The per-note overlap test below does the precise filtering; extra iterations are cheap
+    // and produce no spurious events. Negative iterations do not exist (tape is >= 0).
+    let maxNoteDur = 0
+    for (const note of notes) {
+      const d = noteDur(note)
+      if (d > maxNoteDur) maxNoteDur = d
+    }
+    firstLoop = Math.max(0, Math.floor((windowStart - maxNoteDur) / patLen))
+  }
 
   for (let loop = firstLoop; loop <= lastLoop; loop += 1) {
     for (const note of notes) {
       if (note == null) continue
       const notePos = Number.isFinite(note.positionTicks) ? note.positionTicks : 0
       const tape = loop * patLen + notePos
-      if (tape < windowStart || tape >= windowEnd) continue
+      const dur = noteDur(note)
+      // Include the note when its onset is inside the window (original behavior) OR when it
+      // started earlier but its gate is still open inside the window (held-over). Half-open
+      // intervals: gate [tape, tape + dur) overlaps window [windowStart, windowEnd).
+      const startsInWindow = tape >= windowStart && tape < windowEnd
+      const heldOverIntoWindow = tape < windowStart && tape + dur > windowStart
+      if (!startsInWindow && !heldOverIntoWindow) continue
       const startTick = blockPos + (tape - windowStart)
-      const dur = Number.isFinite(note.durationTicks) ? Math.max(0, note.durationTicks) : 0
       events.push({ kind: 'note', startTick, endTick: startTick + dur })
     }
   }

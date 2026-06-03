@@ -6,6 +6,7 @@ import {
   startEnvelopePlayback,
 } from './envelopePlayback.js'
 import { positionMsToTick } from './macroAutomationPlayback.js'
+import { evaluateEnvelopeOutput, normalizeEnvelopeRuntimeSettings } from './envelopeModulation.js'
 
 // Lets pending promise .catch/.finally chains settle (pump's single-in-flight guard releases
 // inFlight in a .finally, which is a macrotask away from a synchronous frame() call).
@@ -40,6 +41,134 @@ describe('buildPatternBlockNoteEvents', () => {
   it('returns nothing for missing/empty patterns', () => {
     expect(buildPatternBlockNoteEvents({ positionTicks: 0, durationTicks: 100 }, null)).toEqual([])
     expect(buildPatternBlockNoteEvents({ positionTicks: 0, durationTicks: 100 }, { lengthTicks: 0, notes: [] })).toEqual([])
+  })
+})
+
+describe('buildPatternBlockNoteEvents — EVC-R2-r2 held-over reconstruction', () => {
+  // Block scrolled by offsetTicks=1500: its window is pattern-tape [1500, 2500). blockPos is
+  // large enough that held-over notes still map to non-negative absolute ticks.
+  const block = { positionTicks: 10000, durationTicks: 1000, offsetTicks: 1500, loopEnabled: true }
+
+  it('includes a note that starts before the window but is held inside it, preserving real start/end', () => {
+    // Single pattern iteration (huge patLen). Note gate (tape) [1000, 2000) overlaps window
+    // [1500, 2500) even though its onset (1000) is before windowStart (1500).
+    const pattern = { lengthTicks: 100000, notes: [{ positionTicks: 1000, durationTicks: 1000 }] }
+    const events = buildPatternBlockNoteEvents(block, pattern)
+    // Real absolute start = blockPos + (tape - windowStart) = 10000 + (1000 - 1500) = 9500.
+    // Real absolute end preserved at 9500 + 1000 = 10500 (NOT clamped to the window edge).
+    expect(events).toEqual([{ kind: 'note', startTick: 9500, endTick: 10500 }])
+  })
+
+  it('excludes a note whose gate ends before the window', () => {
+    const pattern = { lengthTicks: 100000, notes: [{ positionTicks: 100, durationTicks: 200 }] }
+    // gate [100, 300) does not reach windowStart 1500.
+    expect(buildPatternBlockNoteEvents(block, pattern)).toEqual([])
+  })
+
+  it('excludes a note whose onset is at/after the window end', () => {
+    const pattern = { lengthTicks: 100000, notes: [{ positionTicks: 3000, durationTicks: 100 }] }
+    // onset 3000 >= windowEnd 2500.
+    expect(buildPatternBlockNoteEvents(block, pattern)).toEqual([])
+  })
+
+  it('reconstructs a long note held over from an earlier loop iteration', () => {
+    // patLen 1000; note at tape position 900 with dur 1000 -> iteration 0 gate [900, 1900)
+    // overlaps the window [1500, 2500) but its onset (900) is in the PREVIOUS iteration window.
+    const pattern = { lengthTicks: 1000, notes: [{ positionTicks: 900, durationTicks: 1000 }] }
+    const events = buildPatternBlockNoteEvents(block, pattern)
+    // Iteration 0 (held-over, onset 900): start = 10000 + (900 - 1500) = 9400.
+    // Iteration 1 (onset 1900, starts in window): start = 10000 + (1900 - 1500) = 10400.
+    expect(events).toContainEqual({ kind: 'note', startTick: 9400, endTick: 10400 })
+    expect(events).toContainEqual({ kind: 'note', startTick: 10400, endTick: 11400 })
+  })
+
+  it('does not collapse same-tick notes in the builder (collapse is left to the gate resolver)', () => {
+    // A two-note same-tick chord stays two events here; envelopeModulation collapses them into
+    // one gate at evaluation time (covered by envelopeModulation.test.js).
+    const pattern = {
+      lengthTicks: 100000,
+      notes: [
+        { positionTicks: 1000, durationTicks: 1000 },
+        { positionTicks: 1000, durationTicks: 1000 },
+      ],
+    }
+    const events = buildPatternBlockNoteEvents(block, pattern)
+    expect(events).toEqual([
+      { kind: 'note', startTick: 9500, endTick: 10500 },
+      { kind: 'note', startTick: 9500, endTick: 10500 },
+    ])
+  })
+
+  it('does not regress offset-0 blocks (every note onset is already in-window)', () => {
+    const pattern = { lengthTicks: 100, notes: [{ positionTicks: 0, durationTicks: 20 }, { positionTicks: 50, durationTicks: 10 }] }
+    const flat = { positionTicks: 0, durationTicks: 100, offsetTicks: 0, loopEnabled: true }
+    expect(buildPatternBlockNoteEvents(flat, pattern)).toEqual([
+      { kind: 'note', startTick: 0, endTick: 20 },
+      { kind: 'note', startTick: 50, endTick: 60 },
+    ])
+  })
+})
+
+describe('held-over reconstruction → envelope evaluation (integration)', () => {
+  // Proves the builder's real start/end flow into ADSR evaluation: a held-over note is evaluated
+  // with elapsed measured from its REAL start, not from the block/window edge.
+  it('evaluates a held-over note from its real start tick (elapsed = query - realStart)', () => {
+    const block = { positionTicks: 10000, durationTicks: 1000, offsetTicks: 1500, loopEnabled: true }
+    const pattern = { lengthTicks: 100000, notes: [{ positionTicks: 1000, durationTicks: 1000 }] }
+    const events = buildPatternBlockNoteEvents(block, pattern) // [{ start: 9500, end: 10500 }]
+
+    // attack 1000 ticks (msPerTick = 1), linear 0 -> 1; sustain 1, no decay/release; amount 1.
+    const settings = normalizeEnvelopeRuntimeSettings(
+      { attackMs: 1000, holdMs: 0, decayMs: 0, sustain: 1, releaseMs: 0, amount: 1,
+        triggerSource: { kind: 'parentTrack', events: 'notes' }, retriggerMode: 'restart' },
+      { msPerTick: 1 },
+    )
+
+    // Query mid-attack at tick 10000: elapsed from real start 9500 is 500 -> 0.5.
+    // (If elapsed were measured from the window edge 10000, this would wrongly read 0.)
+    const out = evaluateEnvelopeOutput(settings, events, 10000)
+    expect(out.value).toBeCloseTo(0.5, 5)
+  })
+
+  it('keeps the gate open across overlapping held-over notes until the last real end', () => {
+    // Two block notes whose gates overlap: [9500, 10500) and [10000, 11500) -> merged region
+    // [9500, 11500). With a long release, a query inside the merged region stays at sustain.
+    const block = { positionTicks: 10000, durationTicks: 2000, offsetTicks: 1500, loopEnabled: true }
+    const pattern = {
+      lengthTicks: 100000,
+      notes: [
+        { positionTicks: 1000, durationTicks: 1000 }, // gate tape [1000, 2000) -> abs [9500, 10500)
+        { positionTicks: 1500, durationTicks: 1500 }, // gate tape [1500, 3000) -> abs [10000, 11500)
+      ],
+    }
+    const events = buildPatternBlockNoteEvents(block, pattern)
+    const settings = normalizeEnvelopeRuntimeSettings(
+      { attackMs: 0, holdMs: 0, decayMs: 0, sustain: 1, releaseMs: 1000, amount: 1,
+        triggerSource: { kind: 'parentTrack', events: 'notes' }, retriggerMode: 'legato' },
+      { msPerTick: 1 },
+    )
+    // At tick 11000 (past the first note's end 10500 but inside the merged region end 11500)
+    // the gate is still held -> sustain 1, not releasing.
+    expect(evaluateEnvelopeOutput(settings, events, 11000).value).toBeCloseTo(1, 5)
+  })
+
+  it('honors the trigger source over built note + clip events', () => {
+    // One track with a clip gate [0, 5000) and a pattern note gate [1000, 6000).
+    const clips = [{ trackId: 7, positionTicks: 0, durationTicks: 5000 }]
+    const patternBlocks = [{ trackId: 7, patternId: 'p1', positionTicks: 1000, durationTicks: 5000, offsetTicks: 0, loopEnabled: false }]
+    const patterns = { p1: { lengthTicks: 100000, notes: [{ positionTicks: 0, durationTicks: 5000 }] } }
+    const events = buildTrackTriggerEvents({ clips, patternBlocks, patterns })['7']
+
+    const make = (mode) => normalizeEnvelopeRuntimeSettings(
+      { attackMs: 0, holdMs: 0, decayMs: 0, sustain: 1, releaseMs: 0, amount: 1,
+        triggerSource: { kind: 'parentTrack', events: mode }, retriggerMode: 'restart' },
+      { msPerTick: 1 },
+    )
+
+    // At tick 5500: clip gate has ended (>=5000), note gate still open (<6000).
+    expect(evaluateEnvelopeOutput(make('notes'), events, 5500).value).toBeCloseTo(1, 5) // note seen
+    expect(evaluateEnvelopeOutput(make('clips'), events, 5500).value).toBeCloseTo(0, 5) // clip ended, note ignored
+    expect(evaluateEnvelopeOutput(make('notesAndClips'), events, 5500).value).toBeCloseTo(1, 5) // note seen
   })
 })
 

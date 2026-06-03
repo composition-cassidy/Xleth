@@ -56,9 +56,23 @@
 > automation untouched.** See the "EVC-R2-r1" section in
 > [`fxgraph-architecture.md`](fxgraph-architecture.md).
 >
+> **EVC-R2-r2 (done):** fixes the **pattern-note held-over reconstruction** gap below (§3 "Pattern
+> notes — start/end", §5). `buildPatternBlockNoteEvents` now emits a pattern note when its gate
+> **overlaps** the block window, not only when its onset falls inside it — so a note that started
+> before the window (block `offsetTicks`, or a long note carried from an earlier loop iteration) but
+> is still held inside it is reconstructed. The note's **real** start/end are preserved, so the ADSR
+> is evaluated from the note's actual start (`elapsed = queryTick - noteStartTick`) and release
+> begins at the real note end. Same-tick chord collapse and overlapping-gate merge still happen once
+> in `envelopeModulation` (no per-voice/per-note outputs); clip gates are unchanged. The EVC-R2-r1
+> 60 Hz `PlayheadClock` drive is unchanged. Runtime stays renderer-side / control-rate (still not
+> sample-accurate/audio-rate). **No engine/native, bridge/preload/main, or package-lock changes; no
+> per-voice branch revival; Macro automation untouched.** Remaining edge: a held-over note whose real
+> absolute start maps below tick 0 is still dropped by the non-negative-start guard. See the
+> "EVC-R2-r2" section in [`fxgraph-architecture.md`](fxgraph-architecture.md).
+>
 > **Future work** is the sibling control sources (LFO, Peak Follower) and further modulation UX
 > ergonomics, not a return to per-voice `voiceGain`. See the corrected Envelope Controller
-> sections for EVC-R1, EVC-R2, EVC-R2-r1, and EVC-R3 in
+> sections for EVC-R1, EVC-R2, EVC-R2-r1, EVC-R2-r2, and EVC-R3 in
 > [`fxgraph-architecture.md`](fxgraph-architecture.md). Everything below is retained as
 > historical record and no longer reflects the product direction.
 
