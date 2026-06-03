@@ -797,6 +797,55 @@ drive is deferred to EVC-R2.
   regression, no `effectChains`/Mixer-Chain mutation, no graph-to-chain return, no React Flow, no
   `NodeEditor.jsx`/`nodeGraphStore.js`, no package-lock changes.
 
+### EVC-R2 — triggered-ADSR runtime drive for Envelope→parameter edges
+
+EVC-R2 adds the **first runtime drive** for the Envelope→parameter edges EVC-R1 created. An
+Envelope node now produces a single normalized `0..1` ADSR value, triggered by its parent track's
+notes/clips, and drives its connected parameter edges through the same path Macro automation uses:
+the per-link mapping (FXG.4-e/f/g) shapes the value, a `GraphParameterTarget` resolves the exposed
+port, and `setGraphEffectParameterNormalized` (FXG.4-a) writes the stock/VST parameter. The runtime
+is **renderer-side / control-rate** — the same timing class as macro automation playback, **not**
+sample-accurate or audio-rate. It uses no per-voice gain, no Sampler, no MixEngine, and none of the
+retired EVC.4–EVC.6 engine files; it never mutates Mixer Chain, `effectChains`, or `graphState`.
+
+- **Pure evaluation (`ui/src/fxgraph/envelopeModulation.js`).** `normalizeEnvelopeRuntimeSettings`
+  converts the node's AHDSR milliseconds to ticks (via the transport's bpm/PPQ → `msPerTick`).
+  `collectGateIntervals` filters the parent track's trigger events by `triggerSource.events`
+  (`notes` / `clips` / `notesAndClips`); `resolveActiveGate` merges overlapping events into
+  continuous gate regions (so overlapping notes/clips hold the gate open until the **last** one
+  ends, and same-tick chords collapse to one trigger), then picks the attack origin per
+  `retriggerMode` (`restart` re-attacks from the latest trigger start; `legato` keeps the region
+  start). `evaluateEnvelopeAdsrAtTime` walks straight A/H/D/S/R segments; **release falls from the
+  actual level at gate end**, not an assumed sustain (correct for short gates). `amount` scales the
+  final value once. Evaluation is **stateless across ticks** — the active gate is reconstructed from
+  the full event list each tick, so seeking into an active note/clip evaluates the correct phase
+  from the gate start. **Tension is ignored at runtime** (documented), matching the node preview
+  which also draws straight segments.
+- **Store (`ui/src/stores/effectChainStore.js`).** `applyEnvelopeModulationAtTick(globalTick,
+  { trackEvents, msPerTick, bpm })` iterates graph-mode tracks (master/chain skipped), evaluates
+  each Envelope node, and calls `driveEnvelopeParameterEdges` → `collectEnvelopeParameterWrites` →
+  `setGraphEffectParameterNormalized`. Disabled mappings, unresolved/read-only targets, and
+  envelopes with no edges fail safely; one failed write never aborts the others. Redundant writes
+  are suppressed via the session-only `envelopeAutomationLastValues` cache (reset on project load /
+  hydration and by `resetEnvelopeModulationRuntime`). It never mutates `graphState`, `effectChains`,
+  or syncs audio topology.
+- **Playback (`ui/src/fxgraph/envelopePlayback.js`, mounted once from `TimelineView.jsx`).**
+  `startEnvelopePlayback` subscribes to the **same shared transport poller** as macro automation
+  (no second competing loop), reuses `positionMsToTick`, and reconstructs per-track trigger events
+  from the live timeline (`buildTrackTriggerEvents`: clips → clip gates; pattern blocks + patterns →
+  note gates, mirroring the timeline note-drawing math). It drives **only while playing**.
+- **Stop/reset behavior (chosen).** On the play↔stop transition the controller resets the session
+  cache; on **stop** it performs one flush pass with no active gates, which drives every connected
+  parameter to **0**. This prevents a triggered envelope from leaving a parameter stuck open, and a
+  stopped transport never keeps writing.
+- **Limitations.** Control-rate only (poll-rate granularity, not sample-accurate/audio-rate); trigger
+  detection depends on renderer-accessible timeline/pattern data (a clip's notes produce no triggers
+  if its pattern is not loaded; clip gates are always exact); tension is not modelled at runtime.
+- **Scope (unchanged constraints).** No engine/native code, no bridge/preload/main changes, no
+  per-voice EVC files revived, no Sampler/MixEngine changes, no new parameter-mapping format, no LFO
+  work, no Macro regression, no `effectChains`/Mixer-Chain mutation, no graph-to-chain return, no
+  React Flow, no `NodeEditor.jsx`/`nodeGraphStore.js`, no package-lock changes.
+
 ### EVC.2 — envelope node graphState schema (inert) — reworked by EVC-R1
 
 > The EVC.2 renderer-side schema was **reworked by EVC-R1** from a per-voice `voiceGain` target

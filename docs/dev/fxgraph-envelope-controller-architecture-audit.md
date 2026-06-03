@@ -14,9 +14,27 @@
 > **EVC-R1 (done):** the renderer schema + node UI have been reworked into this
 > parameter-modulator shape — the `voiceGain` target and per-voice fields are gone, and the
 > Envelope node now exposes a `controlOut` port that links to exposed effect parameters via
-> parameter edges (`GraphParameterTarget`), reusing the Macro wiring. It is still
-> **runtime-inert** (no parameter writes). **EVC-R2** will implement the triggered-ADSR runtime
-> drive. See the "Envelope Controller (EVC) — corrected direction" → "EVC-R1" section of
+> parameter edges (`GraphParameterTarget`), reusing the Macro wiring. It was still
+> **runtime-inert** (no parameter writes).
+>
+> **EVC-R2 (done):** the **triggered-ADSR runtime drive** is now live. An Envelope produces one
+> normalized `0..1` value per node, triggered by its parent track's notes/clips, and drives its
+> connected parameter edges through the existing mapping + `GraphParameterTarget` +
+> `setGraphEffectParameterNormalized` path. It is **renderer-side / control-rate** (same timing
+> class as macro automation playback), reconstructed deterministically each transport tick (no
+> per-voice outputs — overlapping notes/clips collapse into gate regions, never summed/averaged).
+> On stop it flushes connected parameters to 0. It uses **no per-voice gain, no Sampler, no
+> MixEngine, and none of the retired EVC.4–EVC.6 engine files**, and never mutates Mixer Chain or
+> `effectChains`. Files: `ui/src/fxgraph/envelopeModulation.js`,
+> `ui/src/fxgraph/envelopePlayback.js`, and the `applyEnvelopeModulationAtTick` /
+> `driveEnvelopeParameterEdges` store actions. Limitations: control-rate not sample-accurate;
+> trigger detection depends on renderer-accessible timeline/pattern data; tension is not modelled
+> at runtime. See the "Envelope Controller (EVC) — corrected direction" → "EVC-R2" section of
+> [`fxgraph-architecture.md`](fxgraph-architecture.md).
+>
+> **Future work** is parameter-modulation UX polish (EVC-R3) and the sibling control sources
+> (LFO, Peak Follower) — **not** a return to per-voice `voiceGain`. See the "Envelope Controller
+> (EVC) — corrected direction" → "EVC-R1"/"EVC-R2" sections of
 > [`fxgraph-architecture.md`](fxgraph-architecture.md). Everything below is retained as
 > historical record and no longer reflects the product direction.
 

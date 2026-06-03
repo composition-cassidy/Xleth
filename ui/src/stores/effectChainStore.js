@@ -20,6 +20,7 @@ import {
   connectEnvelopeToParameter,
   disconnectGraphEdge,
   collectMacroParameterWrites,
+  collectEnvelopeParameterWrites,
   isParameterEdge,
   updateGraphMacroValue,
   renameGraphMacroNode,
@@ -43,6 +44,10 @@ import {
   setMacroAutomationPointCurve,
   evaluateMacroAutomationForMacro,
 } from '../fxgraph/macroAutomation.js'
+import {
+  normalizeEnvelopeRuntimeSettings,
+  evaluateEnvelopeOutput,
+} from '../fxgraph/envelopeModulation.js'
 
 export const DEFAULT_FX_MODE = 'chain'
 export const DEFAULT_FX_PANEL_VIEW = 'chain'
@@ -982,6 +987,44 @@ async function driveAllMacroParameterEdges(get, key, graphState, options = {}) {
   return drives
 }
 
+// EVC-R2 — Envelope runtime drive. Mirrors driveMacroParameterEdges: given an Envelope
+// node id and its evaluated normalized 0..1 output, push each enabled outgoing parameter
+// edge's mapped value through the FXG.4-a setGraphEffectParameterNormalized store action.
+// Uses collectEnvelopeParameterWrites (envelope-sourced parameter edges only), so audio
+// edges and Macro edges are never touched. Control-rate, renderer-side only — no audio
+// topology change, no effectChains mutation, no graphState mutation, no engine node ids.
+// One failed write never aborts the others; an unavailable target fails safely.
+async function driveEnvelopeParameterEdges(get, key, graphState, envelopeNodeId, value, options = {}) {
+  const { writes, skipped } = collectEnvelopeParameterWrites(graphState, envelopeNodeId, value)
+  if (writes.length === 0) return { ok: true, writes: [], skipped, results: [] }
+
+  const setParameter = options.driveSetGraphEffectParameterNormalized
+    ?? get().setGraphEffectParameterNormalized
+  const warn = options.warn ?? console.warn
+  const results = []
+  for (const write of writes) {
+    try {
+      const result = await setParameter(
+        Number(key),
+        write.effectInstanceId,
+        write.parameterId,
+        write.value,
+        options,
+      )
+      results.push({ ...write, result })
+    } catch (e) {
+      warn?.('[FXG] envelope parameter drive write failed', {
+        trackId: key,
+        effectInstanceId: write.effectInstanceId,
+        parameterId: write.parameterId,
+        error: e?.message ?? e,
+      })
+      results.push({ ...write, result: { ok: false, reason: 'engine_error' } })
+    }
+  }
+  return { ok: true, writes, skipped, results }
+}
+
 const useEffectChainStore = create((set, get) => ({
   // { [key: "master" | String(trackId)]: [{nodeId, pluginId, position, bypassed}] }
   chains: {},
@@ -1007,6 +1050,10 @@ const useEffectChainStore = create((set, get) => ({
   // { [key: String(trackId)]: { [macroNodeId]: value } }. Used purely to suppress
   // redundant control-rate drive calls during playback. Never persisted.
   macroAutomationLastValues: {},
+  // EVC-R2 — session-only last-applied envelope output values, keyed by
+  // { [key: String(trackId)]: { [envelopeNodeId]: value } }. Used purely to suppress
+  // redundant control-rate envelope drive calls during playback. Never persisted.
+  envelopeAutomationLastValues: {},
 
   ensureFxState: (key) => {
     const { fxModes, fxPanelViews } = get()
@@ -1029,6 +1076,7 @@ const useEffectChainStore = create((set, get) => ({
       graphRuntimeStatuses: {},
       graphHistories: {},
       macroAutomationLastValues: {},
+      envelopeAutomationLastValues: {},
     })
   },
 
@@ -2008,6 +2056,60 @@ const useEffectChainStore = create((set, get) => ({
   // Clears the session last-applied cache so the next tick re-drives every macro
   // (used on transport stop/seek/project-load). Does not change any value itself.
   resetMacroAutomationRuntime: () => set({ macroAutomationLastValues: {} }),
+
+  // EVC-R2 — control-rate Envelope modulation drive. For every graph-mode track that
+  // owns Envelope nodes, evaluate each Envelope's triggered ADSR at the given global tick
+  // from the parent track's trigger events (passed in via options.trackEvents, keyed by
+  // String(trackId)) and drive its connected parameter edges with the single normalized
+  // output value via the existing Envelope -> Parameter path. The persisted graphState and
+  // node data are NOT mutated — runtime drive only, so playback never dirties the project.
+  // Redundant writes are suppressed via the session envelopeAutomationLastValues cache.
+  // Master and chain-mode tracks are skipped. One Envelope node yields one output value;
+  // there is no per-voice aggregation.
+  applyEnvelopeModulationAtTick: async (globalTick, options = {}) => {
+    if (!Number.isFinite(globalTick)) return { ok: false, reason: 'invalid_tick' }
+    const state = get()
+    const epsilon = Number.isFinite(options.epsilon) ? options.epsilon : 1e-4
+    const trackEvents = options.trackEvents != null && typeof options.trackEvents === 'object'
+      ? options.trackEvents
+      : {}
+    const driven = []
+
+    for (const [key, graphState] of Object.entries(state.graphStates)) {
+      if (key === 'master') continue
+      if (resolveFxMode(state.fxModes, key) !== 'graph') continue
+      if (!graphState || !Array.isArray(graphState.nodes)) continue
+      const envelopeNodes = graphState.nodes.filter((node) => node.type === 'envelope')
+      if (envelopeNodes.length === 0) continue
+      const events = Array.isArray(trackEvents[key]) ? trackEvents[key] : []
+
+      for (const node of envelopeNodes) {
+        const settings = normalizeEnvelopeRuntimeSettings(node.data, {
+          msPerTick: options.msPerTick,
+          bpm: options.bpm,
+        })
+        const out = evaluateEnvelopeOutput(settings, events, globalTick)
+
+        const last = get().envelopeAutomationLastValues?.[key]?.[node.id]
+        if (last != null && Math.abs(last - out.value) <= epsilon) continue
+
+        set((current) => ({
+          envelopeAutomationLastValues: {
+            ...current.envelopeAutomationLastValues,
+            [key]: { ...(current.envelopeAutomationLastValues?.[key] ?? {}), [node.id]: out.value },
+          },
+        }))
+        await driveEnvelopeParameterEdges(get, key, graphState, node.id, out.value, options)
+        driven.push({ trackId: key, envelopeNodeId: node.id, value: out.value, phase: out.phase })
+      }
+    }
+    return { ok: true, driven }
+  },
+
+  // Clears the session last-applied envelope cache so the next drive re-applies every
+  // envelope (used on transport stop/seek/project-load). Does not change any value itself;
+  // the playback controller follows a stop reset with one no-gate flush pass to drive 0.
+  resetEnvelopeModulationRuntime: () => set({ envelopeAutomationLastValues: {} }),
 
   // ── FXG.4-a graph-owned effect parameter descriptors ──────────────────────
   // Read/write normalized [0,1] parameters for a graph-owned effect node. These

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { connectMacroToParameter, createDefaultBezierCurve, GRAPH_PARAMETER_CURVE_BEZIER } from '../fxgraph/graphState.js'
+import { connectMacroToParameter, connectEnvelopeToParameter, createDefaultBezierCurve, GRAPH_PARAMETER_CURVE_BEZIER } from '../fxgraph/graphState.js'
 
 function makeEffect(nodeId, pluginId, position, bypassed = false) {
   return { nodeId, pluginId, position, bypassed }
@@ -157,6 +157,60 @@ function makeLinkedMacroGraphState(trackId = '7', mapping) {
     parameterId: 'mix',
     mapping,
   }, { idFactory: () => 'p-mix' })
+  return linked.graphState
+}
+
+// EVC-R2 — a positioned graph with an Envelope control node plus an effect node that
+// exposes a writable 'mix' parameter port, so Envelope -> Parameter links can be made.
+// The envelope is configured (attack/decay/release 0, sustain 1) so a held trigger
+// resolves immediately to a normalized output of 1 for deterministic drive assertions.
+function makeEnvelopeLinkGraphState(trackId = '7', { readOnly = false } = {}) {
+  const base = makePositionedGraphState(trackId)
+  return {
+    ...base,
+    nodes: [
+      base.nodes[0],
+      {
+        ...base.nodes[1],
+        data: {
+          ...base.nodes[1].data,
+          exposedParameterPorts: [
+            {
+              parameterId: 'mix',
+              parameterIndexFallback: 1,
+              nameSnapshot: 'Mix',
+              labelSnapshot: '%',
+              parameterIdIsFallback: false,
+              automatable: !readOnly,
+              readOnly,
+            },
+          ],
+        },
+      },
+      {
+        id: 'env-a',
+        type: 'envelope',
+        position: { x: 80, y: 228 },
+        data: {
+          label: 'Envelope',
+          attackMs: 0, holdMs: 0, decayMs: 0, sustain: 1, releaseMs: 0,
+          amount: 1, triggerSource: { kind: 'parentTrack', events: 'notesAndClips' },
+          retriggerMode: 'restart',
+        },
+      },
+      base.nodes[2],
+    ],
+    edges: base.edges,
+  }
+}
+
+function makeLinkedEnvelopeGraphState(trackId = '7', mapping) {
+  const linked = connectEnvelopeToParameter(makeEnvelopeLinkGraphState(trackId), {
+    sourceNodeId: 'env-a',
+    targetNodeId: 'fx-1',
+    parameterId: 'mix',
+    mapping,
+  }, { idFactory: () => 'pe-mix' })
   return linked.graphState
 }
 
@@ -1522,6 +1576,160 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(result.ok).toBe(true)
     const macro = useEffectChainStore.getState().graphStates['7'].nodes.find((n) => n.id === 'macro-a')
     expect(macro.data.normalizedValue).toBe(0.9)
+  })
+
+  // ── EVC-R2 Envelope runtime parameter drive ───────────────────────────────
+  const heldNote = (trackKey = '7') => ({ [trackKey]: [{ kind: 'note', startTick: 0, endTick: 10000 }] })
+
+  it('drives setGraphEffectParameterNormalized for a connected Envelope parameter edge', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, makeLinkedEnvelopeGraphState('7'))
+
+    const result = await useEffectChainStore.getState().applyEnvelopeModulationAtTick(500, {
+      trackEvents: heldNote('7'),
+      msPerTick: 1,
+    })
+
+    expect(result.ok).toBe(true)
+    // attack/decay/release 0, sustain 1, amount 1 -> held note resolves to 1 -> default mapping 1.
+    expect(audio.setGraphEffectParameterNormalized).toHaveBeenCalledWith(7, 'effect-1', 'mix', 1)
+  })
+
+  it('does not mutate graphState, effectChains, or sync audio topology during drive', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const graphState = makeLinkedEnvelopeGraphState('7')
+    const baseChain = seedGraphMode(useEffectChainStore, graphState)
+
+    await useEffectChainStore.getState().applyEnvelopeModulationAtTick(500, {
+      trackEvents: heldNote('7'),
+      msPerTick: 1,
+    })
+
+    const state = useEffectChainStore.getState()
+    expect(state.graphStates['7']).toBe(graphState)
+    expect(state.chains['7']).toBe(baseChain)
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+  })
+
+  it('skips a disabled Envelope mapping', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, makeLinkedEnvelopeGraphState('7', { enabled: false }))
+
+    await useEffectChainStore.getState().applyEnvelopeModulationAtTick(500, {
+      trackEvents: heldNote('7'),
+      msPerTick: 1,
+    })
+
+    expect(audio.setGraphEffectParameterNormalized).not.toHaveBeenCalled()
+  })
+
+  it('skips an unresolved Envelope target safely (no throw, no write)', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const linked = makeLinkedEnvelopeGraphState('7')
+    // Drop the exposed port so the persisted target no longer resolves.
+    const broken = {
+      ...linked,
+      nodes: linked.nodes.map((n) =>
+        n.id === 'fx-1' ? { ...n, data: { ...n.data, exposedParameterPorts: [] } } : n),
+    }
+    seedGraphMode(useEffectChainStore, broken)
+
+    const result = await useEffectChainStore.getState().applyEnvelopeModulationAtTick(500, {
+      trackEvents: heldNote('7'),
+      msPerTick: 1,
+    })
+
+    expect(result.ok).toBe(true)
+    expect(audio.setGraphEffectParameterNormalized).not.toHaveBeenCalled()
+  })
+
+  it('one failed Envelope write does not abort the others', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    // Two effects each exposing a writable port, both driven by one envelope.
+    const twoFx = graphWithTwoEffects('7')
+    const withEnv = {
+      ...twoFx,
+      nodes: [
+        twoFx.nodes[0],
+        { ...twoFx.nodes[1], data: { ...twoFx.nodes[1].data, exposedParameterPorts: [
+          { parameterId: 'gain', parameterIndexFallback: 0, nameSnapshot: 'Gain', labelSnapshot: null, parameterIdIsFallback: false, automatable: true, readOnly: false },
+        ] } },
+        { ...twoFx.nodes[2], data: { ...twoFx.nodes[2].data, exposedParameterPorts: [
+          { parameterId: 'mix', parameterIndexFallback: 1, nameSnapshot: 'Mix', labelSnapshot: null, parameterIdIsFallback: false, automatable: true, readOnly: false },
+        ] } },
+        twoFx.nodes[3],
+        {
+          id: 'env-a', type: 'envelope', position: { x: 80, y: 240 },
+          data: { label: 'Envelope', attackMs: 0, holdMs: 0, decayMs: 0, sustain: 1, releaseMs: 0, amount: 1, triggerSource: { kind: 'parentTrack', events: 'notesAndClips' }, retriggerMode: 'restart' },
+        },
+      ],
+      edges: [
+        ...twoFx.edges,
+        { id: 'edge-in-1', sourceNodeId: 'input', sourcePort: 'audio', targetNodeId: 'fx-1', targetPort: 'audioIn', type: 'audio' },
+        { id: 'edge-2-out', sourceNodeId: 'fx-2', sourcePort: 'audioOut', targetNodeId: 'output', targetPort: 'audio', type: 'audio' },
+      ],
+    }
+    const linkA = connectEnvelopeToParameter(withEnv, { sourceNodeId: 'env-a', targetNodeId: 'fx-1', parameterId: 'gain' }, { idFactory: () => 'pe-gain' })
+    const linkB = connectEnvelopeToParameter(linkA.graphState, { sourceNodeId: 'env-a', targetNodeId: 'fx-2', parameterId: 'mix' }, { idFactory: () => 'pe-mix' })
+    seedGraphMode(useEffectChainStore, linkB.graphState)
+
+    audio.setGraphEffectParameterNormalized.mockImplementationOnce(async () => { throw new Error('engine boom') })
+
+    const result = await useEffectChainStore.getState().applyEnvelopeModulationAtTick(500, {
+      trackEvents: heldNote('7'),
+      msPerTick: 1,
+      warn: () => {},
+    })
+
+    expect(result.ok).toBe(true)
+    const calls = audio.setGraphEffectParameterNormalized.mock.calls
+    // Both targets were attempted despite the first throwing.
+    expect(calls.some((c) => c[1] === 'effect-1' && c[2] === 'gain')).toBe(true)
+    expect(calls.some((c) => c[1] === 'effect-2' && c[2] === 'mix')).toBe(true)
+  })
+
+  it('does not drive a chain-mode track', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const graphState = makeLinkedEnvelopeGraphState('7')
+    useEffectChainStore.setState({
+      fxModes: { '7': 'chain' },
+      graphStates: { '7': graphState },
+      graphHistories: {},
+    })
+
+    await useEffectChainStore.getState().applyEnvelopeModulationAtTick(500, {
+      trackEvents: heldNote('7'),
+      msPerTick: 1,
+    })
+
+    expect(audio.setGraphEffectParameterNormalized).not.toHaveBeenCalled()
+  })
+
+  it('suppresses redundant Envelope writes at a steady value', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, makeLinkedEnvelopeGraphState('7'))
+
+    await useEffectChainStore.getState().applyEnvelopeModulationAtTick(500, { trackEvents: heldNote('7'), msPerTick: 1 })
+    await useEffectChainStore.getState().applyEnvelopeModulationAtTick(600, { trackEvents: heldNote('7'), msPerTick: 1 })
+
+    // Same sustain value at both ticks -> only one engine write.
+    const mixCalls = audio.setGraphEffectParameterNormalized.mock.calls.filter((c) => c[2] === 'mix')
+    expect(mixCalls).toHaveLength(1)
+  })
+
+  it('resets the runtime cache so a stop flush can drive parameters to 0', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, makeLinkedEnvelopeGraphState('7'))
+
+    // Held note drives the parameter to 1.
+    await useEffectChainStore.getState().applyEnvelopeModulationAtTick(500, { trackEvents: heldNote('7'), msPerTick: 1 })
+    expect(audio.setGraphEffectParameterNormalized).toHaveBeenLastCalledWith(7, 'effect-1', 'mix', 1)
+
+    // Reset + a no-gate flush pass (what the playback controller does on stop) -> writes 0.
+    useEffectChainStore.getState().resetEnvelopeModulationRuntime()
+    expect(useEffectChainStore.getState().envelopeAutomationLastValues).toEqual({})
+    await useEffectChainStore.getState().applyEnvelopeModulationAtTick(500, { trackEvents: {}, msPerTick: 1 })
+    expect(audio.setGraphEffectParameterNormalized).toHaveBeenLastCalledWith(7, 'effect-1', 'mix', 0)
   })
 
   it('removing a parameter edge is one undo step and does not sync audio topology', async () => {
