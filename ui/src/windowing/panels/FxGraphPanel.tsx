@@ -131,6 +131,7 @@ export interface FxGraphPanelContentProps {
   onRemoveGraphNode?: (nodeId: string) => void;
   onConnectGraphNodes?: (sourceNodeId: string, targetNodeId: string) => void;
   onConnectGraphMacroToParameter?: (macroNodeId: string, targetNodeId: string, parameterId: string) => void;
+  onConnectGraphEnvelopeToParameter?: (envelopeNodeId: string, targetNodeId: string, parameterId: string) => void;
   onDisconnectGraphEdge?: (edgeId: string) => void;
   onEditGraphNode?: (nodeId: string) => void;
   onUpdateGraphMacroValue?: (nodeId: string, value: number) => void;
@@ -209,6 +210,7 @@ export function FxGraphPanelContent({
   onRemoveGraphNode,
   onConnectGraphNodes,
   onConnectGraphMacroToParameter,
+  onConnectGraphEnvelopeToParameter,
   onDisconnectGraphEdge,
   onEditGraphNode,
   onUpdateGraphMacroValue,
@@ -332,6 +334,7 @@ export function FxGraphPanelContent({
               onRemoveNode={graphModeActive ? onRemoveGraphNode : undefined}
               onConnectNodes={graphModeActive ? onConnectGraphNodes : undefined}
               onConnectMacroToParameter={graphModeActive ? onConnectGraphMacroToParameter : undefined}
+              onConnectEnvelopeToParameter={graphModeActive ? onConnectGraphEnvelopeToParameter : undefined}
               onDisconnectEdge={graphModeActive ? onDisconnectGraphEdge : undefined}
               onEditNode={graphModeActive ? onEditGraphNode : undefined}
               onUpdateMacroValue={graphModeActive ? onUpdateGraphMacroValue : undefined}
@@ -504,6 +507,7 @@ export default function FxGraphPanel() {
   const removeGraphNodeForTrack = useEffectChainStore((state) => state.removeGraphNodeForTrack);
   const connectGraphNodesForTrack = useEffectChainStore((state) => state.connectGraphNodesForTrack);
   const connectMacroToParameterForTrack = useEffectChainStore((state) => state.connectMacroToParameterForTrack);
+  const connectEnvelopeToParameterForTrack = useEffectChainStore((state) => state.connectEnvelopeToParameterForTrack);
   const disconnectGraphEdgeForTrack = useEffectChainStore((state) => state.disconnectGraphEdgeForTrack);
   const updateGraphMacroValueForTrack = useEffectChainStore((state) => state.updateGraphMacroValueForTrack);
   const renameGraphMacroNodeForTrack = useEffectChainStore((state) => state.renameGraphMacroNodeForTrack);
@@ -692,6 +696,23 @@ export default function FxGraphPanel() {
     setGraphActionNotice(describeGraphMutationResult(result));
   }, [connectMacroToParameterForTrack, fxMode, selectedTrack?.id]);
 
+  // EVC-R1 — link an Envelope controlOut to an exposed effect parameter. Mirrors the
+  // macro handler; runtime-inert (the store action records the edge but never drives
+  // the parameter — triggered ADSR runtime is EVC-R2).
+  const handleConnectGraphEnvelopeToParameter = useCallback(async (
+    envelopeNodeId: string,
+    targetNodeId: string,
+    parameterId: string,
+  ) => {
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    const result = await connectEnvelopeToParameterForTrack(selectedTrack.id, {
+      sourceNodeId: envelopeNodeId,
+      targetNodeId,
+      parameterId,
+    });
+    setGraphActionNotice(describeGraphMutationResult(result));
+  }, [connectEnvelopeToParameterForTrack, fxMode, selectedTrack?.id]);
+
   const handleDisconnectGraphEdge = useCallback(async (edgeId: string) => {
     if (selectedTrack?.id == null || fxMode !== 'graph') return;
     const result = await disconnectGraphEdgeForTrack(selectedTrack.id, edgeId);
@@ -838,6 +859,7 @@ export default function FxGraphPanel() {
         onRemoveGraphNode={handleRemoveGraphNode}
         onConnectGraphNodes={handleConnectGraphNodes}
         onConnectGraphMacroToParameter={handleConnectGraphMacroToParameter}
+        onConnectGraphEnvelopeToParameter={handleConnectGraphEnvelopeToParameter}
         onDisconnectGraphEdge={handleDisconnectGraphEdge}
         onEditGraphNode={handleEditGraphNode}
         onUpdateGraphMacroValue={handleUpdateGraphMacroValue}

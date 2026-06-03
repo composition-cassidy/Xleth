@@ -21,12 +21,17 @@ const MAX_VIEWPORT_ZOOM = 4
 export const GRAPH_MACRO_NODE_TYPE = 'macro'
 export const GRAPH_MACRO_OUTPUT_PORT = 'controlOut'
 
-// EVC.2 — Envelope Controller node. A graph-owned, per-voice control node that
-// is a sibling to the Macro node, NOT an effect node. It carries an inert AHDSR
-// definition that is persisted/normalized renderer-side only; runtime evaluation
-// is deferred to the engine in a later phase (EVC.4+). See
-// docs/dev/fxgraph-envelope-controller-architecture-audit.md.
+// EVC.2 / EVC-R1 — Envelope Controller node. A graph-owned control-source node, a
+// sibling to the Macro node (NOT an effect node). EVC-R1 reworked it from the
+// retired per-voice voiceGain target into a triggered parameter-modulation source:
+// it carries an inert AHDSR definition (persisted/normalized renderer-side only)
+// and a `controlOut` port that links to exposed effect parameters through the same
+// parameter-edge/GraphParameterTarget path Macro uses. Runtime ADSR drive is
+// deferred to EVC-R2. See docs/dev/fxgraph-envelope-controller-architecture-audit.md.
 export const GRAPH_ENVELOPE_NODE_TYPE = 'envelope'
+// EVC-R1 — the Envelope's single control output port. Same port name as Macro's
+// controlOut (both are control sources for parameter edges).
+export const GRAPH_ENVELOPE_OUTPUT_PORT = 'controlOut'
 
 // FXG.4-e/f — base mapping curve type.
 export const GRAPH_PARAMETER_CURVE_LINEAR = 'linear'
@@ -360,7 +365,7 @@ function validateMacroNodeData(node, _graphState, trackId, warnings) {
 // ---------------------------------------------------------------------------
 
 const ENVELOPE_TRIGGER_EVENTS = new Set(['notes', 'clips', 'notesAndClips'])
-const ENVELOPE_MAX_VOICES_CAP = 32
+const ENVELOPE_RETRIGGER_MODES = new Set(['restart', 'legato'])
 
 export const ENVELOPE_NODE_DEFAULTS = Object.freeze({
   label: 'Envelope',
@@ -373,11 +378,8 @@ export const ENVELOPE_NODE_DEFAULTS = Object.freeze({
   decayTension: 0,
   releaseTension: 0,
   amount: 1,
-  voiceMode: 'poly',
-  maxVoices: 32,
   triggerEvents: 'notesAndClips',
-  legato: false,
-  glideMs: 0,
+  retriggerMode: 'restart',
 })
 
 // ms fields must be finite numbers >= 0; anything else repairs to the default.
@@ -397,21 +399,14 @@ function clampEnvelopeTension(value, fallback) {
   return Math.min(1, Math.max(-1, value))
 }
 
-// voiceMode repairs to "poly" unless it is exactly "mono".
-function normalizeEnvelopeVoiceMode(value) {
-  return value === 'mono' ? 'mono' : 'poly'
-}
-
-// maxVoices repairs to 32 when invalid, rounds to an integer, and clamps to 1..32.
-function normalizeEnvelopeMaxVoices(value) {
-  if (!Number.isFinite(value)) return ENVELOPE_NODE_DEFAULTS.maxVoices
-  const rounded = Math.round(value)
-  return Math.min(ENVELOPE_MAX_VOICES_CAP, Math.max(1, rounded))
-}
-
 // triggerSource.events repairs to "notesAndClips" unless "notes" or "clips".
 function normalizeEnvelopeTriggerEvents(value) {
   return ENVELOPE_TRIGGER_EVENTS.has(value) ? value : ENVELOPE_NODE_DEFAULTS.triggerEvents
+}
+
+// retriggerMode repairs to "restart" unless it is exactly "legato".
+function normalizeEnvelopeRetriggerMode(value) {
+  return ENVELOPE_RETRIGGER_MODES.has(value) ? value : ENVELOPE_NODE_DEFAULTS.retriggerMode
 }
 
 function normalizeEnvelopeLabel(value) {
@@ -421,12 +416,14 @@ function normalizeEnvelopeLabel(value) {
 
 // Normalizes raw envelope node data into the stable closed schema. Missing or
 // malformed input repairs to defaults; provided values are clamped/repaired.
-// triggerSource.kind and target.kind are closed enums forced to their only valid
-// v1 values. Unknown extra fields are intentionally dropped (strict shape).
+// EVC-R1 — the per-voice fields (voiceMode/maxVoices/monophonic) and the retired
+// `target: { kind: "voiceGain" }` are intentionally dropped on load: an Envelope is
+// now a triggered parameter-modulation source whose links live on parameter edges
+// (GraphParameterTarget), not on the node. triggerSource.kind is forced to
+// "parentTrack". Unknown extra fields are dropped (strict shape).
 export function normalizeEnvelopeNodeData(rawData) {
   const raw = isPlainObject(rawData) ? rawData : {}
   const rawTrigger = isPlainObject(raw.triggerSource) ? raw.triggerSource : {}
-  const rawMono = isPlainObject(raw.monophonic) ? raw.monophonic : {}
 
   return {
     label: normalizeEnvelopeLabel(raw.label),
@@ -443,9 +440,6 @@ export function normalizeEnvelopeNodeData(rawData) {
 
     amount: clampEnvelopeUnit(raw.amount, ENVELOPE_NODE_DEFAULTS.amount),
 
-    voiceMode: normalizeEnvelopeVoiceMode(raw.voiceMode),
-    maxVoices: normalizeEnvelopeMaxVoices(raw.maxVoices),
-
     // triggerSource.kind must repair to "parentTrack"; parent ownership is
     // graphState.trackId, never stored on the node.
     triggerSource: {
@@ -453,17 +447,10 @@ export function normalizeEnvelopeNodeData(rawData) {
       events: normalizeEnvelopeTriggerEvents(rawTrigger.events),
     },
 
-    // target.kind must repair to "voiceGain" (the only EVC v1 target). This is
-    // NOT a GraphParameterTarget and never references a plugin parameter.
-    target: {
-      kind: 'voiceGain',
-    },
-
-    // Future-only knobs, present but inert in v1.
-    monophonic: {
-      legato: rawMono.legato === true,
-      glideMs: clampEnvelopeMs(rawMono.glideMs, ENVELOPE_NODE_DEFAULTS.glideMs),
-    },
+    // EVC-R1 — restart (default) re-attacks on a new trigger; legato holds the
+    // current phase. Old monophonic.legato is NOT auto-migrated to legato (explicit
+    // default avoids hidden behavior). Runtime trigger logic arrives in EVC-R2.
+    retriggerMode: normalizeEnvelopeRetriggerMode(raw.retriggerMode),
   }
 }
 
@@ -479,17 +466,11 @@ export function isEnvelopeGraphNode(node) {
 }
 
 // Shallow-merges an update patch into current envelope data, honoring the nested
-// triggerSource / target / monophonic sub-objects, then re-normalizes.
+// triggerSource sub-object, then re-normalizes.
 function mergeEnvelopeNodeData(currentData, patch) {
   const merged = { ...currentData, ...patch }
   if (isPlainObject(patch.triggerSource)) {
     merged.triggerSource = { ...currentData.triggerSource, ...patch.triggerSource }
-  }
-  if (isPlainObject(patch.target)) {
-    merged.target = { ...currentData.target, ...patch.target }
-  }
-  if (isPlainObject(patch.monophonic)) {
-    merged.monophonic = { ...currentData.monophonic, ...patch.monophonic }
   }
   return merged
 }
@@ -1691,6 +1672,188 @@ export function collectMacroParameterWrites(graphState, macroNodeId, macroValue)
   for (const edge of graphState.edges) {
     if (edge.type !== 'parameter') continue
     if (edge.sourceNodeId !== macroNodeId) continue
+
+    const evaluation = evaluateParameterMapping(edge.mapping, value)
+    if (!evaluation.enabled) {
+      skipped.push({ edgeId: edge.id, reason: 'disabled' })
+      continue
+    }
+
+    const target = normalizeGraphParameterTarget(edge.targetParameter)
+    if (!target) {
+      skipped.push({ edgeId: edge.id, reason: 'invalid_target' })
+      continue
+    }
+
+    const resolution = resolveGraphParameterTarget(graphState, target)
+    if (resolution.status !== 'ok') {
+      skipped.push({ edgeId: edge.id, reason: resolution.status })
+      continue
+    }
+    if (resolution.exposedPort?.readOnly === true || resolution.exposedPort?.automatable === false) {
+      skipped.push({ edgeId: edge.id, reason: 'read_only' })
+      continue
+    }
+
+    writes.push({
+      edgeId: edge.id,
+      effectInstanceId: target.effectInstanceId,
+      parameterId: target.parameterId,
+      value: evaluation.value,
+    })
+  }
+
+  return { writes, skipped }
+}
+
+// ---------------------------------------------------------------------------
+// EVC-R1 — Envelope -> Parameter links
+//
+// An Envelope node is a control source like Macro: its `controlOut` port links to
+// an exposed parameter input port on an effect node through a `parameter` edge. The
+// edge shape is identical to a Macro -> Parameter edge (GraphParameterTarget + a
+// per-link mapping); only the source node type differs. These helpers deliberately
+// mirror canConnectMacroToParameter / connectMacroToParameter / collectMacroParameterWrites
+// rather than generalizing them, so the established Macro path is never disturbed.
+// Disconnect reuses disconnectParameterEdge (source-agnostic). Runtime drive is
+// deferred to EVC-R2 — collectEnvelopeParameterWrites exists for that phase + tests
+// but is never called from a renderer drive path in EVC-R1.
+// ---------------------------------------------------------------------------
+
+export function canConnectEnvelopeToParameter(graphState, connectionDraft) {
+  const editCheck = validateGraphStateForEditing(graphState)
+  if (!editCheck.ok) return editCheck
+
+  if (!isPlainObject(connectionDraft)) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_CONNECTION_DRAFT }
+  }
+
+  const { sourceNodeId, targetNodeId } = connectionDraft
+  const parameterId = typeof connectionDraft.parameterId === 'string'
+    ? connectionDraft.parameterId.trim()
+    : ''
+
+  const sourceNode = graphState.nodes.find((n) => n.id === sourceNodeId)
+  const targetNode = graphState.nodes.find((n) => n.id === targetNodeId)
+
+  if (!sourceNode) return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_SOURCE_NODE }
+  if (!targetNode) return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_TARGET_NODE }
+  if (sourceNodeId === targetNodeId) return { ok: false, reason: GRAPH_MUTATION_REJECTION.SELF_CONNECTION }
+
+  // Source must be an envelope control node. Effect/macro nodes cannot source an
+  // envelope parameter edge.
+  if (sourceNode.type !== GRAPH_ENVELOPE_NODE_TYPE) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_SOURCE_TYPE }
+  }
+  // Target must be an effect node. Protected Track I/O, macro, and envelope nodes
+  // are invalid targets (only effects expose writable parameters).
+  if (isProtectedGraphNodeType(targetNode.type)) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.PROTECTED_NODE }
+  }
+  if (targetNode.type !== 'effect') {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_TARGET_TYPE }
+  }
+
+  if (!parameterId) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_PARAMETER_TARGET }
+  }
+
+  const effectInstanceId = readEffectInstanceId(targetNode)
+  if (!effectInstanceId) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_EFFECT_INSTANCE }
+  }
+
+  const exposedPorts = normalizeExposedParameterPorts(targetNode.data?.exposedParameterPorts)
+  const exposedPort = exposedPorts.find((port) => port.parameterId === parameterId)
+  if (!exposedPort) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.PARAMETER_NOT_EXPOSED }
+  }
+  // Read-only / non-automatable parameters cannot be driven.
+  if (exposedPort.readOnly === true || exposedPort.automatable === false) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.PARAMETER_READ_ONLY }
+  }
+
+  const target = createGraphParameterTargetFromExposedPort({
+    graphNode: targetNode,
+    effectInstanceId,
+    exposedPort,
+  })
+  if (!target) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_PARAMETER_TARGET }
+  }
+
+  const targetPort = buildGraphParameterPortId(targetNodeId, parameterId)
+  if (!targetPort) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_PARAMETER_TARGET }
+  }
+
+  // Dedupe: one Envelope may only drive a given parameter on a given node once.
+  const duplicate = graphState.edges.some(
+    (edge) =>
+      edge.type === 'parameter' &&
+      edge.sourceNodeId === sourceNodeId &&
+      edge.targetNodeId === targetNodeId &&
+      edge.targetPort === targetPort,
+  )
+  if (duplicate) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.DUPLICATE_EDGE }
+  }
+
+  return { ok: true, target, targetPort, exposedPort }
+}
+
+export function connectEnvelopeToParameter(graphState, connectionDraft, options = {}) {
+  const check = canConnectEnvelopeToParameter(graphState, connectionDraft)
+  if (!check.ok) return check
+
+  const newEdge = {
+    id: generateMutationId(options.idFactory),
+    sourceNodeId: connectionDraft.sourceNodeId,
+    sourcePort: GRAPH_ENVELOPE_OUTPUT_PORT,
+    targetNodeId: connectionDraft.targetNodeId,
+    targetPort: check.targetPort,
+    type: 'parameter',
+    targetParameter: check.target,
+    mapping: normalizeParameterMapping(connectionDraft.mapping),
+  }
+
+  return {
+    ok: true,
+    edge: newEdge,
+    graphState: {
+      ...graphState,
+      edges: [...graphState.edges, newEdge],
+    },
+  }
+}
+
+// Pure resolver for EVC-R2 runtime drive (and tests). Given an envelope node id and
+// a normalized envelope output value (0..1), returns the parameter writes its enabled
+// outgoing parameter edges produce, mapped through each edge's mapping. Mirrors
+// collectMacroParameterWrites; reports disabled/invalid/unresolved/read-only edges
+// under `skipped` instead of throwing. EVC-R1 never calls this from a drive path.
+export function collectEnvelopeParameterWrites(graphState, envelopeNodeId, envelopeValue) {
+  const writes = []
+  const skipped = []
+
+  if (
+    !isPlainObject(graphState) ||
+    !Array.isArray(graphState.nodes) ||
+    !Array.isArray(graphState.edges)
+  ) {
+    return { writes, skipped }
+  }
+
+  const envelopeNode = graphState.nodes.find((node) => node.id === envelopeNodeId)
+  if (!envelopeNode || envelopeNode.type !== GRAPH_ENVELOPE_NODE_TYPE) {
+    return { writes, skipped }
+  }
+
+  const value = clampEnvelopeUnit(envelopeValue, 0)
+
+  for (const edge of graphState.edges) {
+    if (edge.type !== 'parameter') continue
+    if (edge.sourceNodeId !== envelopeNodeId) continue
 
     const evaluation = evaluateParameterMapping(edge.mapping, value)
     if (!evaluation.enabled) {

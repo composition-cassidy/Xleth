@@ -1208,16 +1208,6 @@
   outline-offset: 1px;
 }
 
-.xleth-graph-state-preview__envelope-target {
-  padding: 2px 4px;
-  border: 1px dashed var(--theme-border-subtle);
-  border-radius: var(--theme-chrome-radius-sm);
-  color: var(--theme-text);
-  font-size: 11px;
-  font-weight: 650;
-  line-height: 1.3;
-}
-
 .xleth-graph-state-preview__action-button--envelope {
   border-color: color-mix(in srgb, var(--theme-success) 45%, var(--theme-border-subtle));
   background: color-mix(in srgb, var(--theme-success) 16%, var(--theme-bg-surface));

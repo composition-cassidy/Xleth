@@ -1,18 +1,22 @@
 import React from 'react';
 import { normalizeEnvelopeNodeData } from '../../../fxgraph/graphState.js';
 
-// EVC.3 — Envelope Controller node UI (renderer-only, inert).
+// EVC.3 / EVC-R1 — Envelope Controller node UI (renderer-only, inert).
 //
 // This module renders the visible/editable Envelope Controller node body inside
-// the FX Graph (`GraphStatePreview.tsx`). It is purely a renderer-side definition
-// editor:
+// the FX Graph (`GraphStatePreview.tsx`). EVC-R1 reworked it from the retired
+// per-voice voiceGain editor into a triggered parameter-modulation source editor:
+// the per-voice fields (voice mode, max voices, legato/glide, the read-only
+// "Voice Gain" target) are gone, a retrigger-mode control was added, and the node
+// advertises a `controlOut` output that links to exposed effect parameters. It is
+// purely a renderer-side definition editor:
 //   - It NEVER reads transport state, creates runtime voices, or writes plugin
-//     parameters.
+//     parameters (runtime ADSR drive arrives in EVC-R2).
 //   - The ADSR preview curve is illustrative only (closed-form A/H/D/S/R segments);
 //     it is NOT audio-accurate and does NOT model tension yet (see the comment on
 //     buildEnvelopePreviewPoints).
 //   - All edits flow out through a single `onChange(patch)` callback that the panel
-//     routes to the EVC.2 store action `updateGraphEnvelopeNodeDataForTrack`, which
+//     routes to the store action `updateGraphEnvelopeNodeDataForTrack`, which
 //     clamps/repairs every field. No clamping is duplicated here — the editor lets
 //     the user type freely and commits raw numbers on blur/change.
 // ---------------------------------------------------------------------------
@@ -28,11 +32,8 @@ export interface EnvelopeNodeData {
   decayTension: number;
   releaseTension: number;
   amount: number;
-  voiceMode: 'poly' | 'mono';
-  maxVoices: number;
   triggerSource: { kind: string; events: 'notes' | 'clips' | 'notesAndClips' };
-  target: { kind: string };
-  monophonic: { legato: boolean; glideMs: number };
+  retriggerMode: 'restart' | 'legato';
 }
 
 export type EnvelopeNodePatch = Record<string, unknown>;
@@ -53,26 +54,17 @@ const TRIGGER_LABELS: Record<EnvelopeNodeData['triggerSource']['events'], string
   notesAndClips: 'Notes + Clips',
 };
 
-const VOICE_MODE_LABELS: Record<EnvelopeNodeData['voiceMode'], string> = {
-  poly: 'Poly',
-  mono: 'Mono',
+const RETRIGGER_LABELS: Record<EnvelopeNodeData['retriggerMode'], string> = {
+  restart: 'Restart',
+  legato: 'Legato',
 };
-
-// v1 ships a single target kind. The summary maps the stored enum to a label.
-const TARGET_LABELS: Record<string, string> = {
-  voiceGain: 'Voice Gain',
-};
-
-export function describeEnvelopeTarget(data: EnvelopeNodeData): string {
-  return TARGET_LABELS[data.target.kind] ?? 'Voice Gain';
-}
 
 export function describeEnvelopeTrigger(data: EnvelopeNodeData): string {
   return TRIGGER_LABELS[data.triggerSource.events] ?? 'Notes + Clips';
 }
 
-export function describeEnvelopeVoiceMode(data: EnvelopeNodeData): string {
-  return VOICE_MODE_LABELS[data.voiceMode] ?? 'Poly';
+export function describeEnvelopeRetrigger(data: EnvelopeNodeData): string {
+  return RETRIGGER_LABELS[data.retriggerMode] ?? 'Restart';
 }
 
 function formatMs(value: number): string {
@@ -193,27 +185,27 @@ export function EnvelopeNodeSummary({ data }: { data: EnvelopeNodeData }) {
         </span>
       </span>
       <span className="xleth-graph-state-preview__envelope-summary-row">
-        <span className="xleth-graph-state-preview__envelope-summary-label">Target</span>
-        <span className="xleth-graph-state-preview__envelope-summary-value">
-          {describeEnvelopeTarget(data)}
-        </span>
-      </span>
-      <span className="xleth-graph-state-preview__envelope-summary-row">
         <span className="xleth-graph-state-preview__envelope-summary-label">Trigger</span>
         <span className="xleth-graph-state-preview__envelope-summary-value">
           {describeEnvelopeTrigger(data)}
         </span>
       </span>
       <span className="xleth-graph-state-preview__envelope-summary-row">
-        <span className="xleth-graph-state-preview__envelope-summary-label">Voices</span>
+        <span className="xleth-graph-state-preview__envelope-summary-label">Retrigger</span>
         <span className="xleth-graph-state-preview__envelope-summary-value">
-          {describeEnvelopeVoiceMode(data)} · max {data.maxVoices}
+          {describeEnvelopeRetrigger(data)}
         </span>
       </span>
       <span className="xleth-graph-state-preview__envelope-summary-row">
         <span className="xleth-graph-state-preview__envelope-summary-label">Amount</span>
         <span className="xleth-graph-state-preview__envelope-summary-value">
           {formatUnitPercent(data.amount)}
+        </span>
+      </span>
+      <span className="xleth-graph-state-preview__envelope-summary-row">
+        <span className="xleth-graph-state-preview__envelope-summary-label">Output</span>
+        <span className="xleth-graph-state-preview__envelope-summary-value">
+          Control Out → parameter
         </span>
       </span>
     </span>
@@ -231,17 +223,6 @@ function commitNumber(
   // store's normalizeEnvelopeNodeData.
   if (!Number.isFinite(value)) return;
   onChange({ [key]: value });
-}
-
-function commitNestedNumber(
-  onChange: (patch: EnvelopeNodePatch) => void,
-  group: 'monophonic',
-  key: string,
-  raw: string,
-) {
-  const value = Number(raw);
-  if (!Number.isFinite(value)) return;
-  onChange({ [group]: { [key]: value } });
 }
 
 interface EnvelopeNumberFieldProps {
@@ -419,32 +400,7 @@ export function EnvelopeEditor({
           ariaLabel="Release tension"
           onChange={onChange}
         />
-        <EnvelopeNumberField
-          key={`maxVoices-${data.maxVoices}`}
-          label="Max Voices"
-          fieldKey="maxVoices"
-          value={data.maxVoices}
-          min={1}
-          max={32}
-          step={1}
-          ariaLabel="Max voices"
-          onChange={onChange}
-        />
       </div>
-
-      <label className="xleth-graph-state-preview__envelope-field">
-        <span className="xleth-graph-state-preview__envelope-field-label">Voice Mode</span>
-        <select
-          className="xleth-graph-state-preview__envelope-select"
-          value={data.voiceMode}
-          aria-label="Voice mode"
-          onPointerDown={(event) => event.stopPropagation()}
-          onChange={(event) => onChange({ voiceMode: event.target.value })}
-        >
-          <option value="poly">Poly</option>
-          <option value="mono">Mono</option>
-        </select>
-      </label>
 
       <label className="xleth-graph-state-preview__envelope-field">
         <span className="xleth-graph-state-preview__envelope-field-label">Trigger Source</span>
@@ -461,42 +417,18 @@ export function EnvelopeEditor({
         </select>
       </label>
 
-      <div className="xleth-graph-state-preview__envelope-field">
-        <span className="xleth-graph-state-preview__envelope-field-label">Target</span>
-        {/* v1 exposes a single per-voice target; shown read-only until the schema
-            supports more than one value. This is NOT a plugin parameter. */}
-        <span className="xleth-graph-state-preview__envelope-target" aria-label="Envelope target">
-          {describeEnvelopeTarget(data)}
-        </span>
-      </div>
-
-      <label className="xleth-graph-state-preview__envelope-field xleth-graph-state-preview__envelope-field--check">
-        <input
-          type="checkbox"
-          checked={data.monophonic.legato}
-          aria-label="Mono legato"
-          onPointerDown={(event) => event.stopPropagation()}
-          onChange={(event) => onChange({ monophonic: { legato: event.target.checked } })}
-        />
-        <span className="xleth-graph-state-preview__envelope-field-label">Legato (mono)</span>
-      </label>
-
       <label className="xleth-graph-state-preview__envelope-field">
-        <span className="xleth-graph-state-preview__envelope-field-label">Glide (mono)</span>
-        <input
-          key={`glideMs-${data.monophonic.glideMs}`}
-          className="xleth-graph-state-preview__envelope-input"
-          type="number"
-          min={0}
-          step={1}
-          defaultValue={data.monophonic.glideMs}
-          aria-label="Mono glide ms"
+        <span className="xleth-graph-state-preview__envelope-field-label">Retrigger Mode</span>
+        <select
+          className="xleth-graph-state-preview__envelope-select"
+          value={data.retriggerMode}
+          aria-label="Retrigger mode"
           onPointerDown={(event) => event.stopPropagation()}
-          onBlur={(event) => commitNestedNumber(onChange, 'monophonic', 'glideMs', event.currentTarget.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') event.currentTarget.blur();
-          }}
-        />
+          onChange={(event) => onChange({ retriggerMode: event.target.value })}
+        >
+          <option value="restart">Restart</option>
+          <option value="legato">Legato</option>
+        </select>
       </label>
     </div>
   );

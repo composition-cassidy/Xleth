@@ -731,12 +731,14 @@ analysis, and recommended implementation sequence.
 > Macro/LFO in the graph.
 >
 > **Roadmap:**
-> - **EVC-R0** (this phase) — retired the incorrect per-voice engine branch; engine
+> - **EVC-R0** (done) — retired the incorrect per-voice engine branch; engine
 >   sources/tests removed, EVC.6 Sampler/MixEngine audio changes reverted. Cleanup only — no
 >   new behavior.
-> - **EVC-R1** — rework the EVC.2/EVC.3 graphState schema + node UI semantics toward
->   **parameter output** (a `controlOut` port and Envelope→parameter edges), reusing the Macro
->   wiring. The EVC.2/EVC.3 renderer node/editor/helpers are **kept in place** until then.
+> - **EVC-R1** (done) — reworked the Envelope graphState schema + node UI into a
+>   **parameter-modulation control source**: dropped the `voiceGain` target and per-voice
+>   fields, added a `controlOut` port and Envelope→parameter edges (GraphParameterTarget,
+>   reusing the Macro wiring). Still **runtime-inert** (no parameter writes yet). See the
+>   "EVC-R1" section below.
 > - **EVC-R2** — implement the **triggered-ADSR runtime drive** for effect parameters
 >   (`setGraphEffectParameterNormalized` via `GraphParameterTarget`).
 >
@@ -746,11 +748,60 @@ analysis, and recommended implementation sequence.
 See [`fxgraph-envelope-controller-architecture-audit.md`](fxgraph-envelope-controller-architecture-audit.md)
 for the EVC.1 foundation audit (historical: it recommended the now-retired per-voice model).
 
-### EVC.2 — envelope node graphState schema (inert) — kept, to be reworked by EVC-R1
+### EVC-R1 — envelope as a parameter-modulation control source (renderer/schema/UI, inert)
 
-> The EVC.2 renderer-side schema is **preserved** after EVC-R0. EVC-R1 will rework it from a
-> per-voice `voiceGain` target toward a parameter-modulation `controlOut` target. The
-> per-voice framing below is historical.
+EVC-R1 reworks the EVC.2/EVC.3 Envelope node from the retired per-voice `voiceGain` meaning into
+a **triggered parameter-modulation control source** — a sibling to Macro. It is
+**renderer/schema/UI/linking only and runtime-inert**: it adds no triggered ADSR runtime, writes
+no plugin parameters, and makes no engine/bridge/preload/main changes. Triggered-ADSR runtime
+drive is deferred to EVC-R2.
+
+- **Schema (`ui/src/fxgraph/graphState.js`).** `normalizeEnvelopeNodeData` drops the retired
+  `target: { kind: "voiceGain" }`, `voiceMode`, `maxVoices`, and `monophonic` fields and adds
+  `retriggerMode` (`"restart"` default | `"legato"`). Old saved envelopes load safely — the
+  per-voice fields are silently dropped; `monophonic.legato` is **not** auto-migrated to legato
+  (an explicit `restart` default avoids hidden behavior). The closed schema is now
+  `{ label, attackMs, holdMs, decayMs, sustain, releaseMs, attackTension, decayTension,
+  releaseTension, amount, triggerSource{ kind:"parentTrack", events }, retriggerMode }`. Parent
+  ownership stays `graphState.trackId` (never stored on the node).
+- **Output port + parameter edges.** A new `GRAPH_ENVELOPE_OUTPUT_PORT` (`controlOut`, the same
+  port name Macro uses) is the Envelope's single control output. `canConnectEnvelopeToParameter`
+  / `connectEnvelopeToParameter` mirror the Macro helpers (they deliberately do **not** generalize
+  the Macro path, so Macro is never disturbed): the source must be an Envelope node, the target an
+  effect node with an exposed, writable, non-read-only parameter port. The persisted edge is a
+  standard `parameter` edge — `{ type:"parameter", sourcePort:"controlOut",
+  targetPort:"gpp:{node}:{param}", targetParameter: GraphParameterTarget, mapping }` — identical in
+  shape to a Macro→parameter edge. Self-links, duplicates, audio targets, Track I/O, macro, and
+  envelope targets are rejected; no raw `engineNodeId` is ever persisted. Audio topology still
+  ignores Envelope nodes and parameter edges. `collectEnvelopeParameterWrites` exists for EVC-R2
+  (and tests) but is never called from a renderer drive path in EVC-R1. Disconnect reuses the
+  existing source-agnostic `disconnectParameterEdge` / `disconnectGraphEdgeForTrack`.
+- **Store (`ui/src/stores/effectChainStore.js`).** `connectEnvelopeToParameterForTrack` is
+  graph-mode gated (rejects master/missing/chain/missing graphState like the other graph actions),
+  persists via `timeline.setTrackGraphState`, and records the `connect_envelope_to_parameter`
+  graph-owned undo transaction. Unlike the Macro action it **does not drive** the parameter after
+  linking (the Envelope has no static output value — that comes from EVC-R2 runtime), so it never
+  calls `setGraphEffectParameterNormalized`, never syncs audio runtime, and never touches
+  `effectChains`/Mixer Chain.
+- **UI (`GraphStatePreview.tsx`, `EnvelopeEditor.tsx`, `FxGraphPanel.tsx`).** The node renders an
+  **Envelope Modulator** (no longer "Per-Voice Envelope"), shows AHDSR / Trigger / Retrigger /
+  Amount / `Control Out → parameter`, and exposes a `controlOut` handle (`data-connect-source-kind
+  ="envelope"`, `data-control-port-id="envelope:{id}:controlOut"`) that drags to an exposed
+  parameter input port to create the edge — generalizing the existing control-source drag (macro)
+  to handle envelope sources too, with the same tokenized cable/handle treatment and no audio
+  handles. The compact editor drops Voice Mode / Max Voices / Voice-Gain target / Legato / Glide
+  and adds a Retrigger Mode select; read-only previews still expose no connection affordance. Macro
+  linking, parameter-cable rendering, and edge deletion are unchanged.
+- **Scope.** No triggered ADSR runtime, no `setGraphEffectParameterNormalized` from the Envelope,
+  no transport-trigger evaluation, no engine/bridge/preload/main changes, no LFO work, no Macro
+  regression, no `effectChains`/Mixer-Chain mutation, no graph-to-chain return, no React Flow, no
+  `NodeEditor.jsx`/`nodeGraphStore.js`, no package-lock changes.
+
+### EVC.2 — envelope node graphState schema (inert) — reworked by EVC-R1
+
+> The EVC.2 renderer-side schema was **reworked by EVC-R1** from a per-voice `voiceGain` target
+> into a parameter-modulation `controlOut` source (see the EVC-R1 section above). The per-voice
+> framing below is historical.
 
 EVC.2 adds the renderer-side data model for the Envelope Controller as a new graph node type,
 `type: 'envelope'`, a sibling to the Macro control node in `ui/src/fxgraph/graphState.js`. It is an
@@ -790,12 +841,12 @@ contract, and no engine-side parsing.
 Runtime (per-voice ADSR evaluation, voice/trigger contract, seek reconstruction, per-voice gain
 application) remains deferred to EVC.4 / EVC.5 / EVC.6.
 
-### EVC.3 — envelope node UI (visual/editable, still inert) — kept, to be reworked by EVC-R1
+### EVC.3 — envelope node UI (visual/editable, still inert) — reworked by EVC-R1
 
 > The EVC.3 renderer UI (Add Envelope affordance, `GraphStatePreview.tsx` rendering,
-> `EnvelopeEditor.tsx`, EVC.3 UI tests) is **preserved** after EVC-R0 and will be reworked by
-> EVC-R1 toward parameter output. The `Per-Voice Envelope` / `Target: Voice Gain` framing
-> below is historical.
+> `EnvelopeEditor.tsx`, UI tests) was **reworked by EVC-R1** into the parameter-modulator node
+> (Envelope Modulator + `controlOut` port; see the EVC-R1 section above). The `Per-Voice
+> Envelope` / `Target: Voice Gain` framing below is historical.
 
 EVC.3 makes the EVC.2 envelope node visible and editable in the active safe FX Graph UI. It is
 **renderer-only and non-audible** — no runtime ADSR evaluator, no trigger-event contract, no

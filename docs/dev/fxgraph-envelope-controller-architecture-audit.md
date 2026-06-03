@@ -9,9 +9,14 @@
 > **Corrected target:** the Envelope Controller is a **graph-owned parameter-modulation source
 > like Macro/LFO** — a triggered ADSR value that drives an **exposed effect parameter** through
 > the existing parameter-edge/mapping system and `GraphParameterTarget`, **not** a per-voice
-> audio-gain runtime. EVC-R1 reworks the renderer schema/UI toward parameter output; EVC-R2
-> implements the triggered-ADSR runtime drive for effect parameters. See the "Envelope
-> Controller (EVC) — corrected direction" section of
+> audio-gain runtime.
+>
+> **EVC-R1 (done):** the renderer schema + node UI have been reworked into this
+> parameter-modulator shape — the `voiceGain` target and per-voice fields are gone, and the
+> Envelope node now exposes a `controlOut` port that links to exposed effect parameters via
+> parameter edges (`GraphParameterTarget`), reusing the Macro wiring. It is still
+> **runtime-inert** (no parameter writes). **EVC-R2** will implement the triggered-ADSR runtime
+> drive. See the "Envelope Controller (EVC) — corrected direction" → "EVC-R1" section of
 > [`fxgraph-architecture.md`](fxgraph-architecture.md). Everything below is retained as
 > historical record and no longer reflects the product direction.
 

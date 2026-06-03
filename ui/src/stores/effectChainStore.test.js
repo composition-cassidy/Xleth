@@ -2467,12 +2467,13 @@ describe('effectChainStore FX mode safety gate', () => {
         type: 'envelope',
         data: {
           label: 'Envelope',
-          voiceMode: 'poly',
-          maxVoices: 32,
           triggerSource: { kind: 'parentTrack', events: 'notesAndClips' },
-          target: { kind: 'voiceGain' },
+          retriggerMode: 'restart',
         },
       })
+      // Retired per-voice shape is not persisted.
+      expect(env.data).not.toHaveProperty('voiceMode')
+      expect(env.data).not.toHaveProperty('target')
       expect(Number.isFinite(env.position.x) && Number.isFinite(env.position.y)).toBe(true)
       // Persisted via setTrackGraphState; no audio sync; chains/effect APIs untouched.
       expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next)
@@ -2490,12 +2491,12 @@ describe('effectChainStore FX mode safety gate', () => {
 
       const result = await useEffectChainStore.getState().addGraphEnvelopeNodeForTrack('7', {
         idFactory: () => 'env-a',
-        data: { label: 'Pluck', attackMs: 2, sustain: 0.2, voiceMode: 'mono', maxVoices: 4 },
+        data: { label: 'Pluck', attackMs: 2, sustain: 0.2, retriggerMode: 'legato' },
       })
 
       expect(result.ok).toBe(true)
       const env = useEffectChainStore.getState().graphStates['7'].nodes.find((n) => n.id === 'env-a')
-      expect(env.data).toMatchObject({ label: 'Pluck', attackMs: 2, sustain: 0.2, voiceMode: 'mono', maxVoices: 4 })
+      expect(env.data).toMatchObject({ label: 'Pluck', attackMs: 2, sustain: 0.2, retriggerMode: 'legato' })
     })
 
     it('rejects updating an envelope node while Mixer Chain owns the track', async () => {
@@ -2529,12 +2530,12 @@ describe('effectChainStore FX mode safety gate', () => {
       const baseChain = seedGraphMode(useEffectChainStore, graphState)
 
       const result = await useEffectChainStore.getState()
-        .updateGraphEnvelopeNodeDataForTrack('7', 'env-a', { attackMs: 33, sustain: 0.42, voiceMode: 'mono' })
+        .updateGraphEnvelopeNodeDataForTrack('7', 'env-a', { attackMs: 33, sustain: 0.42, retriggerMode: 'legato' })
 
       expect(result.ok).toBe(true)
       let state = useEffectChainStore.getState()
       let env = state.graphStates['7'].nodes.find((n) => n.id === 'env-a')
-      expect(env.data).toMatchObject({ attackMs: 33, sustain: 0.42, voiceMode: 'mono' })
+      expect(env.data).toMatchObject({ attackMs: 33, sustain: 0.42, retriggerMode: 'legato' })
       expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, state.graphStates['7'])
       expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
       expect(audio.setGraphEffectParameterNormalized).not.toHaveBeenCalled()
@@ -2546,12 +2547,12 @@ describe('effectChainStore FX mode safety gate', () => {
       state = useEffectChainStore.getState()
       env = state.graphStates['7'].nodes.find((n) => n.id === 'env-a')
       expect(env.data.sustain).toBe(0.7)
-      expect(env.data.voiceMode).toBe('poly')
+      expect(env.data.retriggerMode).toBe('restart')
 
       const redo = await useEffectChainStore.getState().redoGraphEditForTrack('7')
       expect(redo.ok).toBe(true)
       env = useEffectChainStore.getState().graphStates['7'].nodes.find((n) => n.id === 'env-a')
-      expect(env.data.voiceMode).toBe('mono')
+      expect(env.data.retriggerMode).toBe('legato')
       // Undo/redo of a control node never resyncs the audio topology.
       expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
     })
@@ -2572,6 +2573,93 @@ describe('effectChainStore FX mode safety gate', () => {
 
       await useEffectChainStore.getState().addGraphEnvelopeNodeForTrack('7', { idFactory: () => 'env-a' })
       await useEffectChainStore.getState().updateGraphEnvelopeNodeDataForTrack('7', 'env-a', { amount: 0.25 })
+
+      const state = useEffectChainStore.getState()
+      expect(state.chains['7']).toBe(baseChain)
+      expect(audio.addEffect).not.toHaveBeenCalled()
+      expect(audio.removeEffect).not.toHaveBeenCalled()
+      expect(audio.moveEffect).not.toHaveBeenCalled()
+    })
+  })
+
+  // ── EVC-R1 envelope → parameter links ─────────────────────────────────────
+  describe('connectEnvelopeToParameterForTrack', () => {
+    // A macro-link graph (effect with exposed 'mix') plus an envelope node.
+    function makeEnvelopeLinkGraphState(trackId = '7') {
+      const base = makeMacroLinkGraphState(trackId)
+      return {
+        ...base,
+        nodes: [...base.nodes, { id: 'env-a', type: 'envelope', position: { x: 80, y: 360 }, data: {} }],
+      }
+    }
+
+    it('rejects linking while Mixer Chain owns the track', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      const graphState = makeEnvelopeLinkGraphState('7')
+      useEffectChainStore.setState({
+        fxModes: { '7': 'chain' },
+        graphStates: { '7': graphState },
+        graphStateStatuses: { '7': { status: 'valid', graphState, warnings: [] } },
+      })
+
+      await expect(
+        useEffectChainStore.getState().connectEnvelopeToParameterForTrack('7', {
+          sourceNodeId: 'env-a', targetNodeId: 'fx-1', parameterId: 'mix',
+        }),
+      ).resolves.toMatchObject({ ok: false, reason: 'not_graph_mode' })
+      expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+    })
+
+    it('rejects linking on the master track', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      await expect(
+        useEffectChainStore.getState().connectEnvelopeToParameterForTrack('master', {
+          sourceNodeId: 'env-a', targetNodeId: 'fx-1', parameterId: 'mix',
+        }),
+      ).resolves.toMatchObject({ ok: false })
+      expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+    })
+
+    it('links an Envelope controlOut to a parameter, persists, records undo, and never drives the parameter', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      const baseChain = seedGraphMode(useEffectChainStore, makeEnvelopeLinkGraphState('7'))
+
+      const result = await useEffectChainStore.getState().connectEnvelopeToParameterForTrack('7', {
+        sourceNodeId: 'env-a',
+        targetNodeId: 'fx-1',
+        parameterId: 'mix',
+      }, { idFactory: () => 'p-env-mix' })
+
+      expect(result.ok).toBe(true)
+      const state = useEffectChainStore.getState()
+      const next = state.graphStates['7']
+      const edge = next.edges.find((e) => e.id === 'p-env-mix')
+      expect(edge).toMatchObject({
+        sourceNodeId: 'env-a',
+        sourcePort: 'controlOut',
+        targetNodeId: 'fx-1',
+        targetPort: 'gpp:fx-1:mix',
+        type: 'parameter',
+      })
+      expect(edge.targetParameter.kind).toBe('graph-parameter')
+      expect(edge.mapping).toMatchObject({ enabled: true, sourceMin: 0, sourceMax: 1, targetMin: 0, targetMax: 1 })
+      expect(JSON.stringify(next.edges)).not.toContain('engineNodeId')
+      // Persisted, undoable, no audio sync, chains untouched.
+      expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next)
+      expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+      expect(state.chains['7']).toBe(baseChain)
+      expect(state.graphHistories['7'].undoStack.at(-1)).toMatchObject({ label: 'connect_envelope_to_parameter' })
+      // EVC-R1 is runtime-inert: the Envelope never writes the parameter (that is EVC-R2).
+      expect(audio.setGraphEffectParameterNormalized).not.toHaveBeenCalled()
+    })
+
+    it('never mutates effectChains when linking', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      const baseChain = seedGraphMode(useEffectChainStore, makeEnvelopeLinkGraphState('7'))
+
+      await useEffectChainStore.getState().connectEnvelopeToParameterForTrack('7', {
+        sourceNodeId: 'env-a', targetNodeId: 'fx-1', parameterId: 'mix',
+      }, { idFactory: () => 'p-env-mix' })
 
       const state = useEffectChainStore.getState()
       expect(state.chains['7']).toBe(baseChain)

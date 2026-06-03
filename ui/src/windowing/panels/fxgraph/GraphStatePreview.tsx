@@ -211,6 +211,8 @@ interface GraphStatePreviewProps {
   onRemoveNode?: (nodeId: string) => void;
   onConnectNodes?: (sourceNodeId: string, targetNodeId: string) => void;
   onConnectMacroToParameter?: (macroNodeId: string, targetNodeId: string, parameterId: string) => void;
+  // EVC-R1 — link an Envelope controlOut to an exposed parameter input port.
+  onConnectEnvelopeToParameter?: (envelopeNodeId: string, targetNodeId: string, parameterId: string) => void;
   onDisconnectEdge?: (edgeId: string) => void;
   onEditNode?: (nodeId: string) => void;
   onUpdateMacroValue?: (nodeId: string, value: number) => void;
@@ -239,11 +241,13 @@ interface GraphStatePreviewProps {
 
 const NODE_WIDTH = 148;
 const NODE_HEIGHT = 74;
-// EVC.3 — envelope nodes are wider (compact editor with several fields) and taller
-// (subtitle + summary + preview curve + editor). These drive layout/canvas bounds
-// only; envelope nodes carry no edges, so the height is an illustrative estimate.
+// EVC.3 / EVC-R1 — envelope nodes are wider (compact editor with several fields)
+// and taller (subtitle + summary + preview curve + editor). EVC-R1 dropped the
+// per-voice fields (voice mode, max voices, legato/glide, target) so the node is
+// shorter than the EVC.3 estimate. These drive layout/canvas bounds only; the
+// height is an illustrative estimate.
 const ENVELOPE_NODE_WIDTH = 236;
-const ENVELOPE_NODE_CONTENT_HEIGHT = 300;
+const ENVELOPE_NODE_CONTENT_HEIGHT = 244;
 const PARAMETER_PORT_ROW_HEIGHT = 18;
 const PARAMETER_PORT_SECTION_TOP = 8;
 const PARAMETER_PORT_SECTION_BOTTOM = 10;
@@ -448,14 +452,15 @@ function resolveNodeText(node: GraphStateNode) {
   }
 
   if (type === 'envelope') {
-    // EVC.3 — render the persisted envelope definition. The node is a per-voice
-    // controller, not an effect or modulation endpoint: no effectInstanceId, no
-    // plugin metadata, no parameter ports, no macro value. The normalized data
-    // drives both the summary/preview and the compact editor.
+    // EVC-R1 — render the persisted envelope definition. The node is a triggered
+    // parameter-modulation control source (like Macro): no effectInstanceId, no
+    // plugin metadata, no parameter input ports, no macro value — but it does expose
+    // a single `controlOut` port that links to exposed effect parameters. The
+    // normalized data drives the summary/preview and the compact editor.
     const envelope = readEnvelopeNodeData(data);
     return {
       label: envelope.label,
-      secondaryText: 'Per-Voice Envelope',
+      secondaryText: 'Envelope Modulator',
       metaText: null,
       badges: [] as string[],
       effectInstanceId: null,
@@ -786,6 +791,7 @@ export function GraphStatePreviewNode({
   dragging,
   connectEnabled,
   connectParameterEnabled = false,
+  connectEnvelopeParameterEnabled = false,
   connectActive,
   hoveredParameterPortId = null,
   canRemove,
@@ -809,6 +815,7 @@ export function GraphStatePreviewNode({
   dragging: boolean;
   connectEnabled: boolean;
   connectParameterEnabled?: boolean;
+  connectEnvelopeParameterEnabled?: boolean;
   connectActive: boolean;
   hoveredParameterPortId?: string | null;
   canRemove: boolean;
@@ -835,10 +842,13 @@ export function GraphStatePreviewNode({
       ? 'track-output'
       : node.type;
   const isMacro = node.type === 'macro';
-  // EVC.3 — envelope nodes are standalone per-voice controller definitions. They
-  // expose NO ports of any kind (no audio in/out, no macro controlOut, no parameter
-  // ports) and never participate in drag-to-connect.
+  // EVC-R1 — envelope nodes are control-source definitions like macro nodes. They
+  // expose NO audio handles and NO parameter input ports, but DO expose a single
+  // `controlOut` port that drags to an exposed parameter port (parameter edge).
   const isEnvelope = node.type === 'envelope';
+  // A control source emits a `controlOut` that links to exposed effect parameters.
+  const isControlSource = isMacro || isEnvelope;
+  const controlSourceKind = isMacro ? 'macro' : isEnvelope ? 'envelope' : null;
   const style: React.CSSProperties = {
     left: node.x,
     top: node.y,
@@ -846,13 +856,14 @@ export function GraphStatePreviewNode({
     minHeight: node.height,
   };
   // Audio sources (effect/trackInput) drag from the out handle to create audio
-  // edges. Macro controlOut drags to an exposed parameter port to create a
-  // parameter edge — a separate, gated affordance.
+  // edges. A control source (macro/envelope) drags its controlOut to an exposed
+  // parameter port to create a parameter edge — a separate, gated affordance.
   const interactiveAudioOut =
-    connectEnabled && !isMacro && !isEnvelope && !node.virtual && typeof onConnectPointerDown === 'function';
-  const interactiveMacroOut =
-    connectParameterEnabled && isMacro && !node.virtual && typeof onConnectPointerDown === 'function';
-  const interactiveOut = interactiveAudioOut || interactiveMacroOut;
+    connectEnabled && !isControlSource && !node.virtual && typeof onConnectPointerDown === 'function';
+  const interactiveControlOut =
+    !node.virtual && typeof onConnectPointerDown === 'function' &&
+    ((isMacro && connectParameterEnabled) || (isEnvelope && connectEnvelopeParameterEnabled));
+  const interactiveOut = interactiveAudioOut || interactiveControlOut;
   const showRemove =
     canRemove &&
     (node.type === 'effect' || node.type === 'macro' || node.type === 'envelope') &&
@@ -903,22 +914,22 @@ export function GraphStatePreviewNode({
           aria-hidden="true"
         />
       )}
-      {node.type !== 'trackOutput' && !isEnvelope && (
+      {node.type !== 'trackOutput' && (
         interactiveOut ? (
           <span
             className={[
               'xleth-graph-state-preview__handle',
               'xleth-graph-state-preview__handle--out',
               'xleth-graph-state-preview__handle--connect-source',
-              isMacro ? 'xleth-graph-state-preview__handle--control-out' : '',
-              isMacro ? 'xleth-graph-state-preview__handle--connect-parameter-source' : '',
+              isControlSource ? 'xleth-graph-state-preview__handle--control-out' : '',
+              isControlSource ? 'xleth-graph-state-preview__handle--connect-parameter-source' : '',
             ].filter(Boolean).join(' ')}
             data-connect-source="true"
-            data-connect-source-kind={isMacro ? 'macro' : 'audio'}
-            data-control-output={isMacro ? 'true' : undefined}
-            data-control-port-id={isMacro ? `macro:${node.id}:controlOut` : undefined}
-            data-control-port-type={isMacro ? 'macro-output' : undefined}
-            aria-label={isMacro
+            data-connect-source-kind={controlSourceKind ?? 'audio'}
+            data-control-output={isControlSource ? 'true' : undefined}
+            data-control-port-id={isControlSource ? `${controlSourceKind}:${node.id}:controlOut` : undefined}
+            data-control-port-type={isControlSource ? `${controlSourceKind}-output` : undefined}
+            aria-label={isControlSource
               ? `Link ${node.label} to a parameter port`
               : `Start a connection from ${node.label}`}
             onPointerDown={(event) => onConnectPointerDown?.(event, node)}
@@ -931,11 +942,11 @@ export function GraphStatePreviewNode({
             className={[
               'xleth-graph-state-preview__handle',
               'xleth-graph-state-preview__handle--out',
-              isMacro ? 'xleth-graph-state-preview__handle--control-out' : '',
+              isControlSource ? 'xleth-graph-state-preview__handle--control-out' : '',
             ].filter(Boolean).join(' ')}
-            data-control-output={isMacro ? 'true' : undefined}
-            data-control-port-id={isMacro ? `macro:${node.id}:controlOut` : undefined}
-            data-control-port-type={isMacro ? 'macro-output' : undefined}
+            data-control-output={isControlSource ? 'true' : undefined}
+            data-control-port-id={isControlSource ? `${controlSourceKind}:${node.id}:controlOut` : undefined}
+            data-control-port-type={isControlSource ? `${controlSourceKind}-output` : undefined}
             aria-hidden="true"
           />
         )
@@ -1585,6 +1596,7 @@ export default function GraphStatePreview({
   onRemoveNode,
   onConnectNodes,
   onConnectMacroToParameter,
+  onConnectEnvelopeToParameter,
   onDisconnectEdge,
   onEditNode,
   onUpdateMacroValue,
@@ -1623,7 +1635,7 @@ export default function GraphStatePreview({
   const connectRef = React.useRef<{
     pointerId: number;
     sourceNodeId: string;
-    sourceKind: 'audio' | 'macro';
+    sourceKind: 'audio' | 'macro' | 'envelope';
   } | null>(null);
   const hoveredParameterTargetRef = React.useRef<ParameterDropTarget | null>(null);
   const [draggingNodeId, setDraggingNodeId] = React.useState<string | null>(null);
@@ -1679,6 +1691,7 @@ export default function GraphStatePreview({
   const canEditNode = typeof onEditNode === 'function';
   const canConnect = typeof onConnectNodes === 'function';
   const canConnectParameters = typeof onConnectMacroToParameter === 'function';
+  const canConnectEnvelopeParameters = typeof onConnectEnvelopeToParameter === 'function';
   const canDisconnect = typeof onDisconnectEdge === 'function';
   const canEditMappings = typeof onUpdateParameterEdgeMapping === 'function';
   const canExposeParameters =
@@ -1988,7 +2001,9 @@ export default function GraphStatePreview({
 
   const updateHoveredParameterTarget = React.useCallback((event: React.PointerEvent<HTMLSpanElement>) => {
     const connect = connectRef.current;
-    if (!connect || connect.pointerId !== event.pointerId || connect.sourceKind !== 'macro') return;
+    // Parameter-drop highlighting applies to both control sources (macro/envelope).
+    const isControlSource = connect?.sourceKind === 'macro' || connect?.sourceKind === 'envelope';
+    if (!connect || connect.pointerId !== event.pointerId || !isControlSource) return;
 
     const dropElement = typeof document !== 'undefined'
       ? document.elementFromPoint(event.clientX, event.clientY)
@@ -2005,7 +2020,12 @@ export default function GraphStatePreview({
     node: PositionedNode,
   ) => {
     const isMacro = node.type === 'macro';
-    const allowed = isMacro ? canConnectParameters : canConnect;
+    const isEnvelope = node.type === 'envelope';
+    const allowed = isMacro
+      ? canConnectParameters
+      : isEnvelope
+        ? canConnectEnvelopeParameters
+        : canConnect;
     if (!allowed || node.virtual || event.button !== 0) return;
 
     event.preventDefault();
@@ -2014,13 +2034,13 @@ export default function GraphStatePreview({
     connectRef.current = {
       pointerId: event.pointerId,
       sourceNodeId: node.id,
-      sourceKind: isMacro ? 'macro' : 'audio',
+      sourceKind: isMacro ? 'macro' : isEnvelope ? 'envelope' : 'audio',
     };
     hoveredParameterTargetRef.current = null;
     setConnectingFromNodeId(node.id);
     setConnectPoint(toCanvasPoint(event.clientX, event.clientY));
     setHoveredParameterTarget(null);
-  }, [canConnect, canConnectParameters, toCanvasPoint]);
+  }, [canConnect, canConnectParameters, canConnectEnvelopeParameters, toCanvasPoint]);
 
   const handleConnectPointerMove = React.useCallback((event: React.PointerEvent<HTMLSpanElement>) => {
     const connect = connectRef.current;
@@ -2041,15 +2061,18 @@ export default function GraphStatePreview({
       ? document.elementFromPoint(event.clientX, event.clientY)
       : null;
 
-    // Macro controlOut → exposed parameter input port creates a parameter edge.
-    // The drop must land on the highlighted parameter port; node bodies and audio
-    // handles no-op.
-    if (connect.sourceKind === 'macro') {
+    // Control-source controlOut (macro/envelope) → exposed parameter input port
+    // creates a parameter edge. The drop must land on the highlighted parameter
+    // port; node bodies and audio handles no-op.
+    if (connect.sourceKind === 'macro' || connect.sourceKind === 'envelope') {
       const target = hoveredParameterTargetRef.current;
+      const onConnect = connect.sourceKind === 'macro'
+        ? onConnectMacroToParameter
+        : onConnectEnvelopeToParameter;
 
       resetConnect(event);
 
-      connectHighlightedParameterDropTarget(sourceNodeId, target, onConnectMacroToParameter);
+      connectHighlightedParameterDropTarget(sourceNodeId, target, onConnect);
       return;
     }
 
@@ -2066,7 +2089,7 @@ export default function GraphStatePreview({
     if (!parameterDropTarget && onConnectNodes && targetNodeId && targetNodeId !== sourceNodeId) {
       onConnectNodes(sourceNodeId, targetNodeId);
     }
-  }, [onConnectMacroToParameter, onConnectNodes, resetConnect]);
+  }, [onConnectMacroToParameter, onConnectEnvelopeToParameter, onConnectNodes, resetConnect]);
 
   const connectingNode = connectingFromNodeId
     ? model.nodes.find((node) => node.id === connectingFromNodeId)
@@ -2237,6 +2260,7 @@ export default function GraphStatePreview({
                   dragging={draggingNodeId === node.id}
                   connectEnabled={canConnect}
                   connectParameterEnabled={canConnectParameters}
+                  connectEnvelopeParameterEnabled={canConnectEnvelopeParameters}
                   connectActive={connectingFromNodeId === node.id}
                   hoveredParameterPortId={hoveredParameterTarget?.nodeId === node.id ? hoveredParameterTarget.portId : null}
                   canRemove={canRemoveNode}
@@ -2245,10 +2269,10 @@ export default function GraphStatePreview({
                   onPointerMove={canDragNodes ? handleNodePointerMove : undefined}
                   onPointerUp={canDragNodes ? finishDrag : undefined}
                   onPointerCancel={canDragNodes ? cancelDrag : undefined}
-                  onConnectPointerDown={canConnect || canConnectParameters ? handleConnectPointerDown : undefined}
-                  onConnectPointerMove={canConnect || canConnectParameters ? handleConnectPointerMove : undefined}
-                  onConnectPointerUp={canConnect || canConnectParameters ? handleConnectPointerUp : undefined}
-                  onConnectPointerCancel={canConnect || canConnectParameters ? resetConnect : undefined}
+                  onConnectPointerDown={canConnect || canConnectParameters || canConnectEnvelopeParameters ? handleConnectPointerDown : undefined}
+                  onConnectPointerMove={canConnect || canConnectParameters || canConnectEnvelopeParameters ? handleConnectPointerMove : undefined}
+                  onConnectPointerUp={canConnect || canConnectParameters || canConnectEnvelopeParameters ? handleConnectPointerUp : undefined}
+                  onConnectPointerCancel={canConnect || canConnectParameters || canConnectEnvelopeParameters ? resetConnect : undefined}
                   onNodeContextMenu={(canExposeParameters || canMacroAutomation) ? handleNodeContextMenu : undefined}
                   onRemove={canRemoveNode ? onRemoveNode : undefined}
                   onEdit={canEditNode ? onEditNode : undefined}

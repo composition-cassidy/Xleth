@@ -1519,29 +1519,37 @@ function renderEnvelopeNodeMarkup(
   );
 }
 
-describe('GraphStatePreview envelope nodes (EVC.3)', () => {
-  it('renders an envelope node with label and per-voice identity', () => {
+describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
+  it('renders an envelope node with label and modulator identity', () => {
     const html = renderToStaticMarkup(
       <GraphStatePreview graphState={envelopeGraph({ label: 'Pluck Env' })} onUpdateEnvelope={vi.fn()} />,
     );
     expect(html).toContain('data-node-type="envelope"');
     expect(html).toContain('xleth-graph-state-preview__node--envelope');
     expect(html).toContain('Pluck Env');
-    expect(html).toContain('Per-Voice Envelope');
+    expect(html).toContain('Envelope Modulator');
+    // The retired per-voice identity is gone.
+    expect(html).not.toContain('Per-Voice Envelope');
   });
 
-  it('renders the AHDSR summary, Voice Gain target, and trigger source', () => {
+  it('renders the AHDSR summary, retrigger, and trigger source (no per-voice fields)', () => {
     const html = renderToStaticMarkup(
       <GraphStatePreview
-        graphState={envelopeGraph({ attackMs: 10, holdMs: 0, decayMs: 120, sustain: 0.7, releaseMs: 200, triggerSource: { events: 'notes' } })}
+        graphState={envelopeGraph({ attackMs: 10, holdMs: 0, decayMs: 120, sustain: 0.7, releaseMs: 200, triggerSource: { events: 'notes' }, retriggerMode: 'legato' })}
         onUpdateEnvelope={vi.fn()}
       />,
     );
     expect(html).toContain('AHDSR');
     expect(html).toContain('A 10 ms');
     expect(html).toContain('S 70%');
-    expect(html).toContain('Voice Gain');
     expect(html).toContain('Notes');
+    expect(html).toContain('Legato');
+    expect(html).toContain('Control Out');
+    // Retired per-voice labels must not appear.
+    expect(html).not.toContain('Voice Gain');
+    expect(html).not.toContain('Poly');
+    expect(html).not.toContain('max ');
+    expect(html).not.toContain('Legato (mono)');
   });
 
   it('renders the illustrative ADSR preview curve', () => {
@@ -1551,14 +1559,72 @@ describe('GraphStatePreview envelope nodes (EVC.3)', () => {
     expect(html).toContain('Envelope preview curve');
   });
 
-  it('exposes no audio handles, no macro controlOut, and no parameter ports', () => {
+  it('exposes a controlOut handle but no audio handles and no parameter input ports', () => {
     const html = renderEnvelopeNodeMarkup({ onEnvelopeUpdate: vi.fn() });
+    // Envelope is a control source: it has a controlOut, not an audio in handle.
     expect(html).not.toContain('xleth-graph-state-preview__handle--in');
-    expect(html).not.toContain('xleth-graph-state-preview__handle--out');
-    expect(html).not.toContain('data-control-output');
-    expect(html).not.toContain('data-control-port-type');
+    expect(html).toContain('xleth-graph-state-preview__handle--control-out');
+    expect(html).toContain('data-control-output="true"');
+    expect(html).toContain('data-control-port-id="envelope:env-a:controlOut"');
+    expect(html).toContain('data-control-port-type="envelope-output"');
+    // It still has no exposed parameter INPUT ports of its own.
     expect(html).not.toContain('data-parameter-port-type');
-    expect(html).not.toContain('data-connect-source');
+  });
+
+  it('makes the controlOut a parameter-link drag source only when envelope linking is enabled', () => {
+    const envNode = buildGraphStatePreviewModel(envelopeGraph())
+      .nodes.find((candidate) => candidate.id === 'env-a')!;
+    const linkable = renderToStaticMarkup(GraphStatePreviewNode({
+      node: envNode,
+      dragging: false,
+      connectEnabled: false,
+      connectParameterEnabled: false,
+      connectEnvelopeParameterEnabled: true,
+      connectActive: false,
+      canRemove: false,
+      canEdit: false,
+      onConnectPointerDown: vi.fn(),
+    }));
+    expect(linkable).toContain('data-connect-source="true"');
+    expect(linkable).toContain('data-connect-source-kind="envelope"');
+    expect(linkable).toContain('xleth-graph-state-preview__handle--connect-parameter-source');
+
+    const staticHtml = renderToStaticMarkup(GraphStatePreviewNode({
+      node: envNode,
+      dragging: false,
+      connectEnabled: false,
+      connectParameterEnabled: false,
+      connectEnvelopeParameterEnabled: false,
+      connectActive: false,
+      canRemove: false,
+      canEdit: false,
+    }));
+    expect(staticHtml).toContain('data-control-output="true"');
+    expect(staticHtml).not.toContain('data-connect-source-kind="envelope"');
+    expect(staticHtml).not.toContain('xleth-graph-state-preview__handle--connect-parameter-source');
+  });
+
+  it('routes an envelope controlOut pointer-down through the connect handler', () => {
+    const envNode = buildGraphStatePreviewModel(envelopeGraph())
+      .nodes.find((candidate) => candidate.id === 'env-a')!;
+    const onConnectPointerDown = vi.fn();
+    const element = GraphStatePreviewNode({
+      node: envNode,
+      dragging: false,
+      connectEnabled: false,
+      connectParameterEnabled: false,
+      connectEnvelopeParameterEnabled: true,
+      connectActive: false,
+      canRemove: false,
+      canEdit: false,
+      onConnectPointerDown,
+    });
+    const handle = findElementByClass(element, 'xleth-graph-state-preview__handle--connect-parameter-source')!;
+    expect(handle).toBeTruthy();
+    expect(handle.props['data-connect-source-kind']).toBe('envelope');
+    expect(handle.props['data-control-port-id']).toBe('envelope:env-a:controlOut');
+    handle.props.onPointerDown({ button: 0 });
+    expect(onConnectPointerDown).toHaveBeenCalledWith({ button: 0 }, envNode);
   });
 
   it('stays draggable and removable like other editable nodes', () => {
@@ -1638,16 +1704,28 @@ describe('GraphStatePreview envelope nodes (EVC.3)', () => {
     expect(normalizeEnvelopeNodeData({ amount: 5 }).amount).toBe(1);
   });
 
-  it('changes voice mode through the editor select', () => {
+  it('changes retrigger mode through the editor select', () => {
     const onChange = vi.fn();
     const element = EnvelopeEditor({
       nodeId: 'env-a',
-      data: readEnvelopeNodeData({ voiceMode: 'poly' }),
+      data: readEnvelopeNodeData({ retriggerMode: 'restart' }),
       onChange,
     });
-    const select = findElementByAriaLabel(element, 'Voice mode')!;
-    select.props.onChange({ target: { value: 'mono' } });
-    expect(onChange).toHaveBeenCalledWith({ voiceMode: 'mono' });
+    const select = findElementByAriaLabel(element, 'Retrigger mode')!;
+    select.props.onChange({ target: { value: 'legato' } });
+    expect(onChange).toHaveBeenCalledWith({ retriggerMode: 'legato' });
+  });
+
+  it('no longer renders the retired per-voice editor fields', () => {
+    const element = EnvelopeEditor({
+      nodeId: 'env-a',
+      data: readEnvelopeNodeData({}),
+      onChange: vi.fn(),
+    });
+    expect(findElementByAriaLabel(element, 'Voice mode')).toBeNull();
+    expect(findElementByAriaLabel(element, 'Max voices')).toBeNull();
+    expect(findElementByAriaLabel(element, 'Mono legato')).toBeNull();
+    expect(findElementByAriaLabel(element, 'Mono glide ms')).toBeNull();
   });
 
   it('changes trigger source through the editor select', () => {

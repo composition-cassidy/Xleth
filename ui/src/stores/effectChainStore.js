@@ -17,6 +17,7 @@ import {
   removeGraphNode,
   connectGraphNodes,
   connectMacroToParameter,
+  connectEnvelopeToParameter,
   disconnectGraphEdge,
   collectMacroParameterWrites,
   isParameterEdge,
@@ -1815,6 +1816,41 @@ const useEffectChainStore = create((set, get) => ({
     )
 
     return { ...applied, edge: mutation.edge, drive }
+  },
+
+  // EVC-R1 — link an Envelope controlOut to an exposed parameter input port. The
+  // parameter edge persists the GraphParameterTarget + a default linear mapping,
+  // exactly like a Macro -> Parameter link. It is NOT an audio edge, so it never
+  // syncs audio topology and never touches effectChains. Unlike the Macro action it
+  // does NOT drive the parameter after linking: the Envelope has no static output —
+  // its value is produced by triggered ADSR runtime which is deferred to EVC-R2.
+  // So this action is runtime-inert (no setGraphEffectParameterNormalized call).
+  connectEnvelopeToParameterForTrack: async (trackId, connectionDraft, options = {}) => {
+    const access = readGraphStateForMutation(get(), trackId)
+    if (!access.ok) return access
+
+    const mutation = connectEnvelopeToParameter(access.graphState, connectionDraft, {
+      idFactory: options.idFactory,
+    })
+    if (!mutation.ok) return mutation
+
+    const applied = await applyGraphStateMutation(
+      set,
+      access.key,
+      mutation.graphState,
+      { ...options, syncRuntime: false },
+    )
+    if (!applied.ok) return applied
+
+    recordGraphEditTransaction(
+      set,
+      access.key,
+      'connect_envelope_to_parameter',
+      access.graphState,
+      applied.graphState,
+    )
+
+    return { ...applied, edge: mutation.edge }
   },
 
   // FXG.4-g — update the mapping on a Macro -> Parameter edge. Updates persist to
