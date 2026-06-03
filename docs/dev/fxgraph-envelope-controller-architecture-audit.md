@@ -1,5 +1,20 @@
 # FX Graph — Envelope Controller Architecture Audit (EVC.1)
 
+> **⚠️ SUPERSEDED (EVC-R0).** This audit recommended a **per-voice `voiceGain`** Envelope
+> Controller. That direction was **wrong** and has been **retired**. The per-voice engine
+> branch built on this audit (EVC.4–EVC.6: `EnvelopeVoiceEvents`, `EnvelopeAhdsr`,
+> `EnvelopeRuntime`, their `test_envelope_*` targets, and the Sampler/MixEngine voice-gain
+> hooks) was **removed/reverted in EVC-R0**.
+>
+> **Corrected target:** the Envelope Controller is a **graph-owned parameter-modulation source
+> like Macro/LFO** — a triggered ADSR value that drives an **exposed effect parameter** through
+> the existing parameter-edge/mapping system and `GraphParameterTarget`, **not** a per-voice
+> audio-gain runtime. EVC-R1 reworks the renderer schema/UI toward parameter output; EVC-R2
+> implements the triggered-ADSR runtime drive for effect parameters. See the "Envelope
+> Controller (EVC) — corrected direction" section of
+> [`fxgraph-architecture.md`](fxgraph-architecture.md). Everything below is retained as
+> historical record and no longer reflects the product direction.
+
 Investigation/foundation document for the per-voice Envelope Controller node. This is a
 **documentation-only** phase: no schema changes, no node UI, no runtime ADSR code, no trigger
 events, no parameter-edge behavior, no `effectChains` changes. Everything below is an audit finding
@@ -41,6 +56,11 @@ reconstruction" sections in [`fxgraph-architecture.md`](fxgraph-architecture.md)
 ## 1. Executive summary
 
 ### The correct model
+
+> **⚠️ Superseded by EVC-R0 — the per-voice model below is no longer the target.** The corrected
+> Envelope Controller is a graph-owned parameter-modulation source (Macro/LFO-style) that drives
+> exposed effect parameters via `GraphParameterTarget`. Read the rest of this section as
+> historical reasoning, not current direction.
 
 Envelope Controller v1 is a **per-voice controller**, not a global plugin-parameter modulation
 source.

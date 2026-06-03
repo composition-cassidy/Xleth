@@ -196,9 +196,6 @@ add_library(XlethEngineModel STATIC
     src/model/PatternBlock.cpp
     src/model/Timeline.cpp
     src/model/VideoFlipResolver.cpp
-    src/model/EnvelopeAhdsr.cpp
-    src/model/EnvelopeVoiceEvents.cpp
-    src/model/EnvelopeRuntime.cpp
     src/model/ClipModulationEvaluator.cpp
     src/model/ClipCompanionFxBuilder.cpp
     src/project/ProjectManager.cpp
@@ -434,66 +431,6 @@ add_executable(test_video_flip_resolver
 )
 
 target_link_libraries(test_video_flip_resolver PRIVATE
-    XlethEngineModel
-)
-
-# ── test_envelope_voice_events ────────────────────────────────────────────────
-# EVC.4: pure per-voice Envelope Controller trigger/voice occurrence contract.
-# Deterministic clip/note occurrence enumeration (no audio, no transport, no
-# graphState). Pure C++, model-only — links solely against XlethEngineModel.
-add_executable(test_envelope_voice_events
-    test/test_envelope_voice_events.cpp
-)
-
-target_link_libraries(test_envelope_voice_events PRIVATE
-    XlethEngineModel
-)
-
-# ── test_envelope_ahdsr ───────────────────────────────────────────────────────
-# EVC.4b: pure closed-form AHDSR phase/value evaluation + seek/reconstruction.
-# Covers attack/hold/decay/sustain/release phases, zero-duration safety, amount
-# scaling, malformed-input normalization, and per-voice reconstruction edge cases
-# (mid-clip, mid-note, release, post-release, chord, loop, overlap, trigger filter,
-# and live-vs-reconstruction enumeration distinctness). Pure C++, model-only.
-add_executable(test_envelope_ahdsr
-    test/test_envelope_ahdsr.cpp
-)
-
-target_link_libraries(test_envelope_ahdsr PRIVATE
-    XlethEngineModel
-)
-
-# ── test_envelope_runtime ─────────────────────────────────────────────────────
-# EVC.5: engine-side Envelope Controller definition parsing (graphState → engine
-# descriptors) + per-voice runtime state binding. Covers tolerant graphState
-# parsing (repair/ignore rules, unsupported target/trigger kinds, malformed
-# nodes), and reconstruction-driven per-voice runtime voice binding/cleanup
-# (one note, chord, overlapping clips, loop iterations, trigger filtering,
-# mid-note/mid-clip/release/post-release, maxVoices steal policy, no voice
-# combination, and definition-change reset). Non-audible — evaluates levels only,
-# applies no per-voice gain. Pure C++, model-only — links solely against
-# XlethEngineModel (which provides nlohmann/json).
-add_executable(test_envelope_runtime
-    test/test_envelope_runtime.cpp
-)
-
-target_link_libraries(test_envelope_runtime PRIVATE
-    XlethEngineModel
-)
-
-# ── test_envelope_voice_gain ──────────────────────────────────────────────────
-# EVC.6: the first *audible* Envelope phase. Covers the per-voice gain application
-# primitives (envelopeVoiceGainSettings / envelopeVoiceGainMultiplier) the Sampler
-# (note voices) and MixEngine (clip voices) multiply into existing per-voice gain:
-# trigger-source filtering (notes/clips/both), multiple controllers multiplying,
-# amount applied exactly once, per-voice independence (no combination), held vs.
-# release levels (position-pure), and the full graphState → parse → multiplier
-# path. Pure C++, model-only — links solely against XlethEngineModel.
-add_executable(test_envelope_voice_gain
-    test/test_envelope_voice_gain.cpp
-)
-
-target_link_libraries(test_envelope_voice_gain PRIVATE
     XlethEngineModel
 )
 

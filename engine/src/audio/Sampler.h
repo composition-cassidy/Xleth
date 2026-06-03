@@ -4,7 +4,6 @@
 
 #include "Arpeggiator.h"
 #include "../model/TimelineTypes.h"
-#include "../model/EnvelopeAhdsr.h"
 
 #include <array>
 #include <atomic>
@@ -69,18 +68,6 @@ public:
     void setLfoPitch(bool enabled, float amount, float speedHz, bool tempoSync,
                      int tempoDivision, float attackMs, float delayMs,
                      const std::vector<SampleRegion::LfoBreakpoint>& waveform);
-
-    // ── Envelope Controller (EVC.6, per-voice gain) ──────────────────────────
-    // MAIN-THREAD configuration. Sets the note-affecting Envelope Controller
-    // curves (already filtered by MixEngine to graph-mode voiceGain controllers
-    // whose trigger source includes Notes). Each live voice multiplies the
-    // product of these per-voice envelope levels into its output gain, in lockstep
-    // with its own region AHDSR — multiplying, never replacing. Pass count == 0 to
-    // disable (the common chain-mode / no-envelope case, a transparent no-op).
-    // The Sampler never sees graphState JSON or EnvelopeControllerDefinition — only
-    // resolved AHDSR curves. Settings beyond kMaxEnvelopeControllers are ignored.
-    static constexpr int kMaxEnvelopeControllers = 8;
-    void setEnvelopeControllers(const EnvelopeAhdsrSettings* settings, int count);
 
     bool hasSample() const { return sampleData_.getNumSamples() > 0; }
     void allNotesOff();
@@ -261,26 +248,10 @@ private:
         // retrigger). Legato/portamento paths intentionally preserve identity.
         uint64_t spawnCounter   = 0;   // monotonic per-sampler; 0 = never spawned
         int64_t  spawnAbsSample = -1;  // absolute transport sample at spawn; -1 = preview/unknown
-
-        // ── Envelope Controller per-voice state (EVC.6) ──────────────────────
-        // evcElapsedSamples counts engine samples since this voice started
-        // sounding; evcGateSamples is the gate length (= note duration) captured
-        // when the voice enters Release (-1 = gate still held). The EVC level is
-        // evaluated closed-form (EVC.4b) from elapsed/gate, so one voice owns one
-        // independent envelope phase — chords, loop iterations, and overlapping
-        // voices never combine. Reset on every true re-spawn.
-        double evcElapsedSamples = 0.0;
-        double evcGateSamples    = -1.0;
     };
 
     static constexpr int MAX_VOICES = 32;
     std::array<Voice, MAX_VOICES> voices_{};
-
-    // Envelope Controller curves applied to note voices (EVC.6). Fixed-capacity
-    // so configuration never allocates on the audio thread. evcCount_ == 0 means
-    // no envelope (transparent). Set on the main thread via setEnvelopeControllers.
-    std::array<EnvelopeAhdsrSettings, kMaxEnvelopeControllers> evcSettings_{};
-    int evcCount_ = 0;
 
     uint64_t nextSpawnCounter_ = 1;   // 0 reserved as "never spawned" sentinel
     int64_t  currentAbsSample_ = 0;   // buffer-start absolute sample; 0 = preview/pre-transport

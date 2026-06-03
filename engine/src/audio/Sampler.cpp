@@ -164,18 +164,6 @@ void Sampler::setLfoPitch(bool enabled, float amount, float speedHz, bool tempoS
     c.waveform = waveform;
 }
 
-// ── Envelope Controller configuration (EVC.6) ───────────────────────────────
-
-void Sampler::setEnvelopeControllers(const EnvelopeAhdsrSettings* settings, int count)
-{
-    if (settings == nullptr) count = 0;
-    if (count < 0) count = 0;
-    if (count > kMaxEnvelopeControllers) count = kMaxEnvelopeControllers;
-    for (int i = 0; i < count; ++i)
-        evcSettings_[i] = settings[i].normalized();
-    evcCount_ = count;
-}
-
 // ── LFO evaluation ─────────────────────────────────────────────────────────
 
 float Sampler::evaluateLfoWaveform(const std::vector<SampleRegion::LfoBreakpoint>& waveform,
@@ -562,11 +550,6 @@ void Sampler::fireNoteOn(int midiNote, float velocity, int sampleOffset)
     v->spawnAbsSample = (currentAbsSample_ > 0)
                         ? currentAbsSample_ + sampleOffset
                         : -1;
-    // Fresh per-voice Envelope Controller state (EVC.6): elapsed restarts at 0 and
-    // the gate is "held" until this voice releases. A true re-spawn must never
-    // inherit the previous note's envelope phase.
-    v->evcElapsedSamples = 0.0;
-    v->evcGateSamples    = -1.0;
 }
 
 void Sampler::fireNoteOff(int midiNote, int sampleOffset, bool force)
@@ -973,37 +956,6 @@ void Sampler::processVoice(Voice& v,
 
         const float envGain = advanceEnvelope(v, engineSampleRate);
 
-        // ── Envelope Controller per-voice gain (EVC.6) ───────────────────────
-        // An additional per-voice gain multiplier on top of (never replacing) the
-        // region AHDSR (envGain), velocity, fades, declick and LFO stages.
-        // Advanced in lockstep with the region envelope (same per-sample cadence).
-        // The gate is this voice's note duration: capture it the first sample the
-        // voice is in Release (gate end — the deferred noteOff already set Release
-        // above), then evaluate the EVC AHDSR closed-form (EVC.4b) from
-        // elapsed/gate. Each EVC curve is independent and the levels are multiplied
-        // — never combined across voices. evcCount_ == 0 (chain mode / no envelope)
-        // leaves evcGain == 1.0, a transparent no-op.
-        float evcGain = 1.0f;
-        if (evcCount_ > 0)
-        {
-            if (v.evcGateSamples < 0.0 && v.envStage == Voice::EnvStage::Release)
-                v.evcGateSamples = v.evcElapsedSamples;
-
-            const double elapsedMs = v.evcElapsedSamples * 1000.0 / engineSampleRate;
-            // While held the gate is open: a huge gate keeps evaluation in the
-            // Attack→Hold→Decay→Sustain branch until the real release is captured.
-            const double gateMs = (v.evcGateSamples < 0.0)
-                ? 1.0e12
-                : v.evcGateSamples * 1000.0 / engineSampleRate;
-            for (int i = 0; i < evcCount_; ++i)
-            {
-                const EnvelopeAhdsrState es =
-                    evaluateEnvelopeAhdsr(evcSettings_[i], elapsedMs, gateMs);
-                evcGain *= static_cast<float>(es.normalizedLevel);
-            }
-            v.evcElapsedSamples += 1.0;
-        }
-
         // ── FL-STYLE GROUP SLIDE (overrides portamento; updates currentPitchF) ─
         // Modulates the voice's base pitch directly. Pitch envelope and pitch
         // LFO continue to add semitones below as additive modulation layers,
@@ -1174,7 +1126,7 @@ void Sampler::processVoice(Voice& v,
                 sample = sample * fadeOutX + loopStartSample * fadeInX;
             }
             const float panGain = (ch == 0) ? panL : panR;
-            out.addSample(ch, s, sample * envGain * evcGain * v.velocity * declickGain * fadeGain * volLfoGain * panGain);
+            out.addSample(ch, s, sample * envGain * v.velocity * declickGain * fadeGain * volLfoGain * panGain);
         }
 
         v.playPosition += stride;

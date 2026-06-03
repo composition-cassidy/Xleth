@@ -713,16 +713,44 @@ FXG.3-a audit: chain effect ownership, engine effect lifecycle, audio execution 
 graph-owned effect instance proposal, Edit button path, phased engine execution plan, risk
 analysis, and recommended implementation sequence.
 
-## Envelope Controller (EVC, per-voice) — audit
+## Envelope Controller (EVC) — corrected direction
+
+> **⚠️ Direction correction (EVC-R0).** The original per-voice **`voiceGain`** Envelope
+> path (EVC.4–EVC.6) has been **retired/superseded**. The engine-side per-voice sources and
+> tests (`EnvelopeVoiceEvents`, `EnvelopeAhdsr`, `EnvelopeRuntime`, and their
+> `test_envelope_*` targets) and the EVC.6 Sampler/MixEngine voice-gain hooks were
+> **intentionally removed in EVC-R0**. **Do not continue the old voiceGain/per-voice runtime
+> path.**
+>
+> **Corrected target:** the Envelope Controller is a **graph-owned parameter-modulation
+> source, like Macro and LFO** — an Envelope node produces a triggered ADSR value that drives
+> an **exposed effect parameter** through the existing parameter-edge/mapping system and
+> `GraphParameterTarget` (the same path Macro uses), rather than owning a per-voice audio-gain
+> runtime. The Envelope's distinguishing behavior is that its value is **triggered by
+> parent-track clips and/or pattern notes** with ADSR/gate shaping; otherwise it behaves like
+> Macro/LFO in the graph.
+>
+> **Roadmap:**
+> - **EVC-R0** (this phase) — retired the incorrect per-voice engine branch; engine
+>   sources/tests removed, EVC.6 Sampler/MixEngine audio changes reverted. Cleanup only — no
+>   new behavior.
+> - **EVC-R1** — rework the EVC.2/EVC.3 graphState schema + node UI semantics toward
+>   **parameter output** (a `controlOut` port and Envelope→parameter edges), reusing the Macro
+>   wiring. The EVC.2/EVC.3 renderer node/editor/helpers are **kept in place** until then.
+> - **EVC-R2** — implement the **triggered-ADSR runtime drive** for effect parameters
+>   (`setGraphEffectParameterNormalized` via `GraphParameterTarget`).
+>
+> The EVC.1 audit and the EVC.4–EVC.6 sections below are retained as historical record; the
+> per-voice model they describe is **no longer the product target**.
 
 See [`fxgraph-envelope-controller-architecture-audit.md`](fxgraph-envelope-controller-architecture-audit.md)
-for the EVC.1 foundation audit: the per-voice (not global-parameter) Envelope Controller model,
-where timeline clips and pattern notes become playback voices, the existing per-voice AHDSR in
-`Sampler`, seek/export reconstruction requirements, the recommended graphState node shape and
-engine-side runtime, risk register, and the EVC.2–EVC.8 phase split. EVC output explicitly does
-**not** reuse the macro→`GraphParameterTarget`→plugin-parameter path.
+for the EVC.1 foundation audit (historical: it recommended the now-retired per-voice model).
 
-### EVC.2 — envelope node graphState schema (inert)
+### EVC.2 — envelope node graphState schema (inert) — kept, to be reworked by EVC-R1
+
+> The EVC.2 renderer-side schema is **preserved** after EVC-R0. EVC-R1 will rework it from a
+> per-voice `voiceGain` target toward a parameter-modulation `controlOut` target. The
+> per-voice framing below is historical.
 
 EVC.2 adds the renderer-side data model for the Envelope Controller as a new graph node type,
 `type: 'envelope'`, a sibling to the Macro control node in `ui/src/fxgraph/graphState.js`. It is an
@@ -762,7 +790,12 @@ contract, and no engine-side parsing.
 Runtime (per-voice ADSR evaluation, voice/trigger contract, seek reconstruction, per-voice gain
 application) remains deferred to EVC.4 / EVC.5 / EVC.6.
 
-### EVC.3 — envelope node UI (visual/editable, still inert)
+### EVC.3 — envelope node UI (visual/editable, still inert) — kept, to be reworked by EVC-R1
+
+> The EVC.3 renderer UI (Add Envelope affordance, `GraphStatePreview.tsx` rendering,
+> `EnvelopeEditor.tsx`, EVC.3 UI tests) is **preserved** after EVC-R0 and will be reworked by
+> EVC-R1 toward parameter output. The `Per-Voice Envelope` / `Target: Voice Gain` framing
+> below is historical.
 
 EVC.3 makes the EVC.2 envelope node visible and editable in the active safe FX Graph UI. It is
 **renderer-only and non-audible** — no runtime ADSR evaluator, no trigger-event contract, no
@@ -799,7 +832,11 @@ engine-side graphState parsing, no per-voice gain application, and no bridge/pre
 No trigger contract, runtime ADSR, engine parsing, per-voice gain application, `GraphParameterTarget`
 usage, plugin-parameter output, Mixer Chain mutation, or `effectChains` mutation exists after EVC.3.
 
-### EVC.4 — engine-side trigger/voice occurrence contract (pure, non-audible)
+### EVC.4 — engine-side trigger/voice occurrence contract (pure, non-audible) — RETIRED (superseded by EVC-R0)
+
+> **Retired.** `engine/src/model/EnvelopeVoiceEvents.h/.cpp` and
+> `engine/test/test_envelope_voice_events.cpp` were **removed in EVC-R0**. The per-voice
+> occurrence contract is no longer the product target. Retained below as historical record.
 
 EVC.4 adds a **pure engine-side** model for enumerating the parent-track clip/note voice
 occurrences a per-voice Envelope node would later modulate. It is contract/model/test foundation
@@ -845,7 +882,12 @@ only: **not audible**, evaluates **no AHDSR**, applies **no per-voice gain**, an
   parsing, no `GraphParameterTarget` usage, no plugin-parameter output, no bridge/preload/main
   changes, no renderer/UI changes, no Mixer Chain or `effectChains` mutation.
 
-### EVC.4b — AHDSR phase/value evaluation + seek reconstruction (pure, non-audible)
+### EVC.4b — AHDSR phase/value evaluation + seek reconstruction (pure, non-audible) — RETIRED (superseded by EVC-R0)
+
+> **Retired.** `engine/src/model/EnvelopeAhdsr.h/.cpp`, the `…ForReconstruction` enumerators in
+> `EnvelopeVoiceEvents.h/.cpp`, and `engine/test/test_envelope_ahdsr.cpp` were **removed in
+> EVC-R0**. A future parameter-modulator ADSR evaluator (EVC-R2) will be reintroduced under the
+> corrected design. Retained below as historical record.
 
 EVC.4b adds the **pure, closed-form** half of the per-voice Envelope model: an AHDSR evaluator that
 answers "what phase and normalized level is an envelope at, at an arbitrary elapsed time?" and
@@ -911,7 +953,13 @@ called from audio rendering.
   plugin-parameter output, no bridge/preload/main changes, no renderer/UI changes, no clip-fade
   change, no Mixer Chain or `effectChains` mutation.
 
-### EVC.5 — engine-side definition parsing + per-voice runtime binding (non-audible)
+### EVC.5 — engine-side definition parsing + per-voice runtime binding (non-audible) — RETIRED (superseded by EVC-R0)
+
+> **Retired.** `engine/src/model/EnvelopeRuntime.h/.cpp` and
+> `engine/test/test_envelope_runtime.cpp` were **removed in EVC-R0**. The corrected design parses
+> Envelope nodes as graph-owned parameter-modulation sources (EVC-R1) and drives exposed
+> parameters via `GraphParameterTarget` (EVC-R2), not per-voice runtime binding. Retained below
+> as historical record.
 
 EVC.5 adds the engine-side **runtime binding layer** on top of EVC.4 (occurrence enumeration) and
 EVC.4b (closed-form AHDSR evaluator + reconstruction). It does two things: it **parses** Envelope
@@ -972,7 +1020,14 @@ called from audio rendering. EVC.6 adds the per-voice gain target application.
   gain change, no `GraphParameterTarget` usage, no plugin-parameter output, no bridge/preload/main
   changes, no renderer/UI changes, no graphState mutation, no Mixer Chain or `effectChains` mutation.
 
-### EVC.6 — per-voice gain target (first audible Envelope phase)
+### EVC.6 — per-voice gain target (first audible Envelope phase) — RETIRED (superseded by EVC-R0)
+
+> **Retired.** The EVC.6 per-voice gain hooks in `Sampler.h/.cpp` and `MixEngine.h/.cpp`
+> (`setEnvelopeControllers`, `evcGain`, `refreshEnvelopeDefinitions`,
+> `applyEnvelopeControllersToSampler`, etc.) and `engine/test/test_envelope_voice_gain.cpp` were
+> **reverted/removed in EVC-R0**, restoring pre-EVC.6 audio behavior. The Envelope Controller
+> will instead modulate **exposed effect parameters** (EVC-R1/EVC-R2), never per-voice audio
+> gain. Retained below as historical record.
 
 EVC.6 makes the Envelope Controller **audible for the first time**: it applies each per-voice
 Envelope level as an **additional per-voice gain multiplier** on the v1 target (`voiceGain`). It
