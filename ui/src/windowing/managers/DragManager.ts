@@ -125,7 +125,16 @@ function getDragOffsetSnapshot(panelId: PanelId): DragOffset | null {
 }
 
 export function registerWorkAreaRect(rect: WorkAreaRect): void {
-  registeredWorkAreaRect = { ...rect };
+  // Guard: skip the write if every coordinate is already identical.
+  // AppShell calls this on every render (no deps array); without the guard
+  // a new object would be created on every render even when nothing moved.
+  if (
+    rect.left   === registeredWorkAreaRect.left  &&
+    rect.top    === registeredWorkAreaRect.top   &&
+    rect.right  === registeredWorkAreaRect.right &&
+    rect.bottom === registeredWorkAreaRect.bottom
+  ) return;
+  registeredWorkAreaRect = { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
 }
 
 export function beginDrag(

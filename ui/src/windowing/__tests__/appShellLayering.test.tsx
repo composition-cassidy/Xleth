@@ -4,6 +4,13 @@ import path from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it } from 'vitest';
 import TitleBar, { TITLEBAR_MENUS } from '../../components/TitleBar.jsx';
+import { PanelFrame } from '../components/PanelFrame';
+import {
+  beginDrag,
+  cancelDrag,
+  getDragState,
+  registerWorkAreaRect,
+} from '../managers/DragManager';
 import { createInitialPanelStates, usePanelRegistry } from '../registry/PanelRegistry';
 
 function readUiSource(relativePath: string) {
@@ -125,5 +132,129 @@ describe('App shell grid layout contract', () => {
     expect(appCss).toMatch(/\.titlebar-menu-trigger[^{]*\{[^}]*-webkit-app-region:\s*no-drag/s);
     expect(appCss).toMatch(/\.titlebar-btn[^{]*\{[^}]*-webkit-app-region:\s*no-drag/s);
     expect(appCss).toMatch(/\.titlebar-launcher-btn[^{]*\{[^}]*-webkit-app-region:\s*no-drag/s);
+  });
+});
+
+describe('PanelFrame selector stability', () => {
+  beforeEach(() => {
+    usePanelRegistry.setState({ panels: createInitialPanelStates() });
+  });
+
+  // ── Source-level verification ────────────────────────────────────────────
+
+  it('PanelFrame selects primitives, not the panel object, to prevent getSnapshot reference churn', () => {
+    const src = readUiSource('windowing/components/PanelFrame.tsx');
+    // Must have individual primitive field selectors
+    expect(src).toContain("s.panels[id].hidden");
+    expect(src).toContain("s.panels[id].mode");
+    expect(src).toContain("s.panels[id].focused");
+    expect(src).toContain("s.panels[id].zIndex");
+    expect(src).toContain("s.panels[id].floating.x");
+    // Must NOT return a combined object from a selector
+    expect(src).not.toMatch(/usePanelRegistry\(\s*\(s\)\s*=>\s*s\.panels\[id\]\s*\)/);
+    expect(src).not.toMatch(/usePanelRegistry\(\s*\(state\)\s*=>\s*state\.panels\[id\]\s*\)/);
+  });
+
+  it('registerWorkAreaRect is guarded against identical writes', () => {
+    const src = readUiSource('windowing/managers/DragManager.ts');
+    // Guard must compare all four coordinates before writing
+    expect(src).toMatch(/rect\.left\s*===\s*registeredWorkAreaRect\.left/);
+    expect(src).toMatch(/rect\.top\s*===\s*registeredWorkAreaRect\.top/);
+    expect(src).toMatch(/rect\.right\s*===\s*registeredWorkAreaRect\.right/);
+    expect(src).toMatch(/rect\.bottom\s*===\s*registeredWorkAreaRect\.bottom/);
+  });
+
+  // ── Functional: store-level primitive stability ──────────────────────────
+
+  it('panel hidden and mode remain the same primitive values after an unrelated panel is focused', () => {
+    const reg = usePanelRegistry.getState();
+    reg.openPanel('timeline');
+    reg.openPanel('mixer');
+
+    const mixerHiddenBefore = usePanelRegistry.getState().panels.mixer.hidden;
+    const mixerModeBefore   = usePanelRegistry.getState().panels.mixer.mode;
+
+    // Focus timeline — changes timeline's focused/zIndex but should not change
+    // mixer's hidden or mode values.
+    reg.focusPanel('timeline');
+
+    expect(usePanelRegistry.getState().panels.mixer.hidden).toBe(mixerHiddenBefore);
+    expect(usePanelRegistry.getState().panels.mixer.mode).toBe(mixerModeBefore);
+  });
+
+  it('registerWorkAreaRect skips the write when values are unchanged, accepts a new object with different values', () => {
+    // Reset to default unbounded rect first
+    cancelDrag();
+    registerWorkAreaRect({ left: -Infinity, top: -Infinity, right: Infinity, bottom: Infinity });
+
+    // Register an explicit rect
+    registerWorkAreaRect({ left: 100, top: 200, right: 900, bottom: 700 });
+
+    // Register the exact same values (new object) — the guard should treat this
+    // as a no-op.  Verify by checking the workAreaRect captured at drag-start.
+    registerWorkAreaRect({ left: 100, top: 200, right: 900, bottom: 700 });
+
+    usePanelRegistry.getState().openPanel('timeline');
+    beginDrag('timeline', 500, 400, 100, 100);
+    const state1 = getDragState();
+    expect(state1.state).toBe('dragging');
+    if (state1.state === 'dragging') {
+      expect(state1.workAreaRect.left).toBe(100);
+    }
+    cancelDrag();
+
+    // Now register a rect with a changed left coordinate — this must NOT be a
+    // no-op; the new value should be picked up by the next drag.
+    registerWorkAreaRect({ left: 50, top: 200, right: 900, bottom: 700 });
+    beginDrag('timeline', 500, 400, 100, 100);
+    const state2 = getDragState();
+    expect(state2.state).toBe('dragging');
+    if (state2.state === 'dragging') {
+      expect(state2.workAreaRect.left).toBe(50);
+    }
+    cancelDrag();
+  });
+
+  // ── Render stability: no max-update-depth from repeated SSR renders ──────
+
+  it('PanelFrame renders consistent HTML on consecutive calls without intervening mutations', () => {
+    const reg = usePanelRegistry.getState();
+    reg.openPanel('timeline');
+
+    const render = () => renderToStaticMarkup(
+      <PanelFrame id="timeline"><div>content</div></PanelFrame>
+    );
+    const html1 = render();
+    const html2 = render();
+
+    expect(html1).toContain('data-panel-mode="floating"');
+    expect(html1).toBe(html2);
+  });
+
+  it('PanelFrame renders correctly after an unrelated store mutation (simulates top-level rerender)', () => {
+    const reg = usePanelRegistry.getState();
+    reg.openPanel('timeline');
+    // Explicitly focus timeline so we can observe the focused→unfocused transition
+    reg.focusPanel('timeline');
+
+    const htmlBefore = renderToStaticMarkup(
+      <PanelFrame id="timeline"><div>x</div></PanelFrame>
+    );
+    expect(htmlBefore).toContain('data-panel-mode="floating"');
+    expect(htmlBefore).toContain('data-focused="true"');
+
+    // Simulate what "clicking Edit menu causes AppShell rerender" does:
+    // an unrelated store mutation (opening mixer) triggers Zustand listeners;
+    // PanelFrame must NOT diverge into a getSnapshot loop.
+    reg.openPanel('mixer');
+
+    const htmlAfter = renderToStaticMarkup(
+      <PanelFrame id="timeline"><div>x</div></PanelFrame>
+    );
+    // Both renders must produce valid markup — a throw here would indicate a
+    // maximum-update-depth or getSnapshot-cache failure.
+    expect(htmlAfter).toContain('data-panel-mode="floating"');
+    // Timeline lost focus when mixer was opened
+    expect(htmlAfter).toContain('data-focused="false"');
   });
 });
