@@ -22,6 +22,10 @@
   --transition-fast: 0.1s ease;
   --transition:      0.15s ease;
 
+  /* App-shell chrome row heights — grid uses these to bound the workspace. */
+  --xleth-top-chrome-height: 76px;
+  --xleth-bottom-chrome-height: 48px;
+
   /* App-shell layer order. Keep panels above the frameless menu chrome. */
   --xleth-z-workspace: 0;
   --xleth-z-titlebar: 20;
@@ -932,8 +936,8 @@ html[data-xleth-backdrop="native-acrylic"] #root {
 /* â”€â”€ App root â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .app {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: var(--xleth-top-chrome-height) minmax(0, 1fr) var(--xleth-bottom-chrome-height);
   height: 100vh;
   overflow: hidden;
   background: var(--theme-bg-primary);
@@ -948,9 +952,9 @@ html[data-xleth-backdrop="native-acrylic"] #root {
 }
 
 .app-body {
-  flex: 1;
   position: relative;
-  min-height: 0; /* allow flexbox shrinking */
+  min-height: 0;
+  min-width: 0;
   overflow: hidden;
 }
 
@@ -965,11 +969,10 @@ html[data-xleth-backdrop="native-acrylic"] #root {
 .titlebar {
   --titlebar-height: 56px;
   position: relative;
-  min-height: 76px;
+  min-height: var(--xleth-top-chrome-height);
   padding: 10px 12px;
   display: flex;
   align-items: center;
-  flex-shrink: 0;
   background: transparent;
   border-bottom: 0;
   box-shadow: none;
@@ -2930,7 +2933,6 @@ html[data-xleth-backdrop="native-acrylic"] #root {
   padding: 0 16px;
   background: var(--theme-bg-secondary);
   border-top: 1px solid var(--theme-border-subtle);
-  flex-shrink: 0;
   z-index: 50;
 }
 

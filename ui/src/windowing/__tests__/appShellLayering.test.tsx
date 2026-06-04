@@ -79,3 +79,51 @@ describe('Workspace bounds layout contract', () => {
     expect(maximizedBlock).toContain('inset: 0');
   });
 });
+
+describe('App shell grid layout contract', () => {
+  it('defines --xleth-top-chrome-height and --xleth-bottom-chrome-height tokens', () => {
+    const appCss = readUiSource('styles/app.css');
+    expect(appCss).toMatch(/--xleth-top-chrome-height:\s*\d+px/);
+    expect(appCss).toMatch(/--xleth-bottom-chrome-height:\s*\d+px/);
+  });
+
+  it('app shell uses CSS grid so chrome row heights are explicitly bounded', () => {
+    const appCss = readUiSource('styles/app.css');
+    const appBlock = appCss.match(/\.app\s*\{([^}]*)\}/s)?.[1] ?? '';
+    expect(appBlock).toContain('display: grid');
+    expect(appBlock).toContain('var(--xleth-top-chrome-height)');
+    expect(appBlock).toContain('var(--xleth-bottom-chrome-height)');
+    expect(appBlock).toContain('minmax(0, 1fr)');
+    expect(appBlock).not.toContain('display: flex');
+  });
+
+  it('app-body does not use flex sizing that could allow titlebar to encroach on workspace', () => {
+    const appCss = readUiSource('styles/app.css');
+    const bodyBlock = appCss.match(/\.app-body\s*\{([^}]*)\}/s)?.[1] ?? '';
+    expect(bodyBlock).not.toMatch(/flex:\s*1/);
+    expect(bodyBlock).toContain('position: relative');
+    expect(bodyBlock).toContain('overflow: hidden');
+  });
+
+  it('drag manager clamps panel positions to workspace right and bottom edges', () => {
+    const dragManagerSource = readUiSource('windowing/managers/DragManager.ts');
+    // Both getDragOffsetSnapshot (preview) and endDrag (commit) must use workspace dimensions.
+    const occurrences = (dragManagerSource.match(/workAreaRect\.right\s*-.*workAreaRect\.left/g) ?? []).length;
+    expect(occurrences).toBeGreaterThanOrEqual(2);
+  });
+
+  it('drag manager undock spawn uses workspace-local origin, not viewport origin', () => {
+    const dragManagerSource = readUiSource('windowing/managers/DragManager.ts');
+    expect(dragManagerSource).toContain('Number.isFinite(registeredWorkAreaRect.left)');
+    expect(dragManagerSource).toContain('Number.isFinite(registeredWorkAreaRect.top)');
+    expect(dragManagerSource).toMatch(/mouseX\s*-\s*wLeft\s*-\s*panel\.floating\.width/);
+    expect(dragManagerSource).toMatch(/mouseY\s*-\s*wTop\s*-\s*TITLEBAR_HEIGHT/);
+  });
+
+  it('top chrome buttons and menu triggers carry no-drag so pointer events reach them', () => {
+    const appCss = readUiSource('styles/app.css');
+    expect(appCss).toMatch(/\.titlebar-menu-trigger[^{]*\{[^}]*-webkit-app-region:\s*no-drag/s);
+    expect(appCss).toMatch(/\.titlebar-btn[^{]*\{[^}]*-webkit-app-region:\s*no-drag/s);
+    expect(appCss).toMatch(/\.titlebar-launcher-btn[^{]*\{[^}]*-webkit-app-region:\s*no-drag/s);
+  });
+});

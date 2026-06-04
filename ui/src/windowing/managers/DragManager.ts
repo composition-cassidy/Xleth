@@ -110,8 +110,12 @@ function getDragOffsetSnapshot(panelId: PanelId): DragOffset | null {
 
   const finalX = dragState.startPanelX + (dragState.currentMouseX - dragState.startMouseX);
   const finalY = dragState.startPanelY + (dragState.currentMouseY - dragState.startMouseY);
-  const dx = Math.max(0, finalX) - dragState.startPanelX;
-  const dy = Math.max(0, finalY) - dragState.startPanelY;
+  const workAreaW = dragState.workAreaRect.right - dragState.workAreaRect.left;
+  const workAreaH = dragState.workAreaRect.bottom - dragState.workAreaRect.top;
+  const clampedX = Math.max(0, Math.min(finalX, workAreaW - TITLEBAR_HEIGHT));
+  const clampedY = Math.max(0, Math.min(finalY, workAreaH - TITLEBAR_HEIGHT));
+  const dx = clampedX - dragState.startPanelX;
+  const dy = clampedY - dragState.startPanelY;
   const cached = offsetCache.get(panelId);
   if (cached && cached.dx === dx && cached.dy === dy) return cached.value;
 
@@ -137,8 +141,11 @@ export function beginDrag(
   let startX = panelX;
   let startY = panelY;
   if (panel.mode === 'docked') {
-    startX = mouseX - panel.floating.width / 2;
-    startY = mouseY - TITLEBAR_HEIGHT / 2;
+    // Convert viewport mouse coords to workspace-local using the registered work-area rect.
+    const wLeft = Number.isFinite(registeredWorkAreaRect.left) ? registeredWorkAreaRect.left : 0;
+    const wTop = Number.isFinite(registeredWorkAreaRect.top) ? registeredWorkAreaRect.top : 0;
+    startX = mouseX - wLeft - panel.floating.width / 2;
+    startY = mouseY - wTop - TITLEBAR_HEIGHT / 2;
     const registry = usePanelRegistry.getState();
     const undock = (registry as Record<string, (id: PanelId, x: number, y: number) => void>)[
       ['un', 'dock', 'Panel'].join('')
@@ -197,8 +204,10 @@ export function endDrag(): void {
   const activeDrag = dragState;
   const finalX = activeDrag.startPanelX + (activeDrag.currentMouseX - activeDrag.startMouseX);
   const finalY = activeDrag.startPanelY + (activeDrag.currentMouseY - activeDrag.startMouseY);
-  const clampedX = Math.max(0, finalX);
-  const clampedY = Math.max(0, finalY);
+  const workAreaW = activeDrag.workAreaRect.right - activeDrag.workAreaRect.left;
+  const workAreaH = activeDrag.workAreaRect.bottom - activeDrag.workAreaRect.top;
+  const clampedX = Math.max(0, Math.min(finalX, workAreaW - TITLEBAR_HEIGHT));
+  const clampedY = Math.max(0, Math.min(finalY, workAreaH - TITLEBAR_HEIGHT));
 
   unbindWindowListeners();
   dragState = idleDragState;
