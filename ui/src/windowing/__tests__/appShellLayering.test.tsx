@@ -57,3 +57,25 @@ describe('App shell layer order', () => {
     expect(snapGhostSource).not.toContain('9999');
   });
 });
+
+describe('Workspace bounds layout contract', () => {
+  it('titlebar has no negative margin-bottom that would pull the workspace up into the chrome zone', () => {
+    const appCss = readUiSource('styles/app.css');
+    const match = appCss.match(/\.titlebar\s*\{([^}]*)\}/s);
+    const titlebarBlock = match?.[1] ?? '';
+    expect(titlebarBlock).not.toMatch(/margin-bottom:\s*-\d/);
+  });
+
+  it('drawer top-offset is 0 so it aligns with the workspace top, not the viewport top', () => {
+    const appCss = readUiSource('styles/app.css');
+    expect(appCss).toMatch(/--xleth-windowing-drawer-top-offset:\s*0(px)?;/);
+  });
+
+  it('maximized panel uses position:absolute and inset:0, not position:fixed', () => {
+    const windowingCss = readUiSource('windowing/components/windowing.css');
+    const maximizedBlock = windowingCss.match(/\[data-panel-mode="maximized"\]\s*\{([^}]*)\}/s)?.[1] ?? '';
+    expect(maximizedBlock).toContain('position: absolute');
+    expect(maximizedBlock).not.toContain('position: fixed');
+    expect(maximizedBlock).toContain('inset: 0');
+  });
+});
