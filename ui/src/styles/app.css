@@ -952,76 +952,153 @@ html[data-xleth-backdrop="native-acrylic"] #root {
    â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 .titlebar {
-  height: var(--titlebar-h);
+  position: relative;
+  min-height: 70px;
+  margin-bottom: -50px;
+  padding: 10px 18px 22px;
   display: flex;
   align-items: center;
-  background: var(--theme-bg-secondary);
-  border-bottom: 1px solid var(--theme-border-subtle);
   flex-shrink: 0;
+  background: transparent;
+  border-bottom: 0;
+  box-shadow: none;
   -webkit-app-region: drag;
   user-select: none;
-  z-index: 100;
-  box-shadow: var(--theme-depth-elevation-1-top-highlight);
+  z-index: 8;
+  pointer-events: auto;
+}
+
+/* Continuous DAW-style titlebar strip painted behind all control groups so the
+   menus, tool launchers and window controls read as one rounded dark bar with
+   rounded end caps, rather than separate floating pills. */
+.titlebar::before {
+  content: "";
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 50px;
+  background: var(--theme-depth-elevation-2-bg, var(--theme-bg-secondary));
+  border: 1px solid var(--theme-depth-elevation-2-border);
+  border-radius: 12px;
+  box-shadow:
+    var(--theme-depth-elevation-2-top-highlight),
+    var(--theme-depth-elevation-2-outer-shadow);
+  pointer-events: none;
+  -webkit-app-region: drag;
+  z-index: 0;
 }
 
 .titlebar-left {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 2px;
-  -webkit-app-region: no-drag;
-  padding-left: 12px;
-}
-
-.titlebar-logo {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.15em;
-  color: var(--theme-accent);
-  margin-right: 12px;
+  gap: 6px;
+  min-width: 0;
+  -webkit-app-region: drag;
+  z-index: 1;
 }
 
 .titlebar-menus {
   display: flex;
-  gap: 0;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  -webkit-app-region: no-drag;
 }
 
 .titlebar-menu {
   position: relative;
+  flex: 0 0 auto;
+  -webkit-app-region: no-drag;
 }
 
 .titlebar-menu-trigger {
-  background: none;
-  border: none;
-  color: var(--theme-text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 5px 13px;
+  background: var(--theme-depth-elevation-3-bg, var(--theme-bg-elevated));
+  border: 1px solid var(--theme-depth-elevation-2-border);
+  border-radius: 7px;
+  color: var(--theme-text-primary);
   font-family: inherit;
-  font-size: 12px;
-  font-weight: 500;
-  padding: 4px 10px;
-  border-radius: var(--radius-sm);
+  font-size: 0.86rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  line-height: 1;
+  text-transform: uppercase;
   cursor: pointer;
-  transition: background var(--transition-fast), color var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast),
+    filter var(--transition-fast);
+  -webkit-app-region: no-drag;
 }
 
 .titlebar-menu-trigger:hover,
 .titlebar-menu.open .titlebar-menu-trigger {
-  background: var(--theme-bg-surface);
-  color: var(--theme-text);
+  color: var(--theme-accent);
+  filter: brightness(1.12);
+}
+
+.titlebar-menu.open .titlebar-menu-trigger {
+  border-color: var(--theme-accent);
+}
+
+.titlebar-menu-icon {
+  flex: 0 0 auto;
+  color: currentColor;
 }
 
 /* â”€â”€ Dropdown â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .titlebar-dropdown {
   position: absolute;
-  top: 100%;
+  top: calc(100% + 6px);
   left: 0;
-  min-width: 200px;
-  background: var(--theme-bg-elevated);
-  border: 1px solid var(--theme-depth-elevation-3-border);
-  border-radius: var(--radius-md);
-  padding: 4px 0;
-  box-shadow: var(--theme-depth-elevation-3-outer-shadow);
-  z-index: 200;
+  opacity: 0;
+  transform: translateY(-6px);
+  transition:
+    opacity 130ms ease-out,
+    transform 130ms ease-out;
+  pointer-events: none;
+  z-index: 9;
   -webkit-app-region: no-drag;
+}
+
+.titlebar-dropdown[data-state="open"] {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.titlebar-dropdown[data-state="closing"] {
+  opacity: 0;
+  transform: translateY(-4px);
+  transition:
+    opacity 80ms ease-in,
+    transform 80ms ease-in;
+}
+
+.titlebar-dropdown-panel {
+  min-width: 210px;
+  background: var(--theme-depth-elevation-3-bg, var(--theme-bg-elevated));
+  border: 1px solid var(--theme-depth-elevation-3-border);
+  border-radius: 10px;
+  padding: 6px;
+  box-shadow:
+    var(--theme-depth-elevation-1-top-highlight),
+    var(--theme-depth-elevation-3-outer-shadow);
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-dropdown-panel--toolbar {
+  min-width: max-content;
 }
 
 .titlebar-dropdown-item {
@@ -1031,17 +1108,29 @@ html[data-xleth-backdrop="native-acrylic"] #root {
   width: 100%;
   background: none;
   border: none;
-  color: var(--theme-text);
+  border-radius: 8px;
+  color: var(--theme-text-primary);
   font-family: inherit;
-  font-size: 12px;
-  padding: 6px 14px;
+  font-size: 13px;
+  padding: 7px 14px;
   cursor: pointer;
   text-align: left;
-  transition: background var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast),
+    filter var(--transition-fast);
+  -webkit-app-region: no-drag;
 }
 
 .titlebar-dropdown-item:hover {
-  background: var(--theme-focus-ring);
+  background: var(--theme-bg-hover);
+  color: var(--theme-text-primary);
+  filter: brightness(1.08);
+}
+
+.titlebar-dropdown-panel--file .titlebar-dropdown-item {
+  font-size: 15px;
+  font-weight: 600;
 }
 
 .titlebar-shortcut {
@@ -1056,12 +1145,128 @@ html[data-xleth-backdrop="native-acrylic"] #root {
   margin: 4px 10px;
 }
 
+.titlebar-export-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+  padding: 7px 8px 0 14px;
+  border-top: 1px solid var(--theme-border-subtle);
+  color: var(--theme-text-primary);
+  font-size: 13px;
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-export-label {
+  flex: 0 0 auto;
+  font-weight: 700;
+}
+
+.titlebar-export-actions,
+.titlebar-action-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-toolbar-btn {
+  height: 34px;
+  min-width: 34px;
+  max-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  background: var(--theme-bg-elevated);
+  border: 1px solid var(--theme-depth-elevation-3-border);
+  border-radius: 8px;
+  color: var(--theme-text-primary);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: var(--theme-depth-elevation-1-top-highlight);
+  transition:
+    border-color var(--transition-fast),
+    color var(--transition-fast),
+    filter var(--transition-fast),
+    box-shadow var(--transition-fast);
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-toolbar-btn:hover {
+  color: var(--theme-accent);
+  border-color: var(--theme-accent);
+  filter: brightness(1.08);
+  box-shadow:
+    var(--theme-depth-elevation-1-top-highlight),
+    var(--theme-depth-accent-ring);
+}
+
+.titlebar-toolbar-btn--text {
+  min-width: 58px;
+  padding: 8px 12px;
+  color: var(--theme-accent);
+  border-color: var(--theme-accent);
+}
+
+/* ── Panel launchers ─────────────────────────────────────────────────── */
+
+.titlebar-launchers {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  -webkit-app-region: no-drag;
+  z-index: 1;
+}
+
+.titlebar-launcher-btn {
+  width: 32px;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  background: var(--theme-depth-elevation-3-bg, var(--theme-bg-elevated));
+  border: 1px solid var(--theme-depth-elevation-2-border);
+  border-radius: 7px;
+  color: var(--theme-text-muted);
+  cursor: pointer;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast),
+    filter var(--transition-fast);
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-launcher-btn[data-active="true"] {
+  color: var(--xleth-windowing-panel-color);
+  border-color: var(--xleth-windowing-panel-color);
+}
+
+.titlebar-launcher-btn:hover {
+  color: var(--theme-accent);
+  border-color: var(--theme-accent);
+  filter: brightness(1.12);
+}
+
 /* â”€â”€ Center â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .titlebar-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   flex: 1;
   text-align: center;
-  -webkit-app-region: drag;
+  -webkit-app-region: no-drag;
+  pointer-events: none;
 }
 
 .titlebar-project {
@@ -1073,40 +1278,65 @@ html[data-xleth-backdrop="native-acrylic"] #root {
 /* â”€â”€ Window controls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .titlebar-controls {
+  position: relative;
   display: flex;
+  align-items: center;
+  gap: 0;
+  margin-left: 8px;
+  padding-left: 9px;
+  /* Divider separating the tool launchers from the window-control zone. */
+  border-left: 1px solid var(--theme-depth-elevation-2-border);
   -webkit-app-region: no-drag;
+  z-index: 1;
 }
 
 .titlebar-btn {
-  width: 46px;
-  height: var(--titlebar-h);
+  width: 38px;
+  height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: none;
-  border: 1px solid var(--theme-depth-elevation-1-border);
-  color: var(--theme-text-muted);
+  background: var(--theme-depth-elevation-3-bg, var(--theme-bg-elevated));
+  border: 1px solid var(--theme-depth-elevation-2-border);
+  color: var(--theme-text-primary);
   cursor: pointer;
-  transition: background var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
-  border-radius: 0;
-  box-shadow:
-    var(--theme-depth-elevation-1-top-highlight),
-    var(--theme-depth-elevation-1-bottom-edge),
-    0 1px 2px rgba(0,0,0,0.25);
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast),
+    filter var(--transition-fast);
+  border-radius: 7px;
+  -webkit-app-region: no-drag;
+}
+
+/* Divider lines between the minimize / maximize / close zones. */
+.titlebar-controls .titlebar-btn + .titlebar-btn {
+  margin-left: 3px;
 }
 
 .titlebar-btn:hover {
-  background: var(--theme-bg-surface);
-  color: var(--theme-text);
-  box-shadow:
-    var(--theme-depth-elevation-1-top-highlight),
-    var(--theme-depth-elevation-1-bottom-edge),
-    0 1px 3px rgba(0,0,0,0.35);
+  color: var(--theme-accent);
+  border-color: var(--theme-accent);
+  filter: brightness(1.12);
 }
 
 .titlebar-btn-close:hover {
   background: var(--theme-danger);
+  border-color: var(--theme-danger);
   color: var(--theme-fg-inverse);
+}
+
+/* ── Interactive titlebar elements: explicit no-drag + pointer-events so
+   Electron's drag-region hit-tester never captures these as drag targets.
+   Inherited pointer-events is insufficient on Windows frameless windows. ── */
+.titlebar-menu-trigger,
+.titlebar-dropdown-panel,
+.titlebar-dropdown-item,
+.titlebar-toolbar-btn,
+.titlebar-launcher-btn,
+.titlebar-btn {
+  -webkit-app-region: no-drag;
+  pointer-events: auto;
 }
 
 /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
