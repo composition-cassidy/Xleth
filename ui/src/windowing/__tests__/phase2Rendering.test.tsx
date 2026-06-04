@@ -32,6 +32,11 @@ function sectionStyleFor(html: string, panelId: PanelId) {
   return match?.[1] ?? '';
 }
 
+function floatingLayerOffsetFor(style: string) {
+  const match = style.match(/z-index:\s*calc\(var\(--xleth-z-window-floating-base\)\s*\+\s*([0-9]+)\)/);
+  return Number(match?.[1] ?? 0);
+}
+
 describe('Phase 2 PanelFrame rendering', () => {
   beforeEach(resetRegistry);
 
@@ -79,8 +84,11 @@ describe('Phase 2 PanelFrame rendering', () => {
     const html = renderToStaticMarkup(<AppShell mode="focus-demo" />);
     const timelineStyle = sectionStyleFor(html, 'timeline');
     const mixerStyle = sectionStyleFor(html, 'mixer');
-    const timelineZ = Number(timelineStyle.match(/z-index:([0-9]+)/)?.[1] ?? 0);
-    const mixerZ = Number(mixerStyle.match(/z-index:([0-9]+)/)?.[1] ?? 0);
+    expect(timelineStyle).toContain('z-index:calc(var(--xleth-z-window-floating-base) + ');
+    expect(mixerStyle).toContain('z-index:calc(var(--xleth-z-window-floating-base) + ');
+
+    const timelineZ = floatingLayerOffsetFor(timelineStyle);
+    const mixerZ = floatingLayerOffsetFor(mixerStyle);
 
     expect(timelineZ).toBeGreaterThan(mixerZ);
   });

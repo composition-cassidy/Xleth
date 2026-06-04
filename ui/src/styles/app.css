@@ -21,6 +21,14 @@
   /* Transitions */
   --transition-fast: 0.1s ease;
   --transition:      0.15s ease;
+
+  /* App-shell layer order. Keep panels above the frameless menu chrome. */
+  --xleth-z-workspace: 0;
+  --xleth-z-titlebar: 20;
+  --xleth-z-titlebar-dropdown: 21;
+  --xleth-z-window-docked: 30;
+  --xleth-z-window-floating-base: 40;
+  --xleth-z-window-snap-ghost: 70;
 }
 
 /* ── Reset ────────────────────────────────────────────────────────────────── */
@@ -939,6 +947,7 @@ html[data-xleth-backdrop="native-acrylic"] #root {
 
 .app-body {
   flex: 1;
+  position: relative;
   min-height: 0; /* allow flexbox shrinking */
   overflow: hidden;
 }
@@ -964,7 +973,7 @@ html[data-xleth-backdrop="native-acrylic"] #root {
   box-shadow: none;
   -webkit-app-region: drag;
   user-select: none;
-  z-index: 8;
+  z-index: var(--xleth-z-titlebar);
   pointer-events: auto;
 }
 
@@ -1067,7 +1076,7 @@ html[data-xleth-backdrop="native-acrylic"] #root {
     opacity 130ms ease-out,
     transform 130ms ease-out;
   pointer-events: none;
-  z-index: 9;
+  z-index: var(--xleth-z-titlebar-dropdown);
   -webkit-app-region: no-drag;
 }
 

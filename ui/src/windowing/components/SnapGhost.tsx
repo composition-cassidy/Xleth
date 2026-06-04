@@ -42,7 +42,6 @@ export function SnapGhost() {
         background: 'color-mix(in srgb, var(--theme-accent) 18%, transparent)',
         border: '2px solid var(--theme-accent)',
         boxSizing: 'border-box',
-        zIndex: 9999,
         ...ghostStyleFor(snapTarget, reactiveSize),
       } as CSSProperties}
     />

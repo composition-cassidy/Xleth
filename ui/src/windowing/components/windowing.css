@@ -1,11 +1,10 @@
 /* z-index ladder for the windowing system:
- *   floating-work-area:        no z-index (creates stacking context via position: relative)
- *   floating panel frame:      panel.zIndex (dynamic, focus-rotated by focusInPanelMap)
+ *   app titlebar/menu:         var(--xleth-z-titlebar)
+ *   docked panel frame:        var(--xleth-z-window-docked)
+ *   floating/maximized frame:  var(--xleth-z-window-floating-base) + panel.zIndex
  *   floating resize handle:    z-index 2 (inside frame's stacking context)
- *   dock region:               no z-index (flow positioned)
  *   dock region resizer:       z-index 1 (inside region's stacking context via position: relative)
- *   maximized panel:           inset: 0 (top-level overlay; no z-index needed)
- *   snap ghost:                z-index 9999 (inline, in floating-work-area)
+ *   snap ghost:                var(--xleth-z-window-snap-ghost)
  */
 
 .xleth-windowing-shell {
@@ -109,6 +108,7 @@
 
 .xleth-panel-frame.is-docked {
   position: relative;
+  z-index: var(--xleth-z-window-docked);
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -123,6 +123,10 @@
   width: auto !important;
   height: auto !important;
   transform: none !important;
+}
+
+.xleth-snap-ghost {
+  z-index: var(--xleth-z-window-snap-ghost);
 }
 
 .xleth-windowing-titlebar {

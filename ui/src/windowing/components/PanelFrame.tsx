@@ -66,7 +66,7 @@ export function PanelFrame({ id, children }: PanelFrameProps) {
 
   const baseFrameStyle = {
     '--xleth-windowing-panel-color': panelTypeColorVar(id),
-    zIndex: panel.zIndex,
+    zIndex: `calc(var(--xleth-z-window-floating-base) + ${panel.zIndex})`,
   } as CSSProperties;
 
   const floatingBounds = resizePreview ?? {
