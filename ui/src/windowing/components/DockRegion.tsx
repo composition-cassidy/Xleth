@@ -9,6 +9,7 @@ import { PanelFrame } from './PanelFrame';
 export interface DockRegionProps {
   side: DockRegionSide;
   renderPanel?: (id: PanelId) => ReactNode;
+  excludePanelIds?: PanelId[];
 }
 
 function DockTestBody({ label }: { label: string }) {
@@ -19,7 +20,7 @@ function DockTestBody({ label }: { label: string }) {
   );
 }
 
-export function DockRegion({ side, renderPanel }: DockRegionProps) {
+export function DockRegion({ side, renderPanel, excludePanelIds = [] }: DockRegionProps) {
   const reactivePanels = usePanelRegistry((state) => state.panels);
   const reactiveSize = usePanelRegistry((state) => state.dockRegionSizes[side]);
   const isSSR = typeof window === 'undefined';
@@ -27,9 +28,15 @@ export function DockRegion({ side, renderPanel }: DockRegionProps) {
   const committedSize = isSSR ? usePanelRegistry.getState().dockRegionSizes[side] : reactiveSize;
   const preview = useDockRegionResizePreview(side);
   const effectiveSize = preview?.size ?? committedSize;
+  const excluded = new Set(excludePanelIds);
 
   const docked = PANEL_IDS
-    .filter((id) => !panels[id].hidden && panels[id].mode === 'docked' && panels[id].docked.region === side)
+    .filter((id) => (
+      !excluded.has(id)
+      && !panels[id].hidden
+      && panels[id].mode === 'docked'
+      && panels[id].docked.region === side
+    ))
     .sort((a, b) => panels[a].docked.orderInRegion - panels[b].docked.orderInRegion);
 
   if (docked.length === 0) return null;

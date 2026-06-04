@@ -2,6 +2,7 @@ import React from 'react';
 import { useEffect, useRef } from 'react';
 import { DockRegion } from './components/DockRegion';
 import { PanelFrame } from './components/PanelFrame';
+import { SampleSelectorDrawer } from './components/SampleSelectorDrawer';
 import { SnapGhost } from './components/SnapGhost';
 import { TopBarToggles } from './components/TopBarToggles';
 import { registerWorkAreaRect } from './managers/DragManager';
@@ -117,6 +118,8 @@ const PANEL_BODY_FOR_6B: Record<PanelId, React.LazyExoticComponent<React.FC>> = 
   sampler: SamplerWindowPanel,
 };
 
+const DRAWER_PANEL_IDS = new Set<PanelId>(['sampleSelector']);
+
 const SHELL_PANEL_IDS: Record<AppShellMode, PanelId[]> = {
   single: ['timeline'],
   'focus-demo': ['timeline', 'mixer'],
@@ -162,6 +165,7 @@ export function AppShell({ mode = 'single' }: WindowingAppShellProps) {
     ? usePanelRegistry.getState().panels
     : reactivePanels;
   const rendersRealPanels = shouldRenderRealPanels(mode);
+  const drawerPanelIds = rendersRealPanels ? Array.from(DRAWER_PANEL_IDS) : undefined;
 
   useEffect(() => {
     KeyboardManager.init();
@@ -191,16 +195,30 @@ export function AppShell({ mode = 'single' }: WindowingAppShellProps) {
     <div className="xleth-windowing-app">
       <TopBarToggles />
       <div className="xleth-windowing-shell" data-testid="xleth-windowing-shell">
-        <DockRegion side="left" renderPanel={rendersRealPanels ? renderPhase6bPanel : undefined} />
+        {rendersRealPanels && SHELL_PANEL_IDS[mode].includes('sampleSelector') ? (
+          <SampleSelectorDrawer />
+        ) : null}
+        <DockRegion
+          side="left"
+          renderPanel={rendersRealPanels ? renderPhase6bPanel : undefined}
+          excludePanelIds={drawerPanelIds}
+        />
         <div className="xleth-center-column">
-          <DockRegion side="top" renderPanel={rendersRealPanels ? renderPhase6bPanel : undefined} />
+          <DockRegion
+            side="top"
+            renderPanel={rendersRealPanels ? renderPhase6bPanel : undefined}
+            excludePanelIds={drawerPanelIds}
+          />
           <div className="xleth-floating-work-area" ref={workAreaRef}>
             <SnapGhost />
             {SHELL_PANEL_IDS[mode]
               .filter((panelId) => (
+                !(rendersRealPanels && DRAWER_PANEL_IDS.has(panelId))
+                && (
                 rendersRealPanels
                   ? panels[panelId].mode !== 'docked' || panels[panelId].hidden
                   : panels[panelId].mode !== 'docked'
+                )
               ))
               .map((panelId) => {
                 if (rendersRealPanels) return renderPhase6bPanel(panelId);
@@ -211,9 +229,17 @@ export function AppShell({ mode = 'single' }: WindowingAppShellProps) {
                 );
               })}
           </div>
-          <DockRegion side="bottom" renderPanel={rendersRealPanels ? renderPhase6bPanel : undefined} />
+          <DockRegion
+            side="bottom"
+            renderPanel={rendersRealPanels ? renderPhase6bPanel : undefined}
+            excludePanelIds={drawerPanelIds}
+          />
         </div>
-        <DockRegion side="right" renderPanel={rendersRealPanels ? renderPhase6bPanel : undefined} />
+        <DockRegion
+          side="right"
+          renderPanel={rendersRealPanels ? renderPhase6bPanel : undefined}
+          excludePanelIds={drawerPanelIds}
+        />
       </div>
       {/* Global stock-effect editor host. Lives at the windowing root — a
           transform-free container — and OUTSIDE every PanelFrame subtree, so

@@ -37,17 +37,21 @@ describe('App shell layer order', () => {
     const titlebarLayer = cssVarNumber(appCss, '--xleth-z-titlebar');
     const dropdownLayer = cssVarNumber(appCss, '--xleth-z-titlebar-dropdown');
     const dockedLayer = cssVarNumber(appCss, '--xleth-z-window-docked');
+    const drawerLayer = cssVarNumber(appCss, '--xleth-z-window-drawer');
     const floatingBaseLayer = cssVarNumber(appCss, '--xleth-z-window-floating-base');
     const snapGhostLayer = cssVarNumber(appCss, '--xleth-z-window-snap-ghost');
 
     expect(titlebarLayer).toBeLessThan(dropdownLayer);
     expect(dropdownLayer).toBeLessThan(dockedLayer);
     expect(dockedLayer).toBeLessThan(floatingBaseLayer);
+    expect(floatingBaseLayer).toBeLessThan(drawerLayer);
     expect(floatingBaseLayer).toBeLessThan(snapGhostLayer);
+    expect(drawerLayer).toBeLessThan(snapGhostLayer);
 
     expect(appCss).toMatch(/\.titlebar\s*{[\s\S]*z-index:\s*var\(--xleth-z-titlebar\)/);
     expect(appCss).toMatch(/\.titlebar-dropdown\s*{[\s\S]*z-index:\s*var\(--xleth-z-titlebar-dropdown\)/);
     expect(windowingCss).toMatch(/\.xleth-panel-frame\.is-docked\s*{[\s\S]*z-index:\s*var\(--xleth-z-window-docked\)/);
+    expect(windowingCss).toMatch(/\.xleth-sample-selector-drawer-host\s*{[\s\S]*z-index:\s*var\(--xleth-z-window-drawer\)/);
     expect(windowingCss).toContain('var(--xleth-z-window-floating-base) + panel.zIndex');
     expect(windowingCss).toContain('z-index: var(--xleth-z-window-snap-ghost);');
     expect(snapGhostSource).not.toContain('9999');

@@ -7,7 +7,7 @@ import GridLayoutTab from './GridLayoutTab.jsx'
 const TABS = [
   { id: 'media',   label: 'Project Media',   icon: FolderOpen },
   { id: 'samples', label: 'Sample Selector',  icon: Music },
-  { id: 'grid',    label: 'Grid',             icon: Grid3x3 },
+  { id: 'grid',    label: 'Grid Settings',    icon: Grid3x3 },
 ]
 
 export default function LeftPanel({ onOpenPicker, activeSampleId, setActiveSampleId }) {

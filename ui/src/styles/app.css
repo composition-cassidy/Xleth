@@ -28,7 +28,9 @@
   --xleth-z-titlebar-dropdown: 21;
   --xleth-z-window-docked: 30;
   --xleth-z-window-floating-base: 40;
+  --xleth-z-window-drawer: 65;
   --xleth-z-window-snap-ghost: 70;
+  --xleth-windowing-drawer-top-offset: 56px;
 }
 
 /* ── Reset ────────────────────────────────────────────────────────────────── */

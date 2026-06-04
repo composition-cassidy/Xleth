@@ -213,6 +213,15 @@ export const usePanelRegistry = create<PanelRegistryState>((set) => ({
   openPanel: (id) => set((state) => ({
     panels: commitPanels(state, (draft) => {
       draft[id].hidden = false;
+      if (id === 'sampleSelector') {
+        draft[id].mode = 'docked';
+        draft[id].docked = {
+          ...draft[id].docked,
+          region: 'left',
+          orderInRegion: 0,
+        };
+        draft[id].preMaximizeState = null;
+      }
       return focusInPanelMap(draft, id);
     }),
   })),
