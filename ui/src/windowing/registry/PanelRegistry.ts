@@ -192,6 +192,53 @@ function panelSnapshotForMaximize(panel: PanelState): Partial<PanelState> {
   };
 }
 
+function floatingPanelsEqual(a: FloatingPanelState, b: FloatingPanelState): boolean {
+  return a.x === b.x
+    && a.y === b.y
+    && a.width === b.width
+    && a.height === b.height;
+}
+
+function dockedPanelsEqual(a: DockedPanelState, b: DockedPanelState): boolean {
+  return a.region === b.region
+    && a.orderInRegion === b.orderInRegion
+    && a.sizeInRegion === b.sizeInRegion;
+}
+
+function partialPanelStatesEqual(a: Partial<PanelState> | null, b: Partial<PanelState> | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.hidden === b.hidden
+    && a.focused === b.focused
+    && a.zIndex === b.zIndex
+    && a.mode === b.mode
+    && (a.floating === b.floating || Boolean(a.floating && b.floating && floatingPanelsEqual(a.floating, b.floating)))
+    && (a.docked === b.docked || Boolean(a.docked && b.docked && dockedPanelsEqual(a.docked, b.docked)))
+    && partialPanelStatesEqual(a.preMaximizeState ?? null, b.preMaximizeState ?? null);
+}
+
+function panelStatesEqual(a: PanelState, b: PanelState): boolean {
+  return a.id === b.id
+    && a.hidden === b.hidden
+    && a.focused === b.focused
+    && a.zIndex === b.zIndex
+    && a.mode === b.mode
+    && floatingPanelsEqual(a.floating, b.floating)
+    && dockedPanelsEqual(a.docked, b.docked)
+    && partialPanelStatesEqual(a.preMaximizeState, b.preMaximizeState);
+}
+
+function panelMapsEqual(a: PanelStateMap, b: PanelStateMap): boolean {
+  return PANEL_IDS.every((id) => panelStatesEqual(a[id], b[id]));
+}
+
+function dockRegionSizesEqual(a: DockRegionSizes, b: DockRegionSizes): boolean {
+  return a.left === b.left
+    && a.right === b.right
+    && a.top === b.top
+    && a.bottom === b.bottom;
+}
+
 interface RegistryPersistenceSlice {
   panels: PanelStateMap;
   dockRegionSizes: DockRegionSizes;
@@ -210,29 +257,44 @@ export const usePanelRegistry = create<PanelRegistryState>((set) => ({
   panels: createInitialPanelStates(),
   dockRegionSizes: createInitialDockRegionSizes(),
 
-  openPanel: (id) => set((state) => ({
-    panels: commitPanels(state, (draft) => {
-      draft[id].hidden = false;
-      if (id === 'sampleSelector') {
-        draft[id].mode = 'docked';
-        draft[id].docked = {
-          ...draft[id].docked,
-          region: 'left',
-          orderInRegion: 0,
-        };
-        draft[id].preMaximizeState = null;
-      }
-      return focusInPanelMap(draft, id);
-    }),
-  })),
+  openPanel: (id) => set((state) => {
+    const panel = state.panels[id];
+    const sampleSelectorAlreadyDocked = id !== 'sampleSelector'
+      || (
+        panel.mode === 'docked'
+        && panel.docked.region === 'left'
+        && panel.docked.orderInRegion === 0
+        && panel.preMaximizeState === null
+      );
+    if (!panel.hidden && panel.focused && sampleSelectorAlreadyDocked) return state;
+    return {
+      panels: commitPanels(state, (draft) => {
+        draft[id].hidden = false;
+        if (id === 'sampleSelector') {
+          draft[id].mode = 'docked';
+          draft[id].docked = {
+            ...draft[id].docked,
+            region: 'left',
+            orderInRegion: 0,
+          };
+          draft[id].preMaximizeState = null;
+        }
+        return focusInPanelMap(draft, id);
+      }),
+    };
+  }),
 
-  closePanel: (id) => set((state) => ({
-    panels: commitPanels(state, (draft) => {
-      draft[id].hidden = true;
-      draft[id].focused = false;
-      return draft;
-    }),
-  })),
+  closePanel: (id) => set((state) => {
+    const panel = state.panels[id];
+    if (panel.hidden && !panel.focused) return state;
+    return {
+      panels: commitPanels(state, (draft) => {
+        draft[id].hidden = true;
+        draft[id].focused = false;
+        return draft;
+      }),
+    };
+  }),
 
   togglePanel: (id) => {
     const panel = usePanelRegistry.getState().panels[id];
@@ -242,52 +304,72 @@ export const usePanelRegistry = create<PanelRegistryState>((set) => ({
 
   focusPanel: (id) => set((state) => {
     if (state.panels[id].hidden) return state;
+    if (state.panels[id].focused) return state;
     return {
       panels: commitPanels(state, (draft) => focusInPanelMap(draft, id)),
     };
   }),
 
-  moveFloatingPanel: (id, x, y) => set((state) => ({
-    panels: commitPanels(state, (draft) => {
-      draft[id].floating = { ...draft[id].floating, x, y };
-      return draft;
-    }),
-  })),
+  moveFloatingPanel: (id, x, y) => set((state) => {
+    const floating = state.panels[id].floating;
+    if (floating.x === x && floating.y === y) return state;
+    return {
+      panels: commitPanels(state, (draft) => {
+        draft[id].floating = { ...draft[id].floating, x, y };
+        return draft;
+      }),
+    };
+  }),
 
-  resizeFloatingPanel: (id, x, y, width, height) => set((state) => ({
-    panels: commitPanels(state, (draft) => {
-      draft[id].floating = { x, y, width, height };
-      return draft;
-    }),
-  })),
+  resizeFloatingPanel: (id, x, y, width, height) => set((state) => {
+    if (floatingPanelsEqual(state.panels[id].floating, { x, y, width, height })) return state;
+    return {
+      panels: commitPanels(state, (draft) => {
+        draft[id].floating = { x, y, width, height };
+        return draft;
+      }),
+    };
+  }),
 
-  dockPanel: (id, region) => set((state) => ({
-    panels: commitPanels(state, (draft) => {
-      const orderInRegion = PANEL_IDS.filter((panelId) => (
-        panelId !== id
-        && !draft[panelId].hidden
-        && draft[panelId].mode === 'docked'
-        && draft[panelId].docked.region === region
-      )).length;
-      draft[id].hidden = false;
-      draft[id].mode = 'docked';
-      draft[id].docked = {
-        ...draft[id].docked,
-        region,
-        orderInRegion,
-      };
-      return focusInPanelMap(draft, id);
-    }),
-  })),
+  dockPanel: (id, region) => set((state) => {
+    const panel = state.panels[id];
+    if (!panel.hidden && panel.mode === 'docked' && panel.docked.region === region && panel.focused) {
+      return state;
+    }
+    return {
+      panels: commitPanels(state, (draft) => {
+        const orderInRegion = PANEL_IDS.filter((panelId) => (
+          panelId !== id
+          && !draft[panelId].hidden
+          && draft[panelId].mode === 'docked'
+          && draft[panelId].docked.region === region
+        )).length;
+        draft[id].hidden = false;
+        draft[id].mode = 'docked';
+        draft[id].docked = {
+          ...draft[id].docked,
+          region,
+          orderInRegion,
+        };
+        return focusInPanelMap(draft, id);
+      }),
+    };
+  }),
 
-  undockPanel: (id, x, y) => set((state) => ({
-    panels: commitPanels(state, (draft) => {
-      draft[id].hidden = false;
-      draft[id].mode = 'floating';
-      draft[id].floating = { ...draft[id].floating, x, y };
-      return focusInPanelMap(draft, id);
-    }),
-  })),
+  undockPanel: (id, x, y) => set((state) => {
+    const panel = state.panels[id];
+    if (!panel.hidden && panel.mode === 'floating' && panel.floating.x === x && panel.floating.y === y && panel.focused) {
+      return state;
+    }
+    return {
+      panels: commitPanels(state, (draft) => {
+        draft[id].hidden = false;
+        draft[id].mode = 'floating';
+        draft[id].floating = { ...draft[id].floating, x, y };
+        return focusInPanelMap(draft, id);
+      }),
+    };
+  }),
 
   maximizePanel: (id) => set((state) => {
     const panel = state.panels[id];
@@ -332,6 +414,10 @@ export const usePanelRegistry = create<PanelRegistryState>((set) => ({
     if (!preset) return;
     const panels = clonePanelStates(preset.panels);
     const dockRegionSizes = { ...preset.dockRegionSizes };
+    const current = usePanelRegistry.getState();
+    if (panelMapsEqual(current.panels, panels) && dockRegionSizesEqual(current.dockRegionSizes, dockRegionSizes)) {
+      return;
+    }
     scheduleLayoutPersistence(panels, dockRegionSizes);
     set({ panels, dockRegionSizes });
   },

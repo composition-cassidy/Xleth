@@ -30,11 +30,11 @@ function stopControlMouseDown(event: MouseEvent<HTMLButtonElement>) {
 }
 
 export function SampleSelectorDrawer() {
-  const reactivePanel = usePanelRegistry((state) => state.panels.sampleSelector);
+  const reactiveHidden = usePanelRegistry((state) => state.panels.sampleSelector.hidden);
   const reactiveDrawerSize = usePanelRegistry((state) => state.dockRegionSizes.left);
-  const panel = typeof window === 'undefined'
-    ? usePanelRegistry.getState().panels.sampleSelector
-    : reactivePanel;
+  const hidden = typeof window === 'undefined'
+    ? usePanelRegistry.getState().panels.sampleSelector.hidden
+    : reactiveHidden;
   const drawerSize = typeof window === 'undefined'
     ? usePanelRegistry.getState().dockRegionSizes.left
     : reactiveDrawerSize;
@@ -45,7 +45,7 @@ export function SampleSelectorDrawer() {
   } = useXlethRootContext();
 
   const registry: SampleSelectorRegistryActions = usePanelRegistry.getState();
-  const expanded = !panel.hidden;
+  const expanded = !hidden;
   const drawerStyle = {
     '--xleth-windowing-panel-color': panelTypeColorVar('sampleSelector'),
     '--xleth-sample-selector-drawer-width': `${drawerSize}px`,

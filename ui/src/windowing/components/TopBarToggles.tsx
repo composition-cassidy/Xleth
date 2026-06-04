@@ -53,37 +53,70 @@ function panelLayoutMatches(panels: PanelStateMap, presetId: PresetId): boolean 
   });
 }
 
-export function TopBarToggles() {
-  const panels = usePanelRegistry((state) => state.panels);
-  const { onOpenMidiImport } = useXlethRootContext();
+function topBarPanelLayoutKey(panels: PanelStateMap): string {
+  return PANEL_CATALOG_ORDER
+    .map(({ id }) => {
+      const panel = panels[id];
+      return [
+        id,
+        panel.hidden ? '1' : '0',
+        panel.focused ? '1' : '0',
+        panel.mode,
+        panel.docked.region,
+      ].join(':');
+    })
+    .join('|');
+}
+
+function focusedPanelKey(panels: PanelStateMap): string {
   const focusedPanel = PANEL_CATALOG_ORDER.find(({ id }) => (
     panels[id].focused && !panels[id].hidden
   ));
-  const focusedPanelId = focusedPanel?.id as PanelId | undefined;
+  if (!focusedPanel) return '';
+  const panel = panels[focusedPanel.id];
+  return [focusedPanel.id, panel.mode, panel.docked.region].join(':');
+}
+
+function PanelToggleButton({ entry }: { entry: (typeof PANEL_CATALOG_ORDER)[number] }) {
+  const hidden = usePanelRegistry((state) => state.panels[entry.id].hidden);
+  const focused = usePanelRegistry((state) => state.panels[entry.id].focused);
+  const { id } = entry;
+
+  return (
+    <button
+      className="xleth-top-bar-toggle-btn"
+      data-active={String(!hidden)}
+      data-focused={String(focused)}
+      style={{ '--xleth-windowing-panel-color': panelTypeColorVar(id) } as React.CSSProperties}
+      onClick={() => usePanelRegistry.getState().togglePanel(id)}
+      title={`${entry.title} (${entry.fKey})`}
+      aria-label={`Toggle ${entry.title}`}
+      aria-pressed={!hidden}
+    >
+      <entry.icon />
+    </button>
+  );
+}
+
+export function TopBarToggles() {
+  const layoutKey = usePanelRegistry((state) => topBarPanelLayoutKey(state.panels));
+  const reactiveFocusedPanelKey = usePanelRegistry((state) => focusedPanelKey(state.panels));
+  const panels = usePanelRegistry.getState().panels;
+  const { onOpenMidiImport } = useXlethRootContext();
+  void layoutKey;
+  const focusedPanelId = reactiveFocusedPanelKey === ''
+    ? undefined
+    : reactiveFocusedPanelKey.split(':')[0] as PanelId;
+  const focusedPanel = focusedPanelId
+    ? PANEL_CATALOG_ORDER.find(({ id }) => id === focusedPanelId)
+    : undefined;
 
   return (
     <div className="xleth-top-bar-toggles">
       <div className="xleth-top-bar-group" aria-label="Panel visibility">
         {PANEL_CATALOG_ORDER
           .filter((entry) => entry.id !== 'sampleSelector')
-          .map((entry) => {
-            const { id } = entry;
-            return (
-              <button
-                key={id}
-                className="xleth-top-bar-toggle-btn"
-                data-active={String(!panels[id].hidden)}
-                data-focused={String(panels[id].focused)}
-                style={{ '--xleth-windowing-panel-color': panelTypeColorVar(id) } as React.CSSProperties}
-                onClick={() => usePanelRegistry.getState().togglePanel(id)}
-                title={`${entry.title} (${entry.fKey})`}
-                aria-label={`Toggle ${entry.title}`}
-                aria-pressed={!panels[id].hidden}
-              >
-                <entry.icon />
-              </button>
-            );
-          })}
+          .map((entry) => <PanelToggleButton key={entry.id} entry={entry} />)}
       </div>
       <div className="xleth-top-bar-separator" aria-hidden="true" />
       <div className="xleth-top-bar-group" aria-label="Layout presets">

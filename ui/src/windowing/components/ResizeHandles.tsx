@@ -12,9 +12,13 @@ export interface ResizeHandlesProps {
 const RESIZE_EDGES: ResizeEdge[] = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'];
 
 export function ResizeHandles({ id }: ResizeHandlesProps) {
-  const panel = usePanelRegistry((state) => state.panels[id]);
+  const mode = usePanelRegistry((state) => state.panels[id].mode);
+  const floatingX = usePanelRegistry((state) => state.panels[id].floating.x);
+  const floatingY = usePanelRegistry((state) => state.panels[id].floating.y);
+  const floatingWidth = usePanelRegistry((state) => state.panels[id].floating.width);
+  const floatingHeight = usePanelRegistry((state) => state.panels[id].floating.height);
 
-  if (panel.mode === 'maximized') return null;
+  if (mode === 'maximized') return null;
 
   const handleMouseDown = (edge: ResizeEdge) => (event: MouseEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
@@ -24,10 +28,10 @@ export function ResizeHandles({ id }: ResizeHandlesProps) {
       edge,
       event.clientX,
       event.clientY,
-      panel.floating.x,
-      panel.floating.y,
-      panel.floating.width,
-      panel.floating.height,
+      floatingX,
+      floatingY,
+      floatingWidth,
+      floatingHeight,
     );
   };
 

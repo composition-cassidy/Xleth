@@ -61,6 +61,7 @@ const useTimelineDisplayStore = create((set) => ({
       return
     }
     set((state) => {
+      if (state.timelineDisplaySettings[key] === value) return state
       const next = { ...state.timelineDisplaySettings, [key]: value }
       scheduleWrite(next)
       return { timelineDisplaySettings: next }

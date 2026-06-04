@@ -154,8 +154,27 @@ function ToolbarDropdown({ actions, label, onAction }) {
   )
 }
 
+function TitleBarLauncherButton({ entry }) {
+  const panelHidden = usePanelRegistry((state) => state.panels[entry.id].hidden)
+  const Icon = entry.icon
+  const panelVisible = !panelHidden
+
+  return (
+    <button
+      type="button"
+      className="titlebar-launcher-btn"
+      data-active={String(panelVisible)}
+      style={{ '--xleth-windowing-panel-color': `var(${entry.typeColorToken})` }}
+      onClick={() => usePanelRegistry.getState().togglePanel(entry.id)}
+      title={`${entry.title} (${entry.fKey})`}
+      aria-label={`Toggle ${entry.title}`}
+      aria-pressed={panelVisible}
+    >
+      <Icon size={18} strokeWidth={2} aria-hidden="true" />
+    </button>
+  )
+}
 export default function TitleBar({ projectName = 'Untitled Project', onAction }) {
-  const panels = usePanelRegistry((state) => state.panels)
   const [renderedMenu, setRenderedMenu] = useState(null)
   const [openMenu, setOpenMenu] = useState(null)
   const [dropdownState, setDropdownState] = useState('closed')
@@ -319,25 +338,7 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction })
       <div className="titlebar-launchers">
         {PANEL_CATALOG_ORDER
           .filter((entry) => entry.id !== 'sampleSelector')
-          .map((entry) => {
-            const Icon = entry.icon
-            const panelVisible = !panels[entry.id].hidden
-            return (
-              <button
-                key={entry.id}
-                type="button"
-                className="titlebar-launcher-btn"
-                data-active={String(panelVisible)}
-                style={{ '--xleth-windowing-panel-color': `var(${entry.typeColorToken})` }}
-                onClick={() => usePanelRegistry.getState().togglePanel(entry.id)}
-                title={`${entry.title} (${entry.fKey})`}
-                aria-label={`Toggle ${entry.title}`}
-                aria-pressed={panelVisible}
-              >
-                <Icon size={18} strokeWidth={2} aria-hidden="true" />
-              </button>
-            )
-          })}
+          .map((entry) => <TitleBarLauncherButton key={entry.id} entry={entry} />)}
       </div>
 
       <div className="titlebar-controls">

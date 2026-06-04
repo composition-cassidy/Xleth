@@ -2,15 +2,17 @@ import React from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { useDockRegionResizePreview } from '../managers/DockRegionResizeManager';
 import { PANEL_CATALOG, PANEL_IDS, type PanelId } from '../registry/panelCatalog';
-import { usePanelRegistry, type DockRegion as DockRegionSide } from '../registry/PanelRegistry';
+import { usePanelRegistry, type DockRegion as DockRegionSide, type PanelStateMap } from '../registry/PanelRegistry';
 import { DockRegionResizer } from './DockRegionResizer';
 import { PanelFrame } from './PanelFrame';
 
 export interface DockRegionProps {
   side: DockRegionSide;
   renderPanel?: (id: PanelId) => ReactNode;
-  excludePanelIds?: PanelId[];
+  excludePanelIds?: readonly PanelId[];
 }
+
+const EMPTY_PANEL_IDS: readonly PanelId[] = Object.freeze([]);
 
 function DockTestBody({ label }: { label: string }) {
   return (
@@ -20,24 +22,28 @@ function DockTestBody({ label }: { label: string }) {
   );
 }
 
-export function DockRegion({ side, renderPanel, excludePanelIds = [] }: DockRegionProps) {
-  const reactivePanels = usePanelRegistry((state) => state.panels);
-  const reactiveSize = usePanelRegistry((state) => state.dockRegionSizes[side]);
-  const isSSR = typeof window === 'undefined';
-  const panels = isSSR ? usePanelRegistry.getState().panels : reactivePanels;
-  const committedSize = isSSR ? usePanelRegistry.getState().dockRegionSizes[side] : reactiveSize;
-  const preview = useDockRegionResizePreview(side);
-  const effectiveSize = preview?.size ?? committedSize;
+function dockedPanelKey(side: DockRegionSide, excludePanelIds: readonly PanelId[], panels: PanelStateMap): string {
   const excluded = new Set(excludePanelIds);
-
-  const docked = PANEL_IDS
+  return PANEL_IDS
     .filter((id) => (
       !excluded.has(id)
       && !panels[id].hidden
       && panels[id].mode === 'docked'
       && panels[id].docked.region === side
     ))
-    .sort((a, b) => panels[a].docked.orderInRegion - panels[b].docked.orderInRegion);
+    .sort((a, b) => panels[a].docked.orderInRegion - panels[b].docked.orderInRegion)
+    .join('|');
+}
+
+export function DockRegion({ side, renderPanel, excludePanelIds = EMPTY_PANEL_IDS }: DockRegionProps) {
+  const reactiveDockedPanelKey = usePanelRegistry((state) => dockedPanelKey(side, excludePanelIds, state.panels));
+  const reactiveSize = usePanelRegistry((state) => state.dockRegionSizes[side]);
+  const isSSR = typeof window === 'undefined';
+  const dockedKey = isSSR ? dockedPanelKey(side, excludePanelIds, usePanelRegistry.getState().panels) : reactiveDockedPanelKey;
+  const committedSize = isSSR ? usePanelRegistry.getState().dockRegionSizes[side] : reactiveSize;
+  const preview = useDockRegionResizePreview(side);
+  const effectiveSize = preview?.size ?? committedSize;
+  const docked = dockedKey === '' ? [] : dockedKey.split('|') as PanelId[];
 
   if (docked.length === 0) return null;
 

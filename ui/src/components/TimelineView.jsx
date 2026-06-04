@@ -689,8 +689,9 @@ export default function TimelineView({
   // ── Tool state ──────────────────────────────────────────────────────────────
   const [activeTool, setActiveTool] = useState('select')
   const [stickyNoteLength, setStickyNoteLength] = useState(240) // 1/16 = PPQ/4
-  const { snapGranularity, setSnapGranularity } = useSnapStore()
-  const { timelineDisplaySettings } = useTimelineDisplayStore()
+  const snapGranularity = useSnapStore((s) => s.snapGranularity)
+  const setSnapGranularity = useSnapStore((s) => s.setSnapGranularity)
+  const timelineDisplaySettings = useTimelineDisplayStore((s) => s.timelineDisplaySettings)
   const focusedTrackId = useTimelineFocusStore((s) => s.focusedTrackId)
   const setFocusedTrackId = useTimelineFocusStore((s) => s.setFocusedTrackId)
   const timelineTrackHeaderWidth = useUIStore((s) => s.timelineTrackHeaderWidth)

@@ -30,7 +30,8 @@ export default function TimelineToolbar({
 }) {
   const [showDisplayPopover, setShowDisplayPopover] = useState(false)
   const displayBtnRef = useRef(null)
-  const { timelineDisplaySettings, setTimelineDisplaySetting } = useTimelineDisplayStore()
+  const timelineDisplaySettings = useTimelineDisplayStore((s) => s.timelineDisplaySettings)
+  const setTimelineDisplaySetting = useTimelineDisplayStore((s) => s.setTimelineDisplaySetting)
 
   const activeRegion = activeSampleId ? regions[activeSampleId] : null
   const sampleColor = activeRegion ? labelHexColor(activeRegion.label) : null

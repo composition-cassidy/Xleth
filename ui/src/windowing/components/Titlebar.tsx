@@ -20,10 +20,15 @@ export function isTitlebarControlTarget(target: EventTarget | null): boolean {
 export function Titlebar({ id, focused }: TitlebarProps) {
   const entry = PANEL_CATALOG[id];
   const Icon = entry.icon;
-  const reactivePanel = usePanelRegistry((state) => state.panels[id]);
-  const panel = typeof window === 'undefined'
+  const reactiveMode = usePanelRegistry((state) => state.panels[id].mode);
+  const reactiveFloatingX = usePanelRegistry((state) => state.panels[id].floating.x);
+  const reactiveFloatingY = usePanelRegistry((state) => state.panels[id].floating.y);
+  const ssrPanel = typeof window === 'undefined'
     ? usePanelRegistry.getState().panels[id]
-    : reactivePanel;
+    : null;
+  const mode = ssrPanel ? ssrPanel.mode : reactiveMode;
+  const floatingX = ssrPanel ? ssrPanel.floating.x : reactiveFloatingX;
+  const floatingY = ssrPanel ? ssrPanel.floating.y : reactiveFloatingY;
   const closePanel = usePanelRegistry((state) => state.closePanel);
   const maximizePanel = usePanelRegistry((state) => state.maximizePanel);
   const restorePanel = usePanelRegistry((state) => state.restorePanel);
@@ -39,20 +44,20 @@ export function Titlebar({ id, focused }: TitlebarProps) {
 
   const toggleMaximize = (event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
-    if (panel.mode === 'maximized') restorePanel(id);
+    if (mode === 'maximized') restorePanel(id);
     else maximizePanel(id);
   };
 
   const startTitlebarDrag = (event: MouseEvent<HTMLDivElement>) => {
-    if (event.button !== 0 || panel.mode === 'maximized') return;
+    if (event.button !== 0 || mode === 'maximized') return;
     event.preventDefault();
-    beginDrag(id, event.clientX, event.clientY, panel.floating.x, panel.floating.y);
+    beginDrag(id, event.clientX, event.clientY, floatingX, floatingY);
   };
 
   const toggleTitlebarMaximize = (event: MouseEvent<HTMLDivElement>) => {
     if (isTitlebarControlTarget(event.target)) return;
-    if (panel.mode === 'maximized') restorePanel(id);
-    else if (panel.mode === 'floating') maximizePanel(id);
+    if (mode === 'maximized') restorePanel(id);
+    else if (mode === 'floating') maximizePanel(id);
   };
 
   return (
@@ -88,12 +93,12 @@ export function Titlebar({ id, focused }: TitlebarProps) {
         <button
           type="button"
           className="xleth-windowing-control-button"
-          aria-label={panel.mode === 'maximized' ? `Restore ${entry.title}` : `Maximize ${entry.title}`}
-          title={panel.mode === 'maximized' ? `Restore ${entry.title}` : `Maximize ${entry.title}`}
+          aria-label={mode === 'maximized' ? `Restore ${entry.title}` : `Maximize ${entry.title}`}
+          title={mode === 'maximized' ? `Restore ${entry.title}` : `Maximize ${entry.title}`}
           onMouseDown={stopControlMouseDown}
           onClick={toggleMaximize}
         >
-          {panel.mode === 'maximized'
+          {mode === 'maximized'
             ? <Square aria-hidden="true" strokeWidth={2} />
             : <Maximize2 aria-hidden="true" strokeWidth={2} />}
         </button>

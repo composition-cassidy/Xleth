@@ -5,9 +5,10 @@ import { PanelFrame } from './components/PanelFrame';
 import { SampleSelectorDrawer } from './components/SampleSelectorDrawer';
 import { SnapGhost } from './components/SnapGhost';
 import { TopBarToggles } from './components/TopBarToggles';
-import { registerWorkAreaRect } from './managers/DragManager';
+import { registerWorkAreaRect, type WorkAreaRect } from './managers/DragManager';
 import * as KeyboardManager from './managers/KeyboardManager';
 import { usePanelRegistry } from './registry/PanelRegistry';
+import type { PanelStateMap } from './registry/PanelRegistry';
 import { PANEL_CATALOG, type PanelId } from './registry/panelCatalog';
 import EffectEditorHost from '../components/mixer/EffectEditorHost.jsx';
 import './components/windowing.css';
@@ -119,6 +120,7 @@ const PANEL_BODY_FOR_6B: Record<PanelId, React.LazyExoticComponent<React.FC>> = 
 };
 
 const DRAWER_PANEL_IDS = new Set<PanelId>(['sampleSelector']);
+const DRAWER_PANEL_ID_LIST = Object.freeze(Array.from(DRAWER_PANEL_IDS));
 
 const SHELL_PANEL_IDS: Record<AppShellMode, PanelId[]> = {
   single: ['timeline'],
@@ -158,14 +160,48 @@ const SHELL_PANEL_IDS: Record<AppShellMode, PanelId[]> = {
   ],
 };
 
+function workAreaRectsEqual(a: WorkAreaRect | null, b: WorkAreaRect): boolean {
+  return a !== null
+    && a.left === b.left
+    && a.top === b.top
+    && a.right === b.right
+    && a.bottom === b.bottom;
+}
+
+function plainWorkAreaRect(rect: DOMRectReadOnly): WorkAreaRect {
+  return {
+    left: rect.left,
+    top: rect.top,
+    right: rect.right,
+    bottom: rect.bottom,
+  };
+}
+
+function floatingPanelKeyForMode(mode: AppShellMode, panels: PanelStateMap): string {
+  return SHELL_PANEL_IDS[mode]
+    .filter((panelId) => (
+      !(shouldRenderRealPanels(mode) && DRAWER_PANEL_IDS.has(panelId))
+      && (
+        shouldRenderRealPanels(mode)
+          ? panels[panelId].mode !== 'docked' || panels[panelId].hidden
+          : panels[panelId].mode !== 'docked'
+      )
+    ))
+    .join('|');
+}
+
 export function AppShell({ mode = 'single' }: WindowingAppShellProps) {
   const workAreaRef = useRef<HTMLDivElement>(null);
-  const reactivePanels = usePanelRegistry((state) => state.panels);
-  const panels = typeof window === 'undefined'
-    ? usePanelRegistry.getState().panels
-    : reactivePanels;
+  const lastWorkAreaRectRef = useRef<WorkAreaRect | null>(null);
+  const reactiveFloatingPanelKey = usePanelRegistry((state) => floatingPanelKeyForMode(mode, state.panels));
+  const floatingPanelKey = typeof window === 'undefined'
+    ? floatingPanelKeyForMode(mode, usePanelRegistry.getState().panels)
+    : reactiveFloatingPanelKey;
+  const floatingPanelIds = floatingPanelKey === ''
+    ? []
+    : floatingPanelKey.split('|') as PanelId[];
   const rendersRealPanels = shouldRenderRealPanels(mode);
-  const drawerPanelIds = rendersRealPanels ? Array.from(DRAWER_PANEL_IDS) : undefined;
+  const drawerPanelIds = rendersRealPanels ? DRAWER_PANEL_ID_LIST : undefined;
 
   useEffect(() => {
     KeyboardManager.init();
@@ -177,10 +213,28 @@ export function AppShell({ mode = 'single' }: WindowingAppShellProps) {
   }, [mode]);
 
   useEffect(() => {
-    if (workAreaRef.current) {
-      registerWorkAreaRect(workAreaRef.current.getBoundingClientRect());
-    }
-  });
+    const workArea = workAreaRef.current;
+    if (!workArea) return undefined;
+
+    const syncWorkAreaRect = () => {
+      const nextRect = plainWorkAreaRect(workArea.getBoundingClientRect());
+      if (workAreaRectsEqual(lastWorkAreaRectRef.current, nextRect)) return;
+      lastWorkAreaRectRef.current = nextRect;
+      registerWorkAreaRect(nextRect);
+    };
+
+    syncWorkAreaRect();
+
+    const ResizeObserverCtor = typeof ResizeObserver === 'undefined' ? null : ResizeObserver;
+    const observer = ResizeObserverCtor ? new ResizeObserverCtor(syncWorkAreaRect) : null;
+    observer?.observe(workArea);
+    window.addEventListener('resize', syncWorkAreaRect);
+
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', syncWorkAreaRect);
+    };
+  }, []);
 
   const renderPhase6bPanel = (panelId: PanelId) => {
     const PanelBody = PANEL_BODY_FOR_6B[panelId];
@@ -211,16 +265,7 @@ export function AppShell({ mode = 'single' }: WindowingAppShellProps) {
           />
           <div className="xleth-floating-work-area" ref={workAreaRef}>
             <SnapGhost />
-            {SHELL_PANEL_IDS[mode]
-              .filter((panelId) => (
-                !(rendersRealPanels && DRAWER_PANEL_IDS.has(panelId))
-                && (
-                rendersRealPanels
-                  ? panels[panelId].mode !== 'docked' || panels[panelId].hidden
-                  : panels[panelId].mode !== 'docked'
-                )
-              ))
-              .map((panelId) => {
+            {floatingPanelIds.map((panelId) => {
                 if (rendersRealPanels) return renderPhase6bPanel(panelId);
                 return (
                   <PanelFrame key={panelId} id={panelId}>

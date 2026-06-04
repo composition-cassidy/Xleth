@@ -21,7 +21,8 @@ const useSnapStore = create((set) => ({
       console.warn(`[SnapPref] Invalid granularity "${key}", ignoring`)
       return
     }
-    console.log(`[SnapPref] snapGranularity → ${key}`)
+    if (useSnapStore.getState().snapGranularity === key) return
+    console.log(`[SnapPref] snapGranularity -> ${key}`)
     set({ snapGranularity: key })
     scheduleWrite(key)
   },
