@@ -41,6 +41,8 @@
 #include "commands/UndoManager.h"
 #include "commands/TimelineCommands.h"
 #include "commands/QuantizeClipsBatchCommand.h"
+#include "commands/AddNotesBatchCommand.h"
+#include "import/FscScoreParser.h"
 #include "project/ProjectManager.h"
 #include "project/ProxyManager.h"
 #include "export/AudioExporter.h"
@@ -6502,6 +6504,107 @@ void Timeline_MoveNotesBatch(const Napi::CallbackInfo& info)
     log.done();
 }
 
+// timeline_addNotesBatch(patternId, notes[])
+// notes = [{ positionTicks, durationTicks, pitch, velocity, isSlide,
+//            slideCurveCx?, slideCurveCy? }, ...]
+// Inserts N notes into an existing pattern as a single undoable command.
+// Returns the array of real note IDs the pattern assigned (one per inserted
+// note, in insertion order). Invalid note entries are skipped defensively.
+Napi::Value Timeline_AddNotesBatch(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsArray()) {
+        Napi::TypeError::New(env, "timeline_addNotesBatch(patternId: number, notes: array)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    int patternId = info[0].As<Napi::Number>().Int32Value();
+    Napi::Array arr = info[1].As<Napi::Array>();
+
+    std::vector<PatternNote> notes;
+    notes.reserve(arr.Length());
+    for (uint32_t i = 0; i < arr.Length(); ++i) {
+        Napi::Value v = arr.Get(i);
+        if (!v.IsObject()) continue;
+        Napi::Object o = v.As<Napi::Object>();
+        // Reject malformed entries: require the minimum geometry fields.
+        if (!o.Has("positionTicks") || !o.Has("durationTicks") || !o.Has("pitch"))
+            continue;
+        PatternNote n = jsToPatternNote(o);   // id stays 0 → assigned by the command
+        n.id = 0;
+        notes.push_back(n);
+    }
+
+    BridgeCallLog log("timeline.addNotesBatch");
+
+    auto cmd = std::make_unique<AddNotesBatchCommand>(patternId, std::move(notes));
+    AddNotesBatchCommand* cmdPtr = cmd.get();
+    g_undoManager->execute(std::move(cmd), *g_timeline);
+
+    // Return the real IDs the pattern assigned during execute().
+    const std::vector<int>& ids = cmdPtr->getAssignedIds();
+    Napi::Array out = Napi::Array::New(env, ids.size());
+    for (size_t i = 0; i < ids.size(); ++i)
+        out.Set(static_cast<uint32_t>(i), Napi::Number::New(env, ids[i]));
+    log.done(std::to_string(ids.size()) + " note(s)");
+    return out;
+}
+
+// fsc_parse(filePath)
+// Pure read-only FL Studio Score (.fsc) parse. Wraps FscScoreParser::parseFile.
+// Does NOT touch Timeline / Pattern / undo / project state. Returns neutral
+// note data converted to Xleth's 960 PPQ, preserving droppedCount and the
+// source (FL) timing for diagnostics.
+Napi::Value Fsc_Parse(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsString()) {
+        Napi::TypeError::New(env, "fsc_parse(filePath: string)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const std::string filePath = info[0].As<Napi::String>().Utf8Value();
+
+    BridgeCallLog log("fsc.parse");
+    const xleth::import::FscParseResult res =
+        xleth::import::FscScoreParser::parseFile(filePath);
+
+    Napi::Object out = Napi::Object::New(env);
+    out.Set("ok",           Napi::Boolean::New(env, res.ok));
+    if (!res.error.empty())
+        out.Set("error",    Napi::String::New(env, res.error));
+    out.Set("sourcePpq",    Napi::Number::New(env, res.sourcePpq));
+    out.Set("xlethPpq",     Napi::Number::New(env, res.xlethPpq));
+    out.Set("droppedCount", Napi::Number::New(env, res.droppedCount));
+
+    Napi::Array notes = Napi::Array::New(env, res.notes.size());
+    for (size_t i = 0; i < res.notes.size(); ++i) {
+        const xleth::import::ImportedFscNote& n = res.notes[i];
+        Napi::Object jn = Napi::Object::New(env);
+        // Converted Xleth 960-PPQ timing.
+        jn.Set("positionTicks",       Napi::Number::New(env, static_cast<double>(n.xlethStartTick)));
+        jn.Set("lengthTicks",         Napi::Number::New(env, static_cast<double>(n.xlethLengthTick)));
+        jn.Set("pitch",               Napi::Number::New(env, n.key));
+        jn.Set("velocity",            Napi::Number::New(env, n.velocity));
+        jn.Set("isSlide",             Napi::Boolean::New(env, n.isSlide));
+        jn.Set("markerByte",          Napi::Number::New(env, n.markerByte));
+        // Source (FL) timing + raw fields for diagnostics.
+        jn.Set("sourcePositionTicks", Napi::Number::New(env, static_cast<double>(n.sourcePositionTicks)));
+        jn.Set("sourceLengthTicks",   Napi::Number::New(env, static_cast<double>(n.sourceLengthTicks)));
+        jn.Set("flags",               Napi::Number::New(env, n.flags));
+        jn.Set("group",               Napi::Number::New(env, n.group));
+        notes.Set(static_cast<uint32_t>(i), jn);
+    }
+    out.Set("notes", notes);
+
+    log.done(res.ok ? (std::to_string(res.notes.size()) + " note(s)") : res.error);
+    return out;
+}
+
 // timeline_quantizeClipsBatch(specs[])
 // specs = [{ id, isPatternBlock, newStartTicks, newEndTicks, newOffsetTicks,
 //            newStretchRatio }, ...]
@@ -12947,6 +13050,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("timeline_removeNote",             Napi::Function::New(env, Timeline_RemoveNote));
     exports.Set("timeline_moveNote",               Napi::Function::New(env, Timeline_MoveNote));
     exports.Set("timeline_moveNotesBatch",         Napi::Function::New(env, Timeline_MoveNotesBatch));
+    exports.Set("timeline_addNotesBatch",          Napi::Function::New(env, Timeline_AddNotesBatch));
+    exports.Set("fsc_parse",                       Napi::Function::New(env, Fsc_Parse));
     exports.Set("timeline_quantizeClipsBatch",     Napi::Function::New(env, Timeline_QuantizeClipsBatch));
     exports.Set("timeline_resizeNotesBatch",        Napi::Function::New(env, Timeline_ResizeNotesBatch));
     exports.Set("timeline_resizeNote",             Napi::Function::New(env, Timeline_ResizeNote));

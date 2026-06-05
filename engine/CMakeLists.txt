@@ -203,6 +203,7 @@ add_library(XlethEngineModel STATIC
     src/commands/UndoManager.cpp
     src/commands/TimelineCommands.cpp
     src/commands/QuantizeClipsBatchCommand.cpp
+    src/commands/AddNotesBatchCommand.cpp
 )
 
 target_include_directories(XlethEngineModel PUBLIC

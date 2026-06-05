@@ -1,6 +1,6 @@
 'use strict';
 
-const { ipcRenderer } = require('electron');
+const { ipcRenderer, webUtils } = require('electron');
 const { runtimeResource } = require('./runtimePaths');
 
 // Thin helper — keeps call sites concise
@@ -53,6 +53,17 @@ window.xleth = ({
 
   // ── Media server (for <video> elements) ────────────────────────────────────
   getMediaPort: () => invoke('xleth:getMediaPort'),
+
+  // ── FL Studio Score (.fsc) parsing ─────────────────────────────────────────
+  // Pure read-only parse: returns neutral note data (no Timeline mutation).
+  // Pair with timeline.addNotesBatch to actually insert the parsed notes.
+  fsc: {
+    parse: (filePath) => invoke('xleth:fsc:parse', filePath),
+  },
+
+  // Electron 41 removed File.path. Resolve a dropped/selected File to its
+  // absolute filesystem path synchronously via webUtils.
+  getDroppedFilePath: (file) => webUtils.getPathForFile(file),
 
   // ── Legacy flat API (Phase 0 backward compat) ─────────────────────────────
   play:               ()      => invoke('xleth:play'),
@@ -201,6 +212,7 @@ window.xleth = ({
     removeNote:             (patternId, noteId)                 => invoke('xleth:timeline:removeNote', patternId, noteId),
     moveNote:               (patternId, noteId, posTicks, pitch)=> invoke('xleth:timeline:moveNote', patternId, noteId, posTicks, pitch),
     moveNotesBatch:         (patternId, moves)                  => invoke('xleth:timeline:moveNotesBatch', patternId, moves),
+    addNotesBatch:          (patternId, notes)                  => invoke('xleth:timeline:addNotesBatch', patternId, notes),
     quantizeClipsBatch:     (specs)                             => invoke('xleth:timeline:quantizeClipsBatch', specs),
     resizeNotesBatch:       (patternId, resizes)                => invoke('xleth:timeline:resizeNotesBatch', patternId, resizes),
     resizeNote:             (patternId, noteId, durTicks)       => invoke('xleth:timeline:resizeNote', patternId, noteId, durTicks),

@@ -8,6 +8,7 @@
 #include "model/Clip.h"
 #include "commands/UndoManager.h"
 #include "commands/TimelineCommands.h"
+#include "commands/AddNotesBatchCommand.h"
 #include <iostream>
 #include <string>
 #include <cmath>
@@ -356,6 +357,63 @@ static void test9_clipModulationJsonRoundTrip() {
     CHECK(legacyClip.modulation.video.reverseWaveWithScratch, "legacy: reverseWave default true");
 }
 
+static void test10_addNotesBatchUndoRedo() {
+    std::cout << "\n[10] AddNotesBatchCommand: insert 3 notes, undo removes all, redo restores\n";
+
+    Timeline    tl2;
+    UndoManager um2;
+
+    // A pattern to receive the notes (created directly — it's fixture data).
+    Pattern pattern;
+    pattern.name = "BatchPattern";
+    const int patternId = tl2.addPattern(std::move(pattern));
+    CHECK(patternId >= 0, "pattern created");
+    CHECK(tl2.getPattern(patternId)->notes.empty(), "pattern starts with no notes");
+
+    // Build 3 notes with UNASSIGNED ids (0) — the command must assign real ones.
+    std::vector<PatternNote> notes;
+    for (int i = 0; i < 3; ++i) {
+        PatternNote n;
+        n.id       = 0;
+        n.position = TickTime::fromBeats(static_cast<double>(i));
+        n.duration = TickTime::fromBeats(1.0);
+        n.pitch    = 60 + i;
+        n.velocity = 0.8f;
+        notes.push_back(n);
+    }
+
+    auto cmd = std::make_unique<AddNotesBatchCommand>(patternId, std::move(notes));
+    AddNotesBatchCommand* cmdPtr = cmd.get();
+    um2.execute(std::move(cmd), tl2);
+
+    // 3 distinct assigned IDs.
+    const std::vector<int>& ids = cmdPtr->getAssignedIds();
+    CHECK(ids.size() == 3, "3 IDs assigned");
+    CHECK(ids[0] != ids[1] && ids[1] != ids[2] && ids[0] != ids[2], "assigned IDs are distinct");
+
+    const Pattern* p = tl2.getPattern(patternId);
+    CHECK(p->notes.size() == 3, "3 notes inserted into pattern");
+    // Matches single-note add bookkeeping: nextNoteId advanced past every note.
+    for (int id : ids)
+        CHECK(id < p->nextNoteId, "nextNoteId advanced past assigned id");
+
+    // Undo removes all 3 in one operation.
+    um2.undo(tl2);
+    CHECK(tl2.getPattern(patternId)->notes.empty(), "undo removed all 3 notes");
+
+    // Redo restores all 3 with their original IDs.
+    um2.redo(tl2);
+    const Pattern* pr = tl2.getPattern(patternId);
+    CHECK(pr->notes.size() == 3, "redo restored 3 notes");
+    bool idsMatch = true;
+    for (int id : ids) {
+        bool found = false;
+        for (const auto& n : pr->notes) if (n.id == id) { found = true; break; }
+        if (!found) idsMatch = false;
+    }
+    CHECK(idsMatch, "redo restored notes keep their assigned IDs");
+}
+
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
 int main() {
@@ -368,6 +426,7 @@ int main() {
     test7_stackOverflow();
     test8_clipModulationCommandUndoRedo();
     test9_clipModulationJsonRoundTrip();
+    test10_addNotesBatchUndoRedo();
 
     std::cout << "\n";
     if (g_failed == 0) {

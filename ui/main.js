@@ -1404,6 +1404,12 @@ ipcMain.handle('xleth:timeline:moveNote',
 ipcMain.handle('xleth:timeline:moveNotesBatch',
   safeHandler((_, patternId, moves) => callWorker('timeline_moveNotesBatch', [patternId, moves])));
 
+ipcMain.handle('xleth:timeline:addNotesBatch',
+  safeHandler((_, patternId, notes) => callWorker('timeline_addNotesBatch', [patternId, notes])));
+
+ipcMain.handle('xleth:fsc:parse',
+  safeHandler((_, filePath) => callWorker('fsc_parse', [filePath])));
+
 ipcMain.handle('xleth:timeline:quantizeClipsBatch',
   safeHandler((_, specs) => callWorker('timeline_quantizeClipsBatch', [specs])));
 
