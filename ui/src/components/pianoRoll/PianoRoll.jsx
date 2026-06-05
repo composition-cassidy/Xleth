@@ -8,6 +8,65 @@ import PianoRollScrollbarH, { SCROLLBAR_H_HEIGHT } from './PianoRollScrollbarH.j
 import { timelineEvents } from '../../timelineEvents.js'
 import { PPQ, snapBeatToGrid, beatsToTicks } from '../../constants/timeline.js'
 import usePianoRollStore from '../../stores/usePianoRollStore.js'
+import { registerEditorCommand } from '../../windowing/managers/EditorCommandRegistry'
+import { useToast } from '../Toast.jsx'
+
+// Map parsed FSC notes (engine 960-PPQ shape) onto Xleth's PatternNote JS shape.
+// Only the five fields the Piano Roll understands are carried across — marker
+// byte 16 and the diagnostic source fields are intentionally dropped, so a
+// marker-16 note stays a normal note unless the engine flagged isSlide.
+export function mapFscNotesToPatternNotes(fscNotes) {
+  return (fscNotes || []).map((n) => ({
+    positionTicks: n.positionTicks,
+    durationTicks: n.lengthTicks,
+    pitch: n.pitch,
+    velocity: n.velocity,
+    isSlide: n.isSlide,
+  }))
+}
+
+// Orchestrate a single .fsc drop: resolve the dropped File to a path, parse it
+// off the engine, map the notes, and insert them as ONE batch (one undo entry).
+// Extracted from the component so the path/parse/insert flow is unit-testable
+// without a DOM. Returns a status object; never throws on expected failures.
+export async function importFscScore({ file, patternId, xleth, notify, showToast }) {
+  const warn = (msg, level = 'error') => {
+    if (showToast) showToast(msg, level)
+    else console.warn(`[PianoRoll] ${msg}`)
+  }
+
+  if (!patternId) {
+    warn('FSC drop ignored: no active pattern')
+    return { status: 'no-pattern' }
+  }
+
+  const getPath = xleth?.getDroppedFilePath || xleth?.file?.getPathForFile
+  const filePath = getPath?.(file)
+  if (!filePath) {
+    warn('Could not resolve dropped FSC file path')
+    return { status: 'no-path' }
+  }
+
+  const result = await xleth?.fsc?.parse?.(filePath)
+  if (!result?.ok) {
+    warn(`FSC parse failed: ${result?.error || 'unknown error'}`)
+    return { status: 'parse-failed', error: result?.error }
+  }
+
+  const notes = mapFscNotesToPatternNotes(result.notes)
+  if (!notes.length) {
+    warn('FSC import produced no notes')
+    return { status: 'no-notes', droppedCount: result.droppedCount }
+  }
+
+  // Single bridge call → single undo entry for the whole imported score.
+  await xleth?.timeline?.addNotesBatch?.(patternId, notes)
+  if (result.droppedCount > 0) {
+    console.warn(`[PianoRoll] FSC import dropped ${result.droppedCount} note(s)`)
+  }
+  notify?.()
+  return { status: 'ok', count: notes.length }
+}
 
 const KEYBOARD_WIDTH = 60
 const VELOCITY_HEIGHT = 80
@@ -24,6 +83,7 @@ export default function PianoRoll({
   availablePatterns, currentPatternId, onSwitchPattern, onNewPattern,
 }) {
   const activeCenterTab = usePianoRollStore((s) => s.activeCenterTab)
+  const { showToast } = useToast()
   const [pattern, setPattern] = useState(null)
   const [regions, setRegions] = useState([])
   const [activeTool, setActiveTool] = useState('pencil')
@@ -128,6 +188,19 @@ export default function PianoRoll({
     timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
   }, [patternId])
 
+  // Drop an FL Studio Score (.fsc) onto the grid → import into the active
+  // pattern at the parsed tick positions (anchored at tick 0). Insert/undo
+  // semantics are owned by addNotesBatch; this fires it exactly once per drop.
+  const handleDropFsc = useCallback(async (file) => {
+    await importFscScore({
+      file,
+      patternId,
+      xleth: window.xleth,
+      notify: notifyChanged,
+      showToast,
+    })
+  }, [patternId, notifyChanged, showToast])
+
   const handleAddNote = useCallback(async (note) => {
     try {
       await window.xleth?.timeline?.addNote(patternId, note)
@@ -141,6 +214,22 @@ export default function PianoRoll({
       notifyChanged()
     } catch (e) { console.warn('[PianoRoll] removeNote failed:', e.message) }
   }, [patternId, notifyChanged])
+
+  const deleteSelectedNotes = useCallback(async () => {
+    const ids = Array.from(selectedNoteIdsRef.current)
+    if (ids.length === 0) return false
+    const xl = window.xleth
+    for (const id of ids) {
+      try { await xl.timeline.removeNote(patternId, id) } catch { /* ignore */ }
+    }
+    setSelectedNoteIds(new Set())
+    notifyChanged()
+    return true
+  }, [patternId, notifyChanged])
+
+  useEffect(() => (
+    registerEditorCommand('pianoRoll', 'deleteSelected', deleteSelectedNotes)
+  ), [deleteSelectedNotes])
 
   const handleMoveNote = useCallback(async (noteId, posTicks, pitch) => {
     try {
@@ -334,11 +423,7 @@ export default function PianoRoll({
         if (ids.length === 0) return
         e.preventDefault()
         e.stopPropagation()
-        for (const id of ids) {
-          try { await window.xleth?.timeline?.removeNote(patternId, id) } catch { /* ignore */ }
-        }
-        setSelectedNoteIds(new Set())
-        notifyChanged()
+        await deleteSelectedNotes()
         return
       }
 
@@ -529,6 +614,7 @@ export default function PianoRoll({
             onResizeNotesBatch={handleResizeNotesBatch}
             onResizeNote={handleResizeNote}
             onPreviewNote={handlePreviewNote}
+            onDropFsc={handleDropFsc}
           />
           <PianoRollScrollbarV
             contentHeight={contentHeight}

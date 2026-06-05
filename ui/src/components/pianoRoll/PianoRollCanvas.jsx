@@ -43,6 +43,22 @@ function hexToRgba(hex, alpha) {
   return `rgba(${r},${g},${b},${alpha})`
 }
 
+// Find the first dropped FL Studio Score (.fsc) file by name extension.
+// Presentational only: returns the File so the owner can resolve/parse it.
+export function extractFscFile(dataTransfer) {
+  const files = Array.from(dataTransfer?.files || [])
+  return files.find((file) => file.name.toLowerCase().endsWith('.fsc')) || null
+}
+
+// Drop handler logic, factored out so it can be unit-tested without a DOM.
+// Detects an .fsc file and hands the raw File up via onDropFsc — it never
+// parses, never touches window.xleth, and never mutates notes.
+export function handleFscDropEvent(e, onDropFsc) {
+  e.preventDefault()
+  const fsc = extractFscFile(e.dataTransfer)
+  if (fsc) onDropFsc?.(fsc)
+}
+
 // Hit-test a note at local canvas coordinates.
 function hitTestNote(notes, localX, localY, pixelsPerBeat, pixelsPerSemitone, scrollX, scrollY) {
   for (let i = notes.length - 1; i >= 0; i--) {
@@ -194,6 +210,7 @@ export default function PianoRollCanvas({
   pixelsPerBeat, pixelsPerSemitone, scrollX, scrollY,
   width, height,
   onAddNote, onRemoveNote, onMoveNote, onMoveNotesBatch, onResizeNote, onResizeNotesBatch, onPreviewNote,
+  onDropFsc,
 }) {
   const bgRef = useRef(null)
   const ctRef = useRef(null)
@@ -676,6 +693,15 @@ export default function PianoRollCanvas({
       }}
       onMouseDown={handleMouseDown}
       onContextMenu={(e) => e.preventDefault()}
+      onDrop={(e) => handleFscDropEvent(e, onDropFsc)}
+      onDragOver={(e) => {
+        // Browsers may not expose file names until drop — just confirm a file
+        // drag is in progress and advertise a copy so the drop fires.
+        if (Array.from(e.dataTransfer.types || []).includes('Files')) {
+          e.preventDefault()
+          e.dataTransfer.dropEffect = 'copy'
+        }
+      }}
     >
       <canvas ref={bgRef} style={{ position: 'absolute', inset: 0 }} />
       <canvas ref={ctRef} style={{ position: 'absolute', inset: 0 }} />
