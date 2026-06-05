@@ -39,7 +39,7 @@ describe('windowing no-op writes', () => {
     useUIStore.setState({ timelineTrackHeaderWidth: 200 });
     useSnapStore.setState({ snapGranularity: '1/16' });
     cancelDrag();
-    registerWorkAreaRect({ left: -Infinity, top: -Infinity, right: Infinity, bottom: Infinity });
+    registerWorkAreaRect({ left: -Infinity, top: -Infinity, right: Infinity, bottom: Infinity, width: Infinity, height: Infinity });
   });
 
   afterEach(() => {
@@ -90,9 +90,9 @@ describe('windowing no-op writes', () => {
   });
 
   it('keeps repeated workspace rect updates numeric and stable for drag snapshots', () => {
-    const rect = { left: 100, top: 64, right: 900, bottom: 700 };
+    const rect = { left: 100, top: 64, right: 900, bottom: 700, width: 800, height: 636 };
     registerWorkAreaRect(rect);
-    registerWorkAreaRect({ ...rect });
+    expect(countRegistryNotifications(() => registerWorkAreaRect({ ...rect }))).toBe(0);
 
     beginDrag('timeline', 500, 400, 100, 100);
     const dragState = getDragState();
@@ -102,5 +102,20 @@ describe('windowing no-op writes', () => {
       expect(dragState.workAreaRect).not.toBe(rect);
     }
     cancelDrag();
+  });
+
+  it('clamps existing floating panels into a smaller WorkArea rect', () => {
+    const registry = usePanelRegistry.getState();
+    registry.openPanel('mixer');
+    registry.resizeFloatingPanel('mixer', 900, 600, 420, 240);
+
+    registerWorkAreaRect({ left: 320, top: 64, right: 920, bottom: 464, width: 600, height: 400 });
+
+    expect(usePanelRegistry.getState().panels.mixer.floating).toEqual({
+      x: 180,
+      y: 160,
+      width: 420,
+      height: 240,
+    });
   });
 });

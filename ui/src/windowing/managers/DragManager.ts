@@ -41,6 +41,8 @@ export interface WorkAreaRect {
   top: number;
   right: number;
   bottom: number;
+  width: number;
+  height: number;
 }
 
 interface CachedDragOffset {
@@ -71,6 +73,8 @@ let registeredWorkAreaRect: WorkAreaRect = {
   top: -Infinity,
   right: Infinity,
   bottom: Infinity,
+  width: Infinity,
+  height: Infinity,
 };
 let currentSnapTarget: DockRegion | null = null;
 let snapDwellStart = 0;
@@ -132,9 +136,23 @@ export function registerWorkAreaRect(rect: WorkAreaRect): void {
     rect.left   === registeredWorkAreaRect.left  &&
     rect.top    === registeredWorkAreaRect.top   &&
     rect.right  === registeredWorkAreaRect.right &&
-    rect.bottom === registeredWorkAreaRect.bottom
+    rect.bottom === registeredWorkAreaRect.bottom &&
+    rect.width  === registeredWorkAreaRect.width  &&
+    rect.height === registeredWorkAreaRect.height
   ) return;
-  registeredWorkAreaRect = { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+  registeredWorkAreaRect = {
+    left: rect.left,
+    top: rect.top,
+    right: rect.right,
+    bottom: rect.bottom,
+    width: rect.width,
+    height: rect.height,
+  };
+  usePanelRegistry.getState().clampFloatingPanelsToWorkArea(rect.width, rect.height);
+}
+
+export function getRegisteredWorkAreaRect(): WorkAreaRect {
+  return { ...registeredWorkAreaRect };
 }
 
 export function beginDrag(

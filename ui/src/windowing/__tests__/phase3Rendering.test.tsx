@@ -23,7 +23,7 @@ import {
 
 function resetRegistry() {
   cancelDrag();
-  registerWorkAreaRect({ left: -Infinity, top: -Infinity, right: Infinity, bottom: Infinity });
+  registerWorkAreaRect({ left: -Infinity, top: -Infinity, right: Infinity, bottom: Infinity, width: Infinity, height: Infinity });
   usePanelRegistry.setState({ panels: createInitialPanelStates() });
 }
 
@@ -79,10 +79,9 @@ describe('Phase 3 dock region SSR markup', () => {
     const mixerInDoc = html.indexOf('data-panel-id="mixer"', bottomRegionStart);
     expect(mixerInDoc).toBeGreaterThan(bottomRegionStart);
 
-    const floatingAreaStart = html.indexOf('xleth-floating-work-area');
-    const floatingAreaEnd = html.indexOf('xleth-dock-region--bottom');
-    const mixerInFloat = html.indexOf('data-panel-id="mixer"', floatingAreaStart);
-    expect(mixerInFloat === -1 || mixerInFloat > floatingAreaEnd).toBe(true);
+    const floatingLayerStart = html.indexOf('xleth-floating-window-layer');
+    const mixerInFloat = html.indexOf('data-panel-id="mixer"', floatingLayerStart);
+    expect(mixerInFloat).toBe(-1);
   });
 
   it('phase-3 AppShell mode renders the shell harness', () => {
@@ -96,7 +95,7 @@ describe('Phase 3 snap ghost SSR markup', () => {
   beforeEach(resetRegistry);
 
   it('SnapGhost renders with data-snap-target when snap target is active', () => {
-    registerWorkAreaRect({ left: 0, top: 0, right: 1200, bottom: 800 });
+    registerWorkAreaRect({ left: 0, top: 0, right: 1200, bottom: 800, width: 1200, height: 800 });
     usePanelRegistry.getState().openPanel('timeline');
     beginDrag(
       'timeline',
@@ -113,7 +112,7 @@ describe('Phase 3 snap ghost SSR markup', () => {
   });
 
   it('SnapGhost renders nothing when no snap target', () => {
-    registerWorkAreaRect({ left: 0, top: 0, right: 1200, bottom: 800 });
+    registerWorkAreaRect({ left: 0, top: 0, right: 1200, bottom: 800, width: 1200, height: 800 });
     usePanelRegistry.getState().openPanel('timeline');
     beginDrag(
       'timeline',

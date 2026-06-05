@@ -1,6 +1,7 @@
 import { usePanelRegistry } from '../registry/PanelRegistry';
 import type { PanelId } from '../registry/panelCatalog';
 import { createEdgeResizeMachine } from './EdgeResizeMachine';
+import { getRegisteredWorkAreaRect } from './DragManager';
 
 export const MIN_PANEL_WIDTH = 280;
 export const MIN_PANEL_HEIGHT = 120;
@@ -20,6 +21,36 @@ interface ResizeStartBounds {
   y: number;
   width: number;
   height: number;
+}
+
+function clampPreviewToWorkArea(preview: ResizePreview): ResizePreview {
+  const rect = getRegisteredWorkAreaRect();
+  if (!Number.isFinite(rect.width) || !Number.isFinite(rect.height) || rect.width <= 0 || rect.height <= 0) {
+    return preview;
+  }
+
+  let { x, y, width, height } = preview;
+  const panelMinWidth = Math.min(MIN_PANEL_WIDTH, rect.width);
+  const panelMinHeight = Math.min(MIN_PANEL_HEIGHT, rect.height);
+
+  if (x < 0) {
+    width = Math.max(panelMinWidth, width + x);
+    x = 0;
+  }
+  if (y < 0) {
+    height = Math.max(panelMinHeight, height + y);
+    y = 0;
+  }
+  if (x + width > rect.width) {
+    width = Math.max(panelMinWidth, rect.width - x);
+    if (x + width > rect.width) x = Math.max(0, rect.width - width);
+  }
+  if (y + height > rect.height) {
+    height = Math.max(panelMinHeight, rect.height - y);
+    if (y + height > rect.height) y = Math.max(0, rect.height - height);
+  }
+
+  return { x, y, width, height };
 }
 
 const machine = createEdgeResizeMachine<PanelId, ResizeStartBounds, ResizePreview>({
@@ -51,7 +82,7 @@ const machine = createEdgeResizeMachine<PanelId, ResizeStartBounds, ResizePrevie
       y = start.y + (start.height - height);
     }
 
-    return { x, y, width, height };
+    return clampPreviewToWorkArea({ x, y, width, height });
   },
   commit: (panelId, preview) => {
     usePanelRegistry.getState().resizeFloatingPanel(

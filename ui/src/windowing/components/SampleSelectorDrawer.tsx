@@ -10,19 +10,19 @@ import './windowing.css';
 
 type SampleSelectorRegistryActions = Pick<
   PanelRegistryState,
-  'closePanel' | 'dockPanel' | 'focusPanel'
+  'focusPanel' | 'setSampleSelectorDockOpen'
 >;
 
 export function openSampleSelectorDrawer(
-  registry: Pick<PanelRegistryState, 'dockPanel'> = usePanelRegistry.getState(),
+  registry: Pick<PanelRegistryState, 'setSampleSelectorDockOpen'> = usePanelRegistry.getState(),
 ): void {
-  registry.dockPanel('sampleSelector', 'left');
+  registry.setSampleSelectorDockOpen(true);
 }
 
 export function collapseSampleSelectorDrawer(
-  registry: Pick<PanelRegistryState, 'closePanel'> = usePanelRegistry.getState(),
+  registry: Pick<PanelRegistryState, 'setSampleSelectorDockOpen'> = usePanelRegistry.getState(),
 ): void {
-  registry.closePanel('sampleSelector');
+  registry.setSampleSelectorDockOpen(false);
 }
 
 function stopControlMouseDown(event: MouseEvent<HTMLButtonElement>) {
@@ -31,12 +31,12 @@ function stopControlMouseDown(event: MouseEvent<HTMLButtonElement>) {
 
 export function SampleSelectorDrawer() {
   const reactiveHidden = usePanelRegistry((state) => state.panels.sampleSelector.hidden);
-  const reactiveDrawerSize = usePanelRegistry((state) => state.dockRegionSizes.left);
+  const reactiveDrawerSize = usePanelRegistry((state) => state.sampleSelectorDockWidth);
   const hidden = typeof window === 'undefined'
     ? usePanelRegistry.getState().panels.sampleSelector.hidden
     : reactiveHidden;
   const drawerSize = typeof window === 'undefined'
-    ? usePanelRegistry.getState().dockRegionSizes.left
+    ? usePanelRegistry.getState().sampleSelectorDockWidth
     : reactiveDrawerSize;
   const {
     onOpenPicker,

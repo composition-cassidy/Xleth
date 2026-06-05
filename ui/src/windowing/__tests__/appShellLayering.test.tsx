@@ -36,7 +36,7 @@ describe('App shell layer order', () => {
     }
   });
 
-  it('places panel chrome above the titlebar layer without unbounded z-index values', () => {
+  it('places titlebar chrome above panel frames without unbounded z-index values', () => {
     const appCss = readUiSource('styles/app.css');
     const windowingCss = readUiSource('windowing/components/windowing.css');
     const snapGhostSource = readUiSource('windowing/components/SnapGhost.tsx');
@@ -44,21 +44,22 @@ describe('App shell layer order', () => {
     const titlebarLayer = cssVarNumber(appCss, '--xleth-z-titlebar');
     const dropdownLayer = cssVarNumber(appCss, '--xleth-z-titlebar-dropdown');
     const dockedLayer = cssVarNumber(appCss, '--xleth-z-window-docked');
-    const drawerLayer = cssVarNumber(appCss, '--xleth-z-window-drawer');
     const floatingBaseLayer = cssVarNumber(appCss, '--xleth-z-window-floating-base');
     const snapGhostLayer = cssVarNumber(appCss, '--xleth-z-window-snap-ghost');
 
-    expect(titlebarLayer).toBeLessThan(dropdownLayer);
-    expect(dropdownLayer).toBeLessThan(dockedLayer);
     expect(dockedLayer).toBeLessThan(floatingBaseLayer);
-    expect(floatingBaseLayer).toBeLessThan(drawerLayer);
     expect(floatingBaseLayer).toBeLessThan(snapGhostLayer);
-    expect(drawerLayer).toBeLessThan(snapGhostLayer);
+    expect(snapGhostLayer).toBeLessThan(titlebarLayer);
+    expect(titlebarLayer).toBeLessThan(dropdownLayer);
+
+    // Regression: the top menu bar must not render behind floating/maximized panels.
+    expect(titlebarLayer).toBeGreaterThan(floatingBaseLayer);
 
     expect(appCss).toMatch(/\.titlebar\s*{[\s\S]*z-index:\s*var\(--xleth-z-titlebar\)/);
     expect(appCss).toMatch(/\.titlebar-dropdown\s*{[\s\S]*z-index:\s*var\(--xleth-z-titlebar-dropdown\)/);
     expect(windowingCss).toMatch(/\.xleth-panel-frame\.is-docked\s*{[\s\S]*z-index:\s*var\(--xleth-z-window-docked\)/);
-    expect(windowingCss).toMatch(/\.xleth-sample-selector-drawer-host\s*{[\s\S]*z-index:\s*var\(--xleth-z-window-drawer\)/);
+    const drawerHostBlock = windowingCss.match(/\.xleth-sample-selector-drawer-host\s*\{([^}]*)\}/s)?.[1] ?? '';
+    expect(drawerHostBlock).not.toContain('z-index');
     expect(windowingCss).toContain('var(--xleth-z-window-floating-base) + panel.zIndex');
     expect(windowingCss).toContain('z-index: var(--xleth-z-window-snap-ghost);');
     expect(snapGhostSource).not.toContain('9999');
@@ -162,6 +163,8 @@ describe('PanelFrame selector stability', () => {
     expect(src).toMatch(/rect\.top\s*===\s*registeredWorkAreaRect\.top/);
     expect(src).toMatch(/rect\.right\s*===\s*registeredWorkAreaRect\.right/);
     expect(src).toMatch(/rect\.bottom\s*===\s*registeredWorkAreaRect\.bottom/);
+    expect(src).toMatch(/rect\.width\s*===\s*registeredWorkAreaRect\.width/);
+    expect(src).toMatch(/rect\.height\s*===\s*registeredWorkAreaRect\.height/);
   });
 
   // ── Functional: store-level primitive stability ──────────────────────────
@@ -185,14 +188,14 @@ describe('PanelFrame selector stability', () => {
   it('registerWorkAreaRect skips the write when values are unchanged, accepts a new object with different values', () => {
     // Reset to default unbounded rect first
     cancelDrag();
-    registerWorkAreaRect({ left: -Infinity, top: -Infinity, right: Infinity, bottom: Infinity });
+    registerWorkAreaRect({ left: -Infinity, top: -Infinity, right: Infinity, bottom: Infinity, width: Infinity, height: Infinity });
 
     // Register an explicit rect
-    registerWorkAreaRect({ left: 100, top: 200, right: 900, bottom: 700 });
+    registerWorkAreaRect({ left: 100, top: 200, right: 900, bottom: 700, width: 800, height: 500 });
 
     // Register the exact same values (new object) — the guard should treat this
     // as a no-op.  Verify by checking the workAreaRect captured at drag-start.
-    registerWorkAreaRect({ left: 100, top: 200, right: 900, bottom: 700 });
+    registerWorkAreaRect({ left: 100, top: 200, right: 900, bottom: 700, width: 800, height: 500 });
 
     usePanelRegistry.getState().openPanel('timeline');
     beginDrag('timeline', 500, 400, 100, 100);
@@ -205,7 +208,7 @@ describe('PanelFrame selector stability', () => {
 
     // Now register a rect with a changed left coordinate — this must NOT be a
     // no-op; the new value should be picked up by the next drag.
-    registerWorkAreaRect({ left: 50, top: 200, right: 900, bottom: 700 });
+    registerWorkAreaRect({ left: 50, top: 200, right: 900, bottom: 700, width: 850, height: 500 });
     beginDrag('timeline', 500, 400, 100, 100);
     const state2 = getDragState();
     expect(state2.state).toBe('dragging');

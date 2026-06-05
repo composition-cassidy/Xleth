@@ -9,15 +9,58 @@
  */
 
 .xleth-windowing-shell {
+  --xleth-sample-dock-width: 320px;
+  --xleth-sample-dock-handle-width: 32px;
   position: relative;
-  display: flex;
-  flex-direction: row;
+  display: grid;
+  grid-template-columns: var(--xleth-sample-dock-width) minmax(0, 1fr);
   width: 100%;
   height: 100%;
   min-height: 520px;
+  min-width: 0;
   overflow: hidden;
   background: var(--theme-bg-primary);
   color: var(--theme-text);
+}
+
+.xleth-windowing-shell.sample-dock-collapsed {
+  grid-template-columns: var(--xleth-sample-dock-handle-width) minmax(0, 1fr);
+}
+
+.xleth-windowing-shell.sample-dock-disabled {
+  grid-template-columns: 0 minmax(0, 1fr);
+}
+
+.xleth-app-workarea {
+  grid-column: 2;
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--theme-bg-primary);
+}
+
+.xleth-docked-window-layer,
+.xleth-floating-window-layer,
+.xleth-maximized-window-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.xleth-docked-window-layer {
+  display: flex;
+  flex-direction: row;
+}
+
+.xleth-floating-window-layer,
+.xleth-maximized-window-layer {
+  pointer-events: none;
+}
+
+.xleth-floating-window-layer > .xleth-panel-frame,
+.xleth-maximized-window-layer > .xleth-panel-frame {
+  pointer-events: auto;
 }
 
 .xleth-center-column {
@@ -40,6 +83,7 @@
 
 .xleth-backdrop-native-acrylic .xleth-windowing-app,
 .xleth-backdrop-native-acrylic .xleth-windowing-shell,
+.xleth-backdrop-native-acrylic .xleth-app-workarea,
 .xleth-backdrop-native-acrylic .xleth-center-column,
 .xleth-backdrop-native-acrylic .xleth-floating-work-area {
   background: transparent;
@@ -269,35 +313,32 @@
 }
 
 .xleth-sample-selector-drawer-host {
-  position: absolute;
-  top: var(--xleth-windowing-drawer-top-offset, 0px);
-  bottom: 0;
-  left: 0;
-  width: 0;
-  z-index: var(--xleth-z-window-drawer);
-  pointer-events: none;
+  grid-column: 1;
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--theme-bg-surface, transparent);
 }
 
 .xleth-sample-selector-drawer__handle {
-  position: absolute;
-  left: 0;
-  top: 50%;
+  position: relative;
   display: grid;
   grid-template-rows: 1fr auto;
   place-items: center;
   gap: 6px;
-  width: 28px;
-  height: 96px;
+  width: 100%;
+  height: 100%;
   padding: 9px 3px;
   border: 1px solid var(--theme-depth-floating-border);
   border-left: 0;
-  border-radius: 0 var(--theme-chrome-radius-sm) var(--theme-chrome-radius-sm) 0;
+  border-top: 0;
+  border-bottom: 0;
+  border-radius: 0;
   background: var(--theme-depth-floating-bg);
   color: var(--theme-text-muted);
-  box-shadow: var(--theme-depth-floating-top-highlight), var(--theme-depth-floating-shadow);
+  box-shadow: var(--theme-depth-floating-top-highlight);
   cursor: pointer;
-  pointer-events: auto;
-  transform: translateY(-50%);
   transition:
     background var(--theme-transition-fast, 0.1s ease),
     color var(--theme-transition-fast, 0.1s ease),
@@ -331,23 +372,21 @@
 }
 
 .xleth-sample-selector-drawer {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
+  position: relative;
   display: flex;
   flex-direction: column;
-  width: min(var(--xleth-sample-selector-drawer-width, 320px), calc(100vw - 48px));
-  min-width: 260px;
-  max-width: 420px;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
   overflow: hidden;
   border: 1px solid var(--theme-depth-floating-border);
   border-left: 0;
-  border-radius: 0 var(--theme-chrome-border-radius) var(--theme-chrome-border-radius) 0;
+  border-top: 0;
+  border-bottom: 0;
+  border-radius: 0;
   background: var(--theme-depth-floating-bg);
   color: var(--theme-text);
-  box-shadow: var(--theme-depth-floating-top-highlight), var(--theme-depth-floating-shadow);
-  pointer-events: auto;
+  box-shadow: var(--theme-depth-floating-top-highlight);
 }
 
 .xleth-sample-selector-drawer__chrome {

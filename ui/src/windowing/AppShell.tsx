@@ -7,7 +7,10 @@ import { SnapGhost } from './components/SnapGhost';
 import { TopBarToggles } from './components/TopBarToggles';
 import { registerWorkAreaRect, type WorkAreaRect } from './managers/DragManager';
 import * as KeyboardManager from './managers/KeyboardManager';
-import { usePanelRegistry } from './registry/PanelRegistry';
+import {
+  SAMPLE_SELECTOR_DOCK_HANDLE_WIDTH,
+  usePanelRegistry,
+} from './registry/PanelRegistry';
 import type { PanelStateMap } from './registry/PanelRegistry';
 import { PANEL_CATALOG, type PanelId } from './registry/panelCatalog';
 import EffectEditorHost from '../components/mixer/EffectEditorHost.jsx';
@@ -165,7 +168,9 @@ function workAreaRectsEqual(a: WorkAreaRect | null, b: WorkAreaRect): boolean {
     && a.left === b.left
     && a.top === b.top
     && a.right === b.right
-    && a.bottom === b.bottom;
+    && a.bottom === b.bottom
+    && a.width === b.width
+    && a.height === b.height;
 }
 
 function plainWorkAreaRect(rect: DOMRectReadOnly): WorkAreaRect {
@@ -174,6 +179,8 @@ function plainWorkAreaRect(rect: DOMRectReadOnly): WorkAreaRect {
     top: rect.top,
     right: rect.right,
     bottom: rect.bottom,
+    width: rect.width,
+    height: rect.height,
   };
 }
 
@@ -202,6 +209,26 @@ export function AppShell({ mode = 'single' }: WindowingAppShellProps) {
     : floatingPanelKey.split('|') as PanelId[];
   const rendersRealPanels = shouldRenderRealPanels(mode);
   const drawerPanelIds = rendersRealPanels ? DRAWER_PANEL_ID_LIST : undefined;
+  const reactiveSampleSelectorHidden = usePanelRegistry((state) => state.panels.sampleSelector.hidden);
+  const reactiveSampleSelectorDockWidth = usePanelRegistry((state) => state.sampleSelectorDockWidth);
+  const sampleSelectorHidden = typeof window === 'undefined'
+    ? usePanelRegistry.getState().panels.sampleSelector.hidden
+    : reactiveSampleSelectorHidden;
+  const sampleSelectorDockWidth = typeof window === 'undefined'
+    ? usePanelRegistry.getState().sampleSelectorDockWidth
+    : reactiveSampleSelectorDockWidth;
+  const sampleDockEnabled = rendersRealPanels && SHELL_PANEL_IDS[mode].includes('sampleSelector');
+  const sampleDockExpanded = sampleDockEnabled && !sampleSelectorHidden;
+  const shellClassName = [
+    'xleth-windowing-shell',
+    sampleDockEnabled
+      ? (sampleDockExpanded ? 'sample-dock-open' : 'sample-dock-collapsed')
+      : 'sample-dock-disabled',
+  ].join(' ');
+  const shellStyle = {
+    '--xleth-sample-dock-width': `${sampleSelectorDockWidth}px`,
+    '--xleth-sample-dock-handle-width': `${SAMPLE_SELECTOR_DOCK_HANDLE_WIDTH}px`,
+  } as React.CSSProperties;
 
   useEffect(() => {
     KeyboardManager.init();
@@ -248,43 +275,48 @@ export function AppShell({ mode = 'single' }: WindowingAppShellProps) {
   return (
     <div className="xleth-windowing-app">
       <TopBarToggles />
-      <div className="xleth-windowing-shell" data-testid="xleth-windowing-shell">
-        {rendersRealPanels && SHELL_PANEL_IDS[mode].includes('sampleSelector') ? (
+      <div className={shellClassName} data-testid="xleth-windowing-shell" style={shellStyle}>
+        {sampleDockEnabled ? (
           <SampleSelectorDrawer />
         ) : null}
-        <DockRegion
-          side="left"
-          renderPanel={rendersRealPanels ? renderPhase6bPanel : undefined}
-          excludePanelIds={drawerPanelIds}
-        />
-        <div className="xleth-center-column">
-          <DockRegion
-            side="top"
-            renderPanel={rendersRealPanels ? renderPhase6bPanel : undefined}
-            excludePanelIds={drawerPanelIds}
-          />
-          <div className="xleth-floating-work-area" ref={workAreaRef}>
+        <div className="xleth-app-workarea" data-testid="xleth-app-workarea" ref={workAreaRef}>
+          <div className="xleth-docked-window-layer" data-testid="xleth-docked-window-layer">
+            <DockRegion
+              side="left"
+              renderPanel={rendersRealPanels ? renderPhase6bPanel : undefined}
+              excludePanelIds={drawerPanelIds}
+            />
+            <div className="xleth-center-column">
+              <DockRegion
+                side="top"
+                renderPanel={rendersRealPanels ? renderPhase6bPanel : undefined}
+                excludePanelIds={drawerPanelIds}
+              />
+              <div className="xleth-floating-work-area" />
+              <DockRegion
+                side="bottom"
+                renderPanel={rendersRealPanels ? renderPhase6bPanel : undefined}
+                excludePanelIds={drawerPanelIds}
+              />
+            </div>
+            <DockRegion
+              side="right"
+              renderPanel={rendersRealPanels ? renderPhase6bPanel : undefined}
+              excludePanelIds={drawerPanelIds}
+            />
+          </div>
+          <div className="xleth-floating-window-layer" data-testid="xleth-floating-window-layer">
             <SnapGhost />
             {floatingPanelIds.map((panelId) => {
-                if (rendersRealPanels) return renderPhase6bPanel(panelId);
-                return (
-                  <PanelFrame key={panelId} id={panelId}>
-                    <TestPanelBody label={`${PANEL_CATALOG[panelId].title} Test Panel`} />
-                  </PanelFrame>
-                );
-              })}
+              if (rendersRealPanels) return renderPhase6bPanel(panelId);
+              return (
+                <PanelFrame key={panelId} id={panelId}>
+                  <TestPanelBody label={`${PANEL_CATALOG[panelId].title} Test Panel`} />
+                </PanelFrame>
+              );
+            })}
           </div>
-          <DockRegion
-            side="bottom"
-            renderPanel={rendersRealPanels ? renderPhase6bPanel : undefined}
-            excludePanelIds={drawerPanelIds}
-          />
         </div>
-        <DockRegion
-          side="right"
-          renderPanel={rendersRealPanels ? renderPhase6bPanel : undefined}
-          excludePanelIds={drawerPanelIds}
-        />
       </div>
       {/* Global stock-effect editor host. Lives at the windowing root — a
           transform-free container — and OUTSIDE every PanelFrame subtree, so

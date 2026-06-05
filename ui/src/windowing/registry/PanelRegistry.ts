@@ -41,6 +41,10 @@ export const DEFAULT_DOCK_REGION_SIZES: DockRegionSizes = {
   bottom: 240,
 };
 
+export const DEFAULT_SAMPLE_SELECTOR_DOCK_WIDTH = 320;
+export const MIN_SAMPLE_SELECTOR_DOCK_WIDTH = 260;
+export const SAMPLE_SELECTOR_DOCK_HANDLE_WIDTH = 32;
+
 export const MIN_DOCK_REGION_SIZES: DockRegionSizes = {
   left: 220,
   right: 220,
@@ -51,6 +55,7 @@ export const MIN_DOCK_REGION_SIZES: DockRegionSizes = {
 export interface PanelRegistryState {
   panels: PanelStateMap;
   dockRegionSizes: DockRegionSizes;
+  sampleSelectorDockWidth: number;
   openPanel: (id: PanelId) => void;
   closePanel: (id: PanelId) => void;
   togglePanel: (id: PanelId) => void;
@@ -62,6 +67,9 @@ export interface PanelRegistryState {
   maximizePanel: (id: PanelId) => void;
   restorePanel: (id: PanelId) => void;
   setDockRegionSize: (region: DockRegion, size: number) => void;
+  setSampleSelectorDockOpen: (open: boolean) => void;
+  setSampleSelectorDockWidth: (width: number) => void;
+  clampFloatingPanelsToWorkArea: (width: number, height: number) => void;
   applyPreset: (presetId: PresetId) => void;
 }
 
@@ -256,6 +264,7 @@ function commitPanels(
 export const usePanelRegistry = create<PanelRegistryState>((set) => ({
   panels: createInitialPanelStates(),
   dockRegionSizes: createInitialDockRegionSizes(),
+  sampleSelectorDockWidth: DEFAULT_SAMPLE_SELECTOR_DOCK_WIDTH,
 
   openPanel: (id) => set((state) => {
     const panel = state.panels[id];
@@ -407,6 +416,79 @@ export const usePanelRegistry = create<PanelRegistryState>((set) => ({
     const nextSizes = { ...state.dockRegionSizes, [region]: clamped };
     scheduleLayoutPersistence(state.panels, nextSizes);
     return { dockRegionSizes: nextSizes };
+  }),
+
+  setSampleSelectorDockOpen: (open) => set((state) => {
+    const panel = state.panels.sampleSelector;
+    if (open) {
+      const alreadyOpen = !panel.hidden
+        && panel.mode === 'docked'
+        && panel.docked.region === 'left'
+        && panel.docked.orderInRegion === 0
+        && panel.preMaximizeState === null;
+      if (alreadyOpen) return state;
+      return {
+        panels: commitPanels(state, (draft) => {
+          draft.sampleSelector.hidden = false;
+          draft.sampleSelector.mode = 'docked';
+          draft.sampleSelector.docked = {
+            ...draft.sampleSelector.docked,
+            region: 'left',
+            orderInRegion: 0,
+          };
+          draft.sampleSelector.preMaximizeState = null;
+          return draft;
+        }),
+      };
+    }
+
+    if (panel.hidden && !panel.focused) return state;
+    return {
+      panels: commitPanels(state, (draft) => {
+        draft.sampleSelector.hidden = true;
+        draft.sampleSelector.focused = false;
+        return draft;
+      }),
+    };
+  }),
+
+  setSampleSelectorDockWidth: (width) => set((state) => {
+    const clamped = Math.max(MIN_SAMPLE_SELECTOR_DOCK_WIDTH, Math.round(width));
+    if (state.sampleSelectorDockWidth === clamped) return state;
+    return { sampleSelectorDockWidth: clamped };
+  }),
+
+  clampFloatingPanelsToWorkArea: (width, height) => set((state) => {
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+      return state;
+    }
+
+    let changed = false;
+    const nextPanels = clonePanelStates(state.panels);
+    for (const id of PANEL_IDS) {
+      const panel = nextPanels[id];
+      if (panel.hidden || panel.mode !== 'floating') continue;
+
+      const nextWidth = Math.max(1, Math.min(panel.floating.width, width));
+      const nextHeight = Math.max(1, Math.min(panel.floating.height, height));
+      const nextX = Math.max(0, Math.min(panel.floating.x, Math.max(0, width - nextWidth)));
+      const nextY = Math.max(0, Math.min(panel.floating.y, Math.max(0, height - nextHeight)));
+      const nextFloating = {
+        x: nextX,
+        y: nextY,
+        width: nextWidth,
+        height: nextHeight,
+      };
+
+      if (!floatingPanelsEqual(panel.floating, nextFloating)) {
+        panel.floating = nextFloating;
+        changed = true;
+      }
+    }
+
+    if (!changed) return state;
+    scheduleLayoutPersistence(nextPanels, state.dockRegionSizes);
+    return { panels: nextPanels };
   }),
 
   applyPreset: (presetId) => {

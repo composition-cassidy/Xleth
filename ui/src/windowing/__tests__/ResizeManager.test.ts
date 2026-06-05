@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
+  registerWorkAreaRect,
+} from '../managers/DragManager';
+import {
   beginResize,
   cancelResize,
   endResize,
@@ -53,6 +56,7 @@ function runResize(edge: ResizeEdge, dx: number, dy: number) {
 describe('ResizeManager', () => {
   beforeEach(() => {
     cancelResize();
+    registerWorkAreaRect({ left: -Infinity, top: -Infinity, right: Infinity, bottom: Infinity, width: Infinity, height: Infinity });
     setTimelineBounds(START_BOUNDS);
   });
 

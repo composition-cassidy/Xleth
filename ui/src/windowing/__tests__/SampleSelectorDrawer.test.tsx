@@ -9,6 +9,7 @@ import {
   openSampleSelectorDrawer,
 } from '../components/SampleSelectorDrawer';
 import {
+  DEFAULT_SAMPLE_SELECTOR_DOCK_WIDTH,
   createInitialDockRegionSizes,
   createInitialPanelStates,
   usePanelRegistry,
@@ -23,7 +24,18 @@ function resetRegistry() {
   usePanelRegistry.setState({
     panels: createInitialPanelStates(),
     dockRegionSizes: createInitialDockRegionSizes(),
+    sampleSelectorDockWidth: DEFAULT_SAMPLE_SELECTOR_DOCK_WIDTH,
   });
+}
+
+function countRegistryNotifications(run: () => void): number {
+  let notifications = 0;
+  const unsubscribe = usePanelRegistry.subscribe(() => {
+    notifications += 1;
+  });
+  run();
+  unsubscribe();
+  return notifications;
 }
 
 describe('SampleSelectorDrawer', () => {
@@ -55,6 +67,57 @@ describe('SampleSelectorDrawer', () => {
     expect(panel.docked.orderInRegion).toBe(0);
   });
 
+  it('renders the production shell with a reserved sample dock column when open', () => {
+    openSampleSelectorDrawer();
+
+    const appShellSource = readUiSource('windowing/AppShell.tsx');
+
+    expect(appShellSource).toContain('sample-dock-open');
+    expect(appShellSource).toContain('<SampleSelectorDrawer />');
+    expect(appShellSource).toContain('data-testid="xleth-app-workarea"');
+    expect(appShellSource.indexOf('<SampleSelectorDrawer />')).toBeLessThan(
+      appShellSource.indexOf('data-testid="xleth-app-workarea"'),
+    );
+  });
+
+  it('collapses to only the reserved handle column and lets WorkArea expand', () => {
+    openSampleSelectorDrawer();
+    collapseSampleSelectorDrawer();
+
+    const html = renderToStaticMarkup(<SampleSelectorDrawer />);
+    const css = readUiSource('windowing/components/windowing.css');
+
+    expect(html).toContain('xleth-sample-selector-drawer__handle');
+    expect(css).toMatch(/\.xleth-windowing-shell\s*\{[\s\S]*grid-template-columns:\s*var\(--xleth-sample-dock-width\)\s+minmax\(0,\s*1fr\)/);
+    expect(css).toMatch(/\.xleth-windowing-shell\.sample-dock-collapsed\s*\{[\s\S]*grid-template-columns:\s*var\(--xleth-sample-dock-handle-width\)\s+minmax\(0,\s*1fr\)/);
+  });
+
+  it('mounts docked, floating, and maximized layers inside WorkArea', () => {
+    const appShellSource = readUiSource('windowing/AppShell.tsx');
+    const css = readUiSource('windowing/components/windowing.css');
+
+    expect(appShellSource.indexOf('data-testid="xleth-app-workarea"')).toBeLessThan(
+      appShellSource.indexOf('data-testid="xleth-docked-window-layer"'),
+    );
+    expect(appShellSource.indexOf('data-testid="xleth-app-workarea"')).toBeLessThan(
+      appShellSource.indexOf('data-testid="xleth-floating-window-layer"'),
+    );
+    expect(appShellSource).toContain('ref={workAreaRef}');
+    expect(css).toMatch(/\.xleth-app-workarea\s*\{[\s\S]*position:\s*relative/);
+    expect(css).toMatch(/\.xleth-floating-window-layer[^{]*\{[\s\S]*position:\s*absolute[\s\S]*inset:\s*0/);
+    expect(css).toMatch(/\[data-panel-mode="maximized"\]\s*\{[\s\S]*position:\s*absolute[\s\S]*inset:\s*0/);
+  });
+
+  it('keeps Sample Selector out of normal floating and maximized panel mounting paths', () => {
+    const appShellSource = readUiSource('windowing/AppShell.tsx');
+    const sampleSelectorPanelSource = readUiSource('windowing/panels/SampleSelectorPanel.tsx');
+
+    expect(appShellSource).toContain('<SampleSelectorDrawer />');
+    expect(appShellSource).toContain('DRAWER_PANEL_IDS.has(panelId)');
+    expect(appShellSource).toContain('excludePanelIds={drawerPanelIds}');
+    expect(sampleSelectorPanelSource).toContain('return null');
+  });
+
   it('renders the existing internal tabs inside the expanded drawer', () => {
     openSampleSelectorDrawer();
 
@@ -73,6 +136,14 @@ describe('SampleSelectorDrawer', () => {
     collapseSampleSelectorDrawer();
 
     expect(usePanelRegistry.getState().panels.sampleSelector.hidden).toBe(true);
+  });
+
+  it('does not notify registry subscribers for repeated drawer open or close writes', () => {
+    openSampleSelectorDrawer();
+    expect(countRegistryNotifications(() => openSampleSelectorDrawer())).toBe(0);
+
+    collapseSampleSelectorDrawer();
+    expect(countRegistryNotifications(() => collapseSampleSelectorDrawer())).toBe(0);
   });
 
   it('production shell does not render sample selector as a normal PanelFrame', () => {

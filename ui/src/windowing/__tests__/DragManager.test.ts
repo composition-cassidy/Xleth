@@ -22,7 +22,7 @@ const originalDockPanel = usePanelRegistry.getState().dockPanel;
 
 function resetRegistry() {
   cancelDrag();
-  registerWorkAreaRect({ left: -Infinity, top: -Infinity, right: Infinity, bottom: Infinity });
+  registerWorkAreaRect({ left: -Infinity, top: -Infinity, right: Infinity, bottom: Infinity, width: Infinity, height: Infinity });
   usePanelRegistry.setState({
     panels: createInitialPanelStates(),
     moveFloatingPanel: originalMoveFloatingPanel,
@@ -177,7 +177,7 @@ describe('DragManager', () => {
   });
 
   it('sets snap target when mouse is within 40px of work-area edge', () => {
-    registerWorkAreaRect({ left: 0, top: 0, right: 1200, bottom: 800 });
+    registerWorkAreaRect({ left: 0, top: 0, right: 1200, bottom: 800, width: 1200, height: 800 });
     beginDrag('timeline', 200, 400, 100, 100);
 
     updateDrag(30, 400);
@@ -189,7 +189,7 @@ describe('DragManager', () => {
 
   it('docks panel when snap target holds for >= 150ms', () => {
     vi.useFakeTimers();
-    registerWorkAreaRect({ left: 0, top: 0, right: 1200, bottom: 800 });
+    registerWorkAreaRect({ left: 0, top: 0, right: 1200, bottom: 800, width: 1200, height: 800 });
 
     const moveCalls: Array<[number, number]> = [];
     const dockCalls: Array<string> = [];
@@ -217,7 +217,7 @@ describe('DragManager', () => {
 
   it('moves panel when snap target dwell is < 150ms', () => {
     vi.useFakeTimers();
-    registerWorkAreaRect({ left: 0, top: 0, right: 1200, bottom: 800 });
+    registerWorkAreaRect({ left: 0, top: 0, right: 1200, bottom: 800, width: 1200, height: 800 });
 
     const moveCalls: Array<[number, number]> = [];
     const dockCalls: Array<string> = [];
