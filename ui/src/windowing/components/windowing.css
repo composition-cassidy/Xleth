@@ -127,6 +127,70 @@
   background: color-mix(in srgb, var(--theme-accent) 28%, transparent);
 }
 
+.xleth-docked-panel-slot {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 0 0 var(--xleth-docked-panel-size);
+  overflow: hidden;
+}
+
+.xleth-dock-splitter {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 9px;
+  background: transparent;
+  transition: background 120ms ease;
+}
+
+.xleth-dock-splitter::before {
+  content: "";
+  position: absolute;
+  background: color-mix(in srgb, var(--theme-border-subtle) 72%, transparent);
+  opacity: 0.72;
+  transition:
+    background 120ms ease,
+    opacity 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.xleth-dock-splitter--horizontal {
+  cursor: col-resize;
+}
+
+.xleth-dock-splitter--vertical {
+  cursor: row-resize;
+}
+
+.xleth-dock-splitter--horizontal::before {
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 1px;
+}
+
+.xleth-dock-splitter--vertical::before {
+  left: 0;
+  right: 0;
+  top: 4px;
+  height: 1px;
+}
+
+.xleth-dock-splitter:hover,
+.xleth-dock-splitter:active,
+.xleth-dock-splitter[data-active="true"] {
+  background: color-mix(in srgb, var(--theme-accent) 10%, transparent);
+}
+
+.xleth-dock-splitter:hover::before,
+.xleth-dock-splitter:active::before,
+.xleth-dock-splitter[data-active="true"]::before {
+  background: color-mix(in srgb, var(--theme-accent) 58%, var(--theme-border-subtle));
+  opacity: 1;
+  box-shadow: var(--theme-depth-accent-glow-subtle);
+}
+
 .xleth-panel-frame {
   position: absolute;
   display: flex;

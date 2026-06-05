@@ -1,7 +1,14 @@
 import { useSyncExternalStore } from 'react';
 
+export interface ResizePointerMeta {
+  altKey: boolean;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  shiftKey: boolean;
+}
+
 export interface EdgeResizeMachineConfig<Key, Bounds, Preview> {
-  computePreview: (start: Bounds, dx: number, dy: number) => Preview;
+  computePreview: (start: Bounds, dx: number, dy: number, meta: ResizePointerMeta) => Preview;
   commit: (key: Key, preview: Preview) => void;
   arePreviewsEqual: (a: Preview, b: Preview) => boolean;
   name: string;
@@ -19,19 +26,40 @@ interface ResizingMachineState<Key, Bounds> {
   startMouseY: number;
   currentMouseX: number;
   currentMouseY: number;
+  currentMeta: ResizePointerMeta;
 }
 
 type MachineState<Key, Bounds> = IdleMachineState | ResizingMachineState<Key, Bounds>;
 
 export interface EdgeResizeMachine<Key, Bounds, Preview> {
-  begin(key: Key, mouseX: number, mouseY: number, start: Bounds): void;
-  update(mouseX: number, mouseY: number): void;
+  begin(key: Key, mouseX: number, mouseY: number, start: Bounds, meta?: Partial<ResizePointerMeta>): void;
+  update(mouseX: number, mouseY: number, meta?: Partial<ResizePointerMeta>): void;
   end(): void;
   cancel(): void;
   isActive(): boolean;
   cancelIfActive(): boolean;
   subscribe(listener: () => void): () => void;
   usePreview(key: Key): Preview | null;
+}
+
+const DEFAULT_POINTER_META: ResizePointerMeta = {
+  altKey: false,
+  ctrlKey: false,
+  metaKey: false,
+  shiftKey: false,
+};
+
+function normalizePointerMeta(meta?: Partial<ResizePointerMeta>): ResizePointerMeta {
+  return { ...DEFAULT_POINTER_META, ...meta };
+}
+
+function pointerMetaFromEvent(event: MouseEvent): ResizePointerMeta {
+  return {
+    altKey: event.altKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+    shiftKey: event.shiftKey,
+  };
 }
 
 export function createEdgeResizeMachine<Key, Bounds, Preview>(
@@ -49,7 +77,7 @@ export function createEdgeResizeMachine<Key, Bounds, Preview>(
   function computeCurrentPreview(active: ResizingMachineState<Key, Bounds>): Preview {
     const dx = active.currentMouseX - active.startMouseX;
     const dy = active.currentMouseY - active.startMouseY;
-    return config.computePreview(active.startBounds, dx, dy);
+    return config.computePreview(active.startBounds, dx, dy, active.currentMeta);
   }
 
   function getPreviewSnapshot(key: Key): Preview | null {
@@ -61,9 +89,14 @@ export function createEdgeResizeMachine<Key, Bounds, Preview>(
     return next;
   }
 
-  function update(mouseX: number, mouseY: number): void {
+  function update(mouseX: number, mouseY: number, meta?: Partial<ResizePointerMeta>): void {
     if (state.state !== 'resizing') return;
-    state = { ...state, currentMouseX: mouseX, currentMouseY: mouseY };
+    state = {
+      ...state,
+      currentMouseX: mouseX,
+      currentMouseY: mouseY,
+      currentMeta: normalizePointerMeta(meta),
+    };
     previewCache.clear();
     emit();
   }
@@ -80,7 +113,7 @@ export function createEdgeResizeMachine<Key, Bounds, Preview>(
   }
 
   function onMouseMove(event: MouseEvent): void {
-    update(event.clientX, event.clientY);
+    update(event.clientX, event.clientY, pointerMetaFromEvent(event));
   }
 
   function onMouseUp(): void {
@@ -101,7 +134,13 @@ export function createEdgeResizeMachine<Key, Bounds, Preview>(
     windowListenersBound = false;
   }
 
-  function begin(key: Key, mouseX: number, mouseY: number, start: Bounds): void {
+  function begin(
+    key: Key,
+    mouseX: number,
+    mouseY: number,
+    start: Bounds,
+    meta?: Partial<ResizePointerMeta>,
+  ): void {
     unbindListeners();
     state = {
       state: 'resizing',
@@ -111,6 +150,7 @@ export function createEdgeResizeMachine<Key, Bounds, Preview>(
       startMouseY: mouseY,
       currentMouseX: mouseX,
       currentMouseY: mouseY,
+      currentMeta: normalizePointerMeta(meta),
     };
     previewCache.clear();
     bindListeners();

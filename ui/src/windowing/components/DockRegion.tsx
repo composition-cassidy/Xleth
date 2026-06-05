@@ -1,5 +1,11 @@
 import React from 'react';
-import type { CSSProperties, ReactNode } from 'react';
+import type { CSSProperties, MouseEvent, ReactNode } from 'react';
+import {
+  beginDockedPanelResize,
+  useDockedPanelResizePreview,
+  type DockedPanelResizeAxis,
+} from '../managers/DockedPanelResizeManager';
+import { getRegisteredWorkAreaRect } from '../managers/DragManager';
 import { useDockRegionResizePreview } from '../managers/DockRegionResizeManager';
 import { PANEL_CATALOG, PANEL_IDS, type PanelId } from '../registry/panelCatalog';
 import { usePanelRegistry, type DockRegion as DockRegionSide, type PanelStateMap } from '../registry/PanelRegistry';
@@ -32,7 +38,132 @@ function dockedPanelKey(side: DockRegionSide, excludePanelIds: readonly PanelId[
       && panels[id].docked.region === side
     ))
     .sort((a, b) => panels[a].docked.orderInRegion - panels[b].docked.orderInRegion)
+    .map((id) => `${id}:${panels[id].docked.sizeInRegion}`)
     .join('|');
+}
+
+interface DockedPanelEntry {
+  id: PanelId;
+  size: number;
+}
+
+function parseDockedPanelKey(key: string): DockedPanelEntry[] {
+  if (key === '') return [];
+  return key.split('|').map((entry) => {
+    const [id, size] = entry.split(':');
+    return { id: id as PanelId, size: Number(size) };
+  });
+}
+
+function axisForRegion(side: DockRegionSide): DockedPanelResizeAxis {
+  return side === 'top' || side === 'bottom' ? 'horizontal' : 'vertical';
+}
+
+function localAxisCoordinate(rect: DOMRect, regionRect: DOMRect, axis: DockedPanelResizeAxis, edge: 'start' | 'end'): number {
+  if (axis === 'horizontal') {
+    return (edge === 'start' ? rect.left : rect.right) - regionRect.left;
+  }
+  return (edge === 'start' ? rect.top : rect.bottom) - regionRect.top;
+}
+
+function collectSnapTargets(
+  regionElement: HTMLElement,
+  axis: DockedPanelResizeAxis,
+  startSplitterPosition: number,
+): number[] {
+  const regionRect = regionElement.getBoundingClientRect();
+  const targets: number[] = [];
+  const addTarget = (value: number) => {
+    if (!Number.isFinite(value)) return;
+    if (Math.abs(value - startSplitterPosition) <= 1) return;
+    targets.push(Math.round(value));
+  };
+  const addRect = (rect: DOMRect) => {
+    addTarget(localAxisCoordinate(rect, regionRect, axis, 'start'));
+    addTarget(localAxisCoordinate(rect, regionRect, axis, 'end'));
+  };
+
+  const workArea = getRegisteredWorkAreaRect();
+  if (axis === 'horizontal') {
+    addTarget(workArea.left - regionRect.left);
+    addTarget(workArea.right - regionRect.left);
+  } else {
+    addTarget(workArea.top - regionRect.top);
+    addTarget(workArea.bottom - regionRect.top);
+  }
+
+  const root = regionElement.ownerDocument;
+  root.querySelectorAll<HTMLElement>('.xleth-docked-panel-slot, .xleth-floating-window-layer > .xleth-panel-frame')
+    .forEach((element) => addRect(element.getBoundingClientRect()));
+
+  return Array.from(new Set(targets));
+}
+
+interface DockedPanelSplitterProps {
+  region: DockRegionSide;
+  beforeId: PanelId;
+  afterId: PanelId;
+  beforeSize: number;
+  afterSize: number;
+  active: boolean;
+}
+
+function DockedPanelSplitter({
+  region,
+  beforeId,
+  afterId,
+  beforeSize,
+  afterSize,
+  active,
+}: DockedPanelSplitterProps) {
+  const axis = axisForRegion(region);
+
+  const handleMouseDown = (event: MouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const regionElement = event.currentTarget.closest<HTMLElement>('.xleth-dock-region');
+    const beforeSlot = regionElement?.querySelector<HTMLElement>(`[data-docked-slot-id="${beforeId}"]`);
+    if (!regionElement || !beforeSlot) return;
+
+    event.preventDefault();
+    const regionRect = regionElement.getBoundingClientRect();
+    const beforeRect = beforeSlot.getBoundingClientRect();
+    const startSplitterPosition = axis === 'horizontal'
+      ? beforeRect.right - regionRect.left
+      : beforeRect.bottom - regionRect.top;
+
+    beginDockedPanelResize(
+      event.clientX,
+      event.clientY,
+      {
+        region,
+        axis,
+        beforeId,
+        afterId,
+        beforeSize,
+        afterSize,
+        startSplitterPosition,
+        snapTargets: collectSnapTargets(regionElement, axis, startSplitterPosition),
+      },
+      {
+        altKey: event.altKey,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        shiftKey: event.shiftKey,
+      },
+    );
+  };
+
+  return (
+    <div
+      className={`xleth-dock-splitter xleth-dock-splitter--${axis}`}
+      data-testid={`xleth-dock-splitter-${beforeId}-${afterId}`}
+      data-before-panel-id={beforeId}
+      data-after-panel-id={afterId}
+      data-active={active ? 'true' : 'false'}
+      onMouseDown={handleMouseDown}
+      aria-hidden="true"
+    />
+  );
 }
 
 export function DockRegion({ side, renderPanel, excludePanelIds = EMPTY_PANEL_IDS }: DockRegionProps) {
@@ -42,8 +173,9 @@ export function DockRegion({ side, renderPanel, excludePanelIds = EMPTY_PANEL_ID
   const dockedKey = isSSR ? dockedPanelKey(side, excludePanelIds, usePanelRegistry.getState().panels) : reactiveDockedPanelKey;
   const committedSize = isSSR ? usePanelRegistry.getState().dockRegionSizes[side] : reactiveSize;
   const preview = useDockRegionResizePreview(side);
+  const splitterPreview = useDockedPanelResizePreview(side);
   const effectiveSize = preview?.size ?? committedSize;
-  const docked = dockedKey === '' ? [] : dockedKey.split('|') as PanelId[];
+  const docked = parseDockedPanelKey(dockedKey);
 
   if (docked.length === 0) return null;
 
@@ -57,15 +189,42 @@ export function DockRegion({ side, renderPanel, excludePanelIds = EMPTY_PANEL_ID
       data-region={side}
       style={sizeStyle}
     >
-      {docked.map((id: PanelId) => (
-        renderPanel ? (
-          <React.Fragment key={id}>{renderPanel(id)}</React.Fragment>
-        ) : (
-          <PanelFrame key={id} id={id}>
-            <DockTestBody label={PANEL_CATALOG[id].title} />
-          </PanelFrame>
+      {docked.map((entry, index) => {
+        const liveSize = splitterPreview?.beforeId === entry.id
+          ? splitterPreview.beforeSize
+          : splitterPreview?.afterId === entry.id
+            ? splitterPreview.afterSize
+            : entry.size;
+        const next = docked[index + 1];
+
+        return (
+          <React.Fragment key={entry.id}>
+            <div
+              className="xleth-docked-panel-slot"
+              data-docked-slot-id={entry.id}
+              style={{ '--xleth-docked-panel-size': `${liveSize}px` } as CSSProperties}
+            >
+              {renderPanel ? (
+                renderPanel(entry.id)
+              ) : (
+                <PanelFrame id={entry.id}>
+                  <DockTestBody label={PANEL_CATALOG[entry.id].title} />
+                </PanelFrame>
+              )}
+            </div>
+            {next ? (
+              <DockedPanelSplitter
+                region={side}
+                beforeId={entry.id}
+                afterId={next.id}
+                beforeSize={liveSize}
+                afterSize={next.size}
+                active={splitterPreview?.beforeId === entry.id && splitterPreview.afterId === next.id}
+              />
+            ) : null}
+          </React.Fragment>
         )
-      ))}
+      })}
       <DockRegionResizer region={side} currentSize={committedSize} />
     </div>
   );

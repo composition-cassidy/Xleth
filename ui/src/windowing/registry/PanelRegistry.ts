@@ -52,6 +52,18 @@ export const MIN_DOCK_REGION_SIZES: DockRegionSizes = {
   bottom: 200,
 };
 
+export const MIN_DOCKED_PANEL_MAIN_SIZES: Record<PanelId, number> = {
+  timeline: 240,
+  sampleSelector: 220,
+  pianoRoll: 220,
+  preview: 180,
+  mixer: 220,
+  gridSettings: 180,
+  fxGraph: 240,
+  nodeEditor: 200,
+  sampler: 220,
+};
+
 export interface PanelRegistryState {
   panels: PanelStateMap;
   dockRegionSizes: DockRegionSizes;
@@ -67,6 +79,13 @@ export interface PanelRegistryState {
   maximizePanel: (id: PanelId) => void;
   restorePanel: (id: PanelId) => void;
   setDockRegionSize: (region: DockRegion, size: number) => void;
+  resizeDockedPanelPair: (
+    region: DockRegion,
+    beforeId: PanelId,
+    beforeSize: number,
+    afterId: PanelId,
+    afterSize: number,
+  ) => void;
   setSampleSelectorDockOpen: (open: boolean) => void;
   setSampleSelectorDockWidth: (width: number) => void;
   clampFloatingPanelsToWorkArea: (width: number, height: number) => void;
@@ -247,6 +266,34 @@ function dockRegionSizesEqual(a: DockRegionSizes, b: DockRegionSizes): boolean {
     && a.bottom === b.bottom;
 }
 
+function clampDockedPanelPairSizes(
+  beforeId: PanelId,
+  beforeSize: number,
+  afterId: PanelId,
+  afterSize: number,
+): { beforeSize: number; afterSize: number } {
+  const beforeMin = MIN_DOCKED_PANEL_MAIN_SIZES[beforeId];
+  const afterMin = MIN_DOCKED_PANEL_MAIN_SIZES[afterId];
+  const total = Math.max(beforeMin + afterMin, Math.round(beforeSize + afterSize));
+  let nextBefore = Math.round(beforeSize);
+  let nextAfter = total - nextBefore;
+
+  if (nextBefore < beforeMin) {
+    nextBefore = beforeMin;
+    nextAfter = total - nextBefore;
+  }
+
+  if (nextAfter < afterMin) {
+    nextAfter = afterMin;
+    nextBefore = total - nextAfter;
+  }
+
+  return {
+    beforeSize: nextBefore,
+    afterSize: nextAfter,
+  };
+}
+
 interface RegistryPersistenceSlice {
   panels: PanelStateMap;
   dockRegionSizes: DockRegionSizes;
@@ -416,6 +463,40 @@ export const usePanelRegistry = create<PanelRegistryState>((set) => ({
     const nextSizes = { ...state.dockRegionSizes, [region]: clamped };
     scheduleLayoutPersistence(state.panels, nextSizes);
     return { dockRegionSizes: nextSizes };
+  }),
+
+  resizeDockedPanelPair: (region, beforeId, beforeSize, afterId, afterSize) => set((state) => {
+    const beforePanel = state.panels[beforeId];
+    const afterPanel = state.panels[afterId];
+    const canResize = !beforePanel.hidden
+      && !afterPanel.hidden
+      && beforePanel.mode === 'docked'
+      && afterPanel.mode === 'docked'
+      && beforePanel.docked.region === region
+      && afterPanel.docked.region === region;
+    if (!canResize) return state;
+
+    const nextSizes = clampDockedPanelPairSizes(beforeId, beforeSize, afterId, afterSize);
+    if (
+      beforePanel.docked.sizeInRegion === nextSizes.beforeSize
+      && afterPanel.docked.sizeInRegion === nextSizes.afterSize
+    ) {
+      return state;
+    }
+
+    return {
+      panels: commitPanels(state, (draft) => {
+        draft[beforeId].docked = {
+          ...draft[beforeId].docked,
+          sizeInRegion: nextSizes.beforeSize,
+        };
+        draft[afterId].docked = {
+          ...draft[afterId].docked,
+          sizeInRegion: nextSizes.afterSize,
+        };
+        return draft;
+      }),
+    };
   }),
 
   setSampleSelectorDockOpen: (open) => set((state) => {

@@ -65,6 +65,25 @@ describe('Phase 3 dock region SSR markup', () => {
     expect(html).toContain('data-panel-mode="docked"');
   });
 
+  it('DockRegion renders sized docked slots and splitters between siblings', () => {
+    const panels = createInitialPanelStates();
+    panels.timeline.hidden = false;
+    panels.timeline.mode = 'docked';
+    panels.timeline.docked = { region: 'bottom', orderInRegion: 0, sizeInRegion: 300 };
+    panels.mixer.hidden = false;
+    panels.mixer.mode = 'docked';
+    panels.mixer.docked = { region: 'bottom', orderInRegion: 1, sizeInRegion: 260 };
+    usePanelRegistry.setState({ panels });
+
+    const html = renderToStaticMarkup(<DockRegion side="bottom" />);
+
+    expect(html).toContain('data-docked-slot-id="timeline"');
+    expect(html).toContain('data-docked-slot-id="mixer"');
+    expect(html).toContain('--xleth-docked-panel-size:300px');
+    expect(html).toContain('--xleth-docked-panel-size:260px');
+    expect(html).toContain('data-testid="xleth-dock-splitter-timeline-mixer"');
+  });
+
   it('DockRegion returns null when no panels are docked to that region', () => {
     const html = renderToStaticMarkup(<DockRegion side="top" />);
     expect(html).toBe('');

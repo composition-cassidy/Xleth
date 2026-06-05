@@ -1,6 +1,7 @@
 import { PANEL_IDS, type PanelId } from '../registry/panelCatalog';
 import { usePanelRegistry } from '../registry/PanelRegistry';
 import { cancelDrag, getDragState } from './DragManager';
+import { cancelDockedPanelResizeIfActive } from './DockedPanelResizeManager';
 import { cancelDockRegionResizeIfActive } from './DockRegionResizeManager';
 import { cancelResizeIfActive } from './ResizeManager';
 
@@ -176,6 +177,7 @@ function registerDefaultBindings(): void {
   registerBinding('F12', () => usePanelRegistry.getState().togglePanel('sampler'));
   registerBinding('Escape', () => {
     if (cancelResizeIfActive()) return;
+    if (cancelDockedPanelResizeIfActive()) return;
     if (cancelDockRegionResizeIfActive()) return;
     if (getDragState().state === 'dragging') {
       cancelDrag();

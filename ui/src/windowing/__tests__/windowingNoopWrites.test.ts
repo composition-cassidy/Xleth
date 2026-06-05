@@ -71,6 +71,35 @@ describe('windowing no-op writes', () => {
     expect(countRegistryNotifications(() => registry.closePanel('mixer'))).toBe(0);
   });
 
+  it('resizes docked panel pairs without touching floating geometry and skips identical writes', () => {
+    const panels = createInitialPanelStates();
+    panels.timeline.hidden = false;
+    panels.timeline.mode = 'docked';
+    panels.timeline.docked = { region: 'bottom', orderInRegion: 0, sizeInRegion: 300 };
+    panels.mixer.hidden = false;
+    panels.mixer.mode = 'docked';
+    panels.mixer.docked = { region: 'bottom', orderInRegion: 1, sizeInRegion: 260 };
+    usePanelRegistry.setState({ panels });
+
+    const timelineFloating = { ...usePanelRegistry.getState().panels.timeline.floating };
+    const mixerFloating = { ...usePanelRegistry.getState().panels.mixer.floating };
+    const registry = usePanelRegistry.getState();
+
+    registry.resizeDockedPanelPair('bottom', 'timeline', 320, 'mixer', 240);
+    expect(usePanelRegistry.getState().panels.timeline.docked.sizeInRegion).toBe(320);
+    expect(usePanelRegistry.getState().panels.mixer.docked.sizeInRegion).toBe(240);
+    expect(usePanelRegistry.getState().panels.timeline.floating).toEqual(timelineFloating);
+    expect(usePanelRegistry.getState().panels.mixer.floating).toEqual(mixerFloating);
+
+    expect(countRegistryNotifications(() => registry.resizeDockedPanelPair(
+      'bottom',
+      'timeline',
+      320,
+      'mixer',
+      240,
+    ))).toBe(0);
+  });
+
   it('returns previous state for identical timeline store writes', () => {
     const focusBefore = useTimelineFocusStore.getState();
     useTimelineFocusStore.getState().setFocusedTrackId(null);
