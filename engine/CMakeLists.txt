@@ -198,6 +198,7 @@ add_library(XlethEngineModel STATIC
     src/model/VideoFlipResolver.cpp
     src/model/ClipModulationEvaluator.cpp
     src/model/ClipCompanionFxBuilder.cpp
+    src/import/FscScoreParser.cpp
     src/project/ProjectManager.cpp
     src/commands/UndoManager.cpp
     src/commands/TimelineCommands.cpp
@@ -898,6 +899,23 @@ target_compile_definitions(test_midi_importer PRIVATE
     JUCE_DIRECTSOUND=0
     JUCE_USE_WINDOWS_MEDIA_FORMAT=0
     JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_fsc_score_parser ─────────────────────────────────────────────────────
+# Neutral FL Studio Score (.fsc) parser tests. The parser is pure C++ (no JUCE,
+# no FFmpeg, no GL) and lives in XlethEngineModel, so this test links model-only
+# like test_timeline. Real .fsc fixtures live under test/fixtures/fsc and are
+# located at runtime via the XLETH_FSC_FIXTURE_DIR compile definition.
+add_executable(test_fsc_score_parser
+    test/test_fsc_score_parser.cpp
+)
+
+target_link_libraries(test_fsc_score_parser PRIVATE
+    XlethEngineModel
+)
+
+target_compile_definitions(test_fsc_score_parser PRIVATE
+    XLETH_FSC_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/fsc"
 )
 
 # ── test_effects ──────────────────────────────────────────────────────────────
