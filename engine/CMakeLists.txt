@@ -435,6 +435,17 @@ target_link_libraries(test_loop_region PRIVATE
     XlethEngineModel
 )
 
+# ── test_render_scope ─────────────────────────────────────────────────────────
+# Phase 2 render scoping + absolute warm-up policy. render/RenderScope.h is pure
+# (depends only on LoopRegion), so this is model-only — no JUCE/FFmpeg/GL.
+add_executable(test_render_scope
+    test/test_render_scope.cpp
+)
+
+target_link_libraries(test_render_scope PRIVATE
+    XlethEngineModel
+)
+
 # ── test_video_flip_resolver ──────────────────────────────────────────────────
 # Unit tests for the per-track flip state-machine evaluator (Phase 2 keystone).
 # Covers all 4 v1 modifiers and every edge case in spec §4.4 / §7.

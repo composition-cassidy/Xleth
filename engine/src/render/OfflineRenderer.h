@@ -107,13 +107,31 @@ public:
 
     /**
      * Begin rendering on a background thread.
-     * @param startSample  First sample to include in the output (typically 0)
-     * @param endSample    One past the last sample to render
+     * @param startSample  First sample to include in the output (capture start)
+     * @param endSample    One past the last sample to render (capture end)
      * @param settings     Export settings (codec, resolution, fps, output path)
      *
-     * If a render is already in progress, this returns false.
+     * Legacy overload: warm-up begins at startSample (latency-only pre-roll, the
+     * pre-Phase-2 behaviour). If a render is already in progress, returns false.
      */
     bool startRender(int64_t startSample, int64_t endSample,
+                     const ExportSettings& settings);
+
+    /**
+     * Phase 2 windowed render. Separates the engine warm-up position from the
+     * capture window so a scoped absolute render warms up from tick 0
+     * (warmUpStartSample == 0) while the output file still begins at
+     * startSample with no leading silence/black.
+     *
+     * @param startSample        First sample written to the output (capture start)
+     * @param endSample          One past the last sample written (capture end)
+     * @param warmUpStartSample  Sample the engine starts simulating from; output
+     *                           in [warmUpStartSample, startSample) is discarded.
+     *                           Pass 0 for a scoped absolute window, or
+     *                           startSample to keep legacy latency-only pre-roll.
+     */
+    bool startRender(int64_t startSample, int64_t endSample,
+                     int64_t warmUpStartSample,
                      const ExportSettings& settings);
 
     /** Request cancellation — sets the flag, checked every buffer iteration. */
@@ -148,8 +166,10 @@ private:
 
     // ── Internal ──────────────────────────────────────────────────────────
     void render(int64_t startSample, int64_t endSample,
+                int64_t warmUpStartSample,
                 const ExportSettings& settings);
     void renderImpl(int64_t startSample, int64_t endSample,
+                    int64_t warmUpStartSample,
                     const ExportSettings& settings);
 
     /**

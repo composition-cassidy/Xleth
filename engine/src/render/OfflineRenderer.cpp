@@ -6,6 +6,7 @@
 #include "audio/MixEngine.h"
 #include "render/GpuDeviceManager.h"
 #include "render/RenderClock.h"
+#include "render/RenderScope.h"
 #include "render/FrameCache.h"
 #include "render/FrameCollector.h"
 #include "render/RenderVideoDecoder.h"
@@ -96,6 +97,14 @@ OfflineRenderer::~OfflineRenderer()
 bool OfflineRenderer::startRender(int64_t startSample, int64_t endSample,
                                   const ExportSettings& settings)
 {
+    // Legacy overload: warm-up begins at the capture start (latency-only pre-roll).
+    return startRender(startSample, endSample, startSample, settings);
+}
+
+bool OfflineRenderer::startRender(int64_t startSample, int64_t endSample,
+                                  int64_t warmUpStartSample,
+                                  const ExportSettings& settings)
+{
     if (running_.load()) {
         std::fprintf(stderr, "[Renderer] ERROR: render already in progress\n");
         return false;
@@ -121,8 +130,8 @@ bool OfflineRenderer::startRender(int64_t startSample, int64_t endSample,
 
     // Capture settings by value for the thread
     renderThread_ = std::make_unique<std::thread>(
-        [this, startSample, endSample, settings]() {
-            render(startSample, endSample, settings);
+        [this, startSample, endSample, warmUpStartSample, settings]() {
+            render(startSample, endSample, warmUpStartSample, settings);
             running_.store(false);
         });
 
@@ -383,10 +392,11 @@ std::vector<VideoEvent> OfflineRenderer::buildVideoEvents(
 // ===========================================================================
 
 void OfflineRenderer::render(int64_t startSample, int64_t endSample,
+                              int64_t warmUpStartSample,
                               const ExportSettings& settings)
 {
     try {
-        renderImpl(startSample, endSample, settings);
+        renderImpl(startSample, endSample, warmUpStartSample, settings);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "[Renderer] ERROR: %s\n", e.what());
         progress_.setError(e.what());
@@ -407,11 +417,17 @@ void OfflineRenderer::render(int64_t startSample, int64_t endSample,
 // ===========================================================================
 
 void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
+                                  int64_t warmUpStartSample,
                                   const ExportSettings& settings)
 {
     const int sampleRate = settings.sampleRate;
     const AVRational fps = { settings.fpsNum, settings.fpsDen };
     const double bpm = timeline_.getBPM();
+
+    // Clamp warm-up into [0, startSample]; warming up past the capture start is
+    // meaningless and a negative warm-up is undefined.
+    if (warmUpStartSample < 0)           warmUpStartSample = 0;
+    if (warmUpStartSample > startSample)  warmUpStartSample = startSample;
 
     const bool isRegion = (startSample > 0);
     std::fprintf(stderr, "[Renderer] Region mode: %s\n",
@@ -420,6 +436,12 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
         std::fprintf(stderr, "[Renderer] Region: %lld → %lld\n",
                      (long long)startSample, (long long)endSample);
     }
+#ifdef XLETH_DEBUG
+    std::fprintf(stderr,
+        "[RenderScope] capture=[%lld,%lld) warmUpStart=%lld outputStart=0 absoluteWindow=%s\n",
+        (long long)startSample, (long long)endSample, (long long)warmUpStartSample,
+        warmUpStartSample < startSample ? "yes" : "no");
+#endif
 
     const int64_t totalSamples = endSample - startSample;
     const int64_t totalVideoFrames = RenderClock::sampleToVideoFrame(
@@ -435,16 +457,18 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
     std::fprintf(stderr, "[Renderer] prepareToPlay(sampleRate=%d, bufferSize=%d) done, nonRealtime=1\n",
                  sampleRate, kBufferSize);
 
-    // Pre-roll: skip latency compensation samples (no latency in offline mode
-    // since we're not using the JUCE AudioProcessorGraph's realtime path).
-    // The MixEngine is driven directly — no graph latency to compensate.
+    // Pre-roll plan: warm up the engine from warmUpStartSample (tick 0 for a
+    // scoped absolute window), discard that output, and flush plugin/insert
+    // latency so the first KEPT sample == intended audio at startSample. Shared
+    // math with AudioExporter via render/RenderScope.h.
     const auto latencySnapshot = mixer_.getLatencyCompensationSnapshot();
-    const int64_t totalPrerollSamples =
-        static_cast<int64_t>(latencySnapshot.maxAudibleTrackLatencySamples)
-        + static_cast<int64_t>(latencySnapshot.masterInsertLatencySamples);
-    const int64_t historyPreroll = std::min(startSample, totalPrerollSamples);
-    const int64_t renderStart = startSample - historyPreroll;
-    const int64_t totalDiscard = historyPreroll + totalPrerollSamples;
+    const auto prerollPlan = xleth::computeRenderPrerollPlan(
+        warmUpStartSample, startSample,
+        latencySnapshot.maxAudibleTrackLatencySamples,
+        latencySnapshot.masterInsertLatencySamples);
+    const int64_t historyPreroll = prerollPlan.availablePrerollSamples;
+    const int64_t renderStart = prerollPlan.renderStartSample;
+    const int64_t totalDiscard = prerollPlan.discardSamples;
     const int64_t renderSamplesNeeded = totalSamples + totalDiscard;
     const int64_t renderEnd = renderStart + renderSamplesNeeded;
     std::fprintf(stderr,

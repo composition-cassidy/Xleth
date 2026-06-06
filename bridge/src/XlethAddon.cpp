@@ -56,6 +56,7 @@
 #include "render/GpuDeviceManager.h"
 #include "render/HwEncoderDetector.h"
 #include "render/OfflineRenderer.h"
+#include "render/RenderScope.h"
 // [PreviewUnify] GPU compositor pipeline for unified preview
 #include "render/GridCompositor.h"
 #include "render/FrameCollector.h"
@@ -10969,10 +10970,57 @@ Napi::Value Audio_ResetCrashedPlugin(const Napi::CallbackInfo& info)
     return Napi::Boolean::New(env, ok);
 }
 
+// ── Phase 2 render scoping helpers ───────────────────────────────────────────
+
+// End of the last meaningful event (last clip / last pattern block) in ticks.
+static int64_t computeFullTimelineEndTick(const Timeline& tl)
+{
+    int64_t endTick = 0;
+    for (const auto* c : tl.getAllClips())
+        if (c) endTick = std::max(endTick, (c->position + c->duration).ticks);
+    for (const auto* b : tl.getAllPatternBlocks())
+        if (b) endTick = std::max(endTick, (b->position + b->duration).ticks);
+    return endTick;
+}
+
+// Resolve the render scope from the project LoopRegion (the user-facing source
+// of truth). The legacy renderer "Start Bar / End Bar" inputs, if supplied, are
+// honoured ONLY as a debug-only override of the region bounds — never in normal
+// user exports. The override is parsed behind XLETH_DEBUG; note the real
+// user-facing gate is the renderer hiding those inputs outside
+// import.meta.env.DEV, because XLETH_DEBUG is defined unconditionally in this
+// project's native build.
+static xleth::RenderScope resolveExportScope(const Timeline& tl,
+                                             bool hasStartBeat, double startBeat,
+                                             bool hasEndBeat, double endBeat)
+{
+    xleth::RenderScopeOverride dbg;
+#ifdef XLETH_DEBUG
+    if (hasStartBeat || hasEndBeat) {
+        const double sB = hasStartBeat ? startBeat : 0.0;
+        const double eB = hasEndBeat   ? endBeat   : -1.0;
+        if (eB > sB) {   // a real explicit range — treat as a debug bounds repoint
+            dbg.active    = true;
+            dbg.startTick = static_cast<int64_t>(std::llround(sB * 960.0));
+            dbg.endTick   = static_cast<int64_t>(std::llround(eB * 960.0));
+            std::fprintf(stderr,
+                "[LoopRegion] debug bounds override active: [%lld,%lld) ticks\n",
+                (long long)dbg.startTick, (long long)dbg.endTick);
+        }
+    }
+#else
+    (void)hasStartBeat; (void)startBeat; (void)hasEndBeat; (void)endBeat;
+#endif
+    return xleth::computeRenderScope(tl.getLoopRegion(),
+                                     computeFullTimelineEndTick(tl), dbg);
+}
+
 // ── Audio export (offline render to WAV/MP3/FLAC) ────────────────────────────
 
 // audio_exportStart({ outputPath, format, sampleRate, bitDepth, mp3Bitrate,
-//                     flacLevel, startBeat, endBeat }) → bool
+//                     flacLevel }) → bool
+// Render scope derives from the project LoopRegion (Phase 2). startBeat/endBeat,
+// if present, are a debug-only bounds override (see resolveExportScope).
 Napi::Value Audio_ExportStart(const Napi::CallbackInfo& info)
 {
     Napi::Env env = info.Env();
@@ -11007,8 +11055,28 @@ Napi::Value Audio_ExportStart(const Napi::CallbackInfo& info)
     if (o.Has("bitDepth"))   cfg.bitDepth   = o.Get("bitDepth").As<Napi::Number>().Int32Value();
     if (o.Has("mp3Bitrate")) cfg.mp3Bitrate = o.Get("mp3Bitrate").As<Napi::Number>().Int32Value();
     if (o.Has("flacLevel"))  cfg.flacLevel  = o.Get("flacLevel").As<Napi::Number>().Int32Value();
-    if (o.Has("startBeat"))  cfg.startBeat  = o.Get("startBeat").As<Napi::Number>().DoubleValue();
-    if (o.Has("endBeat"))    cfg.endBeat    = o.Get("endBeat").As<Napi::Number>().DoubleValue();
+
+    // Phase 2: render scope is derived from the project LoopRegion. startBeat /
+    // endBeat (if present) are a debug-only bounds override, not a user range.
+    {
+        const bool hasS = o.Has("startBeat");
+        const bool hasE = o.Has("endBeat");
+        const double sB = hasS ? o.Get("startBeat").As<Napi::Number>().DoubleValue() : 0.0;
+        const double eB = hasE ? o.Get("endBeat").As<Napi::Number>().DoubleValue()   : 0.0;
+        const auto scope = resolveExportScope(*g_timeline, hasS, sB, hasE, eB);
+        const double ticksToBeats = 1.0 / 960.0;
+        cfg.startBeat = scope.captureStartTick * ticksToBeats;
+        cfg.endBeat   = scope.captureEndTick   * ticksToBeats;
+        // Absolute window warms up from tick 0 (warmUpStartTick) so in-flight
+        // notes / effect tails survive into the first captured sample.
+        cfg.warmUpStartBeat = scope.scoped
+            ? scope.warmUpStartTick * ticksToBeats
+            : -1.0;   // full timeline: legacy latency-only pre-roll
+        std::fprintf(stderr,
+            "[RenderScope] audio scoped=%s capture=[%.3f,%.3f) warmUpBeat=%.3f\n",
+            scope.scoped ? "true" : "false",
+            cfg.startBeat, cfg.endBeat, cfg.warmUpStartBeat);
+    }
 
     // Reset state
     {
@@ -11209,34 +11277,32 @@ Napi::Value Video_ExportStart(const Napi::CallbackInfo& info)
     if (o.Has("useSourceMedia"))
         settings.useSourceMedia = o.Get("useSourceMedia").As<Napi::Boolean>().Value();
 
-    // Sample range from beats (0 = start of timeline)
-    double startBeat = 0.0, endBeat = -1.0;
-    if (o.Has("startBeat")) startBeat = o.Get("startBeat").As<Napi::Number>().DoubleValue();
-    if (o.Has("endBeat"))   endBeat   = o.Get("endBeat").As<Napi::Number>().DoubleValue();
+    // Phase 2: render scope is derived from the project LoopRegion. startBeat /
+    // endBeat (if present) are a debug-only bounds override, not a user range.
+    const bool hasStartBeat = o.Has("startBeat");
+    const bool hasEndBeat   = o.Has("endBeat");
+    const double startBeatArg = hasStartBeat ? o.Get("startBeat").As<Napi::Number>().DoubleValue() : 0.0;
+    const double endBeatArg   = hasEndBeat   ? o.Get("endBeat").As<Napi::Number>().DoubleValue()   : 0.0;
+    const auto scope = resolveExportScope(*g_timeline, hasStartBeat, startBeatArg,
+                                          hasEndBeat, endBeatArg);
 
-    // Convert beats → samples
+    // Convert ticks → samples. Four distinct concepts (spec §5): warm-up start,
+    // capture start, capture end, and the output timestamp (always 0).
     const double bpm = g_timeline->getBPM();
     const double sampleRate = static_cast<double>(settings.sampleRate);
-    const double beatsToSamples = 60.0 / bpm * sampleRate;
-    int64_t startSample = static_cast<int64_t>(startBeat * beatsToSamples);
+    const double samplesPerTick = (bpm > 0.0) ? (sampleRate * 60.0) / (960.0 * bpm) : 0.0;
+    const int64_t startSample = static_cast<int64_t>(std::llround(scope.captureStartTick * samplesPerTick));
+    const int64_t endSample   = static_cast<int64_t>(std::llround(scope.captureEndTick   * samplesPerTick));
+    // Scoped absolute window warms up from tick 0; full timeline / unscoped uses
+    // legacy latency-only pre-roll (warm-up == capture start).
+    const int64_t warmUpStartSample = scope.scoped
+        ? static_cast<int64_t>(std::llround(scope.warmUpStartTick * samplesPerTick))
+        : startSample;
 
-    // If endBeat not specified, use the timeline's total length
-    int64_t endSample;
-    if (endBeat < 0.0) {
-        // Find the last clip/block end
-        double lastBeat = 0.0;
-        for (const auto* clip : g_timeline->getAllClips()) {
-            double clipEnd = clip->position.toBeats() + clip->duration.toBeats();
-            if (clipEnd > lastBeat) lastBeat = clipEnd;
-        }
-        for (const auto* block : g_timeline->getAllPatternBlocks()) {
-            double blockEnd = block->position.toBeats() + block->duration.toBeats();
-            if (blockEnd > lastBeat) lastBeat = blockEnd;
-        }
-        endSample = static_cast<int64_t>(lastBeat * beatsToSamples);
-    } else {
-        endSample = static_cast<int64_t>(endBeat * beatsToSamples);
-    }
+    std::fprintf(stderr,
+        "[RenderScope] video scoped=%s capture=[%lld,%lld) warmUpSample=%lld outputStart=0\n",
+        scope.scoped ? "true" : "false",
+        (long long)startSample, (long long)endSample, (long long)warmUpStartSample);
 
     if (endSample <= startSample) {
         Napi::Error::New(env, "Export range is empty (endSample <= startSample)").ThrowAsJavaScriptException();
@@ -11271,7 +11337,7 @@ Napi::Value Video_ExportStart(const Napi::CallbackInfo& info)
         *g_gpuDevice
     );
 
-    bool ok = g_videoRenderer->startRender(startSample, endSample, settings);
+    bool ok = g_videoRenderer->startRender(startSample, endSample, warmUpStartSample, settings);
     if (!ok) {
         Napi::Error::New(env, "Failed to start video render").ThrowAsJavaScriptException();
         g_videoRenderer.reset();

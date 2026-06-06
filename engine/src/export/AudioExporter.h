@@ -33,6 +33,11 @@ public:
         int         flacLevel   = 5;        // 0..8
         double      startBeat   = 0.0;
         double      endBeat     = 0.0;      // 0 = auto from max clip end
+        // Phase 2 scoped absolute window: beat the engine warms up FROM (output
+        // discarded until startBeat). < 0 → warm up at startBeat (legacy
+        // latency-only pre-roll). Set to 0 for a scoped absolute render so
+        // in-flight notes/effect tails survive into the first captured sample.
+        double      warmUpStartBeat = -1.0;
     };
 
     struct PrerollPlan {
@@ -49,6 +54,15 @@ public:
                                           int masterInsertLatencySamples);
     static PrerollPlan computePrerollPlan(MixEngine& mixer,
                                           int64_t startSample);
+    // Phase 2 windowed pre-roll: warm-up begins at warmUpStartSample (0 for a
+    // scoped absolute window) independent of the capture start.
+    static PrerollPlan computePrerollPlan(int64_t warmUpStartSample,
+                                          int64_t captureStartSample,
+                                          int maxAudibleTrackLatencySamples,
+                                          int masterInsertLatencySamples);
+    static PrerollPlan computePrerollPlan(MixEngine& mixer,
+                                          int64_t warmUpStartSample,
+                                          int64_t captureStartSample);
 
     // Renders [startBeat, endBeat) of the timeline through mixer and writes
     // to config.outputPath. progressCallback receives 0..1 as render+encode
@@ -67,6 +81,7 @@ private:
     bool renderOffline(const Timeline& timeline,
                        MixEngine& mixer,
                        int64_t startSample,
+                       int64_t warmUpStartSample,
                        int totalSamples,
                        int sampleRate,
                        juce::AudioBuffer<float>& output,

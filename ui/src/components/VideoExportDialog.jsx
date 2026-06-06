@@ -227,10 +227,17 @@ export default function VideoExportDialog({ isOpen, onClose }) {
     && computeDiscordVideoBitrate(discordSettings.tier, discordDurationSec) < DISCORD_MIN_VIDEO_BITRATE
 
   const buildCfg = useCallback(() => {
-    const sBar = Math.max(1, Number(startBar) || 1)
-    const eBar = Number(endBar) || 0
-    const startBeat = (sBar - 1) * BEATS_PER_BAR
-    const endBeat   = eBar > 0 ? eBar * BEATS_PER_BAR : -1.0
+    // Phase 2: the render scope derives from the project LoopRegion. The manual
+    // Start/End Bar inputs are dev-only and forwarded solely as a debug bounds
+    // override (the native side gates them too). In production builds no
+    // start/end beats are sent, so the bridge uses the LoopRegion.
+    const debugRange = {}
+    if (import.meta.env.DEV) {
+      const sBar = Math.max(1, Number(startBar) || 1)
+      const eBar = Number(endBar) || 0
+      debugRange.startBeat = (sBar - 1) * BEATS_PER_BAR
+      debugRange.endBeat   = eBar > 0 ? eBar * BEATS_PER_BAR : -1.0
+    }
 
     if (activeTab === 'youtube') {
       const res = YOUTUBE_RESOLUTIONS.find((r) => r.id === youtubeSettings.resolution)
@@ -253,7 +260,7 @@ export default function VideoExportDialog({ isOpen, onClose }) {
         // sees original-source pixels (otherwise CRF/bitrate operate on already-
         // degraded preview-grade input).
         useSourceMedia: true,
-        startBeat, endBeat,
+        ...debugRange,
       }
     }
 
@@ -273,7 +280,7 @@ export default function VideoExportDialog({ isOpen, onClose }) {
         sampleRate:   44100,
         audioBitrate: 256,
         useSourceMedia: true,
-        startBeat, endBeat,
+        ...debugRange,
       }
     }
 
@@ -292,7 +299,7 @@ export default function VideoExportDialog({ isOpen, onClose }) {
       sampleRate:   Number(customSettings.sampleRate),
       audioBitrate: Number(customSettings.audioBitrate),
       useSourceMedia: true,
-      startBeat, endBeat,
+      ...debugRange,
     }
     if (customSettings.useCrf) {
       cfg.crf = Number(customSettings.crf)
@@ -395,24 +402,30 @@ export default function VideoExportDialog({ isOpen, onClose }) {
             />
           ) : (
             <>
-              {/* Range row is shared across all tabs. */}
-              <div className="export-row">
-                <label>Start Bar</label>
-                <input
-                  type="number" min={1} step={1}
-                  value={startBar}
-                  onChange={(e) => setStartBar(e.target.value)}
-                />
-              </div>
-              <div className="export-row">
-                <label>End Bar</label>
-                <input
-                  type="number" min={0} step={1}
-                  value={endBar}
-                  onChange={(e) => setEndBar(e.target.value)}
-                  placeholder="0 = auto"
-                />
-              </div>
+              {/* Range row — dev-only debug override. Normal exports scope to
+                  the project LoopRegion; these manual bars are hidden in
+                  production builds and forwarded only as a debug override. */}
+              {import.meta.env.DEV && (
+                <>
+                  <div className="export-row">
+                    <label>Start Bar (debug)</label>
+                    <input
+                      type="number" min={1} step={1}
+                      value={startBar}
+                      onChange={(e) => setStartBar(e.target.value)}
+                    />
+                  </div>
+                  <div className="export-row">
+                    <label>End Bar (debug)</label>
+                    <input
+                      type="number" min={0} step={1}
+                      value={endBar}
+                      onChange={(e) => setEndBar(e.target.value)}
+                      placeholder="0 = auto"
+                    />
+                  </div>
+                </>
+              )}
               <div style={{ borderTop: '1px solid var(--theme-border-subtle)', margin: '4px 0', opacity: 0.3 }} />
 
               <div className="export-row">

@@ -3,6 +3,8 @@
 // renders to MP4, and verifies the output contains both audio and video streams.
 
 #include "render/OfflineRenderer.h"
+#include "render/RenderScope.h"
+#include "render/FrameCollector.h"
 #include "export/FFmpegMuxer.h"
 #include "model/Timeline.h"
 #include "model/TimelineTypes.h"
@@ -73,44 +75,150 @@ struct ExportTrimWindow
     int64_t renderEnd = 0;
 };
 
+// Phase 2: trim window now flows through the shared render/RenderScope.h helper
+// with an explicit warm-up start. warmUpStartSample == startSample reproduces the
+// legacy latency-only pre-roll; warmUpStartSample == 0 is the scoped absolute
+// window (warm up from tick 0).
 static ExportTrimWindow computeExportTrimWindow(int64_t startSample, int64_t endSample,
+                                                int64_t warmUpStartSample,
                                                 int trackLatency, int masterLatency)
 {
+    const auto plan = xleth::computeRenderPrerollPlan(
+        warmUpStartSample, startSample, trackLatency, masterLatency);
     ExportTrimWindow window;
-    window.requestedDuration = endSample - startSample;
-    window.totalPrerollSamples = static_cast<int64_t>(trackLatency) + static_cast<int64_t>(masterLatency);
-    window.historyPreroll = std::min(startSample, window.totalPrerollSamples);
-    window.renderStart = startSample - window.historyPreroll;
-    window.totalDiscard = window.historyPreroll + window.totalPrerollSamples;
+    window.requestedDuration   = endSample - startSample;
+    window.totalPrerollSamples = plan.totalPrerollSamples;
+    window.historyPreroll      = plan.availablePrerollSamples;
+    window.renderStart         = plan.renderStartSample;
+    window.totalDiscard        = plan.discardSamples;
     window.renderSamplesNeeded = window.requestedDuration + window.totalDiscard;
-    window.renderEnd = window.renderStart + window.renderSamplesNeeded;
+    window.renderEnd           = window.renderStart + window.renderSamplesNeeded;
     return window;
 }
 
 static void verifyExportTrimWindowMath()
 {
-    const auto projectStartWithPdc = computeExportTrimWindow(0, 48000, 1024, 0);
+    // ── Legacy latency-only pre-roll (warm-up == capture start) ──────────────
+    const auto projectStartWithPdc = computeExportTrimWindow(0, 48000, 0, 1024, 0);
     assert(projectStartWithPdc.historyPreroll == 0);
     assert(projectStartWithPdc.renderStart == 0);
     assert(projectStartWithPdc.totalDiscard == 1024);
     assert(projectStartWithPdc.renderSamplesNeeded == projectStartWithPdc.requestedDuration + 1024);
 
-    const auto midProjectWithPdc = computeExportTrimWindow(48000, 96000, 1024, 0);
+    const auto midProjectWithPdc = computeExportTrimWindow(48000, 96000, 48000, 1024, 0);
     assert(midProjectWithPdc.historyPreroll == 1024);
     assert(midProjectWithPdc.renderStart == 48000 - 1024);
     assert(midProjectWithPdc.totalDiscard == 2048);
     assert(midProjectWithPdc.renderSamplesNeeded == midProjectWithPdc.requestedDuration + 2048);
 
-    const auto noPdc = computeExportTrimWindow(0, 48000, 0, 0);
+    const auto noPdc = computeExportTrimWindow(0, 48000, 0, 0, 0);
     assert(noPdc.historyPreroll == 0);
     assert(noPdc.totalDiscard == 0);
     assert(noPdc.renderStart == 0);
     assert(noPdc.renderSamplesNeeded == noPdc.requestedDuration);
 
-    const auto masterLatencyOnly = computeExportTrimWindow(0, 48000, 0, 1024);
+    const auto masterLatencyOnly = computeExportTrimWindow(0, 48000, 0, 0, 1024);
     assert(masterLatencyOnly.historyPreroll == 0);
     assert(masterLatencyOnly.totalDiscard == 1024);
     assert(masterLatencyOnly.renderSamplesNeeded == masterLatencyOnly.requestedDuration + 1024);
+
+    // ── Phase 2 scoped absolute window (warm up from tick 0) ─────────────────
+    // Region [48000, 96000), warm-up from sample 0 → the engine processes the
+    // full [0, 48000) history (discarded) before capture begins. This is the
+    // cold-start regression guard: if someone reverts to cold-start
+    // (renderStart == startSample), renderStart would be 48000, not 0.
+    const auto absScoped = computeExportTrimWindow(48000, 96000, /*warmUp*/0, 0, 0);
+    assert(absScoped.renderStart == 0 && "absolute window MUST warm up from sample 0 (not cold-start at startSample)");
+    assert(absScoped.totalDiscard == 48000 && "discard covers all of [0, startSample)");
+    assert(absScoped.renderSamplesNeeded == absScoped.requestedDuration + 48000);
+    // Output begins at 0: captured length equals exactly the region length.
+    assert(absScoped.requestedDuration == 48000);
+
+    // With latency on top of warm-up, the latency is flushed before capture too.
+    const auto absScopedPdc = computeExportTrimWindow(48000, 96000, /*warmUp*/0, 1024, 0);
+    assert(absScopedPdc.renderStart == 0 && "warm-up from 0 keeps renderStart clamped at 0");
+    assert(absScopedPdc.totalDiscard == 48000 + 1024 && "discard = warm-up history + latency");
+}
+
+// Phase 2: prove the video event path keeps clips that began BEFORE the scoped
+// window start but are still active at it — i.e. the events are NOT re-timed to
+// region-zero, and findActiveEvent resolves an in-flight clip at the absolute
+// window-start beat.
+static void verifyVideoInFlightEvent()
+{
+    Timeline timeline(120.0, 48000.0);
+
+    SourceMedia src;
+    src.filePath = "inflight.mp4";
+    src.hasVideo = true;
+    src.fps = 30.0;
+    src.duration = 30.0;
+    src.totalFrames = 900;
+    src.width = 320; src.height = 240;
+    int sourceId = timeline.addSource(src);
+
+    SampleRegion region;
+    region.sourceId = sourceId;
+    region.startTime = 0.0;
+    region.endTime = 30.0;
+    int regionId = timeline.addRegion(region);
+
+    TrackInfo track;
+    track.name = "Held";
+    track.videoOpacity = 1.0f;
+    int trackId = timeline.addTrack(track);
+
+    // Grid with this track in a single cell.
+    GridLayout grid;
+    grid.columns = 1; grid.rows = 1;
+    GridSlot slot;
+    slot.trackId = trackId;
+    slot.gridX = 0; slot.gridY = 0;
+    slot.spanX = kGridSubUnitsPerColumn;
+    slot.spanY = kGridSubUnitsPerRow;
+    grid.slots.push_back(slot);
+    timeline.setGridLayout(grid);
+
+    // A long clip from beat 0 → beat 16 (4 bars). The scoped window starts at
+    // beat 8, mid-clip.
+    Clip clip;
+    clip.trackId = trackId;
+    clip.regionId = regionId;
+    clip.position = TickTime::fromBeats(0.0);
+    clip.duration = TickTime::fromBeats(16.0);
+    timeline.addClip(clip);
+
+    auto events = OfflineRenderer::buildVideoEvents(timeline);
+    assert(events.size() == 1);
+    // Event start beat is ABSOLUTE (0), not shifted to the window start.
+    assert(std::abs(events[0].startBeat - 0.0) < 1e-6 && "video events keep absolute start beats");
+
+    // Scoped window starts at beat 8 → 4.0s → 192000 samples @ 120bpm/48kHz.
+    // Output frame 0 maps to the absolute window start via projectStartSample,
+    // exactly as OfflineRenderer drives the collector during a scoped render.
+    const int sampleRate = 48000;
+    const AVRational fps = { 30, 1 };
+    const int64_t windowStartSample = 192000;
+    FrameCollector collector;
+    auto requests = collector.collectRequests(
+        /*outputFrameIndex=*/0, timeline, sampleRate, fps, events,
+        /*allowProxy=*/false, /*projectStartSample=*/windowStartSample);
+
+    bool foundInFlight = false;
+    for (const auto& r : requests)
+        if (r.trackId == trackId) foundInFlight = true;
+    assert(foundInFlight && "in-flight clip must be active at the scoped window start "
+                            "(no cold start, no re-time-to-zero)");
+
+    // Source frame must reflect the clip having played ~4s, NOT frame 0 — proof
+    // the window samples absolute project time, not region-relative zero.
+    for (const auto& r : requests) {
+        if (r.trackId != trackId) continue;
+        assert(r.sourceFrameIndex > 0 &&
+               "in-flight clip must be sampled mid-source, not from frame 0");
+    }
+
+    std::fprintf(stderr, "[TEST:Renderer] Video in-flight event: PASSED\n");
 }
 
 int main()
@@ -127,6 +235,7 @@ int main()
     std::fprintf(stderr, "[TEST:Renderer] GPU available: %s\n", hasGpu ? "YES" : "NO");
     std::fprintf(stderr, "\n[TEST:Renderer] --- Test 0: Export trim window math ---\n");
     verifyExportTrimWindowMath();
+    verifyVideoInFlightEvent();
     std::fprintf(stderr, "[TEST:Renderer] Test 0: PASSED\n");
 
     // ── Test 1: Build video events from timeline ────────────────────────

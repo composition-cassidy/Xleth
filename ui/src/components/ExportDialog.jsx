@@ -61,8 +61,6 @@ export default function ExportDialog({ isOpen, onClose }) {
     setErrorMsg('')
     setPhase('running')
     setProgress(0)
-    const sBar = Math.max(1, Number(startBar) || 1)
-    const eBar = Number(endBar) || 0
     const cfg = {
       outputPath,
       format,
@@ -70,8 +68,15 @@ export default function ExportDialog({ isOpen, onClose }) {
       bitDepth: Number(bitDepth),
       mp3Bitrate: Number(mp3Bitrate),
       flacLevel: Number(flacLevel),
-      startBeat: (sBar - 1) * BEATS_PER_BAR,               // Bar 1 → beat 0
-      endBeat:   eBar > 0 ? eBar * BEATS_PER_BAR : 0,      // End Bar 8 → beat 32 (8 bars)
+    }
+    // Phase 2: the render scope derives from the project LoopRegion. The manual
+    // Start/End Bar inputs are dev-only and sent solely as a debug bounds
+    // override (the native side gates them too).
+    if (import.meta.env.DEV) {
+      const sBar = Math.max(1, Number(startBar) || 1)
+      const eBar = Number(endBar) || 0
+      cfg.startBeat = (sBar - 1) * BEATS_PER_BAR               // Bar 1 → beat 0
+      cfg.endBeat   = eBar > 0 ? eBar * BEATS_PER_BAR : 0      // End Bar 8 → beat 32 (8 bars)
     }
     console.log('[Export] Starting:', cfg)
     const ok = await window.xleth.audio.exportStart(cfg)
@@ -162,31 +167,37 @@ export default function ExportDialog({ isOpen, onClose }) {
             </div>
           )}
 
-          {/* ── Range ──────────────────────────────────────────────────── */}
-          <div className="export-row">
-            <label>Start Bar</label>
-            <input
-              type="number"
-              min={1}
-              step={1}
-              value={startBar}
-              onChange={(e) => setStartBar(e.target.value)}
-              disabled={running}
-            />
-          </div>
+          {/* ── Range (dev-only debug override) ────────────────────────────
+              Normal exports scope to the project LoopRegion. These manual bars
+              are a developer-only bounds override, hidden in production builds. */}
+          {import.meta.env.DEV && (
+            <>
+              <div className="export-row">
+                <label>Start Bar (debug)</label>
+                <input
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={startBar}
+                  onChange={(e) => setStartBar(e.target.value)}
+                  disabled={running}
+                />
+              </div>
 
-          <div className="export-row">
-            <label>End Bar</label>
-            <input
-              type="number"
-              min={0}
-              step={1}
-              value={endBar}
-              onChange={(e) => setEndBar(e.target.value)}
-              disabled={running}
-              placeholder="0 = auto"
-            />
-          </div>
+              <div className="export-row">
+                <label>End Bar (debug)</label>
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={endBar}
+                  onChange={(e) => setEndBar(e.target.value)}
+                  disabled={running}
+                  placeholder="0 = auto"
+                />
+              </div>
+            </>
+          )}
 
           {/* ── Output path ────────────────────────────────────────────── */}
           <div className="export-row export-row-path">

@@ -5,6 +5,7 @@
 #include "SampleBank.h"
 #include "Transport.h"
 #include "audio/MixEngine.h"
+#include "render/RenderScope.h"
 
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_core/juce_core.h>
@@ -68,17 +69,32 @@ AudioExporter::PrerollPlan AudioExporter::computePrerollPlan(
     int maxAudibleTrackLatencySamples,
     int masterInsertLatencySamples)
 {
+    // Legacy latency-only pre-roll: warm-up begins at the capture start.
+    return computePrerollPlan(startSample, startSample,
+                              maxAudibleTrackLatencySamples,
+                              masterInsertLatencySamples);
+}
+
+AudioExporter::PrerollPlan AudioExporter::computePrerollPlan(
+    int64_t warmUpStartSample,
+    int64_t captureStartSample,
+    int maxAudibleTrackLatencySamples,
+    int masterInsertLatencySamples)
+{
+    // Shared warm-up + latency math (render/RenderScope.h). For a scoped
+    // absolute render warmUpStartSample is 0, so renderStartSample becomes 0 and
+    // the engine warms up from tick 0 — in-flight content survives.
+    const auto shared = xleth::computeRenderPrerollPlan(
+        warmUpStartSample, captureStartSample,
+        maxAudibleTrackLatencySamples, masterInsertLatencySamples);
+
     PrerollPlan plan;
     plan.maxAudibleTrackLatencySamples = std::max(0, maxAudibleTrackLatencySamples);
     plan.masterInsertLatencySamples = std::max(0, masterInsertLatencySamples);
-    plan.totalPrerollSamples =
-        static_cast<int64_t>(plan.maxAudibleTrackLatencySamples)
-        + static_cast<int64_t>(plan.masterInsertLatencySamples);
-    plan.renderStartSample =
-        std::max<int64_t>(0, startSample - plan.totalPrerollSamples);
-    plan.availablePrerollSamples = startSample - plan.renderStartSample;
-    plan.discardSamples =
-        plan.availablePrerollSamples + plan.totalPrerollSamples;
+    plan.totalPrerollSamples     = shared.totalPrerollSamples;
+    plan.renderStartSample       = shared.renderStartSample;
+    plan.availablePrerollSamples = shared.availablePrerollSamples;
+    plan.discardSamples          = shared.discardSamples;
     return plan;
 }
 
@@ -86,8 +102,16 @@ AudioExporter::PrerollPlan AudioExporter::computePrerollPlan(
     MixEngine& mixer,
     int64_t startSample)
 {
+    return computePrerollPlan(mixer, startSample, startSample);
+}
+
+AudioExporter::PrerollPlan AudioExporter::computePrerollPlan(
+    MixEngine& mixer,
+    int64_t warmUpStartSample,
+    int64_t captureStartSample)
+{
     const auto latencySnapshot = mixer.getLatencyCompensationSnapshot();
-    return computePrerollPlan(startSample,
+    return computePrerollPlan(warmUpStartSample, captureStartSample,
                               latencySnapshot.maxAudibleTrackLatencySamples,
                               latencySnapshot.masterInsertLatencySamples);
 }
@@ -97,6 +121,7 @@ AudioExporter::PrerollPlan AudioExporter::computePrerollPlan(
 bool AudioExporter::renderOffline(const Timeline& timeline,
                                    MixEngine& mixer,
                                    int64_t startSample,
+                                   int64_t warmUpStartSample,
                                    int totalSamples,
                                    int sampleRate,
                                    juce::AudioBuffer<float>& output,
@@ -108,7 +133,7 @@ bool AudioExporter::renderOffline(const Timeline& timeline,
 
     constexpr int kBlockSize = 4096;
 
-    const auto prerollPlan = computePrerollPlan(mixer, startSample);
+    const auto prerollPlan = computePrerollPlan(mixer, warmUpStartSample, startSample);
     const int64_t renderStartSample = prerollPlan.renderStartSample;
     const int64_t samplesToDiscard = prerollPlan.discardSamples;
     const int64_t renderEndSample =
@@ -414,9 +439,19 @@ bool AudioExporter::exportAudio(const Timeline& timeline,
         return false;
     }
 
+    // Phase 2 warm-up: warmUpStartBeat < 0 keeps the legacy latency-only
+    // pre-roll (warm up at startSample); >= 0 (typically 0 for a scoped absolute
+    // window) warms up from that earlier beat so in-flight content survives.
+    int64_t warmUpStartSample = startSample;
+    if (config.warmUpStartBeat >= 0.0) {
+        warmUpStartSample = static_cast<int64_t>(config.warmUpStartBeat * samplesPerBeat);
+        if (warmUpStartSample < 0)          warmUpStartSample = 0;
+        if (warmUpStartSample > startSample) warmUpStartSample = startSample;
+    }
+
     // 2. Offline render
     juce::AudioBuffer<float> rendered(2, totalSamples);
-    if (!renderOffline(timeline, mixer, startSample, totalSamples, sr,
+    if (!renderOffline(timeline, mixer, startSample, warmUpStartSample, totalSamples, sr,
                        rendered, progressCallback, cancelFlag)) {
         return false;
     }
