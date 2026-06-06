@@ -424,6 +424,17 @@ target_link_libraries(test_timeline PRIVATE
     XlethEngineModel
 )
 
+# ── test_loop_region ──────────────────────────────────────────────────────────
+# LoopRegion data model + invariants + the pure LoopTrap playback state machine.
+# Model-only (LoopTrap.h is header-only) — no JUCE, no FFmpeg, no GL.
+add_executable(test_loop_region
+    test/test_loop_region.cpp
+)
+
+target_link_libraries(test_loop_region PRIVATE
+    XlethEngineModel
+)
+
 # ── test_video_flip_resolver ──────────────────────────────────────────────────
 # Unit tests for the per-track flip state-machine evaluator (Phase 2 keystone).
 # Covers all 4 v1 modifiers and every edge case in spec §4.4 / §7.

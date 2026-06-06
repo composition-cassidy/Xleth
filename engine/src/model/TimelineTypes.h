@@ -1094,3 +1094,65 @@ struct GridLayout {
     int   previewFps    = 30;      // 1-120
     float gapScale      = 0.0f;   // 0.0–0.5
 };
+
+// ─── LoopRegion ───────────────────────────────────────────────────────────────
+// Single global project loop / render region (one per project). Phase 1 uses it
+// ONLY for live in-app playback looping (the audio-clock playback trap). The
+// renderOrigin / tailMode / tailThresholdDb / tailMaxSeconds fields are inert
+// model fields reserved for later phases (render scoping / tail folding); they
+// are persisted so projects round-trip, but no engine code reads them yet.
+//
+// renderScoped is intentionally NOT stored anywhere: it is derived as
+// (renderScoped == loopEnabled) and computed at read time only — see
+// Timeline::isRenderScoped(). Do not add a second persisted flag.
+//
+// Invariants (enforced in the mutation layer — Timeline::setLoopRegion, via
+// normalizeLoopRegion): startTick >= 0 and endTick > startTick, with endTick at
+// least minLengthTicks beyond startTick (1 snap unit when snap is on, 1 tick
+// when snap is off — the caller supplies the snap unit).
+struct LoopRegion {
+    enum class RenderOrigin { Absolute, Normalized };
+    enum class TailMode { HardCut, TailClamp, Wrap };
+
+    int64_t      startTick       = 0;
+    int64_t      endTick         = 4 * 4 * 960;  // 4 bars (16 beats) @ 960 PPQ — sane visible default
+    bool         loopEnabled     = false;
+    RenderOrigin renderOrigin    = RenderOrigin::Absolute;
+    TailMode     tailMode        = TailMode::TailClamp;
+    double       tailThresholdDb = -60.0;
+    double       tailMaxSeconds  = 10.0;
+};
+
+inline std::string loopRenderOriginToString(LoopRegion::RenderOrigin o) {
+    return o == LoopRegion::RenderOrigin::Normalized ? "normalized" : "absolute";
+}
+inline LoopRegion::RenderOrigin stringToLoopRenderOrigin(const std::string& s) {
+    return s == "normalized" ? LoopRegion::RenderOrigin::Normalized
+                             : LoopRegion::RenderOrigin::Absolute;
+}
+
+inline std::string loopTailModeToString(LoopRegion::TailMode m) {
+    switch (m) {
+        case LoopRegion::TailMode::HardCut:   return "hardCut";
+        case LoopRegion::TailMode::Wrap:      return "wrap";
+        case LoopRegion::TailMode::TailClamp: return "tailClamp";
+        default:                              return "tailClamp";
+    }
+}
+inline LoopRegion::TailMode stringToLoopTailMode(const std::string& s) {
+    if (s == "hardCut") return LoopRegion::TailMode::HardCut;
+    if (s == "wrap")    return LoopRegion::TailMode::Wrap;
+    return LoopRegion::TailMode::TailClamp;
+}
+
+// Mutation-layer invariant enforcement. Pure / no side effects so it is unit
+// testable. Clamps startTick to >= 0 and forces endTick to be at least
+// max(1, minLengthTicks) beyond startTick so zero/negative length can never be
+// stored. The renderOrigin / tail* fields pass through untouched.
+inline LoopRegion normalizeLoopRegion(LoopRegion r, int64_t minLengthTicks) {
+    if (r.startTick < 0) r.startTick = 0;
+    int64_t minLen = minLengthTicks < 1 ? 1 : minLengthTicks;
+    if (r.endTick - r.startTick < minLen)
+        r.endTick = r.startTick + minLen;
+    return r;
+}

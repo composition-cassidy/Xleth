@@ -817,6 +817,33 @@ std::string SetBPMCommand::describe() const {
          + " → " + std::to_string((int)newBpm_);
 }
 
+// ─── SetLoopRegionCommand ─────────────────────────────────────────────────────
+
+SetLoopRegionCommand::SetLoopRegionCommand(LoopRegion newRegion, int64_t minLengthTicks,
+                                           const Timeline& timeline)
+    : oldRegion_(timeline.getLoopRegion()),
+      newRegion_(newRegion),
+      minLengthTicks_(minLengthTicks)
+{
+}
+
+void SetLoopRegionCommand::execute(Timeline& timeline) {
+    timeline.setLoopRegion(newRegion_, minLengthTicks_);
+}
+
+void SetLoopRegionCommand::undo(Timeline& timeline) {
+    // Restore the exact prior region. It was already normalized when stored, so
+    // a 1-tick floor is sufficient and will not perturb the snapshot.
+    timeline.setLoopRegion(oldRegion_, 1);
+}
+
+std::string SetLoopRegionCommand::describe() const {
+    return std::string("Set Loop Region [")
+         + std::to_string(newRegion_.startTick) + ", "
+         + std::to_string(newRegion_.endTick) + ") "
+         + (newRegion_.loopEnabled ? "on" : "off");
+}
+
 // ─── SetTrackMutedCommand ─────────────────────────────────────────────────────
 
 SetTrackMutedCommand::SetTrackMutedCommand(int trackId, bool newMuted, const Timeline& timeline)

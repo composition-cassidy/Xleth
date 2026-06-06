@@ -374,6 +374,27 @@ private:
     std::unordered_map<int, double> savedStretchRatios_;
 };
 
+// ─── SetLoopRegionCommand ─────────────────────────────────────────────────────
+// Replaces the single global LoopRegion atomically. Snapshots the previous
+// region at construction for one-step undo. Covers ALL loop mutations —
+// create / move / resize edges / arm-disarm toggle / inert-field settings —
+// since every one routes through Timeline::setLoopRegion. minLengthTicks is the
+// snap unit the UI computed (1 snap unit when snap is on, 1 tick when off) and
+// is enforced in the mutation layer so zero/negative length is unreachable.
+
+class SetLoopRegionCommand : public Command {
+public:
+    SetLoopRegionCommand(LoopRegion newRegion, int64_t minLengthTicks,
+                         const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    LoopRegion oldRegion_;
+    LoopRegion newRegion_;
+    int64_t    minLengthTicks_;
+};
+
 // ─── SetTrackMutedCommand ─────────────────────────────────────────────────────
 
 class SetTrackMutedCommand : public Command {

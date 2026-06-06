@@ -45,11 +45,32 @@ public:
                                          int64_t discardSamples);
     void clearLivePresentationTiming();
 
+    // ── Live playback loop trap ───────────────────────────────────────────────
+    // Set the loop window (already converted to samples by the caller using the
+    // current BPM / sample-rate) and the enabled flag. Called from the message
+    // thread by the bridge after a LoopRegion mutation, on project load, and on
+    // BPM change. Recomputes the arm latch against the current position so
+    // shrinking the window past the playhead disarms it until natural re-entry —
+    // it never yanks the playhead. The wrap itself is applied on the audio thread
+    // inside advance().
+    void setLoopBounds(int64_t startSamples, int64_t endSamples, bool enabled);
+    bool isLoopEnabled() const;
+    bool isLoopArmed()   const;  // diagnostic read — true while the trap is active
+
 private:
     std::atomic<int64_t> positionSamples_{ 0 };
     std::atomic<bool>    playing_{ false };
     std::atomic<double>  bpm_{ 140.0 };
     double               sampleRate_ = 44100.0;
+
+    // Loop trap state. Bounds/enabled are written from the message thread and
+    // read on the audio thread; loopArmed_ is the latch, mutated on both (audio
+    // thread arms on natural entry; message thread arms/disarms on play/seek/
+    // bounds events). All atomic → no locks on the audio path.
+    std::atomic<bool>    loopEnabled_{ false };
+    std::atomic<int64_t> loopStartSamples_{ 0 };
+    std::atomic<int64_t> loopEndSamples_{ 0 };
+    std::atomic<bool>    loopArmed_{ false };
 
     double  samplesToSeconds(int64_t samples) const;
     double  samplesToBeats(int64_t samples)   const;

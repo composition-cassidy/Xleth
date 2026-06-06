@@ -73,6 +73,17 @@ public:
     void   setGlobalStretchMethod(int method);
     int    getGlobalStretchMethod() const { return m_globalStretchMethod; }
 
+    // ── Loop / render region ──────────────────────────────────────────────────
+    // Single global project loop region. setLoopRegion enforces the length
+    // invariants in the mutation layer (zero/negative length is unreachable):
+    // minLengthTicks is supplied by the caller (1 snap unit when snap is on,
+    // 1 tick when snap is off). All UI create/update/toggle/settings mutations
+    // route through a SetLoopRegionCommand, which calls this.
+    const LoopRegion& getLoopRegion() const { return m_loopRegion; }
+    void   setLoopRegion(const LoopRegion& region, int64_t minLengthTicks = 1);
+    // Derived, never stored: render scoping is exactly the loop-enabled flag.
+    bool   isRenderScoped() const { return m_loopRegion.loopEnabled; }
+
     // ── Grid Layout ───────────────────────────────────────────────────────────
     const GridLayout& getGridLayout() const { return m_gridLayout; }
     void   setGridLayout(const GridLayout& layout);
@@ -220,6 +231,7 @@ private:
     std::map<int, PatternBlock> m_patternBlocks;
 
     GridLayout                  m_gridLayout;
+    LoopRegion                  m_loopRegion;   // single global loop/render region
     double m_declickMs = 0.5; // global clip boundary fade duration in ms (0 = disabled)
     int    m_globalStretchMethod = static_cast<int>(StretchMethod::PSOLA);
 

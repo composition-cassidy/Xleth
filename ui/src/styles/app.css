@@ -2620,7 +2620,95 @@ html[data-xleth-backdrop="native-acrylic"] #root {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* Positioning context for the loop-region overlay laid over the ruler. */
+  position: relative;
 }
+
+/* ── Loop / render region bar (Vegas-style, in the ruler) ─────────────────── */
+
+/* Overlay spans the ruler width; only the region body/handles take pointer
+   events so ruler click-to-seek still works in the empty areas. */
+.loop-region-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.loop-region-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  align-items: stretch;
+  box-sizing: border-box;
+  pointer-events: none; /* children re-enable */
+  will-change: transform;
+}
+
+.loop-region-bar__edge {
+  pointer-events: auto;
+  cursor: ew-resize;
+  flex: 0 0 auto;
+  background: var(--theme-accent);
+  opacity: 0.9;
+}
+
+.loop-region-bar__body {
+  pointer-events: auto;
+  cursor: grab;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  padding-left: 3px;
+  border-top: 1px solid var(--theme-accent);
+  border-bottom: 1px solid var(--theme-accent);
+  background: var(--theme-accent-bg-subtle);
+}
+
+.loop-region-bar__body:active { cursor: grabbing; }
+
+.loop-region-bar__toggle {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--theme-accent);
+  cursor: pointer;
+}
+
+.loop-region-bar__toggle:hover {
+  background: var(--theme-accent);
+  color: var(--theme-text-on-accent);
+}
+
+/* Active (loopEnabled): clearly accented. */
+.loop-region-bar--active .loop-region-bar__edge { opacity: 1; }
+.loop-region-bar--active .loop-region-bar__body {
+  background: var(--theme-accent-bg-subtle);
+}
+
+/* Inert (disabled): greyed but still fully draggable/resizable. */
+.loop-region-bar--inert .loop-region-bar__edge {
+  background: var(--theme-border-strong, var(--theme-border-subtle));
+  opacity: 0.55;
+}
+.loop-region-bar--inert .loop-region-bar__body {
+  border-top-color: var(--theme-border-subtle);
+  border-bottom-color: var(--theme-border-subtle);
+  background: var(--theme-bg-elevated, transparent);
+  opacity: 0.7;
+}
+.loop-region-bar--inert .loop-region-bar__toggle { color: var(--theme-text-muted, var(--theme-text-secondary)); }
 
 /* â”€â”€ Ruler (canvas-based) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 

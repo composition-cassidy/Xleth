@@ -1,4 +1,5 @@
 #include "Transport.h"
+#include "audio/LoopTrap.h"
 
 #include <cmath>
 
@@ -19,12 +20,23 @@ void Transport::setBPM(double bpm)
 void Transport::play()
 {
     playing_.store(true, std::memory_order_release);
+    // Arm immediately if the playhead starts inside the loop window; otherwise
+    // stay disarmed and let advance() arm on natural entry (start-outside plays
+    // linearly until it first crosses in).
+    const bool armed = xleth::loopArmOnEvent(
+        loopArmed_.load(std::memory_order_relaxed), /*keepLatch*/ false,
+        positionSamples_.load(std::memory_order_relaxed),
+        loopStartSamples_.load(std::memory_order_relaxed),
+        loopEndSamples_.load(std::memory_order_relaxed),
+        loopEnabled_.load(std::memory_order_relaxed));
+    loopArmed_.store(armed, std::memory_order_release);
 }
 
 void Transport::stop()
 {
     playing_.store(false, std::memory_order_release);
     positionSamples_.store(0, std::memory_order_release);
+    loopArmed_.store(false, std::memory_order_release);
 }
 
 void Transport::pause()
@@ -38,7 +50,31 @@ void Transport::advance(int numSamples)
 {
     if (!playing_.load(std::memory_order_acquire))
         return;
-    positionSamples_.fetch_add(numSamples, std::memory_order_release);
+
+    const bool enabled = loopEnabled_.load(std::memory_order_relaxed);
+    const int64_t pos  = positionSamples_.load(std::memory_order_relaxed);
+
+    if (!enabled) {
+        positionSamples_.store(pos + numSamples, std::memory_order_release);
+        return;
+    }
+
+    // ── Loop wrap injected on the audio-as-master-clock path ────────────────
+    // The master sample clock is mutated HERE, on the audio thread, the same
+    // instant the mix block is consumed. positionSamples_ is the single source
+    // of truth the renderer playhead follows (via getTransportState →
+    // PlayheadClock). By wrapping the clock at the source — never moving the
+    // renderer playhead independently — audio and the on-screen playhead stay
+    // phase-locked, so the loop jump cannot tear A/V sync. The decision logic is
+    // the pure, alloc/lock/log-free xleth::loopAdvance.
+    bool armed = loopArmed_.load(std::memory_order_relaxed);
+    const int64_t newPos = xleth::loopAdvance(
+        pos, numSamples, armed,
+        loopStartSamples_.load(std::memory_order_relaxed),
+        loopEndSamples_.load(std::memory_order_relaxed),
+        enabled);
+    loopArmed_.store(armed, std::memory_order_relaxed);
+    positionSamples_.store(newPos, std::memory_order_release);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -96,11 +132,21 @@ int64_t Transport::getPresentationLatencySamples() const
 void Transport::seekToSample(int64_t sample)
 {
     positionSamples_.store(sample, std::memory_order_release);
+    // Re-evaluate the trap against the new position: seek inside the window
+    // stays/becomes armed; seek outside disarms until natural re-entry.
+    const bool armed = xleth::loopArmOnEvent(
+        loopArmed_.load(std::memory_order_relaxed), /*keepLatch*/ false,
+        sample,
+        loopStartSamples_.load(std::memory_order_relaxed),
+        loopEndSamples_.load(std::memory_order_relaxed),
+        loopEnabled_.load(std::memory_order_relaxed));
+    loopArmed_.store(armed, std::memory_order_release);
 }
 
 void Transport::seekToBeat(double beat)
 {
-    positionSamples_.store(beatsToSamples(beat), std::memory_order_release);
+    // Route through seekToSample so the loop arm latch is recomputed.
+    seekToSample(beatsToSamples(beat));
 }
 
 void Transport::seekToBar(int bar)
@@ -121,6 +167,34 @@ void Transport::configureLivePresentationTiming(int64_t renderStart,
 
 void Transport::clearLivePresentationTiming()
 {
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Loop trap — message-thread setters / reads
+void Transport::setLoopBounds(int64_t startSamples, int64_t endSamples, bool enabled)
+{
+    loopStartSamples_.store(startSamples, std::memory_order_release);
+    loopEndSamples_.store(endSamples, std::memory_order_release);
+    loopEnabled_.store(enabled, std::memory_order_release);
+    // keepLatch: preserve an active trap only while the playhead is still inside
+    // the resized window. Shrinking past the playhead → disarm (no yank);
+    // disabling → disarm. A grow that newly contains the playhead does not force
+    // an arm here — natural entry in advance() handles that next buffer.
+    const bool armed = xleth::loopArmOnEvent(
+        loopArmed_.load(std::memory_order_relaxed), /*keepLatch*/ true,
+        positionSamples_.load(std::memory_order_relaxed),
+        startSamples, endSamples, enabled);
+    loopArmed_.store(armed, std::memory_order_release);
+}
+
+bool Transport::isLoopEnabled() const
+{
+    return loopEnabled_.load(std::memory_order_acquire);
+}
+
+bool Transport::isLoopArmed() const
+{
+    return loopArmed_.load(std::memory_order_acquire);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

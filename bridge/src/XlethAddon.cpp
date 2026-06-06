@@ -537,6 +537,13 @@ std::atomic<bool>                g_audioSuspendedForExport{false};
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Push the committed LoopRegion (ticks) into the live transport (samples). Must
+// run after every loop mutation, undo/redo, project load, and BPM change so the
+// audio-thread playback trap always matches the model. Message-thread only.
+// Defined below near the loop-region handlers; forward-declared here so the
+// earlier project-load path can call it.
+static void syncTransportLoopFromTimeline();
+
 static bool isInitialised() { return audioEngine != nullptr; }
 
 // Rebuild every per-{track,region} sampler referenced by a PatternBlock on
@@ -3013,6 +3020,10 @@ Napi::Value GetTransportState(const Napi::CallbackInfo& info)
             Napi::Number::New(env, static_cast<double>(presentationDiag.deviceOutputLatencySamples)));
     obj.Set("isPlaying",     Napi::Boolean::New(env, t.isPlaying()));
     obj.Set("bpm",           Napi::Number::New(env, bpm));
+    // Loop trap diagnostics — loopEnabled mirrors the model; loopArmed is the
+    // live audio-thread latch (true while the trap is actively wrapping).
+    obj.Set("loopEnabled",   Napi::Boolean::New(env, t.isLoopEnabled()));
+    obj.Set("loopArmed",     Napi::Boolean::New(env, t.isLoopArmed()));
     return obj;
 }
 
@@ -3543,6 +3554,8 @@ Napi::Value Project_NewBlank(const Napi::CallbackInfo& info)
             if (ae) ae->getMixEngine().invalidateClipCache(clipId, tag);
         });
         audioEngine->getTransport().setBPM(g_timeline->getBPM());
+        // Push the loaded project's loop region into the live transport trap.
+        syncTransportLoopFromTimeline();
         syncClipFadeToMixEngine();
         mix.setGlobalStretchMethod(g_timeline->getGlobalStretchMethod());
         mix.rebuildAllSamplers();
@@ -3614,6 +3627,8 @@ Napi::Value Project_Load(const Napi::CallbackInfo& info)
             if (ae) ae->getMixEngine().invalidateClipCache(clipId, tag);
         });
         audioEngine->getTransport().setBPM(g_timeline->getBPM());
+        // Push the loaded project's loop region into the live transport trap.
+        syncTransportLoopFromTimeline();
         syncClipFadeToMixEngine();
         mix.setGlobalStretchMethod(g_timeline->getGlobalStretchMethod());
 
@@ -4020,6 +4035,89 @@ Napi::Value Timeline_GetClipsInRange(const Napi::CallbackInfo& info)
 // Phase 1 — Timeline mutations (all via UndoManager)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── Loop / render region ──────────────────────────────────────────────────────
+
+static void syncTransportLoopFromTimeline()
+{
+    if (!audioEngine || !g_timeline) return;
+    const LoopRegion& lr = g_timeline->getLoopRegion();
+    Transport& t = audioEngine->getTransport();
+    const double bpm = t.getBPM();
+    const double sr  = t.getSampleRate();
+    // samples = ticks/960 * (60/bpm) * sampleRate
+    const double samplesPerTick = (bpm > 0.0) ? (sr * 60.0) / (960.0 * bpm) : 0.0;
+    const int64_t startSamples = static_cast<int64_t>(std::llround(lr.startTick * samplesPerTick));
+    const int64_t endSamples   = static_cast<int64_t>(std::llround(lr.endTick   * samplesPerTick));
+    t.setLoopBounds(startSamples, endSamples, lr.loopEnabled);
+}
+
+// timeline_getLoopRegion() → { startTick, endTick, loopEnabled, renderOrigin,
+//                              tailMode, tailThresholdDb, tailMaxSeconds,
+//                              renderScoped (derived, read-only) }
+Napi::Value Timeline_GetLoopRegion(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const LoopRegion& lr = g_timeline->getLoopRegion();
+    Napi::Object o = Napi::Object::New(env);
+    o.Set("startTick",       Napi::Number::New(env, static_cast<double>(lr.startTick)));
+    o.Set("endTick",         Napi::Number::New(env, static_cast<double>(lr.endTick)));
+    o.Set("loopEnabled",     Napi::Boolean::New(env, lr.loopEnabled));
+    o.Set("renderOrigin",    Napi::String::New(env, loopRenderOriginToString(lr.renderOrigin)));
+    o.Set("tailMode",        Napi::String::New(env, loopTailModeToString(lr.tailMode)));
+    o.Set("tailThresholdDb", Napi::Number::New(env, lr.tailThresholdDb));
+    o.Set("tailMaxSeconds",  Napi::Number::New(env, lr.tailMaxSeconds));
+    // Derived — never stored. Exposed read-only so the UI never persists it.
+    o.Set("renderScoped",    Napi::Boolean::New(env, g_timeline->isRenderScoped()));
+    return o;
+}
+
+// timeline_setLoopRegion(region, minLengthTicks) — undo-tracked, syncs transport.
+// region may be a partial patch; absent fields keep their current values.
+void Timeline_SetLoopRegion(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return;
+    }
+    if (info.Length() < 1 || !info[0].IsObject()) {
+        Napi::TypeError::New(env,
+            "timeline_setLoopRegion(region: object, minLengthTicks?: number)")
+            .ThrowAsJavaScriptException();
+        return;
+    }
+    Napi::Object o = info[0].As<Napi::Object>();
+    LoopRegion r = g_timeline->getLoopRegion();  // start from current; patch fields
+    if (o.Has("startTick"))
+        r.startTick = static_cast<int64_t>(o.Get("startTick").As<Napi::Number>().DoubleValue());
+    if (o.Has("endTick"))
+        r.endTick = static_cast<int64_t>(o.Get("endTick").As<Napi::Number>().DoubleValue());
+    if (o.Has("loopEnabled"))
+        r.loopEnabled = o.Get("loopEnabled").As<Napi::Boolean>().Value();
+    if (o.Has("renderOrigin"))
+        r.renderOrigin = stringToLoopRenderOrigin(o.Get("renderOrigin").As<Napi::String>().Utf8Value());
+    if (o.Has("tailMode"))
+        r.tailMode = stringToLoopTailMode(o.Get("tailMode").As<Napi::String>().Utf8Value());
+    if (o.Has("tailThresholdDb"))
+        r.tailThresholdDb = o.Get("tailThresholdDb").As<Napi::Number>().DoubleValue();
+    if (o.Has("tailMaxSeconds"))
+        r.tailMaxSeconds = o.Get("tailMaxSeconds").As<Napi::Number>().DoubleValue();
+
+    int64_t minLen = 1;
+    if (info.Length() >= 2 && info[1].IsNumber())
+        minLen = static_cast<int64_t>(info[1].As<Napi::Number>().DoubleValue());
+
+    BridgeCallLog log("timeline.setLoopRegion");
+    g_undoManager->execute(
+        std::make_unique<SetLoopRegionCommand>(r, minLen, *g_timeline), *g_timeline);
+    syncTransportLoopFromTimeline();
+    log.done("");
+}
+
 // timeline_setBPM(bpm) — undo-tracked BPM change, syncs transport
 void Timeline_SetBPM(const Napi::CallbackInfo& info)
 {
@@ -4038,6 +4136,8 @@ void Timeline_SetBPM(const Napi::CallbackInfo& info)
     g_undoManager->execute(std::make_unique<SetBPMCommand>(bpm, *g_timeline), *g_timeline);
     // Sync live transport to match the timeline's committed BPM
     audioEngine->getTransport().setBPM(g_timeline->getBPM());
+    // Loop bounds are tick-based; re-derive sample bounds at the new tempo.
+    syncTransportLoopFromTimeline();
     // Invalidate all stretched clips on BPM change. Required because the render
     // loop never submits new jobs on cache miss — only explicit invalidation
     // triggers job resubmission. Without this, stretched clips fall back to raw
@@ -7922,6 +8022,8 @@ Napi::Value Undo_Undo(const Napi::CallbackInfo& info)
     // Sync transport BPM in case a SetBPMCommand was undone
     if (ok && audioEngine)
         audioEngine->getTransport().setBPM(g_timeline->getBPM());
+    // Re-sync the loop trap in case a SetLoopRegionCommand (or BPM change) was undone.
+    if (ok) syncTransportLoopFromTimeline();
     // Patterns may have been restored/mutated — rebuild samplers to stay in sync.
     if (ok) rebuildAllSamplers();
     if (ok) refreshAllClipCaches();
@@ -7944,6 +8046,7 @@ Napi::Value Undo_Redo(const Napi::CallbackInfo& info)
     }
     if (ok && audioEngine)
         audioEngine->getTransport().setBPM(g_timeline->getBPM());
+    if (ok) syncTransportLoopFromTimeline();
     if (ok) rebuildAllSamplers();
     if (ok) refreshAllClipCaches();
     log.done(ok ? "true" : "false (nothing to redo)");
@@ -12986,9 +13089,11 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("timeline_getClips",         Napi::Function::New(env, Timeline_GetClips));
     exports.Set("timeline_getClipsOnTrack",  Napi::Function::New(env, Timeline_GetClipsOnTrack));
     exports.Set("timeline_getClipsInRange",  Napi::Function::New(env, Timeline_GetClipsInRange));
+    exports.Set("timeline_getLoopRegion",    Napi::Function::New(env, Timeline_GetLoopRegion));
 
     // ── Phase 1 — Timeline mutations (via UndoManager) ───────────────────────
     exports.Set("timeline_setBPM",         Napi::Function::New(env, Timeline_SetBPM));
+    exports.Set("timeline_setLoopRegion",  Napi::Function::New(env, Timeline_SetLoopRegion));
     exports.Set("timeline_setTempoLocked", Napi::Function::New(env, Timeline_SetTempoLocked));
     exports.Set("timeline_setDeclickMs",   Napi::Function::New(env, Timeline_SetDeclickMs));
     exports.Set("timeline_setGlobalStretchMethod", Napi::Function::New(env, Timeline_SetGlobalStretchMethod));

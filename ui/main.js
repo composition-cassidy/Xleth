@@ -615,10 +615,16 @@ ipcMain.handle('xleth:timeline:getClipsOnTrack',
 ipcMain.handle('xleth:timeline:getClipsInRange',
   safeHandler((_, startBeat, endBeat) => callWorker('timeline_getClipsInRange', [startBeat, endBeat])));
 
+ipcMain.handle('xleth:timeline:getLoopRegion',
+  safeHandler(() => callWorker('timeline_getLoopRegion')));
+
 // ── Phase 1 handlers — Timeline mutations ────────────────────────────────────
 
 ipcMain.handle('xleth:timeline:setBPM',
   safeHandler((_, bpm) => callWorker('timeline_setBPM', [bpm])));
+
+ipcMain.handle('xleth:timeline:setLoopRegion',
+  safeHandler((_, region, minLengthTicks) => callWorker('timeline_setLoopRegion', [region, minLengthTicks])));
 
 ipcMain.handle('xleth:timeline:setTempoLocked',
   safeHandler((_, locked) => callWorker('timeline_setTempoLocked', [locked])));

@@ -1061,6 +1061,17 @@ void Timeline::setSampleRate(double sr) {
     std::cout << "[Timeline] Set SampleRate=" << sr << "\n";
 }
 
+void Timeline::setLoopRegion(const LoopRegion& region, int64_t minLengthTicks) {
+    // Mutation-layer invariant enforcement: zero/negative length is unreachable.
+    m_loopRegion = normalizeLoopRegion(region, minLengthTicks);
+#ifdef XLETH_DEBUG
+    std::cout << "[LoopRegion] set start=" << m_loopRegion.startTick
+              << " end=" << m_loopRegion.endTick
+              << " enabled=" << (m_loopRegion.loopEnabled ? 1 : 0)
+              << " minLen=" << minLengthTicks << "\n";
+#endif
+}
+
 void Timeline::setTimeSignature(int numerator, int denominator) {
     m_timeSigNum = numerator;
     m_timeSigDen = denominator;
@@ -1342,6 +1353,19 @@ nlohmann::json Timeline::toJSON() const {
     }
     j["gridLayout"] = gl;
 
+    // Loop / render region (single global). renderScoped is derived, never
+    // serialized. tail* / renderOrigin are inert Phase-1 fields persisted for
+    // forward compatibility.
+    nlohmann::json lr;
+    lr["startTick"]       = m_loopRegion.startTick;
+    lr["endTick"]         = m_loopRegion.endTick;
+    lr["loopEnabled"]     = m_loopRegion.loopEnabled;
+    lr["renderOrigin"]    = loopRenderOriginToString(m_loopRegion.renderOrigin);
+    lr["tailMode"]        = loopTailModeToString(m_loopRegion.tailMode);
+    lr["tailThresholdDb"] = m_loopRegion.tailThresholdDb;
+    lr["tailMaxSeconds"]  = m_loopRegion.tailMaxSeconds;
+    j["loopRegion"] = lr;
+
     std::cout << "[Timeline] Serialized: "
               << m_sources.size()       << " sources, "
               << m_regions.size()       << " regions, "
@@ -1566,6 +1590,23 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
             }
         }
 
+        // Loop / render region. Absent in pre-loop projects → keep defaults.
+        // renderScoped is never read from JSON (it is derived from loopEnabled).
+        m_loopRegion = LoopRegion{};
+        if (j.contains("loopRegion")) {
+            const auto& lr = j.at("loopRegion");
+            LoopRegion region;
+            region.startTick   = lr.value("startTick", region.startTick);
+            region.endTick     = lr.value("endTick", region.endTick);
+            region.loopEnabled = lr.value("loopEnabled", false);
+            region.renderOrigin = stringToLoopRenderOrigin(lr.value("renderOrigin", std::string("absolute")));
+            region.tailMode     = stringToLoopTailMode(lr.value("tailMode", std::string("tailClamp")));
+            region.tailThresholdDb = lr.value("tailThresholdDb", region.tailThresholdDb);
+            region.tailMaxSeconds  = lr.value("tailMaxSeconds", region.tailMaxSeconds);
+            // Re-assert the hard length invariant on load (1-tick floor).
+            m_loopRegion = normalizeLoopRegion(region, 1);
+        }
+
         std::cout << "[Timeline] Deserialized: "
                   << m_sources.size()       << " sources, "
                   << m_regions.size()       << " regions, "
@@ -1598,6 +1639,7 @@ void Timeline::clear() {
     m_patternBlocks.clear();
 
     m_gridLayout = GridLayout{};
+    m_loopRegion = LoopRegion{};
 
     m_bpm        = 140.0;
     m_sampleRate = 44100.0;

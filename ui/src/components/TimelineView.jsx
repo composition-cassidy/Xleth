@@ -7,6 +7,7 @@ import MacroAutomationLanes from './timeline/MacroAutomationLanes.jsx'
 import { buildTrackLayout } from './timeline/timelineRowLayout.js'
 import { tokenValue } from '../theming/tokenValue.ts'
 import TimelineRuler from './timeline/TimelineRuler.jsx'
+import LoopRegionBar from './timeline/LoopRegionBar.jsx'
 import TimelineScrollbar from './timeline/TimelineScrollbar.jsx'
 import TimelineToolbar from './timeline/TimelineToolbar.jsx'
 import ContextMenu from './ContextMenu.jsx'
@@ -28,7 +29,7 @@ import { playheadClock } from '../services/PlayheadClock.js'
 import { editCursor } from '../services/EditCursor.js'
 import { timelineEvents } from '../timelineEvents.js'
 import {
-  BEATS_PER_BAR, TRACK_HEIGHT, PPQ,
+  BEATS_PER_BAR, TRACK_HEIGHT, PPQ, RULER_HEIGHT,
   pixelToBeat, snapBeatToGrid, beatsToTicks, regionDurationToTicks, findFreePosition,
   GRANULARITY_BEATS,
 } from '../constants/timeline.js'
@@ -39,6 +40,7 @@ import useSnapStore from '../stores/snapStore.js'
 import useTimelineDisplayStore from '../stores/timelineDisplayStore.js'
 import useUIStore from '../stores/uiStore.js'
 import useTimelineFocusStore from '../stores/timelineFocusStore.js'
+import useLoopRegionStore from '../stores/loopRegionStore.js'
 import usePianoRollStore from '../stores/usePianoRollStore.js'
 import useMixerStore from '../stores/mixerStore.js'
 import { useToast } from './Toast.jsx'
@@ -694,6 +696,7 @@ export default function TimelineView({
   const timelineDisplaySettings = useTimelineDisplayStore((s) => s.timelineDisplaySettings)
   const focusedTrackId = useTimelineFocusStore((s) => s.focusedTrackId)
   const setFocusedTrackId = useTimelineFocusStore((s) => s.setFocusedTrackId)
+  const fetchLoopRegion = useLoopRegionStore((s) => s.fetchLoopRegion)
   const timelineTrackHeaderWidth = useUIStore((s) => s.timelineTrackHeaderWidth)
   const setTimelineTrackHeaderWidth = useUIStore((s) => s.setTimelineTrackHeaderWidth)
   const focusedTrackIdRef = useRef(focusedTrackId)
@@ -868,6 +871,13 @@ export default function TimelineView({
     setDeclickMs(clamped)
     window.xleth?.timeline?.setDeclickMs(clamped)
   }, [])
+
+  // ── Loop region: refresh committed mirror on mount + project load ──────────
+  useEffect(() => {
+    fetchLoopRegion()
+    const offProjectLoaded = window.xleth?.onProjectLoaded?.(fetchLoopRegion)
+    return () => { offProjectLoaded?.() }
+  }, [fetchLoopRegion])
 
   // ── Pencil template (middle-click quick copy) ──────────────────────────────
 
@@ -3875,6 +3885,17 @@ export default function TimelineView({
                 onSeek={handleSeek}
                 onWheel={handleWheel}
               />
+              {/* Vegas-style loop/render region overlay — sits over the ruler.
+                  Repositions on zoom/scroll via the pixelsPerBeat/scrollOffset
+                  React state (the canvas uses refs separately for 60fps). */}
+              <div className="loop-region-overlay" style={{ height: RULER_HEIGHT }}>
+                <LoopRegionBar
+                  pixelsPerBeat={pixelsPerBeat}
+                  scrollOffset={scrollOffset}
+                  snapGranularity={snapGranularity}
+                  rulerHeight={RULER_HEIGHT}
+                />
+              </div>
               <div
                 className="timeline-canvas-scroll"
                 ref={scrollContainerRef}
