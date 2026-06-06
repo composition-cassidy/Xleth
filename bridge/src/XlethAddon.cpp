@@ -11072,10 +11072,20 @@ Napi::Value Audio_ExportStart(const Napi::CallbackInfo& info)
         cfg.warmUpStartBeat = scope.scoped
             ? scope.warmUpStartTick * ticksToBeats
             : -1.0;   // full timeline: legacy latency-only pre-roll
+        // Phase 3A tail policy from the project LoopRegion (built at the export
+        // sample rate). hardCut → no tail; tailClamp → ring out effects past the
+        // capture end; wrap degrades to hardCut (Phase 3B). Applies to both
+        // scoped and full-timeline (loop-disabled) renders.
+        const int srForTail = cfg.sampleRate > 0 ? cfg.sampleRate : 44100;
+        cfg.tail = xleth::computeTailRenderPlan(g_timeline->getLoopRegion(),
+                                                static_cast<double>(srForTail));
         std::fprintf(stderr,
-            "[RenderScope] audio scoped=%s capture=[%.3f,%.3f) warmUpBeat=%.3f\n",
+            "[RenderScope] audio scoped=%s capture=[%.3f,%.3f) warmUpBeat=%.3f "
+            "tail=%s capSamples=%lld\n",
             scope.scoped ? "true" : "false",
-            cfg.startBeat, cfg.endBeat, cfg.warmUpStartBeat);
+            cfg.startBeat, cfg.endBeat, cfg.warmUpStartBeat,
+            cfg.tail.mode == xleth::TailRenderMode::TailClamp ? "tailClamp" : "hardCut",
+            (long long)cfg.tail.maxTailSamples);
     }
 
     // Reset state
@@ -11337,6 +11347,21 @@ Napi::Value Video_ExportStart(const Napi::CallbackInfo& info)
         *g_gpuDevice
     );
 
+    // Phase 3A tail policy from the project LoopRegion (built at the export
+    // sample rate). Must be set before startRender (captured by the render
+    // thread). hardCut → no tail; tailClamp → ring out effects + freeze last
+    // video frame; wrap degrades to hardCut (Phase 3B). Applies to scoped and
+    // full-timeline renders alike.
+    {
+        const auto tailPlan = xleth::computeTailRenderPlan(
+            g_timeline->getLoopRegion(), sampleRate);
+        g_videoRenderer->setTailRenderPlan(tailPlan);
+        std::fprintf(stderr,
+            "[RenderScope] video tail=%s capSamples=%lld holdSamples=%lld\n",
+            tailPlan.mode == xleth::TailRenderMode::TailClamp ? "tailClamp" : "hardCut",
+            (long long)tailPlan.maxTailSamples, (long long)tailPlan.holdSamples);
+    }
+
     bool ok = g_videoRenderer->startRender(startSample, endSample, warmUpStartSample, settings);
     if (!ok) {
         Napi::Error::New(env, "Failed to start video render").ThrowAsJavaScriptException();
@@ -11412,40 +11437,44 @@ Napi::Value Video_ExportCancel(const Napi::CallbackInfo& info)
 }
 
 // video_computeDurationSeconds(startBeat, endBeat) → number
-// Resolves the length of an export range in seconds, using the Timeline's
-// current BPM. If endBeat < 0, end-of-project is computed from the last
-// clip / pattern block end (same logic as Video_ExportStart).
+// Phase 3A: the estimate now derives from the SAME render scope the real export
+// uses — the project LoopRegion (via resolveExportScope) — plus the tail policy.
+// In production the manual Start/End Bar inputs are hidden, so the renderer sends
+// (0, -1); those reach here as a debug-only bounds override that is inert outside
+// XLETH_DEBUG, so the estimate reflects the scoped loop region (not the full
+// timeline) and is NOT driven by stale hidden manual-bar values.
+//
+// The real tail length is unknown before render, so the estimate adds the tail
+// CAP (tailMaxSeconds) for tailClamp; hardCut/wrap add nothing.
 // NOTE: Assumes constant tempo. Update if tempo automation lands.
 Napi::Value Video_ComputeDurationSeconds(const Napi::CallbackInfo& info)
 {
     Napi::Env env = info.Env();
     if (!g_timeline) return Napi::Number::New(env, 0.0);
 
-    double startBeat = 0.0, endBeat = -1.0;
-    if (info.Length() >= 1 && info[0].IsNumber())
-        startBeat = info[0].As<Napi::Number>().DoubleValue();
-    if (info.Length() >= 2 && info[1].IsNumber())
-        endBeat = info[1].As<Napi::Number>().DoubleValue();
+    const bool   hasS = info.Length() >= 1 && info[0].IsNumber();
+    const bool   hasE = info.Length() >= 2 && info[1].IsNumber();
+    const double sB   = hasS ? info[0].As<Napi::Number>().DoubleValue() : 0.0;
+    const double eB   = hasE ? info[1].As<Napi::Number>().DoubleValue() : -1.0;
 
-    if (endBeat < 0.0) {
-        double lastBeat = 0.0;
-        for (const auto* clip : g_timeline->getAllClips()) {
-            if (!clip) continue;
-            double e = clip->position.toBeats() + clip->duration.toBeats();
-            if (e > lastBeat) lastBeat = e;
-        }
-        for (const auto* block : g_timeline->getAllPatternBlocks()) {
-            if (!block) continue;
-            double e = block->position.toBeats() + block->duration.toBeats();
-            if (e > lastBeat) lastBeat = e;
-        }
-        endBeat = lastBeat;
-    }
-
-    const double bpm  = g_timeline->getBPM();
+    const double bpm = g_timeline->getBPM();
     if (bpm <= 0.0) return Napi::Number::New(env, 0.0);
-    const double dur  = std::max(0.0, (endBeat - startBeat) * 60.0 / bpm);
-    return Napi::Number::New(env, dur);
+
+    // Same scope resolution as the export start paths (LoopRegion-derived; debug
+    // bounds override only under XLETH_DEBUG with an explicit eB > sB).
+    const auto scope = resolveExportScope(*g_timeline, hasS, sB, hasE, eB);
+    const double ticksToBeats = 1.0 / 960.0;
+    const double captureBeats =
+        static_cast<double>(scope.captureEndTick - scope.captureStartTick) * ticksToBeats;
+    double seconds = std::max(0.0, captureBeats * 60.0 / bpm);
+
+    // Add the tail cap (rate cancels: maxTailSamples / sr == tailMaxSeconds).
+    constexpr double kNominalSr = 48000.0;
+    const auto tail = xleth::computeTailRenderPlan(g_timeline->getLoopRegion(), kNominalSr);
+    if (tail.mode == xleth::TailRenderMode::TailClamp)
+        seconds += static_cast<double>(tail.maxTailSamples) / kNominalSr;
+
+    return Napi::Number::New(env, seconds);
 }
 
 // ── Sample Export / Swap ──────────────────────────────────────────────────────

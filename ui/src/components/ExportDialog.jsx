@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import ProgressBar from './ProgressBar.jsx'
+import TailRenderControls from './TailRenderControls.jsx'
 import { BEATS_PER_BAR } from '../constants/timeline.js'
 
 // ── Audio export dialog ──────────────────────────────────────────────────────
@@ -198,6 +199,10 @@ export default function ExportDialog({ isOpen, onClose }) {
               </div>
             </>
           )}
+
+          {/* ── Loop render tail policy (Phase 3A) ─────────────────────── */}
+          <div className="export-section-divider" />
+          <TailRenderControls disabled={running} />
 
           {/* ── Output path ────────────────────────────────────────────── */}
           <div className="export-row export-row-path">

@@ -14,6 +14,7 @@
 #include "audio/ClipModulatedReader.h"
 
 #include <atomic>
+#include <limits>
 #include <array>
 #include <condition_variable>
 #include <cstddef>
@@ -345,6 +346,17 @@ public:
     // Also propagates to each effect chain's JUCE AudioProcessorGraph so its
     // built-in spin-wait activates before the first offline processBlock.
     void setNonRealtime(bool nr);
+
+    // ── Offline tail render: note-trigger ceiling (Phase 3A) ────────────────
+    // While rendering a scoped/full export with the tailClamp policy, the engine
+    // must NOT start any new note or clip at or after the capture-end sample, yet
+    // must let already-sounding voices decay and insert-effect wet tails ring
+    // out. Setting this ceiling (in absolute transport samples) gates only NEW
+    // triggers; sustaining voices and effects are untouched. Default INT64_MAX =
+    // disabled, so realtime playback and the main capture window are unaffected.
+    // Main thread only; processBlock reads it as a relaxed atomic.
+    void setNoteTriggerCeilingSample(int64_t ceilingSample);
+    void clearNoteTriggerCeiling();   // reset to disabled (INT64_MAX)
 
     // ── Direct atomic parameter setters (main thread → audio thread) ─────────
     // Write the atomic only. MixEngine holds const Timeline*; model write-back
@@ -928,6 +940,12 @@ private:
     // on chainsMutex_ instead of try_to_lock, ensuring effect chains are
     // never skipped. Set by OfflineRenderer before/after the render loop.
     std::atomic<bool> nonRealtime_{false};
+
+    // Offline tail render: new note/clip triggers at or after this absolute
+    // sample are suppressed (Phase 3A tailClamp). INT64_MAX = disabled. Read on
+    // the audio thread (relaxed); written on the main thread only.
+    std::atomic<int64_t> noteTriggerCeilingSample_{
+        (std::numeric_limits<int64_t>::max)() };
 
     // Debug logging throttle
     MixDebugLog debugLog_;

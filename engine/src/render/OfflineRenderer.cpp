@@ -424,6 +424,18 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
     const AVRational fps = { settings.fpsNum, settings.fpsDen };
     const double bpm = timeline_.getBPM();
 
+    // Phase 3A tail policy (set via setTailRenderPlan before startRender).
+    const xleth::TailRenderPlan tailPlan = tailPlan_;
+
+    // RAII: the note-trigger ceiling (set just before the render loop) must be
+    // cleared on EVERY exit path — error returns, cancel, exception unwind, or
+    // normal completion — so it never leaks into realtime playback.
+    struct CeilingGuard {
+        MixEngine& m;
+        bool armed = false;
+        ~CeilingGuard() { if (armed) m.clearNoteTriggerCeiling(); }
+    } ceilingGuard{ mixer_ };
+
     // Clamp warm-up into [0, startSample]; warming up past the capture start is
     // meaningless and a negative warm-up is undefined.
     if (warmUpStartSample < 0)           warmUpStartSample = 0;
@@ -607,6 +619,30 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
     // ── PHASE 2: RENDER ──────────────────────────────────────────────────
     progress_.phase.store(2);
 
+    // tailClamp: no NEW notes/clips trigger at/after capture end (absolute
+    // sample). Sustaining voices + insert effect tails are unaffected. Cleared by
+    // ceilingGuard on every exit path.
+    mixer_.setNoteTriggerCeilingSample(endSample);
+    ceilingGuard.armed = true;
+
+    const bool tailEnabled = (tailPlan.mode == xleth::TailRenderMode::TailClamp)
+                          && (tailPlan.maxTailSamples > 0);
+#ifdef XLETH_DEBUG
+    std::fprintf(stderr,
+        "[RenderScope] tail mode=%s captureEnd=%lld threshLin=%.6f capSamples=%lld "
+        "holdSamples=%lld freezeVideo=%s\n",
+        tailEnabled ? "tailClamp" : "hardCut",
+        (long long)endSample, tailPlan.thresholdLinear,
+        (long long)tailPlan.maxTailSamples, (long long)tailPlan.holdSamples,
+        tailPlan.freezeVideo ? "yes" : "no");
+#endif
+
+    // Last successfully-composited frame, retained so the tail can freeze it
+    // (BGRA pixels + stride). Never samples new timeline video past endTick.
+    std::vector<uint8_t> lastFramePixels;
+    int  lastFrameStride = 0;
+    bool haveLastFrame   = false;
+
     // Local transport for offline rendering (independent of realtime AudioEngine)
     Transport transport;
     transport.setSampleRate(static_cast<double>(sampleRate));
@@ -788,6 +824,13 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
                     auto readback = compositor.readback();
                     ++videoFramesAttempted;
                     if (readback.valid) {
+                        // Retain for tailClamp freeze-frame (true copy — readback
+                        // is reused next iteration). Only when a tail is planned.
+                        if (tailEnabled && tailPlan.freezeVideo) {
+                            lastFramePixels = readback.pixels;
+                            lastFrameStride = readback.stride;
+                            haveLastFrame   = true;
+                        }
                         if (!muxer.writeVideo(readback.pixels.data(),
                                               readback.stride, f)) {
                             progress_.setError("Video encoding failed at frame "
@@ -872,6 +915,80 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
                          progress_.speedMultiplier.load(),
                          progress_.etaSeconds.load());
         }
+    }
+
+    // ── PHASE 2b: EFFECT TAIL (tailClamp) ─────────────────────────────────
+    // Continue past captureEnd with the trigger ceiling still engaged: no new
+    // notes/clips start, but the wet effect tail rings out. Video freezes the
+    // last captured frame for the tail duration so the container's A/V lengths
+    // stay equal. The master-bus peak is read here on the render (control) thread
+    // — never on the audio thread, so no audio-thread allocation/lock/log.
+    if (tailEnabled && !progress_.cancelRequested.load()) {
+        xleth::TailDetectorState tailState;
+        int64_t tailRendered = 0;
+        const int64_t maxTail = tailPlan.maxTailSamples;
+
+        while (!tailState.done && tailRendered < maxTail) {
+            if (progress_.cancelRequested.load()) break;
+
+            const int thisBufferSize = static_cast<int>(
+                std::min<int64_t>(kBufferSize, maxTail - tailRendered));
+
+            if (audioBuffer.getNumSamples() != thisBufferSize)
+                audioBuffer.setSize(2, thisBufferSize, false, false, true);
+            audioBuffer.clear();
+
+            mixer_.processBlock(audioBuffer, thisBufferSize, transport);
+
+            const double blockPeak = std::max(mixer_.getMasterPeakL(),
+                                              mixer_.getMasterPeakR());
+
+            const float* audioChannels[2] = {
+                audioBuffer.getReadPointer(0),
+                audioBuffer.getReadPointer(1)
+            };
+            if (!muxer.writeAudio(audioChannels, thisBufferSize, audioSamplesWritten)) {
+                progress_.setError("Audio encoding failed (tail)");
+                progress_.failed.store(true);
+                muxer.finalize();
+                std::filesystem::remove(fragPath);
+                mixer_.setNonRealtime(false);
+                progress_.phase.store(0);
+                return;
+            }
+
+            // Frozen video frames at audio-derived boundaries. Reuses the last
+            // composited pixels — NEVER samples new timeline video past endTick.
+            if (haveLastFrame) {
+                const auto frameBounds = RenderClock::frameBoundsForBuffer(
+                    audioSamplesWritten, thisBufferSize, sampleRate, fps);
+                for (int64_t f = frameBounds.first; f <= frameBounds.second; ++f) {
+                    if (!muxer.writeVideo(lastFramePixels.data(), lastFrameStride, f)) {
+                        progress_.setError("Video encoding failed (tail) at frame "
+                                         + std::to_string(f));
+                        progress_.failed.store(true);
+                        muxer.finalize();
+                        std::filesystem::remove(fragPath);
+                        mixer_.setNonRealtime(false);
+                        progress_.phase.store(0);
+                        return;
+                    }
+                    progress_.currentFrame.store(f);
+                }
+            }
+
+            transport.advance(thisBufferSize);
+            audioSamplesWritten += thisBufferSize;
+            tailRendered        += thisBufferSize;
+            xleth::tailDetectorFeed(tailState, tailPlan, blockPeak, thisBufferSize);
+        }
+
+        std::fprintf(stderr,
+            "[Renderer] TAIL: %lld samples (%.3fs) ended by %s, videoFreeze=%s\n",
+            (long long)tailState.tailSamples,
+            static_cast<double>(tailState.tailSamples) / sampleRate,
+            tailState.endedByCap ? "cap" : "threshold",
+            haveLastFrame ? "yes" : "no");
     }
 
     // ── PHASE 3: FINALIZE ────────────────────────────────────────────────

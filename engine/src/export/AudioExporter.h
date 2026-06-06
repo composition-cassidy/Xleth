@@ -2,6 +2,8 @@
 
 #include <juce_audio_basics/juce_audio_basics.h>
 
+#include "render/RenderScope.h"   // xleth::TailRenderPlan (Phase 3A tail policy)
+
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -38,6 +40,12 @@ public:
         // latency-only pre-roll). Set to 0 for a scoped absolute render so
         // in-flight notes/effect tails survive into the first captured sample.
         double      warmUpStartBeat = -1.0;
+
+        // Phase 3A tail policy. Default (HardCut, maxTailSamples == 0) reproduces
+        // pre-3A behaviour: render exactly [startBeat, endBeat) with no tail. The
+        // bridge derives this from the project LoopRegion via
+        // xleth::computeTailRenderPlan() at the export sample rate.
+        xleth::TailRenderPlan tail{};
     };
 
     struct PrerollPlan {
@@ -78,13 +86,22 @@ public:
 private:
     // Offline render pass: drives MixEngine::processBlock() in 4096-sample
     // chunks from a local Transport, filling output with the stereo mix.
+    // `output` is sized to (totalSamples + tail.maxTailSamples). The main
+    // capture fills the first totalSamples; the tail (if tail.mode == TailClamp)
+    // continues past captureEnd, reading the master-bus peak each block to detect
+    // when the wet effect tail has decayed (or the cap is hit). The note-trigger
+    // ceiling is set so no NEW notes/clips start during the tail. The number of
+    // samples actually written (capture + detected tail) is returned via
+    // outRenderedSamples.
     bool renderOffline(const Timeline& timeline,
                        MixEngine& mixer,
                        int64_t startSample,
                        int64_t warmUpStartSample,
                        int totalSamples,
                        int sampleRate,
+                       const xleth::TailRenderPlan& tail,
                        juce::AudioBuffer<float>& output,
+                       int& outRenderedSamples,
                        std::function<void(float)> progressCallback,
                        std::atomic<bool>& cancelFlag);
 

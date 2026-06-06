@@ -446,6 +446,18 @@ target_link_libraries(test_render_scope PRIVATE
     XlethEngineModel
 )
 
+# ── test_tail_render ──────────────────────────────────────────────────────────
+# Phase 3A tail render policy (hardCut + tailClamp): tail-plan derivation, the
+# pure sample-domain tail detector, sanitizers, and scope/estimate math.
+# render/RenderScope.h is pure (LoopRegion only) — model-only, no JUCE/FFmpeg/GL.
+add_executable(test_tail_render
+    test/test_tail_render.cpp
+)
+
+target_link_libraries(test_tail_render PRIVATE
+    XlethEngineModel
+)
+
 # ── test_video_flip_resolver ──────────────────────────────────────────────────
 # Unit tests for the per-track flip state-machine evaluator (Phase 2 keystone).
 # Covers all 4 v1 modifiers and every edge case in spec §4.4 / §7.

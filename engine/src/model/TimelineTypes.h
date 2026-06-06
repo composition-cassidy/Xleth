@@ -1,4 +1,5 @@
 #pragma once
+#include <cmath>
 #include <cstdint>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -1145,14 +1146,40 @@ inline LoopRegion::TailMode stringToLoopTailMode(const std::string& s) {
     return LoopRegion::TailMode::TailClamp;
 }
 
+// ── Tail-field sanitizers (Phase 3A) ──────────────────────────────────────────
+// Pure value clamps applied at the mutation/model boundary so bad UI/IPC input
+// can never be stored. Kept free-standing so they are unit-testable and reusable
+// by the render-scope tail-plan derivation.
+//
+//   tailThresholdDb : finite dBFS, clamped to [-160, 0]. Non-finite → -60 dB.
+//   tailMaxSeconds  : finite, non-negative, capped to kLoopTailMaxSecondsCap.
+constexpr double kLoopTailMaxSecondsCap = 120.0;   // sane upper bound for a tail
+
+inline double sanitizeTailThresholdDb(double db) {
+    if (!std::isfinite(db)) return -60.0;
+    if (db > 0.0)    return 0.0;       // 0 dBFS ceiling
+    if (db < -160.0) return -160.0;    // practical silence floor
+    return db;
+}
+
+inline double sanitizeTailMaxSeconds(double s) {
+    if (!std::isfinite(s)) return 10.0;
+    if (s < 0.0) return 0.0;
+    if (s > kLoopTailMaxSecondsCap) return kLoopTailMaxSecondsCap;
+    return s;
+}
+
 // Mutation-layer invariant enforcement. Pure / no side effects so it is unit
 // testable. Clamps startTick to >= 0 and forces endTick to be at least
 // max(1, minLengthTicks) beyond startTick so zero/negative length can never be
-// stored. The renderOrigin / tail* fields pass through untouched.
+// stored. renderOrigin / tailMode are enums (always valid; the string decoders
+// fall back). The tail dB / seconds fields are clamped to sane finite ranges.
 inline LoopRegion normalizeLoopRegion(LoopRegion r, int64_t minLengthTicks) {
     if (r.startTick < 0) r.startTick = 0;
     int64_t minLen = minLengthTicks < 1 ? 1 : minLengthTicks;
     if (r.endTick - r.startTick < minLen)
         r.endTick = r.startTick + minLen;
+    r.tailThresholdDb = sanitizeTailThresholdDb(r.tailThresholdDb);
+    r.tailMaxSeconds  = sanitizeTailMaxSeconds(r.tailMaxSeconds);
     return r;
 }

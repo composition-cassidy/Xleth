@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <cstdarg>
 #include <cstdio>
 #include <thread>
@@ -1940,6 +1941,19 @@ void MixEngine::setNonRealtime(bool nr)
         masterEffectChain_->setNonRealtime(nr);
 }
 
+// ── Offline tail render: note-trigger ceiling (Phase 3A) ────────────────────
+
+void MixEngine::setNoteTriggerCeilingSample(int64_t ceilingSample)
+{
+    noteTriggerCeilingSample_.store(ceilingSample, std::memory_order_relaxed);
+}
+
+void MixEngine::clearNoteTriggerCeiling()
+{
+    noteTriggerCeilingSample_.store((std::numeric_limits<int64_t>::max)(),
+                                    std::memory_order_relaxed);
+}
+
 // ── Direct atomic parameter setters (slot-based via trackIdToSlot_) ─────────
 
 void MixEngine::setTrackVolume(int trackId, float volume)
@@ -3448,6 +3462,12 @@ void MixEngine::findActiveClips(int64_t bufferStart, int64_t bufferEnd,
 
     if (timeline_ == nullptr) return;
 
+    // Phase 3A tailClamp: suppress clips that START at/after the trigger ceiling
+    // (capture end). Clips already in flight (clipStart < ceiling) keep playing
+    // and decay naturally; only NEW clip onsets in the tail are gated.
+    const int64_t triggerCeiling =
+        noteTriggerCeilingSample_.load(std::memory_order_relaxed);
+
     for (const auto* clip : timeline_->getAllClips())
     {
         if (clip == nullptr) continue;
@@ -3457,6 +3477,12 @@ void MixEngine::findActiveClips(int64_t bufferStart, int64_t bufferEnd,
 
         // Skip clips that don't overlap this buffer
         if (clipEnd <= bufferStart || clipStart >= bufferEnd)
+            continue;
+
+        // tailClamp gate: a clip whose onset is at/after the ceiling must not
+        // start during the tail. (No effect during normal renders/playback —
+        // ceiling is INT64_MAX.)
+        if (clipStart >= triggerCeiling)
             continue;
 
         // Look up sample bank ID for this clip's region
@@ -3752,6 +3778,13 @@ void MixEngine::triggerPatternNotes(const ActivePatternBlock& apb,
 
     const int numSamples = static_cast<int>(bufferEnd - bufferStart);
 
+    // Phase 3A tailClamp: NoteOns at/after this ceiling are suppressed so no new
+    // notes trigger past endTick during the tail. NoteOff/SlideStart are NOT
+    // gated — sustaining voices must still release (decay) naturally. INT64_MAX =
+    // disabled (normal renders/playback).
+    const int64_t triggerCeiling =
+        noteTriggerCeilingSample_.load(std::memory_order_relaxed);
+
     for (int i = 0; i < eventCount; ++i) {
         const AudioEvent& e = events[i];
         const int64_t absSample = TickTime{e.tick}.toSamples(bpm, sampleRate);
@@ -3764,6 +3797,7 @@ void MixEngine::triggerPatternNotes(const ActivePatternBlock& apb,
         switch (e.type) {
             case AudioEvent::NoteOn: {
                 if (absSample >= bufferEnd) continue;
+                if (absSample >= triggerCeiling) continue;  // tailClamp: no new notes
                 const int sampleOffset = static_cast<int>(absSample - bufferStart);
                 jassert(sampleOffset >= 0 && sampleOffset < numSamples);
 #ifdef XLETH_DEBUG
@@ -4314,9 +4348,14 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     for (int i = 0; i < numTrackSlots; ++i)
         trackMidiBuffers_[i].clear();
 
+    // tailClamp: don't emit onset markers for triggers gated past the ceiling.
+    const int64_t midiTriggerCeiling =
+        noteTriggerCeilingSample_.load(std::memory_order_relaxed);
+
     // Clip-start events (channel 2, pitch 60, velocity from clip)
     for (const auto& ac : activeClips_)
     {
+        if (ac.clipStartSample >= midiTriggerCeiling) continue;
         if (ac.clipStartSample >= bufStart && ac.clipStartSample < bufEnd)
         {
             auto slotIt = trackIdToSlot.find(ac.clip->trackId);
@@ -4371,6 +4410,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                 if (absNoteOn < windowStart || absNoteOn >= windowEnd) continue;
 
                 const int64_t absNoteOnSample = tickToSample(absNoteOn);
+                if (absNoteOnSample >= midiTriggerCeiling) continue;  // tailClamp gate
                 const int bufOffset = static_cast<int>(absNoteOnSample - bufStart);
                 if (bufOffset < 0 || bufOffset >= numSamples) continue;
 

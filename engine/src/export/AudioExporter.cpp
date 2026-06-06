@@ -124,12 +124,18 @@ bool AudioExporter::renderOffline(const Timeline& timeline,
                                    int64_t warmUpStartSample,
                                    int totalSamples,
                                    int sampleRate,
+                                   const xleth::TailRenderPlan& tail,
                                    juce::AudioBuffer<float>& output,
+                                   int& outRenderedSamples,
                                    std::function<void(float)> progressCallback,
                                    std::atomic<bool>& cancelFlag)
 {
-    output.setSize(2, totalSamples, false, true, false);
+    const int64_t maxTail = (tail.mode == xleth::TailRenderMode::TailClamp)
+                          ? std::max<int64_t>(0, tail.maxTailSamples) : 0;
+    const int outputCapacity = totalSamples + static_cast<int>(maxTail);
+    output.setSize(2, outputCapacity, false, true, false);
     output.clear();
+    outRenderedSamples = 0;
 
     constexpr int kBlockSize = 4096;
 
@@ -138,6 +144,11 @@ bool AudioExporter::renderOffline(const Timeline& timeline,
     const int64_t samplesToDiscard = prerollPlan.discardSamples;
     const int64_t renderEndSample =
         renderStartSample + samplesToDiscard + static_cast<int64_t>(totalSamples);
+
+    // tailClamp: no NEW notes/clips trigger at/after capture end (absolute
+    // sample). Sustaining voices + insert effect tails are unaffected.
+    const int64_t captureEndSample = startSample + static_cast<int64_t>(totalSamples);
+    mixer.setNoteTriggerCeilingSample(captureEndSample);
 
     Transport transport;
     transport.setSampleRate(static_cast<double>(sampleRate));
@@ -151,9 +162,9 @@ bool AudioExporter::renderOffline(const Timeline& timeline,
     int64_t samplesRemainingToDiscard = samplesToDiscard;
     int pos = 0;
     int lastPct = -1;
+    bool cancelled = false;
     while (currentSample < renderEndSample && pos < totalSamples) {
-        if (cancelFlag.load(std::memory_order_relaxed))
-            return false;
+        if (cancelFlag.load(std::memory_order_relaxed)) { cancelled = true; break; }
 
         const int n = static_cast<int>(
             std::min<int64_t>(kBlockSize, renderEndSample - currentSample));
@@ -190,8 +201,51 @@ bool AudioExporter::renderOffline(const Timeline& timeline,
             }
         }
     }
+    outRenderedSamples = pos;
+
+    // ── Effect-tail capture (tailClamp) ──────────────────────────────────────
+    // Continue past captureEnd with the trigger ceiling engaged: no new notes,
+    // but the wet effect tail rings out. The control thread (here) reads the
+    // master-bus peak — a thread-safe atomic written inside processBlock — so the
+    // audio thread stays allocation/lock/log-free.
+    xleth::TailDetectorState tailState;
+    if (!cancelled && maxTail > 0) {
+        int64_t tailPos = 0;
+        while (!tailState.done && tailPos < maxTail) {
+            if (cancelFlag.load(std::memory_order_relaxed)) { cancelled = true; break; }
+
+            const int n = static_cast<int>(std::min<int64_t>(kBlockSize, maxTail - tailPos));
+            if (block.getNumSamples() != n)
+                block.setSize(2, n, false, false, true);
+            block.clear();
+
+            mixer.processBlock(block, n, transport);
+
+            const double blockPeak = std::max(mixer.getMasterPeakL(),
+                                              mixer.getMasterPeakR());
+
+            for (int ch = 0; ch < 2; ++ch)
+                output.copyFrom(ch, totalSamples + static_cast<int>(tailPos), block, ch, 0, n);
+
+            tailPos += n;
+            transport.advance(n);
+            xleth::tailDetectorFeed(tailState, tail, blockPeak, n);
+        }
+        outRenderedSamples = totalSamples + static_cast<int>(tailPos);
+
+#ifdef XLETH_DEBUG
+        std::fprintf(stderr,
+            "[RenderScope] audioTail mode=tailClamp threshLin=%.6f capSamples=%lld "
+            "holdSamples=%lld detectedTailSamples=%lld endedBy=%s\n",
+            tail.thresholdLinear, (long long)maxTail, (long long)tail.holdSamples,
+            (long long)tailState.tailSamples,
+            tailState.endedByCap ? "cap" : "threshold");
+#endif
+    }
+
     transport.pause();
-    return true;
+    mixer.clearNoteTriggerCeiling();
+    return !cancelled;
 }
 
 // ─── FFmpeg encoder ──────────────────────────────────────────────────────────
@@ -449,12 +503,20 @@ bool AudioExporter::exportAudio(const Timeline& timeline,
         if (warmUpStartSample > startSample) warmUpStartSample = startSample;
     }
 
-    // 2. Offline render
-    juce::AudioBuffer<float> rendered(2, totalSamples);
+    // 2. Offline render (+ effect-tail capture for tailClamp). The bridge built
+    //    config.tail at this export sample rate, so its sample counts are valid.
+    juce::AudioBuffer<float> rendered;
+    int renderedSamples = 0;
     if (!renderOffline(timeline, mixer, startSample, warmUpStartSample, totalSamples, sr,
-                       rendered, progressCallback, cancelFlag)) {
+                       config.tail, rendered, renderedSamples,
+                       progressCallback, cancelFlag)) {
         return false;
     }
+
+    // Trim to the samples actually written (capture + detected tail) so the
+    // encoder doesn't see the unused tail capacity as trailing silence.
+    if (renderedSamples < rendered.getNumSamples())
+        rendered.setSize(2, renderedSamples, /*keepExisting*/ true, false, true);
 
     // 3. Encode
     return encodeWithFFmpeg(rendered, config, progressCallback, cancelFlag);

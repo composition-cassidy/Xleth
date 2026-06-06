@@ -30,7 +30,9 @@
  * silently cold-start.
  */
 
+#include <cmath>
 #include <cstdint>
+#include <limits>
 #include "model/TimelineTypes.h"   // LoopRegion
 
 namespace xleth {
@@ -129,6 +131,110 @@ inline RenderPrerollPlan computeRenderPrerollPlan(int64_t warmUpStartSample,
     p.availablePrerollSamples = captureStartSample - p.renderStartSample;
     p.discardSamples          = p.availablePrerollSamples + p.totalPrerollSamples;
     return p;
+}
+
+// ─── Tail render policy (Phase 3A) ──────────────────────────────────────────────
+// Pure derivation of the effect-tail rendering plan from the LoopRegion tail
+// fields. Shared by AudioExporter and OfflineRenderer so audio-only and A/V
+// exports agree on tail length and stop conditions.
+//
+//   HardCut   — no tail at all. Audio + video stop exactly at captureEnd. May
+//               click/pop; the UI warns about this. (maxTailSamples == 0.)
+//   TailClamp — no NEW notes/clips trigger past endTick (enforced by the engine
+//               note-trigger ceiling), but existing effect wet tails ring out.
+//               Audio renders past captureEnd until the output bus stays below
+//               thresholdLinear for holdSamples, OR maxTailSamples is reached.
+//               Video freezes the last captured frame for the tail duration so
+//               the container's A/V lengths stay equal.
+//
+// Wrap (seamless loop) is Phase 3B. It MUST be gated out upstream (UI disabled +
+// bridge coercion) and must never be silently rendered as TailClamp. As a last
+// line of defence, if Wrap ever reaches here it degrades to HardCut — a plain
+// cut, never a faked seamless loop and never a silent TailClamp.
+enum class TailRenderMode { HardCut, TailClamp };
+
+struct TailRenderPlan {
+    TailRenderMode mode            = TailRenderMode::TailClamp;
+    int64_t        maxTailSamples  = 0;       // hard cap = tailMaxSeconds * sampleRate
+    int64_t        holdSamples     = 0;       // sub-threshold hold (~50 ms)
+    double         thresholdLinear = 0.001;   // 10^(tailThresholdDb/20)
+    bool           freezeVideo     = false;   // freeze last frame for tail (TailClamp)
+};
+
+// ~50 ms hold below threshold ends the tail early. Spec §3A.
+inline int64_t tailHoldSamples(double sampleRate) {
+    if (!(sampleRate > 0.0)) return 0;
+    return static_cast<int64_t>(0.050 * sampleRate + 0.5);
+}
+
+inline double tailDbToLinear(double db) {
+    return std::pow(10.0, db / 20.0);
+}
+
+// Derive the tail plan from the (already-persisted) LoopRegion. sampleRate must
+// be the render sample rate. Inputs are re-sanitized here so a stale/garbage
+// model value can never produce a non-finite cap or threshold.
+inline TailRenderPlan computeTailRenderPlan(const LoopRegion& lr, double sampleRate)
+{
+    TailRenderPlan plan;
+    const double sr = sampleRate > 0.0 ? sampleRate : 48000.0;
+
+    const double thresholdDb  = sanitizeTailThresholdDb(lr.tailThresholdDb);
+    const double maxSeconds   = sanitizeTailMaxSeconds(lr.tailMaxSeconds);
+    plan.thresholdLinear = tailDbToLinear(thresholdDb);
+    plan.holdSamples     = tailHoldSamples(sr);
+
+    switch (lr.tailMode) {
+        case LoopRegion::TailMode::HardCut:
+            plan.mode           = TailRenderMode::HardCut;
+            plan.maxTailSamples = 0;
+            plan.freezeVideo    = false;
+            break;
+        case LoopRegion::TailMode::TailClamp:
+            plan.mode           = TailRenderMode::TailClamp;
+            plan.maxTailSamples = static_cast<int64_t>(maxSeconds * sr + 0.5);
+            plan.freezeVideo    = true;
+            break;
+        case LoopRegion::TailMode::Wrap:
+        default:
+            // Phase 3B not implemented — degrade to a hard cut, NEVER tailClamp.
+            plan.mode           = TailRenderMode::HardCut;
+            plan.maxTailSamples = 0;
+            plan.freezeVideo    = false;
+            break;
+    }
+    return plan;
+}
+
+// ─── Tail detector (sample domain, pure state machine) ──────────────────────────
+// Fed one rendered block's peak (linear magnitude, 0..) plus the block length.
+// The renderer reads the master-bus peak (a thread-safe atomic) on the control
+// thread after each processBlock — NEVER on the audio thread. This keeps the
+// audio thread allocation/lock/log-free while the stop decision stays here, pure.
+struct TailDetectorState {
+    int64_t tailSamples = 0;      // samples rendered into the tail so far
+    int64_t belowRun    = 0;      // consecutive sub-threshold samples
+    bool    done        = false;
+    bool    endedByCap  = false;  // true: cap hit; false: threshold-hold ended it
+};
+
+inline void tailDetectorFeed(TailDetectorState& st, const TailRenderPlan& plan,
+                             double blockPeakLinear, int64_t blockSamples)
+{
+    if (st.done || blockSamples <= 0) return;
+    st.tailSamples += blockSamples;
+
+    if (blockPeakLinear < plan.thresholdLinear) st.belowRun += blockSamples;
+    else                                        st.belowRun  = 0;
+
+    // Threshold-hold has priority so a genuinely-silent tail stops promptly even
+    // when the cap is large.
+    if (plan.holdSamples > 0 && st.belowRun >= plan.holdSamples) {
+        st.done = true; st.endedByCap = false; return;
+    }
+    if (st.tailSamples >= plan.maxTailSamples) {
+        st.done = true; st.endedByCap = true;
+    }
 }
 
 } // namespace xleth

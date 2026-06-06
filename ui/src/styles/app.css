@@ -3563,6 +3563,31 @@ html[data-xleth-backdrop="native-acrylic"] #root {
   gap: 6px;
 }
 
+/* ── Loop render tail policy controls (Phase 3A) ───────────────────────────── */
+.tail-render-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.export-section-divider {
+  border-top: 1px solid var(--theme-border-subtle);
+  opacity: 0.4;
+  margin: 2px 0;
+}
+
+.tail-help {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--theme-text-muted);
+}
+
+.tail-warning {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--theme-warning);
+}
+
 .export-path-group input {
   flex: 1;
   min-width: 0;

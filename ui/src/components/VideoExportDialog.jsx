@@ -5,6 +5,7 @@ import YouTubeTab from './exportPresets/YouTubeTab.jsx'
 import DiscordTab from './exportPresets/DiscordTab.jsx'
 import CustomTab, { makeCustomDefaults } from './exportPresets/CustomTab.jsx'
 import ProgressPanel from './exportPresets/ProgressPanel.jsx'
+import TailRenderControls from './TailRenderControls.jsx'
 import {
   YOUTUBE_RESOLUTIONS,
   computeYoutubeBitrate,
@@ -440,6 +441,11 @@ export default function VideoExportDialog({ isOpen, onClose }) {
                   <option value="hardware">Hardware only</option>
                 </select>
               </div>
+
+              {/* Loop render tail policy (Phase 3A) — shared project LoopRegion. */}
+              <div className="export-section-divider" />
+              <TailRenderControls disabled={running} />
+              <div className="export-section-divider" />
 
               {activeTab === 'youtube' && (
                 <YouTubeTab

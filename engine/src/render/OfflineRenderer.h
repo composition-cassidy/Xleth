@@ -42,6 +42,8 @@ class  GpuDeviceManager;
 
 #include <vector>
 
+#include "render/RenderScope.h"   // xleth::TailRenderPlan (Phase 3A tail policy)
+
 // ---------------------------------------------------------------------------
 // RenderProgress — atomic struct for UI polling
 // ---------------------------------------------------------------------------
@@ -134,6 +136,17 @@ public:
                      int64_t warmUpStartSample,
                      const ExportSettings& settings);
 
+    /**
+     * Phase 3A tail policy. Must be called BEFORE startRender(); the value is
+     * captured into the render thread. Default (HardCut, maxTailSamples == 0)
+     * cuts audio + video exactly at captureEnd. TailClamp continues audio past
+     * captureEnd (no new triggers — the engine note-trigger ceiling enforces it)
+     * until the master bus decays below threshold or the cap is reached, and
+     * freezes the last captured video frame for that tail so A/V lengths match.
+     * The plan's sample counts must be built at the export sample rate.
+     */
+    void setTailRenderPlan(const xleth::TailRenderPlan& plan) { tailPlan_ = plan; }
+
     /** Request cancellation — sets the flag, checked every buffer iteration. */
     void requestCancel();
 
@@ -163,6 +176,10 @@ private:
     std::unique_ptr<std::thread> renderThread_;
     RenderProgress               progress_;
     std::atomic<bool>            running_{false};
+
+    // Phase 3A tail policy (set via setTailRenderPlan before startRender). Default
+    // = HardCut (no tail), preserving pre-3A behaviour.
+    xleth::TailRenderPlan        tailPlan_{};
 
     // ── Internal ──────────────────────────────────────────────────────────
     void render(int64_t startSample, int64_t endSample,
