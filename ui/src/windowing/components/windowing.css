@@ -4,7 +4,8 @@
  *   floating/maximized frame:  var(--xleth-z-window-floating-base) + panel.zIndex
  *   left pull-out drawer:      var(--xleth-z-window-drawer)
  *   floating resize handle:    z-index 2 (inside frame's stacking context)
- *   dock region resizer:       z-index 1 (inside region's stacking context via position: relative)
+ *   dock region resizer:       var(--xleth-z-window-dock-resizer) — above docked panel content
+ *   dock panel splitter:       var(--xleth-z-window-dock-splitter) — above docked panel content
  *   snap ghost:                var(--xleth-z-window-snap-ghost)
  */
 
@@ -112,7 +113,9 @@
 
 .xleth-dock-region-resizer {
   position: absolute;
-  z-index: 1;
+  /* Above the docked panel frame (--xleth-z-window-docked) so the region's edge
+   * gutter is actually grabbable; the docked panel otherwise paints over it. */
+  z-index: var(--xleth-z-window-dock-resizer);
   background: transparent;
   transition: background 120ms ease;
 }
@@ -136,10 +139,22 @@
   overflow: hidden;
 }
 
+/* The last docked panel in a region grows to consume the region's full main
+ * axis (left/right region = height, top/bottom region = width). A dock region's
+ * main axis is always the full workspace extent, so without a fill panel the
+ * leftover space becomes a dead empty band. Sibling panels keep their fixed
+ * pixel size; the fill panel absorbs the remainder. */
+.xleth-docked-panel-slot--fill {
+  flex: 1 1 0;
+}
+
 .xleth-dock-splitter {
   position: relative;
-  z-index: 2;
-  flex: 0 0 9px;
+  /* Above the docked panel frame (--xleth-z-window-docked) so the gutter between
+   * sibling docked panels stays grabbable even if panel content/box-shadow bleeds
+   * to the slot edge. One notch above the region resizer to win their corner. */
+  z-index: var(--xleth-z-window-dock-splitter);
+  flex: 0 0 10px;
   background: transparent;
   transition: background 120ms ease;
 }

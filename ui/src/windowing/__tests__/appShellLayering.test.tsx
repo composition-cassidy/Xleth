@@ -44,6 +44,8 @@ describe('App shell layer order', () => {
     const titlebarLayer = cssVarNumber(appCss, '--xleth-z-titlebar');
     const dropdownLayer = cssVarNumber(appCss, '--xleth-z-titlebar-dropdown');
     const dockedLayer = cssVarNumber(appCss, '--xleth-z-window-docked');
+    const dockResizerLayer = cssVarNumber(appCss, '--xleth-z-window-dock-resizer');
+    const dockSplitterLayer = cssVarNumber(appCss, '--xleth-z-window-dock-splitter');
     const floatingBaseLayer = cssVarNumber(appCss, '--xleth-z-window-floating-base');
     const snapGhostLayer = cssVarNumber(appCss, '--xleth-z-window-snap-ghost');
 
@@ -51,6 +53,16 @@ describe('App shell layer order', () => {
     expect(floatingBaseLayer).toBeLessThan(snapGhostLayer);
     expect(snapGhostLayer).toBeLessThan(titlebarLayer);
     expect(titlebarLayer).toBeLessThan(dropdownLayer);
+
+    // Dock resize gutters must sit ABOVE docked panel content (otherwise the
+    // docked panel frame paints over them and they cannot be grabbed) but BELOW
+    // floating panels and app chrome. The splitter is one notch above the region
+    // resizer so it wins their small corner overlap.
+    expect(dockedLayer).toBeLessThan(dockResizerLayer);
+    expect(dockResizerLayer).toBeLessThan(dockSplitterLayer);
+    expect(dockSplitterLayer).toBeLessThan(floatingBaseLayer);
+    expect(windowingCss).toMatch(/\.xleth-dock-region-resizer\s*{[\s\S]*z-index:\s*var\(--xleth-z-window-dock-resizer\)/);
+    expect(windowingCss).toMatch(/\.xleth-dock-splitter\s*{[\s\S]*z-index:\s*var\(--xleth-z-window-dock-splitter\)/);
 
     // Regression: the top menu bar must not render behind floating/maximized panels.
     expect(titlebarLayer).toBeGreaterThan(floatingBaseLayer);

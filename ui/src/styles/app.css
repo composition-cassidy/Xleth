@@ -26,14 +26,21 @@
   --xleth-top-chrome-height: 76px;
   --xleth-bottom-chrome-height: 48px;
 
-  /* App-shell layer order. Keep panels above the frameless menu chrome. */
+  /* App-shell layer order: workspace panels < app chrome < portaled overlays. */
   --xleth-z-workspace: 0;
-  --xleth-z-titlebar: 20;
-  --xleth-z-titlebar-dropdown: 21;
   --xleth-z-window-docked: 30;
+  /* Dock resize gutters sit ABOVE docked panel content (so they are grabbable)
+   * but BELOW floating panels and app chrome. Without this the docked panel
+   * frame (--xleth-z-window-docked) paints over the region edge resizer and it
+   * cannot be clicked. Splitter is one notch above the region resizer so it wins
+   * their small corner overlap. */
+  --xleth-z-window-dock-resizer: 34;
+  --xleth-z-window-dock-splitter: 35;
   --xleth-z-window-floating-base: 40;
   --xleth-z-window-drawer: 65;
   --xleth-z-window-snap-ghost: 70;
+  --xleth-z-titlebar: 100;
+  --xleth-z-titlebar-dropdown: 101;
   --xleth-windowing-drawer-top-offset: 0px;
 }
 
