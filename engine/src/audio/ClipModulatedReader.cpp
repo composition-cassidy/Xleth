@@ -86,6 +86,15 @@ void ClipModulatedReader::renderBlock(const BlockParams& p,
                              + static_cast<double>(p.pitchOffsetCents);
     const double staticRatio = centsToRatio(staticCents);
 
+    // Bake-rate → prepared-rate readhead correction. All source-sample terms
+    // below (the static/vibrato advance, the seed, the scratch base + residual)
+    // are in prepared-rate units and must scale by srFactor to address the
+    // bake-rate buffer. Callers that don't supply the rates (legacy/tests) fall
+    // back to p.sampleRate for both → srFactor 1.0 and the original behaviour.
+    const double bakeSR     = (p.srcSampleRate      > 0.0) ? p.srcSampleRate      : p.sampleRate;
+    const double preparedSR = (p.preparedSampleRate > 0.0) ? p.preparedSampleRate : p.sampleRate;
+    const double srFactor   = (preparedSR > 0.0) ? bakeSR / preparedSR : 1.0;
+
     State& st = states_[slotFor(clipId)];
 
     const int64_t clipLen = p.clipEndSample - p.clipStartSample;
@@ -145,7 +154,7 @@ void ClipModulatedReader::renderBlock(const BlockParams& p,
                 // (− N strips the unity readhead motion already encoded in
                 // sourceBase). Subtracting N * staticRatio would erase the
                 // static-pitch contribution and is wrong (see D.0/D.1 plan).
-                st.vibTrimD = integratedOff - static_cast<double>(posInClip);
+                st.vibTrimD = (integratedOff - static_cast<double>(posInClip)) * srFactor;
 
                 // Reset declick state so a seek does not fire a phantom flip
                 // on the first sample after the discontinuity.
@@ -160,9 +169,12 @@ void ClipModulatedReader::renderBlock(const BlockParams& p,
             }
             else
             {
-                // Legacy Phase C seed (preserved bit-for-bit).
-                st.sourcePosD = static_cast<double>(p.regionOffsetSamples)
-                              + integratedOff;
+                // Legacy Phase C seed. regionOffset (prepared-rate) and the
+                // integrated vibrato readhead are both source-sample terms →
+                // scale to the bake-rate buffer. srFactor == 1.0 preserves the
+                // original seed bit-for-bit.
+                st.sourcePosD = (static_cast<double>(p.regionOffsetSamples)
+                              + integratedOff) * srFactor;
                 st.vibTrimD = 0.0;
             }
         }
@@ -203,9 +215,13 @@ void ClipModulatedReader::renderBlock(const BlockParams& p,
             const auto sEval = xleth::clipmod::evaluateScratch(
                 p.modulation->scratch, ctx, p.modulation->enabled);
 
+            // regionOffset is a prepared-rate sample count → scale to bake rate.
+            // The scratch curve offset is in seconds → multiply by the buffer's
+            // bake rate directly (this is inherently rate-correct). srFactor == 1
+            // and srcSampleRate == sampleRate reproduce the original expression.
             const double sourceBase =
-                static_cast<double>(p.regionOffsetSamples)
-              + sEval.sourceOffsetSeconds * p.sampleRate;
+                static_cast<double>(p.regionOffsetSamples) * srFactor
+              + sEval.sourceOffsetSeconds * bakeSR;
 
             readPos = sourceBase + st.vibTrimD;
 
@@ -275,14 +291,16 @@ void ClipModulatedReader::renderBlock(const BlockParams& p,
                 }
             }
 
-            // Update vibTrim for next sample using the residual.
-            st.vibTrimD += staticRatio * vEval.pitchRatio - 1.0;
+            // Update vibTrim for next sample using the residual. The static +
+            // vibrato deviation beyond the scratch-driven unity motion is a
+            // source-sample term → scale to the bake rate.
+            st.vibTrimD += (staticRatio * vEval.pitchRatio - 1.0) * srFactor;
         }
         else
         {
             // ── Legacy Phase C path (vibrato only, no scratch) ─────────────
             readPos = st.sourcePosD;
-            const double instantRatio = staticRatio * vEval.pitchRatio;
+            const double instantRatio = staticRatio * vEval.pitchRatio * srFactor;
             st.sourcePosD += instantRatio;
         }
 

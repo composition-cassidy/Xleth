@@ -15,6 +15,14 @@ public:
         int          numChannels       = 0;
         int          numSamples        = 0;
         double       originalSampleRate = 0.0;
+        // Rate the STORED samples are actually at — i.e. the engineSampleRate
+        // passed at load time (the "bake rate"). Both load paths resample the
+        // source to this rate before storing, so the clip-render path must read
+        // the buffer at bufferSampleRate / preparedSampleRate to preserve pitch
+        // when the export rate differs from the bake rate. Distinct from
+        // originalSampleRate (the source file rate), which must NOT be reused
+        // for this — see getSampleBufferRate().
+        double       bufferSampleRate  = 0.0;
     };
 
     // Load a WAV/AIFF file into memory. Returns a unique sample ID (0, 1, 2…).
@@ -44,6 +52,12 @@ public:
     // Returns an empty SampleInfo if sampleId is out of range OR the slot
     // has been tombstoned.
     SampleInfo getSampleInfo(int sampleId) const;
+
+    // Audio-thread-safe bake-rate lookup. Returns the rate the stored samples
+    // are at (SampleInfo::bufferSampleRate), or 0.0 if sampleId is out of range
+    // OR tombstoned. Unlike getSampleInfo(), this copies no juce::String, so it
+    // is safe to call from the render loop (no alloc, no atomic refcount bump).
+    double getSampleBufferRate(int sampleId) const noexcept;
 
     // Returns the index of the first sample (across both channels) whose
     // absolute value reaches `thresholdDb`. Returns 0 if audio breaches the

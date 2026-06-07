@@ -73,6 +73,15 @@ public:
         double    bpm;
         double    sampleRate;
 
+        // Sample-rate correction (mirrors the raw clip path in MixEngine).
+        // srcSampleRate = bake rate of srcBuf; preparedSampleRate = export rate.
+        // The readhead advances by srcSampleRate/preparedSampleRate so a buffer
+        // baked at one rate plays at correct pitch when exported at another.
+        // For post-cache (stretched) clips the caller passes the prepared rate
+        // for srcSampleRate, yielding factor 1.0 (cache buffer already at rate).
+        double    srcSampleRate;
+        double    preparedSampleRate;
+
         // Static clip pitch (combined with vibrato cents in cents space).
         int       pitchOffsetSemis;
         int       pitchOffsetCents;

@@ -92,7 +92,8 @@ int SampleBank::loadSample(const juce::File& file, double engineSampleRate)
     info.name               = file.getFileNameWithoutExtension();
     info.numChannels        = finalBuf.getNumChannels();
     info.numSamples         = finalBuf.getNumSamples();
-    info.originalSampleRate = srcRate;
+    info.originalSampleRate = srcRate;          // source file rate
+    info.bufferSampleRate   = engineSampleRate; // bake rate (samples resampled to this)
 
     std::cout << "[SampleBank] Loaded  : " << info.name.toStdString()
               << "  ch="       << info.numChannels
@@ -347,7 +348,8 @@ decode_done:
     info.name               = name;
     info.numChannels        = 2;
     info.numSamples         = numSamples;
-    info.originalSampleRate = engineSampleRate;  // already resampled
+    info.originalSampleRate = engineSampleRate;  // decoded/resampled to engine rate
+    info.bufferSampleRate   = engineSampleRate;  // bake rate == stored-sample rate
 
     std::cout << "[SampleBank] Loaded region: " << name.toStdString()
               << " [" << startTimeSec << "–" << endTimeSec << "s]"
@@ -387,6 +389,16 @@ SampleBank::SampleInfo SampleBank::getSampleInfo(int sampleId) const
     if (samples_[sampleId] == nullptr)
         return {};
     return samples_[sampleId]->info;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+double SampleBank::getSampleBufferRate(int sampleId) const noexcept
+{
+    if (sampleId < 0 || sampleId >= static_cast<int>(samples_.size()))
+        return 0.0;
+    if (samples_[sampleId] == nullptr)
+        return 0.0;
+    return samples_[sampleId]->info.bufferSampleRate;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

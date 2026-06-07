@@ -697,6 +697,38 @@ target_compile_definitions(test_mix PRIVATE
 # 8 MB stack prevents STATUS_STACK_OVERFLOW during JUCE static initialisation.
 target_link_options(test_mix PRIVATE /STACK:8388608)
 
+# ── test_clip_sr ─────────────────────────────────────────────────────────────
+# Regression for the export clip-pitch (sample-rate) bug: clips baked at one
+# engine rate and exported at another must preserve pitch. Exercises the raw
+# fallback, cache-hit, and modulated-reader clip read branches.
+add_executable(test_clip_sr
+    test/test_clip_sr.cpp
+)
+
+target_link_libraries(test_clip_sr PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_clip_sr PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+target_link_options(test_clip_sr PRIVATE /STACK:8388608)
+
 # Audio performance telemetry unit tests. No JUCE dependency.
 add_executable(test_audio_telemetry
     test/test_audio_telemetry.cpp

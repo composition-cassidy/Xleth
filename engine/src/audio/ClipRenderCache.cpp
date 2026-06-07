@@ -39,12 +39,14 @@ public:
                   std::shared_ptr<CacheEntry> entry,
                   juce::AudioBuffer<float>    srcCopy,
                   double                      sampleRate,
+                  double                      bufferSampleRate,
                   ClipRenderCache*            owner)
         : juce::ThreadPoolJob("ClipRender")
         , clipId_    (clipId)
         , entry_     (std::move(entry))
         , srcCopy_   (std::move(srcCopy))
         , sampleRate_(sampleRate)
+        , bufferSampleRate_(bufferSampleRate)
         , owner_     (owner)
     {}
 
@@ -72,16 +74,41 @@ public:
         // stretchRatio, so to produce exactly durSamp output samples we must
         // read durSamp / stretchRatio source samples. For unity ratio this
         // collapses to the original durSamp, preserving the no-stretch path.
-        const int64_t readStart = regOff;
-        const int64_t readAvail = static_cast<int64_t>(srcTotal) - readStart;
         const bool willStretch  = (std::abs(key.stretchRatio - 1.0) > 1e-4);
         const double effRatio   = (willStretch && key.stretchRatio > 0.0)
                                 ? key.stretchRatio
                                 : 1.0;
         const int64_t srcReadDesired = static_cast<int64_t>(
             std::llround(static_cast<double>(durSamp) / effRatio));
-        const int64_t readLen   = std::min(srcReadDesired,
-                                           std::max(int64_t(0), readAvail));
+
+        // Bake-rate → prepared-rate correction. srcCopy_ is stored at the bake
+        // rate; the cache output and the pitch/stretch engines run at the
+        // prepared rate (sampleRate_). When they differ we resample the source
+        // region bake→prepared via Lagrange BEFORE pitch/stretch so the cached
+        // clip preserves pitch (mirrors the raw clip path in MixEngine). At
+        // matched rate the original memcpy/reverse fast path is kept bit-for-bit.
+        const double srFactor = (bufferSampleRate_ > 0.0 && sampleRate_ > 0.0)
+                              ? bufferSampleRate_ / sampleRate_ : 1.0;
+        const bool   matchedRate = std::abs(srFactor - 1.0) < 1e-9;
+
+        // regOff and srcReadDesired are prepared-rate counts; the bake buffer is
+        // indexed at prepared-index * srFactor.
+        const int64_t readStart = matchedRate
+            ? regOff
+            : static_cast<int64_t>(std::llround(static_cast<double>(regOff) * srFactor));
+        const int64_t readAvail = static_cast<int64_t>(srcTotal) - readStart;
+
+        // readLen = number of PREPARED-rate samples `working` holds (post-resample).
+        int64_t readLen = 0;
+        if (matchedRate) {
+            readLen = std::min(srcReadDesired, std::max(int64_t(0), readAvail));
+        } else if (readAvail > 1) {
+            // Prepared samples producible from the available bake source, with
+            // one sample of Lagrange interpolation headroom.
+            const int64_t maxProducible = static_cast<int64_t>(
+                std::floor(static_cast<double>(readAvail - 1) / srFactor));
+            readLen = std::min(srcReadDesired, std::max(int64_t(0), maxProducible));
+        }
 
         // Warn for very long clips (>10 s)
         const double durationSec = static_cast<double>(durSamp) / sampleRate_;
@@ -112,18 +139,37 @@ public:
             std::max(1, numCh), static_cast<int>(durSamp));
         outBuf->clear();
 
-        if (numCh > 0 && readLen > 0 && readStart >= 0) {
-            // ── a) Reverse / copy source segment ────────────────────────────
+        if (numCh > 0 && readLen > 0 && readStart >= 0 && readStart < srcTotal) {
+            // ── a) Build the prepared-rate source segment ───────────────────
+            // matchedRate: verbatim reverse/copy (bit-for-bit legacy path).
+            // else: resample bake→prepared via Lagrange, then reverse in place.
             juce::AudioBuffer<float> working(numCh, static_cast<int>(readLen));
-            for (int ch = 0; ch < numCh; ++ch) {
-                const float* src = srcCopy_.getReadPointer(ch);
-                float*       dst = working.getWritePointer(ch);
-                if (key.reversed) {
-                    for (int64_t i = 0; i < readLen; ++i)
-                        dst[i] = src[readStart + (readLen - 1 - i)];
-                } else {
-                    std::memcpy(dst, src + readStart,
-                                sizeof(float) * static_cast<size_t>(readLen));
+            if (matchedRate) {
+                for (int ch = 0; ch < numCh; ++ch) {
+                    const float* src = srcCopy_.getReadPointer(ch);
+                    float*       dst = working.getWritePointer(ch);
+                    if (key.reversed) {
+                        for (int64_t i = 0; i < readLen; ++i)
+                            dst[i] = src[readStart + (readLen - 1 - i)];
+                    } else {
+                        std::memcpy(dst, src + readStart,
+                                    sizeof(float) * static_cast<size_t>(readLen));
+                    }
+                }
+            } else {
+                for (int ch = 0; ch < numCh; ++ch) {
+                    juce::LagrangeInterpolator interp;
+                    interp.reset();
+                    interp.process(srFactor,
+                                   srcCopy_.getReadPointer(ch) + readStart,
+                                   working.getWritePointer(ch),
+                                   static_cast<int>(readLen),
+                                   static_cast<int>(readAvail),
+                                   0);
+                    if (key.reversed) {
+                        float* dst = working.getWritePointer(ch);
+                        std::reverse(dst, dst + static_cast<int>(readLen));
+                    }
                 }
             }
 
@@ -243,6 +289,7 @@ private:
     std::shared_ptr<CacheEntry> entry_;
     juce::AudioBuffer<float>    srcCopy_;
     double                      sampleRate_;
+    double                      bufferSampleRate_;
     ClipRenderCache*            owner_;
 };
 
@@ -313,7 +360,8 @@ void ClipRenderCache::markDirty(int clipId) {
 
 void ClipRenderCache::submitJob(int clipId, const CacheKey& key,
                                 const juce::AudioBuffer<float>& srcPcm,
-                                double sampleRate)
+                                double sampleRate,
+                                double bufferSampleRate)
 {
     if (!threadPool_) return;
     if (clipId < 0 || clipId >= kMaxClipId) return;
@@ -349,7 +397,8 @@ void ClipRenderCache::submitJob(int clipId, const CacheKey& key,
     }
 
     threadPool_->addJob(
-        new ClipRenderJob(clipId, entry, std::move(srcCopy), sampleRate, this),
+        new ClipRenderJob(clipId, entry, std::move(srcCopy), sampleRate,
+                          bufferSampleRate, this),
         /*deleteJobWhenFinished=*/true);
 }
 

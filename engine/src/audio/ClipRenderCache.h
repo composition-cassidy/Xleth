@@ -92,9 +92,14 @@ public:
     // Submit a background render job.
     // srcPcm is copied synchronously inside this call — safe to pass a
     // temporary / stack reference.
+    // sampleRate is the prepared/export rate the output is rendered at;
+    // bufferSampleRate is the rate srcPcm is actually stored at (the bake rate).
+    // When they differ, the source region is resampled bake→prepared before
+    // pitch/stretch so the cached clip preserves pitch (mirrors the raw path).
     void submitJob(int clipId, const CacheKey& key,
                    const juce::AudioBuffer<float>& srcPcm,
-                   double sampleRate);
+                   double sampleRate,
+                   double bufferSampleRate);
 
     // Block until all pending jobs finish, then free all state.
     // Call before destroying the owning MixEngine.

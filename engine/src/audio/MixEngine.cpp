@@ -8,6 +8,7 @@
 #include "audio/PluginEditorHost.h"
 #include "audio/XlethEffectBase.h"
 #include "audio/ClipFade.h"
+#include "audio/HermiteInterp.h"
 #include "audio/WorldStretchCache.h"
 #include "dsp/DeclickEnvelope.h"
 #include "model/ClipModulationCompatibility.h"
@@ -2158,7 +2159,8 @@ void MixEngine::invalidateClipCache(int clipId, const char* trigger)
             trigger ? trigger : "null");
     fflush(stderr);
 #endif
-    clipRenderCache_.submitJob(clipId, key, *srcBuf, sr);
+    const double bakeRate = sampleBank_->getSampleBufferRate(it->second);
+    clipRenderCache_.submitJob(clipId, key, *srcBuf, sr, bakeRate);
 }
 
 // ── Clip processed buffer lookup (message thread) ────────────────────────────
@@ -4063,6 +4065,18 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         const int srcChannels = srcBuf->getNumChannels();
         const int srcTotal    = srcBuf->getNumSamples();
 
+        // ── Bake-rate → export-rate correction ───────────────────────────────
+        // SampleBank buffers are stored at the rate they were baked at (the
+        // engine rate at load time). When the prepared/export rate differs, the
+        // clip readhead must advance by bakeRate/preparedRate or the clip plays
+        // sharp/flat (the Sampler already does this via sourceSampleRate_/
+        // engineSampleRate). At matched rate srFactor == 1.0 and every read
+        // below keeps its original integer fast path (bit-identical).
+        const double bakeRate  = sampleBank_->getSampleBufferRate(ac.sampleBankId);
+        const double srFactor  = (bakeRate > 0.0 && preparedSampleRate_ > 0.0)
+                               ? bakeRate / preparedSampleRate_ : 1.0;
+        const bool   matchedRate = std::abs(srFactor - 1.0) < 1e-9;
+
         const bool isGlobalStretch = (ac.clip->stretchMethod == StretchMethod::Global);
         const int resolvedStretchMethod = isGlobalStretch
             ? globalStretchMethod_
@@ -4167,6 +4181,11 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             p.numOutputSamples    = numSamples;
             p.bpm                 = bpm;
             p.sampleRate          = sampleRate;
+            // Bake-rate of the buffer the reader walks. Plain clips read raw
+            // SampleBank PCM (bake rate); post-cache clips read the prepared-rate
+            // cache buffer, so pass preparedSampleRate_ there → factor 1.0.
+            p.srcSampleRate       = usePostCacheModulatedReader ? preparedSampleRate_ : bakeRate;
+            p.preparedSampleRate  = preparedSampleRate_;
             p.pitchOffsetSemis    = usePostCacheModulatedReader ? 0 : ac.clip->pitchOffset;
             p.pitchOffsetCents    = usePostCacheModulatedReader ? 0 : ac.clip->pitchOffsetCents;
             p.fadeInSamples       = fadeInSamples;
@@ -4241,9 +4260,10 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                     trackBuf.addSample(1, s, readBuf->getSample(std::min(1, readCh - 1), rp) * gain);
                 }
             }
-            else
+            else if (matchedRate)
             {
                 // ── Raw PCM fallback (cache miss or no processing needed) ────
+                // Matched bake/export rate → integer fast path (unchanged).
                 const int64_t samplePos = posInClip + ac.regionOffsetSamples;
                 if (samplePos < 0 || samplePos >= srcTotal) continue;
                 const int sp = static_cast<int>(samplePos);
@@ -4258,6 +4278,31 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                 {
                     trackBuf.addSample(0, s, srcBuf->getSample(0, sp) * gain);
                     trackBuf.addSample(1, s, srcBuf->getSample(std::min(1, srcChannels - 1), sp) * gain);
+                }
+            }
+            else
+            {
+                // ── Raw PCM fallback, rate-corrected ─────────────────────────
+                // Bake-rate samples addressed by a prepared-rate index advance
+                // by srFactor (= bakeRate/preparedRate). Fractional readhead →
+                // Hermite interpolation (same interpolator as the modulated
+                // reader). regionOffset is a prepared-rate count, so scale it
+                // too. Bound on srcTotal-1 so Hermite has its +1 neighbour.
+                const double srcPos =
+                    (static_cast<double>(posInClip) + static_cast<double>(ac.regionOffsetSamples))
+                    * srFactor;
+                if (srcPos < 0.0 || srcPos >= static_cast<double>(srcTotal - 1)) continue;
+
+                if (srcChannels == 1)
+                {
+                    const float sample = xleth::audio::hermiteSample(*srcBuf, 0, srcPos) * gain;
+                    trackBuf.addSample(0, s, sample);
+                    trackBuf.addSample(1, s, sample);
+                }
+                else
+                {
+                    trackBuf.addSample(0, s, xleth::audio::hermiteSample(*srcBuf, 0, srcPos) * gain);
+                    trackBuf.addSample(1, s, xleth::audio::hermiteSample(*srcBuf, std::min(1, srcChannels - 1), srcPos) * gain);
                 }
             }
         }
