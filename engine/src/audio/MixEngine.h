@@ -358,6 +358,19 @@ public:
     void setNoteTriggerCeilingSample(int64_t ceilingSample);
     void clearNoteTriggerCeiling();   // reset to disabled (INT64_MAX)
 
+    // ── Offline wrap render: seamless loop-seam seek (Phase 3B) ──────────────
+    // Arm a ONE-SHOT "seamless" backward seek for the wrap (tail-fold) export.
+    // The wrap renderer plays one discarded region pre-roll to prime delay/reverb
+    // (LTI) effect state to its loop-seam condition, then seeks the transport back
+    // to the region start to capture. Normally a backward seek is treated as a
+    // discontinuity and the effect chains are reset (resetProcessors) — which
+    // would destroy exactly the primed tail wrap depends on. When armed, the NEXT
+    // processBlock discontinuity preserves effect-processor state (skips the
+    // chain reset) while STILL releasing held notes (clean region re-trigger) and
+    // re-flushing PDC latency. The flag auto-clears after one discontinuity. Main
+    // thread only; processBlock consumes it as an atomic exchange.
+    void armSeamlessSeek();
+
     // ── Direct atomic parameter setters (main thread → audio thread) ─────────
     // Write the atomic only. MixEngine holds const Timeline*; model write-back
     // (TrackInfo.volume / .pan / .stereoSpread) is the caller's (XlethAddon)
@@ -946,6 +959,12 @@ private:
     // the audio thread (relaxed); written on the main thread only.
     std::atomic<int64_t> noteTriggerCeilingSample_{
         (std::numeric_limits<int64_t>::max)() };
+
+    // Offline wrap render (Phase 3B): one-shot latch so the NEXT processBlock
+    // seek discontinuity preserves effect-processor state (skips the chain
+    // reset) for the seamless loop-seam jump. Read+cleared on the audio thread
+    // via exchange(); armed on the main thread before the seek.
+    std::atomic<bool> seamlessSeekArmed_{ false };
 
     // Debug logging throttle
     MixDebugLog debugLog_;

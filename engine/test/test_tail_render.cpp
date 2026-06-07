@@ -14,6 +14,7 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <vector>
 
 static int g_passed = 0;
 static int g_failed = 0;
@@ -67,15 +68,20 @@ static void testHardCut() {
     CHECK(p.freezeVideo == false, "hardCut does not freeze video");
 }
 
-// ─── 3. wrap is NEVER silently treated as tailClamp ─────────────────────────────
+// ─── 3. wrap maps to a REAL wrap mode (Phase 3B) ────────────────────────────────
 
-static void testWrapNotTailClamp() {
-    std::cout << "[3] wrap degrades to hardCut, never tailClamp (Phase 3B gated)\n";
+static void testWrapIsRealMode() {
+    std::cout << "[3] wrap maps to a real Wrap mode, never hardCut/tailClamp\n";
     LoopRegion lr; lr.tailMode = LoopRegion::TailMode::Wrap;
     TailRenderPlan p = computeTailRenderPlan(lr, kSr);
+    CHECK(p.mode == TailRenderMode::Wrap, "wrap maps to TailRenderMode::Wrap");
+    CHECK(p.mode != TailRenderMode::HardCut, "wrap must NOT become hardCut");
     CHECK(p.mode != TailRenderMode::TailClamp, "wrap must NOT become tailClamp");
-    CHECK(p.mode == TailRenderMode::HardCut, "wrap degrades to a plain hard cut");
-    CHECK(p.maxTailSamples == 0, "wrap renders no faked tail");
+    // The cap bounds the INTERNAL fold tail (working audio), not the output.
+    CHECK(p.maxTailSamples == static_cast<int64_t>(10.0 * kSr + 0.5),
+          "wrap has a working-tail cap (10 s default)");
+    CHECK(p.freezeVideo == false, "wrap never freezes/extends video");
+    CHECK(p.holdSamples == static_cast<int64_t>(0.050 * kSr + 0.5), "wrap hold ≈ 50 ms");
 }
 
 // ─── 4. Sanitizers + model-boundary clamp ───────────────────────────────────────
@@ -220,11 +226,134 @@ static void testDurationEstimate() {
     CHECK(fullSeconds > seconds, "scoped estimate is shorter than the full timeline");
 }
 
+// ─── 11. Scope-aware wrap policy: scoped keeps Wrap, full-timeline fails closed ──
+
+static void testWrapScopePolicy() {
+    std::cout << "[11] wrap stays Wrap when scoped, falls back to tailClamp when not\n";
+    LoopRegion lr; lr.tailMode = LoopRegion::TailMode::Wrap;
+
+    // Scoped (loop-region) render: wrap is preserved.
+    TailRenderPlan scoped = xleth::resolveTailPlanForScope(lr, kSr, /*scoped*/ true);
+    CHECK(scoped.mode == TailRenderMode::Wrap, "scoped wrap stays Wrap");
+    CHECK(scoped.freezeVideo == false, "scoped wrap never freezes video");
+
+    // Full-timeline (non-scoped) render: no region head to fold onto → tailClamp.
+    TailRenderPlan full = xleth::resolveTailPlanForScope(lr, kSr, /*scoped*/ false);
+    CHECK(full.mode == TailRenderMode::TailClamp,
+          "non-scoped wrap fails CLOSED to tailClamp (documented policy)");
+    CHECK(full.mode != TailRenderMode::Wrap, "non-scoped never renders wrap nonsense");
+    CHECK(full.freezeVideo == true, "the tailClamp fall-back freezes video as usual");
+
+    // hardCut / tailClamp are scope-invariant (no regression).
+    LoopRegion hc; hc.tailMode = LoopRegion::TailMode::HardCut;
+    CHECK(xleth::resolveTailPlanForScope(hc, kSr, false).mode == TailRenderMode::HardCut,
+          "hardCut unaffected by scope");
+    LoopRegion tc; tc.tailMode = LoopRegion::TailMode::TailClamp;
+    CHECK(xleth::resolveTailPlanForScope(tc, kSr, true).mode == TailRenderMode::TailClamp,
+          "tailClamp unaffected by scope");
+}
+
+// ─── 12. Tail fold math: output[i % regionLen] += tail[i] ───────────────────────
+
+static void testFoldMath() {
+    std::cout << "[12] fold folds the post-end tail onto the region head (modulo)\n";
+    // Deterministic spec example: region [1,2,3,4], tail [10,20,30,40,50].
+    //   i=0 → region[0]+=10 → 11
+    //   i=1 → region[1]+=20 → 22
+    //   i=2 → region[2]+=30 → 33
+    //   i=3 → region[3]+=40 → 44
+    //   i=4 → region[0]+=50 → 61   (wraps onto the head)
+    // → [61, 22, 33, 44]
+    float region[4] = { 1.0f, 2.0f, 3.0f, 4.0f };
+    const float tail[5] = { 10.0f, 20.0f, 30.0f, 40.0f, 50.0f };
+    xleth::foldTailIntoRegion(region, 4, tail, 5);
+    CHECK(nearly(region[0], 61.0), "region[0] = 1 + 10 + 50 = 61");
+    CHECK(nearly(region[1], 22.0), "region[1] = 2 + 20 = 22");
+    CHECK(nearly(region[2], 33.0), "region[2] = 3 + 30 = 33");
+    CHECK(nearly(region[3], 44.0), "region[3] = 4 + 40 = 44");
+
+    // A tail SHORTER than the region only touches the head, leaves the rest.
+    float r2[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    const float t2[2] = { 5.0f, 6.0f };
+    xleth::foldTailIntoRegion(r2, 4, t2, 2);
+    CHECK(nearly(r2[0], 6.0) && nearly(r2[1], 7.0) && nearly(r2[2], 1.0) && nearly(r2[3], 1.0),
+          "short tail folds only onto the head");
+
+    // Degenerate inputs are no-ops (never crash / never extend).
+    float r3[2] = { 9.0f, 9.0f };
+    xleth::foldTailIntoRegion(r3, 2, nullptr, 5);
+    xleth::foldTailIntoRegion(r3, 0, t2, 2);
+    xleth::foldTailIntoRegion(nullptr, 2, t2, 2);
+    CHECK(nearly(r3[0], 9.0) && nearly(r3[1], 9.0), "degenerate fold is a no-op");
+}
+
+// ─── 13. wrap detector caps the INTERNAL tail without extending output ──────────
+
+static void testWrapTailCapped() {
+    std::cout << "[13] wrap internal tail bounded by cap / threshold; output stays regionLen\n";
+    LoopRegion lr; lr.tailMode = LoopRegion::TailMode::Wrap;  // 10 s cap default
+    TailRenderPlan p = computeTailRenderPlan(lr, kSr);
+
+    // Never-decaying tail → ends by cap, bounded to maxTailSamples.
+    TailDetectorState capSt;
+    int guard = 0;
+    while (!capSt.done && guard++ < 100000)
+        tailDetectorFeed(capSt, p, 0.5, 4096);
+    CHECK(capSt.done && capSt.endedByCap, "wrap tail stops at the cap when audio never decays");
+    CHECK(capSt.tailSamples >= p.maxTailSamples, "rendered at least the cap");
+
+    // Decayed tail → ends by ~50 ms threshold hold, well before the cap.
+    TailDetectorState thrSt;
+    guard = 0;
+    while (!thrSt.done && guard++ < 100000)
+        tailDetectorFeed(thrSt, p, 0.00001, 512);
+    CHECK(thrSt.done && !thrSt.endedByCap, "wrap tail stops on the threshold hold");
+    CHECK(thrSt.tailSamples < p.maxTailSamples, "threshold stop is before the cap");
+
+    // The fold NEVER extends the output: final length == regionLen regardless of
+    // how long the internal tail ran.
+    const int regionLen = 4 * static_cast<int>(kSr);   // 4 s region
+    std::vector<float> region(static_cast<size_t>(regionLen), 0.0f);
+    std::vector<float> tail(static_cast<size_t>(capSt.tailSamples), 0.25f);
+    xleth::foldTailIntoRegion(region.data(), regionLen,
+                              tail.data(), static_cast<int>(tail.size()));
+    CHECK(static_cast<int>(region.size()) == regionLen,
+          "folded output length is exactly the region length (no extension)");
+}
+
+// ─── 14. wrap duration estimate == region duration (no tail cap added) ──────────
+
+static void testWrapDurationEstimate() {
+    std::cout << "[14] wrap estimate = region duration only (tail folds, adds nothing)\n";
+    const double bpm = 120.0;
+    LoopRegion lr; lr.loopEnabled = true; lr.tailMode = LoopRegion::TailMode::Wrap;
+    lr.startTick = 8 * 960;     // beat 8
+    lr.endTick   = 12 * 960;    // beat 12 → 4 beats = 2.0 s @120
+
+    RenderScope rs = computeRenderScope(lr, kFullEnd);
+    const double ticksToBeats = 1.0 / 960.0;
+    const double captureBeats = (rs.captureEndTick - rs.captureStartTick) * ticksToBeats;
+    double seconds = captureBeats * 60.0 / bpm;
+
+    // Mirror the bridge estimate: cap added ONLY for tailClamp. Scoped wrap → Wrap.
+    TailRenderPlan p = xleth::resolveTailPlanForScope(lr, kSr, rs.scoped);
+    if (p.mode == TailRenderMode::TailClamp)
+        seconds += static_cast<double>(p.maxTailSamples) / kSr;
+
+    CHECK(p.mode == TailRenderMode::Wrap, "scoped wrap stays wrap in the estimate path");
+    CHECK(nearly(seconds, 2.0, 1e-3), "wrap estimate == 2 s region, NOT 2 s + 10 s cap");
+
+    // Phase 2 warm-up is preserved for a scoped wrap render (no cold start).
+    CHECK(rs.warmUpStartTick == 0, "scoped wrap still warms up from tick 0 (Phase 2)");
+    CHECK(rs.captureStartTick == lr.startTick, "wrap captures the region start");
+    CHECK(rs.captureEndTick == lr.endTick, "wrap captures the region end");
+}
+
 int main() {
     std::cout << "── test_tail_render ──────────────────────────────────────\n";
     testDefaults();
     testHardCut();
-    testWrapNotTailClamp();
+    testWrapIsRealMode();
     testSanitize();
     testDetectorCap();
     testDetectorThreshold();
@@ -232,6 +361,10 @@ int main() {
     testFullTimelineTail();
     testScopedWarmupIntact();
     testDurationEstimate();
+    testWrapScopePolicy();
+    testFoldMath();
+    testWrapTailCapped();
+    testWrapDurationEstimate();
 
     std::cout << "──────────────────────────────────────────────────────────\n";
     std::cout << "Passed: " << g_passed << "  Failed: " << g_failed << "\n";

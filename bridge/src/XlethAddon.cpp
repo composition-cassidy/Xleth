@@ -11072,19 +11072,21 @@ Napi::Value Audio_ExportStart(const Napi::CallbackInfo& info)
         cfg.warmUpStartBeat = scope.scoped
             ? scope.warmUpStartTick * ticksToBeats
             : -1.0;   // full timeline: legacy latency-only pre-roll
-        // Phase 3A tail policy from the project LoopRegion (built at the export
-        // sample rate). hardCut → no tail; tailClamp → ring out effects past the
-        // capture end; wrap degrades to hardCut (Phase 3B). Applies to both
-        // scoped and full-timeline (loop-disabled) renders.
+        // Tail policy from the project LoopRegion (built at the export sample
+        // rate). hardCut → no tail; tailClamp → ring out effects past the capture
+        // end; wrap (Phase 3B) → fold the post-end tail onto the region head for a
+        // seamless loop. resolveTailPlanForScope fails wrap CLOSED to tailClamp for
+        // a non-scoped (full-timeline) render — there is no region head to fold.
         const int srForTail = cfg.sampleRate > 0 ? cfg.sampleRate : 44100;
-        cfg.tail = xleth::computeTailRenderPlan(g_timeline->getLoopRegion(),
-                                                static_cast<double>(srForTail));
+        cfg.tail = xleth::resolveTailPlanForScope(g_timeline->getLoopRegion(),
+                                                  static_cast<double>(srForTail),
+                                                  scope.scoped);
         std::fprintf(stderr,
             "[RenderScope] audio scoped=%s capture=[%.3f,%.3f) warmUpBeat=%.3f "
             "tail=%s capSamples=%lld\n",
             scope.scoped ? "true" : "false",
             cfg.startBeat, cfg.endBeat, cfg.warmUpStartBeat,
-            cfg.tail.mode == xleth::TailRenderMode::TailClamp ? "tailClamp" : "hardCut",
+            xleth::tailRenderModeName(cfg.tail.mode),
             (long long)cfg.tail.maxTailSamples);
     }
 
@@ -11347,18 +11349,19 @@ Napi::Value Video_ExportStart(const Napi::CallbackInfo& info)
         *g_gpuDevice
     );
 
-    // Phase 3A tail policy from the project LoopRegion (built at the export
-    // sample rate). Must be set before startRender (captured by the render
-    // thread). hardCut → no tail; tailClamp → ring out effects + freeze last
-    // video frame; wrap degrades to hardCut (Phase 3B). Applies to scoped and
-    // full-timeline renders alike.
+    // Tail policy from the project LoopRegion (built at the export sample rate).
+    // Must be set before startRender (captured by the render thread). hardCut → no
+    // tail; tailClamp → ring out effects + freeze last video frame; wrap (Phase
+    // 3B) → fold the post-end audio tail onto the region head (video is NOT frozen
+    // or extended). resolveTailPlanForScope fails wrap CLOSED to tailClamp for a
+    // non-scoped (full-timeline) render.
     {
-        const auto tailPlan = xleth::computeTailRenderPlan(
-            g_timeline->getLoopRegion(), sampleRate);
+        const auto tailPlan = xleth::resolveTailPlanForScope(
+            g_timeline->getLoopRegion(), sampleRate, scope.scoped);
         g_videoRenderer->setTailRenderPlan(tailPlan);
         std::fprintf(stderr,
             "[RenderScope] video tail=%s capSamples=%lld holdSamples=%lld\n",
-            tailPlan.mode == xleth::TailRenderMode::TailClamp ? "tailClamp" : "hardCut",
+            xleth::tailRenderModeName(tailPlan.mode),
             (long long)tailPlan.maxTailSamples, (long long)tailPlan.holdSamples);
     }
 
@@ -11445,7 +11448,9 @@ Napi::Value Video_ExportCancel(const Napi::CallbackInfo& info)
 // timeline) and is NOT driven by stale hidden manual-bar values.
 //
 // The real tail length is unknown before render, so the estimate adds the tail
-// CAP (tailMaxSeconds) for tailClamp; hardCut/wrap add nothing.
+// CAP (tailMaxSeconds) for tailClamp; hardCut adds nothing. wrap (Phase 3B) also
+// adds NOTHING: its tail folds back into the region head, so the exported file is
+// exactly the region length — the cap is internal working audio, not output.
 // NOTE: Assumes constant tempo. Update if tempo automation lands.
 Napi::Value Video_ComputeDurationSeconds(const Napi::CallbackInfo& info)
 {
@@ -11469,8 +11474,11 @@ Napi::Value Video_ComputeDurationSeconds(const Napi::CallbackInfo& info)
     double seconds = std::max(0.0, captureBeats * 60.0 / bpm);
 
     // Add the tail cap (rate cancels: maxTailSamples / sr == tailMaxSeconds).
+    // Scope-aware so wrap (which folds, adding no duration) stays region-length,
+    // and a non-scoped wrap fall-back (→ tailClamp) is estimated with the cap.
     constexpr double kNominalSr = 48000.0;
-    const auto tail = xleth::computeTailRenderPlan(g_timeline->getLoopRegion(), kNominalSr);
+    const auto tail = xleth::resolveTailPlanForScope(
+        g_timeline->getLoopRegion(), kNominalSr, scope.scoped);
     if (tail.mode == xleth::TailRenderMode::TailClamp)
         seconds += static_cast<double>(tail.maxTailSamples) / kNominalSr;
 

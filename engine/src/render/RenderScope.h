@@ -147,18 +147,41 @@ inline RenderPrerollPlan computeRenderPrerollPlan(int64_t warmUpStartSample,
 //               Video freezes the last captured frame for the tail duration so
 //               the container's A/V lengths stay equal.
 //
-// Wrap (seamless loop) is Phase 3B. It MUST be gated out upstream (UI disabled +
-// bridge coercion) and must never be silently rendered as TailClamp. As a last
-// line of defence, if Wrap ever reaches here it degrades to HardCut — a plain
-// cut, never a faked seamless loop and never a silent TailClamp.
-enum class TailRenderMode { HardCut, TailClamp };
+// Wrap (seamless loop) — Phase 3B. A real tail-fold render: the post-end effect
+// tail is captured into a working buffer and folded back onto the region head
+// (output[i % regionLen] += tail[i]) so an exported loop crossfades into itself
+// with no click at the seam. The final audio duration is EXACTLY the region
+// length — the tail is internal working audio, never appended. Video is NOT
+// folded or frozen for wrap (the region's frames render straight; loop
+// seamlessness of the picture is the user's compositional responsibility).
+//
+// Wrap requires a scoped loop region. Mapping a NON-scoped (full-timeline) render
+// to Wrap is meaningless — there is no head to fold onto — so the scope-aware
+// resolver (resolveTailPlanForScope) fails closed to TailClamp in that case.
+// computeTailRenderPlan itself performs the pure enum mapping (Wrap → Wrap) and
+// is the unit-tested contract; it MUST never silently degrade Wrap to HardCut or
+// TailClamp.
+enum class TailRenderMode { HardCut, TailClamp, Wrap };
+
+// Stable lowercase label for logs/diagnostics (matches the model JSON strings).
+inline const char* tailRenderModeName(TailRenderMode m) {
+    switch (m) {
+        case TailRenderMode::HardCut:   return "hardCut";
+        case TailRenderMode::TailClamp: return "tailClamp";
+        case TailRenderMode::Wrap:      return "wrap";
+        default:                        return "hardCut";
+    }
+}
 
 struct TailRenderPlan {
     TailRenderMode mode            = TailRenderMode::TailClamp;
     int64_t        maxTailSamples  = 0;       // hard cap = tailMaxSeconds * sampleRate
+                                              //  (Wrap: cap on the internal fold
+                                              //   tail; does NOT extend output)
     int64_t        holdSamples     = 0;       // sub-threshold hold (~50 ms)
     double         thresholdLinear = 0.001;   // 10^(tailThresholdDb/20)
-    bool           freezeVideo     = false;   // freeze last frame for tail (TailClamp)
+    bool           freezeVideo     = false;   // freeze last frame for tail (TailClamp
+                                              //  only; always false for Wrap)
 };
 
 // ~50 ms hold below threshold ends the tail early. Spec §3A.
@@ -196,14 +219,65 @@ inline TailRenderPlan computeTailRenderPlan(const LoopRegion& lr, double sampleR
             plan.freezeVideo    = true;
             break;
         case LoopRegion::TailMode::Wrap:
+            // Phase 3B: real seamless-loop tail fold. The cap bounds the internal
+            // fold tail (working audio); the final output duration stays exactly
+            // the region length. Video is never frozen/extended for wrap.
+            plan.mode           = TailRenderMode::Wrap;
+            plan.maxTailSamples = static_cast<int64_t>(maxSeconds * sr + 0.5);
+            plan.freezeVideo    = false;
+            break;
         default:
-            // Phase 3B not implemented — degrade to a hard cut, NEVER tailClamp.
+            // Unknown/garbage enum — degrade to a hard cut, NEVER tailClamp.
             plan.mode           = TailRenderMode::HardCut;
             plan.maxTailSamples = 0;
             plan.freezeVideo    = false;
             break;
     }
     return plan;
+}
+
+// Scope-aware tail plan. Wrap only has meaning for a SCOPED loop-region render —
+// folding the post-end tail back onto the region head requires a head to fold
+// onto. For a non-scoped (full-timeline, loopEnabled == false) render there is no
+// region to wrap, so wrap fails CLOSED to TailClamp (effects ring out + last
+// frame frozen) rather than producing nonsense or a silent hard cut. The bridge
+// calls this at the export boundary where `scoped` (== loopEnabled) is known;
+// the pure computeTailRenderPlan above keeps the unmodified enum mapping for unit
+// tests and for callers that have already guaranteed a scoped render.
+inline TailRenderPlan resolveTailPlanForScope(const LoopRegion& lr,
+                                              double sampleRate,
+                                              bool scoped)
+{
+    TailRenderPlan plan = computeTailRenderPlan(lr, sampleRate);
+    if (plan.mode == TailRenderMode::Wrap && !scoped) {
+        // Full-timeline wrap is undefined — fall back to the documented safe
+        // behaviour (tailClamp). This is the single policy point; never silent.
+        plan.mode        = TailRenderMode::TailClamp;
+        plan.freezeVideo = true;
+    }
+    return plan;
+}
+
+// ─── Tail fold (Wrap, sample domain, pure) ──────────────────────────────────────
+// Folds `tailLen` post-end tail samples back onto the region head in place:
+//
+//     region[i % regionLen] += tail[i]   for i in [0, tailLen)
+//
+// Operates on one channel of plain float samples so it is unit-testable with no
+// JUCE/audio dependency, and is only ever called on the control (render) thread —
+// never the audio thread. `regionLen` must be > 0; a zero/negative region or tail
+// is a no-op. The output buffer is NOT extended: a tail longer than the region
+// wraps around and keeps accumulating onto the head (a genuinely seamless loop).
+inline void foldTailIntoRegion(float* region, int regionLen,
+                               const float* tail, int tailLen)
+{
+    if (region == nullptr || tail == nullptr || regionLen <= 0 || tailLen <= 0)
+        return;
+    int idx = 0;
+    for (int i = 0; i < tailLen; ++i) {
+        region[idx] += tail[i];
+        if (++idx >= regionLen) idx = 0;
+    }
 }
 
 // ─── Tail detector (sample domain, pure state machine) ──────────────────────────

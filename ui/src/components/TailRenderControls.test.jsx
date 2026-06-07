@@ -36,14 +36,31 @@ describe('TailRenderControls (Phase 3A)', () => {
   })
   afterEach(() => { container.remove() })
 
-  it('shows the tail-mode control with hardCut, tailClamp and a disabled wrap option', () => {
+  it('shows the tail-mode control with hardCut, tailClamp and an ENABLED wrap option', () => {
     const html = renderHtml(<TailRenderControls />)
     expect(html).toContain('Tail mode')
     expect(html).toContain('value="tailClamp"')
     expect(html).toContain('value="hardCut"')
-    // wrap is visible but explicitly disabled and marked Phase 3B — never active.
-    expect(html).toContain('Phase 3B')
-    expect(html).toMatch(/<option value="wrap"[^>]*disabled/)
+    // Phase 3B: wrap is now a real, selectable option (native support wired).
+    expect(html).toContain('value="wrap"')
+    expect(html).not.toMatch(/<option value="wrap"[^>]*disabled/)
+  })
+
+  it('shows wrap copy about audio tail folding and the LTI/nonlinear limitation', () => {
+    useLoopRegionStore.getState().setLoopRegionLocal({
+      ...DEFAULT_LOOP_REGION, tailMode: 'wrap',
+    })
+    const html = renderHtml(<TailRenderControls />)
+    // mentions folding audio tails for a seamless loop export
+    expect(html).toMatch(/fold/i)
+    expect(html).toMatch(/seamless loop/i)
+    // mentions it is for loop-region renders
+    expect(html).toMatch(/loop-region/i)
+    // warns the fold is exact for LTI effects but approximate for nonlinear ones
+    expect(html).toMatch(/time-invariant/i)
+    expect(html).toMatch(/approximate/i)
+    // mentions the output stays region length (video not extended)
+    expect(html).toMatch(/not (be )?extended/i)
   })
 
   it('shows the tailClamp explanation by default (effects ring out, frozen frame)', () => {

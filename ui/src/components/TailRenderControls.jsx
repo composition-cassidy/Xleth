@@ -7,11 +7,15 @@ import useLoopRegionStore from '../stores/loopRegionStore.js'
 // existing undo-tracked mutation path (timeline.setLoopRegion). Both the audio
 // and video export dialogs embed this so the two agree on tail behaviour.
 //
-// Phase 3A scope:
+// Tail modes:
 //   - hardCut  : works. Warns about click/pop at the boundary.
 //   - tailClamp: works (default). Effects ring out; last video frame frozen.
-//   - wrap     : visible but DISABLED — "lands in Phase 3B". Never silently
-//                mapped to tailClamp.
+//   - wrap     : Phase 3B. Folds the post-region audio tail back onto the region
+//                head for a seamless loop export. Audio only — video is not
+//                extended/frozen. Only meaningful for a scoped loop-region render
+//                (the engine fails it closed to tailClamp for a full-timeline
+//                export). Exact for linear time-invariant effects (reverb/delay);
+//                approximate for compressors/limiters/distortion/modulation.
 //   - renderOrigin: absolute (real) selectable; normalized DISABLED/reserved
 //                   because the engine still falls back to absolute.
 
@@ -81,13 +85,13 @@ export default function TailRenderControls({ disabled = false }) {
       <div className="export-row">
         <label>Tail mode</label>
         <select
-          value={tailMode === 'wrap' ? 'tailClamp' : tailMode}
+          value={tailMode}
           onChange={(e) => commit({ tailMode: e.target.value })}
           disabled={disabled}
         >
           <option value="tailClamp">Tail clamp — let effects ring out</option>
           <option value="hardCut">Hard cut — stop at region end</option>
-          <option value="wrap" disabled>Wrap / seamless loop — Phase 3B</option>
+          <option value="wrap">Wrap — fold tails back for a seamless loop</option>
         </select>
       </div>
 
@@ -95,6 +99,17 @@ export default function TailRenderControls({ disabled = false }) {
         <div className="tail-warning">
           ⚠ Audio and video stop exactly at the region end. This can click/pop
           because the waveform and any reverb/delay tails are cut at the boundary.
+        </div>
+      ) : tailMode === 'wrap' ? (
+        <div className="tail-help">
+          Wrap folds audio tails back onto the start for seamless loop exports —
+          for loop-region renders. The reverb/delay tail that rings out past the
+          region end is folded onto the region head, so the exported audio loops
+          without a click. The exported length stays exactly the region length and
+          the video is not extended or frozen. Tail folding is exact for mostly
+          linear, time-invariant effects such as reverb and delay; compressors,
+          limiters, distortion, and modulation effects can make the fold
+          approximate.
         </div>
       ) : (
         <div className="tail-help">

@@ -105,6 +105,29 @@ private:
                        std::function<void(float)> progressCallback,
                        std::atomic<bool>& cancelFlag);
 
+    // Phase 3B wrap (seamless loop tail-fold) render pass. Distinct from
+    // renderOffline so the Phase 3A hardCut/tailClamp path is untouched.
+    // Sequence: (A) absolute warm-up from warmUpStartSample → startSample AND
+    // (B) one discarded region pre-roll [startSample, endSample) to prime
+    // delay/reverb state to the loop seam — both contiguous, no seek; then a
+    // seamless backward seek to the region start; (C) capture [startSample,
+    // endSample) into `output` (sized to EXACTLY totalSamples) and render the
+    // post-end tail (no new triggers past endSample) into a working buffer until
+    // the master bus decays below threshold or the cap is hit; (D) fold the tail
+    // onto the region head (output[i % totalSamples] += tail[i]). The final
+    // duration is exactly totalSamples — the tail never extends the output.
+    bool renderOfflineWrap(const Timeline& timeline,
+                           MixEngine& mixer,
+                           int64_t startSample,
+                           int64_t warmUpStartSample,
+                           int totalSamples,
+                           int sampleRate,
+                           const xleth::TailRenderPlan& tail,
+                           juce::AudioBuffer<float>& output,
+                           int& outRenderedSamples,
+                           std::function<void(float)> progressCallback,
+                           std::atomic<bool>& cancelFlag);
+
     // Unified FFmpeg-based encoder. Picks codec + sample format from config
     // (WAV -> pcm_s16le/pcm_s24le/pcm_f32le, MP3 -> libmp3lame, FLAC -> flac)
     // and writes the file via the WAV/MP3/FLAC muxer.

@@ -420,6 +420,14 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
                                   int64_t warmUpStartSample,
                                   const ExportSettings& settings)
 {
+    // Phase 3B: wrap (seamless tail fold) is a distinct A/V pipeline (pre-rendered
+    // folded audio + region-only video, no freeze). Branch before any Phase 3A
+    // setup so that path stays byte-for-byte unchanged.
+    if (tailPlan_.mode == xleth::TailRenderMode::Wrap) {
+        renderImplWrap(startSample, endSample, warmUpStartSample, settings);
+        return;
+    }
+
     const int sampleRate = settings.sampleRate;
     const AVRational fps = { settings.fpsNum, settings.fpsDen };
     const double bpm = timeline_.getBPM();
@@ -1065,6 +1073,428 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
     mixer_.setNonRealtime(false);
 
     // Shutdown video pipeline resources
+    compositor.shutdown();
+    decoder.closeAll();
+    cache.clear();
+}
+
+// ===========================================================================
+// renderImplWrap — Phase 3B wrap (seamless loop tail-fold) A/V pipeline
+// ===========================================================================
+//
+// Distinct from renderImpl so the Phase 3A path is untouched. Two stages:
+//   STAGE A (audio, no mux): warm up from tick 0, run one DISCARDED region
+//     pre-roll to prime delay/reverb to the loop seam, seamless-seek back to the
+//     region start, capture the region, render the post-end tail, and FOLD the
+//     tail onto the region head (output[i % regionLen] += tail[i]). Result: a
+//     folded region buffer of EXACTLY the region length.
+//   STAGE B (video + folded audio → mux): stream the folded region audio to the
+//     muxer alongside the region's video frames. NO tail, NO freeze, NO video
+//     fold — final A/V duration == region length.
+//
+void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
+                                      int64_t warmUpStartSample,
+                                      const ExportSettings& settings)
+{
+    const int sampleRate = settings.sampleRate;
+    const AVRational fps  = { settings.fpsNum, settings.fpsDen };
+    const double bpm      = timeline_.getBPM();
+    const xleth::TailRenderPlan tailPlan = tailPlan_;
+
+    if (warmUpStartSample < 0)          warmUpStartSample = 0;
+    if (warmUpStartSample > startSample) warmUpStartSample = startSample;
+
+    const int regionLen = static_cast<int>(endSample - startSample);
+    if (regionLen <= 0) {
+        progress_.setError("Wrap render: empty region");
+        progress_.failed.store(true);
+        progress_.phase.store(0);
+        return;
+    }
+    const int64_t maxTail = std::max<int64_t>(0, tailPlan.maxTailSamples);
+
+    // RAII: the note-trigger ceiling must be cleared on every exit path.
+    struct CeilingGuard {
+        MixEngine& m; bool armed = false;
+        ~CeilingGuard() { if (armed) m.clearNoteTriggerCeiling(); }
+    } ceilingGuard{ mixer_ };
+
+    std::fprintf(stderr,
+        "[Renderer] WRAP mode: region=[%lld,%lld) regionLen=%d\n",
+        (long long)startSample, (long long)endSample, regionLen);
+
+    // ── PHASE 1: PRE-ROLL / audio capture+fold ───────────────────────────────
+    progress_.phase.store(1);
+    mixer_.setNonRealtime(true);
+    mixer_.prepare(static_cast<double>(sampleRate), kBufferSize);
+    mixer_.clearNoteTriggerCeiling();   // region pre-roll + capture trigger normally
+
+    const auto lat = mixer_.getLatencyCompensationSnapshot();
+
+    juce::AudioBuffer<float> regionAudio(2, regionLen);
+    regionAudio.clear();
+
+    {
+        Transport transport;
+        transport.setSampleRate(static_cast<double>(sampleRate));
+        transport.setBPM(bpm);
+        juce::AudioBuffer<float> block(2, kBufferSize);
+
+        // STAGE A: absolute warm-up + one discarded region pre-roll (contiguous).
+        // [warmRenderStart, startSample) recreates in-flight content (Phase 2);
+        // [startSample, endSample) is the wrap pre-roll that primes LTI effect
+        // state to the loop seam. No seek between them → effect state accumulates.
+        const auto warmPlan = xleth::computeRenderPrerollPlan(
+            warmUpStartSample, startSample,
+            lat.maxAudibleTrackLatencySamples, lat.masterInsertLatencySamples);
+        const int64_t warmRenderStart = warmPlan.renderStartSample;
+#ifdef XLETH_DEBUG
+        std::fprintf(stderr,
+            "[TailFold] warmUpStart=%lld preRollRegion=[%lld,%lld) preRollLen=%d "
+            "regionLen=%d\n",
+            (long long)warmRenderStart, (long long)startSample, (long long)endSample,
+            regionLen, regionLen);
+#endif
+        transport.seekToSample(warmRenderStart);
+        transport.play();
+
+        int64_t cur = warmRenderStart;
+        while (cur < endSample) {
+            if (progress_.cancelRequested.load()) {
+                mixer_.setNonRealtime(false); progress_.phase.store(0); return;
+            }
+            const int n = static_cast<int>(std::min<int64_t>(kBufferSize, endSample - cur));
+            if (block.getNumSamples() != n) block.setSize(2, n, false, false, true);
+            block.clear();
+            mixer_.processBlock(block, n, transport);   // discarded (priming)
+            transport.advance(n);
+            cur += n;
+        }
+
+        // STAGE A capture: seamless backward seek to the region start. Latency-only
+        // pre-roll re-flushes PDC; the seamless seek preserves primed effect state
+        // (skips the chain reset) while releasing notes (clean region re-trigger).
+        const auto capPlan = xleth::computeRenderPrerollPlan(
+            startSample, startSample,
+            lat.maxAudibleTrackLatencySamples, lat.masterInsertLatencySamples);
+        const int64_t capRenderStart = capPlan.renderStartSample;
+        int64_t capDiscard = capPlan.discardSamples;
+
+        mixer_.armSeamlessSeek();
+        transport.seekToSample(capRenderStart);
+
+        int pos = 0;
+        int64_t curCap = capRenderStart;
+        while (curCap < endSample && pos < regionLen) {
+            if (progress_.cancelRequested.load()) {
+                mixer_.setNonRealtime(false); progress_.phase.store(0); return;
+            }
+            const int n = static_cast<int>(std::min<int64_t>(kBufferSize, endSample - curCap));
+            if (block.getNumSamples() != n) block.setSize(2, n, false, false, true);
+            block.clear();
+            mixer_.processBlock(block, n, transport);
+
+            const int discardThisBlock = static_cast<int>(std::min<int64_t>(capDiscard, n));
+            capDiscard -= discardThisBlock;
+            int keep = n - discardThisBlock;
+            if (keep > 0) keep = std::min(keep, regionLen - pos);
+            if (keep > 0) {
+                for (int ch = 0; ch < 2; ++ch)
+                    regionAudio.copyFrom(ch, pos, block, ch, discardThisBlock, keep);
+                pos += keep;
+            }
+            transport.advance(n);
+            curCap += n;
+        }
+
+        // STAGE A tail + fold: render the post-end tail (no new triggers) and fold
+        // it onto the region head. The output duration never grows.
+        xleth::TailDetectorState tailState;
+        if (maxTail > 0) {
+            juce::AudioBuffer<float> tailBuf(2, static_cast<int>(maxTail));
+            tailBuf.clear();
+            mixer_.setNoteTriggerCeilingSample(endSample);
+            ceilingGuard.armed = true;
+
+            int64_t tailPos = 0;
+            while (!tailState.done && tailPos < maxTail) {
+                if (progress_.cancelRequested.load()) {
+                    mixer_.setNonRealtime(false); progress_.phase.store(0); return;
+                }
+                const int n = static_cast<int>(std::min<int64_t>(kBufferSize, maxTail - tailPos));
+                if (block.getNumSamples() != n) block.setSize(2, n, false, false, true);
+                block.clear();
+                mixer_.processBlock(block, n, transport);
+                const double blockPeak = std::max(mixer_.getMasterPeakL(),
+                                                  mixer_.getMasterPeakR());
+                for (int ch = 0; ch < 2; ++ch)
+                    tailBuf.copyFrom(ch, static_cast<int>(tailPos), block, ch, 0, n);
+                tailPos += n;
+                transport.advance(n);
+                xleth::tailDetectorFeed(tailState, tailPlan, blockPeak, n);
+            }
+
+            const int foldLen = static_cast<int>(std::min<int64_t>(tailState.tailSamples, maxTail));
+            for (int ch = 0; ch < 2; ++ch)
+                xleth::foldTailIntoRegion(regionAudio.getWritePointer(ch), regionLen,
+                                          tailBuf.getReadPointer(ch), foldLen);
+
+            std::fprintf(stderr,
+                "[TailFold] capture=[%lld,%lld) regionLen=%d detectedTail=%lld endedBy=%s "
+                "foldedSamples=%d finalLen=%d videoExtended=no videoFrozen=no\n",
+                (long long)startSample, (long long)endSample, regionLen,
+                (long long)tailState.tailSamples,
+                tailState.endedByCap ? "cap" : "threshold", foldLen, regionLen);
+
+            mixer_.clearNoteTriggerCeiling();
+            ceilingGuard.armed = false;
+        }
+        transport.pause();
+    }
+
+    // ── PHASE 2: video + folded audio → mux ──────────────────────────────────
+    progress_.phase.store(2);
+
+    const int64_t totalSamples = regionLen;
+    const int64_t totalVideoFrames = RenderClock::sampleToVideoFrame(totalSamples, sampleRate, fps);
+    progress_.totalFrames.store(totalVideoFrames);
+
+    std::vector<SlideAnimationEvent> slideEvents;
+    auto videoEvents = buildVideoEvents(timeline_, &slideEvents, sampleRate);
+
+    ExportSettings muxSettings = settings;
+    std::string fragPath = settings.outputPath + ".frag.mp4";
+    muxSettings.outputPath = fragPath;
+    muxSettings.fragmentedMP4 = true;
+
+    auto* device = gpu_.getDevice();
+    auto* devCtx = gpu_.getContext();
+
+    FFmpegMuxer muxer;
+    if (!muxer.init(muxSettings)) {
+        progress_.setError("Failed to initialize video encoder");
+        progress_.failed.store(true);
+        mixer_.setNonRealtime(false);
+        progress_.phase.store(0);
+        return;
+    }
+    progress_.setVideoEncoderName(muxer.videoEncoderName());
+    progress_.videoEncoderFallback.store(muxer.isVideoEncoderFallback());
+
+    RenderFrameCache cache;
+    FrameCollector collector;
+    AnimationManager animMgr;
+    collector.setAnimationManager(&animMgr);
+    collector.setCompanionFxEnabled(true);
+
+    int64_t videoFramesAttempted = 0;
+    int64_t invalidReadbackCount = 0;
+
+    RenderVideoDecoder decoder;
+    using VM = ExportSettings::VideoMode;
+    if (settings.videoMode == VM::Software) {
+        // software decode only
+    } else if (settings.videoMode == VM::Hardware) {
+        if (!device || !devCtx || !decoder.initHwDevice(device, devCtx)) {
+            progress_.setError(
+                "Hardware video mode selected, but D3D11VA hardware decode could not be "
+                "initialized. Switch Video mode to Auto or Software in Settings.");
+            progress_.failed.store(true);
+            muxer.finalize();
+            std::filesystem::remove(fragPath);
+            mixer_.setNonRealtime(false);
+            progress_.phase.store(0);
+            return;
+        }
+    } else {
+        if (device && devCtx) decoder.initHwDevice(device, devCtx);
+    }
+
+    GridCompositor compositor;
+    if (device && devCtx) {
+        if (!compositor.init(device, devCtx, settings.width, settings.height)) {
+            progress_.setError("Failed to initialize GPU compositor");
+            progress_.failed.store(true);
+            muxer.finalize();
+            std::filesystem::remove(fragPath);
+            mixer_.setNonRealtime(false);
+            progress_.phase.store(0);
+            return;
+        }
+    }
+
+    const GridLayout& grid = timeline_.getGridLayout();
+    const auto renderStartTime = std::chrono::steady_clock::now();
+
+    int64_t audioSamplesWritten = 0;
+    int     iterationCount = 0;
+    double  prevBeat = -1.0;
+
+    while (audioSamplesWritten < totalSamples) {
+        if (progress_.cancelRequested.load()) {
+            muxer.finalize();
+            std::filesystem::remove(fragPath);
+            mixer_.setNonRealtime(false);
+            progress_.phase.store(0);
+            return;
+        }
+
+        const int thisBufferSize = static_cast<int>(
+            std::min<int64_t>(kBufferSize, totalSamples - audioSamplesWritten));
+
+        // Stream the pre-rendered folded region audio (NO live processBlock).
+        const float* audioChannels[2] = {
+            regionAudio.getReadPointer(0) + audioSamplesWritten,
+            regionAudio.getReadPointer(1) + audioSamplesWritten
+        };
+        if (!muxer.writeAudio(audioChannels, thisBufferSize, audioSamplesWritten)) {
+            progress_.setError("Audio encoding failed");
+            progress_.failed.store(true);
+            muxer.finalize();
+            std::filesystem::remove(fragPath);
+            mixer_.setNonRealtime(false);
+            progress_.phase.store(0);
+            return;
+        }
+
+        const auto frameBounds = RenderClock::frameBoundsForBuffer(
+            audioSamplesWritten, thisBufferSize, sampleRate, fps);
+        const int64_t firstFrame = frameBounds.first;
+        const int64_t lastFrame  = frameBounds.second;
+
+        if (firstFrame <= lastFrame) {
+            for (int64_t f = firstFrame; f <= lastFrame; ++f) {
+                const float frameDurationMs = 1000.0f * static_cast<float>(fps.den)
+                                            / static_cast<float>(fps.num);
+                animMgr.advanceAll(frameDurationMs);
+                const int64_t localFrameSample = RenderClock::videoFrameToSample(f, sampleRate, fps);
+                const int64_t projectFrameSample = startSample + localFrameSample;
+
+                {
+                    const int64_t currentPpq = RenderClock::sampleToPPQ(
+                        projectFrameSample, sampleRate, bpm);
+                    const double ticksPerBeat = static_cast<double>(TickTime::fromBeats(1).ticks);
+                    const double currentBeat = static_cast<double>(currentPpq) / ticksPerBeat;
+                    if (prevBeat < 0.0 || currentBeat + 1e-6 < prevBeat)
+                        prevBeat = currentBeat - 1e-6;
+                    for (const auto& se : slideEvents) {
+                        if (se.startBeat > prevBeat && se.startBeat <= currentBeat) {
+                            const TrackInfo* tr = timeline_.getTrack(se.trackId);
+                            if (!tr) continue;
+                            const auto& cfg = tr->slideNoteEffect;
+                            if (cfg.type == SlideNoteEffectSettings::EffectType::None) continue;
+                            double durationMs;
+                            if (cfg.durationMode == SlideNoteEffectSettings::DurationMode::FollowSlide)
+                                durationMs = se.durationBeats * (60000.0 / bpm);
+                            else
+                                durationMs = cfg.fixedDurationMs;
+                            animMgr.onSlideEvent(se.trackId, static_cast<float>(durationMs),
+                                                 cfg, se.slideCurveCx, se.slideCurveCy);
+                        }
+                    }
+                    prevBeat = currentBeat;
+                }
+
+                auto requests = collector.collectRequests(
+                    f, timeline_, sampleRate, fps, videoEvents,
+                    /*allowProxy=*/ !settings.useSourceMedia,
+                    /*projectStartSample=*/ startSample);
+                auto deduplicated = FrameCollector::deduplicateRequests(requests);
+                auto misses = FrameCollector::resolveFrames(deduplicated, cache);
+
+                if (device && devCtx) {
+                    for (const auto& key : misses) {
+                        auto entry = decoder.decode(key.sourcePath, key.frameIndex, device, devCtx);
+                        if (entry.texture) cache.put(key, std::move(entry));
+                    }
+                }
+
+                if (compositor.isInitialized()) {
+                    const float currentTime = static_cast<float>(
+                        RenderClock::sampleToSeconds(projectFrameSample, sampleRate));
+                    compositor.compositeFrame(requests, cache, grid.columns, grid.rows,
+                                              currentTime, grid.gapScale);
+                    auto readback = compositor.readback();
+                    ++videoFramesAttempted;
+                    if (readback.valid) {
+                        if (!muxer.writeVideo(readback.pixels.data(), readback.stride, f)) {
+                            progress_.setError("Video encoding failed at frame " + std::to_string(f));
+                            progress_.failed.store(true);
+                            muxer.finalize();
+                            std::filesystem::remove(fragPath);
+                            mixer_.setNonRealtime(false);
+                            progress_.phase.store(0);
+                            return;
+                        }
+                    } else {
+                        ++invalidReadbackCount;
+                        constexpr int64_t kEarlyAbortThreshold = 10;
+                        if (videoFramesAttempted >= kEarlyAbortThreshold &&
+                            invalidReadbackCount == videoFramesAttempted) {
+                            progress_.setError(
+                                "Compositor readback failed for the first "
+                                + std::to_string(kEarlyAbortThreshold)
+                                + " video frames (D3D11 staging Map failed).");
+                            progress_.failed.store(true);
+                            muxer.finalize();
+                            std::filesystem::remove(fragPath);
+                            mixer_.setNonRealtime(false);
+                            progress_.phase.store(0);
+                            return;
+                        }
+                    }
+                }
+                progress_.currentFrame.store(f);
+            }
+        }
+
+        audioSamplesWritten += thisBufferSize;
+        ++iterationCount;
+
+        const float pct = static_cast<float>(audioSamplesWritten)
+                        / static_cast<float>(totalSamples) * 100.0f;
+        progress_.percentage.store(pct);
+        const auto elapsed = std::chrono::steady_clock::now() - renderStartTime;
+        const double elapsedSec = std::chrono::duration<double>(elapsed).count();
+        if (elapsedSec > 0.01) {
+            const double renderedSec = static_cast<double>(audioSamplesWritten) / sampleRate;
+            const float speed = static_cast<float>(renderedSec / elapsedSec);
+            progress_.speedMultiplier.store(speed);
+        }
+    }
+
+    // ── PHASE 3: FINALIZE ────────────────────────────────────────────────────
+    progress_.phase.store(3);
+    std::fprintf(stderr,
+        "[Renderer] WRAP COMPLETE: regionLen=%d samples, video frames=%lld, "
+        "no tail extension, no video freeze\n",
+        regionLen, (long long)progress_.currentFrame.load());
+
+    if (!muxer.finalize()) {
+        progress_.setError("Muxer finalization failed");
+        progress_.failed.store(true);
+        std::filesystem::remove(fragPath);
+        mixer_.setNonRealtime(false);
+        progress_.phase.store(0);
+        return;
+    }
+
+    if (!progress_.cancelRequested.load()) {
+        if (!remuxToFaststart(fragPath, settings.outputPath)) {
+            std::error_code ec;
+            std::filesystem::rename(fragPath, settings.outputPath, ec);
+        } else {
+            std::filesystem::remove(fragPath);
+        }
+    } else {
+        std::filesystem::remove(fragPath);
+    }
+
+    progress_.percentage.store(100.0f);
+    progress_.complete.store(true);
+    progress_.phase.store(0);
+    mixer_.setNonRealtime(false);
+
     compositor.shutdown();
     decoder.closeAll();
     cache.clear();

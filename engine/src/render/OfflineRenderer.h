@@ -189,6 +189,17 @@ private:
                     int64_t warmUpStartSample,
                     const ExportSettings& settings);
 
+    // Phase 3B wrap (seamless loop tail-fold) A/V path. Kept separate from
+    // renderImpl so the Phase 3A hardCut/tailClamp pipeline is untouched. Audio
+    // is pre-rendered to memory (warm-up + discarded region pre-roll + seamless
+    // seek capture + post-end tail folded onto the region head), then the folded
+    // region audio is streamed to the muxer alongside the region's video frames.
+    // Final A/V duration == region length exactly: NO tail extension, NO video
+    // freeze, NO video fold.
+    void renderImplWrap(int64_t startSample, int64_t endSample,
+                        int64_t warmUpStartSample,
+                        const ExportSettings& settings);
+
     /**
      * Remux fragmented MP4 → standard MP4 with moov at front (faststart).
      * Uses FFmpeg C API stream copy — no re-encoding.

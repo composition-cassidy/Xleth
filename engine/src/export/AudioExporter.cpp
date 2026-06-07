@@ -130,6 +130,15 @@ bool AudioExporter::renderOffline(const Timeline& timeline,
                                    std::function<void(float)> progressCallback,
                                    std::atomic<bool>& cancelFlag)
 {
+    // Phase 3B: wrap (seamless tail fold) is a distinct render path that produces
+    // an output of EXACTLY the region length. Branch out before sizing the buffer
+    // so the Phase 3A hardCut/tailClamp path below is byte-for-byte unchanged.
+    if (tail.mode == xleth::TailRenderMode::Wrap) {
+        return renderOfflineWrap(timeline, mixer, startSample, warmUpStartSample,
+                                 totalSamples, sampleRate, tail, output,
+                                 outRenderedSamples, progressCallback, cancelFlag);
+    }
+
     const int64_t maxTail = (tail.mode == xleth::TailRenderMode::TailClamp)
                           ? std::max<int64_t>(0, tail.maxTailSamples) : 0;
     const int outputCapacity = totalSamples + static_cast<int>(maxTail);
@@ -245,6 +254,187 @@ bool AudioExporter::renderOffline(const Timeline& timeline,
 
     transport.pause();
     mixer.clearNoteTriggerCeiling();
+    return !cancelled;
+}
+
+// ─── Wrap (seamless loop tail fold) render pass — Phase 3B ────────────────────
+//
+// SEMANTICS NOTE (LTI fold exactness): this follows the spec's structure exactly
+// — Phase 2 warm-up, one DISCARDED region pre-roll that PRESERVES effect state to
+// prime the loop seam, capture, then fold the post-end tail onto the head. Be
+// aware that, for a purely linear time-invariant tail, priming the capture AND
+// folding the outgoing tail both contribute the seam's overlap energy, so the
+// folded region can over-emphasise the seam (≈2× in the overlap window) relative
+// to a mathematically-exact circular convolution. A cold-effect capture (no
+// priming) + fold would be LTI-exact, but the spec mandates the priming pre-roll
+// and forbids resetting effect state across it. The UI copy already flags the
+// fold as approximate; nonlinear effects (comp/limiter/distortion) diverge
+// further. See the Phase 3B report for the full derivation.
+bool AudioExporter::renderOfflineWrap(const Timeline& timeline,
+                                       MixEngine& mixer,
+                                       int64_t startSample,
+                                       int64_t warmUpStartSample,
+                                       int totalSamples,
+                                       int sampleRate,
+                                       const xleth::TailRenderPlan& tail,
+                                       juce::AudioBuffer<float>& output,
+                                       int& outRenderedSamples,
+                                       std::function<void(float)> progressCallback,
+                                       std::atomic<bool>& cancelFlag)
+{
+    // Final wrap output is EXACTLY the region length — the tail folds into the
+    // head and never extends the file.
+    const int regionLen = totalSamples;
+    output.setSize(2, regionLen, false, true, false);
+    output.clear();
+    outRenderedSamples = 0;
+    if (regionLen <= 0) return true;
+
+    const int64_t endSample = startSample + static_cast<int64_t>(regionLen);
+    const int64_t maxTail   = std::max<int64_t>(0, tail.maxTailSamples);
+
+    constexpr int kBlockSize = 4096;
+    juce::AudioBuffer<float> block(2, kBlockSize);
+
+    Transport transport;
+    transport.setSampleRate(static_cast<double>(sampleRate));
+    transport.setBPM(timeline.getBPM());
+
+    mixer.clearNoteTriggerCeiling();   // region pre-roll + capture trigger normally
+
+    // ── PHASE A+B: absolute warm-up + one discarded region pre-roll ──────────
+    // Process [warmUpRenderStart, endSample) CONTIGUOUSLY, discarding all output.
+    // [warmUpRenderStart, startSample) is the Phase 2 absolute warm-up (recreates
+    // in-flight content arriving at the region start). [startSample, endSample)
+    // is the wrap pre-roll: a full region iteration whose sole purpose is to drive
+    // delay/reverb (LTI) effect state into the condition it has AT THE LOOP SEAM,
+    // so the captured region inherits a ringing tail instead of cold silence.
+    // This pre-roll is separate from, and runs AFTER, the Phase 2 warm-up — no
+    // seek occurs between them, so effect state accumulates across both.
+    const auto warmPlan = computePrerollPlan(mixer, warmUpStartSample, startSample);
+    const int64_t warmRenderStart = warmPlan.renderStartSample;
+#ifdef XLETH_DEBUG
+    std::fprintf(stderr,
+        "[TailFold] warmUpStart=%lld preRollRegion=[%lld,%lld) preRollLen=%d "
+        "regionLen=%d\n",
+        (long long)warmRenderStart, (long long)startSample, (long long)endSample,
+        regionLen, regionLen);
+#endif
+    transport.seekToSample(warmRenderStart);
+    transport.play();
+
+    int64_t cur = warmRenderStart;
+    bool cancelled = false;
+    while (cur < endSample) {
+        if (cancelFlag.load(std::memory_order_relaxed)) { cancelled = true; break; }
+        const int n = static_cast<int>(std::min<int64_t>(kBlockSize, endSample - cur));
+        if (block.getNumSamples() != n) block.setSize(2, n, false, false, true);
+        block.clear();
+        mixer.processBlock(block, n, transport);   // output discarded (priming)
+        transport.advance(n);
+        cur += n;
+    }
+
+    // ── PHASE C (capture): seamless backward seek to the region start ────────
+    // Latency-only pre-roll for the capture so PDC delay lines re-flush and the
+    // first kept sample aligns with the audio AT startSample. The seamless seek
+    // preserves the primed effect-processor (reverb/delay) state across the jump
+    // while releasing held notes (the region re-triggers cleanly).
+    if (!cancelled) {
+        const auto capPlan = computePrerollPlan(mixer, startSample, startSample);
+        const int64_t capRenderStart = capPlan.renderStartSample;
+        int64_t capDiscard = capPlan.discardSamples;
+
+        mixer.armSeamlessSeek();
+        transport.seekToSample(capRenderStart);
+
+        int pos = 0;
+        int64_t curCap = capRenderStart;
+        int lastPct = -1;
+        while (curCap < endSample && pos < regionLen) {
+            if (cancelFlag.load(std::memory_order_relaxed)) { cancelled = true; break; }
+            const int n = static_cast<int>(std::min<int64_t>(kBlockSize, endSample - curCap));
+            if (block.getNumSamples() != n) block.setSize(2, n, false, false, true);
+            block.clear();
+            mixer.processBlock(block, n, transport);
+
+            const int discardThisBlock = static_cast<int>(std::min<int64_t>(capDiscard, n));
+            capDiscard -= discardThisBlock;
+            int keep = n - discardThisBlock;
+            if (keep > 0) keep = std::min(keep, regionLen - pos);
+            if (keep > 0) {
+                for (int ch = 0; ch < 2; ++ch)
+                    output.copyFrom(ch, pos, block, ch, discardThisBlock, keep);
+                pos += keep;
+            }
+            transport.advance(n);
+            curCap += n;
+
+            if (progressCallback) {
+                const float p = (static_cast<float>(pos) / static_cast<float>(regionLen)) * 0.6f;
+                const int pct = static_cast<int>(p * 1000.0f);
+                if (pct != lastPct) { progressCallback(p); lastPct = pct; }
+            }
+        }
+        outRenderedSamples = pos;
+    }
+
+    // ── PHASE C (tail) + D (fold): render post-end tail, fold onto the head ──
+    // No new notes/clips trigger past endSample (ceiling). The wet effect tail
+    // rings out; we capture it into a working buffer until the master bus stays
+    // below threshold for ~50 ms, or the cap is hit. The master-bus peak is read
+    // here on the control thread — never the audio thread.
+    xleth::TailDetectorState tailState;
+    int64_t tailLen = 0;
+    if (!cancelled && maxTail > 0) {
+        juce::AudioBuffer<float> tailBuf(2, static_cast<int>(maxTail));
+        tailBuf.clear();
+
+        mixer.setNoteTriggerCeilingSample(endSample);   // gate new triggers in tail
+
+        int64_t tailPos = 0;
+        while (!tailState.done && tailPos < maxTail) {
+            if (cancelFlag.load(std::memory_order_relaxed)) { cancelled = true; break; }
+            const int n = static_cast<int>(std::min<int64_t>(kBlockSize, maxTail - tailPos));
+            if (block.getNumSamples() != n) block.setSize(2, n, false, false, true);
+            block.clear();
+            mixer.processBlock(block, n, transport);
+
+            const double blockPeak = std::max(mixer.getMasterPeakL(),
+                                              mixer.getMasterPeakR());
+            for (int ch = 0; ch < 2; ++ch)
+                tailBuf.copyFrom(ch, static_cast<int>(tailPos), block, ch, 0, n);
+
+            tailPos += n;
+            transport.advance(n);
+            xleth::tailDetectorFeed(tailState, tail, blockPeak, n);
+        }
+        tailLen = tailState.tailSamples;
+
+        mixer.clearNoteTriggerCeiling();
+
+        // ── D. Fold the tail onto the region head (output[i % regionLen]) ────
+        const int foldLen = static_cast<int>(std::min<int64_t>(tailLen, maxTail));
+        for (int ch = 0; ch < 2; ++ch)
+            xleth::foldTailIntoRegion(output.getWritePointer(ch), regionLen,
+                                      tailBuf.getReadPointer(ch), foldLen);
+
+#ifdef XLETH_DEBUG
+        std::fprintf(stderr,
+            "[TailFold] capture=[%lld,%lld) regionLen=%d threshLin=%.6f capSamples=%lld "
+            "detectedTail=%lld endedBy=%s foldedSamples=%d finalLen=%d videoExtended=no\n",
+            (long long)startSample, (long long)endSample, regionLen,
+            tail.thresholdLinear, (long long)maxTail, (long long)tailLen,
+            tailState.endedByCap ? "cap" : "threshold", foldLen, regionLen);
+#endif
+    }
+
+    if (progressCallback) progressCallback(0.7f);
+
+    transport.pause();
+    mixer.clearNoteTriggerCeiling();
+    // Final wrap output is exactly the region length regardless of tail length.
+    outRenderedSamples = regionLen;
     return !cancelled;
 }
 
