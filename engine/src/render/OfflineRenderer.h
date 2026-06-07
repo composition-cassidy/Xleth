@@ -189,13 +189,14 @@ private:
                     int64_t warmUpStartSample,
                     const ExportSettings& settings);
 
-    // Phase 3B wrap (seamless loop tail-fold) A/V path. Kept separate from
-    // renderImpl so the Phase 3A hardCut/tailClamp pipeline is untouched. Audio
-    // is pre-rendered to memory (warm-up + discarded region pre-roll + seamless
-    // seek capture + post-end tail folded onto the region head), then the folded
-    // region audio is streamed to the muxer alongside the region's video frames.
-    // Final A/V duration == region length exactly: NO tail extension, NO video
-    // freeze, NO video fold.
+    // Phase 3B wrap (seamless loop tail-fold) A/V path, corrected in 3B-r1. Kept
+    // separate from renderImpl so the Phase 3A hardCut/tailClamp pipeline is
+    // untouched. Audio is pre-rendered to memory via xleth::renderWrapCore —
+    // strictly sequential (Phase-2 absolute warm-up + post-end tail folded onto the
+    // region head), with NO looped-region pre-roll and NO backward seek — then the
+    // folded region audio is streamed to the muxer alongside the region's video
+    // frames. Final A/V duration == region length exactly: NO tail extension, NO
+    // video freeze, NO video fold.
     void renderImplWrap(int64_t startSample, int64_t endSample,
                         int64_t warmUpStartSample,
                         const ExportSettings& settings);

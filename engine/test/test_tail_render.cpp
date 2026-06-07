@@ -11,9 +11,11 @@
 #include "render/RenderScope.h"
 #include "model/TimelineTypes.h"
 
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <utility>
 #include <vector>
 
 static int g_passed = 0;
@@ -349,6 +351,187 @@ static void testWrapDurationEstimate() {
     CHECK(rs.captureEndTick == lr.endTick, "wrap captures the region end");
 }
 
+// ─── 15. Runtime impulse/delay wrap fold (Phase 3B-r1) ──────────────────────────
+// Drives the SHARED production wrap routine (xleth::renderWrapCore) with a
+// deterministic wet-only delay "engine" — NOT just foldTailIntoRegion on synthetic
+// arrays. Proves: (1) the post-end delayed impulse folds back to the region head at
+// EXACTLY 1× (a re-introduced looped-region pre-roll would make it 2×); (2) the
+// Phase-2 absolute warm-up is retained (an impulse during warm-up echoes into the
+// captured region, and cold-starting loses it); (3) the note-trigger ceiling
+// suppresses new triggers in the tail; (4) a tail longer than the region wraps more
+// than once (full-tail modulo fold, not a single slice).
+
+namespace {
+
+// Deterministic single-tap, wet-only delay: output[absPos] = input[absPos - delay].
+// Inputs ("new triggers") at/after the ceiling are suppressed, modelling the engine
+// note-trigger ceiling. No feedback → exactly one echo per impulse at amplitude 1×.
+struct DelayEngine {
+    int64_t absPos  = 0;                                   // current transport sample
+    int     delay   = 0;
+    int64_t ceiling = (std::numeric_limits<int64_t>::max)();
+    std::vector<float> line;                               // size == delay (0 = passthrough)
+    int     widx    = 0;
+    std::vector<std::pair<int64_t, float>> impulses;       // absSample -> amplitude
+    double  lastPeak = 0.0;
+
+    void seek(int64_t p) { absPos = p; }
+
+    float inputAt(int64_t p) const {
+        for (const auto& im : impulses) if (im.first == p) return im.second;
+        return 0.0f;
+    }
+
+    void renderBlock(float* L, float* R, int n) {
+        double pk = 0.0;
+        for (int k = 0; k < n; ++k) {
+            const float in = (absPos < ceiling) ? inputAt(absPos) : 0.0f;
+            float out;
+            if (delay <= 0) {
+                out = in;                                  // passthrough
+            } else {
+                out = line[widx];                          // sample written `delay` ago
+                line[widx] = in;
+                if (++widx >= delay) widx = 0;
+            }
+            L[k] = out; R[k] = out;
+            pk = std::max(pk, static_cast<double>(std::fabs(out)));
+            ++absPos;
+        }
+        lastPeak = pk;
+    }
+};
+
+} // namespace
+
+static void testRuntimeImpulseFold() {
+    std::cout << "[15] runtime impulse/delay wrap fold (1x, warm-up, ceiling, multi-wrap)\n";
+
+    auto noCancel = []() { return false; };
+    auto noProg   = [](float) {};
+
+    // ── Scenario A: double-count guard + Phase-2 warm-up retention + ceiling ──
+    {
+        const int     regionLen   = 48000;
+        const int64_t startSample = 48000;            // region [48000, 96000)
+        const int64_t endSample   = 96000;
+        const int64_t discard     = 48000;            // warm up from sample 0 (Phase 2)
+        const int     D           = 3200;
+        const int     blockSize   = 4096;
+        (void)startSample;
+
+        TailRenderPlan plan;
+        plan.mode            = TailRenderMode::Wrap;
+        plan.thresholdLinear = 1e-9;                  // never threshold-stops
+        plan.holdSamples     = 0;                     // → tail runs to the cap
+        plan.maxTailSamples  = 12288;                 // cap (renders past tail idx 6200)
+
+        DelayEngine eng;
+        eng.delay = D; eng.line.assign(D, 0.0f);
+        eng.seek(0);                                  // renderStart = warm up from 0
+        eng.impulses = {
+            { 44800, 1.0f },   // in WARM-UP → echo at 48000 = capture[0] (Phase-2 retention)
+            { 94000, 1.0f },   // in REGION  → echo at 97200 = tail idx 1200 → fold to out[1200]
+            { 99000, 1.0f },   // AFTER end  → ceiling must SUPPRESS (would echo to out[6200])
+        };
+
+        std::vector<float> outL(regionLen, 0.0f), outR(regionLen, 0.0f);
+        std::vector<float> scratchL(blockSize), scratchR(blockSize);
+        std::vector<float> tailL((size_t)plan.maxTailSamples, 0.0f);
+        std::vector<float> tailR((size_t)plan.maxTailSamples, 0.0f);
+
+        auto rb = [&](float* L, float* R, int n) { eng.renderBlock(L, R, n); };
+        auto pk = [&]() { return eng.lastPeak; };
+        auto cl = [&](int64_t s) { eng.ceiling = s; };
+
+        auto res = xleth::renderWrapCore(
+            outL.data(), outR.data(), regionLen, discard, endSample, plan, blockSize,
+            scratchL.data(), scratchR.data(), tailL.data(), tailR.data(),
+            plan.maxTailSamples, rb, pk, cl, noCancel, noProg);
+
+        CHECK(res.capturedSamples == regionLen, "A: captured exactly the region length");
+        CHECK(!res.cancelled, "A: not cancelled");
+        // Phase-2 warm-up retained: the warm-up impulse's echo lands at capture[0].
+        CHECK(nearly(outL[0], 1.0, 1e-5), "A: Phase-2 warm-up echo present at out[0] (no cold start)");
+        // Double-count guard: the post-end echo folds to out[1200] at EXACTLY 1×.
+        CHECK(nearly(outL[1200], 1.0, 1e-5), "A: folded delayed impulse is 1x at out[1200]");
+        CHECK(!nearly(outL[1200], 2.0, 1e-3), "A: NOT 2x (no prime+fold double count)");
+        // Ceiling honoured: the after-end impulse never fires → no echo at out[6200].
+        CHECK(nearly(outL[6200], 0.0, 1e-6), "A: ceiling suppressed the after-end trigger");
+        CHECK(nearly(outR[0], 1.0, 1e-5) && nearly(outR[1200], 1.0, 1e-5),
+              "A: right channel matches left (per-channel fold)");
+    }
+
+    // ── Scenario A': cold-start discriminator (discard==0 loses the warm-up) ──
+    {
+        const int     regionLen = 48000;
+        const int64_t endSample = 96000;
+        const int     D = 3200;
+        const int     blockSize = 4096;
+
+        TailRenderPlan plan;
+        plan.mode = TailRenderMode::Wrap;
+        plan.thresholdLinear = 1e-9; plan.holdSamples = 0; plan.maxTailSamples = 4096;
+
+        DelayEngine eng; eng.delay = D; eng.line.assign(D, 0.0f);
+        eng.seek(48000);                              // COLD start at the region (no warm-up)
+        eng.impulses = { { 44800, 1.0f } };           // never rendered when discard == 0
+
+        std::vector<float> outL(regionLen, 0.0f), outR(regionLen, 0.0f);
+        std::vector<float> scratchL(blockSize), scratchR(blockSize);
+        std::vector<float> tailL((size_t)plan.maxTailSamples, 0.0f), tailR((size_t)plan.maxTailSamples, 0.0f);
+        auto rb = [&](float* L, float* R, int n) { eng.renderBlock(L, R, n); };
+        auto pk = [&]() { return eng.lastPeak; };
+        auto cl = [&](int64_t s) { eng.ceiling = s; };
+
+        xleth::renderWrapCore(outL.data(), outR.data(), regionLen, /*discard*/0, endSample,
+                              plan, blockSize, scratchL.data(), scratchR.data(),
+                              tailL.data(), tailR.data(), plan.maxTailSamples,
+                              rb, pk, cl, noCancel, noProg);
+        CHECK(nearly(outL[0], 0.0, 1e-6),
+              "A': cold start (discard==0) loses the warm-up echo — proves warm-up matters");
+    }
+
+    // ── Scenario B: a tail longer than the region wraps more than once ────────
+    {
+        const int     regionLen = 2000;
+        const int64_t endSample = 2000;               // region [0, 2000)
+        const int     D = 6000;                       // delay > 2 * regionLen
+        const int     blockSize = 4096;
+
+        TailRenderPlan plan;
+        plan.mode = TailRenderMode::Wrap;
+        plan.thresholdLinear = 1e-9; plan.holdSamples = 0; plan.maxTailSamples = 8000;
+
+        DelayEngine eng; eng.delay = D; eng.line.assign(D, 0.0f);
+        eng.seek(0);
+        eng.impulses = {
+            { 1200, 1.0f },   // echo at 7200 → tail idx 5200 = 2*L+1200 → fold to out[1200]
+            {  200, 1.0f },   // echo at 6200 → tail idx 4200 = 2*L+ 200 → fold to out[200]
+        };
+
+        std::vector<float> outL(regionLen, 0.0f), outR(regionLen, 0.0f);
+        std::vector<float> scratchL(blockSize), scratchR(blockSize);
+        std::vector<float> tailL((size_t)plan.maxTailSamples, 0.0f), tailR((size_t)plan.maxTailSamples, 0.0f);
+        auto rb = [&](float* L, float* R, int n) { eng.renderBlock(L, R, n); };
+        auto pk = [&]() { return eng.lastPeak; };
+        auto cl = [&](int64_t s) { eng.ceiling = s; };
+
+        auto res = xleth::renderWrapCore(
+            outL.data(), outR.data(), regionLen, /*discard*/0, endSample, plan, blockSize,
+            scratchL.data(), scratchR.data(), tailL.data(), tailR.data(),
+            plan.maxTailSamples, rb, pk, cl, noCancel, noProg);
+
+        // Both echoes live at tail idx > 2*regionLen → they only land correctly if
+        // the modulo fold covers the ENTIRE tail (multiple wraps), not one slice.
+        CHECK(res.foldedSamples > 2 * regionLen, "B: folded the whole tail (> 2 region lengths)");
+        CHECK(nearly(outL[1200], 1.0, 1e-5), "B: echo at tail idx 2L+1200 folds to out[1200] (1x)");
+        CHECK(nearly(outL[200],  1.0, 1e-5), "B: echo at tail idx 2L+200 folds to out[200] (1x)");
+        // The captured region itself was silent (wet-only; echoes live only in the tail).
+        CHECK(nearly(outL[500], 0.0, 1e-6), "B: no spurious energy outside the folded positions");
+    }
+}
+
 int main() {
     std::cout << "── test_tail_render ──────────────────────────────────────\n";
     testDefaults();
@@ -365,6 +548,7 @@ int main() {
     testFoldMath();
     testWrapTailCapped();
     testWrapDurationEstimate();
+    testRuntimeImpulseFold();
 
     std::cout << "──────────────────────────────────────────────────────────\n";
     std::cout << "Passed: " << g_passed << "  Failed: " << g_failed << "\n";

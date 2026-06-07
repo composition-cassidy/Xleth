@@ -105,17 +105,23 @@ private:
                        std::function<void(float)> progressCallback,
                        std::atomic<bool>& cancelFlag);
 
-    // Phase 3B wrap (seamless loop tail-fold) render pass. Distinct from
-    // renderOffline so the Phase 3A hardCut/tailClamp path is untouched.
-    // Sequence: (A) absolute warm-up from warmUpStartSample → startSample AND
-    // (B) one discarded region pre-roll [startSample, endSample) to prime
-    // delay/reverb state to the loop seam — both contiguous, no seek; then a
-    // seamless backward seek to the region start; (C) capture [startSample,
-    // endSample) into `output` (sized to EXACTLY totalSamples) and render the
-    // post-end tail (no new triggers past endSample) into a working buffer until
-    // the master bus decays below threshold or the cap is hit; (D) fold the tail
-    // onto the region head (output[i % totalSamples] += tail[i]). The final
-    // duration is exactly totalSamples — the tail never extends the output.
+    // Phase 3B wrap (seamless loop tail-fold) render pass, corrected in 3B-r1.
+    // Distinct from renderOffline so the Phase 3A hardCut/tailClamp path is
+    // untouched. Strictly sequential (via xleth::renderWrapCore) — NO looped-region
+    // pre-roll, NO backward seek:
+    //   (A) absolute warm-up from warmUpStartSample → startSample (RETAINED: it
+    //       recreates the in-flight timeline context — notes/clips/effect tails
+    //       already sounding at the region start — and is discarded);
+    //   (B) capture [startSample, endSample) into `output` (sized to EXACTLY
+    //       totalSamples), flowing straight out of the warm-up;
+    //   (C) render the post-end tail (no new triggers past endSample) into a
+    //       working buffer until the master bus decays below threshold or the cap
+    //       is hit;
+    //   (D) fold the ENTIRE tail onto the region head
+    //       (output[i % totalSamples] += tail[i], multiple wraps included).
+    // The fold alone supplies the loop-seam energy (a looped-region pre-roll would
+    // double-count it). The final duration is exactly totalSamples — the tail never
+    // extends the output.
     bool renderOfflineWrap(const Timeline& timeline,
                            MixEngine& mixer,
                            int64_t startSample,

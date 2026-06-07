@@ -30,6 +30,7 @@
  * silently cold-start.
  */
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -147,13 +148,22 @@ inline RenderPrerollPlan computeRenderPrerollPlan(int64_t warmUpStartSample,
 //               Video freezes the last captured frame for the tail duration so
 //               the container's A/V lengths stay equal.
 //
-// Wrap (seamless loop) — Phase 3B. A real tail-fold render: the post-end effect
-// tail is captured into a working buffer and folded back onto the region head
-// (output[i % regionLen] += tail[i]) so an exported loop crossfades into itself
-// with no click at the seam. The final audio duration is EXACTLY the region
-// length — the tail is internal working audio, never appended. Video is NOT
+// Wrap (seamless loop) — Phase 3B / corrected in 3B-r1. A real tail-fold render:
+// the post-end effect tail is captured into a working buffer and folded back onto
+// the region head (output[i % regionLen] += tail[i]) so an exported loop joins
+// into itself with no click at the seam. The final audio duration is EXACTLY the
+// region length — the tail is internal working audio, never appended. Video is NOT
 // folded or frozen for wrap (the region's frames render straight; loop
 // seamlessness of the picture is the user's compositional responsibility).
+//
+// 3B-r1 CORRECTION: the Phase-2 absolute warm-up (tick 0 → startTick, discarded)
+// is RETAINED — it supplies in-flight timeline context (notes/clips/effect tails
+// already sounding at the region start). But the extra DISCARDED looped-region
+// pre-roll ([startTick,endTick) rendered once to "prime the loop seam") is
+// PROHIBITED: the fold itself supplies the loop-seam energy, so priming + folding
+// double-counts it (~2× at the seam). The corrected render is strictly sequential
+// — warm-up → capture → tail → fold — with no looped pre-roll and no backward
+// seek. See renderWrapCore below and spec §7.3 (r1).
 //
 // Wrap requires a scoped loop region. Mapping a NON-scoped (full-timeline) render
 // to Wrap is meaningless — there is no head to fold onto — so the scope-aware
@@ -309,6 +319,116 @@ inline void tailDetectorFeed(TailDetectorState& st, const TailRenderPlan& plan,
     if (st.tailSamples >= plan.maxTailSamples) {
         st.done = true; st.endedByCap = true;
     }
+}
+
+// ─── Wrap render core (Phase 3B-r1, sample domain, engine-agnostic) ──────────────
+// THE corrected seamless-loop tail-fold render sequence, shared by the audio-only
+// exporter (AudioExporter::renderOfflineWrap) and the A/V renderer
+// (OfflineRenderer::renderImplWrap) so they cannot diverge. Templated on the engine
+// adapter callables (no JUCE/FFmpeg/Transport dependency here) so it is unit-tested
+// directly with a deterministic delay engine — proving the 1× (not 2×) fold.
+//
+// The engine is driven STRICTLY SEQUENTIALLY — no looped-region pre-roll, no
+// backward seek:
+//
+//   [renderStart ............... startTick) [startTick ...... endTick) [endTick ...
+//    └─ discardSamples (DISCARDED) ─┘        └─ capture (regionLen) ─┘  └─ tail ─┘
+//
+//   • discardSamples = Phase-2 absolute warm-up (tick 0 → startTick) + PDC latency
+//     flush. RETAINED — it recreates in-flight timeline context. NOT loop priming.
+//   • capture flows straight out of the warm-up (no discontinuity / no seek).
+//   • the post-end tail (no NEW triggers past endTick — setCeiling) is folded onto
+//     the region head for its ENTIRE length: out[i % regionLen] += tail[i], wrapping
+//     as many times as the tail is long. The output is NEVER extended.
+//
+// A looped-region pre-roll is intentionally absent: the fold supplies the loop-seam
+// energy, so priming + folding would double-count it. The fold is LTI-exact;
+// nonlinear effects (comp/limiter/distortion/modulation) are approximate.
+//
+// Engine adapter callables (duck-typed; all run on the control/render thread):
+//   renderBlock(float* L, float* R, int n) — render the NEXT n samples sequentially
+//                                            into L/R, advancing the transport. The
+//                                            core NEVER requests a seek.
+//   masterPeakLinear() -> double           — peak |sample| of the last block.
+//   setCeiling(int64_t absSample)          — note-trigger ceiling (INT64_MAX = off).
+//   shouldCancel() -> bool                 — abort if true.
+//   onProgress(float p01)                  — capture progress 0..1 (may be a no-op).
+//
+// `scratchL/R` is block-sized throwaway space for the warm-up discard. `tailL/R`
+// is the post-end tail working buffer (length >= effective cap). All buffers are
+// caller-owned. Returns what happened (captured/tail/folded sample counts).
+struct WrapRenderResult {
+    int     capturedSamples = 0;   // == regionLen on success (< on cancel)
+    int64_t tailSamples     = 0;   // detected post-end tail length
+    int     foldedSamples   = 0;   // tail samples folded onto the head
+    bool    cancelled       = false;
+    bool    endedByCap      = false;
+};
+
+template <class RenderBlockFn, class PeakFn, class CeilingFn,
+          class CancelFn, class ProgressFn>
+inline WrapRenderResult renderWrapCore(
+    float* outL, float* outR, int regionLen,
+    int64_t discardSamples, int64_t captureEndSample,
+    const TailRenderPlan& plan, int blockSize,
+    float* scratchL, float* scratchR,
+    float* tailL, float* tailR, int64_t tailCap,
+    RenderBlockFn renderBlock, PeakFn masterPeakLinear,
+    CeilingFn setCeiling, CancelFn shouldCancel, ProgressFn onProgress)
+{
+    WrapRenderResult r;
+    if (outL == nullptr || outR == nullptr || regionLen <= 0) return r;
+    if (blockSize <= 0) blockSize = 4096;
+
+    // ── A. Absolute warm-up + latency flush — render & DISCARD discardSamples. ──
+    // This is the ONLY warm-up. There is deliberately NO second (looped-region)
+    // pre-roll: the fold below supplies the loop-seam energy.
+    int64_t toDiscard = discardSamples < 0 ? 0 : discardSamples;
+    while (toDiscard > 0) {
+        if (shouldCancel()) { r.cancelled = true; return r; }
+        const int n = static_cast<int>(std::min<int64_t>(blockSize, toDiscard));
+        renderBlock(scratchL, scratchR, n);
+        toDiscard -= n;
+    }
+
+    // ── B. Capture EXACTLY regionLen into the output (flows out of the warm-up). ──
+    int pos = 0;
+    while (pos < regionLen) {
+        if (shouldCancel()) { r.cancelled = true; r.capturedSamples = pos; return r; }
+        const int n = static_cast<int>(
+            std::min<int64_t>(blockSize, static_cast<int64_t>(regionLen - pos)));
+        renderBlock(outL + pos, outR + pos, n);
+        pos += n;
+        onProgress(static_cast<float>(pos) / static_cast<float>(regionLen));
+    }
+    r.capturedSamples = pos;
+
+    // ── C. Post-end wet tail (no NEW triggers) + D. fold onto the region head. ──
+    const int64_t cap = std::min<int64_t>(std::max<int64_t>(0, tailCap),
+                                          std::max<int64_t>(0, plan.maxTailSamples));
+    if (cap > 0 && tailL != nullptr && tailR != nullptr) {
+        setCeiling(captureEndSample);
+        TailDetectorState st;
+        int64_t tpos = 0;
+        while (!st.done && tpos < cap) {
+            if (shouldCancel()) { r.cancelled = true; break; }
+            const int n = static_cast<int>(std::min<int64_t>(blockSize, cap - tpos));
+            renderBlock(tailL + tpos, tailR + tpos, n);
+            const double peak = masterPeakLinear();
+            tpos += n;
+            tailDetectorFeed(st, plan, peak, n);
+        }
+        r.tailSamples = st.tailSamples;
+        r.endedByCap  = st.endedByCap;
+        setCeiling((std::numeric_limits<int64_t>::max)());
+
+        // Fold the ENTIRE detected tail onto the head — multiple wraps included.
+        const int foldLen = static_cast<int>(std::min<int64_t>(st.tailSamples, cap));
+        foldTailIntoRegion(outL, regionLen, tailL, foldLen);
+        foldTailIntoRegion(outR, regionLen, tailR, foldLen);
+        r.foldedSamples = foldLen;
+    }
+    return r;
 }
 
 } // namespace xleth

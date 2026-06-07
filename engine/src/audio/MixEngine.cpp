@@ -1954,11 +1954,6 @@ void MixEngine::clearNoteTriggerCeiling()
                                     std::memory_order_relaxed);
 }
 
-void MixEngine::armSeamlessSeek()
-{
-    seamlessSeekArmed_.store(true, std::memory_order_relaxed);
-}
-
 // ── Direct atomic parameter setters (slot-based via trackIdToSlot_) ─────────
 
 void MixEngine::setTrackVolume(int trackId, float volume)
@@ -3984,20 +3979,12 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
 
     // Seek detection: if buffer start doesn't continue from previous buffer
     // end, the playhead jumped. Release all held pattern notes so stale
-    // voices from the old position don't ring indefinitely at the new one.
+    // voices from the old position don't ring indefinitely at the new one, and
+    // reset the effect chains / PDC latency so the new position starts clean.
     if (lastBufferEnd_ >= 0 && bufStart != lastBufferEnd_) {
-        // Phase 3B wrap: a one-shot "seamless" seek preserves effect-processor
-        // (reverb/delay LTI tail) state across the loop-seam jump — the wrap
-        // renderer primed it with a discarded region pre-roll and the captured
-        // region must inherit it. Held notes are still released (the region
-        // re-triggers cleanly) and PDC latency is still re-flushed; only the
-        // chain reset is suppressed. The latch self-clears after this one seek.
-        const bool seamless =
-            seamlessSeekArmed_.exchange(false, std::memory_order_relaxed);
         for (auto& kv : samplers_)
             if (kv.second) kv.second->allNotesOff();
-        if (!seamless)
-            pendingEffectChainReset_ = true;
+        pendingEffectChainReset_ = true;
         pendingLatencyCompensationReset_.store(true, std::memory_order_release);
         std::fill(std::begin(tailEndSamples_), std::end(tailEndSamples_), int64_t(0));
         clipModReader_.resetAllStates();
