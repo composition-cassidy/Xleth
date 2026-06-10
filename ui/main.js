@@ -7,6 +7,13 @@ const os = require('os');
 const http = require('http');
 const { fork } = require('child_process');
 const { runtimeResource, userDataPath } = require('./runtimePaths');
+const {
+  WORKSPACE_BACKDROP_DEFAULT_PREFERENCE,
+  applyWorkspaceBackdropMaterial,
+  getWorkspaceBackdropCachePath,
+  loadWorkspaceBackdropCapability,
+  sanitizeWorkspaceBackdropPreference,
+} = require('./workspaceBackdropCapability');
 
 // Fixed name for the Windows file mapping that backs the FrameOutput double
 // buffer. The forked addon-worker creates it via FrameOutput::initSharedMemory;
@@ -42,6 +49,74 @@ function log(msg) {
   const line = `[${new Date().toISOString()}] ${msg}\n`;
   process.stdout.write(line);
   fs.appendFileSync(logPath, line);
+}
+
+let workspaceBackdropCapability = null;
+let workspaceBackdropState = {
+  capability: null,
+  preference: WORKSPACE_BACKDROP_DEFAULT_PREFERENCE,
+  mode: 'off',
+};
+
+function getWorkspaceBackdropPreference(settings = loadSettings()) {
+  return sanitizeWorkspaceBackdropPreference(settings.workspaceBackdrop);
+}
+
+function ensureWorkspaceBackdropCapability() {
+  if (workspaceBackdropCapability) return workspaceBackdropCapability;
+  try {
+    workspaceBackdropCapability = loadWorkspaceBackdropCapability({
+      cachePath: getWorkspaceBackdropCachePath(app),
+    });
+  } catch (e) {
+    log(`[Backdrop] capability cache unavailable: ${e.message}`);
+    workspaceBackdropCapability = loadWorkspaceBackdropCapability();
+  }
+  return workspaceBackdropCapability;
+}
+
+function getWorkspaceBackdropStateSnapshot() {
+  return {
+    capability: workspaceBackdropState.capability || ensureWorkspaceBackdropCapability(),
+    preference: workspaceBackdropState.preference,
+    mode: workspaceBackdropState.mode === 'native-acrylic' ? 'native-acrylic' : 'off',
+  };
+}
+
+function logWorkspaceBackdropApply(reason, applyResult) {
+  const state = getWorkspaceBackdropStateSnapshot();
+  const c = state.capability || {};
+  const nativeApply = applyResult.requestedMaterial === 'acrylic'
+    ? (applyResult.applySucceeded ? 'success' : 'failure')
+    : 'not-requested';
+  const error = applyResult.error
+    ? ` error=${String(applyResult.error.message || applyResult.error)}`
+    : '';
+  log(
+    `[Backdrop] ${reason} platform=${c.platform || 'unknown'} osVersion=${c.osVersion || 'unknown'} ` +
+    `windowsBuild=${c.windowsBuild ?? 'unknown'} supportsNativeSystemBackdrop=${!!c.supportsNativeSystemBackdrop} ` +
+    `preference=${state.preference} setBackgroundMaterial=${!!applyResult.materialMethodExists} ` +
+    `nativeAcrylicApply=${nativeApply} finalMode=${state.mode}${error}`
+  );
+}
+
+function notifyWorkspaceBackdropChanged() {
+  if (!win || win.isDestroyed()) return;
+  win.webContents.send('xleth:backdrop:modeChanged', getWorkspaceBackdropStateSnapshot());
+}
+
+function applyMainWorkspaceBackdrop(reason = 'startup', { notify = false } = {}) {
+  const capability = ensureWorkspaceBackdropCapability();
+  const preference = getWorkspaceBackdropPreference();
+  const applyResult = applyWorkspaceBackdropMaterial(win, { capability, preference });
+  workspaceBackdropState = {
+    capability,
+    preference,
+    mode: applyResult.mode === 'native-acrylic' ? 'native-acrylic' : 'off',
+  };
+  logWorkspaceBackdropApply(reason, applyResult);
+  if (notify) notifyWorkspaceBackdropChanged();
+  return getWorkspaceBackdropStateSnapshot();
 }
 
 function ffmpegExecutable() {
@@ -360,6 +435,7 @@ function createWindow() {
       preload: runtimeResource('app', 'preload.js'),
     },
   });
+  applyMainWorkspaceBackdrop('startup');
 
   if (addonError) {
     const msg = encodeURIComponent(addonError);
@@ -644,6 +720,12 @@ ipcMain.handle('xleth:timeline:setTrackVisualOnly',
 ipcMain.handle('xleth:timeline:setTrackSolo',
   safeHandler((_, trackId, solo) => callWorker('timeline_setTrackSolo', [trackId, solo])));
 
+ipcMain.handle('xleth:timeline:setTrackOutputRoute',
+  safeHandler((_, trackId, targetTrackId) => callWorker('timeline_setTrackOutputRoute', [trackId, targetTrackId])));
+
+ipcMain.handle('xleth:timeline:getRouting',
+  safeHandler(() => callWorker('timeline_getRouting', [])));
+
 ipcMain.handle('xleth:timeline:setTrackName',
   safeHandler((_, trackId, name) => callWorker('timeline_setTrackName', [trackId, name])));
 
@@ -763,10 +845,26 @@ ipcMain.handle('xleth:timeline:setClipModulation',
   safeHandler((_, id, modulation) => callWorker('timeline_setClipModulation', [id, modulation])));
 
 // ── Global clip-processing defaults ─────────────────────────────────────────
-ipcMain.handle('xleth:settings:get',    (_, key) => loadSettings()[key])
-ipcMain.handle('xleth:settings:set',    (_, key, value) => {
-  const s = loadSettings(); s[key] = value; saveSettings(s)
+ipcMain.handle('xleth:settings:get',    (_, key) => {
+  const settings = loadSettings()
+  if (key === 'workspaceBackdrop') return getWorkspaceBackdropPreference(settings)
+  return settings[key]
 })
+ipcMain.handle('xleth:settings:set',    (_, key, value) => {
+  const s = loadSettings()
+  if (key === 'workspaceBackdrop') {
+    const previous = getWorkspaceBackdropPreference(s)
+    const next = sanitizeWorkspaceBackdropPreference(value)
+    s[key] = next
+    saveSettings(s)
+    if (next !== previous) {
+      return applyMainWorkspaceBackdrop('preference-changed', { notify: true })
+    }
+    return getWorkspaceBackdropStateSnapshot()
+  }
+  s[key] = value; saveSettings(s)
+})
+ipcMain.handle('xleth:backdrop:getState', () => getWorkspaceBackdropStateSnapshot())
 ipcMain.handle('xleth:autosave:restart', () => { restartAutosaveTimer() })
 
 // ── Autosave timer ────────────────────────────────────────────────────────────
@@ -2924,23 +3022,6 @@ app.whenReady().then(async () => {
       log(`shm init FAILED: ${e.message}`);
     }
 
-    // Load samples
-    const mediaDir = runtimeResource('media');
-    await callWorker('loadSample', [path.join(mediaDir, 'KICK_ssedit.wav')]);
-    await callWorker('loadSample', [path.join(mediaDir, 'SNARE_ssedit.wav')]);
-    await callWorker('loadSample', [path.join(mediaDir, 'hihat 1.wav')]);
-    log('Samples loaded');
-    splashStatus('Loading workspace…');
-
-    // Load video if available
-    const videoPath = path.join(mediaDir, 'source_clip.mp4');
-    if (fs.existsSync(videoPath)) {
-      await callWorker('loadVideo', [videoPath]);
-      log('Video loaded');
-    } else {
-      log('No video file — skipping loadVideo');
-    }
-
     // Set up audio-scheduler timeline (drum pattern for legacy transport)
     await callWorker('setBPM', [140]);
     const drumPattern = [
@@ -3097,6 +3178,10 @@ app.on('before-quit', async () => {
 // Also expose the frame-shm meta synchronously for preload (sendSync path).
 ipcMain.on('xleth:video:getFrameShmSync', (event) => {
   event.returnValue = frameShmMeta;
+});
+
+ipcMain.on('xleth:backdrop:getStateSync', (event) => {
+  event.returnValue = getWorkspaceBackdropStateSnapshot();
 });
 
 process.on('uncaughtException', (e) => {

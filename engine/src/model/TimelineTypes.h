@@ -943,6 +943,35 @@ inline std::string normalizeTrackCustomColor(const std::string& v) {
     return out;
 }
 
+// ─── Mixer routing model ─────────────────────────────────────────────────────
+// Source track owns its route. targetTrackId = -1 means Master (default).
+// sends and sidechainRoutes are reserved for Prompt 4+ and are always empty
+// in Prompt 2A. All three types are persisted additively (omitted when default).
+
+struct TrackOutputRoute {
+    int targetTrackId = -1;  // -1 = Master
+};
+
+// Reserved for Prompt 4+. Not wired to DSP in Prompt 2A.
+struct TrackSend {
+    std::string routeId;
+    int   targetTrackId = -1;
+    float gain          = 1.0f;
+    float pan           = 0.0f;
+    bool  preFader      = false;
+    bool  enabled       = true;
+};
+
+// Silent key route. Reserved for Prompt 4+. Not wired to DSP in Prompt 2A.
+struct SidechainRoute {
+    std::string routeId;
+    int         targetTrackId          = -1;
+    std::string targetEffectInstanceId;
+    float       gain                   = 1.0f;
+    bool        preFader               = false;
+    bool        enabled                = true;
+};
+
 // ─── TrackInfo ────────────────────────────────────────────────────────────────
 // Metadata for a sequencer track, including both audio mix and video layout.
 
@@ -1010,6 +1039,13 @@ struct TrackInfo {
     // without parsing, migrating, or executing it.
     bool           hasGraphState    = false;
     nlohmann::json graphState       = nlohmann::json();
+
+    // ── Mixer output routing (Prompt 2A) ────────────────────────────────────
+    // outputRoute.targetTrackId == -1 means Master (default, backward-compat).
+    // sends and sidechainRoutes are reserved schema space; always empty in 2A.
+    TrackOutputRoute            outputRoute;
+    std::vector<TrackSend>      sends;
+    std::vector<SidechainRoute> sidechainRoutes;
 };
 
 inline std::string trackTypeToString(TrackInfo::Type t) {

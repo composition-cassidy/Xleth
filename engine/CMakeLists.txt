@@ -204,6 +204,7 @@ add_library(XlethEngineModel STATIC
     src/commands/TimelineCommands.cpp
     src/commands/QuantizeClipsBatchCommand.cpp
     src/commands/AddNotesBatchCommand.cpp
+    src/audio/TrackRouting.cpp
 )
 
 target_include_directories(XlethEngineModel PUBLIC
@@ -576,6 +577,17 @@ add_executable(test_undo
 )
 
 target_link_libraries(test_undo PRIVATE
+    XlethEngineModel
+)
+
+# ── test_track_routing ────────────────────────────────────────────────────────
+# Prompt 2A: output-routing model, validation, undo command, serialization.
+# No JUCE, no FFmpeg, no GL — pure model + commands.
+add_executable(test_track_routing
+    test/test_track_routing.cpp
+)
+
+target_link_libraries(test_track_routing PRIVATE
     XlethEngineModel
 )
 

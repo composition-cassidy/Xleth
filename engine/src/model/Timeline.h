@@ -5,6 +5,7 @@
 #include "Clip.h"
 #include "Pattern.h"
 #include "PatternBlock.h"
+#include "audio/TrackRouting.h"
 #include <functional>
 #include <map>
 #include <vector>
@@ -162,6 +163,12 @@ public:
     bool setTrackPingPongSettings(int trackId, const PingPongSettings& settings);
     bool setTrackSlideNoteEffectSettings(int trackId, const SlideNoteEffectSettings& settings);
     bool setNoteSlide(int patternId, int noteId, bool isSlide, float curveCx, float curveCy);
+
+    // ── Mixer output routing (Prompt 2A) ──────────────────────────────────────
+    // Validates then commits. Returns ok on success; caller should check before
+    // pushing to undo stack. Does NOT push to undo; use SetTrackOutputRouteCommand.
+    xleth::RoutingValidationResult setTrackOutputRoute(int sourceTrackId, int targetTrackId);
+    TrackOutputRoute               getTrackOutputRoute(int sourceTrackId) const;
 
     // ── Visual Effect Chain ───────────────────────────────────────────────────
     int  addVisualEffect(int trackId, VisualEffect::Type type);          // returns index, -1 on fail

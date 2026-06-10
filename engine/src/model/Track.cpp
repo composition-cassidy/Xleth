@@ -347,6 +347,12 @@ void to_json(nlohmann::json& j, const TrackInfo& t) {
         chain.push_back(f);
     }
     j["visualEffectChain"] = chain;
+
+    // ── Mixer output routing (Prompt 2A) ──────────────────────────────────
+    // Omit outputRoute entirely when default (Master) for project compactness.
+    // sends and sidechainRoutes are reserved; always empty, always omitted.
+    if (t.outputRoute.targetTrackId != -1)
+        j["outputRoute"] = { {"targetTrackId", t.outputRoute.targetTrackId} };
 }
 
 void from_json(const nlohmann::json& j, TrackInfo& t) {
@@ -563,4 +569,17 @@ void from_json(const nlohmann::json& j, TrackInfo& t) {
             t.visualEffectChain.push_back(fx);
         }
     }
+
+    // ── Mixer output routing (Prompt 2A) ──────────────────────────────────
+    // Old projects (no outputRoute key) default to Master. Malformed values
+    // (non-object, missing targetTrackId, negative ids other than -1) also
+    // default to Master — deserialization is deliberately tolerant.
+    t.outputRoute.targetTrackId = -1;
+    if (j.contains("outputRoute") && j.at("outputRoute").is_object()) {
+        int tid = j.at("outputRoute").value("targetTrackId", -1);
+        if (tid >= -1)
+            t.outputRoute.targetTrackId = tid;
+    }
+    t.sends.clear();
+    t.sidechainRoutes.clear();
 }

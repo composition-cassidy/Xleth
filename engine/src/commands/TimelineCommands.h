@@ -437,6 +437,23 @@ private:
     bool newSolo_;
 };
 
+// ─── SetTrackOutputRouteCommand ───────────────────────────────────────────────
+// Only created when the route is already validated (bridge validates first).
+// execute/undo directly set outputRoute.targetTrackId on the mutable track.
+
+class SetTrackOutputRouteCommand : public Command {
+public:
+    SetTrackOutputRouteCommand(int sourceTrackId, int newTargetTrackId,
+                               const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int sourceTrackId_;
+    int oldTargetTrackId_;
+    int newTargetTrackId_;
+};
+
 // ─── SetTrackNameCommand ──────────────────────────────────────────────────────
 
 class SetTrackNameCommand : public Command {

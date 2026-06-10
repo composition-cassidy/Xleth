@@ -37,6 +37,7 @@
 #include "midi/MidiImporter.h"
 #include "model/Timeline.h"
 #include "model/TimelineTypes.h"
+#include "audio/TrackRouting.h"
 #include "commands/ImportMidiCommand.h"
 #include "commands/UndoManager.h"
 #include "commands/TimelineCommands.h"
@@ -631,6 +632,44 @@ static void refreshAllClipCaches()
         if (needs)
             mix.invalidateClipCache(c->id, "refreshAllClipCaches");
     }
+}
+
+// Block until every processing-needing clip's render cache is published, or
+// until timeoutMs elapses. Call AFTER refreshAllClipCaches() (which submits the
+// jobs) and AFTER prepare(exportSR) so the cache keys are built at the export
+// rate. Returns the number of clips still not ready (0 = all warmed).
+//
+// Cross-rate export fix: export prepares the MixEngine at the export sample rate
+// but does not otherwise re-warm the clip cache, so cache entries warmed live at
+// the device rate have mismatched keys and pitched clips silently fall through to
+// the rate-corrected (but pitchless) raw fallback. Re-submitting + awaiting here
+// makes the export render hit the cache, so the cache job applies pitch.
+static int waitForClipCachesReady(int timeoutMs)
+{
+    if (!audioEngine || !g_timeline) return 0;
+    auto& mix = audioEngine->getMixEngine();
+    std::vector<int> pending;
+    for (const Clip* c : g_timeline->getAllClips()) {
+        if (!c) continue;
+        const bool needs = (c->pitchOffset != 0 || c->pitchOffsetCents != 0
+                         || c->reversed || c->stretchRatio != 1.0);
+        if (needs) pending.push_back(c->id);
+    }
+    const auto deadline = std::chrono::steady_clock::now()
+                        + std::chrono::milliseconds(timeoutMs);
+    size_t notReady = pending.size();
+    while (notReady > 0 && std::chrono::steady_clock::now() < deadline) {
+        notReady = 0;
+        for (int id : pending)
+            if (mix.getClipProcessedBuffer(id) == nullptr) ++notReady;
+        if (notReady > 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+#ifdef XLETH_DEBUG
+    fprintf(stderr, "[ClipSR] waitForClipCachesReady: %zu clips, %zu not ready "
+            "after %dms\n", pending.size(), notReady, timeoutMs);
+#endif
+    return static_cast<int>(notReady);
 }
 
 // ── WORLD processing indicator ───────────────────────────────────────────────
@@ -1688,6 +1727,13 @@ static Napi::Object trackToJs(Napi::Env env, const TrackInfo& t) {
             chainArr.Set(static_cast<uint32_t>(i), fxObj);
         }
         o.Set("visualEffectChain", chainArr);
+    }
+    // ── Mixer output routing (Prompt 2A) ──────────────────────────────────
+    // Always emit outputRoute so the renderer never needs to guess the default.
+    {
+        Napi::Object route = Napi::Object::New(env);
+        route.Set("targetTrackId", Napi::Number::New(env, t.outputRoute.targetTrackId));
+        o.Set("outputRoute", route);
     }
     return o;
 }
@@ -4411,6 +4457,70 @@ void Timeline_SetPreviewFps(const Napi::CallbackInfo& info)
             *g_timeline);
     }
     log.done(std::to_string(fps));
+}
+
+// timeline_setTrackOutputRoute(trackId, targetTrackId) — undo-tracked route change.
+// targetTrackId = -1 means Master (default). Returns { ok: bool, targetTrackId? }
+// or { ok: false, reason: string }.
+Napi::Value Timeline_SetTrackOutputRoute(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
+        Napi::TypeError::New(env,
+            "timeline_setTrackOutputRoute(trackId: number, targetTrackId: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    int sourceTrackId  = info[0].As<Napi::Number>().Int32Value();
+    int targetTrackId  = info[1].As<Napi::Number>().Int32Value();
+    BridgeCallLog log("timeline.setTrackOutputRoute");
+
+    auto result = xleth::validateTrackOutputRoute(*g_timeline, sourceTrackId, targetTrackId);
+
+    Napi::Object ret = Napi::Object::New(env);
+    if (!result.ok()) {
+        ret.Set("ok",     Napi::Boolean::New(env, false));
+        ret.Set("reason", Napi::String::New(env, result.reasonString()));
+        log.done(std::string("rejected:") + result.reasonString());
+        return ret;
+    }
+
+    g_undoManager->execute(
+        std::make_unique<SetTrackOutputRouteCommand>(sourceTrackId, targetTrackId, *g_timeline),
+        *g_timeline);
+
+    ret.Set("ok",           Napi::Boolean::New(env, true));
+    ret.Set("targetTrackId", Napi::Number::New(env, targetTrackId));
+    log.done(std::to_string(sourceTrackId) + "->" + std::to_string(targetTrackId));
+    return ret;
+}
+
+// timeline_getRouting() — returns array of { trackId, outputRoute: { targetTrackId } }
+// for all tracks. Read-only; does not require audio engine to be initialised.
+Napi::Value Timeline_GetRouting(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!g_timeline) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    auto tracks = g_timeline->getAllTracks();
+    Napi::Array arr = Napi::Array::New(env, tracks.size());
+    for (size_t i = 0; i < tracks.size(); ++i) {
+        const TrackInfo& t = *tracks[i];
+        Napi::Object entry = Napi::Object::New(env);
+        entry.Set("trackId", Napi::Number::New(env, t.id));
+        Napi::Object route = Napi::Object::New(env);
+        route.Set("targetTrackId", Napi::Number::New(env, t.outputRoute.targetTrackId));
+        entry.Set("outputRoute", route);
+        arr.Set(static_cast<uint32_t>(i), entry);
+    }
+    return arr;
 }
 
 // timeline_setTrackMuted(trackId, muted) — undo-tracked mute toggle
@@ -11125,6 +11235,13 @@ Napi::Value Audio_ExportStart(const Napi::CallbackInfo& info)
         const int sr = cfg.sampleRate > 0 ? cfg.sampleRate : 44100;
         mixer.setNonRealtime(true);
         mixer.prepare(static_cast<double>(sr), 4096);
+        // Warm + await the clip render cache at the EXPORT rate so pitched/
+        // stretched clips hit the cache (which applies pitch) instead of the
+        // rate-corrected-but-pitchless raw fallback. Must run after prepare()
+        // so cache keys are built at the export rate, on the message thread,
+        // before the render thread spawns.
+        refreshAllClipCaches();
+        waitForClipCachesReady(15000);
     }
 
     g_exportThread = std::make_unique<std::thread>([cfg]() {
@@ -11269,6 +11386,16 @@ Napi::Value Video_ExportStart(const Napi::CallbackInfo& info)
     if (o.Has("height"))    settings.height    = o.Get("height").As<Napi::Number>().Int32Value();
     if (o.Has("fpsNum"))    settings.fpsNum    = o.Get("fpsNum").As<Napi::Number>().Int32Value();
     if (o.Has("fpsDen"))    settings.fpsDen    = o.Get("fpsDen").As<Napi::Number>().Int32Value();
+    // Rate-control mode is explicit (UI sends "crf" or "bitrate"). When absent we
+    // leave the struct default (CRF) and rely on the crf<0 sentinel for legacy
+    // callers. This is what stops the CRF default from leaking into bitrate-mode
+    // exports and silently overriding the requested bitrate.
+    if (o.Has("rateControl")) {
+        std::string rcs = o.Get("rateControl").As<Napi::String>().Utf8Value();
+        settings.rateControl = (rcs == "bitrate")
+            ? ExportSettings::RateControl::Bitrate
+            : ExportSettings::RateControl::CRF;
+    }
     if (o.Has("crf"))       settings.crf       = o.Get("crf").As<Napi::Number>().Int32Value();
     if (o.Has("videoBitrate")) settings.videoBitrate = o.Get("videoBitrate").As<Napi::Number>().Int64Value();
 
@@ -11340,6 +11467,11 @@ Napi::Value Video_ExportStart(const Napi::CallbackInfo& info)
         auto& mixer = audioEngine->getMixEngine();
         mixer.setNonRealtime(true);
         mixer.prepare(static_cast<double>(settings.sampleRate), 512);
+        // Warm + await the clip render cache at the EXPORT rate (see audio
+        // export above) so pitched/stretched clips hit the cache rather than the
+        // pitchless raw fallback. Message thread, before the render thread spawns.
+        refreshAllClipCaches();
+        waitForClipCachesReady(15000);
     }
 
     // Create the renderer (destroys any prior instance — joins its thread via dtor)
@@ -13202,9 +13334,11 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("timeline_setGlobalStretchMethod", Napi::Function::New(env, Timeline_SetGlobalStretchMethod));
     exports.Set("timeline_addTrack",     Napi::Function::New(env, Timeline_AddTrack));
     exports.Set("timeline_removeTrack",  Napi::Function::New(env, Timeline_RemoveTrack));
-    exports.Set("timeline_setTrackMuted",      Napi::Function::New(env, Timeline_SetTrackMuted));
-    exports.Set("timeline_setTrackVisualOnly", Napi::Function::New(env, Timeline_SetTrackVisualOnly));
-    exports.Set("timeline_setTrackSolo",       Napi::Function::New(env, Timeline_SetTrackSolo));
+    exports.Set("timeline_setTrackMuted",       Napi::Function::New(env, Timeline_SetTrackMuted));
+    exports.Set("timeline_setTrackVisualOnly",  Napi::Function::New(env, Timeline_SetTrackVisualOnly));
+    exports.Set("timeline_setTrackSolo",        Napi::Function::New(env, Timeline_SetTrackSolo));
+    exports.Set("timeline_setTrackOutputRoute", Napi::Function::New(env, Timeline_SetTrackOutputRoute));
+    exports.Set("timeline_getRouting",          Napi::Function::New(env, Timeline_GetRouting));
     exports.Set("timeline_setTrackName", Napi::Function::New(env, Timeline_SetTrackName));
     exports.Set("timeline_setTrackFxMode", Napi::Function::New(env, Timeline_SetTrackFxMode));
     exports.Set("timeline_setTrackGraphState", Napi::Function::New(env, Timeline_SetTrackGraphState));

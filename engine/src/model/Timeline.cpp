@@ -1654,3 +1654,24 @@ void Timeline::clear() {
               << nTrk << " tracks, "  << nClp << " clips, "
               << nPat << " patterns, " << nBlk << " patternBlocks)\n";
 }
+
+// ─── Mixer output routing (Prompt 2A) ────────────────────────────────────────
+
+xleth::RoutingValidationResult Timeline::setTrackOutputRoute(int sourceTrackId,
+                                                              int targetTrackId)
+{
+    auto result = xleth::validateTrackOutputRoute(*this, sourceTrackId, targetTrackId);
+    if (!result.ok())
+        return result;
+    TrackInfo* t = getTrackMutable(sourceTrackId);
+    if (!t)
+        return { xleth::RoutingValidationReason::unknown_track };
+    t->outputRoute.targetTrackId = targetTrackId;
+    return result;
+}
+
+TrackOutputRoute Timeline::getTrackOutputRoute(int sourceTrackId) const
+{
+    const TrackInfo* t = getTrack(sourceTrackId);
+    return t ? t->outputRoute : TrackOutputRoute{};
+}

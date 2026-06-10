@@ -922,6 +922,33 @@ std::string SetTrackSoloCommand::describe() const {
     return std::string(newSolo_ ? "Solo" : "Unsolo") + " Track " + std::to_string(trackId_);
 }
 
+// ─── SetTrackOutputRouteCommand ───────────────────────────────────────────────
+
+SetTrackOutputRouteCommand::SetTrackOutputRouteCommand(int sourceTrackId,
+                                                       int newTargetTrackId,
+                                                       const Timeline& timeline)
+    : sourceTrackId_(sourceTrackId), newTargetTrackId_(newTargetTrackId)
+{
+    const TrackInfo* t = timeline.getTrack(sourceTrackId);
+    oldTargetTrackId_ = t ? t->outputRoute.targetTrackId : -1;
+}
+
+void SetTrackOutputRouteCommand::execute(Timeline& timeline) {
+    if (TrackInfo* t = timeline.getTrackMutable(sourceTrackId_))
+        t->outputRoute.targetTrackId = newTargetTrackId_;
+}
+
+void SetTrackOutputRouteCommand::undo(Timeline& timeline) {
+    if (TrackInfo* t = timeline.getTrackMutable(sourceTrackId_))
+        t->outputRoute.targetTrackId = oldTargetTrackId_;
+}
+
+std::string SetTrackOutputRouteCommand::describe() const {
+    return "Set Track " + std::to_string(sourceTrackId_) + " output route to "
+         + (newTargetTrackId_ == -1 ? "Master"
+                                    : "track " + std::to_string(newTargetTrackId_));
+}
+
 // ─── SetTrackNameCommand ──────────────────────────────────────────────────────
 
 SetTrackNameCommand::SetTrackNameCommand(int trackId, std::string newName, const Timeline& timeline)

@@ -49,6 +49,23 @@ function openFrameShm() {
   }
 }
 
+function normalizeBackdropState(state) {
+  const mode = state && state.mode === 'native-acrylic' ? 'native-acrylic' : 'off';
+  const preference = state && state.preference === 'off' ? 'off' : 'acrylic';
+  return {
+    capability: state && state.capability ? state.capability : null,
+    preference,
+    mode,
+  };
+}
+
+let backdropCurrent = normalizeBackdropState(null);
+try {
+  backdropCurrent = normalizeBackdropState(ipcRenderer.sendSync('xleth:backdrop:getStateSync'));
+} catch (e) {
+  console.warn('[preload] backdrop state seed failed:', e.message);
+}
+
 window.xleth = ({
 
   // ── Media server (for <video> elements) ────────────────────────────────────
@@ -124,9 +141,11 @@ window.xleth = ({
     setLoopRegion:    (region, minLengthTicks) => invoke('xleth:timeline:setLoopRegion', region, minLengthTicks),
     addTrack:         (info)                => invoke('xleth:timeline:addTrack', info),
     removeTrack:      (id)                  => invoke('xleth:timeline:removeTrack', id),
-    setTrackMuted:      (trackId, muted)      => invoke('xleth:timeline:setTrackMuted', trackId, muted),
-    setTrackVisualOnly: (trackId, visualOnly) => invoke('xleth:timeline:setTrackVisualOnly', trackId, visualOnly),
-    setTrackSolo:       (trackId, solo)       => invoke('xleth:timeline:setTrackSolo', trackId, solo),
+    setTrackMuted:        (trackId, muted)      => invoke('xleth:timeline:setTrackMuted', trackId, muted),
+    setTrackVisualOnly:   (trackId, visualOnly) => invoke('xleth:timeline:setTrackVisualOnly', trackId, visualOnly),
+    setTrackSolo:         (trackId, solo)       => invoke('xleth:timeline:setTrackSolo', trackId, solo),
+    setTrackOutputRoute:  (trackId, targetTrackId) => invoke('xleth:timeline:setTrackOutputRoute', trackId, targetTrackId),
+    getRouting:           ()                    => invoke('xleth:timeline:getRouting'),
     setTrackName:     (trackId, name)       => invoke('xleth:timeline:setTrackName', trackId, name),
     setTrackFxMode:   (trackId, mode)       => invoke('xleth:timeline:setTrackFxMode', trackId, mode),
     setTrackGraphState: (trackId, graphState) => invoke('xleth:timeline:setTrackGraphState', trackId, graphState),
@@ -469,7 +488,24 @@ window.xleth = ({
     set: (key, value) => invoke('xleth:settings:set', key, value),
   },
 
-  // ── Window layout (persisted to userData/layout.json) ──────────────────────
+  // Workspace backdrop state
+  backdrop: {
+    get current() { return backdropCurrent },
+    getState: async () => {
+      backdropCurrent = normalizeBackdropState(await invoke('xleth:backdrop:getState'));
+      return backdropCurrent;
+    },
+    onModeChanged: (cb) => {
+      const h = (_e, state) => {
+        backdropCurrent = normalizeBackdropState(state);
+        cb(backdropCurrent);
+      };
+      ipcRenderer.on('xleth:backdrop:modeChanged', h);
+      return () => ipcRenderer.removeListener('xleth:backdrop:modeChanged', h);
+    },
+  },
+
+  // Window layout (persisted to userData/layout.json)
   layout: {
     read:  ()      => invoke('xleth:layout:read'),
     write: (value) => invoke('xleth:layout:write', value),
