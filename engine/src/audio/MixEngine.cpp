@@ -3243,6 +3243,36 @@ int MixEngine::getTrackChainOutputLatencySamplesLocked(int trackId) const
     return juce::jmax(0, chainIt->second->getOutputLatencySamples());
 }
 
+int MixEngine::buildRoutePdcPlanLocked(xleth::RoutePlan& plan,
+                                       xleth::RoutePdcPlan& pdc,
+                                       int* slotTrackIds) const
+{
+    xleth::RoutePlanSlotInput inputs[kMaxTracks];
+    int chainLatencies[kMaxTracks] = {};
+    int count = 0;
+
+    if (timeline_ != nullptr)
+    {
+        for (const auto* t : timeline_->getAllTracks())
+        {
+            if (t == nullptr || count >= kMaxTracks) continue;
+            inputs[count].trackId             = t->id;
+            inputs[count].outputTargetTrackId = t->outputRoute.targetTrackId;
+            inputs[count].muted               = t->muted;
+            inputs[count].solo                = t->solo;
+            inputs[count].visualOnly          = t->visualOnly;
+            chainLatencies[count] = getTrackChainOutputLatencySamplesLocked(t->id);
+            if (slotTrackIds != nullptr)
+                slotTrackIds[count] = t->id;
+            ++count;
+        }
+    }
+
+    xleth::buildRoutePlan(inputs, count, plan);
+    xleth::buildRoutePdcPlan(inputs, count, plan, chainLatencies, pdc);
+    return count;
+}
+
 MixEngine::LatencyCompensationSnapshot MixEngine::computeLatencyCompensationSnapshotLocked() const
 {
     LatencyCompensationSnapshot snapshot;
@@ -3278,6 +3308,15 @@ MixEngine::LatencyCompensationSnapshot MixEngine::computeLatencyCompensationSnap
             getTrackChainOutputLatencySamplesLocked(track->id));
     }
 
+    // Route-aware max path latency (Prompt 2C). For an unrouted project this
+    // equals maxAudibleTrackLatencySamples (kept above with its legacy flat
+    // semantics for diagnostics); for routed projects it is the deepest
+    // contributing route path into the Master input junction.
+    xleth::RoutePlan plan;
+    xleth::RoutePdcPlan pdc;
+    buildRoutePdcPlanLocked(plan, pdc, nullptr);
+    snapshot.maxPathLatencySamples = pdc.maxPathLatencySamples;
+
     return snapshot;
 }
 
@@ -3302,30 +3341,29 @@ int MixEngine::getTrackCompensationDelaySamples(int trackId) const
     if (track == nullptr || track->visualOnly)
         return 0;
 
+    // Junction PDC (Prompt 2C): the compensation applied immediately before
+    // this track sums into its destination junction (bus input or Master).
+    // For an unrouted project this reduces to the legacy flat value
+    // (maxAudibleTrackLatency − ownLatency for audible tracks, else 0).
     std::lock_guard<std::mutex> lock(chainsMutex_);
-    const auto snapshot = computeLatencyCompensationSnapshotLocked();
-
-    bool anySolo = false;
-    for (const auto* t : timeline_->getAllTracks())
-    {
-        if (t != nullptr && t->solo)
-        {
-            anySolo = true;
-            break;
-        }
-    }
-
-    const bool shouldPlay = anySolo ? track->solo : !track->muted;
-    if (!shouldPlay)
-        return 0;
-
-    return juce::jmax(0, snapshot.maxAudibleTrackLatencySamples
-                            - getTrackChainOutputLatencySamplesLocked(trackId));
+    xleth::RoutePlan plan;
+    xleth::RoutePdcPlan pdc;
+    int slotTrackIds[kMaxTracks];
+    const int count = buildRoutePdcPlanLocked(plan, pdc, slotTrackIds);
+    for (int s = 0; s < count; ++s)
+        if (slotTrackIds[s] == trackId)
+            return pdc.branchCompensationSamples[s];
+    return 0;
 }
 
 int MixEngine::getMaxAudibleTrackLatencySamples() const
 {
     return getLatencyCompensationSnapshot().maxAudibleTrackLatencySamples;
+}
+
+int MixEngine::getMaxPathLatencySamples() const
+{
+    return getLatencyCompensationSnapshot().maxPathLatencySamples;
 }
 
 int MixEngine::getMasterInsertLatencySamples() const
@@ -4571,15 +4609,14 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     {
         int trackLatencies[kMaxTracks] = {};
         double trackTailSeconds[kMaxTracks] = {};
-        bool audibleForPdc[kMaxTracks] = {};
         int maxAudibleTrackLatency = 0;
 
         for (int i = 0; i < numTrackSlots; ++i)
         {
             const auto* track = trackSlots[i].info;
-            // Route-aware audible set (Prompt 2B). For unrouted projects this is
-            // identical to the old `anySolo ? solo : !muted`, so flat PDC behavior
-            // is unchanged; routed projects pick up the mute/solo closure.
+            // Route-aware audible set (Prompt 2B): for unrouted projects this is
+            // identical to the old `anySolo ? solo : !muted`; routed projects
+            // pick up the mute/solo closure.
             const bool shouldPlay = routePlan.audible[i];
 
             auto chainIt = effectChains_.find(track->id);
@@ -4593,17 +4630,29 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                 cachedTrackLatencyEpochs_[i] = epoch;
             }
 
-            audibleForPdc[i] = shouldPlay && !track->visualOnly;
-            if (audibleForPdc[i])
+            // Legacy flat max kept for diagnostics (taps, getters) only — it no
+            // longer drives compensation targets.
+            if (shouldPlay && !track->visualOnly)
                 maxAudibleTrackLatency = std::max(maxAudibleTrackLatency, trackLatencies[i]);
         }
+
+        // Junction PDC (Prompt 2C): compensation aligns each branch at its OWN
+        // destination junction (bus input or Master input) instead of flattening
+        // every track to the global max at Master — that flat target is wrong
+        // once routes nest (a latent bus chain adds downstream path latency the
+        // flat model never sees). buildRoutePdcPlan is pure and allocation-free;
+        // for unrouted projects branchCompensationSamples[i] reduces exactly to
+        // the old (maxAudibleTrackLatency − trackLatencies[i]) behavior.
+        xleth::RoutePdcPlan routePdcPlan;
+        xleth::buildRoutePdcPlan(routeInputs, numTrackSlots, routePlan,
+                                 trackLatencies, routePdcPlan);
 
         for (int i = 0; i < kMaxTracks; ++i)
         {
             const int trackLatency = (i < numTrackSlots) ? trackLatencies[i] : 0;
             const double tailSeconds = (i < numTrackSlots) ? trackTailSeconds[i] : 0.0;
-            const int compensation = (i < numTrackSlots && audibleForPdc[i])
-                                   ? (maxAudibleTrackLatency - trackLatency)
+            const int compensation = (i < numTrackSlots)
+                                   ? routePdcPlan.branchCompensationSamples[i]
                                    : 0;
 
             cachedTrackInsertLatencySamples_[i] = trackLatency;

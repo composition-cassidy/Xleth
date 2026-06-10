@@ -86,4 +86,61 @@ struct RoutePlan {
 // identity order with audible[s] == (anySolo ? solo[s] : !muted[s]).
 void buildRoutePlan(const RoutePlanSlotInput* slots, int count, RoutePlan& out);
 
+// ─── RoutePdcPlan (Prompt 2C junction latency compensation) ───────────────────
+// Route-aware PDC metadata derived from a built RoutePlan plus per-slot insert-
+// chain latencies. A summing junction is either a bus track's input (routed
+// sources summing into that track's pre-chain buffer) or the Master input.
+// Each contributing branch is delay-compensated immediately before it sums into
+// its destination junction so all immediate inputs of a junction arrive aligned.
+// Output routes only — sends and sidechain are deferred (Prompt 4+).
+
+struct RoutePdcPlan {
+    static constexpr int kMaxSlots = RoutePlan::kMaxSlots;
+
+    // Delay (samples) applied to this slot's processed buffer immediately before
+    // summing it into its destination junction. 0 for non-contributing slots.
+    int branchCompensationSamples[kMaxSlots];
+
+    // Aligned latency of the routed input already summed into this slot's buffer
+    // when its own chain runs (= max raw branch arrival over contributing
+    // sources; 0 when nothing routes into the slot). NOTE: a bus's OWN clips
+    // enter its buffer at latency 0 and are not delayed to meet routed input —
+    // same skew as the pre-2C flat model (no pre-chain delay stage exists).
+    int junctionInputLatencySamples[kMaxSlots];
+
+    // Raw latency of this slot's branch as it arrives at its destination
+    // junction BEFORE branch compensation:
+    //   junctionInputLatencySamples[slot] + chainLatencySamples[slot].
+    int branchArrivalLatencySamples[kMaxSlots];
+
+    // True when this slot's signal reaches the Master sum: the slot and every
+    // hop downstream are audible (RoutePlan mute/solo closure) and not
+    // visual-only. Only contributing slots take part in junction maxima.
+    bool contributesToMaster[kMaxSlots];
+
+    // Aligned latency at the Master input junction = the deepest contributing
+    // route path latency (insert chains + branch compensation up to, but not
+    // including, the master insert chain). Export pre-roll consumes this; for
+    // an unrouted project it equals the old max audible track latency.
+    int maxPathLatencySamples = 0;
+};
+
+// Build junction-PDC metadata for a RoutePlan. `slots`/`count` must be the same
+// inputs `plan` was built from; `chainLatencySamples[s]` is slot s's insert-
+// chain output latency (EffectChainManager::getOutputLatencySamples). Pure and
+// audio-thread safe: fixed arrays, no heap allocation, no locks. `out` is fully
+// overwritten.
+//
+// Alignment contract (per junction, over contributing branches only):
+//   compensation[s] = junctionLatency(target(s)) − branchArrival(s)
+// where junctionLatency(Master) == maxPathLatencySamples. Compensation aligns a
+// slot at its OWN destination junction exactly once — latency is never counted
+// twice, and muted/solo-silenced/visual-only branches never inflate any
+// junction. For an unrouted project this reduces exactly to the flat model:
+//   compensation[s] = maxAudibleTrackLatency − chainLatency[s].
+void buildRoutePdcPlan(const RoutePlanSlotInput* slots, int count,
+                       const RoutePlan& plan,
+                       const int* chainLatencySamples,
+                       RoutePdcPlan& out);
+
 } // namespace xleth

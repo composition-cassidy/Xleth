@@ -49,6 +49,11 @@ public:
     };
 
     struct PrerollPlan {
+        // Track-path latency term of the pre-roll. The MixEngine-driven
+        // overloads fill this with the route-aware max path latency
+        // (MixEngine::getMaxPathLatencySamples(), Prompt 2C) — for an unrouted
+        // project that equals the flat max audible track latency this field is
+        // named after. Master insert latency is the separate downstream term.
         int     maxAudibleTrackLatencySamples = 0;
         int     masterInsertLatencySamples = 0;
         int64_t totalPrerollSamples = 0;

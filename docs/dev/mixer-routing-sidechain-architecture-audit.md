@@ -768,6 +768,51 @@ model.
 >   (`test_mixer_bus_routing` target), `engine/test/test_track_routing.cpp` (RoutePlan unit tests
 >   R1-R9), `engine/test/test_mixer_bus_routing.cpp` (new DSP integration tests).
 
+> **Prompt 2C status (junction PDC + export max path latency — 2026-06-10):** Bus routing is now
+> phase-correct under insert-chain latency. What landed:
+> - **Junction PDC implemented (§4.6):** a pure `xleth::buildRoutePdcPlan` (in
+>   `TrackRouting.{h,cpp}`) derives, from the 2B `RoutePlan` plus per-slot chain latencies:
+>   `contributesToMaster[]` (reverse-topo audible-closure reachability — muted/solo-silenced/
+>   visual-only branches and dead-ended subtrees never inflate any junction),
+>   `junctionInputLatencySamples[]` / `branchArrivalLatencySamples[]` (forward-topo raw arrival
+>   maxima per junction), `branchCompensationSamples[]` (per-branch alignment at its OWN
+>   destination junction, applied exactly once), and `maxPathLatencySamples` (aligned latency at
+>   the Master input). `MixEngine::processBlock` now retargets `trackCompensationDelays_[i]` from
+>   `branchCompensationSamples[i]` instead of the flat `maxAudibleTrackLatency − ownLatency`; the
+>   existing `StereoCompensationDelay` position (immediately before summing into the destination)
+>   was already the junction input point, so no DSP relocation was needed. Nested buses align
+>   recursively (each bus's aligned input + its own chain latency is its branch arrival at the
+>   next junction). For unrouted projects the plan reduces bit-exactly to the old flat model.
+> - **Max path latency implemented:** `MixEngine::getMaxPathLatencySamples()` +
+>   `LatencyCompensationSnapshot.maxPathLatencySamples` (route-aware; equals
+>   `maxAudibleTrackLatencySamples` when unrouted; master insert latency stays a separate
+>   downstream term, never double-counted). `getTrackCompensationDelaySamples()` now reports the
+>   junction compensation; the legacy flat getter is kept for diagnostics/taps.
+> - **Export pre-roll switched to route-aware max path latency:**
+>   `AudioExporter::computePrerollPlan(MixEngine&, …)` and both `OfflineRenderer` pre-roll sites
+>   (linear + wrap; a narrow audio-pre-roll-only edit) consume `maxPathLatencySamples`, so
+>   latent/nested bus chains are fully flushed before capture. Unrouted pre-roll is unchanged.
+> - **Known caveat (pre-existing, unchanged):** a bus's OWN clips enter its buffer at latency 0
+>   and are not delayed to meet routed input (no pre-chain delay stage exists); junction PDC
+>   aligns routed branches with each other, same own-content skew as the flat model.
+> - **Tests:** `test_track_routing` P1-P8 (pure RoutePdcPlan: flat equivalence, latent bus,
+>   sibling alignment, nested junction math, mute/solo/visual-only exclusion, route reset). New
+>   `test_mixer_routing_pdc` (CMake target): impulse-coincidence renders that FAIL under the flat
+>   model (latent bus vs direct sibling, siblings into one bus at the single-counted path depth,
+>   nested A→Bus1→Bus2 ← B with direct C, muted-branch non-inflation, solo closure path, route
+>   reset bit-identical to never-routed) plus export probes (nested pre-roll lands the impulse at
+>   its exact timeline position; routed offline export == realtime render shifted by path latency
+>   with maxDiff = 0; unrouted export unchanged). Regression green: `test_mixer_bus_routing` (25),
+>   `test_pdc_stage1` (584), `test_mix` (272), `test_offline_render`, `test_project`, `test_undo`.
+> - **Deferred (NOT in 2C):** sidechain → Prompt 4+. Parallel sends → later. Mixer UI → Prompt 3.
+>   FX Graph sidechain → later. Bus own-content input alignment (pre-chain delay) → later if a
+>   real-world project needs it.
+> - **Files added/modified:** `engine/src/audio/TrackRouting.{h,cpp}` (RoutePdcPlan builder),
+>   `engine/src/audio/MixEngine.{h,cpp}` (junction retargeting, route-aware snapshot/getters),
+>   `engine/src/export/AudioExporter.{h,cpp}`, `engine/src/render/OfflineRenderer.cpp` (pre-roll
+>   inputs only), `engine/CMakeLists.txt` (`test_mixer_routing_pdc` target),
+>   `engine/test/test_track_routing.cpp`, `engine/test/test_mixer_routing_pdc.cpp` (new).
+
 ### Prompt 2 — Mixer bus routing core (engine + persistence + bridge)
 
 - **Scope**: `TrackOutputRoute` model + serialization + validation (§3); `RoutingSnapshot`,

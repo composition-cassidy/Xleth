@@ -110,9 +110,14 @@ AudioExporter::PrerollPlan AudioExporter::computePrerollPlan(
     int64_t warmUpStartSample,
     int64_t captureStartSample)
 {
+    // Route-aware pre-roll (Prompt 2C): use the deepest audible route path into
+    // the Master input (maxPathLatencySamples) so latency-heavy / nested bus
+    // chains are fully flushed before capture. For an unrouted project this
+    // equals the old maxAudibleTrackLatencySamples, so behavior is unchanged.
+    // Master insert latency stays a separate downstream term as before.
     const auto latencySnapshot = mixer.getLatencyCompensationSnapshot();
     return computePrerollPlan(warmUpStartSample, captureStartSample,
-                              latencySnapshot.maxAudibleTrackLatencySamples,
+                              latencySnapshot.maxPathLatencySamples,
                               latencySnapshot.masterInsertLatencySamples);
 }
 

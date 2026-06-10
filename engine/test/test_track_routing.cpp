@@ -493,6 +493,178 @@ static void test_planCycleFailClosed() {
           "all slots forced to Master on cycle");
 }
 
+// ─── RoutePdcPlan helpers (Prompt 2C) ────────────────────────────────────────
+
+// Builds plan + pdc in one go from slot inputs and per-slot chain latencies.
+static void buildPdc(const xleth::RoutePlanSlotInput* in, const int* lat, int count,
+                     xleth::RoutePlan& p, xleth::RoutePdcPlan& d) {
+    xleth::buildRoutePlan(in, count, p);
+    xleth::buildRoutePdcPlan(in, count, p, lat, d);
+}
+
+// ─── P1: Unrouted reduces exactly to the flat model ──────────────────────────
+
+static void test_pdcUnroutedFlatEquivalence() {
+    std::cout << "\n[P1] RoutePdcPlan: unrouted == flat (max − own) model\n";
+    xleth::RoutePlanSlotInput in[3] = { slot(10), slot(20), slot(30) };
+    const int lat[3] = { 10, 0, 4 };
+    xleth::RoutePlan p; xleth::RoutePdcPlan d;
+    buildPdc(in, lat, 3, p, d);
+
+    CHECK(d.maxPathLatencySamples == 10, "maxPath == flat max audible latency (10)");
+    CHECK(d.branchCompensationSamples[0] == 0,  "latent slot comp 0");
+    CHECK(d.branchCompensationSamples[1] == 10, "dry slot comp == max (10)");
+    CHECK(d.branchCompensationSamples[2] == 6,  "partial slot comp == max − own (6)");
+    for (int i = 0; i < 3; ++i) {
+        CHECK(d.contributesToMaster[i], "unrouted unmuted slot contributes");
+        CHECK(d.junctionInputLatencySamples[i] == 0, "no routed input → junctionIn 0");
+    }
+}
+
+// ─── P2: Latent bus chain vs direct sibling at Master ────────────────────────
+
+static void test_pdcLatentBusVsDirect() {
+    std::cout << "\n[P2] RoutePdcPlan: A→Bus(latent)→Master vs direct B\n";
+    // A(10)→Bus(20)→Master, B(30)→Master. Bus chain latency 512, A and B dry.
+    xleth::RoutePlanSlotInput in[3] = { slot(10, 20), slot(20, -1), slot(30, -1) };
+    const int lat[3] = { 0, 512, 0 };
+    xleth::RoutePlan p; xleth::RoutePdcPlan d;
+    buildPdc(in, lat, 3, p, d);
+
+    CHECK(d.branchCompensationSamples[0] == 0,   "A only input to Bus → comp 0");
+    CHECK(d.branchArrivalLatencySamples[1] == 512, "Bus branch arrives at Master at 512");
+    CHECK(d.branchCompensationSamples[1] == 0,   "Bus is the deepest branch → comp 0");
+    CHECK(d.branchCompensationSamples[2] == 512, "direct B aligned to the bus path (512)");
+    CHECK(d.maxPathLatencySamples == 512, "maxPath == bus path (512), not flat max");
+}
+
+// ─── P3: Siblings with different insert latencies align at the bus input ─────
+
+static void test_pdcSiblingsIntoBus() {
+    std::cout << "\n[P3] RoutePdcPlan: siblings align at the bus input junction\n";
+    // A(10)→Bus(30), B(20)→Bus(30); A lat 600, B lat 120, bus dry.
+    xleth::RoutePlanSlotInput in[3] = { slot(10, 30), slot(20, 30), slot(30, -1) };
+    const int lat[3] = { 600, 120, 0 };
+    xleth::RoutePlan p; xleth::RoutePdcPlan d;
+    buildPdc(in, lat, 3, p, d);
+
+    CHECK(d.junctionInputLatencySamples[2] == 600, "bus junction == max sibling arrival (600)");
+    CHECK(d.branchCompensationSamples[0] == 0,   "deeper sibling comp 0");
+    CHECK(d.branchCompensationSamples[1] == 480, "shallower sibling comp 600 − 120");
+    CHECK(d.branchCompensationSamples[2] == 0,   "bus is the only Master input → comp 0");
+    CHECK(d.maxPathLatencySamples == 600, "maxPath == aligned bus input + dry bus chain");
+}
+
+// ─── P4: Nested buses align at every junction ────────────────────────────────
+
+static void test_pdcNested() {
+    std::cout << "\n[P4] RoutePdcPlan: A→B1→B2→Master nested junctions\n";
+    // A(10)→B1(20)→B2(30)→Master; B(40)→B2; C(50)→Master.
+    // chainLat: A=5, B1=7, B2=3, B=20, C=2.
+    xleth::RoutePlanSlotInput in[5] = {
+        slot(10, 20), slot(20, 30), slot(30, -1), slot(40, 30), slot(50, -1)
+    };
+    const int lat[5] = { 5, 7, 3, 20, 2 };
+    xleth::RoutePlan p; xleth::RoutePdcPlan d;
+    buildPdc(in, lat, 5, p, d);
+
+    CHECK(d.junctionInputLatencySamples[1] == 5,  "B1 junction == A arrival (5)");
+    CHECK(d.branchArrivalLatencySamples[1] == 12, "B1 arrives at B2 at 5+7");
+    CHECK(d.junctionInputLatencySamples[2] == 20, "B2 junction == max(B1 12, B 20)");
+    CHECK(d.branchCompensationSamples[1] == 8,  "B1 aligned up to B (20−12)");
+    CHECK(d.branchCompensationSamples[3] == 0,  "B deepest into B2 → comp 0");
+    CHECK(d.branchArrivalLatencySamples[2] == 23, "B2 arrives at Master at 20+3");
+    CHECK(d.branchCompensationSamples[2] == 0,  "B2 deepest at Master → comp 0");
+    CHECK(d.branchCompensationSamples[4] == 21, "C aligned to B2 path (23−2)");
+    CHECK(d.maxPathLatencySamples == 23, "maxPath == deepest nested path (23)");
+}
+
+// ─── P5: Muted branches never inflate junctions or max path ──────────────────
+
+static void test_pdcMutedBranches() {
+    std::cout << "\n[P5] RoutePdcPlan: muted branches don't inflate latency\n";
+    {
+        // Muted latent track direct to Master.
+        xleth::RoutePlanSlotInput in[2] = { slot(10, -1, /*muted=*/true), slot(20, -1) };
+        const int lat[2] = { 2048, 10 };
+        xleth::RoutePlan p; xleth::RoutePdcPlan d;
+        buildPdc(in, lat, 2, p, d);
+        CHECK(!d.contributesToMaster[0], "muted track does not contribute");
+        CHECK(d.maxPathLatencySamples == 10, "muted 2048 ignored, maxPath == 10");
+        CHECK(d.branchCompensationSamples[0] == 0, "muted branch gets no compensation");
+        CHECK(d.branchCompensationSamples[1] == 0, "audible track is the max → comp 0");
+    }
+    {
+        // Audible latent source dead-ended into a muted bus.
+        xleth::RoutePlanSlotInput in[3] = {
+            slot(10, 20), slot(20, -1, /*muted=*/true), slot(30, -1)
+        };
+        const int lat[3] = { 999, 0, 10 };
+        xleth::RoutePlan p; xleth::RoutePdcPlan d;
+        buildPdc(in, lat, 3, p, d);
+        CHECK(p.audible[0], "source itself still audible (2B semantics)");
+        CHECK(!d.contributesToMaster[0], "dead-ended source does not contribute");
+        CHECK(!d.contributesToMaster[1], "muted bus does not contribute");
+        CHECK(d.maxPathLatencySamples == 10, "dead subtree never inflates maxPath");
+    }
+}
+
+// ─── P6: Solo closure drives the contributing set ────────────────────────────
+
+static void test_pdcSoloClosure() {
+    std::cout << "\n[P6] RoutePdcPlan: solo path latency over the audible closure\n";
+    // Kick(10, solo)→Bus(20)→Master; Lead(30)→Master with a big insert.
+    xleth::RoutePlanSlotInput in[3] = {
+        slot(10, 20, false, /*solo=*/true), slot(20, -1), slot(30, -1)
+    };
+    const int lat[3] = { 0, 512, 4096 };
+    xleth::RoutePlan p; xleth::RoutePdcPlan d;
+    buildPdc(in, lat, 3, p, d);
+
+    CHECK(d.contributesToMaster[0] && d.contributesToMaster[1],
+          "solo closure: Kick + downstream Bus contribute");
+    CHECK(!d.contributesToMaster[2], "non-soloed Lead does not contribute");
+    CHECK(d.maxPathLatencySamples == 512,
+          "maxPath over the audible closure (512), not the silenced 4096");
+    CHECK(d.branchCompensationSamples[2] == 0, "silenced branch gets no compensation");
+}
+
+// ─── P7: Visual-only slots never affect route PDC ────────────────────────────
+
+static void test_pdcVisualOnlyExcluded() {
+    std::cout << "\n[P7] RoutePdcPlan: visual-only track excluded from max latency\n";
+    xleth::RoutePlanSlotInput in[2] = {
+        slot(10, -1, false, false, /*visualOnly=*/true), slot(20, -1)
+    };
+    const int lat[2] = { 8192, 16 };
+    xleth::RoutePlan p; xleth::RoutePdcPlan d;
+    buildPdc(in, lat, 2, p, d);
+
+    CHECK(!d.contributesToMaster[0], "visual-only slot does not contribute");
+    CHECK(d.maxPathLatencySamples == 16, "visual-only latency never inflates maxPath");
+}
+
+// ─── P8: Route reset returns to direct-route compensation ────────────────────
+
+static void test_pdcRouteReset() {
+    std::cout << "\n[P8] RoutePdcPlan: reset to Master == direct-route PDC\n";
+    // Routed: A(10)→Bus(20, lat 512)→Master.
+    xleth::RoutePlanSlotInput routed[2] = { slot(10, 20), slot(20, -1) };
+    // Reset: A(10)→Master, Bus(20, lat 512)→Master (still audible, no input).
+    xleth::RoutePlanSlotInput reset[2] = { slot(10, -1), slot(20, -1) };
+    const int lat[2] = { 0, 512 };
+
+    xleth::RoutePlan pr; xleth::RoutePdcPlan dr;
+    buildPdc(routed, lat, 2, pr, dr);
+    CHECK(dr.branchCompensationSamples[0] == 0, "routed: A aligned inside the bus path");
+
+    xleth::RoutePlan pm; xleth::RoutePdcPlan dm;
+    buildPdc(reset, lat, 2, pm, dm);
+    CHECK(dm.branchCompensationSamples[0] == 512,
+          "reset: A compensated directly at Master (flat behavior)");
+    CHECK(dm.maxPathLatencySamples == 512, "reset maxPath == flat max");
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 int main() {
@@ -527,6 +699,16 @@ int main() {
     test_planSoloBus();
     test_planTargetCorrection();
     test_planCycleFailClosed();
+
+    // Prompt 2C — pure RoutePdcPlan builder (junction compensation + max path).
+    test_pdcUnroutedFlatEquivalence();
+    test_pdcLatentBusVsDirect();
+    test_pdcSiblingsIntoBus();
+    test_pdcNested();
+    test_pdcMutedBranches();
+    test_pdcSoloClosure();
+    test_pdcVisualOnlyExcluded();
+    test_pdcRouteReset();
 
     std::cout << "\n=== Results: " << g_passed << " passed, " << g_failed << " failed ===\n";
     if (g_failed > 0) {

@@ -482,11 +482,13 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
     // Pre-roll plan: warm up the engine from warmUpStartSample (tick 0 for a
     // scoped absolute window), discard that output, and flush plugin/insert
     // latency so the first KEPT sample == intended audio at startSample. Shared
-    // math with AudioExporter via render/RenderScope.h.
+    // math with AudioExporter via render/RenderScope.h. The track term is the
+    // route-aware max path latency (Prompt 2C) so latent / nested bus chains are
+    // fully flushed; for unrouted projects it equals the flat per-track max.
     const auto latencySnapshot = mixer_.getLatencyCompensationSnapshot();
     const auto prerollPlan = xleth::computeRenderPrerollPlan(
         warmUpStartSample, startSample,
-        latencySnapshot.maxAudibleTrackLatencySamples,
+        latencySnapshot.maxPathLatencySamples,
         latencySnapshot.masterInsertLatencySamples);
     const int64_t historyPreroll = prerollPlan.availablePrerollSamples;
     const int64_t renderStart = prerollPlan.renderStartSample;
@@ -494,8 +496,8 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
     const int64_t renderSamplesNeeded = totalSamples + totalDiscard;
     const int64_t renderEnd = renderStart + renderSamplesNeeded;
     std::fprintf(stderr,
-                 "[Renderer] PRE-ROLL: track=%d master=%d history=%lld discard=%lld start=%lld renderStart=%lld renderEnd=%lld\n",
-                 latencySnapshot.maxAudibleTrackLatencySamples,
+                 "[Renderer] PRE-ROLL: trackPath=%d master=%d history=%lld discard=%lld start=%lld renderStart=%lld renderEnd=%lld\n",
+                 latencySnapshot.maxPathLatencySamples,
                  latencySnapshot.masterInsertLatencySamples,
                  (long long)historyPreroll,
                  (long long)totalDiscard,
@@ -1148,10 +1150,11 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
         // (warmUpStartSample → startSample, recreating in-flight content) + PDC
         // latency flush, all folded into discardSamples. NO looped-region pre-roll,
         // NO backward seek: the capture flows straight out of the warm-up and the
-        // fold supplies the loop-seam energy.
+        // fold supplies the loop-seam energy. Track term = route-aware max path
+        // latency (Prompt 2C; equals the flat per-track max when unrouted).
         const auto plan = xleth::computeRenderPrerollPlan(
             warmUpStartSample, startSample,
-            lat.maxAudibleTrackLatencySamples, lat.masterInsertLatencySamples);
+            lat.maxPathLatencySamples, lat.masterInsertLatencySamples);
         const int64_t renderStart    = plan.renderStartSample;
         const int64_t discardSamples = plan.discardSamples;
 

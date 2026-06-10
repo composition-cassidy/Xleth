@@ -38,6 +38,7 @@ class PluginEditorHost;
 class PluginRegistry;
 class XlethEffectBase;
 namespace juce { class AudioProcessor; }
+namespace xleth { struct RoutePlan; struct RoutePdcPlan; }
 namespace xleth::audio { class WorldStretchCache; }
 
 // ─── Debug log queue (lock-free, single-producer / single-consumer) ──────────
@@ -227,11 +228,21 @@ public:
     {
         int maxAudibleTrackLatencySamples = 0;
         int masterInsertLatencySamples = 0;
+        // Route-aware max path latency to the Master input (Prompt 2C): the
+        // deepest audible output-route path (insert chains + junction branch
+        // compensation), EXCLUDING the master insert chain (reported separately
+        // above, downstream of the Master input sum). For an unrouted project
+        // this equals maxAudibleTrackLatencySamples. Export pre-roll consumes
+        // this value instead of the flat per-track max.
+        int maxPathLatencySamples = 0;
     };
 
     int getTrackInsertLatencySamples(int trackId) const;
     int getTrackCompensationDelaySamples(int trackId) const;
     int getMaxAudibleTrackLatencySamples() const;
+    // Route-aware max path latency (see LatencyCompensationSnapshot). Safe to
+    // call from export/pre-roll code (main thread; locks chainsMutex_).
+    int getMaxPathLatencySamples() const;
     int getMasterInsertLatencySamples() const;
     LatencyCompensationSnapshot getLatencyCompensationSnapshot() const;
     bool isInterTrackLatencyCompensationApplied() const;
@@ -958,6 +969,16 @@ private:
                                          bool clearHistory);
     LatencyCompensationSnapshot computeLatencyCompensationSnapshotLocked() const;
     int getTrackChainOutputLatencySamplesLocked(int trackId) const;
+
+    // Builds the route plan + junction PDC plan (Prompt 2C) from the live
+    // timeline and current chain latencies. Main-thread diagnostic/export path
+    // (caller holds chainsMutex_); the audio thread builds its own per-block
+    // plans inside processBlock instead. Returns the slot count; when
+    // slotTrackIds != nullptr it receives the trackId of each slot (slot space
+    // == getAllTracks() order, same as processBlock).
+    int buildRoutePdcPlanLocked(xleth::RoutePlan& plan,
+                                xleth::RoutePdcPlan& pdc,
+                                int* slotTrackIds) const;
 
     void maybeLogDebug(int numSamples, double sampleRate);
 };

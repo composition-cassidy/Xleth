@@ -176,4 +176,66 @@ void buildRoutePlan(const RoutePlanSlotInput* slots, int count, RoutePlan& out)
     }
 }
 
+// ─── buildRoutePdcPlan ────────────────────────────────────────────────────────
+
+void buildRoutePdcPlan(const RoutePlanSlotInput* slots, int count,
+                       const RoutePlan& plan,
+                       const int* chainLatencySamples,
+                       RoutePdcPlan& out)
+{
+    if (slots == nullptr || chainLatencySamples == nullptr || count < 0) count = 0;
+    if (count > RoutePdcPlan::kMaxSlots) count = RoutePdcPlan::kMaxSlots;
+    if (count > plan.slotCount) count = plan.slotCount;
+
+    for (int s = 0; s < count; ++s) {
+        out.branchCompensationSamples[s]   = 0;
+        out.junctionInputLatencySamples[s] = 0;
+        out.branchArrivalLatencySamples[s] = 0;
+        out.contributesToMaster[s]         = false;
+    }
+    out.maxPathLatencySamples = 0;
+
+    // Pass 1 — reverse topo (targets before sources): a slot contributes to the
+    // Master sum only when itself and every hop downstream is audible and not
+    // visual-only. An audible source dead-ended into a muted bus contributes
+    // nothing, so it can never inflate a junction or the max path latency.
+    for (int oi = count - 1; oi >= 0; --oi) {
+        const int s = plan.topoOrder[oi];
+        const bool eligible = plan.audible[s] && !slots[s].visualOnly;
+        const int  t = plan.outputTargetSlot[s];
+        out.contributesToMaster[s] = eligible && (t < 0 || out.contributesToMaster[t]);
+    }
+
+    // Pass 2 — forward topo (sources before targets): a branch's raw arrival at
+    // its destination is the aligned routed input it carries plus its own chain
+    // latency. Each junction's input latency is the max raw arrival over its
+    // contributing branches; the Master junction's max is the max path latency.
+    for (int oi = 0; oi < count; ++oi) {
+        const int s = plan.topoOrder[oi];
+        const int chainLat = chainLatencySamples[s] > 0 ? chainLatencySamples[s] : 0;
+        out.branchArrivalLatencySamples[s] = out.junctionInputLatencySamples[s] + chainLat;
+
+        if (!out.contributesToMaster[s]) continue;
+
+        const int t = plan.outputTargetSlot[s];
+        if (t < 0) {
+            if (out.branchArrivalLatencySamples[s] > out.maxPathLatencySamples)
+                out.maxPathLatencySamples = out.branchArrivalLatencySamples[s];
+        } else if (out.branchArrivalLatencySamples[s] > out.junctionInputLatencySamples[t]) {
+            out.junctionInputLatencySamples[t] = out.branchArrivalLatencySamples[s];
+        }
+    }
+
+    // Pass 3 — branch compensation: align every contributing branch to its own
+    // destination junction's input latency (≥ 0 by construction of the maxima).
+    for (int s = 0; s < count; ++s) {
+        if (!out.contributesToMaster[s]) continue;
+        const int t = plan.outputTargetSlot[s];
+        const int junctionLatency = (t < 0) ? out.maxPathLatencySamples
+                                            : out.junctionInputLatencySamples[t];
+        const int comp = junctionLatency - out.branchArrivalLatencySamples[s];
+        out.branchCompensationSamples[s] = comp > 0 ? comp : 0;
+    }
+}
+
 } // namespace xleth
