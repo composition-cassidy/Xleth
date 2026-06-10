@@ -321,10 +321,182 @@ static void test_audioDspUnchanged() {
     CHECK(tl.getTrackOutputRoute(b).targetTrackId == -1, "bus still routes to Master");
 }
 
+// ─── RoutePlan helpers (Prompt 2B) ───────────────────────────────────────────
+
+static xleth::RoutePlanSlotInput slot(int trackId, int target = -1,
+                                      bool muted = false, bool solo = false,
+                                      bool visualOnly = false) {
+    xleth::RoutePlanSlotInput s;
+    s.trackId = trackId;
+    s.outputTargetTrackId = target;
+    s.muted = muted;
+    s.solo = solo;
+    s.visualOnly = visualOnly;
+    return s;
+}
+
+// Index of slot trackId within topoOrder (position in processing order).
+static int orderPos(const xleth::RoutePlan& p, int slotIndex) {
+    for (int i = 0; i < p.slotCount; ++i)
+        if (p.topoOrder[i] == slotIndex) return i;
+    return -1;
+}
+
+// ─── R1: Unrouted plan is identity + audible == !muted ───────────────────────
+
+static void test_planUnrouted() {
+    std::cout << "\n[R1] RoutePlan: unrouted → identity order, all to Master\n";
+    xleth::RoutePlanSlotInput in[3] = { slot(10), slot(20), slot(30) };
+    xleth::RoutePlan p;
+    xleth::buildRoutePlan(in, 3, p);
+
+    CHECK(p.slotCount == 3, "slotCount == 3");
+    CHECK(!p.cycleDetected && !p.targetCorrected, "no defensive corrections");
+    for (int i = 0; i < 3; ++i) {
+        CHECK(p.outputTargetSlot[i] == -1, "slot routes to Master");
+        CHECK(p.topoOrder[i] == i, "identity processing order");
+        CHECK(p.audible[i], "unmuted slot audible");
+    }
+}
+
+// ─── R2: Source → bus resolves to target slot, source before bus ─────────────
+
+static void test_planSourceToBus() {
+    std::cout << "\n[R2] RoutePlan: Kick(10)→DrumBus(20)→Master\n";
+    // Kick routes to DrumBus; DrumBus routes to Master.
+    xleth::RoutePlanSlotInput in[2] = { slot(10, 20), slot(20, -1) };
+    xleth::RoutePlan p;
+    xleth::buildRoutePlan(in, 2, p);
+
+    CHECK(p.outputTargetSlot[0] == 1, "Kick target slot == DrumBus slot (1)");
+    CHECK(p.outputTargetSlot[1] == -1, "DrumBus → Master");
+    CHECK(orderPos(p, 0) < orderPos(p, 1), "Kick processed before DrumBus");
+    CHECK(p.audible[0] && p.audible[1], "both audible (no mute/solo)");
+}
+
+// ─── R3: Bus declared before source → still ordered correctly ────────────────
+
+static void test_planOrderIndependence() {
+    std::cout << "\n[R3] RoutePlan: bus listed before its source still topo-orders\n";
+    // Slot 0 = DrumBus(20)→Master, slot 1 = Kick(10)→DrumBus(20).
+    xleth::RoutePlanSlotInput in[2] = { slot(20, -1), slot(10, 20) };
+    xleth::RoutePlan p;
+    xleth::buildRoutePlan(in, 2, p);
+
+    CHECK(p.outputTargetSlot[1] == 0, "Kick (slot 1) target == DrumBus (slot 0)");
+    CHECK(orderPos(p, 1) < orderPos(p, 0), "Kick processed before DrumBus despite list order");
+}
+
+// ─── R4: Nested A→B1→B2→Master orders all three ──────────────────────────────
+
+static void test_planNested() {
+    std::cout << "\n[R4] RoutePlan: A(10)→B1(20)→B2(30)→Master\n";
+    xleth::RoutePlanSlotInput in[3] = { slot(10, 20), slot(20, 30), slot(30, -1) };
+    xleth::RoutePlan p;
+    xleth::buildRoutePlan(in, 3, p);
+
+    CHECK(p.outputTargetSlot[0] == 1, "A→B1");
+    CHECK(p.outputTargetSlot[1] == 2, "B1→B2");
+    CHECK(p.outputTargetSlot[2] == -1, "B2→Master");
+    CHECK(orderPos(p, 0) < orderPos(p, 1), "A before B1");
+    CHECK(orderPos(p, 1) < orderPos(p, 2), "B1 before B2");
+}
+
+// ─── R5: Muted source not audible; muted bus subtree silenced ────────────────
+
+static void test_planMute() {
+    std::cout << "\n[R5] RoutePlan: muted source / muted bus\n";
+    {
+        // Muted source feeding a bus.
+        xleth::RoutePlanSlotInput in[2] = { slot(10, 20, /*muted=*/true), slot(20, -1) };
+        xleth::RoutePlan p;
+        xleth::buildRoutePlan(in, 2, p);
+        CHECK(!p.audible[0], "muted source not audible");
+        CHECK(p.audible[1], "bus still audible");
+    }
+    {
+        // Muted bus: its audible flag is false → it never forwards its subtree.
+        xleth::RoutePlanSlotInput in[2] = { slot(10, 20), slot(20, -1, /*muted=*/true) };
+        xleth::RoutePlan p;
+        xleth::buildRoutePlan(in, 2, p);
+        CHECK(p.audible[0], "source itself audible (it still sums into the bus)");
+        CHECK(!p.audible[1], "muted bus not audible → subtree silenced downstream");
+    }
+}
+
+// ─── R6: Solo source keeps its downstream bus path audible ───────────────────
+
+static void test_planSoloSource() {
+    std::cout << "\n[R6] RoutePlan: solo source → source + downstream bus audible\n";
+    // Kick(10)→Bus(20)→Master; Snare(30)→Bus(20). Solo Kick.
+    xleth::RoutePlanSlotInput in[3] = {
+        slot(10, 20, false, /*solo=*/true), slot(20, -1), slot(30, 20)
+    };
+    xleth::RoutePlan p;
+    xleth::buildRoutePlan(in, 3, p);
+
+    CHECK(p.audible[0], "soloed Kick audible");
+    CHECK(p.audible[1], "downstream Bus audible so Kick is heard");
+    CHECK(!p.audible[2], "sibling Snare not audible (not soloed)");
+}
+
+// ─── R7: Solo bus keeps upstream sources audible ─────────────────────────────
+
+static void test_planSoloBus() {
+    std::cout << "\n[R7] RoutePlan: solo bus → upstream sources audible through it\n";
+    // Kick(10)→Bus(20)→Master; Snare(30)→Bus(20); Lead(40)→Master. Solo Bus.
+    xleth::RoutePlanSlotInput in[4] = {
+        slot(10, 20), slot(20, -1, false, /*solo=*/true), slot(30, 20), slot(40, -1)
+    };
+    xleth::RoutePlan p;
+    xleth::buildRoutePlan(in, 4, p);
+
+    CHECK(p.audible[1], "soloed Bus audible");
+    CHECK(p.audible[0], "upstream Kick audible through soloed Bus");
+    CHECK(p.audible[2], "upstream Snare audible through soloed Bus");
+    CHECK(!p.audible[3], "unrelated Lead not audible");
+}
+
+// ─── R8: Missing / visual-only target fails closed to Master ─────────────────
+
+static void test_planTargetCorrection() {
+    std::cout << "\n[R8] RoutePlan: missing & visual-only targets → Master\n";
+    {
+        xleth::RoutePlanSlotInput in[1] = { slot(10, /*target=*/999) }; // no such track
+        xleth::RoutePlan p;
+        xleth::buildRoutePlan(in, 1, p);
+        CHECK(p.outputTargetSlot[0] == -1, "missing target routed to Master");
+        CHECK(p.targetCorrected, "targetCorrected flagged");
+    }
+    {
+        // Target exists but is visual-only → invalid bus, fail closed.
+        xleth::RoutePlanSlotInput in[2] = { slot(10, 20), slot(20, -1, false, false, /*visualOnly=*/true) };
+        xleth::RoutePlan p;
+        xleth::buildRoutePlan(in, 2, p);
+        CHECK(p.outputTargetSlot[0] == -1, "visual-only target routed to Master");
+        CHECK(p.targetCorrected, "targetCorrected flagged for visual-only");
+    }
+}
+
+// ─── R9: Cycle fails closed to all-Master ────────────────────────────────────
+
+static void test_planCycleFailClosed() {
+    std::cout << "\n[R9] RoutePlan: cycle → fail closed to all-Master\n";
+    // A(10)→B(20), B(20)→A(10): a 2-cycle the mutation layer would reject, but
+    // the DSP builder must still defend against it.
+    xleth::RoutePlanSlotInput in[2] = { slot(10, 20), slot(20, 10) };
+    xleth::RoutePlan p;
+    xleth::buildRoutePlan(in, 2, p);
+
+    CHECK(p.cycleDetected, "cycle detected");
+    CHECK(p.outputTargetSlot[0] == -1 && p.outputTargetSlot[1] == -1,
+          "all slots forced to Master on cycle");
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 int main() {
-    std::cout << "=== test_track_routing (Prompt 2A) ===\n";
+    std::cout << "=== test_track_routing (Prompt 2A + 2B) ===\n";
 
     test_defaultRoute();
     test_serializeNonDefault();
@@ -344,6 +516,17 @@ int main() {
     test_rejectVisualOnlyTarget();
     test_unknownSource();
     test_audioDspUnchanged();
+
+    // Prompt 2B — pure RoutePlan builder (topo order + mute/solo closure).
+    test_planUnrouted();
+    test_planSourceToBus();
+    test_planOrderIndependence();
+    test_planNested();
+    test_planMute();
+    test_planSoloSource();
+    test_planSoloBus();
+    test_planTargetCorrection();
+    test_planCycleFailClosed();
 
     std::cout << "\n=== Results: " << g_passed << " passed, " << g_failed << " failed ===\n";
     if (g_failed > 0) {

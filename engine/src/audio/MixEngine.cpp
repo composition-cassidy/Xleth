@@ -1,5 +1,6 @@
 #include "audio/MixEngine.h"
 #include "audio/TrackMixer.h"
+#include "audio/TrackRouting.h"
 #include "audio/SampleProcessor.h"
 #include "audio/EffectChainManager.h"
 #include "audio/EditorProcessCoordinator.h"
@@ -4001,17 +4002,10 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     // Find clips active in this buffer window
     findActiveClips(bufStart, bufEnd, bpm, sampleRate);
 
-    // Determine which tracks are in use, and check for solo
+    // Determine which tracks are in use. Solo/mute resolution now lives in the
+    // per-block RoutePlan (route-aware closure, built below from this same track
+    // list), so no separate anySolo scan is needed here.
     auto allTracks = timeline_->getAllTracks();
-    bool anySolo = false;
-    for (const auto* t : allTracks)
-    {
-        if (t != nullptr && t->solo)
-        {
-            anySolo = true;
-            break;
-        }
-    }
 
     // Build a set of track IDs that have active clips (to know which buffers to clear)
     // Use a simple bitfield for track indices 0..kMaxTracks-1
@@ -4043,6 +4037,52 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     // Clear track buffers that will be used
     for (int i = 0; i < numTrackSlots; ++i)
         trackBuffers_[i].clear(0, numSamples);
+
+    // ── Build the output-route DSP plan for this block (Prompt 2B) ────────────
+    // Slot space == trackSlots[] order, read live from the same getAllTracks()
+    // snapshot the rest of the block uses, so the plan can never disagree with
+    // the buffers it indexes. Pure, allocation-free, no locks — built once here,
+    // outside the per-track processing loop. Output routing only; sends and
+    // sidechain are deferred (Prompt 4+). Junction PDC is deferred (Prompt 2C):
+    // the flat per-track compensation below is intentionally left intact.
+    xleth::RoutePlanSlotInput routeInputs[kMaxTracks];
+    for (int i = 0; i < numTrackSlots; ++i)
+    {
+        const auto* t = trackSlots[i].info;
+        routeInputs[i].trackId             = t->id;
+        routeInputs[i].outputTargetTrackId = t->outputRoute.targetTrackId;
+        routeInputs[i].muted               = t->muted;
+        routeInputs[i].solo                = t->solo;
+        routeInputs[i].visualOnly          = t->visualOnly;
+    }
+    xleth::RoutePlan routePlan;
+    xleth::buildRoutePlan(routeInputs, numTrackSlots, routePlan);
+
+    // Throttled fail-closed diagnostics (never spam the audio thread). Both
+    // conditions are programming errors after 2A validation — log rarely.
+    if (routePlan.cycleDetected || routePlan.targetCorrected)
+    {
+        static int routeDiagThrottle = 0;
+        if (++routeDiagThrottle >= 500)
+        {
+            routeDiagThrottle = 0;
+            MixDebugEntry entry;
+            entry.type = MixDebugEntry::Mapping;
+            if (routePlan.cycleDetected)
+                snprintf(entry.message, sizeof(entry.message),
+                         "[Routing] cycle detected in DSP plan — fell back to all-Master");
+            else
+                snprintf(entry.message, sizeof(entry.message),
+                         "[Routing] output target trackId %d (slot %d) missing/invalid — routed to Master",
+                         routePlan.correctedToTrackId, routePlan.correctedFromSlot);
+            debugLog_.push(entry);
+        }
+    }
+
+    // Set true when an audible source slot sums into this slot's bus buffer this
+    // block, so a bus with no clips of its own still processes its chain and
+    // drains its tail. Slot-indexed, mirrors trackBuffers_.
+    bool receivedRoutedInput[kMaxTracks] = {};
 
     // Precompute clip boundary fade length for this block (0 = disabled, no overhead).
     const int clipFadeN = clipBoundaryFadeSamples_.load(std::memory_order_relaxed);
@@ -4537,7 +4577,10 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         for (int i = 0; i < numTrackSlots; ++i)
         {
             const auto* track = trackSlots[i].info;
-            const bool shouldPlay = anySolo ? track->solo : !track->muted;
+            // Route-aware audible set (Prompt 2B). For unrouted projects this is
+            // identical to the old `anySolo ? solo : !muted`, so flat PDC behavior
+            // is unchanged; routed projects pick up the mute/solo closure.
+            const bool shouldPlay = routePlan.audible[i];
 
             auto chainIt = effectChains_.find(track->id);
             if (chainIt != effectChains_.end() && chainIt->second && chainIt->second->isInitialized())
@@ -4650,8 +4693,13 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         diagnosticTapSink->capture(tap);
     };
 
-    for (int i = 0; i < numTrackSlots; ++i)
+    for (int oi = 0; oi < numTrackSlots; ++oi)
     {
+        // Process in topological order so every source slot has already summed
+        // into its bus before the bus slot runs its own chain (Prompt 2B). All
+        // per-slot state (buffers, smoothers, latency caches, peaks) is indexed
+        // by the real slot `i`, so topo iteration changes only the visit order.
+        const int i = routePlan.topoOrder[oi];
         const auto* track = trackSlots[i].info;
         struct TrackTimingScope
         {
@@ -4677,9 +4725,12 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         const int trackInsertLatencySamples = cachedTrackInsertLatencySamples_[i];
         const int trackCompensationSamples = cachedTrackCompensationSamples_[i];
 
-        // Mute/solo logic: if any track is soloed, only play soloed tracks.
-        // If a track is muted (and not soloed), skip it.
-        const bool shouldPlay = anySolo ? track->solo : !track->muted;
+        // Route-aware mute/solo (Prompt 2B). For unrouted projects this matches
+        // the legacy `anySolo ? solo : !muted`; for routed projects it is the
+        // mute/solo closure over output-route edges (a soloed source stays
+        // audible through its downstream bus path, a muted bus mutes its whole
+        // subtree, etc. — see buildRoutePlan).
+        const bool shouldPlay = routePlan.audible[i];
 
         if (!shouldPlay)
         {
@@ -4691,8 +4742,13 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         }
 
         // Tail-aware processing: keep calling the effect chain after content
-        // ends so delay/reverb internal buffers drain naturally.
-        const bool hasAudio  = trackSlots[i].hasClips || trackSlots[i].hasReleasingVoices;
+        // ends so delay/reverb internal buffers drain naturally. A bus track
+        // counts routed input from upstream sources (summed earlier this block,
+        // topo order) as audio, so a bus with no clips of its own still runs its
+        // chain and drains its tail (Prompt 2B).
+        const bool hasAudio  = trackSlots[i].hasClips
+                             || trackSlots[i].hasReleasingVoices
+                             || receivedRoutedInput[i];
         const bool isTailing = !hasAudio
                              && tailEndSamples_[i] > 0
                              && bufStart < tailEndSamples_[i];
@@ -4803,10 +4859,26 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                                hasAudio,
                                isTailing);
 
-        // Sum into output
-        for (int ch = 0; ch < std::min(2, outputBuffer.getNumChannels()); ++ch)
+        // Route-aware sum (Prompt 2B). A default route (-1) sums to Master
+        // (outputBuffer); a bus route sums into the target track's pre-chain
+        // buffer so routed audio runs through the bus chain/fader when the bus
+        // slot processes later in topo order. A routed source touches
+        // outputBuffer zero times — its only path to Master is via its target,
+        // so there is no direct-to-Master duplicate.
+        const int targetSlot = routePlan.outputTargetSlot[i];
+        if (targetSlot < 0)
         {
-            outputBuffer.addFrom(ch, 0, trackBuffers_[i], ch, 0, numSamples);
+            for (int ch = 0; ch < std::min(2, outputBuffer.getNumChannels()); ++ch)
+                outputBuffer.addFrom(ch, 0, trackBuffers_[i], ch, 0, numSamples);
+        }
+        else
+        {
+            auto& targetBuf = trackBuffers_[targetSlot];
+            const int nCh = std::min(targetBuf.getNumChannels(),
+                                     trackBuffers_[i].getNumChannels());
+            for (int ch = 0; ch < nCh; ++ch)
+                targetBuf.addFrom(ch, 0, trackBuffers_[i], ch, 0, numSamples);
+            receivedRoutedInput[targetSlot] = true;
         }
     }
 

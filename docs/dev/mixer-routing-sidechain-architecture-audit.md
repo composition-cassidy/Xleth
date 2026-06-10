@@ -734,6 +734,40 @@ model.
 > `engine/test/test_track_routing.cpp`. Sidechain deferred to Prompt 4+. UI deferred to
 > Prompt 3. Prompt 2B will replace the master summing loop with real bus routing.
 
+> **Prompt 2B status (audible bus routing — 2026-06-10):** Output-route DSP bus summing is now
+> live in `MixEngine::processBlock`. What landed:
+> - **Bus summing implemented (§4.2):** the per-track summing destination is now route-aware — a
+>   default route (`targetTrackId == -1`) sums to Master (`outputBuffer`); a bus route sums the
+>   processed source buffer into the target track's pre-chain buffer (`trackBuffers_[targetSlot]`)
+>   so routed audio runs through the bus's own chain/fader/pan. A routed source touches
+>   `outputBuffer` zero times — **no direct-to-Master duplicate**. Verified by
+>   `test_mixer_bus_routing` T1 (routed energy == 0.5× direct, never inflated) and T7 (muting a
+>   bus silences the whole subtree — the pan-law-independent proof of no duplicate path).
+> - **Topological order implemented (§4.3):** a pure `xleth::buildRoutePlan` (in
+>   `TrackRouting.{h,cpp}`) Kahn-sorts active slots so every source is processed before its bus,
+>   independent of timeline track order. Fail-closed: a cycle (impossible after 2A validation)
+>   falls back to all-to-Master + throttled log; a missing/visual-only target is forced to Master.
+> - **Route-aware mute/solo baseline implemented (§4.5):** the plan computes an `audible[]` set via
+>   a mute/solo closure over output-route edges (soloed source stays audible through its downstream
+>   bus path; soloed bus keeps its upstream sources audible; muted bus silences its subtree). For
+>   unrouted projects this is bit-identical to the legacy `anySolo ? solo : !muted`, so existing
+>   audio is unchanged (`test_mix` 272 checks still pass). Sidechain-solo is NOT implemented.
+> - **Bus activity propagation implemented (§4.2):** a `receivedRoutedInput[]` flag set during
+>   source summing folds into the per-slot `hasAudio` gate, so a bus with no clips of its own still
+>   runs its chain and drains its tail when fed.
+> - **The route plan is built once per block**, on the audio thread, from the same live
+>   `getAllTracks()` slot space the buffers use (allocation-free, lock-free, fixed-size stack
+>   arrays). No `syncRoutingFromTimeline()` / shared snapshot member was needed: route mutations
+>   are read live on the next block, so no bridge change was required.
+> - **Deferred (NOT in 2B):** junction PDC / nested-bus phase alignment and export pre-roll max
+>   path latency → **Prompt 2C** (the existing flat per-track compensation is left intact;
+>   latency-heavy bus chains are not yet phase-correct, and `AudioExporter::computePrerollPlan`
+>   is untouched). Sidechain → Prompt 4+. Sends → later. Mixer UI → Prompt 3.
+> - **Files added/modified:** `engine/src/audio/TrackRouting.{h,cpp}` (RoutePlan builder),
+>   `engine/src/audio/MixEngine.cpp` (route-aware processBlock), `engine/CMakeLists.txt`
+>   (`test_mixer_bus_routing` target), `engine/test/test_track_routing.cpp` (RoutePlan unit tests
+>   R1-R9), `engine/test/test_mixer_bus_routing.cpp` (new DSP integration tests).
+
 ### Prompt 2 — Mixer bus routing core (engine + persistence + bridge)
 
 - **Scope**: `TrackOutputRoute` model + serialization + validation (§3); `RoutingSnapshot`,

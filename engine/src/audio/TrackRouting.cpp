@@ -69,4 +69,111 @@ RoutingValidationResult validateTrackOutputRoute(const Timeline& timeline,
     return { RoutingValidationReason::ok };
 }
 
+// ─── buildRoutePlan ───────────────────────────────────────────────────────────
+
+void buildRoutePlan(const RoutePlanSlotInput* slots, int count, RoutePlan& out)
+{
+    if (slots == nullptr || count < 0) count = 0;
+    if (count > RoutePlan::kMaxSlots) count = RoutePlan::kMaxSlots;
+
+    out.slotCount        = count;
+    out.cycleDetected    = false;
+    out.targetCorrected  = false;
+    out.correctedFromSlot  = -1;
+    out.correctedToTrackId = -1;
+
+    // ── Resolve output target trackId → slot index ────────────────────────────
+    // -1 stays Master. Missing / self / visual-only targets fail closed to
+    // Master (defensive — these are rejected at the 2A mutation layer).
+    for (int s = 0; s < count; ++s) {
+        out.outputTargetSlot[s] = -1;
+        out.audible[s]          = false;
+        out.topoOrder[s]        = s;
+
+        const int targetId = slots[s].outputTargetTrackId;
+        if (targetId == -1) continue;
+
+        int targetSlot = -1;
+        for (int t = 0; t < count; ++t) {
+            if (slots[t].trackId == targetId) { targetSlot = t; break; }
+        }
+
+        if (targetSlot < 0 || targetSlot == s || slots[targetSlot].visualOnly) {
+            // Forced to Master.
+            if (!out.targetCorrected) {
+                out.targetCorrected    = true;
+                out.correctedFromSlot  = s;
+                out.correctedToTrackId = targetId;
+            }
+            continue;
+        }
+        out.outputTargetSlot[s] = targetSlot;
+    }
+
+    // ── Topological order (Kahn): source before target ────────────────────────
+    // Edge s → outputTargetSlot[s]; a target's in-degree counts its sources.
+    int inDegree[RoutePlan::kMaxSlots] = {};
+    for (int s = 0; s < count; ++s) {
+        const int t = out.outputTargetSlot[s];
+        if (t >= 0) ++inDegree[t];
+    }
+
+    int queue[RoutePlan::kMaxSlots];
+    int qHead = 0, qTail = 0;
+    for (int s = 0; s < count; ++s)
+        if (inDegree[s] == 0) queue[qTail++] = s;
+
+    int placed = 0;
+    while (qHead < qTail) {
+        const int s = queue[qHead++];
+        out.topoOrder[placed++] = s;
+        const int t = out.outputTargetSlot[s];
+        if (t >= 0 && --inDegree[t] == 0)
+            queue[qTail++] = t;
+    }
+
+    if (placed != count) {
+        // Cycle — impossible after 2A validation. Fail closed: all-to-Master,
+        // identity processing order.
+        out.cycleDetected = true;
+        for (int s = 0; s < count; ++s) {
+            out.outputTargetSlot[s] = -1;
+            out.topoOrder[s]        = s;
+        }
+    }
+
+    // ── Mute / solo closure over output-route edges ───────────────────────────
+    bool anySolo = false;
+    for (int s = 0; s < count; ++s)
+        if (slots[s].solo) { anySolo = true; break; }
+
+    if (!anySolo) {
+        // No solo: a track is audible unless muted. A muted bus silences its
+        // whole subtree implicitly — its sources still sum into the bus buffer,
+        // but the muted bus never forwards it (audible[bus] == false).
+        for (int s = 0; s < count; ++s)
+            out.audible[s] = !slots[s].muted;
+    } else {
+        // Solo closure: audible = ⋃ over soloed s of
+        //   upstream(s) ∪ {s} ∪ downstreamPath(s).
+        // Upstream + self: a slot whose output path reaches a soloed slot.
+        for (int u = 0; u < count; ++u) {
+            int cur = u, guard = 0;
+            while (cur >= 0 && guard++ <= count) {
+                if (slots[cur].solo) { out.audible[u] = true; break; }
+                cur = out.outputTargetSlot[cur];
+            }
+        }
+        // Downstream path: the route chain from each soloed slot to Master.
+        for (int s = 0; s < count; ++s) {
+            if (!slots[s].solo) continue;
+            int cur = s, guard = 0;
+            while (cur >= 0 && guard++ <= count) {
+                out.audible[cur] = true;
+                cur = out.outputTargetSlot[cur];
+            }
+        }
+    }
+}
+
 } // namespace xleth
