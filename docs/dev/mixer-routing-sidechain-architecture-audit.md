@@ -1051,3 +1051,23 @@ vitest.
     match). Define this in Prompt 6 before touching code.
 12. **Preview/audition bus** bypasses routing by design — confirm no future prompt "fixes" it
     into the routing graph (it would steal voices into buses during auditioning).
+
+---
+
+## Prompt 3 Status (mixer routing UI/store - 2026-06-10)
+
+- **Mixer Output selector implemented:** normal mixer strips have a compact `Output` selector
+  for `Master` or another eligible mixer track. The UI does not call output routing a send.
+- **Route visibility implemented:** source strips show `-> <target track name>` chips when
+  routed away from Master, with `-> Missing track` as the stale-target fallback. Bus/target
+  strips show input-count badges such as `1 input` / `3 inputs`.
+- **Store/IPC integration implemented:** `mixerStore` mirrors engine/project routing state via
+  track JSON and `timeline.getRouting()`, calls `timeline.setTrackOutputRoute(trackId,
+  targetTrackId)`, and refreshes routing on mixer/project/track refresh paths.
+- **Invalid target preview implemented:** client-side target lists omit self, visual-only
+  targets, and obvious feedback-loop targets using a pure JS cycle helper. Engine validation
+  remains final.
+- **Rollback/refetch implemented:** rejected or thrown route mutations roll back the optimistic
+  UI state, map stable bridge reason codes to concise DAW copy, and refetch engine routing when
+  available.
+- **Deferred:** sidechain UI, sends UI, FX Graph sidechain, and routing matrix.

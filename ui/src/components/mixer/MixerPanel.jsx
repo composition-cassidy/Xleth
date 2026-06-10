@@ -16,8 +16,10 @@ import ScanProgressBar from './ScanProgressBar.jsx'
 export default function MixerPanel() {
   const visible = useMixerStore(s => s.visible)
   const trackOrder = useMixerStore(s => s.trackOrder)
+  const routingError = useMixerStore(s => s.routingError)
   const init = useMixerStore(s => s.init)
   const syncFromTimeline = useMixerStore(s => s.syncFromTimeline)
+  const refreshRouting = useMixerStore(s => s.refreshRouting)
   const openVstBrowser = useVstStore(s => s.openBrowser)
 
   // Init on mount + when tracks change
@@ -28,17 +30,22 @@ export default function MixerPanel() {
       try {
         const list = await window.xleth?.timeline?.getTracks()
         if (Array.isArray(list)) syncFromTimeline(list)
+        await refreshRouting()
       } catch {}
     }
     timelineEvents.addEventListener('timeline-tracks-changed', onTracksChanged)
+    timelineEvents.addEventListener('timeline-routing-changed', onTracksChanged)
     timelineEvents.addEventListener('timeline-clips-changed', onTracksChanged)
     timelineEvents.addEventListener('timeline-patterns-changed', onTracksChanged)
+    const offProjectLoaded = window.xleth?.onProjectLoaded?.(onTracksChanged)
     return () => {
       timelineEvents.removeEventListener('timeline-tracks-changed', onTracksChanged)
+      timelineEvents.removeEventListener('timeline-routing-changed', onTracksChanged)
       timelineEvents.removeEventListener('timeline-clips-changed', onTracksChanged)
       timelineEvents.removeEventListener('timeline-patterns-changed', onTracksChanged)
+      offProjectLoaded?.()
     }
-  }, [visible, init, syncFromTimeline])
+  }, [visible, init, syncFromTimeline, refreshRouting])
 
   // Peak polling — sequential async loop, 1 IPC call per cycle
   useEffect(() => {
@@ -83,6 +90,9 @@ export default function MixerPanel() {
         >
           VST Browser
         </button>
+        {routingError && (
+          <span className="mixer-routing-warning" role="status">{routingError}</span>
+        )}
         <ScanProgressBar />
       </div>
       <div className="mixer-strips-row">
