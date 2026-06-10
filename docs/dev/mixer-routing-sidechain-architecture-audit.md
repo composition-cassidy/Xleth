@@ -1070,4 +1070,8 @@ vitest.
 - **Rollback/refetch implemented:** rejected or thrown route mutations roll back the optimistic
   UI state, map stable bridge reason codes to concise DAW copy, and refetch engine routing when
   available.
+- **Prompt 3 plumbing fix:** the initial mixer UI pass reached `ui/main.js` but the worker loaded
+  a stale native addon without `timeline_setTrackOutputRoute` / `timeline_getRouting` exports.
+  The worker-to-native route now resolves through the rebuilt addon, so UI route mutations reach
+  engine routing instead of `notImplemented`.
 - **Deferred:** sidechain UI, sends UI, FX Graph sidechain, and routing matrix.
