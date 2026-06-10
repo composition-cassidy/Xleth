@@ -949,6 +949,118 @@ std::string SetTrackOutputRouteCommand::describe() const {
                                     : "track " + std::to_string(newTargetTrackId_));
 }
 
+// ─── AddSidechainRouteCommand ─────────────────────────────────────────────────
+
+AddSidechainRouteCommand::AddSidechainRouteCommand(int sourceTrackId, SidechainRoute route)
+    : sourceTrackId_(sourceTrackId), route_(std::move(route))
+{
+    // Persist the safe gain once so redo and the model agree on the stored value.
+    route_.gain = xleth::clampSidechainGain(route_.gain);
+}
+
+void AddSidechainRouteCommand::execute(Timeline& timeline) {
+    TrackInfo* t = timeline.getTrackMutable(sourceTrackId_);
+    if (!t) return;
+    // Idempotent: never insert the same routeId twice (defensive against a
+    // double-execute). The same route_ object → identical routeId on every redo.
+    for (const auto& r : t->sidechainRoutes)
+        if (r.routeId == route_.routeId) return;
+    t->sidechainRoutes.push_back(route_);
+}
+
+void AddSidechainRouteCommand::undo(Timeline& timeline) {
+    TrackInfo* t = timeline.getTrackMutable(sourceTrackId_);
+    if (!t) return;
+    auto& routes = t->sidechainRoutes;
+    routes.erase(std::remove_if(routes.begin(), routes.end(),
+                                [&](const SidechainRoute& r) { return r.routeId == route_.routeId; }),
+                 routes.end());
+}
+
+std::string AddSidechainRouteCommand::describe() const {
+    return "Add sidechain route " + route_.routeId + " on track "
+         + std::to_string(sourceTrackId_) + " -> track "
+         + std::to_string(route_.targetTrackId);
+}
+
+// ─── RemoveSidechainRouteCommand ──────────────────────────────────────────────
+
+RemoveSidechainRouteCommand::RemoveSidechainRouteCommand(int sourceTrackId,
+                                                         const std::string& routeId,
+                                                         const Timeline& timeline)
+    : sourceTrackId_(sourceTrackId), routeId_(routeId)
+{
+    const TrackInfo* t = timeline.getTrack(sourceTrackId);
+    if (!t) return;
+    for (size_t i = 0; i < t->sidechainRoutes.size(); ++i) {
+        if (t->sidechainRoutes[i].routeId == routeId_) {
+            removedRoute_ = t->sidechainRoutes[i];
+            index_        = i;
+            had_          = true;
+            return;
+        }
+    }
+}
+
+void RemoveSidechainRouteCommand::execute(Timeline& timeline) {
+    TrackInfo* t = timeline.getTrackMutable(sourceTrackId_);
+    if (!t) return;
+    auto& routes = t->sidechainRoutes;
+    routes.erase(std::remove_if(routes.begin(), routes.end(),
+                                [&](const SidechainRoute& r) { return r.routeId == routeId_; }),
+                 routes.end());
+}
+
+void RemoveSidechainRouteCommand::undo(Timeline& timeline) {
+    if (!had_) return;
+    TrackInfo* t = timeline.getTrackMutable(sourceTrackId_);
+    if (!t) return;
+    auto& routes = t->sidechainRoutes;
+    // Restore at the original index when still in range; otherwise append.
+    const size_t pos = index_ <= routes.size() ? index_ : routes.size();
+    routes.insert(routes.begin() + static_cast<std::ptrdiff_t>(pos), removedRoute_);
+}
+
+std::string RemoveSidechainRouteCommand::describe() const {
+    return "Remove sidechain route " + routeId_ + " on track "
+         + std::to_string(sourceTrackId_);
+}
+
+// ─── SetSidechainRouteParamsCommand ───────────────────────────────────────────
+
+SetSidechainRouteParamsCommand::SetSidechainRouteParamsCommand(
+    int sourceTrackId, const std::string& routeId,
+    const xleth::SidechainRouteParams& newParams, const Timeline& timeline)
+    : sourceTrackId_(sourceTrackId), routeId_(routeId), newParams_(newParams)
+{
+    newParams_.gain = xleth::clampSidechainGain(newParams_.gain);
+    const TrackInfo* t = timeline.getTrack(sourceTrackId);
+    if (!t) return;
+    for (const auto& r : t->sidechainRoutes) {
+        if (r.routeId == routeId_) {
+            oldParams_.gain     = r.gain;
+            oldParams_.preFader = r.preFader;
+            oldParams_.enabled  = r.enabled;
+            had_                = true;
+            return;
+        }
+    }
+}
+
+void SetSidechainRouteParamsCommand::execute(Timeline& timeline) {
+    timeline.setSidechainRouteParams(sourceTrackId_, routeId_, newParams_);
+}
+
+void SetSidechainRouteParamsCommand::undo(Timeline& timeline) {
+    if (!had_) return;
+    timeline.setSidechainRouteParams(sourceTrackId_, routeId_, oldParams_);
+}
+
+std::string SetSidechainRouteParamsCommand::describe() const {
+    return "Set sidechain route " + routeId_ + " params on track "
+         + std::to_string(sourceTrackId_);
+}
+
 // ─── SetTrackNameCommand ──────────────────────────────────────────────────────
 
 SetTrackNameCommand::SetTrackNameCommand(int trackId, std::string newName, const Timeline& timeline)

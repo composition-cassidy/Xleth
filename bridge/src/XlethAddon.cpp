@@ -4499,8 +4499,14 @@ Napi::Value Timeline_SetTrackOutputRoute(const Napi::CallbackInfo& info)
     return ret;
 }
 
-// timeline_getRouting() — returns array of { trackId, outputRoute: { targetTrackId } }
-// for all tracks. Read-only; does not require audio engine to be initialised.
+// timeline_getRouting() — returns an array of per-track routing entries:
+//   { trackId, outputRoute: { targetTrackId }, sidechainRoutes: [ … ] }
+// Each sidechain entry carries a stable `status` (ok | stale_target_track |
+// stale_effect_instance | invalid) computed against live engine state — NEVER an
+// APG node id. Read-only; the output-route shape is unchanged for backward compat
+// with the Prompt 3 mixer store. Effect-instance resolution is best-effort: when
+// the audio engine is not initialised it is skipped (status falls back to ok /
+// stale_target_track), so stale routes are reported, never silently dropped.
 Napi::Value Timeline_GetRouting(const Napi::CallbackInfo& info)
 {
     Napi::Env env = info.Env();
@@ -4518,9 +4524,213 @@ Napi::Value Timeline_GetRouting(const Napi::CallbackInfo& info)
         Napi::Object route = Napi::Object::New(env);
         route.Set("targetTrackId", Napi::Number::New(env, t.outputRoute.targetTrackId));
         entry.Set("outputRoute", route);
+
+        Napi::Array scArr = Napi::Array::New(env, t.sidechainRoutes.size());
+        for (size_t k = 0; k < t.sidechainRoutes.size(); ++k) {
+            const SidechainRoute& sc = t.sidechainRoutes[k];
+            Napi::Object e = Napi::Object::New(env);
+            e.Set("routeId",                Napi::String::New(env, sc.routeId));
+            e.Set("sourceTrackId",          Napi::Number::New(env, t.id));
+            e.Set("targetTrackId",          Napi::Number::New(env, sc.targetTrackId));
+            e.Set("targetEffectInstanceId", Napi::String::New(env, sc.targetEffectInstanceId));
+            e.Set("gain",                   Napi::Number::New(env, sc.gain));
+            e.Set("preFader",               Napi::Boolean::New(env, sc.preFader));
+            e.Set("enabled",                Napi::Boolean::New(env, sc.enabled));
+
+            // Status: stale_target_track (track gone) > stale_effect_instance
+            // (track present, effect missing) > invalid (structurally broken) > ok.
+            const char* status = "ok";
+            if (sc.targetEffectInstanceId.empty()) {
+                status = "invalid";
+            } else if (!g_timeline->getTrack(sc.targetTrackId)) {
+                status = "stale_target_track";
+            } else if (isInitialised()) {
+                int nodeId = audioEngine->getMixEngine()
+                                 .getEffectNodeIdForInstance(sc.targetTrackId,
+                                                             sc.targetEffectInstanceId);
+                if (nodeId < 0) status = "stale_effect_instance";
+            }
+            e.Set("status", Napi::String::New(env, status));
+            scArr.Set(static_cast<uint32_t>(k), e);
+        }
+        entry.Set("sidechainRoutes", scArr);
         arr.Set(static_cast<uint32_t>(i), entry);
     }
     return arr;
+}
+
+// ─── Sidechain route mutations (Prompt 4B) ────────────────────────────────────
+// Build a resolver answering whether targetEffectInstanceId resolves on a target
+// track via the Prompt 4A lookup. Returns an empty std::function when the audio
+// engine is not initialised so the model-only validation path is used.
+static xleth::SidechainEffectResolver makeSidechainEffectResolver()
+{
+    if (!isInitialised())
+        return {};
+    return [](int targetTrackId, const std::string& effectInstanceId) -> bool {
+        return audioEngine->getMixEngine()
+                   .getEffectNodeIdForInstance(targetTrackId, effectInstanceId) >= 0;
+    };
+}
+
+// timeline_addSidechainRoute(sourceTrackId, { targetTrackId, targetEffectInstanceId,
+//   gain?, preFader?, enabled? }) → { ok:true, routeId } | { ok:false, reason }.
+// routeId is generated here (never supplied by the renderer); undo-tracked.
+Napi::Value Timeline_AddSidechainRoute(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsObject()) {
+        Napi::TypeError::New(env,
+            "timeline_addSidechainRoute(sourceTrackId: number, route: object)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    int sourceTrackId   = info[0].As<Napi::Number>().Int32Value();
+    Napi::Object payload = info[1].As<Napi::Object>();
+    BridgeCallLog log("timeline.addSidechainRoute");
+
+    SidechainRoute route;
+    route.routeId = juce::Uuid().toDashedString().toStdString();
+    route.targetTrackId = payload.Has("targetTrackId") && payload.Get("targetTrackId").IsNumber()
+        ? payload.Get("targetTrackId").As<Napi::Number>().Int32Value() : -1;
+    route.targetEffectInstanceId =
+        payload.Has("targetEffectInstanceId") && payload.Get("targetEffectInstanceId").IsString()
+            ? payload.Get("targetEffectInstanceId").As<Napi::String>().Utf8Value() : std::string{};
+    route.gain = payload.Has("gain") && payload.Get("gain").IsNumber()
+        ? payload.Get("gain").As<Napi::Number>().FloatValue() : 1.0f;
+    route.preFader = payload.Has("preFader") && payload.Get("preFader").IsBoolean()
+        ? payload.Get("preFader").As<Napi::Boolean>().Value() : false;
+    route.enabled = payload.Has("enabled") && payload.Get("enabled").IsBoolean()
+        ? payload.Get("enabled").As<Napi::Boolean>().Value() : true;
+
+    auto result = xleth::validateSidechainRoute(*g_timeline, sourceTrackId, route,
+                                                makeSidechainEffectResolver());
+
+    Napi::Object ret = Napi::Object::New(env);
+    if (!result.ok()) {
+        ret.Set("ok",     Napi::Boolean::New(env, false));
+        ret.Set("reason", Napi::String::New(env, result.reasonString()));
+        log.done(std::string("rejected:") + result.reasonString());
+        return ret;
+    }
+
+    g_undoManager->execute(
+        std::make_unique<AddSidechainRouteCommand>(sourceTrackId, route), *g_timeline);
+    audioEngine->refreshLivePresentationLatency();
+
+    ret.Set("ok",      Napi::Boolean::New(env, true));
+    ret.Set("routeId", Napi::String::New(env, route.routeId));
+    log.done(std::to_string(sourceTrackId) + "->" + std::to_string(route.targetTrackId)
+             + " " + route.routeId);
+    return ret;
+}
+
+// timeline_removeSidechainRoute(sourceTrackId, routeId) → { ok } | { ok:false, reason }.
+Napi::Value Timeline_RemoveSidechainRoute(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsString()) {
+        Napi::TypeError::New(env,
+            "timeline_removeSidechainRoute(sourceTrackId: number, routeId: string)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    int         sourceTrackId = info[0].As<Napi::Number>().Int32Value();
+    std::string routeId       = info[1].As<Napi::String>().Utf8Value();
+    BridgeCallLog log("timeline.removeSidechainRoute");
+
+    // Validate existence first so a no-op never creates an undo entry.
+    Napi::Object ret = Napi::Object::New(env);
+    const TrackInfo* t = g_timeline->getTrack(sourceTrackId);
+    bool exists = false;
+    if (t) {
+        for (const auto& r : t->sidechainRoutes)
+            if (r.routeId == routeId) { exists = true; break; }
+    }
+    if (!exists) {
+        ret.Set("ok",     Napi::Boolean::New(env, false));
+        ret.Set("reason", Napi::String::New(env, t ? "unknown_route" : "unknown_source_track"));
+        log.done("rejected");
+        return ret;
+    }
+
+    g_undoManager->execute(
+        std::make_unique<RemoveSidechainRouteCommand>(sourceTrackId, routeId, *g_timeline),
+        *g_timeline);
+    audioEngine->refreshLivePresentationLatency();
+
+    ret.Set("ok", Napi::Boolean::New(env, true));
+    log.done(std::to_string(sourceTrackId) + " " + routeId);
+    return ret;
+}
+
+// timeline_setSidechainRouteParams(sourceTrackId, routeId, { gain?, preFader?,
+//   enabled? }) → { ok } | { ok:false, reason }. Target is immutable; only the
+// mutable params change. Undo-tracked.
+Napi::Value Timeline_SetSidechainRouteParams(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsString() || !info[2].IsObject()) {
+        Napi::TypeError::New(env,
+            "timeline_setSidechainRouteParams(sourceTrackId: number, routeId: string, params: object)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    int          sourceTrackId = info[0].As<Napi::Number>().Int32Value();
+    std::string  routeId       = info[1].As<Napi::String>().Utf8Value();
+    Napi::Object payload       = info[2].As<Napi::Object>();
+    BridgeCallLog log("timeline.setSidechainRouteParams");
+
+    // Seed params from the existing route so omitted keys are left unchanged.
+    Napi::Object ret = Napi::Object::New(env);
+    const TrackInfo* t = g_timeline->getTrack(sourceTrackId);
+    const SidechainRoute* cur = nullptr;
+    if (t) {
+        for (const auto& r : t->sidechainRoutes)
+            if (r.routeId == routeId) { cur = &r; break; }
+    }
+    if (!cur) {
+        ret.Set("ok",     Napi::Boolean::New(env, false));
+        ret.Set("reason", Napi::String::New(env, t ? "unknown_route" : "unknown_source_track"));
+        log.done("rejected");
+        return ret;
+    }
+
+    xleth::SidechainRouteParams params;
+    params.gain = payload.Has("gain") && payload.Get("gain").IsNumber()
+        ? payload.Get("gain").As<Napi::Number>().FloatValue() : cur->gain;
+    params.preFader = payload.Has("preFader") && payload.Get("preFader").IsBoolean()
+        ? payload.Get("preFader").As<Napi::Boolean>().Value() : cur->preFader;
+    params.enabled = payload.Has("enabled") && payload.Get("enabled").IsBoolean()
+        ? payload.Get("enabled").As<Napi::Boolean>().Value() : cur->enabled;
+
+    if (!std::isfinite(params.gain)) {
+        ret.Set("ok",     Napi::Boolean::New(env, false));
+        ret.Set("reason", Napi::String::New(env, "invalid_gain"));
+        log.done("rejected:invalid_gain");
+        return ret;
+    }
+
+    g_undoManager->execute(
+        std::make_unique<SetSidechainRouteParamsCommand>(sourceTrackId, routeId, params, *g_timeline),
+        *g_timeline);
+    audioEngine->refreshLivePresentationLatency();
+
+    ret.Set("ok", Napi::Boolean::New(env, true));
+    log.done(std::to_string(sourceTrackId) + " " + routeId);
+    return ret;
 }
 
 // timeline_setTrackMuted(trackId, muted) — undo-tracked mute toggle
@@ -13339,6 +13549,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("timeline_setTrackSolo",        Napi::Function::New(env, Timeline_SetTrackSolo));
     exports.Set("timeline_setTrackOutputRoute", Napi::Function::New(env, Timeline_SetTrackOutputRoute));
     exports.Set("timeline_getRouting",          Napi::Function::New(env, Timeline_GetRouting));
+    exports.Set("timeline_addSidechainRoute",       Napi::Function::New(env, Timeline_AddSidechainRoute));
+    exports.Set("timeline_removeSidechainRoute",    Napi::Function::New(env, Timeline_RemoveSidechainRoute));
+    exports.Set("timeline_setSidechainRouteParams", Napi::Function::New(env, Timeline_SetSidechainRouteParams));
     exports.Set("timeline_setTrackName", Napi::Function::New(env, Timeline_SetTrackName));
     exports.Set("timeline_setTrackFxMode", Napi::Function::New(env, Timeline_SetTrackFxMode));
     exports.Set("timeline_setTrackGraphState", Napi::Function::New(env, Timeline_SetTrackGraphState));

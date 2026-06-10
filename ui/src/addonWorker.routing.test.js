@@ -112,6 +112,23 @@ describe('addon worker routing dispatch', () => {
       const setTrackOutputRoute = await callWorker(child, 'timeline_setTrackOutputRoute', [1, -1])
       expect(setTrackOutputRoute.notImplemented).not.toBe(true)
 
+      // Prompt 4B sidechain-route methods are recognized by the rebuilt addon.
+      const addSidechainRoute = await callWorker(child, 'timeline_addSidechainRoute', [
+        1,
+        { targetTrackId: 2, targetEffectInstanceId: 'sc-test' },
+      ])
+      expect(addSidechainRoute.notImplemented).not.toBe(true)
+
+      const removeSidechainRoute = await callWorker(child, 'timeline_removeSidechainRoute', [1, 'nope'])
+      expect(removeSidechainRoute.notImplemented).not.toBe(true)
+
+      const setSidechainRouteParams = await callWorker(child, 'timeline_setSidechainRouteParams', [
+        1,
+        'nope',
+        { gain: 1 },
+      ])
+      expect(setSidechainRouteParams.notImplemented).not.toBe(true)
+
       const missing = await callWorker(child, 'timeline_missingRoutingMethodForTest')
       expect(missing).toMatchObject({
         result: null,

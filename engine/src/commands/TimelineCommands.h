@@ -1,6 +1,7 @@
 #pragma once
 #include "Command.h"
 #include "model/TimelineTypes.h"
+#include "audio/TrackRouting.h"
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -452,6 +453,53 @@ private:
     int sourceTrackId_;
     int oldTargetTrackId_;
     int newTargetTrackId_;
+};
+
+// ─── Sidechain route commands (Prompt 4B) ─────────────────────────────────────
+// All three are created only after validation succeeds (the bridge validates
+// first), so they never produce a no-op undo entry. The route's stable routeId
+// is captured at construction and preserved across redo.
+
+class AddSidechainRouteCommand : public Command {
+public:
+    AddSidechainRouteCommand(int sourceTrackId, SidechainRoute route);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int            sourceTrackId_;
+    SidechainRoute route_;   // includes routeId — identical on every redo
+};
+
+class RemoveSidechainRouteCommand : public Command {
+public:
+    RemoveSidechainRouteCommand(int sourceTrackId, const std::string& routeId,
+                                const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int            sourceTrackId_;
+    std::string    routeId_;
+    SidechainRoute removedRoute_;   // captured for undo restore
+    size_t         index_ = 0;      // original position, restored on undo
+    bool           had_   = false;
+};
+
+class SetSidechainRouteParamsCommand : public Command {
+public:
+    SetSidechainRouteParamsCommand(int sourceTrackId, const std::string& routeId,
+                                   const xleth::SidechainRouteParams& newParams,
+                                   const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int                         sourceTrackId_;
+    std::string                 routeId_;
+    xleth::SidechainRouteParams oldParams_;
+    xleth::SidechainRouteParams newParams_;
+    bool                        had_ = false;
 };
 
 // ─── SetTrackNameCommand ──────────────────────────────────────────────────────

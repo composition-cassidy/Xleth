@@ -1,5 +1,6 @@
 #include "Timeline.h"
 #include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <set>
 
@@ -1674,4 +1675,62 @@ TrackOutputRoute Timeline::getTrackOutputRoute(int sourceTrackId) const
 {
     const TrackInfo* t = getTrack(sourceTrackId);
     return t ? t->outputRoute : TrackOutputRoute{};
+}
+
+// ─── Sidechain routes (Prompt 4B) ────────────────────────────────────────────
+
+xleth::RoutingValidationResult Timeline::addSidechainRoute(
+    int sourceTrackId, const SidechainRoute& route,
+    const xleth::SidechainEffectResolver& resolver)
+{
+    auto result = xleth::validateSidechainRoute(*this, sourceTrackId, route, resolver);
+    if (!result.ok())
+        return result;
+    TrackInfo* t = getTrackMutable(sourceTrackId);
+    if (!t)
+        return { xleth::RoutingValidationReason::unknown_source_track };
+    SidechainRoute stored = route;
+    stored.gain = xleth::clampSidechainGain(route.gain);
+    t->sidechainRoutes.push_back(stored);
+    return result;
+}
+
+xleth::RoutingValidationResult Timeline::removeSidechainRoute(
+    int sourceTrackId, const std::string& routeId)
+{
+    TrackInfo* t = getTrackMutable(sourceTrackId);
+    if (!t)
+        return { xleth::RoutingValidationReason::unknown_source_track };
+    auto& routes = t->sidechainRoutes;
+    auto it = std::find_if(routes.begin(), routes.end(),
+                           [&](const SidechainRoute& r) { return r.routeId == routeId; });
+    if (it == routes.end())
+        return { xleth::RoutingValidationReason::unknown_route };
+    routes.erase(it);
+    return { xleth::RoutingValidationReason::ok };
+}
+
+xleth::RoutingValidationResult Timeline::setSidechainRouteParams(
+    int sourceTrackId, const std::string& routeId,
+    const xleth::SidechainRouteParams& params)
+{
+    if (!std::isfinite(params.gain))
+        return { xleth::RoutingValidationReason::invalid_gain };
+    TrackInfo* t = getTrackMutable(sourceTrackId);
+    if (!t)
+        return { xleth::RoutingValidationReason::unknown_source_track };
+    for (auto& r : t->sidechainRoutes) {
+        if (r.routeId != routeId) continue;
+        r.gain     = xleth::clampSidechainGain(params.gain);
+        r.preFader = params.preFader;
+        r.enabled  = params.enabled;
+        return { xleth::RoutingValidationReason::ok };
+    }
+    return { xleth::RoutingValidationReason::unknown_route };
+}
+
+std::vector<SidechainRoute> Timeline::getSidechainRoutes(int sourceTrackId) const
+{
+    const TrackInfo* t = getTrack(sourceTrackId);
+    return t ? t->sidechainRoutes : std::vector<SidechainRoute>{};
 }

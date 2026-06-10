@@ -1,6 +1,8 @@
 #include "audio/TrackRouting.h"
 #include "model/Timeline.h"
 #include "model/TimelineTypes.h"
+#include <algorithm>
+#include <cmath>
 #include <unordered_set>
 #include <vector>
 
@@ -8,12 +10,21 @@ namespace xleth {
 
 const char* RoutingValidationResult::reasonString() const {
     switch (reason) {
-        case RoutingValidationReason::ok:               return "ok";
-        case RoutingValidationReason::unknown_track:    return "unknown_track";
-        case RoutingValidationReason::self_route:       return "self_route";
-        case RoutingValidationReason::cycle:            return "cycle";
-        case RoutingValidationReason::invalid_target:   return "invalid_target";
-        case RoutingValidationReason::master_as_source: return "master_as_source";
+        case RoutingValidationReason::ok:                      return "ok";
+        case RoutingValidationReason::unknown_track:           return "unknown_track";
+        case RoutingValidationReason::self_route:              return "self_route";
+        case RoutingValidationReason::cycle:                   return "cycle";
+        case RoutingValidationReason::invalid_target:          return "invalid_target";
+        case RoutingValidationReason::master_as_source:        return "master_as_source";
+        case RoutingValidationReason::unknown_source_track:    return "unknown_source_track";
+        case RoutingValidationReason::unknown_target_track:    return "unknown_target_track";
+        case RoutingValidationReason::self_sidechain:          return "self_sidechain";
+        case RoutingValidationReason::master_as_target:        return "master_as_target";
+        case RoutingValidationReason::empty_effect_instance:   return "empty_effect_instance";
+        case RoutingValidationReason::unknown_effect_instance: return "unknown_effect_instance";
+        case RoutingValidationReason::duplicate_route:         return "duplicate_route";
+        case RoutingValidationReason::invalid_gain:            return "invalid_gain";
+        case RoutingValidationReason::unknown_route:           return "unknown_route";
     }
     return "unknown";
 }
@@ -65,6 +76,94 @@ RoutingValidationResult validateTrackOutputRoute(const Timeline& timeline,
                 stack.push_back(next);
         }
     }
+
+    return { RoutingValidationReason::ok };
+}
+
+// ─── validateSidechainRoute ───────────────────────────────────────────────────
+
+float clampSidechainGain(float gain)
+{
+    if (!std::isfinite(gain)) return 1.0f;
+    return std::clamp(gain, 0.0f, 2.0f);
+}
+
+// Returns true if adding the directed dependency edge source→target would close
+// a cycle in the union graph of output-route + sidechain-route edges. Both edge
+// kinds point "feeder → consumer" (the consumer must be processed after the
+// feeder in a block). A cycle exists iff `target` can already reach `source`
+// through existing edges. DFS over output route (one per track) + every existing
+// sidechain route's target; master (-1) has no outgoing edges.
+static bool wouldCreateSidechainCycle(const Timeline& timeline,
+                                      int sourceTrackId, int targetTrackId)
+{
+    std::unordered_set<int> visited;
+    std::vector<int> stack;
+    stack.push_back(targetTrackId);
+
+    while (!stack.empty()) {
+        int current = stack.back();
+        stack.pop_back();
+
+        if (current == sourceTrackId)
+            return true;
+        if (current == -1 || visited.count(current))
+            continue;
+        visited.insert(current);
+
+        const TrackInfo* t = timeline.getTrack(current);
+        if (!t) continue;
+
+        if (t->outputRoute.targetTrackId != -1)
+            stack.push_back(t->outputRoute.targetTrackId);
+        for (const auto& sc : t->sidechainRoutes)
+            if (sc.targetTrackId != -1)
+                stack.push_back(sc.targetTrackId);
+    }
+    return false;
+}
+
+RoutingValidationResult validateSidechainRoute(const Timeline& timeline,
+                                               int sourceTrackId,
+                                               const SidechainRoute& route,
+                                               const SidechainEffectResolver& resolver)
+{
+    if (sourceTrackId == -1)
+        return { RoutingValidationReason::master_as_source };
+    if (!timeline.getTrack(sourceTrackId))
+        return { RoutingValidationReason::unknown_source_track };
+
+    const int targetId = route.targetTrackId;
+    if (targetId == -1)
+        return { RoutingValidationReason::master_as_target };
+    if (targetId == sourceTrackId)
+        return { RoutingValidationReason::self_sidechain };
+
+    const TrackInfo* source = timeline.getTrack(sourceTrackId);
+    const TrackInfo* target = timeline.getTrack(targetId);
+    if (!target)
+        return { RoutingValidationReason::unknown_target_track };
+
+    // Track-level / FX-Graph Sidechain-Input targets (empty effect id) are
+    // deferred to a later prompt — reject for 4B.
+    if (route.targetEffectInstanceId.empty())
+        return { RoutingValidationReason::empty_effect_instance };
+
+    if (!std::isfinite(route.gain))
+        return { RoutingValidationReason::invalid_gain };
+
+    // routeId must be unique within the source track.
+    for (const auto& existing : source->sidechainRoutes)
+        if (existing.routeId == route.routeId)
+            return { RoutingValidationReason::duplicate_route };
+
+    // Effect-instance resolution (Prompt 4A lookup, supplied by the engine). When
+    // no resolver is supplied (pure-model context) the check is skipped.
+    if (resolver && !resolver(targetId, route.targetEffectInstanceId))
+        return { RoutingValidationReason::unknown_effect_instance };
+
+    if (wouldCreateSidechainCycle(timeline, sourceTrackId, targetId))
+        return { RoutingValidationReason::cycle };
 
     return { RoutingValidationReason::ok };
 }

@@ -726,6 +726,15 @@ ipcMain.handle('xleth:timeline:setTrackOutputRoute',
 ipcMain.handle('xleth:timeline:getRouting',
   safeHandler(() => callWorker('timeline_getRouting', [])));
 
+ipcMain.handle('xleth:timeline:addSidechainRoute',
+  safeHandler((_, sourceTrackId, route) => callWorker('timeline_addSidechainRoute', [sourceTrackId, route])));
+
+ipcMain.handle('xleth:timeline:removeSidechainRoute',
+  safeHandler((_, sourceTrackId, routeId) => callWorker('timeline_removeSidechainRoute', [sourceTrackId, routeId])));
+
+ipcMain.handle('xleth:timeline:setSidechainRouteParams',
+  safeHandler((_, sourceTrackId, routeId, params) => callWorker('timeline_setSidechainRouteParams', [sourceTrackId, routeId, params])));
+
 ipcMain.handle('xleth:timeline:setTrackName',
   safeHandler((_, trackId, name) => callWorker('timeline_setTrackName', [trackId, name])));
 

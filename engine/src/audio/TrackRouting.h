@@ -1,12 +1,14 @@
 #pragma once
+#include <functional>
 #include <string>
 
 class Timeline;
+struct SidechainRoute;
 
 namespace xleth {
 
 // ─── RoutingValidationReason ──────────────────────────────────────────────────
-// Stable reason codes returned by validateTrackOutputRoute. These strings are
+// Stable reason codes returned by the routing validators. These strings are
 // forwarded verbatim through the bridge to the renderer on validation failure.
 
 enum class RoutingValidationReason {
@@ -16,6 +18,17 @@ enum class RoutingValidationReason {
     cycle,            // adding this edge creates a routing cycle
     invalid_target,   // target is a visualOnly track or otherwise ineligible
     master_as_source, // source trackId == -1 (master has no output route)
+
+    // ── Sidechain-route specific (Prompt 4B) ──────────────────────────────────
+    unknown_source_track,   // sidechain source trackId not found
+    unknown_target_track,   // sidechain target trackId not found
+    self_sidechain,         // sidechain source == target (deferred to a later prompt)
+    master_as_target,       // sidechain target trackId == -1 (master SC deferred)
+    empty_effect_instance,  // targetEffectInstanceId is empty (track-level SC deferred)
+    unknown_effect_instance,// targetEffectInstanceId does not resolve on target track
+    duplicate_route,        // routeId already exists on the source track
+    invalid_gain,           // gain is not finite
+    unknown_route,          // routeId not found on the source track (remove/setParams)
 };
 
 struct RoutingValidationResult {
@@ -38,6 +51,41 @@ struct RoutingValidationResult {
 RoutingValidationResult validateTrackOutputRoute(const Timeline& timeline,
                                                  int sourceTrackId,
                                                  int proposedTargetId);
+
+// ─── Sidechain route validation (Prompt 4B) ───────────────────────────────────
+// A SidechainEffectResolver answers "does this effect instance currently resolve
+// on this target track?" — the only piece of engine state the pure Timeline model
+// cannot see. The bridge builds it from MixEngine::getEffectNodeIdForInstance;
+// pure-model tests supply a fake. When the resolver is empty (null std::function)
+// effect-instance resolution is skipped (model-only validation: structure, self,
+// duplicate, cycle, gain) — staleness is then reported at read time, not here.
+using SidechainEffectResolver =
+    std::function<bool(int targetTrackId, const std::string& effectInstanceId)>;
+
+// Mutable subset of a SidechainRoute editable via setSidechainRouteParams. The
+// route's target (track + effect instance) is immutable after creation.
+struct SidechainRouteParams {
+    float gain     = 1.0f;
+    bool  preFader = false;
+    bool  enabled  = true;
+};
+
+// ─── validateSidechainRoute ───────────────────────────────────────────────────
+// Pure, side-effect-free validator for adding `route` to `sourceTrackId`. Checks,
+// in order: master-as-source, unknown source, master-as-target, self-sidechain,
+// unknown target, empty/unresolved effect instance, non-finite gain, duplicate
+// routeId on the source, and cycle (over the union of output-route and existing
+// sidechain-route edges — see §4.4 of the architecture audit). Gain is validated
+// for finiteness only; the mutation layer clamps the finite value to [0, 2].
+RoutingValidationResult validateSidechainRoute(const Timeline& timeline,
+                                               int sourceTrackId,
+                                               const SidechainRoute& route,
+                                               const SidechainEffectResolver& resolver);
+
+// Clamp a raw gain to the persisted/runtime-safe key-gain range [0, 2]. Non-
+// finite input collapses to the 1.0 default. Shared by the mutation layer and
+// deserialization so both agree on the safe range.
+float clampSidechainGain(float gain);
 
 // ─── RoutePlan (Prompt 2B audio-thread DSP route plan) ────────────────────────
 // Pure, allocation-free description of how active track slots sum together for

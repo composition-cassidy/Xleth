@@ -591,6 +591,17 @@ target_link_libraries(test_track_routing PRIVATE
     XlethEngineModel
 )
 
+# ── test_sidechain_routes ─────────────────────────────────────────────────────
+# Prompt 4B: persistent/validated/undoable sidechain route model. Pure model +
+# commands + TrackRouting validation — no JUCE, no FFmpeg, no GL, no MixEngine.
+add_executable(test_sidechain_routes
+    test/test_sidechain_routes.cpp
+)
+
+target_link_libraries(test_sidechain_routes PRIVATE
+    XlethEngineModel
+)
+
 # ── test_clip_modulation_evaluator ────────────────────────────────────────────
 # Phase B: pure deterministic evaluator math for ClipModulation (vibrato +
 # vinyl scratch). No JUCE, no FFmpeg, no GL — model-only.

@@ -1125,3 +1125,68 @@ prompt adds that identity. No sidechain, no DSP change.
   `engine/CMakeLists.txt` (`test_chain_effect_identity` target),
   `engine/test/test_chain_effect_identity.cpp` (new), and this audit. No DSP, sidechain, sends, FX
   Graph graphState, plugin bus-layout, or mixer-UI code was changed.
+
+## Prompt 4B Status (sidechain route model + bridge — 2026-06-11)
+
+Sidechain routes now exist safely in the model/project/undo/bridge layer. A source track can store
+a silent key route targeting a specific effect instance on another track, addressed only by the
+stable Prompt-4A `effectInstanceId` (never an APG node id). **No sidechain DSP, buffers, APG wiring,
+or audible behavior was added** — output is bit-identical to Prompt 4A.
+
+- **Persisted:** `SidechainRoute` (already reserved in 2A, unchanged shape) now round-trips through
+  `Track.cpp` `to_json`/`from_json`. Emitted only when non-empty; old projects load as empty. Load
+  is **conservatively sanitizing** — a malformed entry is *dropped* (never mutates siblings): empty/
+  duplicate `routeId`, missing/master `targetTrackId`, or empty `targetEffectInstanceId` are removed;
+  `gain` is clamped to `[0,2]` (non-finite → 1.0), `preFader` defaults false, `enabled` true. A
+  *structurally valid* route whose target effect is simply missing at load is **kept**, not dropped.
+- **Validation (pure, `TrackRouting.{h,cpp}` `validateSidechainRoute`):** stable reason codes —
+  `master_as_source`, `unknown_source_track`, `master_as_target`, `self_sidechain`,
+  `unknown_target_track`, `empty_effect_instance`, `unknown_effect_instance`, `invalid_gain`,
+  `duplicate_route`, `cycle`, plus `unknown_route` for remove/setParams. 4B **rejects** empty
+  `targetEffectInstanceId` (track-level / FX-Graph Sidechain-Input deferred), self-sidechain, and
+  master as source or target. Effect-instance resolution uses a `SidechainEffectResolver` callback
+  (the bridge builds it from `MixEngine::getEffectNodeIdForInstance`; pure-model callers pass an
+  empty `std::function` to skip it — keeping the model layer free of any audio-engine dependency).
+- **Cycle rule:** sidechain edges participate in cycle rejection together with output-route edges
+  over their union graph (§4.4). `A output→B` then `B sidechain→A` is rejected (`cycle`) — even
+  though sidechain is silent later, it creates a same-block processing-order dependency. The reverse
+  (`A sidechain→B` while `A output→B`) is allowed.
+- **Mutation APIs (`Timeline`):** `addSidechainRoute(source, route, resolver)`,
+  `removeSidechainRoute(source, routeId)`, `setSidechainRouteParams(source, routeId, params)`,
+  `getSidechainRoutes(source)`. Target (track + effect instance) is immutable after creation; only
+  gain/preFader/enabled are editable. `gain`/`preFader`/`enabled` are **stored only** — no runtime
+  effect in 4B.
+- **Undo/redo (`TimelineCommands.{h,cpp}`):** `AddSidechainRouteCommand`,
+  `RemoveSidechainRouteCommand`, `SetSidechainRouteParamsCommand`. Add captures the full route
+  (routeId generated once by the bridge) so **redo restores the identical routeId**; remove captures
+  the route + original index for undo restore; setParams captures old params. The bridge validates
+  before `execute`, so an invalid mutation never creates an undo entry.
+- **Bridge:** `timeline_addSidechainRoute(sourceTrackId, routePayload)` → `{ok, routeId}` |
+  `{ok:false, reason}`; `timeline_removeSidechainRoute(sourceTrackId, routeId)` and
+  `timeline_setSidechainRouteParams(sourceTrackId, routeId, params)` → `{ok}` | `{ok:false, reason}`.
+  `timeline_getRouting` now adds a per-track `sidechainRoutes[]` (each carrying `routeId`,
+  `sourceTrackId`, `targetTrackId`, `targetEffectInstanceId`, `gain`, `preFader`, `enabled`, and a
+  `status`) while keeping the existing per-track `outputRoute` shape for Prompt-3 compatibility.
+  **Stale status** is reported (`stale_target_track` > `stale_effect_instance` > `invalid` > `ok`),
+  never silently deleted, so future UI can warn. **No APG node id appears in any routing JSON.** IPC
+  added to `ui/main.js` + `ui/preload.js` (`window.xleth.timeline.{add,remove,setSidechainRouteParams}`);
+  no sidechain UI built.
+- **Tests:** new `engine/test/test_sidechain_routes.cpp` (CMake target `test_sidechain_routes`,
+  75 checks, model-only — links `XlethEngineModel`, fake resolver): old-project empty load, add by
+  effectInstanceId, stable/non-empty routeId, full save/load round-trip, JSON-shape (no node ids,
+  defaults omitted), load sanitization (drop malformed, clamp gain, first-duplicate-wins), every
+  validation reason code, output+sidechain cycle rejection, remove, undo/redo add (same routeId),
+  undo/redo remove, setParams + undo/redo + clamp, and stale-status reporting. Regression green:
+  `test_track_routing` (129), `test_project` (98), `test_undo` (84), `test_chain_effect_identity`
+  (51), `test_mixer_bus_routing` (25), `test_mixer_routing_pdc` (112).
+- **Deferred:** sidechain DSP buffers / `SidechainSourceProcessor` / APG multi-bus wiring /
+  `feedsSidechainOnly` solo policy → Prompt 4C; stock + VST sidechain detectors and capability
+  probing → Prompt 5; FX Graph protected Sidechain Input node (and empty-`targetEffectInstanceId`
+  track-level targets) → Prompt 6. No sends. No audible/DSP behavior change.
+- **Files added/modified:** `engine/src/model/Track.cpp`, `engine/src/model/Timeline.{h,cpp}`,
+  `engine/src/audio/TrackRouting.{h,cpp}`, `engine/src/commands/TimelineCommands.{h,cpp}`,
+  `bridge/src/XlethAddon.cpp`, `ui/main.js`, `ui/preload.js`, `engine/CMakeLists.txt`
+  (`test_sidechain_routes` target), `engine/test/test_sidechain_routes.cpp` (new), and this audit.
+  `TimelineTypes.h` `SidechainRoute` was already correct from 2A — unchanged. No DSP, MixEngine
+  `processBlock`, AudioGraph bus-layout, stock/VST sidechain, FX Graph graphState, or mixer-UI code
+  was changed.

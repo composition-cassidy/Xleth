@@ -1,4 +1,7 @@
 #include "Track.h"
+#include <algorithm>
+#include <cmath>
+#include <unordered_set>
 
 // ── VideoFlipConfig JSON helpers ─────────────────────────────────────────────
 
@@ -350,9 +353,27 @@ void to_json(nlohmann::json& j, const TrackInfo& t) {
 
     // ── Mixer output routing (Prompt 2A) ──────────────────────────────────
     // Omit outputRoute entirely when default (Master) for project compactness.
-    // sends and sidechainRoutes are reserved; always empty, always omitted.
+    // sends remain reserved; always empty, always omitted.
     if (t.outputRoute.targetTrackId != -1)
         j["outputRoute"] = { {"targetTrackId", t.outputRoute.targetTrackId} };
+
+    // ── Sidechain routes (Prompt 4B) ──────────────────────────────────────
+    // Silent detector/key routes owned by this (source) track, addressed by a
+    // stable effectInstanceId (never an APG node id). Omitted when empty.
+    if (!t.sidechainRoutes.empty()) {
+        nlohmann::json arr = nlohmann::json::array();
+        for (const auto& sc : t.sidechainRoutes) {
+            arr.push_back({
+                {"routeId",                sc.routeId},
+                {"targetTrackId",          sc.targetTrackId},
+                {"targetEffectInstanceId", sc.targetEffectInstanceId},
+                {"gain",                   sc.gain},
+                {"preFader",               sc.preFader},
+                {"enabled",                sc.enabled},
+            });
+        }
+        j["sidechainRoutes"] = arr;
+    }
 }
 
 void from_json(const nlohmann::json& j, TrackInfo& t) {
@@ -581,5 +602,37 @@ void from_json(const nlohmann::json& j, TrackInfo& t) {
             t.outputRoute.targetTrackId = tid;
     }
     t.sends.clear();
+
+    // ── Sidechain routes (Prompt 4B) ──────────────────────────────────────
+    // Old projects (no key) load as empty. Malformed entries are sanitized
+    // conservatively by DROPPING them (never mutate sibling data): an entry is
+    // kept only when it is structurally complete — non-empty unique routeId, a
+    // real (non-master) targetTrackId, and a non-empty targetEffectInstanceId
+    // (empty/track-level targets are deferred past 4B). gain is clamped to the
+    // safe [0,2] range (non-finite → 1.0); preFader defaults false, enabled
+    // defaults true. A structurally-valid route whose target effect is missing
+    // at load is NOT dropped here — staleness is reported at read time so user
+    // project data survives a temporarily-missing plugin.
     t.sidechainRoutes.clear();
+    if (j.contains("sidechainRoutes") && j.at("sidechainRoutes").is_array()) {
+        std::unordered_set<std::string> seenIds;
+        for (const auto& e : j.at("sidechainRoutes")) {
+            if (!e.is_object()) continue;
+            SidechainRoute sc;
+            sc.routeId = e.value("routeId", std::string{});
+            if (sc.routeId.empty()) continue;          // no stable id → drop
+            if (seenIds.count(sc.routeId)) continue;    // duplicate id → drop
+            sc.targetTrackId = e.value("targetTrackId", -1);
+            if (sc.targetTrackId < 0) continue;         // missing/master target → drop
+            sc.targetEffectInstanceId = e.value("targetEffectInstanceId", std::string{});
+            if (sc.targetEffectInstanceId.empty()) continue; // 4B rejects empty → drop
+            float g = e.value("gain", 1.0f);
+            if (!std::isfinite(g)) g = 1.0f;
+            sc.gain     = std::clamp(g, 0.0f, 2.0f);
+            sc.preFader = e.value("preFader", false);
+            sc.enabled  = e.value("enabled", true);
+            seenIds.insert(sc.routeId);
+            t.sidechainRoutes.push_back(sc);
+        }
+    }
 }
