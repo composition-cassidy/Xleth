@@ -2531,6 +2531,31 @@ std::string MixEngine::getMasterEffectChainState() const
     return masterEffectChain_->getChainState().dump();
 }
 
+// ── Stable effect-instance lookup ─────────────────────────────────────────────
+
+int MixEngine::getEffectNodeIdForInstance(int trackId,
+                                          const std::string& effectInstanceId) const
+{
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+    if (trackId < 0)
+        return masterEffectChain_
+            ? masterEffectChain_->getNodeIdForEffectInstance(effectInstanceId) : -1;
+    auto it = effectChains_.find(trackId);
+    if (it == effectChains_.end() || !it->second) return -1;
+    return it->second->getNodeIdForEffectInstance(effectInstanceId);
+}
+
+std::string MixEngine::getEffectInstanceIdForNode(int trackId, int nodeId) const
+{
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+    if (trackId < 0)
+        return masterEffectChain_
+            ? masterEffectChain_->getEffectInstanceIdForNode(nodeId) : std::string{};
+    auto it = effectChains_.find(trackId);
+    if (it == effectChains_.end() || !it->second) return std::string{};
+    return it->second->getEffectInstanceIdForNode(nodeId);
+}
+
 // ── Effect chain serialization ───────────────────────────────────────────────
 
 nlohmann::json MixEngine::getEffectChainJSON(int trackId) const

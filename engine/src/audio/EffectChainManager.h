@@ -123,6 +123,19 @@ public:
     // True iff effectInstanceId currently maps to a graph-owned processor.
     bool hasGraphNode(const std::string& effectInstanceId) const;
 
+    // ── Stable effect-instance lookup (chain + graph, main thread) ──────
+    // Resolve a stable effectInstanceId to its current-session APG uid, or -1.
+    // Unified across chain-mode and graph-owned nodes: graph-owned instances
+    // resolve through graphNodeIds_, chain-mode instances through the AudioGraph
+    // node metadata. The returned uid is transient (remapped every load) and is
+    // for runtime wiring only — never persist it. Provided so a later sidechain
+    // phase can resolve a persisted (targetTrackId, effectInstanceId) address to
+    // the live engine node.
+    int getNodeIdForEffectInstance(const std::string& effectInstanceId) const;
+
+    // Reverse lookup: the stable effectInstanceId for an APG uid, or "".
+    std::string getEffectInstanceIdForNode(int nodeId) const;
+
     // FXG.3-d: validate a renderer graphState topology payload, resolve active
     // effectInstanceIds to engine node IDs, and rebuild the track's runtime
     // routing from graphState alone. Graph mode is the SOLE owner of the

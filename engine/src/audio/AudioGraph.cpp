@@ -185,11 +185,45 @@ int AudioGraph::addProcessorToGraph(const std::string& pluginId,
     GraphNode gn;
     gn.apgNodeId = nodePtr->nodeID;
     gn.pluginId  = pluginId;
+    // Every node is born with a stable, unique instance id. Chain-mode nodes
+    // keep this engine-generated id; graph-owned nodes have it overwritten with
+    // the renderer-supplied id (EffectChainManager::addGraphNode), and loaded
+    // nodes have it restored from JSON (fromJSON).
+    gn.effectInstanceId = makeEffectInstanceId();
     nodes_[uid]  = std::move(gn);
 
     adjForward_[uid];
     adjReverse_[uid];
     return uid;
+}
+
+std::string AudioGraph::makeEffectInstanceId()
+{
+    return juce::Uuid().toDashedString().toStdString();
+}
+
+int AudioGraph::getNodeIdForEffectInstance(const std::string& effectInstanceId) const
+{
+    if (effectInstanceId.empty()) return -1;
+    for (const auto& [uid, gn] : nodes_)
+        if (gn.effectInstanceId == effectInstanceId)
+            return uid;
+    return -1;
+}
+
+std::string AudioGraph::getEffectInstanceIdForNode(int nodeId) const
+{
+    auto it = nodes_.find(nodeId);
+    return it == nodes_.end() ? std::string{} : it->second.effectInstanceId;
+}
+
+bool AudioGraph::setNodeEffectInstanceId(int nodeId, const std::string& effectInstanceId)
+{
+    if (effectInstanceId.empty()) return false;
+    auto it = nodes_.find(nodeId);
+    if (it == nodes_.end()) return false;
+    it->second.effectInstanceId = effectInstanceId;
+    return true;
 }
 
 int AudioGraph::addNode(const std::string& pluginId)
@@ -840,6 +874,7 @@ nlohmann::json AudioGraph::getChainState() const
         obj["bypassed"] = false;
         obj["missing"]  = (missingNodes_.count(uid) > 0);
         obj["crashed"]  = false;
+        obj["effectInstanceId"] = it->second.effectInstanceId;
 
         if (graph_)
         {
@@ -918,6 +953,7 @@ nlohmann::json AudioGraph::getGraphTopology() const
         obj["level"] = gn.level;
         obj["cumulativeLatency"] = gn.cumulativeLatency;
         obj["bypassed"] = false;
+        obj["effectInstanceId"] = gn.effectInstanceId;
 
         if (graph_)
         {
@@ -998,6 +1034,7 @@ nlohmann::json AudioGraph::toJSON() const
         obj["x"] = gn.x;
         obj["y"] = gn.y;
         obj["bypassed"] = false;
+        obj["effectInstanceId"] = gn.effectInstanceId;
 
         const bool isMissing = (missingNodes_.count(uid) > 0);
 
@@ -1134,6 +1171,9 @@ bool AudioGraph::fromJSON(const nlohmann::json& j,
 
     // Re-create nodes
     std::unordered_map<int, int> oldToNew;  // old serialized uid → new actual uid
+    // Stable instance ids already claimed in this load, so duplicates in the
+    // serialized chain can be repaired deterministically (first wins).
+    std::unordered_set<std::string> seenInstanceIds;
 
     if (j.contains("nodes") && j["nodes"].is_array())
     {
@@ -1277,6 +1317,26 @@ bool AudioGraph::fromJSON(const nlohmann::json& j,
 
             if (newId < 0) continue;
             oldToNew[oldId] = newId;
+
+            // Restore (or repair) the stable effect-instance id. The new node
+            // already carries a freshly-generated unique id from
+            // addProcessorToGraph; we override it with the persisted id when one
+            // is present and not already claimed by an earlier node in this
+            // chain. A missing id (old project) or a duplicate id therefore
+            // keeps the unique generated id — old projects gain ids on the next
+            // save, and duplicates are repaired without creating an ambiguous
+            // lookup. APG uids may have been remapped, but the stable id is
+            // re-attached to the new runtime node here.
+            {
+                const std::string persistedId =
+                    (nodeObj.contains("effectInstanceId") && nodeObj["effectInstanceId"].is_string())
+                        ? nodeObj["effectInstanceId"].get<std::string>()
+                        : std::string{};
+                if (!persistedId.empty() && seenInstanceIds.insert(persistedId).second)
+                    setNodeEffectInstanceId(newId, persistedId);
+                else
+                    seenInstanceIds.insert(nodes_[newId].effectInstanceId);
+            }
 
             // Restore position
             if (nodeObj.contains("x") && nodeObj.contains("y"))

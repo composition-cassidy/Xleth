@@ -1075,3 +1075,53 @@ vitest.
   The worker-to-native route now resolves through the rebuilt addon, so UI route mutations reach
   engine routing instead of `notImplemented`.
 - **Deferred:** sidechain UI, sends UI, FX Graph sidechain, and routing matrix.
+
+## Prompt 4A Status (stable chain-mode effectInstanceId — 2026-06-10)
+
+Sidechain-route targets must address a *specific effect instance* on a target track, and the only
+persistable address is a stable id (APG uids are remapped every load, §1.5). Until now only FX
+Graph (graph-mode) nodes had a stable `effectInstanceId`; normal Mixer Chain nodes did not. This
+prompt adds that identity. No sidechain, no DSP change.
+
+- **Chain-mode nodes now carry a stable `effectInstanceId`:** `AudioGraph::GraphNode` gained an
+  `effectInstanceId` field (UUID string, `juce::Uuid().toDashedString()`), generated once in
+  `addProcessorToGraph` so every node — chain or graph — is born with a unique id. The id survives
+  move/reorder, bypass, parameter edits, and chain-state reads (it lives on the node metadata, not
+  on the transient APG uid).
+- **Persisted additively in chain JSON:** `AudioGraph::toJSON` / `getChainState` /
+  `getGraphTopology` now emit `effectInstanceId` next to each node. Old projects without the field
+  still load: `AudioGraph::fromJSON` restores the persisted id when present and unique, and
+  otherwise keeps the freshly-generated id — so **old projects gain ids on the next save**, and
+  **duplicate ids in a loaded chain are repaired deterministically** (first occurrence wins, later
+  duplicates fall back to a fresh id, lookups stay unambiguous). The id is re-attached to the new
+  runtime node even though the APG uid is remapped.
+- **Ownership kept separate (no chain/graph collapse):** because chain-mode nodes now also serialize
+  an `effectInstanceId`, presence of the field can no longer signal graph ownership. `graphToJSON`
+  writes an explicit `graphOwned` flag (true only for `graphNodeIds_` members), and `graphFromJSON`
+  rebuilds the graph-owned map from that flag (older saves with no flag fall back to field-presence,
+  which was graph-only before this change). Chain-mode ids therefore never leak into `graphNodeIds_`.
+  `EffectChainManager::addGraphNode` also stamps the renderer-supplied id onto the node metadata so
+  the AudioGraph node, the persisted JSON, and `graphNodeIds_` all agree on one id per graph node.
+- **Runtime lookup for the future sidechain phase:** `EffectChainManager::getNodeIdForEffectInstance`
+  / `getEffectInstanceIdForNode` (unified across chain + graph nodes) and `MixEngine`
+  `getEffectNodeIdForInstance(trackId, id)` / `getEffectInstanceIdForNode(trackId, nodeId)`
+  (trackId == -1 = master) resolve a stable id to the live APG uid and back. These return the
+  transient uid for runtime wiring only — the uid is never persisted.
+- **Bridge/UI exposure is additive:** `audio_getEffectChain` / master chain-state already dump
+  `getChainState()`, so `effectInstanceId` now flows to the renderer with no bridge code change and
+  no required UI change (the renderer simply accepts the extra field).
+- **Deferred:** `SidechainRoute` persistence/validation → Prompt 4B; sidechain buffers /
+  `SidechainSourceProcessor` / APG multi-bus wiring / `feedsSidechainOnly` solo policy → Prompt 4C+;
+  stock + VST sidechain detectors and capability probing → Prompt 5; FX Graph protected Sidechain
+  Input node → Prompt 6. No sends.
+- **Tests:** new `engine/test/test_chain_effect_identity.cpp` (CMake target
+  `test_chain_effect_identity`, 51 checks): fresh-unique ids in chain state, lookup round-trip,
+  move/bypass/param-edit preservation, save/load preservation across a forced APG uid remap,
+  old-project id generation, duplicate-id repair, and graph-ownership isolation. Regression green:
+  `test_graph_effect_parameters` (62), `test_project` (98), `test_undo` (84). (`test_effects` has 3
+  pre-existing EQ-only failures unrelated to this change — APVTS param count + dynamic-EQ DSP.)
+- **Files added/modified:** `engine/src/audio/AudioGraph.{h,cpp}`,
+  `engine/src/audio/EffectChainManager.{h,cpp}`, `engine/src/audio/MixEngine.{h,cpp}`,
+  `engine/CMakeLists.txt` (`test_chain_effect_identity` target),
+  `engine/test/test_chain_effect_identity.cpp` (new), and this audit. No DSP, sidechain, sends, FX
+  Graph graphState, plugin bus-layout, or mixer-UI code was changed.

@@ -146,6 +146,10 @@ int EffectChainManager::addGraphNode(const std::string& effectInstanceId,
     const int nodeId = graph_->addNode(pluginId);
     if (nodeId < 0) return -1;
 
+    // Make the node's own stable identity match the renderer-supplied id so the
+    // AudioGraph node metadata, the persisted chain JSON, and graphNode_ map all
+    // agree on a single effectInstanceId for graph-owned nodes.
+    graph_->setNodeEffectInstanceId(nodeId, effectInstanceId);
     graphNodeIds_[effectInstanceId] = nodeId;
     return nodeId;
 }
@@ -170,6 +174,21 @@ int EffectChainManager::getGraphNodeEngineId(const std::string& effectInstanceId
 bool EffectChainManager::hasGraphNode(const std::string& effectInstanceId) const
 {
     return graphNodeIds_.count(effectInstanceId) > 0;
+}
+
+int EffectChainManager::getNodeIdForEffectInstance(const std::string& effectInstanceId) const
+{
+    if (effectInstanceId.empty()) return -1;
+    // Graph-owned instances take precedence (their runtime map is authoritative).
+    auto it = graphNodeIds_.find(effectInstanceId);
+    if (it != graphNodeIds_.end()) return it->second;
+    // Chain-mode instances live in the AudioGraph node metadata.
+    return graph_ ? graph_->getNodeIdForEffectInstance(effectInstanceId) : -1;
+}
+
+std::string EffectChainManager::getEffectInstanceIdForNode(int nodeId) const
+{
+    return graph_ ? graph_->getEffectInstanceIdForNode(nodeId) : std::string{};
 }
 
 nlohmann::json EffectChainManager::syncGraphTopology(const nlohmann::json& topology)
@@ -746,19 +765,26 @@ nlohmann::json EffectChainManager::getMissingNodesJSON() const
 nlohmann::json EffectChainManager::graphToJSON() const
 {
     nlohmann::json out = graph_->toJSON();
-    if (!out.contains("nodes") || !out["nodes"].is_array() || graphNodeIds_.empty())
+    if (!out.contains("nodes") || !out["nodes"].is_array())
         return out;
 
     std::unordered_map<int, std::string> engineNodeToEffectInstance;
     for (const auto& [effectInstanceId, engineNodeId] : graphNodeIds_)
         engineNodeToEffectInstance[engineNodeId] = effectInstanceId;
 
+    // Mark every node's ownership explicitly. AudioGraph::toJSON now emits an
+    // effectInstanceId for ALL nodes (chain-mode included), so presence of the
+    // field alone can no longer signal graph ownership. The "graphOwned" flag is
+    // the authoritative signal consumed by graphFromJSON to rebuild graphNodeIds_
+    // without pulling chain-mode nodes into the graph-owned map.
     for (auto& node : out["nodes"])
     {
         if (!node.is_object()) continue;
         const int engineNodeId = node.value("nodeId", -1);
         auto it = engineNodeToEffectInstance.find(engineNodeId);
-        if (it != engineNodeToEffectInstance.end())
+        const bool graphOwned = (it != engineNodeToEffectInstance.end());
+        node["graphOwned"] = graphOwned;
+        if (graphOwned)
             node["effectInstanceId"] = it->second;
     }
 
@@ -785,6 +811,16 @@ bool EffectChainManager::graphFromJSON(const nlohmann::json& j)
                 : std::string{};
         if (effectInstanceId.empty() || graphNodeIds_.count(effectInstanceId) > 0)
             continue;
+
+        // Only graph-owned nodes belong in graphNodeIds_. Newer saves carry an
+        // explicit "graphOwned" flag (false for chain-mode nodes, which now also
+        // serialize an effectInstanceId). Older saves predate the flag and the
+        // chain-mode id, so absence of the flag falls back to "graph-owned"
+        // (their only nodes with an effectInstanceId were graph-owned).
+        const bool graphOwned = node.contains("graphOwned")
+            ? node.value("graphOwned", false)
+            : true;
+        if (!graphOwned) continue;
 
         const int oldNodeId = node.value("nodeId", -1);
         auto mapped = oldToNewNodeIds.find(oldNodeId);

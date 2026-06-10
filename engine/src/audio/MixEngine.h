@@ -493,6 +493,15 @@ public:
     // BrowserWindow is created.
     void setMainWindowHandle(uintptr_t hwnd);
 
+    // ── Stable effect-instance lookup (main thread) ──────────────────────────
+    // Resolve a stable effectInstanceId on a track's chain (trackId == -1 selects
+    // the master chain) to the current-session APG uid, or -1 if absent. The uid
+    // is transient (remapped every load); only effectInstanceId is persistable.
+    // Exposed for a later sidechain phase that resolves persisted
+    // (targetTrackId, effectInstanceId) addresses to live engine nodes.
+    int getEffectNodeIdForInstance(int trackId, const std::string& effectInstanceId) const;
+    std::string getEffectInstanceIdForNode(int trackId, int nodeId) const;
+
     // Full graph serialization (includes APVTS state, connections, wire gains)
     nlohmann::json getEffectChainJSON(int trackId) const;
     nlohmann::json getMasterEffectChainJSON() const;

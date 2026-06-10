@@ -1094,6 +1094,39 @@ target_compile_definitions(test_effects PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_chain_effect_identity ────────────────────────────────────────────────
+# Prompt 4A: stable chain-mode effectInstanceId — creation, lookup, move, bypass,
+# parameter edit, save/load across APG uid remap, old-project generation,
+# duplicate repair, and graph-ownership isolation.
+add_executable(test_chain_effect_identity
+    test/test_chain_effect_identity.cpp
+)
+
+target_link_libraries(test_chain_effect_identity PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_chain_effect_identity PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+target_link_options(test_chain_effect_identity PRIVATE /STACK:8388608)
+
 # ── test_distortion ──────────────────────────────────────────────────────────
 # Focused Distortion diagnostics. Kept separate from test_effects so it can run
 # independently while unrelated effect tests are being repaired.

@@ -135,6 +135,21 @@ public:
     // and helper gain/delay nodes). Used to validate graph-node adoption.
     bool hasNode(int nodeId) const { return nodes_.count(nodeId) > 0; }
 
+    // ── Stable effect-instance identity (main thread) ───────────────────
+    // Resolve a stable effectInstanceId to its current-session APG uid, or -1
+    // if no node carries that id. The returned uid is transient (remapped on
+    // load) and must never be persisted — only the effectInstanceId is stable.
+    int getNodeIdForEffectInstance(const std::string& effectInstanceId) const;
+
+    // Reverse lookup: the stable effectInstanceId for an APG uid, or "" if the
+    // node is unknown.
+    std::string getEffectInstanceIdForNode(int nodeId) const;
+
+    // Overwrite a node's stable effectInstanceId. Returns false if nodeId is
+    // unknown or the id is empty. Used to stamp the renderer-supplied id onto a
+    // graph-owned node and to restore persisted ids on load.
+    bool setNodeEffectInstanceId(int nodeId, const std::string& effectInstanceId);
+
     // ── Effect parameter / meter access (main-thread only) ─────────────
     // Retrieve the XlethEffectBase for a node.  Returns nullptr if the nodeId
     // is not in this graph or the node does not hold an XlethEffectBase.
@@ -241,6 +256,12 @@ private:
     {
         juce::AudioProcessorGraph::NodeID apgNodeId;
         std::string pluginId;
+        // Stable, persistent per-instance identity (UUID string). Generated once
+        // when the processor is added (addProcessorToGraph), persisted in chain
+        // JSON, and restored on load. Survives the APG uid remap that happens on
+        // every project load, so it is the only safe address for cross-session
+        // references to "this specific effect instance" (e.g. sidechain targets).
+        std::string effectInstanceId;
         float x = 0.0f;
         float y = 0.0f;
         int   level = -1;                // Kahn's BFS level (computed)
@@ -374,6 +395,9 @@ private:
     // Does NOT store vstDescriptions_ — caller must do that if needed.
     int addProcessorToGraph(const std::string& pluginId,
                             std::unique_ptr<juce::AudioProcessor> proc);
+
+    // Generate a fresh, globally-unique stable effect-instance id (UUID string).
+    static std::string makeEffectInstanceId();
 
     // ── Constants ───────────────────────────────────────────────────────
 
