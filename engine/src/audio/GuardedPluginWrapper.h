@@ -2,6 +2,8 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include "audio/SidechainCapability.h"
+
 #include <atomic>
 #include <memory>
 #include <string>
@@ -56,6 +58,12 @@ public:
 
     void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi) override;
 
+    // Bus-layout negotiation is forwarded to the inner plugin (SEH-guarded). The
+    // wrapper mirrors the inner's bus structure, so the APG sizes the process
+    // buffer for the real (main + optional sidechain) channel count and JUCE's
+    // own bus-buffer math inside the inner lines up without manual marshaling.
+    bool isBusesLayoutSupported(const BusesLayout& layouts) const override;
+
     bool   acceptsMidi()          const override { return inner_ && inner_->acceptsMidi(); }
     bool   producesMidi()         const override { return inner_ && inner_->producesMidi(); }
     bool   isMidiEffect()         const override { return inner_ && inner_->isMidiEffect(); }
@@ -83,6 +91,25 @@ public:
     const juce::AudioProcessor* getInner() const noexcept { return inner_.get(); }
 
     bool isCrashed() const noexcept { return crashed_.load(std::memory_order_acquire); }
+
+    // ── Sidechain capability (session-only, never persisted) ────────────
+    // Probed once at construction (SEH-guarded). `supported` means the inner
+    // plugin accepted an aux input bus layout that can carry a sidechain key;
+    // `channels` is the detected key channel count (1 or 2); `enabled` tracks
+    // whether the key bus is currently active. See SidechainCapability.h.
+    const xleth::SidechainCapability& getSidechainCapability() const noexcept { return capability_; }
+
+    // True iff the optional sidechain input bus (bus 1) is currently enabled
+    // with > 0 channels. Audio thread may read this; only mutated on the main
+    // thread under the chains lock via setSidechainInputEnabled().
+    bool isSidechainInputEnabled() const;
+
+    // Main-thread only: enable/disable the wrapper's sidechain input bus to the
+    // probed key channel set (and propagate the layout to the inner on the next
+    // prepareToPlay). Returns true iff the wrapper layout actually changed (so
+    // the caller can re-prepare the graph exactly once). No-op (returns false)
+    // for unsupported plugins or when the bus is already in the desired state.
+    bool setSidechainInputEnabled(bool enabled);
 
     // Attempt to recover a crashed plugin.  Returns true if the plugin is
     // now healthy (crashed_ cleared), false if the reset itself faulted
@@ -156,6 +183,27 @@ public:
 
 private:
     std::unique_ptr<juce::AudioProcessor> inner_;
+
+    // ── Bus mirroring / sidechain capability ────────────────────────────
+    // Build the wrapper's BusesProperties from the inner plugin's declared bus
+    // structure (called from the ctor initializer list, before inner_ is moved).
+    // Main input/output are forced stereo (the audible-path default); any
+    // additional inner buses are mirrored DISABLED-by-default so the wrapper
+    // starts byte-equivalent to today's stereo-only wrapper until a sidechain
+    // route enables the key bus.
+    static juce::AudioProcessor::BusesProperties
+        makeMirroredBusesProperties(juce::AudioProcessor* inner);
+
+    // Probe whether the inner plugin can expose a usable sidechain input bus.
+    // SEH-guarded. Establishes a stereo main layout, tries a stereo then mono
+    // aux input bus, and ALWAYS leaves the inner at stereo-main + sidechain
+    // DISABLED (never enabled by default for runtime use). Session-only result.
+    static xleth::SidechainCapability probeInnerSidechain(juce::AudioProcessor* inner);
+
+    xleth::SidechainCapability capability_{};
+    // The channel set used when the sidechain bus is enabled (stereo or mono,
+    // from the probe). disabled() when unsupported.
+    juce::AudioChannelSet sidechainKeySet_{ juce::AudioChannelSet::disabled() };
 
     // Cached so we can log safely after a crash (avoid re-entering the plugin).
     juce::String cachedName_;

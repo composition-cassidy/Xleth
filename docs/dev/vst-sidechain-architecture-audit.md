@@ -1,8 +1,121 @@
-# VST Sidechain Architecture Audit (VST-SC.1)
+# VST Sidechain Architecture Audit (VST-SC.1 → VST-SC.2)
 
 Read-only audit and implementation map for adding **third-party VST3 sidechain support** to XLETH,
 reusing the existing silent `SidechainRoute` transport, `sidechainBuffers_`, `SidechainSourceProcessor`,
-and route-validation architecture. **No second sidechain engine.** This pass changed no runtime
+and route-validation architecture. **No second sidechain engine.** The VST-SC.1 pass (audit) changed no
+runtime behavior. **VST-SC.2 (below, §13) implements the wrapper bus-mirroring + capability-probing
+foundation** — native C++ only, no UI, no route-validation behavior change.
+
+---
+
+## 13. VST-SC.2 status — wrapper bus mirroring + capability probing (2026-06-12)
+
+**Done.** Foundation pass: a wrapped fake sidechain-capable plugin now exposes a real sidechain bus
+through `GuardedPluginWrapper`, reports session-only capability, and receives a test key on bus 1 with
+no main-output leakage. Stereo-only wrapped plugins remain unsupported. No UI, no full route validation,
+no real-VST smoke (all deferred). Stock + chain + FX-Graph sidechain regressions remain green.
+
+### Files changed
+
+- **`engine/src/audio/SidechainCapability.h`** (new) — POD `xleth::SidechainCapability { bool supported;
+  int channels; bool enabled; }`, no deps, shared by `AudioGraph` and `GuardedPluginWrapper`.
+- **`engine/src/audio/GuardedPluginWrapper.{h,cpp}`** — bus mirroring + capability probe (see below).
+- **`engine/src/audio/AudioGraph.{h,cpp}`** — `GraphNode.sidechain` capability field (session-only);
+  capability captured in `addProcessorToGraph`; `applySidechainTargetInstances` gains a gated wrapped
+  branch; capability emitted additively in `getChainState`/`getGraphTopology`; `createEffect` no longer
+  force-sets `(2,2)` before wrapping (the wrapper owns layout now).
+- **`engine/test/test_vst_sidechain.cpp`** (new) + **`engine/CMakeLists.txt`** target `test_vst_sidechain`.
+
+### Wrapper bus-mirroring behavior (`GuardedPluginWrapper`)
+
+- **Constructor** builds its `BusesProperties` from the inner via `makeMirroredBusesProperties()`: main
+  in/out forced **stereo**; every *additional* inner bus mirrored **disabled-by-default**, so the main
+  path is byte-identical to the old stereo-only wrapper until a route enables the key bus. The wrapper
+  therefore declares the same **bus count** as the inner, and base-class `getBusCount`/`getBus`/
+  `getChannelIndexInProcessBlockBuffer` resolve correctly (key bus → process-block channels 2/3).
+- **`prepareToPlay` no longer forces `(2,2)`** — it applies the wrapper's *current negotiated* layout to
+  the inner (`inner->setBusesLayout(getBusesLayout())`, stereo fallback), so an enabled sidechain bus is
+  no longer clobbered on every graph rebuild. `resetCrashed()` does the same.
+- **`isBusesLayoutSupported`** is overridden to delegate to `inner->checkBusesLayoutSupported` (SEH-guarded).
+- **`setSidechainInputEnabled(bool)`** (idempotent) toggles the wrapper's bus 1 to the probed key set
+  (stereo/mono) or disabled; the inner picks it up on the next prepare. Returns true only on real change.
+- All inner calls stay behind `pluginGuardCall`. The crashed fast-path leaves the buffer untouched: main
+  channels 0/1 (= dry input) pass to the output bus; key channels 2/3 are never read as output → **no leak**.
+
+### Capability probing behavior (session-only, never persisted)
+
+Probed once **in the wrapper constructor** (so it covers `createEffect`, `fromJSON`, and the retry path —
+all wrap then `addProcessorToGraph`), SEH-guarded, in `probeInnerSidechain()`:
+
+1. Re-establish a stereo main layout.
+2. If the inner has `< 2` input buses → **unsupported**.
+3. Else try main-stereo-in + **stereo** sidechain-in + stereo-out, then **mono** sidechain-in; first that
+   `checkBusesLayoutSupported && setBusesLayout` succeeds → `supported`, `channels = 2|1`.
+4. **Always** leave the inner at stereo-main + sidechain **disabled** (never enabled by default).
+5. A fault during probing → caught → marked unsupported, inner left safe.
+
+`AudioGraph::addProcessorToGraph` reads `wrapper.getSidechainCapability()` (and stock effects'
+`supportsExternalSidechain()`) into `GraphNode.sidechain`. **Not serialized** — `toJSON` omits it;
+re-discovered every load.
+
+### Capability exposure shape
+
+Additive per-node object in `getChainState` **and** `getGraphTopology`:
+
+```json
+"sidechain": { "supported": true, "channels": 2, "enabled": false }
+```
+
+`enabled` is recomputed live from the bus layout; `supported`/`channels` come from the instantiation
+probe. Old renderers tolerate the extra field. No new bridge method was required (VST-SC.4 may add a
+read-only `audio_getEffectSidechainCapability` query, addressed by `effectInstanceId`, if a targeted
+refresh is wanted).
+
+### isSidechainCapable / applySidechainTargetInstances
+
+- `AudioGraph::isSidechainCapable` is unchanged (enabled bus-1 with ≥1 channel) and now returns true for a
+  wrapped plugin **once its bus 1 is enabled** — no VST special-casing in `rebuildSidechainInfrastructure`.
+- `applySidechainTargetInstances(ids, includeWrappedPlugins=false)` gained a **gated** wrapped branch. The
+  default is **false**, so the production route-sync path (`MixEngine::syncSidechainTargetBuses`) keeps its
+  **stock-only behavior** — user routes to VSTs still do nothing yet. Tests pass `true`. Full route-driven
+  lazy enable for VSTs is **VST-SC.3**.
+
+### Tests run (Debug, all green)
+
+| Target | Result |
+|---|---|
+| `test_vst_sidechain` (new) | 55 passed — capability probe (stereo/mono/unsupported/rejecting), bus mirroring, key-on-bus-1, no main leak, no-clobber-on-reprepare, crash passthrough, capability-not-persisted, old-JSON loads, stock compressor still supported |
+| `test_stock_compressor_sidechain` | 22 passed |
+| `test_sidechain_runtime` | 28 passed |
+| `test_fxgraph_sidechain_input` | 13 passed |
+| `test_chain_effect_identity` | 51 passed |
+| `test_graph_effect_parameters` | 62 passed |
+
+`git diff --check` / `--cached --check`: clean. Bridge addon rebuilt (`cd bridge && npx cmake-js compile`)
+because plugin-hosting C++ changed; **no Electron smoke performed** this pass.
+
+### What remains for VST-SC.3
+
+- Drive the wrapped branch from `MixEngine::syncSidechainTargetBuses` (real route-driven lazy enable/disable
+  under Timeline mutations) — flip `includeWrappedPlugins` on for the production sync once validated.
+- Add `sidechain_unsupported` to route validation (reject incapable targets) in `TrackRouting`.
+- Latency/PDC refresh after a real SC-enable (reuse `refreshReportedLatency`); prove end-to-end key
+  delivery + ducking under a real route; mono-fold delivery (V4) and PDC (V6).
+
+### Known limitations (VST-SC.2)
+
+- Capability is probed with **stereo/mono** sidechain candidates only; exotic key channel sets are reported
+  as unsupported (intentional — fail closed).
+- Output buses are mirrored by count but the graph still only wires the stereo main output (aux outputs are
+  declared-but-unconnected); fine for sidechain (input-side) and for the fake tests. Real-plugin aux-output
+  behavior is a VST-SC.4 smoke concern.
+- No real VST3 has been exercised — all proofs use fake processors.
+
+---
+
+## (VST-SC.1 audit follows)
+
+Read-only audit and implementation map (unchanged from the VST-SC.1 pass). This pass changed no runtime
 behavior, no C++ behavior, no bridge API, no UI, no schema, and required no native addon rebuild.
 
 > **Status — VST-SC.1 complete (2026-06-11).** Audit only. The single concrete code finding is that

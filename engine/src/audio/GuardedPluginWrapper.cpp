@@ -10,22 +10,143 @@
 #include <cstdlib>
 #include <thread>
 
+// ─── Bus mirroring helpers ──────────────────────────────────────────────────
+
+juce::AudioProcessor::BusesProperties
+GuardedPluginWrapper::makeMirroredBusesProperties(juce::AudioProcessor* inner)
+{
+    // Main buses are always stereo — the hard default for the audible path.
+    BusesProperties props = BusesProperties()
+        .withInput ("Input",  juce::AudioChannelSet::stereo(), true)
+        .withOutput("Output", juce::AudioChannelSet::stereo(), true);
+
+    if (inner == nullptr)
+        return props;
+
+    // Mirror any ADDITIONAL inner buses (e.g. a sidechain aux input) so the
+    // wrapper declares the same bus count and JUCE bus indexing lines up inside
+    // the inner. Extra buses are declared DISABLED-by-default; the main path is
+    // therefore byte-identical to the old stereo-only wrapper until a route
+    // enables the key bus. Bus introspection here is benign (no DSP), so it does
+    // not need the SEH guard — createPluginInstance already succeeded.
+    const int numIn  = inner->getBusCount(true);
+    const int numOut = inner->getBusCount(false);
+
+    auto mirrorSet = [](juce::AudioProcessor::Bus* bus) -> juce::AudioChannelSet
+    {
+        if (bus == nullptr) return juce::AudioChannelSet::stereo();
+        auto set = bus->getDefaultLayout();
+        if (set.isDisabled() || set.size() == 0)
+            set = juce::AudioChannelSet::stereo();
+        return set;
+    };
+
+    for (int i = 1; i < numIn; ++i)
+    {
+        auto* bus = inner->getBus(true, i);
+        juce::String name = (bus != nullptr && bus->getName().isNotEmpty())
+            ? bus->getName() : ("Aux In " + juce::String(i));
+        props = props.withInput(name, mirrorSet(bus), /*enabledByDefault*/ false);
+    }
+    for (int i = 1; i < numOut; ++i)
+    {
+        auto* bus = inner->getBus(false, i);
+        juce::String name = (bus != nullptr && bus->getName().isNotEmpty())
+            ? bus->getName() : ("Aux Out " + juce::String(i));
+        props = props.withOutput(name, mirrorSet(bus), /*enabledByDefault*/ false);
+    }
+
+    return props;
+}
+
+xleth::SidechainCapability
+GuardedPluginWrapper::probeInnerSidechain(juce::AudioProcessor* inner)
+{
+    xleth::SidechainCapability cap;
+    if (inner == nullptr) return cap;
+
+    // Always re-establish a stereo main layout first (today's baseline). A plugin
+    // that keeps its own main layout is tolerated — `baseOk` is informational.
+    xleth::pluginGuardCall([&]
+    {
+        juce::AudioProcessor::BusesLayout layout;
+        layout.inputBuses.add(juce::AudioChannelSet::stereo());
+        layout.outputBuses.add(juce::AudioChannelSet::stereo());
+        inner->setBusesLayout(layout);
+    });
+
+    int inBuses = 0;
+    xleth::pluginGuardCall([&]{ inBuses = inner->getBusCount(true); });
+
+    // Fewer than 2 input buses → cannot carry a key bus → unsupported.
+    if (inBuses >= 2)
+    {
+        // Try main stereo in + <scSet> sidechain in + stereo out, in order.
+        auto trySidechain = [&](const juce::AudioChannelSet& scSet) -> bool
+        {
+            bool ok = false;
+            xleth::pluginGuardCall([&]
+            {
+                juce::AudioProcessor::BusesLayout layout;
+                layout.inputBuses.add(juce::AudioChannelSet::stereo());
+                layout.inputBuses.add(scSet);
+                for (int i = 2; i < inBuses; ++i)
+                    layout.inputBuses.add(juce::AudioChannelSet::disabled());
+                layout.outputBuses.add(juce::AudioChannelSet::stereo());
+                ok = inner->checkBusesLayoutSupported(layout)
+                  && inner->setBusesLayout(layout);
+            });
+            return ok;
+        };
+
+        if (trySidechain(juce::AudioChannelSet::stereo()))
+        {
+            cap.supported = true;
+            cap.channels  = 2;
+        }
+        else if (trySidechain(juce::AudioChannelSet::mono()))
+        {
+            cap.supported = true;
+            cap.channels  = 1;
+        }
+    }
+
+    // ALWAYS leave the inner at stereo-main + sidechain DISABLED, so the key bus
+    // is never enabled by default for runtime use (avoids breaking plugins that
+    // misbehave with an enabled-but-silent aux bus).
+    xleth::pluginGuardCall([&]
+    {
+        juce::AudioProcessor::BusesLayout layout;
+        layout.inputBuses.add(juce::AudioChannelSet::stereo());
+        for (int i = 1; i < inBuses; ++i)
+            layout.inputBuses.add(juce::AudioChannelSet::disabled());
+        layout.outputBuses.add(juce::AudioChannelSet::stereo());
+        inner->setBusesLayout(layout);
+    });
+
+    cap.enabled = false;
+    return cap;
+}
+
 // ─── Construction / destruction ─────────────────────────────────────────────
 
 GuardedPluginWrapper::GuardedPluginWrapper(std::unique_ptr<juce::AudioProcessor> inner)
-    : juce::AudioProcessor(BusesProperties()
-          .withInput ("Input",  juce::AudioChannelSet::stereo(), true)
-          .withOutput("Output", juce::AudioChannelSet::stereo(), true))
+    : juce::AudioProcessor(makeMirroredBusesProperties(inner.get()))
     , inner_(std::move(inner))
 {
     if (inner_)
     {
-        // Force stereo I/O to match the rest of the graph.  VST3 plugins that
-        // default to a non-stereo layout get reconfigured here before any
-        // prepareToPlay call.
-        inner_->setPlayConfigDetails(2, 2,
-                                     getSampleRate() > 0 ? getSampleRate() : 44100.0,
-                                     getBlockSize()  > 0 ? getBlockSize()  : 512);
+        // Probe (SEH-guarded) whether the inner can expose a sidechain bus, and
+        // leave it at stereo-main + sidechain-disabled. The wrapper already
+        // mirrors the bus COUNT (see makeMirroredBusesProperties); the probe
+        // discovers whether bus 1 actually works as a key input and at what
+        // channel count. Capability is session-only — never persisted.
+        capability_ = probeInnerSidechain(inner_.get());
+        sidechainKeySet_ = capability_.supported
+            ? (capability_.channels == 1 ? juce::AudioChannelSet::mono()
+                                         : juce::AudioChannelSet::stereo())
+            : juce::AudioChannelSet::disabled();
+
         cachedName_ = inner_->getName();
         refreshReportedLatency();
     }
@@ -33,16 +154,75 @@ GuardedPluginWrapper::GuardedPluginWrapper(std::unique_ptr<juce::AudioProcessor>
 
 GuardedPluginWrapper::~GuardedPluginWrapper() = default;
 
+// ─── Bus-layout negotiation (forwarded to inner, SEH-guarded) ───────────────
+
+bool GuardedPluginWrapper::isBusesLayoutSupported(const BusesLayout& layouts) const
+{
+    if (!inner_)
+    {
+        // No inner: accept stereo main in/out only (today's fixed layout).
+        return layouts.getMainInputChannelSet()  == juce::AudioChannelSet::stereo()
+            && layouts.getMainOutputChannelSet() == juce::AudioChannelSet::stereo();
+    }
+
+    auto* innerPtr = inner_.get();
+    bool supported = false;
+    const bool ok = xleth::pluginGuardCall([&]
+    {
+        supported = innerPtr->checkBusesLayoutSupported(layouts);
+    });
+    return ok && supported;
+}
+
+bool GuardedPluginWrapper::isSidechainInputEnabled() const
+{
+    if (getBusCount(true) < 2) return false;
+    const auto* bus = getBus(true, 1);
+    return bus != nullptr && bus->isEnabled() && bus->getNumberOfChannels() > 0;
+}
+
+bool GuardedPluginWrapper::setSidechainInputEnabled(bool enabled)
+{
+    if (!capability_.supported) return false;
+    if (getBusCount(true) < 2)  return false;
+    auto* bus = getBus(true, 1);
+    if (bus == nullptr) return false;
+
+    const bool cur = bus->isEnabled() && bus->getNumberOfChannels() > 0;
+    if (cur == enabled) return false;   // idempotent — no layout change
+
+    auto layout = getBusesLayout();
+    if (layout.inputBuses.size() < 2) return false;
+    layout.inputBuses.getReference(1) = enabled
+        ? sidechainKeySet_
+        : juce::AudioChannelSet::disabled();
+
+    // Apply to the wrapper's own buses. The inner receives the same layout on the
+    // next prepareToPlay (see prepareToPlay), so the change is not live until the
+    // graph re-prepares — the caller MUST re-prepare after a true return.
+    if (!setBusesLayout(layout)) return false;
+    capability_.enabled = enabled;
+    return true;
+}
+
 // ─── Lifecycle (guarded — plugins can fault in prepareToPlay) ───────────────
 
 void GuardedPluginWrapper::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
     if (!inner_) return;
 
+    // Mirror the wrapper's currently-negotiated bus layout onto the inner rather
+    // than forcing (2,2). For stereo-only plugins this is stereo in/out (no
+    // change); for sidechain-capable plugins it carries the enabled/disabled key
+    // bus, so a previously-enabled sidechain bus is no longer clobbered on every
+    // graph rebuild.
     auto* innerPtr = inner_.get();
+    const auto wrapperLayout = getBusesLayout();
     const bool ok = xleth::pluginGuardCall([&]
     {
-        innerPtr->setPlayConfigDetails(2, 2, sampleRate, samplesPerBlock);
+        if (!innerPtr->setBusesLayout(wrapperLayout))
+            innerPtr->setPlayConfigDetails(2, 2, sampleRate, samplesPerBlock);
+        innerPtr->setRateAndBufferSizeDetails(sampleRate, samplesPerBlock);
         innerPtr->prepareToPlay(sampleRate, samplesPerBlock);
     });
 
@@ -557,10 +737,13 @@ bool GuardedPluginWrapper::resetCrashed()
     const double sr = getSampleRate() > 0 ? getSampleRate() : 44100.0;
     const int    bs = getBlockSize()  > 0 ? getBlockSize()  : 512;
 
+    const auto wrapperLayout = getBusesLayout();
     const bool ok = xleth::pluginGuardCall([&]
     {
         innerPtr->releaseResources();
-        innerPtr->setPlayConfigDetails(2, 2, sr, bs);
+        if (!innerPtr->setBusesLayout(wrapperLayout))
+            innerPtr->setPlayConfigDetails(2, 2, sr, bs);
+        innerPtr->setRateAndBufferSizeDetails(sr, bs);
         innerPtr->prepareToPlay(sr, bs);
         innerPtr->reset();
     });

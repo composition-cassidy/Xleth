@@ -187,14 +187,29 @@ int AudioGraph::addProcessorToGraph(const std::string& pluginId,
     if (!nodePtr) return -1;
 
     const int uid = static_cast<int>(nodePtr->nodeID.uid);
-    if (auto* stockEffect = dynamic_cast<XlethEffectBase*>(nodePtr->getProcessor()))
-        stockEffect->setHostNodeId(uid);
-    if (auto* guarded = dynamic_cast<GuardedPluginWrapper*>(nodePtr->getProcessor()))
-        guarded->setHostNodeId(uid);
 
     GraphNode gn;
     gn.apgNodeId = nodePtr->nodeID;
     gn.pluginId  = pluginId;
+
+    // Record session-only sidechain capability on the node. Stock effects report
+    // it via supportsExternalSidechain(); wrapped plugins carry the probe result
+    // from the GuardedPluginWrapper constructor. Never persisted (see GraphNode).
+    if (auto* stockEffect = dynamic_cast<XlethEffectBase*>(nodePtr->getProcessor()))
+    {
+        stockEffect->setHostNodeId(uid);
+        if (stockEffect->supportsExternalSidechain())
+        {
+            gn.sidechain.supported = true;
+            gn.sidechain.channels  = 2;
+            gn.sidechain.enabled   = stockEffect->isSidechainInputEnabled();
+        }
+    }
+    else if (auto* guarded = dynamic_cast<GuardedPluginWrapper*>(nodePtr->getProcessor()))
+    {
+        guarded->setHostNodeId(uid);
+        gn.sidechain = guarded->getSidechainCapability();
+    }
     // Every node is born with a stable, unique instance id. Chain-mode nodes
     // keep this engine-generated id; graph-owned nodes have it overwritten with
     // the renderer-supplied id (EffectChainManager::addGraphNode), and loaded
@@ -886,6 +901,12 @@ nlohmann::json AudioGraph::getChainState() const
         obj["crashed"]  = false;
         obj["effectInstanceId"] = it->second.effectInstanceId;
 
+        // Additive, session-only sidechain capability (VST-SC.2). `enabled` is
+        // recomputed live from the live bus layout; supported/channels come from
+        // the instantiation-time probe. Old renderers tolerate extra fields.
+        const auto& scCap = it->second.sidechain;
+        bool scEnabledLive = scCap.enabled;
+
         if (graph_)
         {
             auto* node = graph_->getNodeForId(it->second.apgNodeId);
@@ -894,6 +915,7 @@ nlohmann::json AudioGraph::getChainState() const
                 auto* proc = node->getProcessor();
                 if (proc)
                 {
+                    scEnabledLive = isSidechainCapable(proc);
                     auto* effect = dynamic_cast<XlethEffectBase*>(proc);
                     if (effect)
                     {
@@ -916,6 +938,12 @@ nlohmann::json AudioGraph::getChainState() const
                 }
             }
         }
+
+        obj["sidechain"] = {
+            { "supported", scCap.supported },
+            { "channels",  scCap.channels  },
+            { "enabled",   scEnabledLive   },
+        };
 
         arr.push_back(obj);
     }
@@ -965,16 +993,25 @@ nlohmann::json AudioGraph::getGraphTopology() const
         obj["bypassed"] = false;
         obj["effectInstanceId"] = gn.effectInstanceId;
 
+        bool scEnabledLive = gn.sidechain.enabled;
         if (graph_)
         {
             auto* node = graph_->getNodeForId(gn.apgNodeId);
             if (node)
             {
-                auto* effect = dynamic_cast<XlethEffectBase*>(node->getProcessor());
+                auto* proc = node->getProcessor();
+                scEnabledLive = isSidechainCapable(proc);
+                auto* effect = dynamic_cast<XlethEffectBase*>(proc);
                 if (effect)
                     obj["bypassed"] = effect->isBypassed();
             }
         }
+
+        obj["sidechain"] = {
+            { "supported", gn.sidechain.supported },
+            { "channels",  gn.sidechain.channels  },
+            { "enabled",   scEnabledLive          },
+        };
 
         nodesArr.push_back(obj);
     }
@@ -2171,7 +2208,8 @@ void AudioGraph::clearSidechainKey() noexcept
 }
 
 bool AudioGraph::applySidechainTargetInstances(
-    const std::set<std::string>& enabledInstanceIds)
+    const std::set<std::string>& enabledInstanceIds,
+    bool includeWrappedPlugins)
 {
     if (!graph_) return false;
 
@@ -2183,12 +2221,31 @@ bool AudioGraph::applySidechainTargetInstances(
     {
         auto* node = graph_->getNodeForId(gn.apgNodeId);
         if (!node) continue;
-        auto* eff = dynamic_cast<XlethEffectBase*>(node->getProcessor());
-        if (!eff || !eff->supportsExternalSidechain()) continue;
-
+        auto* proc = node->getProcessor();
         const bool want = enabledInstanceIds.count(gn.effectInstanceId) > 0;
-        if (eff->setSidechainInputEnabled(want))
-            changed = true;
+
+        // Stock external-sidechain-capable effects (today only the compressor).
+        if (auto* eff = dynamic_cast<XlethEffectBase*>(proc))
+        {
+            if (!eff->supportsExternalSidechain()) continue;
+            if (eff->setSidechainInputEnabled(want))
+                changed = true;
+            gn.sidechain.enabled = eff->isSidechainInputEnabled();
+        }
+        // Wrapped third-party plugins whose probe found a usable key bus. Gated
+        // off by default: the production route-sync path keeps stock-only
+        // behavior, so user routes to VSTs still do nothing yet. Full route-driven
+        // lazy enable is deferred to VST-SC.3; tests pass includeWrappedPlugins.
+        else if (includeWrappedPlugins)
+        {
+            if (!gn.sidechain.supported) continue;
+            if (auto* guarded = dynamic_cast<GuardedPluginWrapper*>(proc))
+            {
+                if (guarded->setSidechainInputEnabled(want))
+                    changed = true;
+                gn.sidechain.enabled = guarded->isSidechainInputEnabled();
+            }
+        }
     }
 
     if (changed)
@@ -2728,32 +2785,12 @@ std::unique_ptr<juce::AudioProcessor> AudioGraph::createEffect(const std::string
             }
             if (instance)
             {
-                // Explicitly set stereo bus layout before prepareToPlay.
-                // VST3 plugins may default to a non-stereo configuration; without
-                // this call the AudioProcessorGraph won't route audio correctly.
-                juce::AudioProcessor::BusesLayout layout;
-                layout.inputBuses.add(juce::AudioChannelSet::stereo());
-                layout.outputBuses.add(juce::AudioChannelSet::stereo());
-                if (!instance->setBusesLayout(layout))
-                {
-#ifdef XLETH_DEBUG
-                    std::fprintf(stderr,
-                                 "[PluginHost] setBusesLayout failed for \"%s\" — using plugin default\n",
-                                 desc.name.toRawUTF8());
-#endif
-                }
-                instance->setPlayConfigDetails(2, 2, sr, bs);
-                instance->prepareToPlay(sr, bs);
-#ifdef XLETH_DEBUG
-                std::fprintf(stderr,
-                             "[PluginHost] Loaded: \"%s\" (latency: %d samples,"
-                             " in=%d out=%d at %.0fHz/%d samples)\n",
-                             desc.name.toRawUTF8(),
-                             instance->getLatencySamples(),
-                             instance->getTotalNumInputChannels(),
-                             instance->getTotalNumOutputChannels(),
-                             sr, bs);
-#endif
+                // Bus-layout negotiation + sidechain capability probing now happen
+                // inside the GuardedPluginWrapper (SEH-guarded): it mirrors the
+                // inner's bus count, forces stereo main in/out, probes for a usable
+                // sidechain aux bus, and leaves that bus DISABLED. The wrapper's
+                // prepareToPlay then applies the negotiated layout — no (2,2) force
+                // here, and none on every graph rebuild.
                 return std::make_unique<GuardedPluginWrapper>(std::move(instance));
             }
 #ifdef XLETH_DEBUG

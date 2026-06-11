@@ -3,6 +3,8 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <nlohmann/json.hpp>
 
+#include "audio/SidechainCapability.h"
+
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -274,7 +276,14 @@ public:
     // sidechain infrastructure rewired so the newly-capable node receives the
     // key. Returns true iff any layout changed. Idempotent — a no-op when the
     // desired set already matches the live bus states (no re-prepare churn).
-    bool applySidechainTargetInstances(const std::set<std::string>& enabledInstanceIds);
+    //
+    // VST-SC.2: `includeWrappedPlugins` extends the toggle to sidechain-capable
+    // GuardedPluginWrapper (third-party) nodes. It defaults to FALSE so the
+    // production route-sync path (MixEngine::syncSidechainTargetBuses) keeps its
+    // current stock-only behavior — full route-driven lazy enable for VSTs is
+    // deferred to VST-SC.3. Tests pass true to exercise the wrapper key bus.
+    bool applySidechainTargetInstances(const std::set<std::string>& enabledInstanceIds,
+                                       bool includeWrappedPlugins = false);
 
 private:
     // ── Node data ───────────────────────────────────────────────────────
@@ -293,6 +302,14 @@ private:
         float y = 0.0f;
         int   level = -1;                // Kahn's BFS level (computed)
         int   cumulativeLatency = 0;     // PDC: computed
+
+        // Session-only sidechain capability, discovered at instantiation (stock
+        // effects via supportsExternalSidechain(); wrapped plugins via the
+        // GuardedPluginWrapper probe). NEVER serialized — re-discovered on every
+        // load, since plugins lie and change across hosts/versions. Exposed
+        // additively in chain/graph-state JSON so the UI can gate sidechain
+        // controls without hardcoding plugin ids.
+        xleth::SidechainCapability sidechain;
     };
 
     // ── Wire / connection data ──────────────────────────────────────────
