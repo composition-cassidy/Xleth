@@ -1,6 +1,7 @@
 #include "audio/EffectChainManager.h"
 #include "audio/AudioGraph.h"
 #include "audio/PluginRegistry.h"
+#include "audio/SidechainDiagnostics.h"
 
 #include <functional>
 #include <unordered_map>
@@ -847,6 +848,17 @@ bool EffectChainManager::hasSidechainCapableNode() const
 void EffectChainManager::setSidechainKeyBuffer(const float* left, const float* right,
                                                int numSamples) noexcept
 {
+    if (xleth::sidechain_diag::audioBlockActive())
+    {
+        xleth::sidechain_diag::appendf("EffectChainManager", "setSidechainKeyBuffer",
+            "numSamples=%d inputPeakL=%.8f inputRmsL=%.8f inputPeakR=%.8f inputRmsR=%.8f hasGraph=%d",
+            numSamples,
+            xleth::sidechain_diag::peak(left, numSamples),
+            xleth::sidechain_diag::rms(left, numSamples),
+            xleth::sidechain_diag::peak(right, numSamples),
+            xleth::sidechain_diag::rms(right, numSamples),
+            graph_ ? 1 : 0);
+    }
     if (graph_)
         graph_->setSidechainKey(left, right, numSamples);
 }
@@ -860,7 +872,17 @@ void EffectChainManager::clearSidechainKeyBuffer() noexcept
 bool EffectChainManager::applySidechainTargetInstances(
     const std::set<std::string>& enabledInstanceIds)
 {
-    return graph_ && graph_->applySidechainTargetInstances(enabledInstanceIds);
+    for (const auto& id : enabledInstanceIds)
+    {
+        xleth::sidechain_diag::appendf("EffectChainManager", "applySidechainTargetInstances_request",
+            "targetEffectInstanceId=%s resolvedNodeId=%d",
+            id.c_str(), getNodeIdForEffectInstance(id));
+    }
+    const bool ok = graph_ && graph_->applySidechainTargetInstances(enabledInstanceIds);
+    xleth::sidechain_diag::appendf("EffectChainManager", "applySidechainTargetInstances_result",
+        "requestedInstanceCount=%d success=%d",
+        static_cast<int>(enabledInstanceIds.size()), graph_ ? 1 : 0);
+    return ok;
 }
 
 void EffectChainManager::resetProcessors()

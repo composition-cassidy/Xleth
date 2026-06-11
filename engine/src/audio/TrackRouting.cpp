@@ -1,4 +1,5 @@
 #include "audio/TrackRouting.h"
+#include "audio/SidechainDiagnostics.h"
 #include "model/Timeline.h"
 #include "model/TimelineTypes.h"
 #include <algorithm>
@@ -368,18 +369,56 @@ void buildSidechainPlan(const RoutePlanSlotInput* slots, int count,
     for (int k = 0; k < tapCount && out.tapCount < SidechainPlan::kMaxTaps; ++k) {
         const SidechainTapInput& tp = taps[k];
 
-        if (!tp.enabled || !tp.effectResolved) continue;
+        if (!tp.enabled || !tp.effectResolved) {
+            if (xleth::sidechain_diag::audioBlockActive())
+                xleth::sidechain_diag::appendf("TrackRouting", "buildSidechainPlanSkipped",
+                    "sourceSlot=%d targetTrackId=%d enabled=%d gain=%.6f preFader=%d reason=%s",
+                    tp.sourceSlot, tp.targetTrackId, tp.enabled ? 1 : 0, tp.gain,
+                    tp.preFader ? 1 : 0, !tp.enabled ? "disabled" : "effect_unresolved");
+            continue;
+        }
 
         const int s = tp.sourceSlot;
-        if (s < 0 || s >= count) continue;
-        if (slots[s].muted || slots[s].visualOnly) continue;   // key dies with source
+        if (s < 0 || s >= count) {
+            if (xleth::sidechain_diag::audioBlockActive())
+                xleth::sidechain_diag::appendf("TrackRouting", "buildSidechainPlanSkipped",
+                    "sourceSlot=%d targetTrackId=%d enabled=%d gain=%.6f preFader=%d reason=stale_source_slot",
+                    s, tp.targetTrackId, tp.enabled ? 1 : 0, tp.gain, tp.preFader ? 1 : 0);
+            continue;
+        }
+        if (slots[s].muted || slots[s].visualOnly) {
+            if (xleth::sidechain_diag::audioBlockActive())
+                xleth::sidechain_diag::appendf("TrackRouting", "buildSidechainPlanSkipped",
+                    "sourceSlot=%d sourceTrackId=%d targetTrackId=%d enabled=%d gain=%.6f preFader=%d muted=%d visualOnly=%d reason=source_inactive",
+                    s, slots[s].trackId, tp.targetTrackId, tp.enabled ? 1 : 0,
+                    tp.gain, tp.preFader ? 1 : 0, slots[s].muted ? 1 : 0,
+                    slots[s].visualOnly ? 1 : 0);
+            continue;
+        }   // key dies with source
 
         // Resolve target trackId → slot.
         int targetSlot = -1;
         for (int t = 0; t < count; ++t)
             if (slots[t].trackId == tp.targetTrackId) { targetSlot = t; break; }
-        if (targetSlot < 0 || targetSlot == s) continue;       // stale / self
-        if (!plan.audible[targetSlot] || slots[targetSlot].visualOnly) continue;
+        if (targetSlot < 0 || targetSlot == s) {
+            if (xleth::sidechain_diag::audioBlockActive())
+                xleth::sidechain_diag::appendf("TrackRouting", "buildSidechainPlanSkipped",
+                    "sourceSlot=%d sourceTrackId=%d targetTrackId=%d targetSlot=%d enabled=%d gain=%.6f preFader=%d reason=%s",
+                    s, slots[s].trackId, tp.targetTrackId, targetSlot,
+                    tp.enabled ? 1 : 0, tp.gain, tp.preFader ? 1 : 0,
+                    targetSlot < 0 ? "stale_target_track" : "self_sidechain");
+            continue;
+        }       // stale / self
+        if (!plan.audible[targetSlot] || slots[targetSlot].visualOnly) {
+            if (xleth::sidechain_diag::audioBlockActive())
+                xleth::sidechain_diag::appendf("TrackRouting", "buildSidechainPlanSkipped",
+                    "sourceSlot=%d sourceTrackId=%d targetTrackId=%d targetSlot=%d enabled=%d gain=%.6f preFader=%d targetAudible=%d targetVisualOnly=%d reason=target_inactive",
+                    s, slots[s].trackId, tp.targetTrackId, targetSlot,
+                    tp.enabled ? 1 : 0, tp.gain, tp.preFader ? 1 : 0,
+                    plan.audible[targetSlot] ? 1 : 0,
+                    slots[targetSlot].visualOnly ? 1 : 0);
+            continue;
+        }
 
         const int idx = out.tapCount++;
         out.tapSourceSlot[idx] = s;

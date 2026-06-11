@@ -1,5 +1,16 @@
 # Mixer Bus Routing + Sidechain — Architecture Audit
 
+## Temporary Diagnostic Logger
+
+2026-06-11: Added temporary, diagnostic-only sidechain logging for the stock
+compressor external-key path. The app truncates and writes:
+
+`C:\Users\Krasen\Desktop\XLETH\sidechain-diagnostic-log.txt`
+
+This pass is instrumentation only. It does not include a sidechain behavior fix,
+does not change compressor DSP decisions, and should be removed after the
+diagnosis/fix is complete.
+
 Read-only audit of XLETH's audio routing architecture, plus the source-of-truth implementation
 plan for **audible bus routing** and **silent sidechain routing**. No source code was modified in
 this pass. Implementation prompts 2–6 (§8) must be derivable from this document without guessing.

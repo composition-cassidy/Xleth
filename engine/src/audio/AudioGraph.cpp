@@ -25,6 +25,7 @@
 #include "audio/WireGainProcessor.h"
 #include "audio/DelayCompensationProcessor.h"
 #include "audio/SidechainSourceProcessor.h"
+#include "audio/SidechainDiagnostics.h"
 #include "audio/GuardedPluginWrapper.h"
 #include "audio/PluginCrashGuard.h"
 #include "audio/GraphEffectParameters.h"
@@ -2118,9 +2119,16 @@ void AudioGraph::rebuildSidechainInfrastructure()
     {
         if (sidechainSourceNode_.uid != 0)
         {
+            xleth::sidechain_diag::append("AudioGraph", "rebuildSidechainInfrastructure",
+                                          "targetCount=0 removeSourceNode=1");
             graph_->removeNode(sidechainSourceNode_);
             sidechainSourceNode_ = {};
             sidechainSourceProc_.store(nullptr, std::memory_order_release);
+        }
+        else
+        {
+            xleth::sidechain_diag::append("AudioGraph", "rebuildSidechainInfrastructure",
+                                          "targetCount=0 sourceNodeExists=0");
         }
         return;
     }
@@ -2134,10 +2142,16 @@ void AudioGraph::rebuildSidechainInfrastructure()
         {
             sidechainSourceNode_ = nodePtr->nodeID;
             sidechainSourceProc_.store(raw, std::memory_order_release);
+            xleth::sidechain_diag::appendf("AudioGraph", "createSidechainSourceNode",
+                "sourceNodeId=%u targetCount=%d",
+                static_cast<unsigned>(sidechainSourceNode_.uid),
+                static_cast<int>(scTargets.size()));
         }
         else
         {
             sidechainSourceProc_.store(nullptr, std::memory_order_release);
+            xleth::sidechain_diag::appendf("AudioGraph", "createSidechainSourceNode",
+                "failed=1 targetCount=%d", static_cast<int>(scTargets.size()));
             return;
         }
     }
@@ -2153,7 +2167,12 @@ void AudioGraph::rebuildSidechainInfrastructure()
         for (int ch = 0; ch < keyCh && ch < 2; ++ch)
         {
             const int dstChannel = proc->getChannelIndexInProcessBlockBuffer(true, 1, ch);
-            graph_->addConnection({{sidechainSourceNode_, ch}, {node->nodeID, dstChannel}});
+            const bool connected = graph_->addConnection({{sidechainSourceNode_, ch}, {node->nodeID, dstChannel}});
+            xleth::sidechain_diag::appendf("AudioGraph", "sidechainWire",
+                "sourceNodeId=%u targetNodeId=%u bus=1 srcChannel=%d dstChannel=%d connected=%d",
+                static_cast<unsigned>(sidechainSourceNode_.uid),
+                static_cast<unsigned>(node->nodeID.uid), ch, dstChannel,
+                connected ? 1 : 0);
         }
     }
 }
@@ -2162,6 +2181,9 @@ void AudioGraph::setSidechainKey(const float* left, const float* right, int numS
 {
     if (auto* proc = sidechainSourceProc_.load(std::memory_order_acquire))
         proc->setExternalBuffer(left, right, numSamples);
+    else if (xleth::sidechain_diag::audioBlockActive())
+        xleth::sidechain_diag::appendf("AudioGraph", "setSidechainKey",
+            "numSamples=%d hasSourceProcessor=0", numSamples);
 }
 
 void AudioGraph::clearSidechainKey() noexcept
@@ -2173,7 +2195,11 @@ void AudioGraph::clearSidechainKey() noexcept
 bool AudioGraph::applySidechainTargetInstances(
     const std::set<std::string>& enabledInstanceIds)
 {
-    if (!graph_) return false;
+    if (!graph_) {
+        xleth::sidechain_diag::append("AudioGraph", "applySidechainTargetInstances",
+                                      "failed=1 reason=no_graph");
+        return false;
+    }
 
     // Toggle the sidechain input bus on every external-sidechain-capable stock
     // effect to match the desired set. setSidechainInputEnabled() returns true
@@ -2184,11 +2210,25 @@ bool AudioGraph::applySidechainTargetInstances(
         auto* node = graph_->getNodeForId(gn.apgNodeId);
         if (!node) continue;
         auto* eff = dynamic_cast<XlethEffectBase*>(node->getProcessor());
-        if (!eff || !eff->supportsExternalSidechain()) continue;
+        const bool supports = eff != nullptr && eff->supportsExternalSidechain();
+        if (!supports)
+        {
+            if (enabledInstanceIds.count(gn.effectInstanceId) > 0)
+                xleth::sidechain_diag::appendf("AudioGraph", "applySidechainTargetInstance",
+                    "targetEffectInstanceId=%s nodeId=%d sidechainCapable=0 busEnabled=0 failureReason=not_external_sidechain_effect",
+                    gn.effectInstanceId.c_str(), static_cast<int>(node->nodeID.uid));
+            continue;
+        }
 
         const bool want = enabledInstanceIds.count(gn.effectInstanceId) > 0;
+        const bool before = isSidechainCapable(node->getProcessor());
         if (eff->setSidechainInputEnabled(want))
             changed = true;
+        const bool after = isSidechainCapable(node->getProcessor());
+        xleth::sidechain_diag::appendf("AudioGraph", "applySidechainTargetInstance",
+            "targetEffectInstanceId=%s nodeId=%d requested=%d sidechainCapable=1 busEnabledBefore=%d busEnabledAfter=%d changedSoFar=%d",
+            gn.effectInstanceId.c_str(), static_cast<int>(node->nodeID.uid), want ? 1 : 0,
+            before ? 1 : 0, after ? 1 : 0, changed ? 1 : 0);
     }
 
     if (changed)
@@ -2200,6 +2240,11 @@ bool AudioGraph::applySidechainTargetInstances(
         reprepare(sampleRate_, blockSize_);
         rebuildImmediate();
     }
+    xleth::sidechain_diag::appendf("AudioGraph", "applySidechainTargetInstances",
+        "requestedInstanceCount=%d graphReprepare=%d sidechainSourceNodeId=%u sidechainWiringExists=%d",
+        static_cast<int>(enabledInstanceIds.size()), changed ? 1 : 0,
+        static_cast<unsigned>(sidechainSourceNode_.uid),
+        sidechainSourceNode_.uid != 0 ? 1 : 0);
     return changed;
 }
 

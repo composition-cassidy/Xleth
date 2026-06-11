@@ -1,5 +1,7 @@
 #pragma once
 
+#include "audio/SidechainDiagnostics.h"
+
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include <algorithm>
@@ -50,6 +52,16 @@ public:
         extL_ = left;
         extR_ = right != nullptr ? right : left;
         extN_ = numSamples > 0 ? numSamples : 0;
+        if (xleth::sidechain_diag::audioBlockActive())
+        {
+            xleth::sidechain_diag::appendf("SidechainSourceProcessor", "setExternalBuffer",
+                "numSamples=%d inputPeakL=%.8f inputRmsL=%.8f inputPeakR=%.8f inputRmsR=%.8f",
+                extN_,
+                xleth::sidechain_diag::peak(extL_, extN_),
+                xleth::sidechain_diag::rms(extL_, extN_),
+                xleth::sidechain_diag::peak(extR_, extN_),
+                xleth::sidechain_diag::rms(extR_, extN_));
+        }
     }
 
     // Drop the borrowed pointers so a later block can never read stale audio.
@@ -58,6 +70,9 @@ public:
         extL_ = nullptr;
         extR_ = nullptr;
         extN_ = 0;
+        if (xleth::sidechain_diag::audioBlockActive())
+            xleth::sidechain_diag::append("SidechainSourceProcessor", "clearExternalBuffer",
+                                          "staleBufferReusePrevented=1");
     }
 
     bool hasExternalBuffer() const noexcept { return extL_ != nullptr || extR_ != nullptr; }
@@ -96,6 +111,19 @@ public:
 
             if (copyN < numSamples)
                 std::fill(dst + copyN, dst + numSamples, 0.0f);
+        }
+
+        if (xleth::sidechain_diag::audioBlockActive())
+        {
+            const float* outL = numCh > 0 ? buffer.getReadPointer(0) : nullptr;
+            const float* outR = numCh > 1 ? buffer.getReadPointer(1) : outL;
+            xleth::sidechain_diag::appendf("SidechainSourceProcessor", "processBlock",
+                "numSamples=%d copySamples=%d hasExternalBuffer=%d outputPeakL=%.8f outputRmsL=%.8f outputPeakR=%.8f outputRmsR=%.8f",
+                numSamples, copyN, hasExternalBuffer() ? 1 : 0,
+                xleth::sidechain_diag::peak(outL, numSamples),
+                xleth::sidechain_diag::rms(outL, numSamples),
+                xleth::sidechain_diag::peak(outR, numSamples),
+                xleth::sidechain_diag::rms(outR, numSamples));
         }
     }
 
