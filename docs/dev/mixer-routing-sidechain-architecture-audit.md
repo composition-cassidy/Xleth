@@ -1190,3 +1190,102 @@ or audible behavior was added** — output is bit-identical to Prompt 4A.
   `TimelineTypes.h` `SidechainRoute` was already correct from 2A — unchanged. No DSP, MixEngine
   `processBlock`, AudioGraph bus-layout, stock/VST sidechain, FX Graph graphState, or mixer-UI code
   was changed.
+
+## Prompt 4C+4D Status (runtime silent sidechain key transport + injection groundwork — 2026-06-11)
+
+Sidechain routes now become **real silent runtime key signals** at DSP time, and a target track's
+chain has the infrastructure to receive them through a `SidechainSourceProcessor`. Stored
+`gain`/`preFader`/`enabled` are honored at runtime; the key never becomes audible by itself. No
+stock compressor ducking, VST sidechain probing, or sidechain UI was added — Prompt 5 still owns how
+stock/VST effects consume the key.
+
+- **Runtime key tap buffers implemented (§5.1):** new pre-allocated `MixEngine::sidechainBuffers_`
+  (stereo, one per target slot, sized in lockstep with `trackBuffers_` in `ensureTrackBuffers`). Each
+  block, for every active sidechain route, the source's signal is accumulated (scaled by route gain)
+  into the *target slot's* key buffer. These buffers are consumed only by the target chain's
+  sidechain source node — they are **never** added to `trackBuffers_`, the master `outputBuffer`, the
+  bus-routing buffers, or the preview/audition bus. Structural silence by construction.
+- **Pure `SidechainPlan` (TrackRouting.{h,cpp}):** `buildSidechainPlan` is layered on top of the
+  unchanged output `RoutePlan`/`RoutePdcPlan` (Prompt 2B/2C output routing + junction PDC are byte
+  unchanged — verified by `test_mixer_bus_routing` 25 and `test_mixer_routing_pdc` 112 staying green).
+  It produces, allocation-free and lock-free: the resolved active tap set
+  (`tapSourceSlot/tapTargetSlot/tapGain/tapPreFader`), a `hasIncomingKey[]` per target, a combined
+  output∪sidechain topological `processOrder` (so every key source is processed before its consuming
+  target in the same block), and `feedsSidechainOnly[]`. A tap is active iff: `enabled` &&
+  `effectResolved` && the source is key-allowed (NOT muted, NOT visual-only — both kill the key) &&
+  the target resolves to an audible, non-visual-only slot && it is not a self-tap. If the combined
+  graph is ever cyclic (impossible after 4B validation, which already rejects sidechain cycles) the
+  builder fails closed to the output-only order so audible routing is never disturbed.
+- **Tap points / `preFader` policy (§5.1):** `preFader = true` taps **post-insert, pre-fader** (the
+  closest correct position to "before fader/pan/PDC" given inserts are inherently pre-fader); it is
+  fader/pan/PDC-independent (verified: key peak 0.5 regardless of a 0.25 source fader). `preFader =
+  false` taps **post-fader / post-pan / post-PDC** — the audit's v1 "best-effort post-compensation"
+  position (verified: key peak follows the 0.25 fader × center-pan). Documented as approximate, not
+  faked.
+- **Mute/solo policy (§4.5):** muting a source kills its key; a visual-only source contributes no
+  key; soloing a *target* keeps an otherwise-silenced source processed `feedsSidechainOnly` (rendered,
+  chained, fader'd, tapped — but summed nowhere audible) so its key keeps pumping. Output-route
+  solo/mute closure (2B) is unchanged.
+- **`SidechainSourceProcessor` (new `engine/src/audio/SidechainSourceProcessor.h`):** internal node,
+  0 audio inputs / 2 outputs, copies a borrowed external key buffer into its outputs (silence when
+  none set; block-size safe — a shorter external buffer zero-fills the remainder, so no stale reuse).
+  It never owns/frees MixEngine buffers and never allocates in `processBlock`.
+- **AudioGraph injection groundwork (§5.2):** a single `SidechainSourceProcessor` is created **lazily**
+  (and removed when none remain) per track chain whenever that chain owns a *sidechain-capable* node —
+  defined narrowly as a processor with an **enabled second input bus** (`getBus(true,1)`). It is
+  tracked OUTSIDE `nodes_` (like the I/O nodes) so it never enters chain ordering, PDC, topology, or
+  serialization. `rebuildAPGConnections` re-wires its stereo output to every consumer's second input
+  bus each rebuild. `MixEngine` hands the per-target key to the chain
+  (`EffectChainManager::setSidechainKeyBuffer` → `AudioGraph::setSidechainKey`) immediately before the
+  chain's `processBlock` and clears it immediately after — under the chains lock, same thread, same
+  block. No renderer graphState is required (chain mode only; graph-mode `sidechainInput` is Prompt 6).
+- **APG (2,2) lock relaxed narrowly (risk #3):** the `setPlayConfigDetails(2,2)` force in
+  `addProcessorToGraph` is bypassed **only** for a sidechain-capable node (it keeps its declared
+  layout); every ordinary stereo processor, the graph I/O nodes, and all existing chain-mode effects
+  are byte-for-byte unchanged. Production stock effects (single input bus) and VSTs (forced single
+  stereo in / aux bus disabled) never qualify, so production behavior is identical — only an
+  explicitly sidechain-enabled node (e.g. the test receiver, or a future Prompt-5 stock/VST bus) is
+  recognized. `GuardedPluginWrapper` was not touched.
+- **Fail-closed runtime (§ "Runtime fail-closed behavior"):** a missed chain lock, a missing
+  source/target slot, an unresolved (stale/deleted/empty) target effect instance, or an absent
+  sidechain source node all skip the route silently — output is exactly as if no route existed, no
+  crash, no per-block log spam. Effect-instance resolution is done once per block under the chains
+  lock (no string lookup in the inner sample loop); slot/effect targets are resolved once, not per
+  sample. No per-sample heap allocation; the only per-block churn is clearing the key buffers that
+  actually receive a key.
+- **Silence guarantee — how:** the key buffers are write-only sinks read by nothing but the target
+  chain's sidechain source node, whose output is wired only to a consumer's *second* input bus (never
+  the audible main input, never `trackBuffers_`/`outputBuffer`/bus/preview). The test-only receiver
+  records the key but passes its main bus through unchanged and adds the key nowhere — so a route with
+  no real consumer leaves master **bit-identical** (`maxAbsDiff == 0`, verified).
+- **Test-only receiver + delivery proof:** `engine/test/test_sidechain_runtime.cpp` (new CMake target
+  `test_sidechain_runtime`, 28 checks) adds a `SidechainReceiverProcessor` (declares an enabled
+  sidechain input bus, records its sidechain-bus peak, passes main through) to a target chain and
+  drives `MixEngine::processBlock`. It proves: key delivered through the `SidechainSourceProcessor`
+  (scPeak 0.354 = 0.5×center-pan); master bit-identical with vs without the route; stale/disabled/
+  muted/visual-only routes deliver no key with master unchanged; gain scales the key only
+  (0.5 → 0.177); pre-fader ignores the source fader (0.5) while post-fader follows it (0.088);
+  target-solo keeps the source feeding its key (`feedsSidechainOnly`); plus a `SidechainSourceProcessor`
+  unit test for silence/copy/block-size safety.
+- **Solo "sidechain-only" — how:** a source whose output path does not reach a soloed target is not
+  in the audible solo closure (`RoutePlan::audible[source] == false`), but if it feeds an active key
+  into an audible target, `buildSidechainPlan` sets `feedsSidechainOnly[source]`; `processBlock` then
+  processes it (chain/fader/pan/PDC + key tap) but takes the `if (!audible) continue;` branch before
+  any audible sum, so the key flows while the source stays inaudible.
+- **Deferred (NOT in 4C+4D):** stock compressor external sidechain / `sc_external` param /
+  `XlethCompressorEffect` detector behavior → Prompt 5; OTT/limiter sidechain → Prompt 5; VST
+  sidechain bus probing/enabling + `GuardedPluginWrapper` mirroring → Prompt 5; sidechain source/
+  target UI → Prompt 5 UI slice; FX Graph protected Sidechain Input node + `sidechainIn` port +
+  empty-`targetEffectInstanceId` track-level targets → Prompt 6; parallel sends → later. Key-path PDC
+  remains v1 best-effort (source-side post-compensation tap; ±pathΔ skew documented in risk #2).
+- **Tests:** new `test_sidechain_runtime` (28). Regression green: `test_sidechain_routes` (75),
+  `test_track_routing` (129), `test_mixer_bus_routing` (25), `test_mixer_routing_pdc` (112),
+  `test_mix` (272), `test_project` (98), `test_undo` (84), `test_chain_effect_identity` (51).
+- **Files added/modified:** `engine/src/audio/SidechainSourceProcessor.h` (new),
+  `engine/src/audio/TrackRouting.{h,cpp}` (SidechainPlan), `engine/src/audio/AudioGraph.{h,cpp}`
+  (SC source infra node + narrow (2,2) relaxation), `engine/src/audio/EffectChainManager.{h,cpp}`
+  (key-buffer forwarding), `engine/src/audio/MixEngine.{h,cpp}` (`sidechainBuffers_`, per-block plan,
+  tap accumulation, delivery, `feedsSidechainOnly`, combined order),
+  `engine/test/test_sidechain_runtime.cpp` (new), `engine/CMakeLists.txt`
+  (`test_sidechain_runtime` target), and this audit. No bridge/IPC/renderer/stock-effect-DSP/VST/
+  FX-Graph-graphState/export code was changed.

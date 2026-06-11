@@ -343,6 +343,7 @@ void MixEngine::StereoCompensationDelay::process(juce::AudioBuffer<float>& buffe
 MixEngine::MixEngine()
 {
     trackBuffers_.resize(kMaxTracks);
+    sidechainBuffers_.resize(kMaxTracks);
     activeClips_.reserve(256);
     activeBlocks_.reserve(64);
 
@@ -3515,6 +3516,8 @@ void MixEngine::ensureTrackBuffers(int numSamples)
     // Re-allocate all track buffers (called rarely — only when buffer size grows)
     for (auto& buf : trackBuffers_)
         buf.setSize(2, numSamples, false, true, false);
+    for (auto& buf : sidechainBuffers_)
+        buf.setSize(2, numSamples, false, true, false);
 
     trackBufferSize_ = numSamples;
 }
@@ -4120,6 +4123,15 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     }
     xleth::RoutePlan routePlan;
     xleth::buildRoutePlan(routeInputs, numTrackSlots, routePlan);
+
+    // ── Sidechain runtime plan (Prompt 4C+4D) ─────────────────────────────────
+    // Default to the output-only passthrough (processOrder == routePlan.topoOrder,
+    // no active taps). The real tap set needs effect-instance resolution, which
+    // needs the chains lock, so it is rebuilt below once the lock is held. If the
+    // lock is missed (realtime contention) the plan stays passthrough — sidechain
+    // delivery is skipped this block, exactly as if no route existed (fail-closed).
+    xleth::SidechainPlan scPlan;
+    xleth::buildSidechainPlan(routeInputs, numTrackSlots, routePlan, nullptr, 0, scPlan);
 
     // Throttled fail-closed diagnostics (never spam the audio thread). Both
     // conditions are programming errors after 2A validation — log rarely.
@@ -4767,13 +4779,66 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         diagnosticTapSink->capture(tap);
     };
 
+    // ── Resolve sidechain key taps for this block (Prompt 4C+4D) ─────────────
+    // Built only under the chains lock (effect-instance resolution reads the
+    // target chains). The resolved plan adds source→target processing-order
+    // constraints and the per-target key taps; the audible output plan and
+    // junction PDC above are untouched. A missed lock keeps the passthrough plan.
+    if (chainsLocked && timeline_ != nullptr)
+    {
+        xleth::SidechainTapInput scTaps[xleth::SidechainPlan::kMaxTaps];
+        int scTapCount = 0;
+        for (int s = 0; s < numTrackSlots && scTapCount < xleth::SidechainPlan::kMaxTaps; ++s)
+        {
+            const auto* srcTrack = trackSlots[s].info;
+            if (srcTrack == nullptr) continue;
+            for (const auto& route : srcTrack->sidechainRoutes)
+            {
+                if (scTapCount >= xleth::SidechainPlan::kMaxTaps) break;
+
+                // Resolve the target effect instance on the target chain. A stale
+                // or missing target (deleted effect, empty/track-level id which is
+                // deferred) does not resolve and is skipped silently at DSP — the
+                // route persists but contributes no key.
+                bool resolved = false;
+                if (!route.targetEffectInstanceId.empty())
+                {
+                    auto cit = effectChains_.find(route.targetTrackId);
+                    if (cit != effectChains_.end() && cit->second && cit->second->isInitialized())
+                        resolved = cit->second->getNodeIdForEffectInstance(
+                                       route.targetEffectInstanceId) >= 0;
+                }
+
+                xleth::SidechainTapInput& tp = scTaps[scTapCount++];
+                tp.sourceSlot     = s;
+                tp.targetTrackId  = route.targetTrackId;
+                tp.gain           = xleth::clampSidechainGain(route.gain);
+                tp.preFader       = route.preFader;
+                tp.enabled        = route.enabled;
+                tp.effectResolved = resolved;
+            }
+        }
+
+        xleth::buildSidechainPlan(routeInputs, numTrackSlots, routePlan,
+                                  scTaps, scTapCount, scPlan);
+
+        // Clear the key buffers for the target slots that will receive a key so
+        // accumulation starts from silence (no per-route heap churn — fixed,
+        // pre-sized stereo buffers).
+        if (scPlan.anyActive)
+            for (int t = 0; t < numTrackSlots; ++t)
+                if (scPlan.hasIncomingKey[t])
+                    sidechainBuffers_[t].clear(0, numSamples);
+    }
+
     for (int oi = 0; oi < numTrackSlots; ++oi)
     {
-        // Process in topological order so every source slot has already summed
-        // into its bus before the bus slot runs its own chain (Prompt 2B). All
-        // per-slot state (buffers, smoothers, latency caches, peaks) is indexed
-        // by the real slot `i`, so topo iteration changes only the visit order.
-        const int i = routePlan.topoOrder[oi];
+        // Process in topological + sidechain order so every source slot has
+        // already summed into its bus AND produced its key before the consuming
+        // slot runs its own chain (Prompt 2B output order + Prompt 4C key order).
+        // All per-slot state (buffers, smoothers, latency caches, peaks) is
+        // indexed by the real slot `i`, so iteration changes only the visit order.
+        const int i = scPlan.processOrder[oi];
         const auto* track = trackSlots[i].info;
         struct TrackTimingScope
         {
@@ -4804,7 +4869,14 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         // mute/solo closure over output-route edges (a soloed source stays
         // audible through its downstream bus path, a muted bus mutes its whole
         // subtree, etc. — see buildRoutePlan).
-        const bool shouldPlay = routePlan.audible[i];
+        const bool audible = routePlan.audible[i];
+
+        // Sidechain-only processing (Prompt 4C+4D): a source silenced only by a
+        // solo closure that still feeds an audible target's key is rendered here
+        // (chain/fader/pan/PDC) to produce that key, but is summed nowhere
+        // audible (the output sum below is gated on `audible`).
+        const bool feedsKeyOnly = scPlan.feedsSidechainOnly[i];
+        const bool shouldPlay   = audible || feedsKeyOnly;
 
         if (!shouldPlay)
         {
@@ -4851,6 +4923,23 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             auto chainIt = effectChains_.find(track->id);
             if (chainIt != effectChains_.end() && chainIt->second && chainIt->second->isInitialized())
             {
+                // Hand this target's accumulated key to the chain's sidechain
+                // source node for the duration of its processBlock (Prompt 4C+4D).
+                // The key buffer (sidechainBuffers_[i]) was filled by upstream
+                // source slots already processed this block. No-op when the chain
+                // has no sidechain source node — production stock/VST consumption
+                // is deferred (Prompt 5), so this is silent until a consumer exists.
+                const bool deliverKey = scPlan.hasIncomingKey[i];
+                if (deliverKey)
+                {
+                    const auto& key = sidechainBuffers_[i];
+                    chainIt->second->setSidechainKeyBuffer(
+                        key.getReadPointer(0),
+                        key.getNumChannels() > 1 ? key.getReadPointer(1)
+                                                 : key.getReadPointer(0),
+                        numSamples);
+                }
+
                 const uint64_t chainStartNs = rtDiagEnabled ? steadyNowNs() : 0;
                 if (rtDiagEnabled)
                 {
@@ -4872,6 +4961,27 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                     XlethEffectBase::setRealtimeTimingContext({});
                     recordTrackChainTiming(track->id, steadyNowNs() - chainStartNs);
                 }
+
+                // Drop the borrowed key pointers so no later block reads them.
+                if (deliverKey)
+                    chainIt->second->clearSidechainKeyBuffer();
+            }
+        }
+
+        // Sidechain pre-fader key tap (Prompt 4C+4D): snapshot the post-chain,
+        // pre-fader signal of this source into each enabled pre-fader route's
+        // target key buffer, scaled by the route gain. The key never enters any
+        // audible buffer — only sidechainBuffers_[target]. Cheap: a handful of
+        // taps, no string lookup, no allocation.
+        if (scPlan.anyActive)
+        {
+            for (int k = 0; k < scPlan.tapCount; ++k)
+            {
+                if (scPlan.tapSourceSlot[k] != i || !scPlan.tapPreFader[k]) continue;
+                auto& key = sidechainBuffers_[scPlan.tapTargetSlot[k]];
+                const int nCh = std::min(key.getNumChannels(), trackBuffers_[i].getNumChannels());
+                for (int ch = 0; ch < nCh; ++ch)
+                    key.addFrom(ch, 0, trackBuffers_[i], ch, 0, numSamples, scPlan.tapGain[k]);
             }
         }
 
@@ -4915,7 +5025,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         emitTrackDiagnosticTap(DiagnosticTapPoint::PrePdcTrack,
                                i,
                                trackSlots[i],
-                               shouldPlay,
+                               audible,
                                hasAudio,
                                isTailing);
 
@@ -4929,9 +5039,31 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         emitTrackDiagnosticTap(DiagnosticTapPoint::PostPdcTrack,
                                i,
                                trackSlots[i],
-                               shouldPlay,
+                               audible,
                                hasAudio,
                                isTailing);
+
+        // Sidechain post-fader key tap (Prompt 4C+4D): the post-fader / post-pan /
+        // post-PDC signal is the v1 "best-effort post-compensation" tap point per
+        // the audit (§5.1). Accumulate into each enabled post-fader route's target
+        // key buffer, scaled by route gain. Never enters any audible buffer.
+        if (scPlan.anyActive)
+        {
+            for (int k = 0; k < scPlan.tapCount; ++k)
+            {
+                if (scPlan.tapSourceSlot[k] != i || scPlan.tapPreFader[k]) continue;
+                auto& key = sidechainBuffers_[scPlan.tapTargetSlot[k]];
+                const int nCh = std::min(key.getNumChannels(), trackBuffers_[i].getNumChannels());
+                for (int ch = 0; ch < nCh; ++ch)
+                    key.addFrom(ch, 0, trackBuffers_[i], ch, 0, numSamples, scPlan.tapGain[k]);
+            }
+        }
+
+        // Sidechain-only sources (Prompt 4C+4D) have produced their key above but
+        // are NOT audible — skip every audible sum so the key never leaks into
+        // Master or any bus.
+        if (!audible)
+            continue;
 
         // Route-aware sum (Prompt 2B). A default route (-1) sums to Master
         // (outputBuffer); a bus route sums into the target track's pre-chain

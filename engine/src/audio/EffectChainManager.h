@@ -216,6 +216,17 @@ public:
     void processBlock(juce::AudioBuffer<float>& buffer, int numSamples,
                       juce::MidiBuffer& midi);
 
+    // ── Sidechain key injection (Prompt 4C+4D groundwork) ───────────────
+    // True iff this chain currently owns a sidechain-capable node (and therefore
+    // a SidechainSourceProcessor wired to it). Main thread.
+    bool hasSidechainCapableNode() const;
+
+    // Borrow this block's per-target key audio for the chain's sidechain source
+    // node. No-op when the chain has no sidechain source. MixEngine calls these
+    // around processBlock — under the chains lock, same thread, same block.
+    void setSidechainKeyBuffer(const float* left, const float* right, int numSamples) noexcept;
+    void clearSidechainKeyBuffer() noexcept;
+
     // Reset all processors in the chain. Intended for transport jumps.
     void resetProcessors();
 

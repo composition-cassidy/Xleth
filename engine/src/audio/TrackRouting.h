@@ -191,4 +191,77 @@ void buildRoutePdcPlan(const RoutePlanSlotInput* slots, int count,
                        const int* chainLatencySamples,
                        RoutePdcPlan& out);
 
+// ─── SidechainPlan (Prompt 4C+4D runtime silent key routing) ──────────────────
+// Pure, allocation-free description of how silent sidechain key signals are
+// tapped from source slots and accumulated into per-target key buffers for one
+// processBlock. Built on top of an existing (output-only) RoutePlan so the
+// audible bus-routing and junction-PDC plans are NEVER altered — sidechain only
+// adds processing-order constraints and key taps.
+//
+// Slot space == RoutePlan slot space (getAllTracks() order, == trackBuffers_).
+
+// One stored sidechain route resolved to runtime slot/state for this block. The
+// caller (MixEngine) fills these from the timeline + chain effect-instance
+// resolution once per block, never inside the sample loop.
+struct SidechainTapInput {
+    int   sourceSlot     = -1;     // slot producing the key
+    int   targetTrackId  = -1;     // track receiving the key (resolved to a slot)
+    float gain           = 1.0f;   // key gain (already clamped to [0,2])
+    bool  preFader       = false;  // tap before (true) or after (false) source fader/pan/PDC
+    bool  enabled        = true;   // route enabled flag (stored)
+    bool  effectResolved = true;   // target effect instance resolves on the target chain
+};
+
+struct SidechainPlan {
+    static constexpr int kMaxSlots = RoutePlan::kMaxSlots;
+    static constexpr int kMaxTaps  = 256;
+
+    // Combined output+sidechain topological processing order. Always a valid
+    // topo order of the OUTPUT edges (so output summing + junction PDC stay
+    // correct) that ALSO places every active key source before its target.
+    // Equals RoutePlan::topoOrder when there are no active taps or when the
+    // combined graph is cyclic (fail-closed).
+    int  processOrder[kMaxSlots];
+    int  processCount = 0;
+
+    // Source slots that are NOT audible by output routing but must still be
+    // processed (chain/fader/pan/PDC) this block to produce a key consumed by an
+    // audible target (the solo case). They are tapped but summed nowhere audible.
+    bool feedsSidechainOnly[kMaxSlots];
+
+    // Target slots that receive ≥1 active key this block. Their key buffer must
+    // be cleared before the loop and handed to the target chain before it runs.
+    bool hasIncomingKey[kMaxSlots];
+
+    // Resolved, active taps for this block (enabled, non-stale, key-allowed
+    // source, consuming target, no self-tap). Each contributes source→target.
+    int   tapCount = 0;
+    int   tapSourceSlot[kMaxTaps];
+    int   tapTargetSlot[kMaxTaps];
+    float tapGain[kMaxTaps];
+    bool  tapPreFader[kMaxTaps];
+
+    bool  anyActive     = false;   // false → identical to the output-only path
+    bool  cycleDetected = false;   // combined graph cyclic → fell back to output order
+};
+
+// Build the per-block SidechainPlan. `slots`/`count`/`plan` are the SAME inputs
+// the output RoutePlan was built from; `taps`/`tapCount` are the stored
+// sidechain routes resolved to slot space by the caller. Pure and audio-thread
+// safe: fixed arrays, no heap allocation, no locks. `out` is fully overwritten.
+//
+// A tap becomes active iff: enabled && effectResolved && the source is
+// key-allowed (NOT muted and NOT visual-only — both kill the key per policy) &&
+// the target resolves to a slot that is audible and not visual-only && it is not
+// a self-tap. A muted/visual-only source contributes no key. An active tap whose
+// source is silenced only by SOLO marks that source feedsSidechainOnly so it is
+// still rendered for the key without becoming audible.
+//
+// With tapCount == 0 the plan reduces to processOrder == plan.topoOrder,
+// anyActive == false, and all flags clear (the output-only fast path).
+void buildSidechainPlan(const RoutePlanSlotInput* slots, int count,
+                        const RoutePlan& plan,
+                        const SidechainTapInput* taps, int tapCount,
+                        SidechainPlan& out);
+
 } // namespace xleth

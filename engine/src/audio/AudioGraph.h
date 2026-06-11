@@ -15,6 +15,7 @@
 class XlethEffectBase;
 class WireGainProcessor;
 class DelayCompensationProcessor;
+class SidechainSourceProcessor;
 class PluginRegistry;
 
 // ─── AudioGraph ─────────────────────────────────────────────────────────────
@@ -249,6 +250,22 @@ public:
     int getInputNodeId()  const { return static_cast<int>(inputNode_.uid); }
     int getOutputNodeId() const { return static_cast<int>(outputNode_.uid); }
 
+    // ── Sidechain key injection (Prompt 4C+4D groundwork) ───────────────
+    // A SidechainSourceProcessor infrastructure node is created lazily whenever
+    // this graph contains a sidechain-capable effect node (one with an enabled
+    // second input bus) and removed when none remain. Its stereo output is wired
+    // to every such node's second input bus, so the key signal is delivered
+    // WITHOUT ever touching the audible main path. Returns true iff a
+    // sidechain-capable node is currently present.
+    bool hasSidechainCapableNode() const;
+
+    // Borrow this block's per-target key audio for the sidechain source node.
+    // No-op when no sidechain source node exists. Audio-thread; MixEngine calls
+    // this immediately before, and clearSidechainKey() immediately after, the
+    // chain processBlock — under the chains lock, same thread, same block.
+    void setSidechainKey(const float* left, const float* right, int numSamples) noexcept;
+    void clearSidechainKey() noexcept;
+
 private:
     // ── Node data ───────────────────────────────────────────────────────
 
@@ -313,6 +330,14 @@ private:
     juce::AudioProcessorGraph::NodeID inputNode_{};
     juce::AudioProcessorGraph::NodeID outputNode_{};
 
+    // Sidechain key source infrastructure node (Prompt 4C+4D). Tracked OUTSIDE
+    // nodes_ (like the I/O nodes) so it never participates in chain ordering,
+    // PDC, topology, or serialization. uid 0 / nullptr = not present. The raw
+    // pointer is owned by graph_; it is read on the audio thread (setSidechainKey)
+    // and (re)assigned on the main/message thread during rebuilds, hence atomic.
+    juce::AudioProcessorGraph::NodeID       sidechainSourceNode_{};
+    std::atomic<SidechainSourceProcessor*>  sidechainSourceProc_{nullptr};
+
     // Non-owning pointer to the shared PluginRegistry (set via setPluginRegistry).
     PluginRegistry* pluginRegistry_ = nullptr;
 
@@ -370,6 +395,19 @@ private:
 
     // Rebuild all APG connections from topology data. Idempotent.
     void rebuildAPGConnections();
+
+    // Sidechain groundwork: create/remove the SidechainSourceProcessor node to
+    // match the presence of sidechain-capable nodes, and wire it to their second
+    // input bus. Called from rebuildAPGConnections (connections are rebuilt every
+    // pass, so the key wiring is re-established each time). Main/message thread.
+    void rebuildSidechainInfrastructure();
+
+    // True iff `proc` declares an enabled second input bus with ≥1 channel —
+    // i.e. it can receive a sidechain key. Production stock/VST nodes are
+    // single-input-bus (or have the aux bus disabled), so they never qualify in
+    // this pass; only an explicitly sidechain-enabled node (e.g. a test receiver)
+    // does. Static so it has no per-instance state.
+    static bool isSidechainCapable(const juce::AudioProcessor* proc);
 
     // Recompute linearOrder_ from adjacency lists.
     void updateLinearOrder();

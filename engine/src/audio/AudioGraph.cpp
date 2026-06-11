@@ -24,6 +24,7 @@
 #include "audio/SmartBalanceEffect.h"
 #include "audio/WireGainProcessor.h"
 #include "audio/DelayCompensationProcessor.h"
+#include "audio/SidechainSourceProcessor.h"
 #include "audio/GuardedPluginWrapper.h"
 #include "audio/PluginCrashGuard.h"
 #include "audio/GraphEffectParameters.h"
@@ -148,6 +149,8 @@ void AudioGraph::destroy()
     linearOrder_.clear();
     vstDescriptions_.clear();
     missingNodes_.clear();
+    sidechainSourceProc_.store(nullptr, std::memory_order_release);
+    sidechainSourceNode_ = {};
     graph_.reset();
     inputNode_  = {};
     outputNode_ = {};
@@ -172,7 +175,14 @@ int AudioGraph::addProcessorToGraph(const std::string& pluginId,
     if (!graph_ || !proc) return -1;
     if (static_cast<int>(nodes_.size()) >= kMaxNodes) return -1;
 
-    proc->setPlayConfigDetails(2, 2, sampleRate_, blockSize_);
+    // Stereo is the hard default for the audible chain path. A sidechain-capable
+    // node (one declaring an enabled second input bus) keeps its own declared
+    // layout instead — forcing (2,2) would tear down its key bus. This is the
+    // ONLY relaxation of the (2,2) lock; ordinary stereo nodes are unaffected.
+    if (isSidechainCapable(proc.get()))
+        proc->setRateAndBufferSizeDetails(sampleRate_, blockSize_);
+    else
+        proc->setPlayConfigDetails(2, 2, sampleRate_, blockSize_);
     auto nodePtr = graph_->addNode(std::move(proc));
     if (!nodePtr) return -1;
 
@@ -2049,6 +2059,11 @@ void AudioGraph::rebuildAPGConnections()
         }
     }
 
+    // 3.5 Sidechain key infrastructure (Prompt 4C+4D). All APG connections were
+    //     torn down in step 1, so the SC source → key-bus wiring is re-established
+    //     here every rebuild, after the audible connections above.
+    rebuildSidechainInfrastructure();
+
     // 4. If graph is empty (no effect nodes, no connections), wire input → output
     //    passthrough — UNLESS graph mode has requested fail-closed silence, in
     //    which case Track Output is left unconnected so no stale route leaks.
@@ -2057,6 +2072,102 @@ void AudioGraph::rebuildAPGConnections()
         for (int ch = 0; ch < 2; ++ch)
             graph_->addConnection({{inputNode_, ch}, {outputNode_, ch}});
     }
+}
+
+// ─── Sidechain key infrastructure ─────────────────────────────────────────────
+
+bool AudioGraph::isSidechainCapable(const juce::AudioProcessor* proc)
+{
+    if (proc == nullptr) return false;
+    if (proc->getBusCount(true) < 2) return false;
+    const auto* bus = proc->getBus(true, 1);
+    return bus != nullptr && bus->isEnabled() && bus->getNumberOfChannels() > 0;
+}
+
+bool AudioGraph::hasSidechainCapableNode() const
+{
+    if (!graph_) return false;
+    for (const auto& [uid, gn] : nodes_)
+    {
+        juce::ignoreUnused(uid);
+        if (auto* node = graph_->getNodeForId(gn.apgNodeId))
+            if (isSidechainCapable(node->getProcessor()))
+                return true;
+    }
+    return false;
+}
+
+void AudioGraph::rebuildSidechainInfrastructure()
+{
+    if (!graph_) return;
+
+    // Collect sidechain-capable effect nodes (excludes I/O and helper nodes —
+    // only nodes_ are scanned; the SC source itself is never in nodes_).
+    std::vector<juce::AudioProcessorGraph::Node*> scTargets;
+    for (const auto& [uid, gn] : nodes_)
+    {
+        juce::ignoreUnused(uid);
+        if (auto* node = graph_->getNodeForId(gn.apgNodeId))
+            if (isSidechainCapable(node->getProcessor()))
+                scTargets.push_back(node);
+    }
+
+    // Lazily create / tear down the single SidechainSourceProcessor node so its
+    // existence tracks the presence of any consumer.
+    if (scTargets.empty())
+    {
+        if (sidechainSourceNode_.uid != 0)
+        {
+            graph_->removeNode(sidechainSourceNode_);
+            sidechainSourceNode_ = {};
+            sidechainSourceProc_.store(nullptr, std::memory_order_release);
+        }
+        return;
+    }
+
+    if (sidechainSourceNode_.uid == 0)
+    {
+        auto proc = std::make_unique<SidechainSourceProcessor>();
+        proc->setRateAndBufferSizeDetails(sampleRate_, blockSize_);
+        auto* raw = proc.get();
+        if (auto nodePtr = graph_->addNode(std::move(proc)))
+        {
+            sidechainSourceNode_ = nodePtr->nodeID;
+            sidechainSourceProc_.store(raw, std::memory_order_release);
+        }
+        else
+        {
+            sidechainSourceProc_.store(nullptr, std::memory_order_release);
+            return;
+        }
+    }
+
+    // Wire the SC source's stereo output to each consumer's second input bus.
+    // Channel indices are process-block-buffer indices (the key bus sits after
+    // the node's main bus, e.g. channels 2/3 for a stereo main + stereo key).
+    for (auto* node : scTargets)
+    {
+        auto* proc = node->getProcessor();
+        const auto* keyBus = proc->getBus(true, 1);
+        const int keyCh = keyBus != nullptr ? keyBus->getNumberOfChannels() : 0;
+        for (int ch = 0; ch < keyCh && ch < 2; ++ch)
+        {
+            const int dstChannel = proc->getChannelIndexInProcessBlockBuffer(true, 1, ch);
+            graph_->addConnection({{sidechainSourceNode_, ch}, {node->nodeID, dstChannel}});
+        }
+    }
+}
+
+void AudioGraph::setSidechainKey(const float* left, const float* right, int numSamples) noexcept
+{
+    if (auto* proc = sidechainSourceProc_.load(std::memory_order_acquire))
+        proc->setExternalBuffer(left, right, numSamples);
+}
+
+void AudioGraph::clearSidechainKey() noexcept
+{
+    if (auto* proc = sidechainSourceProc_.load(std::memory_order_acquire))
+        proc->clearExternalBuffer();
 }
 
 // ─── Linear order ───────────────────────────────────────────────────────────

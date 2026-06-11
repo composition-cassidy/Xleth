@@ -787,6 +787,41 @@ target_compile_definitions(test_mixer_routing_pdc PRIVATE
 
 target_link_options(test_mixer_routing_pdc PRIVATE /STACK:8388608)
 
+# ── test_sidechain_runtime ───────────────────────────────────────────────────
+# Prompt 4C+4D: runtime silent sidechain key transport + SidechainSourceProcessor
+# injection groundwork. Drives MixEngine::processBlock with a test-only
+# sidechain-capable receiver to prove key delivery, silence guarantees, gain /
+# pre-fader / disabled / muted / stale behaviour, and solo feedsSidechainOnly.
+# Requires JUCE audio_processors (AudioProcessor-based test receiver).
+add_executable(test_sidechain_runtime
+    test/test_sidechain_runtime.cpp
+)
+
+target_link_libraries(test_sidechain_runtime PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_sidechain_runtime PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+target_link_options(test_sidechain_runtime PRIVATE /STACK:8388608)
+
 # ── test_clip_sr ─────────────────────────────────────────────────────────────
 # Regression for the export clip-pitch (sample-rate) bug: clips baked at one
 # engine rate and exported at another must preserve pitch. Exercises the raw

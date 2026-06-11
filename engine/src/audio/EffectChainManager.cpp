@@ -839,6 +839,24 @@ void EffectChainManager::processBlock(juce::AudioBuffer<float>& buffer, int numS
     graph_->processBlock(buffer, numSamples, midi);
 }
 
+bool EffectChainManager::hasSidechainCapableNode() const
+{
+    return graph_ && graph_->hasSidechainCapableNode();
+}
+
+void EffectChainManager::setSidechainKeyBuffer(const float* left, const float* right,
+                                               int numSamples) noexcept
+{
+    if (graph_)
+        graph_->setSidechainKey(left, right, numSamples);
+}
+
+void EffectChainManager::clearSidechainKeyBuffer() noexcept
+{
+    if (graph_)
+        graph_->clearSidechainKey();
+}
+
 void EffectChainManager::resetProcessors()
 {
     if (graph_)

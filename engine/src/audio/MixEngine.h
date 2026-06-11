@@ -624,6 +624,15 @@ private:
     std::vector<juce::AudioBuffer<float>> trackBuffers_;
     int trackBufferSize_ = 0; // current allocation size in samples
 
+    // Pre-allocated stereo sidechain key buffers (Prompt 4C+4D), one per target
+    // track slot, sized in lockstep with trackBuffers_. A source track with an
+    // enabled sidechain route accumulates its (silent) key into the buffer of
+    // its target slot; that buffer is handed to the target chain's sidechain
+    // source node before the chain runs and is NEVER summed into any audible
+    // buffer (trackBuffers_, outputBuffer, preview). Cleared each block for the
+    // target slots that actually receive a key.
+    std::vector<juce::AudioBuffer<float>> sidechainBuffers_;
+
     // Per-track MidiBuffers populated with onset events (note-on, clip-start)
     // before the effect chain runs.  Reused each block — clear() is O(1).
     juce::MidiBuffer trackMidiBuffers_[kMaxTracks];

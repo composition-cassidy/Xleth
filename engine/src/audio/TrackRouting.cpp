@@ -337,4 +337,106 @@ void buildRoutePdcPlan(const RoutePlanSlotInput* slots, int count,
     }
 }
 
+// ─── buildSidechainPlan ───────────────────────────────────────────────────────
+
+void buildSidechainPlan(const RoutePlanSlotInput* slots, int count,
+                        const RoutePlan& plan,
+                        const SidechainTapInput* taps, int tapCount,
+                        SidechainPlan& out)
+{
+    if (slots == nullptr || count < 0) count = 0;
+    if (count > SidechainPlan::kMaxSlots) count = SidechainPlan::kMaxSlots;
+    if (count > plan.slotCount) count = plan.slotCount;
+    if (taps == nullptr || tapCount < 0) tapCount = 0;
+
+    // Default: identical to the output-only path (processOrder == plan.topoOrder).
+    out.processCount  = count;
+    out.tapCount      = 0;
+    out.anyActive     = false;
+    out.cycleDetected = false;
+    for (int s = 0; s < count; ++s) {
+        out.processOrder[s]        = plan.topoOrder[s];
+        out.feedsSidechainOnly[s]  = false;
+        out.hasIncomingKey[s]      = false;
+    }
+
+    if (count == 0 || tapCount == 0) return;
+
+    // ── Resolve + filter taps to the active set ───────────────────────────────
+    // A tap is active iff it carries a real key this block. Mute/visual-only on
+    // the source kill the key; the target must be audible and not visual-only.
+    for (int k = 0; k < tapCount && out.tapCount < SidechainPlan::kMaxTaps; ++k) {
+        const SidechainTapInput& tp = taps[k];
+
+        if (!tp.enabled || !tp.effectResolved) continue;
+
+        const int s = tp.sourceSlot;
+        if (s < 0 || s >= count) continue;
+        if (slots[s].muted || slots[s].visualOnly) continue;   // key dies with source
+
+        // Resolve target trackId → slot.
+        int targetSlot = -1;
+        for (int t = 0; t < count; ++t)
+            if (slots[t].trackId == tp.targetTrackId) { targetSlot = t; break; }
+        if (targetSlot < 0 || targetSlot == s) continue;       // stale / self
+        if (!plan.audible[targetSlot] || slots[targetSlot].visualOnly) continue;
+
+        const int idx = out.tapCount++;
+        out.tapSourceSlot[idx] = s;
+        out.tapTargetSlot[idx] = targetSlot;
+        out.tapGain[idx]       = tp.gain;
+        out.tapPreFader[idx]   = tp.preFader;
+        out.hasIncomingKey[targetSlot] = true;
+
+        // Source silenced only by solo closure (not by its own mute/visual-only,
+        // already excluded above) must still be rendered to produce the key.
+        if (!plan.audible[s])
+            out.feedsSidechainOnly[s] = true;
+    }
+
+    if (out.tapCount == 0) return;   // nothing survived filtering
+    out.anyActive = true;
+
+    // ── Combined topological order (output ∪ active sidechain edges) ──────────
+    // Both edge kinds point feeder → consumer, so the source of a key must be
+    // placed before its target. A cycle here is impossible after 4B validation
+    // (sidechain edges already participate in cycle rejection); if a stale
+    // impossible route slips through, fail closed to the output-only order so
+    // audible bus routing is never disturbed — the offending key just may be
+    // empty/one-block-stale this block.
+    int inDegree[SidechainPlan::kMaxSlots] = {};
+    for (int s = 0; s < count; ++s) {
+        const int t = plan.outputTargetSlot[s];
+        if (t >= 0) ++inDegree[t];
+    }
+    for (int k = 0; k < out.tapCount; ++k)
+        ++inDegree[out.tapTargetSlot[k]];
+
+    int queue[SidechainPlan::kMaxSlots];
+    int qHead = 0, qTail = 0;
+    for (int s = 0; s < count; ++s)
+        if (inDegree[s] == 0) queue[qTail++] = s;
+
+    int placed = 0;
+    while (qHead < qTail) {
+        const int s = queue[qHead++];
+        out.processOrder[placed++] = s;
+
+        const int t = plan.outputTargetSlot[s];
+        if (t >= 0 && --inDegree[t] == 0)
+            queue[qTail++] = t;
+
+        for (int k = 0; k < out.tapCount; ++k)
+            if (out.tapSourceSlot[k] == s && --inDegree[out.tapTargetSlot[k]] == 0)
+                queue[qTail++] = out.tapTargetSlot[k];
+    }
+
+    if (placed != count) {
+        // Combined cycle — keep the output-only order (already in processOrder).
+        out.cycleDetected = true;
+        for (int s = 0; s < count; ++s)
+            out.processOrder[s] = plan.topoOrder[s];
+    }
+}
+
 } // namespace xleth
