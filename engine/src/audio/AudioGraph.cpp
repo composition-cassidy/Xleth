@@ -242,6 +242,20 @@ std::string AudioGraph::getEffectInstanceIdForNode(int nodeId) const
     return it == nodes_.end() ? std::string{} : it->second.effectInstanceId;
 }
 
+xleth::SidechainCapability AudioGraph::getSidechainCapability(int nodeId) const
+{
+    auto it = nodes_.find(nodeId);
+    return it == nodes_.end() ? xleth::SidechainCapability{} : it->second.sidechain;
+}
+
+bool AudioGraph::isEffectInstanceSidechainCapable(const std::string& effectInstanceId) const
+{
+    const int uid = getNodeIdForEffectInstance(effectInstanceId);
+    if (uid < 0) return false;
+    auto it = nodes_.find(uid);
+    return it != nodes_.end() && it->second.sidechain.supported;
+}
+
 bool AudioGraph::setNodeEffectInstanceId(int nodeId, const std::string& effectInstanceId)
 {
     if (effectInstanceId.empty()) return false;

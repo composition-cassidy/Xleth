@@ -1,10 +1,127 @@
-# VST Sidechain Architecture Audit (VST-SC.1 → VST-SC.2)
+# VST Sidechain Architecture Audit (VST-SC.1 → VST-SC.3)
 
 Read-only audit and implementation map for adding **third-party VST3 sidechain support** to XLETH,
 reusing the existing silent `SidechainRoute` transport, `sidechainBuffers_`, `SidechainSourceProcessor`,
 and route-validation architecture. **No second sidechain engine.** The VST-SC.1 pass (audit) changed no
-runtime behavior. **VST-SC.2 (below, §13) implements the wrapper bus-mirroring + capability-probing
-foundation** — native C++ only, no UI, no route-validation behavior change.
+runtime behavior. **VST-SC.2 (§13) implements the wrapper bus-mirroring + capability-probing
+foundation**; **VST-SC.3 (§14, below) wires the real route into that jack** — route-driven lazy
+enable/disable, `sidechain_unsupported` validation, runtime key delivery, mono fold, latency/PDC
+refresh. Native C++/bridge only, no UI, no real-VST smoke (both deferred to VST-SC.4).
+
+---
+
+## 14. VST-SC.3 status — route-driven lazy enable + key delivery + validation (2026-06-12)
+
+**Done.** A real Timeline `SidechainRoute` targeting a sidechain-capable wrapped fake plugin now enables
+its key bus through the *production* route-sync path, delivers the silent key to bus 1 only (main clean,
+master bit-identical when the plugin doesn't consume it), refreshes latency/PDC when the plugin's layout
+changes, and disables cleanly when the route is removed/disabled. A route to an unsupported wrapped
+plugin is rejected `sidechain_unsupported`. Stock compressor + FX-Graph sidechain regressions stay green.
+No UI, no real-VST smoke. **No second sidechain engine; no VST-specific key path** — the wrapped branch
+rides the exact stock transport (`sidechainBuffers_` → `setSidechainKeyBuffer` → `setSidechainKey` →
+`SidechainSourceProcessor` → bus 1).
+
+### Files changed
+
+- **`engine/src/audio/EffectChainManager.{h,cpp}`** — `applySidechainTargetInstances` now calls
+  `graph_->applySidechainTargetInstances(ids, /*includeWrappedPlugins*/ true)`: the **single line** that
+  turns the VST-SC.2 gated wrapped branch on for the production sync. New
+  `isEffectInstanceSidechainCapable(effectInstanceId)` (resolves the instance → reads
+  `AudioGraph` node capability).
+- **`engine/src/audio/AudioGraph.{h,cpp}`** — new `getSidechainCapability(nodeId)` and
+  `isEffectInstanceSidechainCapable(effectInstanceId)` read-only capability queries; doc comment on
+  `applySidechainTargetInstances` updated (production flipped on). No DSP/PDC change.
+- **`engine/src/audio/MixEngine.{h,cpp}`** — new `isEffectInstanceSidechainCapable(trackId, eid)`
+  (chains-locked passthrough, master via `trackId == -1`). `syncSidechainTargetBuses` is **unchanged** —
+  it already drove the production sync; the wrapped branch turning on is entirely in EffectChainManager.
+- **`engine/src/audio/TrackRouting.{h,cpp}`** — new reason `sidechain_unsupported`; new optional
+  `SidechainCapabilityResolver`; `validateSidechainRoute` gains an optional `capabilityResolver` that
+  rejects a *resolvable-but-incapable* target (consulted **after** the existence resolver, so a missing
+  target is still `unknown_effect_instance`). Empty resolver = legacy behavior.
+- **`engine/src/model/Timeline.{h,cpp}`** — `addSidechainRoute` threads an optional capability resolver
+  into `validateSidechainRoute`.
+- **`bridge/src/XlethAddon.cpp`** — `makeSidechainCapabilityResolver()` (built from
+  `MixEngine::isEffectInstanceSidechainCapable`, empty when uninitialised); passed to
+  `validateSidechainRoute` in `timeline_addSidechainRoute`; `timeline_getRouting` adds an `unsupported`
+  status for a route whose target resolves but is no longer sidechain-capable (re-probed incapable VST).
+- **`engine/test/test_vst_sidechain.cpp`**, **`engine/test/test_sidechain_routes.cpp`** — new tests
+  (below). No `CMakeLists.txt` change (targets already existed).
+
+### Route-driven enable behavior
+
+- **Trigger:** `refreshLivePresentationLatency()` → `MixEngine::syncSidechainTargetBuses()` groups
+  enabled routes by `(targetTrack, targetEffectInstanceId)` →
+  `EffectChainManager::applySidechainTargetInstances` → `AudioGraph::applySidechainTargetInstances(ids,
+  true)`. The wrapped branch enables bus 1 **only** on nodes whose probe set `gn.sidechain.supported`.
+- **Enable iff** ≥1 enabled route targets a supported wrapped instance; **disable** when none do.
+- **Idempotent:** `GuardedPluginWrapper::setSidechainInputEnabled` returns true only on a real layout
+  change, so `applySidechainTargetInstances` re-prepares **only when the enabled set actually changes** —
+  multiple routes to one plugin enable it once; a no-op set causes no reprepare (proven by a test).
+- **Disabled / stale / unsupported routes** never enable a bus; chain- and graph-owned wrapped nodes use
+  the same `effectInstanceId` resolver, so both follow this path. Capability `enabled` in
+  chain/graph-state JSON is recomputed live from the bus layout — it now reflects the real route state.
+
+### Validation behavior (`sidechain_unsupported`)
+
+- `timeline_addSidechainRoute` to a structurally-resolvable but **incapable** target (stereo-only VST)
+  returns `{ ok:false, reason:"sidechain_unsupported" }` and creates **no undo entry / stores no route**
+  (rejected before the `UndoManager::execute`). Stock compressor + probed-capable VSTs resolve supported.
+- A **missing** instance is still `unknown_effect_instance` (existence checked first); the capability
+  resolver is only consulted once the target resolves. Empty resolver (engine uninitialised) skips the
+  check — pure-model contexts and old callers are unaffected.
+- Old saved routes targeting a now-incapable plugin do not crash; `timeline_getRouting` reports
+  `unsupported` (after `stale_target_track` / `stale_effect_instance`).
+
+### Mono support decision — **implemented and tested**
+
+The VST-SC.2 probe already detected a mono key bus (`channels == 1`,
+`sidechainKeySet_ = AudioChannelSet::mono()`). VST-SC.3 verifies delivery: enabling a mono-SC wrapped
+plugin gives bus 1 a single channel; `rebuildSidechainInfrastructure` wires `min(keyChannels, 2)` source
+channels, so only the `SidechainSourceProcessor`'s **L** reaches bus-1 ch 0 — **R never leaks** (the key
+L/R were given opposite signs in the test; main stays bit-identical). No stereo→mono summing fold is
+performed (L is used as the mono key); that is sufficient for a silent key and avoids touching the source
+node. Exotic non-stereo/mono key sets remain **unsupported** (fail closed).
+
+### Latency / PDC behavior
+
+No PDC rewrite. When a route-driven enable changes a wrapped plugin's layout,
+`AudioGraph::applySidechainTargetInstances` already calls `reprepare()` (→ `prepareToPlay` on every node
+→ `GuardedPluginWrapper::refreshReportedLatency()` publishes the inner's new latency) **then**
+`computePDC()` (reads each node's `getLatencySamples()`). So the new latency lands in
+`outputLatencySamples_` automatically, and reverts on disable. Proven by a fake whose reported latency is
+`128` samples when its key bus is enabled and `0` when disabled (`test_vst_sidechain` V6).
+
+### Tests run (Debug, all green)
+
+| Target | Result |
+|---|---|
+| `test_vst_sidechain` | **78** passed (was 55) — adds mono delivery (V4), idempotent-enable + latency/PDC (V6), and a full **MixEngine production-path** suite: real route enables a wrapped SC plugin (key on bus 1, main bit-identical, capability `enabled` true), unsupported wrapped never enabled, disabled route no key, two routes → one plugin enabled once |
+| `test_sidechain_routes` | **83** passed (was 70) — adds T14: `sidechain_unsupported` for resolvable-but-incapable, missing stays `unknown_effect_instance`, empty capability resolver skips, rejected add stores nothing, capable add succeeds |
+| `test_stock_compressor_sidechain` | 22 passed |
+| `test_sidechain_runtime` | 28 passed |
+| `test_fxgraph_sidechain_input` | 13 passed |
+| `test_chain_effect_identity` | 51 passed |
+| `test_graph_effect_parameters` | 62 passed |
+| `test_mixer_bus_routing` / `test_mixer_routing_pdc` | 25 / 112 passed |
+| `test_mix` / `test_project` / `test_undo` | 272 / 98 / 84 checks passed |
+
+`git diff --check`: clean (LF/CRLF notices only). Bridge addon rebuilt (`cd bridge && npx cmake-js
+compile`) because plugin-hosting + bridge validation C++ changed; **no Electron smoke performed**.
+
+### What remains for VST-SC.4
+
+- UI: Mixer Chain sidechain-source dropdown + FX Graph `sidechainIn` port gated by engine capability
+  (`chainState.node.sidechain.supported`), replacing the hardcoded compressor allowlist; unsupported
+  disabled copy; `unsupported`/stale route badges.
+- Manual smoke with ≥1 **real** VST3 exposing a sidechain input (ducking from a Kick, no audible leak);
+  real-plugin aux-output / mirrored-layout-rejection fallback (per-bus marshaling) if needed.
+
+### Known limitations (VST-SC.3)
+
+- All proofs still use **fake** processors (no real VST3 exercised — VST-SC.4).
+- Mono delivery uses the source **L** channel as the key (no RMS/sum fold); fine for a silent key.
+- The capability resolver reads session-only `gn.sidechain.supported`; a plugin that lies about its
+  layout could still mis-probe — fail-closed (unsupported) is the safe default.
 
 ---
 

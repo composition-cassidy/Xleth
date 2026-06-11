@@ -234,6 +234,12 @@ public:
     // Returns true iff a layout changed. Idempotent.
     bool applySidechainTargetInstances(const std::set<std::string>& enabledInstanceIds);
 
+    // VST-SC.3: true iff `effectInstanceId` resolves on this chain AND its node is
+    // sidechain-capable (stock compressor or a probed-capable wrapped plugin). Used
+    // by route validation to reject incapable targets with sidechain_unsupported.
+    // Session-only capability — never persisted.
+    bool isEffectInstanceSidechainCapable(const std::string& effectInstanceId) const;
+
     // Reset all processors in the chain. Intended for transport jumps.
     void resetProcessors();
 

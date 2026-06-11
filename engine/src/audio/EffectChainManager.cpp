@@ -860,7 +860,20 @@ void EffectChainManager::clearSidechainKeyBuffer() noexcept
 bool EffectChainManager::applySidechainTargetInstances(
     const std::set<std::string>& enabledInstanceIds)
 {
-    return graph_ && graph_->applySidechainTargetInstances(enabledInstanceIds);
+    // VST-SC.3: production route sync now includes sidechain-capable wrapped
+    // plugins (includeWrappedPlugins=true). Only probed-capable wrapped nodes are
+    // enabled; stock and unsupported nodes are unaffected.
+    return graph_ && graph_->applySidechainTargetInstances(enabledInstanceIds,
+                                                           /*includeWrappedPlugins*/ true);
+}
+
+bool EffectChainManager::isEffectInstanceSidechainCapable(
+    const std::string& effectInstanceId) const
+{
+    if (!graph_) return false;
+    const int nodeId = getNodeIdForEffectInstance(effectInstanceId);
+    if (nodeId < 0) return false;
+    return graph_->getSidechainCapability(nodeId).supported;
 }
 
 void EffectChainManager::resetProcessors()

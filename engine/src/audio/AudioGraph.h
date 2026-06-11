@@ -149,6 +149,17 @@ public:
     // node is unknown.
     std::string getEffectInstanceIdForNode(int nodeId) const;
 
+    // Session-only sidechain capability for a node, or a default (unsupported)
+    // capability if the node is unknown. `supported`/`channels` come from the
+    // instantiation probe; `enabled` reflects the last applySidechainTargetInstances.
+    xleth::SidechainCapability getSidechainCapability(int nodeId) const;
+
+    // True iff the effect instance resolves on this graph AND its node exposes a
+    // usable sidechain input (stock compressor or a probed-capable wrapped plugin).
+    // A missing instance returns false (the caller distinguishes missing from
+    // unsupported via the existence resolver). Capability is never persisted.
+    bool isEffectInstanceSidechainCapable(const std::string& effectInstanceId) const;
+
     // Overwrite a node's stable effectInstanceId. Returns false if nodeId is
     // unknown or the id is empty. Used to stamp the renderer-supplied id onto a
     // graph-owned node and to restore persisted ids on load.
@@ -277,11 +288,15 @@ public:
     // key. Returns true iff any layout changed. Idempotent — a no-op when the
     // desired set already matches the live bus states (no re-prepare churn).
     //
-    // VST-SC.2: `includeWrappedPlugins` extends the toggle to sidechain-capable
-    // GuardedPluginWrapper (third-party) nodes. It defaults to FALSE so the
-    // production route-sync path (MixEngine::syncSidechainTargetBuses) keeps its
-    // current stock-only behavior — full route-driven lazy enable for VSTs is
-    // deferred to VST-SC.3. Tests pass true to exercise the wrapper key bus.
+    // `includeWrappedPlugins` extends the toggle to sidechain-capable
+    // GuardedPluginWrapper (third-party) nodes. VST-SC.3 turned this ON for the
+    // production route-sync path (EffectChainManager::applySidechainTargetInstances
+    // passes true), so an enabled Timeline SidechainRoute targeting a probed-capable
+    // wrapped plugin now enables its key bus. Only nodes whose probe found a usable
+    // key bus (gn.sidechain.supported) are ever enabled; unsupported wrapped plugins
+    // and the stock branch are unaffected by this flag. Defaults to FALSE for the
+    // few callers that want stock-only behavior; idempotent — no reprepare unless a
+    // bus layout actually changes.
     bool applySidechainTargetInstances(const std::set<std::string>& enabledInstanceIds,
                                        bool includeWrappedPlugins = false);
 

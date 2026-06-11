@@ -52,6 +52,16 @@ static xleth::SidechainEffectResolver makeResolver(
     };
 }
 
+// A capability resolver (VST-SC.3) over a fixed allow-list of sidechain-CAPABLE
+// (trackId, effectInstanceId). Anything not in the set resolves as incapable.
+static xleth::SidechainCapabilityResolver makeCapResolver(
+    std::unordered_set<std::string> capable)
+{
+    return [capable = std::move(capable)](int trackId, const std::string& id) {
+        return capable.count(std::to_string(trackId) + ":" + id) > 0;
+    };
+}
+
 static const char* reasonStr(const xleth::RoutingValidationResult& r) {
     return r.reasonString();
 }
@@ -399,6 +409,54 @@ static void test_staleAfterLoad() {
     CHECK(statusFor(tl, orphan, staleResolver) == "stale_target_track", "missing track stale");
 }
 
+// ─── T14: capability-aware validation (VST-SC.3) ─────────────────────────────
+
+static void test_capabilityValidation() {
+    std::cout << "\n[T14] Capability resolver: sidechain_unsupported\n";
+    using R = xleth::RoutingValidationReason;
+    Timeline tl;
+    int kick = addTrack(tl, "Kick");
+    int bass = addTrack(tl, "Bass");
+
+    // Two effects resolve on the target; only "e-comp" is sidechain-capable.
+    auto resolver = makeResolver({ std::to_string(bass) + ":e-comp",
+                                   std::to_string(bass) + ":e-stereoVst" });
+    auto capable  = makeCapResolver({ std::to_string(bass) + ":e-comp" });
+
+    // Capable target → ok.
+    CHECK(xleth::validateSidechainRoute(tl, kick, makeRoute("a", bass, "e-comp"),
+                                        resolver, capable).reason == R::ok,
+          "capable target validates ok");
+
+    // Resolvable but incapable target → sidechain_unsupported.
+    CHECK(xleth::validateSidechainRoute(tl, kick, makeRoute("a", bass, "e-stereoVst"),
+                                        resolver, capable).reason == R::sidechain_unsupported,
+          "resolvable-but-incapable target → sidechain_unsupported");
+
+    // Unknown/missing effect stays unknown_effect_instance (existence wins over
+    // capability — the capability resolver is only consulted once it resolves).
+    CHECK(xleth::validateSidechainRoute(tl, kick, makeRoute("a", bass, "e-missing"),
+                                        resolver, capable).reason == R::unknown_effect_instance,
+          "missing effect → unknown_effect_instance, not unsupported");
+
+    // No capability resolver supplied → legacy behavior (capability check skipped).
+    CHECK(xleth::validateSidechainRoute(tl, kick, makeRoute("a", bass, "e-stereoVst"),
+                                        resolver, {}).reason == R::ok,
+          "empty capability resolver skips the capability check");
+
+    // Through the Timeline mutation API: rejected unsupported add stores nothing.
+    auto rej = tl.addSidechainRoute(kick, makeRoute("bad-vst", bass, "e-stereoVst"),
+                                    resolver, capable);
+    CHECK(rej.reason == R::sidechain_unsupported, "addSidechainRoute rejects incapable target");
+    CHECK(tl.getSidechainRoutes(kick).empty(), "no route stored on unsupported rejection");
+
+    // A capable add through the same API succeeds and stores the route.
+    auto okAdd = tl.addSidechainRoute(kick, makeRoute("ok-comp", bass, "e-comp"),
+                                      resolver, capable);
+    CHECK(okAdd.ok(), "addSidechainRoute accepts capable target");
+    CHECK(tl.getSidechainRoutes(kick).size() == 1, "capable route stored");
+}
+
 // ─── T13: invalid mutation creates no undo entry (bridge contract) ───────────
 
 static void test_noUndoOnInvalid() {
@@ -429,6 +487,7 @@ int main() {
     test_undoRedoRemove();
     test_setParams();
     test_staleAfterLoad();
+    test_capabilityValidation();
     test_noUndoOnInvalid();
 
     std::cout << "\n────────────────────────────────────\n";

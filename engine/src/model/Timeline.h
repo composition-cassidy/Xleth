@@ -177,9 +177,12 @@ public:
     // the caller (bridge/test) and is preserved verbatim. `resolver` answers
     // whether targetEffectInstanceId resolves on the target track (Prompt 4A
     // lookup); pass an empty std::function to skip that check (model-only).
+    // `capabilityResolver` (VST-SC.3, optional) rejects a resolvable-but-incapable
+    // target with sidechain_unsupported; empty leaves the legacy behavior.
     xleth::RoutingValidationResult addSidechainRoute(
         int sourceTrackId, const SidechainRoute& route,
-        const xleth::SidechainEffectResolver& resolver);
+        const xleth::SidechainEffectResolver& resolver,
+        const xleth::SidechainCapabilityResolver& capabilityResolver = {});
     xleth::RoutingValidationResult removeSidechainRoute(
         int sourceTrackId, const std::string& routeId);
     xleth::RoutingValidationResult setSidechainRouteParams(

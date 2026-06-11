@@ -23,8 +23,13 @@
 
 #include "audio/AudioGraph.h"
 #include "audio/GuardedPluginWrapper.h"
+#include "audio/MixEngine.h"
+#include "model/Timeline.h"
+#include "SampleBank.h"
+#include "Transport.h"
 
 #include <juce_audio_basics/juce_audio_basics.h>
+#include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_core/juce_core.h>
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -34,6 +39,7 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <vector>
 
 #ifdef _MSC_VER
   #ifndef NOMINMAX
@@ -203,6 +209,47 @@ public:
 #ifdef _MSC_VER
         RaiseException(0xE0000042, EXCEPTION_NONCONTINUABLE, 0, nullptr);
 #endif
+    }
+};
+
+// Declares a sidechain bus and records peaks (like FakeSidechain) but REJECTS
+// every enabled key layout, so the capability probe marks it UNSUPPORTED. Used to
+// prove the production route sync never enables an incapable wrapped plugin even
+// when a route targets it (the key never reaches its disabled bus 1).
+class FakeSidechainRejecting : public FakeSidechain
+{
+public:
+    FakeSidechainRejecting()
+        : FakeSidechain(juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()) {}
+    const juce::String getName() const override { return "FakeSidechainRejecting"; }
+    bool isBusesLayoutSupported(const BusesLayout& l) const override
+    {
+        if (l.getMainOutputChannelSet() != juce::AudioChannelSet::stereo()) return false;
+        if (l.getMainInputChannelSet()  != juce::AudioChannelSet::stereo()) return false;
+        if (l.inputBuses.size() > 1
+            && l.getChannelSet(true, 1) != juce::AudioChannelSet::disabled())
+            return false;   // never accept an enabled key bus → unsupported
+        return true;
+    }
+};
+
+// A sidechain-capable fake whose REPORTED LATENCY depends on whether the key bus
+// is enabled: 0 samples disabled, kScLatency samples enabled. Proves that a
+// route-driven SC enable re-prepares the inner, publishes the new latency through
+// the wrapper, and the graph's PDC picks it up (and reverts on disable).
+static constexpr int kScLatency = 128;
+class FakeLatencySidechain : public FakeSidechain
+{
+public:
+    FakeLatencySidechain()
+        : FakeSidechain(juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()) {}
+    const juce::String getName() const override { return "FakeLatencySidechain"; }
+    void prepareToPlay(double, int) override
+    {
+        const bool scOn = getBusCount(true) > 1
+                       && getBus(true, 1) != nullptr
+                       && getBus(true, 1)->isEnabled();
+        setLatencySamples(scOn ? kScLatency : 0);
     }
 };
 
@@ -519,6 +566,294 @@ static void testStockCompressorStillSupported()
     CHECK(node2["sidechain"].value("enabled", false), "stock compressor: enabled after toggle");
 }
 
+// ─── Mono sidechain delivery (V4) ───────────────────────────────────────────────
+
+static void testMonoKeyDelivery()
+{
+    std::cout << "[V4] Mono-SC wrapped plugin receives folded key on bus 1 ch 0; main clean\n";
+
+    auto graph = std::make_unique<AudioGraph>();
+    graph->init(kSR, kBS);
+
+    auto fake = std::make_unique<FakeSidechain>(
+        juce::AudioChannelSet::mono(), juce::AudioChannelSet::mono());
+    FakeSidechain* fakePtr = fake.get();
+    auto wrapped = std::make_unique<GuardedPluginWrapper>(std::move(fake));
+    CHECK(wrapped->getSidechainCapability().channels == 1, "mono fake probed as channels 1");
+    const int uid = graph->addProcessorForTesting("test.vstMono", std::move(wrapped), 0);
+
+    const std::string eid = graph->getEffectInstanceIdForNode(uid);
+    CHECK(graph->applySidechainTargetInstances({eid}, /*includeWrapped*/ true),
+          "enabling mono wrapped SC target changes layout");
+
+    const float kMainAmp = 0.2f;
+    const float kKeyAmp  = 0.7f;
+    std::vector<float> keyL(kBS, kKeyAmp), keyR(kBS, -kKeyAmp);  // R differs to catch leakage
+
+    juce::AudioBuffer<float> io(2, kBS);
+    for (int ch = 0; ch < 2; ++ch)
+        for (int i = 0; i < kBS; ++i) io.setSample(ch, i, kMainAmp);
+    juce::AudioBuffer<float> inputCopy(io);
+
+    juce::MidiBuffer midi;
+    graph->setSidechainKey(keyL.data(), keyR.data(), kBS);
+    graph->processBlock(io, kBS, midi);
+    graph->clearSidechainKey();
+
+    CHECK(std::abs(fakePtr->sidechainPeak() - kKeyAmp) < 0.05f,
+          "mono key (L) delivered to wrapped plugin sidechain bus ch 0");
+    CHECK(maxAbsDiff(io, inputCopy) < 1e-6, "main output unchanged — mono key did not leak");
+}
+
+// ─── Idempotency + latency/PDC refresh (V6, idempotent enable) ──────────────────
+
+static void testIdempotencyAndLatency()
+{
+    std::cout << "[V6] SC enable refreshes latency/PDC; re-enable is idempotent\n";
+
+    auto graph = std::make_unique<AudioGraph>();
+    graph->init(kSR, kBS);
+
+    auto fake = std::make_unique<FakeLatencySidechain>();
+    auto wrapped = std::make_unique<GuardedPluginWrapper>(std::move(fake));
+    const int uid = graph->addProcessorForTesting("test.vstLatency", std::move(wrapped), 0);
+    const std::string eid = graph->getEffectInstanceIdForNode(uid);
+
+    CHECK(graph->getOutputLatencySamples() == 0, "latency 0 before SC enable");
+
+    // First enable changes layout → reprepare → inner reports kScLatency → PDC.
+    CHECK(graph->applySidechainTargetInstances({eid}, true), "first enable changes layout");
+    CHECK(graph->getOutputLatencySamples() == kScLatency,
+          "PDC reflects the post-enable plugin latency");
+
+    // Re-applying the SAME target set is a no-op (idempotent — no reprepare storm).
+    CHECK(!graph->applySidechainTargetInstances({eid}, true),
+          "re-enabling the same target reports no layout change (idempotent)");
+    CHECK(graph->getOutputLatencySamples() == kScLatency, "latency unchanged on idempotent call");
+
+    // Disable → layout change → latency reverts.
+    CHECK(graph->applySidechainTargetInstances({}, true), "disabling changes layout");
+    CHECK(graph->getOutputLatencySamples() == 0, "PDC reverts after SC disable");
+}
+
+// ─── Production route sync (MixEngine) ──────────────────────────────────────────
+// Proves the REAL Timeline SidechainRoute path (no explicit includeWrapped flag):
+//   MixEngine::syncSidechainTargetBuses → EffectChainManager → AudioGraph wrapped
+// branch. A fake wrapped SC plugin is injected into the target chain via the same
+// addProcessorForTesting hook the runtime uses for stock receivers.
+
+static const double kIntBPM = 120.0;
+static constexpr int kIntRender = 22050;   // 0.5 s @ 44100
+
+static juce::File makeSineWav(const juce::File& dir, const juce::String& name,
+                              int numSamples, float freq, float amp)
+{
+    juce::AudioBuffer<float> buf(1, numSamples);
+    float* d = buf.getWritePointer(0);
+    for (int i = 0; i < numSamples; ++i)
+        d[i] = amp * static_cast<float>(std::sin(2.0 * juce::MathConstants<double>::pi * freq
+                              * (static_cast<double>(i) / kSR)));
+    juce::File file = dir.getChildFile(name + ".wav");
+    file.deleteFile();
+    auto out = std::unique_ptr<juce::FileOutputStream>(file.createOutputStream());
+    if (out == nullptr) return {};
+    juce::WavAudioFormat fmt;
+    std::unique_ptr<juce::AudioFormatWriter> w(fmt.createWriterFor(out.get(), kSR, 1, 16, {}, 0));
+    if (w == nullptr) return {};
+    out.release();
+    w->writeFromAudioSampleBuffer(buf, 0, numSamples);
+    w.reset();
+    return file;
+}
+
+enum class WrapKind { Supported, Unsupported };
+
+struct IntScenario
+{
+    WrapKind kind        = WrapKind::Supported;
+    bool     addRoute    = true;
+    bool     routeEnabled = true;
+    int      numSources  = 1;     // routes from N source tracks → same target effect
+};
+
+struct IntResult
+{
+    juce::AudioBuffer<float> master{2, kIntRender};
+    float scPeak = 0.0f;
+    float mainPeak = 0.0f;
+    bool  enabledReported = false;
+    bool  routeAccepted = true;
+};
+
+static IntResult runWrappedRouteScenario(const juce::File& dir, const IntScenario& sc)
+{
+    IntResult r;
+    r.master.clear();
+
+    juce::File kickWav = makeSineWav(dir, "kick_vst", static_cast<int>(kSR * 0.2),  80.0f, 0.6f);
+    juce::File leadWav = makeSineWav(dir, "lead_vst", static_cast<int>(kSR * 0.2), 600.0f, 0.5f);
+
+    Timeline tl(kIntBPM, kSR);
+    std::vector<int> sourceIds;
+    for (int n = 0; n < sc.numSources; ++n)
+    {
+        TrackInfo s; s.name = "Kick" + std::to_string(n);
+        sourceIds.push_back(tl.addTrack(s));
+    }
+    TrackInfo target; target.name = "Bass"; target.solo = true;   // isolate master
+    const int targetId = tl.addTrack(target);
+
+    SampleRegion kr; kr.name = "Kick"; kr.label = SampleLabel::Custom;
+    SampleRegion lr; lr.name = "Lead"; lr.label = SampleLabel::Custom;
+    const int kickReg = tl.addRegion(kr);
+    const int leadReg = tl.addRegion(lr);
+    for (int id : sourceIds)
+    {
+        Clip c; c.trackId = id; c.regionId = kickReg;
+        c.position = TickTime::fromBeats(0.0); c.duration = TickTime::fromBeats(1.0);
+        tl.addClip(c);
+    }
+    { Clip c; c.trackId = targetId; c.regionId = leadReg;
+      c.position = TickTime::fromBeats(0.0); c.duration = TickTime::fromBeats(1.0);
+      tl.addClip(c); }
+
+    SampleBank bank;
+    const int kid = bank.loadSample(kickWav, kSR);
+    const int lid = bank.loadSample(leadWav, kSR);
+
+    auto engine = std::make_unique<MixEngine>();
+    engine->prepare(kSR, 512);
+    engine->setTimeline(&tl);
+    engine->setSampleBank(&bank);
+    engine->mapRegionToSample(kickReg, kid);
+    engine->mapRegionToSample(leadReg, lid);
+
+    // Inject the wrapped fake into the Bass chain through the runtime test hook.
+    std::unique_ptr<juce::AudioProcessor> inner;
+    FakeSidechain* fakePtr = nullptr;
+    if (sc.kind == WrapKind::Supported)
+    {
+        auto f = std::make_unique<FakeSidechain>(
+            juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo());
+        fakePtr = f.get();
+        inner = std::move(f);
+    }
+    else
+    {
+        auto f = std::make_unique<FakeSidechainRejecting>();
+        fakePtr = f.get();
+        inner = std::move(f);
+    }
+    auto wrapped = std::make_unique<GuardedPluginWrapper>(std::move(inner));
+    const int nodeId = engine->addProcessorForTesting(targetId, "test.vstWrapped",
+                                                     std::move(wrapped), 0);
+    const std::string eid = engine->getEffectInstanceIdForNode(targetId, nodeId);
+
+    if (sc.addRoute)
+    {
+        xleth::SidechainEffectResolver resolver =
+            [&](int tid, const std::string& e) -> bool
+            { return engine->getEffectNodeIdForInstance(tid, e) >= 0; };
+
+        for (int n = 0; n < sc.numSources; ++n)
+        {
+            SidechainRoute route;
+            route.routeId = "sc-vst-" + std::to_string(n);
+            route.targetTrackId = targetId;
+            route.targetEffectInstanceId = eid;
+            route.gain = 1.0f;
+            route.preFader = false;
+            route.enabled = sc.routeEnabled;
+            const auto vr = tl.addSidechainRoute(sourceIds[n], route, resolver);
+            if (n == 0) r.routeAccepted = vr.ok();
+        }
+    }
+
+    engine->syncTrackSlotsFromTimeline(true);
+    engine->syncSidechainTargetBuses();   // ← production route-driven SC enable
+    engine->setNonRealtime(true);
+
+    // Capability "enabled" reflects the live route-driven bus state.
+    {
+        auto state = nlohmann::json::parse(engine->getEffectChainState(targetId),
+                                           nullptr, false);
+        if (state.is_array())
+            for (const auto& node : state)
+                if (node.value("effectInstanceId", std::string{}) == eid
+                    && node.contains("sidechain"))
+                    r.enabledReported = node["sidechain"].value("enabled", false);
+    }
+
+    Transport t; t.setSampleRate(kSR); t.setBPM(kIntBPM); t.seekToSample(0); t.play();
+    int pos = 0;
+    while (pos < kIntRender)
+    {
+        const int n = std::min(512, kIntRender - pos);
+        juce::AudioBuffer<float> block(2, n);
+        block.clear();
+        engine->processBlock(block, n, t);
+        for (int ch = 0; ch < 2; ++ch)
+            r.master.copyFrom(ch, pos, block, ch, 0, n);
+        t.advance(n);
+        pos += n;
+    }
+    t.pause();
+
+    if (fakePtr != nullptr) { r.scPeak = fakePtr->sidechainPeak(); r.mainPeak = fakePtr->mainPeak(); }
+    return r;
+}
+
+static void testProductionRouteSync()
+{
+    std::cout << "[V3-prod] Real SidechainRoute enables a wrapped SC plugin via the production path\n";
+
+    juce::File dir = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                         .getChildFile("xleth_test_vst_sc3");
+    dir.createDirectory();
+
+    // Supported wrapped plugin + enabled route → key delivered on bus 1, enabled.
+    {
+        IntScenario s;
+        IntResult r = runWrappedRouteScenario(dir, s);
+        IntScenario noRouteSc = s; noRouteSc.addRoute = false;
+        IntResult noRoute = runWrappedRouteScenario(dir, noRouteSc);
+
+        CHECK(r.routeAccepted, "route to supported wrapped plugin accepted");
+        CHECK(r.mainPeak > 0.01f, "wrapped plugin main bus carries the target signal");
+        CHECK(r.scPeak > 0.01f, "production route delivered the key to wrapped plugin bus 1");
+        CHECK(r.enabledReported, "chain-state sidechain.enabled true after production sync");
+        CHECK(noRoute.scPeak == 0.0f, "no route → no key on the wrapped plugin");
+        CHECK(maxAbsDiff(r.master, noRoute.master) < 1e-6,
+              "master bit-identical with vs without the route (no key leak)");
+    }
+
+    // Unsupported (stereo-only-rejecting) wrapped plugin → route does not enable it.
+    {
+        IntScenario s; s.kind = WrapKind::Unsupported;
+        IntResult r = runWrappedRouteScenario(dir, s);
+        CHECK(r.scPeak == 0.0f, "production route never enables an unsupported wrapped plugin");
+        CHECK(!r.enabledReported, "unsupported wrapped plugin reports sidechain.enabled false");
+    }
+
+    // Disabled route → no key, bus stays disabled.
+    {
+        IntScenario s; s.routeEnabled = false;
+        IntResult r = runWrappedRouteScenario(dir, s);
+        CHECK(r.scPeak == 0.0f, "disabled route delivers no key to the wrapped plugin");
+        CHECK(!r.enabledReported, "disabled route leaves the wrapped SC bus disabled");
+    }
+
+    // Two source routes → same target effect: enabled once, key still delivered.
+    {
+        IntScenario s; s.numSources = 2;
+        IntResult r = runWrappedRouteScenario(dir, s);
+        CHECK(r.scPeak > 0.01f, "two routes to one wrapped plugin keep its bus enabled (key flows)");
+        CHECK(r.enabledReported, "multi-route target reports enabled once");
+    }
+
+    dir.deleteRecursively();
+}
+
 // ─── Main ──────────────────────────────────────────────────────────────────────
 
 int main()
@@ -533,6 +868,9 @@ int main()
     testLayoutRejectingFallback();
     testCapabilityNotPersisted();
     testStockCompressorStillSupported();
+    testMonoKeyDelivery();
+    testIdempotencyAndLatency();
+    testProductionRouteSync();
 
     std::cout << "\n=== Results: " << g_passed << " passed, " << g_failed << " failed ===\n";
     if (g_failed > 0) { std::cerr << "FAILED: " << g_failed << " test(s) failed\n"; return 1; }

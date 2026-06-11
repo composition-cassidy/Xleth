@@ -4538,17 +4538,22 @@ Napi::Value Timeline_GetRouting(const Napi::CallbackInfo& info)
             e.Set("enabled",                Napi::Boolean::New(env, sc.enabled));
 
             // Status: stale_target_track (track gone) > stale_effect_instance
-            // (track present, effect missing) > invalid (structurally broken) > ok.
+            // (track present, effect missing) > unsupported (resolves but exposes
+            // no sidechain input — e.g. a now-incapable VST after re-probe) >
+            // invalid (structurally broken) > ok. Never crashes / never deletes.
             const char* status = "ok";
             if (sc.targetEffectInstanceId.empty()) {
                 status = "invalid";
             } else if (!g_timeline->getTrack(sc.targetTrackId)) {
                 status = "stale_target_track";
             } else if (isInitialised()) {
-                int nodeId = audioEngine->getMixEngine()
-                                 .getEffectNodeIdForInstance(sc.targetTrackId,
-                                                             sc.targetEffectInstanceId);
+                auto& mix = audioEngine->getMixEngine();
+                int nodeId = mix.getEffectNodeIdForInstance(sc.targetTrackId,
+                                                            sc.targetEffectInstanceId);
                 if (nodeId < 0) status = "stale_effect_instance";
+                else if (!mix.isEffectInstanceSidechainCapable(sc.targetTrackId,
+                                                               sc.targetEffectInstanceId))
+                    status = "unsupported";
             }
             e.Set("status", Napi::String::New(env, status));
             scArr.Set(static_cast<uint32_t>(k), e);
@@ -4570,6 +4575,21 @@ static xleth::SidechainEffectResolver makeSidechainEffectResolver()
     return [](int targetTrackId, const std::string& effectInstanceId) -> bool {
         return audioEngine->getMixEngine()
                    .getEffectNodeIdForInstance(targetTrackId, effectInstanceId) >= 0;
+    };
+}
+
+// VST-SC.3: build a resolver answering whether a (resolvable) target effect
+// instance is actually sidechain-capable — used after the existence resolver so
+// an incapable target (stereo-only VST) is rejected with sidechain_unsupported
+// instead of silently stored. Empty when the engine is not initialised (the
+// capability check is then skipped, matching the existence resolver).
+static xleth::SidechainCapabilityResolver makeSidechainCapabilityResolver()
+{
+    if (!isInitialised())
+        return {};
+    return [](int targetTrackId, const std::string& effectInstanceId) -> bool {
+        return audioEngine->getMixEngine()
+                   .isEffectInstanceSidechainCapable(targetTrackId, effectInstanceId);
     };
 }
 
@@ -4608,7 +4628,8 @@ Napi::Value Timeline_AddSidechainRoute(const Napi::CallbackInfo& info)
         ? payload.Get("enabled").As<Napi::Boolean>().Value() : true;
 
     auto result = xleth::validateSidechainRoute(*g_timeline, sourceTrackId, route,
-                                                makeSidechainEffectResolver());
+                                                makeSidechainEffectResolver(),
+                                                makeSidechainCapabilityResolver());
 
     Napi::Object ret = Napi::Object::New(env);
     if (!result.ok()) {

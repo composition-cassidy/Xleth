@@ -22,6 +22,7 @@ const char* RoutingValidationResult::reasonString() const {
         case RoutingValidationReason::master_as_target:        return "master_as_target";
         case RoutingValidationReason::empty_effect_instance:   return "empty_effect_instance";
         case RoutingValidationReason::unknown_effect_instance: return "unknown_effect_instance";
+        case RoutingValidationReason::sidechain_unsupported:   return "sidechain_unsupported";
         case RoutingValidationReason::duplicate_route:         return "duplicate_route";
         case RoutingValidationReason::invalid_gain:            return "invalid_gain";
         case RoutingValidationReason::unknown_route:           return "unknown_route";
@@ -126,7 +127,8 @@ static bool wouldCreateSidechainCycle(const Timeline& timeline,
 RoutingValidationResult validateSidechainRoute(const Timeline& timeline,
                                                int sourceTrackId,
                                                const SidechainRoute& route,
-                                               const SidechainEffectResolver& resolver)
+                                               const SidechainEffectResolver& resolver,
+                                               const SidechainCapabilityResolver& capabilityResolver)
 {
     if (sourceTrackId == -1)
         return { RoutingValidationReason::master_as_source };
@@ -161,6 +163,13 @@ RoutingValidationResult validateSidechainRoute(const Timeline& timeline,
     // no resolver is supplied (pure-model context) the check is skipped.
     if (resolver && !resolver(targetId, route.targetEffectInstanceId))
         return { RoutingValidationReason::unknown_effect_instance };
+
+    // Capability gate (VST-SC.3): a structurally-resolvable target that exposes no
+    // usable sidechain input bus (e.g. a stereo-only VST) is rejected up front,
+    // rather than silently storing a route that could never deliver a key. Only
+    // consulted when both resolvers are supplied and the existence check passed.
+    if (capabilityResolver && !capabilityResolver(targetId, route.targetEffectInstanceId))
+        return { RoutingValidationReason::sidechain_unsupported };
 
     if (wouldCreateSidechainCycle(timeline, sourceTrackId, targetId))
         return { RoutingValidationReason::cycle };

@@ -1681,9 +1681,11 @@ TrackOutputRoute Timeline::getTrackOutputRoute(int sourceTrackId) const
 
 xleth::RoutingValidationResult Timeline::addSidechainRoute(
     int sourceTrackId, const SidechainRoute& route,
-    const xleth::SidechainEffectResolver& resolver)
+    const xleth::SidechainEffectResolver& resolver,
+    const xleth::SidechainCapabilityResolver& capabilityResolver)
 {
-    auto result = xleth::validateSidechainRoute(*this, sourceTrackId, route, resolver);
+    auto result = xleth::validateSidechainRoute(*this, sourceTrackId, route, resolver,
+                                                capabilityResolver);
     if (!result.ok())
         return result;
     TrackInfo* t = getTrackMutable(sourceTrackId);

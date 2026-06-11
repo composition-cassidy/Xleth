@@ -26,6 +26,7 @@ enum class RoutingValidationReason {
     master_as_target,       // sidechain target trackId == -1 (master SC deferred)
     empty_effect_instance,  // targetEffectInstanceId is empty (track-level SC deferred)
     unknown_effect_instance,// targetEffectInstanceId does not resolve on target track
+    sidechain_unsupported,  // target effect resolves but exposes no sidechain input (VST-SC.3)
     duplicate_route,        // routeId already exists on the source track
     invalid_gain,           // gain is not finite
     unknown_route,          // routeId not found on the source track (remove/setParams)
@@ -62,6 +63,17 @@ RoutingValidationResult validateTrackOutputRoute(const Timeline& timeline,
 using SidechainEffectResolver =
     std::function<bool(int targetTrackId, const std::string& effectInstanceId)>;
 
+// A SidechainCapabilityResolver answers "is this RESOLVED effect instance actually
+// sidechain-capable?" — i.e. does its engine node expose a usable sidechain input
+// bus (a stock compressor, or a wrapped plugin whose probe found a key bus). It is
+// only consulted AFTER the existence resolver passes, so a missing instance is
+// reported unknown_effect_instance, while a present-but-incapable one (e.g. a
+// stereo-only VST) is reported sidechain_unsupported. The bridge builds it from
+// MixEngine session-only capability; an empty std::function skips the check
+// (pure-model contexts / tests that don't care). Capability is never persisted.
+using SidechainCapabilityResolver =
+    std::function<bool(int targetTrackId, const std::string& effectInstanceId)>;
+
 // Mutable subset of a SidechainRoute editable via setSidechainRouteParams. The
 // route's target (track + effect instance) is immutable after creation.
 struct SidechainRouteParams {
@@ -77,10 +89,15 @@ struct SidechainRouteParams {
 // routeId on the source, and cycle (over the union of output-route and existing
 // sidechain-route edges — see §4.4 of the architecture audit). Gain is validated
 // for finiteness only; the mutation layer clamps the finite value to [0, 2].
+// `capabilityResolver` (VST-SC.3) is optional: when supplied, a structurally
+// resolvable target that is NOT sidechain-capable is rejected with
+// sidechain_unsupported (after the existence check, before cycle). An empty
+// capability resolver leaves the legacy behavior unchanged.
 RoutingValidationResult validateSidechainRoute(const Timeline& timeline,
                                                int sourceTrackId,
                                                const SidechainRoute& route,
-                                               const SidechainEffectResolver& resolver);
+                                               const SidechainEffectResolver& resolver,
+                                               const SidechainCapabilityResolver& capabilityResolver = {});
 
 // Clamp a raw gain to the persisted/runtime-safe key-gain range [0, 2]. Non-
 // finite input collapses to the 1.0 default. Shared by the mutation layer and

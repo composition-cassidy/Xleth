@@ -512,6 +512,13 @@ public:
     int getEffectNodeIdForInstance(int trackId, const std::string& effectInstanceId) const;
     std::string getEffectInstanceIdForNode(int trackId, int nodeId) const;
 
+    // VST-SC.3: true iff `effectInstanceId` resolves on the given track's chain
+    // (trackId == -1 = master) AND its node exposes a usable sidechain input bus.
+    // Backs the bridge's capability resolver so route validation can reject
+    // incapable targets with sidechain_unsupported. Session-only — never persisted.
+    bool isEffectInstanceSidechainCapable(int trackId,
+                                          const std::string& effectInstanceId) const;
+
     // Full graph serialization (includes APVTS state, connections, wire gains)
     nlohmann::json getEffectChainJSON(int trackId) const;
     nlohmann::json getMasterEffectChainJSON() const;

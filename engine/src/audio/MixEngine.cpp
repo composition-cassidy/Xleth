@@ -2595,6 +2595,18 @@ std::string MixEngine::getEffectInstanceIdForNode(int trackId, int nodeId) const
     return it->second->getEffectInstanceIdForNode(nodeId);
 }
 
+bool MixEngine::isEffectInstanceSidechainCapable(int trackId,
+                                                 const std::string& effectInstanceId) const
+{
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+    if (trackId < 0)
+        return masterEffectChain_
+            && masterEffectChain_->isEffectInstanceSidechainCapable(effectInstanceId);
+    auto it = effectChains_.find(trackId);
+    if (it == effectChains_.end() || !it->second) return false;
+    return it->second->isEffectInstanceSidechainCapable(effectInstanceId);
+}
+
 // ── Effect chain serialization ───────────────────────────────────────────────
 
 nlohmann::json MixEngine::getEffectChainJSON(int trackId) const
