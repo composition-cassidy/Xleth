@@ -3,6 +3,12 @@
 Read-only audit for future implementation prompts 6B, 6C, and 6D. This document does not change
 runtime behavior, graphState schema, UI, native APIs, bridge APIs, or tests.
 
+> **6D status — complete and smoke-tested.** All of 6A (audit), 6B (renderer/schema/UI), 6C
+> (runtime binding), and 6D (polish, save/reload, smoke test) are implemented. The full CDP
+> smoke test passes: sidechain route created after drag, secondary text shows "Keyed by: \<name>",
+> no sidechainRouteNotice when route is healthy, route restored after save/reload. 601 JS tests
+> pass. No engine/bridge changes; no addon rebuild. Renderer-only.
+
 > **6B status — implemented (renderer/schema/UI contract only).** The graphState schema, store
 > actions, and FX Graph UI contract below are now live. 6B added the `sidechainInput` node type,
 > the distinct `sidechain` edge type, the protected-node rule, the source selector, the

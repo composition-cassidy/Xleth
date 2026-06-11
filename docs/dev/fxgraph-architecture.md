@@ -55,6 +55,15 @@ undo/redo. Sidechain edges still never enter the audio topology payload, and no 
 changed (no addon rebuild). See `fxgraph-sidechain-input-architecture-audit.md` § "6C Implementation
 Status".
 
+FXG-SC.6D — polish, save/reload verification, and Electron CDP smoke test. Key additions:
+- `GraphStatePreview.tsx` secondary text for `sidechainInput` nodes now shows "Keyed by: \<track name>"
+  using the `sidechainSources` prop (live name resolution) instead of the raw persisted track ID.
+- `FxGraphPanel.tsx` renders a `sidechainRouteNotice` banner (`.xleth-fx-graph-panel__mode-copy--sidechain-notice`)
+  when any sidechain intent target is in a degraded state (`external_failed`, `route_failed`, `stale`).
+- CDP smoke test verified: drag connection (split pointerdown→waitFor data-connecting→pointermove+pointerup
+  so the sidechain port's `pointer-events:none→auto` transition is respected), source select, route creation,
+  and route restoration after save/reload all pass. 601 JS tests. No engine changes.
+
 ## Mutation helpers (FXG.2C-d)
 
 `graphState.js` exports pure mutation helpers:

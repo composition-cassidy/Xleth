@@ -10,6 +10,7 @@ import { TopBarToggles } from '../components/TopBarToggles';
 import FxGraphPanel, {
   FxGraphPanelContent,
   activateFxGraphMode,
+  describeGraphSidechainRouteStatus,
   selectFxGraphPanelChain,
 } from '../panels/FxGraphPanel';
 import NodeEditorPanel from '../panels/NodeEditorPanel';
@@ -816,6 +817,89 @@ describe('PanelFrame render paths', () => {
     expect(getPanelFrameRenderPath({ ...base, hidden: true })).toBe('hidden');
     expect(getPanelFrameRenderPath({ ...base, hidden: false, mode: 'docked' })).toBe('docked');
     expect(getPanelFrameRenderPath({ ...base, hidden: false, mode: 'maximized' })).toBe('maximized');
+  });
+});
+
+// FXG-SC.6D — route reconcile status surfacing in the panel.
+describe('describeGraphSidechainRouteStatus (FXG-SC.6D)', () => {
+  it('returns null when status is null', () => {
+    expect(describeGraphSidechainRouteStatus(null)).toBeNull();
+  });
+
+  it('returns null when there is no sidechain edge and no stale source', () => {
+    expect(describeGraphSidechainRouteStatus({
+      hasSidechainEdge: false,
+      sourceMissing: false,
+      targets: {},
+    })).toBeNull();
+  });
+
+  it('returns source-missing text when source is set but stale', () => {
+    expect(describeGraphSidechainRouteStatus({
+      hasSidechainEdge: false,
+      sourceMissing: true,
+      targets: {},
+    })).toBe('Sidechain source missing');
+  });
+
+  it('returns null when all targets are ok (route synced)', () => {
+    expect(describeGraphSidechainRouteStatus({
+      hasSidechainEdge: true,
+      sourceMissing: false,
+      targets: { 'inst-a': { status: 'ok' } },
+    })).toBeNull();
+  });
+
+  it('returns null when there are sidechain edges but no targets yet', () => {
+    expect(describeGraphSidechainRouteStatus({
+      hasSidechainEdge: true,
+      sourceMissing: false,
+      targets: {},
+    })).toBeNull();
+  });
+
+  it('returns a pending notice when any target has external_failed status', () => {
+    expect(describeGraphSidechainRouteStatus({
+      hasSidechainEdge: true,
+      sourceMissing: false,
+      targets: { 'inst-a': { status: 'external_failed' } },
+    })).toMatch(/pending/i);
+  });
+
+  it('returns a rejected notice when any target has route_failed status', () => {
+    expect(describeGraphSidechainRouteStatus({
+      hasSidechainEdge: true,
+      sourceMissing: false,
+      targets: { 'inst-a': { status: 'route_failed' } },
+    })).toMatch(/rejected/i);
+  });
+
+  it('renders FxGraphPanelContent with sidechainRouteNotice in the mode-active area', () => {
+    const html = renderToStaticMarkup(
+      <FxGraphPanelContent
+        trackId={7}
+        trackLabel="Bass"
+        fxMode="graph"
+        graphStateStatus="valid"
+        graphState={{ schemaVersion: 1, trackId: 7, nodes: [], edges: [] } as Parameters<typeof FxGraphPanelContent>[0]['graphState']}
+        sidechainRouteNotice="Sidechain source missing"
+      />,
+    );
+    expect(html).toContain('Sidechain source missing');
+  });
+
+  it('does not render sidechainRouteNotice when null', () => {
+    const html = renderToStaticMarkup(
+      <FxGraphPanelContent
+        trackId={7}
+        trackLabel="Bass"
+        fxMode="graph"
+        graphStateStatus="valid"
+        graphState={{ schemaVersion: 1, trackId: 7, nodes: [], edges: [] } as Parameters<typeof FxGraphPanelContent>[0]['graphState']}
+        sidechainRouteNotice={null}
+      />,
+    );
+    expect(html).not.toContain('sidechain-notice');
   });
 });
 

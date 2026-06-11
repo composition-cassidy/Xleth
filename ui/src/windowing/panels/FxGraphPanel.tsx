@@ -101,6 +101,28 @@ export function describeGraphMutationResult(
   return 'Graph edit was rejected.';
 }
 
+// FXG-SC.6D — surface route reconciliation issues in the panel. Returns null when
+// there is no active sidechain intent or when all routes are ok (no notice needed).
+export function describeGraphSidechainRouteStatus(
+  status: {
+    ok?: boolean;
+    sourceMissing?: boolean;
+    hasSidechainEdge?: boolean;
+    targets?: Record<string, { status: string }>;
+  } | null | undefined,
+): string | null {
+  if (!status) return null;
+  if (status.sourceMissing) return 'Sidechain source missing';
+  if (!status.hasSidechainEdge) return null;
+  const targetStatuses = Object.values(status.targets ?? {}).map((t) => t.status);
+  if (targetStatuses.length === 0) return null;
+  if (targetStatuses.every((s) => s === 'ok')) return null; // all good — no notice
+  if (targetStatuses.some((s) => s === 'external_failed')) return 'Route pending: target effect not active yet';
+  if (targetStatuses.some((s) => s === 'route_failed')) return 'Route rejected by audio engine';
+  if (targetStatuses.some((s) => s === 'source_missing')) return 'Sidechain source missing';
+  return null;
+}
+
 export function describeGraphRuntimeStatus(
   status: { ok?: boolean; reason?: string; mode?: string } | null | undefined,
 ): string {
@@ -164,6 +186,9 @@ export interface FxGraphPanelContentProps {
   onCreateMacroAutomationClip?: (macroNodeId: string) => void;
   graphRuntimeStatus?: { ok?: boolean; reason?: string; mode?: string } | null;
   graphActionNotice?: string | null;
+  // FXG-SC.6D — last reconcile status for the selected track's graph sidechain routes.
+  // Null when there is no sidechain intent or the status is normal/ok.
+  sidechainRouteNotice?: string | null;
   conversionError?: string | null;
 }
 
@@ -243,6 +268,7 @@ export function FxGraphPanelContent({
   onCreateMacroAutomationClip,
   graphRuntimeStatus = null,
   graphActionNotice = null,
+  sidechainRouteNotice = null,
   conversionError = null,
 }: FxGraphPanelContentProps) {
   const hasTrack = Boolean(trackLabel);
@@ -329,6 +355,13 @@ export function FxGraphPanelContent({
               <p className="xleth-fx-graph-panel__mode-copy">
                 {describeGraphRuntimeStatus(graphRuntimeStatus)}
               </p>
+              {/* FXG-SC.6D — surface route reconcile failures so the user knows when
+                  a sidechain route could not be created or the source is missing. */}
+              {sidechainRouteNotice && (
+                <p className="xleth-fx-graph-panel__mode-copy xleth-fx-graph-panel__mode-copy--sidechain-notice" role="status">
+                  {sidechainRouteNotice}
+                </p>
+              )}
               {graphActionNotice && (
                 <p className="xleth-fx-graph-panel__mode-copy" role="alert">
                   {graphActionNotice}
@@ -491,6 +524,15 @@ export default function FxGraphPanel() {
   const graphRuntimeStatus = effectChainState && selectedStoreKey != null
     ? effectChainState.graphRuntimeStatuses[selectedStoreKey] ?? null
     : reactiveGraphRuntimeStatus;
+  // FXG-SC.6D — last graph sidechain reconcile status for the current track; drives the
+  // sidechainRouteNotice in FxGraphPanelContent so route failures surface in the panel.
+  const reactiveGraphSidechainStatus = useEffectChainStore((state) => (
+    selectedStoreKey == null ? null : state.graphSidechainStatuses[selectedStoreKey] ?? null
+  ));
+  const graphSidechainStatus = effectChainState && selectedStoreKey != null
+    ? effectChainState.graphSidechainStatuses?.[selectedStoreKey] ?? null
+    : reactiveGraphSidechainStatus;
+  const sidechainRouteNotice = describeGraphSidechainRouteStatus(graphSidechainStatus);
   const reactiveCanUndoGraphEdit = useEffectChainStore((state) => (
     selectedStoreKey == null
       ? false
@@ -956,6 +998,7 @@ export default function FxGraphPanel() {
         onCreateMacroAutomationClip={handleCreateMacroAutomationClip}
         graphRuntimeStatus={graphRuntimeStatus}
         graphActionNotice={graphActionNotice}
+        sidechainRouteNotice={sidechainRouteNotice}
         conversionError={conversionError}
       />
       {confirmOpen && (

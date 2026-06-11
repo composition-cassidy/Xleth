@@ -2428,4 +2428,100 @@ describe('GraphStatePreview sidechain input (FXG-SC.6B)', () => {
     );
     expect(html).toContain('Track 99 (missing)');
   });
+
+  // FXG-SC.6D — secondary text resolves to track name, not raw id.
+  it('shows "Keyed by: <name>" in secondary text when source is in sidechainSources', () => {
+    const node = buildGraphStatePreviewModel(
+      sidechainGraph({ label: 'Sidechain Input', sourceTrackId: 3 }),
+    ).nodes.find((n) => n.id === 'sc')!;
+    const html = renderToStaticMarkup(
+      GraphStatePreviewNode({
+        node,
+        dragging: false,
+        connectEnabled: false,
+        connectActive: false,
+        canRemove: false,
+        canEdit: false,
+        sidechainSources: SIDECHAIN_SOURCES,
+      }),
+    );
+    expect(html).toContain('Keyed by: Kick');
+    expect(html).not.toContain('Keyed by track 3');
+  });
+
+  it('shows "Source missing" in secondary text when saved source is not in sidechainSources', () => {
+    const node = buildGraphStatePreviewModel(
+      sidechainGraph({ label: 'Sidechain Input', sourceTrackId: 99 }),
+    ).nodes.find((n) => n.id === 'sc')!;
+    const html = renderToStaticMarkup(
+      GraphStatePreviewNode({
+        node,
+        dragging: false,
+        connectEnabled: false,
+        connectActive: false,
+        canRemove: false,
+        canEdit: false,
+        sidechainSources: SIDECHAIN_SOURCES,
+      }),
+    );
+    expect(html).toContain('Source missing');
+  });
+
+  it('shows "No source" in secondary text when sourceTrackId is null', () => {
+    const node = buildGraphStatePreviewModel(
+      sidechainGraph({ label: 'Sidechain Input', sourceTrackId: null }),
+    ).nodes.find((n) => n.id === 'sc')!;
+    const html = renderToStaticMarkup(
+      GraphStatePreviewNode({
+        node,
+        dragging: false,
+        connectEnabled: false,
+        connectActive: false,
+        canRemove: false,
+        canEdit: false,
+        sidechainSources: SIDECHAIN_SOURCES,
+      }),
+    );
+    // "No source" appears both in secondary text and in the selector — check at least once.
+    expect(html).toContain('No source');
+  });
+
+  it('shows resolved track name in the static source span (read-only mode)', () => {
+    const node = buildGraphStatePreviewModel(
+      sidechainGraph({ label: 'Sidechain Input', sourceTrackId: 3 }),
+    ).nodes.find((n) => n.id === 'sc')!;
+    const html = renderToStaticMarkup(
+      GraphStatePreviewNode({
+        node,
+        dragging: false,
+        connectEnabled: false,
+        connectActive: false,
+        canRemove: false,
+        canEdit: false,
+        sidechainSources: SIDECHAIN_SOURCES,
+        // onSetSidechainSource is intentionally absent → static span renders.
+      }),
+    );
+    // Should show the track name, not raw 'Track 3'.
+    expect(html).toContain('Kick');
+    expect(html).not.toContain('>Track 3<');
+  });
+
+  it('shows "Track N (missing)" in the static span when the source is stale', () => {
+    const node = buildGraphStatePreviewModel(
+      sidechainGraph({ label: 'Sidechain Input', sourceTrackId: 99 }),
+    ).nodes.find((n) => n.id === 'sc')!;
+    const html = renderToStaticMarkup(
+      GraphStatePreviewNode({
+        node,
+        dragging: false,
+        connectEnabled: false,
+        connectActive: false,
+        canRemove: false,
+        canEdit: false,
+        sidechainSources: SIDECHAIN_SOURCES,
+      }),
+    );
+    expect(html).toContain('Track 99 (missing)');
+  });
 });

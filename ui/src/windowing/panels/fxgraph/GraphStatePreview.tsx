@@ -1162,8 +1162,28 @@ export function GraphStatePreviewNode({
       ) : (
         <span className="xleth-graph-state-preview__node-title">{node.label}</span>
       )}
-      {node.secondaryText && (
-        <span className="xleth-graph-state-preview__node-secondary">{node.secondaryText}</span>
+      {/* FXG-SC.6D — sidechainInput secondary text uses a resolved track name from
+          sidechainSources (available in the component) rather than the raw id from the
+          model (which only knows the persisted number). Other node types render their
+          model-computed secondaryText unchanged. */}
+      {(isSidechainInput
+        ? (() => {
+            const sid = node.sidechainSourceTrackId;
+            if (sid == null) return 'No source';
+            const found = sidechainSources.find((s) => s.sourceTrackId === sid);
+            return found ? `Keyed by: ${found.name}` : 'Source missing';
+          })()
+        : node.secondaryText) && (
+        <span className="xleth-graph-state-preview__node-secondary">
+          {isSidechainInput
+            ? (() => {
+                const sid = node.sidechainSourceTrackId;
+                if (sid == null) return 'No source';
+                const found = sidechainSources.find((s) => s.sourceTrackId === sid);
+                return found ? `Keyed by: ${found.name}` : 'Source missing';
+              })()
+            : node.secondaryText}
+        </span>
       )}
       {/* FXG-SC.6B — Sidechain Input source selector. Lists "No source" plus eligible
           live tracks. A persisted-but-missing source id is shown as an extra stale
@@ -1201,7 +1221,12 @@ export function GraphStatePreviewNode({
             </select>
           ) : (
             <span className="xleth-graph-state-preview__sidechain-source-static">
-              {node.sidechainSourceTrackId == null ? 'No source' : `Track ${node.sidechainSourceTrackId}`}
+              {/* FXG-SC.6D — resolve track name from sidechainSources; fall back to
+                  "Track N (missing)" for a stale saved source id. */}
+              {node.sidechainSourceTrackId == null
+                ? 'No source'
+                : sidechainSources.find((s) => s.sourceTrackId === node.sidechainSourceTrackId)?.name
+                  ?? `Track ${node.sidechainSourceTrackId} (missing)`}
             </span>
           )}
         </span>
