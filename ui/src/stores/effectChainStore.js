@@ -5,6 +5,14 @@ import useDistortionStore from './distortionStore.js'
 import useWaveshaperStore from './waveshaperStore.js'
 import useDelayStore from './delayStore.js'
 import useChorusStore from './chorusStore.js'
+// FXG-SC.6C — reuse the proven mixer-chain sidechain transport helpers so graph
+// route reconciliation drives the SAME native SidechainRoute system, never a second
+// engine. normalizeSidechainRoutesFromRoutingSnapshot parses timeline.getRouting();
+// COMPRESSOR_EXTERNAL_SIDECHAIN_PARAM_ID is the stock compressor's external-key flag.
+import useMixerStore, {
+  normalizeSidechainRoutesFromRoutingSnapshot,
+  COMPRESSOR_EXTERNAL_SIDECHAIN_PARAM_ID,
+} from './mixerStore.js'
 import { createGraphStateFromChain } from '../fxgraph/chainToGraphState.js'
 import { buildLinearGraphTopologyPayload } from '../fxgraph/linearGraphTopology.js'
 import {
@@ -32,6 +40,8 @@ import {
   connectSidechainNodes,
   disconnectSidechainEdge,
   isSidechainEdge,
+  // FXG-SC.6C — pure derivation of desired sidechain route intent from graphState
+  deriveGraphSidechainIntent,
 } from '../fxgraph/graphState.js'
 import {
   showMacroAutomationLane,
@@ -1048,6 +1058,262 @@ function clearEnvelopeRuntimeCache() {
   envelopeRuntimeLastValues.clear()
 }
 
+// ── FXG-SC.6C FX Graph Sidechain Input → Timeline SidechainRoute reconciliation ──
+//
+// The single bridge between graphState sidechain INTENT (a Sidechain Input node
+// with a selected source + sidechain edges to graph-owned compressors) and the
+// proven native sidechain TRANSPORT (Timeline SidechainRoute → MixEngine
+// SidechainPlan → AudioGraph SidechainSourceProcessor → stock compressor bus 1).
+//
+// graphState is the user-facing source of truth. Native routes are derived,
+// reconciled transport — never authored directly for graph-owned sidechain, and
+// never persisted back into graphState (no route ids, no APG node ids). The native
+// resolver already resolves graph-owned effect instances by stable effectInstanceId
+// (EffectChainManager::getNodeIdForEffectInstance walks graph nodes too), so no new
+// engine boundary is needed: this reconciler only diffs desired-vs-existing routes
+// and toggles the compressor's external-key flag.
+
+// A source track can drive a graph compressor only when it is a real, non-visual
+// mixer track distinct from the graph track. mixerStore is the only place with that
+// metadata; tests inject options.isSourceTrackValid instead.
+function defaultIsSourceTrackValid(sourceTrackId, owningTrackId) {
+  if (!Number.isFinite(sourceTrackId)) return false
+  if (sourceTrackId === owningTrackId) return false
+  const tracks = useMixerStore.getState().tracks
+  const track = tracks?.[sourceTrackId]
+  return Boolean(track) && track.visualOnly !== true
+}
+
+// Cheap structural test: did the sidechain ROUTE intent (source + capable targets)
+// change between two graphStates? Used to gate undo/redo route reconciliation so an
+// unrelated macro/audio/position undo never touches native sidechain routes.
+function graphSidechainIntentChanged(beforeGraphState, afterGraphState) {
+  const fingerprint = (graphState) => {
+    const intent = deriveGraphSidechainIntent(graphState)
+    return JSON.stringify({
+      source: intent.sourceTrackId,
+      targets: [...intent.edgeTargets.map((t) => t.effectInstanceId)].sort(),
+      desired: [...intent.desiredTargets.map((t) => t.effectInstanceId)].sort(),
+    })
+  }
+  return fingerprint(beforeGraphState) !== fingerprint(afterGraphState)
+}
+
+function setGraphSidechainStatus(set, key, status) {
+  set((state) => ({
+    graphSidechainStatuses: {
+      ...state.graphSidechainStatuses,
+      [key]: { ...status, updatedAt: Date.now() },
+    },
+  }))
+}
+
+// Reconcile native SidechainRoute records to match the graph's sidechain intent for
+// one graph-mode track. Idempotent and tuple-based: it only ever touches routes that
+// target THIS graph track's own effect instances, so unrelated Mixer Chain / other-
+// track sidechain routes are left untouched. Best-effort — a failed native call is
+// surfaced in graphSidechainStatuses but never throws or rolls back graphState.
+//
+// options.removedEffectInstanceIds lets a graph-effect removal hand in instance ids
+// that just left the graph so their orphaned routes are still torn down.
+async function reconcileGraphSidechainRoutes(set, get, key, options = {}) {
+  const warn = options.warn ?? console.warn
+  const state = get()
+  if (resolveFxMode(state.fxModes, key) !== 'graph') {
+    return { ok: false, reason: 'not_graph_mode' }
+  }
+  const graphState = state.graphStates[key]
+  if (!graphState || !Array.isArray(graphState.nodes) || !Array.isArray(graphState.edges)) {
+    return { ok: false, reason: 'missing_graph_state' }
+  }
+
+  const intent = deriveGraphSidechainIntent(graphState)
+  const owningTrackId = intent.owningTrackId ?? Number(key)
+
+  const timeline = defaultTimelineApi()
+  const getRouting = options.getRouting ?? timeline.getRouting
+  const addRoute = options.addSidechainRoute ?? timeline.addSidechainRoute
+  const removeRoute = options.removeSidechainRoute ?? timeline.removeSidechainRoute
+  if (typeof getRouting !== 'function') {
+    return { ok: false, reason: 'routing_unavailable' }
+  }
+  const isSourceValid = options.isSourceTrackValid ?? defaultIsSourceTrackValid
+  const setExternal = options.setGraphEffectParameterNormalized ?? get().setGraphEffectParameterNormalized
+
+  // Desired routes: every capable compressor with a sidechain edge, but only once the
+  // selected source is finite AND exists/eligible. A finite-but-stale source yields no
+  // route (and a source_missing status) rather than a route the engine would reject.
+  const sourceTrackId = intent.sourceTrackId
+  const sourceValid = sourceTrackId != null && isSourceValid(sourceTrackId, owningTrackId)
+  const desiredByInstance = new Map()
+  if (sourceValid) {
+    for (const target of intent.edgeTargets) {
+      desiredByInstance.set(target.effectInstanceId, {
+        sourceTrackId,
+        targetTrackId: owningTrackId,
+        targetEffectInstanceId: target.effectInstanceId,
+      })
+    }
+  }
+
+  let snapshot
+  try {
+    snapshot = await getRouting()
+  } catch (e) {
+    warn?.('[FXG-SC] getRouting failed during reconcile', { trackId: key, error: e?.message ?? e })
+    return { ok: false, reason: 'routing_unavailable' }
+  }
+  const existingRoutes = normalizeSidechainRoutesFromRoutingSnapshot(snapshot)
+
+  // Ownership scope: only routes that target THIS graph track's own effect instances
+  // (or an instance that was just removed from the graph) are graph-sidechain owned.
+  const ownedInstanceIds = new Set(intent.effectInstanceIds)
+  for (const id of options.removedEffectInstanceIds ?? []) {
+    if (typeof id === 'string' && id.length > 0) ownedInstanceIds.add(id)
+  }
+  const ownedRoutes = existingRoutes.filter(
+    (r) => Number(r.targetTrackId) === owningTrackId &&
+      ownedInstanceIds.has(r.targetEffectInstanceId),
+  )
+  const ownedRouteInstanceIds = new Set(ownedRoutes.map((r) => r.targetEffectInstanceId))
+
+  // An enabled route already matching a desired tuple (same source+target+instance)
+  // must not be recreated — dedup against the original snapshot.
+  const existingDesiredMatch = (route) =>
+    existingRoutes.some((r) =>
+      r.enabled !== false &&
+      Number(r.targetTrackId) === Number(route.targetTrackId) &&
+      Number(r.sourceTrackId) === Number(route.sourceTrackId) &&
+      r.targetEffectInstanceId === route.targetEffectInstanceId)
+
+  const targets = {}
+  const issues = []
+  let routesCreated = 0
+  let routesRemoved = 0
+
+  const markTarget = (effectInstanceId, status) => {
+    targets[effectInstanceId] = { status, sourceTrackId: status === 'ok' ? sourceTrackId : null }
+  }
+
+  // 1) Tear down owned routes that are no longer desired (source cleared/stale, edge
+  //    removed, compressor removed) or whose source changed (remove → re-add below).
+  for (const route of ownedRoutes) {
+    const desired = desiredByInstance.get(route.targetEffectInstanceId)
+    const keep = desired && Number(desired.sourceTrackId) === Number(route.sourceTrackId)
+    if (keep) continue
+    if (typeof removeRoute !== 'function') {
+      issues.push({ effectInstanceId: route.targetEffectInstanceId, kind: 'route_remove_failed' })
+      continue
+    }
+    try {
+      const res = await removeRoute(route.sourceTrackId, route.routeId)
+      if (res === false || res?.ok === false) {
+        issues.push({ effectInstanceId: route.targetEffectInstanceId, kind: 'route_remove_failed' })
+      } else {
+        routesRemoved++
+      }
+    } catch (e) {
+      warn?.('[FXG-SC] removeSidechainRoute failed', { trackId: key, error: e?.message ?? e })
+      issues.push({ effectInstanceId: route.targetEffectInstanceId, kind: 'route_remove_failed' })
+    }
+  }
+
+  // 2) Disable sc_external on compressors the graph owns that are no longer keyed:
+  //    a sidechain edge with no valid source, or a route we just removed. The graph
+  //    sidechain UI owns the external-key state for graph-owned compressors, so a
+  //    removed key returns the compressor to its internal detector (sc_external=0).
+  const edgeTargetInstanceIds = new Set(intent.edgeTargets.map((t) => t.effectInstanceId))
+  for (const effectInstanceId of intent.compressorInstanceIds) {
+    if (desiredByInstance.has(effectInstanceId)) continue
+    if (!edgeTargetInstanceIds.has(effectInstanceId) && !ownedRouteInstanceIds.has(effectInstanceId)) {
+      continue
+    }
+    if (typeof setExternal === 'function') {
+      try {
+        await setExternal(Number(key), effectInstanceId, COMPRESSOR_EXTERNAL_SIDECHAIN_PARAM_ID, 0)
+      } catch (e) {
+        warn?.('[FXG-SC] sc_external disable failed', { trackId: key, effectInstanceId, error: e?.message ?? e })
+      }
+    }
+    if (edgeTargetInstanceIds.has(effectInstanceId)) {
+      // edge present but source unset/stale
+      markTarget(effectInstanceId, 'source_missing')
+    }
+  }
+
+  // 3) For every desired target: enable sc_external (failure is fatal for that target,
+  //    consistent with bd7115a — never claim a route is keyed when the flag did not
+  //    take), then create the route unless an identical enabled one already exists.
+  for (const [effectInstanceId, route] of desiredByInstance) {
+    if (typeof setExternal === 'function') {
+      let externalOk = false
+      try {
+        const res = await setExternal(Number(key), effectInstanceId, COMPRESSOR_EXTERNAL_SIDECHAIN_PARAM_ID, 1)
+        externalOk = res?.ok !== false && res !== false
+      } catch (e) {
+        warn?.('[FXG-SC] sc_external enable failed', { trackId: key, effectInstanceId, error: e?.message ?? e })
+        externalOk = false
+      }
+      if (!externalOk) {
+        issues.push({ effectInstanceId, kind: 'external_failed' })
+        markTarget(effectInstanceId, 'external_failed')
+        continue
+      }
+    }
+
+    if (existingDesiredMatch(route)) {
+      markTarget(effectInstanceId, 'ok')
+      continue
+    }
+    if (typeof addRoute !== 'function') {
+      issues.push({ effectInstanceId, kind: 'route_add_failed' })
+      markTarget(effectInstanceId, 'route_failed')
+      continue
+    }
+    try {
+      const res = await addRoute(route.sourceTrackId, {
+        targetTrackId: route.targetTrackId,
+        targetEffectInstanceId: effectInstanceId,
+        gain: 1.0,
+        preFader: false,
+        enabled: true,
+      })
+      if (res === false || res?.ok === false) {
+        issues.push({ effectInstanceId, kind: 'route_add_failed', reason: res?.reason })
+        markTarget(effectInstanceId, 'route_failed')
+      } else {
+        routesCreated++
+        markTarget(effectInstanceId, 'ok')
+      }
+    } catch (e) {
+      warn?.('[FXG-SC] addSidechainRoute failed', { trackId: key, effectInstanceId, error: e?.message ?? e })
+      issues.push({ effectInstanceId, kind: 'route_add_failed' })
+      markTarget(effectInstanceId, 'route_failed')
+    }
+  }
+
+  // Refresh the mixer routing snapshot so chain-mode UI / status reflects the new
+  // native route set after graph-driven changes.
+  if ((routesCreated > 0 || routesRemoved > 0) && typeof useMixerStore.getState().refreshRouting === 'function') {
+    try { await useMixerStore.getState().refreshRouting() } catch { /* best-effort */ }
+  }
+
+  const status = {
+    ok: issues.length === 0,
+    owningTrackId,
+    sourceTrackId,
+    sidechainInputNodeId: intent.sidechainInputNodeId,
+    sourceMissing: sourceTrackId != null && !sourceValid,
+    hasSidechainEdge: intent.edgeTargets.length > 0,
+    targets,
+    issues,
+    routesCreated,
+    routesRemoved,
+  }
+  setGraphSidechainStatus(set, key, status)
+  return { ok: issues.length === 0, status }
+}
+
 const useEffectChainStore = create((set, get) => ({
   // { [key: "master" | String(trackId)]: [{nodeId, pluginId, position, bypassed}] }
   chains: {},
@@ -1065,6 +1331,10 @@ const useEffectChainStore = create((set, get) => ({
   // { [key: String(trackId)]: { ok, reason, updatedAt } }
   // Session-only FXG.3-c-b runtime routing sync status. Never persisted.
   graphRuntimeStatuses: {},
+  // { [key: String(trackId)]: { ok, sourceTrackId, sourceMissing, targets, issues, ... } }
+  // FXG-SC.6C — session-only status of the last graph sidechain route reconcile for a
+  // track (source/edge/route/external-flag health for UI feedback). Never persisted.
+  graphSidechainStatuses: {},
   // { [key: String(trackId)]: { undoStack, redoStack } }
   // Session-only FX Graph edit history. Never persisted and never shared with
   // Mixer Chain / native undo history.
@@ -1096,6 +1366,7 @@ const useEffectChainStore = create((set, get) => ({
       // hydrateGraphEffectInstancesForLoadedProject after graphState loads.
       graphEngineNodeIds: {},
       graphRuntimeStatuses: {},
+      graphSidechainStatuses: {},
       graphHistories: {},
       macroAutomationLastValues: {},
     })
@@ -1121,7 +1392,11 @@ const useEffectChainStore = create((set, get) => ({
       // FXG.4-f — apply saved macro values to connected parameters now that the
       // graph-owned effect processors exist. Best-effort; never blocks hydration.
       const macroDrives = await driveAllMacroParameterEdges(get, key, graphState, options)
-      results[key] = { ...result, runtimeSync, macroDrives }
+      // FXG-SC.6C — graph-owned effects are now hydrated, so the native sidechain
+      // resolver can resolve them: rebind the derived sidechain route(s) + sc_external
+      // from the persisted graph intent. Best-effort; never blocks hydration.
+      const sidechainSync = await reconcileGraphSidechainRoutes(set, get, key, options)
+      results[key] = { ...result, runtimeSync, macroDrives, sidechainSync: sidechainSync.status }
 
       if (!result.ok || result.failures.length > 0) {
         warn?.('[FXG] graph-owned effect hydration incomplete', {
@@ -1480,6 +1755,12 @@ const useEffectChainStore = create((set, get) => ({
       }
     })
 
+    // FXG-SC.6C — if the undo changed sidechain route intent (source or sidechain
+    // edges), rebind native routes to match the now-current graphState.
+    if (graphSidechainIntentChanged(transaction.afterGraphState, transaction.beforeGraphState)) {
+      await reconcileGraphSidechainRoutes(set, get, access.key, options)
+    }
+
     return { ...applied, transaction }
   },
 
@@ -1517,6 +1798,11 @@ const useEffectChainStore = create((set, get) => ({
         },
       }
     })
+
+    // FXG-SC.6C — same as undo: rebind native routes if the redo changed intent.
+    if (graphSidechainIntentChanged(transaction.beforeGraphState, transaction.afterGraphState)) {
+      await reconcileGraphSidechainRoutes(set, get, access.key, options)
+    }
 
     return { ...applied, transaction }
   },
@@ -1753,6 +2039,20 @@ const useEffectChainStore = create((set, get) => ({
     const isEngineBacked = engineNodeId != null
     const isMacroNode = removedNode?.type === 'macro'
 
+    // FXG-SC.6C — does removing this node tear down sidechain route intent? True when
+    // it is the Sidechain Input node, or an effect that a sidechain edge targets. The
+    // removed effect's stable id is fed to the reconciler so its now-orphaned route
+    // (the instance just left the graph) is still torn down.
+    const removedHadSidechainEdge = access.graphState.edges.some(
+      (e) => e?.type === 'sidechain' && (e.sourceNodeId === nodeId || e.targetNodeId === nodeId),
+    )
+    const removesSidechainIntent =
+      removedNode?.type === 'sidechainInput' || removedHadSidechainEdge
+    const removedEffectInstanceIds =
+      typeof effectInstanceId === 'string' && effectInstanceId.length > 0
+        ? [effectInstanceId]
+        : []
+
     if (isEngineBacked) {
       const removeNode = options.removeGraphEngineNode ?? defaultAudioApi().removeGraphEffectNode
       if (typeof removeNode !== 'function') {
@@ -1789,6 +2089,12 @@ const useEffectChainStore = create((set, get) => ({
         access.graphState,
         applied.graphState,
       )
+      if (removesSidechainIntent) {
+        await reconcileGraphSidechainRoutes(set, get, access.key, {
+          ...options,
+          removedEffectInstanceIds,
+        })
+      }
     }
     return applied
   },
@@ -1925,14 +2231,16 @@ const useEffectChainStore = create((set, get) => ({
     return { ...applied, edge: mutation.edge }
   },
 
-  // ── FXG-SC.6B FX Graph Sidechain Input ────────────────────────────────────
-  // Renderer/graphState intent only. Every action below is graph-mode gated
+  // ── FXG-SC.6B/6C FX Graph Sidechain Input ─────────────────────────────────
+  // Renderer/graphState intent. Every action below is graph-mode gated
   // (master/chain-mode/missing graphState reject via readGraphStateForMutation),
   // persists via timeline.setTrackGraphState, records a graph-owned undo
-  // transaction, and performs NO audio runtime sync (syncRuntime: false — sidechain
-  // edges never enter the audio topology payload). They create NO native sidechain
-  // routes, write NO sc_external parameter, and never touch effectChains/Mixer Chain.
-  // Runtime route binding to the existing SidechainRoute system is deferred to 6C.
+  // transaction, and performs NO audio TOPOLOGY sync (syncRuntime: false — sidechain
+  // edges never enter the audio topology payload) and never touch effectChains.
+  // 6C adds a dedicated graph-sidechain ROUTE sync: after a source/edge mutation that
+  // changes routing intent, reconcileGraphSidechainRoutes derives the desired Timeline
+  // SidechainRoute records and toggles the compressor's sc_external flag. That is a
+  // separate transport pass, NOT part of the audio topology payload.
 
   // Adds the single protected Sidechain Input node to a graph track. Rejects a second
   // node with sidechain_input_exists (carrying existingNodeId so the UI can focus it).
@@ -2000,6 +2308,8 @@ const useEffectChainStore = create((set, get) => ({
         access.graphState,
         applied.graphState,
       )
+      // Source change is route-relevant: rebind/clear the derived native route.
+      await reconcileGraphSidechainRoutes(set, get, access.key, opts)
     }
     return applied
   },
@@ -2034,7 +2344,9 @@ const useEffectChainStore = create((set, get) => ({
       access.graphState,
       applied.graphState,
     )
-    return { ...applied, edge: mutation.edge }
+    // New sidechain edge → create the derived native route + enable sc_external.
+    const reconcile = await reconcileGraphSidechainRoutes(set, get, access.key, opts)
+    return { ...applied, edge: mutation.edge, sidechainSync: reconcile.status }
   },
 
   // Removes a sidechain edge by id. Rejects non-sidechain edge ids with missing_edge
@@ -2061,8 +2373,22 @@ const useEffectChainStore = create((set, get) => ({
         access.graphState,
         applied.graphState,
       )
+      // Edge removed → tear down the derived native route + disable sc_external.
+      await reconcileGraphSidechainRoutes(set, get, access.key, opts)
     }
     return applied
+  },
+
+  // FXG-SC.6C — public entry point to reconcile a graph track's derived sidechain
+  // routes against the existing Timeline SidechainRoute transport. Graph-mode gated;
+  // safe to call after panel mount, project load, or any external routing refresh.
+  // The mutation actions above call this automatically after route-relevant edits.
+  reconcileGraphSidechainRoutesForTrack: async (trackId, options = {}) => {
+    const key = normalizeNormalTrackKey(trackId)
+    if (key == null) {
+      return { ok: false, reason: trackId === 'master' ? 'master_track' : 'no_track' }
+    }
+    return reconcileGraphSidechainRoutes(set, get, key, options ?? {})
   },
 
   // FXG.4-g — update the mapping on a Macro -> Parameter edge. Updates persist to
@@ -2555,6 +2881,7 @@ globalThis.window?.xleth?.onProjectLoaded?.(() => {
     graphStateStatuses: {},
     graphEngineNodeIds: {},
     graphRuntimeStatuses: {},
+    graphSidechainStatuses: {},
     graphHistories: {},
   })
 

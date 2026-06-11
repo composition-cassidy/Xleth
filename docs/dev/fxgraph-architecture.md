@@ -46,6 +46,15 @@ Port naming convention (mirrors `chainToGraphState.js` lines 189-191):
 - `sidechainInput` output -> `'sidechainOut'`; compressor sidechain key target -> `'sidechainIn'`
   (FXG-SC.6B; see `fxgraph-sidechain-input-architecture-audit.md`)
 
+FXG-SC.6C — graph sidechain intent now reconciles to the existing Timeline `SidechainRoute`
+transport. `deriveGraphSidechainIntent(graphState)` (pure) yields the desired routes; the store action
+`reconcileGraphSidechainRoutesForTrack` creates/removes those routes by stable `effectInstanceId`,
+toggles the stock compressor's `sc_external` flag, and runs only after route-relevant mutations
+(source change, sidechain edge connect/disconnect, sidechain-target node removal), hydration, and
+undo/redo. Sidechain edges still never enter the audio topology payload, and no native/bridge code
+changed (no addon rebuild). See `fxgraph-sidechain-input-architecture-audit.md` § "6C Implementation
+Status".
+
 ## Mutation helpers (FXG.2C-d)
 
 `graphState.js` exports pure mutation helpers:

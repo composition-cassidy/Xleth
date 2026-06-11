@@ -1149,3 +1149,86 @@ no native addon rebuild is required.
 
 - No native `SidechainRoute` creation, no `sc_external` write, no runtime ducking, no VST sidechain,
   no Mixer Chain mutation, no NodeEditor/nodeGraphStore/React Flow.
+
+## 6C Implementation Status
+
+6C binds the 6B graphState sidechain **intent** to the existing, proven Timeline
+`SidechainRoute` → MixEngine `SidechainPlan` → `AudioGraph SidechainSourceProcessor` → stock
+compressor bus 1 **transport**. No second sidechain engine was created.
+
+**Confirmed architecture path (verified, no native change required).** The native sidechain stack
+already resolves graph-owned effect instances: `EffectChainManager::getNodeIdForEffectInstance()`
+walks the per-track `AudioGraph` nodes (graph-owned nodes included), so
+`MixEngine::getEffectNodeIdForInstance()` — used by both the bridge route resolver
+(`makeSidechainEffectResolver`) and `MixEngine::processBlock()` key delivery — resolves a graph-owned
+compressor by its stable `effectInstanceId`. `MixEngine::syncSidechainTargetBuses()` and
+`AudioGraph::applySidechainTargetInstances()` enable the sidechain bus on any
+`supportsExternalSidechain()` node regardless of chain/graph mode. **6C therefore changed renderer
+code only; no engine/bridge/preload/main C++ was touched and no addon rebuild was required.**
+
+### Renderer derivation (`ui/src/fxgraph/graphState.js`)
+
+- New pure helper `deriveGraphSidechainIntent(graphState)` returns `owningTrackId`, `sourceTrackId`,
+  `sidechainInputNodeId`, `effectInstanceIds` (route-ownership scope), `compressorInstanceIds`
+  (sidechain-capable compressors present), `edgeTargets` (capable compressors with a sidechain edge),
+  and `desiredTargets` (edgeTargets that also have a finite source). It targets the connected
+  compressor by `effectInstanceId` — never the Sidechain Input node, never a raw APG id.
+
+### Renderer reconciliation (`ui/src/stores/effectChainStore.js`)
+
+- New internal `reconcileGraphSidechainRoutes(set, get, key, options)` + public action
+  `reconcileGraphSidechainRoutesForTrack(trackId, options)`. Graph-mode gated. It:
+  - derives the desired routes from graphState intent (source must be finite **and** exist/eligible —
+    validated by `mixerStore` track metadata via `defaultIsSourceTrackValid`, injectable in tests),
+  - snapshots `timeline.getRouting()` and reuses `mixerStore`'s
+    `normalizeSidechainRoutesFromRoutingSnapshot`,
+  - scopes "graph-owned" routes to those whose `targetTrackId` is the graph track **and** whose
+    `targetEffectInstanceId` is one of this graph's effect instances (or one just removed) — so
+    unrelated Mixer Chain / other-track routes are never touched,
+  - creates missing desired routes with `timeline.addSidechainRoute(source, { targetTrackId,
+    targetEffectInstanceId, gain: 1, preFader: false, enabled: true })`, dedups against existing
+    enabled tuples, and removes stale graph-owned routes with `timeline.removeSidechainRoute`,
+  - enables `sc_external=1` on each desired compressor via the graph parameter API
+    (`setGraphEffectParameterNormalized`, `sc_external`) **before** adding the route, treating a
+    `false`/`{ok:false}` result as a fatal failure for that target (consistent with `bd7115a`) — the
+    route is **not** added when the flag write fails,
+  - records per-target status (`ok` / `route_failed` / `external_failed` / `source_missing`) in a new
+    session-only `graphSidechainStatuses` map for UI feedback.
+- `sc_external` policy: the graph sidechain UI **owns** the external-key state for graph-owned
+  compressors. A desired keyed target gets `sc_external=1`; a compressor that loses its last graph
+  sidechain key (edge removed, source cleared/stale, compressor removed) gets `sc_external=0` and its
+  derived route removed.
+- Reconciliation runs after **route-relevant** mutations only: `setSidechainInputSourceForTrack`,
+  `connectSidechainForTrack`, `disconnectSidechainEdgeForTrack`, `removeGraphNodeForTrack` (when the
+  removed node is the Sidechain Input or a sidechain target — the removed instance id is handed in so
+  its orphaned route is torn down), graph hydration
+  (`hydrateGraphEffectInstancesForLoadedProject`, after graph-owned effects exist), and undo/redo
+  (gated by `graphSidechainIntentChanged`). It never runs on pan/viewport/layout-only edits and is a
+  **separate transport pass** from the audio topology payload (sidechain edges still never enter
+  `buildLinearGraphTopologyPayload`).
+
+### Tests run
+
+- JS: `graphState.test.js` (+`deriveGraphSidechainIntent` suite), `effectChainStore.test.js`
+  (+full 6C reconciliation suite: derivation, add/remove/dedup, re-key, sc_external on/off,
+  external-failure-blocks-route, route-add-failure surfaced, unrelated routes untouched, node-removal
+  teardown, hydration rebind, undo teardown, routing-API-unavailable no-op), plus `mixerStore.test.js`,
+  `GraphStatePreview.test.tsx`, `windowingScaffolding.test.tsx`, `EffectModule.sidechain.test.jsx` —
+  **587 passing**.
+- Native: new `engine/test/test_fxgraph_sidechain_input.cpp` (graph-owned compressor ducks via the
+  existing route by `effectInstanceId`; no key leakage; wrong-instance / no-route / `sc_external=0` /
+  non-compressor targets are safe no-ops) — **13/13 passing**. Regression
+  `test_stock_compressor_sidechain` — **22/22 passing**.
+- `npm run build` succeeds; `git diff --check` clean.
+
+### Manual smoke
+
+- Not performed in this pass (automated coverage proves the native ducking path end-to-end and the
+  renderer reconciliation in isolation). The full Kick/Bass app smoke remains a 6D checklist item.
+
+### Hard-constraint confirmation
+
+- No second sidechain engine. Key stays silent. Sidechain Input is never routed to Track Output and
+  never enters the audio topology payload. No raw APG node ids persisted. No VST sidechain. No
+  `StockParameterCatalog` / `GuardedPluginWrapper` changes. No sends. `effectChains` untouched. No
+  engine/bridge C++ change → **no addon rebuild required**.

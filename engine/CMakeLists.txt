@@ -856,6 +856,42 @@ target_compile_definitions(test_stock_compressor_sidechain PRIVATE
 
 target_link_options(test_stock_compressor_sidechain PRIVATE /STACK:8388608)
 
+# ── test_fxgraph_sidechain_input ─────────────────────────────────────────────
+# Prompt 6C: FX Graph Sidechain Input binds to the EXISTING sidechain route/key
+# transport. Drives MixEngine::processBlock with a GRAPH-OWNED stock compressor
+# (addGraphEffectNode + syncGraphTopology) and a route targeting it by stable
+# effectInstanceId to prove external-key ducking, no key leakage, wrong-instance /
+# non-compressor no-ops, and sc_external=0 legacy behavior — all through the
+# proven native stack (no second sidechain engine).
+add_executable(test_fxgraph_sidechain_input
+    test/test_fxgraph_sidechain_input.cpp
+)
+
+target_link_libraries(test_fxgraph_sidechain_input PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_fxgraph_sidechain_input PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+target_link_options(test_fxgraph_sidechain_input PRIVATE /STACK:8388608)
+
 # ── test_clip_sr ─────────────────────────────────────────────────────────────
 # Regression for the export clip-pitch (sample-rate) bug: clips baked at one
 # engine rate and exported at another must preserve pitch. Exercises the raw

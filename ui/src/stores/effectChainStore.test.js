@@ -3302,3 +3302,333 @@ describe('effectChainStore updateGraphParameterEdgeMappingForTrack', () => {
     expect(useEffectChainStore.getState().graphStates['7'].nodes.some((n) => n.id === 'sc-new')).toBe(true)
   })
 })
+
+// --- FXG-SC.6C FX Graph Sidechain Input → Timeline SidechainRoute reconciliation ---
+describe('effectChainStore graph sidechain route reconciliation (6C)', () => {
+  let audio
+  let timeline
+
+  beforeEach(() => {
+    vi.resetModules()
+    audio = {
+      getEffectChain: vi.fn(async () => '[]'),
+      getMasterEffectChain: vi.fn(async () => '[]'),
+      setGraphEffectParameterNormalized: vi.fn(async () => JSON.stringify({ ok: true })),
+      syncLinearGraphTopology: vi.fn(async () => ({ ok: true })),
+      syncGraphTopology: vi.fn(async () => ({ ok: true })),
+      hydrateGraphEffectNodes: vi.fn(async (_trackId, nodes = []) => ({
+        ok: true,
+        mapping: Object.fromEntries(nodes.map((n, i) => [n.effectInstanceId, 500 + i])),
+        skipped: [],
+        failures: [],
+      })),
+      removeGraphEffectNode: vi.fn(async () => true),
+    }
+    timeline = {
+      setTrackGraphState: vi.fn(async () => true),
+      getRouting: vi.fn(async () => []),
+      addSidechainRoute: vi.fn(async () => ({ ok: true, routeId: 'r-new' })),
+      removeSidechainRoute: vi.fn(async () => ({ ok: true })),
+    }
+    globalThis.window = { xleth: { audio, timeline } }
+  })
+
+  afterEach(() => {
+    delete globalThis.window
+  })
+
+  // input -> compressor -> output on graph track '7', plus a Sidechain Input node
+  // 'sc' (source track 3) optionally connected to the compressor by a sidechain edge.
+  function makeReconcileGraphState(trackId = '7', { source = 3, withEdge = true, pluginId = 'compressor' } = {}) {
+    const nodes = [
+      { id: 'input', type: 'trackInput', position: { x: 0, y: 0 }, data: {} },
+      {
+        id: 'fx-comp',
+        type: 'effect',
+        position: { x: 260, y: 0 },
+        data: {
+          effectInstanceId: 'comp-inst', pluginId, displayName: 'Compressor',
+          bypass: false, missing: false, crashed: false, sourceChainSlotIndex: 0, exposedParameterPorts: [],
+        },
+      },
+      { id: 'output', type: 'trackOutput', position: { x: 520, y: 0 }, data: {} },
+      { id: 'sc', type: 'sidechainInput', position: { x: 0, y: 120 }, data: { label: 'Sidechain Input', sourceTrackId: source } },
+    ]
+    const edges = [
+      { id: 'e-in', sourceNodeId: 'input', sourcePort: 'audio', targetNodeId: 'fx-comp', targetPort: 'audioIn', type: 'audio' },
+      { id: 'e-out', sourceNodeId: 'fx-comp', sourcePort: 'audioOut', targetNodeId: 'output', targetPort: 'audio', type: 'audio' },
+    ]
+    if (withEdge) {
+      edges.push({ id: 'sce', sourceNodeId: 'sc', sourcePort: 'sidechainOut', targetNodeId: 'fx-comp', targetPort: 'sidechainIn', type: 'sidechain' })
+    }
+    return { schemaVersion: 1, trackId, nodes, edges, viewport: { x: 0, y: 0, zoom: 1 } }
+  }
+
+  // Build a timeline.getRouting()-shaped snapshot from a flat list of routes.
+  function routingSnapshot(routes = []) {
+    const bySource = new Map()
+    for (const r of routes) {
+      const list = bySource.get(r.sourceTrackId) ?? []
+      list.push({
+        routeId: r.routeId,
+        sourceTrackId: r.sourceTrackId,
+        targetTrackId: r.targetTrackId,
+        targetEffectInstanceId: r.targetEffectInstanceId,
+        gain: r.gain ?? 1,
+        preFader: false,
+        enabled: r.enabled !== false,
+        status: 'ok',
+      })
+      bySource.set(r.sourceTrackId, list)
+    }
+    return [...bySource.entries()].map(([trackId, sidechainRoutes]) => ({
+      trackId, outputRoute: { targetTrackId: -1 }, sidechainRoutes,
+    }))
+  }
+
+  function seedGraph(store, gs) {
+    store.setState({ fxModes: { [gs.trackId]: 'graph' }, graphStates: { [gs.trackId]: gs }, graphHistories: {} })
+  }
+
+  const validSource = () => true
+
+  it('derives a route from the Sidechain Input source + sidechain edge and enables sc_external', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraph(useEffectChainStore, makeReconcileGraphState('7'))
+
+    const res = await useEffectChainStore.getState().reconcileGraphSidechainRoutesForTrack('7', {
+      isSourceTrackValid: validSource,
+    })
+
+    expect(res.ok).toBe(true)
+    // sc_external enabled on the graph-owned compressor by stable effectInstanceId
+    expect(audio.setGraphEffectParameterNormalized).toHaveBeenCalledWith(7, 'comp-inst', 'sc_external', 1)
+    // route added: source from the Sidechain Input node, target the owning graph track + instance
+    expect(timeline.addSidechainRoute).toHaveBeenCalledWith(3, {
+      targetTrackId: 7,
+      targetEffectInstanceId: 'comp-inst',
+      gain: 1.0,
+      preFader: false,
+      enabled: true,
+    })
+    expect(res.status.targets['comp-inst']).toMatchObject({ status: 'ok' })
+  })
+
+  it('does not add a route when the Sidechain Input has no source', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraph(useEffectChainStore, makeReconcileGraphState('7', { source: null }))
+
+    await useEffectChainStore.getState().reconcileGraphSidechainRoutesForTrack('7', { isSourceTrackValid: validSource })
+
+    expect(timeline.addSidechainRoute).not.toHaveBeenCalled()
+    expect(audio.setGraphEffectParameterNormalized).not.toHaveBeenCalledWith(7, 'comp-inst', 'sc_external', 1)
+  })
+
+  it('does not add a route for an unsupported (non-compressor) target', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraph(useEffectChainStore, makeReconcileGraphState('7', { pluginId: 'reverb' }))
+
+    await useEffectChainStore.getState().reconcileGraphSidechainRoutesForTrack('7', { isSourceTrackValid: validSource })
+
+    expect(timeline.addSidechainRoute).not.toHaveBeenCalled()
+  })
+
+  it('does not add a route when the source track does not exist (stale source)', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraph(useEffectChainStore, makeReconcileGraphState('7'))
+
+    const res = await useEffectChainStore.getState().reconcileGraphSidechainRoutesForTrack('7', {
+      isSourceTrackValid: () => false,
+    })
+
+    expect(timeline.addSidechainRoute).not.toHaveBeenCalled()
+    expect(res.status.sourceMissing).toBe(true)
+    expect(res.status.targets['comp-inst']).toMatchObject({ status: 'source_missing' })
+  })
+
+  it('does not recreate a route that already exists (dedup)', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraph(useEffectChainStore, makeReconcileGraphState('7'))
+    timeline.getRouting.mockResolvedValue(routingSnapshot([
+      { routeId: 'r1', sourceTrackId: 3, targetTrackId: 7, targetEffectInstanceId: 'comp-inst' },
+    ]))
+
+    await useEffectChainStore.getState().reconcileGraphSidechainRoutesForTrack('7', { isSourceTrackValid: validSource })
+
+    expect(timeline.addSidechainRoute).not.toHaveBeenCalled()
+    expect(timeline.removeSidechainRoute).not.toHaveBeenCalled()
+  })
+
+  it('removes the route and disables sc_external when the sidechain edge is gone', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraph(useEffectChainStore, makeReconcileGraphState('7', { withEdge: false }))
+    timeline.getRouting.mockResolvedValue(routingSnapshot([
+      { routeId: 'r1', sourceTrackId: 3, targetTrackId: 7, targetEffectInstanceId: 'comp-inst' },
+    ]))
+
+    await useEffectChainStore.getState().reconcileGraphSidechainRoutesForTrack('7', { isSourceTrackValid: validSource })
+
+    expect(timeline.removeSidechainRoute).toHaveBeenCalledWith(3, 'r1')
+    expect(audio.setGraphEffectParameterNormalized).toHaveBeenCalledWith(7, 'comp-inst', 'sc_external', 0)
+  })
+
+  it('removes the route when the source is cleared', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraph(useEffectChainStore, makeReconcileGraphState('7', { source: null }))
+    timeline.getRouting.mockResolvedValue(routingSnapshot([
+      { routeId: 'r1', sourceTrackId: 3, targetTrackId: 7, targetEffectInstanceId: 'comp-inst' },
+    ]))
+
+    await useEffectChainStore.getState().reconcileGraphSidechainRoutesForTrack('7', { isSourceTrackValid: validSource })
+
+    expect(timeline.removeSidechainRoute).toHaveBeenCalledWith(3, 'r1')
+  })
+
+  it('does not remove unrelated sidechain routes targeting other tracks', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraph(useEffectChainStore, makeReconcileGraphState('7'))
+    // A route targeting a DIFFERENT track (9) must be left untouched.
+    timeline.getRouting.mockResolvedValue(routingSnapshot([
+      { routeId: 'r-other', sourceTrackId: 3, targetTrackId: 9, targetEffectInstanceId: 'other-inst' },
+    ]))
+
+    await useEffectChainStore.getState().reconcileGraphSidechainRoutesForTrack('7', { isSourceTrackValid: validSource })
+
+    expect(timeline.removeSidechainRoute).not.toHaveBeenCalled()
+    // and the desired route IS created
+    expect(timeline.addSidechainRoute).toHaveBeenCalledWith(3, expect.objectContaining({ targetTrackId: 7 }))
+  })
+
+  it('re-keys when the source changes (remove old route, add new one)', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraph(useEffectChainStore, makeReconcileGraphState('7', { source: 4 }))
+    timeline.getRouting.mockResolvedValue(routingSnapshot([
+      { routeId: 'r1', sourceTrackId: 3, targetTrackId: 7, targetEffectInstanceId: 'comp-inst' },
+    ]))
+
+    await useEffectChainStore.getState().reconcileGraphSidechainRoutesForTrack('7', { isSourceTrackValid: validSource })
+
+    expect(timeline.removeSidechainRoute).toHaveBeenCalledWith(3, 'r1')
+    expect(timeline.addSidechainRoute).toHaveBeenCalledWith(4, expect.objectContaining({ targetEffectInstanceId: 'comp-inst' }))
+  })
+
+  it('surfaces a sc_external failure and does NOT add the route', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraph(useEffectChainStore, makeReconcileGraphState('7'))
+    audio.setGraphEffectParameterNormalized.mockResolvedValue(JSON.stringify({ ok: false, reason: 'engine_error' }))
+
+    const res = await useEffectChainStore.getState().reconcileGraphSidechainRoutesForTrack('7', { isSourceTrackValid: validSource })
+
+    expect(res.ok).toBe(false)
+    expect(timeline.addSidechainRoute).not.toHaveBeenCalled()
+    expect(res.status.targets['comp-inst']).toMatchObject({ status: 'external_failed' })
+  })
+
+  it('surfaces a route add failure separately from sc_external', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraph(useEffectChainStore, makeReconcileGraphState('7'))
+    timeline.addSidechainRoute.mockResolvedValue({ ok: false, reason: 'unknown_effect_instance' })
+
+    const res = await useEffectChainStore.getState().reconcileGraphSidechainRoutesForTrack('7', { isSourceTrackValid: validSource })
+
+    expect(res.ok).toBe(false)
+    expect(audio.setGraphEffectParameterNormalized).toHaveBeenCalledWith(7, 'comp-inst', 'sc_external', 1)
+    expect(res.status.targets['comp-inst']).toMatchObject({ status: 'route_failed' })
+  })
+
+  it('connectSidechainForTrack reconciles a route through to the timeline', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    // graph WITHOUT the edge yet; connecting it should add the route.
+    seedGraph(useEffectChainStore, makeReconcileGraphState('7', { withEdge: false }))
+
+    await useEffectChainStore.getState().connectSidechainForTrack('7', 'sc', 'fx-comp', {
+      idFactory: () => 'sce-1',
+      isSourceTrackValid: validSource,
+    })
+
+    expect(timeline.addSidechainRoute).toHaveBeenCalledWith(3, expect.objectContaining({ targetTrackId: 7, targetEffectInstanceId: 'comp-inst' }))
+    expect(audio.setGraphEffectParameterNormalized).toHaveBeenCalledWith(7, 'comp-inst', 'sc_external', 1)
+  })
+
+  it('disconnectSidechainEdgeForTrack tears the route down through the timeline', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraph(useEffectChainStore, makeReconcileGraphState('7'))
+    timeline.getRouting.mockResolvedValue(routingSnapshot([
+      { routeId: 'r1', sourceTrackId: 3, targetTrackId: 7, targetEffectInstanceId: 'comp-inst' },
+    ]))
+
+    await useEffectChainStore.getState().disconnectSidechainEdgeForTrack('7', 'sce', { isSourceTrackValid: validSource })
+
+    expect(timeline.removeSidechainRoute).toHaveBeenCalledWith(3, 'r1')
+  })
+
+  it('removing the graph compressor node tears down its orphaned route', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const gs = makeReconcileGraphState('7')
+    seedGraph(useEffectChainStore, gs)
+    // Mark the compressor engine-backed so removeGraphNodeForTrack destroys it.
+    useEffectChainStore.setState({ graphEngineNodeIds: { '7': { 'comp-inst': 500 } } })
+    timeline.getRouting.mockResolvedValue(routingSnapshot([
+      { routeId: 'r1', sourceTrackId: 3, targetTrackId: 7, targetEffectInstanceId: 'comp-inst' },
+    ]))
+
+    await useEffectChainStore.getState().removeGraphNodeForTrack('7', 'fx-comp', { isSourceTrackValid: validSource })
+
+    expect(timeline.removeSidechainRoute).toHaveBeenCalledWith(3, 'r1')
+  })
+
+  it('does nothing (no throw) when the timeline routing API is unavailable', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraph(useEffectChainStore, makeReconcileGraphState('7'))
+    delete timeline.getRouting
+
+    const res = await useEffectChainStore.getState().reconcileGraphSidechainRoutesForTrack('7', { isSourceTrackValid: validSource })
+
+    expect(res.ok).toBe(false)
+    expect(res.reason).toBe('routing_unavailable')
+    expect(timeline.addSidechainRoute).not.toHaveBeenCalled()
+  })
+
+  it('rejects reconciliation for master / chain-mode / missing graphState', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    await expect(useEffectChainStore.getState().reconcileGraphSidechainRoutesForTrack('master'))
+      .resolves.toMatchObject({ ok: false, reason: 'master_track' })
+
+    useEffectChainStore.setState({ fxModes: { '7': 'chain' }, graphStates: { '7': makeReconcileGraphState('7') } })
+    await expect(useEffectChainStore.getState().reconcileGraphSidechainRoutesForTrack('7'))
+      .resolves.toMatchObject({ ok: false, reason: 'not_graph_mode' })
+  })
+
+  it('hydration reconciles the persisted sidechain intent after graph effects exist', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    useEffectChainStore.setState({
+      fxModes: { '7': 'graph' },
+      graphStates: { '7': makeReconcileGraphState('7') },
+      graphHistories: {},
+    })
+
+    await useEffectChainStore.getState().hydrateGraphEffectInstancesForLoadedProject({ isSourceTrackValid: validSource })
+
+    expect(timeline.addSidechainRoute).toHaveBeenCalledWith(3, expect.objectContaining({ targetTrackId: 7, targetEffectInstanceId: 'comp-inst' }))
+    expect(audio.setGraphEffectParameterNormalized).toHaveBeenCalledWith(7, 'comp-inst', 'sc_external', 1)
+  })
+
+  it('undo of a sidechain connect tears the route back down', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraph(useEffectChainStore, makeReconcileGraphState('7', { withEdge: false }))
+
+    // Connect (records undo) — adds route.
+    await useEffectChainStore.getState().connectSidechainForTrack('7', 'sc', 'fx-comp', {
+      idFactory: () => 'sce-1', isSourceTrackValid: validSource,
+    })
+    // After connect the route exists; getRouting should now report it for the undo reconcile.
+    timeline.getRouting.mockResolvedValue(routingSnapshot([
+      { routeId: 'r-new', sourceTrackId: 3, targetTrackId: 7, targetEffectInstanceId: 'comp-inst' },
+    ]))
+    timeline.removeSidechainRoute.mockClear()
+
+    await useEffectChainStore.getState().undoGraphEditForTrack('7', { isSourceTrackValid: validSource })
+
+    expect(timeline.removeSidechainRoute).toHaveBeenCalledWith(3, 'r-new')
+  })
+})

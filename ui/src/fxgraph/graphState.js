@@ -2260,6 +2260,84 @@ export function isSidechainEdge(graphState, edgeId) {
   return graphState.edges.some((edge) => edge.id === edgeId && edge.type === GRAPH_SIDECHAIN_EDGE_TYPE)
 }
 
+// FXG-SC.6C — Derive the desired sidechain route intent from a graph's Sidechain
+// Input node + sidechain edges. PURE: no engine/route/IPC awareness, no track-
+// existence knowledge. The store turns this intent into existing Timeline
+// SidechainRoute records (6C reconciliation); graphState itself never stores native
+// route ids or APG node ids. Returns:
+//   owningTrackId          number | null — the graph track that owns these effects
+//   sourceTrackId          number | null — the Sidechain Input node's selected source
+//   sidechainInputNodeId   string | null
+//   effectInstanceIds      string[]      — every effect node instance id (route-
+//                                          ownership scope for this track)
+//   compressorInstanceIds  string[]      — sidechain-capable compressor effect nodes
+//                                          present in the graph (regardless of edge)
+//   edgeTargets            [{ effectInstanceId, targetNodeId, edgeId }]
+//                                        — capable compressor targets that have a
+//                                          sidechain edge (source may be unset/stale)
+//   desiredTargets         subset of edgeTargets that also has a finite source id
+//                                        (structural only — source existence/
+//                                          eligibility is enforced one layer up)
+export function deriveGraphSidechainIntent(graphState) {
+  const intent = {
+    owningTrackId: null,
+    sourceTrackId: null,
+    sidechainInputNodeId: null,
+    effectInstanceIds: [],
+    compressorInstanceIds: [],
+    edgeTargets: [],
+    desiredTargets: [],
+  }
+  if (!graphState || !Array.isArray(graphState.nodes) || !Array.isArray(graphState.edges)) {
+    return intent
+  }
+
+  const rawOwning = Number(graphState.trackId)
+  intent.owningTrackId = Number.isFinite(rawOwning) ? rawOwning : null
+
+  // v1: a single Sidechain Input node per graph.
+  const sidechainInput = graphState.nodes.find(isSidechainInputGraphNode)
+  if (sidechainInput) {
+    intent.sidechainInputNodeId = sidechainInput.id
+    const src = sidechainInput.data?.sourceTrackId
+    intent.sourceTrackId = Number.isFinite(src) ? src : null
+  }
+
+  const effectInstanceIds = new Set()
+  const compressorInstanceIds = new Set()
+  const nodeById = new Map()
+  for (const node of graphState.nodes) {
+    if (!isPlainObject(node)) continue
+    nodeById.set(node.id, node)
+    if (node.type !== 'effect') continue
+    const id = readEffectInstanceId(node)
+    if (!id) continue
+    effectInstanceIds.add(id)
+    if (isSidechainCapableEffectNode(node)) compressorInstanceIds.add(id)
+  }
+  intent.effectInstanceIds = [...effectInstanceIds]
+  intent.compressorInstanceIds = [...compressorInstanceIds]
+
+  // Only edges that actually originate at the Sidechain Input node and land on a
+  // sidechain-capable compressor count. A missing/unsupported target is ignored —
+  // the renderer never derives a route to an effect that cannot consume a key.
+  const seenTargets = new Set()
+  for (const edge of graphState.edges) {
+    if (!isPlainObject(edge) || edge.type !== GRAPH_SIDECHAIN_EDGE_TYPE) continue
+    if (!intent.sidechainInputNodeId || edge.sourceNodeId !== intent.sidechainInputNodeId) continue
+    const targetNode = nodeById.get(edge.targetNodeId)
+    if (!isSidechainCapableEffectNode(targetNode)) continue
+    const effectInstanceId = readEffectInstanceId(targetNode)
+    if (!effectInstanceId || seenTargets.has(effectInstanceId)) continue
+    seenTargets.add(effectInstanceId)
+    const target = { effectInstanceId, targetNodeId: targetNode.id, edgeId: edge.id }
+    intent.edgeTargets.push(target)
+    if (intent.sourceTrackId != null) intent.desiredTargets.push(target)
+  }
+
+  return intent
+}
+
 // Removes a sidechain edge specifically. Returns MISSING_EDGE when the id does not
 // resolve to a sidechain edge, so callers never accidentally drop an audio/parameter edge.
 export function disconnectSidechainEdge(graphState, edgeId) {

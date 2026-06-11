@@ -64,6 +64,7 @@ import {
   isSidechainInputGraphNode,
   isSidechainCapableEffectNode,
   normalizeSidechainInputNodeData,
+  deriveGraphSidechainIntent,
 } from './graphState.js'
 import {
   analyzeLinearGraphTopology,
@@ -3597,5 +3598,70 @@ describe('FXG-SC.6B audio topology ignores sidechain intent', () => {
       makeSidechainGraphState(), { sourceNodeId: 'sc', targetNodeId: 'fx-comp' }, { idFactory: () => 'sce-1' },
     ).graphState
     expect(isParameterEdge(graphState, 'sce-1')).toBe(false)
+  })
+})
+
+describe('FXG-SC.6C deriveGraphSidechainIntent', () => {
+  const withEdge = (graphState) =>
+    connectSidechainNodes(graphState, { sourceNodeId: 'sc', targetNodeId: 'fx-comp' }, { idFactory: () => 'sce-1' }).graphState
+
+  it('derives owning track, source, and a desired compressor target from a sidechain edge', () => {
+    const intent = deriveGraphSidechainIntent(withEdge(makeSidechainGraphState()))
+    expect(intent.owningTrackId).toBe(7)
+    expect(intent.sourceTrackId).toBe(3)
+    expect(intent.sidechainInputNodeId).toBe('sc')
+    expect(intent.compressorInstanceIds).toEqual(['comp-inst'])
+    expect(intent.edgeTargets).toEqual([{ effectInstanceId: 'comp-inst', targetNodeId: 'fx-comp', edgeId: 'sce-1' }])
+    expect(intent.desiredTargets).toEqual([{ effectInstanceId: 'comp-inst', targetNodeId: 'fx-comp', edgeId: 'sce-1' }])
+  })
+
+  it('yields no desired target when no sidechain edge exists', () => {
+    const intent = deriveGraphSidechainIntent(makeSidechainGraphState())
+    expect(intent.edgeTargets).toEqual([])
+    expect(intent.desiredTargets).toEqual([])
+    // ...but the compressor is still reported as a capable target in the graph.
+    expect(intent.compressorInstanceIds).toEqual(['comp-inst'])
+  })
+
+  it('keeps an edge target but no desired target when the source is later cleared', () => {
+    // The edge is created while a source is selected, then the source is cleared
+    // (a route is no longer desired, but the edge intent survives in graphState).
+    const connected = withEdge(makeSidechainGraphState())
+    const graphState = {
+      ...connected,
+      nodes: connected.nodes.map((n) =>
+        n.id === 'sc' ? { ...n, data: { ...n.data, sourceTrackId: null } } : n),
+    }
+    const intent = deriveGraphSidechainIntent(graphState)
+    expect(intent.sourceTrackId).toBeNull()
+    expect(intent.edgeTargets).toHaveLength(1)
+    expect(intent.desiredTargets).toEqual([])
+  })
+
+  it('ignores a sidechain edge to a non-compressor / missing target', () => {
+    // An edge persisted against a now-missing compressor is not a derivable target.
+    const graphState = {
+      ...makeSidechainGraphState({
+        nodes: [
+          { id: 'input', type: 'trackInput', position: { x: 0, y: 0 }, data: {} },
+          makeCompressorEffectNode('fx-comp', { missing: true }),
+          { id: 'output', type: 'trackOutput', position: { x: 520, y: 0 }, data: {} },
+          makeSidechainInputNode('sc', { label: 'Sidechain Input', sourceTrackId: 3 }),
+        ],
+      }),
+      edges: [
+        { id: 'sce-1', sourceNodeId: 'sc', sourcePort: 'sidechainOut', targetNodeId: 'fx-comp', targetPort: 'sidechainIn', type: 'sidechain' },
+      ],
+    }
+    const intent = deriveGraphSidechainIntent(graphState)
+    expect(intent.edgeTargets).toEqual([])
+    expect(intent.desiredTargets).toEqual([])
+  })
+
+  it('returns an empty intent for a malformed graphState', () => {
+    const intent = deriveGraphSidechainIntent(null)
+    expect(intent.owningTrackId).toBeNull()
+    expect(intent.sourceTrackId).toBeNull()
+    expect(intent.edgeTargets).toEqual([])
   })
 })
