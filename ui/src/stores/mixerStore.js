@@ -269,8 +269,12 @@ async function setCompressorExternalSidechainParam({
       resolvedValue: enabled ? 1 : 0,
       result,
     })
-    if (result && typeof result === 'object' && result.ok === false) {
-      const reason = result?.reason || 'engine_error'
+    // audio_setEffectParameter resolves to a plain boolean (Napi::Boolean):
+    // false means the engine could not set the parameter (unknown track/node/
+    // param — e.g. an out-of-date native addon without `sc_external`). Treat it
+    // as a real failure; masking it leaves the toggle ON with no engine effect.
+    if (result === false || (result && typeof result === 'object' && result.ok === false)) {
+      const reason = (result && typeof result === 'object' && result.reason) || 'engine_error'
       return { ok: false, reason, error: mapCompressorSidechainModeError() }
     }
     return { ok: true }

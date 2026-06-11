@@ -212,7 +212,7 @@ describe('mixerStore output routing', () => {
     })
   })
 
-  it('treats legacy false setEffectParameter result as successful external mode write', async () => {
+  it('treats boolean false setEffectParameter result as a failed external mode write', async () => {
     const { default: useMixerStore } = await loadMixerStoreFixture()
     window.xleth.audio.setEffectParameter.mockResolvedValueOnce(false)
     seedTracks(useMixerStore, [
@@ -228,10 +228,16 @@ describe('mixerStore output routing', () => {
       sourceTrackId: null,
     })
 
-    expect(result).toMatchObject({ ok: true, externalEnabled: true, route: null })
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'engine_error',
+      error: 'Could not update compressor sidechain mode',
+      externalEnabled: false,
+    })
     expect(window.xleth.audio.setEffectParameter).toHaveBeenCalledWith(2, 44, 'sc_external', 1)
     expect(window.xleth.timeline.addSidechainRoute).not.toHaveBeenCalled()
-    expect(useMixerStore.getState().getSidechainErrorForEffect(2, 'cmp-1')).toBeNull()
+    expect(useMixerStore.getState().getSidechainErrorForEffect(2, 'cmp-1'))
+      .toBe('Could not update compressor sidechain mode')
   })
 
   it('selecting None removes the existing sidechain route while keeping external mode enabled', async () => {

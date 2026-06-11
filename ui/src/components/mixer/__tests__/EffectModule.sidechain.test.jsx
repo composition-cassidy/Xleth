@@ -159,7 +159,7 @@ describe('EffectModule compressor sidechain controls', () => {
     await unmountRoot(root)
   })
 
-  it('treats false setEffectParameter result as success and does not show route rejection on toggle', async () => {
+  it('treats false setEffectParameter result as failure and reverts the toggle', async () => {
     const { EffectModule, useMixerStore } = await loadEffectModuleFixture()
     window.xleth.audio.setEffectParameter.mockResolvedValueOnce(false)
     seedMixerStore(useMixerStore)
@@ -171,8 +171,8 @@ describe('EffectModule compressor sidechain controls', () => {
 
     expect(window.xleth.audio.setEffectParameter).toHaveBeenCalledWith(2, 44, 'sc_external', 1)
     expect(window.xleth.timeline.addSidechainRoute).not.toHaveBeenCalled()
-    expect(container.textContent).toContain('No source')
-    expect(container.textContent).not.toContain('Route rejected')
+    expect(container.textContent).toContain('Could not update compressor sidechain mode')
+    expect(container.querySelector('input[aria-label="External Sidechain"]').checked).toBe(false)
     await unmountRoot(root)
   })
 
