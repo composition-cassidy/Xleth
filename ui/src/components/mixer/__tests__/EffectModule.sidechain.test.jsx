@@ -159,6 +159,46 @@ describe('EffectModule compressor sidechain controls', () => {
     await unmountRoot(root)
   })
 
+  it('treats false setEffectParameter result as success and does not show route rejection on toggle', async () => {
+    const { EffectModule, useMixerStore } = await loadEffectModuleFixture()
+    window.xleth.audio.setEffectParameter.mockResolvedValueOnce(false)
+    seedMixerStore(useMixerStore)
+
+    const { container, root } = await renderEffect(EffectModule)
+    const checkbox = container.querySelector('input[aria-label="External Sidechain"]')
+
+    await clickCheckbox(checkbox)
+
+    expect(window.xleth.audio.setEffectParameter).toHaveBeenCalledWith(2, 44, 'sc_external', 1)
+    expect(window.xleth.timeline.addSidechainRoute).not.toHaveBeenCalled()
+    expect(container.textContent).toContain('No source')
+    expect(container.textContent).not.toContain('Route rejected')
+    await unmountRoot(root)
+  })
+
+  it('keeps source selector disabled when no eligible source tracks exist', async () => {
+    const { EffectModule, useMixerStore } = await loadEffectModuleFixture()
+    seedMixerStore(useMixerStore)
+    useMixerStore.setState({
+      tracks: {
+        2: { id: 2, name: 'Bass', volume: 1, pan: 0, spread: 1, muted: false, solo: false, visualOnly: false },
+        3: { id: 3, name: 'Visual', volume: 1, pan: 0, spread: 1, muted: false, solo: false, visualOnly: true },
+      },
+      trackOrder: [2, 3],
+      outputRoutes: { 2: -1, 3: -1 },
+    })
+
+    const { container, root } = await renderEffect(EffectModule)
+    const checkbox = container.querySelector('input[aria-label="External Sidechain"]')
+    const select = container.querySelector('select[aria-label="Sidechain source"]')
+
+    await clickCheckbox(checkbox)
+
+    expect(select.disabled).toBe(true)
+    expect(window.xleth.timeline.addSidechainRoute).not.toHaveBeenCalled()
+    await unmountRoot(root)
+  })
+
   it('selecting a source calls the route API with the compressor effectInstanceId', async () => {
     const { EffectModule, useMixerStore } = await loadEffectModuleFixture()
     let routing = [
@@ -240,7 +280,7 @@ describe('EffectModule compressor sidechain controls', () => {
 
   it('shows readable backend rejection copy', async () => {
     const { EffectModule, useMixerStore } = await loadEffectModuleFixture()
-    window.xleth.timeline.addSidechainRoute.mockResolvedValueOnce({ ok: false, reason: 'duplicate_route' })
+    window.xleth.timeline.addSidechainRoute.mockResolvedValueOnce({ ok: false, reason: 'cycle' })
     seedMixerStore(useMixerStore)
 
     const { container, root } = await renderEffect(EffectModule)
@@ -255,8 +295,24 @@ describe('EffectModule compressor sidechain controls', () => {
       await Promise.resolve()
     })
 
-    expect(container.textContent).toContain('Sidechain route already exists')
-    expect(container.textContent).not.toContain('duplicate_route')
+    expect(container.textContent).toContain('Would create feedback loop')
+    expect(container.textContent).not.toContain('cycle')
+    await unmountRoot(root)
+  })
+
+  it('shows compressor mode error when sc_external parameter update rejects', async () => {
+    const { EffectModule, useMixerStore } = await loadEffectModuleFixture()
+    window.xleth.audio.setEffectParameter.mockRejectedValueOnce(new Error('ipc failed'))
+    seedMixerStore(useMixerStore)
+
+    const { container, root } = await renderEffect(EffectModule)
+    const checkbox = container.querySelector('input[aria-label="External Sidechain"]')
+
+    await clickCheckbox(checkbox)
+
+    expect(container.textContent).toContain('Could not update compressor sidechain mode')
+    expect(container.textContent).not.toContain('Route rejected')
+    expect(window.xleth.timeline.addSidechainRoute).not.toHaveBeenCalled()
     await unmountRoot(root)
   })
 

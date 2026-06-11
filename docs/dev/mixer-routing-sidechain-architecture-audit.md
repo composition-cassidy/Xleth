@@ -1439,3 +1439,22 @@ VST hosting, FX Graph, sends, graphState, or `StockParameterCatalog.{cpp,h}` fil
 - **Deferred:** multi-source sidechain remains backend-only/deferred in the UI; VST sidechain,
   OTT/limiter sidechain UI, FX Graph Sidechain Input / empty `targetEffectInstanceId` targets,
   sends, routing matrix, and sidechain gain/pre-fader controls all remain deferred.
+
+### 5B-r1 - sidechain UI parameter-set success contract (2026-06-11)
+
+Prompt 5B-r1 fixes a renderer-side contract mismatch in the compressor sidechain UI. Existing stock
+parameter controls call `window.xleth.audio.setEffectParameter(...)` as a fire-and-forget resolved
+IPC operation and do not treat a bare boolean `false` return as user-facing failure. The initial 5B
+sidechain helper did treat `audio_setEffectParameter(trackId, nodeId, "sc_external", 1)` resolving
+to `false` as failure, which incorrectly surfaced as `Route rejected` even when bridge logging showed
+the parameter write had been applied.
+
+- **Fixed:** a resolved legacy `false` return from `setEffectParameter` no longer becomes a
+  sidechain route rejection. Thrown/rejected parameter updates and structured `{ ok: false }`
+  responses still show compressor-mode copy: `Could not update compressor sidechain mode`.
+- **Still strict for routes:** `timeline_addSidechainRoute` / `timeline_removeSidechainRoute`
+  failures remain separately reported. Add failures keep mapped route copy such as `Would create
+  feedback loop`; remove failures show `Could not remove sidechain route`.
+- **No DSP/engine changes:** stock compressor DSP, sidechain runtime transport, output routing/PDC,
+  VST/plugin hosting, FX Graph, sends, graphState, `GuardedPluginWrapper`, and
+  `StockParameterCatalog.{cpp,h}` were not changed.

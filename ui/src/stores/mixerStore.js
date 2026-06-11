@@ -181,6 +181,14 @@ export function mapSidechainRouteError(reason) {
   }
 }
 
+function mapCompressorSidechainModeError() {
+  return 'Could not update compressor sidechain mode'
+}
+
+function mapSidechainRouteRemoveError() {
+  return 'Could not remove sidechain route'
+}
+
 function sidechainEffectKey(targetTrackId, effectInstanceId) {
   return `${normalizeOutputTargetId(targetTrackId)}::${effectInstanceId ?? ''}`
 }
@@ -208,10 +216,10 @@ async function setCompressorExternalSidechainParam({
   const audio = options.audio ?? globalThis.window?.xleth?.audio
   const setEffectParameter = options.setEffectParameter ?? audio?.setEffectParameter
   if (typeof setEffectParameter !== 'function') {
-    return { ok: false, reason: 'engine_unavailable', error: 'Route rejected' }
+    return { ok: false, reason: 'engine_unavailable', error: mapCompressorSidechainModeError() }
   }
   if (!Number.isInteger(targetNodeId) || targetNodeId < 0) {
-    return { ok: false, reason: 'unknown_effect_instance', error: mapSidechainRouteError('unknown_effect_instance') }
+    return { ok: false, reason: 'unknown_effect_instance', error: mapCompressorSidechainModeError() }
   }
 
   try {
@@ -221,14 +229,14 @@ async function setCompressorExternalSidechainParam({
       COMPRESSOR_EXTERNAL_SIDECHAIN_PARAM_ID,
       enabled ? 1 : 0,
     )
-    if (result === false || result?.ok === false) {
+    if (result && typeof result === 'object' && result.ok === false) {
       const reason = result?.reason || 'engine_error'
-      return { ok: false, reason, error: mapSidechainRouteError(reason) }
+      return { ok: false, reason, error: mapCompressorSidechainModeError() }
     }
     return { ok: true }
   } catch (e) {
     ;(options.warn ?? console.warn)?.('[mixerStore] compressor sidechain parameter set failed:', e?.message ?? e)
-    return { ok: false, reason: 'ipc_error', error: 'Route rejected' }
+    return { ok: false, reason: 'ipc_error', error: mapCompressorSidechainModeError() }
   }
 }
 
@@ -497,7 +505,7 @@ const useMixerStore = create((set, get) => ({
     const timeline = options.timeline ?? globalThis.window?.xleth?.timeline
     const removeRoute = options.removeSidechainRoute ?? timeline?.removeSidechainRoute
     if (typeof removeRoute !== 'function') {
-      const error = mapSidechainRouteError('engine_unavailable')
+      const error = mapSidechainRouteRemoveError()
       set(s => ({
         sidechainRoutingErrors: { ...s.sidechainRoutingErrors, [errorKey]: error },
       }))
@@ -508,7 +516,7 @@ const useMixerStore = create((set, get) => ({
       const result = await removeRoute(route.sourceTrackId, route.routeId)
       if (result === false || result?.ok === false) {
         const reason = result?.reason || 'rejected'
-        const error = mapSidechainRouteError(reason)
+        const error = mapSidechainRouteRemoveError()
         await get().refreshRouting()
         set(s => ({
           sidechainRoutingErrors: { ...s.sidechainRoutingErrors, [errorKey]: error },
@@ -525,7 +533,7 @@ const useMixerStore = create((set, get) => ({
       return { ok: true, removed: true }
     } catch (e) {
       ;(options.warn ?? console.warn)?.('[mixerStore] removeSidechainRouteForEffect failed:', e?.message ?? e)
-      const error = 'Route rejected'
+      const error = mapSidechainRouteRemoveError()
       await get().refreshRouting()
       set(s => ({
         sidechainRoutingErrors: { ...s.sidechainRoutingErrors, [errorKey]: error },

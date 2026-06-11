@@ -208,6 +208,7 @@ function CompressorSidechainControls({ effect, storeKey }) {
   )
   const sourceTrack = route ? tracks[route.sourceTrackId] : null
   const selectedSourceValue = route?.sourceTrackId != null ? String(route.sourceTrackId) : ''
+  const hasSelectableSource = eligibleSources.length > 0 || Boolean(route && sourceTrack)
   const statusText = getCompressorSidechainStatusText({
     externalEnabled,
     route,
@@ -308,7 +309,7 @@ function CompressorSidechainControls({ effect, storeKey }) {
         <select
           value={selectedSourceValue}
           onChange={handleSourceChange}
-          disabled={!externalEnabled}
+          disabled={!externalEnabled || !hasSelectableSource}
           aria-label="Sidechain source"
         >
           <option value="">None</option>

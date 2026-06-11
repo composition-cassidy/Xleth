@@ -212,6 +212,28 @@ describe('mixerStore output routing', () => {
     })
   })
 
+  it('treats legacy false setEffectParameter result as successful external mode write', async () => {
+    const { default: useMixerStore } = await loadMixerStoreFixture()
+    window.xleth.audio.setEffectParameter.mockResolvedValueOnce(false)
+    seedTracks(useMixerStore, [
+      { id: 1, name: 'Kick' },
+      { id: 2, name: 'Bass' },
+    ], { 1: -1, 2: -1 })
+
+    const result = await useMixerStore.getState().setCompressorExternalSidechain({
+      targetTrackId: 2,
+      targetNodeId: 44,
+      effectInstanceId: 'cmp-1',
+      enabled: true,
+      sourceTrackId: null,
+    })
+
+    expect(result).toMatchObject({ ok: true, externalEnabled: true, route: null })
+    expect(window.xleth.audio.setEffectParameter).toHaveBeenCalledWith(2, 44, 'sc_external', 1)
+    expect(window.xleth.timeline.addSidechainRoute).not.toHaveBeenCalled()
+    expect(useMixerStore.getState().getSidechainErrorForEffect(2, 'cmp-1')).toBeNull()
+  })
+
   it('selecting None removes the existing sidechain route while keeping external mode enabled', async () => {
     const { default: useMixerStore } = await loadMixerStoreFixture()
     let routing = [
@@ -327,7 +349,7 @@ describe('mixerStore output routing', () => {
 
   it('rejected add refetches routing and records readable error copy', async () => {
     const { default: useMixerStore } = await loadMixerStoreFixture()
-    window.xleth.timeline.addSidechainRoute.mockResolvedValueOnce({ ok: false, reason: 'duplicate_route' })
+    window.xleth.timeline.addSidechainRoute.mockResolvedValueOnce({ ok: false, reason: 'cycle' })
     window.xleth.timeline.getRouting.mockResolvedValueOnce([
       { trackId: 1, outputRoute: { targetTrackId: -1 }, sidechainRoutes: [] },
       { trackId: 2, outputRoute: { targetTrackId: -1 }, sidechainRoutes: [] },
@@ -347,12 +369,38 @@ describe('mixerStore output routing', () => {
 
     expect(result).toMatchObject({
       ok: false,
-      reason: 'duplicate_route',
-      error: 'Sidechain route already exists',
+      reason: 'cycle',
+      error: 'Would create feedback loop',
       externalEnabled: true,
     })
-    expect(useMixerStore.getState().getSidechainErrorForEffect(2, 'cmp-1')).toBe('Sidechain route already exists')
+    expect(useMixerStore.getState().getSidechainErrorForEffect(2, 'cmp-1')).toBe('Would create feedback loop')
     expect(window.xleth.timeline.getRouting).toHaveBeenCalledTimes(1)
+  })
+
+  it('setEffectParameter rejection reports compressor mode error instead of route rejection', async () => {
+    const { default: useMixerStore } = await loadMixerStoreFixture()
+    window.xleth.audio.setEffectParameter.mockRejectedValueOnce(new Error('ipc failed'))
+    seedTracks(useMixerStore, [
+      { id: 1, name: 'Kick' },
+      { id: 2, name: 'Bass' },
+    ], { 1: -1, 2: -1 })
+
+    const result = await useMixerStore.getState().setCompressorExternalSidechain({
+      targetTrackId: 2,
+      targetNodeId: 44,
+      effectInstanceId: 'cmp-1',
+      enabled: true,
+      sourceTrackId: 1,
+    }, { warn: vi.fn() })
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'ipc_error',
+      error: 'Could not update compressor sidechain mode',
+      externalEnabled: false,
+    })
+    expect(window.xleth.timeline.addSidechainRoute).not.toHaveBeenCalled()
+    expect(useMixerStore.getState().getSidechainErrorForEffect(2, 'cmp-1')).toBe('Could not update compressor sidechain mode')
   })
 
   it('missing effect instance rejects without touching route or parameter APIs', async () => {
@@ -417,6 +465,45 @@ describe('mixerStore output routing', () => {
     expect(window.xleth.audio.setEffectParameter).toHaveBeenCalledWith(2, 44, 'sc_external', 0)
     expect(window.xleth.timeline.removeSidechainRoute).toHaveBeenCalledWith(1, 'route-1')
     expect(useMixerStore.getState().getSidechainRouteForEffect(2, 'cmp-1')).toBeNull()
+  })
+
+  it('route remove failure reports route-remove-specific error copy', async () => {
+    const { default: useMixerStore } = await loadMixerStoreFixture()
+    const route = {
+      routeId: 'route-1',
+      sourceTrackId: 1,
+      targetTrackId: 2,
+      targetEffectInstanceId: 'cmp-1',
+      gain: 1,
+      preFader: false,
+      enabled: true,
+      status: 'ok',
+    }
+    window.xleth.timeline.removeSidechainRoute.mockResolvedValueOnce({ ok: false, reason: 'unknown_source_track' })
+    window.xleth.timeline.getRouting.mockResolvedValueOnce([
+      { trackId: 1, outputRoute: { targetTrackId: -1 }, sidechainRoutes: [route] },
+      { trackId: 2, outputRoute: { targetTrackId: -1 }, sidechainRoutes: [] },
+    ])
+    seedTracks(useMixerStore, [
+      { id: 1, name: 'Kick' },
+      { id: 2, name: 'Bass' },
+    ], { 1: -1, 2: -1 }, [route])
+
+    const result = await useMixerStore.getState().setCompressorExternalSidechain({
+      targetTrackId: 2,
+      targetNodeId: 44,
+      effectInstanceId: 'cmp-1',
+      enabled: false,
+    })
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'unknown_source_track',
+      error: 'Could not remove sidechain route',
+      externalEnabled: false,
+    })
+    expect(window.xleth.audio.setEffectParameter).toHaveBeenCalledWith(2, 44, 'sc_external', 0)
+    expect(useMixerStore.getState().getSidechainErrorForEffect(2, 'cmp-1')).toBe('Could not remove sidechain route')
   })
 
   it('handles absent or throwing sidechain route APIs without crashing', async () => {
