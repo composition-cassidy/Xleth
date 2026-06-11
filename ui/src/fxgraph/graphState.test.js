@@ -3281,6 +3281,7 @@ function makeCompressorEffectNode(id = 'fx-comp', overrides = {}) {
       missing: false,
       crashed: false,
       sourceChainSlotIndex: 0,
+      sidechain: { supported: true, channels: 2, enabled: false },
       ...overrides,
     },
   }
@@ -3348,7 +3349,18 @@ describe('FXG-SC.6B sidechain input node normalization', () => {
     expect(isSidechainInputGraphNode(makeSidechainInputNode('sc', {}))).toBe(true)
     expect(isSidechainInputGraphNode(makeCompressorEffectNode())).toBe(false)
     expect(isSidechainCapableEffectNode(makeCompressorEffectNode())).toBe(true)
-    expect(isSidechainCapableEffectNode(makeCompressorEffectNode('fx', { pluginId: 'stock:eq' }))).toBe(false)
+    expect(isSidechainCapableEffectNode(makeCompressorEffectNode('fx', {
+      pluginId: 'fabfilter.pro-c-2',
+      sidechain: { supported: true, channels: 2, enabled: false },
+    }))).toBe(true)
+    expect(isSidechainCapableEffectNode(makeCompressorEffectNode('fx', {
+      pluginId: 'compressor',
+      sidechain: undefined,
+    }))).toBe(false)
+    expect(isSidechainCapableEffectNode(makeCompressorEffectNode('fx', {
+      pluginId: 'stock:eq',
+      sidechain: { supported: false, channels: 0, enabled: false },
+    }))).toBe(false)
     expect(isSidechainCapableEffectNode(makeCompressorEffectNode('fx', { missing: true }))).toBe(false)
     expect(isSidechainCapableEffectNode(makeCompressorEffectNode('fx', { effectInstanceId: '' }))).toBe(false)
   })
@@ -3448,9 +3460,9 @@ describe('FXG-SC.6B sidechain edge validation', () => {
       .toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.SELECT_SOURCE_FIRST })
   })
 
-  it('rejects an unsupported (non-compressor) target', () => {
+  it('rejects a target whose engine capability is unsupported', () => {
     const graphState = makeSidechainGraphState()
-    graphState.nodes.find((n) => n.id === 'fx-comp').data.pluginId = 'stock:eq'
+    graphState.nodes.find((n) => n.id === 'fx-comp').data.sidechain = { supported: false, channels: 0, enabled: false }
     expect(canConnectSidechainNodes(graphState, { sourceNodeId: 'sc', targetNodeId: 'fx-comp' }))
       .toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.UNSUPPORTED_SIDECHAIN_TARGET })
   })
@@ -3610,6 +3622,7 @@ describe('FXG-SC.6C deriveGraphSidechainIntent', () => {
     expect(intent.owningTrackId).toBe(7)
     expect(intent.sourceTrackId).toBe(3)
     expect(intent.sidechainInputNodeId).toBe('sc')
+    expect(intent.sidechainCapableInstanceIds).toEqual(['comp-inst'])
     expect(intent.compressorInstanceIds).toEqual(['comp-inst'])
     expect(intent.edgeTargets).toEqual([{ effectInstanceId: 'comp-inst', targetNodeId: 'fx-comp', edgeId: 'sce-1' }])
     expect(intent.desiredTargets).toEqual([{ effectInstanceId: 'comp-inst', targetNodeId: 'fx-comp', edgeId: 'sce-1' }])
@@ -3620,6 +3633,7 @@ describe('FXG-SC.6C deriveGraphSidechainIntent', () => {
     expect(intent.edgeTargets).toEqual([])
     expect(intent.desiredTargets).toEqual([])
     // ...but the compressor is still reported as a capable target in the graph.
+    expect(intent.sidechainCapableInstanceIds).toEqual(['comp-inst'])
     expect(intent.compressorInstanceIds).toEqual(['comp-inst'])
   })
 

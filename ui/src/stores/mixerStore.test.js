@@ -383,6 +383,37 @@ describe('mixerStore output routing', () => {
     expect(window.xleth.timeline.getRouting).toHaveBeenCalledTimes(1)
   })
 
+  it('maps sidechain_unsupported to plugin sidechain copy', async () => {
+    const { default: useMixerStore } = await loadMixerStoreFixture()
+    window.xleth.timeline.addSidechainRoute.mockResolvedValueOnce({ ok: false, reason: 'sidechain_unsupported' })
+    window.xleth.timeline.getRouting.mockResolvedValueOnce([
+      { trackId: 1, outputRoute: { targetTrackId: -1 }, sidechainRoutes: [] },
+      { trackId: 2, outputRoute: { targetTrackId: -1 }, sidechainRoutes: [] },
+    ])
+    seedTracks(useMixerStore, [
+      { id: 1, name: 'Kick' },
+      { id: 2, name: 'Bass' },
+    ], { 1: -1, 2: -1 })
+
+    const result = await useMixerStore.getState().setEffectExternalSidechain({
+      targetTrackId: 2,
+      targetNodeId: 44,
+      effectInstanceId: 'vst-1',
+      enabled: true,
+      sourceTrackId: 1,
+    })
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'sidechain_unsupported',
+      error: 'This plugin does not expose a sidechain input',
+      externalEnabled: true,
+    })
+    expect(window.xleth.audio.setEffectParameter).not.toHaveBeenCalled()
+    expect(useMixerStore.getState().getSidechainErrorForEffect(2, 'vst-1'))
+      .toBe('This plugin does not expose a sidechain input')
+  })
+
   it('setEffectParameter rejection reports compressor mode error instead of route rejection', async () => {
     const { default: useMixerStore } = await loadMixerStoreFixture()
     window.xleth.audio.setEffectParameter.mockRejectedValueOnce(new Error('ipc failed'))

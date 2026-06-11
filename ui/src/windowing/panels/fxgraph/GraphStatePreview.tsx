@@ -147,10 +147,6 @@ export interface SidechainSourceOption {
   name: string;
 }
 
-// v1 sidechain-capable target plugin ids (renderer-static capability gate). Only the
-// stock compressor declares an external sidechain bus engine-side.
-const SIDECHAIN_SUPPORTED_TARGET_PLUGIN_IDS = ['compressor'];
-
 interface PositionedNode {
   id: string;
   type: PreviewNodeKind;
@@ -404,13 +400,24 @@ function readPositionOverride(
   return { x: override.x, y: override.y };
 }
 
-// FXG-SC.6B — renderer-static sidechain capability check for an effect node. Mirrors
-// graphState.isSidechainCapableEffectNode: a real (non-missing/crashed) effect with an
-// effectInstanceId whose pluginId is sidechain-capable (stock compressor in v1).
+// Mirrors graphState.isSidechainCapableEffectNode: runtime sidechain capability
+// gates the sidechainIn port, and missing capability fails closed.
+function readSidechainCapability(data: Record<string, unknown> | undefined) {
+  const value = data?.sidechain;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const capability = value as Record<string, unknown>;
+  if (typeof capability.supported !== 'boolean') return null;
+  return {
+    supported: capability.supported,
+    channels: Number.isInteger(capability.channels) ? capability.channels as number : 0,
+    enabled: capability.enabled === true,
+  };
+}
+
 function isSidechainCapableEffectData(data: Record<string, unknown> | undefined) {
   if (readBoolean(data, 'missing') || readBoolean(data, 'crashed')) return false;
   if (!readString(data, 'effectInstanceId')) return false;
-  return SIDECHAIN_SUPPORTED_TARGET_PLUGIN_IDS.includes(readString(data, 'pluginId'));
+  return readSidechainCapability(data)?.supported === true;
 }
 
 interface ResolvedNodeText {
@@ -479,7 +486,7 @@ function resolveNodeText(node: GraphStateNode): ResolvedNodeText {
       parameterPorts: readExposedParameterPorts(data),
       // Placeholder / data-only / missing nodes have no engine processor to open.
       editable: pluginId.length > 0 && pluginId !== 'placeholder' && !missing,
-      // FXG-SC.6B — stock compressor effects expose a sidechainIn key target port.
+      // Engine-capable effects expose a sidechainIn key target port.
       sidechainTarget: isSidechainCapableEffectData(data),
     };
   }
@@ -1318,7 +1325,7 @@ export function GraphStatePreviewNode({
           </span>
         </span>
       )}
-      {/* FXG-SC.6B — compressor-only sidechain key target port. Distinct from audio
+      {/* Sidechain key target port. Distinct from audio
           and parameter ports; only accepts a sidechainInput.sidechainOut drop. */}
       {node.type === 'effect' && node.sidechainTarget && (
         <span className="xleth-graph-state-preview__sidechain-section">

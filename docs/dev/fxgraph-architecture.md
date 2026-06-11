@@ -1,11 +1,11 @@
 # FX Graph Architecture
 
-Internal reference for the renderer-side graphState system. Updated through FXG-VP.1.
+Internal reference for the renderer-side graphState system. Updated through FXG-VP.1 and VST-SC.4.
 
 > VST3 sidechain support (engine capability + wrapper bus mirroring) is audited in
-> `docs/dev/vst-sidechain-architecture-audit.md`; the FX Graph `sidechainIn` port should read engine
-> capability rather than the hardcoded `SIDECHAIN_SUPPORTED_TARGET_PLUGIN_IDS` allowlist once that
-> lands (VST-SC.4).
+> `docs/dev/vst-sidechain-architecture-audit.md`. As of VST-SC.4, the FX Graph `sidechainIn` port reads
+> runtime `node.data.sidechain.supported` metadata from native chain/graph state. Capability is
+> session-only render metadata and must not be treated as persisted project truth.
 
 ## Data model separation
 
@@ -48,8 +48,9 @@ Port naming convention (mirrors `chainToGraphState.js` lines 189-191):
 - `trackInput` output -> `'audio'`
 - `effect` input -> `'audioIn'`, output -> `'audioOut'`
 - `trackOutput` input -> `'audio'`
-- `sidechainInput` output -> `'sidechainOut'`; compressor sidechain key target -> `'sidechainIn'`
-  (FXG-SC.6B; see `fxgraph-sidechain-input-architecture-audit.md`)
+- `sidechainInput` output -> `'sidechainOut'`; engine-capable effect sidechain key target -> `'sidechainIn'`
+  (FXG-SC.6B plus VST-SC.4 capability gating; see `fxgraph-sidechain-input-architecture-audit.md`
+  and `vst-sidechain-architecture-audit.md`)
 
 FXG-SC.6C — graph sidechain intent now reconciles to the existing Timeline `SidechainRoute`
 transport. `deriveGraphSidechainIntent(graphState)` (pure) yields the desired routes; the store action

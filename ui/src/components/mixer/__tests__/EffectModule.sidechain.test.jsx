@@ -26,8 +26,18 @@ function makeCompressor(overrides = {}) {
     bypassed: false,
     missing: false,
     crashed: false,
+    sidechain: { supported: true, channels: 2, enabled: false },
     ...overrides,
   }
+}
+
+function makeVst(overrides = {}) {
+  return makeCompressor({
+    pluginId: 'fabfilter.pro-c-2',
+    effectInstanceId: 'vst-sc-1',
+    sidechain: { supported: true, channels: 2, enabled: false },
+    ...overrides,
+  })
 }
 
 function seedMixerStore(useMixerStore, sidechainRoutes = []) {
@@ -128,18 +138,53 @@ describe('EffectModule compressor sidechain controls', () => {
     await unmountRoot(root)
   })
 
-  it('non-compressor stock effects and VST rows do not render active sidechain controls', async () => {
+  it('non-capable stock effects do not render sidechain controls and unsupported VSTs show disabled copy', async () => {
     const { EffectModule, useMixerStore, useVstStore } = await loadEffectModuleFixture()
     seedMixerStore(useMixerStore)
     useVstStore.setState({ plugins: [{ id: 'third.party', name: 'Third Party', vendor: 'Vendor' }] })
 
-    const stock = await renderEffect(EffectModule, makeCompressor({ pluginId: 'limiter' }))
-    const vst = await renderEffect(EffectModule, makeCompressor({ pluginId: 'third.party' }))
+    const stock = await renderEffect(EffectModule, makeCompressor({ pluginId: 'limiter', sidechain: undefined }))
+    const vst = await renderEffect(EffectModule, makeCompressor({
+      pluginId: 'third.party',
+      sidechain: { supported: false, channels: 0, enabled: false },
+    }))
 
     expect(stock.container.textContent).not.toContain('External Sidechain')
+    expect(stock.container.textContent).not.toContain('This plugin does not expose a sidechain input')
     expect(vst.container.textContent).not.toContain('External Sidechain')
+    expect(vst.container.textContent).toContain('This plugin does not expose a sidechain input')
     await unmountRoot(stock.root)
     await unmountRoot(vst.root)
+  })
+
+  it('capability-supported VST rows render sidechain source controls without sc_external', async () => {
+    const { EffectModule, useMixerStore, useVstStore } = await loadEffectModuleFixture()
+    seedMixerStore(useMixerStore)
+    useVstStore.setState({ plugins: [{ id: 'fabfilter.pro-c-2', name: 'FabFilter Pro-C 2', vendor: 'FabFilter' }] })
+
+    const { container, root } = await renderEffect(EffectModule, makeVst())
+    const select = container.querySelector('select[aria-label="Sidechain source"]')
+
+    expect(container.textContent).toContain('Sidechain: Off')
+    expect(container.querySelector('input[aria-label="External Sidechain"]')).toBeNull()
+    expect(select.disabled).toBe(false)
+
+    await act(async () => {
+      select.value = '1'
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(window.xleth.audio.setEffectParameter).not.toHaveBeenCalledWith(2, 44, 'sc_external', 1)
+    expect(window.xleth.timeline.addSidechainRoute).toHaveBeenCalledWith(1, {
+      targetTrackId: 2,
+      targetEffectInstanceId: 'vst-sc-1',
+      gain: 1.0,
+      preFader: false,
+      enabled: true,
+    })
+    await unmountRoot(root)
   })
 
   it('source selector is disabled when external sidechain is off and enabled after toggle on', async () => {
@@ -237,7 +282,7 @@ describe('EffectModule compressor sidechain controls', () => {
       preFader: false,
       enabled: true,
     })
-    expect(container.textContent).toContain('Keyed by: Kick')
+    expect(container.textContent).toContain('Sidechain: Kick')
     await unmountRoot(root)
   })
 
@@ -262,7 +307,7 @@ describe('EffectModule compressor sidechain controls', () => {
     seedMixerStore(useMixerStore, [route])
 
     const okRender = await renderEffect(EffectModule)
-    expect(okRender.container.textContent).toContain('Keyed by: Kick')
+    expect(okRender.container.textContent).toContain('Sidechain: Kick')
     expect(okRender.container.querySelector('select[aria-label="Sidechain source"]').value).toBe('1')
     await unmountRoot(okRender.root)
 

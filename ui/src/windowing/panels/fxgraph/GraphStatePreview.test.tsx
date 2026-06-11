@@ -2238,7 +2238,11 @@ function sidechainInputNode(
 }
 
 function compressorNode(id = 'fx-comp', position = { x: 260, y: 0 }): GraphStateNode {
-  return effectNode(id, 'Compressor', 0, position, { pluginId: 'compressor', effectInstanceId: `${id}-inst` });
+  return effectNode(id, 'Compressor', 0, position, {
+    pluginId: 'compressor',
+    effectInstanceId: `${id}-inst`,
+    sidechain: { supported: true, channels: 2, enabled: false },
+  });
 }
 
 function sidechainGraph(
@@ -2283,21 +2287,49 @@ describe('GraphStatePreview sidechain input (FXG-SC.6B)', () => {
     expect(html).toContain('data-connect-source-kind="sidechain"');
   });
 
-  it('renders the sidechainIn port only on a stock compressor effect node', () => {
+  it('renders the sidechainIn port for capability-supported stock and VST effect nodes', () => {
     const compressorHtml = renderToStaticMarkup(
       <GraphStatePreview graphState={sidechainGraph()} onConnectSidechain={vi.fn()} />,
     );
     expect(compressorHtml).toContain('data-sidechain-port-type="sidechain-input"');
     expect(compressorHtml).toContain('data-sidechain-port-id="scp:fx-comp:sidechainIn"');
 
-    const eqGraph = graphState(
-      [inputNode(), effectNode('fx-eq', 'EQ', 0), outputNode({ x: 560, y: 0 }), sidechainInputNode()],
-      [audioEdge('e-in', 'input', 'fx-eq'), audioEdge('e-out', 'fx-eq', 'output')],
+    const vstGraph = graphState(
+      [
+        inputNode(),
+        effectNode('fx-vst', 'FabFilter Pro-C 2', 0, { x: 260, y: 0 }, {
+          pluginId: 'fabfilter.pro-c-2',
+          sidechain: { supported: true, channels: 2, enabled: false },
+        }),
+        outputNode({ x: 560, y: 0 }),
+        sidechainInputNode(),
+      ],
+      [audioEdge('e-in', 'input', 'fx-vst'), audioEdge('e-out', 'fx-vst', 'output')],
     );
-    const eqHtml = renderToStaticMarkup(
-      <GraphStatePreview graphState={eqGraph} onConnectSidechain={vi.fn()} />,
+    const vstHtml = renderToStaticMarkup(
+      <GraphStatePreview graphState={vstGraph} onConnectSidechain={vi.fn()} />,
     );
-    expect(eqHtml).not.toContain('data-sidechain-port-type="sidechain-input"');
+    expect(vstHtml).toContain('data-sidechain-port-type="sidechain-input"');
+    expect(vstHtml).toContain('data-sidechain-port-id="scp:fx-vst:sidechainIn"');
+  });
+
+  it('does not render sidechainIn for unsupported VST effect nodes', () => {
+    const vstGraph = graphState(
+      [
+        inputNode(),
+        effectNode('fx-vst', 'Unsupported VST', 0, { x: 260, y: 0 }, {
+          pluginId: 'unsupported.vst',
+          sidechain: { supported: false, channels: 0, enabled: false },
+        }),
+        outputNode({ x: 560, y: 0 }),
+        sidechainInputNode(),
+      ],
+      [audioEdge('e-in', 'input', 'fx-vst'), audioEdge('e-out', 'fx-vst', 'output')],
+    );
+    const html = renderToStaticMarkup(
+      <GraphStatePreview graphState={vstGraph} onConnectSidechain={vi.fn()} />,
+    );
+    expect(html).not.toContain('data-sidechain-port-type="sidechain-input"');
   });
 
   it('does not render an active sidechainIn port on a missing/crashed compressor', () => {

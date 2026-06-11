@@ -90,6 +90,18 @@ function cloneJson(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
+function stripRuntimeGraphStateMetadata(graphState) {
+  const copy = cloneJson(graphState)
+  if (!Array.isArray(copy?.nodes)) return copy
+  copy.nodes = copy.nodes.map((node) => {
+    if (node?.type !== 'effect' || node?.data?.sidechain == null) return node
+    const data = { ...node.data }
+    delete data.sidechain
+    return { ...node, data }
+  })
+  return copy
+}
+
 // FXG.4-a: clamp a renderer-supplied normalized parameter value into [0, 1].
 // Returns null for non-finite input so callers can reject before hitting IPC.
 function clampNormalizedValue(value) {
@@ -578,7 +590,7 @@ async function commitValidatedGraphState(set, key, validation, options = {}) {
   const persistGraphState = options.persistGraphState ?? timeline.setTrackGraphState
   if (typeof persistGraphState === 'function') {
     try {
-      const ok = await persistGraphState(Number(key), validation.graphState)
+      const ok = await persistGraphState(Number(key), stripRuntimeGraphStateMetadata(validation.graphState))
       if (ok === false) {
         warn?.('[FXG] graphState mutation persistence returned false', { trackId: key })
       }
@@ -1061,7 +1073,7 @@ function clearEnvelopeRuntimeCache() {
 // ── FXG-SC.6C FX Graph Sidechain Input → Timeline SidechainRoute reconciliation ──
 //
 // The single bridge between graphState sidechain INTENT (a Sidechain Input node
-// with a selected source + sidechain edges to graph-owned compressors) and the
+// with a selected source + sidechain edges to graph-owned sidechain-capable effects) and the
 // proven native sidechain TRANSPORT (Timeline SidechainRoute → MixEngine
 // SidechainPlan → AudioGraph SidechainSourceProcessor → stock compressor bus 1).
 //
@@ -1071,7 +1083,7 @@ function clearEnvelopeRuntimeCache() {
 // resolver already resolves graph-owned effect instances by stable effectInstanceId
 // (EffectChainManager::getNodeIdForEffectInstance walks graph nodes too), so no new
 // engine boundary is needed: this reconciler only diffs desired-vs-existing routes
-// and toggles the compressor's external-key flag.
+// and toggles the stock compressor's external-key flag when the target is the stock compressor.
 
 // A source track can drive a graph compressor only when it is a real, non-visual
 // mixer track distinct from the graph track. mixerStore is the only place with that
@@ -1129,6 +1141,17 @@ async function reconcileGraphSidechainRoutes(set, get, key, options = {}) {
 
   const intent = deriveGraphSidechainIntent(graphState)
   const owningTrackId = intent.owningTrackId ?? Number(key)
+  const pluginIdByInstanceId = new Map()
+  for (const node of graphState.nodes) {
+    if (node?.type !== 'effect') continue
+    const effectInstanceId = node?.data?.effectInstanceId
+    const pluginId = node?.data?.pluginId
+    if (typeof effectInstanceId === 'string' && typeof pluginId === 'string') {
+      pluginIdByInstanceId.set(effectInstanceId, pluginId)
+    }
+  }
+  const requiresStockExternalParam = (effectInstanceId) =>
+    pluginIdByInstanceId.get(effectInstanceId) === 'compressor'
 
   const timeline = defaultTimelineApi()
   const getRouting = options.getRouting ?? timeline.getRouting
@@ -1140,7 +1163,7 @@ async function reconcileGraphSidechainRoutes(set, get, key, options = {}) {
   const isSourceValid = options.isSourceTrackValid ?? defaultIsSourceTrackValid
   const setExternal = options.setGraphEffectParameterNormalized ?? get().setGraphEffectParameterNormalized
 
-  // Desired routes: every capable compressor with a sidechain edge, but only once the
+  // Desired routes: every capable sidechain target with a sidechain edge, but only once the
   // selected source is finite AND exists/eligible. A finite-but-stale source yields no
   // route (and a source_missing status) rather than a route the engine would reject.
   const sourceTrackId = intent.sourceTrackId
@@ -1223,12 +1246,12 @@ async function reconcileGraphSidechainRoutes(set, get, key, options = {}) {
   //    sidechain UI owns the external-key state for graph-owned compressors, so a
   //    removed key returns the compressor to its internal detector (sc_external=0).
   const edgeTargetInstanceIds = new Set(intent.edgeTargets.map((t) => t.effectInstanceId))
-  for (const effectInstanceId of intent.compressorInstanceIds) {
+  for (const effectInstanceId of intent.sidechainCapableInstanceIds ?? intent.compressorInstanceIds) {
     if (desiredByInstance.has(effectInstanceId)) continue
     if (!edgeTargetInstanceIds.has(effectInstanceId) && !ownedRouteInstanceIds.has(effectInstanceId)) {
       continue
     }
-    if (typeof setExternal === 'function') {
+    if (requiresStockExternalParam(effectInstanceId) && typeof setExternal === 'function') {
       try {
         await setExternal(Number(key), effectInstanceId, COMPRESSOR_EXTERNAL_SIDECHAIN_PARAM_ID, 0)
       } catch (e) {
@@ -1245,7 +1268,7 @@ async function reconcileGraphSidechainRoutes(set, get, key, options = {}) {
   //    consistent with bd7115a — never claim a route is keyed when the flag did not
   //    take), then create the route unless an identical enabled one already exists.
   for (const [effectInstanceId, route] of desiredByInstance) {
-    if (typeof setExternal === 'function') {
+    if (requiresStockExternalParam(effectInstanceId) && typeof setExternal === 'function') {
       let externalOk = false
       try {
         const res = await setExternal(Number(key), effectInstanceId, COMPRESSOR_EXTERNAL_SIDECHAIN_PARAM_ID, 1)
@@ -1477,7 +1500,7 @@ const useEffectChainStore = create((set, get) => ({
       if (typeof persistGraphState !== 'function') {
         throw new Error('timeline.setTrackGraphState unavailable')
       }
-      const graphOk = await persistGraphState(Number(key), validation.graphState)
+      const graphOk = await persistGraphState(Number(key), stripRuntimeGraphStateMetadata(validation.graphState))
       if (graphOk === false) {
         throw new Error('timeline.setTrackGraphState returned false')
       }
@@ -1493,7 +1516,7 @@ const useEffectChainStore = create((set, get) => ({
     } catch (e) {
       if (graphStatePersisted && typeof persistGraphState === 'function') {
         try {
-          await persistGraphState(Number(key), previousGraphState)
+          await persistGraphState(Number(key), stripRuntimeGraphStateMetadata(previousGraphState))
         } catch (rollbackError) {
           warnFxgConversion(warn, key, 'graphState rollback failed', {
             error: rollbackError?.message ?? rollbackError,
@@ -1610,7 +1633,7 @@ const useEffectChainStore = create((set, get) => ({
     }
 
     try {
-      const ok = await persistGraphState(Number(key), validation.graphState)
+      const ok = await persistGraphState(Number(key), stripRuntimeGraphStateMetadata(validation.graphState))
       if (ok === false) {
         warn?.('[FXG] graphState node position persistence returned false', {
           trackId: key,
@@ -1686,7 +1709,7 @@ const useEffectChainStore = create((set, get) => ({
     if (typeof persistGraphState !== 'function') return true
 
     try {
-      const ok = await persistGraphState(Number(key), validation.graphState)
+      const ok = await persistGraphState(Number(key), stripRuntimeGraphStateMetadata(validation.graphState))
       if (ok === false) {
         warn?.('[FXG] graphState viewport persistence returned false', {
           trackId: key,

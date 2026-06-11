@@ -1,12 +1,132 @@
-# VST Sidechain Architecture Audit (VST-SC.1 → VST-SC.3)
+# VST Sidechain Architecture Audit (VST-SC.1 → VST-SC.4)
 
 Read-only audit and implementation map for adding **third-party VST3 sidechain support** to XLETH,
 reusing the existing silent `SidechainRoute` transport, `sidechainBuffers_`, `SidechainSourceProcessor`,
 and route-validation architecture. **No second sidechain engine.** The VST-SC.1 pass (audit) changed no
 runtime behavior. **VST-SC.2 (§13) implements the wrapper bus-mirroring + capability-probing
-foundation**; **VST-SC.3 (§14, below) wires the real route into that jack** — route-driven lazy
-enable/disable, `sidechain_unsupported` validation, runtime key delivery, mono fold, latency/PDC
-refresh. Native C++/bridge only, no UI, no real-VST smoke (both deferred to VST-SC.4).
+foundation**; **VST-SC.3 (§14) wires the real route into that jack** — route-driven lazy enable/disable,
+`sidechain_unsupported` validation, runtime key delivery, mono fold, latency/PDC refresh. **VST-SC.4
+(§15, below) exposes the native capability in Mixer Chain + FX Graph UI and smoke-tests the real scanned
+FabFilter Pro-C 2 VST3 path.**
+
+---
+
+## 15. VST-SC.4 status — capability-gated Mixer Chain + FX Graph UI (2026-06-12)
+
+**Done for renderer/product integration.** Mixer Chain and FX Graph now use the engine-reported
+`sidechain.supported` capability on each effect node instead of a renderer compressor allowlist. Stock
+compressor still works, supported wrapped VSTs show sidechain source controls, unsupported wrapped VSTs
+fail closed with clear copy, and graph sidechain ports/validation follow the same runtime metadata. No
+native sidechain engine, wrapper, `AudioGraph`, `TrackRouting`, or bridge code was changed in VST-SC.4.
+
+### Files changed
+
+- **`ui/src/components/mixer/EffectModule.jsx`** — sidechain controls now gate on
+  `effect.sidechain.supported === true`; unsupported capability renders
+  `This plugin does not expose a sidechain input`; VST sidechain source selection reuses the existing
+  Timeline `SidechainRoute` path without writing the stock-only `sc_external` parameter.
+- **`ui/src/stores/mixerStore.js`** — generic `setEffectExternalSidechain` drives supported stock/VST
+  targets; `sidechain_unsupported` and `timeline_getRouting` `unsupported` map to the required DAW copy;
+  stale target/effect statuses still win as stale.
+- **`ui/src/fxgraph/graphState.js`** and
+  **`ui/src/windowing/panels/fxgraph/GraphStatePreview.tsx`** — `sidechainIn` renders and validates only
+  when runtime node metadata has `sidechain.supported === true`; missing/crashed/placeholder or missing
+  capability data fails closed; sidechain edges remain separate from audio topology.
+- **`ui/src/stores/effectChainStore.js`** — FX Graph sidechain reconciliation accepts
+  capability-supported VST targets and avoids stock-compressor parameter writes for VSTs. Runtime
+  `node.data.sidechain` metadata is stripped before `timeline.setTrackGraphState`, so capability is not
+  persisted as durable project truth.
+- **Renderer tests** updated for Mixer Chain VST support/unsupported copy, store error mapping, FX Graph
+  VST `sidechainIn`, route validation, audio-topology exclusion, and hydration persistence behavior.
+
+### Mixer Chain behavior
+
+- Supported effect nodes (`sidechain.supported === true`) show the sidechain source selector. With no
+  route the status is `Sidechain: Off`; with a route it is `Sidechain: <source track name>`.
+- Stock compressor still shows the existing `External Sidechain` toggle and writes `sc_external` only for
+  that stock target. VST targets create/remove the native route directly and do not touch stock params.
+- Unsupported VSTs (`sidechain.supported === false`) show
+  `This plugin does not expose a sidechain input` and do not create routes. A bridge rejection reason of
+  `sidechain_unsupported` maps to the same copy.
+- `timeline_getRouting` route status `unsupported` maps to the unsupported copy; stale target/effect
+  statuses continue to display as stale rather than looking like healthy routes.
+
+### FX Graph behavior
+
+- Graph effect nodes render `sidechainIn` only from runtime/session sidechain metadata. Stock compressor
+  still renders the port; capability-supported VST graph nodes also render it; unsupported/missing/crashed
+  nodes do not.
+- Sidechain edge validation accepts any effect node with `sidechain.supported === true` and rejects
+  unsupported/missing capability with `This effect has no sidechain input.`
+- Sidechain edges remain `sidechainInput -> sidechainIn` edges and are still excluded from the linear
+  audio topology payload. No Macro, Envelope, parameter-port, NodeEditor, nodeGraphStore, or React Flow
+  behavior changed.
+- Capability is treated as runtime/session metadata. It may be cached on in-memory node data for render
+  decisions, but it is stripped before graphState persistence; APG node IDs are still never persisted.
+
+### Real scanned VST3 smoke
+
+Electron/Playwright smoke launched a clean `XLETH_PLAYWRIGHT=1` app against
+`bridge/build/Release/xleth_native.node` (rebuilt in VST-SC.3; no VST-SC.4 C++ changes, so no rebuild in
+this pass). The native scanned-plugin catalog returned:
+
+```json
+{
+  "id": "VST3-Pro-C 2-f1a6549f-763029ad",
+  "name": "Pro-C 2",
+  "vendor": "FabFilter",
+  "format": "VST3",
+  "numInputs": 4,
+  "numOutputs": 2
+}
+```
+
+Smoke result:
+
+- Created a temporary project with `Kick` and `Bass`.
+- Inserted Pro-C 2 on Bass by the scanned plugin ID above (no hardcoded production path).
+- `audio_getEffectChain(Bass)` reported Pro-C 2 with
+  `{ "sidechain": { "supported": true, "channels": 2, "enabled": false } }`.
+- Added Kick -> Bass -> Pro-C 2 sidechain route through the normal `timeline_addSidechainRoute` bridge.
+  `timeline_getRouting` reported `status: "ok"` with the Pro-C 2 `effectInstanceId`.
+- The Mixer Chain UI rendered Pro-C 2 with the sidechain source selector and `Sidechain: Kick`.
+- Saved the project, loaded a blank project, then reloaded the saved smoke project. Pro-C 2 rehydrated,
+  capability was rediscovered from the native chain state, and the route restored with the same stable
+  `effectInstanceId` and `status: "ok"`.
+- Removed the route; `timeline_getRouting` returned no sidechain routes and the Mixer Chain UI returned
+  to `Sidechain: Off`.
+- Inserted FabFilter Micro as an unsupported VST smoke target. Its chain state reported
+  `sidechain.supported: false`, route creation rejected `{ ok:false, reason:"sidechain_unsupported" }`,
+  and the Mixer UI rendered `This plugin does not expose a sidechain input`.
+
+**Limitation:** this automated Electron smoke verified the real scanned Pro-C 2 catalog entry, insertion,
+capability gating, route health, unsupported rejection, route removal, and save/load restore. It did not
+manually monitor plugin gain reduction/meters or audibly confirm ducking/no key leakage with audio
+material, so the final ear/meter ducking check remains a manual QA item.
+
+### Tests run
+
+| Target | Result |
+|---|---|
+| `npm test -- src/stores/mixerStore.test.js src/components/mixer/__tests__/EffectModule.sidechain.test.jsx src/windowing/panels/fxgraph/GraphStatePreview.test.tsx src/windowing/__tests__/windowingScaffolding.test.tsx src/fxgraph/graphState.test.js src/stores/effectChainStore.test.js` | **605** renderer tests passed |
+| `npm run build` | Passed (Vite chunk-size/dynamic-import warnings only) |
+| `git diff --check` / `git diff --cached --check` | Passed (LF/CRLF notices only; no staged diff at check time) |
+| `test_sidechain_routes` | **83** passed |
+| `test_chain_effect_identity` | **51** passed |
+
+Native sidechain binary note: current direct runs of `test_vst_sidechain`, `test_stock_compressor_sidechain`,
+`test_sidechain_runtime`, `test_fxgraph_sidechain_input`, and `test_graph_effect_parameters` exited with
+code 1 and no stdout/stderr from `engine/build/Debug`, despite same-day pre-existing logs showing those
+targets passing after the VST-SC.3 rebuild. No C++ changed in VST-SC.4; treat the silent native-test launch
+failure as an environment/test-runner blocker to investigate separately, not as a renderer regression.
+
+### Remaining limitations
+
+- The UI remains one source per target effect for now.
+- Master sidechain remains unsupported.
+- Capability is intentionally session-only; missing or unavailable capability data fails closed.
+- Manual audio/material smoke still needs a human ear or plugin/meter observation for audible ducking and
+  no key leakage.
 
 ---
 
@@ -685,16 +805,19 @@ manual in VST-SC.4.
 
 ---
 
-## 10. Renderer/UI future plan (document only — no UI in VST-SC.1)
+## 10. Renderer/UI plan (historical VST-SC.1 plan; implemented in VST-SC.4)
+
+VST-SC.4 implements this plan in the product UI: Mixer Chain and FX Graph now read engine-reported
+`sidechain.supported` metadata, unsupported VSTs render disabled copy, and sidechain edges remain
+separate from audio topology. The original VST-SC.1 plan is retained below for audit traceability.
 
 - **Mixer Chain sidechain source dropdown** (`EffectModule.jsx`) should enable a VST target's
   sidechain controls **only when engine capability says supported** — read the new
-  `chainState.node.sidechain.supported` field, not a hardcoded `pluginId === 'compressor'`.
-- **Unsupported VST** → disabled control with "This plugin does not expose a sidechain input."
+  `chainState.node.sidechain.supported` field, not hardcoded compressor identity.
+- **Unsupported VST** → disabled control with `This plugin does not expose a sidechain input`.
 - **FX Graph effect node** (`GraphStatePreview.tsx`) should render the `sidechainIn` port for any
-  capable effect — replace the static `SIDECHAIN_SUPPORTED_TARGET_PLUGIN_IDS = ['compressor']`
-  allowlist (`graphState.js`) with the engine capability flag from graph-topology/chain-state JSON.
-- **Capability comes from the engine**, never from hardcoded renderer plugin ids.
+  capable effect from the engine capability flag in graph-topology/chain-state JSON.
+- **Capability comes from the engine**, never from hardcoded renderer plugin IDs.
 - **`GraphStatePreview`** keeps sidechain edges (`type:'sidechain'`) separate from audio topology
   (already true — `buildLinearGraphTopologyPayload` ignores them); no change to that separation.
 - **No hardcoded colors** — theme tokens only (theming Wave 0).
@@ -752,6 +875,9 @@ manual in VST-SC.4.
   end-to-end; stock compressor and FX Graph regressions green.
 
 ### VST-SC.4 — UI integration + real-plugin smoke
+
+**Status:** product UI integration and real scanned-plugin route/save-load smoke are complete in §15.
+Manual ear/plugin-meter ducking confirmation remains the only incomplete QA item.
 
 - **Model:** Codex — **High**.
 - **Risk:** **Medium–High** (integration + UX, plus real-plugin variability).

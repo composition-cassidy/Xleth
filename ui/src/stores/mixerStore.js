@@ -176,8 +176,23 @@ export function mapSidechainRouteError(reason) {
       return 'Invalid sidechain gain'
     case 'duplicate_route':
       return 'Sidechain route already exists'
+    case 'sidechain_unsupported':
+      return 'This plugin does not expose a sidechain input'
     default:
       return 'Route rejected'
+  }
+}
+
+export function mapSidechainRouteStatus(status) {
+  switch (status) {
+    case 'unsupported':
+      return 'This plugin does not expose a sidechain input'
+    case 'stale_target_track':
+    case 'stale_effect_instance':
+    case 'invalid':
+      return 'Route stale'
+    default:
+      return null
   }
 }
 
@@ -546,12 +561,13 @@ const useMixerStore = create((set, get) => ({
     }
   },
 
-  setCompressorExternalSidechain: async ({
+  setEffectExternalSidechain: async ({
     targetTrackId,
     targetNodeId,
     effectInstanceId,
     enabled,
     sourceTrackId = null,
+    requireExternalParam = false,
   } = {}, options = {}) => {
     const targetId = normalizeOutputTargetId(targetTrackId)
     const sourceId = sourceTrackId == null || sourceTrackId === ''
@@ -601,19 +617,21 @@ const useMixerStore = create((set, get) => ({
     }
 
     const previousRoute = findSidechainRouteForEffect(get().sidechainRoutes, targetId, effectInstanceId)
-    const paramResult = await setCompressorExternalSidechainParam({
-      targetTrackId: targetId,
-      targetNodeId,
-      enabled: enabled === true,
-      options,
-    })
-    if (!paramResult.ok) {
-      setError(paramResult.error)
-      return {
-        ok: false,
-        reason: paramResult.reason,
-        error: paramResult.error,
-        externalEnabled: !enabled,
+    if (requireExternalParam) {
+      const paramResult = await setCompressorExternalSidechainParam({
+        targetTrackId: targetId,
+        targetNodeId,
+        enabled: enabled === true,
+        options,
+      })
+      if (!paramResult.ok) {
+        setError(paramResult.error)
+        return {
+          ok: false,
+          reason: paramResult.reason,
+          error: paramResult.error,
+          externalEnabled: !enabled,
+        }
       }
     }
 
@@ -718,6 +736,9 @@ const useMixerStore = create((set, get) => ({
       return { ok: false, reason: 'ipc_error', error, externalEnabled: true }
     }
   },
+
+  setCompressorExternalSidechain: async (request = {}, options = {}) =>
+    get().setEffectExternalSidechain({ ...request, requireExternalParam: true }, options),
 
   // One-way sync from timeline fetches — only muted/solo/name/order/routes, NOT vol/pan/spread
   syncFromTimeline: (list) => {

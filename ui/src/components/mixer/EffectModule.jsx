@@ -4,6 +4,7 @@ import useEffectChainStore from '../../stores/effectChainStore.js'
 import useMixerStore, {
   COMPRESSOR_EXTERNAL_SIDECHAIN_PARAM_ID,
   findSidechainRouteForEffect,
+  mapSidechainRouteStatus,
 } from '../../stores/mixerStore.js'
 import useVstStore from '../../stores/vstStore.js'
 import ContextMenu from '../ContextMenu.jsx'
@@ -70,26 +71,50 @@ export function effectHasCompressorSidechainParam(effect) {
 }
 
 export function canShowCompressorSidechainControls(effect, storeKey) {
+  return canShowSidechainControls(effect, storeKey)
+}
+
+export function readEngineSidechainCapability(effect) {
+  const capability = effect?.sidechain
+  if (!capability || typeof capability !== 'object') return null
+  if (typeof capability.supported !== 'boolean') return null
+  return {
+    supported: capability.supported,
+    channels: Number.isInteger(capability.channels) ? capability.channels : 0,
+    enabled: capability.enabled === true,
+  }
+}
+
+export function canShowSidechainControls(effect, storeKey) {
   if (storeKey === 'master') return false
   if (!isSelectableEffectModule(effect) || effect?.missing || effect?.crashed) return false
-  if (effect?.pluginId !== 'compressor') return false
+  if (readEngineSidechainCapability(effect)?.supported !== true) return false
   return typeof effect?.effectInstanceId === 'string' && effect.effectInstanceId.length > 0
 }
 
-export function getCompressorSidechainStatusText({
+export function canShowUnsupportedSidechainCopy(effect, storeKey) {
+  if (storeKey === 'master') return false
+  if (!isSelectableEffectModule(effect) || effect?.missing || effect?.crashed) return false
+  const capability = readEngineSidechainCapability(effect)
+  return capability?.supported === false
+}
+
+export function getSidechainStatusText({
   externalEnabled,
   route,
   routeError,
   sourceTrack,
 }) {
   if (routeError) return routeError
-  if (!externalEnabled) return 'No source'
-  if (!route) return 'No source'
-  if (route.status && route.status !== 'ok') return 'Route stale'
+  if (route?.status && route.status !== 'ok') return mapSidechainRouteStatus(route.status) ?? 'Route stale'
+  if (!externalEnabled) return 'Sidechain: Off'
+  if (!route) return 'Sidechain: Off'
   if (!sourceTrack) return 'Route stale'
-  if (route.enabled === false) return 'No source'
-  return `Keyed by: ${sourceTrack.name || `Track ${route.sourceTrackId}`}`
+  if (route.enabled === false) return 'Sidechain: Off'
+  return `Sidechain: ${sourceTrack.name || `Track ${route.sourceTrackId}`}`
 }
+
+export const getCompressorSidechainStatusText = getSidechainStatusText
 
 export async function runEffectModuleInlineAction(action, {
   audio,
@@ -181,21 +206,22 @@ function parseEffectParameters(raw) {
   return Array.isArray(raw) ? raw : []
 }
 
-function CompressorSidechainControls({ effect, storeKey }) {
+function SidechainControls({ effect, storeKey }) {
   const targetTrackId = resolveTrackId(storeKey)
   const routeKey = `${targetTrackId}::${effect.effectInstanceId}`
+  const requiresExternalParam = effect.pluginId === 'compressor'
   const tracks = useMixerStore(s => s.tracks)
   const trackOrder = useMixerStore(s => s.trackOrder)
   const outputRoutes = useMixerStore(s => s.outputRoutes)
   const sidechainRoutes = useMixerStore(s => s.sidechainRoutes)
   const sidechainRoutingErrors = useMixerStore(s => s.sidechainRoutingErrors)
   const refreshRouting = useMixerStore(s => s.refreshRouting)
-  const setCompressorExternalSidechain = useMixerStore(s => s.setCompressorExternalSidechain)
+  const setEffectExternalSidechain = useMixerStore(s => s.setEffectExternalSidechain)
   const initialExternal = readCompressorExternalSidechainValue(effect.parameters) ??
     readCompressorExternalSidechainValue(effect.params) ??
     Boolean(findSidechainRouteForEffect(sidechainRoutes, targetTrackId, effect.effectInstanceId)?.enabled)
-  const [externalEnabled, setExternalEnabled] = useState(initialExternal)
-  const [paramLoaded, setParamLoaded] = useState(effectHasCompressorSidechainParam(effect))
+  const [externalEnabled, setExternalEnabled] = useState(requiresExternalParam ? initialExternal : Boolean(initialExternal))
+  const [paramLoaded, setParamLoaded] = useState(requiresExternalParam && effectHasCompressorSidechainParam(effect))
 
   const route = useMemo(
     () => findSidechainRouteForEffect(sidechainRoutes, targetTrackId, effect.effectInstanceId),
@@ -209,7 +235,7 @@ function CompressorSidechainControls({ effect, storeKey }) {
   const sourceTrack = route ? tracks[route.sourceTrackId] : null
   const selectedSourceValue = route?.sourceTrackId != null ? String(route.sourceTrackId) : ''
   const hasSelectableSource = eligibleSources.length > 0 || Boolean(route && sourceTrack)
-  const statusText = getCompressorSidechainStatusText({
+  const statusText = getSidechainStatusText({
     externalEnabled,
     route,
     routeError,
@@ -217,12 +243,17 @@ function CompressorSidechainControls({ effect, storeKey }) {
   })
 
   useEffect(() => {
+    if (!requiresExternalParam) {
+      setParamLoaded(false)
+      setExternalEnabled(Boolean(route?.enabled))
+      return
+    }
     setParamLoaded(effectHasCompressorSidechainParam(effect))
     const nextValue = readCompressorExternalSidechainValue(effect.parameters) ??
       readCompressorExternalSidechainValue(effect.params) ??
       Boolean(route?.enabled)
     setExternalEnabled(nextValue)
-  }, [effect.effectInstanceId])
+  }, [effect.effectInstanceId, requiresExternalParam, route?.enabled])
 
   useEffect(() => {
     refreshRouting()
@@ -230,6 +261,7 @@ function CompressorSidechainControls({ effect, storeKey }) {
 
   useEffect(() => {
     let cancelled = false
+    if (!requiresExternalParam) return undefined
     ;(async () => {
       try {
         const raw = await window.xleth?.audio?.getEffectParameters?.(targetTrackId, effect.nodeId)
@@ -246,7 +278,7 @@ function CompressorSidechainControls({ effect, storeKey }) {
       }
     })()
     return () => { cancelled = true }
-  }, [targetTrackId, effect.nodeId, effect.effectInstanceId])
+  }, [targetTrackId, effect.nodeId, effect.effectInstanceId, requiresExternalParam])
 
   useEffect(() => {
     if (!paramLoaded && route?.enabled) {
@@ -257,12 +289,13 @@ function CompressorSidechainControls({ effect, storeKey }) {
   const applySidechain = async ({ enabled, sourceTrackId = selectedSourceValue }) => {
     const previousEnabled = externalEnabled
     setExternalEnabled(enabled)
-    const result = await setCompressorExternalSidechain({
+    const result = await setEffectExternalSidechain({
       targetTrackId,
       targetNodeId: effect.nodeId,
       effectInstanceId: effect.effectInstanceId,
       enabled,
       sourceTrackId: enabled ? sourceTrackId : null,
+      requireExternalParam: requiresExternalParam,
     })
     if (result?.externalEnabled != null) {
       setExternalEnabled(result.externalEnabled)
@@ -292,24 +325,30 @@ function CompressorSidechainControls({ effect, storeKey }) {
       onMouseDown={handleSectionMouseDown}
       onClick={stopEffectModuleEvent}
       role="group"
-      aria-label="Compressor sidechain"
+      aria-label="Effect sidechain"
     >
-      <label className="compressor-sidechain-toggle">
-        <input
-          type="checkbox"
-          checked={externalEnabled}
-          onChange={handleToggleChange}
-          aria-label="External Sidechain"
-        />
-        <span>External Sidechain</span>
-      </label>
+      {requiresExternalParam ? (
+        <label className="compressor-sidechain-toggle">
+          <input
+            type="checkbox"
+            checked={externalEnabled}
+            onChange={handleToggleChange}
+            aria-label="External Sidechain"
+          />
+          <span>External Sidechain</span>
+        </label>
+      ) : (
+        <span className="compressor-sidechain-toggle compressor-sidechain-toggle--readonly">
+          Sidechain
+        </span>
+      )}
 
       <label className="compressor-sidechain-source">
         <span>Source</span>
         <select
           value={selectedSourceValue}
           onChange={handleSourceChange}
-          disabled={!externalEnabled || !hasSelectableSource}
+          disabled={(requiresExternalParam && !externalEnabled) || !hasSelectableSource}
           aria-label="Sidechain source"
         >
           <option value="">None</option>
@@ -326,6 +365,16 @@ function CompressorSidechainControls({ effect, storeKey }) {
 
       <span className={`compressor-sidechain-status${routeError || (route && route.status !== 'ok') ? ' compressor-sidechain-status--warning' : ''}`}>
         {statusText}
+      </span>
+    </div>
+  )
+}
+
+function UnsupportedSidechainCopy() {
+  return (
+    <div className="compressor-sidechain-controls compressor-sidechain-controls--unsupported">
+      <span className="compressor-sidechain-status compressor-sidechain-status--warning">
+        This plugin does not expose a sidechain input
       </span>
     </div>
   )
@@ -367,7 +416,8 @@ export default function EffectModule({
   const vendor = vstMeta?.vendor ?? null
   const canOpenStockEditor = Boolean(EFFECT_EDITORS[effect.pluginId]) && !effect.missing
   const inlineAction = isPending ? null : getEffectModuleInlineAction(effect, isVst)
-  const showSidechainControls = canShowCompressorSidechainControls(effect, storeKey)
+  const showSidechainControls = canShowSidechainControls(effect, storeKey)
+  const showUnsupportedSidechainCopy = canShowUnsupportedSidechainCopy(effect, storeKey)
 
   const handleBypassClick = (e) => {
     handleEffectModuleBypassClick(e, {
@@ -430,7 +480,7 @@ export default function EffectModule({
     `effect-module${selected ? ' effect-module--selected' : ''}` +
     `${effect.bypassed ? ' effect-module--bypassed' : ''}` +
     `${isPending ? ' effect-module--pending' : ''}` +
-    `${showSidechainControls ? ' effect-module--with-sidechain' : ''}`
+    `${showSidechainControls || showUnsupportedSidechainCopy ? ' effect-module--with-sidechain' : ''}`
 
   return (
     <div
@@ -496,7 +546,11 @@ export default function EffectModule({
       </button>
 
       {showSidechainControls && (
-        <CompressorSidechainControls effect={effect} storeKey={storeKey} />
+        <SidechainControls effect={effect} storeKey={storeKey} />
+      )}
+
+      {!showSidechainControls && showUnsupportedSidechainCopy && (
+        <UnsupportedSidechainCopy />
       )}
 
       {deleteMenu && (

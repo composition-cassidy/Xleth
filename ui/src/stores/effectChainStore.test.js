@@ -3158,6 +3158,7 @@ describe('effectChainStore updateGraphParameterEdgeMappingForTrack', () => {
             missing: false,
             crashed: false,
             sourceChainSlotIndex: 0,
+            sidechain: { supported: true, channels: 2, enabled: false },
             exposedParameterPorts: [],
           },
         },
@@ -3194,7 +3195,9 @@ describe('effectChainStore updateGraphParameterEdgeMappingForTrack', () => {
     const next = useEffectChainStore.getState().graphStates['7']
     const node = next.nodes.find((n) => n.id === 'sc-new')
     expect(node).toMatchObject({ type: 'sidechainInput', data: { label: 'Sidechain Input', sourceTrackId: 3 } })
-    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next)
+    const persisted = timeline.setTrackGraphState.mock.calls.at(-1)[1]
+    expect(persisted.nodes.find((n) => n.id === 'fx-comp').data.sidechain).toBeUndefined()
+    expect(next.nodes.find((n) => n.id === 'fx-comp').data.sidechain).toEqual({ supported: true, channels: 2, enabled: false })
     // No audio topology sync, no native route, no sc_external write, chains untouched.
     expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
     expect(audio.setGraphEffectParameterNormalized).not.toHaveBeenCalled()
@@ -3268,7 +3271,7 @@ describe('effectChainStore updateGraphParameterEdgeMappingForTrack', () => {
   it('rejects connecting a sidechain edge to an unsupported target', async () => {
     const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
     const graphState = withSidechainInput(makeSidechainStoreGraphState('7'))
-    graphState.nodes.find((n) => n.id === 'fx-comp').data.pluginId = 'stock:eq'
+    graphState.nodes.find((n) => n.id === 'fx-comp').data.sidechain = { supported: false, channels: 0, enabled: false }
     seedGraphMode(useEffectChainStore, graphState)
 
     await expect(useEffectChainStore.getState().connectSidechainForTrack('7', 'sc', 'fx-comp'))
@@ -3339,7 +3342,13 @@ describe('effectChainStore graph sidechain route reconciliation (6C)', () => {
 
   // input -> compressor -> output on graph track '7', plus a Sidechain Input node
   // 'sc' (source track 3) optionally connected to the compressor by a sidechain edge.
-  function makeReconcileGraphState(trackId = '7', { source = 3, withEdge = true, pluginId = 'compressor' } = {}) {
+  function makeReconcileGraphState(trackId = '7', {
+    source = 3,
+    withEdge = true,
+    pluginId = 'compressor',
+    effectInstanceId = 'comp-inst',
+    sidechain = { supported: true, channels: 2, enabled: false },
+  } = {}) {
     const nodes = [
       { id: 'input', type: 'trackInput', position: { x: 0, y: 0 }, data: {} },
       {
@@ -3347,8 +3356,8 @@ describe('effectChainStore graph sidechain route reconciliation (6C)', () => {
         type: 'effect',
         position: { x: 260, y: 0 },
         data: {
-          effectInstanceId: 'comp-inst', pluginId, displayName: 'Compressor',
-          bypass: false, missing: false, crashed: false, sourceChainSlotIndex: 0, exposedParameterPorts: [],
+          effectInstanceId, pluginId, displayName: 'Compressor',
+          bypass: false, missing: false, crashed: false, sourceChainSlotIndex: 0, sidechain, exposedParameterPorts: [],
         },
       },
       { id: 'output', type: 'trackOutput', position: { x: 520, y: 0 }, data: {} },
@@ -3424,13 +3433,39 @@ describe('effectChainStore graph sidechain route reconciliation (6C)', () => {
     expect(audio.setGraphEffectParameterNormalized).not.toHaveBeenCalledWith(7, 'comp-inst', 'sc_external', 1)
   })
 
-  it('does not add a route for an unsupported (non-compressor) target', async () => {
+  it('does not add a route for an unsupported target', async () => {
     const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
-    seedGraph(useEffectChainStore, makeReconcileGraphState('7', { pluginId: 'reverb' }))
+    seedGraph(useEffectChainStore, makeReconcileGraphState('7', {
+      pluginId: 'unsupported.vst',
+      sidechain: { supported: false, channels: 0, enabled: false },
+    }))
 
     await useEffectChainStore.getState().reconcileGraphSidechainRoutesForTrack('7', { isSourceTrackValid: validSource })
 
     expect(timeline.addSidechainRoute).not.toHaveBeenCalled()
+  })
+
+  it('adds a route for a capability-supported VST target without sc_external writes', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraph(useEffectChainStore, makeReconcileGraphState('7', {
+      pluginId: 'fabfilter.pro-c-2',
+      effectInstanceId: 'vst-inst',
+      sidechain: { supported: true, channels: 2, enabled: false },
+    }))
+
+    const res = await useEffectChainStore.getState().reconcileGraphSidechainRoutesForTrack('7', {
+      isSourceTrackValid: validSource,
+    })
+
+    expect(res.ok).toBe(true)
+    expect(audio.setGraphEffectParameterNormalized).not.toHaveBeenCalledWith(7, 'vst-inst', 'sc_external', 1)
+    expect(timeline.addSidechainRoute).toHaveBeenCalledWith(3, {
+      targetTrackId: 7,
+      targetEffectInstanceId: 'vst-inst',
+      gain: 1.0,
+      preFader: false,
+      enabled: true,
+    })
   })
 
   it('does not add a route when the source track does not exist (stale source)', async () => {

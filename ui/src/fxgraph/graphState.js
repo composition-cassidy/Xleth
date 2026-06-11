@@ -45,17 +45,13 @@ export const GRAPH_ENVELOPE_OUTPUT_PORT = 'controlOut'
 export const GRAPH_SIDECHAIN_INPUT_NODE_TYPE = 'sidechainInput'
 // The Sidechain Input's single output port (silent key source).
 export const GRAPH_SIDECHAIN_INPUT_OUTPUT_PORT = 'sidechainOut'
-// The compressor-only sidechain key target port on an effect node.
+// The sidechain key target port on an engine-capable effect node.
 export const GRAPH_SIDECHAIN_TARGET_PORT = 'sidechainIn'
 // A distinct edge kind for sidechain key links — deliberately NOT `audio` so the
 // existing audio topology/cycle code ignores it by default (Option A in the 6A audit).
 export const GRAPH_SIDECHAIN_EDGE_TYPE = 'sidechain'
 // Canonical Sidechain Input node label; malformed labels repair to this.
 export const GRAPH_SIDECHAIN_INPUT_LABEL = 'Sidechain Input'
-// v1 sidechain-capable target plugins. Only the stock compressor declares an external
-// sidechain bus engine-side, so the renderer statically gates the `sidechainIn` port
-// to this plugin id. VST/other-stock sidechain is out of scope for 6B/6C.
-export const SIDECHAIN_SUPPORTED_TARGET_PLUGIN_IDS = Object.freeze(['compressor'])
 
 // FXG.4-e/f — base mapping curve type.
 export const GRAPH_PARAMETER_CURVE_LINEAR = 'linear'
@@ -549,6 +545,15 @@ function validateSidechainInputNodeData(node, trackId, warnings) {
   return normalized
 }
 
+export function normalizeRuntimeSidechainCapability(value) {
+  if (!isPlainObject(value) || typeof value.supported !== 'boolean') return undefined
+  return {
+    supported: value.supported,
+    channels: Number.isInteger(value.channels) ? value.channels : 0,
+    enabled: value.enabled === true,
+  }
+}
+
 function validateEffectNodeData(node, trackId, warnings) {
   if (!isPlainObject(node.data)) {
     return { ok: false, reason: 'invalid_effect_node_data' }
@@ -582,6 +587,7 @@ function validateEffectNodeData(node, trackId, warnings) {
       missing: data.missing,
       crashed: data.crashed,
       sourceChainSlotIndex: data.sourceChainSlotIndex,
+      sidechain: normalizeRuntimeSidechainCapability(data.sidechain),
       exposedParameterPorts: normalizeExposedParameterPorts(
         data.exposedParameterPorts,
         trackId,
@@ -2059,21 +2065,19 @@ export function updateParameterEdgeMapping(graphState, edgeId, mappingPatch) {
 // established audio/parameter paths are never disturbed.
 // ---------------------------------------------------------------------------
 
-function readPluginId(node) {
-  const value = node?.data?.pluginId
-  return typeof value === 'string' ? value : ''
+export function readRuntimeSidechainCapability(node) {
+  return normalizeRuntimeSidechainCapability(node?.data?.sidechain) ?? null
 }
 
-// v1 sidechain capability is static (renderer-side). A node can receive a sidechain
+// Engine sidechain capability is session/runtime metadata. A node can receive a sidechain
 // key only when it is a real effect node (non-missing, non-crashed, has an
-// effectInstanceId) whose pluginId is in SIDECHAIN_SUPPORTED_TARGET_PLUGIN_IDS — the
-// stock compressor today. Backend route validation remains final in 6C.
+// effectInstanceId). Backend route validation remains final in 6C.
 export function isSidechainCapableEffectNode(node) {
   if (!isPlainObject(node) || node.type !== 'effect') return false
   const data = node.data ?? {}
   if (data.missing === true || data.crashed === true) return false
   if (!readEffectInstanceId(node)) return false
-  return SIDECHAIN_SUPPORTED_TARGET_PLUGIN_IDS.includes(readPluginId(node))
+  return readRuntimeSidechainCapability(node)?.supported === true
 }
 
 // Adds the single Sidechain Input node to a graph. Only one is allowed per graph
@@ -2212,7 +2216,7 @@ export function canConnectSidechainNodes(graphState, connectionDraft) {
     return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_EFFECT_INSTANCE }
   }
 
-  // v1: only the stock compressor (non-missing/non-crashed) accepts a sidechain key.
+  // Engine capability is the only target gate; missing capability fails closed.
   if (!isSidechainCapableEffectNode(targetNode)) {
     return { ok: false, reason: GRAPH_MUTATION_REJECTION.UNSUPPORTED_SIDECHAIN_TARGET }
   }
@@ -2270,7 +2274,7 @@ export function isSidechainEdge(graphState, edgeId) {
 //   sidechainInputNodeId   string | null
 //   effectInstanceIds      string[]      — every effect node instance id (route-
 //                                          ownership scope for this track)
-//   compressorInstanceIds  string[]      — sidechain-capable compressor effect nodes
+//   compressorInstanceIds  string[]      — backward-compatible alias for capability targets
 //                                          present in the graph (regardless of edge)
 //   edgeTargets            [{ effectInstanceId, targetNodeId, edgeId }]
 //                                        — capable compressor targets that have a
@@ -2284,6 +2288,7 @@ export function deriveGraphSidechainIntent(graphState) {
     sourceTrackId: null,
     sidechainInputNodeId: null,
     effectInstanceIds: [],
+    sidechainCapableInstanceIds: [],
     compressorInstanceIds: [],
     edgeTargets: [],
     desiredTargets: [],
@@ -2304,7 +2309,7 @@ export function deriveGraphSidechainIntent(graphState) {
   }
 
   const effectInstanceIds = new Set()
-  const compressorInstanceIds = new Set()
+  const sidechainCapableInstanceIds = new Set()
   const nodeById = new Map()
   for (const node of graphState.nodes) {
     if (!isPlainObject(node)) continue
@@ -2313,13 +2318,14 @@ export function deriveGraphSidechainIntent(graphState) {
     const id = readEffectInstanceId(node)
     if (!id) continue
     effectInstanceIds.add(id)
-    if (isSidechainCapableEffectNode(node)) compressorInstanceIds.add(id)
+    if (isSidechainCapableEffectNode(node)) sidechainCapableInstanceIds.add(id)
   }
   intent.effectInstanceIds = [...effectInstanceIds]
-  intent.compressorInstanceIds = [...compressorInstanceIds]
+  intent.sidechainCapableInstanceIds = [...sidechainCapableInstanceIds]
+  intent.compressorInstanceIds = intent.sidechainCapableInstanceIds
 
   // Only edges that actually originate at the Sidechain Input node and land on a
-  // sidechain-capable compressor count. A missing/unsupported target is ignored —
+  // sidechain-capable effect count. A missing/unsupported target is ignored —
   // the renderer never derives a route to an effect that cannot consume a key.
   const seenTargets = new Set()
   for (const edge of graphState.edges) {
