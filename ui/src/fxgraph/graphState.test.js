@@ -49,6 +49,21 @@ import {
   updateParameterEdgeMapping,
   validateGraphState,
   validateGraphStateForEditing,
+  // FXG-SC.6B — Sidechain Input
+  GRAPH_SIDECHAIN_INPUT_NODE_TYPE,
+  GRAPH_SIDECHAIN_EDGE_TYPE,
+  GRAPH_SIDECHAIN_INPUT_OUTPUT_PORT,
+  GRAPH_SIDECHAIN_TARGET_PORT,
+  GRAPH_SIDECHAIN_INPUT_LABEL,
+  addSidechainInputNode,
+  setSidechainInputSource,
+  canConnectSidechainNodes,
+  connectSidechainNodes,
+  disconnectSidechainEdge,
+  isSidechainEdge,
+  isSidechainInputGraphNode,
+  isSidechainCapableEffectNode,
+  normalizeSidechainInputNodeData,
 } from './graphState.js'
 import {
   analyzeLinearGraphTopology,
@@ -828,10 +843,11 @@ function makeNodeDraft(overrides = {}) {
 
 describe('graph mutation architecture guards', () => {
   describe('PROTECTED_NODE_TYPES', () => {
-    it('is a frozen array containing trackInput and trackOutput', () => {
+    it('is a frozen array containing trackInput, trackOutput, and sidechainInput', () => {
       expect(Array.isArray(PROTECTED_NODE_TYPES)).toBe(true)
       expect(Object.isFrozen(PROTECTED_NODE_TYPES)).toBe(true)
-      expect(PROTECTED_NODE_TYPES).toEqual(['trackInput', 'trackOutput'])
+      // FXG-SC.6B — the Sidechain Input node is protected once present.
+      expect(PROTECTED_NODE_TYPES).toEqual(['trackInput', 'trackOutput', 'sidechainInput'])
     })
   })
 
@@ -3247,5 +3263,339 @@ describe('EVC-R1 envelope → parameter links', () => {
     expect(payload.nodes.some((node) => node.nodeId === 'env-1')).toBe(false)
     expect(payload.edges.some((edge) => edge.edgeId === 'p-env-mix')).toBe(false)
     expect(analyzeLinearGraphTopology(linked)).toMatchObject({ ok: true })
+  })
+})
+
+// FXG-SC.6B — FX Graph Sidechain Input node + sidechain edge ----------------------
+function makeCompressorEffectNode(id = 'fx-comp', overrides = {}) {
+  return {
+    id,
+    type: 'effect',
+    position: { x: 260, y: 0 },
+    data: {
+      effectInstanceId: 'comp-inst',
+      pluginId: 'compressor',
+      displayName: 'Compressor',
+      bypass: false,
+      missing: false,
+      crashed: false,
+      sourceChainSlotIndex: 0,
+      ...overrides,
+    },
+  }
+}
+
+function makeSidechainInputNode(id = 'sc', data = {}) {
+  return { id, type: GRAPH_SIDECHAIN_INPUT_NODE_TYPE, position: { x: 0, y: 120 }, data }
+}
+
+// Graph for trackId '7': input -> compressor -> output, plus a Sidechain Input node
+// (source track 3) — but NO sidechain edge by default.
+function makeSidechainGraphState(overrides = {}) {
+  return {
+    schemaVersion: GRAPH_STATE_SCHEMA_VERSION,
+    trackId: '7',
+    nodes: [
+      { id: 'input', type: 'trackInput', position: { x: 0, y: 0 }, data: {} },
+      makeCompressorEffectNode(),
+      { id: 'output', type: 'trackOutput', position: { x: 520, y: 0 }, data: {} },
+      makeSidechainInputNode('sc', { label: 'Sidechain Input', sourceTrackId: 3 }),
+    ],
+    edges: [
+      { id: 'e-in', sourceNodeId: 'input', sourcePort: 'audio', targetNodeId: 'fx-comp', targetPort: 'audioIn', type: 'audio' },
+      { id: 'e-out', sourceNodeId: 'fx-comp', sourcePort: 'audioOut', targetNodeId: 'output', targetPort: 'audio', type: 'audio' },
+    ],
+    viewport: { x: 0, y: 0, zoom: 1 },
+    ...overrides,
+  }
+}
+
+describe('FXG-SC.6B sidechain input node normalization', () => {
+  it('normalizes a sidechainInput node with default label and null source', () => {
+    const result = validateGraphState(makeSidechainGraphState({
+      nodes: [
+        { id: 'input', type: 'trackInput', data: {} },
+        { id: 'output', type: 'trackOutput', data: {} },
+        makeSidechainInputNode('sc', {}),
+      ],
+      edges: [],
+    }), '7')
+    expect(result.status).toBe('valid')
+    const node = result.graphState.nodes.find((n) => n.id === 'sc')
+    expect(node.type).toBe(GRAPH_SIDECHAIN_INPUT_NODE_TYPE)
+    expect(node.data).toEqual({ label: GRAPH_SIDECHAIN_INPUT_LABEL, sourceTrackId: null })
+  })
+
+  it('preserves a valid finite sourceTrackId', () => {
+    const node = normalizeSidechainInputNodeData({ label: 'Sidechain Input', sourceTrackId: 5 })
+    expect(node.sourceTrackId).toBe(5)
+  })
+
+  it('repairs an invalid sourceTrackId to null', () => {
+    expect(normalizeSidechainInputNodeData({ sourceTrackId: 'nope' }).sourceTrackId).toBeNull()
+    expect(normalizeSidechainInputNodeData({ sourceTrackId: Number.NaN }).sourceTrackId).toBeNull()
+    expect(normalizeSidechainInputNodeData({ sourceTrackId: Infinity }).sourceTrackId).toBeNull()
+  })
+
+  it('repairs a malformed label to the canonical Sidechain Input label', () => {
+    expect(normalizeSidechainInputNodeData({ label: 42 }).label).toBe(GRAPH_SIDECHAIN_INPUT_LABEL)
+    expect(normalizeSidechainInputNodeData({ label: '   ' }).label).toBe(GRAPH_SIDECHAIN_INPUT_LABEL)
+    expect(normalizeSidechainInputNodeData(undefined).label).toBe(GRAPH_SIDECHAIN_INPUT_LABEL)
+  })
+
+  it('identifies sidechainInput nodes and sidechain-capable effect nodes', () => {
+    expect(isSidechainInputGraphNode(makeSidechainInputNode('sc', {}))).toBe(true)
+    expect(isSidechainInputGraphNode(makeCompressorEffectNode())).toBe(false)
+    expect(isSidechainCapableEffectNode(makeCompressorEffectNode())).toBe(true)
+    expect(isSidechainCapableEffectNode(makeCompressorEffectNode('fx', { pluginId: 'stock:eq' }))).toBe(false)
+    expect(isSidechainCapableEffectNode(makeCompressorEffectNode('fx', { missing: true }))).toBe(false)
+    expect(isSidechainCapableEffectNode(makeCompressorEffectNode('fx', { effectInstanceId: '' }))).toBe(false)
+  })
+})
+
+describe('FXG-SC.6B sidechain input node is protected', () => {
+  it('reports the sidechainInput type as protected', () => {
+    expect(isProtectedGraphNodeType(GRAPH_SIDECHAIN_INPUT_NODE_TYPE)).toBe(true)
+    expect(PROTECTED_NODE_TYPES).toContain(GRAPH_SIDECHAIN_INPUT_NODE_TYPE)
+  })
+
+  it('rejects removing the sidechainInput node', () => {
+    const graphState = makeSidechainGraphState()
+    expect(canRemoveGraphNode(graphState, 'sc')).toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.PROTECTED_NODE })
+    expect(removeGraphNode(graphState, 'sc')).toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.PROTECTED_NODE })
+  })
+
+  it('rejects audio edges to/from the sidechainInput node', () => {
+    const graphState = makeSidechainGraphState()
+    expect(canConnectGraphNodes(graphState, 'sc', 'fx-comp')).toEqual({
+      ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_SOURCE_TYPE,
+    })
+    expect(canConnectGraphNodes(graphState, 'input', 'sc')).toEqual({
+      ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_TARGET_TYPE,
+    })
+  })
+})
+
+describe('FXG-SC.6B addSidechainInputNode', () => {
+  it('adds the single sidechain input node near track input', () => {
+    const graphState = makeSidechainGraphState({
+      nodes: [
+        { id: 'input', type: 'trackInput', position: { x: 0, y: 0 }, data: {} },
+        makeCompressorEffectNode(),
+        { id: 'output', type: 'trackOutput', position: { x: 520, y: 0 }, data: {} },
+      ],
+    })
+    const result = addSidechainInputNode(graphState, { idFactory: () => 'sc-1', sourceTrackId: 3 })
+    expect(result.ok).toBe(true)
+    expect(result.node).toMatchObject({
+      id: 'sc-1',
+      type: GRAPH_SIDECHAIN_INPUT_NODE_TYPE,
+      data: { label: GRAPH_SIDECHAIN_INPUT_LABEL, sourceTrackId: 3 },
+    })
+    expect(Number.isFinite(result.node.position.x) && Number.isFinite(result.node.position.y)).toBe(true)
+  })
+
+  it('rejects a second sidechain input node and returns the existing id', () => {
+    const result = addSidechainInputNode(makeSidechainGraphState(), { idFactory: () => 'sc-2' })
+    expect(result).toMatchObject({
+      ok: false,
+      reason: GRAPH_MUTATION_REJECTION.SIDECHAIN_INPUT_EXISTS,
+      existingNodeId: 'sc',
+    })
+  })
+})
+
+describe('FXG-SC.6B setSidechainInputSource', () => {
+  it('sets a finite source track id', () => {
+    const result = setSidechainInputSource(makeSidechainGraphState(), 'sc', 9)
+    expect(result.ok).toBe(true)
+    expect(result.graphState.nodes.find((n) => n.id === 'sc').data.sourceTrackId).toBe(9)
+  })
+
+  it('allows clearing the source with null', () => {
+    const result = setSidechainInputSource(makeSidechainGraphState(), 'sc', null)
+    expect(result.ok).toBe(true)
+    expect(result.graphState.nodes.find((n) => n.id === 'sc').data.sourceTrackId).toBeNull()
+  })
+
+  it('rejects a self source (the owning graph track)', () => {
+    const result = setSidechainInputSource(makeSidechainGraphState(), 'sc', 7)
+    expect(result).toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_SIDECHAIN_SOURCE })
+  })
+
+  it('rejects a non-finite source', () => {
+    expect(setSidechainInputSource(makeSidechainGraphState(), 'sc', Number.NaN))
+      .toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_SIDECHAIN_SOURCE })
+  })
+
+  it('rejects setting source on a non-sidechain node', () => {
+    expect(setSidechainInputSource(makeSidechainGraphState(), 'fx-comp', 3))
+      .toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.UNKNOWN_NODE_TYPE })
+  })
+})
+
+describe('FXG-SC.6B sidechain edge validation', () => {
+  it('accepts a valid sidechainInput -> compressor sidechain link', () => {
+    const result = canConnectSidechainNodes(makeSidechainGraphState(), { sourceNodeId: 'sc', targetNodeId: 'fx-comp' })
+    expect(result).toMatchObject({ ok: true, effectInstanceId: 'comp-inst' })
+  })
+
+  it('requires a selected source first', () => {
+    const graphState = makeSidechainGraphState()
+    graphState.nodes.find((n) => n.id === 'sc').data.sourceTrackId = null
+    expect(canConnectSidechainNodes(graphState, { sourceNodeId: 'sc', targetNodeId: 'fx-comp' }))
+      .toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.SELECT_SOURCE_FIRST })
+  })
+
+  it('rejects an unsupported (non-compressor) target', () => {
+    const graphState = makeSidechainGraphState()
+    graphState.nodes.find((n) => n.id === 'fx-comp').data.pluginId = 'stock:eq'
+    expect(canConnectSidechainNodes(graphState, { sourceNodeId: 'sc', targetNodeId: 'fx-comp' }))
+      .toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.UNSUPPORTED_SIDECHAIN_TARGET })
+  })
+
+  it('rejects a target effect with no effectInstanceId', () => {
+    const graphState = makeSidechainGraphState()
+    graphState.nodes.find((n) => n.id === 'fx-comp').data.effectInstanceId = ''
+    expect(canConnectSidechainNodes(graphState, { sourceNodeId: 'sc', targetNodeId: 'fx-comp' }))
+      .toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_EFFECT_INSTANCE })
+  })
+
+  it('rejects Track Output as a sidechain target', () => {
+    expect(canConnectSidechainNodes(makeSidechainGraphState(), { sourceNodeId: 'sc', targetNodeId: 'output' }))
+      .toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_SIDECHAIN_TARGET })
+  })
+
+  it('rejects a non-sidechainInput source', () => {
+    expect(canConnectSidechainNodes(makeSidechainGraphState(), { sourceNodeId: 'input', targetNodeId: 'fx-comp' }))
+      .toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_SIDECHAIN_SOURCE })
+  })
+
+  it('rejects self connection', () => {
+    expect(canConnectSidechainNodes(makeSidechainGraphState(), { sourceNodeId: 'sc', targetNodeId: 'sc' }))
+      .toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.SELF_CONNECTION })
+  })
+
+  it('rejects a duplicate sidechain edge', () => {
+    const connected = connectSidechainNodes(
+      makeSidechainGraphState(), { sourceNodeId: 'sc', targetNodeId: 'fx-comp' }, { idFactory: () => 'sce-1' },
+    ).graphState
+    expect(canConnectSidechainNodes(connected, { sourceNodeId: 'sc', targetNodeId: 'fx-comp' }))
+      .toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.DUPLICATE_SIDECHAIN_EDGE })
+  })
+})
+
+describe('FXG-SC.6B connect/disconnect sidechain edges', () => {
+  it('creates a sidechain edge with the canonical ports and type', () => {
+    const result = connectSidechainNodes(
+      makeSidechainGraphState(), { sourceNodeId: 'sc', targetNodeId: 'fx-comp' }, { idFactory: () => 'sce-1' },
+    )
+    expect(result.ok).toBe(true)
+    expect(result.edge).toEqual({
+      id: 'sce-1',
+      sourceNodeId: 'sc',
+      sourcePort: GRAPH_SIDECHAIN_INPUT_OUTPUT_PORT,
+      targetNodeId: 'fx-comp',
+      targetPort: GRAPH_SIDECHAIN_TARGET_PORT,
+      type: GRAPH_SIDECHAIN_EDGE_TYPE,
+    })
+  })
+
+  it('removes a sidechain edge by id', () => {
+    const connected = connectSidechainNodes(
+      makeSidechainGraphState(), { sourceNodeId: 'sc', targetNodeId: 'fx-comp' }, { idFactory: () => 'sce-1' },
+    ).graphState
+    expect(isSidechainEdge(connected, 'sce-1')).toBe(true)
+    const removed = disconnectSidechainEdge(connected, 'sce-1')
+    expect(removed.ok).toBe(true)
+    expect(removed.graphState.edges.some((e) => e.id === 'sce-1')).toBe(false)
+  })
+
+  it('rejects disconnecting a non-sidechain edge id', () => {
+    const connected = connectSidechainNodes(
+      makeSidechainGraphState(), { sourceNodeId: 'sc', targetNodeId: 'fx-comp' }, { idFactory: () => 'sce-1' },
+    ).graphState
+    expect(disconnectSidechainEdge(connected, 'e-in')).toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_EDGE })
+  })
+
+  it('removing the compressor target node also removes its sidechain edge', () => {
+    const connected = connectSidechainNodes(
+      makeSidechainGraphState(), { sourceNodeId: 'sc', targetNodeId: 'fx-comp' }, { idFactory: () => 'sce-1' },
+    ).graphState
+    const removed = removeGraphNode(connected, 'fx-comp')
+    expect(removed.ok).toBe(true)
+    expect(removed.graphState.edges.some((e) => e.type === GRAPH_SIDECHAIN_EDGE_TYPE)).toBe(false)
+  })
+})
+
+describe('FXG-SC.6B sidechain edge normalization + persistence', () => {
+  it('preserves a valid sidechain edge with type and ports through load', () => {
+    const graphState = makeSidechainGraphState({
+      edges: [
+        { id: 'e-in', sourceNodeId: 'input', sourcePort: 'audio', targetNodeId: 'fx-comp', targetPort: 'audioIn', type: 'audio' },
+        { id: 'e-out', sourceNodeId: 'fx-comp', sourcePort: 'audioOut', targetNodeId: 'output', targetPort: 'audio', type: 'audio' },
+        { id: 'sce-1', sourceNodeId: 'sc', sourcePort: 'sidechainOut', targetNodeId: 'fx-comp', targetPort: 'sidechainIn', type: 'sidechain' },
+      ],
+    })
+    const result = validateGraphState(graphState, '7')
+    expect(result.status).toBe('valid')
+    const edge = result.graphState.edges.find((e) => e.id === 'sce-1')
+    expect(edge).toEqual({
+      id: 'sce-1', sourceNodeId: 'sc', sourcePort: 'sidechainOut', targetNodeId: 'fx-comp', targetPort: 'sidechainIn', type: 'sidechain',
+    })
+  })
+
+  it('drops a malformed sidechain edge whose source is not a sidechainInput node', () => {
+    const graphState = makeSidechainGraphState({
+      edges: [
+        { id: 'e-in', sourceNodeId: 'input', sourcePort: 'audio', targetNodeId: 'fx-comp', targetPort: 'audioIn', type: 'audio' },
+        { id: 'e-out', sourceNodeId: 'fx-comp', sourcePort: 'audioOut', targetNodeId: 'output', targetPort: 'audio', type: 'audio' },
+        { id: 'bad-sc', sourceNodeId: 'input', sourcePort: 'sidechainOut', targetNodeId: 'fx-comp', targetPort: 'sidechainIn', type: 'sidechain' },
+      ],
+    })
+    const result = validateGraphState(graphState, '7')
+    expect(result.status).toBe('valid')
+    expect(result.graphState.edges.some((e) => e.id === 'bad-sc')).toBe(false)
+  })
+
+  it('drops a sidechain edge whose target is Track Output (not an effect)', () => {
+    const graphState = makeSidechainGraphState({
+      edges: [
+        { id: 'e-in', sourceNodeId: 'input', sourcePort: 'audio', targetNodeId: 'fx-comp', targetPort: 'audioIn', type: 'audio' },
+        { id: 'e-out', sourceNodeId: 'fx-comp', sourcePort: 'audioOut', targetNodeId: 'output', targetPort: 'audio', type: 'audio' },
+        { id: 'bad-sc', sourceNodeId: 'sc', sourcePort: 'sidechainOut', targetNodeId: 'output', targetPort: 'sidechainIn', type: 'sidechain' },
+      ],
+    })
+    const result = validateGraphState(graphState, '7')
+    expect(result.status).toBe('valid')
+    expect(result.graphState.edges.some((e) => e.id === 'bad-sc')).toBe(false)
+  })
+
+  it('preserves a stale sourceTrackId on load', () => {
+    const graphState = makeSidechainGraphState()
+    graphState.nodes.find((n) => n.id === 'sc').data.sourceTrackId = 999
+    const result = validateGraphState(graphState, '7')
+    expect(result.graphState.nodes.find((n) => n.id === 'sc').data.sourceTrackId).toBe(999)
+  })
+})
+
+describe('FXG-SC.6B audio topology ignores sidechain intent', () => {
+  it('excludes the sidechainInput node and sidechain edges from the runtime payload', () => {
+    const graphState = connectSidechainNodes(
+      makeSidechainGraphState(), { sourceNodeId: 'sc', targetNodeId: 'fx-comp' }, { idFactory: () => 'sce-1' },
+    ).graphState
+    const payload = buildLinearGraphTopologyPayload(graphState)
+    expect(payload.nodes.some((node) => node.nodeId === 'sc')).toBe(false)
+    expect(payload.edges.some((edge) => edge.edgeId === 'sce-1')).toBe(false)
+    // The audible Track Input -> Compressor -> Track Output path still syncs.
+    expect(payload.nodes.map((n) => n.nodeId).sort()).toEqual(['fx-comp', 'input', 'output'])
+    expect(analyzeLinearGraphTopology(graphState)).toMatchObject({ ok: true })
+  })
+
+  it('does not treat sidechain edges as parameter edges', () => {
+    const graphState = connectSidechainNodes(
+      makeSidechainGraphState(), { sourceNodeId: 'sc', targetNodeId: 'fx-comp' }, { idFactory: () => 'sce-1' },
+    ).graphState
+    expect(isParameterEdge(graphState, 'sce-1')).toBe(false)
   })
 })

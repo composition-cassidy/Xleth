@@ -138,8 +138,18 @@ export interface GraphStateViewport {
   zoom?: number;
 }
 
-type PreviewNodeKind = 'trackInput' | 'trackOutput' | 'effect' | 'macro' | 'envelope' | 'unknown';
-type PreviewEdgeKind = 'audio' | 'parameter' | 'unknown';
+type PreviewNodeKind = 'trackInput' | 'trackOutput' | 'effect' | 'macro' | 'envelope' | 'sidechainInput' | 'unknown';
+type PreviewEdgeKind = 'audio' | 'parameter' | 'sidechain' | 'unknown';
+
+// FXG-SC.6B — eligible sidechain source track (mirrors mixerStore.getEligibleSidechainSources).
+export interface SidechainSourceOption {
+  sourceTrackId: number;
+  name: string;
+}
+
+// v1 sidechain-capable target plugin ids (renderer-static capability gate). Only the
+// stock compressor declares an external sidechain bus engine-side.
+const SIDECHAIN_SUPPORTED_TARGET_PLUGIN_IDS = ['compressor'];
 
 interface PositionedNode {
   id: string;
@@ -156,6 +166,11 @@ interface PositionedNode {
   envelope: EnvelopeNodeData | null;
   // EVC-R3 — compact envelope summary count of outgoing parameter links.
   envelopeParameterEdgeCount: number;
+  // FXG-SC.6B — true only for effect nodes that can receive a sidechain key (stock
+  // compressor, non-missing/crashed, with an effectInstanceId). Drives the sidechainIn port.
+  sidechainTarget: boolean;
+  // FXG-SC.6B — the Sidechain Input node's selected source track id (null when none).
+  sidechainSourceTrackId: number | null;
   // True only for effect nodes backed by a real (non-placeholder, non-missing)
   // plugin — the heuristic that enables the Edit button. The actual engine-node
   // resolution still happens asynchronously in the panel's edit handler.
@@ -215,6 +230,11 @@ interface GraphStatePreviewProps {
   // EVC.3 — envelope node add/edit affordances (graph mode only).
   onAddEnvelopeNode?: () => void;
   onUpdateEnvelope?: (nodeId: string, patch: EnvelopeNodePatch) => void;
+  // FXG-SC.6B — Sidechain Input node add + source selection + key linking.
+  onAddSidechainInput?: () => void;
+  onSetSidechainInputSource?: (nodeId: string, sourceTrackId: number | null) => void;
+  onConnectSidechain?: (sidechainInputNodeId: string, targetNodeId: string) => void;
+  sidechainSources?: SidechainSourceOption[];
   onRemoveNode?: (nodeId: string) => void;
   onConnectNodes?: (sourceNodeId: string, targetNodeId: string) => void;
   onConnectMacroToParameter?: (macroNodeId: string, targetNodeId: string, parameterId: string) => void;
@@ -339,7 +359,8 @@ function resolvePreviewNodeType(type: string): PreviewNodeKind {
     type === 'trackOutput' ||
     type === 'effect' ||
     type === 'macro' ||
-    type === 'envelope'
+    type === 'envelope' ||
+    type === 'sidechainInput'
   ) {
     return type;
   }
@@ -383,38 +404,56 @@ function readPositionOverride(
   return { x: override.x, y: override.y };
 }
 
-function resolveNodeText(node: GraphStateNode) {
+// FXG-SC.6B — renderer-static sidechain capability check for an effect node. Mirrors
+// graphState.isSidechainCapableEffectNode: a real (non-missing/crashed) effect with an
+// effectInstanceId whose pluginId is sidechain-capable (stock compressor in v1).
+function isSidechainCapableEffectData(data: Record<string, unknown> | undefined) {
+  if (readBoolean(data, 'missing') || readBoolean(data, 'crashed')) return false;
+  if (!readString(data, 'effectInstanceId')) return false;
+  return SIDECHAIN_SUPPORTED_TARGET_PLUGIN_IDS.includes(readString(data, 'pluginId'));
+}
+
+interface ResolvedNodeText {
+  label: string;
+  secondaryText: string | null;
+  metaText: string | null;
+  badges: string[];
+  effectInstanceId: string | null;
+  pluginId: string | null;
+  parameterPorts: GraphExposedParameterPort[];
+  macroValue: number | null;
+  envelope: EnvelopeNodeData | null;
+  editable: boolean;
+  sidechainTarget: boolean;
+  sidechainSourceTrackId: number | null;
+  isSidechainInput: boolean;
+}
+
+function resolveNodeText(node: GraphStateNode): ResolvedNodeText {
   const type = resolvePreviewNodeType(node.type);
   const data = node.data;
+  const base: ResolvedNodeText = {
+    label: '',
+    secondaryText: null,
+    metaText: null,
+    badges: [],
+    effectInstanceId: null,
+    pluginId: null,
+    parameterPorts: [],
+    macroValue: null,
+    envelope: null,
+    editable: false,
+    sidechainTarget: false,
+    sidechainSourceTrackId: null,
+    isSidechainInput: false,
+  };
 
   if (type === 'trackInput') {
-    return {
-      label: 'Track Input',
-      secondaryText: null,
-      metaText: null,
-      badges: [] as string[],
-      effectInstanceId: null,
-      pluginId: null,
-      parameterPorts: [] as GraphExposedParameterPort[],
-      macroValue: null,
-      envelope: null,
-      editable: false,
-    };
+    return { ...base, label: 'Track Input' };
   }
 
   if (type === 'trackOutput') {
-    return {
-      label: 'Track Output',
-      secondaryText: null,
-      metaText: null,
-      badges: [] as string[],
-      effectInstanceId: null,
-      pluginId: null,
-      parameterPorts: [] as GraphExposedParameterPort[],
-      macroValue: null,
-      envelope: null,
-      editable: false,
-    };
+    return { ...base, label: 'Track Output' };
   }
 
   if (type === 'effect') {
@@ -430,6 +469,7 @@ function resolveNodeText(node: GraphStateNode) {
     if (readBoolean(data, 'crashed')) badges.push('Crashed');
 
     return {
+      ...base,
       label: displayName,
       secondaryText: pluginId && pluginId !== displayName ? pluginId : null,
       metaText: sourceSlot == null ? null : `Chain slot ${sourceSlot + 1}`,
@@ -437,25 +477,19 @@ function resolveNodeText(node: GraphStateNode) {
       effectInstanceId,
       pluginId,
       parameterPorts: readExposedParameterPorts(data),
-      macroValue: null,
-      envelope: null,
       // Placeholder / data-only / missing nodes have no engine processor to open.
       editable: pluginId.length > 0 && pluginId !== 'placeholder' && !missing,
+      // FXG-SC.6B — stock compressor effects expose a sidechainIn key target port.
+      sidechainTarget: isSidechainCapableEffectData(data),
     };
   }
 
   if (type === 'macro') {
     return {
+      ...base,
       label: readString(data, 'label') || readString(data, 'name') || 'Macro',
       secondaryText: 'Control source',
-      metaText: null,
-      badges: [] as string[],
-      effectInstanceId: null,
-      pluginId: null,
-      parameterPorts: [] as GraphExposedParameterPort[],
       macroValue: readNormalizedValue(data, 'normalizedValue'),
-      envelope: null,
-      editable: false,
     };
   }
 
@@ -467,16 +501,27 @@ function resolveNodeText(node: GraphStateNode) {
     // normalized data drives the summary/preview and the compact editor.
     const envelope = readEnvelopeNodeData(data);
     return {
+      ...base,
       label: envelope.label,
       secondaryText: 'Envelope Modulator',
-      metaText: null,
-      badges: [] as string[],
-      effectInstanceId: null,
-      pluginId: null,
-      parameterPorts: [] as GraphExposedParameterPort[],
-      macroValue: null,
       envelope,
-      editable: false,
+    };
+  }
+
+  if (type === 'sidechainInput') {
+    // FXG-SC.6B — the Sidechain Input node: a protected, non-audible key source with a
+    // selected source track. Its only port is a `sidechainOut` output handle. The
+    // secondary text reflects whether a source is chosen (resolved to a live name in
+    // the panel via sidechainSources; here we only know the persisted id).
+    const rawSource = data?.sourceTrackId;
+    const sourceTrackId = typeof rawSource === 'number' && Number.isFinite(rawSource) ? rawSource : null;
+    const label = readString(data, 'label') || 'Sidechain Input';
+    return {
+      ...base,
+      label,
+      secondaryText: sourceTrackId == null ? 'No source' : `Keyed by track ${sourceTrackId}`,
+      sidechainSourceTrackId: sourceTrackId,
+      isSidechainInput: true,
     };
   }
 
@@ -489,18 +534,12 @@ function resolveNodeText(node: GraphStateNode) {
     'Unknown Node';
 
   return {
+    ...base,
     label: displayName,
     secondaryText: preservedType
       ? `Unsupported node type: ${preservedType}`
       : 'Unsupported node type',
-    metaText: null,
     badges: ['Unknown'],
-    effectInstanceId: null,
-    pluginId: null,
-    parameterPorts: [] as GraphExposedParameterPort[],
-    macroValue: null,
-    envelope: null,
-    editable: false,
   };
 }
 
@@ -538,15 +577,24 @@ function nodeHeightForPorts(portCount: number) {
   return NODE_HEIGHT + parameterPortSectionHeight(portCount);
 }
 
+// FXG-SC.6B — extra body height for the sidechain affordances.
+const SIDECHAIN_PORT_SECTION_HEIGHT = 30;
+const SIDECHAIN_SOURCE_SELECTOR_HEIGHT = 48;
+
 function nodeHeightForText(text: ReturnType<typeof resolveNodeText>) {
   if (text.envelope) {
     return NODE_HEIGHT + ENVELOPE_NODE_CONTENT_HEIGHT;
   }
-  return nodeHeightForPorts(text.parameterPorts.length) + (text.macroValue == null ? 0 : 38);
+  return nodeHeightForPorts(text.parameterPorts.length)
+    + (text.macroValue == null ? 0 : 38)
+    + (text.sidechainTarget ? SIDECHAIN_PORT_SECTION_HEIGHT : 0)
+    + (text.isSidechainInput ? SIDECHAIN_SOURCE_SELECTOR_HEIGHT : 0);
 }
 
 function nodeWidthForType(type: PreviewNodeKind) {
-  return type === 'envelope' ? ENVELOPE_NODE_WIDTH : NODE_WIDTH;
+  if (type === 'envelope') return ENVELOPE_NODE_WIDTH;
+  if (type === 'sidechainInput') return ENVELOPE_NODE_WIDTH;
+  return NODE_WIDTH;
 }
 
 function normalizePositionedNodes(nodes: GraphStateNode[], options: PreviewModelOptions = {}) {
@@ -674,6 +722,12 @@ function parameterPortAnchor(node: PositionedNode, parameterId: string | null) {
   return { x: node.x, y };
 }
 
+// FXG-SC.6B — the sidechainIn port renders near the bottom of an effect node. The key
+// cable lands on the node's left edge at that row.
+function sidechainPortAnchor(node: PositionedNode) {
+  return { x: node.x, y: node.y + node.height - PARAMETER_PORT_ROW_HEIGHT };
+}
+
 export function resolveParameterDropTargetFromElement(
   element: Element | null,
   sourceNodeId?: string | null,
@@ -696,6 +750,36 @@ export function connectHighlightedParameterDropTarget(
 ) {
   if (!target || !onConnect) return false;
   onConnect(sourceNodeId, target.nodeId, target.parameterId);
+  return true;
+}
+
+// FXG-SC.6B — a sidechain drop lands on an effect node's sidechainIn port.
+export interface SidechainDropTarget {
+  nodeId: string;
+  portId: string;
+}
+
+export function resolveSidechainDropTargetFromElement(
+  element: Element | null,
+  sourceNodeId?: string | null,
+): SidechainDropTarget | null {
+  if (!element || typeof element.closest !== 'function') return null;
+  const portElement = element.closest('[data-sidechain-port-type="sidechain-input"][data-sidechain-port-id]');
+  if (!portElement) return null;
+  const portId = portElement.getAttribute('data-sidechain-port-id');
+  const nodeElement = portElement.closest('[data-node-id]');
+  const nodeId = nodeElement?.getAttribute('data-node-id') ?? null;
+  if (!nodeId || !portId || nodeId === sourceNodeId) return null;
+  return { nodeId, portId };
+}
+
+export function connectHighlightedSidechainDropTarget(
+  sourceNodeId: string,
+  target: SidechainDropTarget | null,
+  onConnect?: (sidechainInputNodeId: string, targetNodeId: string) => void,
+) {
+  if (!target || !onConnect) return false;
+  onConnect(sourceNodeId, target.nodeId);
   return true;
 }
 
@@ -747,6 +831,21 @@ function normalizePositionedEdges(
         label: parameterId
           ? `Macro link: ${source.label} to ${target.label} ${parameterId}`
           : `Macro link: ${source.label} to ${target.label}`,
+        path: makeCurvePath(start.x, start.y, end.x, end.y),
+        midX: (start.x + end.x) / 2,
+        midY: (start.y + end.y) / 2,
+      });
+      continue;
+    }
+
+    // FXG-SC.6B — sidechain key cable: Sidechain Input sidechainOut → effect sidechainIn.
+    if (edge.type === 'sidechain') {
+      const start = nodeOutPoint(source);
+      const end = sidechainPortAnchor(target);
+      positionedEdges.push({
+        id: edge.id,
+        type: 'sidechain',
+        label: `Sidechain key: ${source.label} to ${target.label}`,
         path: makeCurvePath(start.x, start.y, end.x, end.y),
         midX: (start.x + end.x) / 2,
         midY: (start.y + end.y) / 2,
@@ -826,8 +925,11 @@ export function GraphStatePreviewNode({
   connectEnabled,
   connectParameterEnabled = false,
   connectEnvelopeParameterEnabled = false,
+  connectSidechainEnabled = false,
   connectActive,
   hoveredParameterPortId = null,
+  hoveredSidechainPort = false,
+  sidechainSources = [],
   canRemove,
   canEdit,
   onPointerDown,
@@ -844,14 +946,21 @@ export function GraphStatePreviewNode({
   onMacroValueCommit,
   onMacroRenameCommit,
   onEnvelopeUpdate,
+  onSetSidechainSource,
 }: {
   node: PositionedNode;
   dragging: boolean;
   connectEnabled: boolean;
   connectParameterEnabled?: boolean;
   connectEnvelopeParameterEnabled?: boolean;
+  // FXG-SC.6B — enables the Sidechain Input node's sidechainOut handle as a drag source.
+  connectSidechainEnabled?: boolean;
   connectActive: boolean;
   hoveredParameterPortId?: string | null;
+  // FXG-SC.6B — true when a sidechain drag is hovering this effect node's sidechainIn port.
+  hoveredSidechainPort?: boolean;
+  // FXG-SC.6B — eligible source tracks for the Sidechain Input source selector.
+  sidechainSources?: SidechainSourceOption[];
   canRemove: boolean;
   canEdit: boolean;
   onPointerDown?: (event: React.PointerEvent<HTMLDivElement>, node: PositionedNode) => void;
@@ -869,13 +978,20 @@ export function GraphStatePreviewNode({
   onMacroRenameCommit?: (nodeId: string, label: string) => void;
   // EVC.3 — envelope node edit callback. When absent, the envelope renders read-only.
   onEnvelopeUpdate?: (nodeId: string, patch: EnvelopeNodePatch) => void;
+  // FXG-SC.6B — Sidechain Input source selector callback.
+  onSetSidechainSource?: (nodeId: string, sourceTrackId: number | null) => void;
 }) {
   const classType = node.type === 'trackInput'
     ? 'track-input'
     : node.type === 'trackOutput'
       ? 'track-output'
-      : node.type;
+      : node.type === 'sidechainInput'
+        ? 'sidechain-input'
+        : node.type;
   const isMacro = node.type === 'macro';
+  // FXG-SC.6B — the Sidechain Input node: a protected key source with one sidechainOut
+  // handle and a source selector. No audio in-handle, no edit/remove, not in Mixer Chain.
+  const isSidechainInput = node.type === 'sidechainInput';
   // EVC-R1 — envelope nodes are control-source definitions like macro nodes. They
   // expose NO audio handles and NO parameter input ports, but DO expose a single
   // `controlOut` port that drags to an exposed parameter port (parameter edge).
@@ -898,6 +1014,10 @@ export function GraphStatePreviewNode({
     !node.virtual && typeof onConnectPointerDown === 'function' &&
     ((isMacro && connectParameterEnabled) || (isEnvelope && connectEnvelopeParameterEnabled));
   const interactiveOut = interactiveAudioOut || interactiveControlOut;
+  // FXG-SC.6B — the Sidechain Input node's sidechainOut is interactive when sidechain
+  // linking is enabled. It is its own connect-source kind, separate from audio/control.
+  const interactiveSidechainOut =
+    isSidechainInput && connectSidechainEnabled && !node.virtual && typeof onConnectPointerDown === 'function';
   const showRemove =
     canRemove &&
     (node.type === 'effect' || node.type === 'macro' || node.type === 'envelope') &&
@@ -942,13 +1062,13 @@ export function GraphStatePreviewNode({
       onPointerCancel={onPointerCancel}
       onContextMenu={canOpenContextMenu ? (event) => onNodeContextMenu?.(event, node) : undefined}
     >
-      {node.type !== 'trackInput' && node.type !== 'macro' && !isEnvelope && (
+      {node.type !== 'trackInput' && node.type !== 'macro' && !isEnvelope && !isSidechainInput && (
         <span
           className="xleth-graph-state-preview__handle xleth-graph-state-preview__handle--in"
           aria-hidden="true"
         />
       )}
-      {node.type !== 'trackOutput' && (
+      {node.type !== 'trackOutput' && !isSidechainInput && (
         interactiveOut ? (
           <span
             className={[
@@ -985,6 +1105,43 @@ export function GraphStatePreviewNode({
           />
         )
       )}
+      {/* FXG-SC.6B — the Sidechain Input node's single sidechainOut handle. It is a
+          distinct connect source (sourceKind 'sidechain'); it drags only to a
+          compressor's sidechainIn port. No audio in-handle exists on this node. */}
+      {isSidechainInput && (
+        interactiveSidechainOut ? (
+          <span
+            className={[
+              'xleth-graph-state-preview__handle',
+              'xleth-graph-state-preview__handle--out',
+              'xleth-graph-state-preview__handle--connect-source',
+              'xleth-graph-state-preview__handle--sidechain-out',
+            ].join(' ')}
+            data-connect-source="true"
+            data-connect-source-kind="sidechain"
+            data-sidechain-output="true"
+            data-sidechain-port-id={`sidechain:${node.id}:sidechainOut`}
+            data-sidechain-port-type="sidechain-output"
+            aria-label={`Link ${node.label} key to a compressor sidechain input`}
+            onPointerDown={(event) => onConnectPointerDown?.(event, node)}
+            onPointerMove={onConnectPointerMove}
+            onPointerUp={onConnectPointerUp}
+            onPointerCancel={onConnectPointerCancel}
+          />
+        ) : (
+          <span
+            className={[
+              'xleth-graph-state-preview__handle',
+              'xleth-graph-state-preview__handle--out',
+              'xleth-graph-state-preview__handle--sidechain-out',
+            ].join(' ')}
+            data-sidechain-output="true"
+            data-sidechain-port-id={`sidechain:${node.id}:sidechainOut`}
+            data-sidechain-port-type="sidechain-output"
+            aria-hidden="true"
+          />
+        )
+      )}
       {node.type === 'macro' && typeof onMacroRenameCommit === 'function' ? (
         <input
           className="xleth-graph-state-preview__macro-label"
@@ -1007,6 +1164,47 @@ export function GraphStatePreviewNode({
       )}
       {node.secondaryText && (
         <span className="xleth-graph-state-preview__node-secondary">{node.secondaryText}</span>
+      )}
+      {/* FXG-SC.6B — Sidechain Input source selector. Lists "No source" plus eligible
+          live tracks. A persisted-but-missing source id is shown as an extra stale
+          option so the saved intent stays visible. Selecting commits the source. */}
+      {isSidechainInput && (
+        <span className="xleth-graph-state-preview__sidechain-source">
+          <span className="xleth-graph-state-preview__sidechain-source-label" id={`sidechain-source-label-${node.id}`}>
+            Source
+          </span>
+          {typeof onSetSidechainSource === 'function' ? (
+            <select
+              className="xleth-graph-state-preview__sidechain-source-select"
+              aria-labelledby={`sidechain-source-label-${node.id}`}
+              aria-label={`${node.label} source track`}
+              value={node.sidechainSourceTrackId == null ? '' : String(node.sidechainSourceTrackId)}
+              data-sidechain-source-track={node.sidechainSourceTrackId == null ? '' : String(node.sidechainSourceTrackId)}
+              onPointerDown={(event) => event.stopPropagation()}
+              onChange={(event) => {
+                const raw = event.currentTarget.value;
+                onSetSidechainSource(node.id, raw === '' ? null : Number(raw));
+              }}
+            >
+              <option value="">No source</option>
+              {node.sidechainSourceTrackId != null &&
+                !sidechainSources.some((s) => s.sourceTrackId === node.sidechainSourceTrackId) && (
+                  <option value={String(node.sidechainSourceTrackId)}>
+                    {`Track ${node.sidechainSourceTrackId} (missing)`}
+                  </option>
+                )}
+              {sidechainSources.map((source) => (
+                <option key={source.sourceTrackId} value={String(source.sourceTrackId)}>
+                  {source.name}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <span className="xleth-graph-state-preview__sidechain-source-static">
+              {node.sidechainSourceTrackId == null ? 'No source' : `Track ${node.sidechainSourceTrackId}`}
+            </span>
+          )}
+        </span>
       )}
       {isEnvelope && node.envelope && (
         <EnvelopeNodeBody
@@ -1092,6 +1290,27 @@ export function GraphStatePreviewNode({
                 </span>
               );
             })}
+          </span>
+        </span>
+      )}
+      {/* FXG-SC.6B — compressor-only sidechain key target port. Distinct from audio
+          and parameter ports; only accepts a sidechainInput.sidechainOut drop. */}
+      {node.type === 'effect' && node.sidechainTarget && (
+        <span className="xleth-graph-state-preview__sidechain-section">
+          <span
+            className={[
+              'xleth-graph-state-preview__sidechain-port',
+              hoveredSidechainPort ? 'xleth-graph-state-preview__sidechain-port--hovered' : '',
+            ].filter(Boolean).join(' ')}
+            role="listitem"
+            title="Sidechain key input"
+            aria-label={`${node.label} sidechain key input`}
+            data-sidechain-port-id={`scp:${node.id}:sidechainIn`}
+            data-sidechain-port-type="sidechain-input"
+            data-drop-target-hovered={hoveredSidechainPort ? 'true' : undefined}
+          >
+            <span className="xleth-graph-state-preview__sidechain-port-dot" aria-hidden="true" />
+            <span className="xleth-graph-state-preview__sidechain-port-label">Sidechain</span>
           </span>
         </span>
       )}
@@ -1628,6 +1847,10 @@ export default function GraphStatePreview({
   onAddMacroNode,
   onAddEnvelopeNode,
   onUpdateEnvelope,
+  onAddSidechainInput,
+  onSetSidechainInputSource,
+  onConnectSidechain,
+  sidechainSources = [],
   onRemoveNode,
   onConnectNodes,
   onConnectMacroToParameter,
@@ -1670,9 +1893,11 @@ export default function GraphStatePreview({
   const connectRef = React.useRef<{
     pointerId: number;
     sourceNodeId: string;
-    sourceKind: 'audio' | 'macro' | 'envelope';
+    sourceKind: 'audio' | 'macro' | 'envelope' | 'sidechain';
   } | null>(null);
   const hoveredParameterTargetRef = React.useRef<ParameterDropTarget | null>(null);
+  // FXG-SC.6B — sidechain drag hover target (effect sidechainIn port).
+  const hoveredSidechainTargetRef = React.useRef<SidechainDropTarget | null>(null);
   const spaceDownRef = React.useRef(false);
 
   React.useEffect(() => {
@@ -1696,6 +1921,7 @@ export default function GraphStatePreview({
   const [connectingFromNodeId, setConnectingFromNodeId] = React.useState<string | null>(null);
   const [connectPoint, setConnectPoint] = React.useState<{ x: number; y: number } | null>(null);
   const [hoveredParameterTarget, setHoveredParameterTarget] = React.useState<ParameterDropTarget | null>(null);
+  const [hoveredSidechainTarget, setHoveredSidechainTarget] = React.useState<SidechainDropTarget | null>(null);
   const [contextMenu, setContextMenu] = React.useState<{
     node: PositionedNode;
     x: number;
@@ -1735,6 +1961,12 @@ export default function GraphStatePreview({
   const canAddMacro = typeof onAddMacroNode === 'function';
   const canAddEnvelope = typeof onAddEnvelopeNode === 'function';
   const canEditEnvelope = typeof onUpdateEnvelope === 'function';
+  // FXG-SC.6B — sidechain affordances are graph-mode only (wired by the panel).
+  const canAddSidechainInput = typeof onAddSidechainInput === 'function';
+  const canSetSidechainSource = typeof onSetSidechainInputSource === 'function';
+  const canConnectSidechain = typeof onConnectSidechain === 'function';
+  const hasSidechainInputNode = Array.isArray(graphState?.nodes)
+    && graphState.nodes.some((node) => node.type === 'sidechainInput');
   const canRemoveNode = typeof onRemoveNode === 'function';
   const canEditNode = typeof onEditNode === 'function';
   const canConnect = typeof onConnectNodes === 'function';
@@ -1755,7 +1987,7 @@ export default function GraphStatePreview({
   const canUseGraphHistory =
     typeof onUndoGraphEdit === 'function' || typeof onRedoGraphEdit === 'function';
   const showToolbar =
-    canEditViewport || canAddNode || canAddMacro || canAddEnvelope || canUseGraphHistory;
+    canEditViewport || canAddNode || canAddMacro || canAddEnvelope || canAddSidechainInput || canUseGraphHistory;
 
   const closeContextMenu = React.useCallback(() => {
     setContextMenu(null);
@@ -2092,9 +2324,11 @@ export default function GraphStatePreview({
       event.currentTarget.releasePointerCapture?.(event.pointerId);
       connectRef.current = null;
       hoveredParameterTargetRef.current = null;
+      hoveredSidechainTargetRef.current = null;
       setConnectingFromNodeId(null);
       setConnectPoint(null);
       setHoveredParameterTarget(null);
+      setHoveredSidechainTarget(null);
     }
   }, []);
 
@@ -2114,17 +2348,35 @@ export default function GraphStatePreview({
     setHoveredParameterTarget(nextTarget);
   }, []);
 
+  // FXG-SC.6B — highlight the compressor sidechainIn port under a sidechain drag.
+  const updateHoveredSidechainTarget = React.useCallback((event: React.PointerEvent<HTMLSpanElement>) => {
+    const connect = connectRef.current;
+    if (!connect || connect.pointerId !== event.pointerId || connect.sourceKind !== 'sidechain') return;
+
+    const dropElement = typeof document !== 'undefined'
+      ? document.elementFromPoint(event.clientX, event.clientY)
+      : null;
+    const nextTarget = resolveSidechainDropTargetFromElement(dropElement, connect.sourceNodeId);
+    const previous = hoveredSidechainTargetRef.current;
+    if (previous?.portId === nextTarget?.portId) return;
+    hoveredSidechainTargetRef.current = nextTarget;
+    setHoveredSidechainTarget(nextTarget);
+  }, []);
+
   const handleConnectPointerDown = React.useCallback((
     event: React.PointerEvent<HTMLSpanElement>,
     node: PositionedNode,
   ) => {
     const isMacro = node.type === 'macro';
     const isEnvelope = node.type === 'envelope';
+    const isSidechainInput = node.type === 'sidechainInput';
     const allowed = isMacro
       ? canConnectParameters
       : isEnvelope
         ? canConnectEnvelopeParameters
-        : canConnect;
+        : isSidechainInput
+          ? canConnectSidechain
+          : canConnect;
     if (!allowed || node.virtual || event.button !== 0) return;
 
     event.preventDefault();
@@ -2133,13 +2385,15 @@ export default function GraphStatePreview({
     connectRef.current = {
       pointerId: event.pointerId,
       sourceNodeId: node.id,
-      sourceKind: isMacro ? 'macro' : isEnvelope ? 'envelope' : 'audio',
+      sourceKind: isMacro ? 'macro' : isEnvelope ? 'envelope' : isSidechainInput ? 'sidechain' : 'audio',
     };
     hoveredParameterTargetRef.current = null;
+    hoveredSidechainTargetRef.current = null;
     setConnectingFromNodeId(node.id);
     setConnectPoint(toCanvasPoint(event.clientX, event.clientY));
     setHoveredParameterTarget(null);
-  }, [canConnect, canConnectParameters, canConnectEnvelopeParameters, toCanvasPoint]);
+    setHoveredSidechainTarget(null);
+  }, [canConnect, canConnectParameters, canConnectEnvelopeParameters, canConnectSidechain, toCanvasPoint]);
 
   const handleConnectPointerMove = React.useCallback((event: React.PointerEvent<HTMLSpanElement>) => {
     const connect = connectRef.current;
@@ -2148,7 +2402,8 @@ export default function GraphStatePreview({
     event.preventDefault();
     setConnectPoint(toCanvasPoint(event.clientX, event.clientY));
     updateHoveredParameterTarget(event);
-  }, [toCanvasPoint, updateHoveredParameterTarget]);
+    updateHoveredSidechainTarget(event);
+  }, [toCanvasPoint, updateHoveredParameterTarget, updateHoveredSidechainTarget]);
 
   const handleConnectPointerUp = React.useCallback((event: React.PointerEvent<HTMLSpanElement>) => {
     const connect = connectRef.current;
@@ -2175,6 +2430,16 @@ export default function GraphStatePreview({
       return;
     }
 
+    // FXG-SC.6B — Sidechain Input sidechainOut → compressor sidechainIn creates a
+    // sidechain edge. The drop must land on the highlighted sidechain port; anything
+    // else (node body, audio handle, parameter port) no-ops via the null target.
+    if (connect.sourceKind === 'sidechain') {
+      const target = hoveredSidechainTargetRef.current;
+      resetConnect(event);
+      connectHighlightedSidechainDropTarget(sourceNodeId, target, onConnectSidechain);
+      return;
+    }
+
     // Audio out → node body creates an audio edge. Parameter ports are not valid
     // audio targets, even though they sit inside effect nodes.
     const parameterDropTarget = resolveParameterDropTargetFromElement(dropElement, sourceNodeId);
@@ -2188,7 +2453,7 @@ export default function GraphStatePreview({
     if (!parameterDropTarget && onConnectNodes && targetNodeId && targetNodeId !== sourceNodeId) {
       onConnectNodes(sourceNodeId, targetNodeId);
     }
-  }, [onConnectMacroToParameter, onConnectEnvelopeToParameter, onConnectNodes, resetConnect]);
+  }, [onConnectMacroToParameter, onConnectEnvelopeToParameter, onConnectSidechain, onConnectNodes, resetConnect]);
 
   const connectingNode = connectingFromNodeId
     ? model.nodes.find((node) => node.id === connectingFromNodeId)
@@ -2196,9 +2461,14 @@ export default function GraphStatePreview({
   const hoveredParameterNode = hoveredParameterTarget
     ? model.nodes.find((node) => node.id === hoveredParameterTarget.nodeId)
     : undefined;
+  const hoveredSidechainNode = hoveredSidechainTarget
+    ? model.nodes.find((node) => node.id === hoveredSidechainTarget.nodeId)
+    : undefined;
   const displayedConnectPoint = hoveredParameterNode
     ? parameterPortAnchor(hoveredParameterNode, hoveredParameterTarget?.parameterId ?? null)
-    : connectPoint;
+    : hoveredSidechainNode
+      ? sidechainPortAnchor(hoveredSidechainNode)
+      : connectPoint;
   const connectLinePath = connectingNode && displayedConnectPoint
     ? (() => {
         const start = nodeOutPoint(connectingNode);
@@ -2281,6 +2551,19 @@ export default function GraphStatePreview({
                   onClick={onAddEnvelopeNode}
                 >
                   Add Envelope
+                </button>
+              )}
+              {canAddSidechainInput && (
+                <button
+                  className="xleth-graph-state-preview__action-button xleth-graph-state-preview__action-button--sidechain"
+                  type="button"
+                  disabled={hasSidechainInputNode}
+                  title={hasSidechainInputNode
+                    ? 'This graph already has a Sidechain Input node'
+                    : 'Add a Sidechain Input node'}
+                  onClick={onAddSidechainInput}
+                >
+                  Add Sidechain Input
                 </button>
               )}
               {canEditViewport && (
@@ -2385,31 +2668,35 @@ export default function GraphStatePreview({
                   connectEnabled={canConnect}
                   connectParameterEnabled={canConnectParameters}
                   connectEnvelopeParameterEnabled={canConnectEnvelopeParameters}
+                  connectSidechainEnabled={canConnectSidechain}
                   connectActive={connectingFromNodeId === node.id}
                   hoveredParameterPortId={hoveredParameterTarget?.nodeId === node.id ? hoveredParameterTarget.portId : null}
+                  hoveredSidechainPort={hoveredSidechainTarget?.nodeId === node.id}
+                  sidechainSources={sidechainSources}
                   canRemove={canRemoveNode}
                   canEdit={canEditNode}
                   onPointerDown={canDragNodes ? handleNodePointerDown : undefined}
                   onPointerMove={canDragNodes ? handleNodePointerMove : undefined}
                   onPointerUp={canDragNodes ? finishDrag : undefined}
                   onPointerCancel={canDragNodes ? cancelDrag : undefined}
-                  onConnectPointerDown={canConnect || canConnectParameters || canConnectEnvelopeParameters ? handleConnectPointerDown : undefined}
-                  onConnectPointerMove={canConnect || canConnectParameters || canConnectEnvelopeParameters ? handleConnectPointerMove : undefined}
-                  onConnectPointerUp={canConnect || canConnectParameters || canConnectEnvelopeParameters ? handleConnectPointerUp : undefined}
-                  onConnectPointerCancel={canConnect || canConnectParameters || canConnectEnvelopeParameters ? resetConnect : undefined}
+                  onConnectPointerDown={canConnect || canConnectParameters || canConnectEnvelopeParameters || canConnectSidechain ? handleConnectPointerDown : undefined}
+                  onConnectPointerMove={canConnect || canConnectParameters || canConnectEnvelopeParameters || canConnectSidechain ? handleConnectPointerMove : undefined}
+                  onConnectPointerUp={canConnect || canConnectParameters || canConnectEnvelopeParameters || canConnectSidechain ? handleConnectPointerUp : undefined}
+                  onConnectPointerCancel={canConnect || canConnectParameters || canConnectEnvelopeParameters || canConnectSidechain ? resetConnect : undefined}
                   onNodeContextMenu={(canExposeParameters || canMacroAutomation) ? handleNodeContextMenu : undefined}
                   onRemove={canRemoveNode ? onRemoveNode : undefined}
                   onEdit={canEditNode ? onEditNode : undefined}
                   onMacroValueCommit={onUpdateMacroValue}
                   onMacroRenameCommit={onRenameMacroNode}
                   onEnvelopeUpdate={canEditEnvelope ? onUpdateEnvelope : undefined}
+                  onSetSidechainSource={canSetSidechainSource ? onSetSidechainInputSource : undefined}
                 />
               ))}
             </div>
             {(canDisconnect || canEditMappings) && (
               <div className="xleth-graph-state-preview__overlay" aria-label="Graph cable controls">
                 {model.edges
-                  .filter((edge) => edge.type === 'audio' || edge.type === 'parameter')
+                  .filter((edge) => edge.type === 'audio' || edge.type === 'parameter' || edge.type === 'sidechain')
                   .map((edge) => (
                     <React.Fragment key={edge.id}>
                       {canDisconnect && (

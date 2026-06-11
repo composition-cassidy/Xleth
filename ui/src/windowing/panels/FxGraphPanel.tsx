@@ -72,6 +72,13 @@ const GRAPH_MUTATION_MESSAGES: Record<string, string> = {
   engine_removal_failed: 'Could not remove that effect cleanly. The graph is unchanged.',
   nothing_to_undo: 'Nothing to undo for this graph.',
   nothing_to_redo: 'Nothing to redo for this graph.',
+  // FXG-SC.6B FX Graph Sidechain Input
+  sidechain_input_exists: 'This graph already has a Sidechain Input node.',
+  select_source_first: 'Select a source track first.',
+  unsupported_sidechain_target: 'This effect has no sidechain input.',
+  invalid_sidechain_source: 'That track cannot be a sidechain source.',
+  invalid_sidechain_target: 'That node cannot receive a sidechain key.',
+  duplicate_sidechain_edge: 'That sidechain link already exists.',
 };
 
 const GRAPH_RUNTIME_MESSAGES: Record<string, string> = {
@@ -128,6 +135,11 @@ export interface FxGraphPanelContentProps {
   // EVC.3 — envelope node add/edit (graph mode only).
   onAddGraphEnvelopeNode?: () => void;
   onUpdateGraphEnvelope?: (nodeId: string, patch: Record<string, unknown>) => void;
+  // FXG-SC.6B — Sidechain Input node add + source selection + key linking (graph mode only).
+  onAddGraphSidechainInput?: () => void;
+  onSetGraphSidechainInputSource?: (nodeId: string, sourceTrackId: number | null) => void;
+  onConnectGraphSidechain?: (sidechainInputNodeId: string, targetNodeId: string) => void;
+  sidechainSources?: { sourceTrackId: number; name: string }[];
   onRemoveGraphNode?: (nodeId: string) => void;
   onConnectGraphNodes?: (sourceNodeId: string, targetNodeId: string) => void;
   onConnectGraphMacroToParameter?: (macroNodeId: string, targetNodeId: string, parameterId: string) => void;
@@ -207,6 +219,10 @@ export function FxGraphPanelContent({
   onAddGraphMacroNode,
   onAddGraphEnvelopeNode,
   onUpdateGraphEnvelope,
+  onAddGraphSidechainInput,
+  onSetGraphSidechainInputSource,
+  onConnectGraphSidechain,
+  sidechainSources = [],
   onRemoveGraphNode,
   onConnectGraphNodes,
   onConnectGraphMacroToParameter,
@@ -331,6 +347,10 @@ export function FxGraphPanelContent({
               onAddMacroNode={graphModeActive ? onAddGraphMacroNode : undefined}
               onAddEnvelopeNode={graphModeActive ? onAddGraphEnvelopeNode : undefined}
               onUpdateEnvelope={graphModeActive ? onUpdateGraphEnvelope : undefined}
+              onAddSidechainInput={graphModeActive ? onAddGraphSidechainInput : undefined}
+              onSetSidechainInputSource={graphModeActive ? onSetGraphSidechainInputSource : undefined}
+              onConnectSidechain={graphModeActive ? onConnectGraphSidechain : undefined}
+              sidechainSources={graphModeActive ? sidechainSources : undefined}
               onRemoveNode={graphModeActive ? onRemoveGraphNode : undefined}
               onConnectNodes={graphModeActive ? onConnectGraphNodes : undefined}
               onConnectMacroToParameter={graphModeActive ? onConnectGraphMacroToParameter : undefined}
@@ -504,6 +524,11 @@ export default function FxGraphPanel() {
   const addGraphMacroNodeForTrack = useEffectChainStore((state) => state.addGraphMacroNodeForTrack);
   const addGraphEnvelopeNodeForTrack = useEffectChainStore((state) => state.addGraphEnvelopeNodeForTrack);
   const updateGraphEnvelopeNodeDataForTrack = useEffectChainStore((state) => state.updateGraphEnvelopeNodeDataForTrack);
+  // FXG-SC.6B — Sidechain Input store actions.
+  const addSidechainInputNodeForTrack = useEffectChainStore((state) => state.addSidechainInputNodeForTrack);
+  const setSidechainInputSourceForTrack = useEffectChainStore((state) => state.setSidechainInputSourceForTrack);
+  const connectSidechainForTrack = useEffectChainStore((state) => state.connectSidechainForTrack);
+  const disconnectSidechainEdgeForTrack = useEffectChainStore((state) => state.disconnectSidechainEdgeForTrack);
   const removeGraphNodeForTrack = useEffectChainStore((state) => state.removeGraphNodeForTrack);
   const connectGraphNodesForTrack = useEffectChainStore((state) => state.connectGraphNodesForTrack);
   const connectMacroToParameterForTrack = useEffectChainStore((state) => state.connectMacroToParameterForTrack);
@@ -523,6 +548,16 @@ export default function FxGraphPanel() {
   const reactiveVstPlugins = useVstStore((state) => state.plugins);
   const vstState = renderingWithoutDom ? useVstStore.getState() : null;
   const vstPlugins = vstState ? vstState.plugins : reactiveVstPlugins;
+  // FXG-SC.6B — eligible sidechain source tracks for the selected graph track. The
+  // mixerStore selector already excludes self, visual-only/non-audio tracks, and
+  // output+sidechain cycles. Subscribing to tracks keeps the list reactive.
+  const getEligibleSidechainSources = useMixerStore((state) => state.getEligibleSidechainSources);
+  const mixerTracks = useMixerStore((state) => state.tracks);
+  const sidechainSources = React.useMemo(
+    () => (selectedTrack?.id == null ? [] : getEligibleSidechainSources(selectedTrack.id)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mixerTracks drives recompute
+    [getEligibleSidechainSources, selectedTrack?.id, mixerTracks],
+  );
   const selectedTrackLabel = selectedTrack
     ? selectedTrack.name || `Track ${selectedTrack.id}`
     : undefined;
@@ -623,6 +658,42 @@ export default function FxGraphPanel() {
     setGraphActionNotice(describeGraphMutationResult(result));
   }, [fxMode, selectedTrack?.id, updateGraphEnvelopeNodeDataForTrack]);
 
+  // FXG-SC.6B — add the protected Sidechain Input node. Graph-mode gated; the store
+  // action persists graphState, records undo, and performs NO audio runtime sync, NO
+  // native route, and NO sc_external write. Pre-fills the source with the first
+  // eligible track so a fresh node is immediately usable when one exists.
+  const handleAddGraphSidechainInput = useCallback(async () => {
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    const result = await addSidechainInputNodeForTrack(selectedTrack.id, {
+      sourceTrackId: sidechainSources[0]?.sourceTrackId ?? null,
+    });
+    setGraphActionNotice(describeGraphMutationResult(result));
+  }, [addSidechainInputNodeForTrack, fxMode, selectedTrack?.id, sidechainSources]);
+
+  // FXG-SC.6B — set the Sidechain Input node's source track. Eligibility is enforced
+  // both here (via eligibleSourceTrackIds) and structurally in the store/graphState.
+  const handleSetGraphSidechainInputSource = useCallback(async (
+    nodeId: string,
+    sourceTrackId: number | null,
+  ) => {
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    const result = await setSidechainInputSourceForTrack(selectedTrack.id, nodeId, sourceTrackId, {
+      eligibleSourceTrackIds: sidechainSources.map((s) => s.sourceTrackId),
+    });
+    setGraphActionNotice(describeGraphMutationResult(result));
+  }, [fxMode, selectedTrack?.id, setSidechainInputSourceForTrack, sidechainSources]);
+
+  // FXG-SC.6B — create a sidechain key link from the Sidechain Input node to a stock
+  // compressor's sidechainIn. Runtime-inert in 6B (no route/native ducking yet).
+  const handleConnectGraphSidechain = useCallback(async (
+    sidechainInputNodeId: string,
+    targetNodeId: string,
+  ) => {
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    const result = await connectSidechainForTrack(selectedTrack.id, sidechainInputNodeId, targetNodeId);
+    setGraphActionNotice(describeGraphMutationResult(result));
+  }, [connectSidechainForTrack, fxMode, selectedTrack?.id]);
+
   const handleRemoveGraphNode = useCallback(async (nodeId: string) => {
     if (selectedTrack?.id == null || fxMode !== 'graph') return;
     const result = await removeGraphNodeForTrack(selectedTrack.id, nodeId);
@@ -715,9 +786,14 @@ export default function FxGraphPanel() {
 
   const handleDisconnectGraphEdge = useCallback(async (edgeId: string) => {
     if (selectedTrack?.id == null || fxMode !== 'graph') return;
-    const result = await disconnectGraphEdgeForTrack(selectedTrack.id, edgeId);
+    // FXG-SC.6B — sidechain edges use a dedicated disconnect action so they never run
+    // through the audio/parameter disconnect path. Resolve the edge type from graphState.
+    const edge = graphState?.edges?.find((candidate) => candidate.id === edgeId);
+    const result = edge?.type === 'sidechain'
+      ? await disconnectSidechainEdgeForTrack(selectedTrack.id, edgeId)
+      : await disconnectGraphEdgeForTrack(selectedTrack.id, edgeId);
     setGraphActionNotice(describeGraphMutationResult(result));
-  }, [disconnectGraphEdgeForTrack, fxMode, selectedTrack?.id]);
+  }, [disconnectGraphEdgeForTrack, disconnectSidechainEdgeForTrack, fxMode, graphState, selectedTrack?.id]);
 
   const runGraphHistoryAction = useCallback(async (kind: 'undo' | 'redo') => {
     if (selectedTrack?.id == null || fxMode !== 'graph') return;
@@ -856,6 +932,10 @@ export default function FxGraphPanel() {
         onAddGraphMacroNode={handleAddGraphMacroNode}
         onAddGraphEnvelopeNode={handleAddGraphEnvelopeNode}
         onUpdateGraphEnvelope={handleUpdateGraphEnvelope}
+        onAddGraphSidechainInput={handleAddGraphSidechainInput}
+        onSetGraphSidechainInputSource={handleSetGraphSidechainInputSource}
+        onConnectGraphSidechain={handleConnectGraphSidechain}
+        sidechainSources={sidechainSources}
         onRemoveGraphNode={handleRemoveGraphNode}
         onConnectGraphNodes={handleConnectGraphNodes}
         onConnectGraphMacroToParameter={handleConnectGraphMacroToParameter}

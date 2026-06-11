@@ -33,6 +33,30 @@ export const GRAPH_ENVELOPE_NODE_TYPE = 'envelope'
 // controlOut (both are control sources for parameter edges).
 export const GRAPH_ENVELOPE_OUTPUT_PORT = 'controlOut'
 
+// FXG-SC.6B — FX Graph Sidechain Input node. A protected, non-audible, graph-owned
+// node that represents the selected source track's incoming silent sidechain key.
+// It is NOT an effect processor: it owns no effectInstanceId, hydrates no engine
+// processor, never participates in audio topology, and never appears in Mixer Chain.
+// Its data carries a selected `sourceTrackId` (a normal mixer track id, or null) and
+// a fixed display label. It exposes a single output port (`sidechainOut`) that links
+// — through a distinct `sidechain` edge — to a sidechain-capable effect's `sidechainIn`
+// target port. Runtime route binding is deferred to 6C; in 6B this is graphState/UI
+// intent only. See docs/dev/fxgraph-sidechain-input-architecture-audit.md.
+export const GRAPH_SIDECHAIN_INPUT_NODE_TYPE = 'sidechainInput'
+// The Sidechain Input's single output port (silent key source).
+export const GRAPH_SIDECHAIN_INPUT_OUTPUT_PORT = 'sidechainOut'
+// The compressor-only sidechain key target port on an effect node.
+export const GRAPH_SIDECHAIN_TARGET_PORT = 'sidechainIn'
+// A distinct edge kind for sidechain key links — deliberately NOT `audio` so the
+// existing audio topology/cycle code ignores it by default (Option A in the 6A audit).
+export const GRAPH_SIDECHAIN_EDGE_TYPE = 'sidechain'
+// Canonical Sidechain Input node label; malformed labels repair to this.
+export const GRAPH_SIDECHAIN_INPUT_LABEL = 'Sidechain Input'
+// v1 sidechain-capable target plugins. Only the stock compressor declares an external
+// sidechain bus engine-side, so the renderer statically gates the `sidechainIn` port
+// to this plugin id. VST/other-stock sidechain is out of scope for 6B/6C.
+export const SIDECHAIN_SUPPORTED_TARGET_PLUGIN_IDS = Object.freeze(['compressor'])
+
 // FXG.4-e/f — base mapping curve type.
 export const GRAPH_PARAMETER_CURVE_LINEAR = 'linear'
 
@@ -50,8 +74,9 @@ const NODE_TYPES = new Set([
   'effect',
   GRAPH_MACRO_NODE_TYPE,
   GRAPH_ENVELOPE_NODE_TYPE,
+  GRAPH_SIDECHAIN_INPUT_NODE_TYPE,
 ])
-const EDGE_TYPES = new Set(['audio', 'parameter'])
+const EDGE_TYPES = new Set(['audio', 'parameter', GRAPH_SIDECHAIN_EDGE_TYPE])
 
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -474,6 +499,56 @@ function validateEnvelopeNodeData(node, trackId, warnings) {
   return normalized
 }
 
+// ---------------------------------------------------------------------------
+// FXG-SC.6B — Sidechain Input node data model (renderer-only)
+//
+// The node's persisted data is intentionally tiny: a display `label` and a selected
+// `sourceTrackId` (a normal mixer track id, or null when no source is chosen). It owns
+// NO effectInstanceId, NO engine/route/APG ids. Normalization is additive (extra fields
+// are preserved, mirroring macro/effect nodes) but `label` repairs to the canonical
+// 'Sidechain Input' and a non-finite `sourceTrackId` repairs to null. A stale source id
+// (track no longer exists) is a finite number and is preserved as-is — staleness is a
+// display concern resolved against live track metadata, not a normalization concern.
+// ---------------------------------------------------------------------------
+
+function normalizeSidechainInputLabel(value) {
+  const label = typeof value === 'string' ? value.trim() : ''
+  return label.length > 0 ? label : GRAPH_SIDECHAIN_INPUT_LABEL
+}
+
+// A valid source is any finite number (mixer track id). Everything else → null.
+function normalizeSidechainSourceTrackId(value) {
+  return Number.isFinite(value) ? value : null
+}
+
+export function normalizeSidechainInputNodeData(rawData) {
+  const raw = isPlainObject(rawData) ? rawData : {}
+  return {
+    ...cloneJson(raw),
+    label: normalizeSidechainInputLabel(raw.label),
+    sourceTrackId: normalizeSidechainSourceTrackId(raw.sourceTrackId),
+  }
+}
+
+export function createDefaultSidechainInputNodeData(overrides = {}) {
+  return normalizeSidechainInputNodeData(isPlainObject(overrides) ? overrides : {})
+}
+
+// True only for graph-owned Sidechain Input nodes.
+export function isSidechainInputGraphNode(node) {
+  return isPlainObject(node) && node.type === GRAPH_SIDECHAIN_INPUT_NODE_TYPE
+}
+
+function validateSidechainInputNodeData(node, trackId, warnings) {
+  const normalized = normalizeSidechainInputNodeData(node.data)
+  if (!isPlainObject(node.data)) {
+    warnings.push(makeWarning('invalidSidechainInputNodeData', trackId, 'invalid sidechain input node data; using defaults', { nodeId: node.id }))
+  } else if (JSON.stringify(normalized) !== JSON.stringify(node.data)) {
+    warnings.push(makeWarning('repairedSidechainInputNodeData', trackId, 'sidechain input node data repaired', { nodeId: node.id }))
+  }
+  return normalized
+}
+
 function validateEffectNodeData(node, trackId, warnings) {
   if (!isPlainObject(node.data)) {
     return { ok: false, reason: 'invalid_effect_node_data' }
@@ -723,6 +798,17 @@ function normalizeNode(node, trackId, warnings, fallbackPosition, rawGraphState)
     }
   }
 
+  if (node.type === GRAPH_SIDECHAIN_INPUT_NODE_TYPE) {
+    return {
+      ok: true,
+      node: withNodePosition({
+        id: node.id,
+        type: GRAPH_SIDECHAIN_INPUT_NODE_TYPE,
+        data: validateSidechainInputNodeData(node, trackId, warnings),
+      }, position),
+    }
+  }
+
   return {
     ok: true,
     node: withNodePosition({
@@ -803,6 +889,33 @@ function normalizeEdge(edge, nodeIds, nodeById, trackId, warnings) {
       targetNodeId: edge.targetNodeId,
     }))
     return { ok: false, reason: 'invalid_envelope_audio_edge', drop: true }
+  }
+
+  // FXG-SC.6B — sidechain edges are key links, NOT audio. A valid one goes from a
+  // Sidechain Input node's `sidechainOut` to an effect node's `sidechainIn`. A
+  // sidechain edge whose endpoints are the wrong node types is malformed: drop it
+  // (consistent with the audio-macro/envelope drop policy) rather than silently
+  // converting it into an `audio` edge. Ports are preserved as stored when valid.
+  if (edge.type === GRAPH_SIDECHAIN_EDGE_TYPE) {
+    if (sourceNodeType !== GRAPH_SIDECHAIN_INPUT_NODE_TYPE || targetNodeType !== 'effect') {
+      warnings.push(makeWarning('invalidSidechainEdge', trackId, 'malformed sidechain edge dropped', {
+        edgeId: edge.id,
+        sourceNodeId: edge.sourceNodeId,
+        targetNodeId: edge.targetNodeId,
+      }))
+      return { ok: false, reason: 'invalid_sidechain_edge', drop: true }
+    }
+    return {
+      ok: true,
+      edge: {
+        id: edge.id,
+        sourceNodeId: edge.sourceNodeId,
+        sourcePort: edge.sourcePort,
+        targetNodeId: edge.targetNodeId,
+        targetPort: edge.targetPort,
+        type: GRAPH_SIDECHAIN_EDGE_TYPE,
+      },
+    }
   }
 
   const normalizedEdge = {
@@ -1064,7 +1177,11 @@ function inferTargetPort(nodeType) {
   return 'audio'
 }
 
-export const PROTECTED_NODE_TYPES = Object.freeze(['trackInput', 'trackOutput'])
+// FXG-SC.6B — the Sidechain Input node is protected once present: it cannot be removed
+// through the normal graph remove action, and (via isProtectedGraphNodeType) it is
+// rejected as a parameter-edge target like Track I/O. It is removed implicitly only
+// when the whole graph is discarded.
+export const PROTECTED_NODE_TYPES = Object.freeze(['trackInput', 'trackOutput', GRAPH_SIDECHAIN_INPUT_NODE_TYPE])
 const PROTECTED_NODE_TYPES_SET = new Set(PROTECTED_NODE_TYPES)
 
 export const GRAPH_MUTATION_REJECTION = Object.freeze({
@@ -1093,6 +1210,13 @@ export const GRAPH_MUTATION_REJECTION = Object.freeze({
   PARAMETER_READ_ONLY: 'parameter_read_only',
   // FXG.4-g — mapping editor mutation validation
   INVALID_PARAMETER_EDGE: 'invalid_parameter_edge',
+  // FXG-SC.6B — Sidechain Input node + sidechain edge validation
+  SIDECHAIN_INPUT_EXISTS: 'sidechain_input_exists',
+  SELECT_SOURCE_FIRST: 'select_source_first',
+  UNSUPPORTED_SIDECHAIN_TARGET: 'unsupported_sidechain_target',
+  INVALID_SIDECHAIN_SOURCE: 'invalid_sidechain_source',
+  INVALID_SIDECHAIN_TARGET: 'invalid_sidechain_target',
+  DUPLICATE_SIDECHAIN_EDGE: 'duplicate_sidechain_edge',
 })
 
 export function isProtectedGraphNodeType(type) {
@@ -1158,6 +1282,15 @@ export function canConnectGraphNodes(graphState, sourceNodeId, targetNodeId, opt
     return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_SOURCE_TYPE }
   }
   if (edgeType === 'audio' && targetNode.type === GRAPH_ENVELOPE_NODE_TYPE) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_TARGET_TYPE }
+  }
+  // FXG-SC.6B — the Sidechain Input node carries no audible audio. It never
+  // participates in a normal audio edge as either endpoint; its only link is the
+  // distinct `sidechain` edge created via connectSidechainNodes().
+  if (edgeType === 'audio' && sourceNode.type === GRAPH_SIDECHAIN_INPUT_NODE_TYPE) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_SOURCE_TYPE }
+  }
+  if (edgeType === 'audio' && targetNode.type === GRAPH_SIDECHAIN_INPUT_NODE_TYPE) {
     return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_TARGET_TYPE }
   }
 
@@ -1910,6 +2043,241 @@ export function updateParameterEdgeMapping(graphState, edgeId, mappingPatch) {
       edges: graphState.edges.map((e) =>
         e.id === edgeId ? { ...e, mapping: normalizedMapping } : e,
       ),
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// FXG-SC.6B — Sidechain Input node + sidechain edge mutations
+//
+// Pure graphState helpers for the FX Graph Sidechain Input feature. They add a
+// protected Sidechain Input node, set its selected source track, and create/remove a
+// distinct `sidechain` edge from `sidechainInput.sidechainOut` to a sidechain-capable
+// effect's `sidechainIn`. None of this creates audio topology, native routes, or
+// runtime ducking — that binding is 6C. The helpers deliberately mirror the
+// Macro/Envelope parameter-edge helpers rather than generalizing them, so the
+// established audio/parameter paths are never disturbed.
+// ---------------------------------------------------------------------------
+
+function readPluginId(node) {
+  const value = node?.data?.pluginId
+  return typeof value === 'string' ? value : ''
+}
+
+// v1 sidechain capability is static (renderer-side). A node can receive a sidechain
+// key only when it is a real effect node (non-missing, non-crashed, has an
+// effectInstanceId) whose pluginId is in SIDECHAIN_SUPPORTED_TARGET_PLUGIN_IDS — the
+// stock compressor today. Backend route validation remains final in 6C.
+export function isSidechainCapableEffectNode(node) {
+  if (!isPlainObject(node) || node.type !== 'effect') return false
+  const data = node.data ?? {}
+  if (data.missing === true || data.crashed === true) return false
+  if (!readEffectInstanceId(node)) return false
+  return SIDECHAIN_SUPPORTED_TARGET_PLUGIN_IDS.includes(readPluginId(node))
+}
+
+// Adds the single Sidechain Input node to a graph. Only one is allowed per graph
+// track in v1: if one already exists this returns SIDECHAIN_INPUT_EXISTS plus the
+// existing node id (so the caller can focus/select it instead of duplicating). The
+// node is placed near Track Input by default and carries an optional initial source.
+export function addSidechainInputNode(graphState, options = {}) {
+  const editCheck = validateGraphStateForEditing(graphState)
+  if (!editCheck.ok) return editCheck
+
+  const existing = graphState.nodes.find((node) => node.type === GRAPH_SIDECHAIN_INPUT_NODE_TYPE)
+  if (existing) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.SIDECHAIN_INPUT_EXISTS, existingNodeId: existing.id }
+  }
+
+  const opts = isPlainObject(options) ? options : {}
+  let position = opts.position
+  if (
+    !isPlainObject(position) ||
+    !Number.isFinite(position.x) ||
+    !Number.isFinite(position.y)
+  ) {
+    // Deterministic default: directly below Track Input (a key input sitting beside
+    // the audio input feels like a compressor key jack, not a send/bus).
+    const input = graphState.nodes.find((node) => node.type === 'trackInput')
+    const baseX = Number.isFinite(input?.position?.x) ? input.position.x : 0
+    const baseY = Number.isFinite(input?.position?.y) ? input.position.y : 0
+    position = { x: baseX, y: baseY + FALLBACK_NODE_SPACING_X }
+  }
+
+  const newNode = {
+    id: generateMutationId(opts.idFactory),
+    type: GRAPH_SIDECHAIN_INPUT_NODE_TYPE,
+    position: { x: position.x, y: position.y },
+    data: {
+      label: GRAPH_SIDECHAIN_INPUT_LABEL,
+      sourceTrackId: normalizeSidechainSourceTrackId(opts.sourceTrackId),
+    },
+  }
+
+  return {
+    ok: true,
+    node: newNode,
+    graphState: {
+      ...graphState,
+      nodes: [...graphState.nodes, newNode],
+    },
+  }
+}
+
+// Sets (or clears, with null) the Sidechain Input node's selected source track. The
+// source must be a finite mixer track id that is not the owning graph track itself
+// (self-sidechain is invalid). Eligibility against live/visual-only tracks is enforced
+// one layer up in the store (which has track metadata); here we only guard structure.
+export function setSidechainInputSource(graphState, nodeId, sourceTrackId) {
+  const editCheck = validateGraphStateForEditing(graphState)
+  if (!editCheck.ok) return editCheck
+  if (typeof nodeId !== 'string' || nodeId.length === 0) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_NODE }
+  }
+
+  const node = graphState.nodes.find((candidate) => candidate.id === nodeId)
+  if (!node) return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_NODE }
+  if (node.type !== GRAPH_SIDECHAIN_INPUT_NODE_TYPE) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.UNKNOWN_NODE_TYPE }
+  }
+
+  let nextSource = null
+  if (sourceTrackId != null) {
+    if (!Number.isFinite(sourceTrackId)) {
+      return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_SIDECHAIN_SOURCE }
+    }
+    if (String(sourceTrackId) === normalizeTrackId(graphState.trackId)) {
+      return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_SIDECHAIN_SOURCE }
+    }
+    nextSource = sourceTrackId
+  }
+
+  return {
+    ok: true,
+    graphState: {
+      ...graphState,
+      nodes: graphState.nodes.map((candidate) => (
+        candidate.id === nodeId
+          ? {
+              ...candidate,
+              data: {
+                ...(candidate.data ?? {}),
+                label: normalizeSidechainInputLabel(candidate.data?.label),
+                sourceTrackId: nextSource,
+              },
+            }
+          : candidate
+      )),
+    },
+  }
+}
+
+// Validates a prospective sidechain edge: sidechainInput.sidechainOut → effect.sidechainIn.
+// Rejection reasons are readable and ordered so the UI can show a precise notice.
+export function canConnectSidechainNodes(graphState, connectionDraft) {
+  const editCheck = validateGraphStateForEditing(graphState)
+  if (!editCheck.ok) return editCheck
+
+  if (!isPlainObject(connectionDraft)) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_CONNECTION_DRAFT }
+  }
+
+  const { sourceNodeId, targetNodeId } = connectionDraft
+  const sourceNode = graphState.nodes.find((n) => n.id === sourceNodeId)
+  const targetNode = graphState.nodes.find((n) => n.id === targetNodeId)
+
+  if (!sourceNode) return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_SOURCE_NODE }
+  if (!targetNode) return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_TARGET_NODE }
+  if (sourceNodeId === targetNodeId) return { ok: false, reason: GRAPH_MUTATION_REJECTION.SELF_CONNECTION }
+
+  // Source must be a Sidechain Input node with a selected source track.
+  if (sourceNode.type !== GRAPH_SIDECHAIN_INPUT_NODE_TYPE) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_SIDECHAIN_SOURCE }
+  }
+  if (!Number.isFinite(sourceNode.data?.sourceTrackId)) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.SELECT_SOURCE_FIRST }
+  }
+
+  // Target must be an effect node — never protected Track I/O, Macro, Envelope, or
+  // another Sidechain Input. (Protected types include sidechainInput itself.)
+  if (isProtectedGraphNodeType(targetNode.type)) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_SIDECHAIN_TARGET }
+  }
+  if (targetNode.type !== 'effect') {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_SIDECHAIN_TARGET }
+  }
+
+  const effectInstanceId = readEffectInstanceId(targetNode)
+  if (!effectInstanceId) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_EFFECT_INSTANCE }
+  }
+
+  // v1: only the stock compressor (non-missing/non-crashed) accepts a sidechain key.
+  if (!isSidechainCapableEffectNode(targetNode)) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.UNSUPPORTED_SIDECHAIN_TARGET }
+  }
+
+  // One sidechain edge per (Sidechain Input → effect sidechainIn) target.
+  const duplicate = graphState.edges.some(
+    (edge) =>
+      edge.type === GRAPH_SIDECHAIN_EDGE_TYPE &&
+      edge.sourceNodeId === sourceNodeId &&
+      edge.targetNodeId === targetNodeId &&
+      edge.targetPort === GRAPH_SIDECHAIN_TARGET_PORT,
+  )
+  if (duplicate) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.DUPLICATE_SIDECHAIN_EDGE }
+  }
+
+  return { ok: true, effectInstanceId }
+}
+
+export function connectSidechainNodes(graphState, connectionDraft, options = {}) {
+  const check = canConnectSidechainNodes(graphState, connectionDraft)
+  if (!check.ok) return check
+
+  const newEdge = {
+    id: generateMutationId(options.idFactory),
+    sourceNodeId: connectionDraft.sourceNodeId,
+    sourcePort: GRAPH_SIDECHAIN_INPUT_OUTPUT_PORT,
+    targetNodeId: connectionDraft.targetNodeId,
+    targetPort: GRAPH_SIDECHAIN_TARGET_PORT,
+    type: GRAPH_SIDECHAIN_EDGE_TYPE,
+  }
+
+  return {
+    ok: true,
+    edge: newEdge,
+    graphState: {
+      ...graphState,
+      edges: [...graphState.edges, newEdge],
+    },
+  }
+}
+
+export function isSidechainEdge(graphState, edgeId) {
+  if (!Array.isArray(graphState?.edges)) return false
+  return graphState.edges.some((edge) => edge.id === edgeId && edge.type === GRAPH_SIDECHAIN_EDGE_TYPE)
+}
+
+// Removes a sidechain edge specifically. Returns MISSING_EDGE when the id does not
+// resolve to a sidechain edge, so callers never accidentally drop an audio/parameter edge.
+export function disconnectSidechainEdge(graphState, edgeId) {
+  const editCheck = validateGraphStateForEditing(graphState)
+  if (!editCheck.ok) return editCheck
+
+  if (typeof edgeId !== 'string' || edgeId.length === 0) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_EDGE }
+  }
+  if (!isSidechainEdge(graphState, edgeId)) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_EDGE }
+  }
+
+  return {
+    ok: true,
+    graphState: {
+      ...graphState,
+      edges: graphState.edges.filter((edge) => edge.id !== edgeId),
     },
   }
 }

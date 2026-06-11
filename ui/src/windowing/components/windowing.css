@@ -1640,6 +1640,139 @@
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme-warning) 15%, transparent);
 }
 
+/* FXG-SC.6B — Sidechain Input affordances. Sidechain key cables/handles/ports read
+ * distinctly from audio (solid accent) and parameter (dashed warning) cables: they use
+ * the success token with a dotted stroke, so a key link is visually unmistakable as
+ * "a compressor key jack", not a send/bus/output route. All colors are theme tokens. */
+.xleth-graph-state-preview__handle--sidechain-out {
+  width: 10px;
+  height: 10px;
+  border-color: color-mix(in srgb, var(--theme-success) 70%, var(--theme-border-strong));
+  background: color-mix(in srgb, var(--theme-success) 34%, var(--theme-bg-surface));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme-success) 14%, transparent);
+}
+
+.xleth-graph-state-preview__edge--sidechain {
+  stroke: color-mix(in srgb, var(--theme-success) 60%, var(--theme-border-strong));
+  stroke-dasharray: 2 4;
+  stroke-width: 1.5;
+}
+
+.xleth-graph-state-preview__node--sidechain-input {
+  border-color: color-mix(in srgb, var(--theme-success) 40%, var(--theme-border-subtle));
+}
+
+.xleth-graph-state-preview__action-button--sidechain {
+  border-color: color-mix(in srgb, var(--theme-success) 45%, var(--theme-border-subtle));
+  background: color-mix(in srgb, var(--theme-success) 16%, var(--theme-bg-surface));
+}
+
+.xleth-graph-state-preview__action-button--sidechain:hover {
+  border-color: var(--theme-success);
+  background: color-mix(in srgb, var(--theme-success) 26%, var(--theme-bg-surface));
+}
+
+.xleth-graph-state-preview__action-button--sidechain:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.xleth-graph-state-preview__sidechain-source {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding-top: 4px;
+}
+
+.xleth-graph-state-preview__sidechain-source-label {
+  color: var(--theme-text-muted);
+  font-size: 10px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.xleth-graph-state-preview__sidechain-source-select {
+  min-width: 0;
+  width: 100%;
+  padding: 3px 4px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--theme-chrome-radius-sm);
+  background: var(--theme-bg-surface);
+  color: var(--theme-text);
+  font: inherit;
+  font-size: 11px;
+  pointer-events: auto;
+}
+
+.xleth-graph-state-preview__sidechain-source-static {
+  color: var(--theme-text-muted);
+  font-size: 11px;
+}
+
+/* The sidechainIn key target port mirrors the parameter-port layout but is success-tinted
+ * and only hit-testable during a sidechain drag, so a sidechainOut can land on it. */
+.xleth-graph-state-preview__sidechain-section {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding-top: 4px;
+}
+
+.xleth-graph-state-preview__sidechain-port {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 18px;
+  min-width: 0;
+  padding: 2px 4px 2px 2px;
+  border-radius: var(--theme-chrome-radius-sm);
+  color: var(--theme-text-muted);
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1.2;
+  pointer-events: none;
+}
+
+.xleth-graph-state-preview__sidechain-port-dot {
+  position: absolute;
+  left: -14px;
+  width: 7px;
+  height: 7px;
+  border: 1px solid color-mix(in srgb, var(--theme-success) 60%, var(--theme-border-strong));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--theme-success) 24%, var(--theme-bg-surface));
+}
+
+.xleth-graph-state-preview__sidechain-port-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.xleth-graph-state-preview__sidechain-port--hovered {
+  color: var(--theme-text);
+  background: color-mix(in srgb, var(--theme-success) 16%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--theme-success) 66%, var(--theme-border-strong));
+  outline-offset: 1px;
+}
+
+.xleth-graph-state-preview__sidechain-port--hovered .xleth-graph-state-preview__sidechain-port-dot {
+  border-color: var(--theme-success);
+  background: color-mix(in srgb, var(--theme-success) 58%, var(--theme-bg-surface));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-success) 20%, transparent);
+}
+
+.xleth-graph-state-preview__canvas[data-connecting="true"] .xleth-graph-state-preview__sidechain-port {
+  pointer-events: auto;
+}
+
+.xleth-graph-state-preview__canvas[data-connecting-kind="sidechain"] .xleth-graph-state-preview__sidechain-port {
+  cursor: copy;
+}
+
 .xleth-graph-state-preview__action-button {
   padding: 6px 10px;
   border: 1px solid color-mix(in srgb, var(--theme-accent) 45%, var(--theme-border-subtle));

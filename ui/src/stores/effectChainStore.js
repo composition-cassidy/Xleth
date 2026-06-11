@@ -26,6 +26,12 @@ import {
   renameGraphMacroNode,
   toggleExposedParameterPort,
   updateParameterEdgeMapping,
+  // FXG-SC.6B — Sidechain Input node + sidechain edge mutations
+  addSidechainInputNode,
+  setSidechainInputSource,
+  connectSidechainNodes,
+  disconnectSidechainEdge,
+  isSidechainEdge,
 } from '../fxgraph/graphState.js'
 import {
   showMacroAutomationLane,
@@ -607,11 +613,14 @@ function graphRuntimeTopologyChanged(beforeGraphState, afterGraphState) {
     const { exposedParameterPorts, ...rest } = data
     return rest
   }
-  // EVC.2 — macro and envelope are control nodes with no audio topology impact.
-  const isControlNodeType = (type) => type === 'macro' || type === 'envelope'
+  // EVC.2 / FXG-SC.6B — macro and envelope are control nodes and sidechainInput is a
+  // silent key source; none has audio topology impact, so all are excluded from the
+  // structural snapshot used to decide whether a runtime audio sync is needed.
+  const isNonAudioNodeType = (type) =>
+    type === 'macro' || type === 'envelope' || type === 'sidechainInput'
   const structuralSnapshot = (graphState) => ({
     nodes: Array.isArray(graphState?.nodes)
-      ? graphState.nodes.filter((node) => !isControlNodeType(node?.type)).map((node) => ({
+      ? graphState.nodes.filter((node) => !isNonAudioNodeType(node?.type)).map((node) => ({
         id: node?.id,
         type: node?.type,
         data: runtimeRelevantNodeData(node?.data),
@@ -619,9 +628,11 @@ function graphRuntimeTopologyChanged(beforeGraphState, afterGraphState) {
       : [],
     edges: Array.isArray(graphState?.edges)
       ? graphState.edges.filter((edge) => {
+        // Sidechain edges never affect audio topology regardless of endpoints.
+        if (edge?.type === 'sidechain') return false
         const source = graphState.nodes?.find((node) => node?.id === edge?.sourceNodeId)
         const target = graphState.nodes?.find((node) => node?.id === edge?.targetNodeId)
-        return !isControlNodeType(source?.type) && !isControlNodeType(target?.type)
+        return !isNonAudioNodeType(source?.type) && !isNonAudioNodeType(target?.type)
       })
       : [],
   })
@@ -1912,6 +1923,146 @@ const useEffectChainStore = create((set, get) => ({
     )
 
     return { ...applied, edge: mutation.edge }
+  },
+
+  // ── FXG-SC.6B FX Graph Sidechain Input ────────────────────────────────────
+  // Renderer/graphState intent only. Every action below is graph-mode gated
+  // (master/chain-mode/missing graphState reject via readGraphStateForMutation),
+  // persists via timeline.setTrackGraphState, records a graph-owned undo
+  // transaction, and performs NO audio runtime sync (syncRuntime: false — sidechain
+  // edges never enter the audio topology payload). They create NO native sidechain
+  // routes, write NO sc_external parameter, and never touch effectChains/Mixer Chain.
+  // Runtime route binding to the existing SidechainRoute system is deferred to 6C.
+
+  // Adds the single protected Sidechain Input node to a graph track. Rejects a second
+  // node with sidechain_input_exists (carrying existingNodeId so the UI can focus it).
+  addSidechainInputNodeForTrack: async (trackId, options = {}) => {
+    const access = readGraphStateForMutation(get(), trackId)
+    if (!access.ok) return access
+
+    const opts = options != null && typeof options === 'object' ? options : {}
+    const mutation = addSidechainInputNode(access.graphState, {
+      idFactory: opts.idFactory,
+      position: opts.position,
+      sourceTrackId: opts.sourceTrackId,
+    })
+    if (!mutation.ok) return mutation
+
+    const applied = await applyGraphStateMutation(
+      set,
+      access.key,
+      mutation.graphState,
+      { ...opts, syncRuntime: false },
+    )
+    if (applied.ok) {
+      recordGraphEditTransaction(
+        set,
+        access.key,
+        'add_sidechain_input_node',
+        access.graphState,
+        applied.graphState,
+      )
+    }
+    return applied
+  },
+
+  // Sets (or clears with null) the Sidechain Input node's selected source track.
+  // Structural validation (self-source, finiteness) lives in setSidechainInputSource.
+  // Visual-only/non-audio eligibility is enforced here when the caller supplies the
+  // current eligible source ids — the store layer is the only place with that metadata.
+  setSidechainInputSourceForTrack: async (trackId, sidechainInputNodeId, sourceTrackIdOrNull, options = {}) => {
+    const access = readGraphStateForMutation(get(), trackId)
+    if (!access.ok) return access
+
+    const opts = options != null && typeof options === 'object' ? options : {}
+    if (
+      sourceTrackIdOrNull != null &&
+      Array.isArray(opts.eligibleSourceTrackIds) &&
+      !opts.eligibleSourceTrackIds.some((id) => Number(id) === Number(sourceTrackIdOrNull))
+    ) {
+      return { ok: false, reason: 'invalid_sidechain_source' }
+    }
+
+    const mutation = setSidechainInputSource(access.graphState, sidechainInputNodeId, sourceTrackIdOrNull)
+    if (!mutation.ok) return mutation
+
+    const applied = await applyGraphStateMutation(
+      set,
+      access.key,
+      mutation.graphState,
+      { ...opts, syncRuntime: false },
+    )
+    if (applied.ok) {
+      recordGraphEditTransaction(
+        set,
+        access.key,
+        'set_sidechain_input_source',
+        access.graphState,
+        applied.graphState,
+      )
+    }
+    return applied
+  },
+
+  // Creates a sidechain edge from a Sidechain Input node's sidechainOut to a stock
+  // compressor's sidechainIn. Validation (capability, dedupe, source selected) lives
+  // in connectSidechainNodes. Runtime-inert in 6B.
+  connectSidechainForTrack: async (trackId, sourceNodeId, targetNodeId, options = {}) => {
+    const access = readGraphStateForMutation(get(), trackId)
+    if (!access.ok) return access
+
+    const opts = options != null && typeof options === 'object' ? options : {}
+    const mutation = connectSidechainNodes(
+      access.graphState,
+      { sourceNodeId, targetNodeId },
+      { idFactory: opts.idFactory },
+    )
+    if (!mutation.ok) return mutation
+
+    const applied = await applyGraphStateMutation(
+      set,
+      access.key,
+      mutation.graphState,
+      { ...opts, syncRuntime: false },
+    )
+    if (!applied.ok) return applied
+
+    recordGraphEditTransaction(
+      set,
+      access.key,
+      'connect_sidechain',
+      access.graphState,
+      applied.graphState,
+    )
+    return { ...applied, edge: mutation.edge }
+  },
+
+  // Removes a sidechain edge by id. Rejects non-sidechain edge ids with missing_edge
+  // so it can never drop an audio/parameter cable.
+  disconnectSidechainEdgeForTrack: async (trackId, edgeId, options = {}) => {
+    const access = readGraphStateForMutation(get(), trackId)
+    if (!access.ok) return access
+
+    const opts = options != null && typeof options === 'object' ? options : {}
+    const mutation = disconnectSidechainEdge(access.graphState, edgeId)
+    if (!mutation.ok) return mutation
+
+    const applied = await applyGraphStateMutation(
+      set,
+      access.key,
+      mutation.graphState,
+      { ...opts, syncRuntime: false },
+    )
+    if (applied.ok) {
+      recordGraphEditTransaction(
+        set,
+        access.key,
+        'disconnect_sidechain_edge',
+        access.graphState,
+        applied.graphState,
+      )
+    }
+    return applied
   },
 
   // FXG.4-g — update the mapping on a Macro -> Parameter edge. Updates persist to

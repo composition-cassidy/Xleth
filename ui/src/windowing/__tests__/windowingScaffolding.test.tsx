@@ -154,6 +154,7 @@ describe('PanelFrame render paths', () => {
     const html = renderToStaticMarkup(<AppShell />);
     expect(html).toContain('data-testid="xleth-windowing-shell"');
     expect(html).toContain('Timeline Test Panel');
+    expect(html).not.toContain('xleth-top-bar-toggles');
   });
 
   it('renders floating panels with titlebar chrome', () => {
@@ -421,6 +422,41 @@ describe('PanelFrame render paths', () => {
 
     expect(graphHtml).toContain('Add Macro');
     expect(chainHtml).not.toContain('Add Macro');
+  });
+
+  it('wires the FXG-SC.6B Sidechain Input actions only in active graph mode', () => {
+    const graphHtml = renderToStaticMarkup(
+      <FxGraphPanelContent
+        trackId={7}
+        trackLabel="Bass"
+        fxMode="graph"
+        graphStateStatus="valid"
+        graphState={makeFxGraphState()}
+        onAddGraphSidechainInput={vi.fn()}
+        onSetGraphSidechainInputSource={vi.fn()}
+        onConnectGraphSidechain={vi.fn()}
+        sidechainSources={[{ sourceTrackId: 3, name: 'Kick' }]}
+      />,
+    );
+    const chainHtml = renderToStaticMarkup(
+      <FxGraphPanelContent
+        trackId={7}
+        trackLabel="Bass"
+        fxMode="chain"
+        graphStateStatus="valid"
+        graphState={makeFxGraphState()}
+        onAddGraphSidechainInput={vi.fn()}
+        onSetGraphSidechainInputSource={vi.fn()}
+        onConnectGraphSidechain={vi.fn()}
+        sidechainSources={[{ sourceTrackId: 3, name: 'Kick' }]}
+      />,
+    );
+
+    expect(graphHtml).toContain('Add Sidechain Input');
+    expect(chainHtml).not.toContain('Add Sidechain Input');
+    // The sidechain UI rides on the same FX Graph shell — no NodeEditor/React Flow revival.
+    expect(graphHtml).not.toContain('react-flow');
+    expect(graphHtml).not.toContain('NodeEditor');
   });
 
   it('renders a degraded graph-mode state when graphState is missing', () => {

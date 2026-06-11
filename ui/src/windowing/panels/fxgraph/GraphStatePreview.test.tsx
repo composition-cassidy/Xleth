@@ -7,8 +7,10 @@ import GraphStatePreview, {
   ParameterEdgeMappingEditor,
   buildGraphStatePreviewModel,
   connectHighlightedParameterDropTarget,
+  connectHighlightedSidechainDropTarget,
   filterExposeParameterDescriptors,
   resolveParameterDropTargetFromElement,
+  resolveSidechainDropTargetFromElement,
   type GraphStateDocument,
   type GraphStateEdge,
   type GraphStateNode,
@@ -2223,5 +2225,207 @@ describe('FXG-VP.1 viewport zoom and pan', () => {
     );
     expect(html).toContain('Fit View');
     expect(html).toContain('Reset View');
+  });
+});
+
+// FXG-SC.6B — FX Graph Sidechain Input node UI.
+function sidechainInputNode(
+  id = 'sc',
+  data: Record<string, unknown> = { label: 'Sidechain Input', sourceTrackId: 3 },
+  position = { x: 0, y: 200 },
+): GraphStateNode {
+  return { id, type: 'sidechainInput', position, data };
+}
+
+function compressorNode(id = 'fx-comp', position = { x: 260, y: 0 }): GraphStateNode {
+  return effectNode(id, 'Compressor', 0, position, { pluginId: 'compressor', effectInstanceId: `${id}-inst` });
+}
+
+function sidechainGraph(
+  scData: Record<string, unknown> = { label: 'Sidechain Input', sourceTrackId: 3 },
+  extraEdges: GraphStateEdge[] = [],
+): GraphStateDocument {
+  return graphState(
+    [inputNode(), compressorNode(), outputNode({ x: 560, y: 0 }), sidechainInputNode('sc', scData)],
+    [audioEdge('e-in', 'input', 'fx-comp'), audioEdge('e-out', 'fx-comp', 'output'), ...extraEdges],
+  );
+}
+
+const SIDECHAIN_SOURCES = [
+  { sourceTrackId: 3, name: 'Kick' },
+  { sourceTrackId: 4, name: 'Snare' },
+];
+
+describe('GraphStatePreview sidechain input (FXG-SC.6B)', () => {
+  it('renders the Sidechain Input node with its label and source selector', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={sidechainGraph()}
+        onSetSidechainInputSource={vi.fn()}
+        sidechainSources={SIDECHAIN_SOURCES}
+      />,
+    );
+    expect(html).toContain('data-node-type="sidechainInput"');
+    expect(html).toContain('xleth-graph-state-preview__node--sidechain-input');
+    expect(html).toContain('Sidechain Input');
+    expect(html).toContain('xleth-graph-state-preview__sidechain-source-select');
+    // Eligible source names appear as options; the selected source (3) is the value.
+    expect(html).toContain('Kick');
+    expect(html).toContain('Snare');
+  });
+
+  it('renders the sidechainOut output handle on the Sidechain Input node', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview graphState={sidechainGraph()} onConnectSidechain={vi.fn()} />,
+    );
+    expect(html).toContain('data-sidechain-output="true"');
+    expect(html).toContain('data-sidechain-port-id="sidechain:sc:sidechainOut"');
+    expect(html).toContain('data-connect-source-kind="sidechain"');
+  });
+
+  it('renders the sidechainIn port only on a stock compressor effect node', () => {
+    const compressorHtml = renderToStaticMarkup(
+      <GraphStatePreview graphState={sidechainGraph()} onConnectSidechain={vi.fn()} />,
+    );
+    expect(compressorHtml).toContain('data-sidechain-port-type="sidechain-input"');
+    expect(compressorHtml).toContain('data-sidechain-port-id="scp:fx-comp:sidechainIn"');
+
+    const eqGraph = graphState(
+      [inputNode(), effectNode('fx-eq', 'EQ', 0), outputNode({ x: 560, y: 0 }), sidechainInputNode()],
+      [audioEdge('e-in', 'input', 'fx-eq'), audioEdge('e-out', 'fx-eq', 'output')],
+    );
+    const eqHtml = renderToStaticMarkup(
+      <GraphStatePreview graphState={eqGraph} onConnectSidechain={vi.fn()} />,
+    );
+    expect(eqHtml).not.toContain('data-sidechain-port-type="sidechain-input"');
+  });
+
+  it('does not render an active sidechainIn port on a missing/crashed compressor', () => {
+    const broken = graphState(
+      [
+        inputNode(),
+        effectNode('fx-comp', 'Compressor', 0, { x: 260, y: 0 }, { pluginId: 'compressor', missing: true }),
+        outputNode({ x: 560, y: 0 }),
+        sidechainInputNode(),
+      ],
+      [audioEdge('e-in', 'input', 'fx-comp'), audioEdge('e-out', 'fx-comp', 'output')],
+    );
+    const html = renderToStaticMarkup(<GraphStatePreview graphState={broken} onConnectSidechain={vi.fn()} />);
+    expect(html).not.toContain('data-sidechain-port-type="sidechain-input"');
+  });
+
+  it('renders the Add Sidechain Input toolbar button and disables it when one exists', () => {
+    const without = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([inputNode(), compressorNode(), outputNode({ x: 560, y: 0 })], [])}
+        onAddSidechainInput={vi.fn()}
+      />,
+    );
+    expect(without).toContain('Add Sidechain Input');
+    expect(without).not.toContain('disabled');
+
+    const withNode = renderToStaticMarkup(
+      <GraphStatePreview graphState={sidechainGraph()} onAddSidechainInput={vi.fn()} />,
+    );
+    expect(withNode).toContain('Add Sidechain Input');
+    expect(withNode).toContain('disabled');
+  });
+
+  it('has no remove button on the protected Sidechain Input node', () => {
+    const node = buildGraphStatePreviewModel(sidechainGraph())
+      .nodes.find((candidate) => candidate.id === 'sc')!;
+    const html = renderToStaticMarkup(
+      GraphStatePreviewNode({
+        node,
+        dragging: false,
+        connectEnabled: true,
+        connectSidechainEnabled: true,
+        connectActive: false,
+        canRemove: true,
+        canEdit: true,
+        onRemove: vi.fn(),
+        onConnectPointerDown: vi.fn(),
+      }),
+    );
+    expect(html).not.toContain('aria-label="Remove Sidechain Input"');
+    // And no audio in-handle.
+    expect(html).not.toContain('xleth-graph-state-preview__handle--in');
+  });
+
+  it('invokes the source callback when the selector changes', () => {
+    const onSetSidechainSource = vi.fn();
+    const node = buildGraphStatePreviewModel(sidechainGraph())
+      .nodes.find((candidate) => candidate.id === 'sc')!;
+    const element = GraphStatePreviewNode({
+      node,
+      dragging: false,
+      connectEnabled: true,
+      connectSidechainEnabled: true,
+      connectActive: false,
+      canRemove: false,
+      canEdit: false,
+      sidechainSources: SIDECHAIN_SOURCES,
+      onSetSidechainSource,
+    });
+    const select = findElementByAriaLabel(element, 'Sidechain Input source track');
+    expect(select).not.toBeNull();
+    select!.props.onChange({ currentTarget: { value: '4' } });
+    expect(onSetSidechainSource).toHaveBeenCalledWith('sc', 4);
+    select!.props.onChange({ currentTarget: { value: '' } });
+    expect(onSetSidechainSource).toHaveBeenCalledWith('sc', null);
+  });
+
+  it('resolves and connects a valid sidechain drop target', () => {
+    const onConnect = vi.fn();
+    const portEl = {
+      getAttribute: (name: string) => (name === 'data-sidechain-port-id' ? 'scp:fx-comp:sidechainIn' : null),
+      closest: (sel: string) =>
+        sel === '[data-node-id]'
+          ? { getAttribute: (n: string) => (n === 'data-node-id' ? 'fx-comp' : null) }
+          : null,
+    };
+    const dropEl = {
+      closest: (sel: string) =>
+        sel.includes('sidechain-port-type') ? portEl : null,
+    } as unknown as Element;
+
+    const target = resolveSidechainDropTargetFromElement(dropEl, 'sc');
+    expect(target).toEqual({ nodeId: 'fx-comp', portId: 'scp:fx-comp:sidechainIn' });
+    expect(connectHighlightedSidechainDropTarget('sc', target, onConnect)).toBe(true);
+    expect(onConnect).toHaveBeenCalledWith('sc', 'fx-comp');
+  });
+
+  it('does not connect when the sidechain drop misses a sidechain port', () => {
+    const onConnect = vi.fn();
+    const dropEl = { closest: () => null } as unknown as Element;
+    const target = resolveSidechainDropTargetFromElement(dropEl, 'sc');
+    expect(target).toBeNull();
+    expect(connectHighlightedSidechainDropTarget('sc', target, onConnect)).toBe(false);
+    expect(onConnect).not.toHaveBeenCalled();
+  });
+
+  it('renders a sidechain cable for a persisted sidechain edge', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={sidechainGraph({ label: 'Sidechain Input', sourceTrackId: 3 }, [
+          { id: 'sce-1', sourceNodeId: 'sc', sourcePort: 'sidechainOut', targetNodeId: 'fx-comp', targetPort: 'sidechainIn', type: 'sidechain' },
+        ])}
+        onConnectSidechain={vi.fn()}
+        onDisconnectEdge={vi.fn()}
+      />,
+    );
+    expect(html).toContain('data-edge-type="sidechain"');
+    expect(html).toContain('xleth-graph-state-preview__edge--sidechain');
+  });
+
+  it('shows a stale source option when the saved source is no longer eligible', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={sidechainGraph({ label: 'Sidechain Input', sourceTrackId: 99 })}
+        onSetSidechainInputSource={vi.fn()}
+        sidechainSources={SIDECHAIN_SOURCES}
+      />,
+    );
+    expect(html).toContain('Track 99 (missing)');
   });
 });

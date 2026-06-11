@@ -3136,4 +3136,169 @@ describe('effectChainStore updateGraphParameterEdgeMappingForTrack', () => {
 
     expect(useEffectChainStore.getState().chains).toBe(chainsBefore)
   })
+
+  // --- FXG-SC.6B FX Graph Sidechain Input store actions ---
+
+  // input -> compressor -> output, graph track '7'. No Sidechain Input node yet.
+  function makeSidechainStoreGraphState(trackId = '7') {
+    return {
+      schemaVersion: 1,
+      trackId,
+      nodes: [
+        { id: 'input', type: 'trackInput', position: { x: 0, y: 0 }, data: {} },
+        {
+          id: 'fx-comp',
+          type: 'effect',
+          position: { x: 260, y: 0 },
+          data: {
+            effectInstanceId: 'comp-inst',
+            pluginId: 'compressor',
+            displayName: 'Compressor',
+            bypass: false,
+            missing: false,
+            crashed: false,
+            sourceChainSlotIndex: 0,
+            exposedParameterPorts: [],
+          },
+        },
+        { id: 'output', type: 'trackOutput', position: { x: 520, y: 0 }, data: {} },
+      ],
+      edges: [
+        { id: 'e-in', sourceNodeId: 'input', sourcePort: 'audio', targetNodeId: 'fx-comp', targetPort: 'audioIn', type: 'audio' },
+        { id: 'e-out', sourceNodeId: 'fx-comp', sourcePort: 'audioOut', targetNodeId: 'output', targetPort: 'audio', type: 'audio' },
+      ],
+      viewport: { x: 0, y: 0, zoom: 1 },
+    }
+  }
+
+  // Seeds a graph that already has a Sidechain Input node (id 'sc', source track 3).
+  function withSidechainInput(graphState) {
+    return {
+      ...graphState,
+      nodes: [
+        ...graphState.nodes,
+        { id: 'sc', type: 'sidechainInput', position: { x: 0, y: 120 }, data: { label: 'Sidechain Input', sourceTrackId: 3 } },
+      ],
+    }
+  }
+
+  it('adds a Sidechain Input node only in graph mode and persists without a route or topology sync', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const baseChain = seedGraphMode(useEffectChainStore, makeSidechainStoreGraphState('7'))
+
+    const result = await useEffectChainStore.getState().addSidechainInputNodeForTrack('7', {
+      idFactory: () => 'sc-new', sourceTrackId: 3,
+    })
+
+    expect(result.ok).toBe(true)
+    const next = useEffectChainStore.getState().graphStates['7']
+    const node = next.nodes.find((n) => n.id === 'sc-new')
+    expect(node).toMatchObject({ type: 'sidechainInput', data: { label: 'Sidechain Input', sourceTrackId: 3 } })
+    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next)
+    // No audio topology sync, no native route, no sc_external write, chains untouched.
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+    expect(audio.setGraphEffectParameterNormalized).not.toHaveBeenCalled()
+    expect(useEffectChainStore.getState().chains['7']).toBe(baseChain)
+  })
+
+  it('rejects a duplicate Sidechain Input node', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, withSidechainInput(makeSidechainStoreGraphState('7')))
+
+    const result = await useEffectChainStore.getState().addSidechainInputNodeForTrack('7')
+    expect(result).toMatchObject({ ok: false, reason: 'sidechain_input_exists', existingNodeId: 'sc' })
+  })
+
+  it('rejects adding a Sidechain Input node on master/chain-mode/missing graphState', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+
+    await expect(useEffectChainStore.getState().addSidechainInputNodeForTrack('master'))
+      .resolves.toMatchObject({ ok: false, reason: 'master_track' })
+
+    useEffectChainStore.setState({ fxModes: { '7': 'chain' }, graphStates: { '7': makeSidechainStoreGraphState('7') } })
+    await expect(useEffectChainStore.getState().addSidechainInputNodeForTrack('7'))
+      .resolves.toMatchObject({ ok: false, reason: 'not_graph_mode' })
+
+    useEffectChainStore.setState({ fxModes: { '8': 'graph' }, graphStates: { '8': null } })
+    await expect(useEffectChainStore.getState().addSidechainInputNodeForTrack('8'))
+      .resolves.toMatchObject({ ok: false, reason: 'missing_graph_state' })
+  })
+
+  it('sets the Sidechain Input source and allows clearing it', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, withSidechainInput(makeSidechainStoreGraphState('7')))
+
+    const set = await useEffectChainStore.getState().setSidechainInputSourceForTrack('7', 'sc', 9, {
+      eligibleSourceTrackIds: [3, 9],
+    })
+    expect(set.ok).toBe(true)
+    expect(useEffectChainStore.getState().graphStates['7'].nodes.find((n) => n.id === 'sc').data.sourceTrackId).toBe(9)
+
+    const cleared = await useEffectChainStore.getState().setSidechainInputSourceForTrack('7', 'sc', null)
+    expect(cleared.ok).toBe(true)
+    expect(useEffectChainStore.getState().graphStates['7'].nodes.find((n) => n.id === 'sc').data.sourceTrackId).toBeNull()
+  })
+
+  it('rejects a self source and an ineligible source', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, withSidechainInput(makeSidechainStoreGraphState('7')))
+
+    await expect(useEffectChainStore.getState().setSidechainInputSourceForTrack('7', 'sc', 7))
+      .resolves.toMatchObject({ ok: false, reason: 'invalid_sidechain_source' })
+
+    await expect(useEffectChainStore.getState().setSidechainInputSourceForTrack('7', 'sc', 5, {
+      eligibleSourceTrackIds: [3],
+    })).resolves.toMatchObject({ ok: false, reason: 'invalid_sidechain_source' })
+  })
+
+  it('connects a sidechain edge to the compressor without native route/topology calls', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, withSidechainInput(makeSidechainStoreGraphState('7')))
+
+    const result = await useEffectChainStore.getState().connectSidechainForTrack('7', 'sc', 'fx-comp', {
+      idFactory: () => 'sce-1',
+    })
+    expect(result.ok).toBe(true)
+    const edge = useEffectChainStore.getState().graphStates['7'].edges.find((e) => e.id === 'sce-1')
+    expect(edge).toMatchObject({ type: 'sidechain', sourcePort: 'sidechainOut', targetPort: 'sidechainIn' })
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+    expect(audio.setGraphEffectParameterNormalized).not.toHaveBeenCalled()
+  })
+
+  it('rejects connecting a sidechain edge to an unsupported target', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const graphState = withSidechainInput(makeSidechainStoreGraphState('7'))
+    graphState.nodes.find((n) => n.id === 'fx-comp').data.pluginId = 'stock:eq'
+    seedGraphMode(useEffectChainStore, graphState)
+
+    await expect(useEffectChainStore.getState().connectSidechainForTrack('7', 'sc', 'fx-comp'))
+      .resolves.toMatchObject({ ok: false, reason: 'unsupported_sidechain_target' })
+  })
+
+  it('disconnects a sidechain edge and rejects non-sidechain edge ids', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, withSidechainInput(makeSidechainStoreGraphState('7')))
+    await useEffectChainStore.getState().connectSidechainForTrack('7', 'sc', 'fx-comp', { idFactory: () => 'sce-1' })
+
+    await expect(useEffectChainStore.getState().disconnectSidechainEdgeForTrack('7', 'e-in'))
+      .resolves.toMatchObject({ ok: false, reason: 'missing_edge' })
+
+    const removed = await useEffectChainStore.getState().disconnectSidechainEdgeForTrack('7', 'sce-1')
+    expect(removed.ok).toBe(true)
+    expect(useEffectChainStore.getState().graphStates['7'].edges.some((e) => e.id === 'sce-1')).toBe(false)
+  })
+
+  it('restores the Sidechain Input node via graph undo/redo', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, makeSidechainStoreGraphState('7'))
+
+    await useEffectChainStore.getState().addSidechainInputNodeForTrack('7', { idFactory: () => 'sc-new' })
+    expect(useEffectChainStore.getState().graphStates['7'].nodes.some((n) => n.id === 'sc-new')).toBe(true)
+
+    await useEffectChainStore.getState().undoGraphEditForTrack('7')
+    expect(useEffectChainStore.getState().graphStates['7'].nodes.some((n) => n.id === 'sc-new')).toBe(false)
+
+    await useEffectChainStore.getState().redoGraphEditForTrack('7')
+    expect(useEffectChainStore.getState().graphStates['7'].nodes.some((n) => n.id === 'sc-new')).toBe(true)
+  })
 })

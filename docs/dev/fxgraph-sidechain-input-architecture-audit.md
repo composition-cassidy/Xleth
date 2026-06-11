@@ -3,6 +3,14 @@
 Read-only audit for future implementation prompts 6B, 6C, and 6D. This document does not change
 runtime behavior, graphState schema, UI, native APIs, bridge APIs, or tests.
 
+> **6B status — implemented (renderer/schema/UI contract only).** The graphState schema, store
+> actions, and FX Graph UI contract below are now live. 6B added the `sidechainInput` node type,
+> the distinct `sidechain` edge type, the protected-node rule, the source selector, the
+> compressor-only `sidechainIn` port, and connection/disconnection handling. Audio runtime ignores
+> all sidechain intent. **No native route binding, no `sc_external` write, and no runtime ducking
+> exist yet — that remains 6C.** See the "6B Implementation Status" section at the end of this doc
+> for the exact files, exports, and behavior delivered.
+
 Binding rule: FX Graph Sidechain Input must reuse the existing silent sidechain route/key transport
 system. Do not create a second sidechain engine.
 
@@ -1082,3 +1090,62 @@ graphState sidechainInput.sourceTrackId
 
 This keeps Mixer Chain as default, keeps FX Graph optional per track, preserves graph-owned
 `effectInstanceId` identity, and avoids inventing a second sidechain engine.
+
+## 6B Implementation Status
+
+6B landed the renderer/schema/UI contract only. No engine/bridge/preload/main code was touched and
+no native addon rebuild is required.
+
+### graphState (`ui/src/fxgraph/graphState.js`)
+
+- New constants: `GRAPH_SIDECHAIN_INPUT_NODE_TYPE = 'sidechainInput'`,
+  `GRAPH_SIDECHAIN_EDGE_TYPE = 'sidechain'`, `GRAPH_SIDECHAIN_INPUT_OUTPUT_PORT = 'sidechainOut'`,
+  `GRAPH_SIDECHAIN_TARGET_PORT = 'sidechainIn'`, `GRAPH_SIDECHAIN_INPUT_LABEL = 'Sidechain Input'`,
+  `SIDECHAIN_SUPPORTED_TARGET_PLUGIN_IDS = ['compressor']`.
+- `sidechainInput` added to `NODE_TYPES`; `sidechain` added to `EDGE_TYPES`.
+- `PROTECTED_NODE_TYPES` now includes `sidechainInput` — it cannot be removed via `removeGraphNode`
+  and is rejected as a parameter-edge target like Track I/O.
+- Node data normalizes to `{ label, sourceTrackId }` (additive): malformed label repairs to
+  `Sidechain Input`; non-finite `sourceTrackId` repairs to `null`; a finite (even stale) source id
+  is preserved. No `effectInstanceId`/engine/route/APG ids.
+- `normalizeEdge` validates `sidechain` edges (source must be `sidechainInput`, target must be
+  `effect`) and drops malformed ones — it never converts them to `audio` edges. `hasAudioCycle`
+  ignores sidechain edges.
+- New pure helpers: `normalizeSidechainInputNodeData`, `createDefaultSidechainInputNodeData`,
+  `isSidechainInputGraphNode`, `isSidechainCapableEffectNode`, `addSidechainInputNode` (one per
+  graph; returns `existingNodeId` on duplicate), `setSidechainInputSource` (null allowed, self
+  rejected), `canConnectSidechainNodes`/`connectSidechainNodes`, `isSidechainEdge`,
+  `disconnectSidechainEdge`. New rejection reasons: `sidechain_input_exists`, `select_source_first`,
+  `unsupported_sidechain_target`, `invalid_sidechain_source`, `invalid_sidechain_target`,
+  `duplicate_sidechain_edge`.
+
+### Runtime topology (`ui/src/fxgraph/linearGraphTopology.js`)
+
+- `sidechainInput` nodes are excluded from the runtime audio node payload (alongside macro/envelope);
+  `sidechain` edges are excluded by the existing `edge.type === 'audio'` filter. A graph with
+  Track Input → Compressor → Track Output plus Sidechain Input → Compressor.sidechainIn syncs only
+  the audible path.
+
+### Store (`ui/src/stores/effectChainStore.js`)
+
+- New graph-mode-gated actions: `addSidechainInputNodeForTrack`, `setSidechainInputSourceForTrack`
+  (accepts `options.eligibleSourceTrackIds` to reject visual-only/ineligible sources),
+  `connectSidechainForTrack`, `disconnectSidechainEdgeForTrack`. All persist via
+  `timeline.setTrackGraphState`, record graph undo transactions, run with `syncRuntime: false`, and
+  make no native route / `sc_external` / topology calls. `graphRuntimeTopologyChanged` ignores
+  sidechain nodes/edges.
+
+### UI (`FxGraphPanel.tsx`, `GraphStatePreview.tsx`, `windowing.css`)
+
+- "Add Sidechain Input" toolbar button (disabled once a node exists). Sidechain Input node renders
+  with a source selector (`No source`, eligible track names, and a stale `Track N (missing)` option
+  for a saved-but-ineligible source) and a single `sidechainOut` handle; no audio in-handle, no
+  edit/remove. Stock compressor effect nodes render a distinct `sidechainIn` port; non-compressor /
+  missing / crashed effects do not. Drag from `sidechainOut` to `sidechainIn` creates a sidechain
+  edge (distinct success-tinted dotted cable using theme tokens); invalid drops no-op. Eligible
+  sources come from `mixerStore.getEligibleSidechainSources`.
+
+### Not in 6B (remains 6C)
+
+- No native `SidechainRoute` creation, no `sc_external` write, no runtime ducking, no VST sidechain,
+  no Mixer Chain mutation, no NodeEditor/nodeGraphStore/React Flow.

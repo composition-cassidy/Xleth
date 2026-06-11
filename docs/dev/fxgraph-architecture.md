@@ -35,13 +35,16 @@ Added a full viewport/camera model to the FX Graph UI (renderer-only, no engine/
 Version: `GRAPH_STATE_SCHEMA_VERSION = 1` (see `graphState.js`).
 Fields: `schemaVersion`, `trackId`, `nodes`, `edges`, `viewport`, plus any extra fields preserved for forward compatibility.
 
-Node types: `trackInput`, `trackOutput`, `effect`, `macro`, `unknown` (load-only fallback).
-Edge types: `audio`, `parameter`, `unknown` (load-only fallback).
+Node types: `trackInput`, `trackOutput`, `effect`, `macro`, `envelope`, `sidechainInput`, `unknown`
+(load-only fallback).
+Edge types: `audio`, `parameter`, `sidechain`, `unknown` (load-only fallback).
 
 Port naming convention (mirrors `chainToGraphState.js` lines 189-191):
 - `trackInput` output -> `'audio'`
 - `effect` input -> `'audioIn'`, output -> `'audioOut'`
 - `trackOutput` input -> `'audio'`
+- `sidechainInput` output -> `'sidechainOut'`; compressor sidechain key target -> `'sidechainIn'`
+  (FXG-SC.6B; see `fxgraph-sidechain-input-architecture-audit.md`)
 
 ## Mutation helpers (FXG.2C-d)
 
@@ -53,7 +56,7 @@ duplicate edges, endpoint rules) but do not check `fxMode`. Store actions in
 `effectChainStore` are responsible for enforcing `fxMode === "graph"` before calling any mutation
 helper.
 
-Protected node types (`PROTECTED_NODE_TYPES`): `trackInput`, `trackOutput`.
+Protected node types (`PROTECTED_NODE_TYPES`): `trackInput`, `trackOutput`, `sidechainInput`.
 These nodes cannot be removed. Future helpers must respect `isProtectedGraphNodeType`.
 
 ## Store mutation actions (FXG.2C-e)
