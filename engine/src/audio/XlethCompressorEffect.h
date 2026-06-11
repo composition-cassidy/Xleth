@@ -1,7 +1,6 @@
 #pragma once
 
 #include "audio/XlethEffectBase.h"
-#include "audio/SidechainDiagnostics.h"
 #include "audio/viz/DynamicsVizCollector.h"
 #include "audio/viz/DynamicsVizFrame.h"
 #include <juce_dsp/juce_dsp.h>
@@ -259,19 +258,6 @@ public:
         //                        per block — no per-sample branch on the param.
         const bool wantExternal = scExternalPtr_ != nullptr
                                 && scExternalPtr_->load(std::memory_order_relaxed) >= 0.5f;
-        const bool sidechainBusEnabled = isSidechainInputEnabled();
-        const float mainInputPeakL = numCh > 0
-            ? xleth::sidechain_diag::peak(mainBus.getReadPointer(0), numSamples)
-            : 0.0f;
-        const float mainInputRmsL = numCh > 0
-            ? xleth::sidechain_diag::rms(mainBus.getReadPointer(0), numSamples)
-            : 0.0f;
-        const float mainInputPeakR = numCh > 1
-            ? xleth::sidechain_diag::peak(mainBus.getReadPointer(1), numSamples)
-            : mainInputPeakL;
-        const float mainInputRmsR = numCh > 1
-            ? xleth::sidechain_diag::rms(mainBus.getReadPointer(1), numSamples)
-            : mainInputRmsL;
         const float* keyL = nullptr;
         const float* keyR = nullptr;
         bool keySilent = false;
@@ -280,7 +266,7 @@ public:
             keyL = mainBus.getReadPointer(0);
             keyR = numCh > 1 ? mainBus.getReadPointer(1) : keyL;
         }
-        else if (sidechainBusEnabled)
+        else if (isSidechainInputEnabled())
         {
             auto scBus = getBusBuffer(buffer, true, 1);
             if (scBus.getNumChannels() > 0)
@@ -304,23 +290,6 @@ public:
         const float popDelay = static_cast<float>(lookaheadSamps + 1);
 
         float peakL = 0.0f, peakR = 0.0f, maxGR = 0.0f;
-        float detectorKeyPeak = 0.0f;
-        double detectorKeySqSum = 0.0;
-        double outputSqSum = 0.0;
-        int detectorKeyCount = 0;
-        int outputCount = 0;
-        const float externalKeyPeakL = wantExternal && !keySilent
-            ? xleth::sidechain_diag::peak(keyL, numSamples)
-            : 0.0f;
-        const float externalKeyRmsL = wantExternal && !keySilent
-            ? xleth::sidechain_diag::rms(keyL, numSamples)
-            : 0.0f;
-        const float externalKeyPeakR = wantExternal && !keySilent
-            ? xleth::sidechain_diag::peak(keyR, numSamples)
-            : 0.0f;
-        const float externalKeyRmsR = wantExternal && !keySilent
-            ? xleth::sidechain_diag::rms(keyR, numSamples)
-            : 0.0f;
 
         // Visualization (opt-in per instance). One acquire load per block —
         // null when the editor is closed, so the hot loop pays only a cheap
@@ -356,11 +325,6 @@ public:
             // signal; external: the key bus; external-with-no-key: silence.
             const float sideL = keySilent ? 0.0f : keyL[s];
             const float sideR = keySilent ? 0.0f : keyR[s];
-            detectorKeyPeak = std::max(detectorKeyPeak,
-                                       std::max(std::abs(sideL), std::abs(sideR)));
-            detectorKeySqSum += 0.5 * (static_cast<double>(sideL) * sideL
-                                     + static_cast<double>(sideR) * sideR);
-            ++detectorKeyCount;
 
             // Per-sample visualization input level (pre-process). Reuses the
             // values already read above — one extra std::max in the hot path.
@@ -424,8 +388,6 @@ public:
                 if (ch == 0) peakL = std::max(peakL, absOut);
                 if (ch == 1) peakR = std::max(peakR, absOut);
                 if (vizCol && absOut > vizAbsOut) vizAbsOut = absOut;
-                outputSqSum += static_cast<double>(mixed) * static_cast<double>(mixed);
-                ++outputCount;
             }
 
             maxGR = std::max(maxGR, grDB);
@@ -452,25 +414,6 @@ public:
                 + " envDB=" + juce::String(20.0f * std::log10(std::max(env_, 1e-6f)), 2)
                 + " threshold=" + juce::String(getSmoothedValue("threshold"), 1));
 #endif
-
-        if ((wantExternal || sidechainBusEnabled || externalKeyPeakL > 0.0f || externalKeyPeakR > 0.0f)
-            && xleth::sidechain_diag::audioBlockActive())
-        {
-            xleth::sidechain_diag::appendf("Compressor", "processBlock",
-                "sc_external=%d sidechainBusEnabled=%d usedExternalKey=%d keySilent=%d mainInputPeakL=%.8f mainInputRmsL=%.8f mainInputPeakR=%.8f mainInputRmsR=%.8f externalKeyPeakL=%.8f externalKeyRmsL=%.8f externalKeyPeakR=%.8f externalKeyRmsR=%.8f detectorKeyPeak=%.8f detectorKeyRms=%.8f gainReductionMaxDb=%.8f outputPeakL=%.8f outputPeakR=%.8f outputRms=%.8f",
-                wantExternal ? 1 : 0,
-                sidechainBusEnabled ? 1 : 0,
-                (wantExternal && !keySilent) ? 1 : 0,
-                keySilent ? 1 : 0,
-                mainInputPeakL, mainInputRmsL, mainInputPeakR, mainInputRmsR,
-                externalKeyPeakL, externalKeyRmsL, externalKeyPeakR, externalKeyRmsR,
-                detectorKeyPeak,
-                detectorKeyCount > 0 ? static_cast<float>(std::sqrt(detectorKeySqSum / detectorKeyCount)) : 0.0f,
-                maxGR,
-                peakL,
-                numCh > 1 ? peakR : peakL,
-                outputCount > 0 ? static_cast<float>(std::sqrt(outputSqSum / outputCount)) : 0.0f);
-        }
 
         writeMeterValue(0, peakL);
         writeMeterValue(1, numCh > 1 ? peakR : peakL);

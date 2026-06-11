@@ -1,16 +1,5 @@
 # Mixer Bus Routing + Sidechain — Architecture Audit
 
-## Temporary Diagnostic Logger
-
-2026-06-11: Added temporary, diagnostic-only sidechain logging for the stock
-compressor external-key path. The app truncates and writes:
-
-`C:\Users\Krasen\Desktop\XLETH\sidechain-diagnostic-log.txt`
-
-This pass is instrumentation only. It does not include a sidechain behavior fix,
-does not change compressor DSP decisions, and should be removed after the
-diagnosis/fix is complete.
-
 Read-only audit of XLETH's audio routing architecture, plus the source-of-truth implementation
 plan for **audible bus routing** and **silent sidechain routing**. No source code was modified in
 this pass. Implementation prompts 2–6 (§8) must be derivable from this document without guessing.
@@ -1469,3 +1458,45 @@ the parameter write had been applied.
 - **No DSP/engine changes:** stock compressor DSP, sidechain runtime transport, output routing/PDC,
   VST/plugin hosting, FX Graph, sends, graphState, `GuardedPluginWrapper`, and
   `StockParameterCatalog.{cpp,h}` were not changed.
+
+## Sidechain smoke-test failure — root cause + fix (2026-06-11)
+
+The failed manual smoke ("External Sidechain UI works, route exists, compressor sounds identical")
+was **not** an engine, bridge, or UI logic bug. Root cause: **the deployed native addon
+(`bridge/build/Release/xleth_native.node`) was stale** — built 2026-06-11 00:29, i.e. *before* the
+Prompt 4C+4D key transport (10:40), the 5A compressor sidechain DSP incl. the `sc_external`
+parameter (11:13), and `syncSidechainTargetBuses`. The app therefore ran a binary with no sidechain
+DSP at all while the renderer (built from current source) showed the 5B controls. Route creation
+appeared to work because the 4B route bridge predated the stale build.
+
+- **First broken boundary** (diagnostic chain): `sc_external` reaches the live compressor node — the
+  parameter did not exist in the running binary, so `audio_setEffectParameter` returned `false`, and
+  every later boundary (bus sync, bus enable, wiring, key fill, ducking) was absent code, not broken
+  code.
+- **Masking regression fixed:** 5B-r1 (7dd7306) reframed that boolean `false` as a "legacy
+  fire-and-forget success", hiding the failure. That premise was wrong — `audio_setEffectParameter`
+  has always returned a meaningful boolean (`false` = unknown track/node/param). The store now treats
+  a resolved `false` as a real failure again (`Could not update compressor sidechain mode`, toggle
+  reverts). This section supersedes the 5B-r1 rationale above.
+- **Fix applied:** rebuilt the addon from current source (no engine/bridge code change needed) and
+  restored strict result handling in `ui/src/stores/mixerStore.js` (+ updated the two tests that had
+  encoded the masked behavior).
+- **Verified in the real app** (CDP-driven manual smoke, real playback through the device callback):
+  toggle + source select through the actual mixer UI created the route with the correct
+  `effectInstanceId`; diagnostic log showed bus enable (`busEnabledBefore=0 busEnabledAfter=1`),
+  `SidechainSourceProcessor` wired to compressor bus 1 (channels 2/3), nonzero key delivery
+  (key peak ≈ 0.64 while Bass main input ≈ 0.029), and `gainReductionMaxDb` pumping 4–20 dB in sync
+  with Kick hits; GR meter confirmed ducking; disabling removed the route and GR returned to 0
+  exactly (legacy `sc_external=0` behavior preserved). The key never appeared in the output.
+- **Temporary diagnostics removed:** the 2026-06-11 sidechain diagnostic logger (commit be6f8dc) was
+  removed entirely after the diagnosis — no gated variant kept; default runtime writes no
+  `sidechain-diagnostic-log.txt`.
+- **Tests run:** native `test_stock_compressor_sidechain`, `test_sidechain_runtime`,
+  `test_sidechain_routes`, `test_chain_effect_identity`, `test_mixer_bus_routing`,
+  `test_mixer_routing_pdc`, `test_mix`, `test_project`, `test_undo` (all pass); vitest mixer/effect
+  chain suites (pass).
+- **Untouched:** VST sidechain, FX Graph Sidechain Input, sends, `GuardedPluginWrapper`, graphState,
+  output routing/PDC semantics, `StockParameterCatalog.{cpp,h}`.
+- **Process note:** after any engine/bridge C++ change, the smoke environment must rebuild
+  `xleth_native.node` (`cd bridge && npx cmake-js compile`) — engine test binaries passing does not
+  mean the app binary is current.

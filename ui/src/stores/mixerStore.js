@@ -207,34 +207,9 @@ function isAudioMixerTarget(track) {
   return Boolean(track) && !track.visualOnly && track.id !== MASTER_OUTPUT_TARGET_ID
 }
 
-function sidechainDiag(eventName, fields = {}) {
-  try {
-    globalThis.window?.xleth?.diagnostics?.sidechain?.('UI', eventName, fields)
-  } catch {}
-}
-
-function summarizeRelevantSidechainRoutes(routes, targetTrackId, effectInstanceId) {
-  const targetId = normalizeOutputTargetId(targetTrackId)
-  return (Array.isArray(routes) ? routes : [])
-    .filter(route =>
-      normalizeOutputTargetId(route?.targetTrackId) === targetId &&
-      route?.targetEffectInstanceId === effectInstanceId)
-    .map(route => ({
-      routeId: route.routeId,
-      sourceTrackId: route.sourceTrackId,
-      targetTrackId: route.targetTrackId,
-      targetEffectInstanceId: route.targetEffectInstanceId,
-      enabled: route.enabled,
-      status: route.status,
-      gain: route.gain,
-      preFader: route.preFader,
-    }))
-}
-
 async function setCompressorExternalSidechainParam({
   targetTrackId,
   targetNodeId,
-  effectInstanceId,
   enabled,
   options = {},
 }) {
@@ -248,27 +223,12 @@ async function setCompressorExternalSidechainParam({
   }
 
   try {
-    sidechainDiag('setEffectParameter_call', {
-      targetTrackId: normalizeOutputTargetId(targetTrackId),
-      nodeId: targetNodeId,
-      effectInstanceId,
-      paramId: COMPRESSOR_EXTERNAL_SIDECHAIN_PARAM_ID,
-      value: enabled ? 1 : 0,
-    })
     const result = await setEffectParameter(
       normalizeOutputTargetId(targetTrackId),
       targetNodeId,
       COMPRESSOR_EXTERNAL_SIDECHAIN_PARAM_ID,
       enabled ? 1 : 0,
     )
-    sidechainDiag('setEffectParameter_result', {
-      targetTrackId: normalizeOutputTargetId(targetTrackId),
-      nodeId: targetNodeId,
-      effectInstanceId,
-      paramId: COMPRESSOR_EXTERNAL_SIDECHAIN_PARAM_ID,
-      resolvedValue: enabled ? 1 : 0,
-      result,
-    })
     // audio_setEffectParameter resolves to a plain boolean (Napi::Boolean):
     // false means the engine could not set the parameter (unknown track/node/
     // param — e.g. an out-of-date native addon without `sc_external`). Treat it
@@ -279,14 +239,6 @@ async function setCompressorExternalSidechainParam({
     }
     return { ok: true }
   } catch (e) {
-    sidechainDiag('setEffectParameter_error', {
-      targetTrackId: normalizeOutputTargetId(targetTrackId),
-      nodeId: targetNodeId,
-      effectInstanceId,
-      paramId: COMPRESSOR_EXTERNAL_SIDECHAIN_PARAM_ID,
-      value: enabled ? 1 : 0,
-      error: e?.message ?? String(e),
-    })
     ;(options.warn ?? console.warn)?.('[mixerStore] compressor sidechain parameter set failed:', e?.message ?? e)
     return { ok: false, reason: 'ipc_error', error: mapCompressorSidechainModeError() }
   }
@@ -565,40 +517,17 @@ const useMixerStore = create((set, get) => ({
     }
 
     try {
-      sidechainDiag('removeSidechainRoute_call', {
-        sourceTrackId: route.sourceTrackId,
-        routeId: route.routeId,
-        targetTrackId: targetId,
-        targetEffectInstanceId: effectInstanceId,
-      })
       const result = await removeRoute(route.sourceTrackId, route.routeId)
-      sidechainDiag('removeSidechainRoute_result', {
-        sourceTrackId: route.sourceTrackId,
-        routeId: route.routeId,
-        targetTrackId: targetId,
-        targetEffectInstanceId: effectInstanceId,
-        result,
-      })
       if (result === false || result?.ok === false) {
         const reason = result?.reason || 'rejected'
         const error = mapSidechainRouteRemoveError()
         await get().refreshRouting()
-        sidechainDiag('getRouting_afterRouteMutation', {
-          targetTrackId: targetId,
-          targetEffectInstanceId: effectInstanceId,
-          routes: summarizeRelevantSidechainRoutes(get().sidechainRoutes, targetId, effectInstanceId),
-        })
         set(s => ({
           sidechainRoutingErrors: { ...s.sidechainRoutingErrors, [errorKey]: error },
         }))
         return { ok: false, reason, error }
       }
       await get().refreshRouting()
-      sidechainDiag('getRouting_afterRouteMutation', {
-        targetTrackId: targetId,
-        targetEffectInstanceId: effectInstanceId,
-        routes: summarizeRelevantSidechainRoutes(get().sidechainRoutes, targetId, effectInstanceId),
-      })
       set(s => {
         const nextErrors = { ...s.sidechainRoutingErrors }
         delete nextErrors[errorKey]
@@ -607,21 +536,9 @@ const useMixerStore = create((set, get) => ({
       timelineEvents.dispatchEvent(new Event('timeline-routing-changed'))
       return { ok: true, removed: true }
     } catch (e) {
-      sidechainDiag('removeSidechainRoute_error', {
-        sourceTrackId: route.sourceTrackId,
-        routeId: route.routeId,
-        targetTrackId: targetId,
-        targetEffectInstanceId: effectInstanceId,
-        error: e?.message ?? String(e),
-      })
       ;(options.warn ?? console.warn)?.('[mixerStore] removeSidechainRouteForEffect failed:', e?.message ?? e)
       const error = mapSidechainRouteRemoveError()
       await get().refreshRouting()
-      sidechainDiag('getRouting_afterRouteMutation', {
-        targetTrackId: targetId,
-        targetEffectInstanceId: effectInstanceId,
-        routes: summarizeRelevantSidechainRoutes(get().sidechainRoutes, targetId, effectInstanceId),
-      })
       set(s => ({
         sidechainRoutingErrors: { ...s.sidechainRoutingErrors, [errorKey]: error },
       }))
@@ -641,17 +558,6 @@ const useMixerStore = create((set, get) => ({
       ? null
       : normalizeOutputTargetId(sourceTrackId)
     const errorKey = sidechainEffectKey(targetId, effectInstanceId)
-    const previousRoute = findSidechainRouteForEffect(get().sidechainRoutes, targetId, effectInstanceId)
-
-    sidechainDiag('setCompressorExternalSidechain_request', {
-      targetTrackId: targetId,
-      nodeId: targetNodeId,
-      effectInstanceId,
-      requestedEnabled: enabled === true,
-      sourceTrackId: sourceId,
-      previousSourceTrackId: previousRoute?.sourceTrackId ?? null,
-      previousRouteId: previousRoute?.routeId ?? null,
-    })
 
     const setError = (error) => set(s => ({
       sidechainRoutingErrors: { ...s.sidechainRoutingErrors, [errorKey]: error },
@@ -694,10 +600,10 @@ const useMixerStore = create((set, get) => ({
       }
     }
 
+    const previousRoute = findSidechainRouteForEffect(get().sidechainRoutes, targetId, effectInstanceId)
     const paramResult = await setCompressorExternalSidechainParam({
       targetTrackId: targetId,
       targetNodeId,
-      effectInstanceId,
       enabled: enabled === true,
       options,
     })
@@ -765,21 +671,7 @@ const useMixerStore = create((set, get) => ({
         preFader: false,
         enabled: true,
       }
-      sidechainDiag('addSidechainRoute_call', {
-        sourceTrackId: sourceId,
-        targetTrackId: targetId,
-        targetEffectInstanceId: effectInstanceId,
-        payload,
-      })
       const result = await addRoute(sourceId, payload)
-      sidechainDiag('addSidechainRoute_result', {
-        sourceTrackId: sourceId,
-        targetTrackId: targetId,
-        targetEffectInstanceId: effectInstanceId,
-        ok: result?.ok ?? result,
-        reason: result?.reason,
-        routeId: result?.routeId,
-      })
       if (result === false || result?.ok === false) {
         const reason = result?.reason || 'rejected'
         const error = mapSidechainRouteError(reason)
@@ -795,21 +687,11 @@ const useMixerStore = create((set, get) => ({
           } catch {}
         }
         await get().refreshRouting()
-        sidechainDiag('getRouting_afterRouteMutation', {
-          targetTrackId: targetId,
-          targetEffectInstanceId: effectInstanceId,
-          routes: summarizeRelevantSidechainRoutes(get().sidechainRoutes, targetId, effectInstanceId),
-        })
         setError(error)
         return { ok: false, reason, error, externalEnabled: true }
       }
 
       await get().refreshRouting()
-      sidechainDiag('getRouting_afterRouteMutation', {
-        targetTrackId: targetId,
-        targetEffectInstanceId: effectInstanceId,
-        routes: summarizeRelevantSidechainRoutes(get().sidechainRoutes, targetId, effectInstanceId),
-      })
       clearError()
       timelineEvents.dispatchEvent(new Event('timeline-routing-changed'))
       return {
@@ -818,12 +700,6 @@ const useMixerStore = create((set, get) => ({
         routeId: result?.routeId,
       }
     } catch (e) {
-      sidechainDiag('addSidechainRoute_error', {
-        sourceTrackId: sourceId,
-        targetTrackId: targetId,
-        targetEffectInstanceId: effectInstanceId,
-        error: e?.message ?? String(e),
-      })
       ;(options.warn ?? console.warn)?.('[mixerStore] setCompressorExternalSidechain failed:', e?.message ?? e)
       if (previousRoute) {
         try {
@@ -838,11 +714,6 @@ const useMixerStore = create((set, get) => ({
       }
       const error = 'Route rejected'
       await get().refreshRouting()
-      sidechainDiag('getRouting_afterRouteMutation', {
-        targetTrackId: targetId,
-        targetEffectInstanceId: effectInstanceId,
-        routes: summarizeRelevantSidechainRoutes(get().sidechainRoutes, targetId, effectInstanceId),
-      })
       setError(error)
       return { ok: false, reason: 'ipc_error', error, externalEnabled: true }
     }

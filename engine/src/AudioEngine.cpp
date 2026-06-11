@@ -1,5 +1,4 @@
 #include "AudioEngine.h"
-#include "audio/SidechainDiagnostics.h"
 
 #include <algorithm>
 #include <chrono>
@@ -257,8 +256,6 @@ void AudioEngine::refreshLivePresentationLatency()
     // after every routing/chain mutation and after project load. Idempotent and
     // cheap when nothing changed; may re-prepare a chain when a route's target
     // set changes (which can shift latency, so it must precede the snapshot).
-    xleth::sidechain_diag::append("AudioEngine", "refreshLivePresentationLatency",
-                                  "callsSyncSidechainTargetBuses=1");
     mixEngine_.syncSidechainTargetBuses();
 
     const auto snapshot = mixEngine_.getLatencyCompensationSnapshot();

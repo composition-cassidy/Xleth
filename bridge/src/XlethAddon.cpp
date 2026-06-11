@@ -38,7 +38,6 @@
 #include "model/Timeline.h"
 #include "model/TimelineTypes.h"
 #include "audio/TrackRouting.h"
-#include "audio/SidechainDiagnostics.h"
 #include "commands/ImportMidiCommand.h"
 #include "commands/UndoManager.h"
 #include "commands/TimelineCommands.h"
@@ -4517,8 +4516,6 @@ Napi::Value Timeline_GetRouting(const Napi::CallbackInfo& info)
     }
 
     auto tracks = g_timeline->getAllTracks();
-    int sidechainRouteCount = 0;
-    std::string routeStatuses;
     Napi::Array arr = Napi::Array::New(env, tracks.size());
     for (size_t i = 0; i < tracks.size(); ++i) {
         const TrackInfo& t = *tracks[i];
@@ -4554,22 +4551,11 @@ Napi::Value Timeline_GetRouting(const Napi::CallbackInfo& info)
                 if (nodeId < 0) status = "stale_effect_instance";
             }
             e.Set("status", Napi::String::New(env, status));
-            ++sidechainRouteCount;
-            if (routeStatuses.size() < 800) {
-                if (!routeStatuses.empty()) routeStatuses += ",";
-                routeStatuses += "sourceTrackId=" + std::to_string(t.id)
-                              + ":targetTrackId=" + std::to_string(sc.targetTrackId)
-                              + ":targetEffectInstanceId=" + sc.targetEffectInstanceId
-                              + ":enabled=" + std::to_string(sc.enabled ? 1 : 0)
-                              + ":status=" + status;
-            }
             scArr.Set(static_cast<uint32_t>(k), e);
         }
         entry.Set("sidechainRoutes", scArr);
         arr.Set(static_cast<uint32_t>(i), entry);
     }
-    xleth::sidechain_diag::appendf("Bridge", "timeline_getRouting",
-        "sidechainRouteCount=%d routes=%s", sidechainRouteCount, routeStatuses.c_str());
     return arr;
 }
 
@@ -4628,10 +4614,6 @@ Napi::Value Timeline_AddSidechainRoute(const Napi::CallbackInfo& info)
     if (!result.ok()) {
         ret.Set("ok",     Napi::Boolean::New(env, false));
         ret.Set("reason", Napi::String::New(env, result.reasonString()));
-        xleth::sidechain_diag::appendf("Bridge", "timeline_addSidechainRoute",
-            "sourceTrackId=%d targetTrackId=%d targetEffectInstanceId=%s gain=%.6f preFader=%d enabled=%d ok=false reason=%s",
-            sourceTrackId, route.targetTrackId, route.targetEffectInstanceId.c_str(),
-            route.gain, route.preFader ? 1 : 0, route.enabled ? 1 : 0, result.reasonString());
         log.done(std::string("rejected:") + result.reasonString());
         return ret;
     }
@@ -4642,11 +4624,6 @@ Napi::Value Timeline_AddSidechainRoute(const Napi::CallbackInfo& info)
 
     ret.Set("ok",      Napi::Boolean::New(env, true));
     ret.Set("routeId", Napi::String::New(env, route.routeId));
-    xleth::sidechain_diag::appendf("Bridge", "timeline_addSidechainRoute",
-        "sourceTrackId=%d targetTrackId=%d targetEffectInstanceId=%s gain=%.6f preFader=%d enabled=%d ok=true routeId=%s",
-        sourceTrackId, route.targetTrackId, route.targetEffectInstanceId.c_str(),
-        route.gain, route.preFader ? 1 : 0, route.enabled ? 1 : 0, route.routeId.c_str());
-    xleth::sidechain_diag::activateAudioBlocks(120, "timeline_addSidechainRoute");
     log.done(std::to_string(sourceTrackId) + "->" + std::to_string(route.targetTrackId)
              + " " + route.routeId);
     return ret;
@@ -4681,9 +4658,6 @@ Napi::Value Timeline_RemoveSidechainRoute(const Napi::CallbackInfo& info)
     if (!exists) {
         ret.Set("ok",     Napi::Boolean::New(env, false));
         ret.Set("reason", Napi::String::New(env, t ? "unknown_route" : "unknown_source_track"));
-        xleth::sidechain_diag::appendf("Bridge", "timeline_removeSidechainRoute",
-            "sourceTrackId=%d routeId=%s ok=false reason=%s",
-            sourceTrackId, routeId.c_str(), t ? "unknown_route" : "unknown_source_track");
         log.done("rejected");
         return ret;
     }
@@ -4694,9 +4668,6 @@ Napi::Value Timeline_RemoveSidechainRoute(const Napi::CallbackInfo& info)
     audioEngine->refreshLivePresentationLatency();
 
     ret.Set("ok", Napi::Boolean::New(env, true));
-    xleth::sidechain_diag::appendf("Bridge", "timeline_removeSidechainRoute",
-        "sourceTrackId=%d routeId=%s ok=true", sourceTrackId, routeId.c_str());
-    xleth::sidechain_diag::activateAudioBlocks(120, "timeline_removeSidechainRoute");
     log.done(std::to_string(sourceTrackId) + " " + routeId);
     return ret;
 }
@@ -10161,12 +10132,6 @@ Napi::Value Audio_SetEffectParameter(const Napi::CallbackInfo& info)
 
     const bool ok = audioEngine->getMixEngine().setEffectParameter(trackId, nodeId, paramId, value);
     if (ok) audioEngine->refreshLivePresentationLatency();
-    if (paramId == "sc_external") {
-        xleth::sidechain_diag::appendf("Bridge", "audio_setEffectParameter",
-            "trackId=%d nodeId=%d paramId=%s value=%.6f result=%d",
-            trackId, nodeId, paramId.c_str(), value, ok ? 1 : 0);
-        xleth::sidechain_diag::activateAudioBlocks(120, "audio_setEffectParameter_sc_external");
-    }
 #ifdef XLETH_DEBUG
     if (!ok) DBG("[Bridge] setEffectParameter FAILED track=" + std::to_string(trackId) + " node=" + std::to_string(nodeId) + " param=" + paramId);
 #endif

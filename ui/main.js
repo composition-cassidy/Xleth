@@ -20,27 +20,6 @@ const {
 // the Electron main process / preload opens the same name via shm_helper.node.
 const FRAME_SHM_NAME = 'XlethFrameBuffer';
 
-const sidechainDiagnosticLogPath = path.resolve(__dirname, '..', 'sidechain-diagnostic-log.txt');
-process.env.XLETH_SIDECHAIN_DIAG_PATH = sidechainDiagnosticLogPath;
-try {
-  fs.writeFileSync(sidechainDiagnosticLogPath, '');
-} catch {}
-
-function sidechainDiag(subsystem, eventName, fields = {}) {
-  const safeSubsystem = String(subsystem || 'Main').replace(/[\]\r\n]/g, '_');
-  const safeEvent = String(eventName || 'event').replace(/[\r\n]/g, '_');
-  const body = Object.entries(fields || {})
-    .map(([key, value]) => {
-      const normalized = typeof value === 'string'
-        ? value.replace(/[\r\n]/g, ' ')
-        : JSON.stringify(value);
-      return `${key}=${normalized}`;
-    })
-    .join(' ');
-  const line = `${new Date().toISOString()} [SidechainDiag][${safeSubsystem}] ${safeEvent}${body ? ` ${body}` : ''}\n`;
-  try { fs.appendFileSync(sidechainDiagnosticLogPath, line); } catch {}
-}
-
 
 // ── User settings (persisted across sessions, not per-project) ───────────────
 const settingsPath = userDataPath('xleth-settings.json')
@@ -325,7 +304,6 @@ function startWorker() {
       ELECTRON_RUN_AS_NODE: undefined,
       XLETH_BRIDGE_DIR: bridgeDir,
       XLETH_FFMPEG_DIR: ffmpegDir,
-      XLETH_SIDECHAIN_DIAG_PATH: sidechainDiagnosticLogPath,
       PATH: workerPathEnv([bridgeDir, ffmpegDir]),
     },
     serialization: 'advanced',  // preserves Buffer/TypedArray/ArrayBuffer across IPC
@@ -746,52 +724,13 @@ ipcMain.handle('xleth:timeline:setTrackOutputRoute',
   safeHandler((_, trackId, targetTrackId) => callWorker('timeline_setTrackOutputRoute', [trackId, targetTrackId])));
 
 ipcMain.handle('xleth:timeline:getRouting',
-  safeHandler(async () => {
-    const result = await callWorker('timeline_getRouting', [])
-    const routes = Array.isArray(result)
-      ? result.flatMap(entry => Array.isArray(entry?.sidechainRoutes) ? entry.sidechainRoutes : [])
-      : []
-    sidechainDiag('Main', 'timeline_getRouting', {
-      sidechainRouteCount: routes.length,
-      routes: routes.map(r => ({
-        sourceTrackId: r.sourceTrackId,
-        targetTrackId: r.targetTrackId,
-        targetEffectInstanceId: r.targetEffectInstanceId,
-        status: r.status,
-        enabled: r.enabled,
-      })),
-    })
-    return result
-  }));
+  safeHandler(() => callWorker('timeline_getRouting', [])));
 
 ipcMain.handle('xleth:timeline:addSidechainRoute',
-  safeHandler(async (_, sourceTrackId, route) => {
-    const result = await callWorker('timeline_addSidechainRoute', [sourceTrackId, route])
-    sidechainDiag('Main', 'addSidechainRoute', {
-      sourceTrackId,
-      targetTrackId: route?.targetTrackId,
-      targetEffectInstanceId: route?.targetEffectInstanceId,
-      gain: route?.gain,
-      preFader: route?.preFader,
-      enabled: route?.enabled,
-      ok: result?.ok ?? result,
-      reason: result?.reason,
-      routeId: result?.routeId,
-    })
-    return result
-  }));
+  safeHandler((_, sourceTrackId, route) => callWorker('timeline_addSidechainRoute', [sourceTrackId, route])));
 
 ipcMain.handle('xleth:timeline:removeSidechainRoute',
-  safeHandler(async (_, sourceTrackId, routeId) => {
-    const result = await callWorker('timeline_removeSidechainRoute', [sourceTrackId, routeId])
-    sidechainDiag('Main', 'removeSidechainRoute', {
-      sourceTrackId,
-      routeId,
-      ok: result?.ok ?? result,
-      reason: result?.reason,
-    })
-    return result
-  }));
+  safeHandler((_, sourceTrackId, routeId) => callWorker('timeline_removeSidechainRoute', [sourceTrackId, routeId])));
 
 ipcMain.handle('xleth:timeline:setSidechainRouteParams',
   safeHandler((_, sourceTrackId, routeId, params) => callWorker('timeline_setSidechainRouteParams', [sourceTrackId, routeId, params])));
@@ -1731,25 +1670,7 @@ ipcMain.handle('xleth:audio:getEffectParameters',
   safeHandler((_, trackId, nodeId) => callWorker('audio_getEffectParameters', [trackId, nodeId])));
 
 ipcMain.handle('xleth:audio:setEffectParameter',
-  safeHandler(async (_, trackId, nodeId, paramId, value) => {
-    const result = await callWorker('audio_setEffectParameter', [trackId, nodeId, paramId, value])
-    if (paramId === 'sc_external') {
-      sidechainDiag('Main', 'audio_setEffectParameter', {
-        trackId,
-        nodeId,
-        paramId,
-        value,
-        result,
-      })
-    }
-    return result
-  }));
-
-ipcMain.handle('xleth:diag:sidechain',
-  safeHandler((_, subsystem, eventName, fields) => {
-    sidechainDiag(subsystem, eventName, fields)
-    return { ok: true, path: sidechainDiagnosticLogPath }
-  }));
+  safeHandler((_, trackId, nodeId, paramId, value) => callWorker('audio_setEffectParameter', [trackId, nodeId, paramId, value])));
 
 ipcMain.handle('xleth:audio:getEffectMeter',
   safeHandler((_, trackId, nodeId) => callWorker('audio_getEffectMeter', [trackId, nodeId])));

@@ -181,12 +181,6 @@ function parseEffectParameters(raw) {
   return Array.isArray(raw) ? raw : []
 }
 
-function sidechainDiag(eventName, fields = {}) {
-  try {
-    window.xleth?.diagnostics?.sidechain?.('UI', eventName, fields)
-  } catch {}
-}
-
 function CompressorSidechainControls({ effect, storeKey }) {
   const targetTrackId = resolveTrackId(storeKey)
   const routeKey = `${targetTrackId}::${effect.effectInstanceId}`
@@ -221,30 +215,6 @@ function CompressorSidechainControls({ effect, storeKey }) {
     routeError,
     sourceTrack,
   })
-
-  useEffect(() => {
-    sidechainDiag('derivedState', {
-      targetTrackId,
-      nodeId: effect.nodeId,
-      effectInstanceId: effect.effectInstanceId,
-      externalEnabled,
-      selectedSourceTrackId: selectedSourceValue || null,
-      routeStatus: route?.status ?? null,
-      routeId: route?.routeId ?? null,
-      routeEnabled: route?.enabled ?? null,
-      routeError,
-    })
-  }, [
-    targetTrackId,
-    effect.nodeId,
-    effect.effectInstanceId,
-    externalEnabled,
-    selectedSourceValue,
-    route?.status,
-    route?.routeId,
-    route?.enabled,
-    routeError,
-  ])
 
   useEffect(() => {
     setParamLoaded(effectHasCompressorSidechainParam(effect))
@@ -308,23 +278,11 @@ function CompressorSidechainControls({ effect, storeKey }) {
 
   const handleToggleChange = async (event) => {
     stopEffectModuleEvent(event)
-    sidechainDiag('toggleExternal', {
-      targetTrackId,
-      nodeId: effect.nodeId,
-      effectInstanceId: effect.effectInstanceId,
-      value: event.target.checked ? 1 : 0,
-    })
     await applySidechain({ enabled: event.target.checked })
   }
 
   const handleSourceChange = async (event) => {
     stopEffectModuleEvent(event)
-    sidechainDiag('sourceSelectorChange', {
-      oldSourceTrackId: selectedSourceValue || null,
-      newSourceTrackId: event.target.value || null,
-      targetTrackId,
-      targetEffectInstanceId: effect.effectInstanceId,
-    })
     await applySidechain({ enabled: true, sourceTrackId: event.target.value })
   }
 

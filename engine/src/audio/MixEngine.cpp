@@ -1,7 +1,6 @@
 #include "audio/MixEngine.h"
 #include "audio/TrackMixer.h"
 #include "audio/TrackRouting.h"
-#include "audio/SidechainDiagnostics.h"
 #include "audio/SampleProcessor.h"
 #include "audio/EffectChainManager.h"
 #include "audio/EditorProcessCoordinator.h"
@@ -80,32 +79,6 @@ bool atomicMaxWithWinner(std::atomic<uint64_t>& target, uint64_t value) noexcept
         }
     }
     return false;
-}
-
-float bufferPeak(const juce::AudioBuffer<float>& buffer, int numSamples) noexcept
-{
-    float p = 0.0f;
-    const int n = std::min(numSamples, buffer.getNumSamples());
-    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
-        p = std::max(p, xleth::sidechain_diag::peak(buffer.getReadPointer(ch), n));
-    return p;
-}
-
-float bufferRms(const juce::AudioBuffer<float>& buffer, int numSamples) noexcept
-{
-    double sum = 0.0;
-    int count = 0;
-    const int n = std::min(numSamples, buffer.getNumSamples());
-    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
-    {
-        const float* data = buffer.getReadPointer(ch);
-        for (int i = 0; i < n; ++i)
-        {
-            sum += static_cast<double>(data[i]) * static_cast<double>(data[i]);
-            ++count;
-        }
-    }
-    return count > 0 ? static_cast<float>(std::sqrt(sum / static_cast<double>(count))) : 0.0f;
 }
 
 template <size_t Size>
@@ -2299,11 +2272,7 @@ void MixEngine::syncTrackSlotsFromTimeline(bool snapVolumeSmoothers)
 
 void MixEngine::syncSidechainTargetBuses()
 {
-    if (timeline_ == nullptr) {
-        xleth::sidechain_diag::append("MixEngine", "syncSidechainTargetBuses",
-                                      "timeline=null");
-        return;
-    }
+    if (timeline_ == nullptr) return;
 
     // Group, per target track, the stable effectInstanceIds that an ENABLED
     // sidechain route currently targets. A disabled route leaves the bus off
@@ -2311,7 +2280,6 @@ void MixEngine::syncSidechainTargetBuses()
     // later prompt and ignored here. Source mute/visual-only is irrelevant to
     // *enabling* the bus — that only governs whether a key flows at DSP time.
     std::unordered_map<int, std::set<std::string>> targetsByTrack;
-    int enabledRouteCount = 0;
     for (const auto* tr : timeline_->getAllTracks())
     {
         if (tr == nullptr) continue;
@@ -2319,22 +2287,9 @@ void MixEngine::syncSidechainTargetBuses()
         {
             if (!route.enabled) continue;
             if (route.targetEffectInstanceId.empty()) continue;
-            ++enabledRouteCount;
             targetsByTrack[route.targetTrackId].insert(route.targetEffectInstanceId);
         }
     }
-
-    int requestedInstanceCount = 0;
-    for (const auto& [trackId, ids] : targetsByTrack)
-    {
-        juce::ignoreUnused(trackId);
-        requestedInstanceCount += static_cast<int>(ids.size());
-    }
-    xleth::sidechain_diag::appendf("MixEngine", "syncSidechainTargetBuses",
-        "enabledSidechainRouteCount=%d targetTrackCount=%d requestedTargetInstanceCount=%d",
-        enabledRouteCount,
-        static_cast<int>(targetsByTrack.size()),
-        requestedInstanceCount);
 
     // Apply to every initialized chain — including chains with no incoming routes
     // (empty set), so a removed/disabled route deterministically disables the bus.
@@ -2346,19 +2301,8 @@ void MixEngine::syncSidechainTargetBuses()
     {
         if (!chain || !chain->isInitialized()) continue;
         auto it = targetsByTrack.find(trackId);
-        const auto& ids = it != targetsByTrack.end() ? it->second : kEmptyTargets;
-        for (const auto& id : ids)
-        {
-            const int nodeId = chain->getNodeIdForEffectInstance(id);
-            xleth::sidechain_diag::appendf("MixEngine", "syncSidechainTarget",
-                "targetTrackId=%d targetEffectInstanceId=%s resolvedNodeId=%d",
-                trackId, id.c_str(), nodeId);
-        }
-        const bool changed = chain->applySidechainTargetInstances(ids);
-        xleth::sidechain_diag::appendf("MixEngine", "syncSidechainTrackApplied",
-            "targetTrackId=%d requestedInstanceCount=%d sidechainCapableAfter=%d busLayoutChanged=%d",
-            trackId, static_cast<int>(ids.size()),
-            chain->hasSidechainCapableNode() ? 1 : 0, changed ? 1 : 0);
+        chain->applySidechainTargetInstances(
+            it != targetsByTrack.end() ? it->second : kEmptyTargets);
     }
 }
 
@@ -4226,7 +4170,6 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     // delivery is skipped this block, exactly as if no route existed (fail-closed).
     xleth::SidechainPlan scPlan;
     xleth::buildSidechainPlan(routeInputs, numTrackSlots, routePlan, nullptr, 0, scPlan);
-    const bool sidechainDiagBlock = xleth::sidechain_diag::consumeAudioBlock();
 
     // Throttled fail-closed diagnostics (never spam the audio thread). Both
     // conditions are programming errors after 2A validation — log rarely.
@@ -4710,11 +4653,6 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     else
         (void)chainsLockGuard.try_lock();
     const bool chainsLocked = chainsLockGuard.owns_lock();
-    if (sidechainDiagBlock && !chainsLocked)
-    {
-        xleth::sidechain_diag::append("MixEngine", "sidechainRuntimeSkipped",
-                                      "reason=chain_lock_unavailable");
-    }
     if (rtDiagEnabled
         && !chainsLocked
         && !nonRealtime_.load(std::memory_order_relaxed))
@@ -4916,42 +4854,11 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                 tp.preFader       = route.preFader;
                 tp.enabled        = route.enabled;
                 tp.effectResolved = resolved;
-                if (sidechainDiagBlock)
-                {
-                    const int targetSlot = trackIdToSlot.count(route.targetTrackId)
-                        ? trackIdToSlot[route.targetTrackId]
-                        : -1;
-                    xleth::sidechain_diag::appendf("MixEngine", "buildSidechainPlanTapInput",
-                        "sourceTrackId=%d sourceSlot=%d targetTrackId=%d targetSlot=%d targetEffectInstanceId=%s enabled=%d gain=%.6f preFader=%d effectResolved=%d",
-                        srcTrack->id, s, route.targetTrackId, targetSlot,
-                        route.targetEffectInstanceId.c_str(), route.enabled ? 1 : 0,
-                        tp.gain, route.preFader ? 1 : 0, resolved ? 1 : 0);
-                }
             }
         }
 
         xleth::buildSidechainPlan(routeInputs, numTrackSlots, routePlan,
                                   scTaps, scTapCount, scPlan);
-        if (sidechainDiagBlock)
-        {
-            xleth::sidechain_diag::appendf("MixEngine", "buildSidechainPlan",
-                "tapInputCount=%d activeTapCount=%d anyActive=%d chainsLocked=1",
-                scTapCount, scPlan.tapCount, scPlan.anyActive ? 1 : 0);
-            for (int k = 0; k < scPlan.tapCount; ++k)
-            {
-                const int sourceSlot = scPlan.tapSourceSlot[k];
-                const int targetSlot = scPlan.tapTargetSlot[k];
-                const int sourceTrackId = (sourceSlot >= 0 && sourceSlot < numTrackSlots && trackSlots[sourceSlot].info)
-                    ? trackSlots[sourceSlot].info->id : -1;
-                const int targetTrackId = (targetSlot >= 0 && targetSlot < numTrackSlots && trackSlots[targetSlot].info)
-                    ? trackSlots[targetSlot].info->id : -1;
-                xleth::sidechain_diag::appendf("MixEngine", "buildSidechainPlanTap",
-                    "sourceTrackId=%d sourceSlot=%d targetTrackId=%d targetSlot=%d enabled=1 gain=%.6f preFader=%d feedsSidechainOnly=%d",
-                    sourceTrackId, sourceSlot, targetTrackId, targetSlot,
-                    scPlan.tapGain[k], scPlan.tapPreFader[k] ? 1 : 0,
-                    (sourceSlot >= 0 && sourceSlot < xleth::SidechainPlan::kMaxSlots && scPlan.feedsSidechainOnly[sourceSlot]) ? 1 : 0);
-            }
-        }
 
         // Clear the key buffers for the target slots that will receive a key so
         // accumulation starts from silence (no per-route heap churn — fixed,
@@ -5064,12 +4971,6 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                 if (deliverKey)
                 {
                     const auto& key = sidechainBuffers_[i];
-                    if (sidechainDiagBlock)
-                    {
-                        xleth::sidechain_diag::appendf("MixEngine", "deliverSidechainKeyToChain",
-                            "targetTrackId=%d targetSlot=%d sidechainPeak=%.8f sidechainRms=%.8f forwardedToChain=1 chainLockAvailable=1",
-                            track->id, i, bufferPeak(key, numSamples), bufferRms(key, numSamples));
-                    }
                     chainIt->second->setSidechainKeyBuffer(
                         key.getReadPointer(0),
                         key.getNumChannels() > 1 ? key.getReadPointer(1)
@@ -5119,19 +5020,6 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                 const int nCh = std::min(key.getNumChannels(), trackBuffers_[i].getNumChannels());
                 for (int ch = 0; ch < nCh; ++ch)
                     key.addFrom(ch, 0, trackBuffers_[i], ch, 0, numSamples, scPlan.tapGain[k]);
-                if (sidechainDiagBlock)
-                {
-                    const int targetSlot = scPlan.tapTargetSlot[k];
-                    const auto* targetTrack = (targetSlot >= 0 && targetSlot < numTrackSlots)
-                        ? trackSlots[targetSlot].info : nullptr;
-                    xleth::sidechain_diag::appendf("MixEngine", "accumulateSidechainKey",
-                        "tapPoint=preFader sourceTrackId=%d sourceSlot=%d targetTrackId=%d targetSlot=%d sourcePeak=%.8f sourceRms=%.8f keyPeakAfter=%.8f keyRmsAfter=%.8f audible=%d feedsSidechainOnly=%d muted=%d visualOnly=%d solo=%d",
-                        track->id, i, targetTrack ? targetTrack->id : -1, targetSlot,
-                        bufferPeak(trackBuffers_[i], numSamples), bufferRms(trackBuffers_[i], numSamples),
-                        bufferPeak(key, numSamples), bufferRms(key, numSamples),
-                        audible ? 1 : 0, feedsKeyOnly ? 1 : 0,
-                        track->muted ? 1 : 0, track->visualOnly ? 1 : 0, track->solo ? 1 : 0);
-                }
             }
         }
 
@@ -5206,19 +5094,6 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                 const int nCh = std::min(key.getNumChannels(), trackBuffers_[i].getNumChannels());
                 for (int ch = 0; ch < nCh; ++ch)
                     key.addFrom(ch, 0, trackBuffers_[i], ch, 0, numSamples, scPlan.tapGain[k]);
-                if (sidechainDiagBlock)
-                {
-                    const int targetSlot = scPlan.tapTargetSlot[k];
-                    const auto* targetTrack = (targetSlot >= 0 && targetSlot < numTrackSlots)
-                        ? trackSlots[targetSlot].info : nullptr;
-                    xleth::sidechain_diag::appendf("MixEngine", "accumulateSidechainKey",
-                        "tapPoint=postFader sourceTrackId=%d sourceSlot=%d targetTrackId=%d targetSlot=%d sourcePeak=%.8f sourceRms=%.8f keyPeakAfter=%.8f keyRmsAfter=%.8f audible=%d feedsSidechainOnly=%d muted=%d visualOnly=%d solo=%d",
-                        track->id, i, targetTrack ? targetTrack->id : -1, targetSlot,
-                        bufferPeak(trackBuffers_[i], numSamples), bufferRms(trackBuffers_[i], numSamples),
-                        bufferPeak(key, numSamples), bufferRms(key, numSamples),
-                        audible ? 1 : 0, feedsKeyOnly ? 1 : 0,
-                        track->muted ? 1 : 0, track->visualOnly ? 1 : 0, track->solo ? 1 : 0);
-                }
             }
         }
 

@@ -82,11 +82,6 @@ window.xleth = ({
   // absolute filesystem path synchronously via webUtils.
   getDroppedFilePath: (file) => webUtils.getPathForFile(file),
 
-  diagnostics: {
-    sidechain: (subsystem, eventName, fields) =>
-      invoke('xleth:diag:sidechain', subsystem, eventName, fields),
-  },
-
   // ── Legacy flat API (Phase 0 backward compat) ─────────────────────────────
   play:               ()      => invoke('xleth:play'),
   stop:               ()      => invoke('xleth:stop'),
