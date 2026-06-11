@@ -1310,9 +1310,10 @@ deferred. Old projects load and sound bit-identical by default.
   identical to before until a route enables it — **no other stock effect is ever sidechain-capable.**
 - **`sc_external` parameter (default 0):** new discrete APVTS param on the compressor
   (`AudioParameterFloat` {0,1,1}, default 0). `0` = legacy internal detector (the main signal is its
-  own key); `1` = read the external key from input bus 1. Added additively to `createLayout`, the
-  `StockParameterCatalog` compressor table (group "Sidechain"), and `getParametersAsJSON`. Old
-  projects deserialize with `sc_external = 0` → identical DSP.
+  own key); `1` = read the external key from input bus 1. Added additively to `createLayout`. Old
+  projects deserialize with `sc_external = 0` → identical DSP. The parameter is accessible through
+  `buildGraphEffectParameterDescriptors` via APVTS enumeration (`paramOwner.getParameters()`); see
+  the **5A-r1 note** below for the `StockParameterCatalog` status.
 - **No-key behavior when `sc_external=1` (deliberate, DAW-standard):** the detector uses **silence**
   as the key whenever external mode is requested but no live key bus is connected (no route targets
   the instance, route disabled/removed, or muted source). It therefore applies **zero** gain
@@ -1365,7 +1366,6 @@ deferred. Old projects load and sound bit-identical by default.
   track-level targets → Prompt 6; parallel sends → later. Key-path PDC remains v1 best-effort.
 - **Files added/modified:** `engine/src/audio/XlethEffectBase.h` (optional SC bus + capability/enable
   API), `engine/src/audio/XlethCompressorEffect.h` (SC bus, `sc_external`, external detector path),
-  `engine/src/audio/StockParameterCatalog.cpp` (`sc_external` descriptor),
   `engine/src/audio/AudioGraph.{h,cpp}` (`applySidechainTargetInstances`),
   `engine/src/audio/EffectChainManager.{h,cpp}` (delegation),
   `engine/src/audio/MixEngine.{h,cpp}` (`syncSidechainTargetBuses`),
@@ -1373,3 +1373,32 @@ deferred. Old projects load and sound bit-identical by default.
   `engine/test/test_stock_compressor_sidechain.cpp` (new), `engine/CMakeLists.txt`
   (`test_stock_compressor_sidechain` target), and this audit. No bridge/IPC/renderer/VST/
   FX-Graph-graphState/`GuardedPluginWrapper`/export/output-routing-semantics code was changed.
+
+### 5A-r1 — `StockParameterCatalog` status and checkpoint reproducibility (2026-06-11)
+
+**Finding:** `engine/src/audio/StockParameterCatalog.{cpp,h}` are **pre-existing untracked files**
+that are not in any `CMakeLists.txt` target and are not `#include`d by any compiled engine or
+bridge source. The `sc_external` descriptor entry was added to the working-tree
+`StockParameterCatalog.cpp` in the 5A session, but:
+
+1. The files are not compiled into any binary — `StockParameterCatalog.cpp` is absent from all
+   `target_sources()` lists; no `file(GLOB …)` exists in `engine/CMakeLists.txt`.
+2. No compiled file includes `StockParameterCatalog.h`. The only `#include` of it is the `.cpp`'s
+   own self-include.
+3. The catalog calls `effect.getAPVTSForCatalog()` — a method that does **not exist** in the
+   committed `XlethEffectBase.h`. The catalog file would fail to compile if added to CMakeLists
+   today.
+4. The `sc_external` APVTS parameter is already fully exposed through the committed code path:
+   `buildGraphEffectParameterDescriptors` (`GraphEffectParameters.cpp`) enumerates
+   `paramOwner.getParameters()` — the APVTS parameter list — and requires no catalog involvement.
+
+**Conclusion:** The committed `b5fdcd3` state is **fully reproducible from a clean checkout.** The
+`sc_external` parameter is accessible via APVTS enumeration; no catalog change is required for
+5A. The catalog files remain intentionally untracked — they are in-progress work for a future
+prompt that will wire up modulation-target metadata (the catalog is the correct future home for
+`sc_external`'s group/label metadata once `getAPVTSForCatalog` is added to `XlethEffectBase`).
+
+**5A-r1 test verification (all from clean build, Debug config, same machines as 5A):**
+`test_stock_compressor_sidechain` 22/22, `test_graph_effect_parameters` 62/62,
+`test_chain_effect_identity` 51/51, `test_project` 98/98, `test_undo` 84/84 — all pass without
+any catalog file in the build.
