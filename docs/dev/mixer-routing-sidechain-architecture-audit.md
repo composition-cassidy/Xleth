@@ -1402,3 +1402,40 @@ prompt that will wire up modulation-target metadata (the catalog is the correct 
 `test_stock_compressor_sidechain` 22/22, `test_graph_effect_parameters` 62/62,
 `test_chain_effect_identity` 51/51, `test_project` 98/98, `test_undo` 84/84 — all pass without
 any catalog file in the build.
+
+## Prompt 5B Status (chain-mode stock compressor sidechain UI - 2026-06-11)
+
+Prompt 5B adds the first renderer UI for the Prompt-4B route APIs and Prompt-5A compressor
+parameter. It is intentionally chain-mode and stock-compressor-only; no engine DSP, bridge IPC,
+VST hosting, FX Graph, sends, graphState, or `StockParameterCatalog.{cpp,h}` files were changed.
+
+- **Compressor module controls:** normal Mixer Chain compressor rows now render a compact
+  `External Sidechain` toggle and `Source` selector only when the row is a stock `compressor`
+  with a stable `effectInstanceId` on a normal track. VSTs, master-chain effects, pending/missing/
+  crashed rows, OTT/limiter/EQ/other stock effects, and FX Graph nodes do not get active
+  sidechain controls.
+- **`sc_external` wiring:** the toggle writes the existing chain-mode stock parameter path,
+  `window.xleth.audio.setEffectParameter(trackId, nodeId, "sc_external", 1|0)`. The UI also reads
+  `getEffectParameters()` when available so save/load state and no-source external-key state can be
+  reflected without new bridge APIs.
+- **Route creation/removal:** selecting a source creates one real sidechain route on the source
+  track via `window.xleth.timeline.addSidechainRoute(sourceTrackId, { targetTrackId,
+  targetEffectInstanceId, gain: 1.0, preFader: false, enabled: true })`. Selecting `None` removes
+  the existing route targeting that compressor instance. Switching sources removes the old route
+  before adding the new one, so the UI remains one-source-per-compressor even though the backend can
+  sum multiple sidechain routes.
+- **Disable behavior:** turning `External Sidechain` off writes `sc_external=0` and removes the
+  route. Prompt 5B deliberately does not keep hidden disabled routes in the early UI; selecting a
+  source later creates a fresh route id.
+- **Routing state/status:** `mixerStore` now mirrors `timeline_getRouting()` sidechain route
+  snapshots alongside output routes and can find a route by `(targetTrackId, targetEffectInstanceId)`.
+  Status text is kept compact: `No source`, `Keyed by: <track>`, `Route stale`, or mapped rejection
+  copy such as `Would create feedback loop` / `Sidechain route already exists`. Stale route status
+  from the engine is preserved for display.
+- **Safety/rollback:** obvious local rejects (self sidechain, unknown source, cycle, missing
+  `effectInstanceId`, master target) avoid route mutation and show readable copy. Backend add/remove
+  failures refetch routing and record readable UI errors rather than exposing raw reason strings as
+  the only user-facing text.
+- **Deferred:** multi-source sidechain remains backend-only/deferred in the UI; VST sidechain,
+  OTT/limiter sidechain UI, FX Graph Sidechain Input / empty `targetEffectInstanceId` targets,
+  sends, routing matrix, and sidechain gain/pre-fader controls all remain deferred.

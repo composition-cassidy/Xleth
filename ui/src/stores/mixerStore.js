@@ -3,6 +3,7 @@ import { timelineEvents } from '../timelineEvents.js'
 import { createPeakEntry, prunePeakSnapshotTracks } from '../components/mixer/meterTelemetry.js'
 
 export const MASTER_OUTPUT_TARGET_ID = -1
+export const COMPRESSOR_EXTERNAL_SIDECHAIN_PARAM_ID = 'sc_external'
 
 export function normalizeOutputTargetId(value) {
   const n = Number(value)
@@ -31,6 +32,36 @@ export function normalizeOutputRoutesFromRoutingSnapshot(snapshot) {
   return outputRoutes
 }
 
+export function normalizeSidechainRoutesFromRoutingSnapshot(snapshot) {
+  const routes = []
+  if (!Array.isArray(snapshot)) return routes
+
+  for (const entry of snapshot) {
+    const sourceTrackId = normalizeOutputTargetId(entry?.trackId)
+    if (sourceTrackId === MASTER_OUTPUT_TARGET_ID) continue
+    const rawRoutes = Array.isArray(entry?.sidechainRoutes) ? entry.sidechainRoutes : []
+    for (const route of rawRoutes) {
+      const routeId = typeof route?.routeId === 'string' ? route.routeId : ''
+      const targetEffectInstanceId =
+        typeof route?.targetEffectInstanceId === 'string' ? route.targetEffectInstanceId : ''
+      if (!routeId || !targetEffectInstanceId) continue
+      routes.push({
+        routeId,
+        sourceTrackId: normalizeOutputTargetId(route?.sourceTrackId ?? sourceTrackId),
+        targetTrackId: normalizeOutputTargetId(route?.targetTrackId),
+        targetEffectInstanceId,
+        gain: Number.isFinite(route?.gain) ? route.gain : 1,
+        preFader: route?.preFader === true,
+        enabled: route?.enabled !== false,
+        status: typeof route?.status === 'string' && route.status.length > 0
+          ? route.status
+          : 'ok',
+      })
+    }
+  }
+  return routes
+}
+
 export function wouldCreateOutputRouteCycle(routesByTrackId, sourceTrackId, targetTrackId) {
   const sourceId = normalizeOutputTargetId(sourceTrackId)
   let current = normalizeOutputTargetId(targetTrackId)
@@ -44,6 +75,65 @@ export function wouldCreateOutputRouteCycle(routesByTrackId, sourceTrackId, targ
     const next = routesByTrackId?.[current]
     if (next == null) return false
     current = normalizeOutputTargetId(next)
+  }
+  return false
+}
+
+function buildRoutingAdjacency(outputRoutes, sidechainRoutes, candidateRoute = null) {
+  const adjacency = new Map()
+  const addEdge = (source, target) => {
+    const sourceId = normalizeOutputTargetId(source)
+    const targetId = normalizeOutputTargetId(target)
+    if (sourceId === MASTER_OUTPUT_TARGET_ID || targetId === MASTER_OUTPUT_TARGET_ID) return
+    if (!adjacency.has(sourceId)) adjacency.set(sourceId, new Set())
+    adjacency.get(sourceId).add(targetId)
+  }
+
+  for (const [sourceTrackId, targetTrackId] of Object.entries(outputRoutes ?? {})) {
+    addEdge(sourceTrackId, targetTrackId)
+  }
+
+  const routes = Array.isArray(sidechainRoutes) ? sidechainRoutes : []
+  for (const route of routes) {
+    if (!route || route.enabled === false) continue
+    addEdge(route.sourceTrackId, route.targetTrackId)
+  }
+
+  if (candidateRoute) {
+    addEdge(candidateRoute.sourceTrackId, candidateRoute.targetTrackId)
+  }
+
+  return adjacency
+}
+
+export function wouldCreateSidechainRouteCycle(
+  outputRoutes,
+  sidechainRoutes,
+  sourceTrackId,
+  targetTrackId,
+) {
+  const sourceId = normalizeOutputTargetId(sourceTrackId)
+  const targetId = normalizeOutputTargetId(targetTrackId)
+  if (sourceId === MASTER_OUTPUT_TARGET_ID || targetId === MASTER_OUTPUT_TARGET_ID) return false
+  if (sourceId === targetId) return true
+
+  const adjacency = buildRoutingAdjacency(outputRoutes, sidechainRoutes, {
+    sourceTrackId: sourceId,
+    targetTrackId: targetId,
+  })
+  const visited = new Set()
+  const stack = [targetId]
+
+  while (stack.length > 0) {
+    const current = stack.pop()
+    if (current === sourceId) return true
+    if (visited.has(current)) continue
+    visited.add(current)
+    const nextTargets = adjacency.get(current)
+    if (!nextTargets) continue
+    for (const next of nextTargets) {
+      if (!visited.has(next)) stack.push(next)
+    }
   }
   return false
 }
@@ -65,8 +155,81 @@ export function mapOutputRouteError(reason) {
   }
 }
 
+export function mapSidechainRouteError(reason) {
+  switch (reason) {
+    case 'cycle':
+      return 'Would create feedback loop'
+    case 'self_sidechain':
+      return 'Cannot sidechain a track into itself'
+    case 'unknown_source_track':
+      return 'Source track no longer exists'
+    case 'unknown_target_track':
+      return 'Target track no longer exists'
+    case 'empty_effect_instance':
+      return 'Effect is missing a stable instance ID'
+    case 'unknown_effect_instance':
+      return 'Target effect no longer exists'
+    case 'master_as_source':
+    case 'master_as_target':
+      return 'Master sidechain is not supported yet'
+    case 'invalid_gain':
+      return 'Invalid sidechain gain'
+    case 'duplicate_route':
+      return 'Sidechain route already exists'
+    default:
+      return 'Route rejected'
+  }
+}
+
+function sidechainEffectKey(targetTrackId, effectInstanceId) {
+  return `${normalizeOutputTargetId(targetTrackId)}::${effectInstanceId ?? ''}`
+}
+
+export function findSidechainRouteForEffect(sidechainRoutes, targetTrackId, effectInstanceId) {
+  if (typeof effectInstanceId !== 'string' || effectInstanceId.length === 0) return null
+  const targetId = normalizeOutputTargetId(targetTrackId)
+  const routes = Array.isArray(sidechainRoutes) ? sidechainRoutes : []
+  const matches = routes.filter((route) =>
+    normalizeOutputTargetId(route?.targetTrackId) === targetId &&
+    route?.targetEffectInstanceId === effectInstanceId)
+  return matches.find((route) => route.enabled !== false) ?? matches[0] ?? null
+}
+
 function isAudioMixerTarget(track) {
   return Boolean(track) && !track.visualOnly && track.id !== MASTER_OUTPUT_TARGET_ID
+}
+
+async function setCompressorExternalSidechainParam({
+  targetTrackId,
+  targetNodeId,
+  enabled,
+  options = {},
+}) {
+  const audio = options.audio ?? globalThis.window?.xleth?.audio
+  const setEffectParameter = options.setEffectParameter ?? audio?.setEffectParameter
+  if (typeof setEffectParameter !== 'function') {
+    return { ok: false, reason: 'engine_unavailable', error: 'Route rejected' }
+  }
+  if (!Number.isInteger(targetNodeId) || targetNodeId < 0) {
+    return { ok: false, reason: 'unknown_effect_instance', error: mapSidechainRouteError('unknown_effect_instance') }
+  }
+
+  try {
+    const result = await setEffectParameter(
+      normalizeOutputTargetId(targetTrackId),
+      targetNodeId,
+      COMPRESSOR_EXTERNAL_SIDECHAIN_PARAM_ID,
+      enabled ? 1 : 0,
+    )
+    if (result === false || result?.ok === false) {
+      const reason = result?.reason || 'engine_error'
+      return { ok: false, reason, error: mapSidechainRouteError(reason) }
+    }
+    return { ok: true }
+  } catch (e) {
+    ;(options.warn ?? console.warn)?.('[mixerStore] compressor sidechain parameter set failed:', e?.message ?? e)
+    return { ok: false, reason: 'ipc_error', error: 'Route rejected' }
+  }
 }
 
 // ── Peak snapshot (non-reactive, mutated in-place) ──────────────────────────
@@ -81,7 +244,9 @@ const useMixerStore = create((set, get) => ({
   tracks: {},       // { [trackId]: { id, name, volume, pan, spread, muted, solo, visualOnly, type } }
   trackOrder: [],   // [id, ...]
   outputRoutes: {}, // { [sourceTrackId]: targetTrackId }, -1 = Master
+  sidechainRoutes: [], // [{ routeId, sourceTrackId, targetTrackId, targetEffectInstanceId, ... }]
   routingError: null,
+  sidechainRoutingErrors: {}, // { [`${targetTrackId}::${effectInstanceId}`]: message }
   master: { volume: 1.0 },
   visible: false,
 
@@ -200,6 +365,26 @@ const useMixerStore = create((set, get) => ({
     }, 0)
   },
 
+  getSidechainRouteForEffect: (targetTrackId, effectInstanceId) =>
+    findSidechainRouteForEffect(get().sidechainRoutes, targetTrackId, effectInstanceId),
+
+  getSidechainErrorForEffect: (targetTrackId, effectInstanceId) =>
+    get().sidechainRoutingErrors[sidechainEffectKey(targetTrackId, effectInstanceId)] ?? null,
+
+  getEligibleSidechainSources: (targetTrackId) => {
+    const targetId = normalizeOutputTargetId(targetTrackId)
+    const { tracks, trackOrder, outputRoutes, sidechainRoutes } = get()
+    const sources = []
+    for (const id of trackOrder) {
+      const source = tracks[id]
+      if (!source || id === targetId) continue
+      if (!isAudioMixerTarget(source)) continue
+      if (wouldCreateSidechainRouteCycle(outputRoutes, sidechainRoutes, id, targetId)) continue
+      sources.push({ sourceTrackId: id, name: source.name || `Track ${id}` })
+    }
+    return sources
+  },
+
   getEligibleOutputTargets: (trackId) => {
     const sourceId = normalizeOutputTargetId(trackId)
     const { tracks, trackOrder, outputRoutes } = get()
@@ -232,14 +417,15 @@ const useMixerStore = create((set, get) => ({
       const routing = await window.xleth?.timeline?.getRouting?.()
       if (!Array.isArray(routing)) return null
       const fetchedRoutes = normalizeOutputRoutesFromRoutingSnapshot(routing)
+      const sidechainRoutes = normalizeSidechainRoutesFromRoutingSnapshot(routing)
       set(s => {
         const outputRoutes = {}
         for (const id of s.trackOrder) {
           outputRoutes[id] = fetchedRoutes[id] ?? MASTER_OUTPUT_TARGET_ID
         }
-        return { outputRoutes, routingError: null }
+        return { outputRoutes, sidechainRoutes, routingError: null }
       })
-      return fetchedRoutes
+      return { outputRoutes: fetchedRoutes, sidechainRoutes }
     } catch (e) {
       console.warn('[mixerStore] refreshRouting failed:', e.message)
       return null
@@ -295,6 +481,232 @@ const useMixerStore = create((set, get) => ({
     }
   },
 
+  removeSidechainRouteForEffect: async ({ targetTrackId, effectInstanceId } = {}, options = {}) => {
+    const targetId = normalizeOutputTargetId(targetTrackId)
+    const route = findSidechainRouteForEffect(get().sidechainRoutes, targetId, effectInstanceId)
+    const errorKey = sidechainEffectKey(targetId, effectInstanceId)
+    if (!route) {
+      set(s => {
+        const nextErrors = { ...s.sidechainRoutingErrors }
+        delete nextErrors[errorKey]
+        return { sidechainRoutingErrors: nextErrors }
+      })
+      return { ok: true, removed: false }
+    }
+
+    const timeline = options.timeline ?? globalThis.window?.xleth?.timeline
+    const removeRoute = options.removeSidechainRoute ?? timeline?.removeSidechainRoute
+    if (typeof removeRoute !== 'function') {
+      const error = mapSidechainRouteError('engine_unavailable')
+      set(s => ({
+        sidechainRoutingErrors: { ...s.sidechainRoutingErrors, [errorKey]: error },
+      }))
+      return { ok: false, reason: 'engine_unavailable', error }
+    }
+
+    try {
+      const result = await removeRoute(route.sourceTrackId, route.routeId)
+      if (result === false || result?.ok === false) {
+        const reason = result?.reason || 'rejected'
+        const error = mapSidechainRouteError(reason)
+        await get().refreshRouting()
+        set(s => ({
+          sidechainRoutingErrors: { ...s.sidechainRoutingErrors, [errorKey]: error },
+        }))
+        return { ok: false, reason, error }
+      }
+      await get().refreshRouting()
+      set(s => {
+        const nextErrors = { ...s.sidechainRoutingErrors }
+        delete nextErrors[errorKey]
+        return { sidechainRoutingErrors: nextErrors }
+      })
+      timelineEvents.dispatchEvent(new Event('timeline-routing-changed'))
+      return { ok: true, removed: true }
+    } catch (e) {
+      ;(options.warn ?? console.warn)?.('[mixerStore] removeSidechainRouteForEffect failed:', e?.message ?? e)
+      const error = 'Route rejected'
+      await get().refreshRouting()
+      set(s => ({
+        sidechainRoutingErrors: { ...s.sidechainRoutingErrors, [errorKey]: error },
+      }))
+      return { ok: false, reason: 'ipc_error', error }
+    }
+  },
+
+  setCompressorExternalSidechain: async ({
+    targetTrackId,
+    targetNodeId,
+    effectInstanceId,
+    enabled,
+    sourceTrackId = null,
+  } = {}, options = {}) => {
+    const targetId = normalizeOutputTargetId(targetTrackId)
+    const sourceId = sourceTrackId == null || sourceTrackId === ''
+      ? null
+      : normalizeOutputTargetId(sourceTrackId)
+    const errorKey = sidechainEffectKey(targetId, effectInstanceId)
+
+    const setError = (error) => set(s => ({
+      sidechainRoutingErrors: { ...s.sidechainRoutingErrors, [errorKey]: error },
+    }))
+    const clearError = () => set(s => {
+      const nextErrors = { ...s.sidechainRoutingErrors }
+      delete nextErrors[errorKey]
+      return { sidechainRoutingErrors: nextErrors }
+    })
+
+    if (targetId === MASTER_OUTPUT_TARGET_ID) {
+      const error = mapSidechainRouteError('master_as_target')
+      setError(error)
+      return { ok: false, reason: 'master_as_target', error, externalEnabled: false }
+    }
+    if (typeof effectInstanceId !== 'string' || effectInstanceId.length === 0) {
+      const reason = 'empty_effect_instance'
+      const error = mapSidechainRouteError(reason)
+      setError(error)
+      return { ok: false, reason, error, externalEnabled: false }
+    }
+    if (enabled === true && sourceId != null) {
+      if (sourceId === targetId) {
+        const reason = 'self_sidechain'
+        const error = mapSidechainRouteError(reason)
+        setError(error)
+        return { ok: false, reason, error, externalEnabled: false }
+      }
+      if (!get().tracks[sourceId]) {
+        const reason = 'unknown_source_track'
+        const error = mapSidechainRouteError(reason)
+        setError(error)
+        return { ok: false, reason, error, externalEnabled: false }
+      }
+      if (wouldCreateSidechainRouteCycle(get().outputRoutes, get().sidechainRoutes, sourceId, targetId)) {
+        const reason = 'cycle'
+        const error = mapSidechainRouteError(reason)
+        setError(error)
+        return { ok: false, reason, error, externalEnabled: false }
+      }
+    }
+
+    const previousRoute = findSidechainRouteForEffect(get().sidechainRoutes, targetId, effectInstanceId)
+    const paramResult = await setCompressorExternalSidechainParam({
+      targetTrackId: targetId,
+      targetNodeId,
+      enabled: enabled === true,
+      options,
+    })
+    if (!paramResult.ok) {
+      setError(paramResult.error)
+      return {
+        ok: false,
+        reason: paramResult.reason,
+        error: paramResult.error,
+        externalEnabled: !enabled,
+      }
+    }
+
+    if (enabled !== true) {
+      const removeResult = await get().removeSidechainRouteForEffect({
+        targetTrackId: targetId,
+        effectInstanceId,
+      }, options)
+      if (!removeResult.ok) {
+        return { ...removeResult, externalEnabled: false }
+      }
+      clearError()
+      return { ok: true, externalEnabled: false, route: null }
+    }
+
+    if (sourceId == null) {
+      const removeResult = previousRoute
+        ? await get().removeSidechainRouteForEffect({ targetTrackId: targetId, effectInstanceId }, options)
+        : { ok: true }
+      if (!removeResult.ok) {
+        return { ...removeResult, externalEnabled: true }
+      }
+      clearError()
+      return { ok: true, externalEnabled: true, route: null }
+    }
+
+    if (previousRoute?.sourceTrackId === sourceId && previousRoute.enabled !== false) {
+      clearError()
+      return { ok: true, externalEnabled: true, route: previousRoute }
+    }
+
+    if (previousRoute) {
+      const removeResult = await get().removeSidechainRouteForEffect({
+        targetTrackId: targetId,
+        effectInstanceId,
+      }, options)
+      if (!removeResult.ok) {
+        return { ...removeResult, externalEnabled: true }
+      }
+    }
+
+    const timeline = options.timeline ?? globalThis.window?.xleth?.timeline
+    const addRoute = options.addSidechainRoute ?? timeline?.addSidechainRoute
+    if (typeof addRoute !== 'function') {
+      const error = mapSidechainRouteError('engine_unavailable')
+      setError(error)
+      return { ok: false, reason: 'engine_unavailable', error, externalEnabled: true }
+    }
+
+    try {
+      const payload = {
+        targetTrackId: targetId,
+        targetEffectInstanceId: effectInstanceId,
+        gain: 1.0,
+        preFader: false,
+        enabled: true,
+      }
+      const result = await addRoute(sourceId, payload)
+      if (result === false || result?.ok === false) {
+        const reason = result?.reason || 'rejected'
+        const error = mapSidechainRouteError(reason)
+        if (previousRoute) {
+          try {
+            await addRoute(previousRoute.sourceTrackId, {
+              targetTrackId: previousRoute.targetTrackId,
+              targetEffectInstanceId: previousRoute.targetEffectInstanceId,
+              gain: previousRoute.gain,
+              preFader: previousRoute.preFader,
+              enabled: previousRoute.enabled,
+            })
+          } catch {}
+        }
+        await get().refreshRouting()
+        setError(error)
+        return { ok: false, reason, error, externalEnabled: true }
+      }
+
+      await get().refreshRouting()
+      clearError()
+      timelineEvents.dispatchEvent(new Event('timeline-routing-changed'))
+      return {
+        ok: true,
+        externalEnabled: true,
+        routeId: result?.routeId,
+      }
+    } catch (e) {
+      ;(options.warn ?? console.warn)?.('[mixerStore] setCompressorExternalSidechain failed:', e?.message ?? e)
+      if (previousRoute) {
+        try {
+          await addRoute(previousRoute.sourceTrackId, {
+            targetTrackId: previousRoute.targetTrackId,
+            targetEffectInstanceId: previousRoute.targetEffectInstanceId,
+            gain: previousRoute.gain,
+            preFader: previousRoute.preFader,
+            enabled: previousRoute.enabled,
+          })
+        } catch {}
+      }
+      const error = 'Route rejected'
+      await get().refreshRouting()
+      setError(error)
+      return { ok: false, reason: 'ipc_error', error, externalEnabled: true }
+    }
+  },
+
   // One-way sync from timeline fetches — only muted/solo/name/order/routes, NOT vol/pan/spread
   syncFromTimeline: (list) => {
     if (!Array.isArray(list)) return
@@ -327,7 +739,16 @@ const useMixerStore = create((set, get) => ({
         }
       }
       prunePeakSnapshotTracks(peaksSnapshot, trackOrder)
-      return { tracks, trackOrder, outputRoutes, routingError: null }
+      const nextSidechainRoutes = s.sidechainRoutes.filter((route) =>
+        trackOrder.includes(Number(route.sourceTrackId)) &&
+        trackOrder.includes(Number(route.targetTrackId)))
+      return {
+        tracks,
+        trackOrder,
+        outputRoutes,
+        sidechainRoutes: nextSidechainRoutes,
+        routingError: null,
+      }
     })
   },
 }))
