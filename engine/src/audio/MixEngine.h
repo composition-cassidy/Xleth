@@ -420,6 +420,16 @@ public:
     // NEVER call from processBlock (audio thread) — no locks on audio thread.
     void syncTrackSlotsFromTimeline(bool snapVolumeSmoothers = false);
 
+    // Main-thread (Prompt 5A): enable the sidechain input bus on every stock
+    // compressor instance that an enabled sidechain route currently targets, and
+    // disable it on every other capable instance. This makes the targeted
+    // compressor "sidechain-capable" so the existing 4C+4D key transport wires
+    // the SidechainSourceProcessor to its second input bus — and ONLY to that
+    // instance, so a route targeting another effect on the same track never feeds
+    // it. Idempotent and allocation-light: chains whose target set is unchanged
+    // do no work. Call after any sidechain-route or chain mutation and after load.
+    void syncSidechainTargetBuses();
+
     // Rebuild the trackId → slot mapping from the current track list.
     // Mapping-only primitive used by syncTrackSlotsFromTimeline().
     // Must be called from the main/message thread whenever tracks are

@@ -5,6 +5,7 @@
 
 #include <memory>
 #include <cstdint>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -226,6 +227,12 @@ public:
     // around processBlock — under the chains lock, same thread, same block.
     void setSidechainKeyBuffer(const float* left, const float* right, int numSamples) noexcept;
     void clearSidechainKeyBuffer() noexcept;
+
+    // Main-thread (Prompt 5A): enable the sidechain input bus on every capable
+    // stock effect (compressor) whose effectInstanceId is in `enabledInstanceIds`
+    // and disable it on all others, re-preparing the chain when anything changes.
+    // Returns true iff a layout changed. Idempotent.
+    bool applySidechainTargetInstances(const std::set<std::string>& enabledInstanceIds);
 
     // Reset all processors in the chain. Intended for transport jumps.
     void resetProcessors();

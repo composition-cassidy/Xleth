@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -265,6 +266,15 @@ public:
     // chain processBlock — under the chains lock, same thread, same block.
     void setSidechainKey(const float* left, const float* right, int numSamples) noexcept;
     void clearSidechainKey() noexcept;
+
+    // Main-thread (Prompt 5A): enable the sidechain input bus on every
+    // external-sidechain-capable stock effect (today only the compressor) whose
+    // stable effectInstanceId appears in `enabledInstanceIds`, and disable it on
+    // all others. When any bus layout changes, the graph is re-prepared and the
+    // sidechain infrastructure rewired so the newly-capable node receives the
+    // key. Returns true iff any layout changed. Idempotent — a no-op when the
+    // desired set already matches the live bus states (no re-prepare churn).
+    bool applySidechainTargetInstances(const std::set<std::string>& enabledInstanceIds);
 
 private:
     // ── Node data ───────────────────────────────────────────────────────

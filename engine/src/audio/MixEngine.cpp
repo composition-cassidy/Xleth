@@ -23,7 +23,9 @@
 #include <limits>
 #include <cstdarg>
 #include <cstdio>
+#include <set>
 #include <thread>
+#include <unordered_map>
 
 namespace {
 
@@ -2265,6 +2267,42 @@ void MixEngine::syncTrackSlotsFromTimeline(bool snapVolumeSmoothers)
 
         if (snapVolumeSmoothers)
             volumeSmoothed_[i].setCurrentAndTargetValue(t->volume);
+    }
+}
+
+void MixEngine::syncSidechainTargetBuses()
+{
+    if (timeline_ == nullptr) return;
+
+    // Group, per target track, the stable effectInstanceIds that an ENABLED
+    // sidechain route currently targets. A disabled route leaves the bus off
+    // (no key would flow anyway); a track-level (empty) target is deferred to a
+    // later prompt and ignored here. Source mute/visual-only is irrelevant to
+    // *enabling* the bus — that only governs whether a key flows at DSP time.
+    std::unordered_map<int, std::set<std::string>> targetsByTrack;
+    for (const auto* tr : timeline_->getAllTracks())
+    {
+        if (tr == nullptr) continue;
+        for (const auto& route : tr->sidechainRoutes)
+        {
+            if (!route.enabled) continue;
+            if (route.targetEffectInstanceId.empty()) continue;
+            targetsByTrack[route.targetTrackId].insert(route.targetEffectInstanceId);
+        }
+    }
+
+    // Apply to every initialized chain — including chains with no incoming routes
+    // (empty set), so a removed/disabled route deterministically disables the bus.
+    // Structural (re-prepare) work: hold the chains lock so the audio thread is
+    // never mid-block for a chain whose layout is changing.
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+    static const std::set<std::string> kEmptyTargets;
+    for (auto& [trackId, chain] : effectChains_)
+    {
+        if (!chain || !chain->isInitialized()) continue;
+        auto it = targetsByTrack.find(trackId);
+        chain->applySidechainTargetInstances(
+            it != targetsByTrack.end() ? it->second : kEmptyTargets);
     }
 }
 

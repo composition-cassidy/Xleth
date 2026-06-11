@@ -2170,6 +2170,39 @@ void AudioGraph::clearSidechainKey() noexcept
         proc->clearExternalBuffer();
 }
 
+bool AudioGraph::applySidechainTargetInstances(
+    const std::set<std::string>& enabledInstanceIds)
+{
+    if (!graph_) return false;
+
+    // Toggle the sidechain input bus on every external-sidechain-capable stock
+    // effect to match the desired set. setSidechainInputEnabled() returns true
+    // only when the layout actually changes, so unchanged chains do no work.
+    bool changed = false;
+    for (auto& [uid, gn] : nodes_)
+    {
+        auto* node = graph_->getNodeForId(gn.apgNodeId);
+        if (!node) continue;
+        auto* eff = dynamic_cast<XlethEffectBase*>(node->getProcessor());
+        if (!eff || !eff->supportsExternalSidechain()) continue;
+
+        const bool want = enabledInstanceIds.count(gn.effectInstanceId) > 0;
+        if (eff->setSidechainInputEnabled(want))
+            changed = true;
+    }
+
+    if (changed)
+    {
+        // The new channel layout is not live until prepareToPlay runs again;
+        // reprepare allocates the bus channels, then rebuildImmediate re-wires
+        // the SidechainSourceProcessor to the now-capable node(s) and recomputes
+        // PDC. Both are main-thread, called by MixEngine under the chains lock.
+        reprepare(sampleRate_, blockSize_);
+        rebuildImmediate();
+    }
+    return changed;
+}
+
 // ─── Linear order ───────────────────────────────────────────────────────────
 
 void AudioGraph::updateLinearOrder()

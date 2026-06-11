@@ -42,12 +42,17 @@ public:
     // passes it here so the APVTS member is initialised in the MIL with *this
     // already pointing to a valid AudioProcessor.  Empty default layout keeps
     // all existing stubs that call XlethEffectBase("pluginId") compiling as-is.
+    // `withSidechainInput` adds a SECOND, optional stereo input bus ("Sidechain")
+    // that is DISABLED by default — so the effect's channel layout, latency, and
+    // graph wiring are byte-identical to a plain stereo effect until the bus is
+    // explicitly enabled (Prompt 5A: only the stock compressor declares it, and
+    // only when a sidechain route targets that exact instance). Every other stock
+    // effect passes `withSidechainInput == false` and is completely unaffected.
     explicit XlethEffectBase(
             const std::string& pluginId,
-            juce::AudioProcessorValueTreeState::ParameterLayout layout = {})
-        : AudioProcessor(BusesProperties()
-              .withInput ("Input",  juce::AudioChannelSet::stereo(), true)
-              .withOutput("Output", juce::AudioChannelSet::stereo(), true))
+            juce::AudioProcessorValueTreeState::ParameterLayout layout = {},
+            bool withSidechainInput = false)
+        : AudioProcessor(makeBusesProperties(withSidechainInput))
         , pluginId_(pluginId)
         , apvts_(*this, nullptr, "State", std::move(layout))
     {}
@@ -63,6 +68,47 @@ public:
     bool isBypassed()  const { return bypassed_.load(std::memory_order_relaxed); }
 
     const std::string& getPluginId() const { return pluginId_; }
+
+    // ── External sidechain capability (Prompt 5A) ───────────────────────────
+    // Internal truth used by the engine to decide which stock effects may have a
+    // sidechain key bus enabled when a route targets them. Only the stock
+    // compressor overrides this; every other stock effect stays false, so they
+    // never receive a second input bus (no behavior change).
+    virtual bool supportsExternalSidechain() const { return false; }
+
+    // True iff this effect declared the optional second input bus at construction.
+    bool hasSidechainInputBus() const { return getBusCount(true) > 1; }
+
+    // True iff the optional sidechain input bus is currently enabled (has > 0
+    // channels). Audio thread may read this; it is only mutated on the main
+    // thread under the chains lock via setSidechainInputEnabled().
+    bool isSidechainInputEnabled() const
+    {
+        const auto* bus = getBusCount(true) > 1 ? getBus(true, 1) : nullptr;
+        return bus != nullptr && bus->isEnabled() && bus->getNumberOfChannels() > 0;
+    }
+
+    // Main-thread only: enable/disable the optional sidechain input bus. Returns
+    // true iff the layout actually changed (so the caller can re-prepare the
+    // graph exactly once). No-op (returns false) for effects without the bus.
+    // The graph MUST be re-prepared after a true return — the new channel layout
+    // is not live until prepareToPlay runs again.
+    bool setSidechainInputEnabled(bool enabled)
+    {
+        if (getBusCount(true) < 2) return false;
+        auto* bus = getBus(true, 1);
+        if (bus == nullptr) return false;
+        const bool cur = bus->isEnabled() && bus->getNumberOfChannels() > 0;
+        if (cur == enabled) return false;
+
+        auto layout = getBusesLayout();
+        if (layout.inputBuses.size() < 2) return false;
+        layout.inputBuses.getReference(1) = enabled
+            ? juce::AudioChannelSet::stereo()
+            : juce::AudioChannelSet::disabled();
+        if (!setBusesLayout(layout)) return false;
+        return true;
+    }
 
     struct RealtimeTimingContext
     {
@@ -448,6 +494,21 @@ protected:
     static double getGlobalBPM() { return sBPM_.load(std::memory_order_relaxed); }
 
 private:
+    // ── Bus construction ──────────────────────────────────────────────────────
+    // All Xleth effects are stereo-in / stereo-out. When `withSidechainInput` is
+    // set, a SECOND stereo input bus ("Sidechain") is declared but left DISABLED
+    // by default, so the realtime layout is identical to a plain stereo effect
+    // until the engine enables it on demand (Prompt 5A).
+    static BusesProperties makeBusesProperties(bool withSidechainInput)
+    {
+        auto props = BusesProperties()
+            .withInput ("Input",  juce::AudioChannelSet::stereo(), true)
+            .withOutput("Output", juce::AudioChannelSet::stereo(), true);
+        if (withSidechainInput)
+            props = props.withInput("Sidechain", juce::AudioChannelSet::stereo(), false);
+        return props;
+    }
+
     // ── Per-parameter smoother state ──────────────────────────────────────────
     struct SmoothedEntry
     {

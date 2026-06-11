@@ -1289,3 +1289,87 @@ stock/VST effects consume the key.
   `engine/test/test_sidechain_runtime.cpp` (new), `engine/CMakeLists.txt`
   (`test_sidechain_runtime` target), and this audit. No bridge/IPC/renderer/stock-effect-DSP/VST/
   FX-Graph-graphState/export code was changed.
+
+## Prompt 5A Status (stock compressor external sidechain — 2026-06-11)
+
+The stock `XlethCompressorEffect` now **consumes** the existing 4C+4D runtime key signal through a
+real JUCE sidechain input bus and produces audible ducking. Nothing else from §5.3–§5.5 changed:
+VST sidechain, OTT/limiter sidechain, sidechain UI, FX Graph Sidechain Input, and sends all remain
+deferred. Old projects load and sound bit-identical by default.
+
+- **Real second input bus on the compressor (§5.3):** `XlethEffectBase` gained an optional
+  third constructor argument `withSidechainInput` that adds a second stereo input bus
+  (`"Sidechain"`) **disabled by default** (`makeBusesProperties`), plus generic helpers
+  `supportsExternalSidechain()` (virtual, default false), `hasSidechainInputBus()`,
+  `isSidechainInputEnabled()`, and main-thread `setSidechainInputEnabled(bool)` (builds a
+  `BusesLayout` and calls `setBusesLayout`, returning true only when the layout actually changed).
+  `XlethCompressorEffect` constructs with `withSidechainInput = true`, overrides
+  `supportsExternalSidechain()` → true and `isBusesLayoutSupported()` (stereo main in/out + a
+  stereo-or-disabled key bus, mirroring the 4C+4D test receiver). Because the bus is disabled at
+  construction, every compressor's realtime layout, latency, PDC, and graph wiring are byte-for-byte
+  identical to before until a route enables it — **no other stock effect is ever sidechain-capable.**
+- **`sc_external` parameter (default 0):** new discrete APVTS param on the compressor
+  (`AudioParameterFloat` {0,1,1}, default 0). `0` = legacy internal detector (the main signal is its
+  own key); `1` = read the external key from input bus 1. Added additively to `createLayout`, the
+  `StockParameterCatalog` compressor table (group "Sidechain"), and `getParametersAsJSON`. Old
+  projects deserialize with `sc_external = 0` → identical DSP.
+- **No-key behavior when `sc_external=1` (deliberate, DAW-standard):** the detector uses **silence**
+  as the key whenever external mode is requested but no live key bus is connected (no route targets
+  the instance, route disabled/removed, or muted source). It therefore applies **zero** gain
+  reduction — external mode **never** compresses from the main signal. (It does not fall back to the
+  internal detector.) Proven by tests C/D/E.
+- **Detector path (§5.3):** `processEffect` now reads the **main bus** via `getBusBuffer(buffer,
+  true, 0)` for all input/output/metering/viz (so the extra key channels are never treated as audio
+  or written to the output), and resolves the key source **once per block** — internal (main), the
+  enabled SC bus, or silence — before the sample loop. No per-sample parameter branch, no per-block
+  heap. With `sc_external=0` the loop is bit-identical to the legacy code (verified: route present
+  vs absent is `maxAbsDiff == 0`).
+- **Per-instance bus enabling (§5.2 wiring, the key 5A glue):** a new main-thread
+  `MixEngine::syncSidechainTargetBuses()` groups, per target track, the effect-instance ids that an
+  **enabled** sidechain route targets, then calls `EffectChainManager::applySidechainTargetInstances`
+  → `AudioGraph::applySidechainTargetInstances`, which enables the SC bus on exactly those
+  external-sidechain-capable nodes (and disables it on all others), re-preparing + rewiring the chain
+  **only when a layout actually changes** (idempotent — no per-call churn). Once enabled, the
+  existing 4C+4D `rebuildSidechainInfrastructure` wires the per-track `SidechainSourceProcessor` to
+  the compressor's bus-1 channels and `MixEngine` delivers the per-target key. A route targeting a
+  **different** instance on the same track leaves this compressor's bus disabled, so it is never fed
+  (verified test G). The sync is driven from `AudioEngine::refreshLivePresentationLatency()` — the
+  universal main-thread hook already called after every routing/chain mutation and after load — so
+  **no bridge/IPC change was needed.** It runs under `chainsMutex_` (consistent with all chain
+  structural mutations); the audio thread is never mid-block for a chain whose layout changes.
+- **APG (2,2) relaxation unchanged beyond 4C+4D:** the compressor only becomes "sidechain-capable"
+  (the existing `isSidechainCapable` = enabled second input bus) once its bus is enabled, at which
+  point the *already-present* 4C+4D narrow relaxation in `addProcessorToGraph` applies. No new
+  relaxation site, no change to graph I/O (stays stereo), no change to any non-capable node.
+  `GuardedPluginWrapper` was not touched.
+- **Key silence — how it is proven:** the key only ever reaches input bus 1; the compressor writes
+  exclusively to the main bus; a bypassed compressor takes the base passthrough fast path and never
+  reads the key. `test_stock_compressor_sidechain` proves: with the target soloed (so master holds
+  only the Bass, source feeding key `feedsSidechainOnly`) the Bass **ducks ~8.8 dB while the Kick key
+  plays and recovers after** — and the ducked window is *quieter*, not louder, simultaneously proving
+  ducking and that the Kick (≈0.4) does not leak in; `sc_external=0` route-present is `maxAbsDiff==0`
+  vs no route; `sc_external=1` with no/disabled/removed route or a muted source applies no ducking;
+  key gain scales the duck; two sources sum into a stronger duck; a route to a different instance
+  does not duck this compressor; and a fully-bypassed compressor with an active key route is
+  `maxAbsDiff==0` vs no route (no key leak).
+- **Tests:** new `engine/test/test_stock_compressor_sidechain.cpp` (CMake target
+  `test_stock_compressor_sidechain`, 22 checks). Regression green: `test_sidechain_runtime` (28),
+  `test_sidechain_routes` (75), `test_graph_effect_parameters` (62), `test_chain_effect_identity`
+  (51), `test_mixer_bus_routing` (25), `test_mixer_routing_pdc` (112), `test_mix` (272),
+  `test_project` (98), `test_undo` (84). `test_effects` keeps the same **3 pre-existing EQ-only
+  failures** (EQ APVTS param count + dynamic-EQ DSP — unrelated to the compressor); all 574 other
+  checks pass.
+- **Deferred (NOT in 5A):** VST sidechain bus probing/enabling + `GuardedPluginWrapper` mirroring →
+  later; OTT/limiter sidechain → later; sidechain source/target UI + capability JSON for the
+  renderer → Prompt 5B; FX Graph protected Sidechain Input node + empty-`targetEffectInstanceId`
+  track-level targets → Prompt 6; parallel sends → later. Key-path PDC remains v1 best-effort.
+- **Files added/modified:** `engine/src/audio/XlethEffectBase.h` (optional SC bus + capability/enable
+  API), `engine/src/audio/XlethCompressorEffect.h` (SC bus, `sc_external`, external detector path),
+  `engine/src/audio/StockParameterCatalog.cpp` (`sc_external` descriptor),
+  `engine/src/audio/AudioGraph.{h,cpp}` (`applySidechainTargetInstances`),
+  `engine/src/audio/EffectChainManager.{h,cpp}` (delegation),
+  `engine/src/audio/MixEngine.{h,cpp}` (`syncSidechainTargetBuses`),
+  `engine/src/AudioEngine.cpp` (sync hook in `refreshLivePresentationLatency`),
+  `engine/test/test_stock_compressor_sidechain.cpp` (new), `engine/CMakeLists.txt`
+  (`test_stock_compressor_sidechain` target), and this audit. No bridge/IPC/renderer/VST/
+  FX-Graph-graphState/`GuardedPluginWrapper`/export/output-routing-semantics code was changed.

@@ -251,6 +251,13 @@ void AudioEngine::cacheCurrentDeviceOutputLatency()
 // getLivePresentationLatencyDiagnostics still return current values.
 void AudioEngine::refreshLivePresentationLatency()
 {
+    // Prompt 5A: keep stock-compressor sidechain buses in sync with the routes
+    // before reading latency — this is the universal main-thread hook called
+    // after every routing/chain mutation and after project load. Idempotent and
+    // cheap when nothing changed; may re-prepare a chain when a route's target
+    // set changes (which can shift latency, so it must precede the snapshot).
+    mixEngine_.syncSidechainTargetBuses();
+
     const auto snapshot = mixEngine_.getLatencyCompensationSnapshot();
     const int64_t maxTrackLatency = std::max<int64_t>(
         0,

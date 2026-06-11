@@ -26,6 +26,15 @@
 //   mix         0–100 %       (Linear 20ms smoothing)
 //   detect_mode 0=Peak, 1=RMS (discrete)
 //   lookahead   0–10 ms       (discrete, applied per block boundary)
+//   sc_external 0=internal, 1=external sidechain (discrete; default 0)
+//
+// External sidechain (Prompt 5A): the compressor declares a second, optional
+// stereo input bus ("Sidechain"), DISABLED by default. The engine enables it and
+// wires the per-track key signal to it only when a sidechain route targets this
+// exact effect instance. With sc_external=1 and a live key bus the detector reads
+// the external key; with sc_external=1 but no key bus it uses SILENCE (never the
+// main signal); with sc_external=0 it behaves exactly as before. The key is read
+// only as a detector and is never mixed into the main output.
 //
 // Metering slots:
 //   0 — L channel output peak (absolute, max over block)
@@ -37,7 +46,8 @@
 class XlethCompressorEffect : public XlethEffectBase
 {
 public:
-    XlethCompressorEffect() : XlethEffectBase("compressor", createLayout())
+    XlethCompressorEffect()
+        : XlethEffectBase("compressor", createLayout(), /*withSidechainInput*/ true)
     {
         registerSmoothedParam("threshold", SmoothType::Linear, 20.0f);
         registerSmoothedParam("ratio",     SmoothType::Linear, 20.0f);
@@ -46,6 +56,29 @@ public:
         registerSmoothedParam("knee",      SmoothType::Linear, 20.0f);
         registerSmoothedParam("makeup",    SmoothType::Linear, 20.0f);
         registerSmoothedParam("mix",       SmoothType::Linear, 20.0f);
+    }
+
+    // ── External sidechain capability (Prompt 5A) ───────────────────────────
+    // The compressor is the only stock effect that can consume an external key
+    // through its second input bus. The engine enables that bus (and wires the
+    // SidechainSourceProcessor to it) only when a sidechain route targets this
+    // exact instance; the `sc_external` parameter then switches the detector to
+    // read the bus instead of the main signal.
+    bool supportsExternalSidechain() const override { return true; }
+
+    // Accept stereo main in/out plus an optional stereo-or-disabled second input
+    // bus (the key). Mirrors the test receiver in test_sidechain_runtime.
+    bool isBusesLayoutSupported(const BusesLayout& layouts) const override
+    {
+        if (layouts.getMainOutputChannelSet() != juce::AudioChannelSet::stereo()) return false;
+        if (layouts.getMainInputChannelSet()  != juce::AudioChannelSet::stereo()) return false;
+        if (layouts.inputBuses.size() > 1)
+        {
+            const auto sc = layouts.getChannelSet(true, 1);
+            if (sc != juce::AudioChannelSet::stereo() && sc != juce::AudioChannelSet::disabled())
+                return false;
+        }
+        return true;
     }
 
     // ── Visualization overrides (XlethEffectBase) ───────────────────────────
@@ -149,6 +182,7 @@ public:
 
         detectModePtr_ = apvts_.getRawParameterValue("detect_mode");
         lookaheadPtr_  = apvts_.getRawParameterValue("lookahead");
+        scExternalPtr_ = apvts_.getRawParameterValue("sc_external");
 
         // setMaximumDelayInSamples must be called BEFORE prepare() so the
         // buffer is allocated at the right size.
@@ -197,8 +231,13 @@ public:
     // ── processEffect ───────────────────────────────────────────────────────
     void processEffect(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& /*midi*/) override
     {
-        const int numSamples = buffer.getNumSamples();
-        const int numCh      = buffer.getNumChannels();
+        // Operate on the MAIN input/output bus only. When the optional sidechain
+        // bus is enabled `buffer` carries extra channels (e.g. 4: main 0/1 + key
+        // 2/3); using getBusBuffer keeps every loop on the 2 main channels so the
+        // key is never treated as audio and never written to the output.
+        auto mainBus = getBusBuffer(buffer, true, 0);
+        const int numSamples = mainBus.getNumSamples();
+        const int numCh      = mainBus.getNumChannels();
 
         // Discrete params: read once per block
         const int detectMode = detectModePtr_
@@ -208,6 +247,42 @@ public:
                                 ? lookaheadPtr_->load(std::memory_order_relaxed)
                                 : 0.0f;
         const int lookaheadSamps = static_cast<int>(lookaheadMs * sampleRate_ / 1000.0);
+
+        // ── Detector key source (Prompt 5A) ─────────────────────────────────
+        // sc_external == false → internal detector (legacy behavior, the key is
+        //                        the main signal itself).
+        // sc_external == true  → read the external key from the second input bus
+        //                        when it is enabled and connected; otherwise use
+        //                        SILENCE (no key present) so external mode never
+        //                        compresses from the main signal. Resolved once
+        //                        per block — no per-sample branch on the param.
+        const bool wantExternal = scExternalPtr_ != nullptr
+                                && scExternalPtr_->load(std::memory_order_relaxed) >= 0.5f;
+        const float* keyL = nullptr;
+        const float* keyR = nullptr;
+        bool keySilent = false;
+        if (!wantExternal)
+        {
+            keyL = mainBus.getReadPointer(0);
+            keyR = numCh > 1 ? mainBus.getReadPointer(1) : keyL;
+        }
+        else if (isSidechainInputEnabled())
+        {
+            auto scBus = getBusBuffer(buffer, true, 1);
+            if (scBus.getNumChannels() > 0)
+            {
+                keyL = scBus.getReadPointer(0);
+                keyR = scBus.getNumChannels() > 1 ? scBus.getReadPointer(1) : keyL;
+            }
+            else
+            {
+                keySilent = true;   // external requested, bus enabled but empty
+            }
+        }
+        else
+        {
+            keySilent = true;       // external requested, no key bus → silence
+        }
 
         // JUCE DelayLine: pushSample decrements writePos after writing, so
         // pop with delay=1 retrieves the just-pushed sample (0-sample net latency).
@@ -246,9 +321,10 @@ public:
             const float rCoeff = std::exp(
                 -1.0f / std::max(releaseMs * 0.001f * static_cast<float>(sampleRate_), 1e-6f));
 
-            // Sidechain: read NON-delayed input (stereo-linked max)
-            const float sideL = buffer.getSample(0, s);
-            const float sideR = numCh > 1 ? buffer.getSample(1, s) : sideL;
+            // Detector input (NON-delayed, stereo-linked max). Internal: the main
+            // signal; external: the key bus; external-with-no-key: silence.
+            const float sideL = keySilent ? 0.0f : keyL[s];
+            const float sideR = keySilent ? 0.0f : keyR[s];
 
             // Per-sample visualization input level (pre-process). Reuses the
             // values already read above — one extra std::max in the hot path.
@@ -301,12 +377,12 @@ public:
             float vizAbsOut = 0.0f;
             for (int ch = 0; ch < numCh; ++ch)
             {
-                const float dry = buffer.getSample(ch, s);
+                const float dry = mainBus.getSample(ch, s);
                 lookaheadDelay_.pushSample(ch, dry);
                 const float delayed = lookaheadDelay_.popSample(ch, popDelay, true);
                 const float wet     = delayed * gainLin;
                 const float mixed   = delayed * (1.0f - mixNorm) + wet * mixNorm;
-                buffer.setSample(ch, s, mixed);
+                mainBus.setSample(ch, s, mixed);
 
                 const float absOut = std::abs(mixed);
                 if (ch == 0) peakL = std::max(peakL, absOut);
@@ -399,12 +475,20 @@ private:
                 Nar{0.0f,   1.0f,    1.0f, 1.0f  }, 0.0f,    ""),
             std::make_unique<Apf>(Pid{"lookahead",    1}, "Lookahead",
                 Nar{0.0f,   10.0f,   0.0f, 1.0f  }, 0.0f,    "ms"),
+            // External-sidechain switch (Prompt 5A). 0 = internal detector (the
+            // legacy behavior, default — old projects load unchanged), 1 = read
+            // the external key from the second input bus. With no valid key bus
+            // (no route targets this instance) external mode uses SILENCE as the
+            // key, so it never compresses from the main signal.
+            std::make_unique<Apf>(Pid{"sc_external",  1}, "External Sidechain",
+                Nar{0.0f,   1.0f,    1.0f, 1.0f  }, 0.0f,    ""),
         };
     }
 
     // Raw APVTS pointers for discrete parameters (resolved in prepareEffect)
     std::atomic<float>* detectModePtr_ = nullptr;
     std::atomic<float>* lookaheadPtr_  = nullptr;
+    std::atomic<float>* scExternalPtr_ = nullptr;
 
     // Envelope follower state (shared for both Peak and RMS modes)
     // In RMS mode, peak_/env_ operate on the squared signal; sqrt is taken at the end.

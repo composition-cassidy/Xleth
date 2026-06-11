@@ -857,6 +857,12 @@ void EffectChainManager::clearSidechainKeyBuffer() noexcept
         graph_->clearSidechainKey();
 }
 
+bool EffectChainManager::applySidechainTargetInstances(
+    const std::set<std::string>& enabledInstanceIds)
+{
+    return graph_ && graph_->applySidechainTargetInstances(enabledInstanceIds);
+}
+
 void EffectChainManager::resetProcessors()
 {
     if (graph_)
