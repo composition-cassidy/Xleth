@@ -2,6 +2,11 @@
 
 Internal reference for the renderer-side graphState system. Updated through FXG-VP.1.
 
+> VST3 sidechain support (engine capability + wrapper bus mirroring) is audited in
+> `docs/dev/vst-sidechain-architecture-audit.md`; the FX Graph `sidechainIn` port should read engine
+> capability rather than the hardcoded `SIDECHAIN_SUPPORTED_TARGET_PLUGIN_IDS` allowlist once that
+> lands (VST-SC.4).
+
 ## Data model separation
 
 `graphState` is the renderer-side graph structure for the FX Graph workspace.

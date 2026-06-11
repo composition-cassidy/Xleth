@@ -7,6 +7,10 @@ this pass. Implementation prompts 2–6 (§8) must be derivable from this docume
 Reference briefs: `docs/txt/xleth_mixer_routing_feature_brief.txt`,
 `docs/txt/juce_audio_graph_sidechain_reference.txt`.
 
+> **VST sidechain follow-up:** the VST3 sidechain plan (capability probing + `GuardedPluginWrapper`
+> bus mirroring + lazy route enable) is audited separately in
+> `docs/dev/vst-sidechain-architecture-audit.md` (VST-SC.1).
+
 ## Terminology (binding for all later prompts)
 
 These three concepts are **never** conflated, in code, schema, or UI copy:
