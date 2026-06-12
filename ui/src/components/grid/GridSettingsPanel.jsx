@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from 'react'
 import { Grid3x3, Eraser, X, Plus, Link2 } from 'lucide-react'
 import { timelineEvents } from '../../timelineEvents.js'
 import useGridEditStore from '../../stores/useGridEditStore.js'
+import XlethSelect from '../common/XlethSelect.jsx'
 
 const SUB_UNITS_PER_COLUMN = 8
 const SUB_UNITS_PER_ROW    = 8
@@ -177,8 +178,9 @@ function GapKnob({ value, onChange, onCommit }) {
 }
 
 // ── Live grid preview ─────────────────────────────────────────────────────────
-function GridPreview({ columns, rows, gapScale }) {
-  const W = 160, H = 90
+function GridPreview({ columns, rows, gapScale, canvasW = 1920, canvasH = 1080 }) {
+  const W = 160
+  const H = Math.max(20, Math.round(W * (canvasH / canvasW)))
 
   const totalGapFrac = Math.min(gapScale, 0.75)
   const gapX = (W * totalGapFrac) / (columns + 1)
@@ -416,33 +418,27 @@ export default function GridSettingsPanel({ layout, setLayout, tracks }) {
             <div className="gsp-canvas-controls">
               <div className="gsp-canvas-row">
                 <span className="gsp-canvas-label">Aspect</span>
-                <select
+                <XlethSelect
                   className="gsp-canvas-select"
                   value={canvasAspect}
-                  onChange={(e) => handleAspectChange(e.target.value)}
-                  title="Project aspect ratio"
-                >
-                  {ASPECT_PRESETS.map(a => (
-                    <option key={a.id} value={a.id}>{a.label}</option>
-                  ))}
-                </select>
+                  options={ASPECT_PRESETS.map(a => ({ value: a.id, label: a.label }))}
+                  onChange={handleAspectChange}
+                  ariaLabel="Project aspect ratio"
+                />
               </div>
 
               <div className="gsp-canvas-row">
                 <span className="gsp-canvas-label">Size</span>
-                <select
+                <XlethSelect
                   className="gsp-canvas-select"
                   value={showSizeInputs ? 'custom' : resId}
-                  onChange={(e) => handleResolutionChange(e.target.value)}
-                  title="Project base resolution"
-                >
-                  {resList.map(r => (
-                    <option key={r.label} value={`${r.width}x${r.height}`}>
-                      {r.label} ({r.width}×{r.height})
-                    </option>
-                  ))}
-                  <option value="custom">Custom…</option>
-                </select>
+                  options={[
+                    ...resList.map(r => ({ value: `${r.width}x${r.height}`, label: `${r.label} (${r.width}×${r.height})` })),
+                    { value: 'custom', label: 'Custom…' },
+                  ]}
+                  onChange={handleResolutionChange}
+                  ariaLabel="Project base resolution"
+                />
               </div>
 
               {showSizeInputs && (
@@ -484,11 +480,13 @@ export default function GridSettingsPanel({ layout, setLayout, tracks }) {
 
           {/* Right: grid preview */}
           <div className="gsp-preview-wrap">
-            <div className="gsp-preview-frame">
+            <div className="gsp-preview-frame" style={{ aspectRatio: `${canvasW} / ${canvasH}` }}>
               <GridPreview
                 columns={layout.columns}
                 rows={layout.rows}
                 gapScale={layout.gapScale ?? 0}
+                canvasW={canvasW}
+                canvasH={canvasH}
               />
             </div>
           </div>

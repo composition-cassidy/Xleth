@@ -57,8 +57,14 @@ async function render(layout) {
   await flush()
 }
 
-async function changeSelect(sel, value) {
-  await act(async () => { sel.value = value; sel.dispatchEvent(new Event('change', { bubbles: true })) })
+async function changeSelect(trigger, value) {
+  // XlethSelect: click trigger to open portal, then click the option by data-value.
+  await act(async () => { trigger.click() })
+  await flush()
+  const option = Array.from(document.querySelectorAll('[data-value]'))
+    .find(el => el.dataset.value === String(value))
+  if (!option) throw new Error(`XlethSelect option with data-value="${value}" not found`)
+  await act(async () => { option.click() })
   await flush()
 }
 

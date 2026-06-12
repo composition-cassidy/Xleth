@@ -5,6 +5,7 @@ import GridEditorDock from './GridEditorDock.jsx'
 import { tokenValue } from '../theming/tokenValue.ts'
 import useGridEditStore from '../stores/useGridEditStore.js'
 import { usePanelVisibility } from '../windowing/contexts/PanelVisibilityContext'
+import { uiCanvasFont } from '../styles/typography.js'
 
 // ── WebGL shaders ────────────────────────────────────────────────────────────
 const VERT_SRC = `
@@ -73,6 +74,9 @@ export default function VideoPreview() {
   const containerRef = useRef(null)
   const canvasAreaRef = useRef(null)
   const wrapperRef = useRef(null)
+  // Holds the current canvas aspect so the ResizeObserver closure always
+  // reads the latest value without being recreated on every outputDims change.
+  const canvasAspectRef = useRef(16 / 9)
   const [videoFile, setVideoFile] = useState(null)
   const [importing, setImporting] = useState(false)
   const [fps, setFps] = useState(0)
@@ -299,7 +303,7 @@ export default function VideoPreview() {
         ctx2d.fillStyle = tokenValue('--theme-preview-loaded-bg')
         ctx2d.fillRect(0, 0, canvas.width, canvas.height)
         ctx2d.fillStyle = tokenValue('--theme-text-placeholder')
-        ctx2d.font = '500 14px "Hanken Grotesk", system-ui'
+        ctx2d.font = uiCanvasFont('500 14px')
         ctx2d.textAlign = 'center'
         ctx2d.textBaseline = 'middle'
         ctx2d.fillText('No video loaded', canvas.width / 2, canvas.height / 2)
@@ -418,16 +422,42 @@ export default function VideoPreview() {
     }
   })
 
-  // Publish the 16:9 content width as a CSS custom property so the dock strip
-  // stays aligned with the overlay rather than spanning the full wrapper width.
+  // Keep CSS vars in sync whenever the canvas output dimensions change.
+  // --xleth-canvas-aspect drives the overlay's aspect-ratio.
+  // --xleth-canvas-content-width drives the dock's alignment width.
+  useEffect(() => {
+    const wrapper    = wrapperRef.current
+    const canvasArea = canvasAreaRef.current
+    if (!wrapper) return
+    const aspect = (outputDims.w > 0 && outputDims.h > 0)
+      ? outputDims.w / outputDims.h
+      : 16 / 9
+    canvasAspectRef.current = aspect
+    wrapper.style.setProperty(
+      '--xleth-canvas-aspect',
+      outputDims.w > 0 ? `${outputDims.w} / ${outputDims.h}` : '16 / 9'
+    )
+    // Recalculate content width immediately so the dock stays aligned even
+    // when a dimension change doesn't trigger a container resize.
+    if (canvasArea) {
+      const { width, height } = canvasArea.getBoundingClientRect()
+      if (width > 0) {
+        wrapper.style.setProperty('--xleth-canvas-content-width', `${Math.min(width, height * aspect)}px`)
+      }
+    }
+  }, [outputDims])
+
+  // ResizeObserver: keep dock width aligned as the container is resized.
+  // The callback reads canvasAspectRef so it always uses the current aspect
+  // without needing to be recreated when outputDims changes.
   useEffect(() => {
     const canvasArea = canvasAreaRef.current
     const wrapper    = wrapperRef.current
     if (!canvasArea || !wrapper) return
     const observer = new ResizeObserver(([entry]) => {
       const { width, height } = entry.contentRect
-      const w = Math.min(width, height * (16 / 9))
-      wrapper.style.setProperty('--grid-16x9-width', `${w}px`)
+      const w = Math.min(width, height * canvasAspectRef.current)
+      wrapper.style.setProperty('--xleth-canvas-content-width', `${w}px`)
     })
     observer.observe(canvasArea)
     return () => observer.disconnect()
