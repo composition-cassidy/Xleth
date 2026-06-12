@@ -253,6 +253,42 @@ public:
     }
 };
 
+// Models the exact real-VST3 behavior that broke FabFilter Pro-C 2 (VST-SC.4-r1):
+// a hosted component refuses to (re)enable its sidechain bus while it is ACTIVE —
+// Steinberg's setBusArrangements/activateBus contract only permits a bus
+// re-arrangement on an INACTIVE component. The construction-time capability probe
+// runs before the first prepareToPlay (inactive), so it succeeds; the runtime,
+// route-driven enable runs after the graph has prepared the node (active), so the
+// inner rejects the new layout — UNLESS the host deactivates the inner first.
+// Plain FakeSidechain does NOT model active state, which is why every earlier fake
+// test passed while the real Pro-C 2 stayed silent. The fix
+// (GuardedPluginWrapper::setSidechainInputEnabled releasing the inner before the
+// layout change) is what this fake exercises.
+class FakeActiveLockSidechain : public FakeSidechain
+{
+public:
+    FakeActiveLockSidechain()
+        : FakeSidechain(juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()) {}
+    const juce::String getName() const override { return "FakeActiveLockSidechain"; }
+
+    void prepareToPlay(double, int) override { active_.store(true); }
+    void releaseResources() override        { active_.store(false); }
+    bool isActive() const { return active_.load(); }
+
+    bool isBusesLayoutSupported(const BusesLayout& l) const override
+    {
+        if (!FakeSidechain::isBusesLayoutSupported(l)) return false;
+        // Enabling the key bus is only permitted while the component is INACTIVE.
+        const bool reqScEnabled = l.inputBuses.size() > 1
+            && !l.getChannelSet(true, 1).isDisabled();
+        if (reqScEnabled && active_.load()) return false;
+        return true;
+    }
+
+private:
+    std::atomic<bool> active_{false};
+};
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 static double maxAbsDiff(const juce::AudioBuffer<float>& a, const juce::AudioBuffer<float>& b)
@@ -421,6 +457,66 @@ static void testKeyDeliveryAndNoLeak()
     }
     // Key still flows after reprepare.
     fakePtr = nullptr;  // (pointer above still valid; re-read peaks via a fresh block)
+}
+
+// ─── Active-state enable (VST-SC.4-r1 regression) ───────────────────────────────
+// A real wrapped VST3 is ACTIVE by the time a route enables its sidechain bus, and
+// rejects a bus re-arrangement while active. This regression reproduces that with
+// FakeActiveLockSidechain: it FAILS if setSidechainInputEnabled does not deactivate
+// the inner before changing the layout (the key bus never enables, the key never
+// reaches bus 1 — the exact silent-sidechain bug seen with FabFilter Pro-C 2).
+
+static void testActiveStateEnable()
+{
+    std::cout << "[V3-r1] Route enables a wrapped SC plugin that is ALREADY ACTIVE\n";
+
+    auto graph = std::make_unique<AudioGraph>();
+    graph->init(kSR, kBS);
+
+    auto fake = std::make_unique<FakeActiveLockSidechain>();
+    FakeActiveLockSidechain* fakePtr = fake.get();
+    auto wrapped = std::make_unique<GuardedPluginWrapper>(std::move(fake));
+    const int uid = graph->addProcessorForTesting("test.vstActiveLock", std::move(wrapped), 0);
+    CHECK(uid >= 0, "active-lock wrapped fake added to graph");
+
+    // The construction-time probe (inactive) still reports SUPPORTED.
+    {
+        const auto node = chainNodeFor(*graph, uid);
+        CHECK(node["sidechain"].value("supported", false),
+              "active-lock fake probed SUPPORTED before first prepare");
+        CHECK(!node["sidechain"].value("enabled", true), "SC bus disabled initially");
+    }
+
+    // Prepare the graph so the inner is ACTIVE — exactly the runtime condition under
+    // which the real plugin (and now this fake) rejects a bus re-arrangement.
+    graph->reprepare(kSR, kBS);
+    CHECK(fakePtr->isActive(), "inner is ACTIVE before the route-driven enable");
+
+    const std::string eid = graph->getEffectInstanceIdForNode(uid);
+    const bool changed = graph->applySidechainTargetInstances({eid}, /*includeWrapped*/ true);
+    CHECK(changed, "enabling an ACTIVE wrapped SC target still changes layout (fix present)");
+    {
+        const auto node = chainNodeFor(*graph, uid);
+        CHECK(node["sidechain"].value("enabled", false),
+              "chain state: enabled true after enabling an active wrapped plugin");
+    }
+
+    // The key must actually reach bus 1 of the now-active, re-enabled plugin.
+    const float kKeyAmp = 0.8f;
+    std::vector<float> keyL(kBS, kKeyAmp), keyR(kBS, kKeyAmp);
+    juce::AudioBuffer<float> io(2, kBS);
+    for (int ch = 0; ch < 2; ++ch)
+        for (int i = 0; i < kBS; ++i) io.setSample(ch, i, 0.2f);
+    juce::AudioBuffer<float> inputCopy(io);
+
+    juce::MidiBuffer midi;
+    graph->setSidechainKey(keyL.data(), keyR.data(), kBS);
+    graph->processBlock(io, kBS, midi);
+    graph->clearSidechainKey();
+
+    CHECK(std::abs(fakePtr->sidechainPeak() - kKeyAmp) < 0.05f,
+          "key delivered to bus 1 of the re-enabled active plugin");
+    CHECK(maxAbsDiff(io, inputCopy) < 1e-6, "main output unchanged — no key leak");
 }
 
 // ─── Crash passthrough drops the key (V8) ──────────────────────────────────────
@@ -864,6 +960,7 @@ int main()
     testCapabilityProbe();
     testBusMirroring();
     testKeyDeliveryAndNoLeak();
+    testActiveStateEnable();
     testCrashPassthroughNoLeak();
     testLayoutRejectingFallback();
     testCapabilityNotPersisted();

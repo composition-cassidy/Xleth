@@ -197,6 +197,22 @@ bool GuardedPluginWrapper::setSidechainInputEnabled(bool enabled)
         ? sidechainKeySet_
         : juce::AudioChannelSet::disabled();
 
+    // A hosted VST3 component only permits a bus re-arrangement while it is
+    // INACTIVE (Steinberg's setBusArrangements / activateBus contract). At this
+    // point the graph is already prepared, so the inner is ACTIVE — and JUCE's
+    // VST3 client refuses the new arrangement while active (its
+    // isBusesLayoutSupported() short-circuits, so canApplyBusesLayout() never
+    // runs setBusArrangements()). Without this the wrapper's setBusesLayout()
+    // below fails and the key bus never enables: the real-VST sidechain stays
+    // silent even though the route, capability, and wiring all look healthy.
+    // Release the inner's resources first so the re-negotiation is valid; the
+    // caller MUST reprepare() after a true return, which re-prepares (and thus
+    // re-activates) the inner with the new layout. Plain/stock processors are
+    // unaffected — their isBusesLayoutSupported() ignores active state, and the
+    // release is a benign no-op sitting between two prepareToPlay() calls.
+    if (inner_)
+        xleth::pluginGuardCall([&]{ inner_->releaseResources(); });
+
     // Apply to the wrapper's own buses. The inner receives the same layout on the
     // next prepareToPlay (see prepareToPlay), so the change is not live until the
     // graph re-prepares — the caller MUST re-prepare after a true return.

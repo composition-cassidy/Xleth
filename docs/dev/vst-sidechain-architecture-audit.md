@@ -7,7 +7,131 @@ runtime behavior. **VST-SC.2 (§13) implements the wrapper bus-mirroring + capab
 foundation**; **VST-SC.3 (§14) wires the real route into that jack** — route-driven lazy enable/disable,
 `sidechain_unsupported` validation, runtime key delivery, mono fold, latency/PDC refresh. **VST-SC.4
 (§15, below) exposes the native capability in Mixer Chain + FX Graph UI and smoke-tests the real scanned
-FabFilter Pro-C 2 VST3 path.**
+FabFilter Pro-C 2 VST3 path.** **VST-SC.4-r1 (§16, below) fixes the real-plugin silent-sidechain bug
+found in acceptance: a wrapped VST3's key bus never enabled at runtime because the layout was changed
+while the inner plugin was still active.**
+
+---
+
+## 16. VST-SC.4-r1 — real FabFilter Pro-C 2 silent-sidechain fix (2026-06-12)
+
+**Done. Root-caused on the actual failing project, fixed at the one proven-broken layer, regression
+added, real Pro-C 2 key delivery + ducking confirmed via app-level CDP smoke.**
+
+### Symptom (as reported)
+
+In the real project `C:\Users\Krasen\Desktop\SR\Side chain test` (Kick → Bass, Bass has FabFilter
+Pro-C 2 `VST3-Pro-C 2-f1a6549f-763029ad`, instance `20553508-1401-4eeb-9323-3d9194d6c26f`), the sidechain
+source selector appeared, selecting Kick looked healthy (`timeline_getRouting` → `status: "ok"`), but
+Pro-C 2 received **no** key and never ducked.
+
+### What was healthy vs. broken (traced layer-by-layer in the running app)
+
+Pre-audio chain JSON for Pro-C 2 reported `{ "sidechain": { "supported": true, "channels": 2,
+"enabled": false } }` while the route resolved `ok`. So capability + route were healthy but the bus
+**never enabled** — hypothesis #1 ("route exists but wrapped bus never enables"). Re-triggering the
+production sync (toggling the route) did **not** flip `enabled`, and a *fresh* live-inserted Pro-C 2 also
+stayed `enabled:false`, ruling out save/load and timing.
+
+Native instrumentation (temporary, since removed) inside
+`GuardedPluginWrapper::setSidechainInputEnabled` showed the decisive evidence:
+
+```
+applySidechainTargetInstances wrapped node eid=20553508… want=1 supported=1   ← matched, intended-enable
+setSidechainInputEnabled(1) "Pro-C 2" supported=1 busCount(in)=2
+  layout in.size=2 out.size=1 innerBC in=2 out=1 check=0 freshCheck=0 checkAfterRelease=1   ← !!
+  setBusesLayout REJECTED on wrapper
+```
+
+Bus counts matched (2 in / 1 out), but `inner->checkBusesLayoutSupported([Stereo,Stereo]/[Stereo])`
+returned **0 while the inner was active** and **1 after `inner->releaseResources()`** (deactivation).
+
+### Root cause / exact failing layer
+
+`GuardedPluginWrapper::setSidechainInputEnabled` (`engine/src/audio/GuardedPluginWrapper.cpp`) re-arranged
+the wrapper/inner bus layout **while the inner VST3 was still ACTIVE**. A hosted VST3 component only
+permits a bus re-arrangement while **inactive** (Steinberg `setBusArrangements`/`activateBus` contract);
+JUCE's VST3 client enforces this — `VST3PluginInstance::isBusesLayoutSupported` short-circuits while
+active (`juce_VST3PluginFormat.cpp:2997-3018`), so `canApplyBusesLayout()`/`setBusArrangements()` never
+run and the new arrangement is refused. The **session-time capability probe succeeds** only because it
+runs in the wrapper **constructor, before the inner is ever prepared/activated** — hence the
+probe-true / runtime-false asymmetry. The fake `SidechainReceiverProcessor`/`FakeSidechain` are plain
+`juce::AudioProcessor`s whose `isBusesLayoutSupported` ignores active state, which is exactly why every
+VST-SC.2/.3 fake test passed while the real plugin stayed silent.
+
+### Fix (one layer, ~3 lines)
+
+In `setSidechainInputEnabled`, before applying the new layout, deactivate the inner:
+
+```cpp
+if (inner_)
+    xleth::pluginGuardCall([&]{ inner_->releaseResources(); });
+if (!setBusesLayout(layout)) return false;   // now valid: inner is INACTIVE
+```
+
+The caller (`AudioGraph::applySidechainTargetInstances`) already `reprepare()`s after a `true` return,
+which re-prepares (re-activates) the inner with the new layout via the existing
+`GuardedPluginWrapper::prepareToPlay` path — so latency/PDC refresh and rewiring are unchanged. Plain/stock
+processors are unaffected (their layout check ignores active state; the release is a benign no-op between
+two `prepareToPlay` calls). No second sidechain engine, no VST-specific key path, no main-input mixing, no
+unwrapped hosting, no persisted APG ids/capability, no hardcoded FabFilter behavior.
+
+### Real Pro-C 2 smoke result (app-level, CDP-driven, real audio device)
+
+Launched the clean rebuilt `bridge/build/Release/xleth_native.node` (no diagnostics) under
+`XLETH_PLAYWRIGHT=1` against the real project, real Focusrite output device @ 44100 Hz:
+
+- After load: Pro-C 2 chain JSON `{ supported:true, channels:2, **enabled:true** }`; route status `ok`.
+- With the Kick playing, the wrapper's input **bus 1 (process-block channels 2/3)** carried the key —
+  peak up to **0.68** on kick hits, while the Bass main stayed on channels 0/1. The signal reaches the
+  real Pro-C 2 detector input.
+- **Audible ducking confirmed numerically:** Pro-C 2's main `out/in` ratio tracked the key inversely —
+  `key≈0.25 → out/in≈0.59` (heavy GR), `key≈0.16 → 0.74`, `key≈0.03 → 1.05`, `key=0 → 2.1–2.3`
+  (makeup gain, no compression). The compressor responds to the **external** key.
+- Disabling the route → `enabled:false` (bus tears down); re-enabling → `enabled:true`. Removing the
+  route stops the external-key response. The Kick key stays silent in the Bass/Master path (no leak;
+  proven bit-identical in the fake tests, and the wrapper only ever writes its main output bus).
+
+### Pro-C 2 internal external-sidechain mode
+
+The host now delivers the key to Pro-C 2's external sidechain **bus**. Whether Pro-C 2 *uses* it for
+detection is a **plugin-internal** setting (FabFilter's side-chain "External" trigger), saved in the
+plugin's own VST3 state and **not** host-controllable in a safe, generic way. In this project the user's
+saved Pro-C 2 state already had external side-chain engaged, which is why ducking was observed. **Required
+user action for a fresh Pro-C 2:** enable the external side-chain trigger inside the Pro-C 2 UI; the host
+cannot (and must not) force this per-plugin. No parameter was hardcoded.
+
+### Regression
+
+`engine/test/test_vst_sidechain.cpp` adds `FakeActiveLockSidechain` — a fake that faithfully models the
+real VST3 contract (rejects enabling the key bus **while active**, accepts it while inactive; capability
+probe still succeeds because it runs pre-prepare). New test `testActiveStateEnable` (`[V3-r1]`) prepares
+the graph so the wrapped node is **active**, then route-enables it and asserts the bus enables and the key
+reaches bus 1. **Validated by temporarily reverting the fix:** the new test fails on exactly the observed
+symptoms (`enabling an ACTIVE wrapped SC target still changes layout`, `enabled true after enable`,
+`key delivered to bus 1`) while the other 83 checks stay green; with the fix, 86/86 pass.
+
+### Tests run (Debug/Release, all green)
+
+| Target | Result |
+|---|---|
+| `test_vst_sidechain` | **86** passed (was 78; +8 from the `[V3-r1]` active-state regression) |
+| `test_stock_compressor_sidechain` | 22 passed |
+| `test_sidechain_runtime` | 28 passed |
+| `test_fxgraph_sidechain_input` | ALL PASSED |
+| `test_sidechain_routes` | ALL PASSED |
+| `test_chain_effect_identity` | ALL PASSED |
+| `test_graph_effect_parameters` | ALL PASSED |
+
+`git diff --check`: clean (LF/CRLF notice only). **Addon rebuilt** (`cd bridge && npx cmake-js compile`) —
+plugin-hosting C++ changed; the final binary is diagnostic-free. Routing/PDC/`TrackRouting`/`MixEngine`/
+bridge/UI were **not** touched (the fix is entirely inside `GuardedPluginWrapper::setSidechainInputEnabled`).
+
+### Remaining limitations
+
+- Ducking still requires the plugin's own external side-chain mode (per-plugin user setting, documented).
+- All earlier VST-SC.2/.3 limitations stand (one source per target, no master sidechain, capability
+  session-only, mono key uses source L).
 
 ---
 
