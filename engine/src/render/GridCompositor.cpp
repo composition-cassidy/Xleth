@@ -572,7 +572,8 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
             }
         }
 
-        drawCell(layerSRV, 0.0f, 0.0f, 1.0f, 1.0f,
+        drawCell(layerSRV,
+                 canvasFitX_, canvasFitY_, canvasFitW_, canvasFitH_,
                  req.opacity, req.orientation, 0.0f);
     }
 
@@ -792,6 +793,13 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
             }
         }
 
+        // Map the cell rect from canvas-UV into output-UV. Identity viewport is
+        // a no-op (legacy fill); a non-identity viewport realizes crop/letterbox.
+        rx = canvasFitX_ + rx * canvasFitW_;
+        ry = canvasFitY_ + ry * canvasFitH_;
+        rw *= canvasFitW_;
+        rh *= canvasFitH_;
+
         drawCell(cellSRV, rx, ry, rw, rh,
                  req.opacity, req.orientation, req.cornerRadius);
     }
@@ -824,7 +832,8 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
             }
         }
 
-        drawCell(layerSRV, 0.0f, 0.0f, 1.0f, 1.0f,
+        drawCell(layerSRV,
+                 canvasFitX_, canvasFitY_, canvasFitW_, canvasFitH_,
                  req.opacity, req.orientation, 0.0f);
     }
 

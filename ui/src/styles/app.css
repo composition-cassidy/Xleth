@@ -6045,6 +6045,314 @@ html[data-xleth-backdrop="native-acrylic"] #root {
   text-align: right;
 }
 
+/* ── Compact Grid Settings Panel (gsp-*) ────────────────────────────────────
+   Replaces the old Layout + Preview sections with a two-column compact block.
+   Visual language matches the titlebar buttons (subtle gradient + raised border).
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.gsp-compact-section {
+  padding: 10px;
+}
+
+.gsp-section-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--theme-text-muted);
+  font-weight: 600;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--theme-border-subtle);
+  margin-bottom: 9px;
+}
+
+.gsp-body {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.gsp-controls {
+  flex: 0 0 130px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+/* ── Columns × Rows inputs ── */
+
+.gsp-dims-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.gsp-dim-input {
+  width: 52px;
+  height: 52px;
+  background:
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.035) 0%, rgba(255, 255, 255, 0.012) 100%),
+    rgba(255, 255, 255, 0.065);
+  border-top: 1px solid rgba(255, 255, 255, 0.18);
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  border-right: 1px solid rgba(0, 0, 0, 0.22);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.42);
+  border-radius: 10px;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.14);
+  color: var(--theme-text-primary);
+  font-family: inherit;
+  font-size: 22px;
+  font-weight: 700;
+  text-align: center;
+  cursor: default;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.gsp-dim-input::-webkit-outer-spin-button,
+.gsp-dim-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.gsp-dim-input:focus {
+  outline: none;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.24),
+    0 0 0 2px var(--theme-accent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.14);
+}
+
+.gsp-dim-sep {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--theme-text-muted);
+  flex: 0 0 auto;
+  text-align: center;
+  width: 14px;
+}
+
+/* ── Link button ── */
+
+.gsp-link-row {
+  display: flex;
+  justify-content: center;
+}
+
+.gsp-link-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 22px;
+  background:
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.035) 0%, rgba(255, 255, 255, 0.012) 100%),
+    rgba(255, 255, 255, 0.065);
+  border-top: 1px solid rgba(255, 255, 255, 0.18);
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  border-right: 1px solid rgba(0, 0, 0, 0.22);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.42);
+  border-radius: 7px;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.20),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  color: var(--theme-text-muted);
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+
+.gsp-link-btn:hover {
+  background:
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.055) 0%, rgba(255, 255, 255, 0.018) 100%),
+    rgba(255, 255, 255, 0.09);
+  color: var(--theme-text-primary);
+}
+
+.gsp-link-btn.active {
+  color: var(--theme-accent);
+  background:
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.035) 0%, rgba(255, 255, 255, 0.012) 100%),
+    rgba(51, 206, 214, 0.12);
+  border-top-color: rgba(51, 206, 214, 0.35);
+}
+
+/* ── GAP rotary knob ── */
+
+.gsp-gap-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+}
+
+.gsp-knob-svg {
+  display: block;
+}
+
+.gsp-gap-label {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--theme-text-muted);
+}
+
+/* ── Project canvas controls (aspect / resolution / size / FPS) ── */
+
+.gsp-canvas-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.gsp-canvas-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.gsp-canvas-label {
+  flex: 0 0 38px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--theme-text-muted);
+}
+
+.gsp-canvas-select {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  background:
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.035) 0%, rgba(255, 255, 255, 0.012) 100%),
+    rgba(255, 255, 255, 0.065);
+  border-top: 1px solid rgba(255, 255, 255, 0.18);
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  border-right: 1px solid rgba(0, 0, 0, 0.22);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.42);
+  border-radius: 7px;
+  color: var(--theme-text-primary);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.gsp-canvas-select:focus {
+  outline: none;
+  border-color: var(--theme-accent);
+}
+
+.gsp-canvas-size {
+  justify-content: center;
+}
+
+.gsp-canvas-size .gsp-dim-input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ── FPS pill (value + unit joined as one control) ── */
+
+.gsp-fps-pill {
+  display: flex;
+  height: 30px;
+  border-top: 1px solid rgba(255, 255, 255, 0.18);
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  border-right: 1px solid rgba(0, 0, 0, 0.22);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.42);
+  border-radius: 8px;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.20),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+
+.gsp-fps-value {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  background:
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.035) 0%, rgba(255, 255, 255, 0.012) 100%),
+    rgba(255, 255, 255, 0.065);
+  border: none;
+  border-right: 1px solid rgba(255, 255, 255, 0.09);
+  color: var(--theme-text-primary);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+  cursor: default;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.gsp-fps-value::-webkit-outer-spin-button,
+.gsp-fps-value::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.gsp-fps-value:focus {
+  outline: none;
+  background:
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.035) 0%, rgba(255, 255, 255, 0.012) 100%),
+    rgba(51, 206, 214, 0.08);
+}
+
+.gsp-fps-unit {
+  flex: 0 0 auto;
+  padding: 0 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.025) 0%, rgba(255, 255, 255, 0.008) 100%),
+    rgba(255, 255, 255, 0.04);
+  color: var(--theme-text-muted);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* ── Grid preview ── */
+
+.gsp-preview-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  padding-top: 2px;
+}
+
+.gsp-preview-frame {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: rgba(255, 255, 255, 0.03);
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
+  border-right: 1px solid rgba(0, 0, 0, 0.20);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.32);
+  border-radius: 5px;
+  overflow: hidden;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.gsp-preview-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
 /* ── Phase 3: VisualFX unified section ───────────────────────────────────── */
 
 .fx-section {

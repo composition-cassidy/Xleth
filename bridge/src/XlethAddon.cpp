@@ -60,6 +60,7 @@
 #include "render/RenderScope.h"
 // [PreviewUnify] GPU compositor pipeline for unified preview
 #include "render/GridCompositor.h"
+#include "render/CanvasFit.h"
 #include "render/FrameCollector.h"
 #include "render/FrameCache.h"          // RenderFrameCache
 #include "render/RenderVideoDecoder.h"
@@ -2023,6 +2024,9 @@ static Napi::Object gridLayoutToJs(Napi::Env env, const GridLayout& g) {
     o.Set("columns",       Napi::Number::New(env, g.columns));
     o.Set("rows",          Napi::Number::New(env, g.rows));
     o.Set("previewFps",    Napi::Number::New(env, g.previewFps));
+    o.Set("canvasWidth",       Napi::Number::New(env, g.canvasWidth));
+    o.Set("canvasHeight",      Napi::Number::New(env, g.canvasHeight));
+    o.Set("canvasAspectRatio", Napi::String::New(env, g.canvasAspectRatio));
     o.Set("gapScale",      Napi::Number::New(env, g.gapScale));
     Napi::Array slotsArr = Napi::Array::New(env, g.slots.size());
     for (size_t i = 0; i < g.slots.size(); ++i)
@@ -2062,6 +2066,18 @@ static GridLayout jsToGridLayout(const Napi::Object& o) {
         g.rows          = o.Get("rows").As<Napi::Number>().Int32Value();
     if (o.Has("previewFps")    && o.Get("previewFps").IsNumber())
         g.previewFps    = o.Get("previewFps").As<Napi::Number>().Int32Value();
+    // Project video canvas — normalized to the supported even-pixel range so the
+    // UI cannot push an out-of-range or odd dimension into the renderer.
+    if (o.Has("canvasWidth")   && o.Get("canvasWidth").IsNumber())
+        g.canvasWidth   = normalizeCanvasDim(
+            o.Get("canvasWidth").As<Napi::Number>().Int32Value(),
+            kCanvasMinWidth, kCanvasMaxWidth);
+    if (o.Has("canvasHeight")  && o.Get("canvasHeight").IsNumber())
+        g.canvasHeight  = normalizeCanvasDim(
+            o.Get("canvasHeight").As<Napi::Number>().Int32Value(),
+            kCanvasMinHeight, kCanvasMaxHeight);
+    if (o.Has("canvasAspectRatio") && o.Get("canvasAspectRatio").IsString())
+        g.canvasAspectRatio = o.Get("canvasAspectRatio").As<Napi::String>().Utf8Value();
     if (o.Has("gapScale")      && o.Get("gapScale").IsNumber()) {
         float v = o.Get("gapScale").As<Napi::Number>().FloatValue();
         // Validate range C++-side (Prompt 11): gapScale ∈ [0.0, 0.5].
@@ -2283,6 +2299,19 @@ static void videoThreadBody()
                         float currentTime = static_cast<float>(outputFrame)
                             * static_cast<float>(fpsRat.den)
                             / static_cast<float>(fpsRat.num);
+
+                        // Reflect the project canvas aspect in the live preview:
+                        // letterbox/pillarbox the canvas into the fixed preview
+                        // surface so a non-16:9 project shows at correct
+                        // proportions. A 16:9 project resolves to identity, so the
+                        // common case is unchanged.
+                        {
+                            const xleth::CanvasFitViewport vp = xleth::computeCanvasFitViewport(
+                                layout.canvasWidth, layout.canvasHeight,
+                                g_previewCompositor->getWidth(), g_previewCompositor->getHeight(),
+                                xleth::CanvasFitMode::Bars);
+                            g_previewCompositor->setCanvasFit(vp.x, vp.y, vp.w, vp.h);
+                        }
 
                         g_previewCompositor->compositeFrame(
                             requests, *g_previewRenderCache,
@@ -11617,6 +11646,14 @@ Napi::Value Video_ExportStart(const Napi::CallbackInfo& info)
     if (o.Has("height"))    settings.height    = o.Get("height").As<Napi::Number>().Int32Value();
     if (o.Has("fpsNum"))    settings.fpsNum    = o.Get("fpsNum").As<Napi::Number>().Int32Value();
     if (o.Has("fpsDen"))    settings.fpsDen    = o.Get("fpsDen").As<Napi::Number>().Int32Value();
+    // Canvas fit (how the project canvas maps when the export aspect differs).
+    // Absent / unknown → Stretch, which is the legacy fill behavior.
+    if (o.Has("fitMode") && o.Get("fitMode").IsString()) {
+        std::string fm = o.Get("fitMode").As<Napi::String>().Utf8Value();
+        if      (fm == "crop") settings.fitMode = ExportSettings::FitMode::Crop;
+        else if (fm == "bars") settings.fitMode = ExportSettings::FitMode::Bars;
+        else                   settings.fitMode = ExportSettings::FitMode::Stretch;
+    }
     // Rate-control mode is explicit (UI sends "crf" or "bitrate"). When absent we
     // leave the struct default (CRF) and rely on the crf<0 sentinel for legacy
     // callers. This is what stops the CRF default from leaking into bitrate-mode

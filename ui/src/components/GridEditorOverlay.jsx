@@ -8,6 +8,7 @@ const DEFAULT_LAYOUT = {
   columns: 3, rows: 3, slots: [],
   fullscreenLayers: [],
   previewFps: 30, gapScale: 0,
+  canvasWidth: 1920, canvasHeight: 1080, canvasAspectRatio: '16:9',
 }
 
 // Mirror of engine constants in TimelineTypes.h. Each grid column is divided

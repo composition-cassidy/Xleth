@@ -471,6 +471,18 @@ target_link_libraries(test_video_flip_resolver PRIVATE
     XlethEngineModel
 )
 
+# ── test_canvas_fit ───────────────────────────────────────────────────────────
+# Pure geometry for crop/stretch/letterbox of the project canvas into an export
+# of a different aspect ratio (render/CanvasFit.h). Header-only, no GPU — links
+# nothing but is given XlethEngineModel for a uniform test target shape.
+add_executable(test_canvas_fit
+    test/test_canvas_fit.cpp
+)
+
+target_link_libraries(test_canvas_fit PRIVATE
+    XlethEngineModel
+)
+
 # ── test_video_flip_applier ───────────────────────────────────────────────────
 # Phase 3 single-call-site wrapper: chord detection + per-track resolver.
 # Includes SyncManager.h (which needs JUCE/FFmpeg transitively) so this test

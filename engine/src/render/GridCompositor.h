@@ -261,6 +261,16 @@ public:
      *  are still applied — they are cheap single-pass or CPU-side operations. */
     void setEffectsBypass(bool bypass) { effectsBypass_ = bypass; }
 
+    /** Set the canvas-fit viewport: where the project authoring canvas maps in
+     *  output-UV space. Applied to every grid cell and fullscreen layer in
+     *  compositeFrame so a single call realizes crop / stretch / letterbox
+     *  without any shader change. Identity (0,0,1,1) — the default — is the
+     *  legacy full-frame fill. See render/CanvasFit.h for how the viewport is
+     *  derived. Persists until changed; safe to call before compositeFrame. */
+    void setCanvasFit(float x, float y, float w, float h) {
+        canvasFitX_ = x; canvasFitY_ = y; canvasFitW_ = w; canvasFitH_ = h;
+    }
+
     // ── Compositing ────────────────────────────────────────────────────────
 
     /**
@@ -326,6 +336,10 @@ private:
     int  height_ = 0;
     bool initialized_    = false;
     bool effectsBypass_  = false;  // preview-only fast path — skips all chainable RT passes
+
+    // Canvas-fit viewport (output-UV placement of the project canvas). Identity =
+    // legacy full-frame fill. Set via setCanvasFit; applied in compositeFrame.
+    float canvasFitX_ = 0.0f, canvasFitY_ = 0.0f, canvasFitW_ = 1.0f, canvasFitH_ = 1.0f;
 
     // ── Render target ──────────────────────────────────────────────────────
     Microsoft::WRL::ComPtr<ID3D11Texture2D>          renderTarget_;

@@ -1331,6 +1331,11 @@ nlohmann::json Timeline::toJSON() const {
     // migration (half-grid → fine-grid) — see fromJSON.
     gl["gridLayoutVersion"] = kGridLayoutVersionFineUnits;
     gl["previewFps"]    = m_gridLayout.previewFps;
+    // Project video canvas (added after gridLayoutVersion 3 — additive, so no
+    // version bump is needed; absent fields default on load for old projects).
+    gl["canvasWidth"]        = m_gridLayout.canvasWidth;
+    gl["canvasHeight"]       = m_gridLayout.canvasHeight;
+    gl["canvasAspectRatio"]  = m_gridLayout.canvasAspectRatio;
     gl["fullscreenLayers"] = nlohmann::json::array();
     for (const auto& fl : m_gridLayout.fullscreenLayers) {
         nlohmann::json flj;
@@ -1487,6 +1492,22 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
             if (gl.contains("columns"))       gl.at("columns").get_to(m_gridLayout.columns);
             if (gl.contains("rows"))          gl.at("rows").get_to(m_gridLayout.rows);
             if (gl.contains("previewFps"))    gl.at("previewFps").get_to(m_gridLayout.previewFps);
+
+            // Project video canvas. Old projects (pre-canvas) omit these; the
+            // GridLayout defaults (1920×1080 / "16:9") then stand, preserving
+            // backward compatibility. Dimensions are normalized to the supported
+            // even-pixel range so a hand-edited or corrupt value can't reach the
+            // encoder.
+            if (gl.contains("canvasWidth"))
+                m_gridLayout.canvasWidth = normalizeCanvasDim(
+                    gl.value("canvasWidth", m_gridLayout.canvasWidth),
+                    kCanvasMinWidth, kCanvasMaxWidth);
+            if (gl.contains("canvasHeight"))
+                m_gridLayout.canvasHeight = normalizeCanvasDim(
+                    gl.value("canvasHeight", m_gridLayout.canvasHeight),
+                    kCanvasMinHeight, kCanvasMaxHeight);
+            if (gl.contains("canvasAspectRatio") && gl.at("canvasAspectRatio").is_string())
+                gl.at("canvasAspectRatio").get_to(m_gridLayout.canvasAspectRatio);
 
             // Coordinate space migration: pre-v2 projects stored slot
             // coordinates in half-grid units (2 per column). v2+ uses

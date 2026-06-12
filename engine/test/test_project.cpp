@@ -446,6 +446,57 @@ int main() {
               "effectChains round-trip unchanged with graphState present");
     }
 
+    // ── Test 5.5: project video canvas round-trips + back-compat defaults ──────
+    std::cout << "\n[5.5] gridLayout canvas — save/load + legacy defaults\n";
+    {
+        // Round-trip a non-default canvas (9:16 vertical, 24 fps) through the
+        // exact persistence layer.
+        Timeline canvasTl(120.0, 48000.0);
+        GridLayout gl = canvasTl.getGridLayout();
+        gl.canvasWidth       = 1080;
+        gl.canvasHeight      = 1920;
+        gl.canvasAspectRatio = "9:16";
+        gl.previewFps        = 24;
+        canvasTl.setGridLayout(gl);
+
+        json saved = canvasTl.toJSON();
+        CHECK(saved["gridLayout"]["canvasWidth"]       == 1080,  "toJSON writes canvasWidth");
+        CHECK(saved["gridLayout"]["canvasHeight"]      == 1920,  "toJSON writes canvasHeight");
+        CHECK(saved["gridLayout"]["canvasAspectRatio"] == "9:16","toJSON writes canvasAspectRatio");
+
+        Timeline reloaded(140.0, 48000.0);
+        REQUIRE(reloaded.fromJSON(saved), "fromJSON of canvas project");
+        const GridLayout& rgl = reloaded.getGridLayout();
+        CHECK(rgl.canvasWidth       == 1080,  "canvasWidth survives round-trip");
+        CHECK(rgl.canvasHeight      == 1920,  "canvasHeight survives round-trip");
+        CHECK(rgl.canvasAspectRatio == "9:16","canvasAspectRatio survives round-trip");
+        CHECK(rgl.previewFps        == 24,    "previewFps (project frame rate) survives round-trip");
+
+        // Legacy project: a gridLayout WITHOUT canvas fields must default to
+        // 1920x1080 / "16:9" so old projects keep loading unchanged.
+        json legacy = saved;
+        legacy["gridLayout"].erase("canvasWidth");
+        legacy["gridLayout"].erase("canvasHeight");
+        legacy["gridLayout"].erase("canvasAspectRatio");
+        Timeline legacyTl(140.0, 48000.0);
+        REQUIRE(legacyTl.fromJSON(legacy), "fromJSON of legacy project");
+        const GridLayout& lgl = legacyTl.getGridLayout();
+        CHECK(lgl.canvasWidth       == 1920,  "legacy project defaults canvasWidth to 1920");
+        CHECK(lgl.canvasHeight      == 1080,  "legacy project defaults canvasHeight to 1080");
+        CHECK(lgl.canvasAspectRatio == "16:9","legacy project defaults aspect to 16:9");
+
+        // Odd / out-of-range dimensions normalize to even, in-range values so a
+        // hand-edited project can't reach the encoder with a bad size.
+        json weird = saved;
+        weird["gridLayout"]["canvasWidth"]  = 1921;    // odd  → 1920
+        weird["gridLayout"]["canvasHeight"] = 99999;   // huge → clamped
+        Timeline weirdTl(140.0, 48000.0);
+        REQUIRE(weirdTl.fromJSON(weird), "fromJSON of out-of-range canvas");
+        const GridLayout& wgl = weirdTl.getGridLayout();
+        CHECK((wgl.canvasWidth % 2) == 0,                 "odd canvasWidth normalized to even");
+        CHECK(wgl.canvasHeight <= kCanvasMaxHeight,       "oversize canvasHeight clamped to range");
+    }
+
     // Test 6: clean up temp directory.
     std::cout << "\n[6] cleanup\n";
     {

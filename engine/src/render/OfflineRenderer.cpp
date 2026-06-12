@@ -11,6 +11,7 @@
 #include "render/FrameCollector.h"
 #include "render/RenderVideoDecoder.h"
 #include "render/GridCompositor.h"
+#include "render/CanvasFit.h"
 #include "render/AnimationManager.h"
 #include "export/FFmpegMuxer.h"
 #include "SyncManager.h"          // VideoEvent
@@ -38,6 +39,29 @@ extern "C" {
 static constexpr int kBufferSize = 512;
 
 namespace {
+
+// Resolve the project canvas (GridLayout) + requested export size + fit mode into
+// the compositor's canvas viewport, then apply it. Identity when the export
+// aspect matches the project aspect or fit mode is Stretch, so aspect-matched
+// exports keep the exact legacy fill path. Logs the resolved placement.
+inline void applyCanvasFitToCompositor(GridCompositor& compositor,
+                                       const GridLayout& grid,
+                                       const ExportSettings& settings) {
+    using FM = ExportSettings::FitMode;
+    const xleth::CanvasFitMode mode =
+          (settings.fitMode == FM::Crop) ? xleth::CanvasFitMode::Crop
+        : (settings.fitMode == FM::Bars) ? xleth::CanvasFitMode::Bars
+                                         : xleth::CanvasFitMode::Stretch;
+    const xleth::CanvasFitViewport vp = xleth::computeCanvasFitViewport(
+        grid.canvasWidth, grid.canvasHeight, settings.width, settings.height, mode);
+    compositor.setCanvasFit(vp.x, vp.y, vp.w, vp.h);
+    const char* modeName = (settings.fitMode == FM::Crop) ? "crop"
+                         : (settings.fitMode == FM::Bars) ? "bars" : "stretch";
+    std::fprintf(stderr,
+        "[CanvasFit] canvas=%dx%d output=%dx%d mode=%s viewport=(%.4f,%.4f,%.4f,%.4f)\n",
+        grid.canvasWidth, grid.canvasHeight, settings.width, settings.height,
+        modeName, vp.x, vp.y, vp.w, vp.h);
+}
 
 struct PatternNoteRef {
     const PatternNote* note = nullptr;
@@ -619,6 +643,7 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
             progress_.phase.store(0);
             return;
         }
+        applyCanvasFitToCompositor(compositor, timeline_.getGridLayout(), settings);
     }
 
     std::fprintf(stderr, "[Renderer] START: samples %lld → %lld (%.2fs), renderStart=%lld discard=%lld renderEnd=%lld\n",
@@ -1301,6 +1326,8 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
     }
 
     const GridLayout& grid = timeline_.getGridLayout();
+    if (compositor.isInitialized())
+        applyCanvasFitToCompositor(compositor, grid, settings);
     const auto renderStartTime = std::chrono::steady_clock::now();
 
     int64_t audioSamplesWritten = 0;

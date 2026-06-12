@@ -1128,9 +1128,36 @@ struct GridLayout {
     int   rows          = 3;       // M (1-8)
     std::vector<GridSlot> slots;
     std::vector<FullscreenLayer> fullscreenLayers;
-    int   previewFps    = 30;      // 1-120
+    int   previewFps    = 30;      // 1-120 — this IS the project frame rate (export + preview default)
+
+    // ── Project video canvas ─────────────────────────────────────────────────
+    // Base output resolution + aspect for the project. The export dialog defaults
+    // to these (Custom may override); the offline renderer treats canvasWidth ×
+    // canvasHeight as the authoring aspect when fitting into an export resolution
+    // that differs (crop / stretch / letterbox). aspectRatio is a UI hint
+    // ("16:9", "9:16", "4:3", "1:1", "21:9", or "custom") and is not used by the
+    // renderer — width/height are authoritative. Added after kProjectFileVersion
+    // 3; older projects without these fields default to 1920×1080 / "16:9".
+    int         canvasWidth       = 1920;   // 16 .. 7680 (even)
+    int         canvasHeight      = 1080;   // 16 .. 4320 (even)
+    std::string canvasAspectRatio = "16:9";
+
     float gapScale      = 0.0f;   // 0.0–0.5
 };
+
+// Clamp a project canvas dimension to the supported encoder range and force it
+// even (H.264/H.265 require even dimensions). Shared by the model loader and the
+// bridge so JS and persisted values normalize identically.
+inline int normalizeCanvasDim(int v, int lo, int hi) {
+    if (v < lo) v = lo;
+    if (v > hi) v = hi;
+    if (v & 1)  v -= 1;           // force even
+    return v;
+}
+constexpr int kCanvasMinWidth  = 16;
+constexpr int kCanvasMaxWidth  = 7680;
+constexpr int kCanvasMinHeight = 16;
+constexpr int kCanvasMaxHeight = 4320;
 
 // ─── LoopRegion ───────────────────────────────────────────────────────────────
 // Single global project loop / render region (one per project). Phase 1 uses it
