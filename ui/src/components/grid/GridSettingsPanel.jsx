@@ -80,10 +80,30 @@ function resolutionIdForDims(aspectId, w, h) {
   return hit ? `${w}x${h}` : 'custom'
 }
 
-function filterSlotsForSize(slots, columns, rows) {
+// Placements whose span falls outside an N×M grid. Used to WARN before a grid
+// shrink — we never silently delete these. Out-of-bounds placements are
+// preserved (recoverable: they reappear when the grid is enlarged again or the
+// slot is moved back into view), matching the "keep user layout, clamp only
+// invalid numbers" rule.
+function slotsOutOfBounds(slots, columns, rows) {
   const maxX = columns * SUB_UNITS_PER_COLUMN
   const maxY = rows    * SUB_UNITS_PER_ROW
-  return slots.filter(s => s.gridX + s.spanX <= maxX && s.gridY + s.spanY <= maxY)
+  return (slots ?? []).filter(s => s.gridX + s.spanX > maxX || s.gridY + s.spanY > maxY)
+}
+
+// Gate a columns/rows change. Returns true to proceed. When shrinking the grid
+// would leave user-authored placements outside the visible area, confirm first
+// so the hide is never silent. Data is preserved regardless of the answer; this
+// only guards against a surprising disappearance.
+function confirmGridResize(slots, columns, rows) {
+  const orphans = slotsOutOfBounds(slots, columns, rows)
+  if (orphans.length === 0) return true
+  const n = orphans.length
+  return window.confirm(
+    `Resizing the grid to ${columns}×${rows} leaves ${n} placement${n === 1 ? '' : 's'} ` +
+    `outside the visible area.\n\nThey will be kept (not deleted) and reappear if you enlarge ` +
+    `the grid again or move them back into view.\n\nContinue?`
+  )
 }
 
 const notify = () => timelineEvents.dispatchEvent(new Event('timeline-grid-changed'))
@@ -211,11 +231,18 @@ export default function GridSettingsPanel({ layout, setLayout, tracks }) {
   const showSizeInputs = customSizeMode || resId === 'custom'
 
   // Persist a canvas patch to the real project gridLayout (single source of
-  // truth). Mirrors the other handlers: optimistic local state + engine write.
+  // truth). Canvas fields (aspect / resolution) are NON-geometric: grid slots
+  // are stored in canvas-independent fine units, so they must survive untouched.
+  // We re-read the engine's current layout as the authoritative base before
+  // applying the patch, so a stale or partial React `layout` can never drop
+  // slots or fullscreen layers when only canvas fields change. Falls back to the
+  // prop when the bridge has no getGridLayout (e.g. unit tests).
   const persistCanvas = useCallback(async (patch) => {
-    const next = { ...layout, ...patch }
+    const tl = window.xleth?.timeline
+    const base = (await tl?.getGridLayout?.()) || layout
+    const next = { ...base, ...patch }
     setLayout(next)
-    await window.xleth?.timeline?.setGridLayout(next)
+    await tl?.setGridLayout(next)
     notify()
   }, [layout, setLayout])
 
@@ -275,18 +302,21 @@ export default function GridSettingsPanel({ layout, setLayout, tracks }) {
   const handleColumnsChange = useCallback(async (e) => {
     const cols = Math.max(1, Math.min(8, parseInt(e.target.value) || 1))
     const rows = linked ? cols : layout.rows
-    const filtered = filterSlotsForSize(layout.slots, cols, rows)
+    if (!confirmGridResize(layout.slots, cols, rows)) return
     setLayout(l => ({ ...l, columns: cols, rows }))
-    await window.xleth?.timeline?.setGridLayout({ ...layout, columns: cols, rows, slots: filtered })
+    // Slots are preserved as-is — out-of-bounds placements stay recoverable and
+    // are never silently deleted (the old filterSlotsForSize behaviour).
+    await window.xleth?.timeline?.setGridLayout({ ...layout, columns: cols, rows })
     notify()
   }, [layout, linked, setLayout])
 
   const handleRowsChange = useCallback(async (e) => {
     const rows = Math.max(1, Math.min(8, parseInt(e.target.value) || 1))
     const cols = linked ? rows : layout.columns
-    const filtered = filterSlotsForSize(layout.slots, cols, rows)
+    if (!confirmGridResize(layout.slots, cols, rows)) return
     setLayout(l => ({ ...l, columns: cols, rows }))
-    await window.xleth?.timeline?.setGridLayout({ ...layout, columns: cols, rows, slots: filtered })
+    // Slots are preserved as-is — see handleColumnsChange.
+    await window.xleth?.timeline?.setGridLayout({ ...layout, columns: cols, rows })
     notify()
   }, [layout, linked, setLayout])
 
