@@ -263,6 +263,101 @@ int main()
         std::fprintf(stderr, "[TEST:Muxer] Test 4: PASSED\n");
     }
 
+    // ── Test 5: Rate-control resolution (pure, no encoder needed) ────────────
+    {
+        std::fprintf(stderr, "\n[TEST:Muxer] --- Test 5: resolveRateControl ---\n");
+        using RC = ExportSettings::RateControl;
+
+        // (a) Software CRF mode → libx264 sets the "crf" private option, no bitrate.
+        {
+            ExportSettings s;
+            s.rateControl = RC::CRF;
+            s.crf = 18;
+            s.videoBitrate = 0;
+            ResolvedRateControl r = resolveRateControl("libx264", s);
+            assert(!r.bitrateMode && "CRF mode should not be bitrate mode");
+            assert(r.setCrfPrivOpt && r.crf == 18 && "libx264 should set crf=18");
+            assert(r.bitrate == 0 && "CRF mode must not set a bitrate for libx264");
+        }
+
+        // (b) Bitrate mode → bitrate honored, CRF never applied (the core bug).
+        {
+            ExportSettings s;
+            s.rateControl = RC::Bitrate;
+            s.crf = 23;               // default leak — must be ignored in bitrate mode
+            s.videoBitrate = 20'000'000;
+            ResolvedRateControl r = resolveRateControl("libx264", s);
+            assert(r.bitrateMode && "Bitrate mode flag");
+            assert(!r.setCrfPrivOpt && "Bitrate mode must NOT set crf");
+            assert(r.bitrate == 20'000'000 && "Requested bitrate must survive");
+        }
+
+        // (c) Bitrate mode with 0 → resolution-scaled default, never proxy-grade.
+        {
+            ExportSettings s;
+            s.rateControl = RC::Bitrate;
+            s.videoBitrate = 0;
+            s.width = 1920; s.height = 1080; s.fpsNum = 30; s.fpsDen = 1;
+            ResolvedRateControl r = resolveRateControl("libx264", s);
+            assert(r.bitrate >= 2'000'000 && "Default bitrate must be sane (>=2 Mbps)");
+        }
+
+        // (d) NVENC CRF mode → constqp + qp (no fake "crf" private option).
+        {
+            ExportSettings s;
+            s.rateControl = RC::CRF;
+            s.crf = 20;
+            ResolvedRateControl r = resolveRateControl("h264_nvenc", s);
+            assert(!r.setCrfPrivOpt && "NVENC must not pretend to support crf");
+            assert(r.rcModeKey && std::strcmp(r.rcModeKey, "rc") == 0);
+            assert(r.rcModeVal && std::strcmp(r.rcModeVal, "constqp") == 0);
+            assert(r.qpOptKey && std::strcmp(r.qpOptKey, "qp") == 0 && r.qpValue == 20);
+        }
+
+        // (e) AMF CRF mode → cqp + triple QP.
+        {
+            ExportSettings s;
+            s.rateControl = RC::CRF;
+            s.crf = 22;
+            ResolvedRateControl r = resolveRateControl("h264_amf", s);
+            assert(!r.setCrfPrivOpt);
+            assert(r.qpOptKey && std::strcmp(r.qpOptKey, "qp_i") == 0 && r.qpValue == 22);
+            assert(r.amfTripleQp && "AMF should also set qp_p/qp_b");
+        }
+
+        // (f) QSV CRF mode → ICQ via global_quality.
+        {
+            ExportSettings s;
+            s.rateControl = RC::CRF;
+            s.crf = 24;
+            ResolvedRateControl r = resolveRateControl("h264_qsv", s);
+            assert(r.useGlobalQuality && r.globalQuality == 24);
+        }
+
+        // (g) Legacy crf<0 sentinel still means "use bitrate" even in CRF mode.
+        {
+            ExportSettings s;
+            s.rateControl = RC::CRF;
+            s.crf = -1;
+            s.videoBitrate = 500'000;
+            ResolvedRateControl r = resolveRateControl("libx264", s);
+            assert(r.bitrateMode && r.bitrate == 500'000 && "crf<0 sentinel → bitrate");
+        }
+
+        // (h) No-CRF codec (mpeg4) in CRF mode → falls back to a sane bitrate.
+        {
+            ExportSettings s;
+            s.rateControl = RC::CRF;
+            s.crf = 18;
+            s.videoBitrate = 0;
+            s.width = 1920; s.height = 1080; s.fpsNum = 30; s.fpsDen = 1;
+            ResolvedRateControl r = resolveRateControl("mpeg4", s);
+            assert(r.bitrateMode && r.bitrate >= 2'000'000 && "mpeg4 CRF→default bitrate");
+        }
+
+        std::fprintf(stderr, "[TEST:Muxer] Test 5: PASSED\n");
+    }
+
     // ── Cleanup ─────────────────────────────────────────────────────────────
     std::filesystem::remove(outPath);
     std::filesystem::remove(fragPath);

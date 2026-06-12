@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { BEATS_PER_BAR } from '../constants/timeline.js'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useToast } from './Toast.jsx'
 import YouTubeTab from './exportPresets/YouTubeTab.jsx'
 import DiscordTab from './exportPresets/DiscordTab.jsx'
@@ -7,32 +6,19 @@ import CustomTab, { makeCustomDefaults } from './exportPresets/CustomTab.jsx'
 import ProgressPanel from './exportPresets/ProgressPanel.jsx'
 import TailRenderControls from './TailRenderControls.jsx'
 import {
-  YOUTUBE_RESOLUTIONS,
-  computeYoutubeBitrate,
   computeDiscordVideoBitrate,
   DISCORD_MIN_VIDEO_BITRATE,
   defaultExportPresets,
+  buildExportConfig,
+  customAspectMismatch,
+  FIT_MODES,
+  DEFAULT_PROJECT_CANVAS,
 } from './exportPresets/presets.js'
-
-// Parses "1920x1080" or "custom" with width/height fields into pixel dims.
-function customResolutionPx(settings) {
-  if (settings.resolution === 'custom') {
-    return { w: Number(settings.customWidth) || 1920, h: Number(settings.customHeight) || 1080 }
-  }
-  const [w, h] = String(settings.resolution).split('x').map(Number)
-  return { w: w || 1920, h: h || 1080 }
-}
-
-const DISCORD_WIDTH  = 1280
-const DISCORD_HEIGHT = 720
 
 export default function VideoExportDialog({ isOpen, onClose }) {
   const { showToast } = useToast()
 
   // ── Range ───────────────────────────────────────────────────────────
-  const [startBar, setStartBar] = useState(1)
-  const [endBar, setEndBar]     = useState(0)
-
   // ── Output file (shared across all tabs) ───────────────────────────
   const [outputPath, setOutputPath] = useState('')
 
@@ -47,6 +33,9 @@ export default function VideoExportDialog({ isOpen, onClose }) {
   const [customSettings, setCustomSettings]   = useState(() => makeCustomDefaults())
   const [customPresets, setCustomPresets]     = useState([])
   const [presetsLoaded, setPresetsLoaded]     = useState(false)
+
+  // ── Project canvas (Grid Settings) — the export default source of truth ─────
+  const [projectCanvas, setProjectCanvas]     = useState(DEFAULT_PROJECT_CANVAS)
 
   // ── Progress state ─────────────────────────────────────────────────
   const [phase, setPhase]         = useState('idle') // idle | running | done | error | cancelled
@@ -159,6 +148,27 @@ export default function VideoExportDialog({ isOpen, onClose }) {
     window.xleth?.settings?.get?.('videoMode').then(v => {
       setVideoModeOverride(['auto', 'software', 'hardware'].includes(v) ? v : 'auto')
     }).catch(() => setVideoModeOverride('auto'))
+
+    // Pull the project canvas (Grid Settings) and default the export to it:
+    //   • Custom is re-seeded from the project canvas (resolution/aspect/fps).
+    //   • YouTube/Discord inherit the project frame rate as their default fps
+    //     (they keep their platform-tuned resolutions — see exportPresets).
+    ;(async () => {
+      try {
+        const gl = await window.xleth?.timeline?.getGridLayout()
+        if (!gl) return
+        const pc = {
+          canvasWidth:       Number(gl.canvasWidth)  || DEFAULT_PROJECT_CANVAS.canvasWidth,
+          canvasHeight:      Number(gl.canvasHeight) || DEFAULT_PROJECT_CANVAS.canvasHeight,
+          canvasAspectRatio: gl.canvasAspectRatio || DEFAULT_PROJECT_CANVAS.canvasAspectRatio,
+          previewFps:        Number(gl.previewFps)   || DEFAULT_PROJECT_CANVAS.previewFps,
+        }
+        setProjectCanvas(pc)
+        setCustomSettings(makeCustomDefaults(pc))
+        setYoutubeSettings(s => ({ ...s, fps: pc.previewFps }))
+        setDiscordSettings(s => ({ ...s, fps: pc.previewFps }))
+      } catch { /* keep DEFAULT_PROJECT_CANVAS */ }
+    })()
   }, [isOpen])
 
   const running  = phase === 'running'
@@ -212,104 +222,36 @@ export default function VideoExportDialog({ isOpen, onClose }) {
     let cancelled = false
     ;(async () => {
       try {
-        const s = Math.max(0, (Number(startBar) - 1) * BEATS_PER_BAR)
-        const e = Number(endBar) > 0 ? Number(endBar) * BEATS_PER_BAR : -1
-        const secs = await window.xleth?.videoExport?.computeDurationSeconds?.(s, e)
+        const secs = await window.xleth?.videoExport?.computeDurationSeconds?.()
         if (!cancelled) setDiscordDurationSec(Number(secs) || 0)
       } catch {
         if (!cancelled) setDiscordDurationSec(0)
       }
     })()
     return () => { cancelled = true }
-  }, [activeTab, startBar, endBar])
+  }, [activeTab])
 
   const discordBelowMin = activeTab === 'discord'
     && discordDurationSec > 0
     && computeDiscordVideoBitrate(discordSettings.tier, discordDurationSec) < DISCORD_MIN_VIDEO_BITRATE
 
-  const buildCfg = useCallback(() => {
-    // Phase 2: the render scope derives from the project LoopRegion. The manual
-    // Start/End Bar inputs are dev-only and forwarded solely as a debug bounds
-    // override (the native side gates them too). In production builds no
-    // start/end beats are sent, so the bridge uses the LoopRegion.
-    const debugRange = {}
-    if (import.meta.env.DEV) {
-      const sBar = Math.max(1, Number(startBar) || 1)
-      const eBar = Number(endBar) || 0
-      debugRange.startBeat = (sBar - 1) * BEATS_PER_BAR
-      debugRange.endBeat   = eBar > 0 ? eBar * BEATS_PER_BAR : -1.0
-    }
+  const buildCfg = useCallback(() => buildExportConfig({
+    activeTab,
+    outputPath,
+    youtubeSettings,
+    discordSettings,
+    customSettings,
+    videoModeOverride,
+    discordDurationSec,
+    projectCanvas,
+  }), [activeTab, outputPath, youtubeSettings,
+      discordSettings, discordDurationSec, customSettings, videoModeOverride, projectCanvas])
 
-    if (activeTab === 'youtube') {
-      const res = YOUTUBE_RESOLUTIONS.find((r) => r.id === youtubeSettings.resolution)
-                || YOUTUBE_RESOLUTIONS[0]
-      const bps = computeYoutubeBitrate(res.width, res.height, youtubeSettings.fps, youtubeSettings.quality)
-      return {
-        outputPath,
-        videoCodec:   'h264',
-        hwEncoder:    youtubeSettings.hwEncoder || '',
-        videoMode:    videoModeOverride || 'auto',
-        width:        res.width,
-        height:       res.height,
-        fpsNum:       Number(youtubeSettings.fps),
-        fpsDen:       1,
-        videoBitrate: bps,
-        audioCodec:   'aac',
-        sampleRate:   48000,
-        audioBitrate: 384,
-        // Final-quality export — bypass DNxHR proxy substitution so the encoder
-        // sees original-source pixels (otherwise CRF/bitrate operate on already-
-        // degraded preview-grade input).
-        useSourceMedia: true,
-        ...debugRange,
-      }
-    }
-
-    if (activeTab === 'discord') {
-      const bps = computeDiscordVideoBitrate(discordSettings.tier, discordDurationSec)
-      return {
-        outputPath,
-        videoCodec:   'h264',
-        hwEncoder:    discordSettings.hwEncoder || '',
-        videoMode:    videoModeOverride || 'auto',
-        width:        DISCORD_WIDTH,
-        height:       DISCORD_HEIGHT,
-        fpsNum:       Number(discordSettings.fps),
-        fpsDen:       1,
-        videoBitrate: bps,
-        audioCodec:   'opus',
-        sampleRate:   44100,
-        audioBitrate: 256,
-        useSourceMedia: true,
-        ...debugRange,
-      }
-    }
-
-    // Custom
-    const { w, h } = customResolutionPx(customSettings)
-    const cfg = {
-      outputPath,
-      videoCodec:   customSettings.videoCodec,
-      hwEncoder:    customSettings.hwEncoder || '',
-      videoMode:    videoModeOverride || 'auto',
-      width:        w,
-      height:       h,
-      fpsNum:       Number(customSettings.fps),
-      fpsDen:       1,
-      audioCodec:   customSettings.audioCodec,
-      sampleRate:   Number(customSettings.sampleRate),
-      audioBitrate: Number(customSettings.audioBitrate),
-      useSourceMedia: true,
-      ...debugRange,
-    }
-    if (customSettings.useCrf) {
-      cfg.crf = Number(customSettings.crf)
-    } else {
-      cfg.videoBitrate = Number(customSettings.videoBitrate) * 1_000_000
-    }
-    return cfg
-  }, [activeTab, outputPath, startBar, endBar, youtubeSettings,
-      discordSettings, discordDurationSec, customSettings, videoModeOverride])
+  // Custom export whose aspect differs from the project must pick a fit mode
+  // before it can run (crop / stretch / letterbox actually change the encode).
+  const customFitRequired = activeTab === 'custom'
+    && customAspectMismatch(customSettings, projectCanvas)
+    && !FIT_MODES.includes(customSettings.fitMode)
 
   const activeFps = activeTab === 'youtube' ? youtubeSettings.fps
                   : activeTab === 'discord' ? discordSettings.fps
@@ -324,6 +266,10 @@ export default function VideoExportDialog({ isOpen, onClose }) {
       showToast('Clip too long for this Discord tier. Trim the range or pick a higher tier.', 'error')
       return
     }
+    if (customFitRequired) {
+      showToast('Choose a fit mode — the custom output aspect differs from the project canvas.', 'error')
+      return
+    }
     setPhase('running')
     setProgress(0)
     setErrorMsg('')
@@ -334,7 +280,7 @@ export default function VideoExportDialog({ isOpen, onClose }) {
       setPhase('error')
       setErrorMsg('Failed to start render (already running?)')
     }
-  }, [outputPath, discordBelowMin, buildCfg, activeFps, showToast])
+  }, [outputPath, discordBelowMin, customFitRequired, buildCfg, activeFps, showToast])
 
   const cancel = useCallback(async () => {
     await window.xleth?.videoExport?.exportCancel()
@@ -350,7 +296,7 @@ export default function VideoExportDialog({ isOpen, onClose }) {
 
   if (!isOpen) return null
 
-  const exportDisabled = !outputPath || discordBelowMin
+  const exportDisabled = !outputPath || discordBelowMin || customFitRequired
 
   return (
     <div className="export-dialog-backdrop" onClick={() => { if (!running) onClose() }}>
@@ -403,42 +349,16 @@ export default function VideoExportDialog({ isOpen, onClose }) {
             />
           ) : (
             <>
-              {/* Range row — dev-only debug override. Normal exports scope to
-                  the project LoopRegion; these manual bars are hidden in
-                  production builds and forwarded only as a debug override. */}
-              {import.meta.env.DEV && (
-                <>
-                  <div className="export-row">
-                    <label>Start Bar (debug)</label>
-                    <input
-                      type="number" min={1} step={1}
-                      value={startBar}
-                      onChange={(e) => setStartBar(e.target.value)}
-                    />
-                  </div>
-                  <div className="export-row">
-                    <label>End Bar (debug)</label>
-                    <input
-                      type="number" min={0} step={1}
-                      value={endBar}
-                      onChange={(e) => setEndBar(e.target.value)}
-                      placeholder="0 = auto"
-                    />
-                  </div>
-                </>
-              )}
-              <div style={{ borderTop: '1px solid var(--theme-border-subtle)', margin: '4px 0', opacity: 0.3 }} />
-
               <div className="export-row">
-                <label>Video mode</label>
+                <label>Encoder</label>
                 <select
                   value={videoModeOverride}
                   onChange={e => setVideoModeOverride(e.target.value)}
                   style={{ fontSize: 12 }}
                 >
                   <option value="auto">Auto</option>
-                  <option value="software">Software</option>
-                  <option value="hardware">Hardware only</option>
+                  <option value="software">Software Encoder</option>
+                  <option value="hardware">Hardware Encoder Only</option>
                 </select>
               </div>
 
@@ -463,8 +383,6 @@ export default function VideoExportDialog({ isOpen, onClose }) {
                   outputPath={outputPath}
                   onBrowse={browse}
                   running={running}
-                  startBar={startBar}
-                  endBar={endBar}
                 />
               )}
               {activeTab === 'custom' && (
@@ -474,6 +392,7 @@ export default function VideoExportDialog({ isOpen, onClose }) {
                   outputPath={outputPath}
                   onBrowse={browse}
                   running={running}
+                  projectCanvas={projectCanvas}
                   presets={customPresets}
                   onSavePreset={handleSavePreset}
                   onLoadPreset={handleLoadPreset}

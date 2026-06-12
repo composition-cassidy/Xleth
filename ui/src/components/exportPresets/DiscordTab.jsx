@@ -1,5 +1,4 @@
-import { useEffect, useState } from 'react'
-import { BEATS_PER_BAR } from '../../constants/timeline.js'
+import React, { useEffect, useState } from 'react'
 import {
   DISCORD_TIER_LABELS,
   DISCORD_WARN_VIDEO_BITRATE,
@@ -22,8 +21,6 @@ export default function DiscordTab({
   outputPath,
   onBrowse,
   running,
-  startBar,
-  endBar,
 }) {
   const [availableEncoders, setAvailableEncoders] = useState([])
   const [durationSeconds, setDurationSeconds] = useState(0)
@@ -51,16 +48,14 @@ export default function DiscordTab({
     let cancelled = false
     ;(async () => {
       try {
-        const s = Math.max(0, (Number(startBar) - 1) * BEATS_PER_BAR)
-        const e = Number(endBar) > 0 ? Number(endBar) * BEATS_PER_BAR : -1
-        const secs = await window.xleth?.videoExport?.computeDurationSeconds?.(s, e)
+        const secs = await window.xleth?.videoExport?.computeDurationSeconds?.()
         if (!cancelled) setDurationSeconds(Number(secs) || 0)
       } catch {
         if (!cancelled) setDurationSeconds(0)
       }
     })()
     return () => { cancelled = true }
-  }, [startBar, endBar])
+  }, [])
 
   const videoBitrate = computeDiscordVideoBitrate(settings.tier, durationSeconds)
   const estimatedBytes = estimateDiscordFileBytes(videoBitrate, durationSeconds)

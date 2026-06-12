@@ -11,9 +11,6 @@ import TailRenderControls, {
 } from './TailRenderControls.jsx'
 import useLoopRegionStore, { DEFAULT_LOOP_REGION } from '../stores/loopRegionStore.js'
 
-// Real client render (jsdom) so the zustand store updates are reflected — under
-// SSR (renderToStaticMarkup) zustand v5 uses getInitialState, which would always
-// show the default region.
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
 let container
@@ -25,82 +22,78 @@ function renderHtml(el) {
   return html
 }
 
-describe('TailRenderControls (Phase 3A)', () => {
+describe('TailRenderControls', () => {
   beforeEach(() => {
-    // timeline mock: no getLoopRegion so the mount fetch no-ops and the state we
-    // set below is what renders.
     window.xleth = { timeline: {} }
     container = document.createElement('div')
     document.body.appendChild(container)
     useLoopRegionStore.getState().setLoopRegionLocal({ ...DEFAULT_LOOP_REGION })
   })
-  afterEach(() => { container.remove() })
 
-  it('shows the tail-mode control with hardCut, tailClamp and an ENABLED wrap option', () => {
+  afterEach(() => {
+    container.remove()
+  })
+
+  it('uses user-facing End Behavior copy while preserving tail mode values', () => {
     const html = renderHtml(<TailRenderControls />)
-    expect(html).toContain('Tail mode')
+    expect(html).toContain('End Behavior')
+    expect(html).not.toContain('Tail mode')
     expect(html).toContain('value="tailClamp"')
+    expect(html).toContain('Let audio fade out')
     expect(html).toContain('value="hardCut"')
-    // Phase 3B: wrap is now a real, selectable option (native support wired).
+    expect(html).toContain('Cut exactly at end')
     expect(html).toContain('value="wrap"')
-    expect(html).not.toMatch(/<option value="wrap"[^>]*disabled/)
+    expect(html).toContain('Loop-safe wrap')
   })
 
-  it('shows wrap copy about audio tail folding and the LTI/nonlinear limitation', () => {
-    useLoopRegionStore.getState().setLoopRegionLocal({
-      ...DEFAULT_LOOP_REGION, tailMode: 'wrap',
-    })
+  it('shows the fade-out helper and compact tail limits only for tailClamp', () => {
     const html = renderHtml(<TailRenderControls />)
-    // mentions folding audio tails for a seamless loop export
-    expect(html).toMatch(/fold/i)
-    expect(html).toMatch(/seamless loop/i)
-    // mentions it is for loop-region renders
-    expect(html).toMatch(/loop-region/i)
-    // warns the fold is exact for LTI effects but approximate for nonlinear ones
-    expect(html).toMatch(/time-invariant/i)
-    expect(html).toMatch(/approximate/i)
-    // mentions the output stays region length (video not extended)
-    expect(html).toMatch(/not (be )?extended/i)
-  })
-
-  it('shows the tailClamp explanation by default (effects ring out, frozen frame)', () => {
-    const html = renderHtml(<TailRenderControls />)
-    expect(html).toContain('ring out')
-    expect(html).toContain('frozen')
-  })
-
-  it('shows the hardCut click/pop warning when hardCut is selected', () => {
-    useLoopRegionStore.getState().setLoopRegionLocal({
-      ...DEFAULT_LOOP_REGION, tailMode: 'hardCut',
-    })
-    const html = renderHtml(<TailRenderControls />)
-    expect(html).toContain('tail-warning')
-    expect(html).toMatch(/click\/pop/)
-  })
-
-  it('defaults threshold to -60 dBFS and cap to 10 seconds', () => {
-    const html = renderHtml(<TailRenderControls />)
+    expect(html).toContain('After the region ends, existing reverb, delay, and effect tails continue until they fade below the limit.')
+    expect(html).toContain('Tail fade settings')
     expect(html).toContain('Tail threshold (dBFS)')
     expect(html).toContain('value="-60"')
     expect(html).toContain('Tail max (seconds)')
     expect(html).toContain('value="10"')
   })
 
-  it('defaults render origin to absolute and disables the reserved normalized option', () => {
+  it('hides tail threshold and max controls for hardCut', () => {
+    useLoopRegionStore.getState().setLoopRegionLocal({
+      ...DEFAULT_LOOP_REGION,
+      tailMode: 'hardCut',
+    })
     const html = renderHtml(<TailRenderControls />)
-    expect(html).toContain('Render origin')
+    expect(html).toContain('Export stops at the region end. Effect tails are cut off.')
+    expect(html).not.toContain('Tail threshold (dBFS)')
+    expect(html).not.toContain('Tail max (seconds)')
+  })
+
+  it('hides tail threshold and max controls for wrap', () => {
+    useLoopRegionStore.getState().setLoopRegionLocal({
+      ...DEFAULT_LOOP_REGION,
+      tailMode: 'wrap',
+    })
+    const html = renderHtml(<TailRenderControls />)
+    expect(html).toContain('Effect tails are folded back into the start of the region for seamless loop exports.')
+    expect(html).not.toContain('Tail threshold (dBFS)')
+    expect(html).not.toContain('Tail max (seconds)')
+  })
+
+  it('uses Start Processing From copy and disables the reserved normalized origin value', () => {
+    const html = renderHtml(<TailRenderControls />)
+    expect(html).toContain('Start Processing From')
+    expect(html).not.toContain('Render origin')
     expect(html).toContain('value="absolute"')
+    expect(html).toContain('Project start')
     expect(html).toMatch(/<option value="normalized"[^>]*disabled/)
+    expect(html).toContain('Region start')
   })
 
   it('clamps and sanitizes threshold/cap values', () => {
-    // Threshold: finite, [-120, 0]; non-finite → fallback.
     expect(clampTailNumber('5', TAIL_THRESHOLD_MIN, TAIL_THRESHOLD_MAX, -60)).toBe(0)
     expect(clampTailNumber('-999', TAIL_THRESHOLD_MIN, TAIL_THRESHOLD_MAX, -60)).toBe(-120)
     expect(clampTailNumber('-42', TAIL_THRESHOLD_MIN, TAIL_THRESHOLD_MAX, -60)).toBe(-42)
     expect(clampTailNumber('abc', TAIL_THRESHOLD_MIN, TAIL_THRESHOLD_MAX, -60)).toBe(-60)
 
-    // Cap: finite, non-negative, capped.
     expect(clampTailNumber('-5', TAIL_MAX_SECONDS_MIN, TAIL_MAX_SECONDS_MAX, 10)).toBe(0)
     expect(clampTailNumber('9999', TAIL_MAX_SECONDS_MIN, TAIL_MAX_SECONDS_MAX, 10)).toBe(120)
     expect(clampTailNumber('7.5', TAIL_MAX_SECONDS_MIN, TAIL_MAX_SECONDS_MAX, 10)).toBe(7.5)

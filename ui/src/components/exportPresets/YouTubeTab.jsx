@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import {
   YOUTUBE_QUALITY_STOPS,
   YOUTUBE_RESOLUTIONS,

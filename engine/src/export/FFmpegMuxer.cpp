@@ -189,6 +189,103 @@ static std::vector<const AVCodec*> buildVideoEncoderCandidates(
     return result;
 }
 
+// ===========================================================================
+// Rate-control resolution (pure — see header)
+// ===========================================================================
+
+int64_t defaultVideoBitrate(int width, int height, int fpsNum, int fpsDen)
+{
+    if (width <= 0 || height <= 0) { width = 1920; height = 1080; }
+    double fps = (fpsDen > 0) ? static_cast<double>(fpsNum) / fpsDen : 30.0;
+    if (fps <= 0.0) fps = 30.0;
+
+    // ~0.10 bits per pixel·frame — a conservative H.264 "looks good" rule of
+    // thumb (1080p30 ≈ 6.2 Mbps, 1080p60 ≈ 12 Mbps, 4K60 ≈ 50 Mbps).
+    double bps = static_cast<double>(width) * static_cast<double>(height) * fps * 0.10;
+
+    int64_t br = static_cast<int64_t>(bps);
+    const int64_t kMin = 2'000'000;     // never proxy-grade
+    const int64_t kMax = 120'000'000;   // sanity cap
+    if (br < kMin) br = kMin;
+    if (br > kMax) br = kMax;
+    return br;
+}
+
+ResolvedRateControl resolveRateControl(const char* encoderName, const ExportSettings& s)
+{
+    ResolvedRateControl r;
+    const char* name = encoderName ? encoderName : "";
+
+    const bool isNvenc = std::strstr(name, "_nvenc") != nullptr;
+    const bool isAmf   = std::strstr(name, "_amf")   != nullptr;
+    const bool isQsv   = std::strstr(name, "_qsv")   != nullptr;
+    const bool isMf    = std::strstr(name, "_mf")    != nullptr;
+    // Encoders that expose libx264-style "crf".
+    const bool hasCrfOpt = std::strstr(name, "libx264")   != nullptr
+                        || std::strstr(name, "libx265")   != nullptr
+                        || std::strstr(name, "libsvtav1") != nullptr
+                        || std::strstr(name, "libaom")    != nullptr;
+
+    // crf < 0 is the long-standing "disable CRF, use bitrate" sentinel (header,
+    // and every existing test). Honor it even when rateControl was left default.
+    const bool bitrateMode =
+        (s.rateControl == ExportSettings::RateControl::Bitrate) || (s.crf < 0);
+
+    if (bitrateMode) {
+        r.bitrateMode = true;
+        r.bitrate = (s.videoBitrate > 0)
+                        ? static_cast<int64_t>(s.videoBitrate)
+                        : defaultVideoBitrate(s.width, s.height, s.fpsNum, s.fpsDen);
+        // Hardware defaults vary by driver — pin an explicit VBR mode.
+        if      (isNvenc) { r.rcModeKey = "rc";           r.rcModeVal = "vbr"; }
+        else if (isAmf)   { r.rcModeKey = "rc";           r.rcModeVal = "vbr_peak"; }
+        else if (isMf)    { r.rcModeKey = "rate_control"; r.rcModeVal = "u_vbr"; }
+        // qsv + software select VBR/ABR implicitly once bit_rate is set.
+        r.notes = "bitrate";
+        return r;
+    }
+
+    // ── Constant-quality (CRF) mode ──────────────────────────────────────────
+    int q = s.crf;
+    if (q < 0)  q = 23;
+    if (q > 51) q = 51;
+    r.crf = q;
+
+    if (hasCrfOpt) {
+        r.setCrfPrivOpt = true;
+        r.notes = "crf(priv)";
+    } else if (isNvenc) {
+        r.rcModeKey = "rc";  r.rcModeVal = "constqp";
+        r.qpOptKey  = "qp";  r.qpValue   = q;          // NVENC qp shares x264's 0..51 scale
+        r.notes = "nvenc constqp";
+    } else if (isAmf) {
+        r.rcModeKey = "rc";   r.rcModeVal = "cqp";
+        r.qpOptKey  = "qp_i"; r.qpValue   = q; r.amfTripleQp = true;
+        r.notes = "amf cqp";
+    } else if (isQsv) {
+        r.useGlobalQuality = true; r.globalQuality = q; // ICQ quality
+        r.notes = "qsv icq";
+    } else if (isMf) {
+        // Media Foundation "quality" is 0..100, higher = better. Map x264 CRF
+        // (0..51, lower = better) onto it. Approximate but honest, not a fake crf.
+        int mfq = static_cast<int>(std::lround((51.0 - q) / 51.0 * 100.0));
+        if (mfq < 0)   mfq = 0;
+        if (mfq > 100) mfq = 100;
+        r.rcModeKey = "rate_control"; r.rcModeVal = "quality";
+        r.qpOptKey  = "quality";      r.qpValue   = mfq;
+        r.notes = "mf quality";
+    } else {
+        // mpeg4 / dnxhd / prores have no recognized constant-quality knob: pick a
+        // sane explicit bitrate so output is not proxy-grade.
+        r.bitrateMode = true;
+        r.bitrate = (s.videoBitrate > 0)
+                        ? static_cast<int64_t>(s.videoBitrate)
+                        : defaultVideoBitrate(s.width, s.height, s.fpsNum, s.fpsDen);
+        r.notes = "no-crf-support→default bitrate";
+    }
+    return r;
+}
+
 const void* FFmpegMuxer::findAudioEncoder(ExportSettings::AudioCodec codec)
 {
     using AC = ExportSettings::AudioCodec;
@@ -324,16 +421,34 @@ bool FFmpegMuxer::initVideoStream(const ExportSettings& s)
             }
         }
 
-        if (s.videoBitrate > 0) videoCodecCtx_->bit_rate = s.videoBitrate;
-        if (s.crf >= 0)         av_opt_set_int(videoCodecCtx_->priv_data, "crf", s.crf, 0);
+        // Resolve + apply the encoder-specific rate-control plan. This is the
+        // fix for the "CRF/bitrate does nothing" bug: each encoder family needs
+        // a different knob, and CRF must never silently clobber a target bitrate
+        // (or vice versa).
+        const ResolvedRateControl rc = resolveRateControl(codec->name, s);
+        if (rc.bitrate > 0)   videoCodecCtx_->bit_rate = rc.bitrate;
+        if (rc.setCrfPrivOpt) av_opt_set_int(videoCodecCtx_->priv_data, "crf", rc.crf, 0);
+        if (rc.rcModeKey)     av_opt_set(videoCodecCtx_->priv_data, rc.rcModeKey, rc.rcModeVal, 0);
+        if (rc.qpOptKey)      av_opt_set_int(videoCodecCtx_->priv_data, rc.qpOptKey, rc.qpValue, 0);
+        if (rc.amfTripleQp) {
+            av_opt_set_int(videoCodecCtx_->priv_data, "qp_p", rc.qpValue, 0);
+            av_opt_set_int(videoCodecCtx_->priv_data, "qp_b", rc.qpValue, 0);
+        }
+        if (rc.useGlobalQuality) videoCodecCtx_->global_quality = rc.globalQuality;
+
         if (fmtCtx_->oformat->flags & AVFMT_GLOBALHEADER)
             videoCodecCtx_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
         std::fprintf(stderr,
-                     "[Muxer] Trying encoder '%s' (%zu/%zu): %dx%d pix_fmt=%d bitrate=%lld\n",
+                     "[Muxer] Trying encoder '%s' (%zu/%zu): %dx%d pix_fmt=%d "
+                     "rc=%s bitrate=%lld crf=%d qp=%d (%s)\n",
                      codec->name, ci + 1, candidates.size(),
                      s.width, s.height, (int)videoCodecCtx_->pix_fmt,
-                     (long long)videoCodecCtx_->bit_rate);
+                     rc.bitrateMode ? "bitrate" : "crf",
+                     (long long)videoCodecCtx_->bit_rate,
+                     rc.setCrfPrivOpt ? rc.crf : -1,
+                     rc.qpOptKey ? rc.qpValue : (rc.useGlobalQuality ? rc.globalQuality : -1),
+                     rc.notes);
 
         int ret = avcodec_open2(videoCodecCtx_, codec, nullptr);
         if (ret == 0) {
@@ -367,7 +482,22 @@ bool FFmpegMuxer::initVideoStream(const ExportSettings& s)
 
     videoEncoderName_ = chosenCodec->name;
     videoStream_->time_base = videoCodecCtx_->time_base;
-    std::fprintf(stderr, "[Muxer] Selected video encoder: '%s'\n", chosenCodec->name);
+
+    // Authoritative one-line summary of the final encoder configuration.
+    {
+        const ResolvedRateControl rc = resolveRateControl(chosenCodec->name, s);
+        const char* mode = s.videoMode == ExportSettings::VideoMode::Hardware ? "hardware"
+                         : s.videoMode == ExportSettings::VideoMode::Software ? "software" : "auto";
+        std::fprintf(stderr,
+            "[Muxer] Resolved encoder config: encoder=%s videoMode=%s rateControl=%s "
+            "crf=%d bitrate=%lld qp=%d (%s)\n",
+            chosenCodec->name, mode,
+            rc.bitrateMode ? "bitrate" : "crf",
+            rc.setCrfPrivOpt ? rc.crf : -1,
+            (long long)videoCodecCtx_->bit_rate,
+            rc.qpOptKey ? rc.qpValue : (rc.useGlobalQuality ? rc.globalQuality : -1),
+            rc.notes);
+    }
 
     int ret = avcodec_parameters_from_context(videoStream_->codecpar, videoCodecCtx_);
     if (ret < 0) {

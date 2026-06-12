@@ -55,8 +55,18 @@ struct ExportSettings {
     int         height          = 1080;
     int         fpsNum          = 30;       // AVRational = {fpsNum, fpsDen}
     int         fpsDen          = 1;
-    int         crf             = 23;       // -1 = disable CRF, use bitrate
-    int         videoBitrate    = 0;        // bps, 0 = codec default / CRF mode
+    // ── Rate control ─────────────────────────────────────────────────────────
+    // The mode is EXPLICIT, not inferred from which of crf/videoBitrate is set.
+    // (Inferring was the historical bug: the crf default below leaked into
+    //  bitrate-mode exports and made libx264 ignore the requested bitrate.)
+    enum class RateControl {
+        CRF,      // constant quality — crf field drives the encoder
+        Bitrate   // target/constant bitrate — videoBitrate field drives the encoder
+    };
+    RateControl rateControl     = RateControl::CRF;
+
+    int         crf             = 23;       // 0..51 quality. <0 = legacy "use bitrate" sentinel
+    int         videoBitrate    = 0;        // bps, 0 = codec/resolution-scaled default
     std::string hwEncoderName;              // "h264_nvenc", "h264_amf", or "" for auto
 
     // ── Video mode ─────────────────────────────────────────────────────────
@@ -66,6 +76,14 @@ struct ExportSettings {
         Hardware  // require HW encode/decode; fail loudly if unavailable
     };
     VideoMode videoMode = VideoMode::Auto;
+
+    // ── Canvas fit ───────────────────────────────────────────────────────────
+    // How the project authoring canvas (GridLayout.canvasWidth × canvasHeight)
+    // is fitted when width × height above describe a different aspect ratio.
+    // Stretch is the legacy fill behavior and the only effect when the export
+    // aspect matches the project aspect. See render/CanvasFit.h.
+    enum class FitMode { Stretch, Crop, Bars };
+    FitMode fitMode = FitMode::Stretch;
 
     // ── Audio ──────────────────────────────────────────────────────────────
     enum class AudioCodec { AAC, OPUS, FLAC, PCM_S16LE };
@@ -77,6 +95,44 @@ struct ExportSettings {
     // ── Container ──────────────────────────────────────────────────────────
     bool        fragmentedMP4   = false;    // movflags=frag_keyframe+empty_moov
 };
+
+// ---------------------------------------------------------------------------
+// Rate-control resolution (pure, unit-testable)
+// ---------------------------------------------------------------------------
+//
+// Different encoders expose constant-quality through different knobs:
+//   libx264/libx265/libsvtav1/libaom  → "crf" private option
+//   *_nvenc                           → rc=constqp + qp
+//   *_amf                             → rc=cqp + qp_i/qp_p/qp_b
+//   *_qsv                             → global_quality (ICQ)
+//   *_mf                              → rate_control=quality + quality (0..100)
+//   mpeg4/dnxhd/prores (no CRF knob)  → fall back to a sane target bitrate
+//
+// resolveRateControl() turns an ExportSettings + encoder name into the exact
+// set of values FFmpegMuxer applies to the AVCodecContext. Keeping it a pure
+// function lets tests assert that CRF/bitrate survive into encoder config
+// without opening a real encoder.
+struct ResolvedRateControl {
+    bool        bitrateMode      = false;   // true → target/constant bitrate
+    int64_t     bitrate          = 0;       // bps → AVCodecContext::bit_rate (0 = leave default)
+    bool        setCrfPrivOpt    = false;   // libx264-family: priv_data "crf"
+    int         crf              = -1;
+    const char* rcModeKey        = nullptr; // priv_data RC-mode key ("rc"/"rate_control") or null
+    const char* rcModeVal        = nullptr; // value for rcModeKey
+    const char* qpOptKey         = nullptr; // priv_data int QP key ("qp"/"qp_i"/"quality") or null
+    int         qpValue          = -1;
+    bool        amfTripleQp      = false;   // also set qp_p/qp_b (AMF cqp)
+    bool        useGlobalQuality = false;   // qsv ICQ via AVCodecContext::global_quality
+    int         globalQuality    = -1;
+    const char* notes            = "";      // short human description for logs
+};
+
+// Resolution/fps-scaled default video bitrate (bps) — used when bitrate mode is
+// requested with 0, or when a codec has no recognized constant-quality control.
+int64_t defaultVideoBitrate(int width, int height, int fpsNum, int fpsDen);
+
+// Compute the encoder-specific rate-control plan. Pure; no FFmpeg state touched.
+ResolvedRateControl resolveRateControl(const char* encoderName, const ExportSettings& s);
 
 // ---------------------------------------------------------------------------
 // FFmpegMuxer

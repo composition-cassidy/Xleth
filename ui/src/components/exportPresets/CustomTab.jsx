@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import React, { useEffect, useState } from 'react'
+import { customAspectMismatch, buildExportConfig, describeExportSummary } from './presets.js'
 
 const CUSTOM_DEFAULTS = {
   videoCodec:    'h264',
@@ -13,10 +14,32 @@ const CUSTOM_DEFAULTS = {
   audioCodec:    'aac',
   sampleRate:    48000,
   audioBitrate:  384,
+  fitMode:       '', // '' until the user picks; only required on aspect mismatch
 }
 
-export function makeCustomDefaults() {
-  return { ...CUSTOM_DEFAULTS }
+// Resolution presets offered in the dropdown. A project canvas that matches one
+// is shown as that preset; anything else falls back to the explicit Custom size.
+const RES_PRESETS = ['1920x1080', '1280x720', '3840x2160']
+
+function resolutionIdFor(w, h) {
+  const id = `${w}x${h}`
+  return RES_PRESETS.includes(id) ? id : 'custom'
+}
+
+// Build the Custom-tab defaults, seeded from the project canvas when provided so
+// the export defaults to the Grid Settings resolution / aspect / frame rate.
+export function makeCustomDefaults(projectCanvas) {
+  if (!projectCanvas) return { ...CUSTOM_DEFAULTS }
+  const w   = Number(projectCanvas.canvasWidth)  || CUSTOM_DEFAULTS.customWidth
+  const h   = Number(projectCanvas.canvasHeight) || CUSTOM_DEFAULTS.customHeight
+  const fps = Number(projectCanvas.previewFps)   || CUSTOM_DEFAULTS.fps
+  return {
+    ...CUSTOM_DEFAULTS,
+    resolution:   resolutionIdFor(w, h),
+    customWidth:  w,
+    customHeight: h,
+    fps,
+  }
 }
 
 /**
@@ -30,6 +53,7 @@ export default function CustomTab({
   outputPath,
   onBrowse,
   running,
+  projectCanvas,      // { canvasWidth, canvasHeight, canvasAspectRatio, previewFps }
   presets,            // array of { name, settings }
   onSavePreset,       // (name, settings) => void
   onLoadPreset,       // (name) => void
@@ -69,10 +93,22 @@ export default function CustomTab({
     setSelectedPreset('')
   }
 
+  // When the custom output aspect differs from the project canvas aspect, the
+  // user must pick how the canvas maps into it (crop / stretch / letterbox).
+  const aspectMismatch = projectCanvas
+    ? customAspectMismatch(settings, projectCanvas)
+    : false
+
+  // Accurate one-line description of the exact output this tab will encode.
+  const outputSummary = describeExportSummary(buildExportConfig({
+    activeTab: 'custom', outputPath: '', customSettings: settings,
+    videoModeOverride: 'auto', projectCanvas,
+  }))
+
   return (
     <div className="export-tab-panel">
       <div className="export-tab-desc">
-        Full control. MP4 container — all supported by the built-in muxer.
+        Custom export settings for codec, resolution, frame rate, quality, and audio.
       </div>
 
       {/* ── Preset row ─────────────────────────────────────────────────────── */}
@@ -106,7 +142,7 @@ export default function CustomTab({
       </div>
 
       <div className="export-row">
-        <label>Encoder</label>
+        <label>Encoder Device</label>
         <select value={settings.hwEncoder}
                 onChange={(e) => onChange({ hwEncoder: e.target.value })}
                 disabled={running || !availableEncoders.length}>
@@ -151,27 +187,61 @@ export default function CustomTab({
         <select value={settings.fps}
                 onChange={(e) => onChange({ fps: Number(e.target.value) })}
                 disabled={running}>
+          {![60, 30, 24].includes(Number(settings.fps)) && (
+            <option value={settings.fps}>{settings.fps} fps</option>
+          )}
           <option value={60}>60 fps</option>
           <option value={30}>30 fps</option>
           <option value={24}>24 fps</option>
         </select>
       </div>
 
+      {/* ── Fit mode — only when the output aspect differs from the project ──── */}
+      {aspectMismatch && (
+        <div className="export-row export-row-fit">
+          <label>Fit to canvas</label>
+          <div className="custom-fit-modes">
+            <div className="custom-fit-buttons">
+              {[
+                { id: 'crop',    label: 'Crop to fill',  hint: 'Preserve proportions, fill output, crop edges.' },
+                { id: 'stretch', label: 'Stretch to fit', hint: 'Scale directly into output, allowing distortion.' },
+                { id: 'bars',    label: 'Fit with bars',  hint: 'Preserve proportions, letterbox / pillarbox.' },
+              ].map((m) => (
+                <button key={m.id} type="button"
+                        className={`custom-fit-btn ${settings.fitMode === m.id ? 'active' : ''}`}
+                        onClick={() => onChange({ fitMode: m.id })}
+                        disabled={running}
+                        title={m.hint}>
+                  {m.label}
+                </button>
+              ))}
+            </div>
+            <div className={`custom-fit-hint ${settings.fitMode ? '' : 'required'}`}>
+              {settings.fitMode
+                ? ({ crop: 'Preserve proportions, fill output, crop edges.',
+                     stretch: 'Scale directly into output, allowing distortion.',
+                     bars: 'Preserve proportions, letterbox / pillarbox.' }[settings.fitMode])
+                : `Output aspect differs from the project (${projectCanvas?.canvasAspectRatio || 'canvas'}). Choose a fit mode to export.`}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="export-row">
         <label>Rate Control</label>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
           <label><input type="radio" checked={settings.useCrf}
                          onChange={() => onChange({ useCrf: true })}
-                         disabled={running} /> CRF</label>
+                         disabled={running} /> Quality (CRF)</label>
           <label><input type="radio" checked={!settings.useCrf}
                          onChange={() => onChange({ useCrf: false })}
-                         disabled={running} /> Bitrate</label>
+                         disabled={running} /> Target Bitrate</label>
         </div>
       </div>
 
       {settings.useCrf ? (
         <div className="export-row">
-          <label>CRF</label>
+          <label>Quality (CRF)</label>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <input type="range" min={0} max={51} step={1} value={settings.crf}
                    onChange={(e) => onChange({ crf: Number(e.target.value) })}
@@ -181,7 +251,7 @@ export default function CustomTab({
         </div>
       ) : (
         <div className="export-row">
-          <label>Bitrate (Mbps)</label>
+          <label>Target Bitrate (Mbps)</label>
           <input type="number" min={1} max={200} step={1}
                  value={settings.videoBitrate}
                  onChange={(e) => onChange({ videoBitrate: Number(e.target.value) })}
@@ -226,6 +296,13 @@ export default function CustomTab({
           </select>
         </div>
       )}
+
+      <div className="export-row">
+        <label></label>
+        <div className="export-bitrate-readout" title="Final encoded output">
+          {outputSummary}
+        </div>
+      </div>
 
       <div className="export-row export-row-path">
         <label>Output File</label>

@@ -3582,10 +3582,33 @@ html[data-xleth-backdrop="native-acrylic"] #root {
   color: var(--theme-text-muted);
 }
 
+.tail-advanced-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  animation: tail-fields-entry var(--transition-fast) both;
+}
+
+.tail-compact-row {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 5px;
+}
+
 .tail-warning {
   font-size: 11px;
   line-height: 1.4;
   color: var(--theme-warning);
+}
+
+@keyframes tail-fields-entry {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .export-path-group input {
