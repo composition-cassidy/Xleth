@@ -7974,14 +7974,15 @@ html.fx-drag-active * {
 .mixer-output-select {
   width: 100%;
   min-width: 0;
-  height: 18px;
-  padding: 0 3px;
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: 3px;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid var(--theme-border-default);
+  border-radius: var(--radius-sm);
   background: var(--theme-bg-inset);
   color: var(--theme-text-muted);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 600;
+  box-shadow: var(--theme-depth-well-inner-shadow);
   outline: none;
 }
 
@@ -8008,13 +8009,13 @@ html.fx-drag-active * {
 .mixer-route-chip {
   min-width: 0;
   max-width: 100%;
-  padding: 1px 3px;
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: 3px;
+  padding: 2px 4px;
+  border: 1px solid color-mix(in srgb, var(--theme-accent) 38%, var(--theme-border-subtle));
+  border-radius: var(--radius-sm);
   background: var(--theme-accent-bg-subtle);
   color: var(--theme-accent);
   font-size: 9px;
-  line-height: 11px;
+  line-height: 12px;
   font-weight: 700;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -8041,39 +8042,83 @@ html.fx-drag-active * {
 }
 
 .mixer-ms-btn {
-  width: 22px;
-  height: 18px;
-  font-size: 10px;
-  font-weight: 700;
+  width: 26px;
+  height: 22px;
+  font-size: 12px;
+  font-weight: 800;
   border: 1px solid var(--theme-border-subtle);
-  border-radius: 3px;
-  background: none;
+  border-radius: var(--radius-sm);
+  background: var(--theme-bg-inset);
   color: var(--theme-text-subtle);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background var(--transition-fast), color var(--transition-fast);
+  box-shadow: var(--theme-depth-elevation-1-top-highlight);
+  transition: background var(--transition-fast), color var(--transition-fast),
+              border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
+
+/* Resting colour-coding: M=danger, S=warning, V=success.  The strip always
+ * renders exactly three buttons in M/S/V order, so :nth-child maps 1:1 without
+ * needing per-button classes (which would require touching MixerStrip.jsx).
+ * The real mute/solo/visual-only state is still driven entirely by the
+ * .muted / .active classes below — these resting tints never imply active. */
+.mixer-strip-controls .mixer-ms-btn:nth-child(1) { color: var(--theme-danger); }
+.mixer-strip-controls .mixer-ms-btn:nth-child(2) { color: var(--theme-warning); }
+.mixer-strip-controls .mixer-ms-btn:nth-child(3) { color: var(--theme-success); }
+
+.mixer-strip-controls .mixer-ms-btn:nth-child(1):hover {
+  border-color: var(--theme-danger);
+  background: var(--theme-semantic-danger-bg-subtle);
+}
+.mixer-strip-controls .mixer-ms-btn:nth-child(2):hover {
+  border-color: var(--theme-warning);
+  background: var(--theme-semantic-warning-bg-subtle);
+}
+.mixer-strip-controls .mixer-ms-btn:nth-child(3):hover {
+  border-color: var(--theme-success);
+  background: color-mix(in srgb, var(--theme-success) 16%, transparent);
+}
+
 .mixer-ms-btn:hover {
   border-color: var(--theme-text-muted);
 }
+
 .mixer-ms-btn.muted {
   background: var(--theme-semantic-danger-bg-medium);
   color: var(--theme-danger);
   border-color: var(--theme-danger);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--theme-danger) 30%, transparent),
+    var(--theme-depth-elevation-1-top-highlight);
 }
 .mixer-ms-btn.active {
   background: var(--theme-semantic-warning-bg-subtle);
   color: var(--theme-warning);
   border-color: var(--theme-warning);
 }
+/* Solo (2nd) stays amber when active; Visual-only (3rd) reads green when active,
+ * matching the mockup, while still reflecting the real visualOnly store flag. */
+.mixer-strip-controls .mixer-ms-btn:nth-child(2).active {
+  background: color-mix(in srgb, var(--theme-warning) 22%, var(--theme-bg-elevated));
+  color: var(--theme-warning);
+  border-color: var(--theme-warning);
+}
+.mixer-strip-controls .mixer-ms-btn:nth-child(3).active {
+  background: color-mix(in srgb, var(--theme-success) 22%, var(--theme-bg-elevated));
+  color: var(--theme-success);
+  border-color: var(--theme-success);
+}
 
 .mixer-strip-knobs {
   flex-shrink: 0;
   display: flex;
-  gap: 2px;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
   justify-content: center;
+  padding: 2px 0;
 }
 
 /* â”€â”€ Fader area (meter + fader side by side, fills remaining height) â”€â”€â”€â”€â”€â”€ */
@@ -8083,7 +8128,7 @@ html.fx-drag-active * {
   display: flex;
   align-items: stretch;
   justify-content: center;
-  gap: 3px;
+  gap: 5px;
   min-height: 0;
   width: 100%;
 }
@@ -8103,9 +8148,10 @@ html.fx-drag-active * {
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
-  width: 2px;
+  width: 4px;
   background: var(--theme-depth-well-bg);
-  border-radius: 1px;
+  border-radius: 2px;
+  box-shadow: var(--theme-depth-well-inner-shadow);
 }
 
 .mixer-fader-unity {
@@ -8120,18 +8166,29 @@ html.fx-drag-active * {
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
-  width: 16px;
-  height: 28px;
-  background: var(--theme-bg-elevated);
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: 3px;
+  width: 18px;
+  height: 30px;
+  background:
+    linear-gradient(
+      180deg,
+      var(--theme-depth-elevation-3-bg),
+      var(--theme-bg-elevated)
+    );
+  border: 1px solid var(--theme-border-default);
+  border-radius: var(--radius-sm);
   pointer-events: none;
-  transition: border-color var(--transition-fast);
-  box-shadow: var(--theme-depth-elevation-1-top-highlight);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  box-shadow:
+    var(--theme-depth-elevation-2-top-highlight),
+    0 1px 3px rgba(0, 0, 0, 0.4);
 }
 .mixer-fader-thumb.active,
 .mixer-fader:hover .mixer-fader-thumb {
   border-color: var(--theme-accent);
+  box-shadow:
+    var(--theme-depth-elevation-2-top-highlight),
+    var(--theme-depth-accent-glow-subtle),
+    0 1px 3px rgba(0, 0, 0, 0.4);
 }
 
 .mixer-fader-ticks {
@@ -8151,7 +8208,8 @@ html.fx-drag-active * {
 
 .mixer-fader-tick-label {
   font-size: 8px;
-  color: var(--theme-text-subtle);
+  color: var(--theme-text-muted);
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 
@@ -8165,8 +8223,9 @@ html.fx-drag-active * {
 }
 
 .mixer-fader-readout-text {
-  font-size: 10px;
-  color: var(--theme-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--theme-text-primary);
   font-variant-numeric: tabular-nums;
   cursor: text;
 }
@@ -8196,7 +8255,7 @@ html.fx-drag-active * {
 }
 
 .effect-chain-panel--preview {
-  height: 92px;
+  height: 104px;
   gap: 0;
 }
 
@@ -8211,7 +8270,7 @@ html.fx-drag-active * {
 }
 
 .selected-effect-rack .effect-module {
-  min-height: 24px;
+  min-height: 30px;
 }
 
 /* Mode toggle row */
@@ -8224,13 +8283,13 @@ html.fx-drag-active * {
 
 .effect-chain-mode-btn {
   flex: 1;
-  height: 14px;
-  font-size: 8px;
+  height: 20px;
+  font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.05em;
   border: 1px solid var(--theme-border-subtle);
-  border-radius: 2px;
-  background: none;
+  border-radius: var(--radius-sm);
+  background: var(--theme-bg-inset);
   color: var(--theme-text-subtle);
   cursor: pointer;
   padding: 0;
@@ -8287,16 +8346,16 @@ html.fx-drag-active * {
 .effect-chain-preview-overflow,
 .effect-chain-preview-empty {
   min-width: 0;
-  min-height: 18px;
+  min-height: 22px;
   display: flex;
   align-items: center;
   gap: 3px;
-  padding: 1px 4px;
-  border: 1px solid var(--theme-border-subtle);
+  padding: 2px 6px;
+  border: 1px solid var(--theme-depth-elevation-1-border);
   border-radius: var(--radius-sm);
   background: var(--theme-mixer-effect-slot-bg);
   color: var(--theme-text-muted);
-  font-size: 8px;
+  font-size: 9px;
   font-weight: 600;
   line-height: 1.2;
   box-sizing: border-box;
@@ -8438,12 +8497,12 @@ html.fx-drag-active * {
 
 .effect-chain-empty-btn {
   width: 100%;
-  min-height: 20px;
-  border: 1px dashed var(--theme-border-subtle);
+  min-height: 28px;
+  border: 1px dashed var(--theme-border-default);
   border-radius: var(--radius-sm);
   background: none;
   color: var(--theme-text-subtle);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.04em;
   cursor: pointer;
@@ -8457,35 +8516,44 @@ html.fx-drag-active * {
   background: var(--theme-accent-bg-subtle);
 }
 
-/* Add button */
+/* Add button — large filled accent "+" anchored at the rack's bottom-left,
+ * matching the mockup.  Behaviour (opens the add-effect picker) is unchanged. */
 .effect-chain-footer {
   display: flex;
   flex-shrink: 0;
+  justify-content: flex-start;
 }
 
 .effect-chain-add-btn {
-  width: 100%;
-  height: 16px;
-  font-size: 12px;
+  width: 40px;
+  height: 30px;
+  font-size: 20px;
   font-weight: 400;
   line-height: 1;
-  border: 1px dashed var(--theme-border-subtle);
+  border: 1px solid var(--theme-accent);
   border-radius: var(--radius-sm);
-  background: none;
-  color: var(--theme-text-subtle);
+  background: var(--theme-accent-bg-subtle);
+  color: var(--theme-accent);
   cursor: pointer;
   padding: 0;
-  transition: border-color var(--transition-fast), color var(--transition-fast);
+  box-shadow: var(--theme-depth-elevation-1-top-highlight);
+  transition: border-color var(--transition-fast), color var(--transition-fast),
+              background var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .effect-chain-add-btn:hover {
   border-color: var(--theme-accent);
   color: var(--theme-accent);
+  background: var(--theme-accent-bg-medium);
+  box-shadow:
+    var(--theme-depth-elevation-1-top-highlight),
+    var(--theme-depth-accent-glow-subtle);
 }
 
 .effect-chain-add-btn:disabled {
   opacity: 0.3;
   cursor: not-allowed;
+  box-shadow: none;
 }
 
 /* â”€â”€ Effect Module â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
@@ -8531,21 +8599,28 @@ html.fx-drag-active * {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto auto auto;
   align-items: center;
-  column-gap: 2px;
+  column-gap: 3px;
   width: 100%;
-  min-height: 20px;
-  background: var(--theme-mixer-effect-slot-bg);
-  border: 1px solid var(--theme-border-subtle);
+  min-height: 26px;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--theme-mixer-effect-slot-bg) 70%, var(--theme-bg-elevated)),
+      var(--theme-mixer-effect-slot-bg)
+    );
+  border: 1px solid var(--theme-depth-elevation-1-border);
   border-radius: var(--radius-sm);
-  padding: 1px 3px;
+  padding: 3px 6px;
   box-sizing: border-box;
   cursor: default;
+  box-shadow: var(--theme-depth-elevation-1-top-highlight);
   transition: border-color var(--transition-fast), background var(--transition-fast), opacity var(--transition-fast), box-shadow var(--transition-fast);
   flex-shrink: 0;
 }
 
 .effect-module:hover {
   background: var(--theme-mixer-effect-slot-hover-bg);
+  border-color: color-mix(in srgb, var(--theme-accent) 40%, var(--theme-border-subtle));
 }
 
 .effect-module--selected {
@@ -8559,7 +8634,8 @@ html.fx-drag-active * {
 }
 
 .effect-module--bypassed {
-  opacity: 0.58;
+  opacity: 0.62;
+  border-style: dashed;
 }
 
 .effect-module--pending {
@@ -8635,7 +8711,7 @@ html.fx-drag-active * {
 
 .effect-module-name-text {
   display: block;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 600;
   color: var(--theme-text-muted);
   overflow: hidden;
