@@ -7635,6 +7635,46 @@ html.fx-drag-active * {
    Mixer Panel
    â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
+/* ── Mixer window chrome (scoped to the Mixer panel ONLY) ─────────────────────
+ * Pass A — heavier Mixer-specific title/header treatment.  Every rule below is
+ * scoped with [data-panel-id="mixer"] so the shared windowing chrome
+ * (.xleth-windowing-titlebar et al. in windowing.css) is left completely
+ * untouched for all other panels.  The attribute+class selectors raise
+ * specificity above the base windowing rules, so they win regardless of
+ * stylesheet order; no global tokens are mutated. */
+.xleth-panel-frame[data-panel-id="mixer"] {
+  border-radius: var(--theme-chrome-radius-md);
+}
+
+.xleth-windowing-titlebar[data-panel-id="mixer"] {
+  height: 36px;
+  min-height: 36px;
+  background:
+    linear-gradient(
+      180deg,
+      var(--theme-depth-elevation-2-bg),
+      var(--theme-chrome-titlebar-bg)
+    );
+  border-bottom: 1px solid var(--theme-depth-elevation-1-border);
+  box-shadow:
+    var(--theme-depth-elevation-2-top-highlight),
+    var(--theme-depth-elevation-1-bottom-edge);
+}
+
+.xleth-windowing-titlebar[data-panel-id="mixer"] .xleth-windowing-panel-icon {
+  width: 18px;
+  height: 18px;
+  margin-left: 10px;
+  margin-right: 8px;
+}
+
+.xleth-windowing-titlebar[data-panel-id="mixer"] .xleth-windowing-panel-name {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .mixer-panel {
   flex: 1;
   min-height: 0;
@@ -7642,6 +7682,7 @@ html.fx-drag-active * {
   flex-direction: column;
   background: var(--theme-depth-well-bg);
   border-top: 1px solid var(--theme-border-subtle);
+  box-shadow: var(--theme-depth-well-top-shadow);
   overflow: hidden;
 }
 
@@ -7649,12 +7690,19 @@ html.fx-drag-active * {
 .mixer-toolbar {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 6px;
+  gap: 6px;
+  padding: 5px 8px;
   flex-shrink: 0;
-  border-bottom: 1px solid var(--theme-border-subtle);
-  background: var(--theme-bg-primary);
-  box-shadow: var(--theme-depth-elevation-1-top-highlight);
+  border-bottom: 1px solid var(--theme-depth-elevation-1-border);
+  background:
+    linear-gradient(
+      180deg,
+      var(--theme-depth-elevation-2-bg),
+      var(--theme-bg-primary)
+    );
+  box-shadow:
+    var(--theme-depth-elevation-2-top-highlight),
+    var(--theme-depth-elevation-1-bottom-edge);
 }
 
 .mixer-toolbar-btn {
@@ -7701,6 +7749,11 @@ html.fx-drag-active * {
   flex: 1;
   display: flex;
   min-height: 0;
+  /* Recessed center "well": the empty lane between the selected track strip and
+   * the master strip should read as an intentional inset surface, not dead space.
+   * The deeper tint + inner top shadow sink the area below the elevated strips. */
+  background: var(--theme-depth-well-bg);
+  box-shadow: var(--theme-depth-well-inner-shadow);
   overflow: hidden;
 }
 
@@ -7718,32 +7771,40 @@ html.fx-drag-active * {
 }
 
 .selected-effect-rack {
-  width: 168px;
-  min-width: 168px;
+  width: 184px;
+  min-width: 184px;
   height: 100%;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 7px 6px;
+  gap: 8px;
+  padding: 9px 9px;
   border-right: 2px solid var(--theme-accent);
-  background: var(--theme-bg-elevated);
-  box-shadow: var(--theme-depth-elevation-1-top-highlight);
+  background:
+    linear-gradient(
+      180deg,
+      var(--theme-depth-elevation-3-bg),
+      var(--theme-bg-elevated)
+    );
+  box-shadow:
+    var(--theme-depth-elevation-2-top-highlight),
+    var(--theme-depth-accent-glow-subtle),
+    inset -1px 0 0 var(--theme-depth-elevation-2-border);
 }
 
 .selected-effect-rack-header {
   flex-shrink: 0;
   min-width: 0;
-  padding-bottom: 5px;
-  border-bottom: 1px solid var(--theme-border-subtle);
+  padding-bottom: 7px;
+  border-bottom: 2px solid var(--theme-accent);
 }
 
 .selected-effect-rack-title {
   min-width: 0;
   color: var(--theme-text-primary);
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 700;
-  line-height: 18px;
+  line-height: 20px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -7817,19 +7878,26 @@ html.fx-drag-active * {
 /* â”€â”€ Strip â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .mixer-strip {
-  width: 80px;
-  min-width: 80px;
+  width: 96px;
+  min-width: 96px;
   height: 100%;
   min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 6px 4px;
-  border-right: 1px solid var(--theme-border-subtle);
-  gap: 4px;
+  padding: 8px 6px;
+  border-right: 1px solid var(--theme-depth-elevation-1-border);
+  gap: 6px;
   user-select: none;
-  background: var(--theme-bg-secondary);
-  box-shadow: var(--theme-depth-elevation-1-top-highlight);
+  background:
+    linear-gradient(
+      180deg,
+      var(--theme-depth-elevation-2-bg),
+      var(--theme-bg-secondary)
+    );
+  box-shadow:
+    var(--theme-depth-elevation-1-top-highlight),
+    var(--theme-depth-elevation-1-bottom-edge);
 }
 
 .mixer-strip--muted {
@@ -7845,33 +7913,45 @@ html.fx-drag-active * {
 .mixer-strip--selected {
   outline: 2px solid var(--theme-accent);
   outline-offset: -2px;
+  border-radius: var(--theme-chrome-radius-md);
   background: var(--theme-accent-bg-subtle);
   box-shadow:
     inset 0 0 0 1px var(--theme-focus-ring),
-    var(--theme-depth-elevation-1-top-highlight);
+    var(--theme-depth-accent-glow-subtle),
+    var(--theme-depth-elevation-2-top-highlight);
 }
 
 .mixer-strip--master {
-  width: 90px;
-  min-width: 90px;
+  width: 108px;
+  min-width: 108px;
   flex-shrink: 0;
-  background: var(--theme-bg-elevated);
   border-left: 2px solid var(--theme-accent);
   border-right: none;
+  background:
+    linear-gradient(
+      180deg,
+      var(--theme-depth-elevation-3-bg),
+      var(--theme-bg-elevated)
+    );
+  box-shadow:
+    var(--theme-depth-elevation-2-top-highlight),
+    var(--theme-depth-accent-glow-subtle);
   opacity: 1;
 }
 
 .mixer-strip-label {
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: 13px;
   color: var(--theme-text-primary);
   text-align: center;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   width: 100%;
-  font-weight: 600;
-  line-height: 14px;
+  padding-bottom: 5px;
+  border-bottom: 2px solid var(--theme-accent);
+  font-weight: 700;
+  line-height: 16px;
 }
 
 .mixer-output-route {
