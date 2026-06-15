@@ -101,10 +101,8 @@ art/
 # Vendored download archives (re-downloadable; too large for GitHub)
 *.7z
 
-# Local Claude state
-.claude/scheduled_tasks.lock
-.claude/step1-err.log
-.claude/step1-proposal.md
+# Local Claude state (entire dir — local config/scratch, not shipped)
+.claude/
 
 # --- Dev cruft (not shipped) ---
 *.bak
