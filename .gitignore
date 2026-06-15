@@ -103,3 +103,38 @@ art/
 
 # Local Claude state
 .claude/scheduled_tasks.lock
+.claude/step1-err.log
+.claude/step1-proposal.md
+
+# --- Dev cruft (not shipped) ---
+*.bak
+*.zip
+*.patch
+
+# Root build/run output dumps
+/*_output.txt
+/build_log.txt
+/offline_stdout.txt
+/offline_stderr.txt
+/telem.txt
+/terminal_log.txt
+/CWINDOWSsystem32cmd.exe*.txt
+*pass-6g-plan.txt
+
+# Root dev scripts & stray files
+/*.bat
+/project.json
+/test.mid
+/XlethSampler.jsx
+
+# Root internal planning/audit/spec docs
+/ARCHITECTURE_AUDIT.md
+/BUILD_DIAGNOSIS.md
+/BUILD_VERIFY.md
+/DEP_AUDIT.md
+/LMMS_ANALYSIS.md
+/PHASE 1 BUGS.md
+/PIANOROLLDIAGNOSTIC.md
+/XLETH_VS_LMMS_AUDIT.md
+/midi-import-v1-spec.md
+/xleth-*.md

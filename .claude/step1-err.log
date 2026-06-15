@@ -1,2 +1,0 @@
-DEBUG: matches sample {"path":"ui/src/components/mixer/PeakMeter.jsx","line":64,"column":27,"matchedText":"#22C55E","kind":"hex","subsystem":"mixer","originalSubsystem":"mixer","dispatch":"native","dispatchSelector":null,"elementHint":"gradient-stop","surroundingContext":"    61:         // Bottom (low) to top (high)\n  
-DEBUG: total matches 584
