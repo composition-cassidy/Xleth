@@ -103,8 +103,6 @@ interface DockedPanelSplitterProps {
   region: DockRegionSide;
   beforeId: PanelId;
   afterId: PanelId;
-  beforeSize: number;
-  afterSize: number;
   active: boolean;
 }
 
@@ -112,8 +110,6 @@ function DockedPanelSplitter({
   region,
   beforeId,
   afterId,
-  beforeSize,
-  afterSize,
   active,
 }: DockedPanelSplitterProps) {
   const axis = axisForRegion(region);
@@ -122,11 +118,19 @@ function DockedPanelSplitter({
     if (event.button !== 0) return;
     const regionElement = event.currentTarget.closest<HTMLElement>('.xleth-dock-region');
     const beforeSlot = regionElement?.querySelector<HTMLElement>(`[data-docked-slot-id="${beforeId}"]`);
-    if (!regionElement || !beforeSlot) return;
+    const afterSlot = regionElement?.querySelector<HTMLElement>(`[data-docked-slot-id="${afterId}"]`);
+    if (!regionElement || !beforeSlot || !afterSlot) return;
 
     event.preventDefault();
     const regionRect = regionElement.getBoundingClientRect();
     const beforeRect = beforeSlot.getBoundingClientRect();
+    const afterRect = afterSlot.getBoundingClientRect();
+    // Measure the live rendered extent of each slot so the drag tracks the cursor
+    // 1:1 and clamps against real geometry. The last docked slot flex-grows to
+    // fill the region, so its stored sizeInRegion does not reflect its on-screen
+    // size — only the measured rect does.
+    const measuredBefore = Math.round(axis === 'horizontal' ? beforeRect.width : beforeRect.height);
+    const measuredAfter = Math.round(axis === 'horizontal' ? afterRect.width : afterRect.height);
     const startSplitterPosition = axis === 'horizontal'
       ? beforeRect.right - regionRect.left
       : beforeRect.bottom - regionRect.top;
@@ -139,8 +143,8 @@ function DockedPanelSplitter({
         axis,
         beforeId,
         afterId,
-        beforeSize,
-        afterSize,
+        beforeSize: measuredBefore,
+        afterSize: measuredAfter,
         startSplitterPosition,
         snapTargets: collectSnapTargets(regionElement, axis, startSplitterPosition),
       },
@@ -196,11 +200,15 @@ export function DockRegion({ side, renderPanel, excludePanelIds = EMPTY_PANEL_ID
             ? splitterPreview.afterSize
             : entry.size;
         const next = docked[index + 1];
+        const isLast = next === undefined;
+        const slotClassName = isLast
+          ? 'xleth-docked-panel-slot xleth-docked-panel-slot--fill'
+          : 'xleth-docked-panel-slot';
 
         return (
           <React.Fragment key={entry.id}>
             <div
-              className="xleth-docked-panel-slot"
+              className={slotClassName}
               data-docked-slot-id={entry.id}
               style={{ '--xleth-docked-panel-size': `${liveSize}px` } as CSSProperties}
             >
@@ -217,8 +225,6 @@ export function DockRegion({ side, renderPanel, excludePanelIds = EMPTY_PANEL_ID
                 region={side}
                 beforeId={entry.id}
                 afterId={next.id}
-                beforeSize={liveSize}
-                afterSize={next.size}
                 active={splitterPreview?.beforeId === entry.id && splitterPreview.afterId === next.id}
               />
             ) : null}

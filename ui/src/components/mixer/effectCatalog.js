@@ -61,7 +61,7 @@ export const EFFECT_CATEGORIES = [
 ]
 
 // Stable label used when a scanned VST/plugin section has no entries.
-export const NO_SCANNED_PLUGINS_LABEL = 'No plugins scanned - open VST Browser to scan'
+export const NO_SCANNED_PLUGINS_LABEL = 'No plugins scanned - scan VST3 plugins in Settings'
 export const VST_GROUP_LABEL = 'VST3 Plugins'
 
 // Sort scanned plugins by name, then vendor (case-insensitive). Shared so the

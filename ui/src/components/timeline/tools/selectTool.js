@@ -4,6 +4,7 @@ import {
 } from '../../../constants/timeline.js'
 import { labelHexColor } from '../../../constants/labels.js'
 import { tokenValue } from '../../../theming/tokenValue.ts'
+import { uiCanvasFont } from '../../../styles/typography.js'
 import { drawRubberBand, drawMovePreview } from '../timelineDrawing.js'
 import { getRegionPlaybackDurationSec } from '../regionDuration.js'
 
@@ -33,6 +34,7 @@ export function createSelectTool(deps) {
     // FXG.4-h-r1: derived row layout so macro automation child lanes shift the
     // track-index↔Y mapping. Optional — falls back to contiguous geometry.
     trackLayoutRef,
+    allowUnselectedEdgeResize = false,
   } = deps
 
   // Resolve a Y coordinate to a track index (lane bands map to their parent
@@ -149,7 +151,7 @@ export function createSelectTool(deps) {
     const track = tracks?.[trackIndex]
     if (track?.type === 'Pattern') {
       const hitBlock = hitTestPatternBlock(beat, trackIndex)
-      if (hitBlock && selectedBlockIdsRef?.current?.has(hitBlock.id)) {
+      if (hitBlock && (allowUnselectedEdgeResize || selectedBlockIdsRef?.current?.has(hitBlock.id))) {
         if (isOnRightEdgeOf(localX, hitBlock.positionTicks, hitBlock.durationTicks)) {
           setHoverEdge('right'); return
         }
@@ -161,7 +163,7 @@ export function createSelectTool(deps) {
       return
     }
     const hitClip = hitTestClip(beat, trackIndex)
-    if (hitClip && selectedRef.current.has(hitClip.id)) {
+    if (hitClip && (allowUnselectedEdgeResize || selectedRef.current.has(hitClip.id))) {
       if (isOnRightEdgeOf(localX, hitClip.positionTicks, hitClip.durationTicks)) { setHoverEdge('right'); return }
       if (isOnLeftEdgeOf(localX, hitClip.positionTicks))  { setHoverEdge('left');  return }
     }
@@ -187,9 +189,10 @@ export function createSelectTool(deps) {
       if (track?.type === 'Pattern') {
         const hitBlock = hitTestPatternBlock(beat, trackIndex)
         if (hitBlock) {
-          const isRightEdge = selectedBlockIdsRef?.current?.has(hitBlock.id)
+          const canResizeEdge = allowUnselectedEdgeResize || selectedBlockIdsRef?.current?.has(hitBlock.id)
+          const isRightEdge = canResizeEdge
             && isOnRightEdgeOf(localX, hitBlock.positionTicks, hitBlock.durationTicks)
-          const isLeftEdge = !isRightEdge && selectedBlockIdsRef?.current?.has(hitBlock.id)
+          const isLeftEdge = !isRightEdge && canResizeEdge
             && isOnLeftEdgeOf(localX, hitBlock.positionTicks)
           pendingHit = { block: hitBlock, isRightEdge, isLeftEdge, e }
           dragKind = 'block'
@@ -224,9 +227,10 @@ export function createSelectTool(deps) {
       const hitClip = hitTestClip(beat, trackIndex)
 
       if (hitClip) {
-        const isRightEdge = selectedRef.current.has(hitClip.id)
+        const canResizeEdge = allowUnselectedEdgeResize || selectedRef.current.has(hitClip.id)
+        const isRightEdge = canResizeEdge
           && isOnRightEdgeOf(localX, hitClip.positionTicks, hitClip.durationTicks)
-        const isLeftEdge = !isRightEdge && selectedRef.current.has(hitClip.id)
+        const isLeftEdge = !isRightEdge && canResizeEdge
           && isOnLeftEdgeOf(localX, hitClip.positionTicks)
         pendingHit = { clip: hitClip, isRightEdge, isLeftEdge, e }
         dragKind = 'clip'
@@ -752,7 +756,7 @@ export function createSelectTool(deps) {
           const ratioText = ratio.toFixed(2) + '×'
           const edgePx = beatToPixel(clipStartBeat + newDurationBeats, scrollOffset, ppb)
           ctx.save()
-          ctx.font = '11px system-ui, sans-serif'
+          ctx.font = uiCanvasFont('11px')
           ctx.fillStyle = tokenValue('--theme-fg-inverse')
           ctx.textAlign = 'right'
           ctx.fillText(ratioText, edgePx - 4, topOf(trackIdx) + TRACK_HEIGHT * 0.5 - 2)
@@ -787,7 +791,7 @@ export function createSelectTool(deps) {
           const ratioText = ratio.toFixed(2) + '×'
           const edgePx = beatToPixel(newStartBeat, scrollOffset, ppb)
           ctx.save()
-          ctx.font = '11px system-ui, sans-serif'
+          ctx.font = uiCanvasFont('11px')
           ctx.fillStyle = tokenValue('--theme-fg-inverse')
           ctx.textAlign = 'left'
           ctx.fillText(ratioText, edgePx + 4, topOf(trackIdx) + TRACK_HEIGHT * 0.5 - 2)

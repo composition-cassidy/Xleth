@@ -31,6 +31,8 @@ describe('AudioPerformanceDiagnosticsPanel capture control', () => {
 
     expect(html).toContain('Performance report')
     expect(html).toContain('Capture 10s Performance Report')
+    expect(html).toContain('xleth-select-trigger')
     expect(html).toContain('Idle')
+    expect(html).not.toContain('<select')
   })
 })

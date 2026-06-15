@@ -1,4 +1,4 @@
-import { X } from 'lucide-react'
+import { Scissors, X } from 'lucide-react'
 import { labelColor, formatTime } from '../../constants/labels.js'
 
 /**
@@ -7,8 +7,9 @@ import { labelColor, formatTime } from '../../constants/labels.js'
  *   selectedId – string | null
  *   onSelect   – (sample) => void
  *   onDelete   – (id) => void
+ *   onSplit    – (sample) => void  — opens the Split Syllables panel (Quote rows)
  */
-export default function MarkedSamplesList({ samples, selectedId, onSelect, onDelete }) {
+export default function MarkedSamplesList({ samples, selectedId, onSelect, onDelete, onSplit }) {
   return (
     <div className="marked-samples-list">
       {/* ── Header ───────────────────────────────────────────────────── */}
@@ -34,6 +35,15 @@ export default function MarkedSamplesList({ samples, selectedId, onSelect, onDel
               key={sample.id}
               className={`marked-sample-item ${sample.id === selectedId ? 'selected' : ''}`}
               onClick={() => onSelect(sample)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  onSelect(sample)
+                }
+              }}
+              role="button"
+              tabIndex={0}
+              aria-pressed={sample.id === selectedId}
               title={`${sample.label} · ${formatTime(sample.startTime)} – ${formatTime(sample.endTime)}`}
             >
               {/* Label color dot */}
@@ -42,24 +52,36 @@ export default function MarkedSamplesList({ samples, selectedId, onSelect, onDel
                 style={{ background: labelColor(sample.label) }}
               />
 
-              {/* Name */}
-              <span className="marked-sample-name">{sample.name}</span>
+              <span className="marked-sample-main">
+                <span className="marked-sample-name">{sample.name}</span>
+                <span className="marked-sample-time">
+                  {formatTime(sample.startTime)}-{formatTime(sample.endTime)}
+                </span>
+              </span>
 
               {/* Swapped badge */}
               {sample.hasSwappedAudio && (
                 <span className="marked-sample-swapped-badge">Swapped</span>
               )}
 
-              {/* Time range */}
-              <span className="marked-sample-time">
-                {formatTime(sample.startTime)}–{formatTime(sample.endTime)}
-              </span>
-
               {/* Duration badge */}
               <span className="marked-sample-dur">{dur.toFixed(2)}s</span>
 
+              {/* Split syllables (Quote regions only) */}
+              {onSplit && sample.label === 'Quote' && (
+                <button
+                  type="button"
+                  className="marked-sample-split"
+                  onClick={e => { e.stopPropagation(); onSplit(sample) }}
+                  title="Split syllables"
+                >
+                  <Scissors size={11} />
+                </button>
+              )}
+
               {/* Delete */}
               <button
+                type="button"
                 className="marked-sample-delete"
                 onClick={e => { e.stopPropagation(); onDelete(sample.id) }}
                 title="Remove sample"

@@ -88,6 +88,18 @@ public:
      */
     static int64_t sampleToPPQ(int64_t samplePos, int sampleRate, double bpm);
 
+    /**
+     * Convert a PPQ tick position to a sample position using the same integer
+     * timing domain as sampleToPPQ().
+     */
+    static int64_t ppqToSample(int64_t ppq, int sampleRate, double bpm);
+
+    /**
+     * Convert a beat position to a sample position through PPQ so callers do
+     * not duplicate beat/sample math outside the render timing utility.
+     */
+    static int64_t beatToSample(double beat, int sampleRate, double bpm);
+
     // ----- sample <-> seconds (display only) --------------------------------
 
     /** Floating-point — acceptable because this is DISPLAY ONLY, never PTS. */

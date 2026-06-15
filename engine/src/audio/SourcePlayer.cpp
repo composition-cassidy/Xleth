@@ -20,6 +20,9 @@ SourcePlayer::~SourcePlayer() { unloadSource(); }
 // MAIN THREAD — blocks until decoding is complete
 bool SourcePlayer::loadSource(const std::string& filePath, double engineSampleRate)
 {
+    if (isCurrentSource(filePath, engineSampleRate))
+        return true;
+
     unloadSource();
     sampleRate_ = engineSampleRate;
 
@@ -236,7 +239,9 @@ bool SourcePlayer::loadSource(const std::string& filePath, double engineSampleRa
 
     totalSamples_ = numSamples;
     duration_     = static_cast<double>(numSamples) / engineSampleRate;
+    loadedFilePath_ = filePath;
     playPosition_.store(0, std::memory_order_relaxed);
+    previewEndSample_.store(-1, std::memory_order_relaxed);
     playing_.store(false, std::memory_order_relaxed);
     loaded_.store(true, std::memory_order_release);
 
@@ -249,6 +254,13 @@ bool SourcePlayer::loadSource(const std::string& filePath, double engineSampleRa
               << "\n" << std::flush;
 
     return true;
+}
+
+bool SourcePlayer::isCurrentSource(const std::string& filePath, double engineSampleRate) const
+{
+    return loaded_.load(std::memory_order_acquire)
+        && loadedFilePath_ == filePath
+        && std::abs(sampleRate_ - engineSampleRate) < 0.5;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -297,8 +309,10 @@ void SourcePlayer::unloadSource()
     playing_.store(false, std::memory_order_release);
     loaded_.store(false, std::memory_order_release);
     playPosition_.store(0, std::memory_order_relaxed);
+    previewEndSample_.store(-1, std::memory_order_relaxed);
     totalSamples_ = 0;
     duration_     = 0.0;
+    loadedFilePath_.clear();
     decodedAudio_.setSize(0, 0);
 }
 
@@ -310,7 +324,30 @@ void SourcePlayer::play(double startTimeSeconds)
     int64_t pos = static_cast<int64_t>(startTimeSeconds * sampleRate_);
     pos = std::max<int64_t>(0, std::min(pos, totalSamples_));
     playPosition_.store(pos, std::memory_order_release);
+    previewEndSample_.store(-1, std::memory_order_release);
     playing_.store(true, std::memory_order_release);
+}
+
+uint64_t SourcePlayer::playRegionPreview(double startTimeSeconds, double endTimeSeconds)
+{
+    if (!loaded_.load(std::memory_order_acquire)) return 0;
+
+    int64_t start = static_cast<int64_t>(startTimeSeconds * sampleRate_);
+    int64_t end   = static_cast<int64_t>(std::ceil(endTimeSeconds * sampleRate_));
+    start = std::max<int64_t>(0, std::min(start, totalSamples_));
+    end   = std::max<int64_t>(0, std::min(end, totalSamples_));
+    if (end <= start) {
+        playing_.store(false, std::memory_order_release);
+        previewEndSample_.store(-1, std::memory_order_release);
+        playPosition_.store(start, std::memory_order_release);
+        return 0;
+    }
+
+    const uint64_t seq = previewSeq_.fetch_add(1, std::memory_order_acq_rel) + 1;
+    playPosition_.store(start, std::memory_order_release);
+    previewEndSample_.store(end, std::memory_order_release);
+    playing_.store(true, std::memory_order_release);
+    return seq;
 }
 
 void SourcePlayer::pause()
@@ -330,12 +367,14 @@ void SourcePlayer::seek(double timeSeconds)
     int64_t pos = static_cast<int64_t>(timeSeconds * sampleRate_);
     pos = std::max<int64_t>(0, std::min(pos, totalSamples_));
     playPosition_.store(pos, std::memory_order_release);
+    previewEndSample_.store(-1, std::memory_order_release);
 }
 
 void SourcePlayer::stop()
 {
     playing_.store(false, std::memory_order_release);
     playPosition_.store(0, std::memory_order_relaxed);
+    previewEndSample_.store(-1, std::memory_order_release);
 }
 
 // ── Queries ──────────────────────────────────────────────────────────────────
@@ -366,10 +405,23 @@ void SourcePlayer::processBlock(juce::AudioBuffer<float>& outputBuffer, int numS
         return;
     }
 
+    const int64_t previewEnd = previewEndSample_.load(std::memory_order_acquire);
+    const bool boundedPreview = previewEnd >= 0;
+    const int64_t effectiveEnd = boundedPreview
+        ? std::min<int64_t>(previewEnd, totalSamples_)
+        : totalSamples_;
+    if (pos >= effectiveEnd)
+    {
+        playPosition_.store(effectiveEnd, std::memory_order_release);
+        previewEndSample_.store(-1, std::memory_order_release);
+        playing_.store(false, std::memory_order_release);
+        return;
+    }
+
     const int outChannels = outputBuffer.getNumChannels();
     const int srcChannels = decodedAudio_.getNumChannels();  // always 2
     const int available   = static_cast<int>(std::min<int64_t>(numSamples,
-                                                                totalSamples_ - pos));
+                                                                effectiveEnd - pos));
 
     // Additive mix into the output buffer (other sources may already be mixed in)
     for (int ch = 0; ch < std::min(outChannels, srcChannels); ++ch)
@@ -387,8 +439,11 @@ void SourcePlayer::processBlock(juce::AudioBuffer<float>& outputBuffer, int numS
     int64_t newPos = pos + available;
     playPosition_.store(newPos, std::memory_order_release);
 
-    // Stop at end of buffer
-    if (newPos >= totalSamples_)
+    // Stop at the bounded preview end or source end without overshooting.
+    if (newPos >= effectiveEnd)
+    {
+        playPosition_.store(effectiveEnd, std::memory_order_release);
+        previewEndSample_.store(-1, std::memory_order_release);
         playing_.store(false, std::memory_order_release);
+    }
 }
-

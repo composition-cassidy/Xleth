@@ -3,6 +3,7 @@ import {
   destroy,
   handleKeyEvent,
   rebind,
+  register,
   registerBinding,
   resetBindingsForTest,
 } from '../managers/KeyboardManager';
@@ -13,6 +14,25 @@ import {
 
 function keyEvent(key: string): KeyboardEvent {
   return { key, type: 'keydown' } as KeyboardEvent;
+}
+
+function shortcutEvent(key: string, modifiers: Partial<KeyboardEvent> = {}): KeyboardEvent {
+  const event: Record<string, unknown> = {
+    key,
+    type: 'keydown',
+    ctrlKey: false,
+    shiftKey: false,
+    altKey: false,
+    metaKey: false,
+    defaultPrevented: false,
+    stopPropagation: vi.fn(),
+    stopImmediatePropagation: vi.fn(),
+    ...modifiers,
+  };
+  event.preventDefault = vi.fn(() => {
+    event.defaultPrevented = true;
+  });
+  return event as unknown as KeyboardEvent;
 }
 
 function resetRegistry() {
@@ -89,6 +109,31 @@ describe('KeyboardManager', () => {
     handleKeyEvent(keyEvent('F12'));
 
     expect(action).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes panel-scoped graph undo shortcuts only to the focused fxGraph panel', () => {
+    const action = vi.fn((event: KeyboardEvent) => {
+      event.preventDefault();
+      return 'handled' as const;
+    });
+    register({ scope: 'panel:fxGraph', combo: 'Ctrl+z', handler: action });
+
+    const timelineEvent = shortcutEvent('z', { ctrlKey: true });
+    handleKeyEvent(timelineEvent);
+    expect(action).not.toHaveBeenCalled();
+    expect(timelineEvent.defaultPrevented).toBe(false);
+
+    usePanelRegistry.getState().openPanel('fxGraph');
+    const fxGraphEvent = shortcutEvent('z', { ctrlKey: true });
+    handleKeyEvent(fxGraphEvent);
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(fxGraphEvent.defaultPrevented).toBe(true);
+
+    usePanelRegistry.getState().openPanel('mixer');
+    const mixerEvent = shortcutEvent('z', { ctrlKey: true });
+    handleKeyEvent(mixerEvent);
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(mixerEvent.defaultPrevented).toBe(false);
   });
 
   it('rebind moves a binding', () => {

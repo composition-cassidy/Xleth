@@ -30,6 +30,8 @@ public:
     /// Release decoded audio buffer.
     void unloadSource();
 
+    bool isCurrentSource(const std::string& filePath, double engineSampleRate) const;
+
     /// Lightweight probe: opens `filePath` with FFmpeg, checks for an audio
     /// stream, reads duration, and closes.  No decoding.  Used by the import
     /// pipeline to classify audio-only sources before committing to a full
@@ -39,6 +41,7 @@ public:
     // ── Transport (any thread) ───────────────────────────────────────────────
 
     void play(double startTimeSeconds);
+    uint64_t playRegionPreview(double startTimeSeconds, double endTimeSeconds);
     void pause();
     void resume();
     void seek(double timeSeconds);
@@ -62,8 +65,11 @@ private:
     double sampleRate_  = 48000.0;
     int64_t totalSamples_ = 0;
     double duration_      = 0.0;
+    std::string loadedFilePath_;
 
     std::atomic<int64_t> playPosition_ { 0 };
+    std::atomic<int64_t> previewEndSample_ { -1 };
+    std::atomic<uint64_t> previewSeq_ { 0 };
     std::atomic<bool>    playing_      { false };
     std::atomic<bool>    loaded_       { false };
 };

@@ -7,7 +7,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 async function loadMixerStripFixture() {
   vi.doMock('../EffectChainPanel.jsx', () => ({
-    default: () => <div data-testid="effect-chain-panel" />,
+    default: (props) => (
+      <div
+        data-testid="effect-chain-panel"
+        data-mode={props.mode}
+        data-track-id={props.trackId}
+      />
+    ),
   }))
   vi.doMock('../PeakMeter.jsx', () => ({
     default: () => <div data-testid="peak-meter" />,
@@ -16,6 +22,7 @@ async function loadMixerStripFixture() {
     default: ({ value, onChange }) => (
       <input data-testid="volume-fader" value={value} onChange={(e) => onChange(Number(e.target.value))} />
     ),
+    FaderReadout: ({ value }) => <div data-testid="fader-readout">{value}</div>,
   }))
   vi.doMock('../../sampler/Knob.jsx', () => ({
     default: ({ label }) => <div data-testid={`knob-${label}`} />,
@@ -23,7 +30,8 @@ async function loadMixerStripFixture() {
 
   const stripModule = await import('../MixerStrip.jsx')
   const { default: useMixerStore } = await import('../../../stores/mixerStore.js')
-  return { MixerStrip: stripModule.default, useMixerStore }
+  const { default: useTimelineFocusStore } = await import('../../../stores/timelineFocusStore.js')
+  return { MixerStrip: stripModule.default, useMixerStore, useTimelineFocusStore }
 }
 
 function seedMixer(store, outputRoutes = {}) {
@@ -36,6 +44,7 @@ function seedMixer(store, outputRoutes = {}) {
     trackOrder: [1, 2, 3],
     outputRoutes: { 1: -1, 2: -1, 3: -1, ...outputRoutes },
     routingError: null,
+    selectedChainKey: null,
   })
 }
 
@@ -85,9 +94,40 @@ describe('MixerStrip output routing UI', () => {
     const { container, root } = await renderStrip(MixerStrip, 1)
     const select = container.querySelector('.mixer-output-select')
 
-    expect(container.textContent).toContain('Output')
+    expect(select).not.toBeNull()
+    expect(select.getAttribute('aria-label')).toBe('Output')
     expect(select.value).toBe('-1')
     expect(Array.from(select.options).map(option => option.textContent)).toContain('Master')
+    expect(container.querySelector('[data-testid="effect-chain-panel"]').dataset.mode).toBe('preview')
+    await unmountRoot(root)
+  })
+
+  it('clicking a strip selects it as the focused mixer chain', async () => {
+    const { MixerStrip, useMixerStore, useTimelineFocusStore } = await loadMixerStripFixture()
+    seedMixer(useMixerStore)
+    useTimelineFocusStore.setState({ focusedTrackId: null })
+
+    const { container, root } = await renderStrip(MixerStrip, 2)
+
+    await act(async () => {
+      container.querySelector('.mixer-strip').dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(useMixerStore.getState().selectedChainKey).toBe('2')
+    expect(useTimelineFocusStore.getState().focusedTrackId).toBe(2)
+    await unmountRoot(root)
+  })
+
+  it('marks the selected strip with an active class and aria state', async () => {
+    const { MixerStrip, useMixerStore } = await loadMixerStripFixture()
+    seedMixer(useMixerStore)
+    useMixerStore.setState({ selectedChainKey: '1' })
+
+    const { container, root } = await renderStrip(MixerStrip, 1)
+    const strip = container.querySelector('.mixer-strip')
+
+    expect(strip.className).toContain('mixer-strip--selected')
+    expect(strip.getAttribute('aria-selected')).toBe('true')
     await unmountRoot(root)
   })
 

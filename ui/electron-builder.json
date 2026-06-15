@@ -1,7 +1,7 @@
 {
   "appId": "com.xleth.app",
   "productName": "XLETH",
-  "files": ["dist/**/*", "src/plugin-ui/layouts/*.json", "main.js", "preload.js", "runtimePaths.js", "splash.html", "splash-preload.js"],
+  "files": ["dist/**/*", "src/plugin-ui/layouts/*.json", "main.js", "preload.js", "runtimePaths.js", "workspaceBackdropCapability.js", "splash.html", "splash-preload.js"],
   "directories": {
     "output": "../dist"
   },
@@ -35,6 +35,11 @@
     {
       "from": "../media",
       "to": "media",
+      "filter": ["**/*"]
+    },
+    {
+      "from": "../art",
+      "to": "art",
       "filter": ["**/*"]
     },
     {

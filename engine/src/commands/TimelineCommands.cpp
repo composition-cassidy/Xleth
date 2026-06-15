@@ -922,6 +922,32 @@ std::string SetTrackSoloCommand::describe() const {
     return std::string(newSolo_ ? "Solo" : "Unsolo") + " Track " + std::to_string(trackId_);
 }
 
+// ─── SetTrackOrderCommand ─────────────────────────────────────────────────────
+
+SetTrackOrderCommand::SetTrackOrderCommand(std::vector<int> trackIdsInOrder, const Timeline& timeline)
+    : trackIdsInOrder_(std::move(trackIdsInOrder))
+{
+    for (const TrackInfo* t : timeline.getAllTracks()) {
+        if (t)
+            oldOrdersByTrackId_[t->id] = t->order;
+    }
+}
+
+void SetTrackOrderCommand::execute(Timeline& timeline) {
+    timeline.setTrackOrder(trackIdsInOrder_);
+}
+
+void SetTrackOrderCommand::undo(Timeline& timeline) {
+    for (const auto& [trackId, order] : oldOrdersByTrackId_) {
+        if (TrackInfo* t = timeline.getTrackMutable(trackId))
+            t->order = order;
+    }
+}
+
+std::string SetTrackOrderCommand::describe() const {
+    return "Reorder Tracks";
+}
+
 // ─── SetTrackOutputRouteCommand ───────────────────────────────────────────────
 
 SetTrackOutputRouteCommand::SetTrackOutputRouteCommand(int sourceTrackId,

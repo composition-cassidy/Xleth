@@ -1,7 +1,13 @@
 import React from 'react'
 import { useEffect, useRef, useState } from 'react'
+import XlethSelect from '../common/XlethSelect.jsx'
 
 const POLL_MS = 500
+const CAPTURE_DURATION_OPTIONS = [
+  { value: 5, label: '5s' },
+  { value: 10, label: '10s' },
+  { value: 30, label: '30s' },
+]
 
 function numberOrZero(value) {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
@@ -193,17 +199,15 @@ export default function AudioPerformanceDiagnosticsPanel() {
           <label className="settings-panel-label" htmlFor="audio-perf-capture-seconds">
             Performance report
           </label>
-          <select
+          <XlethSelect
             id="audio-perf-capture-seconds"
             className="settings-panel-select"
             value={captureSeconds}
-            onChange={e => setCaptureSeconds(Number(e.target.value))}
+            options={CAPTURE_DURATION_OPTIONS}
+            onChange={nextValue => setCaptureSeconds(Number(nextValue))}
             disabled={captureState.status === 'capturing'}
-          >
-            <option value={5}>5s</option>
-            <option value={10}>10s</option>
-            <option value={30}>30s</option>
-          </select>
+            ariaLabel="Performance report capture duration"
+          />
           <button
             type="button"
             className="settings-panel-button"

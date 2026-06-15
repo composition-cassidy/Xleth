@@ -1,5 +1,6 @@
 #include "RenderClock.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdio>   // fprintf for validate() — always available, not just debug
@@ -72,6 +73,32 @@ int64_t RenderClock::sampleToPPQ(int64_t samplePos, int sampleRate, double bpm)
                (long long)samplePos, bpm, (long long)ppq);
 
     return ppq;
+}
+
+int64_t RenderClock::ppqToSample(int64_t ppq, int sampleRate, double bpm)
+{
+    if (sampleRate <= 0 || bpm <= 0.0) return 0;
+
+    const int64_t bpmMilli = static_cast<int64_t>(std::round(bpm * 1000.0));
+    if (bpmMilli <= 0) return 0;
+
+    const int64_t sample = av_rescale(
+        ppq,
+        60000LL * static_cast<int64_t>(sampleRate),
+        bpmMilli * static_cast<int64_t>(PPQ));
+
+    RCLOCK_LOG("ppqToSample: ppq=%lld bpm=%.1f -> sample=%lld",
+               (long long)ppq, bpm, (long long)sample);
+
+    return sample;
+}
+
+int64_t RenderClock::beatToSample(double beat, int sampleRate, double bpm)
+{
+    if (sampleRate <= 0 || bpm <= 0.0 || !std::isfinite(beat)) return 0;
+    const double clampedBeat = std::max(0.0, beat);
+    return static_cast<int64_t>(
+        clampedBeat * (static_cast<double>(sampleRate) * 60.0 / bpm));
 }
 
 // ===========================================================================

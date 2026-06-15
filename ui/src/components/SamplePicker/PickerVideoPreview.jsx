@@ -11,8 +11,16 @@ import { useRef, useState, useEffect, useMemo } from 'react'
  *   filePath    – absolute path to the video file
  *   currentTime – seconds (from SourcePlayer position polling)
  *   isPlaying   – whether SourcePlayer is currently playing
+ *   sourceWidth  – source video width
+ *   sourceHeight – source video height
  */
-export default function PickerVideoPreview({ filePath, currentTime, isPlaying }) {
+export default function PickerVideoPreview({
+  filePath,
+  currentTime,
+  isPlaying,
+  sourceWidth,
+  sourceHeight,
+}) {
   const videoRef = useRef(null)
   const [mediaPort, setMediaPort] = useState(null)
 
@@ -65,8 +73,15 @@ export default function PickerVideoPreview({ filePath, currentTime, isPlaying })
     }
   }, [isPlaying])
 
+  const aspectRatio = sourceWidth > 0 && sourceHeight > 0
+    ? `${sourceWidth} / ${sourceHeight}`
+    : '16 / 9'
+
   return (
-    <div className="picker-video-preview">
+    <div
+      className="picker-video-preview"
+      style={{ '--picker-video-aspect': aspectRatio }}
+    >
       {videoUrl ? (
         <video
           ref={videoRef}

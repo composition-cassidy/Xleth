@@ -89,6 +89,26 @@
       "floating": { "x": 340, "y": 100, "width": 680, "height": 520 },
       "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 280 },
       "preMaximizeState": null
+    },
+    "quickNotation": {
+      "id": "quickNotation",
+      "hidden": true,
+      "focused": false,
+      "zIndex": 0,
+      "mode": "floating",
+      "floating": { "x": 360, "y": 140, "width": 380, "height": 320 },
+      "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 220 },
+      "preMaximizeState": null
+    },
+    "splitSyllables": {
+      "id": "splitSyllables",
+      "hidden": true,
+      "focused": false,
+      "zIndex": 0,
+      "mode": "floating",
+      "floating": { "x": 380, "y": 160, "width": 540, "height": 440 },
+      "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 280 },
+      "preMaximizeState": null
     }
   },
   "dockRegionSizes": { "left": 320, "right": 280, "top": 240, "bottom": 320 }

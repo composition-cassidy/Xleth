@@ -18,6 +18,7 @@
 //   • Smoothing/downsampling mirror the Limiter painter so the panel reads at
 //     a similar cadence.
 
+import { uiCanvasFont } from '../../../styles/typography.js'
 import { dbToY } from './scaling.js'
 
 export const TRANSIENT_DISPLAY = Object.freeze({
@@ -355,7 +356,7 @@ function drawLevelGrid(ctx, x, y, w, h, theme) {
   if (w >= 128 && h >= 60) {
     ctx.globalAlpha = 0.7
     ctx.fillStyle = theme.textMuted || '#999'
-    ctx.font = '10px ui-sans-serif, system-ui, sans-serif'
+    ctx.font = uiCanvasFont('10px')
     ctx.textAlign = 'right'
     ctx.textBaseline = 'middle'
     for (const db of gridDb) {

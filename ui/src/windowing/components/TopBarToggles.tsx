@@ -89,7 +89,7 @@ function PanelToggleButton({ entry }: { entry: (typeof PANEL_CATALOG_ORDER)[numb
       data-focused={String(focused)}
       style={{ '--xleth-windowing-panel-color': panelTypeColorVar(id) } as React.CSSProperties}
       onClick={() => usePanelRegistry.getState().togglePanel(id)}
-      title={`${entry.title} (${entry.fKey})`}
+      title={entry.fKey ? `${entry.title} (${entry.fKey})` : entry.title}
       aria-label={`Toggle ${entry.title}`}
       aria-pressed={!hidden}
     >
@@ -115,7 +115,7 @@ export function TopBarToggles() {
     <div className="xleth-top-bar-toggles">
       <div className="xleth-top-bar-group" aria-label="Panel visibility">
         {PANEL_CATALOG_ORDER
-          .filter((entry) => entry.id !== 'sampleSelector')
+          .filter((entry) => entry.id !== 'sampleSelector' && entry.id !== 'quickNotation')
           .map((entry) => <PanelToggleButton key={entry.id} entry={entry} />)}
       </div>
       <div className="xleth-top-bar-separator" aria-hidden="true" />

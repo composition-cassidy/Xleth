@@ -46,12 +46,14 @@ describe('PanelVisibility keep-alive rendering', () => {
 
   it.skip('effects require jsdom', () => {});
 
-  it('keepAliveWhenHidden is true for timeline and preview only', () => {
-    expect(PANEL_CATALOG.timeline.keepAliveWhenHidden).toBe(true);
-    expect(PANEL_CATALOG.preview.keepAliveWhenHidden).toBe(true);
+  it('keepAliveWhenHidden is true for timeline, preview and splitSyllables only', () => {
+    const keepAliveIds = ['timeline', 'preview', 'splitSyllables'] as const;
+    for (const id of keepAliveIds) {
+      expect(PANEL_CATALOG[id].keepAliveWhenHidden).toBe(true);
+    }
 
     for (const id of PANEL_IDS) {
-      if (id === 'timeline' || id === 'preview') continue;
+      if ((keepAliveIds as readonly string[]).includes(id)) continue;
       expect(PANEL_CATALOG[id].keepAliveWhenHidden).toBe(false);
     }
   });

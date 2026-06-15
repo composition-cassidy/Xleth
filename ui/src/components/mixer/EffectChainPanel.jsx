@@ -3,6 +3,7 @@ import useEffectChainStore, { resolveFxMode, resolveFxPanelView } from '../../st
 import useVstStore from '../../stores/vstStore.js'
 import { usePanelRegistry } from '../../windowing/registry/PanelRegistry'
 import EffectModule from './EffectModule.jsx'
+import { PLUGIN_NAMES } from './effectEditorOpeners.js'
 import TrackContextMenu from '../timeline/TrackContextMenu.jsx'
 import {
   EFFECT_CATEGORIES,
@@ -44,6 +45,77 @@ export function syncSelectedEffectChainNode(selectedNodeId, chain) {
 
 export function shouldShowEffectChainOverflow(chainLength, visibleLimit = VISIBLE_LIMIT) {
   return chainLength > visibleLimit
+}
+
+export function getEffectChainDisplayName(effect, vstPlugins = []) {
+  const explicitName = effect?.displayName ?? effect?.name ?? effect?.pluginName
+  if (explicitName) return explicitName
+  const stockName = PLUGIN_NAMES[effect?.pluginId]
+  if (stockName) return stockName
+  const vstMeta = vstPlugins.find((plugin) => plugin.id === effect?.pluginId)
+  return vstMeta?.name ?? effect?.pluginId ?? effect?.type ?? 'Effect'
+}
+
+export function getEffectChainRowKey(effect, index) {
+  if (effect?.nodeId != null && effect.nodeId !== -1) return effect.nodeId
+  const pluginKey = effect?.pluginId ?? effect?.effectInstanceId ?? effect?.name ?? effect?.type ?? 'effect'
+  return `pending-${pluginKey}-${index}`
+}
+
+export function EffectChainPreviewList({
+  chain = EMPTY_CHAIN,
+  vstPlugins = [],
+  limit = VISIBLE_LIMIT,
+  chainLabel = 'Effect chain',
+  graphModeActive = false,
+}) {
+  if (graphModeActive) {
+    return (
+      <div className="effect-chain-preview-list" role="status" aria-label={`${chainLabel} preview`}>
+        <div className="effect-chain-preview-row effect-chain-preview-row--graph">
+          <span className="effect-chain-preview-name">FX Graph Active</span>
+        </div>
+      </div>
+    )
+  }
+
+  if (chain.length === 0) {
+    return (
+      <div className="effect-chain-preview-list" role="list" aria-label={`${chainLabel} preview`}>
+        <div className="effect-chain-preview-empty">No FX</div>
+      </div>
+    )
+  }
+
+  const visibleEffects = chain.slice(0, limit)
+  const overflowCount = Math.max(0, chain.length - limit)
+
+  return (
+    <div className="effect-chain-preview-list" role="list" aria-label={`${chainLabel} preview`}>
+      {visibleEffects.map((effect, index) => {
+        const displayName = getEffectChainDisplayName(effect, vstPlugins)
+        const key = getEffectChainRowKey(effect, index)
+        const rowClassName =
+          `effect-chain-preview-row${effect.bypassed ? ' effect-chain-preview-row--bypassed' : ''}` +
+          `${effect.missing ? ' effect-chain-preview-row--missing' : ''}` +
+          `${effect.crashed ? ' effect-chain-preview-row--crashed' : ''}`
+
+        return (
+          <div key={key} className={rowClassName} role="listitem" title={displayName}>
+            <span className="effect-chain-preview-name">{displayName}</span>
+            {effect.bypassed && <span className="effect-chain-preview-badge">Off</span>}
+            {effect.missing && <span className="effect-chain-preview-badge effect-chain-preview-badge--warning">Missing</span>}
+            {effect.crashed && <span className="effect-chain-preview-badge effect-chain-preview-badge--danger">Crashed</span>}
+          </div>
+        )
+      })}
+      {overflowCount > 0 && (
+        <div className="effect-chain-preview-overflow" role="listitem">
+          +{overflowCount} more
+        </div>
+      )}
+    </div>
+  )
 }
 
 export function buildEffectChainMenuItems({ addEffect, storeKey, vstPlugins }) {
@@ -132,38 +204,9 @@ export function EffectChainGraphShell({
   )
 }
 
-export function getInitialEffectChainPopoverPosition(anchorRect, viewport = {
-  width: window.innerWidth,
-  height: window.innerHeight,
-}) {
-  const margin = 8
-  const preferredWidth = 236
-  const preferredHeight = 260
-  const openRight = viewport.width - anchorRect.right >= preferredWidth
-  const left = openRight
-    ? anchorRect.right + 6
-    : Math.max(margin, anchorRect.left - preferredWidth - 6)
-  const top = Math.max(margin, Math.min(anchorRect.top, viewport.height - preferredHeight - margin))
-
-  return { left, top }
-}
-
-export function clampEffectChainPopoverPosition(position, size, viewport = {
-  width: window.innerWidth,
-  height: window.innerHeight,
-}) {
-  const margin = 8
-  const maxLeft = Math.max(margin, viewport.width - size.width - margin)
-  const maxTop = Math.max(margin, viewport.height - size.height - margin)
-
-  return {
-    left: Math.min(Math.max(position.left, margin), maxLeft),
-    top: Math.min(Math.max(position.top, margin), maxTop),
-  }
-}
-
-export default function EffectChainPanel({ trackId, master }) {
+export default function EffectChainPanel({ trackId, master, mode = 'editable' }) {
   const key = master ? 'master' : String(trackId)
+  const editable = mode === 'editable'
 
   const reactiveChain = useEffectChainStore((state) => state.chains[key] ?? EMPTY_CHAIN)
   const reactiveFxMode = useEffectChainStore((state) => resolveFxMode(state.fxModes, key))
@@ -187,10 +230,7 @@ export default function EffectChainPanel({ trackId, master }) {
   const [dragOrder, setDragOrder] = useState(null)
   const [selectedNodeId, setSelectedNodeId] = useState(null)
   const [addMenuPos, setAddMenuPos] = useState(null)
-  const [fullChainPos, setFullChainPos] = useState(null)
   const dragRef = useRef(null)
-  const overflowBtnRef = useRef(null)
-  const fullChainPopoverRef = useRef(null)
 
   const displayChain = dragOrder ?? chain
   const panelViewState = getEffectChainPanelViewState(fxPanelView, fxMode)
@@ -206,6 +246,7 @@ export default function EffectChainPanel({ trackId, master }) {
   }, [chain])
 
   useEffect(() => {
+    if (!editable) return undefined
     const onMouseUp = () => {
       if (!dragRef.current) return
 
@@ -221,16 +262,18 @@ export default function EffectChainPanel({ trackId, master }) {
 
     document.addEventListener('mouseup', onMouseUp)
     return () => document.removeEventListener('mouseup', onMouseUp)
-  }, [key, moveEffect])
+  }, [editable, key, moveEffect])
 
   const handleDragStart = useCallback((nodeId, index, event) => {
+    if (!editable) return
     event.preventDefault()
     dragRef.current = { nodeId, fromIndex: index, currentIndex: index }
     setDragOrder([...chain])
     document.body.style.cursor = 'grabbing'
-  }, [chain])
+  }, [chain, editable])
 
   const handleDragOver = useCallback((toIndex) => {
+    if (!editable) return
     if (!dragRef.current) return
     if (toIndex === dragRef.current.currentIndex) return
 
@@ -246,81 +289,18 @@ export default function EffectChainPanel({ trackId, master }) {
       nextOrder.splice(toIndex, 0, draggedEffect)
       return nextOrder
     })
-  }, [])
+  }, [editable])
 
   const handleSelectNode = useCallback((nodeId) => {
+    if (!editable) return
     setSelectedNodeId(nodeId)
-  }, [])
+  }, [editable])
 
   const handleAddClick = useCallback((event) => {
+    if (!editable) return
     const rect = event.currentTarget.getBoundingClientRect()
-    setFullChainPos(null)
     setAddMenuPos((currentPos) => (currentPos ? null : { x: rect.left, y: rect.top }))
-  }, [])
-
-  const handleOverflowClick = useCallback(() => {
-    if (!overflowBtnRef.current) return
-
-    if (fullChainPos) {
-      setFullChainPos(null)
-      return
-    }
-
-    const rect = overflowBtnRef.current.getBoundingClientRect()
-    setAddMenuPos(null)
-    setFullChainPos(getInitialEffectChainPopoverPosition(rect))
-  }, [fullChainPos])
-
-  useEffect(() => {
-    if (!fullChainPos) return
-
-    const handleOutsideClick = (event) => {
-      if (
-        fullChainPopoverRef.current &&
-        !fullChainPopoverRef.current.contains(event.target) &&
-        event.target !== overflowBtnRef.current
-      ) {
-        setFullChainPos(null)
-      }
-    }
-
-    document.addEventListener('mousedown', handleOutsideClick)
-    return () => document.removeEventListener('mousedown', handleOutsideClick)
-  }, [fullChainPos])
-
-  useEffect(() => {
-    if (!fullChainPos) return
-
-    const handleEscape = (event) => {
-      if (event.key === 'Escape') {
-        setFullChainPos(null)
-      }
-    }
-
-    window.addEventListener('keydown', handleEscape)
-    return () => window.removeEventListener('keydown', handleEscape)
-  }, [fullChainPos])
-
-  useEffect(() => {
-    if (!fullChainPos) return
-    if (!shouldShowEffectChainOverflow(displayChain.length)) {
-      setFullChainPos(null)
-    }
-  }, [displayChain.length, fullChainPos])
-
-  useEffect(() => {
-    if (!fullChainPos || !fullChainPopoverRef.current) return
-
-    const rect = fullChainPopoverRef.current.getBoundingClientRect()
-    const nextPosition = clampEffectChainPopoverPosition(fullChainPos, {
-      width: rect.width,
-      height: rect.height,
-    })
-
-    if (nextPosition.left !== fullChainPos.left || nextPosition.top !== fullChainPos.top) {
-      setFullChainPos(nextPosition)
-    }
-  }, [displayChain.length, fullChainPos])
+  }, [editable])
 
   const menuItems = useMemo(() => (
     buildEffectChainMenuItems({
@@ -337,7 +317,6 @@ export default function EffectChainPanel({ trackId, master }) {
     }
     setDragOrder(null)
     setAddMenuPos(null)
-    setFullChainPos(null)
   }, [])
 
   const handleChainMode = useCallback(() => {
@@ -355,7 +334,7 @@ export default function EffectChainPanel({ trackId, master }) {
   const renderEffectRows = (effects, { limit = effects.length } = {}) => (
     effects.slice(0, limit).map((effect, index) => (
       <EffectModule
-        key={effect.nodeId === -1 ? `pending-${effect.pluginId}-${index}` : effect.nodeId}
+        key={getEffectChainRowKey(effect, index)}
         effect={effect}
         index={index}
         storeKey={key}
@@ -367,29 +346,42 @@ export default function EffectChainPanel({ trackId, master }) {
     ))
   )
 
-  const overflowCount = Math.max(0, displayChain.length - VISIBLE_LIMIT)
-  const overflowVisible = shouldShowEffectChainOverflow(displayChain.length)
   const chainLabel = master ? 'Master effect chain' : 'Track effect chain'
 
+  if (!editable) {
+    return (
+      <div className="effect-chain-panel effect-chain-panel--preview">
+        <EffectChainPreviewList
+          chain={displayChain}
+          vstPlugins={vstPlugins}
+          chainLabel={chainLabel}
+          graphModeActive={graphModeActive}
+        />
+      </div>
+    )
+  }
+
   return (
-    <div className="effect-chain-panel">
+    <div className="effect-chain-panel effect-chain-panel--editable">
       <div className="effect-chain-mode-row">
-        <button
-          className={panelViewState.chainButtonClassName}
-          onClick={handleChainMode}
-          disabled={panelViewState.chainButtonDisabled}
-          title="Show Mixer Chain rack"
-        >
-          CHAIN
-        </button>
-        <button
-          className={panelViewState.nodeButtonClassName}
-          onClick={handleNodeMode}
-          disabled={panelViewState.nodeButtonDisabled}
-          title={panelViewState.nodeButtonTitle}
-        >
-          NODE
-        </button>
+        <div className="effect-chain-mode-pill">
+          <button
+            className={panelViewState.chainButtonClassName}
+            onClick={handleChainMode}
+            disabled={panelViewState.chainButtonDisabled}
+            title="Show Mixer Chain rack"
+          >
+            CHAIN
+          </button>
+          <button
+            className={panelViewState.nodeButtonClassName}
+            onClick={handleNodeMode}
+            disabled={panelViewState.nodeButtonDisabled}
+            title={panelViewState.nodeButtonTitle}
+          >
+            NODE
+          </button>
+        </div>
       </div>
 
       {graphModeActive ? (
@@ -407,21 +399,9 @@ export default function EffectChainPanel({ trackId, master }) {
                 + Add effect
               </button>
             ) : (
-              renderEffectRows(displayChain, { limit: VISIBLE_LIMIT })
+              renderEffectRows(displayChain)
             )}
           </div>
-
-          {overflowVisible && (
-            <button
-              ref={overflowBtnRef}
-              className={`effect-chain-overflow${fullChainPos ? ' effect-chain-overflow--open' : ''}`}
-              onClick={handleOverflowClick}
-              title={fullChainPos ? 'Hide full effect chain' : 'Show full effect chain'}
-              aria-label={fullChainPos ? 'Hide full effect chain' : 'Show full effect chain'}
-            >
-              +{overflowCount} more
-            </button>
-          )}
 
           <div className="effect-chain-footer">
             <button
@@ -448,28 +428,6 @@ export default function EffectChainPanel({ trackId, master }) {
         />
       )}
 
-      {fullChainPos && (
-        <div
-          ref={fullChainPopoverRef}
-          className="effect-chain-full-popover"
-          style={{ left: fullChainPos.left, top: fullChainPos.top }}
-        >
-          <div className="effect-chain-full-popover-header">
-            <span>Effect Chain - {displayChain.length} Effect{displayChain.length === 1 ? '' : 's'}</span>
-            <button
-              className="effect-chain-full-popover-close"
-              onClick={() => setFullChainPos(null)}
-              title="Close full effect chain"
-              aria-label="Close full effect chain"
-            >
-              x
-            </button>
-          </div>
-          <div className="effect-chain-full-popover-list" role="listbox" aria-label={`${chainLabel} full list`}>
-            {renderEffectRows(displayChain)}
-          </div>
-        </div>
-      )}
     </div>
   )
 }

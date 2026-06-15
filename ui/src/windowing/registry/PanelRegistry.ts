@@ -62,6 +62,8 @@ export const MIN_DOCKED_PANEL_MAIN_SIZES: Record<PanelId, number> = {
   fxGraph: 240,
   nodeEditor: 200,
   sampler: 220,
+  quickNotation: 220,
+  splitSyllables: 220,
 };
 
 export interface PanelRegistryState {

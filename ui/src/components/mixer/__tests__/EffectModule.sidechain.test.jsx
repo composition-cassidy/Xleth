@@ -133,12 +133,12 @@ describe('EffectModule compressor sidechain controls', () => {
 
     const { container, root } = await renderEffect(EffectModule)
 
-    expect(container.textContent).toContain('External Sidechain')
+    expect(container.textContent).toContain('EXT. SIDECHAIN')
     expect(container.querySelector('input[aria-label="External Sidechain"]')).not.toBeNull()
     await unmountRoot(root)
   })
 
-  it('non-capable stock effects do not render sidechain controls and unsupported VSTs show disabled copy', async () => {
+  it('non-capable stock effects and unsupported VSTs do not render sidechain controls', async () => {
     const { EffectModule, useMixerStore, useVstStore } = await loadEffectModuleFixture()
     seedMixerStore(useMixerStore)
     useVstStore.setState({ plugins: [{ id: 'third.party', name: 'Third Party', vendor: 'Vendor' }] })
@@ -152,7 +152,10 @@ describe('EffectModule compressor sidechain controls', () => {
     expect(stock.container.textContent).not.toContain('External Sidechain')
     expect(stock.container.textContent).not.toContain('This plugin does not expose a sidechain input')
     expect(vst.container.textContent).not.toContain('External Sidechain')
-    expect(vst.container.textContent).toContain('This plugin does not expose a sidechain input')
+    expect(vst.container.textContent).not.toContain('This plugin does not expose a sidechain input')
+    expect(vst.container.querySelector('select[aria-label="Sidechain source"]')).toBeNull()
+    expect(vst.container.querySelector('.compressor-sidechain-status')).toBeNull()
+    expect(vst.container.querySelector('.effect-module--with-sidechain')).toBeNull()
     await unmountRoot(stock.root)
     await unmountRoot(vst.root)
   })
@@ -165,7 +168,7 @@ describe('EffectModule compressor sidechain controls', () => {
     const { container, root } = await renderEffect(EffectModule, makeVst())
     const select = container.querySelector('select[aria-label="Sidechain source"]')
 
-    expect(container.textContent).toContain('Sidechain: Off')
+    expect(container.querySelector('.compressor-sidechain-toggle--readonly')).not.toBeNull()
     expect(container.querySelector('input[aria-label="External Sidechain"]')).toBeNull()
     expect(select.disabled).toBe(false)
 
@@ -282,7 +285,8 @@ describe('EffectModule compressor sidechain controls', () => {
       preFader: false,
       enabled: true,
     })
-    expect(container.textContent).toContain('Sidechain: Kick')
+    // Active source is reflected by the source dropdown selection
+    expect(container.querySelector('select[aria-label="Sidechain source"]').value).toBe('1')
     await unmountRoot(root)
   })
 
@@ -307,7 +311,6 @@ describe('EffectModule compressor sidechain controls', () => {
     seedMixerStore(useMixerStore, [route])
 
     const okRender = await renderEffect(EffectModule)
-    expect(okRender.container.textContent).toContain('Sidechain: Kick')
     expect(okRender.container.querySelector('select[aria-label="Sidechain source"]').value).toBe('1')
     await unmountRoot(okRender.root)
 

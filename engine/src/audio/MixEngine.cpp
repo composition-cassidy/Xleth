@@ -29,6 +29,21 @@
 
 namespace {
 
+// ── Realtime effect-tail drain (silence-detected) ───────────────────────────
+// After a track's content ends we keep running its insert chain so reverb/delay
+// wet tails ring out instead of being cut at the clip boundary. The stop is
+// decided by the chain OUTPUT level, NOT by the plugin's self-reported
+// getTailLengthSeconds(): external VST reverbs routinely report that as 0
+// (unimplemented) or "infinite" (JUCE returns +inf), so it can't be trusted to
+// size the drain. This mirrors the offline renderer's tail detector
+// (RenderScope.h) so realtime and exported tails agree: drain until the output
+// stays below kRealtimeTailThresholdLinear for kRealtimeTailHoldSeconds, hard-
+// capped at kRealtimeTailMaxSeconds so a frozen / self-oscillating effect can
+// never drain forever.
+constexpr double kRealtimeTailMaxSeconds      = 30.0;
+constexpr float  kRealtimeTailThresholdLinear = 0.001f;  // -60 dB
+constexpr double kRealtimeTailHoldSeconds     = 0.050;   // 50 ms
+
 uint64_t steadyNowNs() noexcept
 {
     return static_cast<uint64_t>(
@@ -3288,7 +3303,6 @@ void MixEngine::resetLatencyCompensationState()
         cachedTrackInsertLatencySamples_[i] = 0;
         cachedTrackCompensationSamples_[i] = 0;
         cachedTrackLatencyEpochs_[i] = 0;
-        cachedTrackTailSeconds_[i] = 0.0;
     }
 
     cachedMaxAudibleTrackLatencySamples_ = 0;
@@ -4033,6 +4047,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         pendingEffectChainReset_ = true;
         pendingLatencyCompensationReset_.store(true, std::memory_order_release);
         std::fill(std::begin(tailEndSamples_), std::end(tailEndSamples_), int64_t(0));
+        std::fill(std::begin(tailBelowThreshRun_), std::end(tailBelowThreshRun_), int64_t(0));
         clipModReader_.resetAllStates();
     }
     wasPlaying_ = isPlaying;
@@ -4106,6 +4121,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         pendingEffectChainReset_ = true;
         pendingLatencyCompensationReset_.store(true, std::memory_order_release);
         std::fill(std::begin(tailEndSamples_), std::end(tailEndSamples_), int64_t(0));
+        std::fill(std::begin(tailBelowThreshRun_), std::end(tailBelowThreshRun_), int64_t(0));
         clipModReader_.resetAllStates();
     }
     lastBufferEnd_ = bufEnd;
@@ -4695,7 +4711,6 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     if (chainsLocked)
     {
         int trackLatencies[kMaxTracks] = {};
-        double trackTailSeconds[kMaxTracks] = {};
         int maxAudibleTrackLatency = 0;
 
         for (int i = 0; i < numTrackSlots; ++i)
@@ -4710,7 +4725,6 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             if (chainIt != effectChains_.end() && chainIt->second && chainIt->second->isInitialized())
             {
                 trackLatencies[i] = juce::jmax(0, chainIt->second->getOutputLatencySamples());
-                trackTailSeconds[i] = chainIt->second->getMaxTailLengthSeconds();
                 const std::uint64_t epoch = chainIt->second->getLatencyEpoch();
                 if (cachedTrackLatencyEpochs_[i] != 0 && cachedTrackLatencyEpochs_[i] != epoch)
                     audioPerformanceTelemetry_.incrementLatencyEpochChange();
@@ -4737,13 +4751,11 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         for (int i = 0; i < kMaxTracks; ++i)
         {
             const int trackLatency = (i < numTrackSlots) ? trackLatencies[i] : 0;
-            const double tailSeconds = (i < numTrackSlots) ? trackTailSeconds[i] : 0.0;
             const int compensation = (i < numTrackSlots)
                                    ? routePdcPlan.branchCompensationSamples[i]
                                    : 0;
 
             cachedTrackInsertLatencySamples_[i] = trackLatency;
-            cachedTrackTailSeconds_[i] = tailSeconds;
 
             if (cachedTrackCompensationSamples_[i] != compensation)
             {
@@ -4911,7 +4923,6 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             rtDiagEnabled ? steadyNowNs() : 0
         };
 
-        const int trackInsertLatencySamples = cachedTrackInsertLatencySamples_[i];
         const int trackCompensationSamples = cachedTrackCompensationSamples_[i];
 
         // Route-aware mute/solo (Prompt 2B). For unrouted projects this matches
@@ -4933,6 +4944,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             trackPeaks_[i].peakL.store(0.0f, std::memory_order_relaxed);
             trackPeaks_[i].peakR.store(0.0f, std::memory_order_relaxed);
             tailEndSamples_[i] = 0;
+            tailBelowThreshRun_[i] = 0;
             syncTrackCompensationDelayState(i, 0, true);
             continue;
         }
@@ -4954,6 +4966,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             trackPeaks_[i].peakL.store(0.0f, std::memory_order_relaxed);
             trackPeaks_[i].peakR.store(0.0f, std::memory_order_relaxed);
             tailEndSamples_[i] = 0;
+            tailBelowThreshRun_[i] = 0;
             syncTrackCompensationDelayState(i, trackCompensationSamples, true);
             continue;
         }
@@ -5035,18 +5048,6 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             }
         }
 
-        if (hasAudio)
-        {
-            const int64_t chainTailSamples =
-                static_cast<int64_t>(std::ceil(cachedTrackTailSeconds_[i] * sampleRate));
-            const int64_t drainSamples =
-                juce::jmax<int64_t>(chainTailSamples,
-                                    static_cast<int64_t>(trackInsertLatencySamples))
-                + static_cast<int64_t>(trackCompensationSamples);
-
-            tailEndSamples_[i] = (drainSamples > 0) ? (bufEnd + drainSamples) : 0;
-        }
-
         // Post-effects fader — 20ms linear ramp to eliminate zipper noise.
         {
             const int nCh = trackBuffers_[i].getNumChannels();
@@ -5092,6 +5093,40 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                                audible,
                                hasAudio,
                                isTailing);
+
+        // ── Effect-tail drain bookkeeping (silence-detected) ─────────────────
+        // While content plays, arm a generous hard cap so the insert chain keeps
+        // running after the clip ends — that is what lets reverb/delay wet tails
+        // (including external VSTs) ring out past the boundary. Once content has
+        // ended (isTailing), stop as soon as the post-PDC track output has stayed
+        // below -60 dB for ~50 ms (tail fully decayed), or the cap expires —
+        // whichever comes first. The decision is driven by the ACTUAL output
+        // level, never the plugin's self-reported getTailLengthSeconds(), which
+        // VST reverbs routinely report as 0 or "infinite". Measuring post-PDC
+        // also means any compensation-delay flush is inherently waited out (its
+        // buffered audio keeps the output above threshold until drained).
+        if (hasAudio)
+        {
+            tailEndSamples_[i] = bufEnd
+                + static_cast<int64_t>(std::ceil(kRealtimeTailMaxSeconds * sampleRate));
+            tailBelowThreshRun_[i] = 0;
+        }
+        else  // isTailing — this point is reached only when hasAudio || isTailing
+        {
+            const float outMag = trackBuffers_[i].getMagnitude(0, numSamples);
+            if (outMag < kRealtimeTailThresholdLinear)
+                tailBelowThreshRun_[i] += numSamples;
+            else
+                tailBelowThreshRun_[i] = 0;
+
+            const int64_t holdSamples =
+                static_cast<int64_t>(kRealtimeTailHoldSeconds * sampleRate + 0.5);
+            if (tailBelowThreshRun_[i] >= holdSamples)
+            {
+                tailEndSamples_[i] = 0;       // tail decayed — stop next block
+                tailBelowThreshRun_[i] = 0;
+            }
+        }
 
         // Sidechain post-fader key tap (Prompt 4C+4D): the post-fader / post-pan /
         // post-PDC signal is the v1 "best-effort post-compensation" tap point per

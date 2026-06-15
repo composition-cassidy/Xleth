@@ -18,6 +18,7 @@
 //   • A bottom strip prints the current crossover frequencies (Lo / Hi) and
 //     a per-band GR readout.
 
+import { uiCanvasFont } from '../../../styles/typography.js'
 import { dbToY } from './scaling.js'
 
 export const MULTIBAND_DISPLAY = Object.freeze({
@@ -433,7 +434,7 @@ function drawBandLane(ctx, x, y, w, h, columns, theme, bandKey, label, grReadout
 
   // Label + GR readout (left-aligned label, right-aligned GR number)
   if (w >= 80 && h >= 24) {
-    ctx.font = '10px ui-sans-serif, system-ui, sans-serif'
+    ctx.font = uiCanvasFont('10px')
     ctx.textBaseline = 'top'
     ctx.fillStyle = color
     ctx.globalAlpha = 0.95
@@ -587,7 +588,7 @@ export function drawOverdoneGainReduction(ctx, w, h, ring, theme) {
     ctx.fillRect(6, Math.round(lh / 2 - 4), Math.max(2, fillW), 8)
 
     if (w >= 80 && lh >= 22) {
-      ctx.font = '10px ui-sans-serif, system-ui, sans-serif'
+      ctx.font = uiCanvasFont('10px')
       ctx.textBaseline = 'middle'
       ctx.fillStyle = color
       ctx.textAlign = 'left'

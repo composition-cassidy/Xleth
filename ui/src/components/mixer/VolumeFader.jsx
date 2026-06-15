@@ -39,27 +39,12 @@ function formatDB(gain) {
   return db.toFixed(1)
 }
 
-// ── Tick marks ──────────────────────────────────────────────────────────────
-const TICKS = [
-  { db: 12, label: '+12' },
-  { db: 6, label: '+6' },
-  { db: 0, label: '0' },
-  { db: -6, label: '-6' },
-  { db: -12, label: '-12' },
-  { db: -24, label: '-24' },
-  { db: -48, label: '-48' },
-]
-
 const THUMB_H = 28
-const THUMB_W = 16
-const GROOVE_W = 2
 
 export default function VolumeFader({ value, onChange }) {
   const containerRef = useRef(null)
   const dragRef = useRef(null)
   const liveRef = useRef(value)
-  const [editing, setEditing] = useState(false)
-  const [editText, setEditText] = useState('')
 
   useEffect(() => { liveRef.current = value }, [value])
 
@@ -133,6 +118,45 @@ export default function VolumeFader({ value, onChange }) {
     onChange?.(gain)
   }, [value, onChange])
 
+  const pos = linearToPos(value)
+  const thumbY = posToY(pos)
+
+  return (
+    <div
+      ref={containerRef}
+      className="mixer-fader"
+      onMouseDown={handleMouseDown}
+      onWheel={handleWheel}
+    >
+      {/* Groove */}
+      <div className="mixer-fader-groove" style={{ top: THUMB_H / 2, bottom: THUMB_H / 2 }}>
+        {/* Lit fill — everything below the thumb glows */}
+        <div className="mixer-fader-fill" style={{ height: `${pos * 100}%` }} />
+        {/* Unity line at 0dB */}
+        <div
+          className="mixer-fader-unity"
+          style={{ bottom: `${linearToPos(1.0) * 100}%` }}
+        />
+      </div>
+
+      {/* Thumb — centred on the value position (== top of the lit fill) */}
+      <div
+        className={`mixer-fader-thumb ${dragRef.current ? 'active' : ''}`}
+        style={{ top: thumbY + THUMB_H / 2 }}
+      >
+        <span className="mixer-fader-thumb-line" />
+      </div>
+    </div>
+  )
+}
+
+// dB readout — lifted out of the fader body so it sits above the meter/fader
+// pair and is never occluded by the thumb at full travel.  Owns its own
+// double-click-to-type editing, reusing the same taper helpers as the fader.
+export function FaderReadout({ value, onChange }) {
+  const [editing, setEditing] = useState(false)
+  const [editText, setEditText] = useState('')
+
   const handleDoubleClick = useCallback(() => {
     setEditing(true)
     setEditText(formatDB(value))
@@ -148,73 +172,31 @@ export default function VolumeFader({ value, onChange }) {
     setEditing(false)
   }, [editText, onChange])
 
-  const pos = linearToPos(value)
-  const thumbY = posToY(pos)
-
   return (
-    <div
-      ref={containerRef}
-      className="mixer-fader"
-      onMouseDown={handleMouseDown}
-      onWheel={handleWheel}
-    >
-      {/* Tick marks */}
-      <div className="mixer-fader-ticks">
-        {TICKS.map(t => {
-          const tp = linearToPos(dbToLinear(t.db))
-          const top = posToY(tp) + THUMB_H / 2
-          return (
-            <div
-              key={t.db}
-              className="mixer-fader-tick"
-              style={{ top }}
-            >
-              <span className="mixer-fader-tick-label">{t.label}</span>
-            </div>
-          )
-        })}
-      </div>
-
-      {/* Groove */}
-      <div className="mixer-fader-groove" style={{ top: THUMB_H / 2, bottom: THUMB_H / 2 }}>
-        {/* Unity line at 0dB */}
-        <div
-          className="mixer-fader-unity"
-          style={{ bottom: `${linearToPos(1.0) * 100}%` }}
+    <div className="mixer-fader-readout">
+      {editing ? (
+        <input
+          autoFocus
+          type="text"
+          className="mixer-fader-readout-input"
+          value={editText}
+          onChange={e => setEditText(e.target.value)}
+          onBlur={commitEdit}
+          onKeyDown={e => {
+            if (e.key === 'Enter') commitEdit()
+            else if (e.key === 'Escape') setEditing(false)
+          }}
+          onMouseDown={e => e.stopPropagation()}
         />
-      </div>
-
-      {/* Thumb */}
-      <div
-        className={`mixer-fader-thumb ${dragRef.current ? 'active' : ''}`}
-        style={{ top: thumbY }}
-      />
-
-      {/* dB readout */}
-      <div className="mixer-fader-readout">
-        {editing ? (
-          <input
-            autoFocus
-            type="text"
-            className="mixer-fader-readout-input"
-            value={editText}
-            onChange={e => setEditText(e.target.value)}
-            onBlur={commitEdit}
-            onKeyDown={e => {
-              if (e.key === 'Enter') commitEdit()
-              else if (e.key === 'Escape') setEditing(false)
-            }}
-          />
-        ) : (
-          <span
-            className="mixer-fader-readout-text"
-            onDoubleClick={handleDoubleClick}
-            title="Double-click to type dB · Drag vertical · Shift = fine · Ctrl+click = 0dB"
-          >
-            {formatDB(value)}
-          </span>
-        )}
-      </div>
+      ) : (
+        <span
+          className="mixer-fader-readout-text"
+          onDoubleClick={handleDoubleClick}
+          title="Double-click to type dB · Drag the fader · Shift = fine · Ctrl+click = 0dB"
+        >
+          {formatDB(value)}<span className="mixer-fader-readout-unit">db</span>
+        </span>
+      )}
     </div>
   )
 }

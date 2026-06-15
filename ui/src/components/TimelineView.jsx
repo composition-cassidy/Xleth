@@ -12,7 +12,6 @@ import TimelineScrollbar from './timeline/TimelineScrollbar.jsx'
 import TimelineToolbar from './timeline/TimelineToolbar.jsx'
 import ContextMenu from './ContextMenu.jsx'
 import TrackContextMenu from './timeline/TrackContextMenu.jsx'
-import FadeBezierEditor from './timeline/FadeBezierEditor.jsx'
 import ConfirmConvertDialog from './timeline/ConfirmConvertDialog.jsx'
 import QuantizeDialog from './timeline/QuantizeDialog.jsx'
 import { buildQuantizeSpecs } from '../utils/quantize.js'
@@ -27,6 +26,7 @@ import { startEnvelopePlayback } from '../fxgraph/envelopePlayback.js'
 import useEffectChainStore from '../stores/effectChainStore.js'
 import { playheadClock } from '../services/PlayheadClock.js'
 import { editCursor } from '../services/EditCursor.js'
+import { createXlethStoppedPreviewSeekScheduler } from '../services/stoppedPreviewSeekScheduler.js'
 import { timelineEvents } from '../timelineEvents.js'
 import {
   BEATS_PER_BAR, TRACK_HEIGHT, PPQ, RULER_HEIGHT,
@@ -35,11 +35,13 @@ import {
 } from '../constants/timeline.js'
 import { getRegime } from '../utils/waveformRenderer.js'
 import { getRegionPlaybackDurationSec } from './timeline/regionDuration.js'
+import { getClipRegionWaveformStartSec } from './timeline/timelineDrawing.js'
 import { getSelectableSyllables } from './SyllableSplitter/syllableModel.js'
 import useSnapStore from '../stores/snapStore.js'
 import useTimelineDisplayStore from '../stores/timelineDisplayStore.js'
 import useUIStore from '../stores/uiStore.js'
 import useTimelineFocusStore from '../stores/timelineFocusStore.js'
+import useQuickNotationStore from '../stores/quickNotationStore.js'
 import useLoopRegionStore from '../stores/loopRegionStore.js'
 import usePianoRollStore from '../stores/usePianoRollStore.js'
 import useMixerStore from '../stores/mixerStore.js'
@@ -48,6 +50,7 @@ import { usePanelVisibility } from '../windowing/contexts/PanelVisibilityContext
 import { usePanelRegistry } from '../windowing/registry/PanelRegistry.ts'
 import TrackFlipPropertiesPanel from './timeline/TrackFlipPropertiesPanel.jsx'
 import { register as registerKeyboardBinding } from '../windowing/managers/KeyboardManager'
+import { registerEditorCommand } from '../windowing/managers/EditorCommandRegistry'
 
 // Combos the timeline panel claims. Listed once at module scope so the
 // useEffect that registers them stays empty-deps — handler reads fresh
@@ -696,6 +699,7 @@ export default function TimelineView({
   const timelineDisplaySettings = useTimelineDisplayStore((s) => s.timelineDisplaySettings)
   const focusedTrackId = useTimelineFocusStore((s) => s.focusedTrackId)
   const setFocusedTrackId = useTimelineFocusStore((s) => s.setFocusedTrackId)
+  const setQuickNotationContext = useQuickNotationStore((s) => s.setContext)
   const fetchLoopRegion = useLoopRegionStore((s) => s.fetchLoopRegion)
   const timelineTrackHeaderWidth = useUIStore((s) => s.timelineTrackHeaderWidth)
   const setTimelineTrackHeaderWidth = useUIStore((s) => s.setTimelineTrackHeaderWidth)
@@ -779,6 +783,20 @@ export default function TimelineView({
   const isPlayingRef = useRef(false)
   const playheadBeatRef = useRef(0)
   const bpmRef = useRef(140)
+  const stoppedPreviewSeekSchedulerRef = useRef(null)
+
+  useEffect(() => {
+    const scheduler = createXlethStoppedPreviewSeekScheduler({
+      isPlaying: () => isPlayingRef.current,
+    })
+    stoppedPreviewSeekSchedulerRef.current = scheduler
+    return () => {
+      scheduler.dispose()
+      if (stoppedPreviewSeekSchedulerRef.current === scheduler) {
+        stoppedPreviewSeekSchedulerRef.current = null
+      }
+    }
+  }, [])
 
   // ── User-scroll guard (prevents ensureVisible from fighting manual scroll) ─
   const userScrollingRef = useRef(false)
@@ -911,6 +929,23 @@ export default function TimelineView({
       label:             region.label,
     })
   }, [activeSampleId, regions, stickyNoteLength, updatePencilTemplate])
+
+  // ── Open Quick Notation panel ──────────────────────────────────────────────
+  const handleOpenQuickNotation = useCallback(() => {
+    const region = pencilTemplateRef.current
+      ? regions[pencilTemplateRef.current.regionId]
+      : activeSampleId != null ? regions[activeSampleId] : null
+    if (!region || region.label !== 'Quote') return
+    const syllables = getSelectableSyllables(region.syllables)
+    if (syllables.length === 0) return
+    setQuickNotationContext({
+      regionId: region.id,
+      regionName: region.name,
+      syllableCount: syllables.length,
+      regionDurationTicks: regionDurationToTicks(region.startTime, region.endTime, bpmRef.current),
+    })
+    usePanelRegistry.getState().openPanel('quickNotation')
+  }, [activeSampleId, regions, setQuickNotationContext])
 
   // Clear pencil template when user selects a different sample in Sample Selector
   useEffect(() => {
@@ -1067,9 +1102,20 @@ export default function TimelineView({
     const onPatternsChanged = () => { fetchPatterns() }
     const onPatternBlocksChanged = () => { fetchPatternBlocks() }
     const onPatternChanged = () => { fetchPatterns() }
+    const onTracksChanged = (e) => {
+      const { trackId, patch } = e.detail || {}
+      if (trackId != null && patch && typeof patch === 'object') {
+        setTracks((prev) => prev.map((track) =>
+          track.id === trackId ? { ...track, ...patch } : track
+        ))
+      } else {
+        fetchTracks()
+      }
+    }
     const onRegionAudioLoaded = (e) => {
       if (e.detail?.regionId != null) loadedRegionAudioRef.current.add(e.detail.regionId)
     }
+    timelineEvents.addEventListener('timeline-tracks-changed', onTracksChanged)
     timelineEvents.addEventListener('timeline-regions-changed', onRegionsChanged)
     timelineEvents.addEventListener('timeline-clips-changed', onClipsChanged)
     timelineEvents.addEventListener('timeline-region-audio-loaded', onRegionAudioLoaded)
@@ -1077,6 +1123,7 @@ export default function TimelineView({
     timelineEvents.addEventListener('timeline-pattern-blocks-changed', onPatternBlocksChanged)
     timelineEvents.addEventListener('timeline-pattern-changed', onPatternChanged)
     return () => {
+      timelineEvents.removeEventListener('timeline-tracks-changed', onTracksChanged)
       timelineEvents.removeEventListener('timeline-regions-changed', onRegionsChanged)
       timelineEvents.removeEventListener('timeline-clips-changed', onClipsChanged)
       timelineEvents.removeEventListener('timeline-region-audio-loaded', onRegionAudioLoaded)
@@ -1256,7 +1303,10 @@ export default function TimelineView({
           if (cached.pitchOffset      === (clip.pitchOffset ?? 0) &&
               cached.pitchOffsetCents === (clip.pitchOffsetCents ?? 0) &&
               cached.reversed         === !!clip.reversed &&
-              cached.stretchRatio     === (clip.stretchRatio ?? 1.0)) {
+              cached.stretchRatio     === (clip.stretchRatio ?? 1.0) &&
+              cached.regionOffsetTicks === (clip.regionOffsetTicks ?? 0) &&
+              cached.syllableIndex    === (clip.syllableIndex ?? -1) &&
+              cached.durationTicks     === clip.durationTicks) {
             continue  // still valid
           }
           // Params changed — evict and refetch, reset retry counter
@@ -1283,6 +1333,9 @@ export default function TimelineView({
               pitchOffsetCents: clip.pitchOffsetCents ?? 0,
               reversed:         !!clip.reversed,
               stretchRatio:     clip.stretchRatio ?? 1.0,
+              regionOffsetTicks: clip.regionOffsetTicks ?? 0,
+              syllableIndex:     clip.syllableIndex ?? -1,
+              durationTicks:     clip.durationTicks,
             }
             canvasRef.current?.redrawContent('waveform')
           } else if (data && !data.ready) {
@@ -1313,6 +1366,9 @@ export default function TimelineView({
                       pitchOffsetCents: clip.pitchOffsetCents ?? 0,
                       reversed:         !!clip.reversed,
                       stretchRatio:     clip.stretchRatio ?? 1.0,
+                      regionOffsetTicks: clip.regionOffsetTicks ?? 0,
+                      syllableIndex:     clip.syllableIndex ?? -1,
+                      durationTicks:     clip.durationTicks,
                     }
                     canvasRef.current?.redrawContent('waveform')
                   }
@@ -1400,7 +1456,7 @@ export default function TimelineView({
         if (visR <= visL) continue
 
         const clipDurSec = (clip.durationTicks / PPQ) / (bpm / 60)
-        const regionOffsetSec = ((clip.regionOffsetTicks ?? 0) / PPQ) / (bpm / 60)
+        const regionOffsetSec = getClipRegionWaveformStartSec(clip, region, bpm)
         const secPerPx = clipDurSec / clipW
         const visStartSec = regionOffsetSec + (visL - x) * secPerPx
         const visEndSec   = regionOffsetSec + (visR - x) * secPerPx
@@ -1502,7 +1558,9 @@ export default function TimelineView({
       setIsPlaying(s.isPlaying)
       if (!s.isPlaying) {
         // Final position at engine-reported stopped position
-        const stopBeat = s.positionMs * s.bpm / 60000
+        const stopBeat = Number.isFinite(s.rawPositionBeats)
+          ? s.rawPositionBeats
+          : s.positionMs * s.bpm / 60000
         playheadBeatRef.current = stopBeat
         editCursor.setPosition(stopBeat)
         canvasRef.current?.positionPlayhead(stopBeat)
@@ -1530,15 +1588,19 @@ export default function TimelineView({
   // During playback, editCursor follows the playback position (10fps, no re-renders).
   // When stopped, editCursor is authoritative and won't be overwritten.
   useEffect(() => {
-    return playheadClock.onDisplayUpdate((posMs, bpm) => {
+    return playheadClock.onDisplayUpdate((posMs, bpm, positionBeats) => {
       if (!isPlayingRef.current) return
-      editCursor.setPosition((posMs / 1000) * (bpm / 60))
+      editCursor.setPosition(Number.isFinite(positionBeats)
+        ? positionBeats
+        : (posMs / 1000) * (bpm / 60))
     })
   }, [])
 
   useEffect(() => {
-    const unsub = playheadClock.onFrame((posMs) => {
-      playheadBeatRef.current = posMs * bpmRef.current / 60000
+    const unsub = playheadClock.onFrame((posMs, bpm, positionBeats) => {
+      playheadBeatRef.current = Number.isFinite(positionBeats)
+        ? positionBeats
+        : posMs * bpmRef.current / 60000
 
       // Auto-scroll only during playback and only when user isn't manually scrolling
       if (!isPlayingRef.current || userScrollingRef.current) return
@@ -1704,7 +1766,7 @@ export default function TimelineView({
     console.log(`[Timeline] Track added: ${name}`)
     if (window.xleth?.timeline?.addTrack) {
       try {
-        await window.xleth.timeline.addTrack({ name })
+        await window.xleth.timeline.addTrack({ name, order: tracks.length })
         await fetchTracks()
         return
       } catch { /* fall through to local */ }
@@ -1714,7 +1776,7 @@ export default function TimelineView({
       ...prev,
       { id: Date.now(), name, type: 'Audio', volume: 1, pan: 0, muted: false, solo: false, visualOnly: false },
     ])
-  }, [fetchTracks])
+  }, [fetchTracks, tracks.length])
 
   const handleMute = useCallback(async (id) => {
     const current = tracks.find((t) => t.id === id)
@@ -1857,15 +1919,22 @@ export default function TimelineView({
   }, [fetchTracks])
 
   const handleReorder = useCallback((fromIndex, toIndex) => {
-    setTracks((prev) => {
-      const next = [...prev]
-      const [moved] = next.splice(fromIndex, 1)
-      next.splice(toIndex, 0, moved)
-      // Reorder is local-only (not persisted to engine), so sync mixer directly
-      useMixerStore.getState().syncFromTimeline(next)
-      return next
-    })
-  }, [])
+    if (fromIndex < 0 || toIndex < 0 || fromIndex >= tracks.length || toIndex >= tracks.length) return
+    const next = [...tracks]
+    const [moved] = next.splice(fromIndex, 1)
+    next.splice(toIndex, 0, moved)
+    const nextTrackIds = next.map((track) => track.id)
+    setTracks(next)
+    useMixerStore.getState().syncFromTimeline(next)
+    if (window.xleth?.timeline?.setTrackOrder) {
+      window.xleth.timeline.setTrackOrder(nextTrackIds).then((ok) => {
+        if (ok === false) fetchTracks()
+      }).catch((e) => {
+        console.warn('[Timeline] setTrackOrder failed', e)
+        fetchTracks()
+      })
+    }
+  }, [fetchTracks, tracks])
 
   // ── Pattern-track conversion helpers ───────────────────────────────────────
 
@@ -2093,14 +2162,27 @@ export default function TimelineView({
 
   // ── Seek via ruler ─────────────────────────────────────────────────────────
 
-  const handleSeek = useCallback((beat) => {
-    editCursor.setPosition(beat)
-    const posMs = beat * 60000 / bpmRef.current
-    playheadClock.syncFromEngine(posMs, bpmRef.current, isPlayingRef.current)
-    playheadBeatRef.current = beat
-    canvasRef.current?.positionPlayhead(beat)
+  const handleSeek = useCallback((beat, options = {}) => {
+    const phase = options.phase || 'commit'
+    const shouldCommitTransport = phase === 'commit'
+    const clampedBeat = Math.max(0, beat)
+
+    editCursor.setPosition(clampedBeat)
+    const posMs = clampedBeat * 60000 / bpmRef.current
+    playheadClock.seekLocally(posMs, bpmRef.current, isPlayingRef.current, clampedBeat)
+    playheadBeatRef.current = clampedBeat
+    canvasRef.current?.positionPlayhead(clampedBeat)
     rulerRef.current?.redrawOverlay()
-    window.xleth?.transport?.seek(beat)  // fire-and-forget
+
+    if (!isPlayingRef.current) {
+      const scheduler = stoppedPreviewSeekSchedulerRef.current
+      scheduler?.schedule({ beat: clampedBeat })
+      if (shouldCommitTransport) scheduler?.flush()
+    }
+
+    if (shouldCommitTransport) {
+      window.xleth?.transport?.seek(clampedBeat)  // final real transport/edit position
+    }
   }, [])
 
   // ── Mutation callbacks (passed to tools via canvas) ────────────────────────
@@ -2293,6 +2375,36 @@ export default function TimelineView({
       console.error('[DeleteTool] removePatternBlock failed:', err)
     }
   }, [])
+
+  const deleteSelectedTimelineItems = useCallback(async () => {
+    if (selectedClipIds.size === 0 && selectedBlockIds.size === 0) return false
+
+    const clipIdList = [...selectedClipIds]
+    const blockIdList = [...selectedBlockIds]
+    const xl = window.xleth
+    console.log(`[Keyboard] Deleting ${clipIdList.length} clip(s), ${blockIdList.length} block(s)`)
+    setSelectedClipIds(new Set())
+    setSelectedBlockIds(new Set())
+    await Promise.all([
+      ...clipIdList.map(id =>
+        xl.timeline.removeClip(id).catch(err =>
+          console.error(`[Keyboard] removeClip(${id}) failed:`, err)
+        )
+      ),
+      ...blockIdList.map(id =>
+        xl.timeline.removePatternBlock(id).catch(err =>
+          console.error(`[Keyboard] removePatternBlock(${id}) failed:`, err)
+        )
+      ),
+    ])
+    if (clipIdList.length > 0) await fetchClips()
+    if (blockIdList.length > 0) timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
+    return true
+  }, [fetchClips, selectedBlockIds, selectedClipIds])
+
+  useEffect(() => (
+    registerEditorCommand('timeline', 'deleteSelected', deleteSelectedTimelineItems)
+  ), [deleteSelectedTimelineItems])
 
   const handleSplitPatternBlock = useCallback(async (blockId, splitPositionTicks) => {
     const block = patternBlocks.find(b => b.id === blockId)
@@ -2645,25 +2757,7 @@ export default function TimelineView({
       if (e.key === 'Delete' && (selectedClipIds.size > 0 || selectedBlockIds.size > 0)) {
         e.preventDefault()
         e.stopPropagation()
-        const clipIdList = [...selectedClipIds]
-        const blockIdList = [...selectedBlockIds]
-        console.log(`[Keyboard] Deleting ${clipIdList.length} clip(s), ${blockIdList.length} block(s)`)
-        setSelectedClipIds(new Set())
-        setSelectedBlockIds(new Set())
-        await Promise.all([
-          ...clipIdList.map(id =>
-            window.xleth?.timeline?.removeClip(id).catch(err =>
-              console.error(`[Keyboard] removeClip(${id}) failed:`, err)
-            )
-          ),
-          ...blockIdList.map(id =>
-            window.xleth?.timeline?.removePatternBlock(id).catch(err =>
-              console.error(`[Keyboard] removePatternBlock(${id}) failed:`, err)
-            )
-          ),
-        ])
-        if (clipIdList.length > 0) await fetchClips()
-        if (blockIdList.length > 0) timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
+        await deleteSelectedTimelineItems()
         return
       }
 
@@ -2707,6 +2801,9 @@ export default function TimelineView({
               fadeOutY1: clip.fadeOutY1 ?? 0,
               fadeOutX2: clip.fadeOutX2 ?? 1,
               fadeOutY2: clip.fadeOutY2 ?? 1,
+              // Clip modulation (Vibrato / Scratch / Video Swirl+Scratch) — carry
+              // the full object so paste preserves Swirl/Scratch data.
+              modulation: clip.modulation ?? null,
             }))
             console.log(`[Keyboard] Copied ${selectedClips.length} clip(s)`)
             console.log('[ClipCopy] source clips (raw React state) =',
@@ -2761,8 +2858,9 @@ export default function TimelineView({
 
         const cb = clipboardRef.current
         if (cb && Array.isArray(cb) && cb.length > 0) {
-          // Read & snap edit cursor — instant, no IPC
-          const baseBeat = snapBeatToGrid(editCursor.getPosition())
+          // Read the edit cursor exactly — it may be off-grid after playback or
+          // free seeking, and paste should not quantize it back to 1/16.
+          const baseBeat = Math.max(0, editCursor.getPosition())
           const baseTicks = beatsToTicks(baseBeat)
 
           // Predict end position from clipboard geometry (pure math, no I/O)
@@ -2774,14 +2872,7 @@ export default function TimelineView({
 
           // Advance edit cursor IMMEDIATELY — spamming Ctrl+V reads fresh values
           const predictedEndBeat = predictedEndTicks / PPQ
-          editCursor.setPosition(predictedEndBeat)
-
-          // Fire-and-forget transport sync (engine follows editor, not vice versa)
-          window.xleth?.transport?.seek(predictedEndBeat)
-          playheadClock.syncFromEngine(predictedEndBeat * 60000 / bpmRef.current, bpmRef.current, isPlayingRef.current)
-          playheadBeatRef.current = predictedEndBeat
-          canvasRef.current?.positionPlayhead(predictedEndBeat)
-          rulerRef.current?.redrawOverlay()
+          handleSeek(predictedEndBeat)
 
           // Rebase point: focused track if it matches the clipboard's source type,
           // else fall back to the clipboard's source track. This preserves the
@@ -2838,6 +2929,8 @@ export default function TimelineView({
                 fadeInX2:  item.fadeInX2,  fadeInY2:  item.fadeInY2,
                 fadeOutX1: item.fadeOutX1, fadeOutY1: item.fadeOutY1,
                 fadeOutX2: item.fadeOutX2, fadeOutY2: item.fadeOutY2,
+                // Restore Vibrato / Scratch / Video Swirl+Scratch from the snapshot
+                ...(item.modulation ? { modulation: item.modulation } : {}),
               }
               console.log('[ClipPaste] payload for clip', pasteIdx++, '=',
                 JSON.stringify(payload, null, 2))
@@ -2858,7 +2951,7 @@ export default function TimelineView({
         // ── Paste pattern blocks at edit cursor (Ctrl+V) ───────────────
         const pbcb = patternBlockClipboardRef.current
         if (pbcb && Array.isArray(pbcb) && pbcb.length > 0) {
-          const baseBeat = snapBeatToGrid(editCursor.getPosition())
+          const baseBeat = Math.max(0, editCursor.getPosition())
           const baseTicks = beatsToTicks(baseBeat)
 
           // Predict end position & advance cursor immediately (same pattern as clip paste)
@@ -2868,12 +2961,7 @@ export default function TimelineView({
             if (end > predictedEndTicks) predictedEndTicks = end
           }
           const predictedEndBeat = predictedEndTicks / PPQ
-          editCursor.setPosition(predictedEndBeat)
-          window.xleth?.transport?.seek(predictedEndBeat)
-          playheadClock.syncFromEngine(predictedEndBeat * 60000 / bpmRef.current, bpmRef.current, isPlayingRef.current)
-          playheadBeatRef.current = predictedEndBeat
-          canvasRef.current?.positionPlayhead(predictedEndBeat)
-          rulerRef.current?.redrawOverlay()
+          handleSeek(predictedEndBeat)
 
           // Same compatibility fallback as the clip-paste branch — if focused
           // track type doesn't match the clipboard's source type, rebase on
@@ -2972,6 +3060,8 @@ export default function TimelineView({
                 fadeInX2:  clip.fadeInX2  ?? 1,  fadeInY2:  clip.fadeInY2  ?? 1,
                 fadeOutX1: clip.fadeOutX1 ?? 0,  fadeOutY1: clip.fadeOutY1 ?? 0,
                 fadeOutX2: clip.fadeOutX2 ?? 1,  fadeOutY2: clip.fadeOutY2 ?? 1,
+                // Carry Vibrato / Scratch / Video Swirl+Scratch so Ctrl+D keeps them
+                ...(clip.modulation ? { modulation: clip.modulation } : {}),
               }
               console.log('[ClipDuplicate] source clip (raw React state) =',
                 JSON.stringify(clip, null, 2))
@@ -3337,71 +3427,6 @@ export default function TimelineView({
     ? (contextMenu.type === 'clip'
         ? [
             { label: 'Auto-Trim Silence (−54 dB)', onClick: () => handleAutoTrimClip(contextMenu.clipId) },
-            { type: 'separator' },
-            {
-              type: 'custom', key: 'volume-slider',
-              content: (
-                <ClipSliderRow
-                  label="Volume"
-                  value={Math.round((contextMenuClip?.velocity ?? 1.0) * 100)}
-                  min={0} max={200} step={1}
-                  onCommit={(v) => handleSetClipVelocity(contextMenu.clipId, v / 100)}
-                  formatValue={(v) => `${v}%`}
-                />
-              ),
-            },
-            {
-              type: 'custom', key: 'fade-in',
-              content: (
-                <div>
-                  <ClipSliderRow
-                    label="Fade In"
-                    value={contextMenuClip?.fadeInPercent ?? 0}
-                    min={0} max={100} step={1}
-                    onCommit={(v) => handleSetClipFade(contextMenu.clipId, { fadeInPercent: v })}
-                    formatValue={(v) => `${Math.round(v)}%`}
-                  />
-                  {(contextMenuClip?.fadeInPercent ?? 0) > 0 && (
-                    <div style={{ padding: '0 8px 6px' }}>
-                      <FadeBezierEditor
-                        x1={contextMenuClip?.fadeInX1 ?? 0} y1={contextMenuClip?.fadeInY1 ?? 0}
-                        x2={contextMenuClip?.fadeInX2 ?? 1} y2={contextMenuClip?.fadeInY2 ?? 1}
-                        type="fadeIn" width={180} height={100}
-                        onChange={(fx1, fy1, fx2, fy2) => handleSetClipFade(contextMenu.clipId, {
-                          fadeInX1: fx1, fadeInY1: fy1, fadeInX2: fx2, fadeInY2: fy2,
-                        })}
-                      />
-                    </div>
-                  )}
-                </div>
-              ),
-            },
-            {
-              type: 'custom', key: 'fade-out',
-              content: (
-                <div>
-                  <ClipSliderRow
-                    label="Fade Out"
-                    value={contextMenuClip?.fadeOutPercent ?? 0}
-                    min={0} max={100} step={1}
-                    onCommit={(v) => handleSetClipFade(contextMenu.clipId, { fadeOutPercent: v })}
-                    formatValue={(v) => `${Math.round(v)}%`}
-                  />
-                  {(contextMenuClip?.fadeOutPercent ?? 0) > 0 && (
-                    <div style={{ padding: '0 8px 6px' }}>
-                      <FadeBezierEditor
-                        x1={contextMenuClip?.fadeOutX1 ?? 0} y1={contextMenuClip?.fadeOutY1 ?? 0}
-                        x2={contextMenuClip?.fadeOutX2 ?? 1} y2={contextMenuClip?.fadeOutY2 ?? 1}
-                        type="fadeOut" width={180} height={100}
-                        onChange={(fx1, fy1, fx2, fy2) => handleSetClipFade(contextMenu.clipId, {
-                          fadeOutX1: fx1, fadeOutY1: fy1, fadeOutX2: fx2, fadeOutY2: fy2,
-                        })}
-                      />
-                    </div>
-                  )}
-                </div>
-              ),
-            },
             { type: 'separator' },
             {
               label: contextMenuClip?.reversed ? '✓ Reverse' : 'Reverse',
@@ -3826,6 +3851,7 @@ export default function TimelineView({
         onDeclickChange={handleDeclick}
         onOpenQuantize={() => setQuantizeOpen(true)}
         quantizeSelectionCount={selectedClipIds.size + selectedBlockIds.size}
+        onOpenQuickNotation={handleOpenQuickNotation}
       />
 
       {/* ── Body ─────────────────────────────────────────────────────────── */}
@@ -3883,6 +3909,7 @@ export default function TimelineView({
                 scrollOffsetRef={scrollOffsetRef}
                 playheadBeatRef={playheadBeatRef}
                 onSeek={handleSeek}
+                snapGranularity={snapGranularity}
                 onWheel={handleWheel}
               />
               {/* Vegas-style loop/render region overlay — sits over the ruler.
@@ -3936,6 +3963,8 @@ export default function TimelineView({
                   onStretchClip={handleStretchClip}
                   onStretchClipLeft={handleStretchClipLeft}
                   onSplitClip={handleSplitClip}
+                  onSetClipVelocity={handleSetClipVelocity}
+                  onSetClipFade={handleSetClipFade}
                   onRequestClipContextMenu={(clipId, x, y) => {
                     setQuickFxMenu(null)
                     setContextMenu({ type: 'clip', clipId, x, y })

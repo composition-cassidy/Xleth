@@ -10,6 +10,8 @@
 // The painter only renders these values; it never analyses audio or edits the
 // curve. Draggable curve-node editing is a later phase.
 
+import { uiCanvasFont } from '../../../styles/typography.js'
+
 // Static frequency tick set used for labels and grid lines.
 const FREQ_TICKS = Object.freeze([
   { hz: 50,    text: '50' },
@@ -103,7 +105,7 @@ function drawGrid(ctx, w, h, theme) {
   if (h >= 70 && w >= 240) {
     ctx.globalAlpha = 0.85
     ctx.fillStyle = theme?.textMuted || '#8a98a8'
-    ctx.font = '9px ui-sans-serif, system-ui, sans-serif'
+    ctx.font = uiCanvasFont('9px')
     ctx.textAlign = 'center'
     ctx.textBaseline = 'bottom'
     for (const tick of FREQ_TICKS) {
@@ -241,7 +243,7 @@ function drawNoSignal(ctx, w, h, theme) {
   ctx.save()
   ctx.fillStyle = theme?.textMuted || '#8a98a8'
   ctx.globalAlpha = 0.65
-  ctx.font = '11px ui-sans-serif, system-ui, sans-serif'
+  ctx.font = uiCanvasFont('11px')
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
   ctx.fillText('No signal yet', w / 2, h / 2)

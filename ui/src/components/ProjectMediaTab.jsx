@@ -5,10 +5,12 @@ import ImportDropZone from './ImportDropZone.jsx'
 import { useXlethRootContext } from '../windowing/contexts/XlethRootContext.jsx'
 import SourceCard from './SourceCard.jsx'
 import ContextMenu from './ContextMenu.jsx'
+import { useToast } from './Toast.jsx'
 import { DEFAULT_LABELS, loadCustomLabels, labelColor } from '../constants/labels.js'
 
 export default function ProjectMediaTab({ onOpenPicker }) {
   const { onOpenMidiImport } = useXlethRootContext()
+  const { showToast } = useToast()
   const [sources, setSources] = useState([])
   const [thumbnails, setThumbnails] = useState({})   // { [sourceId]: dataURL }
   const [importing, setImporting] = useState(false)
@@ -92,17 +94,26 @@ export default function ProjectMediaTab({ onOpenPicker }) {
 
   // ── Shared import logic ───────────────────────────────────────────────────
   async function importFiles(filePaths) {
+    let didImport = false
+
     for (const fp of filePaths) {
       const name = fp.replace(/^.*[\\/]/, '')
       console.log(`[ProjectMedia] Importing ${name}`)
 
       try {
         const sourceId = await window.xleth?.project?.importSource(fp)
+        if (!Number.isFinite(sourceId) || sourceId < 0) {
+          throw new Error('Engine rejected the media file.')
+        }
+        didImport = true
         console.log(`[ProjectMedia] Import complete: id=${sourceId} ${name}`)
       } catch (e) {
         console.error(`[ProjectMedia] Error importing ${name}:`, e)
+        showToast(`Import failed: ${name} (${e?.message || 'unknown error'})`, 'error')
       }
     }
+
+    if (!didImport) return
 
     // Refresh sources list after all imports
     const srcs = await fetchSources()

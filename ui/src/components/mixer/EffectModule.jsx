@@ -92,13 +92,6 @@ export function canShowSidechainControls(effect, storeKey) {
   return typeof effect?.effectInstanceId === 'string' && effect.effectInstanceId.length > 0
 }
 
-export function canShowUnsupportedSidechainCopy(effect, storeKey) {
-  if (storeKey === 'master') return false
-  if (!isSelectableEffectModule(effect) || effect?.missing || effect?.crashed) return false
-  const capability = readEngineSidechainCapability(effect)
-  return capability?.supported === false
-}
-
 export function getSidechainStatusText({
   externalEnabled,
   route,
@@ -328,30 +321,29 @@ function SidechainControls({ effect, storeKey }) {
       aria-label="Effect sidechain"
     >
       {requiresExternalParam ? (
-        <label className="compressor-sidechain-toggle">
+        <label className={`compressor-sidechain-toggle${externalEnabled ? ' compressor-sidechain-toggle--on' : ''}`}>
           <input
             type="checkbox"
             checked={externalEnabled}
             onChange={handleToggleChange}
             aria-label="External Sidechain"
           />
-          <span>External Sidechain</span>
+          <span>EXT. SIDECHAIN</span>
         </label>
       ) : (
         <span className="compressor-sidechain-toggle compressor-sidechain-toggle--readonly">
-          Sidechain
+          SIDECHAIN
         </span>
       )}
 
       <label className="compressor-sidechain-source">
-        <span>Source</span>
         <select
           value={selectedSourceValue}
           onChange={handleSourceChange}
           disabled={(requiresExternalParam && !externalEnabled) || !hasSelectableSource}
           aria-label="Sidechain source"
         >
-          <option value="">None</option>
+          <option value="">none</option>
           {route && sourceTrack && !eligibleSources.some(source => source.sourceTrackId === route.sourceTrackId) && (
             <option value={String(route.sourceTrackId)}>{sourceTrack.name || `Track ${route.sourceTrackId}`}</option>
           )}
@@ -363,19 +355,11 @@ function SidechainControls({ effect, storeKey }) {
         </select>
       </label>
 
-      <span className={`compressor-sidechain-status${routeError || (route && route.status !== 'ok') ? ' compressor-sidechain-status--warning' : ''}`}>
-        {statusText}
-      </span>
-    </div>
-  )
-}
-
-function UnsupportedSidechainCopy() {
-  return (
-    <div className="compressor-sidechain-controls compressor-sidechain-controls--unsupported">
-      <span className="compressor-sidechain-status compressor-sidechain-status--warning">
-        This plugin does not expose a sidechain input
-      </span>
+      {(routeError || (route && route.status !== 'ok')) && (
+        <span className="compressor-sidechain-status compressor-sidechain-status--warning">
+          {statusText}
+        </span>
+      )}
     </div>
   )
 }
@@ -417,7 +401,6 @@ export default function EffectModule({
   const canOpenStockEditor = Boolean(EFFECT_EDITORS[effect.pluginId]) && !effect.missing
   const inlineAction = isPending ? null : getEffectModuleInlineAction(effect, isVst)
   const showSidechainControls = canShowSidechainControls(effect, storeKey)
-  const showUnsupportedSidechainCopy = canShowUnsupportedSidechainCopy(effect, storeKey)
 
   const handleBypassClick = (e) => {
     handleEffectModuleBypassClick(e, {
@@ -480,7 +463,7 @@ export default function EffectModule({
     `effect-module${selected ? ' effect-module--selected' : ''}` +
     `${effect.bypassed ? ' effect-module--bypassed' : ''}` +
     `${isPending ? ' effect-module--pending' : ''}` +
-    `${showSidechainControls || showUnsupportedSidechainCopy ? ' effect-module--with-sidechain' : ''}`
+    `${showSidechainControls ? ' effect-module--with-sidechain' : ''}`
 
   return (
     <div
@@ -547,10 +530,6 @@ export default function EffectModule({
 
       {showSidechainControls && (
         <SidechainControls effect={effect} storeKey={storeKey} />
-      )}
-
-      {!showSidechainControls && showUnsupportedSidechainCopy && (
-        <UnsupportedSidechainCopy />
       )}
 
       {deleteMenu && (

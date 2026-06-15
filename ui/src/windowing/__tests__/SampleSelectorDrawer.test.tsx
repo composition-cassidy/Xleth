@@ -41,12 +41,13 @@ function countRegistryNotifications(run: () => void): number {
 describe('SampleSelectorDrawer', () => {
   beforeEach(resetRegistry);
 
-  it('renders a collapsed left-edge handle when the sample selector is hidden', () => {
+  it('renders a collapsed centered edge tab when the sample selector is hidden', () => {
     usePanelRegistry.getState().closePanel('sampleSelector');
 
     const html = renderToStaticMarkup(<SampleSelectorDrawer />);
 
-    expect(html).toContain('xleth-sample-selector-drawer__handle');
+    expect(html).toContain('xleth-sample-selector-drawer__edge-toggle');
+    expect(html).toContain('xleth-sample-selector-drawer__edge-toggle--collapsed');
     expect(html).toContain('aria-label="Open Sample Selector drawer"');
     expect(html).not.toContain('left-panel-tabs');
   });
@@ -80,16 +81,24 @@ describe('SampleSelectorDrawer', () => {
     );
   });
 
-  it('collapses to only the reserved handle column and lets WorkArea expand', () => {
+  it('collapses to only the reserved edge-tab column and lets WorkArea expand', () => {
     openSampleSelectorDrawer();
     collapseSampleSelectorDrawer();
 
     const html = renderToStaticMarkup(<SampleSelectorDrawer />);
     const css = readUiSource('windowing/components/windowing.css');
 
-    expect(html).toContain('xleth-sample-selector-drawer__handle');
+    expect(html).toContain('xleth-sample-selector-drawer__edge-toggle--collapsed');
     expect(css).toMatch(/\.xleth-windowing-shell\s*\{[\s\S]*grid-template-columns:\s*var\(--xleth-sample-dock-width\)\s+minmax\(0,\s*1fr\)/);
+    expect(css).toMatch(/\.xleth-windowing-shell\s*\{[\s\S]*transition:\s*grid-template-columns\s+180ms\s+cubic-bezier\(0\.16,\s*1,\s*0\.3,\s*1\)/);
     expect(css).toMatch(/\.xleth-windowing-shell\.sample-dock-collapsed\s*\{[\s\S]*grid-template-columns:\s*var\(--xleth-sample-dock-handle-width\)\s+minmax\(0,\s*1fr\)/);
+  });
+
+  it('disables the drawer tween when reduced motion is requested', () => {
+    const css = readUiSource('windowing/components/windowing.css');
+
+    expect(css).toMatch(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*\.xleth-windowing-shell,\s*[\s\S]*\.xleth-sample-selector-drawer\s*\{[\s\S]*transition:\s*none/);
+    expect(css).toMatch(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*\.xleth-sample-selector-drawer\s*\{[\s\S]*animation:\s*none/);
   });
 
   it('mounts docked, floating, and maximized layers inside WorkArea', () => {
@@ -127,6 +136,8 @@ describe('SampleSelectorDrawer', () => {
     expect(html).toContain('Project Media');
     expect(html).toContain('Sample Selector');
     expect(html).toContain('Grid Settings');
+    expect(html).not.toContain('xleth-sample-selector-drawer__chrome');
+    expect(html).toContain('xleth-sample-selector-drawer__edge-toggle--expanded');
     expect(html).toContain('aria-label="Collapse Sample Selector drawer"');
   });
 

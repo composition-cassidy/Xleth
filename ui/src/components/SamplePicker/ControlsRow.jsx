@@ -1,8 +1,9 @@
 import { useState, useRef, useCallback } from 'react'
 import { Play, Pause, Plus } from 'lucide-react'
+import XlethSelect from '../common/XlethSelect.jsx'
 
 function formatTime(s) {
-  if (s === null || !isFinite(s)) return '—'
+  if (s === null || !isFinite(s)) return '--'
   const m   = Math.floor(s / 60)
   const sec = s % 60
   return `${m}:${String(Math.floor(sec)).padStart(2, '0')}.${String(Math.floor((sec % 1) * 100)).padStart(2, '0')}`
@@ -13,6 +14,7 @@ function formatTime(s) {
  *   playing          – boolean
  *   label            – string
  *   sampleName       – string
+ *   currentTime      – number
  *   inPoint          – number | null
  *   outPoint         – number | null
  *   duration         – number
@@ -29,6 +31,7 @@ export default function ControlsRow({
   playing,
   label,
   sampleName,
+  currentTime,
   inPoint,
   outPoint,
   duration,
@@ -45,24 +48,23 @@ export default function ControlsRow({
   const [customLabelDraft, setCustomLabelDraft] = useState('')
   const customInputRef = useRef(null)
 
-  const canPlay  = inPoint !== null && outPoint !== null
   const canAdd   = inPoint !== null && outPoint !== null
     && Math.abs(outPoint - inPoint) >= 0.01
 
   const selDuration = (inPoint !== null && outPoint !== null)
     ? Math.abs(outPoint - inPoint)
     : null
+  const hasAuditionSelection = selDuration !== null && selDuration >= 0.01
 
   // ── Custom label ──────────────────────────────────────────────────────────
-  const handleSelectChange = useCallback((e) => {
-    const val = e.target.value
-    if (val === '__add_custom__') {
+  const handleSelectChange = useCallback((value) => {
+    if (value === '__add_custom__') {
       setAddingCustom(true)
       setCustomLabelDraft('')
       // Focus the inline input on next tick
       setTimeout(() => customInputRef.current?.focus(), 0)
     } else {
-      onLabelChange(val)
+      onLabelChange(value)
     }
   }, [onLabelChange])
 
@@ -86,6 +88,9 @@ export default function ControlsRow({
     <div className="picker-controls">
       {/* ── Time display ─────────────────────────────────────────────── */}
       <div className="picker-time-display">
+        <span className="picker-time-label">Now</span>
+        <span className="picker-time-value">{formatTime(currentTime)}</span>
+        <span className="picker-time-sep">·</span>
         <span className="picker-time-label">In</span>
         <span className="picker-time-value">{formatTime(inPoint)}</span>
         <span className="picker-time-sep">·</span>
@@ -98,6 +103,13 @@ export default function ControlsRow({
             <span className="picker-time-value">{selDuration.toFixed(2)}s</span>
           </>
         )}
+        {duration > 0 && (
+          <>
+            <span className="picker-time-sep">·</span>
+            <span className="picker-time-label">Total</span>
+            <span className="picker-time-value">{formatTime(duration)}</span>
+          </>
+        )}
       </div>
 
       <div className="picker-controls-row">
@@ -105,7 +117,11 @@ export default function ControlsRow({
         <button
           className={`picker-btn picker-play-btn ${playing ? 'active' : ''}`}
           onClick={onPlaySelection}
-          title={playing ? 'Pause (Space)' : 'Play Selection (Space)'}
+          title={playing
+            ? 'Pause (Space)'
+            : hasAuditionSelection
+              ? 'Play Selection (Space)'
+              : 'Play from Current Position (Space)'}
         >
           {playing ? <Pause size={13} /> : <Play size={13} />}
           <span>{playing ? 'Pause' : 'Play'}</span>
@@ -146,17 +162,21 @@ export default function ControlsRow({
             maxLength={24}
           />
         ) : (
-          <select
-            className="picker-label-select"
-            value={label}
-            onChange={handleSelectChange}
+          <div
+            className="picker-label-select-wrap"
             style={{ '--label-color': `var(--theme-label-${label.toLowerCase()}, var(--theme-label-custom))` }}
           >
-            {allLabels.map(l => (
-              <option key={l} value={l}>{l}</option>
-            ))}
-            <option value="__add_custom__">+ Add Custom…</option>
-          </select>
+            <XlethSelect
+              value={label}
+              options={[
+                ...allLabels.map(l => ({ value: l, label: l })),
+                { value: '__add_custom__', label: '+ Add Custom...' },
+              ]}
+              onChange={handleSelectChange}
+              ariaLabel="Sample label"
+              className="picker-label-select"
+            />
+          </div>
         )}
 
         {/* ── Sample name ──────────────────────────────────────────── */}

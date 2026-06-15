@@ -89,3 +89,14 @@ CTestTestfile.cmake
 
 # vcpkg
 vcpkg_installed/
+
+# Scratch logs & build/test artifacts
+*.log
+.codex-backups/
+fsc_test/
+
+# Design working files (PSDs etc. — not shipped source)
+art/
+
+# Local Claude state
+.claude/scheduled_tasks.lock

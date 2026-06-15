@@ -5,6 +5,7 @@
 // per-column peaks, applies light visual smoothing, and then draws the layers
 // in a stable dB range. No DSP or telemetry values are invented here.
 
+import { uiCanvasFont } from '../../../styles/typography.js'
 import { dbToY, grToY } from './scaling.js'
 
 export const LIMITER_DISPLAY = Object.freeze({
@@ -475,7 +476,7 @@ function drawPlotGrid(ctx, x, y, w, h, theme) {
   if (w >= 128 && h >= 68) {
     ctx.globalAlpha = 0.72
     ctx.fillStyle = theme.textMuted || '#999'
-    ctx.font = '10px ui-sans-serif, system-ui, sans-serif'
+    ctx.font = uiCanvasFont('10px')
     ctx.textAlign = 'right'
     ctx.textBaseline = 'middle'
     for (const db of gridDb) {
@@ -650,7 +651,7 @@ function drawOutputMeter(ctx, x, y, w, h, ring, theme) {
   if (labelW) {
     ctx.globalAlpha = 0.78
     ctx.fillStyle = theme.textMuted || '#999'
-    ctx.font = '9px ui-sans-serif, system-ui, sans-serif'
+    ctx.font = uiCanvasFont('9px')
     ctx.textAlign = 'right'
     ctx.textBaseline = 'middle'
     for (const db of ticks) {

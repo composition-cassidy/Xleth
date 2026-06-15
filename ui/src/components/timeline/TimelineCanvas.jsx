@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, useImperativeHandle, forwardRef, useCallback, useMemo } from 'react'
-import { drawGrid, drawClips, drawDropPreview, drawPatternBlocks, drawWorldSpinners, resolveTimelinePalette } from './timelineDrawing.js'
+import { drawGrid, drawClips, drawDropPreview, drawPatternBlocks, drawWorldSpinners, drawGhostClips, resolveTimelinePalette } from './timelineDrawing.js'
 import { buildResolvedTrackColorMap } from './trackColorResolver.js'
 import useWorldProcessingStore from '../../stores/worldProcessingStore.js'
-import { TRACK_HEIGHT, PPQ, pixelToBeat, beatToPixel } from '../../constants/timeline.js'
+import useGhostClipStore from '../../stores/ghostClipStore.js'
+import { TRACK_HEIGHT, PPQ, pixelToBeat, beatToPixel, beatToPlayheadPixel } from '../../constants/timeline.js'
 import { getClipRect, clipHasFxIntent } from './clipGeometry.js'
 import { playheadClock } from '../../services/PlayheadClock.js'
 import { timelineEvents } from '../../timelineEvents.js'
@@ -10,6 +11,45 @@ import { createSelectTool } from './tools/selectTool.js'
 import { createPencilTool } from './tools/pencilTool.js'
 import { createSplitTool } from './tools/splitTool.js'
 import { createDeleteTool } from './tools/deleteTool.js'
+
+const PLAYHEAD_LINE_WIDTH = 1
+const CLIP_VOLUME_MIN = 0
+const CLIP_VOLUME_MAX = 2
+const CLIP_CONTROL_MIN_WIDTH = 34
+const CLIP_VOLUME_PILL_W = 34
+const CLIP_VOLUME_PILL_H = 16
+const CLIP_FADE_HIT_H = 24
+const CLIP_FADE_HANDLE_W = 24
+const CLIP_VOLUME_SNAP_DB = 0.8
+
+function clamp(value, min, max) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return min
+  return Math.min(max, Math.max(min, n))
+}
+
+function normalizedClipFades(clip) {
+  let fadeInPercent = clamp(clip?.fadeInPercent ?? 0, 0, 100)
+  let fadeOutPercent = clamp(clip?.fadeOutPercent ?? 0, 0, 100)
+  const total = fadeInPercent + fadeOutPercent
+  if (total > 100) {
+    const scale = 100 / total
+    fadeInPercent *= scale
+    fadeOutPercent *= scale
+  }
+  return { fadeInPercent, fadeOutPercent }
+}
+
+function velocityToDb(value) {
+  const velocity = Number(value)
+  if (!Number.isFinite(velocity) || velocity <= 0) return -Infinity
+  return 20 * Math.log10(velocity)
+}
+
+function snapVelocityToUnity(value) {
+  const velocity = clamp(value, CLIP_VOLUME_MIN, CLIP_VOLUME_MAX)
+  return Math.abs(velocityToDb(velocity)) <= CLIP_VOLUME_SNAP_DB ? 1 : velocity
+}
 
 /**
  * Three-layer canvas: background (grid), content (clips), overlay (drop preview + tool).
@@ -29,6 +69,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     onStretchClip, onStretchClipLeft,
     onSplitClip,
     onRequestClipContextMenu,
+    onSetClipVelocity, onSetClipFade,
     setSelectedClipIds,
     // Focus pivot (track-of-row under pointer) — fires on mouse-down/right-click
     onFocusTrack,
@@ -81,6 +122,11 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   const worldProcessingClips    = useWorldProcessingStore(s => s.worldProcessingClips)
   const worldProcessingClipsRef = useRef(worldProcessingClips)
   worldProcessingClipsRef.current = worldProcessingClips
+
+  // ── Notation ghost clips ──────────────────────────────────────────────────
+  const ghostClips    = useGhostClipStore(s => s.ghostClips)
+  const ghostClipsRef = useRef(ghostClips)
+  ghostClipsRef.current = ghostClips
   const spinAngleRef       = useRef(0)
   const spinRafRef         = useRef(null)
   // Memoized track-id→index map; rebuilt only when the tracks prop changes so
@@ -119,6 +165,8 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   // ── "Copied!" tooltip (middle-click feedback) ──────────────────────────────
   const [copiedTooltip, setCopiedTooltip] = useState(null) // { x, y }
   const copiedTooltipTimer = useRef(null)
+  const clipControlDraftRef = useRef(null)
+  const clipControlHandlersRef = useRef({ hitTest: null, beginDrag: null })
 
   function showCopiedTooltip(x, y) {
     if (copiedTooltipTimer.current) clearTimeout(copiedTooltipTimer.current)
@@ -161,7 +209,12 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     const dpr = window.devicePixelRatio || 1
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     const palette = resolveTimelinePalette()
-    drawGrid(ctx, w, h, scrollOffsetRef.current, pixelsPerBeatRef.current, trackCount, tracksRef.current, palette, trackLayoutRef.current)
+    drawGrid(
+      ctx, w, h,
+      scrollOffsetRef.current, pixelsPerBeatRef.current,
+      trackCount, tracksRef.current, palette, trackLayoutRef.current,
+      snapGranularityRef.current
+    )
     const dt = performance.now() - t0
     if (dt > 16) console.warn(`[Timeline] WARNING grid redraw took ${dt.toFixed(1)}ms (reason: ${reason})`)
   }
@@ -185,7 +238,8 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       clipsRef.current, tidx, regionsRef.current,
       selectedRef.current, waveformCacheRef?.current, hiResCacheRef?.current, clipPeakCacheRef?.current, bpmRef?.current,
       mutedTrackIds, palette,
-      timelineDisplaySettingsRef.current, trackColorById, trackLayoutRef.current
+      timelineDisplaySettingsRef.current, trackColorById, trackLayoutRef.current,
+      clipControlDraftRef.current
     )
     drawPatternBlocks(
       ctx, w, h,
@@ -195,6 +249,14 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       selectedBlockIdsRef.current, mutedTrackIds, palette,
       timelineDisplaySettingsRef.current, trackColorById, trackLayoutRef.current
     )
+    if (ghostClipsRef.current?.length) {
+      const so  = scrollOffsetRef.current
+      const ppb = pixelsPerBeatRef.current
+      const lay = trackLayoutRef.current
+      const tickToPixelFn = (tick) => beatToPixel(tick / PPQ, so, ppb)
+      const trackYFn = (idx) => (lay?.trackTop?.(idx) ?? idx * TRACK_HEIGHT)
+      drawGhostClips(ctx, ghostClipsRef.current, clipsRef.current, tickToPixelFn, trackYFn, palette)
+    }
     const wpc = worldProcessingClipsRef.current
     if (wpc?.size) {
       // Use palette-resolved accent rather than per-frame getComputedStyle.
@@ -231,9 +293,10 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   function positionPlayhead(beat) {
     const el = playheadLineRef.current
     if (!el) return
-    const px = (beat - scrollOffsetRef.current) * pixelsPerBeatRef.current
+    const rawPx = beatToPixel(beat, scrollOffsetRef.current, pixelsPerBeatRef.current)
+    const px = beatToPlayheadPixel(beat, scrollOffsetRef.current, pixelsPerBeatRef.current, PLAYHEAD_LINE_WIDTH)
     const w = sizeRef.current.w || 9999
-    if (px >= -2 && px <= w) {
+    if (rawPx >= -PLAYHEAD_LINE_WIDTH && rawPx <= w + PLAYHEAD_LINE_WIDTH) {
       el.style.transform = `translateX(${px}px)`
       el.style.opacity = '1'
     } else {
@@ -346,6 +409,15 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     redrawContent('track-layout')
   }, [trackLayout])
 
+  useEffect(() => {
+    redrawGrid('snap-granularity')
+  }, [snapGranularity])
+
+  // ── Redraw when notation ghost clips change ───────────────────────────────
+  useEffect(() => {
+    redrawContent('ghost-clips')
+  }, [ghostClips])
+
   // ── WORLD spinner rAF loop ────────────────────────────────────────────────
   // Runs at ~60fps only while at least one clip is being WORLD-processed.
 
@@ -372,8 +444,8 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   // ── PlayheadClock 60fps playhead animation (DOM element, GPU-composited) ──
 
   useEffect(() => {
-    const unsub = playheadClock.onFrame((posMs, bpm) => {
-      const beat = posMs * bpm / 60000
+    const unsub = playheadClock.onFrame((posMs, bpm, positionBeats) => {
+      const beat = Number.isFinite(positionBeats) ? positionBeats : posMs * bpm / 60000
       playheadBeatRef.current = beat
       positionPlayhead(beat)
     })
@@ -407,6 +479,12 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   const handleMouseDown = useCallback((e) => {
     const pos = getLocalXY(e)
     if (!pos) return
+
+    if (e.button === 0 && activeTool !== 'pencil') {
+      const handlers = clipControlHandlersRef.current
+      const clipControlHit = handlers.hitTest?.(pos.localX, pos.localY)
+      if (clipControlHit && handlers.beginDrag?.(clipControlHit, e)) return
+    }
 
     // ── Focus shift on left-click anywhere in a track row ─────────────────
     // Covers empty-body click, clip click, and pattern-block click —
@@ -480,7 +558,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     }
     window.addEventListener('mousemove', onWindowMove)
     window.addEventListener('mouseup', onWindowUp)
-  }, [getLocalXY, onSetPencilTemplate, onFocusTrack])
+  }, [activeTool, getLocalXY, onSetPencilTemplate, onFocusTrack])
 
   const handleMouseMove = useCallback((e) => {
     // Only handle hover (non-dragging) moves here; dragging is captured on window
@@ -584,6 +662,117 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     return out
   }, [clips, tracks, scrollOffset, pixelsPerBeat, onOpenClipFxQuickMenu, trackLayout])
 
+  const hitTestClipControl = useCallback((localX, localY) => {
+    if (!onSetClipVelocity && !onSetClipFade) return null
+    const clipList = clipsRef.current || []
+    const trackList = tracksRef.current || []
+    const ppb = pixelsPerBeatRef.current
+    const so = scrollOffsetRef.current
+    const trackIdToIndex = trackIdToIndexRef.current
+
+    for (let i = clipList.length - 1; i >= 0; i--) {
+      const clip = clipList[i]
+      const trackIdx = trackIdToIndex[clip.trackId]
+      const track = trackList[trackIdx]
+      if (track?.type === 'Pattern') continue
+      const rect = getClipRect(clip, trackIdToIndex, so, ppb, trackLayoutRef.current)
+      if (!rect || rect.w < CLIP_CONTROL_MIN_WIDTH) continue
+      if (localX < rect.x - 6 || localX > rect.x + rect.w + 6) continue
+      if (localY < rect.y || localY > rect.y + rect.h) continue
+
+      const fades = normalizedClipFades(clip)
+      const volumeRange = Math.max(8, rect.h - 30)
+      const volumeY = rect.y + 18 + (1 - clamp(clip.velocity ?? 1, CLIP_VOLUME_MIN, CLIP_VOLUME_MAX) / CLIP_VOLUME_MAX) * volumeRange
+      const volumeX = rect.x + rect.w / 2
+      const fadeInX = rect.x + rect.w * fades.fadeInPercent / 100
+      const fadeOutX = rect.x + rect.w - rect.w * fades.fadeOutPercent / 100
+      const bottomHit = localY >= rect.y + rect.h - CLIP_FADE_HIT_H
+
+      if (onSetClipVelocity &&
+          Math.abs(localX - volumeX) <= CLIP_VOLUME_PILL_W / 2 + 6 &&
+          Math.abs(localY - volumeY) <= CLIP_VOLUME_PILL_H / 2 + 7) {
+        return { clip, rect, kind: 'volume', fades }
+      }
+      if (onSetClipFade && bottomHit &&
+          localX >= Math.max(rect.x - 4, fadeInX - CLIP_FADE_HANDLE_W - 6) &&
+          localX <= Math.min(rect.x + rect.w + 4, fadeInX + CLIP_FADE_HANDLE_W + 6)) {
+        return { clip, rect, kind: 'fadeIn', fades }
+      }
+      if (onSetClipFade && bottomHit &&
+          localX <= Math.min(rect.x + rect.w + 4, fadeOutX + CLIP_FADE_HANDLE_W + 6) &&
+          localX >= Math.max(rect.x - 4, fadeOutX - CLIP_FADE_HANDLE_W - 6)) {
+        return { clip, rect, kind: 'fadeOut', fades }
+      }
+    }
+    return null
+  }, [onSetClipFade, onSetClipVelocity])
+
+  const readClipControlValue = useCallback((hit, localX, localY) => {
+    if (!hit) return 0
+    if (hit.kind === 'volume') {
+      const range = Math.max(8, hit.rect.h - 30)
+      const norm = clamp((localY - hit.rect.y - 18) / range, 0, 1)
+      return snapVelocityToUnity((1 - norm) * CLIP_VOLUME_MAX)
+    }
+    if (hit.kind === 'fadeIn') {
+      const maxFade = Math.max(0, 100 - hit.fades.fadeOutPercent)
+      return clamp(((localX - hit.rect.x) / hit.rect.w) * 100, 0, maxFade)
+    }
+    const maxFade = Math.max(0, 100 - hit.fades.fadeInPercent)
+    return clamp(((hit.rect.x + hit.rect.w - localX) / hit.rect.w) * 100, 0, maxFade)
+  }, [])
+
+  const beginClipControlDrag = useCallback((hit, startEvent) => {
+    if (!hit) return false
+    startEvent.preventDefault()
+    startEvent.stopPropagation()
+    setSelectedClipIds?.(new Set([hit.clip.id]))
+    onFocusTrack?.(hit.clip.trackId)
+    isDraggingRef.current = true
+    setIsDraggingState(true)
+
+    const setDraftFromEvent = (event) => {
+      const p = getLocalXY(event)
+      if (!p) return clipControlDraftRef.current?.value ?? 0
+      const value = readClipControlValue(hit, p.localX, p.localY)
+      clipControlDraftRef.current = { clipId: hit.clip.id, kind: hit.kind, value }
+      redrawContent('clip-control-drag')
+      return value
+    }
+
+    setDraftFromEvent(startEvent)
+
+    const onWindowMove = (event) => {
+      setDraftFromEvent(event)
+    }
+    const onWindowUp = async (event) => {
+      window.removeEventListener('mousemove', onWindowMove)
+      window.removeEventListener('mouseup', onWindowUp)
+      const value = setDraftFromEvent(event)
+      clipControlDraftRef.current = null
+      isDraggingRef.current = false
+      setIsDraggingState(false)
+      redrawContent('clip-control-commit')
+      try {
+        if (hit.kind === 'volume') {
+          await onSetClipVelocity?.(hit.clip.id, Number(value.toFixed(3)))
+        } else if (hit.kind === 'fadeIn') {
+          await onSetClipFade?.(hit.clip.id, { fadeInPercent: Number(value.toFixed(2)) })
+        } else {
+          await onSetClipFade?.(hit.clip.id, { fadeOutPercent: Number(value.toFixed(2)) })
+        }
+      } catch (err) {
+        console.warn('[TimelineCanvas] clip control commit failed', err)
+      }
+    }
+    window.addEventListener('mousemove', onWindowMove)
+    window.addEventListener('mouseup', onWindowUp)
+    return true
+  }, [getLocalXY, onFocusTrack, onSetClipFade, onSetClipVelocity, readClipControlValue, setSelectedClipIds])
+
+  clipControlHandlersRef.current.hitTest = hitTestClipControl
+  clipControlHandlersRef.current.beginDrag = beginClipControlDrag
+
   // ── Canvas content height tracks the number of tracks ──────────────────────
 
   const contentH = Math.max(trackLayout?.totalHeight ?? trackCount * TRACK_HEIGHT, 200)
@@ -666,7 +855,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
           position: 'absolute',
           top: 0,
           left: 0,
-          width: '2px',
+          width: `${PLAYHEAD_LINE_WIDTH}px`,
           height: '100%',
           backgroundColor: 'var(--theme-border-focus)',
           pointerEvents: 'none',

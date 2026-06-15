@@ -50,12 +50,19 @@ function openFrameShm() {
 }
 
 function normalizeBackdropState(state) {
-  const mode = state && state.mode === 'native-acrylic' ? 'native-acrylic' : 'off';
-  const preference = state && state.preference === 'off' ? 'off' : 'acrylic';
+  const mode = state && ['native-acrylic', 'image', 'video'].includes(state.mode) ? state.mode : 'off';
+  const preference = state && ['off', 'acrylic', 'image', 'video', 'none'].includes(state.preference)
+    ? state.preference
+    : 'none';
   return {
     capability: state && state.capability ? state.capability : null,
     preference,
     mode,
+    imagePath: typeof state?.imagePath === 'string' ? state.imagePath : null,
+    imageUrl: typeof state?.imageUrl === 'string' ? state.imageUrl : null,
+    videoPath: typeof state?.videoPath === 'string' ? state.videoPath : null,
+    videoUrl: typeof state?.videoUrl === 'string' ? state.videoUrl : null,
+    lastError: typeof state?.lastError === 'string' ? state.lastError : null,
   };
 }
 
@@ -144,6 +151,7 @@ window.xleth = ({
     setTrackMuted:        (trackId, muted)      => invoke('xleth:timeline:setTrackMuted', trackId, muted),
     setTrackVisualOnly:   (trackId, visualOnly) => invoke('xleth:timeline:setTrackVisualOnly', trackId, visualOnly),
     setTrackSolo:         (trackId, solo)       => invoke('xleth:timeline:setTrackSolo', trackId, solo),
+    setTrackOrder:        (trackIds)            => invoke('xleth:timeline:setTrackOrder', trackIds),
     setTrackOutputRoute:  (trackId, targetTrackId) => invoke('xleth:timeline:setTrackOutputRoute', trackId, targetTrackId),
     getRouting:           ()                    => invoke('xleth:timeline:getRouting'),
     addSidechainRoute:        (sourceTrackId, route)        => invoke('xleth:timeline:addSidechainRoute', sourceTrackId, route),
@@ -180,6 +188,7 @@ window.xleth = ({
     setVisualEffectBypassed: (trackId, ei, bp)     => invoke('xleth:timeline:setVisualEffectBypassed', trackId, ei, bp),
     getVisualEffectChain:    (trackId)             => invoke('xleth:timeline:getVisualEffectChain', trackId),
     addClip:          (clip)                => invoke('xleth:timeline:addClip', clip),
+    addClipsBatch:    (clips)               => invoke('xleth:timeline:addClipsBatch', clips),
     removeClip:       (id)                  => invoke('xleth:timeline:removeClip', id),
     moveClip:         (id, trackId, pos)    => invoke('xleth:timeline:moveClip', id, trackId, pos),
     resizeClip:       (id, dur)             => invoke('xleth:timeline:resizeClip', id, dur),
@@ -302,6 +311,7 @@ window.xleth = ({
     // ── SourcePlayer (Sample Picker audio preview via C++ engine) ────────
     loadSource:        (filePath) => invoke('xleth:audio:loadSource', filePath),
     playSource:        (startTime) => invoke('xleth:audio:playSource', startTime),
+    playRegionPreview: (startTime, endTime) => invoke('xleth:audio:playRegionPreview', startTime, endTime),
     pauseSource:       ()          => invoke('xleth:audio:pauseSource'),
     resumeSource:      ()          => invoke('xleth:audio:resumeSource'),
     seekSource:        (time)      => invoke('xleth:audio:seekSource', time),
@@ -441,6 +451,8 @@ window.xleth = ({
     // FrameServer: open/close a decoder for a source (fast native path)
     openSource:     (id)    => invoke('xleth:video:openSource', id),
     closeSource:    (id)    => invoke('xleth:video:closeSource', id),
+    requestPreviewFrameAtTimelinePosition: (position) =>
+        invoke('xleth:video:requestPreviewFrameAtTimelinePosition', position),
     // Get JPEG frame — pass sourceId (number) for native path, filePath (string) for legacy
     getFrameAtTime: (idOrPath, t, maxW, maxH) =>
         invoke('xleth:video:getFrameAtTime', idOrPath, t, maxW, maxH),
@@ -506,6 +518,18 @@ window.xleth = ({
       ipcRenderer.on('xleth:backdrop:modeChanged', h);
       return () => ipcRenderer.removeListener('xleth:backdrop:modeChanged', h);
     },
+    chooseImage: async () => {
+      backdropCurrent = normalizeBackdropState(await invoke('xleth:backdrop:chooseImage'));
+      return backdropCurrent;
+    },
+    chooseVideo: async () => {
+      backdropCurrent = normalizeBackdropState(await invoke('xleth:backdrop:chooseVideo'));
+      return backdropCurrent;
+    },
+    setMedia: async (settings) => {
+      backdropCurrent = normalizeBackdropState(await invoke('xleth:backdrop:setMedia', settings));
+      return backdropCurrent;
+    },
   },
 
   // Window layout (persisted to userData/layout.json)
@@ -569,6 +593,24 @@ window.xleth = ({
   shell: {
     showItemInFolder: (path) => invoke('xleth:shell:showItemInFolder', path),
     openPath:         (path) => invoke('xleth:shell:openPath', path),
+  },
+
+  // ── Quick Launchers ────────────────────────────────────────────────────────
+  launcher: {
+    chooseExe:     ()        => invoke('xleth:launcher:chooseExe'),
+    choosePng:     ()        => invoke('xleth:launcher:choosePng'),
+    spawnDetached: (exePath) => invoke('xleth:launcher:spawn', exePath),
+    // Pure path transform — mirrors buildXlethMediaUrl() in main.js
+    buildIconUrl: (filePath) => {
+      if (!filePath) return null
+      const normalised = filePath.replace(/\\/g, '/')
+      const m = normalised.match(/^([a-zA-Z]):\/(.*)$/)
+      if (m) {
+        return 'xleth-media://' + m[1].toLowerCase() + '/' +
+          m[2].split('/').map(encodeURIComponent).join('/')
+      }
+      return 'xleth-media:///' + normalised.split('/').map(encodeURIComponent).join('/')
+    },
   },
 
   // ── MIDI Import ───────────────────────────────────────────────────────────

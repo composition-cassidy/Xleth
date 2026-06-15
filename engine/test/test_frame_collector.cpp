@@ -12,6 +12,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 
 // ---------------------------------------------------------------------------
 // Helper: build a VideoEvent
@@ -281,6 +282,12 @@ int main()
             noteEvent(5.0, 1.5, 76, 20, 7),
             noteEvent(5.0, 1.5, 64, 21, 8),
             noteEvent(5.0, 1.5, 79, 22, 9),
+            // Four-note stack: every same-tick member must consume the next
+            // flip state before the collector chooses the visible event.
+            noteEvent(6.0, 1.0, 84, 30, 10),
+            noteEvent(6.0, 1.0, 60, 31, 11),
+            noteEvent(6.0, 1.0, 67, 32, 12),
+            noteEvent(6.0, 1.0, 72, 33, 13),
         };
         std::vector<VideoEvent*> ptrs;
         for (auto& ev : flipEvents) ptrs.push_back(&ev);
@@ -303,8 +310,18 @@ int main()
         auto assertOrientationAtBeat = [&](double beat, Orientation expected) {
             auto reqs = collectAtBeat(beat);
             const CellFrameRequest* req = findGridRequestForTrack(reqs, trackIds[0]);
-            assert(req != nullptr);
-            assert(req->orientation == static_cast<int>(expected));
+            if (!req) {
+                std::fprintf(stderr, "[TEST:FrameCollector] Missing grid request at beat %.2f\n", beat);
+                std::abort();
+            }
+            const int actual = req->orientation;
+            const int want = static_cast<int>(expected);
+            if (actual != want) {
+                std::fprintf(stderr,
+                             "[TEST:FrameCollector] Orientation mismatch at beat %.2f: got %d expected %d\n",
+                             beat, actual, want);
+                std::abort();
+            }
         };
 
         assertOrientationAtBeat(0.0, Orientation::None);
@@ -314,6 +331,8 @@ int main()
         assertOrientationAtBeat(3.0, Orientation::Rotate90CCW);
         assertOrientationAtBeat(4.0, Orientation::None);
         assertOrientationAtBeat(5.0, Orientation::Rotate180);
+        assertOrientationAtBeat(6.0, Orientation::Horizontal);
+        assertOrientationAtBeat(6.25, Orientation::Horizontal);
 
         std::fprintf(stderr, "[TEST:FrameCollector] Test 1b: PASSED\n");
     }

@@ -700,12 +700,16 @@ private:
     // where processBlock() is not running concurrently (see rebuildAllSamplers).
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> volumeSmoothed_[kMaxTracks];
 
-    // Per-track effect-tail drain: absolute sample position where the tail
-    // expires.  0 = no tail.  Set while content is active (hasClips or
-    // releasing voices), checked when content ends to keep calling the
-    // effect chain on silent buffers until internal state drains.
+    // Per-track effect-tail drain (silence-detected). tailEndSamples_ is the
+    // absolute sample at which the tail HARD CAP expires (0 = not tailing); it
+    // is armed to a generous ceiling while content is active and consulted when
+    // content ends to keep calling the effect chain on silent buffers so
+    // reverb/delay tails ring out. tailBelowThreshRun_ counts consecutive
+    // sub-threshold output samples during the tail so a decayed tail stops early
+    // (independent of the plugin's unreliable getTailLengthSeconds()).
     // Audio-thread only — no mutex needed.
     int64_t tailEndSamples_[kMaxTracks] = {};
+    int64_t tailBelowThreshRun_[kMaxTracks] = {};
 
     class StereoCompensationDelay
     {
@@ -740,7 +744,6 @@ private:
     int cachedTrackInsertLatencySamples_[kMaxTracks] = {};
     int cachedTrackCompensationSamples_[kMaxTracks] = {};
     std::uint64_t cachedTrackLatencyEpochs_[kMaxTracks] = {};
-    double cachedTrackTailSeconds_[kMaxTracks] = {};
     int cachedMaxAudibleTrackLatencySamples_ = 0;
     int cachedMasterInsertLatencySamples_ = 0;
     std::uint64_t cachedMasterLatencyEpoch_ = 0;

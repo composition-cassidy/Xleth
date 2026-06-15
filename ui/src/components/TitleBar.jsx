@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import { usePanelRegistry } from '../windowing/registry/PanelRegistry'
 import { PANEL_CATALOG_ORDER } from '../windowing/registry/panelCatalog'
+import { useQuickLaunchersStore } from '../stores/quickLaunchersStore.js'
 
 const DROPDOWN_OPEN_DELAY_MS = 40
 const DROPDOWN_CLOSE_MS = 80
@@ -170,11 +171,57 @@ function TitleBarLauncherButton({ entry }) {
       aria-label={`Toggle ${entry.title}`}
       aria-pressed={panelVisible}
     >
-      <Icon size={18} strokeWidth={2} aria-hidden="true" />
+      <Icon size={22} strokeWidth={2} aria-hidden="true" />
     </button>
   )
 }
+
+function QuickLauncherButton({ launcher }) {
+  const iconUrl = window.xleth?.launcher?.buildIconUrl?.(launcher.iconPngPath || '')
+
+  function handleClick() {
+    window.xleth?.launcher?.spawnDetached?.(launcher.exePath)
+  }
+
+  return (
+    <button
+      type="button"
+      className="titlebar-launcher-btn"
+      data-active="false"
+      onClick={handleClick}
+      title={launcher.label}
+      aria-label={`Launch ${launcher.label}`}
+    >
+      {iconUrl ? (
+        <img
+          src={iconUrl}
+          alt=""
+          aria-hidden="true"
+          className="titlebar-quick-launcher-icon"
+          onError={e => {
+            e.currentTarget.style.display = 'none'
+            const fb = e.currentTarget.nextSibling
+            if (fb) fb.style.display = 'block'
+          }}
+        />
+      ) : null}
+      <span
+        className="titlebar-quick-launcher-fallback"
+        style={{ display: iconUrl ? 'none' : 'block' }}
+        aria-hidden="true"
+      >
+        {(launcher.label || '?').charAt(0).toUpperCase()}
+      </span>
+    </button>
+  )
+}
+
 export default function TitleBar({ projectName = 'Untitled Project', onAction }) {
+  const quickLaunchers = useQuickLaunchersStore((state) => state.launchers)
+  const hydrateQuickLaunchers = useQuickLaunchersStore((state) => state.hydrate)
+
+  useEffect(() => { hydrateQuickLaunchers() }, [hydrateQuickLaunchers])
+
   const [renderedMenu, setRenderedMenu] = useState(null)
   const [openMenu, setOpenMenu] = useState(null)
   const [dropdownState, setDropdownState] = useState('closed')
@@ -321,7 +368,7 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction })
                   aria-haspopup={direct ? undefined : 'menu'}
                   aria-expanded={direct ? undefined : menuIsOpen}
                 >
-                  {MenuIcon && <MenuIcon className="titlebar-menu-icon" size={18} strokeWidth={2} aria-hidden="true" />}
+                  {MenuIcon && <MenuIcon className="titlebar-menu-icon" size={20} strokeWidth={2} aria-hidden="true" />}
                   <span>{menu.label.toUpperCase()}</span>
                 </button>
                 {!direct && menuIsRendered && (
@@ -339,6 +386,14 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction })
         {PANEL_CATALOG_ORDER
           .filter((entry) => entry.id !== 'sampleSelector')
           .map((entry) => <TitleBarLauncherButton key={entry.id} entry={entry} />)}
+
+        {quickLaunchers.length > 0 && (
+          <div className="titlebar-launchers-divider" aria-hidden="true" />
+        )}
+
+        {quickLaunchers.map((launcher) => (
+          <QuickLauncherButton key={launcher.id} launcher={launcher} />
+        ))}
       </div>
 
       <div className="titlebar-controls">
@@ -348,7 +403,7 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction })
           onClick={() => window.xleth.window.minimize()}
           aria-label="Minimize"
         >
-          <Minus size={14} />
+          <Minus size={18} />
         </button>
         <button
           type="button"
@@ -356,7 +411,7 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction })
           onClick={() => window.xleth.window.maximize()}
           aria-label="Maximize"
         >
-          <Square size={14} />
+          <Square size={18} />
         </button>
         <button
           type="button"
@@ -364,7 +419,7 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction })
           onClick={() => window.xleth.window.close()}
           aria-label="Close"
         >
-          <X size={14} />
+          <X size={18} />
         </button>
       </div>
     </div>

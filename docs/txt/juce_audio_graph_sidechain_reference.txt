@@ -1,0 +1,62 @@
+JUCE AUDIOGRAPH / BUS / SIDECHAIN REFERENCE FOR XLETH MIXER ROUTING
+Target folder in repo: C:\Users\Krasen\Desktop\XLETH\docs\txt
+
+This document summarizes internet-access references for Claude Code, which cannot browse.
+Use this as background only. Verify XLETH's actual code paths in the repo.
+
+Primary sources
+1. JUCE AudioProcessorGraph class reference:
+   https://docs.juce.com/master/classjuce_1_1AudioProcessorGraph.html
+
+2. JUCE AudioProcessor class reference:
+   https://docs.juce.com/master/classjuce_1_1AudioProcessor.html
+
+3. JUCE AudioProcessor::Bus class reference:
+   https://docs.juce.com/master/classjuce_1_1AudioProcessor_1_1Bus.html
+
+4. JUCE tutorial: Configuring the right bus layouts for your plugins:
+   https://juce.com/tutorials/tutorial_audio_bus_layouts/
+
+AudioProcessorGraph facts relevant to XLETH
+- AudioProcessorGraph is itself an AudioProcessor that plays back a graph of other AudioProcessors.
+- Processors are added as nodes.
+- Node output/input channels can be connected with addConnection().
+- The graph exposes canConnect(), addConnection(), removeConnection(), disconnectNode(), isConnectionLegal(), removeIllegalConnections(), and isAnInputTo().
+- isAnInputTo() can recursively check whether a node is upstream of another node, useful for detecting/avoiding cycles.
+- UpdateKind::async can avoid rebuilding the graph after every single graph edit when applying many changes in a batch.
+- addConnection() can fail if the requested connection is not legal, for example if channels/types do not match.
+- removeIllegalConnections() exists because connections can become invalid if channel layouts change.
+
+Implementation implications
+- XLETH should not implement mixer routing by only changing UI state. Engine graph or equivalent engine routing must be updated.
+- Routing validation should be explicit before committing persistent state.
+- Batch route rewrites should avoid unnecessary audio graph rebuild churn.
+- Cycle checks must exist before output routing commits.
+- Engine-level routing should keep stable persistent IDs separate from transient JUCE graph node IDs.
+
+AudioProcessor / Bus facts relevant to sidechain
+- AudioProcessor is JUCE's base class for internal processors and hosted plugins.
+- JUCE plugin hosting also uses AudioProcessor as the wrapper around loaded plugin instances.
+- If a processor/plugin has more than one input or output bus, the processBlock buffer contains channels for all buses.
+- getBusBuffer() is the intended way to get the buffer for a particular bus from processBlock.
+- getBusCount(isInput), getBus(isInput, busIndex), getChannelCountOfBus(), getChannelIndexInProcessBlockBuffer(), and enableAllBuses() are relevant inspection/manipulation APIs.
+- AudioProcessor::Bus exposes properties such as input/output direction, bus index, whether it is main bus, name, default/current layout, channel count, enabled state, supported channel layouts, enable(), and getBusBuffer().
+- addBus/removeBus exist but most processors do not support dynamic bus count changes. Do not assume dynamic bus addition will work for every plugin.
+- JUCE's bus layout tutorial explicitly includes defining input, output, and sidechain buses and testing/changing bus layouts in JUCE Audio Plugin Host.
+- The JUCE Audio Plugin Host can enable/disable buses and change bus channel sets if the plugin allows it.
+
+Implementation implications for VST sidechain
+- Do not assume a plugin supports sidechain just because it is a compressor.
+- Inspect the plugin's input bus count and bus metadata/layout support.
+- Main input bus and sidechain/aux input bus must be treated separately.
+- If a plugin has no usable sidechain/aux input bus, XLETH must report unsupported instead of creating a fake route.
+- If a sidechain bus exists but is disabled, attempt to enable it only through valid JUCE APIs and handle failure cleanly.
+- Sidechain input audio must be placed into the plugin's non-main input bus, not mixed into the audible main bus.
+- Sidechain route state must be silent and separate from audio output/send routing state.
+
+Testing requirements derived from JUCE behavior
+- Build a test plugin/stock processor with main input + sidechain input and assert sidechain signal reaches only sidechain bus.
+- Assert sidechain signal is not audible at track output unless a processor intentionally uses it.
+- Assert unsupported plugins are marked unsupported.
+- Assert route changes remove illegal graph connections after bus layout changes.
+- Assert graph cycle prevention before calling addConnection() where possible.

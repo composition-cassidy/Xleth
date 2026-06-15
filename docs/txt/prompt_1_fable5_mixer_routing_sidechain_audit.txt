@@ -1,0 +1,182 @@
+Run this with: Fable 5 — Extra. Use Ultracode only if your Claude Code setup has a true repo-wide audit mode and you are okay paying for the extra orchestration.
+
+TASK SUMMARY
+Perform a read-only architecture audit for XLETH mixer bus routing and sidechain support, then produce a concrete phased implementation plan that will become the source-of-truth for later implementation prompts.
+
+Context:
+- Project: XLETH.
+- Stack: Windows-only C++ engine using JUCE + FFmpeg + OpenGL, Node-API bridge, Electron + React renderer.
+- The feature needed is mixer routing plus sidechain support.
+- Mixer bus routing means one or more audio tracks can output into another mixer/audio track as an audible bus.
+- Sidechain routing means a source track can feed a silent key/control signal into a target effect or FX Graph sidechain input without becoming audible through that target.
+- The key user problem to avoid: if Kick is output-routed to Drum Bus, Kick must not also keep going directly to Master by default. That would cause double-monitoring and louder/incorrect playback.
+- Reference docs to read first:
+  - docs/txt/xleth_mixer_routing_feature_brief.txt
+  - docs/txt/juce_audio_graph_sidechain_reference.txt
+
+Relevant areas to inspect:
+- Engine audio graph/routing:
+  - engine/src/audio
+  - existing AudioGraph, MixEngine, EffectChainManager, track processing, mixer track structures, mute/solo, latency/PDC, offline render/export paths.
+- Bridge/API:
+  - Node-API addon files
+  - Electron IPC in ui/main.js
+  - preload APIs in ui/preload.js
+- Renderer/UI/state:
+  - mixer components/stores
+  - effect chain store
+  - FX Graph graphState helpers and panel components
+  - project save/load serialization and migrations
+  - undo/redo command patterns
+- Tests:
+  - existing engine audio tests
+  - existing renderer/store tests
+  - export/offline render tests if present.
+
+Hard constraints:
+- Do not edit source code.
+- Do not implement the feature in this pass.
+- Do not run broad destructive commands.
+- Do not push.
+- Do not use `git add .`.
+- Preserve unrelated dirty/untracked files.
+- Do not replace Mixer Chain with FX Graph.
+- Do not force tracks into FX Graph mode.
+- Do not use quarantined legacy NodeEditor/nodeGraphStore/React Flow paths.
+- Do not persist raw transient JUCE/engine node IDs in project files.
+- Do not pass graphState node IDs as plugin parameter addresses.
+- Do not implement UI-only fake routing.
+- Do not treat sidechain as an audible send.
+- Do not assume every third-party VST supports sidechain.
+- Do not route Master into normal tracks.
+- Do not allow self-routing or routing cycles.
+- Do not hardcode production UI colors if you discuss UI implementation later.
+
+Routing semantics to preserve:
+- Default normal track output should remain Master unless changed.
+- Output routing to a bus means the source's main audible output goes to the bus instead of directly to Master.
+- Parallel sends are separate from output routing. Do not conflate them.
+- Sidechain routes are silent detector/control routes. They do not contribute directly to audible output.
+- FX Graph sidechain should be represented by a protected Sidechain Input / Input Activator node that cannot be deleted.
+
+Audit deliverable:
+Produce a single detailed Markdown report. Either write it to:
+  docs/dev/mixer-routing-sidechain-architecture-audit.md
+or, if you want to keep this strictly read-only, print the full report in your final answer instead. Prefer writing the Markdown file only if the repo already uses docs/dev for architecture audits.
+
+The report must include:
+
+1. Current architecture map
+- Exact files/classes/functions responsible for:
+  - track audio processing
+  - mixer/effect chain processing
+  - JUCE AudioProcessorGraph usage
+  - track IDs vs engine node IDs
+  - FX Graph graphState persistence and runtime mapping
+  - plugin hosting / stock effects
+  - project save/load
+  - mute/solo
+  - offline export/render
+  - IPC/preload/store boundaries
+- Include file paths and function/class names.
+
+2. Existing capability assessment
+- What XLETH already has that can support bus routing.
+- What XLETH already has that can support sidechain routing.
+- What must be added.
+- What existing assumptions will break if routing is added naively.
+
+3. Proposed persistent data model
+Define a concrete proposed schema for:
+- output routing
+- optional future parallel sends
+- sidechain routing
+- route IDs
+- source/target track IDs
+- target effectInstanceId when sidechaining into a specific effect
+- gain/pan/pre-fader/enabled state where appropriate
+- migration/default behavior for old projects
+- project save/load boundaries
+Do not use raw engine node IDs in persisted state.
+
+4. Engine implementation plan
+Explain how to implement:
+- audible bus summing
+- no accidental Master duplication
+- topological ordering
+- cycle/self-route prevention
+- route validation
+- mute/solo behavior
+- latency/PDC implications
+- realtime playback and offline export parity
+- bridge API surface
+- failure modes and error reporting.
+
+5. Sidechain implementation plan
+Explain how to implement:
+- silent sidechain route collection
+- sidechain buffers per target effect/track
+- stock effect sidechain support
+- third-party VST sidechain support using JUCE bus APIs where available
+- unsupported plugin behavior
+- how to prevent sidechain from becoming audible unless intentionally used by a processor.
+
+6. FX Graph implementation plan
+Explain how to implement:
+- protected Sidechain Input / Input Activator node
+- graphState representation
+- renderer UI behavior
+- engine/runtime mapping
+- restrictions on deletion and connection
+- relationship to existing protected Input/Output graph nodes
+- how this should interact with parameter modulation nodes like Macro/LFO/Envelope if relevant.
+
+7. UI/UX plan
+Explain how to expose this clearly:
+- track output selector
+- bus route display
+- sidechain source/target selector
+- avoiding the term confusion between output route, send, and sidechain
+- clear warnings for unsupported VST sidechain
+- what to defer to later.
+
+8. Phased implementation prompts
+Break the work into prompts 2-6:
+- Prompt 2: mixer bus routing core
+- Prompt 3: mixer routing UI
+- Prompt 4: sidechain routing core
+- Prompt 5: stock/VST sidechain support
+- Prompt 6: FX Graph protected sidechain input node
+For each prompt, include:
+- scope
+- files likely touched
+- tests required
+- exact success condition
+- what not to touch.
+
+9. Test matrix
+List exact tests to add or update:
+- unit tests
+- engine tests
+- renderer/store tests
+- save/load migration tests
+- offline render tests
+- negative tests for cycles, self-routing, Master routing, unsupported plugins, sidechain silence, and no double-Master output.
+
+10. Risk list
+Call out architectural risks bluntly:
+- performance bottlenecks
+- graph rebuild churn
+- latency/PDC failure modes
+- solo/mute edge cases
+- stale mappings
+- project compatibility
+- VST bus-layout weirdness
+- FX Graph ownership conflicts.
+
+Success condition:
+- No source implementation is performed.
+- The final report gives enough exact architecture detail that another model can write implementation prompts 2-6 without guessing.
+- The report explicitly separates audible output routing, parallel sends, and silent sidechain routing.
+- The report explicitly protects against double-monitoring to Master.
+- The report identifies exact repo files/classes/functions that should be touched later.

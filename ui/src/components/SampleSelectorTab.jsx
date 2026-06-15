@@ -4,8 +4,9 @@ import { timelineEvents } from '../timelineEvents.js'
 import { DEFAULT_LABELS, loadCustomLabels, labelColor } from '../constants/labels.js'
 import SampleGroup from './SampleGroup.jsx'
 import ContextMenu from './ContextMenu.jsx'
-import SyllableSplitterModal from './SyllableSplitter/SyllableSplitterModal.jsx'
 import useSampleViewModeStore from '../stores/sampleViewModeStore.js'
+import useSplitSyllablesPanelStore from '../stores/splitSyllablesPanelStore.js'
+import { usePanelRegistry } from '../windowing/registry/PanelRegistry.ts'
 
 /**
  * Sample Selector tab — organises all marked regions by label.
@@ -22,7 +23,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
   const [regions, setRegions]   = useState([])
   const [sources, setSources]   = useState({})  // { [id]: sourceObject }
   const [contextMenu,      setContextMenu]      = useState(null)  // { x, y, region }
-  const [splitterRegion,   setSplitterRegion]   = useState(null)  // Quote region being split in modal
+  // Split Syllables now opens the floating windowing panel (see openSplitter).
   const [collapsedGroups,  setCollapsedGroups]  = useState(new Set())
   const [editingNameId,    setEditingNameId]    = useState(null)
   const [editingNameValue, setEditingNameValue] = useState('')
@@ -322,7 +323,10 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
       ...(region.label === 'Quote' ? [{
         label: 'Split Syllables',
         icon: Scissors,
-        onClick: () => setSplitterRegion(region),
+        onClick: () => {
+          useSplitSyllablesPanelStore.getState().setSplitTarget({ region })
+          usePanelRegistry.getState().openPanel('splitSyllables')
+        },
       }, { type: 'separator' }] : []),
       // Export Audio
       {
@@ -529,12 +533,9 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
         />
       )}
 
-      {/* ── Syllable splitter modal (for Quote regions) ────────────── */}
-      <SyllableSplitterModal
-        isOpen={!!splitterRegion}
-        region={splitterRegion}
-        onClose={() => setSplitterRegion(null)}
-      />
+      {/* Split Syllables opens as a floating windowing panel — see the
+          'Split Syllables' context-menu entry which sets the panel store
+          and calls openPanel('splitSyllables'). */}
     </div>
   )
 }

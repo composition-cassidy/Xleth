@@ -5,9 +5,30 @@ import { createPeakEntry, prunePeakSnapshotTracks } from '../components/mixer/me
 export const MASTER_OUTPUT_TARGET_ID = -1
 export const COMPRESSOR_EXTERNAL_SIDECHAIN_PARAM_ID = 'sc_external'
 
+function dispatchTimelineTrackPatch(trackId, patch) {
+  timelineEvents.dispatchEvent(new CustomEvent('timeline-tracks-changed', {
+    detail: { trackId, patch },
+  }))
+}
+
 export function normalizeOutputTargetId(value) {
   const n = Number(value)
   return Number.isInteger(n) ? n : MASTER_OUTPUT_TARGET_ID
+}
+
+export function normalizeMixerChainKey(value) {
+  if (value === 'master') return 'master'
+  if (value == null || value === '') return null
+  const n = Number(value)
+  if (!Number.isInteger(n) || n === MASTER_OUTPUT_TARGET_ID) return null
+  return String(n)
+}
+
+export function resolveSelectedMixerChainKey(value, trackOrder = []) {
+  const key = normalizeMixerChainKey(value)
+  if (key === 'master') return key
+  if (key != null && trackOrder.includes(Number(key))) return key
+  return trackOrder.length > 0 ? String(trackOrder[0]) : null
 }
 
 export function normalizeOutputRoutesFromTracks(list) {
@@ -276,9 +297,16 @@ const useMixerStore = create((set, get) => ({
   sidechainRoutingErrors: {}, // { [`${targetTrackId}::${effectInstanceId}`]: message }
   master: { volume: 1.0 },
   visible: false,
+  selectedChainKey: null, // null | "master" | String(trackId)
 
   toggleMixer: () => set(s => ({ visible: !s.visible })),
   setVisible: (v) => set({ visible: v }),
+  setSelectedChainKey: (key) => {
+    const nextKey = normalizeMixerChainKey(key)
+    set((state) => (
+      state.selectedChainKey === nextKey ? state : { selectedChainKey: nextKey }
+    ))
+  },
 
   init: async () => {
     try {
@@ -309,7 +337,13 @@ const useMixerStore = create((set, get) => ({
         }
       }
       prunePeakSnapshotTracks(peaksSnapshot, trackOrder)
-      set({ tracks, trackOrder, outputRoutes, routingError: null })
+      set(s => ({
+        tracks,
+        trackOrder,
+        outputRoutes,
+        routingError: null,
+        selectedChainKey: resolveSelectedMixerChainKey(s.selectedChainKey, trackOrder),
+      }))
       if (list.some(t => t?.outputRoute == null)) {
         await get().refreshRouting()
       }
@@ -356,7 +390,7 @@ const useMixerStore = create((set, get) => ({
     const next = !t.muted
     set(s => ({ tracks: { ...s.tracks, [trackId]: { ...s.tracks[trackId], muted: next } } }))
     window.xleth?.timeline?.setTrackMuted(trackId, next)
-    timelineEvents.dispatchEvent(new Event('timeline-tracks-changed'))
+    dispatchTimelineTrackPatch(trackId, { muted: next })
   },
 
   toggleSolo: (trackId) => {
@@ -365,7 +399,7 @@ const useMixerStore = create((set, get) => ({
     const next = !t.solo
     set(s => ({ tracks: { ...s.tracks, [trackId]: { ...s.tracks[trackId], solo: next } } }))
     window.xleth?.timeline?.setTrackSolo(trackId, next)
-    timelineEvents.dispatchEvent(new Event('timeline-tracks-changed'))
+    dispatchTimelineTrackPatch(trackId, { solo: next })
   },
 
   toggleVisualOnly: (trackId) => {
@@ -374,7 +408,7 @@ const useMixerStore = create((set, get) => ({
     const next = !t.visualOnly
     set(s => ({ tracks: { ...s.tracks, [trackId]: { ...s.tracks[trackId], visualOnly: next } } }))
     window.xleth?.timeline?.setTrackVisualOnly(trackId, next)
-    timelineEvents.dispatchEvent(new Event('timeline-tracks-changed'))
+    dispatchTimelineTrackPatch(trackId, { visualOnly: next })
   },
 
   // Output routing state mirrors engine/project state; engine validation remains final.
@@ -749,7 +783,11 @@ const useMixerStore = create((set, get) => ({
       const outputRoutes = { ...s.outputRoutes }
       for (const t of list) {
         trackOrder.push(t.id)
-        outputRoutes[t.id] = normalizeOutputTargetId(t.outputRoute?.targetTrackId)
+        if (Object.prototype.hasOwnProperty.call(t, 'outputRoute')) {
+          outputRoutes[t.id] = normalizeOutputTargetId(t.outputRoute?.targetTrackId)
+        } else if (!Object.prototype.hasOwnProperty.call(outputRoutes, t.id)) {
+          outputRoutes[t.id] = MASTER_OUTPUT_TARGET_ID
+        }
         const existing = tracks[t.id]
         if (existing) {
           tracks[t.id] = { ...existing, name: t.name, muted: t.muted, solo: t.solo, visualOnly: t.visualOnly ?? false, type: t.type }
@@ -781,6 +819,7 @@ const useMixerStore = create((set, get) => ({
         outputRoutes,
         sidechainRoutes: nextSidechainRoutes,
         routingError: null,
+        selectedChainKey: resolveSelectedMixerChainKey(s.selectedChainKey, trackOrder),
       }
     })
   },

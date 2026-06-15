@@ -2,11 +2,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   ROOT_APP_SHELL_MODE,
   getFileMenuShortcutLabel,
+  getWorkspaceBackdropClassName,
   handleXlethRootMenuAction,
   hydrateProductionLayout,
 } from './XlethRoot.jsx'
+import { timelineEvents } from './timelineEvents.js'
+import { TITLEBAR_MENUS, isDirectTitlebarMenu } from './components/TitleBar.jsx'
 import usePianoRollStore from './stores/usePianoRollStore.js'
 import { createInitialPanelStates, usePanelRegistry } from './windowing/registry/PanelRegistry'
+import * as EditorCommandRegistry from './windowing/managers/EditorCommandRegistry'
 import * as StatePersistence from './windowing/managers/StatePersistence'
 
 describe('XlethRoot New Project reset', () => {
@@ -186,5 +190,133 @@ describe('XlethRoot New Project reset', () => {
     expect(xl.window.zoomIn).toHaveBeenCalledTimes(1)
     expect(xl.window.zoomOut).toHaveBeenCalledTimes(1)
     expect(xl.window.resetZoom).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows a toast when source import is rejected', async () => {
+    const xl = makeXleth()
+    const filePath = 'C:\\Videos\\bad.mp4'
+    xl.project.openImportDialog.mockResolvedValue([filePath])
+    xl.project.importSource.mockResolvedValue(-1)
+    const dispatchSpy = vi.spyOn(timelineEvents, 'dispatchEvent')
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await handleXlethRootMenuAction('Import Source', { xl, showToast })
+
+    expect(xl.project.importSource).toHaveBeenCalledWith(filePath)
+    expect(showToast).toHaveBeenCalledWith(
+      expect.stringContaining('Import failed: bad.mp4'),
+      'error',
+    )
+    expect(dispatchSpy).not.toHaveBeenCalled()
+  })
+
+  it('configures the top Settings label as a direct action instead of a dropdown', () => {
+    const settingsMenu = TITLEBAR_MENUS.find(menu => menu.label === 'Settings')
+
+    expect(settingsMenu).toBeTruthy()
+    expect(isDirectTitlebarMenu(settingsMenu)).toBe(true)
+    expect(settingsMenu.items).toEqual([])
+    expect(settingsMenu.action).toBe('Settings')
+  })
+
+  it('configures the top Theme label as a direct action instead of a dropdown', () => {
+    const themeMenu = TITLEBAR_MENUS.find(menu => menu.label === 'Theme')
+
+    expect(themeMenu).toBeTruthy()
+    expect(isDirectTitlebarMenu(themeMenu)).toBe(true)
+    expect(themeMenu.items).toEqual([])
+    expect(themeMenu.action).toBe('Theme Editor')
+  })
+
+  it('configures the Edit dropdown as the complete compact action strip', () => {
+    const editMenu = TITLEBAR_MENUS.find(menu => menu.label === 'Edit')
+
+    expect(editMenu).toBeTruthy()
+    expect(isDirectTitlebarMenu(editMenu)).toBe(false)
+    expect(editMenu.items.map(item => item.action)).toEqual([
+      'Undo',
+      'Redo',
+      'Zoom In',
+      'Zoom Out',
+      'Delete',
+      'Reset Zoom',
+    ])
+    expect(editMenu.items.map(item => item.label)).toEqual([
+      'Undo',
+      'Redo',
+      'Zoom In',
+      'Zoom Out',
+      'Delete',
+      'RESET',
+    ])
+  })
+
+  it('configures the View dropdown as zoom controls only', () => {
+    const viewMenu = TITLEBAR_MENUS.find(menu => menu.label === 'View')
+
+    expect(viewMenu).toBeTruthy()
+    expect(isDirectTitlebarMenu(viewMenu)).toBe(false)
+    expect(viewMenu.items.map(item => item.action)).toEqual([
+      'Zoom In',
+      'Zoom Out',
+      'Reset Zoom',
+    ])
+    expect(viewMenu.items.map(item => item.label)).toEqual([
+      'Zoom In',
+      'Zoom Out',
+      'RESET',
+    ])
+  })
+
+  it('routes Delete to the focused editor command registry', async () => {
+    const runEditorCommand = vi
+      .spyOn(EditorCommandRegistry, 'runEditorCommand')
+      .mockResolvedValue(true)
+
+    await handleXlethRootMenuAction('Delete', { xl: makeXleth() })
+
+    expect(runEditorCommand).toHaveBeenCalledWith('deleteSelected')
+  })
+
+  it('routes Settings directly to the consolidated Settings surface', async () => {
+    const setShowSettings = vi.fn()
+    const setSettingsInitialCategory = vi.fn()
+    const setShowThemeEditor = vi.fn()
+
+    await handleXlethRootMenuAction('Settings', {
+      xl: makeXleth(),
+      setShowSettings,
+      setSettingsInitialCategory,
+      setShowThemeEditor,
+    })
+
+    expect(setSettingsInitialCategory).toHaveBeenCalledWith('project')
+    expect(setShowSettings).toHaveBeenCalledWith(true)
+    expect(setShowThemeEditor).not.toHaveBeenCalled()
+  })
+
+  it('routes Theme directly to the theme editor settings surface', async () => {
+    const setShowSettings = vi.fn()
+    const setSettingsInitialCategory = vi.fn()
+    const setShowThemeEditor = vi.fn()
+
+    await handleXlethRootMenuAction('Theme Editor', {
+      xl: makeXleth(),
+      setShowSettings,
+      setSettingsInitialCategory,
+      setShowThemeEditor,
+    })
+
+    expect(setSettingsInitialCategory).toHaveBeenCalledWith('theme-editor')
+    expect(setShowSettings).toHaveBeenCalledWith(true)
+    expect(setShowThemeEditor).not.toHaveBeenCalled()
+  })
+
+  it('maps workspace backdrop modes to root classes', () => {
+    expect(getWorkspaceBackdropClassName('native-acrylic')).toBe('xleth-backdrop-native-acrylic')
+    expect(getWorkspaceBackdropClassName('image')).toBe('xleth-backdrop-image')
+    expect(getWorkspaceBackdropClassName('video')).toBe('xleth-backdrop-video')
+    expect(getWorkspaceBackdropClassName('off')).toBe('xleth-backdrop-off')
+    expect(getWorkspaceBackdropClassName('unsupported')).toBe('xleth-backdrop-off')
   })
 })

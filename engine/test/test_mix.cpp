@@ -1147,6 +1147,162 @@ static void testEQTailNoClick()
     tempDir.deleteRecursively();
 }
 
+// ─── Realtime effect-tail drain (external-VST reverb/delay) ──────────────────
+// A minimal third-party "reverb": a leaky-integrator feedback so a short input
+// excites a long decaying wet tail that keeps ringing after the input stops.
+// This models a real VST3 reverb downstream of GuardedPluginWrapper. The
+// reported tail length is configurable so the test can prove the realtime drain
+// is driven by the chain OUTPUT level, never by getTailLengthSeconds() — which
+// real reverbs report as 0 (unimplemented) or +inf (kInfiniteTail), both of
+// which previously truncated the tail at the clip boundary.
+class FakeReverbTail : public juce::AudioProcessor
+{
+public:
+    explicit FakeReverbTail(double reportedTailSeconds)
+        : juce::AudioProcessor(BusesProperties()
+              .withInput ("Input",  juce::AudioChannelSet::stereo(), true)
+              .withOutput("Output", juce::AudioChannelSet::stereo(), true))
+        , reportedTail_(reportedTailSeconds) {}
+
+    const juce::String getName() const override { return "FakeReverbTail"; }
+    void prepareToPlay(double, int) override { state_[0] = state_[1] = 0.0; }
+    void releaseResources() override {}
+    void reset() override { state_[0] = state_[1] = 0.0; }
+    void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
+    {
+        const int n   = buffer.getNumSamples();
+        const int nCh = std::min(2, buffer.getNumChannels());
+        for (int ch = 0; ch < nCh; ++ch)
+        {
+            float* d = buffer.getWritePointer(ch);
+            double s = state_[ch];
+            for (int i = 0; i < n; ++i)
+            {
+                s    = static_cast<double>(d[i]) + kDecay * s;  // leaky feedback
+                d[i] = static_cast<float>(0.05 * s);            // decaying wet tail
+            }
+            state_[ch] = s;
+        }
+    }
+    bool acceptsMidi() const override { return false; }
+    bool producesMidi() const override { return false; }
+    bool isMidiEffect() const override { return false; }
+    double getTailLengthSeconds() const override { return reportedTail_; }
+    bool hasEditor() const override { return false; }
+    juce::AudioProcessorEditor* createEditor() override { return nullptr; }
+    int getNumPrograms() override { return 1; }
+    int getCurrentProgram() override { return 0; }
+    void setCurrentProgram(int) override {}
+    const juce::String getProgramName(int) override { return {}; }
+    void changeProgramName(int, const juce::String&) override {}
+    void getStateInformation(juce::MemoryBlock&) override {}
+    void setStateInformation(const void*, int) override {}
+
+private:
+    static constexpr double kDecay = 0.9997;  // ≈ -60 dB after ~0.5 s of silence
+    double reportedTail_ = 0.0;
+    double state_[2] = {0.0, 0.0};
+};
+
+static void testRealtimeVstReverbTailDrain()
+{
+    std::cout << "[reverb tail] external-VST wet tail rings out past clip end\n";
+
+    const double bpm        = 120.0;
+    const double sampleRate = 44100.0;
+    const int    blockSize  = 512;
+
+    // Both report values used to truncate the tail: 0 → drain length was 0;
+    // +inf → ceil(inf * sr) cast to int64 was UB (collapsed to ~no drain).
+    const double reportVariants[2] = { 0.0, std::numeric_limits<double>::infinity() };
+    const char*  reportLabels  [2] = { "reports 0 s tail", "reports infinite tail" };
+
+    for (int v = 0; v < 2; ++v)
+    {
+        Timeline timeline(bpm, sampleRate);
+
+        TrackInfo track; track.name = "Reverb Track"; track.volume = 1.0f;
+        const int trackId = timeline.addTrack(track);
+
+        SampleRegion region; region.name = "Tone";
+        const int regionId = timeline.addRegion(region);
+
+        // Short clip: 0.2 s of tone, ending long before we inspect the tail.
+        const int    clipLenSamples = static_cast<int>(0.2 * sampleRate);  // 8820
+        const double clipBeats      = sampleToBeats(clipLenSamples, sampleRate, bpm);
+        Clip clip; clip.trackId = trackId; clip.regionId = regionId;
+        clip.position = TickTime::fromBeats(0.0);
+        clip.duration = TickTime::fromBeats(clipBeats);
+        timeline.addClip(clip);
+
+        juce::File tempDir = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                                 .getChildFile("xleth_reverb_tail_test");
+        tempDir.createDirectory();
+        juce::File wav = generateWav(tempDir, "tone", sampleRate, clipLenSamples, 440.0f, 0.7f);
+
+        SampleBank bank;
+        const int sampleId = bank.loadSample(wav, sampleRate);
+        CHECK(sampleId >= 0, "tone sample should load");
+
+        MixEngine engine;
+        engine.setTimeline(&timeline);
+        engine.setSampleBank(&bank);
+        engine.mapRegionToSample(regionId, sampleId);
+        engine.rebuildAllSamplers();
+        engine.prepare(sampleRate, blockSize);
+        engine.setNonRealtime(true);  // deterministic chain lock; tail logic unaffected
+
+        const int nodeId = engine.addProcessorForTesting(
+            trackId, "fakereverb",
+            std::make_unique<FakeReverbTail>(reportVariants[v]), 0);
+        CHECK(nodeId >= 0,
+              std::string("fake reverb should attach (") + reportLabels[v] + ")");
+
+        // 0.2 s clip + 1.6 s of trailing silence to watch the tail ring then stop.
+        const int totalSamples = static_cast<int>(1.8 * sampleRate);
+        Transport transport;
+        transport.setSampleRate(sampleRate);
+        transport.setBPM(bpm);
+        auto output = offlineRender(engine, transport, totalSamples, blockSize);
+
+        auto windowPeak = [&](int from, int to) {
+            from = std::max(0, from);
+            to   = std::min(totalSamples, to);
+            float p = 0.0f;
+            for (int ch = 0; ch < 2; ++ch)
+                for (int s = from; s < to; ++s)
+                    p = std::max(p, std::abs(output.getSample(ch, s)));
+            return p;
+        };
+
+        const int clipEnd = clipLenSamples;
+        const int sr      = static_cast<int>(sampleRate);
+
+        // Sanity: the clip itself produced audio.
+        CHECK(windowPeak(0, clipEnd) > 0.01f,
+              std::string("clip should produce audio (") + reportLabels[v] + ")");
+
+        // THE FIX: 0.05–0.25 s AFTER the clip ends — pure wet tail, no clip, no
+        // voices. Must still be audible (above the -60 dB drain threshold).
+        // Pre-fix this was silence (the chain was no longer being called).
+        const float tailPeak = windowPeak(clipEnd + sr / 20, clipEnd + sr / 4);
+        CHECK(tailPeak > 1.0e-3f,
+              std::string("reverb wet tail must ring out past the clip end (")
+                  + reportLabels[v] + ")");
+
+        // Termination: 1.4–1.6 s after the clip end the tail has fully decayed,
+        // so the silence-detected drain must have STOPPED the chain (no endless
+        // processing — important for the +inf report, and proves the cap/early-
+        // stop works rather than running the full 30 s ceiling).
+        const float settledPeak = windowPeak(clipEnd + sr * 7 / 5, clipEnd + sr * 8 / 5);
+        CHECK(settledPeak < 1.0e-3f,
+              std::string("tail must decay to silence and the drain must stop (")
+                  + reportLabels[v] + ")");
+
+        tempDir.deleteRecursively();
+    }
+}
+
 // ─── main ────────────────────────────────────────────────────────────────────
 
 static void testTrackPdcTwoTrackImpulseAlignment()
@@ -2203,6 +2359,7 @@ int main()
     testMute();
     testSolo();
     testEQTailNoClick();
+    testRealtimeVstReverbTailDrain();
     testTrackPdcTwoTrackImpulseAlignment();
     testTrackPdcMultiLatencyAlignment();
     testTrackPdcSilenceGapResumeRetainsDelayTargets();

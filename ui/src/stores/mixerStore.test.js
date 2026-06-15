@@ -140,6 +140,37 @@ describe('mixerStore output routing', () => {
     expect(wouldCreateOutputRouteCycle({ 1: 99 }, 2, 1)).toBe(false)
   })
 
+  it('syncFromTimeline preserves output routes when a rename payload omits route data', async () => {
+    const { default: useMixerStore } = await loadMixerStoreFixture()
+    seedTracks(useMixerStore, [
+      { id: 1, name: 'Drums', muted: false, solo: false, visualOnly: false },
+      { id: 2, name: 'Bus', muted: false, solo: false, visualOnly: false },
+    ], { 1: 2, 2: -1 })
+
+    useMixerStore.getState().syncFromTimeline([
+      { id: 1, name: 'Drums', muted: false, solo: false, visualOnly: false },
+      { id: 2, name: 'Renamed Bus', muted: false, solo: false, visualOnly: false },
+    ])
+
+    expect(useMixerStore.getState().tracks[2].name).toBe('Renamed Bus')
+    expect(useMixerStore.getState().outputRoutes[1]).toBe(2)
+  })
+
+  it('syncFromTimeline still applies explicit route updates', async () => {
+    const { default: useMixerStore } = await loadMixerStoreFixture()
+    seedTracks(useMixerStore, [
+      { id: 1, name: 'Drums', muted: false, solo: false, visualOnly: false },
+      { id: 2, name: 'Bus', muted: false, solo: false, visualOnly: false },
+    ], { 1: 2, 2: -1 })
+
+    useMixerStore.getState().syncFromTimeline([
+      { id: 1, name: 'Drums', muted: false, solo: false, visualOnly: false, outputRoute: { targetTrackId: -1 } },
+      { id: 2, name: 'Bus', muted: false, solo: false, visualOnly: false, outputRoute: { targetTrackId: -1 } },
+    ])
+
+    expect(useMixerStore.getState().outputRoutes[1]).toBe(-1)
+  })
+
   it('finds an existing sidechain route for a compressor and preserves stale status', async () => {
     const { default: useMixerStore } = await loadMixerStoreFixture()
     seedTracks(useMixerStore, [

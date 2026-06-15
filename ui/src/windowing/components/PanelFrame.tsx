@@ -90,6 +90,7 @@ export function PanelFrame({ id, children }: PanelFrameProps) {
           className="xleth-panel-frame is-docked"
           data-panel-id={id}
           data-panel-mode="docked"
+          data-backdrop-fx-panel-rect="true"
           style={{ '--xleth-windowing-panel-color': panelTypeColorVar(id) } as CSSProperties}
           onMouseDown={() => { focusPanel(id); panelRef.current?.focus(); }}
         >
@@ -128,6 +129,7 @@ export function PanelFrame({ id, children }: PanelFrameProps) {
         data-panel-id={id}
         data-panel-mode={mode}
         data-focused={focused}
+        data-backdrop-fx-panel-rect="true"
         style={frameStyle}
         onMouseDown={() => { focusPanel(id); panelRef.current?.focus(); }}
       >

@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
+import XlethSelect from './common/XlethSelect.jsx'
 
 const STORAGE_KEY = 'xleth-audio-device'
 
@@ -22,8 +23,12 @@ export default function AudioDeviceSelector() {
     init()
   }, [])
 
-  const handleChange = async (e) => {
-    const name = e.target.value
+  const options = useMemo(
+    () => devices.map(device => ({ value: device, label: device })),
+    [devices]
+  )
+
+  const handleChange = async (name) => {
     setSelected(name)
     localStorage.setItem(STORAGE_KEY, name)
     const result = await window.xleth?.audio?.setOutputDevice?.(name)
@@ -34,15 +39,14 @@ export default function AudioDeviceSelector() {
   if (devices.length === 0) return null
 
   return (
-    <select
+    <XlethSelect
+      id="transport-audio-device"
       className="transport-device-select"
       value={selected}
       onChange={handleChange}
-      title="Audio output device"
-    >
-      {devices.map(d => (
-        <option key={d} value={d}>{d}</option>
-      ))}
-    </select>
+      options={options}
+      ariaLabel="Audio output device"
+      placeholder="Audio output"
+    />
   )
 }

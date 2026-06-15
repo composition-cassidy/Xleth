@@ -55,12 +55,108 @@ describe('EffectChainPanel compact rack rendering', () => {
     expect(html).not.toContain('FX Graph Shell')
   })
 
-  it('marks overflow as visible when the chain exceeds the 4-row rack limit', async () => {
-    const { panelModule } = await loadEffectChainPanelFixture()
+  it('renders preview-only effect names without edit controls', async () => {
+    const { EffectChainPanel, useEffectChainStore, useVstStore } = await loadEffectChainPanelFixture()
+    useEffectChainStore.setState({
+      chains: {
+        '7': [
+          { nodeId: 1, pluginId: 'compressor', position: 0, bypassed: false },
+          { nodeId: 2, pluginId: 'delay', position: 1, bypassed: true },
+          { nodeId: 3, pluginId: 'missing.vst3', position: 2, missing: true },
+        ],
+      },
+    })
+    useVstStore.setState({
+      plugins: [{ id: 'missing.vst3', name: 'Missing Verb', vendor: 'Old Vendor' }],
+    })
+
+    const html = renderToStaticMarkup(<EffectChainPanel trackId={7} mode="preview" />)
+
+    expect(html).toContain('effect-chain-panel--preview')
+    expect(html).toContain('Compressor')
+    expect(html).toContain('Delay')
+    expect(html).toContain('Missing Verb')
+    expect(html).toContain('Off')
+    expect(html).toContain('Missing')
+    expect(html).not.toContain('+ Add effect')
+    expect(html).not.toContain('effect-chain-add-btn')
+    expect(html).not.toContain('effect-chain-mode-btn')
+    expect(html).not.toContain('effect-module-grip')
+    expect(html).not.toContain('Bypass effect')
+    expect(html).not.toContain('Open plugin editor')
+  })
+
+  it('renders graph-owned tracks as preview-only graph status rows', async () => {
+    const { EffectChainPanel, useEffectChainStore, useVstStore } = await loadEffectChainPanelFixture()
+    useEffectChainStore.setState({
+      chains: { '7': [{ nodeId: 1, pluginId: 'compressor', position: 0 }] },
+      fxModes: { '7': 'graph' },
+    })
+    useVstStore.setState({ plugins: [] })
+
+    const html = renderToStaticMarkup(<EffectChainPanel trackId={7} mode="preview" />)
+
+    expect(html).toContain('FX Graph Active')
+    expect(html).not.toContain('Compressor')
+    expect(html).not.toContain('effect-module')
+    expect(html).not.toContain('effect-chain-add-btn')
+  })
+
+  it('renders every editable effect row without an overflow trigger', async () => {
+    const { EffectChainPanel, useEffectChainStore, useVstStore } = await loadEffectChainPanelFixture()
+    useEffectChainStore.setState({
+      chains: {
+        '7': [
+          { nodeId: 1, pluginId: 'compressor', position: 0, bypassed: false },
+          { nodeId: 2, pluginId: 'delay', position: 1, bypassed: false },
+          { nodeId: 3, pluginId: 'reverb', position: 2, bypassed: false },
+          { nodeId: 4, pluginId: 'chorus', position: 3, bypassed: false },
+          { nodeId: 5, pluginId: 'phaser', position: 4, bypassed: false },
+        ],
+      },
+    })
+    useVstStore.setState({ plugins: [] })
+
+    const html = renderToStaticMarkup(<EffectChainPanel trackId={7} />)
+
+    expect(html).toContain('Compressor')
+    expect(html).toContain('Delay')
+    expect(html).toContain('Reverb')
+    expect(html).toContain('Chorus')
+    expect(html).toContain('Phaser')
+    expect(html).not.toContain('effect-chain-overflow')
+    expect(html).not.toContain('+1 more')
+    expect(html).not.toContain('Show full effect chain')
+    expect(html).not.toContain('effect-chain-full-popover')
+  })
+
+  it('keeps overflow counts limited to preview-only effect lists', async () => {
+    const { EffectChainPanel, panelModule, useEffectChainStore, useVstStore } = await loadEffectChainPanelFixture()
+    useEffectChainStore.setState({
+      chains: {
+        '7': [
+          { nodeId: 1, pluginId: 'compressor', position: 0, bypassed: false },
+          { nodeId: 2, pluginId: 'delay', position: 1, bypassed: false },
+          { nodeId: 3, pluginId: 'reverb', position: 2, bypassed: false },
+          { nodeId: 4, pluginId: 'chorus', position: 3, bypassed: false },
+          { nodeId: 5, pluginId: 'phaser', position: 4, bypassed: false },
+        ],
+      },
+    })
+    useVstStore.setState({ plugins: [] })
+
+    const html = renderToStaticMarkup(<EffectChainPanel trackId={7} mode="preview" />)
 
     expect(panelModule.VISIBLE_LIMIT).toBe(4)
     expect(panelModule.shouldShowEffectChainOverflow(4)).toBe(false)
     expect(panelModule.shouldShowEffectChainOverflow(5)).toBe(true)
+    expect(html).toContain('Compressor')
+    expect(html).toContain('Delay')
+    expect(html).toContain('Reverb')
+    expect(html).toContain('Chorus')
+    expect(html).not.toContain('Phaser')
+    expect(html).toContain('+1 more')
+    expect(html).toContain('effect-chain-preview-overflow')
   })
 
   it('selected-row class can be derived from the exported selection helper for a real nodeId', async () => {

@@ -4,7 +4,6 @@ import { DockRegion } from './components/DockRegion';
 import { PanelFrame } from './components/PanelFrame';
 import { SampleSelectorDrawer } from './components/SampleSelectorDrawer';
 import { SnapGhost } from './components/SnapGhost';
-import { TopBarToggles } from './components/TopBarToggles';
 import { registerWorkAreaRect, type WorkAreaRect } from './managers/DragManager';
 import * as KeyboardManager from './managers/KeyboardManager';
 import {
@@ -14,6 +13,7 @@ import {
 import type { PanelStateMap } from './registry/PanelRegistry';
 import { PANEL_CATALOG, type PanelId } from './registry/panelCatalog';
 import EffectEditorHost from '../components/mixer/EffectEditorHost.jsx';
+import BackdropLayer from '../backdrop/BackdropLayer.jsx';
 import './components/windowing.css';
 
 const TimelinePanel = React.lazy(() => import('./panels/TimelinePanel'));
@@ -25,6 +25,8 @@ const GridSettingsPanel = React.lazy(() => import('./panels/GridSettingsPanel'))
 const FxGraphPanel = React.lazy(() => import('./panels/FxGraphPanel'));
 const NodeEditorPanel = React.lazy(() => import('./panels/NodeEditorPanel'));
 const SamplerWindowPanel = React.lazy(() => import('./panels/SamplerWindowPanel'));
+const QuickNotationPanel = React.lazy(() => import('./panels/QuickNotationPanel'));
+const SplitSyllablesPanel = React.lazy(() => import('./panels/SplitSyllablesPanel'));
 
 type DevShellMode =
   | 'single'
@@ -39,6 +41,7 @@ export type AppShellMode = DevShellMode | 'production';
 
 export interface WindowingAppShellProps {
   mode?: AppShellMode;
+  backdropImageUrl?: string;
 }
 
 export function shouldRenderRealPanels(mode: AppShellMode): boolean {
@@ -120,6 +123,8 @@ const PANEL_BODY_FOR_6B: Record<PanelId, React.LazyExoticComponent<React.FC>> = 
   fxGraph: FxGraphPanel,
   nodeEditor: NodeEditorPanel,
   sampler: SamplerWindowPanel,
+  quickNotation: QuickNotationPanel,
+  splitSyllables: SplitSyllablesPanel,
 };
 
 const DRAWER_PANEL_IDS = new Set<PanelId>(['sampleSelector']);
@@ -150,6 +155,7 @@ const SHELL_PANEL_IDS: Record<AppShellMode, PanelId[]> = {
     'gridSettings',
     'fxGraph',
     'sampler',
+    'quickNotation',
   ],
   production: [
     'timeline',
@@ -160,6 +166,8 @@ const SHELL_PANEL_IDS: Record<AppShellMode, PanelId[]> = {
     'gridSettings',
     'fxGraph',
     'sampler',
+    'quickNotation',
+    'splitSyllables',
   ],
 };
 
@@ -197,7 +205,7 @@ function floatingPanelKeyForMode(mode: AppShellMode, panels: PanelStateMap): str
     .join('|');
 }
 
-export function AppShell({ mode = 'single' }: WindowingAppShellProps) {
+export function AppShell({ mode = 'single', backdropImageUrl = '' }: WindowingAppShellProps) {
   const workAreaRef = useRef<HTMLDivElement>(null);
   const lastWorkAreaRectRef = useRef<WorkAreaRect | null>(null);
   const reactiveFloatingPanelKey = usePanelRegistry((state) => floatingPanelKeyForMode(mode, state.panels));
@@ -274,12 +282,12 @@ export function AppShell({ mode = 'single' }: WindowingAppShellProps) {
 
   return (
     <div className="xleth-windowing-app">
-      <TopBarToggles />
       <div className={shellClassName} data-testid="xleth-windowing-shell" style={shellStyle}>
         {sampleDockEnabled ? (
           <SampleSelectorDrawer />
         ) : null}
         <div className="xleth-app-workarea" data-testid="xleth-app-workarea" ref={workAreaRef}>
+          <BackdropLayer workAreaRef={workAreaRef} backdropImageUrl={backdropImageUrl} />
           <div className="xleth-docked-window-layer" data-testid="xleth-docked-window-layer">
             <DockRegion
               side="left"
@@ -292,7 +300,7 @@ export function AppShell({ mode = 'single' }: WindowingAppShellProps) {
                 renderPanel={rendersRealPanels ? renderPhase6bPanel : undefined}
                 excludePanelIds={drawerPanelIds}
               />
-              <div className="xleth-floating-work-area" />
+              <div className="xleth-floating-work-area" data-backdrop-empty-surface="true" />
               <DockRegion
                 side="bottom"
                 renderPanel={rendersRealPanels ? renderPhase6bPanel : undefined}

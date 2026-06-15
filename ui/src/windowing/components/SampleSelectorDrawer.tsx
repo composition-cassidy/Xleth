@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { CSSProperties, MouseEvent } from 'react';
-import { ChevronLeft, GripVertical, PanelLeft } from 'lucide-react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import LeftPanel from '../../components/LeftPanel.jsx';
 import { PanelVisibilityProvider } from '../contexts/PanelVisibilityContext';
 import { useXlethRootContext } from '../contexts/XlethRootContext.jsx';
@@ -8,10 +8,20 @@ import { usePanelRegistry, type PanelRegistryState } from '../registry/PanelRegi
 import { panelTypeColorVar } from '../registry/panelCatalog';
 import './windowing.css';
 
+const SAMPLE_SELECTOR_DRAWER_TWEEN_MS = 180;
+
 type SampleSelectorRegistryActions = Pick<
   PanelRegistryState,
   'focusPanel' | 'setSampleSelectorDockOpen'
 >;
+
+type SampleSelectorDrawerPhase = 'expanded' | 'collapsing' | 'collapsed';
+
+function prefersReducedDrawerMotion(): boolean {
+  return typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
 
 export function openSampleSelectorDrawer(
   registry: Pick<PanelRegistryState, 'setSampleSelectorDockOpen'> = usePanelRegistry.getState(),
@@ -46,6 +56,52 @@ export function SampleSelectorDrawer() {
 
   const registry: SampleSelectorRegistryActions = usePanelRegistry.getState();
   const expanded = !hidden;
+  const reduceDrawerMotion = prefersReducedDrawerMotion();
+  const [renderPhase, setRenderPhase] = useState<SampleSelectorDrawerPhase>(
+    () => (expanded ? 'expanded' : 'collapsed'),
+  );
+  const collapseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (collapseTimerRef.current !== null) {
+      clearTimeout(collapseTimerRef.current);
+      collapseTimerRef.current = null;
+    }
+
+    if (expanded) {
+      setRenderPhase('expanded');
+      return undefined;
+    }
+
+    if (renderPhase === 'collapsed') {
+      return undefined;
+    }
+
+    if (reduceDrawerMotion) {
+      setRenderPhase('collapsed');
+      return undefined;
+    }
+
+    setRenderPhase('collapsing');
+    collapseTimerRef.current = setTimeout(() => {
+      setRenderPhase('collapsed');
+      collapseTimerRef.current = null;
+    }, SAMPLE_SELECTOR_DRAWER_TWEEN_MS);
+
+    return () => {
+      if (collapseTimerRef.current !== null) {
+        clearTimeout(collapseTimerRef.current);
+        collapseTimerRef.current = null;
+      }
+    };
+  }, [expanded, reduceDrawerMotion]);
+
+  const drawerState: SampleSelectorDrawerPhase = expanded
+    ? 'expanded'
+    : reduceDrawerMotion || renderPhase === 'collapsed'
+      ? 'collapsed'
+      : 'collapsing';
+  const shouldRenderDrawer = expanded || (!reduceDrawerMotion && renderPhase !== 'collapsed');
   const drawerStyle = {
     '--xleth-windowing-panel-color': panelTypeColorVar('sampleSelector'),
     '--xleth-sample-selector-drawer-width': `${drawerSize}px`,
@@ -55,41 +111,37 @@ export function SampleSelectorDrawer() {
     <PanelVisibilityProvider isVisible={expanded}>
       <div
         className="xleth-sample-selector-drawer-host"
-        data-drawer-state={expanded ? 'expanded' : 'collapsed'}
+        data-drawer-state={drawerState}
         style={drawerStyle}
       >
-        {!expanded ? (
+        {!shouldRenderDrawer ? (
           <button
             type="button"
-            className="xleth-sample-selector-drawer__handle"
+            className="xleth-sample-selector-drawer__edge-toggle xleth-sample-selector-drawer__edge-toggle--collapsed"
             aria-label="Open Sample Selector drawer"
             title="Open Sample Selector"
+            onMouseDown={stopControlMouseDown}
             onClick={() => openSampleSelectorDrawer(registry)}
           >
-            <GripVertical className="xleth-sample-selector-drawer__handle-grip" aria-hidden="true" />
-            <PanelLeft className="xleth-sample-selector-drawer__handle-icon" aria-hidden="true" />
+            <ChevronRight aria-hidden="true" strokeWidth={2} />
           </button>
         ) : (
           <aside
             className="xleth-sample-selector-drawer"
             aria-label="Sample Selector drawer"
+            aria-hidden={drawerState === 'collapsing' ? true : undefined}
             onMouseDown={() => registry.focusPanel('sampleSelector')}
           >
-            <header className="xleth-sample-selector-drawer__chrome">
-              <span className="xleth-sample-selector-drawer__accent" aria-hidden="true" />
-              <PanelLeft className="xleth-sample-selector-drawer__icon" aria-hidden="true" />
-              <h2 className="xleth-sample-selector-drawer__title">Sample Selector</h2>
-              <button
-                type="button"
-                className="xleth-windowing-control-button xleth-sample-selector-drawer__collapse"
-                aria-label="Collapse Sample Selector drawer"
-                title="Collapse Sample Selector"
-                onMouseDown={stopControlMouseDown}
-                onClick={() => collapseSampleSelectorDrawer(registry)}
-              >
-                <ChevronLeft aria-hidden="true" strokeWidth={2} />
-              </button>
-            </header>
+            <button
+              type="button"
+              className="xleth-sample-selector-drawer__edge-toggle xleth-sample-selector-drawer__edge-toggle--expanded"
+              aria-label="Collapse Sample Selector drawer"
+              title="Collapse Sample Selector"
+              onMouseDown={stopControlMouseDown}
+              onClick={() => collapseSampleSelectorDrawer(registry)}
+            >
+              <ChevronLeft aria-hidden="true" strokeWidth={2} />
+            </button>
             <div className="xleth-sample-selector-drawer__body">
               <LeftPanel
                 onOpenPicker={onOpenPicker}

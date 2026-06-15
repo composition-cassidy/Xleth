@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect } from 'react'
 import { X, Search, FolderPlus, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react'
 import useVstStore from '../../stores/vstStore.js'
 import useEffectChainStore from '../../stores/effectChainStore.js'
+import ScanProgressBar from './ScanProgressBar.jsx'
 
 const PATHS_KEY = 'xleth.vstSearchPaths'
 
@@ -9,7 +10,7 @@ function loadPaths() {
   try { return JSON.parse(localStorage.getItem(PATHS_KEY) || '[]') } catch { return [] }
 }
 
-export default function VstBrowser() {
+export default function VstBrowser({ embedded = false }) {
   const [search,     setSearch]     = useState('')
   const [failedOpen, setFailedOpen] = useState(false)
   const [paths,      setPaths]      = useState(loadPaths)
@@ -23,13 +24,14 @@ export default function VstBrowser() {
   const fetchFailed     = useVstStore(s => s.fetchFailed)
 
   const addEffect = useEffectChainStore(s => s.addEffect)
+  const isOpen = embedded || browserOpen
 
   // Refresh lists when browser opens
   useEffect(() => {
-    if (!browserOpen) return
+    if (!isOpen) return
     fetchPlugins()
     fetchFailed()
-  }, [browserOpen, fetchPlugins, fetchFailed])
+  }, [isOpen, fetchPlugins, fetchFailed])
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -59,19 +61,22 @@ export default function VstBrowser() {
   }
 
   const handleDoubleClick = (plugin) => {
+    if (embedded) return
     if (!browserStoreKey) return
     addEffect(browserStoreKey, plugin.id)
   }
 
-  if (!browserOpen) return null
+  if (!isOpen) return null
 
   return (
-    <div className="vst-browser">
+    <div className={`vst-browser${embedded ? ' vst-browser--embedded' : ''}`}>
       <div className="vst-browser-header">
         <span className="vst-browser-title">VST3 Browser</span>
-        <button className="vst-browser-close" onClick={closeBrowser} title="Close">
-          <X size={11} />
-        </button>
+        {!embedded && (
+          <button className="vst-browser-close" onClick={closeBrowser} title="Close">
+            <X size={11} />
+          </button>
+        )}
       </div>
 
       {/* Search */}
@@ -150,6 +155,7 @@ export default function VstBrowser() {
       )}
 
       {/* Footer */}
+      <ScanProgressBar />
       <div className="vst-browser-footer">
         <button className="vst-browser-btn" onClick={handleAddPath} title="Add VST3 search folder">
           <FolderPlus size={10} />

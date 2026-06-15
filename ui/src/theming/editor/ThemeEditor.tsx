@@ -3,6 +3,7 @@ import { useTheme } from '../runtime/ThemeProvider'
 import { getShippedTheme, DEFAULT_THEME_NAME } from '../runtime/ThemeLoader'
 import { resolveTheme } from '../runtime/applyTheme'
 import type { ThemeFile } from '../schema/types'
+import { X } from 'lucide-react'
 import ThemeList, { type UserThemeMeta } from './ThemeList'
 import SimpleMode from './SimpleMode'
 import AdvancedMode from './AdvancedMode'
@@ -10,6 +11,12 @@ import PreviewPane from './PreviewPane'
 
 interface Props {
   onClose: () => void
+}
+
+interface ThemeEditorContentProps {
+  embedded?: boolean
+  onRequestClose?: () => void
+  showHeader?: boolean
 }
 
 const xlethTheme = () => (window as any).xleth?.theme
@@ -31,7 +38,11 @@ function makeWorkingFromActive(active: ThemeFile): ThemeFile {
   return { ...active, locked: false }
 }
 
-export default function ThemeEditor({ onClose }: Props) {
+export function ThemeEditorContent({
+  embedded = false,
+  onRequestClose,
+  showHeader = false,
+}: ThemeEditorContentProps) {
   const { slug: activeSlug, theme: activeTheme, setTheme } = useTheme()
 
   const [originalSlug] = useState<string>(() => activeSlug ?? DEFAULT_THEME_NAME)
@@ -49,13 +60,12 @@ export default function ThemeEditor({ onClose }: Props) {
     [workingTheme]
   )
 
-  // Load user theme list on mount
+  // Load user theme list on mount.
   useEffect(() => {
     const load = async () => {
       try {
         const raw = await xlethTheme()?.listUser?.()
         if (!Array.isArray(raw)) return
-        // raw may be string[] slugs or {slug, name}[] — handle both
         let metas: UserThemeMeta[] = raw.map((item: any) =>
           typeof item === 'string'
             ? { slug: item, name: item }
@@ -72,8 +82,7 @@ export default function ThemeEditor({ onClose }: Props) {
     load()
   }, [activeSlug, activeTheme.name])
 
-  // When user picks a different theme from the list, load it.
-  // Skip first render so we don't clobber activeTheme edits.
+  // Skip first render so we do not clobber activeTheme edits.
   const isFirstRender = useRef(true)
   useEffect(() => {
     if (isFirstRender.current) {
@@ -85,7 +94,6 @@ export default function ThemeEditor({ onClose }: Props) {
       setWorkingTheme(makeWorking(selectedSlug))
       return
     }
-    // User theme — load async
     ;(async () => {
       try {
         const raw = await xlethTheme()?.loadUser?.(selectedSlug)
@@ -96,17 +104,20 @@ export default function ThemeEditor({ onClose }: Props) {
     })()
   }, [selectedSlug])
 
-  // Close on Escape — but not if save prompt is open
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        if (showSavePrompt) { setShowSavePrompt(false); return }
-        onClose()
+      if (e.key !== 'Escape') return
+      if (showSavePrompt) {
+        e.preventDefault()
+        e.stopPropagation()
+        setShowSavePrompt(false)
+        return
       }
+      onRequestClose?.()
     }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [onClose, showSavePrompt])
+    window.addEventListener('keydown', handler, true)
+    return () => window.removeEventListener('keydown', handler, true)
+  }, [onRequestClose, showSavePrompt])
 
   const handleTokenChange = useCallback((name: string, value: string) => {
     setWorkingTheme(prev => ({
@@ -122,8 +133,7 @@ export default function ThemeEditor({ onClose }: Props) {
       const nextDetached = isCurrentlyDetached
         ? detached.filter(n => n !== name)
         : [...detached, name]
-      // When detaching, seed the token with its current resolved value so it
-      // has an explicit starting point in the ColorPicker.
+      // When detaching, seed the token with its current resolved value.
       const nextTokens = (!isCurrentlyDetached && resolvedValues[name])
         ? { ...prev.tokens, [name]: resolvedValues[name] }
         : prev.tokens
@@ -142,8 +152,8 @@ export default function ThemeEditor({ onClose }: Props) {
     const file = getShippedTheme(originalSlug)
     if (!file) return
     await setTheme(originalSlug, file)
-    onClose()
-  }, [originalSlug, setTheme, onClose])
+    onRequestClose?.()
+  }, [originalSlug, setTheme, onRequestClose])
 
   const handleSaveNew = useCallback(async () => {
     const name = saveNameInput.trim()
@@ -151,9 +161,7 @@ export default function ThemeEditor({ onClose }: Props) {
     setSaving(true)
     try {
       const slug = slugify(name)
-      // Strip all explicit token overrides — keep only the 5 base tokens.
-      // This prevents inherited teal/accent values from the shipped theme
-      // bleeding through when the user changes accent to a different color.
+      // Keep only base tokens so inherited shipped-theme accents do not leak.
       const BASE_TOKEN_NAMES = [
         '--theme-bg-primary',
         '--theme-bg-surface',
@@ -190,100 +198,109 @@ export default function ThemeEditor({ onClose }: Props) {
   const flatTokens = workingTheme.tokens as Record<string, string>
 
   return (
-    <div className="theme-editor-backdrop" onClick={showSavePrompt ? undefined : onClose}>
-      <div className="theme-editor" onClick={e => e.stopPropagation()}>
-
+    <div className={`theme-editor-content${embedded ? ' theme-editor-content--embedded' : ''}`}>
+      {showHeader && (
         <div className="theme-editor-header">
           <span className="theme-editor-title">Theme Editor</span>
-          <button className="theme-editor-close" onClick={onClose}>✕</button>
+          <button className="theme-editor-close" onClick={onRequestClose} aria-label="Close Theme Editor">
+            <X size={15} aria-hidden="true" />
+          </button>
         </div>
+      )}
 
-        <div className="theme-editor-body">
-          <ThemeList
-            selectedSlug={selectedSlug}
-            onSelect={setSelectedSlug}
-            userThemes={userThemes}
-          />
+      <div className="theme-editor-body">
+        <ThemeList
+          selectedSlug={selectedSlug}
+          onSelect={setSelectedSlug}
+          userThemes={userThemes}
+        />
 
-          <div className="theme-editor-center">
-            <div className="theme-editor-tabs">
-              <button
-                className={`theme-editor-tab ${activeTab === 'simple' ? 'theme-editor-tab--active' : ''}`}
-                onClick={() => setActiveTab('simple')}
-              >
-                Simple
-              </button>
-              <button
-                className={`theme-editor-tab ${activeTab === 'advanced' ? 'theme-editor-tab--active' : ''}`}
-                onClick={() => setActiveTab('advanced')}
-              >
-                Advanced
-              </button>
-            </div>
-            {activeTab === 'simple' ? (
-              <SimpleMode tokens={flatTokens} onTokenChange={handleTokenChange} />
-            ) : (
-              <AdvancedMode
-                workingTheme={workingTheme}
-                resolvedValues={resolvedValues}
-                onTokenChange={handleTokenChange}
-                onDetachToggle={handleDetachToggle}
-              />
-            )}
+        <div className="theme-editor-center">
+          <div className="theme-editor-tabs">
+            <button
+              className={`theme-editor-tab ${activeTab === 'simple' ? 'theme-editor-tab--active' : ''}`}
+              onClick={() => setActiveTab('simple')}
+            >
+              Simple
+            </button>
+            <button
+              className={`theme-editor-tab ${activeTab === 'advanced' ? 'theme-editor-tab--active' : ''}`}
+              onClick={() => setActiveTab('advanced')}
+            >
+              Advanced
+            </button>
           </div>
-
-          <div className="theme-editor-preview">
-            <PreviewPane workingTheme={workingTheme} />
-          </div>
-        </div>
-
-        {/* Save-as-new prompt */}
-        {showSavePrompt && (
-          <div className="theme-editor-save-prompt">
-            <span className="theme-editor-save-label">Theme name</span>
-            <input
-              className="theme-editor-save-input"
-              type="text"
-              placeholder="My Custom Theme"
-              value={saveNameInput}
-              onChange={e => setSaveNameInput(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') handleSaveNew() }}
-              autoFocus
+          {activeTab === 'simple' ? (
+            <SimpleMode tokens={flatTokens} onTokenChange={handleTokenChange} />
+          ) : (
+            <AdvancedMode
+              workingTheme={workingTheme}
+              resolvedValues={resolvedValues}
+              onTokenChange={handleTokenChange}
+              onDetachToggle={handleDetachToggle}
             />
-            <div className="theme-editor-save-actions">
-              <button
-                className="theme-editor-btn theme-editor-btn--ghost"
-                onClick={() => { setShowSavePrompt(false); setSaveNameInput('') }}
-              >
-                Cancel
-              </button>
-              <button
-                className="theme-editor-btn theme-editor-btn--primary"
-                onClick={handleSaveNew}
-                disabled={!saveNameInput.trim() || saving}
-              >
-                {saving ? 'Saving…' : 'Save'}
-              </button>
-            </div>
-          </div>
-        )}
-
-        <div className="theme-editor-footer">
-          <button
-            className="theme-editor-btn theme-editor-btn--ghost"
-            onClick={() => { setSaveNameInput(''); setShowSavePrompt(true) }}
-          >
-            Save as New Theme
-          </button>
-          <div style={{ flex: 1 }} />
-          <button className="theme-editor-btn theme-editor-btn--ghost" onClick={handleRevert}>
-            Revert
-          </button>
-          <button className="theme-editor-btn theme-editor-btn--primary" onClick={handleApply}>
-            Apply
-          </button>
+          )}
         </div>
 
+        <div className="theme-editor-preview">
+          <PreviewPane workingTheme={workingTheme} />
+        </div>
+      </div>
+
+      {showSavePrompt && (
+        <div className="theme-editor-save-prompt">
+          <span className="theme-editor-save-label">Theme name</span>
+          <input
+            className="theme-editor-save-input"
+            type="text"
+            placeholder="My Custom Theme"
+            value={saveNameInput}
+            onChange={e => setSaveNameInput(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') handleSaveNew() }}
+            autoFocus
+          />
+          <div className="theme-editor-save-actions">
+            <button
+              className="theme-editor-btn theme-editor-btn--ghost"
+              onClick={() => { setShowSavePrompt(false); setSaveNameInput('') }}
+            >
+              Cancel
+            </button>
+            <button
+              className="theme-editor-btn theme-editor-btn--primary"
+              onClick={handleSaveNew}
+              disabled={!saveNameInput.trim() || saving}
+            >
+              {saving ? 'Saving...' : 'Save'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="theme-editor-footer">
+        <button
+          className="theme-editor-btn theme-editor-btn--ghost"
+          onClick={() => { setSaveNameInput(''); setShowSavePrompt(true) }}
+        >
+          Save as New Theme
+        </button>
+        <div style={{ flex: 1 }} />
+        <button className="theme-editor-btn theme-editor-btn--ghost" onClick={handleRevert}>
+          Revert
+        </button>
+        <button className="theme-editor-btn theme-editor-btn--primary" onClick={handleApply}>
+          Apply
+        </button>
+      </div>
+    </div>
+  )
+}
+
+export default function ThemeEditor({ onClose }: Props) {
+  return (
+    <div className="theme-editor-backdrop" onClick={onClose}>
+      <div className="theme-editor" onClick={e => e.stopPropagation()}>
+        <ThemeEditorContent onRequestClose={onClose} showHeader />
       </div>
     </div>
   )

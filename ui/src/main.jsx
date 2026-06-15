@@ -4,12 +4,17 @@ import XlethRoot from './XlethRoot.jsx'
 import NodeEditorWindow from './NodeEditorWindow.jsx'
 import { ThemeProvider } from './theming/runtime/ThemeProvider'
 
-// Hanken Grotesk font weights
-import '@fontsource/hanken-grotesk/300.css'
-import '@fontsource/hanken-grotesk/400.css'
-import '@fontsource/hanken-grotesk/500.css'
-import '@fontsource/hanken-grotesk/600.css'
-import '@fontsource/hanken-grotesk/700.css'
+// UI font weights
+import '@fontsource/inter/300.css'
+import '@fontsource/inter/400.css'
+import '@fontsource/inter/500.css'
+import '@fontsource/inter/600.css'
+import '@fontsource/inter/700.css'
+import '@fontsource/noto-sans/300.css'
+import '@fontsource/noto-sans/400.css'
+import '@fontsource/noto-sans/500.css'
+import '@fontsource/noto-sans/600.css'
+import '@fontsource/noto-sans/700.css'
 
 import './styles/app.css'
 
@@ -17,6 +22,15 @@ const params = new URLSearchParams(window.location.search)
 const view = params.get('view')
 const storeKey = params.get('key')
 const trackPos = params.get('pos')
+const initialBackdropMode = ['native-acrylic', 'image', 'video'].includes(window.xleth?.backdrop?.current?.mode)
+  ? window.xleth.backdrop.current.mode
+  : 'off'
+
+if (view === 'node-editor') {
+  document.documentElement.removeAttribute('data-xleth-backdrop')
+} else {
+  document.documentElement.setAttribute('data-xleth-backdrop', initialBackdropMode)
+}
 
 console.log('[UI] App mounting', view ? `(view=${view}, key=${storeKey})` : '')
 

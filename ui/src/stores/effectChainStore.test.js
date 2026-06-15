@@ -334,6 +334,42 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(audio.getEffectChain).toHaveBeenCalledWith(7)
   })
 
+  it('ignores stale master-chain fetches that resolve after a reorder', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const oldMasterChain = [
+      makeEffect(11, 'distortion', 0),
+      makeEffect(12, 'xletheq', 1),
+      makeEffect(13, 'resonancesuppressor', 2),
+    ]
+    const movedMasterChain = [
+      makeEffect(12, 'xletheq', 0),
+      makeEffect(11, 'distortion', 1),
+      makeEffect(13, 'resonancesuppressor', 2),
+    ]
+    let resolveStaleFetch
+    const staleFetch = new Promise((resolve) => {
+      resolveStaleFetch = resolve
+    })
+
+    audio.getMasterEffectChain
+      .mockImplementationOnce(() => staleFetch)
+      .mockResolvedValueOnce(JSON.stringify(movedMasterChain))
+
+    useEffectChainStore.setState({
+      chains: { master: oldMasterChain },
+      fxModes: { master: 'chain' },
+      fxPanelViews: { master: 'chain' },
+    })
+
+    const oldFetchPromise = useEffectChainStore.getState().fetchChain('master')
+    await useEffectChainStore.getState().moveEffect('master', 12, 0)
+    resolveStaleFetch(JSON.stringify(oldMasterChain))
+    await oldFetchPromise
+
+    expect(audio.moveMasterEffect).toHaveBeenCalledWith(12, 0)
+    expect(useEffectChainStore.getState().chains.master).toEqual(movedMasterChain)
+  })
+
   it('resolves only exact graph strings as graph fxMode', async () => {
     const { DEFAULT_FX_MODE, resolveFxMode } = await loadEffectChainStoreFixture()
 

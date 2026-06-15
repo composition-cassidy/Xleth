@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, memo } from 'react'
-import { SkipBack, Play, Pause, Square, SkipForward, Sliders, Lock, LockOpen } from 'lucide-react'
+import { SkipBack, Play, Pause, Square, SkipForward, Lock, LockOpen } from 'lucide-react'
 import AudioDeviceSelector from './AudioDeviceSelector.jsx'
 import { subscribe } from '../transportStore.js'
 import { playheadClock } from '../services/PlayheadClock.js'
@@ -19,8 +19,8 @@ const PositionDisplay = memo(function PositionDisplay() {
   const [pos, setPos] = useState({ ms: 0, beats: 0, bars: 1 })
 
   useEffect(() => {
-    return playheadClock.onDisplayUpdate((posMs, bpm) => {
-      const beats = posMs * bpm / 60000
+    return playheadClock.onDisplayUpdate((posMs, bpm, positionBeats) => {
+      const beats = Number.isFinite(positionBeats) ? positionBeats : posMs * bpm / 60000
       setPos({ ms: posMs, beats, bars: Math.floor(beats / 4) + 1 })
     })
   }, [])
@@ -42,8 +42,6 @@ const PositionDisplay = memo(function PositionDisplay() {
 export default function TransportBar() {
   const [isPlaying, setIsPlaying] = useState(false)
   const [bpm, setBpm] = useState(140)
-  const mixerVisible = useMixerStore(s => s.visible)
-  const toggleMixer = useMixerStore(s => s.toggleMixer)
 
   const [editingBpm, setEditingBpm] = useState(false)
   const [bpmInput, setBpmInput] = useState('140')
@@ -185,15 +183,6 @@ export default function TransportBar() {
       {/* ── Position display (isolated memo — only this subtree re-renders at 10fps) ── */}
       <PositionDisplay />
 
-      {/* ── Mixer toggle ───────────────────────────────────────────────── */}
-      <button
-        className={`transport-btn ${mixerVisible ? 'transport-btn-active' : ''}`}
-        onClick={toggleMixer}
-        title="Toggle Mixer (M)"
-      >
-        <Sliders size={14} />
-      </button>
-
       <AudioDeviceSelector />
 
       {/* ── Spacer ──────────────────────────────────────────────────────── */}
@@ -232,14 +221,6 @@ export default function TransportBar() {
         >
           {tempoLocked ? <Lock size={12} /> : <LockOpen size={12} />}
         </button>
-      </div>
-
-      {/* ── Shortcut hints ──────────────────────────────────────────────── */}
-      <div className="transport-hints">
-        <kbd>SPACE</kbd>
-        <span>{spacebarMode === 'play-stop' ? 'play/stop' : 'play/pause'}</span>
-        <kbd>HOME</kbd>
-        <span>rewind</span>
       </div>
     </div>
   )

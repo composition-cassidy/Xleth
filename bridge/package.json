@@ -1,12 +1,14 @@
 {
   "name": "xleth-native",
-  "version": "0.0.1",
+  "version": "1.0.0-beta",
   "main": "build/Release/xleth_native.node",
   "scripts": {
     "build": "cmake-js compile",
     "rebuild": "cmake-js rebuild",
     "test": "node test_phase1.js",
     "test:transport": "node test_transport_contract.js",
+    "test:preview-seek": "node test_preview_seek_contract.js",
+    "test:source-preview": "node test_source_preview_contract.js",
     "test:audio-telemetry": "node test_audio_telemetry.js",
     "test:patterns": "node test_patterns.js",
     "test:flip-v2": "node ../scripts/test-flip-v2.js"

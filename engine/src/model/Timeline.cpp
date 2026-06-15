@@ -198,7 +198,27 @@ std::vector<const TrackInfo*> Timeline::getAllTracks() const {
     out.reserve(m_tracks.size());
     for (const auto& [id, t] : m_tracks)
         out.push_back(&t);
+    std::stable_sort(out.begin(), out.end(), [](const TrackInfo* a, const TrackInfo* b) {
+        if (a->order != b->order)
+            return a->order < b->order;
+        return a->id < b->id;
+    });
     return out;
+}
+
+bool Timeline::setTrackOrder(const std::vector<int>& trackIdsInOrder) {
+    if (trackIdsInOrder.size() != m_tracks.size())
+        return false;
+
+    std::set<int> seen;
+    for (int trackId : trackIdsInOrder) {
+        if (m_tracks.find(trackId) == m_tracks.end() || !seen.insert(trackId).second)
+            return false;
+    }
+
+    for (size_t i = 0; i < trackIdsInOrder.size(); ++i)
+        m_tracks[trackIdsInOrder[i]].order = static_cast<int>(i);
+    return true;
 }
 
 bool Timeline::removeTrack(int id) {

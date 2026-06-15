@@ -9,6 +9,7 @@
 // No DSP runs here. We only project bucket data (peaks, GR, detector point)
 // onto canvas pixels.
 
+import { uiCanvasFont } from '../../../styles/typography.js'
 import { dbToY, grToY, softKneeOutputDb, SCALES } from './scaling.js'
 
 // ── Display constants ───────────────────────────────────────────────────────
@@ -565,7 +566,7 @@ function drawActivityGrid(ctx, w, h, theme) {
   if (w >= 90 && h >= 32) {
     ctx.globalAlpha = 0.55
     ctx.fillStyle = theme.textMuted || '#999'
-    ctx.font = '9px ui-sans-serif, system-ui, sans-serif'
+    ctx.font = uiCanvasFont('9px')
     ctx.textAlign = 'right'
     ctx.textBaseline = 'middle'
     for (const db of gridDb) {
@@ -757,7 +758,7 @@ export function drawCompressorMeters(ctx, x, y, w, h, ring, theme) {
   if (labelW) {
     ctx.globalAlpha = 0.78
     ctx.fillStyle = theme.textMuted || '#999'
-    ctx.font = '9px ui-sans-serif, system-ui, sans-serif'
+    ctx.font = uiCanvasFont('9px')
     ctx.textAlign = 'right'
     ctx.textBaseline = 'middle'
     for (const db of ticks) {

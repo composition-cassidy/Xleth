@@ -50,6 +50,16 @@ function detectPreset(waveform) {
 
 const TAB_LABELS = { vol: 'Vol LFO', pan: 'Pan LFO', pitch: 'Pitch LFO' }
 
+const SAMPLER_KNOB_APPEARANCE = {
+  tickStyle: 'none',
+  glyph: 'rotary-arrow',
+  accentGlow: true,
+}
+
+function SamplerKnob(props) {
+  return <Knob {...SAMPLER_KNOB_APPEARANCE} {...props} />
+}
+
 export default function LfoSection({ settings, setField, setFields, commit }) {
   const [lfoTab, setLfoTab] = useState('vol')
   const p = PREFIX[lfoTab]
@@ -163,7 +173,7 @@ export default function LfoSection({ settings, setField, setFields, commit }) {
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <div style={{ display: 'flex', gap: 6 }}>
-              <Knob
+              <SamplerKnob
                 label="DEL"
                 value={settings[f('delayMs')]}
                 min={0} max={5000} defaultValue={0}
@@ -173,7 +183,7 @@ export default function LfoSection({ settings, setField, setFields, commit }) {
                 onLiveChange={(v) => setField(f('delayMs'), Math.round(v))}
                 onCommit={(v) => commit({ [f('delayMs')]: Math.round(v) })}
               />
-              <Knob
+              <SamplerKnob
                 label="ATT"
                 value={settings[f('attackMs')]}
                 min={0} max={5000} defaultValue={0}
@@ -183,7 +193,7 @@ export default function LfoSection({ settings, setField, setFields, commit }) {
                 onLiveChange={(v) => setField(f('attackMs'), Math.round(v))}
                 onCommit={(v) => commit({ [f('attackMs')]: Math.round(v) })}
               />
-              <Knob
+              <SamplerKnob
                 label="AMT"
                 value={settings[f('amount')]}
                 min={lfoTab === 'pitch' ? -48 : 0}
@@ -195,7 +205,7 @@ export default function LfoSection({ settings, setField, setFields, commit }) {
                 onLiveChange={(v) => setField(f('amount'), lfoTab === 'pitch' ? Number(v.toFixed(1)) : Number(v.toFixed(3)))}
                 onCommit={(v) => commit({ [f('amount')]: lfoTab === 'pitch' ? Number(v.toFixed(1)) : Number(v.toFixed(3)) })}
               />
-              <Knob
+              <SamplerKnob
                 label="SPEED"
                 value={settings[f('speedHz')]}
                 min={0.01} max={20} defaultValue={1}

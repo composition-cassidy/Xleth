@@ -75,20 +75,22 @@ function assertTransportShape(state, label) {
     'livePresentationMaxTrackLatencySamples',
     'livePresentationMasterLatencySamples',
     'livePresentationDeviceOutputLatencySamples',
+    'sampleRate',
   ]) {
     ok(typeof state[key] === 'number', `${label}: ${key} is numeric`);
   }
 }
 
 function assertPresentationConversions(state, label) {
-  const expectedPresentationMs = (state.positionSamples / 48000) * 1000;
-  const expectedRawMs = (state.rawPositionSamples / 48000) * 1000;
+  const sampleRate = state.sampleRate || 48000;
+  const expectedPresentationMs = (state.positionSamples / sampleRate) * 1000;
+  const expectedRawMs = (state.rawPositionSamples / sampleRate) * 1000;
   near(state.positionMs, expectedPresentationMs, 0.25,
        `${label}: positionMs is derived from presentation samples`);
   near(state.rawPositionMs, expectedRawMs, 0.25,
        `${label}: rawPositionMs is derived from raw samples`);
 
-  const beatsPerSample = state.bpm / (60 * 48000);
+  const beatsPerSample = state.bpm / (60 * sampleRate);
   near(state.positionBeats, state.positionSamples * beatsPerSample, 1.0e-3,
        `${label}: positionBeats is derived from presentation samples`);
   near(state.rawPositionBeats, state.rawPositionSamples * beatsPerSample, 1.0e-3,

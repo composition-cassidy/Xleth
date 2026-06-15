@@ -24,6 +24,11 @@ bool isVideoModulationCompatible(const VideoEvent& event) noexcept
                event.modulation);
 }
 
+int resolvedFlipOrdinal(const VideoEvent& event) noexcept
+{
+    return event.monoOrdinal >= 0 ? event.monoOrdinal : event.globalNoteIndex;
+}
+
 xleth::clipmod::VideoModulationTimingContext makeVideoTimingContext(
     const VideoEvent& event,
     double beatPos,
@@ -466,8 +471,8 @@ const VideoEvent* FrameCollector::findActiveEvent(
     if (track && track->muted) return nullptr;
 
     // Find the latest-starting active event on this track. If multiple
-    // same-tick note-ons are active, choose the highest resolved ordinal so
-    // an EveryNote chord shows the final state after all chord members fire.
+    // same-tick note-ons are active, choose the highest resolved flip ordinal
+    // so an EveryNote chord consumes every stacked note before drawing.
     const VideoEvent* best = nullptr;
     for (const auto& ev : events) {
         if (ev.trackId != trackId) continue;
@@ -476,7 +481,7 @@ const VideoEvent* FrameCollector::findActiveEvent(
         if (!best
             || ev.startBeat > best->startBeat
             || (ev.startBeat == best->startBeat
-                && ev.globalNoteIndex > best->globalNoteIndex)) {
+                && resolvedFlipOrdinal(ev) > resolvedFlipOrdinal(*best))) {
             best = &ev;
         }
     }

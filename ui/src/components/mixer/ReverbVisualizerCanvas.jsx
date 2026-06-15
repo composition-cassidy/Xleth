@@ -14,6 +14,7 @@
 //   zero drawing after unmount, identical to ChorusOrbitVisualizer pattern.
 
 import { useEffect, useRef } from 'react'
+import { uiCanvasFont } from '../../styles/typography.js'
 
 // ── Seeded PRNG ───────────────────────────────────────────────────────────────
 // mulberry32 — deterministic, no global state, good distribution.
@@ -503,7 +504,7 @@ export default function ReverbVisualizerCanvas({ params, styleIndex = 0 }) {
       {
         const label = STYLE_LABELS[Math.max(0, Math.min(STYLE_LABELS.length - 1, styleIdx))]
         ctx.save()
-        ctx.font         = '600 9px ui-sans-serif, system-ui, -apple-system, sans-serif'
+        ctx.font         = uiCanvasFont('600 9px')
         ctx.textBaseline = 'top'
         ctx.fillStyle    = 'rgba(210, 148, 40, 0.55)'
         ctx.shadowBlur   = 3

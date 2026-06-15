@@ -2,6 +2,7 @@ import { useRef, useEffect, useState, useCallback } from 'react'
 import { timelineEvents } from '../../timelineEvents.js'
 import { drawEnvelope, downsamplePeaks3 } from '../../utils/waveformRenderer.js'
 import { tokenValue } from '../../theming/tokenValue.ts'
+import { uiCanvasFont } from '../../styles/typography.js'
 
 const HANDLE_HIT = 8
 
@@ -91,7 +92,7 @@ export default function SamplerWaveform({
 
     if (!peaks) {
       ctx.fillStyle = tokenValue('--theme-text-placeholder')
-      ctx.font = '11px sans-serif'
+      ctx.font = uiCanvasFont('11px')
       ctx.textAlign = 'center'
       ctx.fillText(loadError ? 'Waveform unavailable' : 'Loading…', width / 2, height / 2)
       return

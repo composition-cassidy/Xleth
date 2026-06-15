@@ -5,7 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const http = require('http');
-const { fork } = require('child_process');
+const { fork, spawn } = require('child_process');
 const { runtimeResource, userDataPath } = require('./runtimePaths');
 const {
   WORKSPACE_BACKDROP_DEFAULT_PREFERENCE,
@@ -19,6 +19,10 @@ const {
 // buffer. The forked addon-worker creates it via FrameOutput::initSharedMemory;
 // the Electron main process / preload opens the same name via shm_helper.node.
 const FRAME_SHM_NAME = 'XlethFrameBuffer';
+const WORKSPACE_BACKDROP_DEFAULT_IMAGE = 'backdrop-1@1.25x.png';
+const WORKSPACE_BACKDROP_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp']);
+const BACKDROP_MEDIA_SETTINGS_KEY = 'backdropMedia';
+const BACKDROP_MEDIA_SOURCE_TYPES = new Set(['none', 'acrylic', 'image', 'video']);
 
 
 // ── User settings (persisted across sessions, not per-project) ───────────────
@@ -54,12 +58,135 @@ function log(msg) {
 let workspaceBackdropCapability = null;
 let workspaceBackdropState = {
   capability: null,
-  preference: WORKSPACE_BACKDROP_DEFAULT_PREFERENCE,
+  preference: 'none',
   mode: 'off',
+  imagePath: null,
+  imageUrl: null,
+  videoPath: null,
+  videoUrl: null,
+  lastError: null,
 };
 
 function getWorkspaceBackdropPreference(settings = loadSettings()) {
   return sanitizeWorkspaceBackdropPreference(settings.workspaceBackdrop);
+}
+
+function stringOrEmpty(value) {
+  return typeof value === 'string' ? value : '';
+}
+
+function sanitizeBackdropMediaSettings(value, settings = loadSettings()) {
+  const source = typeof value === 'string'
+    ? { sourceType: value }
+    : value && typeof value === 'object'
+      ? value
+      : {};
+  const legacyPreference = getWorkspaceBackdropPreference(settings);
+  let sourceType = BACKDROP_MEDIA_SOURCE_TYPES.has(source.sourceType)
+    ? source.sourceType
+    : null;
+  if (!sourceType) {
+    sourceType = ['acrylic', 'image', 'video'].includes(legacyPreference)
+      ? legacyPreference
+      : 'none';
+  }
+  return {
+    sourceType,
+    imagePath: stringOrEmpty(source.imagePath),
+    videoPath: stringOrEmpty(source.videoPath),
+    lastError: stringOrEmpty(source.lastError),
+  };
+}
+
+function getWorkspaceBackdropArtDir() {
+  return runtimeResource('art');
+}
+
+function isWorkspaceBackdropImageName(name) {
+  return typeof name === 'string'
+    && path.basename(name) === name
+    && WORKSPACE_BACKDROP_IMAGE_EXTENSIONS.has(path.extname(name).toLowerCase());
+}
+
+function isWorkspaceBackdropImagePath(filePath) {
+  return typeof filePath === 'string'
+    && WORKSPACE_BACKDROP_IMAGE_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+}
+
+function isWorkspaceBackdropVideoPath(filePath) {
+  return typeof filePath === 'string' && path.extname(filePath).toLowerCase() === '.mp4';
+}
+
+function buildXlethMediaUrl(filePath) {
+  const normalised = filePath.replace(/\\/g, '/');
+  const driveMatch = normalised.match(/^([a-zA-Z]):\/(.*)$/);
+  if (driveMatch) {
+    const [, drive, rest] = driveMatch;
+    return 'xleth-media://' + drive.toLowerCase() + '/' +
+      rest.split('/').map(encodeURIComponent).join('/');
+  }
+  return 'xleth-media:///' + normalised.split('/').map(encodeURIComponent).join('/');
+}
+
+function resolveWorkspaceBackdropImage(settings = loadSettings(), mediaSettings = null) {
+  if (isWorkspaceBackdropImagePath(mediaSettings?.imagePath)) {
+    try {
+      if (fs.existsSync(mediaSettings.imagePath)) {
+        return {
+          name: path.basename(mediaSettings.imagePath),
+          path: mediaSettings.imagePath,
+          url: buildXlethMediaUrl(mediaSettings.imagePath),
+        };
+      }
+    } catch {}
+  }
+
+  const artDir = getWorkspaceBackdropArtDir();
+  const configuredName = isWorkspaceBackdropImageName(settings.workspaceBackdropImage)
+    ? settings.workspaceBackdropImage
+    : null;
+  const candidates = [
+    configuredName,
+    WORKSPACE_BACKDROP_DEFAULT_IMAGE,
+  ].filter(Boolean);
+
+  try {
+    const discovered = fs.readdirSync(artDir)
+      .filter(isWorkspaceBackdropImageName)
+      .sort((a, b) => a.localeCompare(b));
+    candidates.push(...discovered);
+  } catch {}
+
+  for (const name of candidates) {
+    const candidatePath = path.join(artDir, name);
+    try {
+      if (fs.existsSync(candidatePath)) {
+        return {
+          name,
+          path: candidatePath,
+          url: buildXlethMediaUrl(candidatePath),
+        };
+      }
+    } catch {}
+  }
+  return { name: null, path: null, url: null };
+}
+
+function resolveWorkspaceBackdropVideo(mediaSettings) {
+  const videoPath = isWorkspaceBackdropVideoPath(mediaSettings?.videoPath)
+    ? mediaSettings.videoPath
+    : null;
+  if (!videoPath) return { path: null, url: null, lastError: null };
+  try {
+    if (fs.existsSync(videoPath)) {
+      return { path: videoPath, url: buildXlethMediaUrl(videoPath), lastError: null };
+    }
+  } catch {}
+  return {
+    path: videoPath,
+    url: null,
+    lastError: 'Video backdrop could not be played. The file may be missing or unsupported.',
+  };
 }
 
 function ensureWorkspaceBackdropCapability() {
@@ -79,7 +206,14 @@ function getWorkspaceBackdropStateSnapshot() {
   return {
     capability: workspaceBackdropState.capability || ensureWorkspaceBackdropCapability(),
     preference: workspaceBackdropState.preference,
-    mode: workspaceBackdropState.mode === 'native-acrylic' ? 'native-acrylic' : 'off',
+    mode: ['native-acrylic', 'image', 'video'].includes(workspaceBackdropState.mode)
+      ? workspaceBackdropState.mode
+      : 'off',
+    imagePath: workspaceBackdropState.imagePath,
+    imageUrl: workspaceBackdropState.imageUrl,
+    videoPath: workspaceBackdropState.videoPath,
+    videoUrl: workspaceBackdropState.videoUrl,
+    lastError: workspaceBackdropState.lastError,
   };
 }
 
@@ -107,16 +241,112 @@ function notifyWorkspaceBackdropChanged() {
 
 function applyMainWorkspaceBackdrop(reason = 'startup', { notify = false } = {}) {
   const capability = ensureWorkspaceBackdropCapability();
-  const preference = getWorkspaceBackdropPreference();
-  const applyResult = applyWorkspaceBackdropMaterial(win, { capability, preference });
+  const settings = loadSettings();
+  const mediaSettings = sanitizeBackdropMediaSettings(settings[BACKDROP_MEDIA_SETTINGS_KEY], settings);
+  const sourceType = mediaSettings.sourceType;
+  const materialPreference = sourceType === 'acrylic'
+    ? 'acrylic'
+    : sourceType === 'image'
+      ? 'image'
+      : 'off';
+  const applyResult = applyWorkspaceBackdropMaterial(win, { capability, preference: materialPreference });
+  const image = sourceType === 'image'
+    ? resolveWorkspaceBackdropImage(settings, mediaSettings)
+    : { path: null, url: null };
+  const video = sourceType === 'video'
+    ? resolveWorkspaceBackdropVideo(mediaSettings)
+    : { path: null, url: null, lastError: null };
   workspaceBackdropState = {
     capability,
-    preference,
-    mode: applyResult.mode === 'native-acrylic' ? 'native-acrylic' : 'off',
+    preference: sourceType,
+    mode: sourceType === 'video'
+      ? 'video'
+      : sourceType === 'acrylic'
+        ? (applyResult.mode === 'native-acrylic' ? 'native-acrylic' : 'off')
+        : (sourceType === 'image' && applyResult.mode === 'image' ? 'image' : 'off'),
+    imagePath: image.path,
+    imageUrl: image.url,
+    videoPath: video.path,
+    videoUrl: video.url,
+    lastError: mediaSettings.lastError || video.lastError,
   };
   logWorkspaceBackdropApply(reason, applyResult);
   if (notify) notifyWorkspaceBackdropChanged();
   return getWorkspaceBackdropStateSnapshot();
+}
+
+function backdropImportNameForSource(srcPath) {
+  const ext = path.extname(srcPath).toLowerCase();
+  if (!WORKSPACE_BACKDROP_IMAGE_EXTENSIONS.has(ext)) {
+    throw new Error('Workspace backdrops must be PNG, JPEG, or WebP images.');
+  }
+  const stem = path.basename(srcPath, ext)
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48) || 'workspace-backdrop';
+  return `${stem}-${Date.now()}${ext}`;
+}
+
+async function chooseWorkspaceBackdropImage() {
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+    title: 'Choose Workspace Backdrop',
+    filters: [{ name: 'Images (PNG, JPEG, WebP)', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+    properties: ['openFile'],
+  });
+  if (canceled || !filePaths.length) return getWorkspaceBackdropStateSnapshot();
+
+  const srcPath = filePaths[0];
+  const destName = backdropImportNameForSource(srcPath);
+  const artDir = getWorkspaceBackdropArtDir();
+  fs.mkdirSync(artDir, { recursive: true });
+  const destPath = path.join(artDir, destName);
+  fs.copyFileSync(srcPath, destPath);
+
+  const settings = loadSettings();
+  settings.workspaceBackdrop = 'image';
+  settings.workspaceBackdropImage = destName;
+  settings[BACKDROP_MEDIA_SETTINGS_KEY] = sanitizeBackdropMediaSettings({
+    ...(settings[BACKDROP_MEDIA_SETTINGS_KEY] || {}),
+    sourceType: 'image',
+    imagePath: destPath,
+    lastError: '',
+  }, settings);
+  saveSettings(settings);
+  return applyMainWorkspaceBackdrop('image-chosen', { notify: true });
+}
+
+async function chooseWorkspaceBackdropVideo() {
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+    title: 'Choose Workspace Background Video',
+    filters: [{ name: 'Background Video (MP4)', extensions: ['mp4'] }],
+    properties: ['openFile'],
+  });
+  if (canceled || !filePaths.length) return getWorkspaceBackdropStateSnapshot();
+
+  const srcPath = filePaths[0];
+  if (!isWorkspaceBackdropVideoPath(srcPath)) {
+    throw new Error('Workspace background videos must be MP4 files.');
+  }
+
+  const settings = loadSettings();
+  settings.workspaceBackdrop = 'video';
+  settings[BACKDROP_MEDIA_SETTINGS_KEY] = sanitizeBackdropMediaSettings({
+    ...(settings[BACKDROP_MEDIA_SETTINGS_KEY] || {}),
+    sourceType: 'video',
+    videoPath: srcPath,
+    lastError: '',
+  }, settings);
+  saveSettings(settings);
+  return applyMainWorkspaceBackdrop('video-chosen', { notify: true });
+}
+
+function setWorkspaceBackdropMedia(value) {
+  const settings = loadSettings();
+  const next = sanitizeBackdropMediaSettings(value, settings);
+  settings[BACKDROP_MEDIA_SETTINGS_KEY] = next;
+  settings.workspaceBackdrop = next.sourceType === 'none' ? 'off' : next.sourceType;
+  saveSettings(settings);
+  return applyMainWorkspaceBackdrop('media-settings-changed', { notify: true });
 }
 
 function ffmpegExecutable() {
@@ -151,6 +381,7 @@ function startMediaServer() {
   const MIME_TYPES = {
     '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.avi': 'video/x-msvideo',
     '.mkv': 'video/x-matroska', '.webm': 'video/webm',
+    '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
   };
 
   const server = http.createServer((req, res) => {
@@ -720,6 +951,9 @@ ipcMain.handle('xleth:timeline:setTrackVisualOnly',
 ipcMain.handle('xleth:timeline:setTrackSolo',
   safeHandler((_, trackId, solo) => callWorker('timeline_setTrackSolo', [trackId, solo])));
 
+ipcMain.handle('xleth:timeline:setTrackOrder',
+  safeHandler((_, trackIds) => callWorker('timeline_setTrackOrder', [trackIds])));
+
 ipcMain.handle('xleth:timeline:setTrackOutputRoute',
   safeHandler((_, trackId, targetTrackId) => callWorker('timeline_setTrackOutputRoute', [trackId, targetTrackId])));
 
@@ -817,6 +1051,9 @@ ipcMain.handle('xleth:timeline:setTrackVisualEffectChainOrder',
 ipcMain.handle('xleth:timeline:addClip',
   safeHandler((_, clip) => callWorker('timeline_addClip', [clip])));
 
+ipcMain.handle('xleth:timeline:addClipsBatch',
+  safeHandler((_, clips) => callWorker('timeline_addClipsBatch', [clips])));
+
 ipcMain.handle('xleth:timeline:removeClip',
   safeHandler((_, id) => callWorker('timeline_removeClip', [id])));
 
@@ -857,10 +1094,14 @@ ipcMain.handle('xleth:timeline:setClipModulation',
 ipcMain.handle('xleth:settings:get',    (_, key) => {
   const settings = loadSettings()
   if (key === 'workspaceBackdrop') return getWorkspaceBackdropPreference(settings)
+  if (key === BACKDROP_MEDIA_SETTINGS_KEY) return sanitizeBackdropMediaSettings(settings[BACKDROP_MEDIA_SETTINGS_KEY], settings)
   return settings[key]
 })
 ipcMain.handle('xleth:settings:set',    (_, key, value) => {
   const s = loadSettings()
+  if (key === BACKDROP_MEDIA_SETTINGS_KEY) {
+    return setWorkspaceBackdropMedia(value)
+  }
   if (key === 'workspaceBackdrop') {
     const previous = getWorkspaceBackdropPreference(s)
     const next = sanitizeWorkspaceBackdropPreference(value)
@@ -874,7 +1115,38 @@ ipcMain.handle('xleth:settings:set',    (_, key, value) => {
   s[key] = value; saveSettings(s)
 })
 ipcMain.handle('xleth:backdrop:getState', () => getWorkspaceBackdropStateSnapshot())
+ipcMain.handle('xleth:backdrop:chooseImage', () => chooseWorkspaceBackdropImage())
+ipcMain.handle('xleth:backdrop:chooseVideo', () => chooseWorkspaceBackdropVideo())
+ipcMain.handle('xleth:backdrop:setMedia', (_, value) => setWorkspaceBackdropMedia(value))
 ipcMain.handle('xleth:autosave:restart', () => { restartAutosaveTimer() })
+
+// ── Quick Launchers ───────────────────────────────────────────────────────────
+ipcMain.handle('xleth:launcher:chooseExe', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+    title: 'Choose Executable',
+    filters: [{ name: 'Executables', extensions: ['exe'] }],
+    properties: ['openFile'],
+  })
+  return canceled || !filePaths.length ? null : filePaths[0]
+})
+
+ipcMain.handle('xleth:launcher:choosePng', async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+    title: 'Choose Icon (PNG)',
+    filters: [{ name: 'PNG Images', extensions: ['png'] }],
+    properties: ['openFile'],
+  })
+  return canceled || !filePaths.length ? null : filePaths[0]
+})
+
+ipcMain.handle('xleth:launcher:spawn', (_, exePath) => {
+  try {
+    spawn(exePath, [], { detached: true, stdio: 'ignore' }).unref()
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: err.message }
+  }
+})
 
 // ── Autosave timer ────────────────────────────────────────────────────────────
 
@@ -2512,6 +2784,10 @@ ipcMain.handle('xleth:audio:loadSource',
 ipcMain.handle('xleth:audio:playSource',
   safeHandler((_, startTime) => callWorker('source_playSource', [startTime ?? 0])));
 
+ipcMain.handle('xleth:audio:playRegionPreview',
+  safeHandler((_, startTime, endTime) =>
+    callWorker('source_playRegionPreview', [startTime ?? 0, endTime ?? 0])));
+
 ipcMain.handle('xleth:audio:pauseSource',
   safeHandler(() => callWorker('source_pauseSource')));
 
@@ -2574,6 +2850,9 @@ ipcMain.handle('xleth:video:openSource',
 
 ipcMain.handle('xleth:video:closeSource',
   safeHandler((_, sourceId) => callWorker('video_closeSource', [sourceId])));
+
+ipcMain.handle('xleth:video:requestPreviewFrameAtTimelinePosition',
+  safeHandler((_, position) => callWorker('video_requestPreviewFrameAtTimelinePosition', [position])));
 
 // Legacy FFmpeg subprocess fallback (for callers still passing filePath strings)
 function legacyGetFrameAtTime(filePath, timeSeconds) {
@@ -3064,6 +3343,7 @@ app.whenReady().then(async () => {
     '.mkv': 'video/x-matroska', '.webm': 'video/webm',
     '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.flac': 'audio/flac',
     '.ogg': 'audio/ogg', '.aac': 'audio/aac',
+    '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
   };
 
   protocol.handle('xleth-media', async (request) => {
@@ -3078,6 +3358,13 @@ app.whenReady().then(async () => {
                  decodeURIComponent(pathname).replace(/\//g, path.sep);
     } else {
       filePath = decodeURIComponent(pathname.slice(1)).replace(/\//g, path.sep);
+    }
+
+    if (!filePath || !fs.existsSync(filePath)) {
+      return new Response('Not found', {
+        status: 404,
+        headers: { 'Cross-Origin-Resource-Policy': 'cross-origin', 'Access-Control-Allow-Origin': '*' },
+      });
     }
 
     const stat = fs.statSync(filePath);
@@ -3102,6 +3389,7 @@ app.whenReady().then(async () => {
               'Content-Length': String(chunkSize),
               'Content-Type': contentType,
               'Cross-Origin-Resource-Policy': 'cross-origin',
+              'Access-Control-Allow-Origin': '*',
             },
           }
         );
@@ -3117,6 +3405,7 @@ app.whenReady().then(async () => {
           'Content-Length': String(fileSize),
           'Content-Type': contentType,
           'Cross-Origin-Resource-Policy': 'cross-origin',
+          'Access-Control-Allow-Origin': '*',
         },
       }
     );

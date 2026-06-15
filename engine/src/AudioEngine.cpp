@@ -1,4 +1,5 @@
 #include "AudioEngine.h"
+#include "render/RenderClock.h"
 
 #include <algorithm>
 #include <chrono>
@@ -295,9 +296,8 @@ void AudioEngine::seekTimelineToSample(int64_t sample)
 void AudioEngine::seekTimelineToBeat(double beat)
 {
     const double bpm = transport_.getBPM();
-    const double sr = transport_.getSampleRate();
-    const int64_t sample = static_cast<int64_t>(
-        std::max(0.0, beat) * (sr * 60.0 / bpm));
+    const int sampleRate = static_cast<int>(std::llround(transport_.getSampleRate()));
+    const int64_t sample = RenderClock::beatToSample(beat, sampleRate, bpm);
     seekTimelineToSample(sample);
 }
 

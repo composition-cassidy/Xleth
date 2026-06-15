@@ -40,6 +40,8 @@ export default function Knob({
   labelPlacement = 'bottom',
   depth = 'raised',
   appearanceTokens = null,
+  accentGlow = false,
+  glyph = null,
 }) {
   const canvasRef = useRef(null)
   const dragRef = useRef(null) // { startY, startValue, fine }
@@ -94,6 +96,8 @@ export default function Knob({
       tickStyle,
       tickDensity,
       depth,
+      accentGlow,
+      glyph,
       surface: readToken(appearanceTokens?.surfaceCssVar, tokenValue('--theme-fx-knob-lg-bg'), c, '#172033'),
       accent: readToken(appearanceTokens?.accentCssVar, color || tokenValue('--theme-border-focus'), c, '#52e5ff'),
       text: readToken(appearanceTokens?.textCssVar, tokenValue('--theme-text-muted'), c, '#cbd5e1'),
@@ -111,6 +115,8 @@ export default function Knob({
     tickDensity,
     depth,
     appearanceTokens,
+    accentGlow,
+    glyph,
   ])
 
   // Pointer-captured drag — replaces global window mouse listeners.
@@ -311,12 +317,55 @@ function drawAppearanceKnob(ctx, opts) {
     tickStyle,
     tickDensity,
     depth,
+    accentGlow,
+    glyph,
     surface,
     accent,
     text,
     track,
     border,
   } = opts
+
+  // Mixer PAN / WIDTH knob — a solid dark raised cap with a bright accent
+  // value-arc hugging the rim and a short pointer "hook" at the current value.
+  // No dim background track: only the lit arc shows, exactly like the mockup.
+  if (glyph === 'rotary-arrow') {
+    drawCap(ctx, {
+      cx,
+      cy,
+      outerR,
+      knobR,
+      capStyle: 'soft-disk',
+      depth: 'raised',
+      surface,
+      text,
+      border,
+    })
+
+    // Bright value arc from the start angle to the current value.
+    ctx.save()
+    ctx.lineCap = 'round'
+    if (accentGlow) {
+      ctx.shadowColor = withAlpha(accent, 0.85)
+      ctx.shadowBlur = 6
+    }
+    ctx.strokeStyle = accent
+    ctx.lineWidth = 3
+    ctx.beginPath()
+    ctx.arc(cx, cy, trackR, startAngle, valueAngle)
+    ctx.stroke()
+
+    // Pointer hook — a radial tick just inside the arc at the value angle.
+    const outerP = trackR
+    const innerP = Math.max(2, trackR - 7)
+    ctx.lineWidth = 2.6
+    ctx.beginPath()
+    ctx.moveTo(cx + Math.cos(valueAngle) * innerP, cy + Math.sin(valueAngle) * innerP)
+    ctx.lineTo(cx + Math.cos(valueAngle) * outerP, cy + Math.sin(valueAngle) * outerP)
+    ctx.stroke()
+    ctx.restore()
+    return
+  }
 
   drawTicks(ctx, {
     cx,
@@ -345,6 +394,17 @@ function drawAppearanceKnob(ctx, opts) {
     const trackWidth = getTrackWidth(ringStyle)
     ctx.lineCap = 'round'
 
+    // Soft glow applied only to the accent (value) arc when requested.
+    const applyAccentGlow = () => {
+      if (!accentGlow) return
+      ctx.shadowColor = withAlpha(accent, 0.85)
+      ctx.shadowBlur = 6
+    }
+    const clearGlow = () => {
+      ctx.shadowColor = 'transparent'
+      ctx.shadowBlur = 0
+    }
+
     if (ringStyle === 'split-track') {
       // Dim full track
       ctx.strokeStyle = withAlpha(track || text, 0.25)
@@ -356,11 +416,15 @@ function drawAppearanceKnob(ctx, opts) {
       const midAngle = startAngle + (endAngle - startAngle) * 0.5
       const arcFrom = Math.min(midAngle, valueAngle)
       const arcTo = Math.max(midAngle, valueAngle)
+      ctx.save()
+      applyAccentGlow()
       ctx.strokeStyle = accent
       ctx.lineWidth = trackWidth + 0.5
       ctx.beginPath()
       ctx.arc(cx, cy, trackR, arcFrom, arcTo)
       ctx.stroke()
+      ctx.restore()
+      clearGlow()
     } else {
       ctx.strokeStyle = withAlpha(track || text, ringStyle === 'thin-line' ? 0.45 : 0.62)
       ctx.lineWidth = trackWidth
@@ -368,11 +432,14 @@ function drawAppearanceKnob(ctx, opts) {
       ctx.arc(cx, cy, trackR, startAngle, endAngle)
       ctx.stroke()
 
+      ctx.save()
+      applyAccentGlow()
       ctx.strokeStyle = accent
       ctx.lineWidth = ringStyle === 'metered-arc' ? trackWidth + 1 : trackWidth
       ctx.beginPath()
       ctx.arc(cx, cy, trackR, startAngle, valueAngle)
       ctx.stroke()
+      ctx.restore()
     }
     ctx.lineCap = 'butt'
   }

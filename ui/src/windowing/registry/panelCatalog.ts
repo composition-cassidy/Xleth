@@ -2,8 +2,10 @@ import {
   AudioWaveform,
   Clock3,
   Grid3x3,
+  Music2,
   PanelLeft,
   Piano,
+  Scissors,
   SlidersHorizontal,
   Video,
   Workflow,
@@ -20,6 +22,8 @@ export const PANEL_IDS = [
   'fxGraph',
   'nodeEditor',
   'sampler',
+  'quickNotation',
+  'splitSyllables',
 ] as const;
 
 export type PanelId = (typeof PANEL_IDS)[number];
@@ -53,7 +57,7 @@ export interface PanelCatalogEntry {
   title: string;
   typeColorToken: PanelTypeColorToken;
   icon: LucideIcon;
-  fKey: 'F5' | 'F6' | 'F7' | 'F8' | 'F9' | 'F10' | 'F11' | 'F12';
+  fKey?: 'F5' | 'F6' | 'F7' | 'F8' | 'F9' | 'F10' | 'F11' | 'F12';
   defaultFloating: FloatingDimensions;
   keepAliveWhenHidden: boolean;
 }
@@ -139,6 +143,24 @@ export const PANEL_CATALOG = {
     fKey: 'F12',
     defaultFloating: { x: 340, y: 100, width: 680, height: 520 },
     keepAliveWhenHidden: false,
+  },
+  quickNotation: {
+    id: 'quickNotation',
+    title: 'Quick Notation',
+    typeColorToken: '--theme-text-muted',
+    icon: Music2,
+    defaultFloating: { x: 360, y: 140, width: 380, height: 320 },
+    keepAliveWhenHidden: false,
+  },
+  splitSyllables: {
+    id: 'splitSyllables',
+    title: 'Split Syllables',
+    typeColorToken: '--theme-text-muted',
+    icon: Scissors,
+    // Context-opened from a sample row (no F-key). keepAliveWhenHidden keeps the
+    // cached waveform mipmap + marker edits alive across close/reopen.
+    defaultFloating: { x: 380, y: 160, width: 540, height: 440 },
+    keepAliveWhenHidden: true,
   },
 } satisfies Record<PanelId, PanelCatalogEntry>;
 

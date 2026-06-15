@@ -68,6 +68,29 @@ import {
 export const DEFAULT_FX_MODE = 'chain'
 export const DEFAULT_FX_PANEL_VIEW = 'chain'
 
+const fetchRequestIdsByKey = new Map()
+const mutationEpochsByKey = new Map()
+
+function nextFetchRequestId(key) {
+  const nextId = (fetchRequestIdsByKey.get(key) ?? 0) + 1
+  fetchRequestIdsByKey.set(key, nextId)
+  return nextId
+}
+
+function getMutationEpoch(key) {
+  return mutationEpochsByKey.get(key) ?? 0
+}
+
+function markChainMutationStarted(key) {
+  const nextEpoch = getMutationEpoch(key) + 1
+  mutationEpochsByKey.set(key, nextEpoch)
+  return nextEpoch
+}
+
+function isLatestChainFetch(key, requestId, mutationEpoch) {
+  return fetchRequestIdsByKey.get(key) === requestId && getMutationEpoch(key) === mutationEpoch
+}
+
 // Dispatch IPC to the correct track vs. master variant.
 // key === 'master' -> masterFn(...args)
 // key === String(trackId) -> trackFn(Number(key), ...args)
@@ -2780,10 +2803,13 @@ const useEffectChainStore = create((set, get) => ({
 
   fetchChain: async (key) => {
     get().ensureFxState(key)
+    const requestId = nextFetchRequestId(key)
+    const mutationEpoch = getMutationEpoch(key)
 
     try {
       const raw = await ipc(key, 'getEffectChain', 'getMasterEffectChain')
       const chain = parseChain(raw)
+      if (!isLatestChainFetch(key, requestId, mutationEpoch)) return
       set((state) => ({
         ...buildFxStateDefaults(state.fxModes, state.fxPanelViews, key),
         chains: { ...state.chains, [key]: chain },
@@ -2799,6 +2825,7 @@ const useEffectChainStore = create((set, get) => ({
 
     const chain = state.chains[key] ?? []
     if (chain.length >= 100) return false
+    markChainMutationStarted(key)
 
     // Optimistic: append placeholder so UI responds immediately
     const placeholder = { nodeId: -1, pluginId, position: chain.length, bypassed: false }
@@ -2817,6 +2844,7 @@ const useEffectChainStore = create((set, get) => ({
 
   removeEffect: async (key, nodeId) => {
     if (!isChainFxMode(get(), key)) return false
+    markChainMutationStarted(key)
 
     // Optimistic: filter out immediately
     set((state) => ({
@@ -2837,6 +2865,7 @@ const useEffectChainStore = create((set, get) => ({
 
   moveEffect: async (key, nodeId, newPos) => {
     if (!isChainFxMode(get(), key)) return false
+    markChainMutationStarted(key)
 
     // Optimistic: reorder locally
     set((state) => {
@@ -2862,6 +2891,7 @@ const useEffectChainStore = create((set, get) => ({
 
   setBypass: async (key, nodeId, bypassed) => {
     if (!isChainFxMode(get(), key)) return false
+    markChainMutationStarted(key)
 
     // Optimistic: flip bypass flag
     set((state) => ({

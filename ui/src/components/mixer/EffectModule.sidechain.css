@@ -1,57 +1,91 @@
 .effect-module--with-sidechain {
-  row-gap: 3px;
-  padding-bottom: 3px;
+  row-gap: 4px;
+  padding-bottom: 5px;
 }
 
 .compressor-sidechain-controls {
-  grid-column: 2 / -1;
-  display: grid;
-  grid-template-columns: auto minmax(68px, 1fr);
-  align-items: center;
-  gap: 4px 6px;
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   min-width: 0;
-  padding-top: 4px;
-  border-top: 1px solid var(--theme-depth-elevation-1-border);
+  padding-top: 5px;
+  border-top: 1px solid color-mix(in srgb, var(--theme-accent) 20%, transparent);
 }
 
-.compressor-sidechain-toggle,
-.compressor-sidechain-source {
+/* Full-width toggle row, reads like a button strip */
+.compressor-sidechain-toggle {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
+  width: 100%;
   min-width: 0;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--theme-depth-well-bg);
+  box-shadow: var(--theme-depth-elevation-2-top-highlight);
+  color: var(--theme-text);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.compressor-sidechain-toggle--on {
+  border-color: color-mix(in srgb, var(--theme-accent) 55%, transparent);
+  color: var(--theme-accent);
+  box-shadow:
+    var(--theme-depth-elevation-2-top-highlight),
+    var(--theme-depth-accent-glow-subtle);
+}
+
+.compressor-sidechain-toggle--readonly {
+  cursor: default;
   color: var(--theme-text-muted);
-  font-size: 8px;
-  font-weight: 600;
-  line-height: 1.2;
 }
 
 .compressor-sidechain-toggle input {
-  width: 12px;
-  height: 12px;
+  width: 13px;
+  height: 13px;
   margin: 0;
+  flex-shrink: 0;
   accent-color: var(--theme-accent);
+  cursor: pointer;
+}
+
+/* Source dropdown sits directly below the toggle, full width */
+.compressor-sidechain-source {
+  display: flex;
+  width: 100%;
+  min-width: 0;
 }
 
 .compressor-sidechain-source select {
   min-width: 0;
   width: 100%;
-  height: 20px;
-  border: 1px solid var(--theme-border-default);
+  height: 22px;
+  border: 1px solid var(--theme-border-subtle);
   border-radius: var(--radius-sm);
-  background: var(--theme-bg-inset);
+  background: var(--theme-depth-well-bg);
   color: var(--theme-text-muted);
   font: inherit;
-  font-size: 8px;
-  padding: 0 4px;
+  font-size: 9px;
+  font-weight: 600;
+  padding: 0 7px;
+  box-shadow: var(--theme-depth-well-inner-shadow);
+  cursor: pointer;
 }
 
 .compressor-sidechain-source select:disabled {
-  opacity: 0.58;
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .compressor-sidechain-status {
-  grid-column: 1 / -1;
   min-width: 0;
   color: var(--theme-text-muted);
   font-size: 8px;

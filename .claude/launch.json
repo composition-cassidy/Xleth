@@ -4,8 +4,8 @@
     {
       "name": "vite-ui",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["vite", "--port", "5174", "--strictPort"],
-      "port": 5174,
+      "runtimeArgs": ["vite", "--port", "5175", "--strictPort"],
+      "port": 5175,
       "cwd": "ui"
     },
     {

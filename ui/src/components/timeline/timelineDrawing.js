@@ -6,17 +6,38 @@
 import {
   TRACK_HEIGHT, BEATS_PER_BAR, SUBDIVISIONS, SUB_GRID_THRESHOLD,
   CLIP_MIN_WIDTH_PX, PPQ,
+  GRANULARITY_BEATS,
   beatToPixel,
 } from '../../constants/timeline.js'
 import { labelHexColor } from '../../constants/labels.js'
 import { drawEnvelope, drawTrace, drawWaveformLine, drawSamplePoints, getRegime } from '../../utils/waveformRenderer.js'
 import { tokenValue } from '../../theming/tokenValue.ts'
+import { uiCanvasFont } from '../../styles/typography.js'
 import { normalizeTrackPalette, TRACK_PALETTE_FALLBACK } from './trackColorResolver.js'
 import { getRegionPlaybackDurationSec } from './regionDuration.js'
 import { getSyllableDisplayNumber } from '../SyllableSplitter/syllableModel.js'
 
 // Default engine sample rate (used for spp computation when no per-region rate is known)
 const DEFAULT_SR = 48000
+
+export function getClipRegionWaveformStartSec(clip, region, bpm) {
+  if (!clip || !bpm) return 0
+  const offsetTicks = Number(clip.regionOffsetTicks ?? 0)
+  const offsetSec = Number.isFinite(offsetTicks)
+    ? (offsetTicks / PPQ) / (bpm / 60)
+    : 0
+  const syllableIndex = Number(clip.syllableIndex)
+  if (
+    Number.isInteger(syllableIndex) &&
+    syllableIndex >= 0 &&
+    Array.isArray(region?.syllables) &&
+    syllableIndex < region.syllables.length
+  ) {
+    const sylStart = Number(region.syllables[syllableIndex]?.startTime)
+    return Math.max(0, (Number.isFinite(sylStart) ? sylStart : 0) + offsetSec)
+  }
+  return Math.max(0, offsetSec)
+}
 
 // ── Theme palette ────────────────────────────────────────────────────────────
 // Resolve all CSS custom properties used by the Timeline canvas exactly once
@@ -58,6 +79,7 @@ export function resolveTimelinePalette() {
     loopBrace:         tokenValue('--theme-timeline-loop-brace'),
     accent:            tokenValue('--theme-accent'),
     danger:            tokenValue('--theme-danger'),
+    warning:           tokenValue('--theme-warning'),
     fgInverse:         tokenValue('--theme-fg-inverse'),
     // Depth
     wellTopShadow:     tokenValue('--theme-timeline-well-top-shadow'),
@@ -160,7 +182,12 @@ function _normalizedClipFadePercents(clip) {
   return { fadeInPercent, fadeOutPercent }
 }
 
-export function drawGrid(ctx, w, h, scrollOffset, ppb, trackCount, tracks = null, palette = null, trackLayout = null) {
+export function getSnapGridIntervalBeats(snapGranularity = '1/16') {
+  const interval = GRANULARITY_BEATS[snapGranularity]
+  return Number.isFinite(interval) && interval > 0 ? interval : GRANULARITY_BEATS['1/16']
+}
+
+export function drawGrid(ctx, w, h, scrollOffset, ppb, trackCount, tracks = null, palette = null, trackLayout = null, snapGranularity = '1/16') {
   ctx.clearRect(0, 0, w, h)
   const p = palette ?? resolveTimelinePalette()
 
@@ -218,10 +245,10 @@ export function drawGrid(ctx, w, h, scrollOffset, ppb, trackCount, tracks = null
   // ladder relative to the gridMinor token's base alpha.
   // 16th notes (ppb > 80), 32nd (> 400), 64th (> 2000), 128th (> 10000)
   const subLevels = [
-    { divPerBeat: 4,   threshold: SUB_GRID_THRESHOLD, mult: 1.0  },  // 16th
-    { divPerBeat: 8,   threshold: 400,                mult: 0.83 }, // 32nd
-    { divPerBeat: 16,  threshold: 2000,               mult: 0.67 }, // 64th
-    { divPerBeat: 32,  threshold: 10000,              mult: 0.5  }, // 128th
+    { divPerBeat: 4,   threshold: SUB_GRID_THRESHOLD, mult: 1.55 }, // 16th
+    { divPerBeat: 8,   threshold: 400,                mult: 1.28 }, // 32nd
+    { divPerBeat: 16,  threshold: 2000,               mult: 1.04 }, // 64th
+    { divPerBeat: 32,  threshold: 10000,              mult: 0.78 }, // 128th
   ]
   for (const { divPerBeat, threshold, mult } of subLevels) {
     if (ppb <= threshold) continue
@@ -256,6 +283,29 @@ export function drawGrid(ctx, w, h, scrollOffset, ppb, trackCount, tracks = null
     ctx.lineTo(x, h)
   }
   ctx.stroke()
+
+  // Active snap markers mirror the toolbar setting, so changing Snap has an
+  // immediate visual footprint on the timeline grid.
+  const snapInterval = getSnapGridIntervalBeats(snapGranularity)
+  const snapSpacingPx = snapInterval * ppb
+  if (snapSpacingPx >= 6) {
+    const firstSnap = Math.floor(startBeat / snapInterval) * snapInterval
+    const snapAlpha = snapInterval >= BEATS_PER_BAR ? 0.30
+      : snapInterval >= 1 ? 0.24
+        : Math.min(0.22, Math.max(0.12, snapSpacingPx / 80))
+    ctx.strokeStyle = withAlpha(p.accent || p.gridBeat, snapAlpha)
+    ctx.lineWidth = snapInterval >= 1 ? 1 : 0.75
+    ctx.beginPath()
+    for (let beat = firstSnap; beat <= endBeat + snapInterval / 2; beat += snapInterval) {
+      if (beat < startBeat - snapInterval / 2) continue
+      const x = Math.round(beatToPixel(beat, scrollOffset, ppb)) + 0.5
+      if (x < 0) continue
+      if (x > w) break
+      ctx.moveTo(x, 0)
+      ctx.lineTo(x, h)
+    }
+    ctx.stroke()
+  }
 
   // Bar lines (vertical, major — every BEATS_PER_BAR beats)
   ctx.strokeStyle = p.gridBar
@@ -345,7 +395,7 @@ export function drawRuler(ctx, w, h, scrollOffset, ppb, palette = null) {
 
   // Bar numbers
   ctx.fillStyle = p.rulerText
-  ctx.font = '600 9px "Hanken Grotesk", system-ui, sans-serif'
+  ctx.font = uiCanvasFont('600 9px')
   ctx.textBaseline = 'top'
   const firstBar = Math.floor(startBeat / BEATS_PER_BAR) * BEATS_PER_BAR
   for (let beat = firstBar; beat <= endBeat; beat += BEATS_PER_BAR) {
@@ -527,6 +577,12 @@ function getTimelineBodyMaterial({
 const CLIP_PAD = 2         // top/bottom padding within track lane
 const CLIP_TEXT_PAD = 6    // horizontal text padding inside clip
 const HANDLE_W = 4         // resize handle width (selected only)
+const CLIP_VOLUME_MAX = 2
+const CLIP_CONTROL_MIN_W = 42
+const CLIP_VOLUME_PILL_W = 34
+const CLIP_VOLUME_PILL_H = 16
+const CLIP_FADE_TRIANGLE_W = 24
+const CLIP_FADE_TRIANGLE_H = 18
 
 // ── Pass 5D internal block layout ───────────────────────────────────────────
 // Reserved title-strip + measured truncation + bottom-right metadata chips.
@@ -628,9 +684,151 @@ function buildClipMetadataChips(clip) {
   return chips
 }
 
+function clampNumber(value, min, max) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return min
+  return Math.min(max, Math.max(min, n))
+}
+
+function hexToRgb(hex) {
+  if (typeof hex !== 'string' || !/^#[0-9a-f]{6}$/i.test(hex)) return { r: 0, g: 0, b: 0 }
+  return {
+    r: parseInt(hex.slice(1, 3), 16),
+    g: parseInt(hex.slice(3, 5), 16),
+    b: parseInt(hex.slice(5, 7), 16),
+  }
+}
+
+function mixHex(hex, target, amount) {
+  const src = hexToRgb(hex)
+  const dst = typeof target === 'string' ? hexToRgb(target) : target
+  const t = clampNumber(amount, 0, 1)
+  const r = Math.round(src.r + (dst.r - src.r) * t)
+  const g = Math.round(src.g + (dst.g - src.g) * t)
+  const b = Math.round(src.b + (dst.b - src.b) * t)
+  return `rgb(${r},${g},${b})`
+}
+
+function roundedRect(ctx, x, y, w, h, r) {
+  const rr = Math.min(r, w / 2, h / 2)
+  ctx.beginPath()
+  ctx.moveTo(x + rr, y)
+  ctx.lineTo(x + w - rr, y)
+  ctx.quadraticCurveTo(x + w, y, x + w, y + rr)
+  ctx.lineTo(x + w, y + h - rr)
+  ctx.quadraticCurveTo(x + w, y + h, x + w - rr, y + h)
+  ctx.lineTo(x + rr, y + h)
+  ctx.quadraticCurveTo(x, y + h, x, y + h - rr)
+  ctx.lineTo(x, y + rr)
+  ctx.quadraticCurveTo(x, y, x + rr, y)
+  ctx.closePath()
+}
+
+function drawClipInlineControls(ctx, clip, x, y, clipW, clipH, baseHex, selected, activeControl = null) {
+  if (clipW < CLIP_CONTROL_MIN_W || clipH < 30) return
+
+  const draftValue = activeControl?.clipId === clip.id ? activeControl.value : null
+  const committedFades = _normalizedClipFadePercents(clip)
+  const fadeInPercent = activeControl?.clipId === clip.id && activeControl.kind === 'fadeIn'
+    ? clampNumber(draftValue, 0, Math.max(0, 100 - committedFades.fadeOutPercent))
+    : committedFades.fadeInPercent
+  const fadeOutPercent = activeControl?.clipId === clip.id && activeControl.kind === 'fadeOut'
+    ? clampNumber(draftValue, 0, Math.max(0, 100 - committedFades.fadeInPercent))
+    : committedFades.fadeOutPercent
+  const velocity = activeControl?.clipId === clip.id && activeControl.kind === 'volume'
+    ? clampNumber(draftValue, 0, CLIP_VOLUME_MAX)
+    : clampNumber(clip.velocity ?? 1, 0, CLIP_VOLUME_MAX)
+
+  const accent = mixHex(baseHex, { r: 255, g: 255, b: 255 }, 0.42)
+  const dark = mixHex(baseHex, { r: 0, g: 0, b: 0 }, 0.70)
+  const lineY = Math.round(y + 18 + (1 - velocity / CLIP_VOLUME_MAX) * Math.max(8, clipH - 30)) + 0.5
+  const pillX = Math.round(x + clipW / 2 - CLIP_VOLUME_PILL_W / 2)
+  const pillY = Math.round(lineY - CLIP_VOLUME_PILL_H / 2)
+  const fadeInX = x + clipW * clampNumber(fadeInPercent, 0, 100) / 100
+  const fadeOutX = x + clipW - clipW * clampNumber(fadeOutPercent, 0, 100) / 100
+  const triW = Math.min(CLIP_FADE_TRIANGLE_W, Math.max(12, clipW * 0.45))
+  const bottom = y + clipH
+  const triH = Math.min(CLIP_FADE_TRIANGLE_H, clipH * 0.36)
+  const fadeInLeft = fadeInX <= x + triW ? x : Math.min(x + clipW - triW, fadeInX - triW)
+  const fadeInRight = fadeInLeft + triW
+  const fadeOutRight = fadeOutX >= x + clipW - triW ? x + clipW : Math.max(x + triW, fadeOutX + triW)
+  const fadeOutLeft = fadeOutRight - triW
+  const isActiveFadeIn = activeControl?.clipId === clip.id && activeControl.kind === 'fadeIn'
+  const isActiveFadeOut = activeControl?.clipId === clip.id && activeControl.kind === 'fadeOut'
+  const isActiveVolume = activeControl?.clipId === clip.id && activeControl.kind === 'volume'
+  const isUnity = Math.abs(velocity - 1) < 0.0005
+
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(x, y, clipW, clipH)
+  ctx.clip()
+
+  ctx.fillStyle = dark
+  ctx.globalAlpha = selected ? 0.96 : 0.88
+  ctx.shadowColor = accent
+  ctx.shadowBlur = isActiveFadeIn || isActiveFadeOut ? 8 : 4
+  ctx.beginPath()
+  ctx.moveTo(fadeInLeft, bottom)
+  ctx.lineTo(fadeInRight, bottom)
+  ctx.lineTo(fadeInLeft, Math.max(y, bottom - triH))
+  ctx.closePath()
+  ctx.fill()
+  ctx.beginPath()
+  ctx.moveTo(fadeOutRight, bottom)
+  ctx.lineTo(fadeOutLeft, bottom)
+  ctx.lineTo(fadeOutRight, Math.max(y, bottom - triH))
+  ctx.closePath()
+  ctx.fill()
+  ctx.shadowBlur = 0
+
+  ctx.globalAlpha = selected ? 0.95 : 0.80
+  ctx.fillStyle = accent
+  ctx.shadowColor = accent
+  ctx.shadowBlur = selected ? 5 : 3
+  ctx.fillRect(x, y + 1, 3, clipH - 2)
+  ctx.fillRect(x + clipW - 3, y + 1, 3, clipH - 2)
+  ctx.shadowBlur = 0
+
+  ctx.globalAlpha = selected ? 0.86 : 0.62
+  ctx.strokeStyle = accent
+  ctx.lineWidth = 2
+  ctx.shadowColor = accent
+  ctx.shadowBlur = isActiveVolume || isUnity ? 7 : 3
+  ctx.beginPath()
+  ctx.moveTo(x, lineY)
+  ctx.lineTo(x + clipW, lineY)
+  ctx.stroke()
+  ctx.shadowBlur = 0
+
+  ctx.globalAlpha = 1
+  ctx.fillStyle = mixHex(baseHex, { r: 255, g: 255, b: 255 }, selected ? 0.54 : 0.45)
+  ctx.strokeStyle = 'rgba(0,0,0,0.45)'
+  ctx.lineWidth = 1
+  ctx.shadowColor = isUnity ? 'rgba(255,255,255,0.78)' : accent
+  ctx.shadowBlur = isActiveVolume || isUnity ? 9 : 4
+  roundedRect(ctx, pillX, pillY, CLIP_VOLUME_PILL_W, CLIP_VOLUME_PILL_H, 7)
+  ctx.fill()
+  ctx.stroke()
+  ctx.shadowBlur = 0
+
+  ctx.strokeStyle = 'rgba(14,15,24,0.82)'
+  ctx.lineWidth = 2
+  for (let i = 0; i < 5; i++) {
+    const gx = pillX + 9 + i * 4
+    const top = pillY + 5 + (i % 2)
+    const bottomLine = pillY + CLIP_VOLUME_PILL_H - 5
+    ctx.beginPath()
+    ctx.moveTo(gx, top)
+    ctx.lineTo(gx, bottomLine)
+    ctx.stroke()
+  }
+
+  ctx.restore()
+}
+
 function drawMetadataChips(ctx, chips, area, palette, { handleReserveRight = 0, leftLimit }) {
   if (!chips.length) return
-  ctx.font = '500 9px "Hanken Grotesk", system-ui, sans-serif'
+  ctx.font = uiCanvasFont('500 9px')
   ctx.textBaseline = 'middle'
 
   const proc = chips.find(c => c.kind === 'proc')
@@ -673,7 +871,7 @@ function drawMetadataChips(ctx, chips, area, palette, { handleReserveRight = 0, 
   }
 }
 
-export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, regions, selectedClipIds, waveformCache, hiResCache, clipPeakCache, bpm, mutedTrackIds, palette = null, timelineDisplaySettings = null, trackColorById = null, trackLayout = null) {
+export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, regions, selectedClipIds, waveformCache, hiResCache, clipPeakCache, bpm, mutedTrackIds, palette = null, timelineDisplaySettings = null, trackColorById = null, trackLayout = null, activeClipControl = null) {
   ctx.clearRect(0, 0, w, h)
   if (!clips || clips.length === 0) return
   const p = palette ?? resolveTimelinePalette()
@@ -769,7 +967,7 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
       if (regionDurSec > 0 && visR > visL) {
       const regionDurTicks = regionDurSec * (bpm / 60) * PPQ
       const clipDurSec = (clip.durationTicks / PPQ) / (bpm / 60)
-      const regionOffsetSec = ((clip.regionOffsetTicks ?? 0) / PPQ) / (bpm / 60)
+      const regionOffsetSec = getClipRegionWaveformStartSec(clip, region, bpm)
 
       // Map visible pixels to seconds within the region (for unprocessed clips)
       const secPerPx = clipDurSec / clipW
@@ -872,7 +1070,7 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
           const wfData = waveformCache[clip.regionId]
           if (wfData?.peaks && wfData.stride === 3) {
             const totalPeakCols = Math.floor(wfData.peaks.length / 3)
-            const offsetFrac = (clip.regionOffsetTicks ?? 0) / regionDurTicks
+            const offsetFrac = regionDurSec > 0 ? regionOffsetSec / regionDurSec : 0
             const durFrac = clip.durationTicks / regionDurTicks
             const startCol = Math.floor(offsetFrac * totalPeakCols)
             const endCol = Math.min(totalPeakCols, Math.ceil((offsetFrac + durFrac) * totalPeakCols))
@@ -1001,7 +1199,7 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
           )
           ctx.clip()
           ctx.fillStyle = p.clipLabel
-          ctx.font = '600 10px "Hanken Grotesk", system-ui, sans-serif'
+          ctx.font = uiCanvasFont('600 10px')
           ctx.textBaseline = 'middle'
           const fitted = fitText(ctx, clipLabel, titleAvailW, { allowBareEllipsis })
           if (fitted) {
@@ -1032,6 +1230,8 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
 
     // ── Resize handles (selected only) ────────────────────────────────────
     // Drawn last so they always sit on top of strip + chips.
+    drawClipInlineControls(ctx, clip, x, y, clipW, clipH, hex, selected, activeClipControl)
+
     if (selected && clipW > HANDLE_W * 3) {
       ctx.fillStyle = hexToRgba(hex, 1.0)
       ctx.fillRect(x, y, HANDLE_W, clipH)                       // left
@@ -1039,9 +1239,7 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
     }
   }
 
-  if (visibleCount > 0) {
-    console.log(`[TimelineClips] Rendering ${clips.length} clips (${visibleCount} visible in viewport)`)
-  }
+  void visibleCount
 }
 
 // ── WORLD processing spinners ────────────────────────────────────────────────
@@ -1239,7 +1437,7 @@ export function drawPatternBlocks(ctx, w, h, scrollOffset, ppb, blocks, trackIdT
                             && block.durationTicks > pattern.lengthTicks)
     if (hasLoopGlyph) {
       ctx.fillStyle = p.patternGlyphBg
-      ctx.font = '600 8px "Hanken Grotesk", system-ui, sans-serif'
+      ctx.font = uiCanvasFont('600 8px')
       ctx.textBaseline = 'top'
       // ↻ when loop active, ∣→ when disabled (extends as empty space)
       const glyph = block.loopEnabled === false ? '∣→' : '↻'
@@ -1275,7 +1473,7 @@ export function drawPatternBlocks(ctx, w, h, scrollOffset, ppb, blocks, trackIdT
         )
         ctx.clip()
         ctx.fillStyle = p.patternLabel
-        ctx.font = '600 10px "Hanken Grotesk", system-ui, sans-serif'
+        ctx.font = uiCanvasFont('600 10px')
         ctx.textBaseline = 'middle'
         const fitted = fitText(ctx, pattern?.name || '?', titleAvailW, { allowBareEllipsis })
         if (fitted) {
@@ -1322,7 +1520,7 @@ export function drawDropPreview(ctx, w, h, scrollOffset, ppb, preview, palette =
     ctx.rect(x + CLIP_TEXT_PAD, y, clipW - CLIP_TEXT_PAD * 2, clipH)
     ctx.clip()
     ctx.fillStyle = p.fgInverse
-    ctx.font = '600 10px "Hanken Grotesk", system-ui, sans-serif'
+    ctx.font = uiCanvasFont('600 10px')
     ctx.textBaseline = 'middle'
     ctx.fillText(name || '', x + CLIP_TEXT_PAD, y + clipH / 2)
     ctx.restore()
@@ -1360,10 +1558,56 @@ export function drawGhostPreview(ctx, w, h, scrollOffset, ppb, ghost, palette = 
     ctx.rect(x + CLIP_TEXT_PAD, y, clipW - CLIP_TEXT_PAD * 2, clipH)
     ctx.clip()
     ctx.fillStyle = p.fgInverse
-    ctx.font = '600 10px "Hanken Grotesk", system-ui, sans-serif'
+    ctx.font = uiCanvasFont('600 10px')
     ctx.textBaseline = 'middle'
     ctx.fillText(name, x + CLIP_TEXT_PAD, y + clipH / 2)
     ctx.restore()
+  }
+}
+
+/**
+ * Draw notation ghost clips — translucent preview clips derived from a
+ * parsed notation string. Drawn on the content canvas AFTER real clips,
+ * read from a separate ref; never touches clipsRef.
+ *
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {Array}    ghostClips     Array of { syllableIndex, startTick, audioOffsetPercent }
+ * @param {Array}    clips          Real clip array for collision detection (read-only)
+ * @param {Function} tickToPixelFn  (tick: number) => x pixel
+ * @param {Function} trackYFn       (syllableIndex: number) => track top y pixel (raw, no padding)
+ * @param {object}   theme          Resolved palette from resolveTimelinePalette()
+ */
+export function drawGhostClips(ctx, ghostClips, clips, tickToPixelFn, trackYFn, theme) {
+  if (!ghostClips || ghostClips.length === 0) return
+  const p = theme ?? resolveTimelinePalette()
+  const palette = p.trackPalette || TRACK_PALETTE_FALLBACK
+
+  // Build tick ranges from real clips for collision detection (read-only)
+  const clipRanges = clips
+    ? clips.map(c => ({ start: c.positionTicks | 0, end: (c.positionTicks | 0) + (c.durationTicks | 0) }))
+    : []
+
+  for (const gc of ghostClips) {
+    const { syllableIndex, startTick } = gc
+    const color = palette[syllableIndex % palette.length] || p.accent
+
+    const x = tickToPixelFn(startTick)
+    const w = tickToPixelFn(startTick + 240) - x  // one 16th note visual width
+    const y = trackYFn(syllableIndex) + GHOST_CLIP_PAD
+    const h = TRACK_HEIGHT - GHOST_CLIP_PAD * 2
+
+    if (w < 1) continue
+
+    const hasCollision = clipRanges.some(r => startTick >= r.start && startTick < r.end)
+
+    ctx.fillStyle = withAlpha(color, 0.4)
+    ctx.fillRect(x, y, w, h)
+
+    ctx.strokeStyle = hasCollision ? p.warning : p.accent
+    ctx.lineWidth = 2
+    ctx.setLineDash([4, 3])
+    ctx.strokeRect(x, y, w, h)
+    ctx.setLineDash([])
   }
 }
 

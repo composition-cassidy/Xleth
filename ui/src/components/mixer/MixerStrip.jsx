@@ -1,18 +1,11 @@
 import React, { useCallback, useEffect } from 'react'
 import useMixerStore, { MASTER_OUTPUT_TARGET_ID, normalizeOutputTargetId } from '../../stores/mixerStore.js'
+import useTimelineFocusStore from '../../stores/timelineFocusStore.js'
 import Knob from '../sampler/Knob.jsx'
-import VolumeFader from './VolumeFader.jsx'
+import VolumeFader, { FaderReadout } from './VolumeFader.jsx'
 import PeakMeter from './PeakMeter.jsx'
 import EffectChainPanel from './EffectChainPanel.jsx'
-
-function formatPan(v) {
-  if (Math.abs(v) < 0.05) return 'C'
-  return v > 0 ? `${Math.round(v * 100)}R` : `${Math.round(-v * 100)}L`
-}
-
-function formatSpread(v) {
-  return `${Math.round(v * 100)}%`
-}
+import { useTokenValue } from '../../theming/tokenValue.ts'
 
 export default function MixerStrip({ trackId }) {
   const track = useMixerStore(s => s.tracks[trackId])
@@ -28,6 +21,10 @@ export default function MixerStrip({ trackId }) {
   const toggleMute = useMixerStore(s => s.toggleMute)
   const toggleSolo = useMixerStore(s => s.toggleSolo)
   const toggleVisualOnly = useMixerStore(s => s.toggleVisualOnly)
+  const selectedChainKey = useMixerStore(s => s.selectedChainKey)
+  const setSelectedChainKey = useMixerStore(s => s.setSelectedChainKey)
+  const setFocusedTrackId = useTimelineFocusStore(s => s.setFocusedTrackId)
+  const knobAccent = useTokenValue('--theme-accent')
 
   const handleVolume = useCallback((gain) => setVolume(trackId, gain), [trackId, setVolume])
   const handlePanLive = useCallback((v) => setPan(trackId, v), [trackId, setPan])
@@ -43,6 +40,12 @@ export default function MixerStrip({ trackId }) {
   const outputTargets = getEligibleOutputTargets(trackId)
   const hasSelectedTarget = outputTargets.some(option => option.targetTrackId === routeTargetId)
   const selectedMissingTarget = routeTargetId !== MASTER_OUTPUT_TARGET_ID && !hasSelectedTarget
+  const selected = selectedChainKey === String(trackId)
+
+  const handleSelectStrip = useCallback(() => {
+    setFocusedTrackId(trackId)
+    setSelectedChainKey(String(trackId))
+  }, [setFocusedTrackId, setSelectedChainKey, trackId])
 
   const handleOutputRouteChange = useCallback((e) => {
     setOutputRoute(trackId, Number(e.target.value))
@@ -57,46 +60,20 @@ export default function MixerStrip({ trackId }) {
   if (!track) return null
 
   return (
-    <div className={`mixer-strip ${track.muted ? 'mixer-strip--muted' : ''} ${track.visualOnly ? 'mixer-strip--visual-only' : ''}`}>
+    <div
+      className={`mixer-strip ${selected ? 'mixer-strip--selected' : ''} ${track.muted ? 'mixer-strip--muted' : ''} ${track.visualOnly ? 'mixer-strip--visual-only' : ''}`}
+      onClick={handleSelectStrip}
+      aria-selected={selected}
+    >
       {/* Track name */}
       <div className="mixer-strip-label" title={track.name}>
         {track.name}
       </div>
 
-      <div className="mixer-output-route">
-        <label className="mixer-output-label" htmlFor={`mixer-output-${trackId}`}>Output</label>
-        <select
-          id={`mixer-output-${trackId}`}
-          className="mixer-output-select"
-          value={routeTargetId}
-          onChange={handleOutputRouteChange}
-          title={routingError || 'Output'}
-        >
-          {selectedMissingTarget && (
-            <option value={routeTargetId} disabled>Missing track</option>
-          )}
-          {outputTargets.map(option => (
-            <option key={option.targetTrackId} value={option.targetTrackId}>
-              {option.name}
-            </option>
-          ))}
-        </select>
-      </div>
+      {/* Effects list preview */}
+      <EffectChainPanel trackId={trackId} mode="preview" />
 
-      <div className="mixer-route-badges" aria-live="polite">
-        {routeTargetId !== MASTER_OUTPUT_TARGET_ID && (
-          <span className="mixer-route-chip" title={routeTarget ? `Output to ${routeTarget.name}` : 'Output target missing'}>
-            {`→ ${routeTarget?.name || 'Missing track'}`}
-          </span>
-        )}
-        {busInputCount > 0 && (
-          <span className="mixer-route-chip mixer-route-chip--input" title={`${busInputCount} routed input${busInputCount === 1 ? '' : 's'}`}>
-            {`${busInputCount} input${busInputCount === 1 ? '' : 's'}`}
-          </span>
-        )}
-      </div>
-
-      {/* Mute / Solo */}
+      {/* Mute / Solo / Visual-only */}
       <div className="mixer-strip-controls">
         <button
           className={`mixer-ms-btn ${track.muted ? 'muted' : ''}`}
@@ -121,41 +98,83 @@ export default function MixerStrip({ trackId }) {
         </button>
       </div>
 
-      {/* Pan + Spread knobs */}
-      <div className="mixer-strip-knobs">
-        <Knob
-          value={track.pan}
-          min={-1}
-          max={1}
-          defaultValue={0}
-          label="PAN"
-          formatValue={formatPan}
-          onLiveChange={handlePanLive}
-          onCommit={handlePanCommit}
-          size={36}
-          dragRange={120}
-        />
-        <Knob
-          value={track.spread}
-          min={0}
-          max={2}
-          defaultValue={1}
-          label="WIDTH"
-          formatValue={formatSpread}
-          onLiveChange={handleSpreadLive}
-          onCommit={handleSpreadCommit}
-          size={36}
-          dragRange={120}
-        />
+      {/* Meter + Fader + Knobs — keystone module */}
+      <div className="mixer-strip-bottom">
+        <div className="mixer-meter-fader-col">
+          <FaderReadout value={track.volume} onChange={handleVolume} />
+          <div className="mixer-strip-fader-area">
+            <PeakMeter trackId={trackId} />
+            <VolumeFader value={track.volume} onChange={handleVolume} />
+          </div>
+        </div>
+        <div className="mixer-strip-knobs">
+          <Knob
+            value={track.pan}
+            min={-1}
+            max={1}
+            defaultValue={0}
+            label="PAN"
+            onLiveChange={handlePanLive}
+            onCommit={handlePanCommit}
+            size={38}
+            dragRange={120}
+            valueReadout="hidden"
+            tickStyle="none"
+            glyph="rotary-arrow"
+            color={knobAccent}
+            accentGlow
+          />
+          <Knob
+            value={track.spread}
+            min={0}
+            max={2}
+            defaultValue={1}
+            label="WIDTH"
+            onLiveChange={handleSpreadLive}
+            onCommit={handleSpreadCommit}
+            size={38}
+            dragRange={120}
+            valueReadout="hidden"
+            tickStyle="none"
+            glyph="rotary-arrow"
+            color={knobAccent}
+            accentGlow
+          />
+        </div>
       </div>
 
-      {/* Effect chain */}
-      <EffectChainPanel trackId={trackId} />
+      {/* Output routing — sits beneath the meter/fader, per the design */}
+      <div className="mixer-output-route">
+        <select
+          id={`mixer-output-${trackId}`}
+          className="mixer-output-select"
+          value={routeTargetId}
+          onChange={handleOutputRouteChange}
+          title={routingError || 'Output'}
+          aria-label="Output"
+        >
+          {selectedMissingTarget && (
+            <option value={routeTargetId} disabled>Missing track</option>
+          )}
+          {outputTargets.map(option => (
+            <option key={option.targetTrackId} value={option.targetTrackId}>
+              {option.name}
+            </option>
+          ))}
+        </select>
+      </div>
 
-      {/* Fader + Meter area */}
-      <div className="mixer-strip-fader-area">
-        <PeakMeter trackId={trackId} />
-        <VolumeFader value={track.volume} onChange={handleVolume} />
+      <div className="mixer-route-badges" aria-live="polite">
+        {routeTargetId !== MASTER_OUTPUT_TARGET_ID && (
+          <span className="mixer-route-chip" title={routeTarget ? `Output to ${routeTarget.name}` : 'Output target missing'}>
+            {`→ ${routeTarget?.name || 'Missing track'}`}
+          </span>
+        )}
+        {busInputCount > 0 && (
+          <span className="mixer-route-chip mixer-route-chip--input" title={`${busInputCount} routed input${busInputCount === 1 ? '' : 's'}`}>
+            {`${busInputCount} input${busInputCount === 1 ? '' : 's'}`}
+          </span>
+        )}
       </div>
     </div>
   )

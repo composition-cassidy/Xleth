@@ -1,0 +1,94 @@
+XLETH MIXER ROUTING + SIDECHAIN FEATURE BRIEF
+Target folder in repo: C:\Users\Krasen\Desktop\XLETH\docs\txt
+
+Purpose
+This document is a compact source brief for Claude Code / Fable 5 to read before auditing XLETH's codebase. It is not an implementation spec. The actual code architecture must be discovered from the repository.
+
+Project
+- XLETH is a Windows-only DAW/video compositor.
+- Stack: C++ engine using JUCE + FFmpeg + OpenGL, Node-API bridge, Electron + React UI.
+- Current architecture must not be guessed. Audit engine, bridge, Electron IPC/preload, renderer stores, mixer UI, existing AudioGraph, existing FX Graph, and save/load/project schema before proposing implementation.
+
+User goal
+XLETH needs mixer routing:
+- Route one or more audio tracks into another mixer/audio track as a bus.
+- Common use case: Kick, Snare, Hats, Percussion -> Drum Bus -> Master.
+- Bus routing is for audible audio flow through the target track's rack/effects.
+- Bus routing should save resources and support normal mix workflows like applying compression/EQ/saturation to the Drum Bus instead of repeating effects on every drum track.
+
+Critical non-negotiable behavior: no accidental double-monitoring
+When a source track is routed to a bus as its main output, it must not also keep playing directly to Master by default.
+Correct:
+- Kick output -> Drum Bus
+- Drum Bus output -> Master
+Incorrect default:
+- Kick -> Master and Kick -> Drum Bus at the same time
+
+Terminology rule
+Do not blur these concepts:
+1. Output routing / bus routing:
+   - Audible path ownership.
+   - Source track's main output points to another track or Master.
+   - The source should not also go to Master unless explicitly routed there.
+2. Parallel send:
+   - Source track keeps its main output and sends a copy to another track/bus.
+   - This is intentionally parallel and should be a separate explicit feature/state.
+3. Sidechain routing:
+   - Silent key/control signal.
+   - Does not contribute audible audio to the target track.
+   - Example: Kick remains audible through its own path; Kick also silently feeds Bass compressor detector/key input.
+
+Sidechain goal
+XLETH needs sidechaining:
+- Example: Kick sidechain -> Bass compressor sidechain input.
+- Kick still plays through its own mixer route to Master.
+- Bass still plays through its own mixer route to Master.
+- Kick sidechain signal is detector/control input only; it must not be heard through Bass.
+- Sidechaining must work for stock effects that support it and third-party VSTs that expose a sidechain/aux input bus.
+- Unsupported plugins must not pretend to support sidechain.
+
+FX Graph sidechain goal
+FX Graph must support internal sidechain input:
+- Add a protected "Sidechain Input" / "Input Activator" node when a graph-mode track has incoming sidechain signal.
+- This node must not be deletable.
+- It is conceptually similar to protected Input/Output graph nodes.
+- It exposes sidechain/control audio inside the FX Graph.
+- It must not become an accidental audible mix path.
+
+Expected phases after audit
+The audit should propose a phased implementation. Preferred high-level split:
+1. Mixer routing architecture/data model and engine path.
+2. Mixer bus routing core: persistent output routing, bus summing, no Master duplication.
+3. Mixer routing UI: output selector / route labels / validation.
+4. Sidechain routing core: silent source-to-target-effect edges.
+5. Stock + VST sidechain support: detect/enable/plugin bus handling.
+6. FX Graph protected Sidechain Input node.
+7. Tests, save/load migration, undo/redo, solo/mute behavior, render/export behavior.
+
+Do-not-break rules
+- Do not replace the normal Mixer Chain UI with FX Graph.
+- Do not force every track into FX Graph mode.
+- Do not mutate existing effectChains as a shortcut for graph routing.
+- Do not pass raw transient engine node IDs through persisted project state.
+- Do not use graphState node IDs as engine/plugin parameter addresses.
+- Do not revive old quarantined NodeEditor / nodeGraphStore paths.
+- Do not hardcode production UI colors; use theme tokens/CSS variables.
+- Do not implement UI-only fake routing that does not affect engine playback/export.
+- Do not implement sidechain as audible send.
+- Do not allow cycles or self-routing.
+- Do not silently route a track to both Master and a bus when the user intended bus output routing.
+- Do not make Master routable into normal tracks.
+- Do not assume every VST supports sidechain.
+
+DAW behavior decisions that must be explicitly designed
+The audit must identify where these are currently implemented and propose correct behavior:
+- Track output routing default: every normal track outputs to Master unless changed.
+- Bus track: likely normal audio/mixer track receiving summed sources.
+- Output routing vs send routing must be separately represented.
+- Sidechain source mute behavior.
+- Sidechain source solo behavior.
+- Bus solo behavior: soloing a bus should include source tracks feeding it, or at least require a deliberate policy.
+- Export/offline render must match realtime routing.
+- Save/load must preserve routing.
+- Undo/redo should cover user routing changes.
+- Latency/PDC impact must be audited before routing with sidechain and busses.

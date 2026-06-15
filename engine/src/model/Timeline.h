@@ -44,6 +44,7 @@ public:
     const TrackInfo*             getTrack(int id) const;
     TrackInfo*                   getTrackMutable(int id);
     std::vector<const TrackInfo*> getAllTracks() const;
+    bool                         setTrackOrder(const std::vector<int>& trackIdsInOrder);
     bool                         removeTrack(int id);
 
     // ── Clips ─────────────────────────────────────────────────────────────────

@@ -26,6 +26,14 @@ export function beatToPixel(beat, scrollOffset, ppb) {
   return (beat - scrollOffset) * ppb
 }
 
+export function beatToGridLinePixel(beat, scrollOffset, ppb) {
+  return Math.round(beatToPixel(beat, scrollOffset, ppb)) + 0.5
+}
+
+export function beatToPlayheadPixel(beat, scrollOffset, ppb, lineWidth = 2) {
+  return beatToGridLinePixel(beat, scrollOffset, ppb) - lineWidth / 2
+}
+
 export function pixelToBeat(px, scrollOffset, ppb) {
   return px / ppb + scrollOffset
 }

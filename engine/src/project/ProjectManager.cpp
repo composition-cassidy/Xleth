@@ -7,6 +7,8 @@
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <string>
+#include <system_error>
 #include <nlohmann/json.hpp>
 
 #ifdef XLETH_HAS_DECODER
@@ -20,6 +22,36 @@ namespace fs = std::filesystem;
 using json   = nlohmann::json;
 
 static constexpr const char* XLETH_VERSION = "0.1.0";
+
+namespace {
+
+fs::path utf8FilesystemPath(const std::string& path)
+{
+#ifdef _WIN32
+    std::u8string utf8;
+    utf8.reserve(path.size());
+    for (const unsigned char ch : path)
+        utf8.push_back(static_cast<char8_t>(ch));
+    return fs::path(utf8);
+#else
+    return fs::path(path);
+#endif
+}
+
+bool fileExistsUtf8(const std::string& path)
+{
+    std::error_code ec;
+    const bool exists = fs::exists(utf8FilesystemPath(path), ec);
+    return exists && !ec;
+}
+
+std::string filenameFromUtf8Path(const std::string& path)
+{
+    const auto pos = path.find_last_of("/\\");
+    return pos == std::string::npos ? path : path.substr(pos + 1);
+}
+
+} // namespace
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -336,14 +368,14 @@ ProjectManager::validateMedia(const Timeline& timeline) {
         MediaStatus status;
         status.sourceId = src->id;
         status.filePath = src->filePath;
-        status.found    = fs::exists(src->filePath);
+        status.found    = fileExistsUtf8(src->filePath);
 
         if (!status.found) {
             status.error = "Source file not found: " + src->filePath;
             std::cerr << "[Project] WARNING source id=" << src->id
                       << " missing: " << src->filePath << "\n";
         } else if (src->proxyReady && !src->proxyPath.empty() &&
-                   !fs::exists(src->proxyPath)) {
+                   !fileExistsUtf8(src->proxyPath)) {
             // Original exists but proxy was lost — note it and optionally re-transcode
             status.error = "Proxy missing (original OK): " + src->proxyPath;
             std::cout << "[Project] WARNING proxy missing for source id=" << src->id
@@ -383,7 +415,7 @@ int ProjectManager::importSource(Timeline& timeline,
     (void)progressCallback; // reserved for future on-demand proxy progress reporting
     std::cout << "[Project] Importing source: " << filePath << "\n";
 
-    if (!fs::exists(filePath)) {
+    if (!fileExistsUtf8(filePath)) {
         std::cerr << "[Project] ERROR importSource: file not found: " << filePath << "\n";
         return -1;
     }
@@ -402,7 +434,7 @@ int ProjectManager::importSource(Timeline& timeline,
 
         SourceMedia media;
         media.filePath    = filePath;
-        media.fileName    = fs::path(filePath).filename().string();
+        media.fileName    = filenameFromUtf8Path(filePath);
         media.width       = 0;
         media.height      = 0;
         media.fps         = 0.0;
@@ -422,7 +454,7 @@ int ProjectManager::importSource(Timeline& timeline,
 
     SourceMedia media;
     media.filePath    = filePath;
-    media.fileName    = fs::path(filePath).filename().string();
+    media.fileName    = filenameFromUtf8Path(filePath);
     media.width       = decoder.getWidth();
     media.height      = decoder.getHeight();
     media.fps         = decoder.getFPS();

@@ -43,6 +43,7 @@
 #include "commands/TimelineCommands.h"
 #include "commands/QuantizeClipsBatchCommand.h"
 #include "commands/AddNotesBatchCommand.h"
+#include "commands/AddClipsBatchCommand.h"
 #include "import/FscScoreParser.h"
 #include "project/ProjectManager.h"
 #include "project/ProxyManager.h"
@@ -210,6 +211,11 @@ std::thread       videoThread;
 std::atomic<bool> videoRunning{false};
 std::atomic<uint64_t> videoThreadCompletedTicks{0};
 std::atomic<bool> g_previewDirty{false};  // set by bridge functions to force a re-render while stopped
+std::atomic<uint64_t> g_latestStoppedPreviewSeq{0};
+std::atomic<uint64_t> g_pendingStoppedPreviewSeq{0};
+std::atomic<uint64_t> g_publishedStoppedPreviewSeq{0};
+std::atomic<uint64_t> g_discardedStoppedPreviewSeq{0};
+std::atomic<int64_t>  g_pendingStoppedPreviewSample{0};
 
 // Guards both SyncManager event mutations (main thread) and videoTick() calls
 // (video thread) to prevent data races on events_ / driftSamples_ etc.
@@ -2184,6 +2190,21 @@ static void videoThreadBody()
             bool isPlaying = t.isPlaying();
 
             bool forceRender = g_previewDirty.exchange(false);
+            uint64_t stoppedPreviewSeq = 0;
+            bool hasStoppedPreviewRequest = false;
+            int64_t stoppedPreviewSample = 0;
+            if (!isPlaying && forceRender) {
+                const uint64_t pendingSeq =
+                    g_pendingStoppedPreviewSeq.load(std::memory_order_acquire);
+                const uint64_t latestSeq =
+                    g_latestStoppedPreviewSeq.load(std::memory_order_acquire);
+                if (pendingSeq != 0 && pendingSeq == latestSeq) {
+                    stoppedPreviewSeq = pendingSeq;
+                    stoppedPreviewSample =
+                        g_pendingStoppedPreviewSample.load(std::memory_order_acquire);
+                    hasStoppedPreviewRequest = true;
+                }
+            }
 
             if ((isPlaying || forceRender) && !events.empty()) {
 
@@ -2210,13 +2231,21 @@ static void videoThreadBody()
                         g_previewAnimMgr->advanceAll(deltaMs);
 
                     // Compute output frame index from engine-owned presentation time.
-                    int64_t samplePos  = audioEngine->getLivePresentationPositionSamples();
+                    // Playback remains audio-master-clock driven. Stopped preview
+                    // renders use an explicit project sample and feed it into
+                    // FrameCollector as projectStartSample with local frame 0.
+                    int64_t samplePos = hasStoppedPreviewRequest
+                        ? stoppedPreviewSample
+                        : audioEngine->getLivePresentationPositionSamples();
                     int     sampleRate = static_cast<int>(t.getSampleRate());
                     int previewFps = layout.previewFps;
                     if (previewFps < 1 || previewFps > 120) previewFps = 30;
                     AVRational fpsRat = { previewFps, 1 };
                     int64_t outputFrame = RenderClock::sampleToVideoFrame(
                         samplePos, sampleRate, fpsRat);
+                    const int64_t collectorOutputFrame = hasStoppedPreviewRequest ? 0 : outputFrame;
+                    const int64_t collectorProjectStartSample =
+                        hasStoppedPreviewRequest ? samplePos : 0;
 
                     // ── Slide-note beat-crossing dispatch ─────────────
                     // Fire SlideAnimationEvents whose startBeat fell between
@@ -2274,7 +2303,8 @@ static void videoThreadBody()
 
                     // Collect → dedup → resolve → decode misses → composite → readback
                     auto requests = g_previewCollector->collectRequests(
-                        outputFrame, *g_timeline, sampleRate, fpsRat, events);
+                        collectorOutputFrame, *g_timeline, sampleRate, fpsRat,
+                        events, true, collectorProjectStartSample);
                     g_previewDiag.lastRequestCount.store(static_cast<int>(requests.size()),
                                                          std::memory_order_relaxed);
 
@@ -2296,9 +2326,11 @@ static void videoThreadBody()
                     }
 
                     if (g_previewCompositor->isInitialized()) {
-                        float currentTime = static_cast<float>(outputFrame)
-                            * static_cast<float>(fpsRat.den)
-                            / static_cast<float>(fpsRat.num);
+                        float currentTime = hasStoppedPreviewRequest
+                            ? static_cast<float>(RenderClock::sampleToSeconds(samplePos, sampleRate))
+                            : static_cast<float>(outputFrame)
+                                * static_cast<float>(fpsRat.den)
+                                / static_cast<float>(fpsRat.num);
 
                         // Reflect the project canvas aspect in the live preview:
                         // letterbox/pillarbox the canvas into the fixed preview
@@ -2387,7 +2419,16 @@ static void videoThreadBody()
                             g_previewCompositor->getPendingSlotsCount(), std::memory_order_relaxed);
                         if (rb.result == ReadbackResult::Valid) {
                             g_previewDiag.readbackValidCount.fetch_add(1, std::memory_order_relaxed);
-                            uint8_t* canvas = frameOutput.getBackBuffer();
+                            bool canPublish = true;
+                            if (hasStoppedPreviewRequest) {
+                                const uint64_t latestSeq =
+                                    g_latestStoppedPreviewSeq.load(std::memory_order_acquire);
+                                if (stoppedPreviewSeq != latestSeq || t.isPlaying()) {
+                                    canPublish = false;
+                                    g_discardedStoppedPreviewSeq.fetch_add(1, std::memory_order_relaxed);
+                                }
+                            }
+                            uint8_t* canvas = canPublish ? frameOutput.getBackBuffer() : nullptr;
                             if (canvas) {
                                 g_previewDiag.canvasCopyCount.fetch_add(1, std::memory_order_relaxed);
                                 const uint8_t* src = rb.pixels.data();
@@ -2418,12 +2459,29 @@ static void videoThreadBody()
                                     }
                                 }
                                 frameOutput.swapBuffers();
+                                if (hasStoppedPreviewRequest) {
+                                    g_publishedStoppedPreviewSeq.store(
+                                        stoppedPreviewSeq, std::memory_order_release);
+                                }
                                 blackWritten = isPlaying ? false : true;
                             }
                         } else if (rb.result == ReadbackResult::NotReady) {
                             g_previewDiag.readbackNotReadyCount.fetch_add(1, std::memory_order_relaxed);
                         } else {
                             g_previewDiag.readbackInvalidCount.fetch_add(1, std::memory_order_relaxed);
+                            if (hasStoppedPreviewRequest) {
+                                const uint64_t latestSeq =
+                                    g_latestStoppedPreviewSeq.load(std::memory_order_acquire);
+                                if (stoppedPreviewSeq == latestSeq && !t.isPlaying()) {
+                                    frameOutput.writeBlackFrame();
+                                    g_previewDiag.blackFrameCount.fetch_add(1, std::memory_order_relaxed);
+                                    g_publishedStoppedPreviewSeq.store(
+                                        stoppedPreviewSeq, std::memory_order_release);
+                                    blackWritten = true;
+                                } else {
+                                    g_discardedStoppedPreviewSeq.fetch_add(1, std::memory_order_relaxed);
+                                }
+                            }
                         }
 
                         // ── Windowed readback health check (60-frame window) ──────────────
@@ -2485,13 +2543,38 @@ static void videoThreadBody()
                                 }
                             }
                         }
+                    } else if (hasStoppedPreviewRequest) {
+                        const uint64_t latestSeq =
+                            g_latestStoppedPreviewSeq.load(std::memory_order_acquire);
+                        if (stoppedPreviewSeq == latestSeq && !t.isPlaying()) {
+                            frameOutput.writeBlackFrame();
+                            g_previewDiag.blackFrameCount.fetch_add(1, std::memory_order_relaxed);
+                            g_publishedStoppedPreviewSeq.store(
+                                stoppedPreviewSeq, std::memory_order_release);
+                            blackWritten = true;
+                        } else {
+                            g_discardedStoppedPreviewSeq.fetch_add(1, std::memory_order_relaxed);
+                        }
                     }
                 }
                 // Export OR visibility pause: write one black frame, then idle
                 else if (previewPaused) {
-                    if (!blackWritten) {
+                    bool canPublishBlack = true;
+                    if (hasStoppedPreviewRequest) {
+                        const uint64_t latestSeq =
+                            g_latestStoppedPreviewSeq.load(std::memory_order_acquire);
+                        if (stoppedPreviewSeq != latestSeq || t.isPlaying()) {
+                            canPublishBlack = false;
+                            g_discardedStoppedPreviewSeq.fetch_add(1, std::memory_order_relaxed);
+                        }
+                    }
+                    if (!blackWritten && canPublishBlack) {
                         frameOutput.writeBlackFrame();
                         g_previewDiag.blackFrameCount.fetch_add(1, std::memory_order_relaxed);
+                        if (hasStoppedPreviewRequest) {
+                            g_publishedStoppedPreviewSeq.store(
+                                stoppedPreviewSeq, std::memory_order_release);
+                        }
                         blackWritten = true;
                     }
                 }
@@ -2518,9 +2601,22 @@ static void videoThreadBody()
                 // === END LEGACY CPU PATH ===
 #endif
 
-            } else if (!isPlaying) {
-                if (!blackWritten) {
+            } else if (!isPlaying && forceRender) {
+                bool canPublishBlack = true;
+                if (hasStoppedPreviewRequest) {
+                    const uint64_t latestSeq =
+                        g_latestStoppedPreviewSeq.load(std::memory_order_acquire);
+                    if (stoppedPreviewSeq != latestSeq || t.isPlaying()) {
+                        canPublishBlack = false;
+                        g_discardedStoppedPreviewSeq.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+                if (canPublishBlack) {
                     frameOutput.writeBlackFrame();
+                    if (hasStoppedPreviewRequest) {
+                        g_publishedStoppedPreviewSeq.store(
+                            stoppedPreviewSeq, std::memory_order_release);
+                    }
                     blackWritten = true;
                 }
             }
@@ -3086,6 +3182,7 @@ Napi::Value GetTransportState(const Napi::CallbackInfo& info)
     obj.Set("rawPositionBeats", Napi::Number::New(env, t.getPositionBeats()));
     obj.Set("rawPositionBars", Napi::Number::New(env, t.getPositionBars()));
     obj.Set("rawPositionSamples", Napi::Number::New(env, static_cast<double>(rawPositionSamples)));
+    obj.Set("sampleRate", Napi::Number::New(env, sampleRate));
     obj.Set("livePresentationLatencySamples",
             Napi::Number::New(env, static_cast<double>(presentationDiag.totalPresentationLatencySamples)));
     obj.Set("livePresentationMaxTrackLatencySamples",
@@ -3832,6 +3929,12 @@ Napi::Value Project_ImportSource(const Napi::CallbackInfo& info)
     BridgeCallLog log("project.importSource");
 
     int id = g_projectManager->importSource(*g_timeline, filePath);
+    if (id < 0) {
+        Napi::Error::New(env, "Import failed: unsupported or unreadable media file.")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
     if (id >= 0) {
         const SourceMedia* src = g_timeline->getSource(id);
         if (src && src->hasVideo) {
@@ -4857,6 +4960,58 @@ void Timeline_SetTrackSolo(const Napi::CallbackInfo& info)
     log.done(std::to_string(trackId) + "=" + (solo ? "1" : "0"));
 }
 
+// timeline_setTrackOrder(trackIds[]) - undo-tracked visible track order
+Napi::Value Timeline_SetTrackOrder(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsArray()) {
+        Napi::TypeError::New(env, "timeline_setTrackOrder(trackIds: number[])")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    Napi::Array arr = info[0].As<Napi::Array>();
+    std::vector<int> trackIds;
+    trackIds.reserve(arr.Length());
+    for (uint32_t i = 0; i < arr.Length(); ++i) {
+        Napi::Value v = arr.Get(i);
+        if (!v.IsNumber()) {
+            Napi::TypeError::New(env, "timeline_setTrackOrder(trackIds: number[])")
+                .ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+        trackIds.push_back(v.As<Napi::Number>().Int32Value());
+    }
+
+    BridgeCallLog log("timeline.setTrackOrder");
+    if (trackIds.size() != g_timeline->getAllTracks().size()) {
+        log.done("rejected:count-mismatch");
+        return Napi::Boolean::New(env, false);
+    }
+
+    std::unordered_set<int> seenTrackIds;
+    for (int id : trackIds) {
+        if (!g_timeline->getTrack(id)) {
+            log.done("rejected:track-not-found");
+            return Napi::Boolean::New(env, false);
+        }
+        if (!seenTrackIds.insert(id).second) {
+            log.done("rejected:duplicate-track");
+            return Napi::Boolean::New(env, false);
+        }
+    }
+
+    g_undoManager->execute(
+        std::make_unique<SetTrackOrderCommand>(trackIds, *g_timeline),
+        *g_timeline);
+    log.done("stored");
+    return Napi::Boolean::New(env, true);
+}
+
 // timeline_setTrackName(trackId, name) — undo-tracked rename
 void Timeline_SetTrackName(const Napi::CallbackInfo& info)
 {
@@ -4995,9 +5150,14 @@ Napi::Value Timeline_AddTrack(const Napi::CallbackInfo& info)
     g_undoManager->execute(std::make_unique<AddTrackCommand>(t), *g_timeline);
     syncMixerTrackSlots(false);
 
-    // The newly added track always has the highest ID in the sorted map
+    // The newly added track always has the highest ID; getAllTracks() returns
+    // visible timeline order, so compute the max explicitly.
     auto tracks = g_timeline->getAllTracks();
-    int newId = tracks.empty() ? -1 : tracks.back()->id;
+    int newId = -1;
+    for (const auto* track : tracks) {
+        if (track)
+            newId = std::max(newId, track->id);
+    }
     log.done(std::to_string(newId));
     return Napi::Number::New(env, newId);
 }
@@ -5034,7 +5194,8 @@ void Timeline_RemoveTrack(const Napi::CallbackInfo& info)
 //                    regionOffsetTicks?, syllableIndex?, velocity?, pitchOffset?,
 //                    pitchOffsetCents?, reversed?, stretchRatio?, stretchMethod?, formantPreserve?,
 //                    fadeInPercent?, fadeOutPercent?, fadeInX1?, fadeInY1?, fadeInX2?, fadeInY2?,
-//                    fadeOutX1?, fadeOutY1?, fadeOutX2?, fadeOutY2? }) → id
+//                    fadeOutX1?, fadeOutY1?, fadeOutX2?, fadeOutY2?,
+//                    modulation? }) → id
 Napi::Value Timeline_AddClip(const Napi::CallbackInfo& info)
 {
     Napi::Env env = info.Env();
@@ -5102,6 +5263,15 @@ Napi::Value Timeline_AddClip(const Napi::CallbackInfo& info)
     if (o.Has("fadeOutY1") && o.Get("fadeOutY1").IsNumber()) clip.fadeOutY1 = o.Get("fadeOutY1").As<Napi::Number>().FloatValue();
     if (o.Has("fadeOutX2") && o.Get("fadeOutX2").IsNumber()) clip.fadeOutX2 = o.Get("fadeOutX2").As<Napi::Number>().FloatValue();
     if (o.Has("fadeOutY2") && o.Get("fadeOutY2").IsNumber()) clip.fadeOutY2 = o.Get("fadeOutY2").As<Napi::Number>().FloatValue();
+
+    // Clip modulation (Vibrato / Scratch / Video swirl-scratch) — optional.
+    // Carried by copy/paste & duplicate so those operations preserve Swirl and
+    // Scratch data. Parsed from a default-constructed base so any absent nested
+    // field falls back to the engine default rather than leaking another clip's
+    // state; a present `modulation` object round-trips clipModulationToJs.
+    if (o.Has("modulation") && o.Get("modulation").IsObject())
+        clip.modulation = jsToClipModulation(
+            o.Get("modulation").As<Napi::Object>(), ClipModulation{});
 
 #ifdef XLETH_DEBUG
     // Per-field "present/defaulted" map — reveals whether a missing JS key
@@ -5174,6 +5344,69 @@ Napi::Value Timeline_AddClip(const Napi::CallbackInfo& info)
 
     log.done(std::to_string(newId));
     return Napi::Number::New(env, newId);
+}
+
+// timeline_addClipsBatch([{ trackId, regionId, positionTicks, durationTicks,
+//                           regionOffsetTicks?, syllableIndex?, velocity? }, ...]) → [id, ...]
+// Inserts N clips as a single undoable command.
+Napi::Value Timeline_AddClipsBatch(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsArray()) {
+        Napi::TypeError::New(env, "timeline_addClipsBatch(clips: Array)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    BridgeCallLog log("timeline.addClipsBatch");
+
+    Napi::Array arr = info[0].As<Napi::Array>();
+    std::vector<Clip> clips;
+    clips.reserve(arr.Length());
+
+    for (uint32_t i = 0; i < arr.Length(); i++) {
+        if (!arr.Get(i).IsObject()) continue;
+        Napi::Object o = arr.Get(i).As<Napi::Object>();
+        Clip clip;
+        clip.trackId        = o.Get("trackId").As<Napi::Number>().Int32Value();
+        clip.regionId       = o.Get("regionId").As<Napi::Number>().Int32Value();
+        clip.position.ticks = static_cast<int64_t>(o.Get("positionTicks").As<Napi::Number>().DoubleValue());
+        clip.duration.ticks = static_cast<int64_t>(o.Get("durationTicks").As<Napi::Number>().DoubleValue());
+        if (o.Has("regionOffsetTicks") && o.Get("regionOffsetTicks").IsNumber())
+            clip.regionOffset.ticks = static_cast<int64_t>(o.Get("regionOffsetTicks").As<Napi::Number>().DoubleValue());
+        if (o.Has("syllableIndex") && o.Get("syllableIndex").IsNumber())
+            clip.syllableIndex = o.Get("syllableIndex").As<Napi::Number>().Int32Value();
+        if (o.Has("velocity") && o.Get("velocity").IsNumber())
+            clip.velocity = o.Get("velocity").As<Napi::Number>().FloatValue();
+        clips.push_back(std::move(clip));
+    }
+
+    if (clips.empty()) {
+        log.done("0");
+        return Napi::Array::New(env, 0);
+    }
+
+    auto cmd = std::make_unique<AddClipsBatchCommand>(clips);
+    AddClipsBatchCommand* cmdPtr = cmd.get();
+    g_undoManager->execute(std::move(cmd), *g_timeline);
+
+    const auto& ids = cmdPtr->getAssignedIds();
+    for (int id : ids) {
+        if (audioEngine && id >= 0)
+            audioEngine->getMixEngine().invalidateClipCache(id, "addClipsBatch");
+    }
+    if (!clips.empty())
+        maybeEnqueueRegionProxy(clips[0].regionId, clips[0].trackId);
+
+    Napi::Array result = Napi::Array::New(env, ids.size());
+    for (size_t i = 0; i < ids.size(); i++)
+        result.Set(static_cast<uint32_t>(i), Napi::Number::New(env, ids[i]));
+
+    log.done(std::to_string(ids.size()));
+    return result;
 }
 
 // timeline_removeClip(id)
@@ -12254,12 +12487,15 @@ Napi::Value Source_LoadSource(const Napi::CallbackInfo& info)
     BridgeCallLog log("source.loadSource");
 
     auto& sp = audioEngine->getSourcePlayer();
-    bool ok = sp.loadSource(path, audioEngine->getSampleRate());
+    const double sampleRate = audioEngine->getSampleRate();
+    bool skipped = sp.isCurrentSource(path, sampleRate);
+    bool ok = sp.loadSource(path, sampleRate);
 
     Napi::Object o = Napi::Object::New(env);
     o.Set("success",  Napi::Boolean::New(env, ok));
     o.Set("duration", Napi::Number::New(env, ok ? sp.getDuration() : 0.0));
-    log.done(ok ? "ok" : "failed");
+    o.Set("skipped",  Napi::Boolean::New(env, skipped && ok));
+    log.done(ok ? (skipped ? "skipped" : "ok") : "failed");
     return o;
 }
 
@@ -12275,6 +12511,43 @@ void Source_PlaySource(const Napi::CallbackInfo& info)
     if (info.Length() >= 1 && info[0].IsNumber())
         startTime = info[0].As<Napi::Number>().DoubleValue();
     audioEngine->getSourcePlayer().play(startTime);
+}
+
+// source_playRegionPreview(startTime, endTime)
+Napi::Value Source_PlayRegionPreview(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised()) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
+        Napi::TypeError::New(env, "source_playRegionPreview(startTime: number, endTime: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    const double startTime = info[0].As<Napi::Number>().DoubleValue();
+    const double endTime = info[1].As<Napi::Number>().DoubleValue();
+    if (!std::isfinite(startTime) || !std::isfinite(endTime)) {
+        Napi::RangeError::New(env, "startTime and endTime must be finite")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    BridgeCallLog log("source.playRegionPreview");
+    auto& sp = audioEngine->getSourcePlayer();
+    const uint64_t seq = sp.playRegionPreview(startTime, endTime);
+
+    Napi::Object o = Napi::Object::New(env);
+    o.Set("started", Napi::Boolean::New(env, seq != 0));
+    o.Set("seq", Napi::Number::New(env, static_cast<double>(seq)));
+    o.Set("duration", Napi::Number::New(env, std::max(0.0, endTime - startTime)));
+    if (seq == 0) {
+        o.Set("reason", Napi::String::New(env, sp.isLoaded() ? "invalidRange" : "notLoaded"));
+    }
+    log.done(seq != 0 ? "ok" : "ignored");
+    return o;
 }
 
 // source_pauseSource()
@@ -12421,6 +12694,93 @@ Napi::Value Video_GetFrame(const Napi::CallbackInfo& info)
     if (jpeg.empty()) return env.Null();
 
     return Napi::Buffer<uint8_t>::Copy(env, jpeg.data(), jpeg.size());
+}
+
+// video_requestPreviewFrameAtTimelinePosition({ beat } | { ticks } | { seconds })
+// Schedules one stopped-transport preview render at the requested project time.
+Napi::Value Video_RequestPreviewFrameAtTimelinePosition(const Napi::CallbackInfo& info)
+{
+    Napi::Env env = info.Env();
+    if (!isInitialised() || !audioEngine || !g_timeline) {
+        Napi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsObject()) {
+        Napi::TypeError::New(env,
+            "video_requestPreviewFrameAtTimelinePosition({ beat } | { ticks } | { seconds })")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    Napi::Object pos = info[0].As<Napi::Object>();
+    const bool hasBeat = pos.Has("beat") && pos.Get("beat").IsNumber();
+    const bool hasTicks = pos.Has("ticks") && pos.Get("ticks").IsNumber();
+    const bool hasSeconds = pos.Has("seconds") && pos.Get("seconds").IsNumber();
+    const int shapeCount = (hasBeat ? 1 : 0) + (hasTicks ? 1 : 0) + (hasSeconds ? 1 : 0);
+    if (shapeCount != 1) {
+        Napi::TypeError::New(env,
+            "preview position must contain exactly one numeric field: beat, ticks, or seconds")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    Transport& t = audioEngine->getTransport();
+    const int sampleRate = static_cast<int>(std::llround(t.getSampleRate()));
+    const double bpm = t.getBPM();
+    if (sampleRate <= 0 || bpm <= 0.0) {
+        Napi::RangeError::New(env, "invalid transport timing state").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    int64_t targetSample = 0;
+    const char* inputKind = "unknown";
+    if (hasBeat) {
+        const double beat = pos.Get("beat").As<Napi::Number>().DoubleValue();
+        if (!std::isfinite(beat)) {
+            Napi::RangeError::New(env, "beat must be finite").ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+        targetSample = RenderClock::beatToSample(beat, sampleRate, bpm);
+        inputKind = "beat";
+    } else if (hasTicks) {
+        const double ticksValue = pos.Get("ticks").As<Napi::Number>().DoubleValue();
+        if (!std::isfinite(ticksValue)) {
+            Napi::RangeError::New(env, "ticks must be finite").ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+        const int64_t ticks = static_cast<int64_t>(std::llround(std::max(0.0, ticksValue)));
+        targetSample = RenderClock::ppqToSample(ticks, sampleRate, bpm);
+        inputKind = "ticks";
+    } else {
+        const double seconds = pos.Get("seconds").As<Napi::Number>().DoubleValue();
+        if (!std::isfinite(seconds)) {
+            Napi::RangeError::New(env, "seconds must be finite").ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+        targetSample = RenderClock::secondsToSample(std::max(0.0, seconds), sampleRate);
+        inputKind = "seconds";
+    }
+    if (targetSample < 0) targetSample = 0;
+
+    const bool isPlaying = t.isPlaying();
+    uint64_t seq = g_latestStoppedPreviewSeq.load(std::memory_order_acquire);
+    if (!isPlaying) {
+        seq = g_latestStoppedPreviewSeq.fetch_add(1, std::memory_order_acq_rel) + 1;
+        g_pendingStoppedPreviewSample.store(targetSample, std::memory_order_release);
+        g_pendingStoppedPreviewSeq.store(seq, std::memory_order_release);
+        g_previewDirty.store(true, std::memory_order_release);
+    }
+
+    Napi::Object out = Napi::Object::New(env);
+    out.Set("accepted", Napi::Boolean::New(env, !isPlaying));
+    out.Set("isPlaying", Napi::Boolean::New(env, isPlaying));
+    out.Set("seq", Napi::Number::New(env, static_cast<double>(seq)));
+    out.Set("sample", Napi::Number::New(env, static_cast<double>(targetSample)));
+    out.Set("inputKind", Napi::String::New(env, inputKind));
+    out.Set("timingPath", Napi::String::New(env,
+        hasSeconds ? "RenderClock::secondsToSample -> FrameCollector::collectRequests(projectStartSample)"
+                   : "RenderClock::beatToSample/ppqToSample -> FrameCollector::collectRequests(projectStartSample)"));
+    return out;
 }
 
 // ── EQ-specific N-API functions ─────────────────────────────────────────────
@@ -13015,6 +13375,25 @@ Napi::Value Diag_GetVisualPreviewDiagnostic(const Napi::CallbackInfo& info)
           Napi::Number::New(env, g_previewResolutionScale));
     o.Set("previewEffectsBypass",
           Napi::Boolean::New(env, g_previewEffectsBypass));
+    {
+        Napi::Object stoppedPreview = Napi::Object::New(env);
+        stoppedPreview.Set("latestSeq",
+            Napi::Number::New(env, static_cast<double>(
+                g_latestStoppedPreviewSeq.load(std::memory_order_acquire))));
+        stoppedPreview.Set("pendingSeq",
+            Napi::Number::New(env, static_cast<double>(
+                g_pendingStoppedPreviewSeq.load(std::memory_order_acquire))));
+        stoppedPreview.Set("publishedSeq",
+            Napi::Number::New(env, static_cast<double>(
+                g_publishedStoppedPreviewSeq.load(std::memory_order_acquire))));
+        stoppedPreview.Set("discardedCount",
+            Napi::Number::New(env, static_cast<double>(
+                g_discardedStoppedPreviewSeq.load(std::memory_order_acquire))));
+        stoppedPreview.Set("pendingSample",
+            Napi::Number::New(env, static_cast<double>(
+                g_pendingStoppedPreviewSample.load(std::memory_order_acquire))));
+        o.Set("stoppedPreview", stoppedPreview);
+    }
 
     // ── Canvas / FrameOutput ─────────────────────────────────────────────────
     o.Set("canvasWidth",  Napi::Number::New(env, CANVAS_W));
@@ -13605,6 +13984,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("timeline_setTrackMuted",       Napi::Function::New(env, Timeline_SetTrackMuted));
     exports.Set("timeline_setTrackVisualOnly",  Napi::Function::New(env, Timeline_SetTrackVisualOnly));
     exports.Set("timeline_setTrackSolo",        Napi::Function::New(env, Timeline_SetTrackSolo));
+    exports.Set("timeline_setTrackOrder",       Napi::Function::New(env, Timeline_SetTrackOrder));
     exports.Set("timeline_setTrackOutputRoute", Napi::Function::New(env, Timeline_SetTrackOutputRoute));
     exports.Set("timeline_getRouting",          Napi::Function::New(env, Timeline_GetRouting));
     exports.Set("timeline_addSidechainRoute",       Napi::Function::New(env, Timeline_AddSidechainRoute));
@@ -13616,6 +13996,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("timeline_setPatternName",   Napi::Function::New(env, Timeline_SetPatternName));
     exports.Set("timeline_setPatternRegion", Napi::Function::New(env, Timeline_SetPatternRegion));
     exports.Set("timeline_addClip",          Napi::Function::New(env, Timeline_AddClip));
+    exports.Set("timeline_addClipsBatch",    Napi::Function::New(env, Timeline_AddClipsBatch));
     exports.Set("timeline_removeClip",       Napi::Function::New(env, Timeline_RemoveClip));
     exports.Set("timeline_setClipParams",    Napi::Function::New(env, Timeline_SetClipParams));
     exports.Set("timeline_setClipModulation",Napi::Function::New(env, Timeline_SetClipModulation));
@@ -13875,6 +14256,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     // ── Phase 1B — SourcePlayer (Sample Picker preview) ─────────────────────
     exports.Set("source_loadSource",   Napi::Function::New(env, Source_LoadSource));
     exports.Set("source_playSource",   Napi::Function::New(env, Source_PlaySource));
+    exports.Set("source_playRegionPreview", Napi::Function::New(env, Source_PlayRegionPreview));
     exports.Set("source_pauseSource",  Napi::Function::New(env, Source_PauseSource));
     exports.Set("source_resumeSource", Napi::Function::New(env, Source_ResumeSource));
     exports.Set("source_seekSource",   Napi::Function::New(env, Source_SeekSource));
@@ -13887,6 +14269,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("video_openSource",  Napi::Function::New(env, Video_OpenSource));
     exports.Set("video_closeSource", Napi::Function::New(env, Video_CloseSource));
     exports.Set("video_getFrame",    Napi::Function::New(env, Video_GetFrame));
+    exports.Set("video_requestPreviewFrameAtTimelinePosition",
+                Napi::Function::New(env, Video_RequestPreviewFrameAtTimelinePosition));
 
     // ── Waveform mipmap bindings ─────────────────────────────────────────────
     exports.Set("waveform_getRegionPeaks", Napi::Function::New(env, Waveform_GetRegionPeaks));

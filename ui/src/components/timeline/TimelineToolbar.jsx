@@ -27,6 +27,7 @@ export default function TimelineToolbar({
   onDeclickChange,
   onOpenQuantize,
   quantizeSelectionCount = 0,
+  onOpenQuickNotation,
 }) {
   const [showDisplayPopover, setShowDisplayPopover] = useState(false)
   const displayBtnRef = useRef(null)
@@ -123,6 +124,19 @@ export default function TimelineToolbar({
           </div>
         </>
       )}
+
+      {/* ── Quick Notation button ─────────────────────────────── */}
+      <div className="timeline-toolbar-sep" />
+      <button
+        className="timeline-syllable-btn"
+        onClick={() => onOpenQuickNotation?.()}
+        disabled={!syllableRegion || syllableRegion.label !== 'Quote' || selectableSyllables.length === 0}
+        title={syllableRegion?.label === 'Quote' && selectableSyllables.length > 0
+          ? 'Quick Notation — place clips by typing rhythm patterns'
+          : 'Quick Notation (select a Quote with syllables first)'}
+      >
+        QN
+      </button>
 
       {/* ── Separator ────────────────────────────────────────── */}
       <div className="timeline-toolbar-sep" />

@@ -438,6 +438,19 @@ private:
     bool newSolo_;
 };
 
+// ─── SetTrackOrderCommand ─────────────────────────────────────────────────────
+
+class SetTrackOrderCommand : public Command {
+public:
+    SetTrackOrderCommand(std::vector<int> trackIdsInOrder, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    std::vector<int>             trackIdsInOrder_;
+    std::unordered_map<int, int> oldOrdersByTrackId_;
+};
+
 // ─── SetTrackOutputRouteCommand ───────────────────────────────────────────────
 // Only created when the route is already validated (bridge validates first).
 // execute/undo directly set outputRoute.targetTrackId on the mutable track.

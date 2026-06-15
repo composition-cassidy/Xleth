@@ -10,7 +10,6 @@ import useSamplerPanelStore from './stores/samplerPanelStore.js'
 import SettingsPanel from './components/SettingsPanel.jsx'
 import MissingPluginsDialog from './components/MissingPluginsDialog.jsx'
 import DevThemeSwitcher from './components/debug/DevThemeSwitcher.jsx'
-import ThemeEditor from './theming/editor/ThemeEditor'
 import { ToastProvider, useToast } from './components/Toast.jsx'
 import { showUnsavedChangesDialog } from './components/UnsavedChangesDialog.jsx'
 import usePianoRollStore from './stores/usePianoRollStore.js'
@@ -18,6 +17,7 @@ import useWorldProcessingStore from './stores/worldProcessingStore.js'
 import AppShell from './windowing/AppShell.tsx'
 import XlethRootContext from './windowing/contexts/XlethRootContext.jsx'
 import { usePanelRegistry } from './windowing/registry/PanelRegistry'
+import { runEditorCommand } from './windowing/managers/EditorCommandRegistry'
 import { ElectronAdapter } from './windowing/managers/StatePersistence'
 import * as StatePersistence from './windowing/managers/StatePersistence'
 
@@ -27,6 +27,24 @@ const ZOOM_IN_LABEL = 'Zoom In'
 const ZOOM_OUT_LABEL = 'Zoom Out'
 const RESET_ZOOM_LABEL = 'Reset Zoom'
 export const ROOT_APP_SHELL_MODE = 'production'
+
+function sourceNameFromPath(filePath) {
+  return String(filePath || '').replace(/^.*[\\/]/, '') || 'source'
+}
+
+function assertImportedSourceId(sourceId) {
+  if (!Number.isFinite(sourceId) || sourceId < 0) {
+    throw new Error('Engine rejected the media file.')
+  }
+  return sourceId
+}
+
+export function getWorkspaceBackdropClassName(mode) {
+  if (mode === 'native-acrylic') return 'xleth-backdrop-native-acrylic'
+  if (mode === 'image') return 'xleth-backdrop-image'
+  if (mode === 'video') return 'xleth-backdrop-video'
+  return 'xleth-backdrop-off'
+}
 
 /**
  * Save the current project via Save / Save-As flow.
@@ -112,7 +130,7 @@ export async function handleXlethRootMenuAction(label, {
   setAllPatterns,
   setMissingPlugins,
   setShowSettings,
-  setShowThemeEditor,
+  setSettingsInitialCategory,
 } = {}) {
   switch (label) {
     case 'New Project': {
@@ -207,10 +225,20 @@ export async function handleXlethRootMenuAction(label, {
     case 'Import Source': {
       const files = await xl.project.openImportDialog()
       if (!files) return
+      let importedCount = 0
       for (const filePath of files) {
-        await xl.project.importSource(filePath)
+        try {
+          assertImportedSourceId(await xl.project.importSource(filePath))
+          importedCount += 1
+        } catch (e) {
+          const name = sourceNameFromPath(filePath)
+          console.error(`[ProjectMedia] Error importing ${name}:`, e)
+          showToast?.(`Import failed: ${name} (${e?.message || 'unknown error'})`, 'error')
+        }
       }
-      timelineEvents.dispatchEvent(new Event('timeline-sources-changed'))
+      if (importedCount > 0) {
+        timelineEvents.dispatchEvent(new Event('timeline-sources-changed'))
+      }
       break
     }
     case EXPORT_AUDIO_LABEL:
@@ -234,14 +262,19 @@ export async function handleXlethRootMenuAction(label, {
     case 'Redo':
       await xl.undo.redo()
       break
+    case 'Delete':
+      await runEditorCommand('deleteSelected')
+      break
     case 'Exit':
       xl.window.close()
       break
     case 'Settings':
+      setSettingsInitialCategory?.('project')
       setShowSettings?.(true)
       break
     case 'Theme Editor':
-      setShowThemeEditor?.(true)
+      setSettingsInitialCategory?.('theme-editor')
+      setShowSettings?.(true)
       break
     default:
       break
@@ -258,6 +291,16 @@ export default function XlethRoot() {
 
 function XlethRootInner() {
   const { showToast } = useToast()
+  const [workspaceBackdropMode, setWorkspaceBackdropMode] = useState(() => (
+    ['native-acrylic', 'image', 'video'].includes(window.xleth?.backdrop?.current?.mode)
+      ? window.xleth.backdrop.current.mode
+      : 'off'
+  ))
+  const [workspaceBackdropImageUrl, setWorkspaceBackdropImageUrl] = useState(() => (
+    window.xleth?.backdrop?.current?.mode === 'image'
+      ? window.xleth.backdrop.current.imageUrl || ''
+      : ''
+  ))
 
   // TODO: lift to Zustand in 6d. These root-owned UI selections still bridge
   // the production windowing wrappers with the legacy app components.
@@ -273,13 +316,29 @@ function XlethRootInner() {
   const [midiInitialPath, setMidiInitialPath] = useState(null)
   const [missingPlugins, setMissingPlugins] = useState(null)
   const [showSettings, setShowSettings] = useState(false)
-  const [showThemeEditor, setShowThemeEditor] = useState(false)
+  const [settingsInitialCategory, setSettingsInitialCategory] = useState('project')
 
   const pianoRollPatternId = usePianoRollStore((s) => s.patternId)
   const activeCenterTab = usePianoRollStore((s) => s.activeCenterTab)
 
   useEffect(() => {
     usePianoRollStore.getState().init()
+  }, [])
+
+  useEffect(() => {
+    const applyBackdropState = (state) => {
+      const mode = ['native-acrylic', 'image', 'video'].includes(state?.mode) ? state.mode : 'off'
+      setWorkspaceBackdropMode(mode)
+      setWorkspaceBackdropImageUrl(mode === 'image' ? state?.imageUrl || '' : '')
+      document.documentElement.setAttribute('data-xleth-backdrop', mode)
+    }
+
+    applyBackdropState(window.xleth?.backdrop?.current)
+    window.xleth?.backdrop?.getState?.()
+      .then(applyBackdropState)
+      .catch((e) => console.warn('[XlethRoot] backdrop state failed:', e?.message || e))
+
+    return window.xleth?.backdrop?.onModeChanged?.(applyBackdropState)
   }, [])
 
   useEffect(() => {
@@ -396,7 +455,7 @@ function XlethRootInner() {
       setAllPatterns,
       setMissingPlugins,
       setShowSettings,
-      setShowThemeEditor,
+      setSettingsInitialCategory,
     })
   }, [showToast])
 
@@ -460,7 +519,16 @@ function XlethRootInner() {
   }, [onOpenMidiImport])
 
   return (
-    <div className="app" onDragOver={handleAppDragOver} onDrop={handleAppDrop}>
+    <div
+      className={`app ${getWorkspaceBackdropClassName(workspaceBackdropMode)}`}
+      style={{
+        '--xleth-workspace-backdrop-image': workspaceBackdropImageUrl
+          ? `url("${workspaceBackdropImageUrl.replace(/"/g, '\\"')}")`
+          : 'none',
+      }}
+      onDragOver={handleAppDragOver}
+      onDrop={handleAppDrop}
+    >
       <TitleBar projectName={projectName} onAction={handleMenuAction} />
 
       <div className="app-body" style={{ position: 'relative' }}>
@@ -470,7 +538,7 @@ function XlethRootInner() {
 
         <div style={{ display: pickerSource ? 'none' : 'contents' }}>
           <XlethRootContext.Provider value={rootContextValue}>
-            <AppShell mode={ROOT_APP_SHELL_MODE} />
+            <AppShell mode={ROOT_APP_SHELL_MODE} backdropImageUrl={workspaceBackdropImageUrl} />
           </XlethRootContext.Provider>
         </div>
       </div>
@@ -490,16 +558,11 @@ function XlethRootInner() {
           onClose={() => setMissingPlugins(null)}
         />
       )}
-      {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
-      {showThemeEditor && <ThemeEditor onClose={() => setShowThemeEditor(false)} />}
-      {import.meta.env.DEV && (
-        <button
-          className="midi-debug-open-btn"
-          onClick={() => setMidiImportOpen(true)}
-          title="Debug: open MIDI Import dialog"
-        >
-          MIDI
-        </button>
+      {showSettings && (
+        <SettingsPanel
+          initialCategory={settingsInitialCategory}
+          onClose={() => setShowSettings(false)}
+        />
       )}
     </div>
   )

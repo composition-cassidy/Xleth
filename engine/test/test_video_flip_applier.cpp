@@ -164,6 +164,49 @@ static void testEveryNoteChordTriggers() {
     CHECK(events[3].globalNoteIndex == 3, "globalNoteIndex rewritten to ordinal 3");
 }
 
+static void testEveryNoteFourNoteStackTriggersEveryMember() {
+    std::cout << "[3b] EveryNote 4-note stack advances every member\n";
+
+    auto cfg = configEveryNoteStates(4);
+    std::vector<VideoEvent> events = {
+        makeEvent(0.0, 72),  // source order 20
+        makeEvent(0.0, 60),  // source order 21
+        makeEvent(0.0, 64),  // source order 22
+        makeEvent(0.0, 67),  // source order 23
+        makeEvent(1.0, 76),  // immediately after the stack
+    };
+
+    for (int i = 0; i < 4; ++i) {
+        events[static_cast<std::size_t>(i)].hasSourceTriggerOrder = true;
+        events[static_cast<std::size_t>(i)].sourceTriggerOrder = 20 + i;
+        events[static_cast<std::size_t>(i)].originalEmissionOrder = i;
+    }
+    events[4].hasSourceTriggerOrder = true;
+    events[4].sourceTriggerOrder = 24;
+    events[4].originalEmissionOrder = 4;
+
+    std::vector<VideoEvent*> ptrs;
+    for (auto& e : events) ptrs.push_back(&e);
+
+    videoFlipApplier::applyTrack(ptrs, cfg, kPPQ);
+
+    for (int i = 0; i < static_cast<int>(events.size()); ++i) {
+        const auto& ev = events[static_cast<std::size_t>(i)];
+        CHECK(ev.monoOrdinal == i,
+              "4-note stack: every note-on gets the next ordinal");
+        CHECK(ev.globalNoteIndex == i,
+              "4-note stack: globalNoteIndex mirrors the EveryNote ordinal");
+        CHECK(ev.stateIndex == (i % 4),
+              "4-note stack: stateIndex follows the next flipped state");
+        CHECK(ev.orientation == cfg.states[static_cast<std::size_t>(i % 4)].orientation,
+              "4-note stack: orientation follows stateIndex");
+    }
+    CHECK(events[3].stateIndex == 3,
+          "fourth simultaneous note lands on the fourth flipped state");
+    CHECK(events[4].stateIndex == 0,
+          "next note after the stack continues from the consumed chord count");
+}
+
 // ─── [4] Chord followed by single advances immediately ──────────────────────
 
 static void testSameTickUsesSourceOrderBeforePitch() {
@@ -435,6 +478,7 @@ int main() {
     testFirstMonoNoAdvance();
     testEveryNoteChordTriggers();
     testSameTickUsesSourceOrderBeforePitch();
+    testEveryNoteFourNoteStackTriggersEveryMember();
     testChordFollowedBySingle();
     testMonoBetweenChords();
     testChordBeforeAnyMono();

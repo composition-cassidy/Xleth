@@ -52,22 +52,28 @@ const emptySettings = {
 }
 
 // ── Layout primitives styled per mock ─────────────────────────────────────
+const SAMPLER_KNOB_APPEARANCE = {
+  tickStyle: 'none',
+  glyph: 'rotary-arrow',
+  accentGlow: true,
+}
+
+function SamplerKnob(props) {
+  return <Knob {...SAMPLER_KNOB_APPEARANCE} {...props} />
+}
+
 function Tabs({ tabs, active, onSelect, sm }) {
   return (
-    <div style={{ display: 'flex', borderBottom: '1px solid var(--theme-border-subtle)' }}>
+    <div className={`sampler-tabs${sm ? ' sampler-tabs--sm' : ''}`}>
       {tabs.map((t) => (
-        <div key={t.id} onClick={() => onSelect(t.id)} style={{
-          padding: sm ? '4px 10px' : '6px 14px',
-          fontSize: sm ? 10 : 11,
-          fontWeight: 600,
-          textTransform: 'uppercase',
-          letterSpacing: '0.07em',
-          color: active === t.id ? 'var(--theme-text)' : 'var(--theme-text-muted)',
-          borderBottom: active === t.id ? '2px solid var(--theme-accent)' : '2px solid transparent',
-          marginBottom: -1,
-          cursor: 'pointer',
-          userSelect: 'none',
-        }}>{t.label}</div>
+        <button
+          type="button"
+          key={t.id}
+          onClick={() => onSelect(t.id)}
+          className={`sampler-tab${active === t.id ? ' is-active' : ''}`}
+        >
+          {t.label}
+        </button>
       ))}
     </div>
   )
@@ -75,26 +81,16 @@ function Tabs({ tabs, active, onSelect, sm }) {
 
 function Seg({ opts, val, set, sm }) {
   return (
-    <div style={{
-      display: 'flex',
-      background: 'var(--theme-bg-primary)',
-      border: '1px solid var(--theme-border-strong)',
-      borderRadius: 3,
-      overflow: 'hidden',
-    }}>
+    <div className={`sampler-seg${sm ? ' sampler-seg--sm' : ''}`}>
       {opts.map((o) => (
-        <div key={o.v} onClick={() => set(o.v)} style={{
-          padding: sm ? '3px 7px' : '5px 12px',
-          fontSize: sm ? 9 : 10,
-          fontWeight: 700,
-          textTransform: 'uppercase',
-          letterSpacing: '0.05em',
-          background: val === o.v ? 'var(--theme-accent)' : 'transparent',
-          color: val === o.v ? 'var(--theme-text-on-accent)' : 'var(--theme-text-muted)',
-          cursor: 'pointer',
-          userSelect: 'none',
-          whiteSpace: 'nowrap',
-        }}>{o.l}</div>
+        <button
+          type="button"
+          key={o.v}
+          onClick={() => set(o.v)}
+          className={`sampler-seg-option${val === o.v ? ' is-active' : ''}`}
+        >
+          {o.l}
+        </button>
       ))}
     </div>
   )
@@ -102,33 +98,25 @@ function Seg({ opts, val, set, sm }) {
 
 function Pill({ label, on, toggle }) {
   return (
-    <div onClick={toggle} style={{
-      padding: '4px 10px',
-      fontSize: 10,
-      fontWeight: 600,
-      textTransform: 'uppercase',
-      letterSpacing: '0.04em',
-      border: `1px solid ${on ? 'var(--theme-accent)' : 'var(--theme-border-strong)'}`,
-      background: on ? 'var(--theme-bg-elevated)' : 'transparent',
-      color: on ? 'var(--theme-accent)' : 'var(--theme-text-muted)',
-      borderRadius: 3,
-      cursor: 'pointer',
-      userSelect: 'none',
-      whiteSpace: 'nowrap',
-    }}>{label}</div>
+    <button
+      type="button"
+      onClick={toggle}
+      className={`sampler-pill${on ? ' is-active' : ''}`}
+    >
+      {label}
+    </button>
   )
 }
 
 function Chk({ val, set, label }) {
   return (
-    <label style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', userSelect: 'none' }}>
+    <label className="sampler-check">
       <input
         type="checkbox"
         checked={!!val}
         onChange={(e) => set(e.target.checked)}
-        style={{ accentColor: 'var(--theme-accent)', cursor: 'pointer' }}
       />
-      <span style={{ fontSize: 9, color: 'var(--theme-text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</span>
+      <span>{label}</span>
     </label>
   )
 }
@@ -138,16 +126,7 @@ function Sel({ val, set, opts }) {
     <select
       value={val}
       onChange={(e) => set(e.target.value)}
-      style={{
-        background: 'var(--theme-bg-elevated)',
-        border: '1px solid var(--theme-border-strong)',
-        color: 'var(--theme-text)',
-        fontSize: 10,
-        padding: '3px 6px',
-        borderRadius: 3,
-        outline: 'none',
-        cursor: 'pointer',
-      }}
+      className="sampler-select"
     >
       {opts.map((o) => <option key={o} value={o}>{o}</option>)}
     </select>
@@ -156,16 +135,7 @@ function Sel({ val, set, opts }) {
 
 function SectionLabel({ children }) {
   return (
-    <div style={{
-      fontSize: 9,
-      color: 'var(--theme-text-muted)',
-      textTransform: 'uppercase',
-      letterSpacing: '0.1em',
-      fontWeight: 600,
-      borderTop: '1px solid var(--theme-border-subtle)',
-      paddingTop: 7,
-      marginBottom: 7,
-    }}>{children}</div>
+    <div className="sampler-section-label">{children}</div>
   )
 }
 
@@ -380,7 +350,7 @@ export default function SamplerPanelContent({ regionId, onClose }) {
 
   const numSamples = audioInfo?.numSamples || 0
   const sampleRate = audioInfo?.originalSampleRate || 48000
-  const accentPanel = tokenValue('--theme-panel-pianoroll')
+  const accentPanel = tokenValue('--theme-panel-mixer')
   const muted = 'var(--theme-text-muted)'
   const text = 'var(--theme-text)'
   const surface = 'var(--theme-bg-surface)'
@@ -390,8 +360,8 @@ export default function SamplerPanelContent({ regionId, onClose }) {
   const lblStyle = { fontSize: 9, color: muted, textTransform: 'uppercase', letterSpacing: '0.06em' }
 
   const renderSample = () => (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <div style={{ border: `1px solid ${borderStrong}`, borderRadius: 4, overflow: 'hidden' }}>
+    <div className="sampler-page sampler-page--sample">
+      <div className="sampler-waveform-well">
         <SamplerWaveform
           regionId={regionId}
           numSamples={numSamples}
@@ -412,8 +382,8 @@ export default function SamplerPanelContent({ regionId, onClose }) {
         />
       </div>
 
-      <div style={{ display: 'flex', justifyContent: 'space-around', padding: '0 8px', flexWrap: 'wrap', gap: 8 }}>
-        <Knob
+      <div className="sampler-control-rail sampler-control-rail--knobs">
+        <SamplerKnob
           label="SMP Start"
           value={settings.smpStart}
           min={0}
@@ -424,7 +394,7 @@ export default function SamplerPanelContent({ regionId, onClose }) {
           onLiveChange={(v) => setField('smpStart', Math.round(v))}
           onCommit={(v) => commit({ smpStart: Math.round(v) })}
         />
-        <Knob
+        <SamplerKnob
           label="Length"
           value={settings.smpLength === 0 ? numSamples : settings.smpLength}
           min={0}
@@ -445,7 +415,7 @@ export default function SamplerPanelContent({ regionId, onClose }) {
             commit({ smpLength: len >= numSamples ? 0 : len })
           }}
         />
-        <Knob
+        <SamplerKnob
           label="In"
           value={settings.fadeInMs}
           min={0} max={5000} defaultValue={0}
@@ -455,7 +425,7 @@ export default function SamplerPanelContent({ regionId, onClose }) {
           onLiveChange={(v) => setField('fadeInMs', Math.round(v))}
           onCommit={(v) => commit({ fadeInMs: Math.round(v) })}
         />
-        <Knob
+        <SamplerKnob
           label="Out"
           value={settings.fadeOutMs}
           min={0} max={5000} defaultValue={0}
@@ -465,7 +435,7 @@ export default function SamplerPanelContent({ regionId, onClose }) {
           onLiveChange={(v) => setField('fadeOutMs', Math.round(v))}
           onCommit={(v) => commit({ fadeOutMs: Math.round(v) })}
         />
-        <Knob
+        <SamplerKnob
           label="Declick"
           value={settings.declickMs}
           min={0} max={10} step={0.1} defaultValue={1.5}
@@ -475,7 +445,7 @@ export default function SamplerPanelContent({ regionId, onClose }) {
           onLiveChange={(v) => setField('declickMs', Math.round(v * 10) / 10)}
           onCommit={(v) => commit({ declickMs: Math.round(v * 10) / 10 })}
         />
-        <Knob
+        <SamplerKnob
           label="XFade"
           value={settings.crossfadeSamples}
           min={0} max={5000} defaultValue={0}
@@ -485,7 +455,7 @@ export default function SamplerPanelContent({ regionId, onClose }) {
           onLiveChange={(v) => setField('crossfadeSamples', Math.round(v))}
           onCommit={(v) => commit({ crossfadeSamples: Math.round(v) })}
         />
-        <Knob
+        <SamplerKnob
           label="Loop Start"
           value={settings.loopStart}
           min={0}
@@ -496,7 +466,7 @@ export default function SamplerPanelContent({ regionId, onClose }) {
           onLiveChange={(v) => setField('loopStart', Math.round(v))}
           onCommit={(v) => commit({ loopStart: Math.round(v) })}
         />
-        <Knob
+        <SamplerKnob
           label="Loop End"
           value={settings.loopEnd === 0 ? numSamples : settings.loopEnd}
           min={0}
@@ -519,7 +489,7 @@ export default function SamplerPanelContent({ regionId, onClose }) {
         />
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap', padding: '0 4px' }}>
+      <div className="sampler-control-rail sampler-control-rail--meta">
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={lblStyle}>Root Note</span>
           <RootNotePicker
@@ -549,9 +519,9 @@ export default function SamplerPanelContent({ regionId, onClose }) {
         <Chk val={settings.loopEnabled} set={(v) => commitField('loopEnabled', v)} label="Loop" />
       </div>
 
-      <div>
+      <div className="sampler-module sampler-module--effects">
         <SectionLabel>Precomputed Effects</SectionLabel>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        <div className="sampler-pill-row">
           <Pill label="Remove DC Offset" on={!!settings.dcOffsetRemoved}  toggle={() => commitField('dcOffsetRemoved', !settings.dcOffsetRemoved)} />
           <Pill label="Normalize"        on={!!settings.normalized}       toggle={() => commitField('normalized', !settings.normalized)} />
           <Pill label="Reverse Polarity" on={!!settings.polarityReversed} toggle={() => commitField('polarityReversed', !settings.polarityReversed)} />
@@ -570,11 +540,11 @@ export default function SamplerPanelContent({ regionId, onClose }) {
     const dimmed = isPitch && !settings.pitchEnvEnabled
 
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div className="sampler-env-body">
         {isPitch && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          <div className="sampler-control-rail sampler-control-rail--compact">
             <Chk val={settings.pitchEnvEnabled} set={(v) => commitField('pitchEnvEnabled', v)} label="Enable" />
-            <Knob
+            <SamplerKnob
               label="Amount"
               value={settings.pitchEnvAmount}
               min={-48} max={48} defaultValue={0}
@@ -588,9 +558,9 @@ export default function SamplerPanelContent({ regionId, onClose }) {
           </div>
         )}
 
-        <div style={dimmed ? { opacity: 0.4, pointerEvents: 'none' } : undefined}>
-          <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
-            <div style={{ flex: 1, border: `1px solid ${border}`, borderRadius: 3, overflow: 'hidden' }}>
+        <div className={dimmed ? 'sampler-dimmed' : undefined}>
+          <div className="sampler-env-grid">
+            <div className="sampler-graph-well">
               <EnvelopeEditor
                 delayMs={settings[f('delayMs')]}
                 attackMs={settings[f('attackMs')]}
@@ -618,48 +588,48 @@ export default function SamplerPanelContent({ regionId, onClose }) {
               />
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <div style={{ display: 'flex', gap: 5 }}>
-                <Knob label="DEL" value={settings[f('delayMs')]} min={0} max={5000} defaultValue={0}
+            <div className="sampler-knob-bank">
+              <div className="sampler-knob-row">
+                <SamplerKnob label="DEL" value={settings[f('delayMs')]} min={0} max={5000} defaultValue={0}
                   size={36} color={envColor} formatValue={(v) => `${Math.round(v)}`}
                   onLiveChange={(v) => setField(f('delayMs'), Math.round(v))}
                   onCommit={(v) => commit({ [f('delayMs')]: Math.round(v) })} />
-                <Knob label="ATK" value={settings[f('attackMs')]} min={0} max={5000} defaultValue={0}
+                <SamplerKnob label="ATK" value={settings[f('attackMs')]} min={0} max={5000} defaultValue={0}
                   size={36} color={envColor} formatValue={(v) => `${Math.round(v)}`}
                   onLiveChange={(v) => setField(f('attackMs'), Math.round(v))}
                   onCommit={(v) => commit({ [f('attackMs')]: Math.round(v) })} />
-                <Knob label="HLD" value={settings[f('holdMs')]} min={0} max={5000} defaultValue={0}
+                <SamplerKnob label="HLD" value={settings[f('holdMs')]} min={0} max={5000} defaultValue={0}
                   size={36} color={envColor} formatValue={(v) => `${Math.round(v)}`}
                   onLiveChange={(v) => setField(f('holdMs'), Math.round(v))}
                   onCommit={(v) => commit({ [f('holdMs')]: Math.round(v) })} />
-                <Knob label="DEC" value={settings[f('decayMs')]} min={0} max={5000} defaultValue={0}
+                <SamplerKnob label="DEC" value={settings[f('decayMs')]} min={0} max={5000} defaultValue={0}
                   size={36} color={envColor} formatValue={(v) => `${Math.round(v)}`}
                   onLiveChange={(v) => setField(f('decayMs'), Math.round(v))}
                   onCommit={(v) => commit({ [f('decayMs')]: Math.round(v) })} />
-                <Knob label="SUS" value={settings[f('sustain')] * 100} min={0} max={100}
+                <SamplerKnob label="SUS" value={settings[f('sustain')] * 100} min={0} max={100}
                   defaultValue={isPitch ? 0 : 100}
                   size={36} color={envColor} formatValue={(v) => `${Math.round(v)}%`}
                   onLiveChange={(v) => setField(f('sustain'), Math.round(v) / 100)}
                   onCommit={(v) => commit({ [f('sustain')]: Math.round(v) / 100 })} />
-                <Knob label="REL" value={settings[f('releaseMs')]} min={0} max={5000}
+                <SamplerKnob label="REL" value={settings[f('releaseMs')]} min={0} max={5000}
                   defaultValue={isPitch ? 0 : 50}
                   size={36} color={envColor} formatValue={(v) => `${Math.round(v)}`}
                   onLiveChange={(v) => setField(f('releaseMs'), Math.round(v))}
                   onCommit={(v) => commit({ [f('releaseMs')]: Math.round(v) })} />
               </div>
 
-              <div style={{ display: 'flex', gap: 5, alignItems: 'flex-end' }}>
-                <Knob label="ATK T" value={settings[f('attackTension')]} min={-1} max={1} defaultValue={0}
+              <div className="sampler-knob-row sampler-knob-row--tension">
+                <SamplerKnob label="ATK T" value={settings[f('attackTension')]} min={-1} max={1} defaultValue={0}
                   size={28} dragRange={120} color={'var(--theme-accent)'} capStyle='soft-disk'
                   formatValue={(v) => v.toFixed(2)}
                   onLiveChange={(v) => setField(f('attackTension'), Number(v.toFixed(3)))}
                   onCommit={(v) => commit({ [f('attackTension')]: Number(v.toFixed(3)) })} />
-                <Knob label="DEC T" value={settings[f('decayTension')]} min={-1} max={1} defaultValue={0}
+                <SamplerKnob label="DEC T" value={settings[f('decayTension')]} min={-1} max={1} defaultValue={0}
                   size={28} dragRange={120} color={'var(--theme-accent)'} capStyle='soft-disk'
                   formatValue={(v) => v.toFixed(2)}
                   onLiveChange={(v) => setField(f('decayTension'), Number(v.toFixed(3)))}
                   onCommit={(v) => commit({ [f('decayTension')]: Number(v.toFixed(3)) })} />
-                <Knob label="REL T" value={settings[f('releaseTension')]} min={-1} max={1} defaultValue={0}
+                <SamplerKnob label="REL T" value={settings[f('releaseTension')]} min={-1} max={1} defaultValue={0}
                   size={28} dragRange={120} color={'var(--theme-accent)'} capStyle='soft-disk'
                   formatValue={(v) => v.toFixed(2)}
                   onLiveChange={(v) => setField(f('releaseTension'), Number(v.toFixed(3)))}
@@ -673,7 +643,7 @@ export default function SamplerPanelContent({ regionId, onClose }) {
 
           {/* Embedded LFO sub-section — only relevant under Env tab */}
           {!isPitch && (
-            <div style={{ marginTop: 14 }}>
+            <div className="sampler-lfo-wrap">
               <SectionLabel>LFO</SectionLabel>
               <LfoSection settings={settings} setField={setField} setFields={setFields} commit={commit} />
             </div>
@@ -687,22 +657,16 @@ export default function SamplerPanelContent({ regionId, onClose }) {
     const arpDirIdx = Math.max(0, Math.min(3, settings.arpDirection ?? 0))
     const arpDirId = ARP_DIRS[arpDirIdx]
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <div style={{ display: 'flex', gap: 12 }}>
+      <div className="sampler-page sampler-page--playback">
+        <div className="sampler-playback-grid">
           {/* Voice + Portamento */}
-          <div style={{
-            background: surface,
-            border: `1px solid ${borderStrong}`,
-            borderRadius: 4,
-            padding: 12,
-            display: 'flex', flexDirection: 'column', gap: 12, alignItems: 'center', minWidth: 148,
-          }}>
+          <div className="sampler-module sampler-voice-module" style={{ minWidth: 148 }}>
             <Seg
               opts={[{ v: 'mono', l: 'Mono' }, { v: 'poly', l: 'Poly' }]}
               val={settings.monoEnabled ? 'mono' : 'poly'}
               set={(v) => commitField('monoEnabled', v === 'mono')}
             />
-            <Knob
+            <SamplerKnob
               value={settings.portamentoTimeMs}
               min={0} max={2000} defaultValue={0}
               size={48}
@@ -721,13 +685,7 @@ export default function SamplerPanelContent({ regionId, onClose }) {
           </div>
 
           {/* Arpeggiator */}
-          <div style={{
-            background: surface,
-            border: `1px solid ${borderStrong}`,
-            borderRadius: 4,
-            padding: 12,
-            flex: 1,
-          }}>
+          <div className="sampler-module sampler-arp-module">
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
               <span style={{ fontSize: 10, fontWeight: 700, color: text, textTransform: 'uppercase', letterSpacing: '0.1em' }}>
                 Arpeggiator
@@ -739,11 +697,7 @@ export default function SamplerPanelContent({ regionId, onClose }) {
                 style={{ accentColor: 'var(--theme-accent)', cursor: 'pointer' }}
               />
             </div>
-            <div style={{
-              opacity: settings.arpEnabled ? 1 : 0.3,
-              pointerEvents: settings.arpEnabled ? 'auto' : 'none',
-              display: 'flex', flexDirection: 'column', gap: 8,
-            }}>
+            <div className={settings.arpEnabled ? 'sampler-arp-controls' : 'sampler-arp-controls sampler-dimmed'}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span style={{ ...lblStyle, width: 62 }}>Range</span>
                 <Seg
@@ -788,7 +742,7 @@ export default function SamplerPanelContent({ regionId, onClose }) {
                     opts={TDIVS}
                   />
                 ) : (
-                  <Knob
+                  <SamplerKnob
                     value={settings.arpFreeTimeMs}
                     min={10} max={2000} defaultValue={125}
                     size={28}
@@ -800,7 +754,7 @@ export default function SamplerPanelContent({ regionId, onClose }) {
                   />
                 )}
                 <Chk val={settings.arpTempoSync} set={(v) => commitField('arpTempoSync', v)} label="Tempo Sync" />
-                <Knob
+                <SamplerKnob
                   label="Gate"
                   value={settings.arpGate * 100}
                   min={1} max={100} defaultValue={80}
@@ -817,12 +771,7 @@ export default function SamplerPanelContent({ regionId, onClose }) {
         </div>
 
         {/* Envelope + LFO card */}
-        <div style={{
-          background: surface,
-          border: `1px solid ${borderStrong}`,
-          borderRadius: 4,
-          padding: 12,
-        }}>
+        <div className="sampler-module sampler-env-module">
           <Tabs
             tabs={[{ id: 'env', label: 'Env' }, { id: 'pitch', label: 'Pitch' }]}
             active={envTab}
@@ -838,45 +787,19 @@ export default function SamplerPanelContent({ regionId, onClose }) {
   }
 
   return (
-    <div style={{
-      flex: '1 1 auto',
-      overflow: 'auto',
-      background: 'var(--theme-bg-primary)',
-      color: text,
-      fontFamily: "'Segoe UI', system-ui, sans-serif",
-    }}>
-      <div style={{
-        background: surface,
-        border: `1px solid ${borderStrong}`,
-        borderRadius: 6,
-        overflow: 'hidden',
-        margin: 12,
-      }}>
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          padding: '7px 12px',
-          background: card,
-          borderBottom: `1px solid ${border}`,
-        }}>
-          <div style={{ width: 3, height: 14, background: accentPanel, borderRadius: 2 }} />
-          <span style={{
-            fontSize: 10,
-            fontWeight: 700,
-            letterSpacing: '0.14em',
-            textTransform: 'uppercase',
-            color: muted,
-          }}>Xleth Sampler{region?.name ? ` — ${region.name}` : ''}</span>
-        </div>
-        <div style={{ padding: '0 12px', background: card, borderBottom: `1px solid ${border}` }}>
+    <div className="sampler-panel-body">
+      <div className="sampler-panel-tabbar">
+        <div className="sampler-panel-tabs">
           <Tabs
             tabs={[{ id: 'sample', label: 'Sample' }, { id: 'playback', label: 'Playback' }]}
             active={tab}
             onSelect={setTab}
           />
         </div>
-        <div style={{ padding: 12 }}>
+        <span className="sampler-panel-region-label">{region?.name || 'No sample selected'}</span>
+      </div>
+      <div className="sampler-panel-scroll">
+        <div className="sampler-panel-content">
           {tab === 'sample' ? renderSample() : renderPlayback()}
         </div>
       </div>

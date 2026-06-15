@@ -5,11 +5,20 @@ import PickerVideoPreview from './PickerVideoPreview.jsx'
 import WaveformScrubber from './WaveformScrubber.jsx'
 import ControlsRow from './ControlsRow.jsx'
 import MarkedSamplesList from './MarkedSamplesList.jsx'
-import SyllableSplitter from '../SyllableSplitter/SyllableSplitter.jsx'
+import { normalizeSelection } from './selection.js'
+import useSplitSyllablesPanelStore from '../../stores/splitSyllablesPanelStore.js'
+import { usePanelRegistry } from '../../windowing/registry/PanelRegistry.ts'
 
 import {
   DEFAULT_LABELS, loadCustomLabels, saveCustomLabels
 } from '../../constants/labels.js'
+
+function isPickerShortcutTarget(target) {
+  if (!target || typeof target.closest !== 'function') return false
+  return Boolean(target.closest(
+    'input, textarea, select, button, [contenteditable="true"], .xleth-select-popup'
+  ))
+}
 
 // Count how many saved samples share the given label
 function nextLabelIndex(samples, label) {
@@ -47,6 +56,7 @@ export default function SamplePicker({ source, onClose }) {
   const currentTimeRef = useRef(0)   // mirror of currentTime for stable closures
   const [playing,     setPlaying]     = useState(false)
   const playingRef = useRef(false)   // mirror of playing for stable closures
+  const playbackStopTimeRef = useRef(null)
   const [sourceDuration, setSourceDuration] = useState(0) // duration from engine loadSource
 
   // ── Selection state ─────────────────────────────────────────────────────────
@@ -144,9 +154,23 @@ export default function SamplePicker({ source, onClose }) {
             currentTimeRef.current = pos
             setCurrentTime(pos)
 
+            const stopTime = playbackStopTimeRef.current
+            if (stopTime !== null && pos >= stopTime - 0.005) {
+              playbackStopTimeRef.current = null
+              window.xleth?.audio?.pauseSource().catch(() => {})
+              window.xleth?.audio?.seekSource(stopTime).catch(() => {})
+              currentTimeRef.current = stopTime
+              setCurrentTime(stopTime)
+              playingRef.current = false
+              setPlaying(false)
+              console.log(`[SamplePicker] Selection playback ended at ${stopTime.toFixed(3)}s`)
+              return
+            }
+
             // Check if engine stopped playing (reached end of buffer)
             const stillPlaying = await window.xleth?.audio?.isSourcePlaying()
             if (!stillPlaying && playingRef.current) {
+              playbackStopTimeRef.current = null
               playingRef.current = false
               setPlaying(false)
               console.log(`[SamplePicker] Playback ended at ${pos.toFixed(3)}s`)
@@ -219,24 +243,28 @@ export default function SamplePicker({ source, onClose }) {
     if (playingRef.current) {
       // Pause — engine remembers position
       window.xleth?.audio?.pauseSource().catch(() => {})
+      playbackStopTimeRef.current = null
       playingRef.current = false
       setPlaying(false)
       console.log(`[SamplePicker] Pause at ${currentTimeRef.current.toFixed(3)}s`)
       return
     }
 
-    // Play from in-point or current position
-    const start = inPoint ?? currentTimeRef.current ?? 0
+    const selection = normalizeSelection(inPoint, outPoint)
+    const start = selection?.start ?? currentTimeRef.current ?? 0
+    playbackStopTimeRef.current = selection?.end ?? null
+
     console.log(
       `[SamplePicker] Play from ${start.toFixed(3)}s, ` +
-      `duration=${duration.toFixed(3)}s`
+      `duration=${duration.toFixed(3)}s` +
+      (selection ? `, stop=${selection.end.toFixed(3)}s` : '')
     )
     window.xleth?.audio?.playSource(start).catch(e =>
       console.error('[SamplePicker] playSource error:', e)
     )
     playingRef.current = true
     setPlaying(true)
-  }, [inPoint, duration])
+  }, [inPoint, outPoint, duration])
 
   // Stable ref so the keydown effect doesn't re-register on every inPoint/duration change
   const handlePlaySelectionRef = useRef(handlePlaySelection)
@@ -245,10 +273,9 @@ export default function SamplePicker({ source, onClose }) {
   // ── Add sample ─────────────────────────────────────────────────────────────
   const handleAddSample = useCallback(async () => {
     if (isAddingRef.current) return          // block overlapping invocations
-    if (inPoint === null || outPoint === null) return
-    const start = Math.min(inPoint, outPoint)
-    const end   = Math.max(inPoint, outPoint)
-    if (end - start < 0.01) return  // degenerate selection
+    const selection = normalizeSelection(inPoint, outPoint)
+    if (!selection) return
+    const { start, end } = selection
 
     isAddingRef.current = true
     let didIncrementPending = false
@@ -383,20 +410,19 @@ export default function SamplePicker({ source, onClose }) {
     setLabel(trimmed)
   }, [])
 
-  // ── Syllable editing (inline for selected Quote region) ───────────────────
-  const selectedSample = samples.find(s => s.id === selectedId) || null
-  const handleSaveSyllables = useCallback(async (syllables) => {
-    if (!selectedId) return
-    try {
-      await window.xleth?.timeline?.setSyllables(selectedId, syllables)
-      // Reflect locally so the splitter's initial state stays in sync
-      setSamples(prev => prev.map(s => s.id === selectedId ? { ...s, syllables } : s))
-      timelineEvents.dispatchEvent(new Event('timeline-regions-changed'))
-      console.log(`[SamplePicker] Saved ${syllables.length} syllable(s) for region ${selectedId}`)
-    } catch (e) {
-      console.error('[SamplePicker] setSyllables failed:', e)
-    }
-  }, [selectedId])
+  // ── Open the Split Syllables floating panel for a marked sample ────────────
+  // The panel owns its own marker/waveform state (keepAliveWhenHidden), so the
+  // picker only hands it the target region + source context and asks the
+  // windowing system to surface it.
+  const handleOpenSplitter = useCallback((sample) => {
+    useSplitSyllablesPanelStore.getState().setSplitTarget({
+      region: sample,
+      sourceFilePath: source.filePath,
+      sourceWaveform: waveformData,
+    })
+    usePanelRegistry.getState().openPanel('splitSyllables')
+    console.log(`[SamplePicker] Opened Split Syllables for "${sample.name}"`)
+  }, [source.filePath, waveformData])
 
   // ── Keyboard shortcuts (capture phase overrides TransportBar) ──────────────
   // handlePlaySelectionRef used instead of handlePlaySelection directly so this
@@ -404,8 +430,7 @@ export default function SamplePicker({ source, onClose }) {
   // not on every inPoint/duration change that recreates handlePlaySelection.
   useEffect(() => {
     const handler = (e) => {
-      const tag = e.target?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      if (isPickerShortcutTarget(e.target)) return
 
       if (e.key === 'i' || e.key === 'I') {
         e.stopImmediatePropagation()
@@ -428,6 +453,10 @@ export default function SamplePicker({ source, onClose }) {
 
   // ── Render ─────────────────────────────────────────────────────────────────
   const allLabels = [...DEFAULT_LABELS, ...customLabels]
+  const sourceMeta = [
+    source.width && source.height ? `${source.width}x${source.height}` : null,
+    source.fps ? `${Math.round(source.fps)}fps` : null,
+  ].filter(Boolean).join(' - ')
 
   return (
     <div className="sample-picker">
@@ -440,90 +469,85 @@ export default function SamplePicker({ source, onClose }) {
         <span className="sample-picker-source-name" title={source.filePath}>
           {source.name}
         </span>
-        {source.width && (
+        {sourceMeta && (
           <span className="sample-picker-source-meta">
-            {source.width}×{source.height} · {Math.round(source.fps || 0)}fps
+            {sourceMeta}
           </span>
         )}
       </div>
 
-      {/* ── Video preview ──────────────────────────────────────────────── */}
-      {source.hasVideo !== false && (
-        <PickerVideoPreview
-          filePath={source.filePath}
-          currentTime={currentTime}
-          isPlaying={playing}
-        />
-      )}
+      <div className="sample-picker-workspace">
+        <div className="sample-picker-main">
+          <div className="sample-picker-preview-stack">
+            {source.hasVideo !== false ? (
+              <PickerVideoPreview
+                filePath={source.filePath}
+                currentTime={currentTime}
+                isPlaying={playing}
+                sourceWidth={source.width}
+                sourceHeight={source.height}
+              />
+            ) : (
+              <div className="picker-video-preview picker-video-preview--audio-only">
+                <div className="picker-video-placeholder">
+                  <span>Audio source</span>
+                </div>
+              </div>
+            )}
 
-      {/* ── Waveform + scrubber ────────────────────────────────────────── */}
-      <WaveformScrubber
-        filePath={source.filePath}
-        waveformData={waveformData}
-        waveformError={waveformError}
-        duration={duration}
-        currentTime={currentTime}
-        inPoint={inPoint}
-        outPoint={outPoint}
-        onSeek={handleSeek}
-        onInChange={setInPoint}
-        onOutChange={setOutPoint}
-      />
+            <WaveformScrubber
+              filePath={source.filePath}
+              waveformData={waveformData}
+              waveformError={waveformError}
+              duration={duration}
+              currentTime={currentTime}
+              inPoint={inPoint}
+              outPoint={outPoint}
+              onSeek={handleSeek}
+              onInChange={setInPoint}
+              onOutChange={setOutPoint}
+            />
+          </div>
 
-      {/* ── Controls row ───────────────────────────────────────────────── */}
-      <ControlsRow
-        playing={playing}
-        label={label}
-        sampleName={sampleName}
-        inPoint={inPoint}
-        outPoint={outPoint}
-        duration={duration}
-        allLabels={allLabels}
-        onPlaySelection={handlePlaySelection}
-        onSetIn={handleSetIn}
-        onSetOut={handleSetOut}
-        onLabelChange={handleLabelChange}
-        onNameChange={handleNameChange}
-        onAddSample={handleAddSample}
-        onAddCustomLabel={handleAddCustomLabel}
-      />
+          <div className="sample-picker-control-strip">
+            <ControlsRow
+              playing={playing}
+              label={label}
+              sampleName={sampleName}
+              currentTime={currentTime}
+              inPoint={inPoint}
+              outPoint={outPoint}
+              duration={duration}
+              allLabels={allLabels}
+              onPlaySelection={handlePlaySelection}
+              onSetIn={handleSetIn}
+              onSetOut={handleSetOut}
+              onLabelChange={handleLabelChange}
+              onNameChange={handleNameChange}
+              onAddSample={handleAddSample}
+              onAddCustomLabel={handleAddCustomLabel}
+            />
 
-      {/* ── Add-sample error (duplicate name) ─────────────────────────── */}
-      {addSampleError && (
-        <div
-          className="picker-name-error"
-          role="alert"
-          style={{
-            color: 'var(--theme-semantic-danger-text)',
-            background: 'var(--theme-semantic-danger-bg-subtle)',
-            padding: '6px 12px',
-            margin: '4px 12px',
-            borderRadius: '4px',
-            fontSize: '12px',
-          }}
-        >
-          {addSampleError}
+            {addSampleError && (
+              <div className="picker-name-error" role="alert">
+                {addSampleError}
+              </div>
+            )}
+          </div>
         </div>
-      )}
 
-      {/* ── Syllable splitter (only when a Quote is selected) ──────────── */}
-      {selectedSample && selectedSample.label === 'Quote' && (
-        <SyllableSplitter
-          region={selectedSample}
-          sourceFilePath={source.filePath}
-          sourceWaveform={waveformData}
-          onSave={handleSaveSyllables}
-          compact
-        />
-      )}
-
-      {/* ── Marked samples list ────────────────────────────────────────── */}
-      <MarkedSamplesList
-        samples={samples}
-        selectedId={selectedId}
-        onSelect={handleSelectSample}
-        onDelete={handleDeleteSample}
-      />
+        <aside className="sample-picker-rail" aria-label="Marked samples">
+          {/* Splitting syllables now opens a dedicated floating panel via the
+              scissors button on each Quote row (see onSplit). */}
+          <MarkedSamplesList
+            samples={samples}
+            selectedId={selectedId}
+            onSelect={handleSelectSample}
+            onDelete={handleDeleteSample}
+            onSplit={handleOpenSplitter}
+          />
+        </aside>
+      </div>
     </div>
   )
 }

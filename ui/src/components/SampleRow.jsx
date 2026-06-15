@@ -125,7 +125,7 @@ export default function SampleRow({
     el.style.cssText = `
       position: absolute; top: -1000px; left: -1000px;
       padding: 4px 10px; border-radius: 4px; font-size: 12px;
-      font-family: "Hanken Grotesk", system-ui; font-weight: 600;
+      font-family: var(--xleth-global-font-family); font-weight: 600;
       background: ${getComputedLabelColor(region.label)}; color: #000;
       white-space: nowrap;
     `

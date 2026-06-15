@@ -1,6 +1,7 @@
 import { TRACK_HEIGHT, PPQ, pixelToBeat, snapBeatToGrid, beatsToTicks, findFreePosition } from '../../../constants/timeline.js'
 import { labelHexColor } from '../../../constants/labels.js'
 import { drawGhostPreview } from '../timelineDrawing.js'
+import { createSelectTool } from './selectTool.js'
 
 /**
  * Pencil tool — click to draw clips at the active sample's color/label.
@@ -8,11 +9,11 @@ import { drawGhostPreview } from '../timelineDrawing.js'
  */
 export function createPencilTool(deps) {
   const {
-    clipsRef, tracksRef, regionsRef, selectedRef,
+    clipsRef, tracksRef, regionsRef,
     pixelsPerBeatRef, scrollOffsetRef,
     activeSampleIdRef, stickyNoteLengthRef, pencilTemplateRef,
     snapGranularityRef,
-    onCreateClip, onDeleteClip, setSelectedClipIds, setStickyNoteLength,
+    onCreateClip, onDeleteClip, setStickyNoteLength,
     redrawOverlay,
     // Pattern block deps
     patternBlocksRef, patternsRef, currentPatternIdByTrackRef,
@@ -20,6 +21,8 @@ export function createPencilTool(deps) {
     // FXG.4-h-r1: row layout so lane bands resolve to their parent track.
     trackLayoutRef,
   } = deps
+
+  const selectTool = createSelectTool({ ...deps, allowUnselectedEdgeResize: true })
 
   // Resolve a Y to a track index via the row layout when present (lane bands map
   // to their parent track — child lanes never accept drawn audio/pattern clips).
@@ -30,6 +33,7 @@ export function createPencilTool(deps) {
   }
 
   let ghost = null // { beat, trackIndex, durationBeats, color, name }
+  let delegatedToSelect = false
 
   function hitTestClip(beat, trackIndex) {
     const clips = clipsRef.current
@@ -78,9 +82,11 @@ export function createPencilTool(deps) {
 
       // ── Pattern track branch ────────────────────────────────────────────
       if (track?.type === 'Pattern' && e.button === 0) {
-        const hitBlock = hitTestPatternBlock(snappedBeat, trackIndex)
+        const hitBlock = hitTestPatternBlock(beat, trackIndex)
         if (hitBlock) {
-          // No-op on click; block selection belongs to select tool
+          ghost = null
+          delegatedToSelect = true
+          selectTool.onMouseDown(localX, localY, e)
           return
         }
         const patternId = currentPatternIdByTrackRef?.current?.[track.id]
@@ -96,15 +102,17 @@ export function createPencilTool(deps) {
         return
       }
 
-      const hitClip = hitTestClip(snappedBeat, trackIndex)
+      const hitClip = hitTestClip(beat, trackIndex)
 
       if (e.button === 0) {
         // Left click
         if (hitClip) {
-          // Click existing clip → select it, update sticky length
-          setSelectedClipIds(new Set([hitClip.id]))
+          // Existing clips use select-tool behavior: select, move, trim, or
+          // Shift+edge stretch. Pencil only draws when the pointer starts empty.
           setStickyNoteLength(hitClip.durationTicks)
-          console.log(`[PencilTool] Clicked clip ${hitClip.id}, sticky length → ${hitClip.durationTicks}t`)
+          ghost = null
+          delegatedToSelect = true
+          selectTool.onMouseDown(localX, localY, e)
         } else {
           // Click empty → create clip (slide past any overlap on this track)
           const template = pencilTemplateRef?.current
@@ -137,6 +145,11 @@ export function createPencilTool(deps) {
     },
 
     onMouseMove(localX, localY, e) {
+      if (delegatedToSelect) {
+        selectTool.onMouseMove(localX, localY, e)
+        return
+      }
+
       const beat = pixelToBeat(localX, scrollOffsetRef.current, pixelsPerBeatRef.current)
       const trackIndex = idxAtY(localY)
       const tracks = tracksRef.current
@@ -149,6 +162,19 @@ export function createPencilTool(deps) {
 
       const modifiers = { alt: e.altKey, shift: e.shiftKey, ctrl: e.ctrlKey }
       const snappedBeat = snapBeatToGrid(Math.max(0, beat), modifiers, snapGranularityRef?.current)
+      const track = tracks[trackIndex]
+      const hoveringExisting = track?.type === 'Pattern'
+        ? hitTestPatternBlock(beat, trackIndex)
+        : hitTestClip(beat, trackIndex)
+
+      selectTool.onMouseMove(localX, localY, e)
+
+      if (hoveringExisting) {
+        ghost = null
+        redrawOverlay()
+        return
+      }
+
       const template = pencilTemplateRef?.current
       const region = template
         ? regionsRef.current?.[template.regionId]
@@ -164,7 +190,11 @@ export function createPencilTool(deps) {
       redrawOverlay()
     },
 
-    onMouseUp() {},
+    onMouseUp(localX, localY, e) {
+      if (!delegatedToSelect) return
+      selectTool.onMouseUp(localX, localY, e)
+      delegatedToSelect = false
+    },
 
     onContextMenu(localX, localY, e) {
       e.preventDefault()
@@ -188,11 +218,17 @@ export function createPencilTool(deps) {
     },
 
     drawOverlay(ctx, w, h, viewState) {
+      if (delegatedToSelect) {
+        selectTool.drawOverlay(ctx, w, h, viewState)
+        return
+      }
       drawGhostPreview(ctx, w, h, viewState.scrollOffset, viewState.pixelsPerBeat, ghost, null, trackLayoutRef?.current)
     },
 
     cleanup() {
       ghost = null
+      delegatedToSelect = false
+      selectTool.cleanup?.()
     },
   }
 }

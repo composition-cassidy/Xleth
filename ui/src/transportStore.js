@@ -24,8 +24,15 @@ function startPolling() {
       if (s) {
         currentState = s
 
-        // Feed PlayheadClock for interpolation / drift correction
-        playheadClock.syncFromEngine(s.positionMs, s.bpm, s.isPlaying)
+        // Feed the arranger/edit playhead from raw musical timeline time.
+        // `position*` is presentation-latency compensated for video/output
+        // diagnostics; using it here makes stopped seeks visibly jump left.
+        playheadClock.syncFromEngine(
+          s.rawPositionMs ?? s.positionMs,
+          s.bpm,
+          s.isPlaying,
+          s.rawPositionBeats ?? s.positionBeats,
+        )
 
         // Adjust poll rate on play/stop transitions
         if (s.isPlaying !== wasPlaying) {

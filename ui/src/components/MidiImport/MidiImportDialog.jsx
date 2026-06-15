@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import MidiTrackRow from './MidiTrackRow.jsx'
 import { findMatchingSample, gmDrumName } from './filenameMatch.js'
 import { useToast } from '../Toast.jsx'
@@ -20,12 +20,63 @@ import {
   denomToTicks,
 } from './maxNoteLength.js'
 
+export const MIDI_BPM_MATCH_TOLERANCE = 0.05
+
+export function areBpmsEffectivelyEqual(sourceBpm, projectBpm, tolerance = MIDI_BPM_MATCH_TOLERANCE) {
+  const source = Number(sourceBpm)
+  const project = Number(projectBpm)
+  if (!Number.isFinite(source) || !Number.isFinite(project)) return false
+  return Math.abs(source - project) <= tolerance
+}
+
+export function getEffectiveTempoOverride(tempoOverride, sourceBpm, projectBpm) {
+  return areBpmsEffectivelyEqual(sourceBpm, projectBpm) ? false : !!tempoOverride
+}
+
+export function getRegionDisplayName(region, source) {
+  return region?.name
+    || region?.label
+    || source?.fileName
+    || source?.filePath?.replace(/\\/g, '/').split('/').pop()
+    || `Sample ${region?.id ?? ''}`.trim()
+}
+
+export function getRegionPreviewTime(region, source) {
+  const start = Number(region?.startTime)
+  const end = Number(region?.endTime)
+  if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+    return start + Math.min(0.1, (end - start) * 0.25)
+  }
+  if (Number.isFinite(start)) return start
+  const duration = Number(source?.duration)
+  return Number.isFinite(duration) && duration > 0 ? Math.min(duration * 0.25, 1) : 0
+}
+
+export function buildSamplePickerItems(regions = [], sourceMedia = []) {
+  const sourceById = new Map((sourceMedia || []).map(source => [String(source.id), source]))
+  return (regions || []).map(region => {
+    const source = sourceById.get(String(region.sourceId)) || null
+    const name = getRegionDisplayName(region, source)
+    const duration = Number(region?.endTime) - Number(region?.startTime)
+    return {
+      id: region.id,
+      name,
+      subLabel: source?.fileName || region?.label || null,
+      title: source?.filePath || name,
+      region,
+      source,
+      previewTime: getRegionPreviewTime(region, source),
+      duration: Number.isFinite(duration) && duration > 0 ? duration : null,
+    }
+  })
+}
+
 // ── Module-level helpers ──────────────────────────────────────────────────────
 
 // Returns a flat array of output tracks post-drum-split, in engine-canonical order.
 // Disabled source tracks are excluded. Used both to drive the UI and to build
 // perTrackOptions for importFull.
-function buildOutputTracks(sourceTracks, trackOptions) {
+export function buildOutputTracks(sourceTracks, trackOptions) {
   const out = []
   for (const track of sourceTracks) {
     const opts = trackOptions[track.index]
@@ -74,6 +125,70 @@ function initSourceTrackOptions(tracks) {
   return opts
 }
 
+export function buildMidiImportOptions({
+  summary,
+  trackOptions,
+  outputTracks,
+  outputTrackOptions,
+  projectBpm,
+  tempoOverride,
+}) {
+  const enabledTrackIndices = []
+  const perTrackOptions = {}
+  for (const srcTrack of (summary?.tracks || [])) {
+    const opts = trackOptions[srcTrack.index]
+    if (!opts || !opts.enabled) continue
+    enabledTrackIndices.push(srcTrack.index)
+    const splitDrums = !!srcTrack.isDrum && !!opts.splitByNote
+    const enabledSubNotes = splitDrums
+      ? (srcTrack.uniqueNoteNumbers || []).filter(pitch => {
+          const ot = outputTracks.find(o => o.sourceTrackIndex === srcTrack.index && o.drumPitch === pitch)
+          return ot ? (outputTrackOptions[ot.outputTrackIndex]?.enabled !== false) : false
+        })
+      : []
+    perTrackOptions[String(srcTrack.index)] = { splitDrums, enabledSubNotes }
+  }
+
+  const projectBPM = projectBpm ?? summary?.sourceTempo ?? 120
+  const maxNoteLengthByOutputTrack = outputTracks.map(ot => {
+    const opts = outputTrackOptions[ot.outputTrackIndex]
+    const denom = opts?.maxNoteLengthDenom ?? DEFAULT_MAX_NOTE_LENGTH_DENOM
+    return denomToTicks(denom)
+  })
+
+  return {
+    enabledTrackIndices,
+    perTrackOptions,
+    tempoOverride: getEffectiveTempoOverride(tempoOverride, summary?.sourceTempo, projectBpm),
+    projectTPQ: PPQ,
+    projectBPM,
+    maxNoteLengthByOutputTrack,
+  }
+}
+
+export function buildMidiCommitOptions({
+  metadata,
+  summary,
+  outputTrackOptions,
+  tempoOverride,
+  projectBpm,
+}) {
+  return {
+    tempoOverride: getEffectiveTempoOverride(tempoOverride, metadata?.sourceTempo ?? summary?.sourceTempo, projectBpm),
+    sourceBPM: metadata?.sourceTempo ?? summary?.sourceTempo,
+    projectTPQ: PPQ,
+    outputTracks: (metadata?.outputTracks || []).map((ot, i) => {
+      const userOpts = outputTrackOptions[i]
+      return {
+        outputTrackIndex: i,
+        name: userOpts?.name ?? ot.name,
+        visualOnly: userOpts?.visualOnly ?? false,
+        regionId: Number(userOpts?.sampleId ?? -1),
+      }
+    }),
+  }
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
@@ -91,7 +206,8 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
   const [trackOptions, setTrackOptions] = useState({})
   // Output-track-level: { [outputTrackIndex]: { _stableKey, enabled, visualOnly, sampleId, name } }
   const [outputTrackOptions, setOutputTrackOptions] = useState({})
-  const [sources, setSources] = useState([])
+  const [regions, setRegions] = useState([])
+  const [sourceMedia, setSourceMedia] = useState([])
 
   // Fetch project BPM whenever the dialog opens.
   useEffect(() => {
@@ -112,7 +228,8 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
     setTempoOverride(true)
     setTrackOptions({})
     setOutputTrackOptions({})
-    setSources([])
+    setRegions([])
+    setSourceMedia([])
 
     let cancelled = false
 
@@ -162,16 +279,26 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
         return
       }
 
-      let srcs = []
+      let fetchedRegions = []
+      let fetchedSources = []
       try {
-        const fetched = await window.xleth?.timeline?.getRegions?.()
-        srcs = Array.isArray(fetched) ? fetched : []
+        const [regionResult, sourceResult] = await Promise.allSettled([
+          window.xleth?.timeline?.getRegions?.(),
+          window.xleth?.timeline?.getSources?.(),
+        ])
+        fetchedRegions = regionResult.status === 'fulfilled' && Array.isArray(regionResult.value)
+          ? regionResult.value
+          : []
+        fetchedSources = sourceResult.status === 'fulfilled' && Array.isArray(sourceResult.value)
+          ? sourceResult.value
+          : []
       } catch (e) {
-        console.warn('[MidiImport] getRegions error:', e)
+        console.warn('[MidiImport] timeline media fetch error:', e)
       }
       if (cancelled) return
 
-      setSources(srcs)
+      setRegions(fetchedRegions)
+      setSourceMedia(fetchedSources)
       setSummary(parsed)
       setTrackOptions(initSourceTrackOptions(parsed.tracks || []))
       // outputTrackOptions seeded by reconciliation effect watching outputTracks
@@ -196,11 +323,16 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
     [summary, trackOptions]
   )
 
+  const sampleItems = useMemo(
+    () => buildSamplePickerItems(regions, sourceMedia),
+    [regions, sourceMedia]
+  )
+
   // ── Reconcile outputTrackOptions whenever outputTracks changes ──────────────
   // Carries forward existing entries by stableKey so user selections survive
   // splitByNote toggles and parent enable/disable. Seeds new entries via auto-match.
-  // sources captured from render closure — correct at the time outputTracks changes.
-  // sources intentionally excluded from deps — auto-match runs on seed only.
+  // regions captured from render closure — correct at the time outputTracks changes.
+  // regions intentionally excluded from deps — auto-match runs on seed only.
   useEffect(() => {
     setOutputTrackOptions(prev => {
       const prevByStableKey = {}
@@ -213,7 +345,7 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
         if (prevByStableKey[key]) {
           next[ot.outputTrackIndex] = prevByStableKey[key]
         } else {
-          const matched = findMatchingSample(ot.name, sources)
+          const matched = findMatchingSample(ot.name, regions)
           if (matched) {
             console.log(`[MidiImport] Auto-match: "${ot.name}" → "${matched.name}" (regionId=${matched.id})`)
           } else {
@@ -257,8 +389,10 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
       return
     }
 
+    const effectiveTempoOverride = getEffectiveTempoOverride(tempoOverride, summary.sourceTempo, projectBpm)
+
     setPhase('importing')
-    console.log('[MidiImport] Import begin: tempoOverride=', tempoOverride, 'output tracks=', outputTracks.length)
+    console.log('[MidiImport] Import begin: tempoOverride=', effectiveTempoOverride, 'output tracks=', outputTracks.length)
 
     // Two RAFs so phase='importing' paints before synchronous bridge calls freeze the renderer.
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))
@@ -266,41 +400,14 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
     const t0 = performance.now()
 
     try {
-      const enabledTrackIndices = []
-      const perTrackOptions = {}
-      for (const srcTrack of (summary.tracks || [])) {
-        const opts = trackOptions[srcTrack.index]
-        if (!opts || !opts.enabled) continue
-        enabledTrackIndices.push(srcTrack.index)
-        const splitDrums = !!srcTrack.isDrum && !!opts.splitByNote
-        const enabledSubNotes = splitDrums
-          ? (srcTrack.uniqueNoteNumbers || []).filter(pitch => {
-              const ot = outputTracks.find(o => o.sourceTrackIndex === srcTrack.index && o.drumPitch === pitch)
-              return ot ? (outputTrackOptions[ot.outputTrackIndex]?.enabled !== false) : false
-            })
-          : []
-        perTrackOptions[String(srcTrack.index)] = { splitDrums, enabledSubNotes }
-      }
-
-      const projectBPM = projectBpm ?? summary.sourceTempo ?? 120
-
-      // Per-output-track clamp (in project ticks), parallel to outputTracks order.
-      // The engine builds the same output-track ordering, so a positional array
-      // is the simplest stable encoding. 0 = off for that track.
-      const maxNoteLengthByOutputTrack = outputTracks.map(ot => {
-        const opts = outputTrackOptions[ot.outputTrackIndex]
-        const denom = opts?.maxNoteLengthDenom ?? DEFAULT_MAX_NOTE_LENGTH_DENOM
-        return denomToTicks(denom)
-      })
-
-      const importOptions = {
-        enabledTrackIndices,
-        perTrackOptions,
+      const importOptions = buildMidiImportOptions({
+        summary,
+        trackOptions,
+        outputTracks,
+        outputTrackOptions,
+        projectBpm,
         tempoOverride,
-        projectTPQ: PPQ,
-        projectBPM,
-        maxNoteLengthByOutputTrack,
-      }
+      })
 
       console.log('[MidiImport] Import payload:', importOptions)
 
@@ -315,20 +422,13 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
                      'renderer:', outputTracks.length)
       }
 
-      const commitOptions = {
+      const commitOptions = buildMidiCommitOptions({
+        metadata: meta,
+        summary,
+        outputTrackOptions,
         tempoOverride,
-        sourceBPM: meta.sourceTempo ?? summary.sourceTempo,
-        projectTPQ: PPQ,
-        outputTracks: meta.outputTracks.map((ot, i) => {
-          const userOpts = outputTrackOptions[i]
-          return {
-            outputTrackIndex: i,
-            name: userOpts?.name ?? ot.name,
-            visualOnly: userOpts?.visualOnly ?? false,
-            regionId: Number(userOpts?.sampleId ?? -1),
-          }
-        }),
-      }
+        projectBpm,
+      })
 
       await window.xleth.midi.executeImport(noteData, commitOptions)
       const t2 = performance.now()
@@ -347,6 +447,12 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
 
   const fileName = filePath ? filePath.replace(/\\/g, '/').split('/').pop() : ''
   const filteredSourceTracks = summary ? (summary.tracks || []).filter(t => t.noteCount > 0) : []
+  const tempoBpmMatches = areBpmsEffectivelyEqual(summary?.sourceTempo, projectBpm)
+  const pitchBendTrackCount = filteredSourceTracks.filter(track => track.hasPitchBend).length
+  const unassignedOutputCount = outputTracks.filter(ot => {
+    const opts = outputTrackOptions[ot.outputTrackIndex]
+    return opts?.enabled !== false && (opts?.sampleId == null || Number(opts.sampleId) < 0)
+  }).length
 
   // Builds the outputOptions prop for a given source track. For non-split tracks,
   // returns a single options object (or null if disabled). For split-drum tracks,
@@ -369,7 +475,7 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
   }
 
   return (
-    <div className="midi-dialog-backdrop" onClick={() => onClose()}>
+    <div className="midi-dialog-backdrop">
       <div className="midi-dialog" onClick={e => e.stopPropagation()}>
 
         {/* ── Header ─────────────────────────────────────────────────────── */}
@@ -423,18 +529,30 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
                 </span>
               </div>
 
-              <label className="midi-checkbox-row">
+              <label className={`midi-tempo-override-row${tempoBpmMatches ? ' midi-tempo-override-row--inactive' : ''}`}>
                 <input
                   type="checkbox"
-                  checked={tempoOverride}
+                  checked={tempoBpmMatches ? false : tempoOverride}
                   onChange={e => setTempoOverride(e.target.checked)}
+                  disabled={tempoBpmMatches}
                 />
-                Override project tempo to match source
+                <span className="midi-tempo-override-text">Override project tempo to match source</span>
+                {tempoBpmMatches && (
+                  <span className="midi-tempo-override-note">Already matches</span>
+                )}
               </label>
 
-              {summary.hasMidFileTempoChanges && (
-                <div className="midi-warning-banner">
-                  ⚠ MIDI contains tempo changes — only first tempo will be used
+              {(summary.hasMidFileTempoChanges || pitchBendTrackCount > 0 || unassignedOutputCount > 0) && (
+                <div className="midi-import-details" aria-label="Import details">
+                  {summary.hasMidFileTempoChanges && (
+                    <span>MIDI tempo changes: first tempo only</span>
+                  )}
+                  {pitchBendTrackCount > 0 && (
+                    <span>Pitch bend: skipped on {pitchBendTrackCount} track{pitchBendTrackCount === 1 ? '' : 's'}</span>
+                  )}
+                  {unassignedOutputCount > 0 && (
+                    <span>Unassigned outputs: {unassignedOutputCount}</span>
+                  )}
                 </div>
               )}
 
@@ -454,7 +572,7 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
                       ...prev,
                       [outputTrackIndex]: { ...prev[outputTrackIndex], ...patch },
                     }))}
-                    sources={sources}
+                    sampleItems={sampleItems}
                   />
                 ))}
               </div>

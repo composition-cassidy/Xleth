@@ -11,6 +11,7 @@
 //   cancelAnimationFrame → zero background animation after close.
 
 import { useEffect, useRef } from 'react'
+import { uiCanvasFont } from '../../styles/typography.js'
 
 // ── Pure helpers (exported for unit tests) ───────────────────────────────────
 
@@ -403,7 +404,7 @@ export default function PhaserVisualizerCanvas({ params }) {
       const LABEL_FREQS = [20,    100,   1000, 4000, 16000]
       const LABEL_TEXTS = ['20', '100',  '1k', '4k', '16k']
       ctx.save()
-      ctx.font         = '9px system-ui, sans-serif'
+      ctx.font         = uiCanvasFont('9px')
       ctx.textAlign    = 'center'
       ctx.textBaseline = 'top'
       ctx.fillStyle    = 'rgba(175, 155, 215, 0.35)'

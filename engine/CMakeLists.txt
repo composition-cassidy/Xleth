@@ -204,6 +204,7 @@ add_library(XlethEngineModel STATIC
     src/commands/TimelineCommands.cpp
     src/commands/QuantizeClipsBatchCommand.cpp
     src/commands/AddNotesBatchCommand.cpp
+    src/commands/AddClipsBatchCommand.cpp
     src/audio/TrackRouting.cpp
 )
 
