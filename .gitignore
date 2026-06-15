@@ -98,5 +98,8 @@ fsc_test/
 # Design working files (PSDs etc. — not shipped source)
 art/
 
+# Vendored download archives (re-downloadable; too large for GitHub)
+*.7z
+
 # Local Claude state
 .claude/scheduled_tasks.lock
