@@ -19,6 +19,7 @@ import {
 import { usePanelRegistry } from '../windowing/registry/PanelRegistry'
 import { PANEL_CATALOG_ORDER } from '../windowing/registry/panelCatalog'
 import { useQuickLaunchersStore } from '../stores/quickLaunchersStore.js'
+import { XlethButton, XlethIconButton } from './common/XlethButton.jsx'
 
 const DROPDOWN_OPEN_DELAY_MS = 40
 const DROPDOWN_CLOSE_MS = 80
@@ -90,7 +91,7 @@ function FileDropdown({ onAction }) {
   return (
     <div className="titlebar-dropdown-panel titlebar-dropdown-panel--file" role="menu">
       {FILE_DROPDOWN_ITEMS.map((item) => (
-        <button
+        <XlethButton
           type="button"
           key={item.label}
           className="titlebar-dropdown-item"
@@ -101,12 +102,12 @@ function FileDropdown({ onAction }) {
           role="menuitem"
         >
           <span>{item.label}</span>
-        </button>
+        </XlethButton>
       ))}
       <div className="titlebar-export-row" role="group" aria-label="Export">
         <span className="titlebar-export-label">Export:</span>
         <div className="titlebar-export-actions">
-          <button
+          <XlethIconButton
             type="button"
             className="titlebar-toolbar-btn"
             onClick={() => onAction(EXPORT_AUDIO_LABEL)}
@@ -114,8 +115,8 @@ function FileDropdown({ onAction }) {
             aria-label="Export Audio"
           >
             <AudioWaveform size={18} strokeWidth={2} aria-hidden="true" />
-          </button>
-          <button
+          </XlethIconButton>
+          <XlethIconButton
             type="button"
             className="titlebar-toolbar-btn"
             onClick={() => onAction(EXPORT_VIDEO_LABEL)}
@@ -123,7 +124,7 @@ function FileDropdown({ onAction }) {
             aria-label="Export Video"
           >
             <Video size={18} strokeWidth={2} aria-hidden="true" />
-          </button>
+          </XlethIconButton>
         </div>
       </div>
     </div>
@@ -137,7 +138,7 @@ function ToolbarDropdown({ actions, label, onAction }) {
         {actions.map((item) => {
           const Icon = item.icon
           return (
-            <button
+            <XlethButton
               type="button"
               key={item.action}
               className={`titlebar-toolbar-btn ${item.text ? 'titlebar-toolbar-btn--text' : ''}`}
@@ -147,7 +148,7 @@ function ToolbarDropdown({ actions, label, onAction }) {
               role="menuitem"
             >
               {Icon ? <Icon size={18} strokeWidth={2} aria-hidden="true" /> : item.label}
-            </button>
+            </XlethButton>
           )
         })}
       </div>
@@ -161,9 +162,10 @@ function TitleBarLauncherButton({ entry }) {
   const panelVisible = !panelHidden
 
   return (
-    <button
+    <XlethIconButton
       type="button"
       className="titlebar-launcher-btn"
+      active={panelVisible}
       data-active={String(panelVisible)}
       style={{ '--xleth-windowing-panel-color': `var(${entry.typeColorToken})` }}
       onClick={() => usePanelRegistry.getState().togglePanel(entry.id)}
@@ -172,7 +174,7 @@ function TitleBarLauncherButton({ entry }) {
       aria-pressed={panelVisible}
     >
       <Icon size={22} strokeWidth={2} aria-hidden="true" />
-    </button>
+    </XlethIconButton>
   )
 }
 
@@ -184,9 +186,10 @@ function QuickLauncherButton({ launcher }) {
   }
 
   return (
-    <button
+    <XlethIconButton
       type="button"
       className="titlebar-launcher-btn"
+      active={false}
       data-active="false"
       onClick={handleClick}
       title={launcher.label}
@@ -212,7 +215,7 @@ function QuickLauncherButton({ launcher }) {
       >
         {(launcher.label || '?').charAt(0).toUpperCase()}
       </span>
-    </button>
+    </XlethIconButton>
   )
 }
 
@@ -361,16 +364,17 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction })
                 key={menu.label}
                 className={`titlebar-menu ${menuIsOpen ? 'open' : ''}`}
               >
-                <button
+                <XlethButton
                   type="button"
                   className="titlebar-menu-trigger"
+                  active={menuIsOpen}
                   onClick={() => handleMenuClick(idx)}
                   aria-haspopup={direct ? undefined : 'menu'}
                   aria-expanded={direct ? undefined : menuIsOpen}
                 >
                   {MenuIcon && <MenuIcon className="titlebar-menu-icon" size={20} strokeWidth={2} aria-hidden="true" />}
-                  <span>{menu.label.toUpperCase()}</span>
-                </button>
+                  <span>{menu.label}</span>
+                </XlethButton>
                 {!direct && menuIsRendered && (
                   <div className="titlebar-dropdown" data-state={dropdownState}>
                     {renderDropdown(menu)}
@@ -397,30 +401,30 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction })
       </div>
 
       <div className="titlebar-controls">
-        <button
+        <XlethIconButton
           type="button"
           className="titlebar-btn"
           onClick={() => window.xleth.window.minimize()}
           aria-label="Minimize"
         >
-          <Minus size={18} />
-        </button>
-        <button
+          <Minus size={14} />
+        </XlethIconButton>
+        <XlethIconButton
           type="button"
           className="titlebar-btn"
           onClick={() => window.xleth.window.maximize()}
           aria-label="Maximize"
         >
-          <Square size={18} />
-        </button>
-        <button
+          <Square size={14} />
+        </XlethIconButton>
+        <XlethIconButton
           type="button"
           className="titlebar-btn titlebar-btn-close"
           onClick={() => window.xleth.window.close()}
           aria-label="Close"
         >
-          <X size={18} />
-        </button>
+          <X size={14} />
+        </XlethIconButton>
       </div>
     </div>
   )

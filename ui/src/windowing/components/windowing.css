@@ -426,25 +426,23 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   width: 22px;
   height: 22px;
   padding: 0;
-  border: 1px solid var(--theme-depth-elevation-1-border);
+  border: calc(var(--theme-chrome-underline-thickness) / 2) solid transparent;
   border-radius: var(--theme-chrome-radius-sm);
-  background: none;
+  background: transparent;
   color: var(--theme-text-muted);
   cursor: pointer;
   transition: background var(--theme-transition-fast, 0.1s ease),
               color var(--theme-transition-fast, 0.1s ease),
               box-shadow var(--theme-transition-fast, 0.1s ease);
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.055),
-    0 1px 2px rgba(0,0,0,0.18);
+  box-shadow: none;
+  -webkit-app-region: no-drag;
+  pointer-events: auto;
 }
 
 .xleth-windowing-control-button:hover {
   background: rgba(255,255,255,0.055);
   color: var(--theme-chrome-titlebar-fg);
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.075),
-    0 1px 2px rgba(0,0,0,0.24);
+  box-shadow: none;
 }
 
 .xleth-windowing-control-button:active {
@@ -2215,9 +2213,10 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   height: 36px;
   padding: 0 8px;
   gap: 4px;
-  background: var(--theme-chrome-titlebar-bg);
+  background: transparent;
   border-bottom: 1px solid var(--theme-border-subtle);
-  box-shadow: var(--theme-depth-elevation-1-top-highlight);
+  box-shadow: none;
+  -webkit-app-region: no-drag;
 }
 
 .xleth-top-bar-group {
@@ -2251,12 +2250,14 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
               color var(--theme-transition-fast, 0.1s ease),
               border-color var(--theme-transition-fast, 0.1s ease),
               box-shadow var(--theme-transition-fast, 0.1s ease);
-  box-shadow: var(--theme-depth-elevation-1-top-highlight);
+  box-shadow: none;
+  -webkit-app-region: no-drag;
+  pointer-events: auto;
 }
 
 .xleth-top-bar-toggle-btn[data-active="true"] {
   color: var(--xleth-windowing-panel-color);
-  box-shadow: var(--theme-depth-pressed-inner-shadow);
+  box-shadow: none;
 }
 
 .xleth-top-bar-toggle-btn[data-focused="true"] {
@@ -2264,7 +2265,7 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
 }
 
 .xleth-top-bar-toggle-btn:hover {
-  background: var(--theme-bg-hover);
+  background: var(--theme-primitive-control-hover-bg);
 }
 
 .xleth-top-bar-toggle-btn:focus-visible {
@@ -2290,6 +2291,9 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   background: none;
   color: var(--theme-text-muted);
   cursor: pointer;
+  box-shadow: none;
+  -webkit-app-region: no-drag;
+  pointer-events: auto;
 }
 
 .xleth-top-bar-preset-btn {
@@ -2307,7 +2311,7 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
 
 .xleth-top-bar-preset-btn:hover,
 .xleth-top-bar-dock-btn:hover {
-  background: var(--theme-bg-hover);
+  background: var(--theme-primitive-control-hover-bg);
 }
 
 .xleth-top-bar-preset-btn[data-active="true"],

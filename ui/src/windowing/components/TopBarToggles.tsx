@@ -16,6 +16,7 @@ import {
   type PanelId,
 } from '../registry/panelCatalog';
 import { useXlethRootContext } from '../contexts/XlethRootContext.jsx';
+import { XlethButton, XlethIconButton } from '../../components/common/XlethButton.jsx';
 
 interface LayoutPresetButton {
   id: PresetId;
@@ -83,8 +84,9 @@ function PanelToggleButton({ entry }: { entry: (typeof PANEL_CATALOG_ORDER)[numb
   const { id } = entry;
 
   return (
-    <button
+    <XlethIconButton
       className="xleth-top-bar-toggle-btn"
+      active={!hidden}
       data-active={String(!hidden)}
       data-focused={String(focused)}
       style={{ '--xleth-windowing-panel-color': panelTypeColorVar(id) } as React.CSSProperties}
@@ -94,7 +96,7 @@ function PanelToggleButton({ entry }: { entry: (typeof PANEL_CATALOG_ORDER)[numb
       aria-pressed={!hidden}
     >
       <entry.icon />
-    </button>
+    </XlethIconButton>
   );
 }
 
@@ -123,9 +125,10 @@ export function TopBarToggles() {
         {LAYOUT_PRESETS.map((preset) => {
           const active = panelLayoutMatches(panels, preset.id);
           return (
-            <button
+            <XlethButton
               key={preset.id}
               className="xleth-top-bar-preset-btn"
+              active={active}
               data-active={String(active)}
               onClick={() => usePanelRegistry.getState().applyPreset(preset.id)}
               title={preset.title}
@@ -134,7 +137,7 @@ export function TopBarToggles() {
             >
               {preset.id === 'fl-compose' ? <RotateCcw aria-hidden="true" /> : null}
               <span>{preset.label}</span>
-            </button>
+            </XlethButton>
           );
         })}
       </div>
@@ -147,9 +150,10 @@ export function TopBarToggles() {
               && panels[focusedPanelId].docked.region === region,
           );
           return (
-            <button
+            <XlethIconButton
               key={region}
               className="xleth-top-bar-dock-btn"
+              active={active}
               data-active={String(active)}
               disabled={!focusedPanelId}
               onClick={() => {
@@ -161,20 +165,20 @@ export function TopBarToggles() {
               aria-pressed={active}
             >
               <Icon aria-hidden="true" />
-            </button>
+            </XlethIconButton>
           );
         })}
       </div>
       <div className="xleth-top-bar-separator" aria-hidden="true" />
       <div className="xleth-top-bar-group" aria-label="Import">
-        <button
+        <XlethIconButton
           className="xleth-top-bar-toggle-btn"
           onClick={() => onOpenMidiImport()}
           title="Import MIDI"
           aria-label="Import MIDI"
         >
           <Music2 aria-hidden="true" />
-        </button>
+        </XlethIconButton>
       </div>
     </div>
   );

@@ -3,6 +3,7 @@ import { FolderOpen, Music, Grid3x3 } from 'lucide-react'
 import ProjectMediaTab from './ProjectMediaTab.jsx'
 import SampleSelectorTab from './SampleSelectorTab.jsx'
 import GridLayoutTab from './GridLayoutTab.jsx'
+import { XlethButton } from './common/XlethButton.jsx'
 
 const TABS = [
   { id: 'media',   label: 'Project Media',   icon: FolderOpen },
@@ -22,15 +23,16 @@ export default function LeftPanel({ onOpenPicker, activeSampleId, setActiveSampl
     <div className="left-panel">
       <div className="left-panel-tabs">
         {TABS.map(({ id, label, icon: Icon }) => (
-          <button
+          <XlethButton
             key={id}
             className={`left-panel-tab ${activeTab === id ? 'active' : ''}`}
+            active={activeTab === id}
             onClick={() => handleTabSwitch(id)}
             title={label}
           >
             <Icon size={14} />
             <span>{label}</span>
-          </button>
+          </XlethButton>
         ))}
       </div>
       <div className="left-panel-content">

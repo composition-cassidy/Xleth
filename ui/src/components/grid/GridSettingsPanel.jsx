@@ -1,7 +1,10 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { Grid3x3, Eraser, X, Plus, Link2 } from 'lucide-react'
 import { timelineEvents } from '../../timelineEvents.js'
 import useGridEditStore from '../../stores/useGridEditStore.js'
+import { XlethButton, XlethIconButton } from '../common/XlethButton.jsx'
+import XlethKnob from '../common/XlethKnob.jsx'
+import XlethPanelHeader from '../common/XlethPanelHeader.jsx'
 import XlethSelect from '../common/XlethSelect.jsx'
 
 const SUB_UNITS_PER_COLUMN = 8
@@ -56,6 +59,8 @@ const RESOLUTION_PRESETS = {
 const CANVAS_MIN = 16
 const CANVAS_MAX_W = 7680
 const CANVAS_MAX_H = 4320
+const GAP_MAX = 0.5
+const FPS_OPTIONS = [24, 30, 60, 120].map(fps => ({ value: fps, label: String(fps) }))
 
 // Force even (encoders require it) and clamp to range.
 function normCanvasDim(v, max) {
@@ -109,74 +114,6 @@ function confirmGridResize(slots, columns, rows) {
 
 const notify = () => timelineEvents.dispatchEvent(new Event('timeline-grid-changed'))
 
-// ── Rotary knob for gap ───────────────────────────────────────────────────────
-function GapKnob({ value, onChange, onCommit }) {
-  const svgRef = useRef(null)
-  const dragRef = useRef(null)
-  const MAX = 0.5
-  const normalized = value / MAX
-
-  const cx = 26, cy = 26, r = 18, sw = 3
-  const startDeg = 225, sweepDeg = 270
-
-  const polar = (deg, radius = r) => {
-    const rad = (deg * Math.PI) / 180
-    return [cx + radius * Math.cos(rad), cy + radius * Math.sin(rad)]
-  }
-
-  const arcPath = (startD, endD) => {
-    const [sx, sy] = polar(startD)
-    const [ex, ey] = polar(endD)
-    const delta = ((endD - startD) + 360) % 360
-    const large = delta > 180 ? 1 : 0
-    return `M ${sx.toFixed(2)},${sy.toFixed(2)} A ${r},${r} 0 ${large},1 ${ex.toFixed(2)},${ey.toFixed(2)}`
-  }
-
-  const valueAngle = startDeg + normalized * sweepDeg
-  const bgPath  = arcPath(startDeg, startDeg + sweepDeg - 0.01)
-  const valPath = normalized > 0.01 ? arcPath(startDeg, valueAngle) : null
-  const [dotX, dotY] = polar(valueAngle, r)
-
-  const handlePointerDown = useCallback((e) => {
-    e.preventDefault()
-    svgRef.current.setPointerCapture(e.pointerId)
-    dragRef.current = { startY: e.clientY, startVal: value, currentVal: value }
-  }, [value])
-
-  const handlePointerMove = useCallback((e) => {
-    if (!dragRef.current) return
-    const dy = dragRef.current.startY - e.clientY
-    const newVal = Math.max(0, Math.min(MAX, dragRef.current.startVal + dy * 0.004))
-    dragRef.current.currentVal = newVal
-    onChange(newVal)
-  }, [onChange])
-
-  const handlePointerUp = useCallback(() => {
-    if (!dragRef.current) return
-    onCommit(dragRef.current.currentVal)
-    dragRef.current = null
-  }, [onCommit])
-
-  return (
-    <svg
-      ref={svgRef}
-      className="gsp-knob-svg"
-      viewBox="0 0 52 52"
-      width="52"
-      height="52"
-      style={{ cursor: 'ns-resize', touchAction: 'none', userSelect: 'none' }}
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-    >
-      <path d={bgPath} fill="none" stroke="rgba(255,255,255,0.12)" strokeWidth={sw} strokeLinecap="round" />
-      {valPath && <path d={valPath} fill="none" stroke="var(--theme-accent)" strokeWidth={sw} strokeLinecap="round" />}
-      <circle cx={cx} cy={cy} r={11} fill="rgba(255,255,255,0.07)" stroke="rgba(255,255,255,0.16)" strokeWidth={0.75} />
-      <circle cx={dotX.toFixed(2)} cy={dotY.toFixed(2)} r={2.5} fill="var(--theme-accent)" />
-    </svg>
-  )
-}
-
 // ── Live grid preview ─────────────────────────────────────────────────────────
 function GridPreview({ columns, rows, gapScale, canvasW = 1920, canvasH = 1080 }) {
   const W = 160
@@ -198,10 +135,7 @@ function GridPreview({ columns, rows, gapScale, canvasW = 1920, canvasH = 1080 }
           key={`${rr}-${cc}`}
           x={x.toFixed(1)} y={y.toFixed(1)}
           width={cellW.toFixed(1)} height={cellH.toFixed(1)}
-          rx={1.5}
-          fill="rgba(255,255,255,0.07)"
-          stroke="rgba(255,255,255,0.22)"
-          strokeWidth={0.7}
+          className="gsp-preview-cell"
         />
       )
     }
@@ -231,6 +165,7 @@ export default function GridSettingsPanel({ layout, setLayout, tracks }) {
   const resList      = RESOLUTION_PRESETS[canvasAspect] || []
   const resId        = resolutionIdForDims(canvasAspect, canvasW, canvasH)
   const showSizeInputs = customSizeMode || resId === 'custom'
+  const previewFps = Number(layout.previewFps ?? 60)
 
   // Persist a canvas patch to the real project gridLayout (single source of
   // truth). Canvas fields (aspect / resolution) are NON-geometric: grid slots
@@ -334,6 +269,15 @@ export default function GridSettingsPanel({ layout, setLayout, tracks }) {
   }, [layout])
 
   const fsLayers = layout.fullscreenLayers ?? []
+  const trackOptions = useMemo(() => [
+    { value: -1, label: '-- None --' },
+    ...tracks.map(t => ({ value: t.id, label: t.name })),
+  ], [tracks])
+  const fpsOptions = useMemo(() => (
+    FPS_OPTIONS.some(option => Number(option.value) === previewFps)
+      ? FPS_OPTIONS
+      : [...FPS_OPTIONS, { value: previewFps, label: String(previewFps) }]
+  ), [previewFps])
 
   const handleAddLayer = useCallback(async (placement) => {
     const next = [...fsLayers, {
@@ -369,7 +313,7 @@ export default function GridSettingsPanel({ layout, setLayout, tracks }) {
     <>
       {/* ── Compact Layout & Quality section ── */}
       <div className="grid-tab-section gsp-compact-section">
-        <div className="gsp-section-title">Layout &amp; Quality</div>
+        <XlethPanelHeader title="Layout & Quality" />
         <div className="gsp-body">
 
           {/* Left: controls */}
@@ -394,24 +338,30 @@ export default function GridSettingsPanel({ layout, setLayout, tracks }) {
 
             {/* Link button */}
             <div className="gsp-link-row">
-              <button
+              <XlethIconButton
                 type="button"
                 className={`gsp-link-btn${linked ? ' active' : ''}`}
+                active={linked}
                 onClick={() => setLinked(l => !l)}
                 title={linked ? 'Unlink columns and rows' : 'Link columns and rows'}
+                aria-label={linked ? 'Unlink columns and rows' : 'Link columns and rows'}
               >
-                <Link2 size={12} />
-              </button>
+                <Link2 aria-hidden="true" />
+              </XlethIconButton>
             </div>
 
             {/* GAP knob */}
             <div className="gsp-gap-wrap">
-              <GapKnob
+              <XlethKnob
+                className="gsp-gap-knob"
                 value={layout.gapScale ?? 0}
+                min={0}
+                max={GAP_MAX}
+                label="GAP"
                 onChange={(v) => setLayout(l => ({ ...l, gapScale: v }))}
                 onCommit={handleGapScaleChange}
+                aria-label="Grid gap"
               />
-              <span className="gsp-gap-label">GAP</span>
             </div>
 
             {/* Project canvas: aspect ratio, resolution, FPS */}
@@ -449,14 +399,16 @@ export default function GridSettingsPanel({ layout, setLayout, tracks }) {
                     value={canvasW}
                     onChange={(e) => handleCanvasDimChange('w', e.target.value)}
                   />
-                  <button
+                  <XlethIconButton
                     type="button"
                     className={`gsp-link-btn${dimsLocked ? ' active' : ''}`}
+                    active={dimsLocked}
                     onClick={handleToggleLock}
                     title={dimsLocked ? 'Aspect locked — width/height stay in ratio' : 'Aspect unlocked — free ratio'}
+                    aria-label={dimsLocked ? 'Unlock aspect ratio' : 'Lock aspect ratio'}
                   >
-                    <Link2 size={12} />
-                  </button>
+                    <Link2 aria-hidden="true" />
+                  </XlethIconButton>
                   <input
                     className="gsp-dim-input"
                     type="number" min={CANVAS_MIN} max={CANVAS_MAX_H} step={2}
@@ -466,14 +418,15 @@ export default function GridSettingsPanel({ layout, setLayout, tracks }) {
                 </div>
               )}
 
-              <div className="gsp-fps-pill">
-                <input
-                  className="gsp-fps-value"
-                  type="number" min={1} max={120}
-                  value={layout.previewFps}
-                  onChange={(e) => handleFpsChange(e.target.value)}
+              <div className="gsp-canvas-row">
+                <span className="gsp-canvas-label">FPS</span>
+                <XlethSelect
+                  className="gsp-canvas-select"
+                  value={previewFps}
+                  options={fpsOptions}
+                  onChange={handleFpsChange}
+                  ariaLabel="Project frame rate"
                 />
-                <div className="gsp-fps-unit">FPS</div>
               </div>
             </div>
           </div>
@@ -496,52 +449,55 @@ export default function GridSettingsPanel({ layout, setLayout, tracks }) {
 
       {/* ── Fullscreen Layers ── */}
       <div className="grid-tab-section">
-        <div className="grid-tab-section-header">
-          <h3>Fullscreen Layers</h3>
-          {fsLayers.length > 0 && (
-            <span className="grid-tab-section-count">
+        <XlethPanelHeader
+          title="Fullscreen Layers"
+          meta={fsLayers.length > 0 ? (
+            <>
               {fsLayers.filter(l => l.placement === 'behind').length} Behind
               {' · '}
               {fsLayers.filter(l => l.placement === 'front').length} Front
-            </span>
-          )}
-        </div>
+            </>
+          ) : null}
+        />
         {fsLayers.length === 0 && (
           <div className="grid-tab-empty">No fullscreen layers</div>
         )}
         {fsLayers.map((fl, idx) => (
           <div key={idx} className="grid-tab-fslayer-card">
             <div className="grid-tab-fslayer-card-header">
-              <select
+              <XlethSelect
+                className="grid-tab-fslayer-select"
                 value={fl.trackId}
-                onChange={(e) => handleUpdateLayer(idx, { trackId: parseInt(e.target.value) })}
-              >
-                <option value={-1}>-- None --</option>
-                {tracks.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-              </select>
-              <button
+                options={trackOptions}
+                onChange={(trackId) => handleUpdateLayer(idx, { trackId: Number(trackId) })}
+                ariaLabel="Fullscreen layer track"
+              />
+              <XlethIconButton
                 type="button"
                 className="grid-tab-fslayer-remove"
                 onClick={() => handleRemoveLayer(idx)}
                 title="Remove layer"
+                aria-label="Remove fullscreen layer"
               >
-                <X size={12} />
-              </button>
+                <X aria-hidden="true" />
+              </XlethIconButton>
             </div>
             <div className="grid-tab-fslayer-card-controls">
               <div className="grid-tab-fslayer-placement">
-                <button
+                <XlethButton
                   type="button"
                   className={fl.placement === 'behind' ? 'active' : ''}
+                  active={fl.placement === 'behind'}
                   onClick={() => handleUpdateLayer(idx, { placement: 'behind' })}
                   title="Render behind grid"
-                >Behind</button>
-                <button
+                >Behind</XlethButton>
+                <XlethButton
                   type="button"
                   className={fl.placement === 'front' ? 'active' : ''}
+                  active={fl.placement === 'front'}
                   onClick={() => handleUpdateLayer(idx, { placement: 'front' })}
                   title="Render in front of grid"
-                >Front</button>
+                >Front</XlethButton>
               </div>
               <input
                 type="range" min={0} max={1} step={0.05}
@@ -555,29 +511,30 @@ export default function GridSettingsPanel({ layout, setLayout, tracks }) {
           </div>
         ))}
         <div className="grid-tab-row grid-tab-fslayer-add">
-          <button type="button" className="grid-tab-btn" onClick={() => handleAddLayer('behind')}>
+          <XlethButton type="button" className="grid-tab-btn" onClick={() => handleAddLayer('behind')}>
             <Plus size={12} /><span>Add Behind</span>
-          </button>
-          <button type="button" className="grid-tab-btn" onClick={() => handleAddLayer('front')}>
+          </XlethButton>
+          <XlethButton type="button" className="grid-tab-btn" onClick={() => handleAddLayer('front')}>
             <Plus size={12} /><span>Add Front</span>
-          </button>
+          </XlethButton>
         </div>
       </div>
 
       {/* ── Actions ── */}
       <div className="grid-tab-section grid-tab-section--separated">
         <div className="grid-tab-actions">
-          <button
+          <XlethButton
             className={`grid-tab-btn ${gridEditMode ? 'active' : ''}`}
+            active={gridEditMode}
             onClick={() => setGridEditMode(!gridEditMode)}
           >
             <Grid3x3 size={13} />
             <span>{gridEditMode ? 'Exit Edit' : 'Edit Grid'}</span>
-          </button>
-          <button className="grid-tab-btn grid-tab-btn-danger" onClick={handleClearLayout}>
+          </XlethButton>
+          <XlethButton className="grid-tab-btn grid-tab-btn-danger" onClick={handleClearLayout}>
             <Eraser size={13} />
             <span>Clear Layout</span>
-          </button>
+          </XlethButton>
         </div>
       </div>
     </>

@@ -4,6 +4,7 @@ import { Maximize2, Minus, Square, X } from 'lucide-react';
 import { beginDrag } from '../managers/DragManager';
 import { PANEL_CATALOG, panelTypeColorVar, type PanelId } from '../registry/panelCatalog';
 import { usePanelRegistry } from '../registry/PanelRegistry';
+import { XlethIconButton } from '../../components/common/XlethButton.jsx';
 import './windowing.css';
 
 export interface TitlebarProps {
@@ -80,7 +81,7 @@ export function Titlebar({ id, focused }: TitlebarProps) {
       <span className="xleth-windowing-panel-name">{entry.title}</span>
       <span className="xleth-windowing-drag-zone" aria-hidden="true" />
       <div className="xleth-windowing-controls" aria-label={`${entry.title} panel controls`}>
-        <button
+        <XlethIconButton
           type="button"
           className="xleth-windowing-control-button"
           aria-label={`Minimize ${entry.title}`}
@@ -89,8 +90,8 @@ export function Titlebar({ id, focused }: TitlebarProps) {
           onClick={hidePanel}
         >
           <Minus aria-hidden="true" strokeWidth={2} />
-        </button>
-        <button
+        </XlethIconButton>
+        <XlethIconButton
           type="button"
           className="xleth-windowing-control-button"
           aria-label={mode === 'maximized' ? `Restore ${entry.title}` : `Maximize ${entry.title}`}
@@ -101,8 +102,8 @@ export function Titlebar({ id, focused }: TitlebarProps) {
           {mode === 'maximized'
             ? <Square aria-hidden="true" strokeWidth={2} />
             : <Maximize2 aria-hidden="true" strokeWidth={2} />}
-        </button>
-        <button
+        </XlethIconButton>
+        <XlethIconButton
           type="button"
           className="xleth-windowing-control-button"
           aria-label={`Close ${entry.title}`}
@@ -111,7 +112,7 @@ export function Titlebar({ id, focused }: TitlebarProps) {
           onClick={hidePanel}
         >
           <X aria-hidden="true" strokeWidth={2} />
-        </button>
+        </XlethIconButton>
       </div>
     </div>
   );
