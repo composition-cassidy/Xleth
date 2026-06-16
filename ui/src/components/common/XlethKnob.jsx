@@ -40,8 +40,11 @@ export default forwardRef(function XlethKnob({
   const startDeg = 225
   const sweepDeg = 270
   const valueAngle = startDeg + normalized * sweepDeg
+  const arcNormalized = Math.max(normalized, 0.012)
+  const arcAngle = startDeg + arcNormalized * sweepDeg
   const bgPath = arcPath(cx, cy, radius, startDeg, startDeg + sweepDeg - 0.01)
-  const valPath = normalized > 0.01 ? arcPath(cx, cy, radius, startDeg, valueAngle) : null
+  const valPath = arcPath(cx, cy, radius, startDeg, arcAngle)
+  const bevelPath = arcPath(cx, cy, 22, 210, 330)
   const [dotX, dotY] = polar(cx, cy, radius, valueAngle)
 
   const assignRef = (node) => {
@@ -93,6 +96,7 @@ export default forwardRef(function XlethKnob({
         <path className="xleth-knob__track" d={bgPath} />
         {valPath && <path className="xleth-knob__value" d={valPath} />}
         <circle className="xleth-knob__cap" cx={cx} cy={cy} r="22" />
+        <path className="xleth-knob__bevel" d={bevelPath} />
         <circle className="xleth-knob__dot" cx={dotX.toFixed(2)} cy={dotY.toFixed(2)} r="4" />
       </svg>
       {label && <span className="xleth-knob__label">{label}</span>}

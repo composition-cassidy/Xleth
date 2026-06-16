@@ -244,23 +244,44 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   explicit('--theme-depth-elevation-2-outer-shadow', '0 4px 12px rgba(0, 0, 0, 0.35)',                                           'solid', 'Foundations', 'depth', 'shadow'),
   ref     ('--theme-depth-elevation-3-outer-shadow', '--theme-chrome-shadow',                                                    'solid', 'Foundations', 'depth', 'shadow'),
   ref     ('--theme-depth-floating-shadow',          '--theme-chrome-shadow',                                                    'solid', 'Foundations', 'depth', 'shadow'),
-  explicit('--theme-depth-floating-focused-shadow',  '0 0 0 1px var(--theme-accent), 0 12px 40px rgba(0, 0, 0, 0.6)',            'solid', 'Foundations', 'depth', 'shadow'),
+  explicit('--theme-depth-floating-focused-shadow',  'var(--theme-depth-floating-shadow)',                                      'solid', 'Foundations', 'depth', 'shadow'),
   explicit('--theme-depth-well-inner-shadow',        'inset 0 2px 4px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(0, 0, 0, 0.30)', 'solid', 'Foundations', 'depth', 'shadow'),
   explicit('--theme-depth-well-top-shadow',          'inset 0 4px 8px rgba(0, 0, 0, 0.35)',                                      'solid', 'Foundations', 'depth', 'shadow'),
   explicit('--theme-depth-pressed-inner-shadow',     'inset 0 1px 2px rgba(0, 0, 0, 0.45)',                                      'solid', 'Foundations', 'depth', 'shadow'),
+  explicit('--theme-depth-hard-shadow',              '4px 5px 0 rgba(0, 0, 0, 0.50)',                                            'solid', 'Foundations', 'depth', 'shadow'),
+  explicit('--theme-depth-panel-hard-shadow',        '6px 8px 0 rgba(0, 0, 0, 0.45)',                                            'solid', 'Foundations', 'depth', 'shadow'),
+  explicit('--theme-depth-top-light-bevel',          'inset 0 1px 0 rgba(255, 255, 255, 0.08)',                                  'solid', 'Foundations', 'depth', 'shadow'),
+  explicit('--theme-depth-control-hard-shadow-filter','drop-shadow(4px 5px 0 rgba(0, 0, 0, 0.45))',                              'solid', 'Foundations', 'depth', 'shadow'),
 
   // Accent glow / focus halo (TEMP hardcoded accent literals — see Pass 2/3 cleanup note above)
-  explicit('--theme-depth-accent-glow-subtle', '0 0 8px rgba(51, 206, 214, 0.20)',                                'solid', 'Foundations', 'depth', 'shadow'),
-  explicit('--theme-depth-accent-glow-medium', '0 0 16px rgba(51, 206, 214, 0.28)',                               'solid', 'Foundations', 'depth', 'shadow'),
-  explicit('--theme-depth-accent-glow-strong', '0 0 26px rgba(51, 206, 214, 0.35)',                               'solid', 'Foundations', 'depth', 'shadow'),
-  explicit('--theme-depth-accent-ring',        '0 0 0 1px var(--theme-accent)',                                   'solid', 'Foundations', 'depth', 'shadow'),
-  explicit('--theme-depth-accent-halo',        '0 0 0 2px rgba(51, 206, 214, 0.20), 0 0 0 1px var(--theme-accent)', 'solid', 'Foundations', 'depth', 'shadow'),
+  explicit('--theme-depth-accent-glow-subtle', 'none',                                      'solid', 'Foundations', 'depth', 'shadow'),
+  explicit('--theme-depth-accent-glow-medium', 'none',                                      'solid', 'Foundations', 'depth', 'shadow'),
+  explicit('--theme-depth-accent-glow-strong', 'none',                                      'solid', 'Foundations', 'depth', 'shadow'),
+  explicit('--theme-depth-accent-ring',        '0 0 0 1px var(--theme-border-focus)',       'solid', 'Foundations', 'depth', 'shadow'),
+  explicit('--theme-depth-accent-halo',        '0 0 0 1px var(--theme-border-focus)',       'solid', 'Foundations', 'depth', 'shadow'),
 
   // Amplitude knob — unitless multiplier consumed at SELECTOR level via
   // calc() in future passes (NEVER inside token values; the catalog has
   // no calc() synthesis). 0 = flat, 0.5 = subtle, 1 = default, 1.5–2 = strong.
   // Future Theme Editor exposes this as a range slider; SimpleMode unaffected this pass.
   explicit('--theme-depth-amplitude', '1', 'solid', 'Foundations', 'depth', 'dimension'),
+
+  // Density scale for utility panels. These keep peripheral controls closer
+  // to the timeline/mixer cadence without changing panel structure.
+  explicit('--theme-panel-padding-compact',      '8px',      'solid', 'Foundations', 'density', 'dimension'),
+  explicit('--theme-panel-gap-compact',          '8px',      'solid', 'Foundations', 'density', 'dimension'),
+  explicit('--theme-section-padding-compact',    '6px',      'solid', 'Foundations', 'density', 'dimension'),
+  explicit('--theme-section-gap-compact',        '6px',      'solid', 'Foundations', 'density', 'dimension'),
+  explicit('--theme-control-padding-compact',    '3px 6px',  'solid', 'Foundations', 'density', 'dimension'),
+  explicit('--theme-control-gap-compact',        '6px',      'solid', 'Foundations', 'density', 'dimension'),
+  explicit('--theme-control-height-compact',     '28px',     'solid', 'Foundations', 'density', 'dimension'),
+  explicit('--theme-control-size-compact',       '42px',     'solid', 'Foundations', 'density', 'dimension'),
+  explicit('--theme-control-value-font-compact', '18px',     'solid', 'Foundations', 'density', 'dimension'),
+  explicit('--theme-knob-size-compact',          '44px',     'solid', 'Foundations', 'density', 'dimension'),
+  explicit('--theme-notation-min-height-compact','52px',     'solid', 'Foundations', 'density', 'dimension'),
+  explicit('--theme-grid-controls-width-compact','112px',    'solid', 'Foundations', 'density', 'dimension'),
+  explicit('--theme-empty-padding-compact',      '12px 8px', 'solid', 'Foundations', 'density', 'dimension'),
+  explicit('--theme-empty-margin-compact',       '4px',      'solid', 'Foundations', 'density', 'dimension'),
 
   // ─── Foundations: Semantic (§3.2 / §3.3) ──────────────────────────────
   // --theme-info passes through accent via deriveTheme.
@@ -270,6 +291,30 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   explicit('--theme-success', '#22C55E', 'solid', 'Foundations', 'semantic'),
   explicit('--theme-warning', '#FFAA33', 'solid', 'Foundations', 'semantic'),
   derivedFormula('--theme-info',    'solid', 'Foundations', 'semantic'),
+  ref('--theme-state-active', '--theme-accent', 'solid', 'Foundations', 'semantic'),
+  ref('--theme-state-on',     '--theme-accent', 'solid', 'Foundations', 'semantic'),
+  ref('--theme-knob-body',         '--theme-bg-surface',    'solid', 'Foundations', 'semantic'),
+  ref('--theme-knob-track',        '--theme-border-subtle', 'solid', 'Foundations', 'semantic'),
+  ref('--theme-knob-border',       '--theme-border-subtle', 'solid', 'Foundations', 'semantic'),
+  ref('--theme-knob-pointer',      '--theme-text-muted',    'solid', 'Foundations', 'semantic'),
+  ref('--theme-knob-arc',          '--theme-accent',        'solid', 'Foundations', 'semantic'),
+  ref('--theme-knob-arc-modified', '--theme-warning',       'solid', 'Foundations', 'semantic'),
+  ref('--theme-primitive-app-bg',            '--theme-bg-primary',      'solid', 'Foundations', 'semantic'),
+  ref('--theme-primitive-panel-bg',          '--theme-bg-surface',      'solid', 'Foundations', 'semantic'),
+  ref('--theme-primitive-header-bg',         '--theme-bg-secondary',    'solid', 'Foundations', 'semantic'),
+  ref('--theme-primitive-control-bg',        '--theme-bg-tertiary',     'solid', 'Foundations', 'semantic'),
+  ref('--theme-primitive-control-hover-bg',  '--theme-bg-hover',        'solid', 'Foundations', 'semantic'),
+  ref('--theme-primitive-control-active-bg', '--theme-bg-active',       'solid', 'Foundations', 'semantic'),
+  ref('--theme-primitive-well-bg',           '--theme-bg-inset',        'solid', 'Foundations', 'semantic'),
+  ref('--theme-primitive-control-border',    '--theme-border-subtle',   'solid', 'Foundations', 'semantic'),
+  ref('--theme-primitive-control-fg',        '--theme-text-muted',      'solid', 'Foundations', 'semantic'),
+  ref('--theme-primitive-control-active-fg', '--theme-text',            'solid', 'Foundations', 'semantic'),
+  ref('--theme-primitive-active-accent',     '--theme-accent',          'solid', 'Foundations', 'semantic'),
+  ref('--theme-primitive-meter-rail',        '--theme-depth-well-bg',   'solid', 'Foundations', 'semantic'),
+  ref('--theme-primitive-meter-idle',        '--theme-accent-bg-subtle','solid', 'Foundations', 'semantic'),
+  ref('--theme-primitive-meter-fill',        '--theme-success',         'solid', 'Foundations', 'semantic'),
+  explicit('--theme-led-green', '#5fe08f', 'solid', 'Foundations', 'semantic'),
+  explicit('--theme-led-red',   '#ff5a52', 'solid', 'Foundations', 'semantic'),
   // Default drag-preview tint for pattern-list items and timeline drag
   // shadows. In the semantic subsystem (UNIVERSAL) so any consumer may
   // reference it regardless of its own subsystem.

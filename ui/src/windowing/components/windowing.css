@@ -21,7 +21,8 @@
   min-height: 520px;
   min-width: 0;
   overflow: hidden;
-  background: var(--theme-bg-primary);
+  background: var(--theme-primitive-app-bg);
+  background-image: none;
   color: var(--theme-text);
   transition: grid-template-columns 180ms cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -40,7 +41,8 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: var(--theme-bg-primary);
+  background: var(--theme-primitive-app-bg);
+  background-image: none;
 }
 
 .xleth-docked-window-layer,
@@ -90,18 +92,8 @@
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background:
-    linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--theme-bg-primary) 12%, transparent),
-      color-mix(in srgb, var(--theme-bg-secondary) 18%, transparent)
-    ),
-    radial-gradient(
-      circle at 50% 42%,
-      color-mix(in srgb, var(--theme-accent) 8%, transparent),
-      transparent 62%
-    );
-  opacity: 0.58;
+  background: var(--theme-primitive-app-bg);
+  opacity: 0;
 }
 
 .xleth-backdrop-fx-canvas {
@@ -142,7 +134,15 @@
   overflow: hidden;
   min-height: 0;
   min-width: 0;
-  background: var(--theme-bg-primary);
+  background: var(--theme-primitive-app-bg);
+  background-image: none;
+}
+
+.xleth-backdrop-off .xleth-backdrop-layer,
+html[data-xleth-backdrop="off"] .xleth-backdrop-layer,
+.xleth-backdrop-native-acrylic .xleth-backdrop-layer,
+html[data-xleth-backdrop="native-acrylic"] .xleth-backdrop-layer {
+  display: none;
 }
 
 .xleth-backdrop-native-acrylic .xleth-windowing-app,
@@ -150,7 +150,8 @@
 .xleth-backdrop-native-acrylic .xleth-app-workarea,
 .xleth-backdrop-native-acrylic .xleth-center-column,
 .xleth-backdrop-native-acrylic .xleth-floating-work-area {
-  background: transparent;
+  background: var(--theme-primitive-app-bg);
+  background-image: none;
 }
 
 .xleth-backdrop-image .xleth-windowing-app,

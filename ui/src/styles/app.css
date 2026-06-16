@@ -959,15 +959,18 @@ html[data-xleth-backdrop="video"] #root {
   grid-template-rows: var(--xleth-top-chrome-height) minmax(0, 1fr) var(--xleth-bottom-chrome-height);
   height: 100vh;
   overflow: hidden;
-  background: var(--theme-bg-primary);
+  background: var(--theme-primitive-app-bg);
+  background-image: none;
 }
 
 .app.xleth-backdrop-native-acrylic {
-  background: transparent;
+  background: var(--theme-primitive-app-bg);
+  background-image: none;
 }
 
 .app.xleth-backdrop-off {
-  background: var(--theme-bg-primary);
+  background: var(--theme-primitive-app-bg);
+  background-image: none;
 }
 
 .app.xleth-backdrop-image {
@@ -979,7 +982,8 @@ html[data-xleth-backdrop="video"] #root {
 }
 
 .app.xleth-backdrop-video {
-  background: var(--theme-bg-primary);
+  background: var(--theme-primitive-app-bg);
+  background-image: none;
 }
 
 .app-body {
@@ -987,10 +991,12 @@ html[data-xleth-backdrop="video"] #root {
   min-height: 0;
   min-width: 0;
   overflow: hidden;
+  background: var(--theme-primitive-app-bg);
 }
 
 .xleth-backdrop-native-acrylic .app-body {
-  background: transparent;
+  background: var(--theme-primitive-app-bg);
+  background-image: none;
 }
 
 .xleth-backdrop-image .app-body,
@@ -1559,9 +1565,12 @@ html[data-xleth-backdrop="video"] .app-body {
 
 .left-panel-tab.active {
   color: var(--theme-accent);
-  border-color: transparent;
-  background: transparent;
-  box-shadow: inset 0 calc(var(--theme-chrome-underline-thickness) * -1) 0 var(--theme-accent);
+  border-color: var(--theme-primitive-control-border);
+  background: var(--theme-primitive-control-active-bg);
+  box-shadow:
+    var(--theme-depth-hard-shadow),
+    var(--theme-depth-top-light-bevel),
+    inset 0 calc(var(--theme-chrome-underline-thickness) * -1) 0 var(--theme-accent);
 }
 
 .left-panel-tab:focus-visible {
@@ -14067,7 +14076,9 @@ html.fx-drag-active * {
 .xleth-icon-button[data-active="true"] {
   background: var(--theme-primitive-control-active-bg);
   color: var(--theme-primitive-control-active-fg);
-  box-shadow: var(--theme-depth-top-light-bevel);
+  box-shadow:
+    var(--theme-depth-hard-shadow),
+    var(--theme-depth-top-light-bevel);
 }
 
 .xleth-button[data-active="true"]::after,
@@ -14140,6 +14151,7 @@ html.fx-drag-active * {
   touch-action: none;
   user-select: none;
   -webkit-app-region: no-drag;
+  filter: var(--theme-depth-control-hard-shadow-filter);
 }
 
 .xleth-knob__track,
@@ -14165,6 +14177,13 @@ html.fx-drag-active * {
 
 .xleth-knob__dot {
   fill: var(--theme-primitive-active-accent);
+}
+
+.xleth-knob__bevel {
+  fill: none;
+  stroke: var(--theme-border-strong);
+  stroke-linecap: round;
+  stroke-width: calc(var(--theme-chrome-underline-thickness) / 2);
 }
 
 .xleth-knob__label {
@@ -17293,9 +17312,12 @@ html, body, #root {
 
 .left-panel-tab.active {
   color: var(--theme-accent);
-  border-color: transparent;
-  background: transparent;
-  box-shadow: inset 0 calc(var(--theme-chrome-underline-thickness) * -1) 0 var(--theme-state-active);
+  border-color: var(--theme-primitive-control-border);
+  background: var(--theme-primitive-control-active-bg);
+  box-shadow:
+    var(--theme-depth-hard-shadow),
+    var(--theme-depth-top-light-bevel),
+    inset 0 calc(var(--theme-chrome-underline-thickness) * -1) 0 var(--theme-state-active);
 }
 
 .sampler-tab.is-active {
