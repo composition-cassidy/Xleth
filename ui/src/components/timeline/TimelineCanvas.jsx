@@ -851,13 +851,14 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       )}
       <div
         ref={playheadLineRef}
+        className="timeline-playhead-line"
         style={{
           position: 'absolute',
           top: 0,
           left: 0,
           width: `${PLAYHEAD_LINE_WIDTH}px`,
           height: '100%',
-          backgroundColor: 'var(--theme-border-focus)',
+          backgroundColor: 'var(--theme-timeline-playhead-line)',
           pointerEvents: 'none',
           zIndex: 10,
           willChange: 'transform',

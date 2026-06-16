@@ -1,7 +1,6 @@
 import { useState, useRef, useCallback } from 'react'
 import { Trash2, Music, Sliders, VolumeX } from 'lucide-react'
 import { TRACK_HEIGHT } from '../../constants/timeline.js'
-import { hexToRgba } from './timelineDrawing.js'
 import { timelineEvents } from '../../timelineEvents.js'
 import { TRACK_PALETTE_FALLBACK } from './trackColorResolver.js'
 
@@ -54,7 +53,7 @@ export default function TrackHeader({
       className={`track-header${track.muted ? ' track-header--muted' : ''}${track.visualOnly ? ' track-header--visual-only' : ''}${isPatternTrack ? ' track-header--pattern' : ''}${isFocused ? ' track-header--focused' : ''}`}
       style={{
         height: TRACK_HEIGHT,
-        ...(isPatternTrack && { background: `linear-gradient(90deg, ${hexToRgba(color, 0.06)} 0%, transparent 60%)` }),
+        '--track-header-fill': color,
       }}
       draggable
       onMouseDown={() => onFocus?.(track.id)}
@@ -67,6 +66,7 @@ export default function TrackHeader({
         onRequestContextMenu?.(track, e.clientX, e.clientY)
       }}
     >
+      <span className="track-header-identity-stripe" aria-hidden="true" />
       {isFocused && <div className="track-header-focus-bar" />}
 
       {/* Left content — color stripe + name stack. Dims to 55% when muted. */}

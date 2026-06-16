@@ -307,10 +307,9 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
 }
 
 .xleth-panel-frame.is-focused {
-  border-color: var(--theme-depth-floating-focused-border);
+  border-color: var(--theme-depth-floating-border);
   box-shadow:
     var(--theme-depth-floating-top-highlight),
-    var(--theme-depth-accent-glow-subtle),
     var(--theme-depth-floating-shadow);
 }
 
@@ -2242,7 +2241,7 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   height: 28px;
   padding: 0;
   border: 0;
-  border-bottom: 2px solid transparent;
+  border-bottom: var(--theme-chrome-underline-thickness) solid transparent;
   border-radius: var(--theme-chrome-radius-sm);
   background: none;
   cursor: pointer;
@@ -2257,8 +2256,10 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
 }
 
 .xleth-top-bar-toggle-btn[data-active="true"] {
-  color: var(--xleth-windowing-panel-color);
-  box-shadow: none;
+  color: var(--theme-accent);
+  background: var(--theme-primitive-control-bg);
+  border-bottom-color: var(--theme-accent);
+  box-shadow: var(--theme-depth-top-light-bevel);
 }
 
 .xleth-top-bar-toggle-btn[data-focused="true"] {

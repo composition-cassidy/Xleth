@@ -126,6 +126,29 @@ function GridPreview({ columns, rows, gapScale, canvasW = 1920, canvasH = 1080 }
   const cellH = Math.max(2, (H - gapY * (rows + 1)) / rows)
 
   const cells = []
+  const lines = []
+  for (let cc = 1; cc < columns; cc++) {
+    const x = cc * (W / columns)
+    lines.push(
+      <line
+        key={`v-${cc}`}
+        x1={x.toFixed(1)} y1="0"
+        x2={x.toFixed(1)} y2={H}
+        className="gsp-preview-grid-line"
+      />
+    )
+  }
+  for (let rr = 1; rr < rows; rr++) {
+    const y = rr * (H / rows)
+    lines.push(
+      <line
+        key={`h-${rr}`}
+        x1="0" y1={y.toFixed(1)}
+        x2={W} y2={y.toFixed(1)}
+        className="gsp-preview-grid-line"
+      />
+    )
+  }
   for (let rr = 0; rr < rows; rr++) {
     for (let cc = 0; cc < columns; cc++) {
       const x = gapX + cc * (cellW + gapX)
@@ -144,6 +167,7 @@ function GridPreview({ columns, rows, gapScale, canvasW = 1920, canvasH = 1080 }
   return (
     <svg className="gsp-preview-svg" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet">
       {cells}
+      {lines}
     </svg>
   )
 }
