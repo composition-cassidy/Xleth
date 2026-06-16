@@ -6,8 +6,8 @@
   --xleth-global-font-family: "Inter", "Noto Sans", "Segoe UI", system-ui, sans-serif;
 
   /* Sizing */
-  --titlebar-h:   32px;
-  --transport-h:  48px;
+  --titlebar-h:   48px;
+  --transport-h:  64px;
   --panel-min-w: 250px;
   --panel-max-w: 400px;
   --divider-w:     4px;
@@ -23,9 +23,9 @@
   --transition:      0.15s ease;
 
   /* App-shell chrome row heights — grid uses these to bound the workspace. */
-  --xleth-top-chrome-height: 76px;
-  --xleth-bottom-chrome-height: 48px;
-  --xleth-bottom-chrome-overhang: 28px;
+  --xleth-top-chrome-height: 48px;
+  --xleth-bottom-chrome-height: 64px;
+  --xleth-bottom-chrome-overhang: 0px;
 
   /* App-shell layer order: workspace panels < app chrome < portaled overlays. */
   --xleth-z-workspace: 0;
@@ -1012,8 +1012,9 @@ html[data-xleth-backdrop="video"] .app-body {
 
 .titlebar {
   position: relative;
+  height: var(--xleth-top-chrome-height);
   min-height: var(--xleth-top-chrome-height);
-  padding: var(--theme-control-gap-compact) var(--theme-section-padding-compact);
+  padding: 0 var(--theme-section-padding-compact);
   display: flex;
   align-items: center;
   background: var(--theme-chrome-titlebar-bg);
@@ -3171,59 +3172,27 @@ html[data-xleth-backdrop="video"] .app-body {
    â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 .transport-bar {
-  --transport-backdrop-height: var(--titlebar-backdrop-height, 76px);
-  --transport-backdrop-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 76' preserveAspectRatio='none'%3E%3Cpath fill='white' d='M0 76H100V0C97 3 94 6 88 6H12C6 6 3 3 0 0Z'/%3E%3C/svg%3E");
-  --transport-content-offset-y: -14px;
   position: relative;
   height: var(--transport-h);
   display: flex;
   align-items: center;
   gap: 16px;
-  padding: 0 16px;
-  background: transparent;
-  border-top: 0;
+  padding: 8px 16px;
+  background: var(--theme-chrome-titlebar-bg);
+  border-top: 1px solid var(--theme-border-subtle);
   z-index: 50;
-  overflow: visible;
+  overflow: hidden;
 }
 
 .transport-bar::before,
 .transport-bar::after {
-  content: "";
-  position: absolute;
-  bottom: 0;
-  height: var(--transport-backdrop-height);
-  pointer-events: none;
-  -webkit-mask-image: var(--transport-backdrop-mask);
-  mask-image: var(--transport-backdrop-mask);
-  -webkit-mask-repeat: no-repeat;
-  mask-repeat: no-repeat;
-  -webkit-mask-size: 100% 100%;
-  mask-size: 100% 100%;
-  z-index: 0;
-}
-
-.transport-bar::before {
-  left: 0;
-  right: 0;
-  background: var(--theme-depth-elevation-2-border);
-  filter: drop-shadow(0 -2px 7px rgba(0, 0, 0, 0.34));
-}
-
-.transport-bar::after {
-  left: 1px;
-  right: 1px;
-  bottom: 1px;
-  height: calc(var(--transport-backdrop-height) - 2px);
-  background:
-    linear-gradient(to top, rgba(255, 255, 255, 0.025) 0%, rgba(0, 0, 0, 0.025) 100%),
-    var(--theme-bg-elevated);
-  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.50);
+  content: none;
 }
 
 .transport-bar > * {
   position: relative;
   z-index: 1;
-  transform: translateY(var(--transport-content-offset-y));
+  transform: none;
 }
 
 /* â”€â”€ Controls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
@@ -14217,6 +14186,12 @@ html.fx-drag-active * {
   box-shadow: none;
 }
 
+.titlebar-menu-trigger.xleth-button {
+  height: var(--theme-control-height-compact);
+  min-height: var(--theme-control-height-compact);
+  padding: 0 6px;
+}
+
 .titlebar-launcher-btn.xleth-icon-button:hover:not(:disabled),
 .titlebar-btn.xleth-icon-button:hover:not(:disabled) {
   background: var(--theme-primitive-control-hover-bg);
@@ -15372,8 +15347,8 @@ html.fx-drag-active * {
   --xleth-global-font-family: "Inter", "Noto Sans", "Segoe UI", system-ui, sans-serif;
 
   /* Sizing */
-  --titlebar-h:   32px;
-  --transport-h:  48px;
+  --titlebar-h:   48px;
+  --transport-h:  64px;
   --panel-min-w: 250px;
   --panel-max-w: 400px;
   --divider-w:     4px;
