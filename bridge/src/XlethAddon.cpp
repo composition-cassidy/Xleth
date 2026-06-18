@@ -61,6 +61,7 @@
 #include "render/RenderScope.h"
 // [PreviewUnify] GPU compositor pipeline for unified preview
 #include "render/GridCompositor.h"
+#include "render/VisualFrameDiagnostics.h"  // opt-in pixel-content instrumentation
 #include "render/CanvasFit.h"
 #include "render/FrameCollector.h"
 #include "render/FrameCache.h"          // RenderFrameCache
@@ -278,6 +279,13 @@ struct PreviewDiagCounters {
     std::atomic<int>      lastReadbackHeight    {0};
     std::atomic<int>      lastRequestCount      {0};
     std::atomic<int>      lastDecodeMissCount   {0};
+    // ── Collector content counters (per preview tick) ────────────────────────
+    std::atomic<int>      lastActiveVisualEvents {0};  // events fed to collectRequests
+    std::atomic<int>      lastDedupKeyCount      {0};  // unique decode keys (frames needed)
+    std::atomic<int>      lastCacheHitCount      {0};  // keys already in render cache
+    std::atomic<int>      lastDecodeSuccessCount {0};  // misses decoded → texture this tick
+    std::atomic<int>      lastDecodeFailCount    {0};  // misses that produced no texture
+    std::atomic<int>      lastPreviewTimeMs      {0};  // compositor `time` used (ms)
     std::atomic<int>      lastLayoutColumns     {0};
     std::atomic<int>      lastLayoutRows        {0};
     std::atomic<int>      lastCompositorWidth   {0};
@@ -317,6 +325,24 @@ static const char* readbackHRESULTText(int32_t hrValue)
         case E_FAIL:                       return "E_FAIL";
         case E_OUTOFMEMORY:                return "E_OUTOFMEMORY";
         default:                           return "(unknown)";
+    }
+}
+
+// Map a raw D3D_FEATURE_LEVEL value to its short name for the diagnostic log.
+static const char* featureLevelText(uint32_t fl)
+{
+    switch (fl) {
+        case 0x9100: return "9_1";
+        case 0x9200: return "9_2";
+        case 0x9300: return "9_3";
+        case 0xa000: return "10_0";
+        case 0xa100: return "10_1";
+        case 0xb000: return "11_0";
+        case 0xb100: return "11_1";
+        case 0xc000: return "12_0";
+        case 0xc100: return "12_1";
+        case 0:      return "n/a";
+        default:     return "(other)";
     }
 }
 
@@ -2307,23 +2333,38 @@ static void videoThreadBody()
                         events, true, collectorProjectStartSample);
                     g_previewDiag.lastRequestCount.store(static_cast<int>(requests.size()),
                                                          std::memory_order_relaxed);
+                    g_previewDiag.lastActiveVisualEvents.store(static_cast<int>(events.size()),
+                                                              std::memory_order_relaxed);
 
                     auto deduplicated = FrameCollector::deduplicateRequests(requests);
                     auto misses = FrameCollector::resolveFrames(
                         deduplicated, *g_previewRenderCache);
                     g_previewDiag.lastDecodeMissCount.store(static_cast<int>(misses.size()),
                                                             std::memory_order_relaxed);
+                    g_previewDiag.lastDedupKeyCount.store(static_cast<int>(deduplicated.size()),
+                                                          std::memory_order_relaxed);
+                    // Keys already resolved from the render cache this tick.
+                    g_previewDiag.lastCacheHitCount.store(
+                        static_cast<int>(deduplicated.size()) - static_cast<int>(misses.size()),
+                        std::memory_order_relaxed);
 
                     auto* device = g_gpuDevice->getDevice();
                     auto* devCtx = g_gpuDevice->getContext();
+                    int decodeSucc = 0, decodeFail = 0;
                     if (device && devCtx) {
                         for (const auto& key : misses) {
                             auto entry = g_previewRenderDecoder->decode(
                                 key.sourcePath, key.frameIndex, device, devCtx);
-                            if (entry.texture)
+                            if (entry.texture) {
                                 g_previewRenderCache->put(key, std::move(entry));
+                                ++decodeSucc;
+                            } else {
+                                ++decodeFail;
+                            }
                         }
                     }
+                    g_previewDiag.lastDecodeSuccessCount.store(decodeSucc, std::memory_order_relaxed);
+                    g_previewDiag.lastDecodeFailCount.store(decodeFail, std::memory_order_relaxed);
 
                     if (g_previewCompositor->isInitialized()) {
                         float currentTime = hasStoppedPreviewRequest
@@ -2345,6 +2386,8 @@ static void videoThreadBody()
                             g_previewCompositor->setCanvasFit(vp.x, vp.y, vp.w, vp.h);
                         }
 
+                        g_previewDiag.lastPreviewTimeMs.store(
+                            static_cast<int>(currentTime * 1000.0f), std::memory_order_relaxed);
                         g_previewCompositor->compositeFrame(
                             requests, *g_previewRenderCache,
                             layout.columns, layout.rows,
@@ -2432,6 +2475,25 @@ static void videoThreadBody()
                             if (canvas) {
                                 g_previewDiag.canvasCopyCount.fetch_add(1, std::memory_order_relaxed);
                                 const uint8_t* src = rb.pixels.data();
+
+                                // ── Diag: pre-frameoutput-write ───────────────
+                                // Stats on the BGRA source pixels we are about to
+                                // copy/convert into the shared-memory back buffer.
+                                // (XLETH_VISUAL_DIAG_PIXELS=1 only — zero cost off.)
+                                if (xleth::visualdiag::pixelsEnabled()) {
+                                    static std::atomic<int64_t> s_preIdx{0};
+                                    const int64_t fi =
+                                        s_preIdx.fetch_add(1, std::memory_order_relaxed);
+                                    auto ps = xleth::visualdiag::computeFrameStats(
+                                        src, rb.width, rb.height, rb.stride,
+                                        xleth::visualdiag::PixelFormat::BGRA, fi);
+                                    xleth::visualdiag::record("pre-frameoutput-write", ps);
+                                    xleth::visualdiag::maybeDumpFrame(
+                                        "pre-frameoutput-write", src, rb.width,
+                                        rb.height, rb.stride,
+                                        xleth::visualdiag::PixelFormat::BGRA, ps);
+                                }
+
                                 if (rb.width == CANVAS_W && rb.height == CANVAS_H) {
                                     const size_t pixelCount =
                                         static_cast<size_t>(CANVAS_W) * CANVAS_H;
@@ -2458,6 +2520,30 @@ static void videoThreadBody()
                                         }
                                     }
                                 }
+                                // ── Diag: post-frameoutput-write ──────────────
+                                // Stats on the RGBA bytes that now sit in the
+                                // shared-memory back buffer (note: channel order
+                                // flipped from the BGRA source above). Records the
+                                // written buffer index so a transport/index-swap
+                                // mismatch is visible against the renderer side.
+                                if (xleth::visualdiag::pixelsEnabled()) {
+                                    static std::atomic<int64_t> s_postIdx{0};
+                                    const int64_t fi =
+                                        s_postIdx.fetch_add(1, std::memory_order_relaxed);
+                                    // Back buffer = the half NOT currently fronted.
+                                    const int64_t writtenIdx =
+                                        frameOutput.getCurrentBufferIndex() ^ 1;
+                                    auto ps = xleth::visualdiag::computeFrameStats(
+                                        canvas, CANVAS_W, CANVAS_H, CANVAS_W * 4,
+                                        xleth::visualdiag::PixelFormat::RGBA,
+                                        fi, writtenIdx);
+                                    xleth::visualdiag::record("post-frameoutput-write", ps);
+                                    xleth::visualdiag::maybeDumpFrame(
+                                        "post-frameoutput-write", canvas, CANVAS_W,
+                                        CANVAS_H, CANVAS_W * 4,
+                                        xleth::visualdiag::PixelFormat::RGBA, ps);
+                                }
+
                                 frameOutput.swapBuffers();
                                 if (hasStoppedPreviewRequest) {
                                     g_publishedStoppedPreviewSeq.store(
@@ -13347,10 +13433,17 @@ Napi::Value Diag_GetVisualPreviewDiagnostic(const Napi::CallbackInfo& info)
         o.Set("activeAdapterIndex",
               Napi::Number::New(env, g_gpuDevice->getActiveAdapterIndex()));
         o.Set("hasD3D11Device", Napi::Boolean::New(env, g_gpuDevice->hasDevice()));
+        o.Set("activeFeatureLevel",
+              Napi::String::New(env, featureLevelText(g_gpuDevice->getActiveFeatureLevel())));
+        o.Set("deviceIsWarp", Napi::Boolean::New(env, g_gpuDevice->isWarpDevice()));
+        o.Set("debugLayerActive", Napi::Boolean::New(env, g_gpuDevice->isDebugLayerActive()));
     } else {
         adapterArr = Napi::Array::New(env, 0);
         o.Set("activeAdapterIndex", Napi::Number::New(env, -1));
         o.Set("hasD3D11Device", Napi::Boolean::New(env, false));
+        o.Set("activeFeatureLevel", Napi::String::New(env, "n/a"));
+        o.Set("deviceIsWarp", Napi::Boolean::New(env, false));
+        o.Set("debugLayerActive", Napi::Boolean::New(env, false));
     }
     o.Set("adapters", adapterArr);
 
@@ -13447,6 +13540,12 @@ Napi::Value Diag_GetVisualPreviewDiagnostic(const Napi::CallbackInfo& info)
     last.Set("readbackHeight", Napi::Number::New(env, g_previewDiag.lastReadbackHeight.load()));
     last.Set("requestCount",   Napi::Number::New(env, g_previewDiag.lastRequestCount.load()));
     last.Set("decodeMissCount",Napi::Number::New(env, g_previewDiag.lastDecodeMissCount.load()));
+    last.Set("activeVisualEvents", Napi::Number::New(env, g_previewDiag.lastActiveVisualEvents.load()));
+    last.Set("dedupKeyCount",      Napi::Number::New(env, g_previewDiag.lastDedupKeyCount.load()));
+    last.Set("cacheHitCount",      Napi::Number::New(env, g_previewDiag.lastCacheHitCount.load()));
+    last.Set("decodeSuccessCount", Napi::Number::New(env, g_previewDiag.lastDecodeSuccessCount.load()));
+    last.Set("decodeFailCount",    Napi::Number::New(env, g_previewDiag.lastDecodeFailCount.load()));
+    last.Set("previewTimeMs",      Napi::Number::New(env, g_previewDiag.lastPreviewTimeMs.load()));
     last.Set("layoutColumns",  Napi::Number::New(env, g_previewDiag.lastLayoutColumns.load()));
     last.Set("layoutRows",     Napi::Number::New(env, g_previewDiag.lastLayoutRows.load()));
     last.Set("compositorWidth",  Napi::Number::New(env, g_previewDiag.lastCompositorWidth.load()));
@@ -13516,6 +13615,71 @@ Napi::Value Diag_GetVisualPreviewDiagnostic(const Napi::CallbackInfo& info)
         gl.Set("previewFps", Napi::Number::New(env, layout.previewFps));
         gl.Set("gapScale",   Napi::Number::New(env, layout.gapScale));
         o.Set("gridLayout", gl);
+    }
+
+    // ── Pixel-content verification (opt-in: XLETH_VISUAL_DIAG_PIXELS=1) ───────
+    // Per-stage content fingerprints recorded by the native pipeline. Renderer
+    // stages (renderer-pre-webgl-upload / renderer-post-webgl-readpixels) are
+    // collected JS-side and merged by the report builder, not here.
+    {
+        auto statsToObj = [&](const xleth::visualdiag::FramePixelStats& s) {
+            Napi::Object so = Napi::Object::New(env);
+            so.Set("observed",      Napi::Boolean::New(env, s.observed));
+            so.Set("format",        Napi::String::New(env,
+                                        xleth::visualdiag::pixelFormatName(s.format)));
+            so.Set("width",         Napi::Number::New(env, s.width));
+            so.Set("height",        Napi::Number::New(env, s.height));
+            so.Set("rowPitch",      Napi::Number::New(env, s.rowPitch));
+            so.Set("byteCount",     Napi::Number::New(env, static_cast<double>(s.byteCount)));
+            // checksum as string — avoids JS Number precision worries at scale.
+            so.Set("checksum64",    Napi::String::New(env, std::to_string(s.checksum64)));
+            so.Set("nonZeroBytes",  Napi::Number::New(env, static_cast<double>(s.nonZeroBytes)));
+            so.Set("nonZeroPixels", Napi::Number::New(env, static_cast<double>(s.nonZeroPixels)));
+            so.Set("averageLuma",   Napi::Number::New(env, s.averageLuma));
+            so.Set("first16Bytes",  Napi::String::New(env, xleth::visualdiag::first16Hex(s)));
+            Napi::Array cp = Napi::Array::New(env, 4);
+            for (uint32_t i = 0; i < 4; ++i)
+                cp.Set(i, Napi::Number::New(env, s.centerPixel[i]));
+            so.Set("centerPixel", cp);
+            Napi::Array corners = Napi::Array::New(env, 4);
+            for (uint32_t c = 0; c < 4; ++c) {
+                Napi::Array one = Napi::Array::New(env, 4);
+                for (uint32_t i = 0; i < 4; ++i)
+                    one.Set(i, Napi::Number::New(env, s.corners[c][i]));
+                corners.Set(c, one);
+            }
+            so.Set("corners",    corners);
+            so.Set("frameIndex", Napi::Number::New(env, static_cast<double>(s.frameIndex)));
+            so.Set("tickIndex",  Napi::Number::New(env, static_cast<double>(s.tickIndex)));
+            so.Set("timestamp",  Napi::Number::New(env, s.timestamp));
+            return so;
+        };
+
+        auto snaps = xleth::visualdiag::snapshotAll();
+        Napi::Array pixelStatsArr = Napi::Array::New(env, snaps.size());
+        for (size_t i = 0; i < snaps.size(); ++i) {
+            const auto& sn = snaps[i];
+            Napi::Object row = Napi::Object::New(env);
+            row.Set("stage",       Napi::String::New(env, sn.stage));
+            row.Set("observed",    Napi::Boolean::New(env, sn.observed));
+            row.Set("sampleCount", Napi::Number::New(env, static_cast<double>(sn.sampleCount)));
+            row.Set("dumpCount",   Napi::Number::New(env, static_cast<double>(sn.dumpCount)));
+            row.Set("first",  statsToObj(sn.first));
+            row.Set("latest", statsToObj(sn.latest));
+            pixelStatsArr.Set(static_cast<uint32_t>(i), row);
+        }
+        o.Set("pixelStats", pixelStatsArr);
+
+        Napi::Object flags = Napi::Object::New(env);
+        flags.Set("pixelsEnabled",
+                  Napi::Boolean::New(env, xleth::visualdiag::pixelsEnabled()));
+        flags.Set("dumpFramesEnabled",
+                  Napi::Boolean::New(env, xleth::visualdiag::dumpFramesEnabled()));
+        flags.Set("maxDumpFramesPerStage",
+                  Napi::Number::New(env, xleth::visualdiag::maxDumpFramesPerStage()));
+        flags.Set("dumpSessionDir",
+                  Napi::String::New(env, xleth::visualdiag::dumpSessionDir()));
+        o.Set("visualDiagFlags", flags);
     }
 
     return o;

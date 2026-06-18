@@ -1,6 +1,7 @@
 #include "GridCompositor.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cstdio>
 #include <cstring>
@@ -19,6 +20,7 @@
 #include "shaders/FX_ScratchWaveSmearPS.h"
 
 #include "model/TimelineTypes.h"  // VisualEffect
+#include "VisualFrameDiagnostics.h"  // opt-in pixel-content instrumentation
 
 // ---------------------------------------------------------------------------
 // HRESULT → short text for readback failure diagnostics
@@ -52,6 +54,23 @@ static const char* readbackStageText(ReadbackFailureStage stage) {
         case ReadbackFailureStage::DimensionsInvalid:           return "dimensions_invalid";
         default:                                                return "unknown";
     }
+}
+
+// Opt-in (XLETH_VISUAL_DIAG_PIXELS=1) content fingerprint of a just-read-back
+// frame. `buf.pixels` is tightly-packed BGRA (stride == width*4) — the staging
+// rowPitch has already been stripped by the memcpy loop above. No-op overhead
+// when the diagnostic flag is off (callers gate on pixelsEnabled()).
+static void recordReadbackPixelStats(const ReadbackBuffer& buf) {
+    if (!xleth::visualdiag::pixelsEnabled()) return;
+    static std::atomic<int64_t> s_frameIdx{0};
+    const int64_t idx = s_frameIdx.fetch_add(1, std::memory_order_relaxed);
+    auto stats = xleth::visualdiag::computeFrameStats(
+        buf.pixels.data(), buf.width, buf.height, buf.stride,
+        xleth::visualdiag::PixelFormat::BGRA, idx);
+    xleth::visualdiag::record("post-d3d11-readback", stats);
+    xleth::visualdiag::maybeDumpFrame("post-d3d11-readback", buf.pixels.data(),
+                                      buf.width, buf.height, buf.stride,
+                                      xleth::visualdiag::PixelFormat::BGRA, stats);
 }
 
 static ReadbackTextureDesc captureTextureDesc(ID3D11Texture2D* texture) {
@@ -1101,6 +1120,7 @@ ReadbackBuffer GridCompositor::readback(ReadbackMode mode)
             lastReadbackHR_ = S_OK;
             buf.valid = true;
             buf.result = ReadbackResult::Valid;
+            recordReadbackPixelStats(buf);
 
             auto end = std::chrono::high_resolution_clock::now();
             double ms = std::chrono::duration<double, std::milli>(end - start).count();
@@ -1237,6 +1257,7 @@ ReadbackBuffer GridCompositor::readback(ReadbackMode mode)
             lastReadbackHR_ = S_OK;
             buf.valid = true;
             buf.result = ReadbackResult::Valid;
+            recordReadbackPixelStats(buf);
 
             auto end = std::chrono::high_resolution_clock::now();
             double ms = std::chrono::duration<double, std::milli>(end - start).count();

@@ -54,6 +54,48 @@ function createProgram(gl, vertSrc, fragSrc) {
   return program
 }
 
+// ── Pixel-content diagnostics (opt-in) ───────────────────────────────────────
+// Mirrors the native FramePixelStats fingerprint so the renderer stages line up
+// with the engine stages in the Visual Preview Diagnostic Log. `format` MUST be
+// labelled ('RGBA' here, since shm + readPixels are both RGBA) so first-byte
+// comparisons against native BGRA are never made blindly. Heavy (~full-frame
+// loop) — callers gate on the diag flag and sample sparingly.
+function computeFrameStatsJS(bytes, width, height, format) {
+  const rIdx = format === 'BGRA' ? 2 : 0
+  const bIdx = format === 'BGRA' ? 0 : 2
+  const px = width * height
+  const n = px * 4
+  let checksum = 0, nonZeroBytes = 0, nonZeroPixels = 0, lumaSum = 0
+  for (let i = 0; i < n; i += 4) {
+    const c0 = bytes[i], c1 = bytes[i + 1], c2 = bytes[i + 2], c3 = bytes[i + 3]
+    checksum += c0 + c1 + c2 + c3
+    if (c0) nonZeroBytes++
+    if (c1) nonZeroBytes++
+    if (c2) nonZeroBytes++
+    if (c3) nonZeroBytes++
+    if (c0 || c1 || c2) nonZeroPixels++
+    lumaSum += 0.299 * bytes[i + rIdx] + 0.587 * c1 + 0.114 * bytes[i + bIdx]
+  }
+  const first16 = []
+  for (let i = 0; i < Math.min(16, n); i++) {
+    first16.push(bytes[i].toString(16).padStart(2, '0').toUpperCase())
+  }
+  const at = (x, y) => {
+    const o = (y * width + x) * 4
+    return [bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]
+  }
+  return {
+    observed: true, format, width, height, rowPitch: width * 4,
+    byteCount: n, checksum64: String(checksum),
+    nonZeroBytes, nonZeroPixels,
+    averageLuma: px ? lumaSum / px : 0,
+    first16Bytes: first16.join(' '),
+    centerPixel: at(width >> 1, height >> 1),
+    corners: [at(0, 0), at(width - 1, 0), at(0, height - 1), at(width - 1, height - 1)],
+    frameIndex: -1, tickIndex: -1, timestamp: 0,
+  }
+}
+
 function hexToGlColor(hex) {
   const h = hex.replace('#', '')
   const r = parseInt(h.slice(0, 2), 16) / 255
@@ -169,8 +211,32 @@ export default function VideoPreview() {
       clearColorRgb: null,             // [r,g,b] (0..1) used by drawNoVideo
       drawApi: 'none',                 // 'webgl' | 'canvas2d' | 'none'
       webgl: null,                     // populated below if WebGL init succeeds
+      // ── Pixel-content verification (opt-in) ──────────────────────────────
+      // Populated only when window.xleth.diag.visualPixelDiag.pixels is set.
+      // stage -> { observed, sampleCount, latest }
+      pixelStats: {},
+      glErrorAfterUpload: 0,           // last gl.getError() after texSubImage2D
+      glErrorAfterDraw: 0,             // last gl.getError() after drawArrays
+      pixelDiagEnabled: false,
     }
     window.__xlethVisualPreviewDiag = diag
+
+    // Opt-in pixel-content instrumentation (mirrors native XLETH_VISUAL_DIAG_PIXELS).
+    const pixelDiagEnabled = !!(window.xleth?.diag?.visualPixelDiag?.pixels)
+    diag.pixelDiagEnabled = pixelDiagEnabled
+    let pixelDiagFrame = 0          // counts successful uploads
+    let readPixelsBuf = null        // lazily-sized RGBA scratch for readPixels
+    const PIXEL_DIAG_FIRST_N = 3    // always sample the first N uploads
+    const PIXEL_DIAG_EVERY = 120    // then sample 1-in-N to keep watching
+    const shouldSamplePixels = (n) => n < PIXEL_DIAG_FIRST_N || (n % PIXEL_DIAG_EVERY) === 0
+    const recordRendererStats = (stage, stats) => {
+      const prev = diag.pixelStats[stage]
+      diag.pixelStats[stage] = {
+        observed: true,
+        sampleCount: (prev?.sampleCount || 0) + 1,
+        latest: stats,
+      }
+    }
 
     // ── Open the named shared-memory region (synchronous handshake) ─────
     // preload.js calls shm_helper.openSharedMemory() which maps the same
@@ -341,6 +407,20 @@ export default function VideoPreview() {
           let uploadOk = false
           if (useWebGL) {
             try {
+              // ── Diag: renderer-pre-webgl-upload ──────────────────────────
+              // Stats on the exact RGBA bytes read from shared memory, BEFORE
+              // they touch WebGL. Compared against the engine's
+              // post-frameoutput-write (also RGBA) this isolates transport vs
+              // GPU-upload faults. Sampled sparingly — heavy full-frame loop.
+              const sampleThis = pixelDiagEnabled && shouldSamplePixels(pixelDiagFrame)
+              if (sampleThis) {
+                try {
+                  const stats = computeFrameStatsJS(frame, sabWidth, sabHeight, 'RGBA')
+                  stats.shmIndex = idx
+                  recordRendererStats('renderer-pre-webgl-upload', stats)
+                } catch { /* never let diag break preview */ }
+              }
+
               gl.bindTexture(gl.TEXTURE_2D, texture)
               if (texW !== sabWidth || texH !== sabHeight) {
                 gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, sabWidth, sabHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, frame)
@@ -349,11 +429,30 @@ export default function VideoPreview() {
                 gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, sabWidth, sabHeight, gl.RGBA, gl.UNSIGNED_BYTE, frame)
               }
               const err = gl.getError()
+              if (pixelDiagEnabled) diag.glErrorAfterUpload = err
               if (err !== gl.NO_ERROR) {
                 throw new Error(`gl.getError = 0x${err.toString(16)}`)
               }
               gl.drawArrays(gl.TRIANGLES, 0, 6)
               uploadOk = true
+
+              // ── Diag: renderer-post-webgl-readpixels ─────────────────────
+              // Read back what the GPU actually drew. If pre-upload is non-zero
+              // but this is zero, the fault is in WebGL upload/draw/presentation.
+              if (sampleThis) {
+                try {
+                  const need = sabWidth * sabHeight * 4
+                  if (!readPixelsBuf || readPixelsBuf.length !== need) {
+                    readPixelsBuf = new Uint8Array(need)
+                  }
+                  gl.readPixels(0, 0, sabWidth, sabHeight, gl.RGBA, gl.UNSIGNED_BYTE, readPixelsBuf)
+                  const drawErr = gl.getError()
+                  if (pixelDiagEnabled) diag.glErrorAfterDraw = drawErr
+                  const stats = computeFrameStatsJS(readPixelsBuf, sabWidth, sabHeight, 'RGBA')
+                  recordRendererStats('renderer-post-webgl-readpixels', stats)
+                } catch { /* readPixels unsupported / context lost — skip */ }
+              }
+              if (pixelDiagEnabled) pixelDiagFrame++
             } catch (e) {
               diag.lastTexUploadError = String(e?.message || e)
             }

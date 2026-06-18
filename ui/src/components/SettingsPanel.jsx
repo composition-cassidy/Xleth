@@ -121,6 +121,12 @@ function snapshotPreviewDiag() {
     contextLostCount: live.contextLostCount,
     contextRestoredCount: live.contextRestoredCount,
     clearColorRgb: live.clearColorRgb ? [...live.clearColorRgb] : null,
+    // Opt-in pixel-content verification (renderer stages). Shallow-cloned so the
+    // IPC structured-clone to main does not carry live references.
+    pixelDiagEnabled: !!live.pixelDiagEnabled,
+    glErrorAfterUpload: live.glErrorAfterUpload,
+    glErrorAfterDraw: live.glErrorAfterDraw,
+    pixelStats: live.pixelStats ? JSON.parse(JSON.stringify(live.pixelStats)) : {},
     webgl: live.webgl ? {
       ...live.webgl,
       extensions: Array.isArray(live.webgl.extensions)

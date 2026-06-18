@@ -280,6 +280,7 @@ add_library(XlethEngineCore STATIC
     src/render/VideoFlipApplier.cpp
     src/render/RenderVideoDecoder.cpp
     src/render/GridCompositor.cpp
+    src/render/VisualFrameDiagnostics.cpp
     src/render/HwEncoderDetector.cpp
     src/render/OfflineRenderer.cpp
     src/render/ArpVideoExpander.cpp

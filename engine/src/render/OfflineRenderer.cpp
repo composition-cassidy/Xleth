@@ -11,6 +11,7 @@
 #include "render/FrameCollector.h"
 #include "render/RenderVideoDecoder.h"
 #include "render/GridCompositor.h"
+#include "render/VisualFrameDiagnostics.h"  // opt-in pixel-content instrumentation
 #include "render/CanvasFit.h"
 #include "render/AnimationManager.h"
 #include "export/FFmpegMuxer.h"
@@ -39,6 +40,21 @@ extern "C" {
 static constexpr int kBufferSize = 512;
 
 namespace {
+
+// Opt-in (XLETH_VISUAL_DIAG_PIXELS=1) content fingerprint of a composed export
+// frame, taken immediately before it is handed to the encoder. `readback.pixels`
+// is BGRA with row stride `readback.stride`. No-op when the flag is off.
+// `encoderName`/dimensions are passed through only for the JSON sidecar context.
+inline void recordExportPreEncode(const ReadbackBuffer& readback, long long frameIndex) {
+    if (!xleth::visualdiag::pixelsEnabled()) return;
+    auto stats = xleth::visualdiag::computeFrameStats(
+        readback.pixels.data(), readback.width, readback.height, readback.stride,
+        xleth::visualdiag::PixelFormat::BGRA, frameIndex);
+    xleth::visualdiag::record("export-pre-encode", stats);
+    xleth::visualdiag::maybeDumpFrame(
+        "export-pre-encode", readback.pixels.data(), readback.width,
+        readback.height, readback.stride, xleth::visualdiag::PixelFormat::BGRA, stats);
+}
 
 // Resolve the project canvas (GridLayout) + requested export size + fit mode into
 // the compositor's canvas viewport, then apply it. Identity when the export
@@ -868,6 +884,7 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
                             lastFrameStride = readback.stride;
                             haveLastFrame   = true;
                         }
+                        recordExportPreEncode(readback, (long long)f);
                         if (!muxer.writeVideo(readback.pixels.data(),
                                               readback.stride, f)) {
                             progress_.setError("Video encoding failed at frame "
@@ -1421,6 +1438,7 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
                     auto readback = compositor.readback();
                     ++videoFramesAttempted;
                     if (readback.valid) {
+                        recordExportPreEncode(readback, (long long)f);
                         if (!muxer.writeVideo(readback.pixels.data(), readback.stride, f)) {
                             progress_.setError("Video encoding failed at frame " + std::to_string(f));
                             progress_.failed.store(true);

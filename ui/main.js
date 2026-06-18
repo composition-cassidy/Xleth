@@ -2281,7 +2281,65 @@ function fmtKVLines(obj, indent = '  ') {
   return lines.join('\n');
 }
 
-function buildVisualPreviewDiagnosticText({ engine, extras, settings }) {
+// ── Pixel-content verification helpers ───────────────────────────────────────
+// The six stages are sourced from two places: native stages come from the
+// engine N-API snapshot (engine.pixelStats array); renderer stages come from
+// the live preview canvas (extras.preview.pixelStats object). This merges both
+// into one stage→{observed, sampleCount, latest} lookup the section can render.
+const PIXEL_STAGE_ORDER = [
+  'post-d3d11-readback',
+  'pre-frameoutput-write',
+  'post-frameoutput-write',
+  'renderer-pre-webgl-upload',
+  'renderer-post-webgl-readpixels',
+  'export-pre-encode',
+];
+
+function buildPixelStageLookup(engine, preview) {
+  const lookup = {};
+  // Native (array of rows)
+  if (engine && Array.isArray(engine.pixelStats)) {
+    for (const row of engine.pixelStats) {
+      if (row && row.stage) {
+        lookup[row.stage] = {
+          observed: !!row.observed,
+          sampleCount: row.sampleCount || 0,
+          dumpCount: row.dumpCount || 0,
+          latest: row.latest || null,
+          source: 'native',
+        };
+      }
+    }
+  }
+  // Renderer (object keyed by stage)
+  if (preview && preview.pixelStats && typeof preview.pixelStats === 'object') {
+    for (const [stage, v] of Object.entries(preview.pixelStats)) {
+      if (!v) continue;
+      lookup[stage] = {
+        observed: !!v.observed,
+        sampleCount: v.sampleCount || 0,
+        dumpCount: 0,
+        latest: v.latest || null,
+        source: 'renderer',
+      };
+    }
+  }
+  return lookup;
+}
+
+// Classify a stage row: 'non-zero' | 'all-zero' | 'not-sampled' | 'failed'.
+function interpretPixelStage(entry) {
+  if (!entry || !entry.observed) return 'not-sampled';
+  const s = entry.latest;
+  if (!s || !s.observed || !s.width || !s.height) return 'failed';
+  return (s.nonZeroPixels > 0) ? 'non-zero' : 'all-zero';
+}
+
+function fmtPixelArr(a) {
+  return Array.isArray(a) ? `[${a.join(', ')}]` : 'n/a';
+}
+
+function buildVisualPreviewDiagnosticText({ engine, extras, settings, gpuInfo }) {
   const ts = new Date();
   const out = [];
   const sep = '─'.repeat(72);
@@ -2324,9 +2382,38 @@ function buildVisualPreviewDiagnosticText({ engine, extras, settings }) {
     });
   }
   out.push(`  D3D11 device created: ${fmtBool(engine && engine.hasD3D11Device)}`);
+  if (engine) {
+    out.push(`  D3D feature level:    ${engine.activeFeatureLevel || 'n/a'}`);
+    out.push(`  Device type:          ${engine.deviceIsWarp ? 'WARP (software rasterizer — XLETH_D3D11_WARP)' : 'hardware'}`);
+    out.push(`  D3D11 debug layer:    ${fmtBool(engine.debugLayerActive)}`);
+  }
   out.push(`  Engine compositor backend: D3D11 (GridCompositor) — NOT OpenGL`);
   out.push(`  Renderer (Electron preview canvas) backend: WebGL / Canvas2D`);
   out.push(`  Video encode/decode mode (requested): ${(settings && settings.videoMode) || 'auto'}`);
+  // Electron's own GPU view — a third independent signal (engine DXGI list and
+  // renderer WebGL unmasked-renderer are the other two). Useful when Chromium
+  // falls back to a different adapter than the engine's D3D11 device.
+  out.push('');
+  out.push('  Electron app.getGPUInfo(\'basic\'):');
+  if (!gpuInfo) {
+    out.push('    (unavailable)');
+  } else if (gpuInfo.error) {
+    out.push(`    ✗ getGPUInfo failed: ${gpuInfo.error}`);
+  } else {
+    const gpus = (gpuInfo.gpuDevice && Array.isArray(gpuInfo.gpuDevice)) ? gpuInfo.gpuDevice : [];
+    if (!gpus.length) {
+      out.push('    (no gpuDevice entries reported)');
+    } else {
+      gpus.forEach((g, i) => {
+        out.push(`    [${i}] vendorId=${fmtVendorHex(g.vendorId)} deviceId=${fmtVendorHex(g.deviceId)}` +
+          `${g.active ? ' ACTIVE' : ''}${g.driverVendor ? ` driverVendor=${g.driverVendor}` : ''}` +
+          `${g.driverVersion ? ` driverVersion=${g.driverVersion}` : ''}`);
+      });
+    }
+    if (gpuInfo.auxAttributes && gpuInfo.auxAttributes.glRenderer) {
+      out.push(`    glRenderer: ${gpuInfo.auxAttributes.glRenderer}`);
+    }
+  }
   out.push('');
 
   // ── 2. Known-good video paths ──────────────────────────────────────────
@@ -2361,7 +2448,30 @@ function buildVisualPreviewDiagnosticText({ engine, extras, settings }) {
       out.push(`  Grid layout:            ${engine.gridLayout.columns} cols × ${engine.gridLayout.rows} rows @ ${engine.gridLayout.previewFps} fps  gapScale=${engine.gridLayout.gapScale}`);
     }
     if (engine.lastTick) {
-      out.push(`  Last tick:              ${engine.lastTick.requestCount} cell requests, ${engine.lastTick.decodeMissCount} decode misses`);
+      const lt = engine.lastTick;
+      out.push(`  Last tick:              ${lt.requestCount} cell requests, ${lt.decodeMissCount} decode misses`);
+      out.push('');
+      out.push('  TIMELINE / COLLECTOR CONTENT (latest preview tick):');
+      out.push(`    Preview time used:        ${lt.previewTimeMs != null ? (lt.previewTimeMs / 1000).toFixed(3) + ' s' : 'unavailable'}`);
+      out.push(`    Active visual events:     ${lt.activeVisualEvents != null ? lt.activeVisualEvents : 'unavailable'}  (events fed to the collector)`);
+      out.push(`    Project has visual events:${lt.activeVisualEvents != null ? (lt.activeVisualEvents > 0 ? ' yes' : ' NO — nothing to render') : ' unavailable'}`);
+      out.push(`    Cells requested:          ${lt.requestCount}  (final compositor input count)`);
+      out.push(`    Unique decode keys:       ${lt.dedupKeyCount != null ? lt.dedupKeyCount : 'unavailable'}  (after dedup)`);
+      out.push(`    Cache hits:               ${lt.cacheHitCount != null ? lt.cacheHitCount : 'unavailable'}`);
+      out.push(`    Decode requests (misses): ${lt.decodeMissCount}`);
+      out.push(`    Decode successes:         ${lt.decodeSuccessCount != null ? lt.decodeSuccessCount : 'unavailable'}`);
+      out.push(`    Decode failures:          ${lt.decodeFailCount != null ? lt.decodeFailCount : 'unavailable'}`);
+      out.push(`    Cells skipped (+reason):  unavailable — collectRequests does not currently`);
+      out.push(`                              expose a per-cell skip/reject reason list`);
+      out.push(`    Paused for export:        ${fmtBool(engine.pauseForExport)}`);
+      out.push(`    Paused for visibility:    ${fmtBool(engine.pauseForVisibility)}`);
+      if (lt.requestCount === 0) {
+        out.push('    ⚠ 0 cells requested → the collector found NO visual content at this');
+        out.push('      timeline position. If the project DOES have video on the grid, the');
+        out.push('      compositor is rendering an empty (black) scene — the pixels are');
+        out.push('      genuinely zero at the source, not lost in transport. This matches a');
+        out.push('      PIXEL CONTENT VERIFICATION reading of all-zero at post-d3d11-readback.');
+      }
     }
   }
   out.push('');
@@ -2581,6 +2691,121 @@ function buildVisualPreviewDiagnosticText({ engine, extras, settings }) {
   out.push('                              (Task Manager → Performance → GPU, or GPU-Z)');
   out.push('');
 
+  // ── 7. Pixel content verification ──────────────────────────────────────
+  out.push('7. PIXEL CONTENT VERIFICATION');
+  out.push(sep);
+  const diagFlags = engine && engine.visualDiagFlags;
+  const pixelsOn = diagFlags && diagFlags.pixelsEnabled;
+  const rendererPixelsOn = preview && preview.pixelDiagEnabled;
+  out.push('  This section proves whether REAL non-zero pixels exist at each stage of');
+  out.push('  the pipeline — not just that bytes moved. Native readback is BGRA; the');
+  out.push('  shared-memory / WebGL stages are RGBA (channel order is labelled per row,');
+  out.push('  so do NOT compare first-bytes across formats blindly).');
+  out.push('');
+  out.push(`  Native pixel diag (XLETH_VISUAL_DIAG_PIXELS):   ${pixelsOn ? 'ON' : 'OFF'}`);
+  out.push(`  Renderer pixel diag (same flag, renderer):     ${rendererPixelsOn ? 'ON' : 'OFF'}`);
+  if (diagFlags) {
+    out.push(`  Raw frame dumps (XLETH_VISUAL_DIAG_DUMP_FRAMES): ${diagFlags.dumpFramesEnabled ? 'ON' : 'OFF'}` +
+      ` (max ${diagFlags.maxDumpFramesPerStage}/stage)`);
+    if (diagFlags.dumpFramesEnabled && diagFlags.dumpSessionDir) {
+      out.push(`  Dump folder: ${diagFlags.dumpSessionDir}`);
+    }
+  }
+  if (!pixelsOn && !rendererPixelsOn) {
+    out.push('');
+    out.push('  ⚠ Pixel verification was NOT enabled for this run. To capture it:');
+    out.push('      1. Close Xleth.');
+    out.push('      2. Relaunch with the environment variable XLETH_VISUAL_DIAG_PIXELS=1');
+    out.push('         (PowerShell:  $env:XLETH_VISUAL_DIAG_PIXELS=1 ; .\\Xleth.exe )');
+    out.push('      3. Open a project WITH visible video, let the preview run a moment,');
+    out.push('         start a short export if render also fails, then export this log again.');
+  }
+  out.push('');
+
+  const pix = buildPixelStageLookup(engine, preview);
+  for (const stage of PIXEL_STAGE_ORDER) {
+    const entry = pix[stage];
+    const verdict = interpretPixelStage(entry);
+    out.push(`  ── ${stage} ──`);
+    if (!entry) {
+      out.push(`     observed:        no`);
+      out.push(`     interpretation:  not-sampled (stage never recorded this run)`);
+      out.push('');
+      continue;
+    }
+    const s = entry.latest;
+    out.push(`     observed:        ${fmtBool(entry.observed)}   (source: ${entry.source})`);
+    out.push(`     frames sampled:  ${entry.sampleCount}${entry.dumpCount ? `   raw dumps: ${entry.dumpCount}` : ''}`);
+    if (s && s.observed) {
+      out.push(`     format:          ${s.format}`);
+      out.push(`     dimensions:      ${s.width} × ${s.height}   rowPitch=${s.rowPitch}   bytes=${s.byteCount}`);
+      out.push(`     checksum64:      ${s.checksum64}`);
+      out.push(`     nonZeroBytes:    ${s.nonZeroBytes}`);
+      out.push(`     nonZeroPixels:   ${s.nonZeroPixels} / ${(s.width * s.height) || 0}`);
+      out.push(`     averageLuma:     ${typeof s.averageLuma === 'number' ? s.averageLuma.toFixed(3) : s.averageLuma}  (0..255)`);
+      out.push(`     first16Bytes:    ${s.first16Bytes}`);
+      out.push(`     centerPixel:     ${fmtPixelArr(s.centerPixel)}  (${s.format})`);
+      if (Array.isArray(s.corners)) {
+        out.push(`     corners TL/TR/BL/BR: ${s.corners.map(fmtPixelArr).join(' ')}`);
+      }
+    }
+    out.push(`     interpretation:  ${verdict}`);
+    out.push('');
+  }
+
+  // Plain-English cross-stage diagnosis.
+  out.push('  PLAIN-ENGLISH INTERPRETATION:');
+  const v = (stage) => interpretPixelStage(pix[stage]);
+  const readback   = v('post-d3d11-readback');
+  const preFO      = v('pre-frameoutput-write');
+  const postFO     = v('post-frameoutput-write');
+  const preUpload  = v('renderer-pre-webgl-upload');
+  const postDraw   = v('renderer-post-webgl-readpixels');
+  const exportPre  = v('export-pre-encode');
+  const isZero = (x) => x === 'all-zero';
+  const isNon  = (x) => x === 'non-zero';
+
+  const lines = [];
+  if (isZero(readback) && (isZero(preFO) || preFO === 'not-sampled')) {
+    lines.push('  • Native readback is ALL-ZERO → the engine / compositor / timeline is');
+    lines.push('    producing EMPTY frames BEFORE shared memory. The transport and WebGL are');
+    lines.push('    innocent — look upstream (cell requests / decode / compositor scene).');
+  }
+  if (isNon(readback) && (isZero(preUpload) || isZero(postFO))) {
+    lines.push('  • Native readback is NON-ZERO but the renderer reads ZERO before upload →');
+    lines.push('    FrameOutput / shared-memory transport or buffer-index swap mismatch.');
+  }
+  if (isNon(preUpload) && isZero(postDraw)) {
+    lines.push('  • Renderer pre-upload is NON-ZERO but post-WebGL readPixels is ZERO →');
+    lines.push('    WebGL upload / draw / presentation issue (texture, context, or driver).');
+  }
+  if ((isNon(preUpload) || isNon(postDraw)) && isZero(exportPre)) {
+    lines.push('  • Preview pixels are NON-ZERO but export-pre-encode is ZERO →');
+    lines.push('    the export path diverges from the preview path (black before encode).');
+  }
+  if (isZero(readback) && isZero(exportPre)) {
+    lines.push('  • BOTH preview readback AND export are ALL-ZERO before encode/upload →');
+    lines.push('    upstream timeline / collector / compositor content issue (empty scene).');
+    lines.push('    Cross-check section 3 "Last tick: N cell requests" — 0 requests means');
+    lines.push('    the collector requested no visual cells (see section 3 below/above).');
+  }
+  if (isNon(readback) && isNon(preUpload) && isNon(postDraw)) {
+    lines.push('  • Every sampled stage has NON-ZERO pixels. If the canvas still looks blank,');
+    lines.push('    the problem is presentation/compositing AFTER the WebGL draw (CSS, blend,');
+    lines.push('    canvas size, or the window compositor) — not the pixel pipeline.');
+  }
+  if (!lines.length) {
+    if (!pixelsOn && !rendererPixelsOn) {
+      lines.push('  • No pixel data captured (diagnostic flag was off — see note above).');
+    } else {
+      lines.push('  • Not enough stages were sampled to draw a cross-stage conclusion.');
+      lines.push('    Ensure the preview was visible (and export ran, if render also fails)');
+      lines.push('    while XLETH_VISUAL_DIAG_PIXELS=1, then re-export this log.');
+    }
+  }
+  lines.forEach((l) => out.push(l));
+  out.push('');
+
   // ── Footer ─────────────────────────────────────────────────────────────
   out.push(sep);
   out.push('Notes for the developer reading this report:');
@@ -2625,7 +2850,17 @@ ipcMain.handle('xleth:diag:exportVisualPreviewLog', safeHandler(async (event, ex
   let settings = {};
   try { settings = loadSettings() || {}; } catch {}
 
-  let body = buildVisualPreviewDiagnosticText({ engine, extras, settings });
+  // Electron's own view of the GPU (separate from the engine's DXGI list and
+  // the renderer's WebGL context — a third independent signal). 'basic' is
+  // cheap; tolerate failure so the report still generates.
+  let gpuInfo = null;
+  try {
+    if (app.getGPUInfo) gpuInfo = await app.getGPUInfo('basic');
+  } catch (e) {
+    gpuInfo = { error: e && e.message ? e.message : String(e) };
+  }
+
+  let body = buildVisualPreviewDiagnosticText({ engine, extras, settings, gpuInfo });
   if (engineError) {
     let engineWarning;
     if (engineError === 'notImplemented') {

@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>   // std::getenv
+#include <cstring>   // std::strcmp
 
 // Link against D3D11 and DXGI (pragma lib — MSVC only, avoids CMake changes
 // for consumers that only include the header).
@@ -143,31 +145,66 @@ bool GpuDeviceManager::createDevice(int adapterIndex)
         }
     }
 
+    // ── Diagnostic launch switches (one-run, NOT shipping behaviour) ─────────
+    // XLETH_D3D11_WARP=1        → force the WARP software rasterizer so a tester
+    //                             can prove whether the failure is hardware-driver
+    //                             specific. Ignores the chosen DXGI adapter.
+    // XLETH_D3D11_DEBUG_LAYER=1 → request D3D11_CREATE_DEVICE_DEBUG; if the SDK
+    //                             debug layer is unavailable we retry without it
+    //                             and continue (never crash).
+    auto envOn = [](const char* n) {
+        const char* v = std::getenv(n);
+        return v && v[0] && std::strcmp(v, "0") != 0;
+    };
+    const bool forceWarp     = envOn("XLETH_D3D11_WARP");
+    const bool wantDebugLayer = envOn("XLETH_D3D11_DEBUG_LAYER");
+
     // Build creation flags
     UINT flags = D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
+    bool requestDebug = false;
 #ifdef _DEBUG
-    flags |= D3D11_CREATE_DEVICE_DEBUG;
+    requestDebug = true;
 #endif
+    if (wantDebugLayer) requestDebug = true;
+    if (requestDebug) flags |= D3D11_CREATE_DEVICE_DEBUG;
 
-    std::fprintf(stderr, "[GpuDevice] Creating D3D11 device on adapter %d ('%ls') featureLevel=11_0 flags=0x%X\n",
-                 adapterIndex,
-                 info ? info->name.c_str() : L"unknown",
-                 flags);
+    // WARP must be created with DRIVER_TYPE_WARP and a NULL adapter; VIDEO_SUPPORT
+    // is not meaningful on WARP, so drop it to avoid a create failure.
+    IDXGIAdapter1*     createAdapter = forceWarp ? nullptr : chosenAdapter.Get();
+    const D3D_DRIVER_TYPE driverType = forceWarp ? D3D_DRIVER_TYPE_WARP
+                                                 : D3D_DRIVER_TYPE_UNKNOWN;
+    if (forceWarp) flags &= ~D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
+
+    std::fprintf(stderr,
+        "[GpuDevice] Creating D3D11 device on adapter %d ('%ls') featureLevel=11_0 "
+        "flags=0x%X driverType=%s%s%s\n",
+        adapterIndex, info ? info->name.c_str() : L"unknown", flags,
+        forceWarp ? "WARP" : "UNKNOWN",
+        forceWarp ? " [XLETH_D3D11_WARP]" : "",
+        wantDebugLayer ? " [XLETH_D3D11_DEBUG_LAYER]" : "");
 
     D3D_FEATURE_LEVEL requestedLevel = D3D_FEATURE_LEVEL_11_0;
     D3D_FEATURE_LEVEL actualLevel    = D3D_FEATURE_LEVEL_11_0;
 
-    hr = D3D11CreateDevice(
-        chosenAdapter.Get(),         // adapter (nullptr = default)
-        D3D_DRIVER_TYPE_UNKNOWN,     // must be UNKNOWN when pAdapter is non-null
-        nullptr,                     // no software rasterizer
-        flags,
-        &requestedLevel, 1,          // feature level 11_0
-        D3D11_SDK_VERSION,
-        device_.GetAddressOf(),
-        &actualLevel,
-        context_.GetAddressOf()
-    );
+    auto tryCreate = [&](UINT createFlags) -> HRESULT {
+        return D3D11CreateDevice(
+            createAdapter, driverType, nullptr, createFlags,
+            &requestedLevel, 1, D3D11_SDK_VERSION,
+            device_.GetAddressOf(), &actualLevel, context_.GetAddressOf());
+    };
+
+    hr = tryCreate(flags);
+
+    // If the debug layer was requested but is not installed, the call fails with
+    // DXGI_ERROR_SDK_COMPONENT_MISSING / E_FAIL — retry without it.
+    if (FAILED(hr) && (flags & D3D11_CREATE_DEVICE_DEBUG)) {
+        std::fprintf(stderr,
+            "[GpuDevice] D3D11 debug layer unavailable (HRESULT=0x%08X) — retrying "
+            "without D3D11_CREATE_DEVICE_DEBUG\n", static_cast<unsigned int>(hr));
+        requestDebug = false;
+        flags &= ~D3D11_CREATE_DEVICE_DEBUG;
+        hr = tryCreate(flags);
+    }
 
     if (FAILED(hr)) {
         std::fprintf(stderr, "[GpuDevice] ERROR: D3D11CreateDevice failed. HRESULT=0x%08X adapter=%d\n",
@@ -176,6 +213,9 @@ bool GpuDeviceManager::createDevice(int adapterIndex)
     }
 
     activeAdapterIndex_ = adapterIndex;
+    activeFeatureLevel_ = static_cast<uint32_t>(actualLevel);
+    isWarp_             = forceWarp;
+    debugLayerActive_   = requestDebug && (flags & D3D11_CREATE_DEVICE_DEBUG) != 0;
 
     // Enable multi-thread protection
     bool mtOk = enableMultithreadProtection();

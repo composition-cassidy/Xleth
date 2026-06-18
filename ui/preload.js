@@ -490,6 +490,16 @@ window.xleth = ({
   diag: {
     exportVisualPreviewLog: (extras) =>
       invoke('xleth:diag:exportVisualPreviewLog', extras || {}),
+    // Opt-in pixel-content verification flags, read from the environment the
+    // app was launched with. The renderer (VideoPreview) uses `pixels` to gate
+    // the (expensive) per-frame WebGL pixel-stat computation so there is zero
+    // overhead in a normal run. Mirrors the native XLETH_VISUAL_DIAG_* gates.
+    visualPixelDiag: {
+      pixels: !!(process.env.XLETH_VISUAL_DIAG_PIXELS &&
+                 process.env.XLETH_VISUAL_DIAG_PIXELS !== '0'),
+      dumpFrames: !!(process.env.XLETH_VISUAL_DIAG_DUMP_FRAMES &&
+                     process.env.XLETH_VISUAL_DIAG_DUMP_FRAMES !== '0'),
+    },
   },
 
   // ── Phase 1: sync ─────────────────────────────────────────────────────────

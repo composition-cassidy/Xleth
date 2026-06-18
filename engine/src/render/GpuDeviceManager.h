@@ -102,6 +102,16 @@ public:
     /** The active adapter index, or -1 if no device. */
     int getActiveAdapterIndex() const { return activeAdapterIndex_; }
 
+    // ── Device diagnostics (populated by createDevice) ──────────────────────
+    /** Achieved D3D_FEATURE_LEVEL as a raw value (e.g. 0xb000 == 11_0), 0 if none. */
+    uint32_t getActiveFeatureLevel() const { return activeFeatureLevel_; }
+    /** True if the device was created as a WARP (software) rasterizer.
+     *  Only happens when XLETH_D3D11_WARP=1 — diagnostic use only. */
+    bool isWarpDevice() const { return isWarp_; }
+    /** True if the D3D11 debug layer is active on the device (XLETH_D3D11_DEBUG_LAYER=1
+     *  or a _DEBUG build, and the SDK layer was actually available). */
+    bool isDebugLayerActive() const { return debugLayerActive_; }
+
     // ── Device accessors (downstream consumers use these) ───────────────────
 
     ID3D11Device*        getDevice()  const { return device_.Get(); }
@@ -116,6 +126,9 @@ private:
     Microsoft::WRL::ComPtr<ID3D11Device>        device_;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> context_;
     int                                         activeAdapterIndex_ = -1;
+    uint32_t                                    activeFeatureLevel_ = 0;
+    bool                                        isWarp_           = false;
+    bool                                        debugLayerActive_ = false;
 
     // ── Helpers ─────────────────────────────────────────────────────────────
     void rankAdapters();
