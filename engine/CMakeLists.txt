@@ -385,6 +385,30 @@ target_compile_definitions(XlethEngineHeaders INTERFACE
     $<$<BOOL:${XLETH_ASIO}>:JUCE_ASIO=1>
 )
 
+# ── XlethEngineService ────────────────────────────────────────────────────────
+# Host-neutral orchestration and command dispatch. Keeping this in its own
+# archive ensures neither Node headers nor node.lib enter the reusable service.
+add_library(XlethEngineService STATIC
+    src/XlethEngineService.cpp
+)
+
+target_include_directories(XlethEngineService
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_compile_definitions(XlethEngineService PRIVATE
+    XLETH_DEBUG
+)
+
+target_link_libraries(XlethEngineService PUBLIC
+    XlethEngineCore
+    XlethEngineHeaders
+    nlohmann_json::nlohmann_json
+)
+
 # ── Standalone executable ─────────────────────────────────────────────────────
 # Thin shell linking XlethEngineCore + VideoCompositor.cpp (GPU).
 # VideoCompositor.cpp is compiled ONLY here so GLFW/GLEW/OpenGL symbols

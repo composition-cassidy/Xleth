@@ -106,6 +106,7 @@ set_target_properties(xleth_native PROPERTIES
 target_include_directories(xleth_native PRIVATE
     ${CMAKE_JS_INC}
     ${NODE_ADDON_API_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../engine/include
 )
 
 target_compile_definitions(xleth_native PRIVATE
@@ -117,6 +118,7 @@ target_compile_definitions(xleth_native PRIVATE
 )
 
 target_link_libraries(xleth_native PRIVATE
+    XlethEngineService  # host-neutral command implementation
     XlethEngineCore     # CPU-only engine (no VideoCompositor/GLFW/GLEW/OpenGL)
     XlethEngineHeaders  # JUCE/FFmpeg include paths only — no extra sources added
     ${CMAKE_JS_LIB}
