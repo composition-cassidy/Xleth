@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>XLETH</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <style>
+    :root{--s0:#0b0b0b;--s1:#131313;--s2:#181818;--s3:#1c1c1c;--bd:#222;--bd2:#2a2a2a;--t1:#d4d4d4;--t2:#969696;--t3:#606060;--t4:#424242;--ac:#00b896}
+    *{box-sizing:border-box}html,body,#root{width:100%;height:100%;margin:0;overflow:hidden;background:transparent;color:var(--t1);font-family:system-ui,-apple-system,'Segoe UI',sans-serif}
+    button{height:26px;padding:0 11px;border:1px solid var(--bd2);background:var(--s3);color:var(--t1);font:12px inherit;cursor:pointer}button:hover{border-color:var(--ac);color:#fff}button:active{transform:translateY(1px)}
+    .app{display:flex;flex-direction:column;width:100vw;height:100vh}.bar{height:40px;flex:none;display:flex;align-items:center;gap:7px;padding:0 8px;background:var(--s2);border-bottom:1px solid var(--bd);position:relative;z-index:3}
+    .logo{font-size:13px;font-weight:800;letter-spacing:2.6px;margin-right:10px;color:#e6e6e6}.readout{height:25px;min-width:76px;padding:4px 8px;border:1px solid var(--bd);background:var(--s0);color:var(--t2);font:12px Consolas,monospace}.spacer{flex:1}.win{display:flex;gap:2px}.win button{width:30px;padding:0}.body{display:flex;flex:1;min-height:0;position:relative}.video{flex:0 0 66.7%;background:transparent;pointer-events:none;position:relative}.video-label{position:absolute;left:13px;top:12px;color:#fff;font:11px/1.55 Consolas,monospace;text-shadow:0 1px 3px #000,1px 1px 0 #000;letter-spacing:.4px}
+    .side{flex:1;background:var(--s1);border-left:1px solid var(--bd);padding:20px;position:relative;z-index:2}.side h1{font-size:15px;margin:0 0 15px;letter-spacing:.4px}.card{padding:14px;margin-bottom:12px;background:var(--s2);border:1px solid var(--bd2);box-shadow:4px 5px 0 rgba(0,0,0,.5);font-size:12px;color:var(--t2)}.row{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--bd)}.row:last-child{border:0}.value{color:var(--t1)}.status{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:7px;background:#75403c}.status.on{background:var(--ac);box-shadow:0 0 7px rgba(0,184,150,.5)}.note{color:var(--t3);line-height:1.5}.error{position:absolute;z-index:5;top:40px;left:0;right:0;padding:7px 12px;background:#5b2525;color:#ffdede;border-bottom:1px solid #813838;font-size:12px}
+  </style>
+</head>
+<body><div id="root"></div>
+<script>
+  const e=React.createElement;
+  const invoke=(method,args=[])=>window.__TAURI__.core.invoke('engine_call',{method,args});
+  function App(){
+    const [connected,setConnected]=React.useState(false),[bpm,setBpm]=React.useState('--'),[position,setPosition]=React.useState(0),[project,setProject]=React.useState('No project loaded'),[error,setError]=React.useState('');
+    const showError=React.useCallback(err=>{setError(String(err));setTimeout(()=>setError(''),5000)},[]);
+    React.useEffect(()=>{let live=true;const poll=async()=>{try{const state=await invoke('transport_getState');if(live){setConnected(true);setBpm(Number(state.bpm||0).toFixed(1));setPosition(Number(state.positionMs||0));}}catch(err){if(live)setConnected(false)}};poll();const timer=setInterval(poll,100);return()=>{live=false;clearInterval(timer)}},[]);
+    const call=async method=>{try{await invoke(method)}catch(err){showError(err)}};
+    const load=async()=>{try{const selected=await window.__TAURI__.dialog.open({multiple:false,filters:[{name:'XLETH',extensions:['xleth']}]});if(!selected)return;await invoke('project_load',[selected]);setProject(selected.split(/[\\/]/).pop())}catch(err){showError(err)}};
+    const time=ms=>{const total=Math.max(0,Math.floor(ms));const m=Math.floor(total/60000),s=Math.floor(total%60000/1000),x=total%1000;return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}.${String(x).padStart(3,'0')}`};
+    const win=()=>window.__TAURI__.window.getCurrentWindow();
+    return e('div',{className:'app'},
+      error&&e('div',{className:'error'},error),
+      e('div',{className:'bar'},e('div',{className:'logo'},'XLETH'),e('button',{onClick:load},'Load Project'),e('button',{onClick:()=>call('play')},'Play'),e('button',{onClick:()=>call('stop')},'Stop'),e('div',{className:'readout'},`BPM ${bpm}`),e('div',{className:'readout'},time(position)),e('div',{className:'spacer'}),e('div',{className:'win'},e('button',{title:'Minimise',onClick:()=>win().minimize()},'−'),e('button',{title:'Maximise',onClick:()=>win().toggleMaximize()},'□'),e('button',{title:'Close',onClick:()=>win().close()},'×'))),
+      e('div',{className:'body'},e('main',{className:'video'},e('div',{className:'video-label'},e('div',null,'XLETH VIDEO — 960×540'),e('div',null,connected?'Video: Active':'Video: Waiting'))),e('aside',{className:'side'},e('h1',null,'Phase 1 Shell'),e('div',{className:'card'},e('div',{className:'row'},e('span',null,'Engine'),e('span',{className:'value'},e('i',{className:`status ${connected?'on':''}`}),connected?'Connected':'Disconnected')),e('div',{className:'row'},e('span',null,'Project'),e('span',{className:'value'},project))),e('div',{className:'card note'},'Full UI panels coming in Phase 4')))
+    )
+  }
+  ReactDOM.createRoot(document.getElementById('root')).render(e(App));
+</script></body></html>
