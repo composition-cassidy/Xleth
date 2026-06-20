@@ -2,9 +2,11 @@
  * Singleton transport-state poller.
  * Shared interval serves all consumers — eliminates duplicate IPC traffic.
  *
- * During playback: polls every 200ms (drift correction only — PlayheadClock
- * handles 60fps interpolation). While stopped: polls every 33ms for responsive
- * seeking and state changes.
+ * Fixed 250ms (4 Hz). Previously dual-rate (33ms stopped / 200ms playing):
+ * the 33ms stopped rate is a full IPC round-trip 30×/sec on the JUCE message
+ * thread. Under complex projects with the sidecar this caused audio underruns.
+ * PlayheadClock handles smooth 60fps display interpolation during playback;
+ * seeking responsiveness is acceptable at 250ms (one poll = one position update).
  */
 
 import { playheadClock } from './services/PlayheadClock.js'
@@ -13,8 +15,7 @@ let currentState = null
 const listeners = new Set()
 let intervalId = null
 
-let pollMs = 33      // ~30 fps when stopped, 200ms during playback
-let wasPlaying = false
+const POLL_MS = 250  // 4 Hz — pipe-friendly; PlayheadClock interpolates display
 
 function startPolling() {
   if (intervalId !== null) return
@@ -34,30 +35,16 @@ function startPolling() {
           s.rawPositionBeats ?? s.positionBeats,
         )
 
-        // Adjust poll rate on play/stop transitions
-        if (s.isPlaying !== wasPlaying) {
-          wasPlaying = s.isPlaying
-          const newRate = s.isPlaying ? 200 : 33
-          if (newRate !== pollMs) {
-            pollMs = newRate
-            clearInterval(intervalId)
-            intervalId = null
-            startPolling()
-          }
-        }
-
         for (const fn of listeners) fn(s)
       }
     } catch { /* engine not ready */ }
-  }, pollMs)
+  }, POLL_MS)
 }
 
 function stopPolling() {
   if (intervalId === null) return
   clearInterval(intervalId)
   intervalId = null
-  wasPlaying = false
-  pollMs = 33
 }
 
 /** Subscribe to transport updates. Returns an unsubscribe function. */

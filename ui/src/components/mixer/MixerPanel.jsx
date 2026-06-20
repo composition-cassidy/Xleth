@@ -86,12 +86,11 @@ export default function MixerPanel() {
         } catch {
           clearAllMeterTelemetry(peaksSnapshot)
         }
-        // 50 ms ≈ 20 Hz.  Previously 33 ms (30 Hz): getAllPeaks iterates every
-        // active track under a lock shared with the audio thread.  At 30 Hz with
-        // 10+ tracks each Napi::Object allocation adds up.  20 Hz is imperceptible
-        // to the eye for peak meters but meaningfully reduces JUCE message-thread
-        // starvation when a VST editor window is open.
-        await new Promise(r => setTimeout(r, 50))
+        // 125 ms ≈ 8 Hz.  Previously 50 ms (20 Hz): getAllPeaks acquires a lock
+        // shared with the audio thread.  Under complex projects (9-10 tracks,
+        // effects, sidecar JSON pipe) 20 Hz causes message-thread back-pressure
+        // and audio underruns.  8 Hz is imperceptible on a peak meter.
+        await new Promise(r => setTimeout(r, 125))
       }
     })()
     return () => {

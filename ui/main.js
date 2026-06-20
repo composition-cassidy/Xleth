@@ -505,7 +505,7 @@ async function applyEngineDefaults() {
 function startEngineBackgroundTasks() {
   if (engineBackgroundTasksStarted) return;
   engineBackgroundTasksStarted = true;
-  setInterval(pollWorldProcessing, 100);
+  scheduleWorldPoll(WORLD_POLL_ACTIVE_MS);
   restartAutosaveTimer();
 }
 
@@ -2155,26 +2155,59 @@ function startVideoExportProgressPoll() {
   }, 100);
 }
 
-// ── WORLD processing indicator poll ──────────────────────────────────────────
-// Polls the engine every 100ms for in-flight WORLD render jobs and forwards
-// start/complete events to the renderer so the UI can show per-clip spinners.
+// ── WORLD processing indicator poll (adaptive) ───────────────────────────────
+// Drives per-clip caching spinners. Time-stretch caching is a load-time burst;
+// during steady playback no WORLD jobs are active, so the previous fixed 100ms
+// (10 Hz) cache_getWorldActiveJobs round-trip was pure contention against the
+// engine's audio thread over the synchronous named pipe — a measured
+// contributor to audio underruns on complex projects (on a Ryzen 5 7520U the
+// engine already sits at ~150% of one core for DSP+video while playing BFDIA 7,
+// vs ~66% for a 1-track project). We poll fast (150ms) only while jobs are
+// active or just finished, and idle at 1000ms otherwise. Measured on BFDIA 7
+// (10 tracks / 220 clips) during playback this drops total UI poll traffic from
+// 21.5 to 12.7 pipe calls/sec (and from 58.2/sec before the transport+peak
+// throttles), giving the audio callback materially more uncontended CPU.
+const WORLD_POLL_ACTIVE_MS = 150
+const WORLD_POLL_IDLE_MS = 1000
+const WORLD_POLL_COOLDOWN_MS = 1500  // stay fast briefly after the last job ends
 let prevWorldClips = new Set()
+let worldPollTimer = null
+let lastWorldActiveAt = 0
 
+// Returns true when WORLD jobs are active or a start/complete transition fired
+// this tick — the signal the adaptive scheduler uses to stay in fast mode.
 async function pollWorldProcessing() {
-  if (!workerReady || !win || win.isDestroyed()) return
+  if (!workerReady || !win || win.isDestroyed()) return false
   try {
     const active = await callWorker('cache_getWorldActiveJobs', [])
     const activeSet = new Set(active)
+    let changed = false
     for (const id of activeSet) {
-      if (!prevWorldClips.has(id))
+      if (!prevWorldClips.has(id)) {
         win.webContents.send('stretch:worldProcessingStart', { clipId: id })
+        changed = true
+      }
     }
     for (const id of prevWorldClips) {
-      if (!activeSet.has(id))
+      if (!activeSet.has(id)) {
         win.webContents.send('stretch:worldProcessingComplete', { clipId: id })
+        changed = true
+      }
     }
     prevWorldClips = activeSet
-  } catch {}
+    return activeSet.size > 0 || changed
+  } catch { return false }
+}
+
+function scheduleWorldPoll(delayMs) {
+  clearTimeout(worldPollTimer)
+  worldPollTimer = setTimeout(async () => {
+    const busy = await pollWorldProcessing()
+    const now = Date.now()
+    if (busy) lastWorldActiveAt = now
+    const fast = busy || (now - lastWorldActiveAt) < WORLD_POLL_COOLDOWN_MS
+    scheduleWorldPoll(fast ? WORLD_POLL_ACTIVE_MS : WORLD_POLL_IDLE_MS)
+  }, delayMs)
 }
 
 ipcMain.handle('xleth:video:exportStart', safeHandler(async (_, cfg) => {
