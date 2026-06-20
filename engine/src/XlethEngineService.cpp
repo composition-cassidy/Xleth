@@ -11456,6 +11456,10 @@ JsonApi::Value Audio_IsMasterGraphLinear(const JsonApi::CallbackInfo& info)
 // Used to locate xleth-plugin-scanner.exe which is deployed as a sibling.
 static juce::File getThisModuleDir()
 {
+    if (const char* supportDir = std::getenv("XLETH_ENGINE_SUPPORT_DIR")) {
+        const juce::File configured(juce::String::fromUTF8(supportDir));
+        if (configured.isDirectory()) return configured;
+    }
 #ifdef _WIN32
     wchar_t path[MAX_PATH] = {};
     HMODULE hm = nullptr;

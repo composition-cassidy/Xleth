@@ -9,6 +9,11 @@ include(FetchContent)
 set(_VCPKG_INSTALLED "${CMAKE_CURRENT_SOURCE_DIR}/../bridge/build/vcpkg_installed/x64-windows"
     CACHE PATH "Pre-installed vcpkg packages shared with the bridge build")
 
+if(NOT EXISTS "${_VCPKG_INSTALLED}"
+   AND EXISTS "${CMAKE_BINARY_DIR}/vcpkg_installed/x64-windows")
+    set(_VCPKG_INSTALLED "${CMAKE_BINARY_DIR}/vcpkg_installed/x64-windows")
+endif()
+
 if(EXISTS "${_VCPKG_INSTALLED}")
     list(APPEND CMAKE_PREFIX_PATH "${_VCPKG_INSTALLED}")
     list(APPEND CMAKE_PREFIX_PATH "${_VCPKG_INSTALLED}/debug")
@@ -413,6 +418,39 @@ target_link_libraries(XlethEngineService PUBLIC
 # Thin shell linking XlethEngineCore + VideoCompositor.cpp (GPU).
 # VideoCompositor.cpp is compiled ONLY here so GLFW/GLEW/OpenGL symbols
 # remain absent from the Node.js addon link graph.
+# Named-pipe sidecar. It is excluded from ALL so bridge-clean keeps its existing
+# addon-only behavior; build.bat requests this target explicitly.
+add_executable(xleth-engine EXCLUDE_FROM_ALL
+    sidecar/sidecar_main.cpp
+)
+
+target_link_libraries(xleth-engine PRIVATE
+    XlethEngineService
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(xleth-engine PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+set_target_properties(xleth-engine PROPERTIES
+    OUTPUT_NAME "xleth-engine"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_BINARY_DIR}"
+)
+
 juce_add_console_app(XlethEngine
     PRODUCT_NAME "Xleth Engine"
     VERSION      "0.0.1"

@@ -1,7 +1,7 @@
 {
   "appId": "com.xleth.app",
   "productName": "XLETH",
-  "files": ["dist/**/*", "src/plugin-ui/layouts/*.json", "main.js", "preload.js", "runtimePaths.js", "workspaceBackdropCapability.js", "splash.html", "splash-preload.js"],
+  "files": ["dist/**/*", "src/plugin-ui/layouts/*.json", "src/engine-pipe-client.js", "main.js", "preload.js", "runtimePaths.js", "workspaceBackdropCapability.js", "splash.html", "splash-preload.js"],
   "directories": {
     "output": "../dist"
   },
@@ -10,8 +10,8 @@
   "compression": "normal",
   "extraResources": [
     {
-      "from": "addon-worker.js",
-      "to": "worker/addon-worker.js"
+      "from": "../build/xleth-engine.exe",
+      "to": "engine/xleth-engine.exe"
     },
     {
       "from": "../xlethpopup.png",
@@ -50,17 +50,12 @@
     {
       "from": "../vendor/ffmpeg/bin",
       "to": "ffmpeg",
-      "filter": ["ffmpeg.exe", "ffprobe.exe"]
+      "filter": ["ffmpeg.exe", "ffprobe.exe", "*.dll"]
     },
     {
       "from": "../vendor/ffmpeg",
       "to": "ffmpeg",
       "filter": ["LICENSE", "README.txt"]
-    },
-    {
-      "from": "../vendor/node",
-      "to": "node",
-      "filter": ["node.exe"]
     }
   ],
   "win": {

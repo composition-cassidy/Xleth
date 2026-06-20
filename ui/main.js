@@ -5,8 +5,9 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const http = require('http');
-const { fork, spawn } = require('child_process');
+const { spawn } = require('child_process');
 const { runtimeResource, userDataPath } = require('./runtimePaths');
+const engineClient = require('./src/engine-pipe-client');
 const {
   WORKSPACE_BACKDROP_DEFAULT_PREFERENCE,
   applyWorkspaceBackdropMaterial,
@@ -16,7 +17,7 @@ const {
 } = require('./workspaceBackdropCapability');
 
 // Fixed name for the Windows file mapping that backs the FrameOutput double
-// buffer. The forked addon-worker creates it via FrameOutput::initSharedMemory;
+// buffer. The engine sidecar creates it via FrameOutput::initSharedMemory;
 // the Electron main process / preload opens the same name via shm_helper.node.
 const FRAME_SHM_NAME = 'XlethFrameBuffer';
 const WORKSPACE_BACKDROP_DEFAULT_IMAGE = 'backdrop-1@1.25x.png';
@@ -446,11 +447,9 @@ function startMediaServer() {
 // initialization, which reliably loads the addon. Zero-copy video delivery
 // uses a Windows named file mapping (shm_helper) instead of SAB transfer.
 
-let worker = null;
 let workerReady = false;
 let addonError = null;
-let nextMsgId = 1;
-const pending = new Map();
+let engineBackgroundTasksStarted = false;
 
 // High-frequency polling methods — suppress routine logs for these
 const SILENT_METHODS = new Set(['getFrameRGBA', 'getCurrentFrame', 'getFrameBuffer', 'getTransportState', 'audio_getAllPeaks', 'audio_getRealtimeDiagnostics', 'audio_getAudioPerformanceTelemetry', 'getAudioPerformanceTelemetry', 'audio_setTrackVolume', 'audio_setTrackPan', 'audio_setTrackSpread', 'audio_setMasterVolume', 'cache_getWorldActiveJobs']);
@@ -458,122 +457,85 @@ const SILENT_METHODS = new Set(['getFrameRGBA', 'getCurrentFrame', 'getFrameBuff
 let lastTransportStateStr = null;
 let autosaveIntervalId = null;
 
-function resolveSystemNodeExe() {
-  // 1. Explicit override always wins.
-  if (process.env.XLETH_NODE_EXE) return process.env.XLETH_NODE_EXE;
-  // 2. Packaged build — use the bundled binary shipped under resources/.
-  if (app.isPackaged) {
-    return runtimeResource('node', process.platform === 'win32' ? 'node.exe' : 'node');
-  }
-  // 3. Dev build — resolve to an absolute path so child_process.fork doesn't
-  //    rely on Electron's process.env.PATH being identical to the shell PATH.
-  //    Bare 'node.exe' fails with ENOENT on Windows when CreateProcess can't
-  //    find it in the parent's environment block.
-  try {
-    const { execFileSync } = require('child_process');
-    const lookup = process.platform === 'win32' ? 'where' : 'which';
-    const out = execFileSync(lookup, ['node'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-    const first = out.split(/\r?\n/).map(s => s.trim()).find(Boolean);
-    if (first && fs.existsSync(first)) return first;
-  } catch (_) { /* fall through */ }
-  if (process.platform === 'win32') {
-    const candidates = [
-      'C:\\Program Files\\nodejs\\node.exe',
-      'C:\\Program Files (x86)\\nodejs\\node.exe',
-      path.join(os.homedir(), 'AppData', 'Roaming', 'nvm', 'nodejs', 'node.exe'),
-      path.join(os.homedir(), 'scoop', 'apps', 'nodejs', 'current', 'node.exe'),
-    ];
-    for (const c of candidates) {
-      if (fs.existsSync(c)) return c;
-    }
-  }
-  // Last resort — let fork() try its luck and surface ENOENT to the UI.
-  return process.platform === 'win32' ? 'node.exe' : 'node';
-}
-
-function startWorker() {
-  const workerPath = runtimeResource('worker', 'addon-worker.js');
+async function startWorker() {
   const bridgeDir = runtimeResource('bridge');
   const ffmpegDir = runtimeResource('ffmpeg');
-  // Force system node.exe — not electron.exe --run-as-node — because the
-  // JUCE/FFmpeg static initializers crash inside Electron's runtime.
-  // The addon is ABI-compatible with recent Node versions.
-  const nodeExe = resolveSystemNodeExe();
-  log(`Forking addon worker via ${nodeExe}: ${workerPath}`);
+  const engineExe = app.isPackaged
+    ? runtimeResource('engine', 'xleth-engine.exe')
+    : path.join(__dirname, '..', 'build', 'xleth-engine.exe');
+  log(`Starting engine sidecar: ${engineExe}`);
   log(`[Runtime] app.isPackaged=${app.isPackaged}`);
   log(`[Runtime] process.resourcesPath=${process.resourcesPath}`);
   log(`[Runtime] bridgeDir=${bridgeDir}`);
   log(`[Runtime] ffmpegDir=${ffmpegDir}`);
 
-  // Pre-flight checks — fork() throws a confusing ENOENT for ANY missing
-  // file in the spawn args (executable, cwd, addon). Surface clear errors.
-  if (!fs.existsSync(nodeExe)) {
-    addonError = `Node.js executable not found: ${nodeExe}. Set XLETH_NODE_EXE or install Node to a standard location.`;
+  if (!fs.existsSync(engineExe)) {
+    addonError = `Engine sidecar missing: ${engineExe}. Run: build engine-exe`;
     log(`[startWorker] ${addonError}`);
     workerReady = false;
-    return;
+    throw new Error(addonError);
   }
-  if (!fs.existsSync(bridgeDir)) {
-    addonError = `Bridge addon not built — ${bridgeDir} is missing. Run: build bridge-clean`;
-    log(`[startWorker] ${addonError}`);
-    workerReady = false;
-    return;
-  }
-  const addonPath = path.join(bridgeDir, 'xleth_native.node');
-  if (!fs.existsSync(addonPath)) {
-    addonError = `Bridge addon binary missing: ${addonPath}. Run: build bridge-clean`;
-    log(`[startWorker] ${addonError}`);
-    workerReady = false;
-    return;
-  }
-  worker = fork(workerPath, [], {
-    stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
-    execPath: nodeExe,
-    cwd: bridgeDir,
+
+  await engineClient.start({
+    executablePath: engineExe,
+    cwd: path.dirname(engineExe),
+    log,
     env: {
       ...process.env,
-      ELECTRON_RUN_AS_NODE: undefined,
-      XLETH_BRIDGE_DIR: bridgeDir,
+      XLETH_ENGINE_SUPPORT_DIR: bridgeDir,
       XLETH_FFMPEG_DIR: ffmpegDir,
-      PATH: workerPathEnv([bridgeDir, ffmpegDir]),
+      PATH: workerPathEnv([path.dirname(engineExe), bridgeDir, ffmpegDir]),
     },
-    serialization: 'advanced',  // preserves Buffer/TypedArray/ArrayBuffer across IPC
   });
-
-  worker.on('message', (msg) => {
-    if (msg && msg.ready) {
-      workerReady = true;
-      log('[Worker] ready');
-      // Apply the saved new-project default to the initial blank project.
-      const saved = loadSettings()
-      callWorker('timeline_setGlobalStretchMethod', [getNewProjectGlobalStretchMethodDefault()]).catch(() => {})
-      if (saved.globalFormantPreserve != null)
-        callWorker('engine_setGlobalFormantPreserve', [saved.globalFormantPreserve]).catch(() => {})
-      setInterval(pollWorldProcessing, 100)
-      restartAutosaveTimer()
-      return;
-    }
-    if (msg && typeof msg.id === 'number') {
-      const p = pending.get(msg.id);
-      if (!p) return;
-      pending.delete(msg.id);
-      if (msg.error) { p.reject(new Error(msg.error)); return; }
-      if (msg.notImplemented) { p.reject(new Error('notImplemented')); return; }
-      if (msg.frame) { p.resolve({ width: msg.frame.w, height: msg.frame.h, pixels: msg.frame.data }); return; }
-      p.resolve(msg.result === undefined ? null : msg.result);
-    }
-  });
-
-  worker.on('exit', (code) => {
-    log(`[Worker] exited code=${code}`);
-    workerReady = false;
-    addonError = `worker exited (code ${code})`;
-    for (const { reject } of pending.values()) reject(new Error(addonError));
-    pending.clear();
-  });
+  workerReady = true;
+  addonError = null;
+  log('[Engine] pipe ready');
 }
 
-// Dispatches to the forked child via IPC. Returns a Promise.
+async function applyEngineDefaults() {
+  const saved = loadSettings();
+  await callWorker('timeline_setGlobalStretchMethod',
+    [getNewProjectGlobalStretchMethodDefault()]).catch(() => {});
+  if (saved.globalFormantPreserve != null) {
+    await callWorker('engine_setGlobalFormantPreserve',
+      [saved.globalFormantPreserve]).catch(() => {});
+  }
+}
+
+function startEngineBackgroundTasks() {
+  if (engineBackgroundTasksStarted) return;
+  engineBackgroundTasksStarted = true;
+  setInterval(pollWorldProcessing, 100);
+  restartAutosaveTimer();
+}
+
+engineClient.on('disconnect', () => { workerReady = false; });
+engineClient.on('exit', (code, signal, expected) => {
+  if (expected) return;
+  workerReady = false;
+  addonError = `xleth-engine.exe exited (code ${code}, signal ${signal || 'none'})`;
+});
+engineClient.on('restarted', async () => {
+  log('[Engine] sidecar restarted; restoring engine initialization');
+  workerReady = true;
+  addonError = null;
+  try {
+    await callWorker('initialize');
+    await ensureFrameShm(960, 540);
+    await applyEngineDefaults();
+    log('[Engine] restart recovery complete');
+  } catch (error) {
+    workerReady = false;
+    addonError = `engine restart initialization failed: ${error.message}`;
+    log(`[Engine] ${addonError}`);
+  }
+});
+engineClient.on('engine-fatal', () => {
+  dialog.showErrorBox('Engine crash', 'xleth-engine.exe failed to restart. Quitting.');
+  app.quit();
+});
+
+// Dispatches to the named-pipe sidecar. Returns a Promise.
 function callWorker(method, args = []) {
   if (!workerReady) {
     return Promise.reject(new Error('Engine not ready: ' + (addonError || 'starting')));
@@ -581,27 +543,20 @@ function callWorker(method, args = []) {
   if (!SILENT_METHODS.has(method)) {
     log(`[IPC] → ${method}(${args.map(a => typeof a === 'object' ? JSON.stringify(a).slice(0, 60) : a).join(', ')})`);
   }
-  const id = nextMsgId++;
-  return new Promise((resolve, reject) => {
-    pending.set(id, {
-      resolve: (result) => {
-        if (method === 'getTransportState') {
-          const str = JSON.stringify(result);
-          if (str !== lastTransportStateStr) {
-            log(`[IPC] transport changed: ${str}`);
-            lastTransportStateStr = str;
-          }
-        } else if (!SILENT_METHODS.has(method)) {
-          log(`[IPC] ← result: ${JSON.stringify(result).slice(0, 80)}`);
-        }
-        resolve(result);
-      },
-      reject: (err) => {
-        log(`[IPC] ← error (${method}): ${err.message}`);
-        reject(err);
-      },
-    });
-    worker.send({ id, method, args });
+  return engineClient.send(method, args).then(result => {
+    if (method === 'getTransportState') {
+      const str = JSON.stringify(result);
+      if (str !== lastTransportStateStr) {
+        log(`[IPC] transport changed: ${str}`);
+        lastTransportStateStr = str;
+      }
+    } else if (!SILENT_METHODS.has(method)) {
+      log(`[IPC] ← result: ${JSON.stringify(result).slice(0, 80)}`);
+    }
+    return result;
+  }, err => {
+    log(`[IPC] ← error (${method}): ${err.message}`);
+    throw err;
   });
 }
 
@@ -671,7 +626,9 @@ function createWindow() {
   if (addonError) {
     const msg = encodeURIComponent(addonError);
     win.loadURL(`data:text/html,<pre style="color:red;background:%230A0A0F;padding:20px">Addon error:\n${msg}</pre>`);
-  } else if (process.env.XLETH_PLAYWRIGHT === '1' || app.isPackaged) {
+  } else if (process.env.XLETH_PLAYWRIGHT === '1'
+             || process.argv.includes('--xleth-use-dist')
+             || app.isPackaged) {
     win.loadFile(runtimeResource('app', 'dist', 'index.html'));
   } else {
     win.loadURL('http://localhost:5173');
@@ -731,7 +688,7 @@ ipcMain.handle('xleth:syncStats',      safeHandler(() => callWorker('getSyncStat
 ipcMain.handle('xleth:setVideoResolution', safeHandler((_, w, h) => callWorker('setVideoResolution', [w, h])));
 
 // ── Video frame output: Windows named shared memory ─────────────────────────
-// The forked worker creates a named file mapping and writes the double-buffer
+// The engine sidecar creates a named file mapping and writes the double-buffer
 // there; the renderer (via preload.js + shm_helper.node) opens the same name
 // and reads frames with zero copies. Main only tells the renderer the name
 // and metadata — no buffer crosses IPC.
@@ -2835,7 +2792,7 @@ function buildVisualPreviewDiagnosticText({ engine, extras, settings, gpuInfo })
 ipcMain.handle('xleth:diag:exportVisualPreviewLog', safeHandler(async (event, extras) => {
   const senderWin = BrowserWindow.fromWebContents(event.sender) || win;
 
-  // Pull engine state. Tolerate worker not ready / call failure — we still
+  // Pull engine state. Tolerate the sidecar not being ready — we still
   // want to produce *some* report so the tester can send something.
   let engine = null;
   let engineError = null;
@@ -2843,7 +2800,7 @@ ipcMain.handle('xleth:diag:exportVisualPreviewLog', safeHandler(async (event, ex
     engine = await callWorker('diag_getVisualPreviewDiagnostic', []);
   } catch (e) {
     engineError = e && e.message ? e.message : String(e);
-    log(`[diag] worker call failed: ${engineError}`);
+    log(`[diag] engine call failed: ${engineError}`);
   }
 
   // Carry forward the persisted videoMode setting for context.
@@ -3071,8 +3028,7 @@ ipcMain.handle('xleth:midi:importFull', (_, filePath, optionsJson) =>
     callWorker('midi_importFull', [filePath, optionsJson]));
 
 ipcMain.handle('xleth:midi:executeImport', (_, noteData, optionsJson) =>
-    // preload.js guarantees noteData is a Buffer; fork uses serialization:'advanced'
-    // so it crosses to the worker as a real Buffer. No coercion needed here.
+    // preload.js guarantees noteData is a Buffer; the pipe client base64-encodes it.
     callWorker('midi_executeImport', [noteData, optionsJson]));
 
 // Replaced by WaveformMipmap N-API bindings — see WaveformMipmap.h
@@ -3517,23 +3473,14 @@ app.whenReady().then(async () => {
   });
 
   try {
-    startWorker();
+    await startWorker();
     splashStatus('Initializing audio engine…');
-    // Wait for worker ready signal (arrives on 'message' as {ready:true}).
-    await new Promise((resolve, reject) => {
-      const t0 = Date.now();
-      const check = () => {
-        if (workerReady) return resolve();
-        if (addonError) return reject(new Error(addonError));
-        if (Date.now() - t0 > 10000) return reject(new Error('worker ready timeout'));
-        setTimeout(check, 50);
-      };
-      check();
-    });
     splashStatus('Registering codecs…');
 
     await callWorker('initialize');
     log('initialize() OK');
+    await applyEngineDefaults();
+    startEngineBackgroundTasks();
     splashStatus('Starting compositor…');
 
     // Swap the engine's owned FrameOutput buffer for a Windows named file
@@ -3671,7 +3618,7 @@ app.whenReady().then(async () => {
   }
   // ──────────────────────────────────────────────────────────────────────────
 
-  // Pass the main-window native HWND to the worker so VST editor-host
+  // Pass the main-window native HWND to the sidecar so VST editor-host
   // processes can call SetWindowLongPtrW(GWLP_HWNDPARENT) and be treated as
   // owned popups: they minimize with the main window, don't get a separate
   // taskbar button, and stay above the main window in Z-order.
@@ -3690,6 +3637,7 @@ app.whenReady().then(async () => {
       log('[HWND] Failed to read native window handle: ' + e.message);
     }
   }
+
 });
 
 app.on('window-all-closed', () => {
@@ -3700,12 +3648,17 @@ app.on('activate', () => {
   if (win === null) createWindow();
 });
 
-app.on('before-quit', async () => {
-  if (workerReady) {
-    try { await callWorker('shutdown'); } catch (e) { log('shutdown error: ' + e.message); }
-  }
-  try { worker?.kill(); } catch {}
-  log('Exiting.');
+let engineQuitStarted = false;
+app.on('before-quit', (event) => {
+  if (engineQuitStarted) return;
+  event.preventDefault();
+  engineQuitStarted = true;
+  (async () => {
+    try { await engineClient.shutdown(); }
+    catch (e) { log('shutdown error: ' + e.message); }
+    log('Exiting.');
+    app.quit();
+  })();
 });
 
 // Also expose the frame-shm meta synchronously for preload (sendSync path).
