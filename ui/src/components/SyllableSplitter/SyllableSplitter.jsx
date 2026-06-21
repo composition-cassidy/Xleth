@@ -15,7 +15,7 @@ import {
 } from './splitSyllablesMipmap.js'
 
 // ── Constants ────────────────────────────────────────────────────────────────
-const CANVAS_H   = 90    // waveform canvas height
+const CANVAS_H   = 138   // waveform canvas height
 const HANDLE_HIT = 8     // hit-test radius around marker (px)
 const DELETE_EDGE = 6    // drag this close to left/right edge → delete marker
 const MIN_ZOOM   = 1
@@ -281,17 +281,6 @@ export default function SyllableSplitter({
     ctx.fillStyle = themeColor('--theme-syllable-splitter-bg', '--theme-bg-inset')
     ctx.fillRect(0, 0, w, h)
 
-    // Section tints (alternate) — visual aid for where each syllable lives
-    const edges = [0, ...markers, regionDur]
-    for (let i = 0; i < edges.length - 1; i++) {
-      if (i % 2 === 0) continue
-      const x0 = Math.max(0, timeToX(edges[i]))
-      const x1 = Math.min(w, timeToX(edges[i + 1]))
-      if (x1 <= x0) continue
-      ctx.fillStyle = themeColor('--theme-syllable-section-alt', '--theme-accent-bg-subtle')
-      ctx.fillRect(x0, 0, x1 - x0, h)
-    }
-
     // Centerline
     const mid = h / 2
     ctx.strokeStyle = themeColor('--theme-syllable-splitter-wave-dim', '--theme-border-subtle')
@@ -346,19 +335,9 @@ export default function SyllableSplitter({
       ctx.fillText('No waveform', 8, mid)
     }
 
-    // Section number labels (top-left of each visible section)
-    ctx.fillStyle = themeColor('--theme-accent')
-    ctx.font = uiCanvasFont('600 11px')
-    ctx.textBaseline = 'top'
-    for (const section of sections) {
-      const x0 = timeToX(section.start)
-      if (x0 < -20 || x0 > w) continue
-      ctx.fillText(section.label, Math.max(2, x0) + 4, 3)
-    }
-
     // Marker lines (only those within the visible window)
     ctx.strokeStyle = themeColor('--theme-accent')
-    ctx.lineWidth = 2
+    ctx.lineWidth = 1
     for (let i = 0; i < markers.length; i++) {
       const x = timeToX(markers[i])
       if (x < -2 || x > w + 2) continue
@@ -366,11 +345,24 @@ export default function SyllableSplitter({
       ctx.moveTo(x, 0)
       ctx.lineTo(x, h)
       ctx.stroke()
-      // Handle knobs at top and bottom
-      ctx.fillStyle = themeColor('--theme-accent')
-      ctx.fillRect(x - 4, 0, 8, 4)
-      ctx.fillRect(x - 4, h - 4, 8, 4)
     }
+
+    // Compact flags label each section at its start point.
+    ctx.font = uiCanvasFont('700 9px')
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    for (const section of sections) {
+      const x = timeToX(section.start)
+      if (x < -18 || x > w + 18) continue
+      const leading = section.label === '~'
+      ctx.fillStyle = leading
+        ? themeColor('--theme-text-subtle', '--theme-text-muted')
+        : themeColor('--theme-accent')
+      ctx.fillRect(Math.max(0, x - 8), 0, 16, 14)
+      ctx.fillStyle = themeColor('--theme-bg-primary', '--theme-bg-inset')
+      ctx.fillText(section.label, Math.max(8, x), 7)
+    }
+    ctx.textAlign = 'left'
 
     // Zoom indicator (top-right) when zoomed in
     if (z > MIN_ZOOM + 1e-3) {
@@ -764,14 +756,14 @@ export default function SyllableSplitter({
             className={`syllable-section-card${playingIdx === i ? ' playing' : ''}${selectedMarkerIndex === i ? ' selected' : ''}`}
             onClick={() => setSelectedMarkerIndex(i)}
           >
-            <span className="syllable-section-num">{s.label}</span>
+            <span className={`syllable-section-num${s.label === '~' ? ' is-leading' : ''}`}>{s.label}</span>
             <button
               className="syllable-section-play"
               onClick={() => playSection(i)}
               disabled={!sourceReady || Math.max(0, s.end - s.start) <= 0.01}
               title={!sourceReady ? 'Loading preview audio...' : (playingIdx === i ? 'Stop' : 'Play syllable')}
             >
-              {playingIdx === i ? <Square size={10} /> : <Play size={10} />}
+              {playingIdx === i ? <Square size={9} /> : <Play size={9} />}
             </button>
             <input
               type="text"
@@ -796,9 +788,6 @@ export default function SyllableSplitter({
         <button className="syllable-splitter-btn syllable-splitter-btn--clear" onClick={handleClearAll} disabled={markers.length === 0 && texts.every(t => !t)}>
           <Trash2 size={12} /> Clear All
         </button>
-        <span className="syllable-splitter-hint">
-          Click to place marker · Drag to move · Right-click or drag to edge to delete · Scroll to zoom · Space to preview selected
-        </span>
         <button className="syllable-splitter-btn syllable-splitter-btn--save primary" onClick={handleSave} disabled={!dirty}>
           Save
         </button>

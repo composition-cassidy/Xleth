@@ -206,6 +206,21 @@ std::string AudioEngine::getCurrentOutputDevice() const
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// [XRun] Hardware x-run count from the active driver (-1 if unsupported).
+int AudioEngine::getDeviceXRunCount() const
+{
+    if (auto* dev = deviceManager_.getCurrentAudioDevice())
+        return dev->getXRunCount();
+    return -1;
+}
+
+// [XRun] JUCE device-manager CPU load estimate, range [0,1].
+double AudioEngine::getDeviceCpuUsage() const
+{
+    return deviceManager_.getCpuUsage();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 std::string AudioEngine::setOutputDevice(const std::string& deviceName)
 {
     juce::AudioDeviceManager::AudioDeviceSetup setup;

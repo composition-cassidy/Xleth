@@ -70,6 +70,8 @@ export async function importFscScore({ file, patternId, xleth, notify, showToast
 
 const KEYBOARD_WIDTH = 60
 const VELOCITY_HEIGHT = 80
+const RULER_HEIGHT = 24
+const TOOLBAR_HEIGHT = 40
 const DEFAULT_PX_PER_BEAT = 80
 const DEFAULT_PX_PER_SEMITONE = 14
 
@@ -173,7 +175,7 @@ export default function PianoRoll({
 
   // Initial scroll: center around C4 (pitch 60)
   useEffect(() => {
-    const canvasH = size.h - VELOCITY_HEIGHT - 40
+    const canvasH = size.h - VELOCITY_HEIGHT - TOOLBAR_HEIGHT - RULER_HEIGHT
     const targetY = (PITCH_MAX - 60) * pixelsPerSemitone - canvasH / 2
     setScrollY(Math.max(0, targetY))
   }, [size.h, pixelsPerSemitone])
@@ -490,7 +492,7 @@ export default function PianoRoll({
       setScrollX((x) => Math.max(0, x + e.deltaY))
     } else {
       e.preventDefault()
-      const maxScrollY = Math.max(0, (PITCH_MAX - PITCH_MIN + 1) * pixelsPerSemitone - (size.h - VELOCITY_HEIGHT - 40 - SCROLLBAR_H_HEIGHT))
+      const maxScrollY = Math.max(0, (PITCH_MAX - PITCH_MIN + 1) * pixelsPerSemitone - (size.h - VELOCITY_HEIGHT - TOOLBAR_HEIGHT - RULER_HEIGHT - SCROLLBAR_H_HEIGHT))
       setScrollY((y) => Math.max(0, Math.min(maxScrollY, y + e.deltaY)))
     }
   }, [pixelsPerSemitone, size.h])
@@ -506,7 +508,7 @@ export default function PianoRoll({
   const patternLengthTicks = pattern?.lengthTicks || 0
   const highlightedPitches = new Set(notes.map((n) => n.pitch))
   const canvasWidth = Math.max(0, size.w - KEYBOARD_WIDTH - SCROLLBAR_V_WIDTH)
-  const canvasHeight = Math.max(0, size.h - VELOCITY_HEIGHT - 40 - SCROLLBAR_H_HEIGHT) // 40 = toolbar
+  const canvasHeight = Math.max(0, size.h - VELOCITY_HEIGHT - TOOLBAR_HEIGHT - RULER_HEIGHT - SCROLLBAR_H_HEIGHT)
 
   // Content bounds for scrollbar sizing
   const contentHeight = (PITCH_MAX - PITCH_MIN + 1) * pixelsPerSemitone
@@ -530,10 +532,30 @@ export default function PianoRoll({
     setScrollX((x) => Math.min(x, maxX))
   }, [contentWidth, canvasWidth])
 
+  // Ruler tick labels for the visible horizontal range. Bar boundaries
+  // (every 4 beats, 4/4) get a bright integer; in-between beats get a dim
+  // "bar.beat" sub-label — mirrors the mockup's ruler.
+  const rulerLabels = []
+  {
+    const startBeat = Math.max(0, Math.floor(scrollX / pixelsPerBeat))
+    const endBeat = Math.ceil((scrollX + canvasWidth) / pixelsPerBeat) + 1
+    for (let b = startBeat; b <= endBeat; b++) {
+      const left = b * pixelsPerBeat - scrollX
+      if (left < -20 || left > canvasWidth) continue
+      const isBar = b % 4 === 0
+      rulerLabels.push({
+        key: b,
+        left,
+        isBar,
+        text: isBar ? String(b / 4 + 1) : `${Math.floor(b / 4) + 1}.${(b % 4) + 1}`,
+      })
+    }
+  }
+
   return (
     <div
       className="piano-roll"
-      style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%', background: 'var(--theme-bg-inset)' }}
+      style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%', background: '#0d0d0d' }}
     >
       {floating && (
         <div
@@ -581,6 +603,19 @@ export default function PianoRoll({
         onRegionChange={handleRegionChange}
       />
       <div ref={containerRef} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <div className="piano-roll-ruler" style={{ height: RULER_HEIGHT }}>
+          <div className="piano-roll-ruler-corner" style={{ width: KEYBOARD_WIDTH }} />
+          <div className="piano-roll-ruler-track" style={{ width: canvasWidth }}>
+            {rulerLabels.map((l) => (
+              <span
+                key={l.key}
+                className={`piano-roll-ruler-tick${l.isBar ? ' bar' : ''}`}
+                style={{ left: l.left }}
+              >{l.text}</span>
+            ))}
+          </div>
+          <div className="piano-roll-ruler-corner" style={{ width: SCROLLBAR_V_WIDTH }} />
+        </div>
         <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
           <PianoRollKeyboard
             pixelsPerSemitone={pixelsPerSemitone}
@@ -624,7 +659,7 @@ export default function PianoRoll({
           />
         </div>
         <div style={{ display: 'flex' }}>
-          <div style={{ width: KEYBOARD_WIDTH, background: 'var(--theme-pianoroll-key-white-bg)', borderRight: '1px solid var(--theme-border-subtle)', borderTop: '1px solid var(--theme-border-subtle)' }} />
+          <div style={{ width: KEYBOARD_WIDTH, background: '#0d0d0d', borderRight: '1px solid #222', borderTop: '1px solid #222' }} />
           <PianoRollScrollbarH
             contentWidth={contentWidth}
             viewportWidth={canvasWidth}
@@ -632,10 +667,15 @@ export default function PianoRoll({
             setScrollX={setScrollX}
             onZoomDelta={handleZoomDelta}
           />
-          <div style={{ width: SCROLLBAR_V_WIDTH, background: 'var(--theme-pianoroll-key-white-bg)', borderTop: '1px solid var(--theme-border-subtle)' }} />
+          <div style={{ width: SCROLLBAR_V_WIDTH, background: '#0d0d0d', borderTop: '1px solid #222' }} />
         </div>
         <div style={{ display: 'flex' }}>
-          <div style={{ width: KEYBOARD_WIDTH, background: 'var(--theme-pianoroll-key-white-bg)', borderRight: '1px solid var(--theme-border-subtle)', borderTop: '1px solid var(--theme-border-subtle)' }} />
+          <div className="piano-roll-velocity-gutter" style={{ width: KEYBOARD_WIDTH, height: VELOCITY_HEIGHT }}>
+            <span className="piano-roll-velocity-title">VEL</span>
+            <span className="piano-roll-velocity-axis" style={{ top: 4 }}>127</span>
+            <span className="piano-roll-velocity-axis" style={{ top: '50%' }}>64</span>
+            <span className="piano-roll-velocity-axis" style={{ bottom: 3 }}>1</span>
+          </div>
           <VelocityLane
             notes={notes}
             selectedNoteIds={selectedNoteIds}
@@ -645,7 +685,7 @@ export default function PianoRoll({
             height={VELOCITY_HEIGHT}
             onSetVelocity={handleSetVelocity}
           />
-          <div style={{ width: SCROLLBAR_V_WIDTH, background: 'var(--theme-pianoroll-key-white-bg)', borderTop: '1px solid var(--theme-border-subtle)' }} />
+          <div style={{ width: SCROLLBAR_V_WIDTH, background: '#181818', borderTop: '1px solid #222' }} />
         </div>
       </div>
     </div>

@@ -10,7 +10,9 @@ import TimelineRuler from './timeline/TimelineRuler.jsx'
 import LoopRegionBar from './timeline/LoopRegionBar.jsx'
 import TimelineScrollbar from './timeline/TimelineScrollbar.jsx'
 import TimelineToolbar from './timeline/TimelineToolbar.jsx'
+import { pixelsToViewportPan } from './timeline/middleMousePan.js'
 import ContextMenu from './ContextMenu.jsx'
+import XlethSelect from './common/XlethSelect.jsx'
 import TrackContextMenu from './timeline/TrackContextMenu.jsx'
 import ConfirmConvertDialog from './timeline/ConfirmConvertDialog.jsx'
 import QuantizeDialog from './timeline/QuantizeDialog.jsx'
@@ -1758,6 +1760,21 @@ export default function TimelineView({
     }
   }, [zoomAtCursor, scrollOffsetRef, applyScroll, scrollBy, markUserScrolling])
 
+  const handleMiddleMousePan = useCallback((deltaXPx, deltaYPx) => {
+    markUserScrolling()
+    const { deltaBeats, deltaScrollTop } = pixelsToViewportPan(
+      deltaXPx,
+      deltaYPx,
+      pixelsPerBeatRef.current,
+    )
+    if (deltaBeats !== 0) scrollBy(deltaBeats)
+
+    const sc = scrollContainerRef.current
+    if (!sc || deltaScrollTop === 0 || sc.scrollHeight <= sc.clientHeight) return
+    const maxScrollTop = Math.max(0, sc.scrollHeight - sc.clientHeight)
+    sc.scrollTop = Math.max(0, Math.min(maxScrollTop, sc.scrollTop + deltaScrollTop))
+  }, [markUserScrolling, scrollBy])
+
   // ── Track mutations ────────────────────────────────────────────────────────
 
   const handleAddTrack = useCallback(async () => {
@@ -2227,6 +2244,47 @@ export default function TimelineView({
     }
   }, [fetchClips])
 
+  const handleDuplicateClips = useCallback(async (placements) => {
+    if (!Array.isArray(placements) || placements.length === 0) return
+    try {
+      const newIds = []
+      for (const { clip, trackId, positionTicks } of placements) {
+        const payload = {
+          trackId,
+          regionId: clip.regionId,
+          positionTicks,
+          durationTicks: clip.durationTicks,
+          regionOffsetTicks: clip.regionOffsetTicks ?? 0,
+          syllableIndex: clip.syllableIndex ?? -1,
+          velocity: clip.velocity ?? 1.0,
+          pitchOffset: clip.pitchOffset ?? 0,
+          pitchOffsetCents: clip.pitchOffsetCents ?? 0,
+          reversed: clip.reversed ?? false,
+          stretchRatio: clip.stretchRatio ?? 1.0,
+          stretchMethod: clip.stretchMethod ?? 0,
+          formantPreserve: clip.formantPreserve ?? false,
+          fadeInPercent: clip.fadeInPercent ?? 0,
+          fadeOutPercent: clip.fadeOutPercent ?? 0,
+          fadeInX1: clip.fadeInX1 ?? 0,
+          fadeInY1: clip.fadeInY1 ?? 0,
+          fadeInX2: clip.fadeInX2 ?? 1,
+          fadeInY2: clip.fadeInY2 ?? 1,
+          fadeOutX1: clip.fadeOutX1 ?? 0,
+          fadeOutY1: clip.fadeOutY1 ?? 0,
+          fadeOutX2: clip.fadeOutX2 ?? 1,
+          fadeOutY2: clip.fadeOutY2 ?? 1,
+          ...(clip.modulation ? { modulation: clip.modulation } : {}),
+        }
+        const newId = await window.xleth?.timeline?.addClip(payload)
+        if (newId != null) newIds.push(newId)
+      }
+      await fetchClips()
+      setSelectedClipIds(new Set(newIds))
+    } catch (err) {
+      console.error('[SelectTool] Duplicate drag failed:', err)
+    }
+  }, [fetchClips])
+
   const handleResizeClip = useCallback(async (clipId, newDurationTicks) => {
     console.log(`[SelectTool] Resizing clip ${clipId}: dur=${newDurationTicks}t`)
     try {
@@ -2337,6 +2395,33 @@ export default function TimelineView({
       console.error('[SelectTool] movePatternBlock failed:', err)
     }
   }, [])
+
+  const handleDuplicatePatternBlocks = useCallback(async (placements) => {
+    if (!Array.isArray(placements) || placements.length === 0) return
+    try {
+      const newIds = []
+      for (const { block, trackId, positionTicks } of placements) {
+        const blockId = await window.xleth?.timeline?.addPatternBlock({
+          trackId,
+          patternId: block.patternId,
+          positionTicks,
+          durationTicks: block.durationTicks,
+          offsetTicks: block.offsetTicks ?? 0,
+        })
+        if (blockId != null && blockId >= 0) {
+          newIds.push(blockId)
+          if (block.loopEnabled) {
+            await window.xleth?.timeline?.setPatternBlockLoop(blockId, true)
+          }
+        }
+      }
+      await fetchPatternBlocks()
+      timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
+      setSelectedBlockIds(new Set(newIds))
+    } catch (err) {
+      console.error('[SelectTool] Pattern duplicate drag failed:', err)
+    }
+  }, [fetchPatternBlocks])
 
   const handleResizePatternBlock = useCallback(async (blockId, durationTicks) => {
     console.log(`[SelectTool] Resizing pattern block ${blockId}: dur=${durationTicks}t`)
@@ -3571,14 +3656,12 @@ export default function TimelineView({
                             />
                             <div style={{ padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
                               <span style={{ fontSize: 11, color: '#aaa', minWidth: 40 }}>Rate</span>
-                              <select
+                              <XlethSelect
+                                className="clip-mod-select"
                                 value={vibRateMode}
-                                onChange={(e) => handleSetClipVibrato(contextMenu.clipId, { rateMode: e.target.value })}
-                                style={{ flex: 1 }}
-                              >
-                                <option value="freeHz">Free</option>
-                                <option value="tempoSync">Sync</option>
-                              </select>
+                                options={[{ value: 'freeHz', label: 'Free' }, { value: 'tempoSync', label: 'Sync' }]}
+                                onChange={(val) => handleSetClipVibrato(contextMenu.clipId, { rateMode: val })}
+                              />
                             </div>
                             {vibRateMode === 'freeHz' ? (
                               <ClipSliderRow
@@ -3591,24 +3674,22 @@ export default function TimelineView({
                             ) : (
                               <div style={{ padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
                                 <span style={{ fontSize: 11, color: '#aaa', minWidth: 40 }}>Sync</span>
-                                <select
+                                <XlethSelect
+                                  className="clip-mod-select"
                                   value={v.syncDivision ?? 'eighth'}
-                                  onChange={(e) => handleSetClipVibrato(contextMenu.clipId, { syncDivision: e.target.value })}
-                                  style={{ flex: 1 }}
-                                >
-                                  {VIBRATO_SYNC_DIVISIONS.map(([val, lbl]) => <option key={val} value={val}>{lbl}</option>)}
-                                </select>
+                                  options={VIBRATO_SYNC_DIVISIONS.map(([val, lbl]) => ({ value: val, label: lbl }))}
+                                  onChange={(val) => handleSetClipVibrato(contextMenu.clipId, { syncDivision: val })}
+                                />
                               </div>
                             )}
                             <div style={{ padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
                               <span style={{ fontSize: 11, color: '#aaa', minWidth: 40 }}>Shape</span>
-                              <select
+                              <XlethSelect
+                                className="clip-mod-select"
                                 value={v.shape ?? 'sine'}
-                                onChange={(e) => handleSetClipVibrato(contextMenu.clipId, { shape: e.target.value })}
-                                style={{ flex: 1 }}
-                              >
-                                {VIBRATO_SHAPES.map(([val, lbl]) => <option key={val} value={val}>{lbl}</option>)}
-                              </select>
+                                options={VIBRATO_SHAPES.map(([val, lbl]) => ({ value: val, label: lbl }))}
+                                onChange={(val) => handleSetClipVibrato(contextMenu.clipId, { shape: val })}
+                              />
                             </div>
                           </div>
                         )}
@@ -3621,18 +3702,15 @@ export default function TimelineView({
                           <div style={{ paddingLeft: 10 }}>
                             <div style={{ padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
                               <span style={{ fontSize: 11, color: '#aaa', minWidth: 40 }}>Preset</span>
-                              <select
+                              <XlethSelect
+                                className="clip-mod-select"
                                 value={scrPresetKey}
-                                onChange={(e) => {
-                                  if (e.target.value !== 'custom') handleSetClipScratch(contextMenu.clipId, {}, { presetKey: e.target.value })
-                                }}
-                                style={{ flex: 1 }}
-                              >
-                                <option value="custom" disabled>Custom</option>
-                                {SCRATCH_PRESETS.map(preset => (
-                                  <option key={preset.key} value={preset.key}>{preset.label}</option>
-                                ))}
-                              </select>
+                                options={[
+                                  { value: 'custom', label: 'Custom', disabled: true },
+                                  ...SCRATCH_PRESETS.map(p => ({ value: p.key, label: p.label })),
+                                ]}
+                                onChange={(val) => handleSetClipScratch(contextMenu.clipId, {}, { presetKey: val })}
+                              />
                             </div>
                             <ClipSliderRow
                               label="Smooth"
@@ -3643,13 +3721,12 @@ export default function TimelineView({
                             />
                             <div style={{ padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
                               <span style={{ fontSize: 11, color: '#aaa', minWidth: 40 }}>Edge</span>
-                              <select
+                              <XlethSelect
+                                className="clip-mod-select"
                                 value={s.edgeMode ?? SCRATCH_DEFAULTS.edgeMode}
-                                onChange={(e) => handleSetClipScratch(contextMenu.clipId, { edgeMode: e.target.value })}
-                                style={{ flex: 1 }}
-                              >
-                                {SCRATCH_EDGE_MODES.map(([val, lbl]) => <option key={val} value={val}>{lbl}</option>)}
-                              </select>
+                                options={SCRATCH_EDGE_MODES.map(([val, lbl]) => ({ value: val, label: lbl }))}
+                                onChange={(val) => handleSetClipScratch(contextMenu.clipId, { edgeMode: val })}
+                              />
                             </div>
                             {showBabyScratchControls && (
                               <>
@@ -3670,15 +3747,12 @@ export default function TimelineView({
                                 </div>
                                 <div style={{ padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
                                   <span style={{ fontSize: 11, color: '#aaa', minWidth: 78 }}>Length</span>
-                                  <select
+                                  <XlethSelect
+                                    className="clip-mod-select"
                                     value={babySettings.lengthBeats}
-                                    onChange={(e) => updateBabyScratch({ lengthBeats: normalizeScratchLengthBeats(e.target.value) })}
-                                    style={{ flex: 1 }}
-                                  >
-                                    {SCRATCH_BABY_LENGTHS.map(([length, label]) => (
-                                      <option key={length} value={length}>{label}</option>
-                                    ))}
-                                  </select>
+                                    options={SCRATCH_BABY_LENGTHS.map(([length, label]) => ({ value: length, label }))}
+                                    onChange={(val) => updateBabyScratch({ lengthBeats: val })}
+                                  />
                                 </div>
                               </>
                             )}
@@ -3958,6 +4032,7 @@ export default function TimelineView({
                   onCreateClip={handleCreateClip}
                   onDeleteClip={handleDeleteClip}
                   onMoveClip={handleMoveClip}
+                  onDuplicateClips={handleDuplicateClips}
                   onResizeClip={handleResizeClip}
                   onResizeClipLeft={handleResizeClipLeft}
                   onStretchClip={handleStretchClip}
@@ -3965,6 +4040,7 @@ export default function TimelineView({
                   onSplitClip={handleSplitClip}
                   onSetClipVelocity={handleSetClipVelocity}
                   onSetClipFade={handleSetClipFade}
+                  onMiddleMousePan={handleMiddleMousePan}
                   onRequestClipContextMenu={(clipId, x, y) => {
                     setQuickFxMenu(null)
                     setContextMenu({ type: 'clip', clipId, x, y })
@@ -3990,6 +4066,7 @@ export default function TimelineView({
                   currentPatternIdByTrack={currentPatternIdByTrack}
                   onCreatePatternBlock={handleCreatePatternBlock}
                   onMovePatternBlock={handleMovePatternBlock}
+                  onDuplicatePatternBlocks={handleDuplicatePatternBlocks}
                   onResizePatternBlock={handleResizePatternBlock}
                   onResizePatternBlockLeft={handleResizePatternBlockLeft}
                   onDeletePatternBlock={handleDeletePatternBlock}
@@ -4118,13 +4195,12 @@ export default function TimelineView({
                 {v.rateMode === 'tempoSync' ? (
                   <div style={{ padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
                     <span style={{ fontSize: 11, color: '#aaa', minWidth: 60 }}>Vib Sync</span>
-                    <select
+                    <XlethSelect
+                      className="clip-mod-select"
                       value={v.syncDivision ?? 'eighth'}
-                      onChange={(e) => handleSetClipVibrato(clip.id, { syncDivision: e.target.value })}
-                      style={{ flex: 1 }}
-                    >
-                      {VIBRATO_SYNC_DIVISIONS.map(([val, lbl]) => <option key={val} value={val}>{lbl}</option>)}
-                    </select>
+                      options={VIBRATO_SYNC_DIVISIONS.map(([val, lbl]) => ({ value: val, label: lbl }))}
+                      onChange={(val) => handleSetClipVibrato(clip.id, { syncDivision: val })}
+                    />
                   </div>
                 ) : (
                   <ClipSliderRow
@@ -4143,18 +4219,15 @@ export default function TimelineView({
                 <div style={sectionLabel}>Scratch</div>
                 <div style={{ padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
                   <span style={{ fontSize: 11, color: '#aaa', minWidth: 60 }}>Preset</span>
-                  <select
+                  <XlethSelect
+                    className="clip-mod-select"
                     value={presetKey}
-                    onChange={(e) => {
-                      if (e.target.value !== 'custom') handleSetClipScratch(clip.id, {}, { presetKey: e.target.value })
-                    }}
-                    style={{ flex: 1 }}
-                  >
-                    <option value="custom" disabled>Custom</option>
-                    {SCRATCH_PRESETS.map(preset => (
-                      <option key={preset.key} value={preset.key}>{preset.label}</option>
-                    ))}
-                  </select>
+                    options={[
+                      { value: 'custom', label: 'Custom', disabled: true },
+                      ...SCRATCH_PRESETS.map(p => ({ value: p.key, label: p.label })),
+                    ]}
+                    onChange={(val) => handleSetClipScratch(clip.id, {}, { presetKey: val })}
+                  />
                 </div>
                 <ClipSliderRow
                   label="Scratch Smooth"
@@ -4182,15 +4255,12 @@ export default function TimelineView({
                     </div>
                     <div style={{ padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
                       <span style={{ fontSize: 11, color: '#aaa', minWidth: 78 }}>Length</span>
-                      <select
+                      <XlethSelect
+                        className="clip-mod-select"
                         value={babySettings.lengthBeats}
-                        onChange={(e) => updateBabyScratch({ lengthBeats: normalizeScratchLengthBeats(e.target.value) })}
-                        style={{ flex: 1 }}
-                      >
-                        {SCRATCH_BABY_LENGTHS.map(([length, label]) => (
-                          <option key={length} value={length}>{label}</option>
-                        ))}
-                      </select>
+                        options={SCRATCH_BABY_LENGTHS.map(([length, label]) => ({ value: length, label }))}
+                        onChange={(val) => updateBabyScratch({ lengthBeats: val })}
+                      />
                     </div>
                   </>
                 )}

@@ -8,7 +8,7 @@ import LfoSection from './LfoSection.jsx'
 import { tokenValue } from '../../theming/tokenValue.ts'
 
 const WAVE_WIDTH = 800
-const WAVE_HEIGHT = 128
+const WAVE_HEIGHT = 158
 
 const ARP_DIRS = ['up', 'down', 'updown', 'sticky']
 const ARP_DIR_TITLES = { up: 'Up', down: 'Down', updown: 'Up + Down', sticky: 'Sticky' }
@@ -55,7 +55,7 @@ const emptySettings = {
 const SAMPLER_KNOB_APPEARANCE = {
   tickStyle: 'none',
   glyph: 'rotary-arrow',
-  accentGlow: true,
+  accentGlow: false,
 }
 
 function SamplerKnob(props) {
@@ -96,18 +96,6 @@ function Seg({ opts, val, set, sm }) {
   )
 }
 
-function Pill({ label, on, toggle }) {
-  return (
-    <button
-      type="button"
-      onClick={toggle}
-      className={`sampler-pill${on ? ' is-active' : ''}`}
-    >
-      {label}
-    </button>
-  )
-}
-
 function Chk({ val, set, label }) {
   return (
     <label className="sampler-check">
@@ -136,6 +124,21 @@ function Sel({ val, set, opts }) {
 function SectionLabel({ children }) {
   return (
     <div className="sampler-section-label">{children}</div>
+  )
+}
+
+function formatDuration(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return '0:00.000'
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes}:${(seconds - minutes * 60).toFixed(3).padStart(6, '0')}`
+}
+
+function ProcessButton({ label, active, onClick, children }) {
+  return (
+    <button type="button" className={`sampler-process-button${active ? ' is-active' : ''}`} onClick={onClick}>
+      {children}
+      <span>{label}</span>
+    </button>
   )
 }
 
@@ -350,19 +353,27 @@ export default function SamplerPanelContent({ regionId, onClose }) {
 
   const numSamples = audioInfo?.numSamples || 0
   const sampleRate = audioInfo?.originalSampleRate || 48000
-  const accentPanel = tokenValue('--theme-panel-mixer')
+  // Flat parity: generic (non-modulation) knobs follow the app's flat teal
+  // accent, matching the rest of the flat chrome. Per-modulation env/LFO knobs
+  // keep their distinct color-coding via envColor below.
+  const accentPanel = tokenValue('--xleth-flat-accent') || tokenValue('--theme-panel-mixer')
   const muted = 'var(--theme-text-muted)'
   const text = 'var(--theme-text)'
-  const surface = 'var(--theme-bg-surface)'
   const card = 'var(--theme-bg-elevated)'
   const border = 'var(--theme-border-subtle)'
-  const borderStrong = 'var(--theme-border-strong)'
   const lblStyle = { fontSize: 9, color: muted, textTransform: 'uppercase', letterSpacing: '0.06em' }
+  const sourceName = (audioInfo?.audioFilePath || '').split(/[\\/]/).pop() || ''
+  const sourceDuration = audioInfo?.duration ?? (sampleRate > 0 ? numSamples / sampleRate : 0)
 
   const renderSample = () => (
     <div className="sampler-page sampler-page--sample">
-      <div className="sampler-waveform-well">
-        <SamplerWaveform
+      <section className="sampler-waveform-block">
+        <div className="sampler-waveform-meta">
+          <span className="sampler-waveform-name" title={sourceName}>{sourceName}</span>
+          <span>{(sampleRate / 1000).toFixed(sampleRate % 1000 === 0 ? 0 : 1)}kHz &middot; {formatDuration(sourceDuration)}</span>
+        </div>
+        <div className="sampler-waveform-well">
+          <SamplerWaveform
           regionId={regionId}
           numSamples={numSamples}
           loopEnabled={settings.loopEnabled}
@@ -377,12 +388,31 @@ export default function SamplerPanelContent({ regionId, onClose }) {
           crossfadeSamples={settings.crossfadeSamples}
           sampleRate={sampleRate}
           onCommitSmpPoints={commitSmpPoints}
-          width={WAVE_WIDTH}
-          height={WAVE_HEIGHT}
-        />
-      </div>
+            width={WAVE_WIDTH}
+            height={WAVE_HEIGHT}
+            responsive
+          />
+        </div>
+      </section>
 
-      <div className="sampler-control-rail sampler-control-rail--knobs">
+      <div className="sampler-identity-row">
+        <section className="sampler-card sampler-root-card">
+          <SectionLabel>Root Note</SectionLabel>
+          <RootNotePicker value={settings.rootNote} onChange={(midi) => commitField('rootNote', midi)} />
+        </section>
+
+        <section className="sampler-card sampler-mode-card">
+          <SectionLabel>Mode</SectionLabel>
+          <Seg
+            opts={[{ v: false, l: 'One-shot' }, { v: true, l: 'Sustained' }]}
+            val={!!settings.crossfadeEnabled}
+            set={(value) => commitField('crossfadeEnabled', value)}
+          />
+        </section>
+
+        <section className="sampler-range-card sampler-range-card--trim">
+          <header><i /><span>Trim</span></header>
+          <div className="sampler-range-knobs sampler-range-knobs--trim">
         <SamplerKnob
           label="SMP Start"
           value={settings.smpStart}
@@ -445,12 +475,23 @@ export default function SamplerPanelContent({ regionId, onClose }) {
           onLiveChange={(v) => setField('declickMs', Math.round(v * 10) / 10)}
           onCommit={(v) => commit({ declickMs: Math.round(v * 10) / 10 })}
         />
+          </div>
+        </section>
+
+        <section className={`sampler-range-card sampler-range-card--loop${settings.loopEnabled ? '' : ' is-disabled'}`}>
+          <header>
+            <i /><span>Loop</span>
+            <button type="button" className={settings.loopEnabled ? 'is-active' : ''} onClick={() => commitField('loopEnabled', !settings.loopEnabled)}>
+              {settings.loopEnabled ? 'On' : 'Off'}
+            </button>
+          </header>
+          <div className="sampler-range-knobs sampler-range-knobs--loop">
         <SamplerKnob
           label="XFade"
           value={settings.crossfadeSamples}
           min={0} max={5000} defaultValue={0}
-          size={42}
-          color={accentPanel}
+          size={36}
+          color="var(--sampler-loop)"
           formatValue={(v) => `${Math.round(v)}`}
           onLiveChange={(v) => setField('crossfadeSamples', Math.round(v))}
           onCommit={(v) => commit({ crossfadeSamples: Math.round(v) })}
@@ -461,8 +502,8 @@ export default function SamplerPanelContent({ regionId, onClose }) {
           min={0}
           max={Math.max(0, numSamples - 1)}
           defaultValue={0}
-          size={42}
-          color={accentPanel}
+          size={36}
+          color="var(--sampler-loop)"
           onLiveChange={(v) => setField('loopStart', Math.round(v))}
           onCommit={(v) => commit({ loopStart: Math.round(v) })}
         />
@@ -472,8 +513,8 @@ export default function SamplerPanelContent({ regionId, onClose }) {
           min={0}
           max={numSamples}
           defaultValue={numSamples}
-          size={42}
-          color={accentPanel}
+          size={36}
+          color="var(--sampler-loop)"
           formatValue={(v) => {
             const r = Math.round(v)
             return (numSamples === 0 || r >= numSamples) ? 'END' : String(r)
@@ -487,47 +528,19 @@ export default function SamplerPanelContent({ regionId, onClose }) {
             commit({ loopEnd: end >= numSamples ? 0 : end })
           }}
         />
+          </div>
+        </section>
       </div>
 
-      <div className="sampler-control-rail sampler-control-rail--meta">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={lblStyle}>Root Note</span>
-          <RootNotePicker
-            value={settings.rootNote}
-            onChange={(midi) => commitField('rootNote', midi)}
-          />
+      <section className="sampler-card sampler-process-card">
+        <SectionLabel>Process (applies immediately)</SectionLabel>
+        <div className="sampler-process-row">
+          <ProcessButton label="Remove DC Offset" active={!!settings.dcOffsetRemoved} onClick={() => commitField('dcOffsetRemoved', !settings.dcOffsetRemoved)}><span aria-hidden>-</span></ProcessButton>
+          <ProcessButton label="Normalize" active={!!settings.normalized} onClick={() => commitField('normalized', !settings.normalized)}><span aria-hidden>~</span></ProcessButton>
+          <ProcessButton label="Reverse Polarity" active={!!settings.polarityReversed} onClick={() => commitField('polarityReversed', !settings.polarityReversed)}><span aria-hidden>+/-</span></ProcessButton>
+          <ProcessButton label="Reverse" active={!!settings.reversed} onClick={() => commitField('reversed', !settings.reversed)}><span aria-hidden>&lt;&gt;</span></ProcessButton>
         </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={lblStyle}>Mode</span>
-          {[['oneshot', 'One-shot'], ['sustained', 'Sustained']].map(([id, lbl]) => {
-            const active = id === 'sustained' ? settings.crossfadeEnabled : !settings.crossfadeEnabled
-            return (
-              <label key={id} style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
-                <input
-                  type="radio"
-                  checked={active}
-                  onChange={() => commitField('crossfadeEnabled', id === 'sustained')}
-                  style={{ accentColor: 'var(--theme-accent)' }}
-                />
-                <span style={{ fontSize: 10, color: active ? text : muted }}>{lbl}</span>
-              </label>
-            )
-          })}
-        </div>
-
-        <Chk val={settings.loopEnabled} set={(v) => commitField('loopEnabled', v)} label="Loop" />
-      </div>
-
-      <div className="sampler-module sampler-module--effects">
-        <SectionLabel>Precomputed Effects</SectionLabel>
-        <div className="sampler-pill-row">
-          <Pill label="Remove DC Offset" on={!!settings.dcOffsetRemoved}  toggle={() => commitField('dcOffsetRemoved', !settings.dcOffsetRemoved)} />
-          <Pill label="Normalize"        on={!!settings.normalized}       toggle={() => commitField('normalized', !settings.normalized)} />
-          <Pill label="Reverse Polarity" on={!!settings.polarityReversed} toggle={() => commitField('polarityReversed', !settings.polarityReversed)} />
-          <Pill label="Reverse"          on={!!settings.reversed}         toggle={() => commitField('reversed', !settings.reversed)} />
-        </div>
-      </div>
+      </section>
     </div>
   )
 
@@ -642,12 +655,6 @@ export default function SamplerPanelContent({ regionId, onClose }) {
           </div>
 
           {/* Embedded LFO sub-section — only relevant under Env tab */}
-          {!isPitch && (
-            <div className="sampler-lfo-wrap">
-              <SectionLabel>LFO</SectionLabel>
-              <LfoSection settings={settings} setField={setField} setFields={setFields} commit={commit} />
-            </div>
-          )}
         </div>
       </div>
     )
@@ -658,9 +665,10 @@ export default function SamplerPanelContent({ regionId, onClose }) {
     const arpDirId = ARP_DIRS[arpDirIdx]
     return (
       <div className="sampler-page sampler-page--playback">
-        <div className="sampler-playback-grid">
+        <div className="sampler-playback-grid sampler-voice-panel">
           {/* Voice + Portamento */}
           <div className="sampler-module sampler-voice-module" style={{ minWidth: 148 }}>
+            <SectionLabel>Voice</SectionLabel>
             <Seg
               opts={[{ v: 'mono', l: 'Mono' }, { v: 'poly', l: 'Poly' }]}
               val={settings.monoEnabled ? 'mono' : 'poly'}
@@ -773,7 +781,7 @@ export default function SamplerPanelContent({ regionId, onClose }) {
         {/* Envelope + LFO card */}
         <div className="sampler-module sampler-env-module">
           <Tabs
-            tabs={[{ id: 'env', label: 'Env' }, { id: 'pitch', label: 'Pitch' }]}
+            tabs={[{ id: 'env', label: 'Envelope' }, { id: 'pitch', label: 'Pitch Envelope' }]}
             active={envTab}
             onSelect={setEnvTab}
             sm
@@ -781,6 +789,9 @@ export default function SamplerPanelContent({ regionId, onClose }) {
           <div style={{ marginTop: 10 }}>
             {renderEnv()}
           </div>
+        </div>
+        <div className="sampler-module sampler-lfo-module">
+          <LfoSection settings={settings} setField={setField} setFields={setFields} commit={commit} />
         </div>
       </div>
     )
@@ -796,7 +807,6 @@ export default function SamplerPanelContent({ regionId, onClose }) {
             onSelect={setTab}
           />
         </div>
-        <span className="sampler-panel-region-label">{region?.name || 'No sample selected'}</span>
       </div>
       <div className="sampler-panel-scroll">
         <div className="sampler-panel-content">

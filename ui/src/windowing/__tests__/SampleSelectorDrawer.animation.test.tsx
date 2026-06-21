@@ -8,11 +8,15 @@ import {
   openSampleSelectorDrawer,
 } from '../components/SampleSelectorDrawer';
 import {
-  DEFAULT_SAMPLE_SELECTOR_DOCK_WIDTH,
   createInitialDockRegionSizes,
   createInitialPanelStates,
   usePanelRegistry,
 } from '../registry/PanelRegistry';
+
+vi.mock('../../components/Toast.jsx', () => ({
+  ToastProvider: ({ children }: { children: unknown }) => children,
+  useToast: () => ({ dismiss: () => {}, showToast: () => undefined }),
+}));
 
 let originalMatchMedia: typeof window.matchMedia | undefined;
 
@@ -21,7 +25,6 @@ function resetRegistry() {
   usePanelRegistry.setState({
     panels: createInitialPanelStates(),
     dockRegionSizes: createInitialDockRegionSizes(),
-    sampleSelectorDockWidth: DEFAULT_SAMPLE_SELECTOR_DOCK_WIDTH,
   });
 }
 

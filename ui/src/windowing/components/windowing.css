@@ -11,7 +11,7 @@
  */
 
 .xleth-windowing-shell {
-  --xleth-sample-dock-width: 320px;
+  --xleth-sample-dock-width: 258px;
   --xleth-sample-dock-handle-width: 32px;
   position: relative;
   display: grid;
@@ -385,27 +385,6 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   opacity: 1;
 }
 
-.xleth-windowing-panel-icon {
-  width: 14px;
-  height: 14px;
-  margin-left: 8px;
-  margin-right: 6px;
-  color: var(--xleth-windowing-panel-color);
-  flex: 0 0 auto;
-}
-
-.xleth-windowing-panel-name {
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 1;
-  color: var(--theme-text-muted);
-  white-space: nowrap;
-}
-
-.xleth-windowing-titlebar[data-focused="true"] .xleth-windowing-panel-name {
-  color: var(--theme-chrome-titlebar-fg);
-}
-
 .xleth-windowing-drag-zone {
   flex: 1 1 auto;
   align-self: stretch;
@@ -579,6 +558,21 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   display: flex;
   flex-direction: column;
   background: var(--theme-bg-primary);
+}
+
+.xleth-sample-selector-drawer__resize-handle {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  bottom: 0;
+  z-index: var(--xleth-z-window-dock-resizer);
+  width: 8px;
+  cursor: ew-resize;
+  background: transparent;
+}
+
+.xleth-sample-selector-drawer__resize-handle:hover {
+  background: color-mix(in srgb, var(--theme-accent) 22%, transparent);
 }
 
 @keyframes xleth-sample-selector-drawer-enter {
@@ -2151,6 +2145,90 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   overflow-y: auto;
 }
 
+/* Flat shell parity for graph context menus */
+.xleth-graph-state-preview__context-menu {
+  gap: 4px;
+  padding: 7px;
+  border: 1px solid var(--xleth-flat-border-strong, #2a2a2a);
+  border-radius: 0;
+  background: var(--xleth-flat-panel, #1c1c1c);
+  color: var(--xleth-flat-text-secondary, #969696);
+  box-shadow: none;
+  font-family: var(--xleth-global-font-family, inherit);
+}
+
+.xleth-graph-state-preview__context-title {
+  color: var(--xleth-flat-text, #d4d4d4);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.xleth-graph-state-preview__context-item,
+.xleth-graph-state-preview__parameter-item {
+  min-height: 26px;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--xleth-flat-text-secondary, #969696);
+  font-size: 11px;
+  font-weight: 400;
+  transition:
+    background 90ms ease-out,
+    border-color 90ms ease-out,
+    color 90ms ease-out;
+}
+
+.xleth-graph-state-preview__context-item:hover:not(:disabled),
+.xleth-graph-state-preview__context-item:focus-visible,
+.xleth-graph-state-preview__parameter-item:hover:not(:disabled),
+.xleth-graph-state-preview__parameter-item:focus-visible,
+.xleth-graph-state-preview__parameter-item--exposed {
+  border-color: var(--xleth-flat-border-strong, #2a2a2a);
+  background: var(--xleth-flat-chrome, #181818);
+  color: var(--xleth-flat-text, #d4d4d4);
+  outline: 0;
+}
+
+.xleth-graph-state-preview__parameter-item--exposed {
+  color: var(--xleth-flat-accent, #00b896);
+}
+
+.xleth-graph-state-preview__context-item:disabled,
+.xleth-graph-state-preview__parameter-item:disabled {
+  color: var(--xleth-flat-text-subtle, #424242);
+  opacity: 1;
+}
+
+.xleth-graph-state-preview__context-section {
+  border-top: 1px solid var(--xleth-flat-border, #222222);
+}
+
+.xleth-graph-state-preview__context-section-title,
+.xleth-graph-state-preview__context-empty {
+  color: var(--xleth-flat-text-muted, #606060);
+}
+
+.xleth-graph-state-preview__parameter-search {
+  min-height: 26px;
+  border: 1px solid var(--xleth-flat-border-strong, #2a2a2a);
+  border-radius: 0;
+  background: var(--xleth-flat-well, #0b0b0b);
+  color: var(--xleth-flat-text-secondary, #969696);
+}
+
+.xleth-graph-state-preview__parameter-search:focus-visible {
+  border-color: var(--xleth-flat-accent, #00b896);
+  outline: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xleth-graph-state-preview__context-item,
+  .xleth-graph-state-preview__parameter-item {
+    transition: none;
+  }
+}
+
 .xleth-graph-state-preview__parameter-group {
   display: grid;
   gap: 2px;
@@ -2558,4 +2636,71 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
 .xleth-graph-state-preview__mapping-editor-preview-label {
   color: var(--theme-text-muted);
   opacity: 0.7;
+}
+
+/* Flat mockup-aligned workspace shell */
+.xleth-windowing-shell {
+  background: var(--xleth-flat-main, #0f0f0f);
+}
+
+.xleth-app-workarea {
+  background: var(--xleth-flat-main, #0f0f0f);
+}
+
+.xleth-floating-work-area {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: var(--xleth-flat-main, #0f0f0f);
+  box-shadow: none;
+}
+
+.xleth-panel-frame {
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.xleth-panel-frame.is-focused,
+.xleth-panel-frame:focus,
+.xleth-panel-frame[data-panel-mode="maximized"] {
+  box-shadow: none;
+}
+
+.xleth-panel-frame.is-docked {
+  border-radius: 0;
+}
+
+.xleth-windowing-titlebar {
+  min-height: 22px;
+  height: 22px;
+  background: var(--xleth-flat-chrome, #181818);
+  border-bottom: 1px solid var(--xleth-flat-border, #222);
+  box-shadow: none;
+}
+
+.xleth-windowing-controls {
+  gap: 1px;
+  padding-right: 3px;
+}
+
+.xleth-windowing-control-button,
+.xleth-windowing-control-button.xleth-icon-button {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--xleth-flat-text-muted, #606060);
+}
+
+.xleth-windowing-control-button:hover,
+.xleth-windowing-control-button:active,
+.xleth-windowing-control-button:focus-visible,
+.xleth-windowing-control-button.xleth-icon-button:hover:not(:disabled),
+.xleth-windowing-control-button.xleth-icon-button:active,
+.xleth-windowing-control-button.xleth-icon-button:focus-visible {
+  background: transparent;
+  box-shadow: none;
+  color: var(--xleth-flat-text-secondary, #969696);
 }

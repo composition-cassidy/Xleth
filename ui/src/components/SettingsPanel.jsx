@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Brush, Film, Folder, Image as ImageIcon, Monitor, Palette, Play, Plug, Rocket, SlidersHorizontal, Volume2, X } from 'lucide-react'
+import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { Film, Image as ImageIcon, X } from 'lucide-react'
 import {
   GLOBAL_STRETCH_METHOD_OPTIONS,
   sanitizeGlobalStretchMethod,
@@ -7,7 +7,15 @@ import {
 import AudioPerformanceDiagnosticsPanel from './debug/AudioPerformanceDiagnosticsPanel.jsx'
 import XlethSelect from './common/XlethSelect.jsx'
 import VstBrowser from './mixer/VstBrowser.jsx'
-import { ThemeEditorContent } from '../theming/editor/ThemeEditor'
+import { ThemeContext } from '../theming/runtime/ThemeProvider'
+import { resolveTheme, writeThemeToRoot } from '../theming/runtime/applyTheme'
+import {
+  APPEARANCE_THEME_SLUG,
+  DEFAULT_APPEARANCE_ACCENT,
+  DEFAULT_APPEARANCE_DARKNESS,
+  buildAppearanceTheme,
+  normalizeAccentHex,
+} from '../theming/runtime/appearanceTheme'
 import {
   BACKDROP_FX_PRESETS,
   BACKDROP_FX_QUALITIES,
@@ -23,15 +31,14 @@ import {
 const VALID_NAMING_FORMATS = ['sampleNameOnly', 'categoryAndName', 'sourceAndName', 'fullLegacy']
 
 export const SETTINGS_CATEGORIES = [
-  { id: 'project', label: 'Project', summary: 'Clip handling and safety defaults', icon: Folder },
-  { id: 'transport', label: 'Transport', summary: 'Playback controls', icon: Play },
-  { id: 'audio', label: 'Audio', summary: 'Latency and realtime diagnostics', icon: Volume2 },
-  { id: 'plugins', label: 'Plugins', summary: 'Scan and manage VST3 plugins', icon: Plug },
-  { id: 'graphics', label: 'Graphics', summary: 'GPU and preview diagnostics', icon: Monitor },
-  { id: 'appearance', label: 'Appearance', summary: 'Workspace backdrop', icon: Palette },
-  { id: 'theme-editor', label: 'Theme Editor', summary: 'Theme editing and preview', icon: Brush },
-  { id: 'launchers', label: 'Launchers', summary: 'Quick-launch external tools from the toolbar', icon: Rocket },
-  { id: 'advanced', label: 'Advanced', summary: 'Export naming behavior', icon: SlidersHorizontal },
+  { id: 'project', label: 'Project', summary: 'Clip handling and safety defaults' },
+  { id: 'transport', label: 'Transport', summary: 'Playback controls' },
+  { id: 'audio', label: 'Audio', summary: 'Latency and realtime diagnostics' },
+  { id: 'plugins', label: 'Plugins', summary: 'Scan and manage VST3 plugins' },
+  { id: 'graphics', label: 'Graphics', summary: 'GPU and preview diagnostics' },
+  { id: 'appearance', label: 'Appearance', summary: 'Accent color, brightness, and workspace backdrop' },
+  { id: 'launchers', label: 'Launchers', summary: 'Quick-launch external tools from the toolbar' },
+  { id: 'advanced', label: 'Advanced', summary: 'Export naming behavior' },
 ]
 
 const AUTOSAVE_OPTIONS = [
@@ -168,6 +175,11 @@ function SettingsRow({ label, htmlFor, description, children }) {
 
 export default function SettingsPanel({ onClose, initialCategory = 'project' }) {
   const backdropVideoInputRef = useRef(null)
+  const themeContext = useContext(ThemeContext)
+  const appearanceAppliedRef = useRef(null)
+  const appearancePersistTimerRef = useRef(null)
+  const [accentColor, setAccentColor] = useState(DEFAULT_APPEARANCE_ACCENT)
+  const [brightness, setBrightness] = useState(DEFAULT_APPEARANCE_DARKNESS)
   const [activeCategory, setActiveCategory] = useState(() => normalizeCategory(initialCategory))
   const [projectStretchMethod, setProjectStretchMethod] = useState(null)
   const [defaultStretchMethod, setDefaultStretchMethod] = useState(null)
@@ -245,6 +257,15 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
 
     xl?.settings?.get?.('sampleNamingFormat')?.then(v => {
       if (VALID_NAMING_FORMATS.includes(v)) setNamingFormat(v)
+    }).catch(() => {})
+
+    xl?.settings?.get?.('appearanceAccent')?.then(v => {
+      if (typeof v === 'string' && v.trim()) setAccentColor(normalizeAccentHex(v))
+    }).catch(() => {})
+
+    xl?.settings?.get?.('appearanceDarkness')?.then(v => {
+      const n = Number(v)
+      if (Number.isFinite(n)) setBrightness(Math.min(100, Math.max(0, n)))
     }).catch(() => {})
 
     if (xl?.gpu?.getAvailableGpus) {
@@ -483,6 +504,52 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
     void setBackdropFxSettings(patch)
   }
 
+  const applyAppearance = useCallback((accent, darkness) => {
+    const file = buildAppearanceTheme(accent, darkness)
+
+    // Live apply. Prefer the ThemeProvider so its applied-token tracking stays
+    // in sync; fall back to writing :root directly when no provider is mounted
+    // (e.g. unit tests rendering SettingsPanel in isolation).
+    if (themeContext?.setTheme) {
+      void themeContext.setTheme(APPEARANCE_THEME_SLUG, file)
+    } else {
+      const { values } = resolveTheme(file)
+      writeThemeToRoot(values, appearanceAppliedRef.current ?? undefined)
+      appearanceAppliedRef.current = values
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('xleth-theme-changed'))
+      }
+    }
+
+    // Persist (debounced) so the choice survives a reload. The full token file
+    // is saved as a user theme and marked active; the raw knobs are stored so
+    // the controls reopen at the right positions.
+    if (appearancePersistTimerRef.current) clearTimeout(appearancePersistTimerRef.current)
+    appearancePersistTimerRef.current = setTimeout(() => {
+      const xl = getXleth()
+      void xl?.theme?.saveUser?.(APPEARANCE_THEME_SLUG, file)
+      void xl?.settings?.set?.('activeTheme', APPEARANCE_THEME_SLUG)
+      void xl?.settings?.set?.('appearanceAccent', accent)
+      void xl?.settings?.set?.('appearanceDarkness', darkness)
+    }, 400)
+  }, [themeContext])
+
+  useEffect(() => () => {
+    if (appearancePersistTimerRef.current) clearTimeout(appearancePersistTimerRef.current)
+  }, [])
+
+  function handleAccentChange(event) {
+    const next = normalizeAccentHex(event.target.value)
+    setAccentColor(next)
+    applyAppearance(next, brightness)
+  }
+
+  function handleBrightnessChange(event) {
+    const next = Math.min(100, Math.max(0, Number(event.target.value)))
+    setBrightness(next)
+    applyAppearance(accentColor, next)
+  }
+
   async function exportVisualPreviewDiagnostic() {
     const exporter = getXleth()?.diag?.exportVisualPreviewLog
     if (!exporter) {
@@ -714,7 +781,47 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
     const mediaStatus = backdropMediaSettings.lastError || backdropState?.lastError || ''
     return (
       <>
-        <SettingsSection title="Backdrop Media" index={0}>
+        <SettingsSection title="Theme" index={0}>
+          <SettingsRow
+            label="Accent color"
+            htmlFor="settings-appearance-accent"
+            description="Highlights, active controls, and selection across the app."
+          >
+            <div className="settings-panel-color-row">
+              <input
+                id="settings-appearance-accent"
+                type="color"
+                className="settings-panel-color-input"
+                value={accentColor}
+                onChange={handleAccentChange}
+                aria-label="Accent color"
+              />
+              <span className="settings-panel-range-value">{accentColor.toUpperCase()}</span>
+            </div>
+          </SettingsRow>
+          <SettingsRow
+            label="Brightness"
+            htmlFor="settings-appearance-brightness"
+            description="Lowest is near-black with light text; highest is light grey with dark text."
+          >
+            <div className="settings-panel-range-row">
+              <input
+                id="settings-appearance-brightness"
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                className="settings-panel-range"
+                value={brightness}
+                onChange={handleBrightnessChange}
+                aria-label="Brightness"
+              />
+              <span className="settings-panel-range-value">{brightness}%</span>
+            </div>
+          </SettingsRow>
+        </SettingsSection>
+
+        <SettingsSection title="Backdrop Media" index={1}>
           <SettingsRow
             label="Source"
             htmlFor="settings-backdrop-media-source"
@@ -795,7 +902,7 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
           )}
         </SettingsSection>
 
-        <SettingsSection title="Backdrop FX" index={1}>
+        <SettingsSection title="Backdrop FX" index={2}>
           <SettingsRow
             label="Enable reactive backdrop"
             htmlFor="settings-backdrop-fx-enabled"
@@ -891,12 +998,6 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
       </>
     )
   }
-
-  const renderThemeEditor = () => (
-    <SettingsSection title="Embedded Theme Editor" index={0} className="settings-panel-section--theme-editor">
-      <ThemeEditorContent embedded />
-    </SettingsSection>
-  )
 
   const renderLaunchers = () => {
     function basename(p) {
@@ -1091,8 +1192,6 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
         return renderGraphics()
       case 'appearance':
         return renderAppearance()
-      case 'theme-editor':
-        return renderThemeEditor()
       case 'launchers':
         return renderLaunchers()
       case 'advanced':
@@ -1130,7 +1229,6 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
         <div className="settings-panel-shell">
           <nav className="settings-panel-categories" aria-label="Settings categories">
             {SETTINGS_CATEGORIES.map(category => {
-              const Icon = category.icon
               const selected = activeCategory === category.id
               return (
                 <button
@@ -1140,7 +1238,6 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
                   aria-current={selected ? 'page' : undefined}
                   onClick={() => setActiveCategory(category.id)}
                 >
-                  <Icon size={16} aria-hidden="true" />
                   <span>{category.label}</span>
                 </button>
               )

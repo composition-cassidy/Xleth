@@ -4,6 +4,7 @@ import { ChevronLeft, ChevronRight } from 'lucide-react';
 import LeftPanel from '../../components/LeftPanel.jsx';
 import { PanelVisibilityProvider } from '../contexts/PanelVisibilityContext';
 import { useXlethRootContext } from '../contexts/XlethRootContext.jsx';
+import { beginDockRegionResize } from '../managers/DockRegionResizeManager';
 import { usePanelRegistry, type PanelRegistryState } from '../registry/PanelRegistry';
 import { panelTypeColorVar } from '../registry/panelCatalog';
 import './windowing.css';
@@ -41,12 +42,12 @@ function stopControlMouseDown(event: MouseEvent<HTMLButtonElement>) {
 
 export function SampleSelectorDrawer() {
   const reactiveHidden = usePanelRegistry((state) => state.panels.sampleSelector.hidden);
-  const reactiveDrawerSize = usePanelRegistry((state) => state.sampleSelectorDockWidth);
+  const reactiveDrawerSize = usePanelRegistry((state) => state.dockRegionSizes.left);
   const hidden = typeof window === 'undefined'
     ? usePanelRegistry.getState().panels.sampleSelector.hidden
     : reactiveHidden;
   const drawerSize = typeof window === 'undefined'
-    ? usePanelRegistry.getState().sampleSelectorDockWidth
+    ? usePanelRegistry.getState().dockRegionSizes.left
     : reactiveDrawerSize;
   const {
     onOpenPicker,
@@ -104,8 +105,14 @@ export function SampleSelectorDrawer() {
   const shouldRenderDrawer = expanded || (!reduceDrawerMotion && renderPhase !== 'collapsed');
   const drawerStyle = {
     '--xleth-windowing-panel-color': panelTypeColorVar('sampleSelector'),
-    '--xleth-sample-selector-drawer-width': `${drawerSize}px`,
   } as CSSProperties;
+
+  const handleResizeMouseDown = (event: MouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    beginDockRegionResize('left', 'horizontal', event.clientX, event.clientY, drawerSize);
+  };
 
   return (
     <PanelVisibilityProvider isVisible={expanded}>
@@ -149,6 +156,12 @@ export function SampleSelectorDrawer() {
                 setActiveSampleId={setActiveSampleId}
               />
             </div>
+            <div
+              className="xleth-sample-selector-drawer__resize-handle"
+              data-testid="xleth-sample-selector-drawer-resize-handle"
+              onMouseDown={handleResizeMouseDown}
+              aria-hidden="true"
+            />
           </aside>
         )}
       </div>

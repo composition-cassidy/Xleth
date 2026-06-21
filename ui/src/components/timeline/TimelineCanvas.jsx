@@ -11,6 +11,7 @@ import { createSelectTool } from './tools/selectTool.js'
 import { createPencilTool } from './tools/pencilTool.js'
 import { createSplitTool } from './tools/splitTool.js'
 import { createDeleteTool } from './tools/deleteTool.js'
+import { didMiddleMousePanStart } from './middleMousePan.js'
 
 const PLAYHEAD_LINE_WIDTH = 1
 const CLIP_VOLUME_MIN = 0
@@ -61,15 +62,16 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     clips, regions, tracks, selectedClipIds, dropPreviewRef, waveformCacheRef, hiResCacheRef, clipPeakCacheRef, bpmRef,
     patternBlocks, patterns, selectedBlockIds, setSelectedBlockIds,
     currentPatternIdByTrack,
-    onCreatePatternBlock, onMovePatternBlock, onResizePatternBlock, onResizePatternBlockLeft, onDeletePatternBlock, onSplitPatternBlock,
+    onCreatePatternBlock, onMovePatternBlock, onDuplicatePatternBlocks, onResizePatternBlock, onResizePatternBlockLeft, onDeletePatternBlock, onSplitPatternBlock,
     onOpenPianoRoll,
     // Tool system props
     activeTool, stickyNoteLength, setStickyNoteLength, activeSampleId, snapGranularity,
-    onCreateClip, onDeleteClip, onMoveClip, onResizeClip, onResizeClipLeft,
+    onCreateClip, onDeleteClip, onMoveClip, onDuplicateClips, onResizeClip, onResizeClipLeft,
     onStretchClip, onStretchClipLeft,
     onSplitClip,
     onRequestClipContextMenu,
     onSetClipVelocity, onSetClipFade,
+    onMiddleMousePan,
     setSelectedClipIds,
     // Focus pivot (track-of-row under pointer) — fires on mouse-down/right-click
     onFocusTrack,
@@ -144,9 +146,11 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   // ── Tool instance ref ────────────────────────────────────────────────────
   const toolRef = useRef(null)
   const isDraggingRef = useRef(false)
+  const middleMouseGestureRef = useRef(null)
   // Mirror of isDraggingRef into React state — drives FX badge layer hide
   // during drag/resize without touching the canvas hot path.
   const [isDraggingState, setIsDraggingState] = useState(false)
+  const [isMiddlePanningState, setIsMiddlePanningState] = useState(false)
 
   // ── Inline pattern-block rename overlay ──────────────────────────────────
   const [renamingBlock, setRenamingBlock] = useState(null) // { patternId, x, y, w, h, initial }
@@ -315,7 +319,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       pixelsPerBeatRef, scrollOffsetRef, bpmRef,
       activeSampleIdRef, stickyNoteLengthRef, pencilTemplateRef,
       snapGranularityRef, trackLayoutRef,
-      onCreateClip, onDeleteClip, onMoveClip, onResizeClip, onResizeClipLeft,
+      onCreateClip, onDeleteClip, onMoveClip, onDuplicateClips, onResizeClip, onResizeClipLeft,
       onStretchClip, onStretchClipLeft,
       onSplitClip,
       onRequestClipContextMenu,
@@ -327,7 +331,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       patternBlocksRef, patternsRef, selectedBlockIdsRef,
       currentPatternIdByTrackRef,
       setSelectedBlockIds,
-      onCreatePatternBlock, onMovePatternBlock, onResizePatternBlock, onResizePatternBlockLeft,
+      onCreatePatternBlock, onMovePatternBlock, onDuplicatePatternBlocks, onResizePatternBlock, onResizePatternBlockLeft,
       onDeletePatternBlock, onSplitPatternBlock,
     }
 
@@ -474,6 +478,21 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     return trackIndex * TRACK_HEIGHT
   }, [])
 
+  const buildPencilTemplateFromHitClip = useCallback((hitClip) => {
+    if (!hitClip) return null
+    const region = regionsRef.current?.[hitClip.regionId]
+    return {
+      regionId: hitClip.regionId,
+      regionOffsetTicks: hitClip.regionOffsetTicks ?? 0,
+      durationTicks: hitClip.durationTicks,
+      velocity: hitClip.velocity ?? 1.0,
+      pitchOffset: hitClip.pitchOffset ?? 0,
+      syllableIndex: hitClip.syllableIndex ?? -1,
+      displayName: region?.name || '?',
+      label: region?.label,
+    }
+  }, [])
+
   // ── Mouse event handlers (dispatched to active tool) ──────────────────────
 
   const handleMouseDown = useCallback((e) => {
@@ -497,43 +516,87 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       }
     }
 
-    // ── Middle-click: quick copy clip as pencil template ──────────────────
+    // ── Middle-click: tap copies a clip, hold+drag pans the playlist. ─────
     if (e.button === 1) {
-      e.preventDefault() // prevent browser auto-scroll
+      e.preventDefault()
       const beat = pixelToBeat(pos.localX, scrollOffsetRef.current, pixelsPerBeatRef.current)
       const trackIndex = trackIndexAtLocalY(pos.localY)
-      const clips = clipsRef.current
-      const tks = tracksRef.current
-      if (!clips || !tks || trackIndex < 0 || trackIndex >= tks.length) return
+      const clips = clipsRef.current || []
+      const tks = tracksRef.current || []
 
-      // Hit-test (same pattern as tools)
       let hitClip = null
-      for (let i = 0; i < clips.length; i++) {
-        const clip = clips[i]
-        const clipBeat = clip.positionTicks / PPQ
-        const clipEnd = clipBeat + clip.durationTicks / PPQ
-        const clipTrackIdx = tks.findIndex(t => t.id === clip.trackId)
-        if (beat >= clipBeat && beat < clipEnd && trackIndex === clipTrackIdx) {
-          hitClip = clip
-          break
+      if (trackIndex >= 0 && trackIndex < tks.length) {
+        for (let i = 0; i < clips.length; i++) {
+          const clip = clips[i]
+          const clipBeat = clip.positionTicks / PPQ
+          const clipEnd = clipBeat + clip.durationTicks / PPQ
+          const clipTrackIdx = tks.findIndex(t => t.id === clip.trackId)
+          if (beat >= clipBeat && beat < clipEnd && trackIndex === clipTrackIdx) {
+            hitClip = clip
+            break
+          }
         }
       }
 
-      if (hitClip && onSetPencilTemplate) {
-        const region = regionsRef.current?.[hitClip.regionId]
-        onSetPencilTemplate({
-          regionId: hitClip.regionId,
-          regionOffsetTicks: hitClip.regionOffsetTicks ?? 0,
-          durationTicks: hitClip.durationTicks,
-          velocity: hitClip.velocity ?? 1.0,
-          pitchOffset: hitClip.pitchOffset ?? 0,
-          syllableIndex: hitClip.syllableIndex ?? -1,
-          displayName: region?.name || '?',
-          label: region?.label,
-        })
-        showCopiedTooltip(pos.localX, pos.localY)
+      middleMouseGestureRef.current = {
+        startClientX: e.clientX,
+        startClientY: e.clientY,
+        lastClientX: e.clientX,
+        lastClientY: e.clientY,
+        copyTemplate: hitClip && onSetPencilTemplate ? buildPencilTemplateFromHitClip(hitClip) : null,
+        tooltipX: pos.localX,
+        tooltipY: pos.localY,
+        panning: false,
+        prevBodyCursor: document.body.style.cursor,
       }
-      return // don't pass to active tool
+
+      const onWindowMove = (me) => {
+        const gesture = middleMouseGestureRef.current
+        if (!gesture) return
+
+        const totalDx = me.clientX - gesture.startClientX
+        const totalDy = me.clientY - gesture.startClientY
+        if (!gesture.panning) {
+          if (!onMiddleMousePan || !didMiddleMousePanStart(totalDx, totalDy)) return
+          gesture.panning = true
+          isDraggingRef.current = true
+          setIsDraggingState(true)
+          setIsMiddlePanningState(true)
+          document.body.style.cursor = 'grabbing'
+        }
+
+        const deltaX = me.clientX - gesture.lastClientX
+        const deltaY = me.clientY - gesture.lastClientY
+        gesture.lastClientX = me.clientX
+        gesture.lastClientY = me.clientY
+        if (deltaX !== 0 || deltaY !== 0) onMiddleMousePan(deltaX, deltaY)
+      }
+
+      const onWindowUp = () => {
+        const gesture = middleMouseGestureRef.current
+        middleMouseGestureRef.current = null
+        window.removeEventListener('mousemove', onWindowMove)
+        window.removeEventListener('mouseup', onWindowUp)
+        if (!gesture) return
+
+        if (gesture.panning) {
+          isDraggingRef.current = false
+          setIsDraggingState(false)
+          setIsMiddlePanningState(false)
+          document.body.style.cursor = gesture.prevBodyCursor
+          redrawOverlay()
+          return
+        }
+
+        if (gesture.copyTemplate && onSetPencilTemplate) {
+          onSetPencilTemplate(gesture.copyTemplate)
+          showCopiedTooltip(gesture.tooltipX, gesture.tooltipY)
+        }
+      }
+
+      window.addEventListener('mousemove', onWindowMove)
+      window.addEventListener('mouseup', onWindowUp)
+      return
     }
 
     // ── Left-click / other: dispatch to active tool ───────────────────────
@@ -553,12 +616,17 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       setIsDraggingState(false)
       window.removeEventListener('mousemove', onWindowMove)
       window.removeEventListener('mouseup', onWindowUp)
+      window.removeEventListener('keyup', onWindowKeyUp)
       // Redraw overlay after drag ends (cursor is CSS-owned via data-tool attribute)
       redrawOverlay()
     }
+    const onWindowKeyUp = (ke) => {
+      toolRef.current?.onKeyUp?.(ke)
+    }
     window.addEventListener('mousemove', onWindowMove)
     window.addEventListener('mouseup', onWindowUp)
-  }, [activeTool, getLocalXY, onSetPencilTemplate, onFocusTrack])
+    window.addEventListener('keyup', onWindowKeyUp)
+  }, [activeTool, buildPencilTemplateFromHitClip, getLocalXY, onMiddleMousePan, onSetPencilTemplate, onFocusTrack])
 
   const handleMouseMove = useCallback((e) => {
     // Only handle hover (non-dragging) moves here; dragging is captured on window
@@ -782,7 +850,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       ref={containerRef}
       className="timeline-canvas-container"
       data-tool={activeTool}
-      style={{ minHeight: contentH }}
+      style={{ minHeight: contentH, cursor: isMiddlePanningState ? 'grabbing' : undefined }}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onDoubleClick={handleDoubleClick}

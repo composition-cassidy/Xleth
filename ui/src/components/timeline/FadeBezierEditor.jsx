@@ -1,5 +1,6 @@
 import { useRef, useEffect, useCallback, useState } from 'react'
 import { tokenValue } from '../../theming/tokenValue.ts'
+import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
 
 /**
  * Cubic bezier fade curve editor.
@@ -35,6 +36,7 @@ export default function FadeBezierEditor({
   const [p1, setP1] = useState({ x: x1, y: y1 })
   const [p2, setP2] = useState({ x: x2, y: y2 })
   const dragging = useRef(null)
+  const themeEpoch = useThemeEpoch()
 
   // Sync props -> state when they change externally
   useEffect(() => { setP1({ x: x1, y: y1 }) }, [x1, y1])
@@ -123,7 +125,7 @@ export default function FadeBezierEditor({
     }
     drawHandle(cp1.cx, cp1.cy, tokenValue('--theme-timeline-bezier-handle-cp1'))
     drawHandle(cp2.cx, cp2.cy, tokenValue('--theme-timeline-bezier-handle-cp2'))
-  }, [p1, p2, width, height, toCanvas])
+  }, [p1, p2, width, height, toCanvas, themeEpoch])
 
   // Hit test
   const hitTest = useCallback((cx, cy) => {

@@ -325,6 +325,10 @@ const juce::AudioBuffer<float>* ClipRenderCache::getProcessedBuffer(
     if (!e)                                                return nullptr;
     if (!e->ready.load(std::memory_order_acquire))         return nullptr;
     if (!(e->key == key)) {
+        // [StreamUnder] stale-key churn — count before the (non-gated) log so
+        // the rate is visible in the trace even when stderr is being drained
+        // slowly by Electron. Lock-free; audio-thread safe.
+        keyMismatchCount_.fetch_add(1, std::memory_order_relaxed);
         // TEMPORARY non-gated log: dump both keys side-by-side on mismatch
         fprintf(stderr, "[ClipCache] MISMATCH clip=%d\n"
             "  lookup: region=%d syl=%d offset=%lld dur=%lld srcLen=%lld pitch=%d+%dc stretch=%.6f rev=%d method=%d formant=%d\n"

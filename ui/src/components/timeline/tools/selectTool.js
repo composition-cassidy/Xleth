@@ -20,7 +20,7 @@ export function createSelectTool(deps) {
   const {
     clipsRef, tracksRef, regionsRef, selectedRef,
     pixelsPerBeatRef, scrollOffsetRef, bpmRef,
-    onMoveClip, onResizeClip, onResizeClipLeft,
+    onMoveClip, onDuplicateClips, onResizeClip, onResizeClipLeft,
     onStretchClip, onStretchClipLeft,
     setSelectedClipIds, setStickyNoteLength,
     onRequestClipContextMenu,
@@ -30,7 +30,7 @@ export function createSelectTool(deps) {
     // Pattern block deps
     patternBlocksRef, patternsRef, selectedBlockIdsRef,
     setSelectedBlockIds,
-    onMovePatternBlock, onResizePatternBlock, onResizePatternBlockLeft,
+    onMovePatternBlock, onDuplicatePatternBlocks, onResizePatternBlock, onResizePatternBlockLeft,
     // FXG.4-h-r1: derived row layout so macro automation child lanes shift the
     // track-index↔Y mapping. Optional — falls back to contiguous geometry.
     trackLayoutRef,
@@ -54,7 +54,7 @@ export function createSelectTool(deps) {
   function setDragClass(name) {
     const el = containerRef?.current
     if (!el) return
-    el.classList.remove('dragging', 'rubber-banding', 'resizing-right', 'resizing-left', 'stretching-right', 'stretching-left')
+    el.classList.remove('dragging', 'duplicating', 'rubber-banding', 'resizing-right', 'resizing-left', 'stretching-right', 'stretching-left')
     if (name) el.classList.add(name)
   }
   function setHoverEdge(edge) {
@@ -67,7 +67,8 @@ export function createSelectTool(deps) {
 
   // Drag state
   let dragKind = null  // null | 'clip' | 'block'
-  let dragMode = null  // null | 'pending' | 'move' | 'resize' | 'resize-left' | 'rubberband'
+  let dragMode = null  // null | 'pending' | 'move' | 'duplicate' | 'resize' | 'resize-left' | 'rubberband'
+  let dragCancelled = false
   let lastModifiers = {}
   let dragOriginX = 0, dragOriginY = 0
   let dragCurrentX = 0, dragCurrentY = 0
@@ -89,6 +90,105 @@ export function createSelectTool(deps) {
   // Multi-select drag state
   let dragSelectedClips = []   // [{ clip, origBeat, origTrackIdx }]
   let dragSelectedBlocks = []  // [{ block, origBeat, origTrackIdx }]
+
+  function resetDragState({ cancelled = false } = {}) {
+    dragCancelled = cancelled
+    dragMode = null
+    dragKind = null
+    pendingHit = null
+    dragClip = null
+    dragBlock = null
+    dragSelectedClips = []
+    dragSelectedBlocks = []
+    setDragClass(null)
+    redrawOverlay()
+  }
+
+  function getDragDelta() {
+    const tracks = tracksRef.current || []
+    const beatDelta = pixelToBeat(dragCurrentX, scrollOffsetRef.current, pixelsPerBeatRef.current)
+      - pixelToBeat(dragOriginX, scrollOffsetRef.current, pixelsPerBeatRef.current)
+    const newTrackIndex = idxAtY(dragCurrentY)
+    const clampedTrackIdx = Math.max(0, Math.min(newTrackIndex, tracks.length - 1))
+    const anchorTrackIdx = dragKind === 'block' ? dragBlockOrigTrackIdx : dragClipOrigTrackIdx
+    const requestedTrackDelta = clampedTrackIdx - anchorTrackIdx
+    const clipItems = dragSelectedClips.length > 0
+      ? dragSelectedClips
+      : dragClip
+        ? [{ origTrackIdx: dragClipOrigTrackIdx }]
+        : []
+    const blockItems = dragSelectedBlocks.length > 0
+      ? dragSelectedBlocks
+      : dragBlock
+        ? [{ origTrackIdx: dragBlockOrigTrackIdx }]
+        : []
+    const destinationTypesMatch = clipItems.every(({ origTrackIdx }) => {
+      const target = tracks[origTrackIdx + requestedTrackDelta]
+      return target && target.type !== 'Pattern'
+    }) && blockItems.every(({ origTrackIdx }) => {
+      const target = tracks[origTrackIdx + requestedTrackDelta]
+      return target?.type === 'Pattern'
+    })
+    return {
+      tracks,
+      beatDelta,
+      trackDelta: destinationTypesMatch ? requestedTrackDelta : 0,
+    }
+  }
+
+  function getClipDragPlacements(modifiers) {
+    const items = dragSelectedClips.length > 0
+      ? dragSelectedClips
+      : dragClip
+        ? [{ clip: dragClip, origBeat: dragClipOrigBeat, origTrackIdx: dragClipOrigTrackIdx }]
+        : []
+    if (items.length === 0) return []
+    const { tracks, beatDelta, trackDelta } = getDragDelta()
+
+    return items.map(({ clip, origBeat, origTrackIdx }) => {
+      const positionTicks = beatsToTicks(snapBeatToGrid(
+        Math.max(0, origBeat + beatDelta),
+        modifiers,
+        snapGranularityRef?.current,
+      ))
+      const proposedTrackIdx = Math.max(0, Math.min(origTrackIdx + trackDelta, tracks.length - 1))
+      const proposedTrack = tracks[proposedTrackIdx]
+      const trackIndex = proposedTrack?.type === 'Pattern' ? origTrackIdx : proposedTrackIdx
+      return {
+        clip,
+        positionTicks,
+        trackId: tracks[trackIndex]?.id ?? clip.trackId,
+        trackIndex,
+      }
+    })
+  }
+
+  function getBlockDragPlacements(modifiers) {
+    const items = dragSelectedBlocks.length > 0
+      ? dragSelectedBlocks
+      : dragBlock
+        ? [{ block: dragBlock, origBeat: dragBlockOrigBeat, origTrackIdx: dragBlockOrigTrackIdx }]
+        : []
+    if (items.length === 0) return []
+    const { tracks, beatDelta, trackDelta } = getDragDelta()
+
+    return items.map(({ block, origBeat, origTrackIdx }) => {
+      const positionTicks = beatsToTicks(snapBeatToGrid(
+        Math.max(0, origBeat + beatDelta),
+        modifiers,
+        snapGranularityRef?.current,
+      ))
+      const proposedTrackIdx = Math.max(0, Math.min(origTrackIdx + trackDelta, tracks.length - 1))
+      const proposedTrack = tracks[proposedTrackIdx]
+      const trackIndex = proposedTrack?.type === 'Pattern' ? proposedTrackIdx : origTrackIdx
+      return {
+        block,
+        positionTicks,
+        trackId: tracks[trackIndex]?.id ?? block.trackId,
+        trackIndex,
+      }
+    })
+  }
 
   // Compute the max duration the clip can have given its region + current offset.
   function computeRegionDurTicks(clip) {
@@ -173,6 +273,7 @@ export function createSelectTool(deps) {
   return {
     onMouseDown(localX, localY, e) {
       if (e.button !== 0) return
+      dragCancelled = false
       lastModifiers = { alt: e.altKey, shift: e.shiftKey, ctrl: e.ctrlKey }
 
       const beat = pixelToBeat(localX, scrollOffsetRef.current, pixelsPerBeatRef.current)
@@ -213,6 +314,18 @@ export function createSelectTool(deps) {
               }))
           } else {
             dragSelectedBlocks = []
+          }
+          if (selectedBlockIdsRef?.current?.has(hitBlock.id) && selectedRef.current.size > 0) {
+            const trks = tracksRef.current
+            dragSelectedClips = clipsRef.current
+              .filter((c) => selectedRef.current.has(c.id))
+              .map((c) => ({
+                clip: c,
+                origBeat: c.positionTicks / PPQ,
+                origTrackIdx: trks.findIndex((t) => t.id === c.trackId),
+              }))
+          } else {
+            dragSelectedClips = []
           }
           dragMode = 'pending'
           return
@@ -257,6 +370,18 @@ export function createSelectTool(deps) {
         } else {
           dragSelectedClips = []
         }
+        if (selectedRef.current.has(hitClip.id) && selectedBlockIdsRef?.current?.size > 0) {
+          const trks = tracksRef.current
+          dragSelectedBlocks = (patternBlocksRef.current || [])
+            .filter((b) => selectedBlockIdsRef.current.has(b.id))
+            .map((b) => ({
+              block: b,
+              origBeat: b.positionTicks / PPQ,
+              origTrackIdx: trks.findIndex((t) => t.id === b.trackId),
+            }))
+        } else {
+          dragSelectedBlocks = []
+        }
         dragMode = 'pending'
       } else {
         dragKind = null
@@ -299,8 +424,8 @@ export function createSelectTool(deps) {
             }
             console.log(`[SelectTool] Left-resize drag started on block ${pendingHit.block.id}`)
           } else {
-            dragMode = 'move'
-            setDragClass('dragging')
+            dragMode = pendingHit.e.shiftKey ? 'duplicate' : 'move'
+            setDragClass(dragMode === 'duplicate' ? 'duplicating' : 'dragging')
             if (!selectedBlockIdsRef?.current?.has(pendingHit.block.id)) {
               if (pendingHit.e.ctrlKey || pendingHit.e.metaKey || pendingHit.e.shiftKey) {
                 setSelectedBlockIds?.((prev) => new Set([...prev, pendingHit.block.id]))
@@ -308,7 +433,7 @@ export function createSelectTool(deps) {
                 setSelectedBlockIds?.(new Set([pendingHit.block.id]))
               }
             }
-            console.log(`[SelectTool] Move drag started on block ${pendingHit.block.id}`)
+            console.log(`[SelectTool] ${dragMode === 'duplicate' ? 'Duplicate' : 'Move'} drag started on block ${pendingHit.block.id}`)
           }
         } else if (pendingHit?.clip) {
           if (pendingHit.isRightEdge) {
@@ -326,8 +451,8 @@ export function createSelectTool(deps) {
             }
             console.log(`[SelectTool] Left-resize drag started on clip ${pendingHit.clip.id}`)
           } else {
-            dragMode = 'move'
-            setDragClass('dragging')
+            dragMode = pendingHit.e.shiftKey ? 'duplicate' : 'move'
+            setDragClass(dragMode === 'duplicate' ? 'duplicating' : 'dragging')
             if (!selectedRef.current.has(pendingHit.clip.id)) {
               if (pendingHit.e.ctrlKey || pendingHit.e.metaKey || pendingHit.e.shiftKey) {
                 setSelectedClipIds((prev) => new Set([...prev, pendingHit.clip.id]))
@@ -335,13 +460,19 @@ export function createSelectTool(deps) {
                 setSelectedClipIds(new Set([pendingHit.clip.id]))
               }
             }
-            console.log(`[SelectTool] Move drag started on clip ${pendingHit.clip.id}`)
+            console.log(`[SelectTool] ${dragMode === 'duplicate' ? 'Duplicate' : 'Move'} drag started on clip ${pendingHit.clip.id}`)
           }
         } else {
           dragMode = 'rubberband'
           setDragClass('rubber-banding')
           console.log(`[SelectTool] Rubberband started`)
         }
+      }
+
+      if (dragMode === 'duplicate' && !e.shiftKey) {
+        resetDragState({ cancelled: true })
+        console.log('[SelectTool] Duplicate drag cancelled because Shift was released')
+        return
       }
 
       // ── Clip resize live updates (trim) and stretch cursor ─────────────────
@@ -390,6 +521,10 @@ export function createSelectTool(deps) {
     },
 
     onMouseUp(localX, localY, e) {
+      if (dragCancelled) {
+        dragCancelled = false
+        return
+      }
       if (dragMode === 'pending' || !dragMode) {
         if (pendingHit?.block) {
           const hitBlock = pendingHit.block
@@ -445,6 +580,20 @@ export function createSelectTool(deps) {
       }
 
       const modifiers = { alt: e.altKey, shift: e.shiftKey, ctrl: e.ctrlKey }
+
+      if (dragMode === 'duplicate') {
+        if (modifiers.shift) {
+          const clipPlacements = getClipDragPlacements(modifiers)
+          const blockPlacements = getBlockDragPlacements(modifiers)
+          if (clipPlacements.length > 0) onDuplicateClips?.(clipPlacements)
+          if (blockPlacements.length > 0) onDuplicatePatternBlocks?.(blockPlacements)
+          if (clipPlacements.length + blockPlacements.length > 0) {
+            console.log(`[SelectTool] Duplicated ${clipPlacements.length} clip(s) and ${blockPlacements.length} pattern block(s) by drag`)
+          }
+        }
+        resetDragState()
+        return
+      }
 
       // ── Block move/resize commit ────────────────────────────────────────
       if (dragMode === 'move' && dragBlock) {
@@ -633,6 +782,18 @@ export function createSelectTool(deps) {
       }
     },
 
+    onKeyUp(e) {
+      const pendingDuplicate = dragMode === 'pending'
+        && (pendingHit?.clip || pendingHit?.block)
+        && !pendingHit.isLeftEdge
+        && !pendingHit.isRightEdge
+        && pendingHit.e.shiftKey
+      if (e.key === 'Shift' && (dragMode === 'duplicate' || pendingDuplicate)) {
+        resetDragState({ cancelled: true })
+        console.log('[SelectTool] Duplicate drag cancelled because Shift was released')
+      }
+    },
+
     drawOverlay(ctx, w, h, viewState) {
       const { scrollOffset, pixelsPerBeat: ppb } = viewState
 
@@ -642,7 +803,19 @@ export function createSelectTool(deps) {
 
       // ── Block drag previews ──────────────────────────────────────────
       // Block color follows the block's pattern's region (sample-agnostic tracks).
-      if (dragMode === 'move' && dragBlock) {
+      if ((dragMode === 'move' || dragMode === 'duplicate') && (dragBlock || dragSelectedBlocks.length > 0)) {
+        if (dragMode === 'duplicate') {
+          for (const { block, positionTicks, trackIndex } of getBlockDragPlacements(lastModifiers)) {
+            const blockPattern = patternsRef.current?.[block.patternId]
+            const region = regionsRef.current?.[blockPattern?.regionId]
+            drawMovePreview(ctx, w, h, scrollOffset, ppb, {
+              beat: positionTicks / PPQ,
+              trackIndex,
+              durationBeats: block.durationTicks / PPQ,
+              color: labelHexColor(region?.label),
+            }, trackLayoutRef?.current)
+          }
+        } else {
         const beatDelta = pixelToBeat(dragCurrentX, scrollOffset, ppb)
           - pixelToBeat(dragOriginX, scrollOffset, ppb)
         const newTrackIndex = idxAtY(dragCurrentY)
@@ -667,6 +840,7 @@ export function createSelectTool(deps) {
             durationBeats: block.durationTicks / PPQ,
             color: labelHexColor(region?.label),
           }, trackLayoutRef?.current)
+        }
         }
       }
 
@@ -708,25 +882,12 @@ export function createSelectTool(deps) {
       }
 
       // ── Clip drag previews ───────────────────────────────────────────
-      if (dragMode === 'move' && dragClip) {
-        const beatDelta = pixelToBeat(dragCurrentX, scrollOffset, ppb)
-          - pixelToBeat(dragOriginX, scrollOffset, ppb)
-        const newTrackIndex = idxAtY(dragCurrentY)
-        const tracks = tracksRef.current
-        const clampedTrackIdx = Math.max(0, Math.min(newTrackIndex, (tracks?.length || 1) - 1))
-        const trackDelta = clampedTrackIdx - dragClipOrigTrackIdx
-
-        const items = dragSelectedClips.length > 1
-          ? dragSelectedClips
-          : [{ clip: dragClip, origBeat: dragClipOrigBeat, origTrackIdx: dragClipOrigTrackIdx }]
-
-        for (const { clip, origBeat, origTrackIdx } of items) {
-          const newBeat = snapBeatToGrid(Math.max(0, origBeat + beatDelta), lastModifiers, snapGranularityRef?.current)
-          const newTrkIdx = Math.max(0, Math.min(origTrackIdx + trackDelta, (tracks?.length || 1) - 1))
+      if ((dragMode === 'move' || dragMode === 'duplicate') && (dragClip || dragSelectedClips.length > 0)) {
+        for (const { clip, positionTicks, trackIndex } of getClipDragPlacements(lastModifiers)) {
           const region = regionsRef.current?.[clip.regionId]
           drawMovePreview(ctx, w, h, scrollOffset, ppb, {
-            beat: newBeat,
-            trackIndex: newTrkIdx,
+            beat: positionTicks / PPQ,
+            trackIndex,
             durationBeats: clip.durationTicks / PPQ,
             color: labelHexColor(region?.label),
           }, trackLayoutRef?.current)
@@ -801,6 +962,7 @@ export function createSelectTool(deps) {
     },
 
     cleanup() {
+      dragCancelled = false
       dragMode = null
       dragKind = null
       pendingHit = null

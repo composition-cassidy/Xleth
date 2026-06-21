@@ -1,6 +1,6 @@
 'use strict';
 
-const { ipcRenderer, webUtils } = require('electron');
+const { ipcRenderer, webUtils, shell } = require('electron');
 const { runtimeResource } = require('./runtimePaths');
 
 // Thin helper — keeps call sites concise
@@ -110,12 +110,22 @@ window.xleth = ({
     hasProjectDir:      ()          => invoke('xleth:project:hasProjectDir'),
     load:               (dir)       => invoke('xleth:project:load', dir),
     importSource:       (filePath)  => invoke('xleth:project:importSource', filePath),
+    removeSource:       (sourceId)  => invoke('xleth:project:removeSource', sourceId),
     validateMedia:      ()          => invoke('xleth:project:validateMedia'),
+    relinkSource:       (sourceId, newPath) => invoke('xleth:project:relinkSource', sourceId, newPath),
+    relinkRegionAudio:  (regionId, newPath) => invoke('xleth:project:relinkRegionAudio', regionId, newPath),
     getInfo:            ()          => invoke('xleth:project:getInfo'),
     openNewProjectDialog: ()        => invoke('xleth:dialog:newProject'),
     openProjectDialog:   ()         => invoke('xleth:dialog:openProject'),
     openSaveAsDialog:    ()         => invoke('xleth:dialog:saveProjectAs'),
     openImportDialog:   ()          => invoke('xleth:dialog:importSources'),
+    locateMediaDialog:  (displayName) => invoke('xleth:dialog:locateMedia', displayName),
+    exportZip:          (opts)      => invoke('xleth:project:exportZip', opts),
+    onZipExportProgress: (cb) => {
+      const h = (_e, data) => cb(data);
+      ipcRenderer.on('zip-export:progress', h);
+      return () => ipcRenderer.removeListener('zip-export:progress', h);
+    },
     getSourceThumbnail: (filePath, duration) => invoke('xleth:project:getSourceThumbnail', filePath, duration),
     isDirty:            ()          => invoke('xleth:project:isDirty'),
     newBlank:           ()          => invoke('xleth:project:newBlank'),
@@ -603,6 +613,7 @@ window.xleth = ({
   shell: {
     showItemInFolder: (path) => invoke('xleth:shell:showItemInFolder', path),
     openPath:         (path) => invoke('xleth:shell:openPath', path),
+    openExternal:     (url)  => shell.openExternal(url),
   },
 
   // ── Quick Launchers ────────────────────────────────────────────────────────
@@ -669,6 +680,13 @@ window.xleth = ({
     const h = () => callback();
     ipcRenderer.on('xleth:project-loaded', h);
     return () => ipcRenderer.removeListener('xleth:project-loaded', h);
+  },
+
+  // ── Update notifier ───────────────────────────────────────────────────────
+  onUpdateAvailable: (callback) => {
+    const h = (_e, data) => callback(data);
+    ipcRenderer.on('xleth:update-available', h);
+    return () => ipcRenderer.removeListener('xleth:update-available', h);
   },
 });
 

@@ -17,6 +17,8 @@ export default function ProjectMediaTab({ onOpenPicker }) {
   const [contextMenu, setContextMenu] = useState(null) // { x, y, source }
   const [labelPickerMenu, setLabelPickerMenu] = useState(null) // { x, y, source }
   const prevSourceIds = useRef(new Set())
+  const sourceRequestId = useRef(0)
+  const projectGeneration = useRef(0)
 
   // ── Fetch sources from engine ─────────────────────────────────────────────
   const fetchSources = useCallback(async () => {
@@ -24,9 +26,7 @@ export default function ProjectMediaTab({ onOpenPicker }) {
       const srcs = await window.xleth?.timeline?.getSources()
       if (Array.isArray(srcs)) {
         // Normalize fileName → name so all UI components can use source.name
-        const normalized = srcs.map(s => ({ ...s, name: s.name ?? s.fileName }))
-        setSources(normalized)
-        return normalized
+        return srcs.map(s => ({ ...s, name: s.name ?? s.fileName }))
       }
     } catch (e) {
       console.error('[ProjectMedia] Error fetching sources:', e)
@@ -35,11 +35,11 @@ export default function ProjectMediaTab({ onOpenPicker }) {
   }, [])
 
   // ── Fetch thumbnail for a source ──────────────────────────────────────────
-  const fetchThumbnail = useCallback(async (source) => {
+  const fetchThumbnail = useCallback(async (source, generation = projectGeneration.current) => {
     if (!source.filePath) return
     try {
       const dataUrl = await window.xleth?.project?.getSourceThumbnail(source.filePath, source.duration)
-      if (dataUrl) {
+      if (dataUrl && generation === projectGeneration.current) {
         console.log(`[ProjectMedia] Thumbnail generated: id=${source.id}`)
         setThumbnails(prev => ({ ...prev, [source.id]: dataUrl }))
       }
@@ -49,15 +49,47 @@ export default function ProjectMediaTab({ onOpenPicker }) {
   }, [])
 
   // ── Initial load ──────────────────────────────────────────────────────────
-  useEffect(() => {
-    fetchSources().then(srcs => {
-      if (!srcs) return
-      srcs.forEach(s => {
-        prevSourceIds.current.add(s.id)
-        if (s.hasVideo !== false) fetchThumbnail(s)
-      })
-    })
+  const refreshSources = useCallback(async ({ resetProject = false } = {}) => {
+    if (resetProject) {
+      projectGeneration.current += 1
+      prevSourceIds.current.clear()
+      setThumbnails({})
+    }
+
+    const requestId = ++sourceRequestId.current
+    const generation = projectGeneration.current
+    const srcs = await fetchSources()
+    if (!srcs || requestId !== sourceRequestId.current) return null
+
+    setSources(srcs)
+    const currentIds = new Set(srcs.map(s => String(s.id)))
+    setThumbnails(prev => Object.fromEntries(
+      Object.entries(prev).filter(([id]) => currentIds.has(id))
+    ))
+
+    for (const source of srcs) {
+      if (!prevSourceIds.current.has(source.id)) {
+        prevSourceIds.current.add(source.id)
+        if (source.hasVideo !== false) fetchThumbnail(source, generation)
+      }
+    }
+    return srcs
   }, [fetchSources, fetchThumbnail])
+
+  // Refresh while this tab remains mounted; switching tabs must not be required.
+  useEffect(() => {
+    refreshSources()
+    const onSourcesChanged = () => refreshSources()
+    const offProjectLoaded = window.xleth?.onProjectLoaded?.(
+      () => refreshSources({ resetProject: true })
+    )
+    timelineEvents.addEventListener('timeline-sources-changed', onSourcesChanged)
+    return () => {
+      sourceRequestId.current += 1
+      offProjectLoaded?.()
+      timelineEvents.removeEventListener('timeline-sources-changed', onSourcesChanged)
+    }
+  }, [refreshSources])
 
   // ── Import via dialog ─────────────────────────────────────────────────────
   const handleImportDialog = useCallback(async () => {
@@ -116,14 +148,8 @@ export default function ProjectMediaTab({ onOpenPicker }) {
     if (!didImport) return
 
     // Refresh sources list after all imports
-    const srcs = await fetchSources()
+    const srcs = await refreshSources()
     if (srcs) {
-      for (const s of srcs) {
-        if (!prevSourceIds.current.has(s.id)) {
-          prevSourceIds.current.add(s.id)
-          if (s.hasVideo !== false) fetchThumbnail(s)
-        }
-      }
       timelineEvents.dispatchEvent(new Event('timeline-sources-changed'))
     }
   }
@@ -189,16 +215,22 @@ export default function ProjectMediaTab({ onOpenPicker }) {
       label: 'Remove',
       icon: Trash2,
       danger: true,
-      onClick: () => {
-        console.log(`[ProjectMedia] Source removed: id=${contextMenu.source.id}`)
-        // Remove from local state (engine-side removal will come in a future phase)
-        setSources(prev => prev.filter(s => s.id !== contextMenu.source.id))
+      onClick: async () => {
+        const id = contextMenu.source.id
+        console.log(`[ProjectMedia] Source removed: id=${id}`)
+        try {
+          await window.xleth?.project?.removeSource(id)
+        } catch (e) {
+          console.error(`[ProjectMedia] Engine removeSource failed: id=${id}`, e)
+        }
+        setSources(prev => prev.filter(s => s.id !== id))
         setThumbnails(prev => {
           const next = { ...prev }
-          delete next[contextMenu.source.id]
+          delete next[id]
           return next
         })
-        prevSourceIds.current.delete(contextMenu.source.id)
+        prevSourceIds.current.delete(id)
+        timelineEvents.dispatchEvent(new Event('timeline-sources-changed'))
       },
     },
   ] : []

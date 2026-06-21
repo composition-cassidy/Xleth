@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react'
 import { tokenValue } from '../../theming/tokenValue.ts'
+import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
 
 // Circular knob — FL-style vertical drag.
 // Drag up = increase, drag down = decrease. Shift = fine adjust (10x slower).
@@ -48,6 +49,9 @@ export default function Knob({
   const liveValueRef = useRef(value)
   const [editing, setEditing] = useState(false)
   const [editText, setEditText] = useState('')
+  // Repaint the canvas when the active theme changes so the value-arc/pointer
+  // colors track --theme-border-focus (accent) live.
+  const themeEpoch = useThemeEpoch()
 
   const clamp = useCallback((v) => Math.max(min, Math.min(max, v)), [min, max])
 
@@ -117,6 +121,7 @@ export default function Knob({
     appearanceTokens,
     accentGlow,
     glyph,
+    themeEpoch,
   ])
 
   // Pointer-captured drag — replaces global window mouse listeners.
@@ -192,6 +197,7 @@ export default function Knob({
   }, [editText, clamp, onLiveChange, onCommit])
 
   const display = formatValue ? formatValue(value) : String(Math.round(value))
+  const isRing = glyph === 'rotary-arrow'
   const isPluginAppearance = !!appearancePreset
   const readoutMode = valueReadout || 'below'
   const labelMode = labelPlacement || 'bottom'
@@ -202,7 +208,7 @@ export default function Knob({
   const pluginTextColor = isPluginAppearance && appearanceTokens?.textCssVar
     ? `var(${appearanceTokens.textCssVar})`
     : null
-  const valueColor = pluginTextColor || '#BBBBCC'
+  const valueColor = pluginTextColor || (isRing ? '#ededf0' : '#BBBBCC')
   const labelColor = pluginTextColor || 'var(--theme-fx-axis-label)'
   const rootDirection = isPluginAppearance && labelMode === 'left' ? 'row' : 'column'
   const canvasTitle = readoutMode === 'tooltip'
@@ -284,16 +290,30 @@ export default function Knob({
           </div>
         </>
       ) : showBelowReadout ? (
-        <div
-          onDoubleClick={handleDoubleClick}
-          title="Double-click to edit"
-          style={{
-            fontSize: 10, color: valueColor, minHeight: 12,
-            fontVariantNumeric: 'tabular-nums', cursor: 'text',
-          }}
-        >
-          {display}
-        </div>
+        <>
+          <div
+            onDoubleClick={handleDoubleClick}
+            title="Double-click to edit"
+            style={{
+              fontSize: isRing ? 11 : 10,
+              fontWeight: isRing ? 600 : 400,
+              letterSpacing: isRing ? '0.01em' : undefined,
+              color: valueColor, minHeight: 12,
+              fontVariantNumeric: 'tabular-nums', cursor: 'text',
+            }}
+          >
+            {display}
+          </div>
+          {isRing && (
+            <span
+              aria-hidden
+              style={{
+                width: 4, height: 4, borderRadius: '50%',
+                background: color || 'var(--theme-accent)', opacity: 0.9,
+              }}
+            />
+          )}
+        </>
       ) : null}
       {(!isPluginAppearance || labelMode === 'bottom') && labelNode}
     </div>
@@ -326,43 +346,100 @@ function drawAppearanceKnob(ctx, opts) {
     border,
   } = opts
 
-  // Mixer PAN / WIDTH knob — a solid dark raised cap with a bright accent
-  // value-arc hugging the rim and a short pointer "hook" at the current value.
-  // No dim background track: only the lit arc shows, exactly like the mockup.
+  // Hollow recessed ring knob — a flat dark disk with a raised grey groove band
+  // around the rim, a bright accent arc lighting the value portion, and a short
+  // radial pointer tick at the current value. Matches the sampler/mixer mock.
   if (glyph === 'rotary-arrow') {
-    drawCap(ctx, {
+    const geometry = getRotaryRingGeometry({
       cx,
       cy,
       outerR,
-      knobR,
-      capStyle: 'soft-disk',
-      depth: 'raised',
-      surface,
-      text,
-      border,
+      startAngle,
+      endAngle,
+      valueAngle,
+      accentGlow,
     })
+    const { ringWidth, ringR, innerR, marker } = geometry
 
-    // Bright value arc from the start angle to the current value.
+    // Flat dark body — subtle top-lit sheen reads as a recessed disk.
     ctx.save()
-    ctx.lineCap = 'round'
+    if (depth === 'raised') {
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.5)'
+      ctx.shadowBlur = 5
+      ctx.shadowOffsetY = 2
+    }
+    const body = ctx.createLinearGradient(cx, cy - outerR, cx, cy + outerR)
+    body.addColorStop(0, '#202022')
+    body.addColorStop(1, '#0e0e0f')
+    ctx.fillStyle = body
+    ctx.beginPath()
+    safeArc(ctx, cx, cy, ringR + ringWidth / 2, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.restore()
+
+    // Hollow centre — a darker inset so the groove band reads as raised.
+    if (innerR > 1) {
+      const hole = ctx.createLinearGradient(cx, cy - innerR, cx, cy + innerR)
+      hole.addColorStop(0, '#0b0b0c')
+      hole.addColorStop(1, '#161618')
+      ctx.fillStyle = hole
+      ctx.beginPath()
+      safeArc(ctx, cx, cy, innerR, 0, Math.PI * 2)
+      ctx.fill()
+    }
+
+    // Unlit groove — the same open 270-degree sweep as the value arc.
+    ctx.strokeStyle = '#2c2c2e'
+    ctx.lineWidth = ringWidth
+    ctx.lineCap = 'butt'
+    ctx.beginPath()
+    safeArc(ctx, cx, cy, ringR, startAngle, endAngle)
+    ctx.stroke()
+
+    // Soft top bevel along the band.
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)'
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    safeArc(ctx, cx, cy, ringR + ringWidth / 2 - 0.5, Math.PI * 1.15, Math.PI * 1.85)
+    ctx.stroke()
+
+    // Lit value arc from the start angle to the current value. A wider, dim
+    // under-stroke supplies a soft bloom; the bright stroke sits on top. The
+    // bloom is drawn within the reserved margin so it never clips.
+    ctx.lineCap = 'butt'
     if (accentGlow) {
-      ctx.shadowColor = withAlpha(accent, 0.85)
-      ctx.shadowBlur = 6
+      ctx.save()
+      ctx.strokeStyle = withAlpha(accent, 0.3)
+      ctx.lineWidth = ringWidth + 5
+      ctx.beginPath()
+      ctx.arc(cx, cy, ringR, startAngle, valueAngle)
+      ctx.stroke()
+      ctx.restore()
+    }
+    ctx.save()
+    if (accentGlow) {
+      ctx.shadowColor = withAlpha(accent, 0.9)
+      ctx.shadowBlur = 5
     }
     ctx.strokeStyle = accent
-    ctx.lineWidth = 3
+    ctx.lineWidth = Math.max(2, ringWidth - 0.5)
     ctx.beginPath()
-    ctx.arc(cx, cy, trackR, startAngle, valueAngle)
+    ctx.arc(cx, cy, ringR, startAngle, valueAngle)
     ctx.stroke()
+    ctx.restore()
 
-    // Pointer hook — a radial tick just inside the arc at the value angle.
-    const outerP = trackR
-    const innerP = Math.max(2, trackR - 7)
-    ctx.lineWidth = 2.6
+    // Position marker — a short rectangular radial bar crossing the ring.
+    ctx.save()
+    if (accentGlow) {
+      ctx.shadowColor = withAlpha(accent, 0.9)
+      ctx.shadowBlur = 5
+    }
+    ctx.fillStyle = accent
     ctx.beginPath()
-    ctx.moveTo(cx + Math.cos(valueAngle) * innerP, cy + Math.sin(valueAngle) * innerP)
-    ctx.lineTo(cx + Math.cos(valueAngle) * outerP, cy + Math.sin(valueAngle) * outerP)
-    ctx.stroke()
+    ctx.moveTo(marker[0].x, marker[0].y)
+    for (let i = 1; i < marker.length; i += 1) ctx.lineTo(marker[i].x, marker[i].y)
+    ctx.closePath()
+    ctx.fill()
     ctx.restore()
     return
   }
@@ -453,6 +530,47 @@ function drawAppearanceKnob(ctx, opts) {
     accent,
     text,
   })
+}
+
+export function getRotaryRingGeometry({
+  cx,
+  cy,
+  outerR,
+  startAngle,
+  endAngle,
+  valueAngle,
+  accentGlow = false,
+}) {
+  const glowPad = accentGlow ? 4 : 1
+  const ringWidth = Math.max(2.5, Math.min(7, outerR * 0.3))
+  const ringR = outerR - ringWidth / 2 - glowPad
+  const innerR = Math.max(1, ringR - ringWidth / 2 - 1.5)
+  const markerInner = ringR - ringWidth / 2 - 1
+  const markerOuter = ringR + ringWidth / 2 + 1
+  const markerHalfWidth = Math.max(1, ringWidth * 0.24)
+  const radialX = Math.cos(valueAngle)
+  const radialY = Math.sin(valueAngle)
+  const tangentX = -radialY
+  const tangentY = radialX
+  const point = (radius, tangentOffset) => ({
+    x: cx + radialX * radius + tangentX * tangentOffset,
+    y: cy + radialY * radius + tangentY * tangentOffset,
+  })
+
+  return {
+    startAngle,
+    endAngle,
+    valueAngle,
+    ringWidth,
+    ringR,
+    innerR,
+    marker: [
+      point(markerInner, -markerHalfWidth),
+      point(markerOuter, -markerHalfWidth),
+      point(markerOuter, markerHalfWidth),
+      point(markerInner, markerHalfWidth),
+    ],
+  }
 }
 
 function safeArc(ctx, x, y, r, startAngle, endAngle, anticlockwise) {

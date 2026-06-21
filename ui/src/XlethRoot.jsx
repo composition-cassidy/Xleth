@@ -4,13 +4,16 @@ import TitleBar from './components/TitleBar.jsx'
 import TransportBar from './components/TransportBar.jsx'
 import SamplePicker from './components/SamplePicker/SamplePicker.jsx'
 import ExportDialog from './components/ExportDialog.jsx'
+import ExportZipDialog from './components/ExportZipDialog.jsx'
 import MidiImportDialog from './components/MidiImport/MidiImportDialog.jsx'
 import VideoExportDialog from './components/VideoExportDialog.jsx'
 import useSamplerPanelStore from './stores/samplerPanelStore.js'
 import SettingsPanel from './components/SettingsPanel.jsx'
 import MissingPluginsDialog from './components/MissingPluginsDialog.jsx'
+import MissingMediaDialog from './components/MissingMediaDialog.jsx'
 import DevThemeSwitcher from './components/debug/DevThemeSwitcher.jsx'
 import { ToastProvider, useToast } from './components/Toast.jsx'
+import UpdateBanner from './components/UpdateBanner.jsx'
 import { showUnsavedChangesDialog } from './components/UnsavedChangesDialog.jsx'
 import usePianoRollStore from './stores/usePianoRollStore.js'
 import useWorldProcessingStore from './stores/worldProcessingStore.js'
@@ -23,6 +26,7 @@ import * as StatePersistence from './windowing/managers/StatePersistence'
 
 const EXPORT_AUDIO_LABEL = 'Export Audio…'
 const EXPORT_VIDEO_LABEL = 'Export Video…'
+const EXPORT_ZIP_LABEL = 'Export as ZIP…'
 const ZOOM_IN_LABEL = 'Zoom In'
 const ZOOM_OUT_LABEL = 'Zoom Out'
 const RESET_ZOOM_LABEL = 'Reset Zoom'
@@ -129,6 +133,8 @@ export async function handleXlethRootMenuAction(label, {
   setCurrentPatternIdByTrack,
   setAllPatterns,
   setMissingPlugins,
+  setMissingMedia,
+  setExportZipOpen,
   setShowSettings,
   setSettingsInitialCategory,
 } = {}) {
@@ -202,6 +208,17 @@ export async function handleXlethRootMenuAction(label, {
       } catch (e) {
         console.warn('[Project] getMissingPlugins error:', e)
       }
+      // Surface media that the engine could not auto-relink (typically external
+      // source videos moved from another machine) so the user can locate them.
+      try {
+        const media = await xl.project.validateMedia()
+        if (Array.isArray(media)) {
+          const missing = media.filter((m) => m && m.found === false)
+          if (missing.length > 0) setMissingMedia?.(missing)
+        }
+      } catch (e) {
+        console.warn('[Project] validateMedia error:', e)
+      }
       break
     }
     case 'Save': {
@@ -247,6 +264,9 @@ export async function handleXlethRootMenuAction(label, {
     case EXPORT_VIDEO_LABEL:
       setVideoExportDialogOpen?.(true)
       break
+    case EXPORT_ZIP_LABEL:
+      setExportZipOpen?.(true)
+      break
     case ZOOM_IN_LABEL:
       xl.window.zoomIn?.()
       break
@@ -270,10 +290,6 @@ export async function handleXlethRootMenuAction(label, {
       break
     case 'Settings':
       setSettingsInitialCategory?.('project')
-      setShowSettings?.(true)
-      break
-    case 'Theme Editor':
-      setSettingsInitialCategory?.('theme-editor')
       setShowSettings?.(true)
       break
     default:
@@ -312,9 +328,11 @@ function XlethRootInner() {
   const [projectName, setProjectName] = useState('Untitled Project')
   const [exportDialogOpen, setExportDialogOpen] = useState(false)
   const [videoExportDialogOpen, setVideoExportDialogOpen] = useState(false)
+  const [exportZipOpen, setExportZipOpen] = useState(false)
   const [midiImportOpen, setMidiImportOpen] = useState(false)
   const [midiInitialPath, setMidiInitialPath] = useState(null)
   const [missingPlugins, setMissingPlugins] = useState(null)
+  const [missingMedia, setMissingMedia] = useState(null)
   const [showSettings, setShowSettings] = useState(false)
   const [settingsInitialCategory, setSettingsInitialCategory] = useState('project')
 
@@ -454,6 +472,8 @@ function XlethRootInner() {
       setCurrentPatternIdByTrack,
       setAllPatterns,
       setMissingPlugins,
+      setMissingMedia,
+      setExportZipOpen,
       setShowSettings,
       setSettingsInitialCategory,
     })
@@ -529,7 +549,11 @@ function XlethRootInner() {
       onDragOver={handleAppDragOver}
       onDrop={handleAppDrop}
     >
-      <TitleBar projectName={projectName} onAction={handleMenuAction} />
+      <TitleBar
+        projectName={projectName}
+        onAction={handleMenuAction}
+        activeMenuLabel={showSettings ? 'Settings' : null}
+      />
 
       <div className="app-body" style={{ position: 'relative' }}>
         {pickerSource && (
@@ -547,6 +571,7 @@ function XlethRootInner() {
 
       <ExportDialog isOpen={exportDialogOpen} onClose={() => setExportDialogOpen(false)} />
       <VideoExportDialog isOpen={videoExportDialogOpen} onClose={() => setVideoExportDialogOpen(false)} />
+      <ExportZipDialog isOpen={exportZipOpen} onClose={() => setExportZipOpen(false)} />
       <MidiImportDialog
         isOpen={midiImportOpen}
         initialFilePath={midiInitialPath}
@@ -558,12 +583,19 @@ function XlethRootInner() {
           onClose={() => setMissingPlugins(null)}
         />
       )}
+      {missingMedia && missingMedia.length > 0 && (
+        <MissingMediaDialog
+          media={missingMedia}
+          onClose={() => setMissingMedia(null)}
+        />
+      )}
       {showSettings && (
         <SettingsPanel
           initialCategory={settingsInitialCategory}
           onClose={() => setShowSettings(false)}
         />
       )}
+      <UpdateBanner />
     </div>
   )
 }

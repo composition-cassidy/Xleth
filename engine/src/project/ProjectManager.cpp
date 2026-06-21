@@ -1,5 +1,6 @@
 #include "project/ProjectManager.h"
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <ctime>
 #include <filesystem>
@@ -51,6 +52,21 @@ std::string filenameFromUtf8Path(const std::string& path)
     return pos == std::string::npos ? path : path.substr(pos + 1);
 }
 
+// True for "C:\...", "C:/...", "\\server\share", or POSIX "/abs". A path that is
+// none of these is treated as relative-to-project.
+bool isAbsolutePath(const std::string& path)
+{
+    if (path.size() >= 2 && std::isalpha(static_cast<unsigned char>(path[0])) &&
+        path[1] == ':')
+        return true;                              // Windows drive path
+    if (path.size() >= 2 && (path[0] == '\\' || path[0] == '/') &&
+        (path[1] == '\\' || path[1] == '/'))
+        return true;                              // UNC \\server\share
+    if (!path.empty() && (path[0] == '/' || path[0] == '\\'))
+        return true;                              // POSIX root
+    return false;
+}
+
 } // namespace
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -96,6 +112,10 @@ std::string ProjectManager::getExportsDir()  const {
 
 std::string ProjectManager::getSwappedDir()  const {
     return (fs::path(projectDir_) / "swapped").string();
+}
+
+std::string ProjectManager::getMediaDir()    const {
+    return (fs::path(projectDir_) / "media").string();
 }
 
 // ─── createProject ────────────────────────────────────────────────────────────
@@ -334,6 +354,11 @@ std::optional<Timeline> ProjectManager::loadProject(const std::string& projectDi
     if (j.contains("masterEffectChain") && j["masterEffectChain"].is_object())
         loadedMasterEffectChain_ = j["masterEffectChain"];
 
+    // Heal in-project asset paths (swapped/exports/media/proxies) that broke
+    // because the project moved. External sources that can't be found here stay
+    // missing and surface to the relink UI via validateMedia().
+    resolveMediaPaths(timeline);
+
     std::cout << "[Project] Loaded '" << projectName_
               << "': BPM=" << timeline.getBPM()
               << ", SR=" << timeline.getSampleRate()
@@ -354,6 +379,160 @@ const nlohmann::json& ProjectManager::getLoadedMasterEffectChain() const {
     return loadedMasterEffectChain_;
 }
 
+// ─── Path resolution (relink-on-load) ─────────────────────────────────────────
+
+std::optional<std::string>
+ProjectManager::resolveMediaPath(const std::string& stored) const {
+    if (stored.empty() || projectDir_.empty())
+        return std::nullopt;
+
+    // 1. Stored path exists as-is (the normal same-machine case).
+    if (fileExistsUtf8(stored))
+        return stored;
+
+    // 2. Stored path is project-relative (written by Export ZIP) → join to dir.
+    if (!isAbsolutePath(stored)) {
+        const std::string joined = projectDir_ + "/" + stored;
+        if (fileExistsUtf8(joined))
+            return joined;
+    }
+
+    // Normalize separators for the substring scans below.
+    std::string norm = stored;
+    std::replace(norm.begin(), norm.end(), '\\', '/');
+
+    // 3. In-project subfolder tail: an absolute path from another machine still
+    //    carries ".../swapped/foo.wav"; rebuild that tail from the current dir.
+    static const char* kSubdirs[] = { "media", "swapped", "exports", "proxies" };
+    for (const char* sub : kSubdirs) {
+        const std::string needle = std::string("/") + sub + "/";
+        size_t tailStart = std::string::npos;
+        if (const auto pos = norm.rfind(needle); pos != std::string::npos)
+            tailStart = pos + 1;                                  // keep "<sub>/..."
+        else if (norm.rfind(std::string(sub) + "/", 0) == 0)
+            tailStart = 0;                                        // begins with "<sub>/"
+        if (tailStart != std::string::npos) {
+            const std::string joined = projectDir_ + "/" + norm.substr(tailStart);
+            if (fileExistsUtf8(joined))
+                return joined;
+        }
+    }
+
+    // 4. Last resort: basename match inside the in-project asset folders.
+    const std::string base = filenameFromUtf8Path(stored);
+    for (const std::string& dir : { getMediaDir(), getSwappedDir(), getExportsDir() }) {
+        const std::string candidate = dir + "/" + base;
+        if (fileExistsUtf8(candidate))
+            return candidate;
+    }
+
+    return std::nullopt;
+}
+
+void ProjectManager::resolveMediaPaths(Timeline& timeline) {
+    int relinked = 0;
+
+    for (const SourceMedia* csrc : timeline.getAllSources()) {
+        SourceMedia* src = timeline.getSourceMutable(csrc->id);
+        if (!src) continue;
+        if (auto r = resolveMediaPath(src->filePath); r && *r != src->filePath) {
+            std::cout << "[Project] Auto-relinked source id=" << src->id
+                      << ": " << src->filePath << " -> " << *r << "\n";
+            src->filePath = *r;
+            ++relinked;
+        }
+        if (auto r = resolveMediaPath(src->proxyPath); r && *r != src->proxyPath)
+            src->proxyPath = *r;
+    }
+
+    for (SampleRegion* reg : timeline.getAllRegionsMutable()) {
+        if (auto r = resolveMediaPath(reg->swappedAudioPath);
+                r && *r != reg->swappedAudioPath) {
+            std::cout << "[Project] Auto-relinked region id=" << reg->id
+                      << " swapped audio -> " << *r << "\n";
+            reg->swappedAudioPath = *r;
+            ++relinked;
+        }
+        if (auto r = resolveMediaPath(reg->audioFilePath);
+                r && *r != reg->audioFilePath) {
+            reg->audioFilePath = *r;
+            ++relinked;
+        }
+    }
+
+    if (relinked > 0)
+        std::cout << "[Project] resolveMediaPaths: auto-relinked "
+                  << relinked << " in-project path(s)\n";
+}
+
+// ─── relinkSource / relinkRegionAudio ─────────────────────────────────────────
+
+bool ProjectManager::relinkSource(Timeline& timeline, int sourceId,
+                                  const std::string& newPath) {
+    SourceMedia* src = timeline.getSourceMutable(sourceId);
+    if (!src) {
+        std::cerr << "[Project] relinkSource: unknown source id=" << sourceId << "\n";
+        return false;
+    }
+    if (!fileExistsUtf8(newPath)) {
+        std::cerr << "[Project] relinkSource: new path not found: " << newPath << "\n";
+        return false;
+    }
+
+    src->filePath   = newPath;
+    src->fileName   = filenameFromUtf8Path(newPath);
+    // The old proxy belongs to the old file — clear so it regenerates on demand.
+    src->proxyPath  = "";
+    src->proxyReady = true;
+
+#ifdef XLETH_HAS_DECODER
+    // Best-effort re-probe so resolution/fps/duration match the new file.
+    VideoDecoder decoder;
+    if (decoder.open(newPath)) {
+        src->width       = decoder.getWidth();
+        src->height      = decoder.getHeight();
+        src->fps         = decoder.getFPS();
+        src->duration    = decoder.getDuration();
+        src->totalFrames = decoder.getTotalFrames();
+        src->hasVideo    = (src->width > 0 && src->height > 0);
+        decoder.close();
+    } else {
+        double audioDuration = 0.0;
+        if (SourcePlayer::probeAudio(newPath, audioDuration)) {
+            src->width = src->height = src->totalFrames = 0;
+            src->fps = 0.0;
+            src->duration = audioDuration;
+            src->hasVideo = false;
+        }
+    }
+#endif
+
+    std::cout << "[Project] Relinked source id=" << sourceId
+              << " -> " << newPath << "\n";
+    return true;
+}
+
+bool ProjectManager::relinkRegionAudio(Timeline& timeline, int regionId,
+                                       const std::string& newPath) {
+    SampleRegion* reg = timeline.getRegionMutable(regionId);
+    if (!reg) {
+        std::cerr << "[Project] relinkRegionAudio: unknown region id="
+                  << regionId << "\n";
+        return false;
+    }
+    if (!fileExistsUtf8(newPath)) {
+        std::cerr << "[Project] relinkRegionAudio: new path not found: "
+                  << newPath << "\n";
+        return false;
+    }
+
+    reg->swappedAudioPath = newPath;
+    reg->hasSwappedAudio  = true;
+    std::cout << "[Project] Relinked region id=" << regionId
+              << " swapped audio -> " << newPath << "\n";
+    return true;
+}
+
 // ─── validateMedia ────────────────────────────────────────────────────────────
 
 std::vector<ProjectManager::MediaStatus>
@@ -366,9 +545,13 @@ ProjectManager::validateMedia(const Timeline& timeline) {
 
     for (const SourceMedia* src : timeline.getAllSources()) {
         MediaStatus status;
-        status.sourceId = src->id;
-        status.filePath = src->filePath;
-        status.found    = fileExistsUtf8(src->filePath);
+        status.sourceId    = src->id;
+        status.kind        = "source";
+        status.filePath    = src->filePath;
+        status.displayName = src->fileName.empty()
+                                 ? filenameFromUtf8Path(src->filePath)
+                                 : src->fileName;
+        status.found       = fileExistsUtf8(src->filePath);
 
         if (!status.found) {
             status.error = "Source file not found: " + src->filePath;
@@ -402,7 +585,30 @@ ProjectManager::validateMedia(const Timeline& timeline) {
         results.push_back(std::move(status));
     }
 
-    std::cout << "[Project] Validated " << results.size() << " source(s)\n";
+    // Per-region swapped audio lives inside the project folder (swapped/).
+    // resolveMediaPaths() heals the in-project ones on load; anything still
+    // missing here is a genuine relink candidate. (audioFilePath is intentionally
+    // not validated: it is not used by the playback load path — audio_loadRegionAudio
+    // reads swappedAudioPath or the source filePath — so reporting it would only
+    // produce false-positive relink prompts.)
+    for (const SampleRegion* reg : timeline.getAllRegions()) {
+        if (!reg->hasSwappedAudio || reg->swappedAudioPath.empty())
+            continue;
+        MediaStatus status;
+        status.regionId    = reg->id;
+        status.kind        = "swappedAudio";
+        status.filePath    = reg->swappedAudioPath;
+        status.displayName = filenameFromUtf8Path(reg->swappedAudioPath);
+        status.found       = fileExistsUtf8(reg->swappedAudioPath);
+        if (!status.found) {
+            status.error = "Swapped audio not found: " + reg->swappedAudioPath;
+            std::cerr << "[Project] WARNING region id=" << reg->id
+                      << " swapped audio missing: " << reg->swappedAudioPath << "\n";
+        }
+        results.push_back(std::move(status));
+    }
+
+    std::cout << "[Project] Validated " << results.size() << " media reference(s)\n";
     return results;
 }
 

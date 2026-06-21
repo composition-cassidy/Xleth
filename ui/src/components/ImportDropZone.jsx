@@ -49,19 +49,21 @@ export default function ImportDropZone({ onFilesDropped, onMidiFileDropped, chil
 
     const files = Array.from(e.dataTransfer.files)
 
+    // Electron 41+ removed File.path; use webUtils via the preload bridge.
+    const getPath = (f) => window.xleth?.getDroppedFilePath?.(f) || f.path || f.name
+
     // Route first .mid/.midi to the MIDI import dialog
     const midiFile = files.find(f => MIDI_EXT.test(f.name))
     if (midiFile && onMidiFileDropped) {
-      const path = midiFile.path || midiFile.name
+      const path = getPath(midiFile)
       console.log('[ProjectMedia] MIDI import requested (drop):', path)
       onMidiFileDropped(path)
     }
 
     // Route A/V files to the existing source-import flow
-    // In Electron, File objects have a .path property with full filesystem path
     const avPaths = files
       .filter(f => ALLOWED_EXT.test(f.name) && !MIDI_EXT.test(f.name))
-      .map(f => f.path || f.name)
+      .map(getPath)
       .filter(Boolean)
 
     if (avPaths.length > 0) {

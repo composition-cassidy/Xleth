@@ -4,7 +4,6 @@ import {
   Folder,
   Layout,
   Minus,
-  Palette,
   Pencil,
   Redo2,
   Settings,
@@ -33,6 +32,7 @@ export const FILE_DROPDOWN_ITEMS = [
   { label: 'Save', shortcut: 'Ctrl+S' },
   { label: 'Save As...', shortcut: 'Ctrl+Shift+S' },
   { label: 'Import Source', shortcut: 'Ctrl+I' },
+  { label: 'Export as ZIP…' },
 ]
 
 export const EDIT_DROPDOWN_ACTIONS = [
@@ -68,11 +68,6 @@ export const TITLEBAR_MENUS = [
     action: 'Settings',
     items: [],
   },
-  {
-    label: 'Theme',
-    action: 'Theme Editor',
-    items: [],
-  },
 ]
 
 const TITLEBAR_MENU_ICONS = {
@@ -80,7 +75,6 @@ const TITLEBAR_MENU_ICONS = {
   Edit: Pencil,
   View: Layout,
   Settings,
-  Theme: Palette,
 }
 
 export function isDirectTitlebarMenu(menu) {
@@ -219,7 +213,7 @@ function QuickLauncherButton({ launcher }) {
   )
 }
 
-export default function TitleBar({ projectName = 'Untitled Project', onAction }) {
+export default function TitleBar({ projectName = 'Untitled Project', onAction, activeMenuLabel = null }) {
   const quickLaunchers = useQuickLaunchersStore((state) => state.launchers)
   const hydrateQuickLaunchers = useQuickLaunchersStore((state) => state.hydrate)
 
@@ -359,15 +353,16 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction })
             const MenuIcon = TITLEBAR_MENU_ICONS[menu.label]
             const menuIsRendered = renderedMenu === idx
             const menuIsOpen = openMenu === idx
+            const menuIsActive = menuIsOpen || activeMenuLabel === menu.label
             return (
               <div
                 key={menu.label}
-                className={`titlebar-menu ${menuIsOpen ? 'open' : ''}`}
+                className={`titlebar-menu ${menuIsOpen ? 'open' : ''}${menuIsActive ? ' active' : ''}`}
               >
                 <XlethButton
                   type="button"
                   className="titlebar-menu-trigger"
-                  active={menuIsOpen}
+                  active={menuIsActive}
                   onClick={() => handleMenuClick(idx)}
                   aria-haspopup={direct ? undefined : 'menu'}
                   aria-expanded={direct ? undefined : menuIsOpen}

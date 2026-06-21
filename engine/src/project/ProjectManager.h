@@ -61,18 +61,34 @@ public:
     // loadProject() call. Returns an empty/null JSON if not present.
     const nlohmann::json& getLoadedMasterEffectChain() const;
 
-    // Per-source validation result.
+    // Per-media validation result. Covers both Media Pool sources and the
+    // per-region swapped/extracted audio that lives inside the project folder.
     struct MediaStatus {
-        int         sourceId;
-        std::string filePath;
-        bool        found;
+        int         sourceId = -1;          // set when kind == "source"
+        int         regionId = -1;          // set when kind == "swappedAudio"/"audio"
+        std::string kind;                   // "source" | "swappedAudio" | "audio"
+        std::string filePath;               // the (still) stored path
+        std::string displayName;            // basename, for the relink UI
+        bool        found = false;
         std::string error;
     };
 
-    // Check that every source's original file exists.
+    // Check that every media reference resolves on disk: each source's original
+    // file plus each region's swapped/extracted audio. Items that resolveMediaPaths
+    // already healed report found=true; only genuine externals stay found=false.
     // If proxyReady is true but the proxy file is missing, notes the error and
     // (when built with XLETH_HAS_DECODER) re-transcodes the proxy in the background.
     std::vector<MediaStatus> validateMedia(const Timeline& timeline);
+
+    // Point a Media Pool source at a user-chosen replacement file. Updates
+    // filePath/fileName, clears the (now-stale) proxy so it regenerates, and
+    // (when built with XLETH_HAS_DECODER) re-probes width/height/fps/duration.
+    // Returns false if the source id is unknown or newPath does not exist.
+    bool relinkSource(Timeline& timeline, int sourceId, const std::string& newPath);
+
+    // Point a region's swapped audio at a user-chosen replacement file.
+    // Returns false if the region id is unknown or newPath does not exist.
+    bool relinkRegionAudio(Timeline& timeline, int regionId, const std::string& newPath);
 
     // Import a media file into the timeline:
     //   1. Validate the file path
@@ -90,6 +106,7 @@ public:
     std::string getProxiesDir()  const;
     std::string getExportsDir()  const;
     std::string getSwappedDir()  const;
+    std::string getMediaDir()    const;   // <projectDir>/media (consolidated sources)
 
     // Clear the active project directory / name so subsequent save() calls
     // act as "untitled" until createProject / saveProjectAs / loadProject
@@ -109,4 +126,16 @@ private:
     void        ensureDirectories();
     std::string projectFilePath() const;
     static std::string currentTimestamp();
+
+    // Resolve a single stored media path against the *current* project dir when
+    // the stored (often absolute, from another machine) path is missing.
+    // Tries, in order: the stored path as-is, the stored path as project-relative,
+    // an in-project subfolder tail (media/swapped/exports/proxies), and a basename
+    // match inside media/swapped/exports. Returns the path to use, or nullopt if
+    // nothing resolves (caller leaves it for the manual relink prompt).
+    std::optional<std::string> resolveMediaPath(const std::string& stored) const;
+
+    // Walk every source/region path and rewrite any that resolveMediaPath heals.
+    // Called at the end of loadProject so moved in-project assets self-heal.
+    void resolveMediaPaths(Timeline& timeline);
 };

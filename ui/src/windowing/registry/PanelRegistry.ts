@@ -41,8 +41,6 @@ export const DEFAULT_DOCK_REGION_SIZES: DockRegionSizes = {
   bottom: 240,
 };
 
-export const DEFAULT_SAMPLE_SELECTOR_DOCK_WIDTH = 320;
-export const MIN_SAMPLE_SELECTOR_DOCK_WIDTH = 260;
 export const SAMPLE_SELECTOR_DOCK_HANDLE_WIDTH = 32;
 
 export const MIN_DOCK_REGION_SIZES: DockRegionSizes = {
@@ -57,7 +55,7 @@ export const MIN_DOCKED_PANEL_MAIN_SIZES: Record<PanelId, number> = {
   sampleSelector: 220,
   pianoRoll: 220,
   preview: 180,
-  mixer: 220,
+  mixer: 260,
   gridSettings: 180,
   fxGraph: 240,
   nodeEditor: 200,
@@ -69,7 +67,6 @@ export const MIN_DOCKED_PANEL_MAIN_SIZES: Record<PanelId, number> = {
 export interface PanelRegistryState {
   panels: PanelStateMap;
   dockRegionSizes: DockRegionSizes;
-  sampleSelectorDockWidth: number;
   openPanel: (id: PanelId) => void;
   closePanel: (id: PanelId) => void;
   togglePanel: (id: PanelId) => void;
@@ -89,7 +86,6 @@ export interface PanelRegistryState {
     afterSize: number,
   ) => void;
   setSampleSelectorDockOpen: (open: boolean) => void;
-  setSampleSelectorDockWidth: (width: number) => void;
   clampFloatingPanelsToWorkArea: (width: number, height: number) => void;
   applyPreset: (presetId: PresetId) => void;
 }
@@ -313,7 +309,6 @@ function commitPanels(
 export const usePanelRegistry = create<PanelRegistryState>((set) => ({
   panels: createInitialPanelStates(),
   dockRegionSizes: createInitialDockRegionSizes(),
-  sampleSelectorDockWidth: DEFAULT_SAMPLE_SELECTOR_DOCK_WIDTH,
 
   openPanel: (id) => set((state) => {
     const panel = state.panels[id];
@@ -533,12 +528,6 @@ export const usePanelRegistry = create<PanelRegistryState>((set) => ({
         return draft;
       }),
     };
-  }),
-
-  setSampleSelectorDockWidth: (width) => set((state) => {
-    const clamped = Math.max(MIN_SAMPLE_SELECTOR_DOCK_WIDTH, Math.round(width));
-    if (state.sampleSelectorDockWidth === clamped) return state;
-    return { sampleSelectorDockWidth: clamped };
   }),
 
   clampFloatingPanelsToWorkArea: (width, height) => set((state) => {

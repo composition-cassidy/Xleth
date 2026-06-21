@@ -582,6 +582,162 @@ static void syncTransportLoopFromTimeline();
 
 static bool isInitialised() { return audioEngine != nullptr; }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Audio-health diagnostic trace (read-only instrumentation)
+// ─────────────────────────────────────────────────────────────────────────────
+// Lock-free counters live on the audio/RT threads; everything here runs on the
+// JUCE message thread (start/stop) or a dedicated background sampler thread
+// (1s reads). NOTHING here touches the audio thread or chainsMutex_. Enabled
+// only when XLETH_AUDIO_TRACE is set, so default builds are unaffected.
+namespace {
+
+std::mutex   g_audioTraceMutex;
+std::ofstream g_audioTraceFile;
+bool         g_audioTraceInit = false;
+
+std::thread       g_audioHealthThread;
+std::atomic<bool> g_audioHealthStop{false};
+
+} // namespace
+
+void XlethEngineService::audioTrace(const std::string& line)
+{
+    std::lock_guard<std::mutex> lk(g_audioTraceMutex);
+    if (!g_audioTraceInit) {
+        g_audioTraceInit = true;
+        const char* env = std::getenv("XLETH_AUDIO_TRACE");
+        if (env != nullptr && env[0] != '\0') {
+            std::string path = (std::strcmp(env, "1") == 0)
+                ? (std::filesystem::temp_directory_path() / "xleth-audio-trace.log").string()
+                : std::string(env);
+            g_audioTraceFile.open(path, std::ios::out | std::ios::trunc);
+            std::fprintf(stderr, "[AudioTrace] writing trace file: %s\n", path.c_str());
+        }
+    }
+    std::fprintf(stderr, "%s\n", line.c_str());
+    if (g_audioTraceFile.is_open()) {
+        g_audioTraceFile << line << '\n';
+        g_audioTraceFile.flush();
+    }
+}
+
+bool XlethEngineService::audioTraceEnabled()
+{
+    const char* env = std::getenv("XLETH_AUDIO_TRACE");
+    return env != nullptr && env[0] != '\0';
+}
+
+namespace {
+
+// 1s background sampler. Reads only lock-free atomics + JUCE device-load
+// estimate; deltas are reported per second. Emits two grep-able lines per tick:
+//   [XRun]     hardware x-runs, CPU load, audio-callback/process overruns
+//   [Underrun] clip-render-cache misses, effect-chain try_lock misses
+void audioHealthLoop()
+{
+    int      sec        = 0;
+    bool     first      = true;
+    int      prevXRun   = -1;
+    uint64_t prevChain  = 0;
+    uint64_t prevClip   = 0;
+    uint64_t prevOver   = 0;
+    uint64_t prevCbOver = 0;
+    uint64_t prevMismatch = 0;
+
+    while (!g_audioHealthStop.load(std::memory_order_relaxed)) {
+        // Sleep ~1s in short steps so shutdown stays responsive.
+        for (int i = 0; i < 10 && !g_audioHealthStop.load(std::memory_order_relaxed); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (g_audioHealthStop.load(std::memory_order_relaxed)) break;
+        if (!isInitialised()) continue;
+        ++sec;
+
+        auto&    mix       = audioEngine->getMixEngine();
+        // Re-assert realtime diagnostics each tick so a UI toggle can't silence
+        // the chain-lock / overrun counters mid-capture. Idempotent + cheap.
+        mix.setRealtimeDiagnosticsEnabled(true);
+        const int      xr        = audioEngine->getDeviceXRunCount();
+        const double   cpu       = audioEngine->getDeviceCpuUsage();
+        const uint64_t chainMiss = mix.getChainLockMissCount();
+        const uint64_t clipMiss  = mix.getClipCacheMissCount();
+        const uint64_t mismatch  = mix.getClipKeyMismatchCount();
+        const uint64_t overrun   = mix.getOverrunBlockCount();
+        const uint64_t cbOverrun = mix.getAudioCallbackOverrunCount();
+        const bool     playing   = audioEngine->getTransport().isPlaying();
+        const int      xrDelta   = (!first && prevXRun >= 0 && xr >= 0) ? (xr - prevXRun) : 0;
+
+        if (!first) {
+            char buf[512];
+            std::snprintf(buf, sizeof(buf),
+                "[XRun] t=%d playing=%d xrun/s=%d xrunTotal=%d cpu=%.1f%% "
+                "overrunBlk/s=%llu cbOverrun/s=%llu",
+                sec, playing ? 1 : 0, xrDelta, xr, cpu * 100.0,
+                (unsigned long long)(overrun - prevOver),
+                (unsigned long long)(cbOverrun - prevCbOver));
+            XlethEngineService::audioTrace(buf);
+
+            std::snprintf(buf, sizeof(buf),
+                "[Underrun] t=%d clipCacheMiss/s=%llu chainLockMiss/s=%llu "
+                "clipCacheMissTotal=%llu chainLockMissTotal=%llu",
+                sec,
+                (unsigned long long)(clipMiss - prevClip),
+                (unsigned long long)(chainMiss - prevChain),
+                (unsigned long long)clipMiss,
+                (unsigned long long)chainMiss);
+            XlethEngineService::audioTrace(buf);
+
+            // [StreamUnder] Split clipCacheMiss into genuine render/stream
+            // starvation (notReady) vs stale-key churn (keyMismatch). A high
+            // keyMismatch/s also means the audio thread is hitting the non-gated
+            // MISMATCH fprintf in ClipRenderCache::getProcessedBuffer every block.
+            const uint64_t mismatchDelta = mismatch - prevMismatch;
+            const uint64_t clipMissDelta = clipMiss - prevClip;
+            const uint64_t notReadyDelta = clipMissDelta >= mismatchDelta
+                                         ? clipMissDelta - mismatchDelta : 0;
+            std::snprintf(buf, sizeof(buf),
+                "[StreamUnder] t=%d notReady/s=%llu keyMismatch/s=%llu "
+                "keyMismatchTotal=%llu",
+                sec,
+                (unsigned long long)notReadyDelta,
+                (unsigned long long)mismatchDelta,
+                (unsigned long long)mismatch);
+            XlethEngineService::audioTrace(buf);
+        }
+
+        prevXRun     = xr;
+        prevChain    = chainMiss;
+        prevClip     = clipMiss;
+        prevOver     = overrun;
+        prevCbOver   = cbOverrun;
+        prevMismatch = mismatch;
+        first        = false;
+    }
+}
+
+// Called on the message thread from Initialize(). Enables realtime diagnostics
+// (so chainLockMiss/overrun counters advance) and starts the sampler thread.
+void startAudioHealthSampler()
+{
+    if (!XlethEngineService::audioTraceEnabled()) return;
+    if (g_audioHealthThread.joinable()) return;  // already running
+    if (isInitialised())
+        audioEngine->getMixEngine().setRealtimeDiagnosticsEnabled(true);
+    g_audioHealthStop.store(false, std::memory_order_relaxed);
+    g_audioHealthThread = std::thread(audioHealthLoop);
+    XlethEngineService::audioTrace("[AudioTrace] health sampler started (1s cadence)");
+}
+
+// Called on the message thread from Shutdown(), before audioEngine is destroyed.
+void stopAudioHealthSampler()
+{
+    if (!g_audioHealthThread.joinable()) return;
+    g_audioHealthStop.store(true, std::memory_order_relaxed);
+    g_audioHealthThread.join();
+    XlethEngineService::audioTrace("[AudioTrace] health sampler stopped");
+}
+
+} // namespace
+
 // Rebuild every per-{track,region} sampler referenced by a PatternBlock on
 // the given track. Pattern tracks no longer bind to a single region — samplers
 // are per-{trackId, regionId} pair, one for each unique region used by blocks
@@ -2927,6 +3083,9 @@ JsonApi::Value Initialize(const JsonApi::CallbackInfo& info)
     //    Body lives in videoThreadBody(); lifecycle helpers defined above.
     startVideoThread();
 
+    // 9. Audio-health diagnostic sampler (no-op unless XLETH_AUDIO_TRACE set).
+    startAudioHealthSampler();
+
     log.done("true");
     return JsonApi::Boolean::New(env, true);
 }
@@ -2935,6 +3094,9 @@ void Shutdown(const JsonApi::CallbackInfo& info)
 {
     BridgeCallLog log("shutdown");
     if (!isInitialised()) { log.done("noop"); return; }
+
+    // Stop the audio-health sampler first so it never reads a half-torn engine.
+    stopAudioHealthSampler();
 
     videoRunning = false;
     if (videoThread.joinable())

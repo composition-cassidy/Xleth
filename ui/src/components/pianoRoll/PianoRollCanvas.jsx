@@ -1,31 +1,30 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { tokenValue } from '../../theming/tokenValue.ts'
 import { PPQ, snapBeatToGrid, beatsToTicks, beatToPixel, pixelToBeat } from '../../constants/timeline.js'
-import { PITCH_MIN, PITCH_MAX, isBlackKey } from './PianoRollKeyboard.jsx'
+import { PITCH_MIN, PITCH_MAX, isBlackKey, pitchLabel } from './PianoRollKeyboard.jsx'
+import { tokenValue } from '../../theming/tokenValue.ts'
 
 const RESIZE_HANDLE_PX = 6
 
-// Resolve all theme tokens once per draw cycle. Calling tokenValue() (which
-// reads getComputedStyle) inside the pitch-row loop would fire ~127+ times per
-// frame; resolving here reduces that to a single batch of reads.
+// Canvas colors are resolved at draw time because CSS variables cannot be
+// passed directly to CanvasRenderingContext2D.
 function resolvePalette() {
   return {
-    bg:            tokenValue('--theme-bg-inset'),
-    rowAlt:        tokenValue('--theme-pianoroll-grid-bg'),
-    gridMinor:     tokenValue('--theme-pianoroll-subdivision-line'),
-    gridBeat:      tokenValue('--theme-pianoroll-beat-line'),
-    gridBar:       tokenValue('--theme-pianoroll-bar-line'),
-    patternOverlay:tokenValue('--theme-overlay-medium'),
-    patternBorder: tokenValue('--theme-border-focus'),
-    noteLabel:     tokenValue('--theme-label-pitch'),
-    noteSlide:     tokenValue('--theme-pianoroll-note-slide-fill'),
-    noteBorder:    tokenValue('--theme-pianoroll-note-stroke'),
-    noteSelStroke: tokenValue('--theme-fg-inverse'),
-    noteHighlightBand: tokenValue('--theme-pianoroll-note-highlight-band'),
-    noteShadowBand:    tokenValue('--theme-pianoroll-note-shadow-band'),
-    lassoFill:     tokenValue('--theme-pianoroll-note-slide-stroke'),
-    lassoStroke:   tokenValue('--theme-border-focus'),
-    wellTopShadow: tokenValue('--theme-pianoroll-well-top-shadow'),
+    bg: tokenValue('--theme-pianoroll-grid-bg') || '#111118',
+    rowWhite: tokenValue('--theme-pianoroll-key-white-bg') || '#15151C',
+    rowBlack: tokenValue('--theme-pianoroll-key-black-bg') || '#0A0A10',
+    line16: tokenValue('--theme-pianoroll-subdivision-line') || 'rgba(255,255,255,0.04)',
+    lineBeat: tokenValue('--theme-pianoroll-beat-line') || 'rgba(255,255,255,0.06)',
+    lineBar: tokenValue('--theme-pianoroll-bar-line') || 'rgba(255,255,255,0.14)',
+    octaveLine: tokenValue('--theme-border-subtle') || '#2A2A38',
+    accent: tokenValue('--theme-accent') || '#33CED6',
+    patternOverlay: tokenValue('--theme-overlay-subtle') || 'rgba(0,0,0,0.25)',
+    patternBorder: tokenValue('--theme-snap-ghost-border') || 'rgba(51,206,214,0.4)',
+    noteSlide: tokenValue('--theme-pianoroll-note-slide-fill') || '#E64FE6',
+    noteLabel: tokenValue('--theme-text-on-accent') || '#0D0D14',
+    noteGhost: tokenValue('--theme-success') || '#3FB27A',
+    noteSelStroke: tokenValue('--theme-accent') || '#33CED6',
+    lassoFill: tokenValue('--theme-pianoroll-selection-rect') || 'rgba(51,206,214,0.18)',
+    lassoStroke: tokenValue('--theme-accent') || '#33CED6',
   }
 }
 
@@ -81,43 +80,34 @@ function drawBackground(ctx, w, h, pixelsPerBeat, pixelsPerSemitone, scrollX, sc
   ctx.fillStyle = palette.bg
   ctx.fillRect(0, 0, w, h)
 
-  // Horizontal row striping: black keys slightly darker
+  // Flat horizontal row striping — every row gets a fill: white-key rows a
+  // touch lighter than black-key rows. No per-row hairlines (the stripe
+  // contrast carries the rhythm); only the octave (C) boundary draws a line.
   for (let p = PITCH_MAX; p >= PITCH_MIN; p--) {
     const y = (PITCH_MAX - p) * pixelsPerSemitone - scrollY
     if (y + pixelsPerSemitone < 0 || y > h) continue
-    if (isBlackKey(p)) {
-      ctx.fillStyle = palette.rowAlt
-      ctx.fillRect(0, y, w, pixelsPerSemitone)
-    }
-    if ((p % 12) === 0) {
-      // Octave boundary line (C)
-      ctx.strokeStyle = palette.gridBar
-      ctx.lineWidth = 1
-      ctx.beginPath()
-      ctx.moveTo(0, Math.round(y + pixelsPerSemitone) + 0.5)
-      ctx.lineTo(w, Math.round(y + pixelsPerSemitone) + 0.5)
-      ctx.stroke()
-    }
+    ctx.fillStyle = isBlackKey(p) ? palette.rowBlack : palette.rowWhite
+    ctx.fillRect(0, y, w, pixelsPerSemitone)
   }
 
-  // Horizontal grid for each semitone row
-  ctx.strokeStyle = palette.gridMinor
-  ctx.lineWidth = 0.5
+  ctx.strokeStyle = palette.octaveLine
+  ctx.lineWidth = 1
   ctx.beginPath()
   for (let p = PITCH_MAX; p >= PITCH_MIN; p--) {
+    if ((p % 12) !== 0) continue
     const y = (PITCH_MAX - p) * pixelsPerSemitone - scrollY
-    if (y < 0 || y > h) continue
-    ctx.moveTo(0, Math.round(y) + 0.5)
-    ctx.lineTo(w, Math.round(y) + 0.5)
+    if (y < -pixelsPerSemitone || y > h) continue
+    ctx.moveTo(0, Math.round(y + pixelsPerSemitone) + 0.5)
+    ctx.lineTo(w, Math.round(y + pixelsPerSemitone) + 0.5)
   }
   ctx.stroke()
 
-  // Vertical beat grid — 16th note subdivisions + beats
   const startBeat = Math.floor(scrollX / pixelsPerBeat)
   const endBeat = Math.ceil((scrollX + w) / pixelsPerBeat) + 1
 
-  ctx.strokeStyle = palette.gridBeat
-  ctx.lineWidth = 0.5
+  // 1/16 subdivisions (faintest)
+  ctx.strokeStyle = palette.line16
+  ctx.lineWidth = 1
   ctx.beginPath()
   for (let b = startBeat; b <= endBeat; b++) {
     for (let sub = 1; sub < 4; sub++) {
@@ -129,10 +119,12 @@ function drawBackground(ctx, w, h, pixelsPerBeat, pixelsPerSemitone, scrollX, sc
   }
   ctx.stroke()
 
-  ctx.strokeStyle = palette.gridBar
+  // Beat lines (every quarter that isn't a bar boundary)
+  ctx.strokeStyle = palette.lineBeat
   ctx.lineWidth = 1
   ctx.beginPath()
   for (let b = startBeat; b <= endBeat; b++) {
+    if (b % 4 === 0) continue
     const x = Math.round(b * pixelsPerBeat - scrollX) + 0.5
     if (x < 0 || x > w) continue
     ctx.moveTo(x, 0)
@@ -140,15 +132,20 @@ function drawBackground(ctx, w, h, pixelsPerBeat, pixelsPerSemitone, scrollX, sc
   }
   ctx.stroke()
 
-  // Inner top-edge shadow — creates recessed depth at the grid boundary.
-  // One gradient draw per frame, not inside any loop.
-  const topShadow = ctx.createLinearGradient(0, 0, 0, 14)
-  topShadow.addColorStop(0, palette.wellTopShadow)
-  topShadow.addColorStop(1, 'rgba(0, 0, 0, 0)')
-  ctx.fillStyle = topShadow
-  ctx.fillRect(0, 0, w, 14)
+  // Bar lines (brightest)
+  ctx.strokeStyle = palette.lineBar
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  for (let b = startBeat; b <= endBeat; b++) {
+    if (b % 4 !== 0) continue
+    const x = Math.round(b * pixelsPerBeat - scrollX) + 0.5
+    if (x < 0 || x > w) continue
+    ctx.moveTo(x, 0)
+    ctx.lineTo(x, h)
+  }
+  ctx.stroke()
 
-  // Pattern-length marker (dim region past pattern end)
+  // Pattern-length marker (dim region past pattern end) — flat, no top shadow.
   if (patternLenBeats > 0) {
     const endX = patternLenBeats * pixelsPerBeat - scrollX
     if (endX < w) {
@@ -175,30 +172,37 @@ function drawNotes(ctx, w, h, notes, selectedNoteIds, pixelsPerBeat, pixelsPerSe
     if (x + wid < 0 || x > w || y + pixelsPerSemitone < 0 || y > h) continue
 
     const selected = selectedNoteIds?.has(note.id)
-    const alpha = 0.4 + 0.6 * (note.velocity ?? 1.0)
-    // Slide notes use a magenta accent so they're visually distinct from
-    // regular notes — they don't spawn cells, they trigger a per-track effect.
-    const hex = note.isSlide ? palette.noteSlide : palette.noteLabel
-    ctx.fillStyle = hexToRgba(hex, alpha * (selected ? 1.0 : 0.85))
-    ctx.fillRect(x, y + 1, wid, pixelsPerSemitone - 2)
-    // Material depth: composite a 1px highlight band at the top and a 1px
-    // shadow lip at the bottom. Hue-agnostic neutral overlays so regular and
-    // slide notes share one set of values. Gated to skip on tiny notes where
-    // the bands would consume too much of the body and read as stripes.
+    const vel = Math.max(0, Math.min(1, note.velocity ?? 1.0))
     const bodyH = pixelsPerSemitone - 2
-    if (bodyH >= 6 && wid >= 4) {
-      ctx.fillStyle = palette.noteHighlightBand
-      ctx.fillRect(x, y + 1, wid, 1)
-      ctx.fillStyle = palette.noteShadowBand
-      ctx.fillRect(x, y + pixelsPerSemitone - 2, wid, 1)
+
+    // Flat note body: green, with velocity mapped to lightness (louder = brighter).
+    // Slide notes keep their magenta identity. No highlight/shadow bands — the
+    // 1px stroke alone gives the note its edge.
+    if (note.isSlide) {
+      ctx.fillStyle = palette.noteSlide
+      ctx.strokeStyle = palette.noteSlide
+    } else {
+      ctx.fillStyle = `hsl(128 33% ${(26 + vel * 30).toFixed(1)}%)`
+      ctx.strokeStyle = `hsl(128 38% ${(40 + vel * 28).toFixed(1)}%)`
     }
-    // Selected notes get a high-contrast inverse stroke for clear selection
-    // feedback; unselected notes use the dedicated note-stroke token
-    // (--theme-pianoroll-note-stroke → --theme-border-strong) for a crisper
-    // border than the same-color-as-fill approach used previously.
-    ctx.strokeStyle = selected ? palette.noteSelStroke : palette.noteBorder
-    ctx.lineWidth = selected ? 2 : 1
-    ctx.strokeRect(x + 0.5, y + 1.5, wid - 1, pixelsPerSemitone - 3)
+    ctx.fillRect(x, y + 1, wid, bodyH)
+    ctx.lineWidth = 1
+    ctx.strokeRect(x + 0.5, y + 1.5, wid - 1, bodyH - 1)
+
+    // Pitch label inside the note when there's room (mockup labels longer notes).
+    if (!note.isSlide && wid >= 22 && bodyH >= 9) {
+      ctx.fillStyle = palette.noteLabel
+      ctx.font = '500 8px -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif'
+      ctx.textBaseline = 'middle'
+      ctx.fillText(pitchLabel(note.pitch), x + 3, y + pixelsPerSemitone / 2 + 0.5)
+    }
+
+    // Selection: a crisp 1px teal outline, inset so it hugs the note edge.
+    if (selected) {
+      ctx.strokeStyle = palette.accent
+      ctx.lineWidth = 1
+      ctx.strokeRect(x + 0.5, y + 1.5, wid - 1, bodyH - 1)
+    }
   }
 }
 
@@ -618,7 +622,7 @@ export default function PianoRollCanvas({
     const palette = resolvePalette()
 
     if (ds.action === ACTION.MOVE_NOTES) {
-      ov.fillStyle = hexToRgba(palette.noteLabel, 0.55)
+      ov.fillStyle = hexToRgba(palette.noteGhost, 0.55)
       ov.strokeStyle = palette.noteSelStroke
       ov.lineWidth = 1.5
       ov.setLineDash([4, 3])
@@ -639,7 +643,7 @@ export default function PianoRollCanvas({
       const anchorOrig = ds.originals.get(ds.anchorNoteId)
       if (!anchorOrig) return
       const deltaTicks = ds.previewDurationTicks - ds.origDurationTicks
-      ov.fillStyle = hexToRgba(palette.noteLabel, 0.55)
+      ov.fillStyle = hexToRgba(palette.noteGhost, 0.55)
       ov.strokeStyle = palette.noteSelStroke
       ov.lineWidth = 1.5
       ov.setLineDash([4, 3])

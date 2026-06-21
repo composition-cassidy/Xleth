@@ -32,7 +32,7 @@ describe('App shell layer order', () => {
     const html = renderToStaticMarkup(<TitleBar projectName="Layer Test" onAction={() => {}} />);
 
     for (const menu of TITLEBAR_MENUS) {
-      expect(html).toContain(`>${menu.label.toUpperCase()}<`);
+      expect(html).toContain(`>${menu.label}<`);
     }
   });
 
@@ -89,6 +89,21 @@ describe('Workspace bounds layout contract', () => {
   it('drawer top-offset is 0 so it aligns with the workspace top, not the viewport top', () => {
     const appCss = readUiSource('styles/app.css');
     expect(appCss).toMatch(/--xleth-windowing-drawer-top-offset:\s*0(px)?;/);
+  });
+
+  it('sample drawer width comes from the left dock region, not a fixed drawer width', () => {
+    const appShellSource = readUiSource('windowing/AppShell.tsx');
+    const drawerSource = readUiSource('windowing/components/SampleSelectorDrawer.tsx');
+    const appCss = readUiSource('styles/app.css');
+
+    expect(appShellSource).toContain('state.dockRegionSizes.left');
+    expect(appShellSource).toContain("useDockRegionResizePreview('left')");
+    expect(appShellSource).toContain("'--xleth-sample-dock-width'");
+    expect(appShellSource).not.toContain('sampleSelectorDockWidth');
+    expect(drawerSource).not.toContain('sampleSelectorDockWidth');
+    const drawerBlock = appCss.match(/\.xleth-sample-selector-drawer,\s*\.xleth-sample-selector-drawer__body,\s*\.left-panel\s*\{([^}]*)\}/s)?.[1] ?? '';
+    expect(drawerBlock).toContain('width: 100%');
+    expect(drawerBlock).not.toContain('width: 258px');
   });
 
   it('maximized panel uses position:absolute and inset:0, not position:fixed', () => {

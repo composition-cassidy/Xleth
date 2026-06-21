@@ -1,7 +1,7 @@
 {
   "appId": "com.xleth.app",
   "productName": "XLETH",
-  "files": ["dist/**/*", "src/plugin-ui/layouts/*.json", "src/engine-pipe-client.js", "main.js", "preload.js", "runtimePaths.js", "workspaceBackdropCapability.js", "splash.html", "splash-preload.js"],
+  "files": ["dist/**/*", "src/plugin-ui/layouts/*.json", "main.js", "preload.js", "runtimePaths.js", "workspaceBackdropCapability.js", "update-checker.js", "splash.html", "splash-preload.js"],
   "directories": {
     "output": "../dist"
   },
@@ -9,10 +9,6 @@
   "asarUnpack": ["**/*.node"],
   "compression": "normal",
   "extraResources": [
-    {
-      "from": "../build/xleth-engine.exe",
-      "to": "engine/xleth-engine.exe"
-    },
     {
       "from": "../xlethpopup.png",
       "to": "xlethpopup.png"
@@ -40,7 +36,7 @@
     {
       "from": "../art",
       "to": "art",
-      "filter": ["**/*"]
+      "filter": ["*.png", "*.jpg", "*.jpeg", "*.webp"]
     },
     {
       "from": "../build/engine/XlethEngine_artefacts/Release",
@@ -61,13 +57,18 @@
   "win": {
     "target": [
       {
-        "target": "portable",
+        "target": "nsis",
         "arch": ["x64"]
       }
     ]
   },
-  "portable": {
-    "artifactName": "Xleth-${version}-portable.${ext}",
-    "unpackDirName": "Xleth-${version}"
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "deleteAppDataOnUninstall": false,
+    "artifactName": "Xleth-${version}-setup.${ext}"
   }
 }

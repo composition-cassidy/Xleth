@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 
-const WIDGET_SIZE = 64
+const WIDGET_SIZE = 42
 const DOT_SIZE    = 7
 const MAX_OFFSET  = WIDGET_SIZE - DOT_SIZE
 

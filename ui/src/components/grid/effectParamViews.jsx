@@ -13,6 +13,14 @@
 //     fixedDurationMs in SlideNoteEffectSection).
 import { Fragment } from 'react'
 import { snapToZero, snapToOne } from '../../utils/sliderHelpers.js'
+import XlethSelect from '../common/XlethSelect.jsx'
+
+const EASING_OPTIONS = [
+  { value: 0, label: 'Linear' },
+  { value: 1, label: 'Ease Out' },
+  { value: 2, label: 'Ease In-Out' },
+  { value: 3, label: 'Ease Out Back' },
+]
 
 // ─── BounceParamsView ────────────────────────────────────────────────────────
 // value shape: BounceSettings — { directionDeg, distance, durationMs,
@@ -101,16 +109,13 @@ export function ZprParamsView({ value, onChange, hideDuration = false, hideEnabl
         onBlur={(e) => onChange({ targetRotation: parseFloat(e.target.value) || 0 })} />
       <span />
       <label>Easing</label>
-      <select value={zoomEasing}
-        onChange={(e) => {
-          const v2 = parseInt(e.target.value)
-          onChange({ zoomEasing: v2, panEasing: v2, rotEasing: v2 })
-        }}>
-        <option value={0}>Linear</option>
-        <option value={1}>Ease Out</option>
-        <option value={2}>Ease In-Out</option>
-        <option value={3}>Ease Out Back</option>
-      </select>
+      <XlethSelect
+        className="fx-param-select"
+        value={zoomEasing}
+        options={EASING_OPTIONS}
+        onChange={value => onChange({ zoomEasing: value, panEasing: value, rotEasing: value })}
+        ariaLabel="Effect easing"
+      />
       <span />
       {zoomEasing === 3 && (<>
         <label>Overshoot</label>

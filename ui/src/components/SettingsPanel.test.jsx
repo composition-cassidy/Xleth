@@ -28,12 +28,13 @@ describe('SettingsPanel consolidated shell', () => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true
   })
 
-  it('renders the responsive category shell with Theme Editor as a top-level category', () => {
+  it('renders the responsive category shell without a standalone Theme Editor category', () => {
     const html = renderToStaticMarkup(<SettingsPanel onClose={() => {}} />)
 
     expect(html).toContain('settings-panel-shell')
     expect(html).toContain('settings-panel-categories')
-    expect(html).toContain('Theme Editor')
+    expect(html).not.toContain('Theme Editor')
+    expect(SETTINGS_CATEGORIES.every(category => !('icon' in category))).toBe(true)
     expect(SETTINGS_CATEGORIES.map(category => category.id)).toEqual([
       'project',
       'transport',
@@ -41,7 +42,6 @@ describe('SettingsPanel consolidated shell', () => {
       'plugins',
       'graphics',
       'appearance',
-      'theme-editor',
       'launchers',
       'advanced',
     ])
@@ -89,6 +89,28 @@ describe('SettingsPanel consolidated shell', () => {
     expect(html).toContain('vst-browser--embedded')
     expect(html).toContain('Scan Plugins')
     expect(html).toContain('Add Path')
+  })
+
+  it('exposes accent color and brightness controls in the Appearance category', async () => {
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = createRoot(container)
+
+    try {
+      await act(async () => {
+        root.render(<SettingsPanel initialCategory="appearance" onClose={() => {}} />)
+      })
+
+      expect(container.textContent).toContain('Accent color')
+      expect(container.textContent).toContain('Brightness')
+      expect(container.querySelector('#settings-appearance-accent')).not.toBeNull()
+      const brightness = container.querySelector('#settings-appearance-brightness')
+      expect(brightness).not.toBeNull()
+      expect(brightness.getAttribute('type')).toBe('range')
+    } finally {
+      await act(async () => root.unmount())
+      container.remove()
+    }
   })
 
   it('offers Backdrop Media source modes separately from Backdrop FX', async () => {

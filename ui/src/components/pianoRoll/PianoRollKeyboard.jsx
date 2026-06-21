@@ -42,18 +42,18 @@ export default function PianoRollKeyboard({
           top: y,
           height: pixelsPerSemitone,
           left: 0,
-          right: isBlack ? '35%' : 0,
+          right: 0,
           background: isBlack
-            ? (highlighted ? 'var(--theme-pianoroll-key-black-highlight)' : 'var(--theme-pianoroll-key-black-bg)')
-            : (highlighted ? 'var(--theme-pianoroll-key-white-highlight)' : 'var(--theme-pianoroll-key-white-bg)'),
-          borderBottom: '1px solid var(--theme-pianoroll-key-black-bg)',
-          borderRight: isBlack ? '1px solid var(--theme-pianoroll-key-black-bg)' : 'none',
+            ? (highlighted ? '#223530' : '#161616')
+            : (highlighted ? '#bcd2c9' : '#a8a8a8'),
+          borderBottom: isBlack ? '1px solid #0d0d0d' : '1px solid rgba(0,0,0,0.18)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'flex-end',
-          paddingRight: 4,
-          fontSize: 9,
-          color: 'var(--theme-pianoroll-key-label-fg)',
+          paddingRight: 5,
+          fontSize: 8,
+          letterSpacing: '0.02em',
+          color: isBlack ? '#5a5a5a' : '#2a2a2a',
           cursor: 'pointer',
           userSelect: 'none',
         }}
@@ -73,8 +73,8 @@ export default function PianoRollKeyboard({
         width: 60,
         height: height,
         overflow: 'hidden',
-        background: 'var(--theme-pianoroll-key-white-bg)',
-        borderRight: '1px solid var(--theme-border-subtle)',
+        background: '#0d0d0d',
+        borderRight: '1px solid #222',
         flexShrink: 0,
       }}
     >

@@ -4,6 +4,7 @@ import { DockRegion } from './components/DockRegion';
 import { PanelFrame } from './components/PanelFrame';
 import { SampleSelectorDrawer } from './components/SampleSelectorDrawer';
 import { SnapGhost } from './components/SnapGhost';
+import { useDockRegionResizePreview } from './managers/DockRegionResizeManager';
 import { registerWorkAreaRect, type WorkAreaRect } from './managers/DragManager';
 import * as KeyboardManager from './managers/KeyboardManager';
 import {
@@ -218,13 +219,15 @@ export function AppShell({ mode = 'single', backdropImageUrl = '' }: WindowingAp
   const rendersRealPanels = shouldRenderRealPanels(mode);
   const drawerPanelIds = rendersRealPanels ? DRAWER_PANEL_ID_LIST : undefined;
   const reactiveSampleSelectorHidden = usePanelRegistry((state) => state.panels.sampleSelector.hidden);
-  const reactiveSampleSelectorDockWidth = usePanelRegistry((state) => state.sampleSelectorDockWidth);
+  const reactiveSampleDockRegionWidth = usePanelRegistry((state) => state.dockRegionSizes.left);
   const sampleSelectorHidden = typeof window === 'undefined'
     ? usePanelRegistry.getState().panels.sampleSelector.hidden
     : reactiveSampleSelectorHidden;
-  const sampleSelectorDockWidth = typeof window === 'undefined'
-    ? usePanelRegistry.getState().sampleSelectorDockWidth
-    : reactiveSampleSelectorDockWidth;
+  const committedSampleDockRegionWidth = typeof window === 'undefined'
+    ? usePanelRegistry.getState().dockRegionSizes.left
+    : reactiveSampleDockRegionWidth;
+  const sampleDockResizePreview = useDockRegionResizePreview('left');
+  const sampleDockWidth = sampleDockResizePreview?.size ?? committedSampleDockRegionWidth;
   const sampleDockEnabled = rendersRealPanels && SHELL_PANEL_IDS[mode].includes('sampleSelector');
   const sampleDockExpanded = sampleDockEnabled && !sampleSelectorHidden;
   const shellClassName = [
@@ -234,7 +237,7 @@ export function AppShell({ mode = 'single', backdropImageUrl = '' }: WindowingAp
       : 'sample-dock-disabled',
   ].join(' ');
   const shellStyle = {
-    '--xleth-sample-dock-width': `${sampleSelectorDockWidth}px`,
+    '--xleth-sample-dock-width': `${sampleDockWidth}px`,
     '--xleth-sample-dock-handle-width': `${SAMPLE_SELECTOR_DOCK_HANDLE_WIDTH}px`,
   } as React.CSSProperties;
 

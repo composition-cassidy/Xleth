@@ -183,10 +183,10 @@ export default function TransportBar() {
       {/* ── Position display (isolated memo — only this subtree re-renders at 10fps) ── */}
       <PositionDisplay />
 
-      <AudioDeviceSelector />
-
       {/* ── Spacer ──────────────────────────────────────────────────────── */}
       <div className="transport-spacer" />
+
+      <AudioDeviceSelector />
 
       {/* ── BPM ─────────────────────────────────────────────────────────── */}
       <div className="transport-bpm">

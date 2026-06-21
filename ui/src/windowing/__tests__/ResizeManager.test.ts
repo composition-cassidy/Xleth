@@ -6,6 +6,7 @@ import {
   beginResize,
   cancelResize,
   endResize,
+  MIN_MIXER_PANEL_HEIGHT,
   MIN_PANEL_HEIGHT,
   MIN_PANEL_WIDTH,
   type ResizeEdge,
@@ -160,5 +161,22 @@ describe('ResizeManager', () => {
       width: 350,
       height: 240,
     });
+  });
+
+  it('keeps the mixer above its compact-layout height floor', () => {
+    const panels = createInitialPanelStates();
+    panels.mixer.hidden = false;
+    panels.mixer.mode = 'floating';
+    panels.mixer.floating = { x: 100, y: 80, width: 640, height: 400 };
+    usePanelRegistry.setState({
+      panels,
+      resizeFloatingPanel: originalResizeFloatingPanel,
+    });
+
+    beginResize('mixer', 's', 0, 0, 100, 80, 640, 400);
+    updateResize(0, -1000);
+    endResize();
+
+    expect(usePanelRegistry.getState().panels.mixer.floating.height).toBe(MIN_MIXER_PANEL_HEIGHT);
   });
 });

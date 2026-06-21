@@ -1,6 +1,7 @@
 import { useRef, useEffect } from 'react'
 import { peaksSnapshot } from '../../stores/mixerStore.js'
 import { tokenValue } from '../../theming/tokenValue.ts'
+import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
 
 function linearToDB(gain) {
   if (gain <= 0) return -96
@@ -28,7 +29,7 @@ function peakToPos(peak) {
 const BAR_W = 8
 const GAP = 3
 const TOTAL_W = BAR_W * 2 + GAP  // 19px
-const RADIUS = BAR_W / 2
+const RADIUS = 0  // square bars — matches the flat mockup meter
 
 // Only the two reference marks the design calls for.
 const SCALE_TICKS = [
@@ -48,11 +49,16 @@ function roundedBarPath(ctx, x, y, w, h, r) {
 }
 
 export default function PeakMeter({ trackId, master }) {
+  const themeEpoch = useThemeEpoch()
   const canvasRef = useRef(null)
   const wrapRef   = useRef(null)
   const rafRef    = useRef(null)
   const smoothRef = useRef({ l: 0, r: 0 })
   const gradientRef = useRef(null)
+
+  // Drop the cached rail gradient when the theme changes so the RAF loop
+  // rebuilds it with the new success/warning/danger token colors.
+  useEffect(() => { gradientRef.current = null }, [themeEpoch])
 
   useEffect(() => {
     const c = canvasRef.current

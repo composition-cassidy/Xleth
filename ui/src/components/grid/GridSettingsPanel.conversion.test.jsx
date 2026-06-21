@@ -151,8 +151,8 @@ describe('GridSettingsPanel — canvas conversion never loses placements', () =>
   it('FPS change never touches geometry (no setGridLayout, only setPreviewFps)', async () => {
     getGridLayout.mockResolvedValue(REAL_LAYOUT)
     await render(REAL_LAYOUT)
-    const fps = container.querySelector('.gsp-fps-value')
-    await changeInput(fps, '60')
+    const [, , fps] = Array.from(container.querySelectorAll('.gsp-canvas-select'))
+    await changeSelect(fps, '60')
 
     expect(setPreviewFps).toHaveBeenCalledWith(60)
     expect(setGridLayout).not.toHaveBeenCalled()

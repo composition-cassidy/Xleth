@@ -149,7 +149,7 @@ export const PANEL_CATALOG = {
     title: 'Quick Notation',
     typeColorToken: '--theme-text-muted',
     icon: Music2,
-    defaultFloating: { x: 360, y: 140, width: 380, height: 320 },
+    defaultFloating: { x: 360, y: 140, width: 480, height: 314 },
     keepAliveWhenHidden: false,
   },
   splitSyllables: {
@@ -159,7 +159,7 @@ export const PANEL_CATALOG = {
     icon: Scissors,
     // Context-opened from a sample row (no F-key). keepAliveWhenHidden keeps the
     // cached waveform mipmap + marker edits alive across close/reopen.
-    defaultFloating: { x: 380, y: 160, width: 540, height: 440 },
+    defaultFloating: { x: 140, y: 160, width: 1000, height: 352 },
     keepAliveWhenHidden: true,
   },
 } satisfies Record<PanelId, PanelCatalogEntry>;

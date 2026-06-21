@@ -5,9 +5,9 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const http = require('http');
-const { spawn } = require('child_process');
+const { fork, spawn } = require('child_process');
 const { runtimeResource, userDataPath } = require('./runtimePaths');
-const engineClient = require('./src/engine-pipe-client');
+const { checkForUpdates } = require('./update-checker');
 const {
   WORKSPACE_BACKDROP_DEFAULT_PREFERENCE,
   applyWorkspaceBackdropMaterial,
@@ -17,7 +17,7 @@ const {
 } = require('./workspaceBackdropCapability');
 
 // Fixed name for the Windows file mapping that backs the FrameOutput double
-// buffer. The engine sidecar creates it via FrameOutput::initSharedMemory;
+// buffer. The engine worker creates it via FrameOutput::initSharedMemory;
 // the Electron main process / preload opens the same name via shm_helper.node.
 const FRAME_SHM_NAME = 'XlethFrameBuffer';
 const WORKSPACE_BACKDROP_DEFAULT_IMAGE = 'backdrop-1@1.25x.png';
@@ -440,16 +440,44 @@ function startMediaServer() {
   return server;
 }
 
-// ── Native addon hosted in a forked Node.js child process ────────────────────
-// The addon links JUCE + FFmpeg + GLEW/GLFW. Loading it in the Electron main
-// process or utilityProcess crashed natively (0xFFFD0003 / 0xC0000005). A
-// child_process.fork runs under system Node with its own DLL search and
-// initialization, which reliably loads the addon. Zero-copy video delivery
-// uses a Windows named file mapping (shm_helper) instead of SAB transfer.
+// ── Engine backend — fork addon-worker.js under system Node ──────────────────
+// The addon links JUCE + FFmpeg + GLEW/GLFW and must run under system Node to
+// avoid 0xFFFD0003 / 0xC0000005 crashes inside Electron's runtime. Zero-copy
+// video via Windows named file mapping (shm_helper).
 
 let workerReady = false;
 let addonError = null;
 let engineBackgroundTasksStarted = false;
+
+let worker = null;
+let nextMsgId = 1;
+const pending = new Map();
+
+function resolveSystemNodeExe() {
+  if (process.env.XLETH_NODE_EXE) return process.env.XLETH_NODE_EXE;
+  if (app.isPackaged) {
+    return runtimeResource('node', process.platform === 'win32' ? 'node.exe' : 'node');
+  }
+  try {
+    const { execFileSync } = require('child_process');
+    const lookup = process.platform === 'win32' ? 'where' : 'which';
+    const out = execFileSync(lookup, ['node'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    const first = out.split(/\r?\n/).map(s => s.trim()).find(Boolean);
+    if (first && fs.existsSync(first)) return first;
+  } catch (_) { /* fall through */ }
+  if (process.platform === 'win32') {
+    const candidates = [
+      'C:\\Program Files\\nodejs\\node.exe',
+      'C:\\Program Files (x86)\\nodejs\\node.exe',
+      path.join(os.homedir(), 'AppData', 'Roaming', 'nvm', 'nodejs', 'node.exe'),
+      path.join(os.homedir(), 'scoop', 'apps', 'nodejs', 'current', 'node.exe'),
+    ];
+    for (const c of candidates) {
+      if (fs.existsSync(c)) return c;
+    }
+  }
+  return process.platform === 'win32' ? 'node.exe' : 'node';
+}
 
 // High-frequency polling methods — suppress routine logs for these
 const SILENT_METHODS = new Set(['getFrameRGBA', 'getCurrentFrame', 'getFrameBuffer', 'getTransportState', 'audio_getAllPeaks', 'audio_getRealtimeDiagnostics', 'audio_getAudioPerformanceTelemetry', 'getAudioPerformanceTelemetry', 'audio_setTrackVolume', 'audio_setTrackPan', 'audio_setTrackSpread', 'audio_setMasterVolume', 'cache_getWorldActiveJobs']);
@@ -460,36 +488,83 @@ let autosaveIntervalId = null;
 async function startWorker() {
   const bridgeDir = runtimeResource('bridge');
   const ffmpegDir = runtimeResource('ffmpeg');
-  const engineExe = app.isPackaged
-    ? runtimeResource('engine', 'xleth-engine.exe')
-    : path.join(__dirname, '..', 'build', 'xleth-engine.exe');
-  log(`Starting engine sidecar: ${engineExe}`);
+
+  const workerPath = runtimeResource('worker', 'addon-worker.js');
+  const nodeExe = resolveSystemNodeExe();
+  log(`[Engine] fork mode — ${nodeExe} ${workerPath}`);
   log(`[Runtime] app.isPackaged=${app.isPackaged}`);
   log(`[Runtime] process.resourcesPath=${process.resourcesPath}`);
   log(`[Runtime] bridgeDir=${bridgeDir}`);
   log(`[Runtime] ffmpegDir=${ffmpegDir}`);
 
-  if (!fs.existsSync(engineExe)) {
-    addonError = `Engine sidecar missing: ${engineExe}. Run: build engine-exe`;
+  if (!fs.existsSync(nodeExe)) {
+    addonError = `Node.js executable not found: ${nodeExe}. Set XLETH_NODE_EXE or install Node to a standard location.`;
+    log(`[startWorker] ${addonError}`);
+    workerReady = false;
+    throw new Error(addonError);
+  }
+  if (!fs.existsSync(bridgeDir)) {
+    addonError = `Bridge addon not built — ${bridgeDir} is missing. Run: build bridge-clean`;
+    log(`[startWorker] ${addonError}`);
+    workerReady = false;
+    throw new Error(addonError);
+  }
+  const addonPath = path.join(bridgeDir, 'xleth_native.node');
+  if (!fs.existsSync(addonPath)) {
+    addonError = `Bridge addon binary missing: ${addonPath}. Run: build bridge-clean`;
     log(`[startWorker] ${addonError}`);
     workerReady = false;
     throw new Error(addonError);
   }
 
-  await engineClient.start({
-    executablePath: engineExe,
-    cwd: path.dirname(engineExe),
-    log,
-    env: {
-      ...process.env,
-      XLETH_ENGINE_SUPPORT_DIR: bridgeDir,
-      XLETH_FFMPEG_DIR: ffmpegDir,
-      PATH: workerPathEnv([path.dirname(engineExe), bridgeDir, ffmpegDir]),
-    },
+  return new Promise((resolve, reject) => {
+    worker = fork(workerPath, [], {
+      stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+      execPath: nodeExe,
+      cwd: bridgeDir,
+      env: {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: undefined,
+        XLETH_BRIDGE_DIR: bridgeDir,
+        XLETH_FFMPEG_DIR: ffmpegDir,
+        PATH: workerPathEnv([bridgeDir, ffmpegDir]),
+      },
+      serialization: 'advanced',
+    });
+    let resolved = false;
+    worker.on('message', (msg) => {
+      if (msg && msg.ready) {
+        workerReady = true;
+        addonError = null;
+        log('[Worker] ready');
+        if (!resolved) { resolved = true; resolve(); }
+        return;
+      }
+      if (msg && typeof msg.id === 'number') {
+        const p = pending.get(msg.id);
+        if (!p) return;
+        pending.delete(msg.id);
+        if (msg.error) { p.reject(new Error(msg.error)); return; }
+        if (msg.notImplemented) { p.reject(new Error('notImplemented')); return; }
+        if (msg.frame) { p.resolve({ width: msg.frame.w, height: msg.frame.h, pixels: msg.frame.data }); return; }
+        p.resolve(msg.result === undefined ? null : msg.result);
+      }
+    });
+    worker.on('exit', (code) => {
+      log(`[Worker] exited code=${code}`);
+      workerReady = false;
+      addonError = `worker exited (code ${code})`;
+      for (const p of pending.values()) p.reject(new Error(addonError));
+      pending.clear();
+      if (!resolved) { resolved = true; reject(new Error(addonError)); }
+    });
+    worker.on('error', (err) => {
+      log(`[Worker] spawn error: ${err.message}`);
+      workerReady = false;
+      addonError = err.message;
+      if (!resolved) { resolved = true; reject(err); }
+    });
   });
-  workerReady = true;
-  addonError = null;
-  log('[Engine] pipe ready');
 }
 
 async function applyEngineDefaults() {
@@ -509,33 +584,7 @@ function startEngineBackgroundTasks() {
   restartAutosaveTimer();
 }
 
-engineClient.on('disconnect', () => { workerReady = false; });
-engineClient.on('exit', (code, signal, expected) => {
-  if (expected) return;
-  workerReady = false;
-  addonError = `xleth-engine.exe exited (code ${code}, signal ${signal || 'none'})`;
-});
-engineClient.on('restarted', async () => {
-  log('[Engine] sidecar restarted; restoring engine initialization');
-  workerReady = true;
-  addonError = null;
-  try {
-    await callWorker('initialize');
-    await ensureFrameShm(960, 540);
-    await applyEngineDefaults();
-    log('[Engine] restart recovery complete');
-  } catch (error) {
-    workerReady = false;
-    addonError = `engine restart initialization failed: ${error.message}`;
-    log(`[Engine] ${addonError}`);
-  }
-});
-engineClient.on('engine-fatal', () => {
-  dialog.showErrorBox('Engine crash', 'xleth-engine.exe failed to restart. Quitting.');
-  app.quit();
-});
-
-// Dispatches to the named-pipe sidecar. Returns a Promise.
+// Dispatches to the engine worker. Returns a Promise.
 function callWorker(method, args = []) {
   if (!workerReady) {
     return Promise.reject(new Error('Engine not ready: ' + (addonError || 'starting')));
@@ -543,20 +592,33 @@ function callWorker(method, args = []) {
   if (!SILENT_METHODS.has(method)) {
     log(`[IPC] → ${method}(${args.map(a => typeof a === 'object' ? JSON.stringify(a).slice(0, 60) : a).join(', ')})`);
   }
-  return engineClient.send(method, args).then(result => {
-    if (method === 'getTransportState') {
-      const str = JSON.stringify(result);
-      if (str !== lastTransportStateStr) {
-        log(`[IPC] transport changed: ${str}`);
-        lastTransportStateStr = str;
-      }
-    } else if (!SILENT_METHODS.has(method)) {
-      log(`[IPC] ← result: ${JSON.stringify(result).slice(0, 80)}`);
-    }
-    return result;
-  }, err => {
-    log(`[IPC] ← error (${method}): ${err.message}`);
-    throw err;
+  const id = nextMsgId++;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      reject(new Error(`Engine command timed out: ${method}`));
+    }, 30_000);
+    pending.set(id, {
+      resolve: (result) => {
+        clearTimeout(timer);
+        if (method === 'getTransportState') {
+          const str = JSON.stringify(result);
+          if (str !== lastTransportStateStr) {
+            log(`[IPC] transport changed: ${str}`);
+            lastTransportStateStr = str;
+          }
+        } else if (!SILENT_METHODS.has(method)) {
+          log(`[IPC] ← result: ${JSON.stringify(result).slice(0, 80)}`);
+        }
+        resolve(result);
+      },
+      reject: (err) => {
+        clearTimeout(timer);
+        log(`[IPC] ← error (${method}): ${err.message}`);
+        reject(err);
+      },
+    });
+    worker.send({ id, method, args });
   });
 }
 
@@ -688,7 +750,7 @@ ipcMain.handle('xleth:syncStats',      safeHandler(() => callWorker('getSyncStat
 ipcMain.handle('xleth:setVideoResolution', safeHandler((_, w, h) => callWorker('setVideoResolution', [w, h])));
 
 // ── Video frame output: Windows named shared memory ─────────────────────────
-// The engine sidecar creates a named file mapping and writes the double-buffer
+// The engine worker creates a named file mapping and writes the double-buffer
 // there; the renderer (via preload.js + shm_helper.node) opens the same name
 // and reads frames with zero copies. Main only tells the renderer the name
 // and metadata — no buffer crosses IPC.
@@ -811,8 +873,17 @@ ipcMain.handle('xleth:project:load',
 ipcMain.handle('xleth:project:importSource',
   safeHandler((_, filePath) => callWorker('project_importSource', [filePath])));
 
+ipcMain.handle('xleth:project:removeSource',
+  safeHandler((_, sourceId) => callWorker('project_removeSource', [sourceId])));
+
 ipcMain.handle('xleth:project:validateMedia',
   safeHandler(() => callWorker('project_validateMedia')));
+
+ipcMain.handle('xleth:project:relinkSource',
+  safeHandler((_, sourceId, newPath) => callWorker('project_relinkSource', [sourceId, newPath])));
+
+ipcMain.handle('xleth:project:relinkRegionAudio',
+  safeHandler((_, regionId, newPath) => callWorker('project_relinkRegionAudio', [regionId, newPath])));
 
 ipcMain.handle('xleth:project:getInfo',
   safeHandler(() => callWorker('project_getInfo')));
@@ -2825,7 +2896,7 @@ function buildVisualPreviewDiagnosticText({ engine, extras, settings, gpuInfo })
 ipcMain.handle('xleth:diag:exportVisualPreviewLog', safeHandler(async (event, extras) => {
   const senderWin = BrowserWindow.fromWebContents(event.sender) || win;
 
-  // Pull engine state. Tolerate the sidecar not being ready — we still
+  // Pull engine state. Tolerate the engine not being ready — we still
   // want to produce *some* report so the tester can send something.
   let engine = null;
   let engineError = null;
@@ -3222,6 +3293,23 @@ ipcMain.handle('xleth:dialog:importSources', async () => {
   return filePaths;
 });
 
+// Locate a single replacement file for a missing source/sample (relink flow).
+ipcMain.handle('xleth:dialog:locateMedia', async (_, displayName) => {
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+    title: displayName ? `Locate "${displayName}"` : 'Locate Media File',
+    filters: [
+      { name: 'All Supported', extensions: ['mp4', 'avi', 'mov', 'mkv', 'wav', 'mp3', 'flac', 'ogg', 'aac', 'm4a'] },
+      { name: 'Video Files', extensions: ['mp4', 'avi', 'mov', 'mkv'] },
+      { name: 'Audio Files', extensions: ['wav', 'mp3', 'flac', 'ogg', 'aac', 'm4a'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+    properties: ['openFile'],
+  });
+  if (canceled || !filePaths.length) return null;
+  log(`[Relink] Located replacement: ${filePaths[0]}`);
+  return filePaths[0];
+});
+
 ipcMain.handle('xleth:dialog:exportAudio', async (_, defaultName, format) => {
   const filters = ({
     wav:  [{ name: 'WAV Audio',  extensions: ['wav']  }],
@@ -3247,6 +3335,140 @@ ipcMain.handle('xleth:dialog:exportVideo', async (_, defaultName) => {
   if (canceled || !filePath) return null;
   log(`[ProjectMedia] Export video target: ${filePath}`);
   return filePath;
+});
+
+// ── Export Project as ZIP ─────────────────────────────────────────────────────
+// Bundles the project into a portable .zip. In 'full' mode external source media
+// is copied into media/ and every in-project path is rewritten to project-relative
+// so the archive opens on any machine with no relinking. In 'projectOnly' mode the
+// large sources are left out (recipient relinks them) but samples are still bundled.
+// Proxies are never shipped — they regenerate on demand.
+
+function sanitizeZipName(name) {
+  return String(name).replace(/[<>:"/\\|?* -]/g, '_') || 'file';
+}
+
+function isUnderArchivedSubdir(rel) {
+  return /^(media|swapped|exports)\//i.test(rel);
+}
+
+async function buildProjectZip({ projectDir, destPath, mode, senderWin }) {
+  const archiver = require('archiver');
+  const send = (p) => {
+    if (senderWin && !senderWin.isDestroyed())
+      senderWin.webContents.send('zip-export:progress', p);
+  };
+  send({ running: true, phase: 'preparing', percent: 0 });
+
+  const proj = JSON.parse(fs.readFileSync(path.join(projectDir, 'project.json'), 'utf8'));
+
+  const insideProject = (p) => {
+    if (!p) return false;
+    const rel = path.relative(projectDir, p);
+    return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+  };
+  const relInProject = (p) =>
+    insideProject(p) ? path.relative(projectDir, p).split(path.sep).join('/') : null;
+
+  const extraFiles = [];          // { src, name } added beyond the archived dirs
+  const usedMediaNames = new Set();
+  const uniqueMediaName = (absPath) => {
+    const base = sanitizeZipName(path.basename(absPath));
+    let name = base, i = 1;
+    while (usedMediaNames.has(name.toLowerCase())) {
+      const ext = path.extname(base);
+      name = `${base.slice(0, base.length - ext.length)}_${i++}${ext}`;
+    }
+    usedMediaNames.add(name.toLowerCase());
+    return `media/${name}`;
+  };
+
+  // Media Pool sources.
+  if (Array.isArray(proj.sources)) {
+    for (const s of proj.sources) {
+      const rel = relInProject(s.filePath);
+      if (rel && isUnderArchivedSubdir(rel)) {
+        s.filePath = rel;                                  // shipped via archive.directory
+      } else if (mode === 'full' && s.filePath && fs.existsSync(s.filePath)) {
+        const zipRel = uniqueMediaName(s.filePath);        // external/root → copy into media/
+        extraFiles.push({ src: s.filePath, name: zipRel });
+        s.filePath = zipRel;
+      }
+      // projectOnly, or a missing file: leave s.filePath untouched (recipient relinks).
+      s.proxyPath = '';                                    // proxies are not shipped
+    }
+  }
+
+  // Region audio that lives inside the project → rewrite to relative (these dirs ship).
+  if (Array.isArray(proj.regions)) {
+    for (const r of proj.regions) {
+      const sw = relInProject(r.swappedAudioPath);
+      if (sw) r.swappedAudioPath = sw;
+      const au = relInProject(r.audioFilePath);
+      if (au) r.audioFilePath = au;
+    }
+  }
+
+  await new Promise((resolve, reject) => {
+    const output = fs.createWriteStream(destPath);
+    const archive = archiver('zip', { zlib: { level: mode === 'full' ? 6 : 9 } });
+    output.on('close', resolve);
+    output.on('error', reject);
+    archive.on('error', reject);
+    archive.on('warning', (w) => log(`[ZipExport] warning: ${w.message}`));
+    archive.on('progress', (data) => {
+      const total = (data.fs && data.fs.totalBytes) || 0;
+      const done = (data.fs && data.fs.processedBytes) || 0;
+      send({ running: true, phase: 'archiving', percent: total > 0 ? Math.round((done / total) * 100) : 0 });
+    });
+    archive.pipe(output);
+
+    archive.append(JSON.stringify(proj, null, 4), { name: 'project.json' });
+    for (const sub of ['swapped', 'exports']) {
+      const dir = path.join(projectDir, sub);
+      if (fs.existsSync(dir)) archive.directory(dir, sub);
+    }
+    for (const f of extraFiles) {
+      if (fs.existsSync(f.src)) archive.file(f.src, { name: f.name });
+    }
+    archive.finalize();
+  });
+
+  send({ running: false, phase: 'done', percent: 100, path: destPath });
+}
+
+ipcMain.handle('xleth:project:exportZip', async (event, opts) => {
+  const senderWin = BrowserWindow.fromWebContents(event.sender) || win;
+  const mode = (opts && opts.mode) === 'projectOnly' ? 'projectOnly' : 'full';
+  try {
+    // Flush the latest timeline state to project.json before bundling.
+    await callWorker('project_save');
+
+    const info = await callWorker('project_getInfo');
+    const projectDir = info && info.projectDir;
+    if (!projectDir || !fs.existsSync(path.join(projectDir, 'project.json'))) {
+      return { ok: false, error: 'No project is open to export.' };
+    }
+
+    const projectName = path.basename(projectDir) || 'project';
+    const { canceled, filePath: destPath } = await dialog.showSaveDialog(senderWin, {
+      title: 'Export Project as ZIP…',
+      defaultPath: `${projectName}.zip`,
+      filters: [{ name: 'ZIP Archive', extensions: ['zip'] }],
+    });
+    if (canceled || !destPath) return { ok: false, cancelled: true };
+
+    log(`[ZipExport] ${mode} → ${destPath}`);
+    await buildProjectZip({ projectDir, destPath, mode, senderWin });
+    log(`[ZipExport] done → ${destPath}`);
+    return { ok: true, path: destPath };
+  } catch (e) {
+    log(`[ZipExport] error: ${e && e.message}`);
+    if (senderWin && !senderWin.isDestroyed())
+      senderWin.webContents.send('zip-export:progress',
+        { running: false, phase: 'error', error: (e && e.message) || 'Export failed' });
+    return { ok: false, error: (e && e.message) || 'Export failed' };
+  }
 });
 
 ipcMain.handle('xleth:project:getSourceThumbnail', async (_, filePath, duration) => {
@@ -3651,7 +3873,7 @@ app.whenReady().then(async () => {
   }
   // ──────────────────────────────────────────────────────────────────────────
 
-  // Pass the main-window native HWND to the sidecar so VST editor-host
+  // Pass the main-window native HWND to the engine so VST editor-host
   // processes can call SetWindowLongPtrW(GWLP_HWNDPARENT) and be treated as
   // owned popups: they minimize with the main window, don't get a separate
   // taskbar button, and stay above the main window in Z-order.
@@ -3671,6 +3893,7 @@ app.whenReady().then(async () => {
     }
   }
 
+  checkForUpdates(win);
 });
 
 app.on('window-all-closed', () => {
@@ -3687,8 +3910,14 @@ app.on('before-quit', (event) => {
   event.preventDefault();
   engineQuitStarted = true;
   (async () => {
-    try { await engineClient.shutdown(); }
-    catch (e) { log('shutdown error: ' + e.message); }
+    try {
+      if (workerReady) {
+        try { await callWorker('shutdown'); } catch (e) { log('shutdown error: ' + e.message); }
+      }
+      try { worker?.kill(); } catch {}
+    } catch (e) {
+      log('shutdown error: ' + e.message);
+    }
     log('Exiting.');
     app.quit();
   })();

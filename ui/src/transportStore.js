@@ -4,7 +4,7 @@
  *
  * Fixed 250ms (4 Hz). Previously dual-rate (33ms stopped / 200ms playing):
  * the 33ms stopped rate is a full IPC round-trip 30×/sec on the JUCE message
- * thread. Under complex projects with the sidecar this caused audio underruns.
+ * thread. Under complex projects this caused audio underruns.
  * PlayheadClock handles smooth 60fps display interpolation during playback;
  * seeking responsiveness is acceptable at 250ms (one poll = one position update).
  */

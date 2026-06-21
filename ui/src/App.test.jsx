@@ -219,16 +219,13 @@ describe('XlethRoot New Project reset', () => {
     expect(settingsMenu.action).toBe('Settings')
   })
 
-  it('configures the top Theme label as a direct action instead of a dropdown', () => {
+  it('does not expose Theme as a top-level titlebar menu', () => {
     const themeMenu = TITLEBAR_MENUS.find(menu => menu.label === 'Theme')
 
-    expect(themeMenu).toBeTruthy()
-    expect(isDirectTitlebarMenu(themeMenu)).toBe(true)
-    expect(themeMenu.items).toEqual([])
-    expect(themeMenu.action).toBe('Theme Editor')
+    expect(themeMenu).toBeUndefined()
   })
 
-  it('configures the Edit dropdown as the complete compact action strip', () => {
+  it('configures the Edit dropdown as editing actions only', () => {
     const editMenu = TITLEBAR_MENUS.find(menu => menu.label === 'Edit')
 
     expect(editMenu).toBeTruthy()
@@ -236,18 +233,12 @@ describe('XlethRoot New Project reset', () => {
     expect(editMenu.items.map(item => item.action)).toEqual([
       'Undo',
       'Redo',
-      'Zoom In',
-      'Zoom Out',
       'Delete',
-      'Reset Zoom',
     ])
     expect(editMenu.items.map(item => item.label)).toEqual([
       'Undo',
       'Redo',
-      'Zoom In',
-      'Zoom Out',
       'Delete',
-      'RESET',
     ])
   })
 
@@ -291,23 +282,6 @@ describe('XlethRoot New Project reset', () => {
     })
 
     expect(setSettingsInitialCategory).toHaveBeenCalledWith('project')
-    expect(setShowSettings).toHaveBeenCalledWith(true)
-    expect(setShowThemeEditor).not.toHaveBeenCalled()
-  })
-
-  it('routes Theme directly to the theme editor settings surface', async () => {
-    const setShowSettings = vi.fn()
-    const setSettingsInitialCategory = vi.fn()
-    const setShowThemeEditor = vi.fn()
-
-    await handleXlethRootMenuAction('Theme Editor', {
-      xl: makeXleth(),
-      setShowSettings,
-      setSettingsInitialCategory,
-      setShowThemeEditor,
-    })
-
-    expect(setSettingsInitialCategory).toHaveBeenCalledWith('theme-editor')
     expect(setShowSettings).toHaveBeenCalledWith(true)
     expect(setShowThemeEditor).not.toHaveBeenCalled()
   })

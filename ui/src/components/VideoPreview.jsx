@@ -563,7 +563,7 @@ export default function VideoPreview() {
   }, [])
 
   return (
-    <div className="video-preview" ref={containerRef}>
+    <div className={`video-preview ${videoFile ? 'has-video' : 'is-empty'}`} ref={containerRef}>
       <div className="video-header">
         <div className="video-header-left">
           {videoFile && <span className="video-filename">{videoFile}</span>}

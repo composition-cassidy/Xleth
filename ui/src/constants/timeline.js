@@ -1,8 +1,8 @@
 // Timeline canvas constants
 
-export const TRACK_HEIGHT = 60
-export const RULER_HEIGHT = 24
-export const HEADER_WIDTH = 180
+export const TRACK_HEIGHT = 50
+export const RULER_HEIGHT = 26
+export const HEADER_WIDTH = 188
 
 // Zoom: pixels per beat
 export const MIN_PPB = 8       // ~4 bars visible at 1920px

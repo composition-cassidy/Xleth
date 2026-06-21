@@ -21,7 +21,7 @@ import { isResizing, subscribeResize } from '../windowing/managers/ResizeManager
 import { isDockRegionResizing, subscribeDockRegionResize } from '../windowing/managers/DockRegionResizeManager'
 import { isDockedPanelResizing, subscribeDockedPanelResize } from '../windowing/managers/DockedPanelResizeManager'
 
-export function createBackdropFxPanelLayoutKey(panels, dockRegionSizes, sampleSelectorDockWidth) {
+export function createBackdropFxPanelLayoutKey(panels, dockRegionSizes) {
   const panelKey = PANEL_IDS
     .map((id) => {
       const panel = panels[id]
@@ -41,7 +41,6 @@ export function createBackdropFxPanelLayoutKey(panels, dockRegionSizes, sampleSe
     Math.round(sizes.right || 0),
     Math.round(sizes.top || 0),
     Math.round(sizes.bottom || 0),
-    Math.round(sampleSelectorDockWidth || 0),
   ].join('|')
 }
 
@@ -152,7 +151,6 @@ export default function BackdropLayer({
   const layoutKey = usePanelRegistry((state) => createBackdropFxPanelLayoutKey(
     state.panels,
     state.dockRegionSizes,
-    state.sampleSelectorDockWidth,
   ))
   const runtime = resolveBackdropFxRuntime(settings, prefersReducedMotion)
   const reactivePreset = isBackdropFxReactivePreset(settings.preset)

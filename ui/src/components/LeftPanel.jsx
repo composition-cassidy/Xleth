@@ -6,9 +6,9 @@ import GridLayoutTab from './GridLayoutTab.jsx'
 import { XlethButton } from './common/XlethButton.jsx'
 
 const TABS = [
-  { id: 'media',   label: 'Project Media',   icon: FolderOpen },
-  { id: 'samples', label: 'Sample Selector',  icon: Music },
-  { id: 'grid',    label: 'Grid Settings',    icon: Grid3x3 },
+  { id: 'media',   label: 'MEDIA',   title: 'Project Media',    icon: FolderOpen },
+  { id: 'samples', label: 'SAMPLES', title: 'Sample Selector',   icon: Music },
+  { id: 'grid',    label: 'GRID',    title: 'Grid Settings',     icon: Grid3x3 },
 ]
 
 export default function LeftPanel({ onOpenPicker, activeSampleId, setActiveSampleId }) {
@@ -22,13 +22,14 @@ export default function LeftPanel({ onOpenPicker, activeSampleId, setActiveSampl
   return (
     <div className="left-panel">
       <div className="left-panel-tabs">
-        {TABS.map(({ id, label, icon: Icon }) => (
+        {TABS.map(({ id, label, title, icon: Icon }) => (
           <XlethButton
             key={id}
             className={`left-panel-tab ${activeTab === id ? 'active' : ''}`}
             active={activeTab === id}
             onClick={() => handleTabSwitch(id)}
-            title={label}
+            title={title}
+            aria-label={title}
           >
             <Icon size={14} />
             <span>{label}</span>

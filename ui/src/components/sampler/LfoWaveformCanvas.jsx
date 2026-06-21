@@ -1,5 +1,6 @@
 import { useRef, useEffect, useCallback, useMemo } from 'react'
 import { tokenValue } from '../../theming/tokenValue.ts'
+import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
 
 // 8-point catmull-rom LFO editor.
 //
@@ -83,6 +84,7 @@ export default function LfoWaveformCanvas({
 }) {
   const canvasRef = useRef(null)
   const dragRef = useRef(null)
+  const themeEpoch = useThemeEpoch()
 
   const Y = useMemo(() => backendToY(waveform), [waveform])
   const amp = (height / 2) - 6
@@ -164,7 +166,7 @@ export default function LfoWaveformCanvas({
       ctx.lineWidth = 1.5
       ctx.stroke()
     }
-  }, [Y, color, width, height, amp])
+  }, [Y, color, width, height, amp, themeEpoch])
 
   useEffect(() => { draw() }, [draw])
 

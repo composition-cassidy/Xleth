@@ -80,6 +80,18 @@ public:
     const juce::AudioBuffer<float>* getProcessedBuffer(
         int clipId, const CacheKey& key) const noexcept;
 
+    // [StreamUnder] diagnostic split. getProcessedBuffer() returns nullptr in
+    // two distinct situations that look identical to MixEngine's clipCacheMiss
+    // counter: (a) no ready entry yet (genuine streaming/render starvation) and
+    // (b) a ready entry exists but its key differs from the request (stale-key
+    // churn — the audio thread re-falls-back to raw PCM every block AND, today,
+    // hits the non-gated MISMATCH fprintf in getProcessedBuffer). Counting the
+    // mismatch case separately lets the 1s health sampler tell starvation apart
+    // from key churn. Lock-free atomic, incremented on the audio thread.
+    uint64_t getKeyMismatchCount() const noexcept {
+        return keyMismatchCount_.load(std::memory_order_relaxed);
+    }
+
     // ── Message thread ───────────────────────────────────────────────────────
     // Evict the entry for clipId (e.g. clip params changed).
     void markDirty(int clipId);
@@ -120,6 +132,10 @@ private:
     // C++20 std::atomic<shared_ptr<T>> — load/store are always safe across
     // message-thread writes and audio-thread reads.
     mutable std::atomic<std::shared_ptr<CacheEntry>> slots_[kMaxClipId];
+
+    // [StreamUnder] key-mismatch tally — see getKeyMismatchCount(). Audio thread
+    // increments (relaxed); 1s sampler reads. Never gates behaviour.
+    mutable std::atomic<uint64_t> keyMismatchCount_{0};
 
     // Owning map: keeps entries alive until explicitly evicted.
     // Held only by message/worker threads — NEVER audio thread.

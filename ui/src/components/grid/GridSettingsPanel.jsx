@@ -3,7 +3,6 @@ import { Grid3x3, Eraser, X, Plus, Link2 } from 'lucide-react'
 import { timelineEvents } from '../../timelineEvents.js'
 import useGridEditStore from '../../stores/useGridEditStore.js'
 import { XlethButton, XlethIconButton } from '../common/XlethButton.jsx'
-import XlethKnob from '../common/XlethKnob.jsx'
 import XlethPanelHeader from '../common/XlethPanelHeader.jsx'
 import XlethSelect from '../common/XlethSelect.jsx'
 
@@ -342,6 +341,8 @@ export default function GridSettingsPanel({ layout, setLayout, tracks }) {
 
           {/* Left: controls */}
           <div className="gsp-controls">
+            <div className="gsp-layout-row">
+              <div className="gsp-layout-controls">
 
             {/* Columns × Rows */}
             <div className="gsp-dims-row">
@@ -374,18 +375,41 @@ export default function GridSettingsPanel({ layout, setLayout, tracks }) {
               </XlethIconButton>
             </div>
 
-            {/* GAP knob */}
+            {/* GAP */}
             <div className="gsp-gap-wrap">
-              <XlethKnob
-                className="gsp-gap-knob"
-                value={layout.gapScale ?? 0}
+              <div className="gsp-gap-header">
+                <span className="gsp-gap-label">Gap</span>
+                <span className="gsp-gap-value">
+                  {Math.round((layout.gapScale ?? 0) * 100)} px
+                </span>
+              </div>
+              <input
+                className="gsp-gap-slider"
+                type="range"
                 min={0}
                 max={GAP_MAX}
-                label="GAP"
-                onChange={(v) => setLayout(l => ({ ...l, gapScale: v }))}
-                onCommit={handleGapScaleChange}
+                step={0.01}
+                value={layout.gapScale ?? 0}
+                onChange={(e) => setLayout(l => ({ ...l, gapScale: Number(e.target.value) }))}
+                onPointerUp={(e) => handleGapScaleChange(Number(e.currentTarget.value))}
+                onKeyUp={(e) => handleGapScaleChange(Number(e.currentTarget.value))}
                 aria-label="Grid gap"
               />
+            </div>
+              </div>
+
+              {/* Right: grid preview */}
+              <div className="gsp-preview-wrap">
+                <div className="gsp-preview-frame" style={{ aspectRatio: `${canvasW} / ${canvasH}` }}>
+                  <GridPreview
+                    columns={layout.columns}
+                    rows={layout.rows}
+                    gapScale={layout.gapScale ?? 0}
+                    canvasW={canvasW}
+                    canvasH={canvasH}
+                  />
+                </div>
+              </div>
             </div>
 
             {/* Project canvas: aspect ratio, resolution, FPS */}
@@ -454,20 +478,6 @@ export default function GridSettingsPanel({ layout, setLayout, tracks }) {
               </div>
             </div>
           </div>
-
-          {/* Right: grid preview */}
-          <div className="gsp-preview-wrap">
-            <div className="gsp-preview-frame" style={{ aspectRatio: `${canvasW} / ${canvasH}` }}>
-              <GridPreview
-                columns={layout.columns}
-                rows={layout.rows}
-                gapScale={layout.gapScale ?? 0}
-                canvasW={canvasW}
-                canvasH={canvasH}
-              />
-            </div>
-          </div>
-
         </div>
       </div>
 
@@ -475,13 +485,6 @@ export default function GridSettingsPanel({ layout, setLayout, tracks }) {
       <div className="grid-tab-section">
         <XlethPanelHeader
           title="Fullscreen Layers"
-          meta={fsLayers.length > 0 ? (
-            <>
-              {fsLayers.filter(l => l.placement === 'behind').length} Behind
-              {' · '}
-              {fsLayers.filter(l => l.placement === 'front').length} Front
-            </>
-          ) : null}
         />
         {fsLayers.length === 0 && (
           <div className="grid-tab-empty">No fullscreen layers</div>

@@ -2451,6 +2451,9 @@ void MixEngine::destroyAllEffectChains()
 
 int MixEngine::addEffect(int trackId, const std::string& pluginId, int position)
 {
+    // TWO-STRIKE: chain->addEffect() instantiates the VST (DLL load + prepareToPlay).
+    // Minimising hold time requires a two-phase EffectChainManager API:
+    // createPluginOffline(pluginId) pre-lock, then insertPreparedPlugin(proc, pos) inside.
     std::lock_guard<std::mutex> lock(chainsMutex_);
     // Auto-init chain on first add
     auto& chain = effectChains_[trackId];
@@ -2506,10 +2509,14 @@ bool MixEngine::setEffectBypass(int trackId, int nodeId, bool bypassed)
 
 std::string MixEngine::getEffectChainState(int trackId) const
 {
-    std::lock_guard<std::mutex> lock(chainsMutex_);
-    auto it = effectChains_.find(trackId);
-    if (it == effectChains_.end() || !it->second) return "[]";
-    return it->second->getChainState().dump();
+    nlohmann::json state;
+    {
+        std::lock_guard<std::mutex> lock(chainsMutex_);
+        auto it = effectChains_.find(trackId);
+        if (it == effectChains_.end() || !it->second) return "[]";
+        state = it->second->getChainState();
+    }
+    return state.dump();
 }
 
 // ── Master effect chain ─────────────────────────────────────────────────────
@@ -2532,6 +2539,8 @@ void MixEngine::destroyMasterEffectChain()
 
 int MixEngine::addMasterEffect(const std::string& pluginId, int position)
 {
+    // TWO-STRIKE: same as addEffect — plugin instantiation inside lock.
+    // Needs createPluginOffline / insertPreparedPlugin split in EffectChainManager.
     std::lock_guard<std::mutex> lock(chainsMutex_);
     if (!masterEffectChain_)
     {
@@ -2580,9 +2589,13 @@ bool MixEngine::setMasterEffectBypass(int nodeId, bool bypassed)
 
 std::string MixEngine::getMasterEffectChainState() const
 {
-    std::lock_guard<std::mutex> lock(chainsMutex_);
-    if (!masterEffectChain_) return "[]";
-    return masterEffectChain_->getChainState().dump();
+    nlohmann::json state;
+    {
+        std::lock_guard<std::mutex> lock(chainsMutex_);
+        if (!masterEffectChain_) return "[]";
+        state = masterEffectChain_->getChainState();
+    }
+    return state.dump();
 }
 
 // ── Stable effect-instance lookup ─────────────────────────────────────────────
@@ -2626,6 +2639,10 @@ bool MixEngine::isEffectInstanceSidechainCapable(int trackId,
 
 nlohmann::json MixEngine::getEffectChainJSON(int trackId) const
 {
+    // TWO-STRIKE: graphToJSON() serialises per-plugin APVTS state (getStateInformation)
+    // which can take 50-200ms per VST under load. Splitting requires EffectChainManager
+    // to separate topology snapshot (fast, lock-needed) from state serialisation
+    // (slow, could run lock-free on a stable snapshot). Flagged for a follow-up pass.
     std::lock_guard<std::mutex> lock(chainsMutex_);
     auto it = effectChains_.find(trackId);
     if (it == effectChains_.end() || !it->second) return nlohmann::json::object();
@@ -2634,6 +2651,7 @@ nlohmann::json MixEngine::getEffectChainJSON(int trackId) const
 
 nlohmann::json MixEngine::getMasterEffectChainJSON() const
 {
+    // TWO-STRIKE: same as getEffectChainJSON — APVTS state serialisation under lock.
     std::lock_guard<std::mutex> lock(chainsMutex_);
     if (!masterEffectChain_) return nlohmann::json::object();
     return masterEffectChain_->graphToJSON();
@@ -2641,6 +2659,9 @@ nlohmann::json MixEngine::getMasterEffectChainJSON() const
 
 bool MixEngine::loadEffectChainFromJSON(int trackId, const nlohmann::json& j)
 {
+    // TWO-STRIKE: graphFromJSON() instantiates every plugin in the chain (bulk DLL
+    // load + prepareToPlay) inside the lock. A two-phase split — offline construction
+    // then locked graph splice — requires EffectChainManager API changes.
     std::lock_guard<std::mutex> lock(chainsMutex_);
     auto& chain = effectChains_[trackId];
     if (!chain) {
@@ -2656,6 +2677,7 @@ bool MixEngine::loadEffectChainFromJSON(int trackId, const nlohmann::json& j)
 
 bool MixEngine::loadMasterEffectChainFromJSON(const nlohmann::json& j)
 {
+    // TWO-STRIKE: same as loadEffectChainFromJSON — bulk plugin instantiation inside lock.
     std::lock_guard<std::mutex> lock(chainsMutex_);
     if (!masterEffectChain_) {
         masterEffectChain_ = std::make_unique<EffectChainManager>();
@@ -2673,6 +2695,7 @@ bool MixEngine::loadMasterEffectChainFromJSON(const nlohmann::json& j)
 std::string MixEngine::getMissingPluginsJSON() const
 {
     nlohmann::json arr = nlohmann::json::array();
+    {
     std::lock_guard<std::mutex> lock(chainsMutex_);
 
     auto appendMissing = [&](int trackId, const EffectChainManager* chain)
@@ -2714,12 +2737,14 @@ std::string MixEngine::getMissingPluginsJSON() const
     for (const auto& [tid, chain] : effectChains_)
         appendMissing(tid, chain.get());
     appendMissing(-1, masterEffectChain_.get());
-
+    } // release chainsMutex_
     return arr.dump();
 }
 
 bool MixEngine::tryResolvePlugin(int trackId, int nodeId)
 {
+    // TWO-STRIKE: tryResolvePlugin instantiates the real VST (replaces placeholder)
+    // inside the lock. Same two-phase split needed as addEffect.
     std::lock_guard<std::mutex> lock(chainsMutex_);
     if (!pluginRegistry_) return false;
 
@@ -2761,6 +2786,8 @@ void MixEngine::removeAllMissingPlugins()
 
 bool MixEngine::resetCrashedPlugin(int trackId, int nodeId)
 {
+    // TWO-STRIKE: resetCrashedPlugin re-initialises a crashed VST (prepareToPlay +
+    // state restore) inside the lock. Plugin re-init time is unbounded.
     std::lock_guard<std::mutex> lock(chainsMutex_);
     if (trackId == -1)
     {
@@ -2822,10 +2849,14 @@ void MixEngine::setNodePosition(int trackId, int nodeId, float x, float y)
 
 std::string MixEngine::getGraphTopology(int trackId) const
 {
-    std::lock_guard<std::mutex> lock(chainsMutex_);
-    auto it = effectChains_.find(trackId);
-    if (it == effectChains_.end() || !it->second) return "{}";
-    return it->second->getGraphTopology().dump();
+    nlohmann::json topology;
+    {
+        std::lock_guard<std::mutex> lock(chainsMutex_);
+        auto it = effectChains_.find(trackId);
+        if (it == effectChains_.end() || !it->second) return "{}";
+        topology = it->second->getGraphTopology();
+    }
+    return topology.dump();
 }
 
 bool MixEngine::isGraphLinear(int trackId) const
@@ -2846,6 +2877,8 @@ int MixEngine::addGraphEffectNode(int trackId, const std::string& effectInstance
 {
     if (trackId < 0) return -1;  // master track is chain-only
 
+    // TWO-STRIKE: addGraphNode instantiates the VST inside the lock.
+    // Same two-phase split needed as addEffect.
     std::lock_guard<std::mutex> lock(chainsMutex_);
     auto& chain = effectChains_[trackId];
     if (!chain)
@@ -2887,6 +2920,8 @@ nlohmann::json MixEngine::hydrateGraphEffectNodes(int trackId,
         return rejected;
     }
 
+    // TWO-STRIKE: hydrateGraphNodes instantiates multiple VSTs inside the lock.
+    // Needs a two-phase split in EffectChainManager (offline construct, locked splice).
     std::lock_guard<std::mutex> lock(chainsMutex_);
     auto& chain = effectChains_[trackId];
     if (!chain)
@@ -2957,6 +2992,8 @@ nlohmann::json MixEngine::syncGraphTopology(int trackId, const nlohmann::json& t
         };
     }
 
+    // TWO-STRIKE: syncGraphTopology rebuilds the full routing graph (may create and
+    // connect nodes) inside the lock. Splitting requires EffectChainManager changes.
     std::lock_guard<std::mutex> lock(chainsMutex_);
     auto& chain = effectChains_[trackId];
     if (!chain)
@@ -3042,9 +3079,13 @@ void MixEngine::setMasterNodePosition(int nodeId, float x, float y)
 
 std::string MixEngine::getMasterGraphTopology() const
 {
-    std::lock_guard<std::mutex> lock(chainsMutex_);
-    if (!masterEffectChain_) return "{}";
-    return masterEffectChain_->getGraphTopology().dump();
+    nlohmann::json topology;
+    {
+        std::lock_guard<std::mutex> lock(chainsMutex_);
+        if (!masterEffectChain_) return "{}";
+        topology = masterEffectChain_->getGraphTopology();
+    }
+    return topology.dump();
 }
 
 bool MixEngine::isMasterGraphLinear() const
@@ -3064,13 +3105,15 @@ std::string MixEngine::getGraphEffectParameters(int trackId, const std::string& 
         return nlohmann::json({ {"ok", false}, {"reason", "master_track"},
                                 {"effectInstanceId", effectInstanceId} }).dump();
 
-    std::lock_guard<std::mutex> lock(chainsMutex_);
-    auto it = effectChains_.find(trackId);
-    if (it == effectChains_.end() || !it->second)
-        return nlohmann::json({ {"ok", false}, {"reason", "track_not_found"},
-                                {"trackId", trackId}, {"effectInstanceId", effectInstanceId} }).dump();
-
-    nlohmann::json out = it->second->getGraphEffectParameters(effectInstanceId);
+    nlohmann::json out;
+    {
+        std::lock_guard<std::mutex> lock(chainsMutex_);
+        auto it = effectChains_.find(trackId);
+        if (it == effectChains_.end() || !it->second)
+            return nlohmann::json({ {"ok", false}, {"reason", "track_not_found"},
+                                    {"trackId", trackId}, {"effectInstanceId", effectInstanceId} }).dump();
+        out = it->second->getGraphEffectParameters(effectInstanceId);
+    }
     out["trackId"] = trackId;
     return out.dump();
 }
@@ -3082,13 +3125,15 @@ std::string MixEngine::getGraphEffectParameterValue(int trackId, const std::stri
         return nlohmann::json({ {"ok", false}, {"reason", "master_track"},
                                 {"effectInstanceId", effectInstanceId} }).dump();
 
-    std::lock_guard<std::mutex> lock(chainsMutex_);
-    auto it = effectChains_.find(trackId);
-    if (it == effectChains_.end() || !it->second)
-        return nlohmann::json({ {"ok", false}, {"reason", "track_not_found"},
-                                {"trackId", trackId}, {"effectInstanceId", effectInstanceId} }).dump();
-
-    nlohmann::json out = it->second->getGraphEffectParameterValue(effectInstanceId, parameterId);
+    nlohmann::json out;
+    {
+        std::lock_guard<std::mutex> lock(chainsMutex_);
+        auto it = effectChains_.find(trackId);
+        if (it == effectChains_.end() || !it->second)
+            return nlohmann::json({ {"ok", false}, {"reason", "track_not_found"},
+                                    {"trackId", trackId}, {"effectInstanceId", effectInstanceId} }).dump();
+        out = it->second->getGraphEffectParameterValue(effectInstanceId, parameterId);
+    }
     out["trackId"] = trackId;
     return out.dump();
 }
@@ -3101,14 +3146,16 @@ std::string MixEngine::setGraphEffectParameterNormalized(int trackId, const std:
         return nlohmann::json({ {"ok", false}, {"reason", "master_track"},
                                 {"effectInstanceId", effectInstanceId} }).dump();
 
-    std::lock_guard<std::mutex> lock(chainsMutex_);
-    auto it = effectChains_.find(trackId);
-    if (it == effectChains_.end() || !it->second)
-        return nlohmann::json({ {"ok", false}, {"reason", "track_not_found"},
-                                {"trackId", trackId}, {"effectInstanceId", effectInstanceId} }).dump();
-
-    nlohmann::json out = it->second->setGraphEffectParameterNormalized(
-        effectInstanceId, parameterId, static_cast<float>(normalizedValue));
+    nlohmann::json out;
+    {
+        std::lock_guard<std::mutex> lock(chainsMutex_);
+        auto it = effectChains_.find(trackId);
+        if (it == effectChains_.end() || !it->second)
+            return nlohmann::json({ {"ok", false}, {"reason", "track_not_found"},
+                                    {"trackId", trackId}, {"effectInstanceId", effectInstanceId} }).dump();
+        out = it->second->setGraphEffectParameterNormalized(
+            effectInstanceId, parameterId, static_cast<float>(normalizedValue));
+    }
     out["trackId"] = trackId;
     if (out.value("ok", false))
         pendingLatencyCompensationReset_.store(true, std::memory_order_release);
@@ -3140,6 +3187,9 @@ bool MixEngine::setEffectParameter(int trackId, int nodeId, const std::string& p
 
 bool MixEngine::setEffectProgram(int trackId, int nodeId, int programIndex)
 {
+    // TWO-STRIKE: setCurrentProgram is plugin-defined and may trigger full state
+    // restoration (unbounded time). The entire call must be serialised under the lock
+    // so the audio thread never sees a half-restored state; no safe split exists.
     std::lock_guard<std::mutex> lock(chainsMutex_);
     EffectChainManager* chain = nullptr;
     if (trackId == -1)
@@ -3167,6 +3217,9 @@ bool MixEngine::setEffectStateInformation(int trackId,
                                           const void* data,
                                           int sizeInBytes)
 {
+    // TWO-STRIKE: setStateInformation is plugin-defined and can be slow (XML parse,
+    // sample-bank restore, etc.). The swap must be atomic from the audio thread's
+    // perspective, so the entire restore must stay under the lock; no safe split.
     std::lock_guard<std::mutex> lock(chainsMutex_);
     EffectChainManager* chain = nullptr;
     if (trackId == -1)
@@ -4293,6 +4346,12 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
 
             readBuf  = clipRenderCache_.getProcessedBuffer(ac.clip->id, key);
             cacheHit = (readBuf != nullptr);
+
+            // [Underrun] Clip wanted a processed buffer but the render cache had
+            // none ready → this clip block is silenced / falls back. Lock-free
+            // audio-thread counter, read by the 1s health sampler.
+            if (!cacheHit)
+                clipCacheMissCount_.fetch_add(1, std::memory_order_relaxed);
         }
 
 #ifdef XLETH_DEBUG

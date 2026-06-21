@@ -12,15 +12,24 @@ import { createPortal } from 'react-dom'
 export default function ContextMenu({ x, y, items, onClose }) {
   const menuRef = useRef(null)
 
-  // Clamp to viewport once mounted
+  // Clamp to viewport — re-runs on mount and whenever the menu resizes
+  // (e.g. when user enables Scratch/Vibrato and new controls appear)
   useEffect(() => {
     const el = menuRef.current
     if (!el) return
-    const rect = el.getBoundingClientRect()
-    const vw = window.innerWidth
-    const vh = window.innerHeight
-    if (rect.right > vw)   el.style.left  = `${vw - rect.width - 4}px`
-    if (rect.bottom > vh)  el.style.top   = `${vh - rect.height - 4}px`
+
+    const clamp = () => {
+      const rect = el.getBoundingClientRect()
+      const vw = window.innerWidth
+      const vh = window.innerHeight
+      if (rect.right > vw)   el.style.left = `${vw - rect.width - 4}px`
+      if (rect.bottom > vh)  el.style.top  = `${vh - rect.height - 4}px`
+    }
+
+    clamp()
+    const ro = new ResizeObserver(clamp)
+    ro.observe(el)
+    return () => ro.disconnect()
   }, [x, y])
 
   // Close on outside click

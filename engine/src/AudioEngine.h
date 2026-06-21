@@ -77,6 +77,14 @@ public:
     int    getBufferSize()  const { return bufferSize_; }
     double getLatencyMs()   const;
 
+    // ── Audio-health instrumentation ─────────────────────────────────────────
+    // [XRun] Current device hardware x-run (under/overflow) count, or -1 when the
+    // active driver does not report it. CPU usage is the JUCE device-manager load
+    // estimate in [0,1]. Both are cheap, lock-free-ish reads safe to poll from a
+    // background sampler thread during steady playback.
+    int    getDeviceXRunCount() const;
+    double getDeviceCpuUsage()  const;
+
     std::vector<std::string> getOutputDevices()       const;
     std::string              getCurrentOutputDevice()  const;
     std::string              setOutputDevice(const std::string& deviceName);

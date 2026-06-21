@@ -5,7 +5,6 @@ import Knob from '../sampler/Knob.jsx'
 import VolumeFader, { FaderReadout } from './VolumeFader.jsx'
 import PeakMeter from './PeakMeter.jsx'
 import EffectChainPanel from './EffectChainPanel.jsx'
-import { useTokenValue } from '../../theming/tokenValue.ts'
 
 export default function MixerStrip({ trackId }) {
   const track = useMixerStore(s => s.tracks[trackId])
@@ -24,7 +23,6 @@ export default function MixerStrip({ trackId }) {
   const selectedChainKey = useMixerStore(s => s.selectedChainKey)
   const setSelectedChainKey = useMixerStore(s => s.setSelectedChainKey)
   const setFocusedTrackId = useTimelineFocusStore(s => s.setFocusedTrackId)
-  const knobAccent = useTokenValue('--theme-accent')
 
   const handleVolume = useCallback((gain) => setVolume(trackId, gain), [trackId, setVolume])
   const handlePanLive = useCallback((v) => setPan(trackId, v), [trackId, setPan])
@@ -116,13 +114,12 @@ export default function MixerStrip({ trackId }) {
             label="PAN"
             onLiveChange={handlePanLive}
             onCommit={handlePanCommit}
-            size={38}
+            size={28}
             dragRange={120}
             valueReadout="hidden"
             tickStyle="none"
             glyph="rotary-arrow"
-            color={knobAccent}
-            accentGlow
+            color="#7d7d7d"
           />
           <Knob
             value={track.spread}
@@ -132,13 +129,12 @@ export default function MixerStrip({ trackId }) {
             label="WIDTH"
             onLiveChange={handleSpreadLive}
             onCommit={handleSpreadCommit}
-            size={38}
+            size={28}
             dragRange={120}
             valueReadout="hidden"
             tickStyle="none"
             glyph="rotary-arrow"
-            color={knobAccent}
-            accentGlow
+            color="#7d7d7d"
           />
         </div>
       </div>

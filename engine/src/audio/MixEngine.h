@@ -221,6 +221,34 @@ public:
     // ── Peak meters (thread-safe reads) ──────────────────────────────────────
     float getMasterPeakL() const { return masterPeakL_.load(std::memory_order_relaxed); }
     float getMasterPeakR() const { return masterPeakR_.load(std::memory_order_relaxed); }
+
+    // ── Audio-health instrumentation (lock-free reads; never touch chainsMutex_) ──
+    // [Underrun] Counts every processBlock where a clip needed a processed
+    // (stretch/pitch/reverse/formant) buffer but ClipRenderCache had none ready —
+    // the audio thread then silences/falls back for that clip block. Always
+    // counted, independent of realtime diagnostics.
+    uint64_t getClipCacheMissCount() const noexcept {
+        return clipCacheMissCount_.load(std::memory_order_relaxed);
+    }
+    // [StreamUnder] Subset of getClipCacheMissCount() caused by a ready cache
+    // entry whose key differs from the request (stale-key churn), as opposed to
+    // no-entry-yet starvation. notReady/s = clipCacheMiss/s − keyMismatch/s.
+    uint64_t getClipKeyMismatchCount() const noexcept {
+        return clipRenderCache_.getKeyMismatchCount();
+    }
+    // The three below mirror realtimeDiagnostics_ atomics and only advance while
+    // realtime diagnostics are enabled. chainLockMiss = audio thread failed the
+    // chainsMutex_ try_lock and skipped effect-chain processing for that block.
+    uint64_t getChainLockMissCount() const noexcept {
+        return realtimeDiagnostics_.chainLockMissCount.load(std::memory_order_relaxed);
+    }
+    uint64_t getOverrunBlockCount() const noexcept {
+        return realtimeDiagnostics_.overrunBlockCount.load(std::memory_order_relaxed);
+    }
+    uint64_t getAudioCallbackOverrunCount() const noexcept {
+        return realtimeDiagnostics_.audioCallbackOverrunCount.load(std::memory_order_relaxed);
+    }
+
     float getTrackPeakL(int trackId) const;
     float getTrackPeakR(int trackId) const;
 
@@ -799,6 +827,11 @@ private:
     };
 
     RealtimeDiagnosticsState realtimeDiagnostics_;
+
+    // [Underrun] Audio-health: clip-render-cache misses observed on the audio
+    // thread (see getClipCacheMissCount). Incremented in processBlock; read from
+    // the 1s health sampler. Standalone (not gated on realtime diagnostics).
+    std::atomic<uint64_t> clipCacheMissCount_{0};
 
     static void realtimePluginTimingCallback(void* userData, const char* pluginId,
                                              int trackId, int nodeId, uint64_t elapsedNs);

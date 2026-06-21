@@ -40,4 +40,16 @@ describe('Mixer layout CSS', () => {
     expect(embeddedBrowserRule).toMatch(/width:\s*100%\s*;/)
     expect(embeddedListRule).toMatch(/max-height:\s*360px\s*;/)
   })
+
+  it('switches short mixer panels to a side-by-side compact control layout', () => {
+    const css = readAppCss()
+    const mixerPanelRule = cssRule(css, '.mixer-panel')
+    const compactBlock = css.match(/@container mixer-panel \(max-height:\s*360px\)\s*{([\s\S]*?)\n}/)?.[1] ?? ''
+
+    expect(mixerPanelRule).toMatch(/container-name:\s*mixer-panel\s*;/)
+    expect(mixerPanelRule).toMatch(/container-type:\s*size\s*;/)
+    expect(compactBlock).toMatch(/\.mixer-strip-bottom\s*{[\s\S]*?flex-direction:\s*row\s*;/)
+    expect(compactBlock).toMatch(/\.mixer-strip-fader-area\s*{[\s\S]*?min-height:\s*56px\s*;/)
+    expect(compactBlock).toMatch(/\.mixer-strip-knobs\s*{[\s\S]*?width:\s*36px\s*;/)
+  })
 })

@@ -20,7 +20,6 @@ export function isTitlebarControlTarget(target: EventTarget | null): boolean {
 
 export function Titlebar({ id, focused }: TitlebarProps) {
   const entry = PANEL_CATALOG[id];
-  const Icon = entry.icon;
   const reactiveMode = usePanelRegistry((state) => state.panels[id].mode);
   const reactiveFloatingX = usePanelRegistry((state) => state.panels[id].floating.x);
   const reactiveFloatingY = usePanelRegistry((state) => state.panels[id].floating.y);
@@ -77,8 +76,6 @@ export function Titlebar({ id, focused }: TitlebarProps) {
         data-focused={focused}
         aria-hidden="true"
       />
-      <Icon className="xleth-windowing-panel-icon" aria-hidden="true" strokeWidth={2} />
-      <span className="xleth-windowing-panel-name">{entry.title}</span>
       <span className="xleth-windowing-drag-zone" aria-hidden="true" />
       <div className="xleth-windowing-controls" aria-label={`${entry.title} panel controls`}>
         <XlethIconButton

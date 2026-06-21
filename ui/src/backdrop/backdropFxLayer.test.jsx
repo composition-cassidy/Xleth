@@ -626,6 +626,14 @@ describe('BackdropLayer', () => {
     expect(isEmptyBackdropClickTarget(empty, workArea)).toBe(true)
     expect(isEmptyBackdropClickTarget(child, workArea)).toBe(false)
   })
+
+  it('does not paint the solid preview placeholder over image or video backdrops', () => {
+    const source = readFileSync(path.resolve(process.cwd(), 'src/styles/app.css'), 'utf8')
+
+    expect(source).toMatch(/\.xleth-backdrop-off \.xleth-floating-work-area::before/)
+    expect(source).toMatch(/\.xleth-backdrop-off \.xleth-floating-work-area::after/)
+    expect(source).not.toMatch(/(?:^|\n)\.xleth-floating-work-area::(?:before|after)\s*\{/)
+  })
 })
 
 describe('BackdropFxRenderer fallback', () => {

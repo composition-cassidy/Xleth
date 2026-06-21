@@ -1,5 +1,6 @@
 import { useRef, useEffect, useCallback, useState } from 'react'
 import { tokenValue } from '../../theming/tokenValue.ts'
+import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
 
 const HANDLE_R = 5
 const HANDLE_HIT = 10
@@ -33,6 +34,7 @@ export default function EnvelopeEditor({
   const canvasRef = useRef(null)
   const dragRef = useRef(null)
   const [hoverHandle, setHoverHandle] = useState(null)
+  const themeEpoch = useThemeEpoch()
 
   const tMax = Math.max(500, delayMs + attackMs + holdMs + decayMs + SUSTAIN_VIS_MS + releaseMs)
 
@@ -156,7 +158,7 @@ export default function EnvelopeEditor({
     drawHandle(P6, hoverHandle === 'R')
   }, [delayMs, attackMs, holdMs, decayMs, sustain, releaseMs,
       attackTension, decayTension, releaseTension,
-      width, height, plotW, plotH, getPoints, ampToY, hoverHandle, color])
+      width, height, plotW, plotH, getPoints, ampToY, hoverHandle, color, themeEpoch])
 
   const getLocalXY = useCallback((e) => {
     const rect = canvasRef.current?.getBoundingClientRect()

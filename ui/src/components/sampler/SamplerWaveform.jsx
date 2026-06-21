@@ -2,6 +2,7 @@ import { useRef, useEffect, useState, useCallback } from 'react'
 import { timelineEvents } from '../../timelineEvents.js'
 import { drawEnvelope, downsamplePeaks3 } from '../../utils/waveformRenderer.js'
 import { tokenValue } from '../../theming/tokenValue.ts'
+import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
 import { uiCanvasFont } from '../../styles/typography.js'
 
 const HANDLE_HIT = 8
@@ -14,11 +15,33 @@ export default function SamplerWaveform({
   fadeInMs = 0, fadeOutMs = 0, sampleRate = 48000,
   crossfadeSamples = 0,
   onCommitSmpPoints,
-  width = 520, height = 100,
+  width: requestedWidth = 520, height = 100,
+  responsive = false,
 }) {
   const canvasRef = useRef(null)
+  const [responsiveWidth, setResponsiveWidth] = useState(0)
   const [peaks, setPeaks] = useState(null)
   const [loadError, setLoadError] = useState(false)
+  const themeEpoch = useThemeEpoch()
+  const width = responsive && responsiveWidth > 0 ? responsiveWidth : requestedWidth
+
+  useEffect(() => {
+    if (!responsive || typeof ResizeObserver === 'undefined') return undefined
+    const container = canvasRef.current?.parentElement
+    if (!container) return undefined
+
+    const updateWidth = (nextWidth) => {
+      const rounded = Math.max(1, Math.round(nextWidth))
+      setResponsiveWidth((current) => current === rounded ? current : rounded)
+    }
+    updateWidth(container.clientWidth)
+
+    const observer = new ResizeObserver((entries) => {
+      if (entries[0]) updateWidth(entries[0].contentRect.width)
+    })
+    observer.observe(container)
+    return () => observer.disconnect()
+  }, [responsive])
 
   // Loop marker drag state
   const loopDragRef = useRef(null)
@@ -265,7 +288,7 @@ export default function SamplerWaveform({
       smpStart, smpLength, declickSamples, smpDrag,
       fadeInMs, fadeOutMs, sampleRate,
       crossfadeSamples,
-      numSamples])
+      numSamples, themeEpoch])
 
   // ── Shared helpers ──────────────────────────────────────────────────────────
   const getLocalX = useCallback((e) => {

@@ -88,7 +88,7 @@ export default function MixerPanel() {
         }
         // 125 ms ≈ 8 Hz.  Previously 50 ms (20 Hz): getAllPeaks acquires a lock
         // shared with the audio thread.  Under complex projects (9-10 tracks,
-        // effects, sidecar JSON pipe) 20 Hz causes message-thread back-pressure
+        // effects) 20 Hz causes message-thread back-pressure
         // and audio underruns.  8 Hz is imperceptible on a peak meter.
         await new Promise(r => setTimeout(r, 125))
       }

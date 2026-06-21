@@ -96,7 +96,7 @@
       "focused": false,
       "zIndex": 0,
       "mode": "floating",
-      "floating": { "x": 360, "y": 140, "width": 380, "height": 320 },
+      "floating": { "x": 360, "y": 140, "width": 480, "height": 314 },
       "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 220 },
       "preMaximizeState": null
     },
@@ -106,7 +106,7 @@
       "focused": false,
       "zIndex": 0,
       "mode": "floating",
-      "floating": { "x": 380, "y": 160, "width": 540, "height": 440 },
+      "floating": { "x": 140, "y": 160, "width": 1000, "height": 352 },
       "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 280 },
       "preMaximizeState": null
     }

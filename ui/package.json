@@ -1,6 +1,6 @@
 {
   "name": "xleth-ui",
-  "version": "1.0.0-beta",
+  "version": "1.1.0-beta",
   "private": true,
   "main": "main.js",
   "scripts": {
@@ -22,6 +22,7 @@
     "@fontsource/inter": "^5.2.8",
     "@fontsource/noto-sans": "^5.2.10",
     "@xyflow/react": "^12.10.2",
+    "archiver": "^7.0.1",
     "lucide-react": "^1.7.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

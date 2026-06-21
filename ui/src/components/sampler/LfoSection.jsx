@@ -90,7 +90,7 @@ export default function LfoSection({ settings, setField, setFields, commit }) {
   const lblStyle = { fontSize: 9, color: muted, textTransform: 'uppercase', letterSpacing: '0.06em' }
 
   return (
-    <div style={{
+    <div className="sampler-lfo-section" style={{
       background: surface,
       border: `1px solid ${borderStrong}`,
       borderRadius: 4,
@@ -100,9 +100,9 @@ export default function LfoSection({ settings, setField, setFields, commit }) {
       gap: 8,
     }}>
       {/* LFO sub-tabs */}
-      <div style={{ display: 'flex', borderBottom: `1px solid ${border}` }}>
+      <div className="sampler-lfo-tabs" style={{ display: 'flex', borderBottom: `1px solid ${border}` }}>
         {['vol', 'pan', 'pitch'].map((tab) => (
-          <div key={tab} onClick={() => setLfoTab(tab)} style={{
+          <button type="button" key={tab} onClick={() => setLfoTab(tab)} className={`sampler-lfo-tab${lfoTab === tab ? ' is-active' : ''}`} style={{
             padding: '4px 10px',
             fontSize: 10,
             fontWeight: 600,
@@ -113,12 +113,12 @@ export default function LfoSection({ settings, setField, setFields, commit }) {
             marginBottom: -1,
             cursor: 'pointer',
             userSelect: 'none',
-          }}>{TAB_LABELS[tab]}</div>
+          }}>{TAB_LABELS[tab]}</button>
         ))}
       </div>
 
       {/* Enable toggle */}
-      <label style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', userSelect: 'none' }}>
+      <label className="sampler-lfo-enable" style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', userSelect: 'none' }}>
         <input
           type="checkbox"
           checked={enabled}
@@ -131,16 +131,16 @@ export default function LfoSection({ settings, setField, setFields, commit }) {
         <span style={lblStyle}>Enable</span>
       </label>
 
-      <div style={enabled ? undefined : { opacity: 0.4, pointerEvents: 'none' }}>
-        <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div className={`sampler-lfo-body${enabled ? '' : ' is-disabled'}`} style={enabled ? undefined : { opacity: 0.4, pointerEvents: 'none' }}>
+        <div className="sampler-lfo-layout" style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
+          <div className="sampler-lfo-graph-column" style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
             {/* Preset row */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <div className="sampler-lfo-presets" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
               <span style={{ ...lblStyle, marginRight: 2 }}>Preset</span>
               {Object.keys(PRESET_ICONS).map((id) => {
                 const active = detectedPreset === id
                 return (
-                  <div key={id} onClick={() => applyPreset(id)} title={PRESET_TITLES[id]} style={{
+                  <button type="button" key={id} onClick={() => applyPreset(id)} title={PRESET_TITLES[id]} className={`sampler-lfo-preset${active ? ' is-active' : ''}`} style={{
                     width: 28, height: 24,
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                     background: active ? accentToken : cardBg,
@@ -149,7 +149,7 @@ export default function LfoSection({ settings, setField, setFields, commit }) {
                     borderRadius: 3, cursor: 'pointer', userSelect: 'none',
                   }}>
                     <svg width={14} height={14} viewBox="0 0 14 14">{PRESET_ICONS[id]}</svg>
-                  </div>
+                  </button>
                 )
               })}
               {detectedPreset === null && (
@@ -158,7 +158,7 @@ export default function LfoSection({ settings, setField, setFields, commit }) {
             </div>
 
             {/* Editable canvas */}
-            <div style={{ border: `1px solid ${border}`, borderRadius: 3, overflow: 'hidden' }}>
+            <div className="sampler-lfo-graph" style={{ border: `1px solid ${border}`, borderRadius: 3, overflow: 'hidden' }}>
               <LfoWaveformCanvas
                 waveform={waveform}
                 color={color}
@@ -168,11 +168,11 @@ export default function LfoSection({ settings, setField, setFields, commit }) {
                 onCommit={(wf) => commit({ [f('waveform')]: wf })}
               />
             </div>
-            <div style={{ fontSize: 9, color: muted }}>Drag points to edit · Click preset to reset</div>
+            <div className="sampler-lfo-caption" style={{ fontSize: 9, color: muted }}>Drag points to edit &middot; Click preset to reset</div>
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <div style={{ display: 'flex', gap: 6 }}>
+          <div className="sampler-lfo-controls" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div className="sampler-lfo-knobs" style={{ display: 'flex', gap: 6 }}>
               <SamplerKnob
                 label="DEL"
                 value={settings[f('delayMs')]}
@@ -217,7 +217,7 @@ export default function LfoSection({ settings, setField, setFields, commit }) {
               />
             </div>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div className="sampler-lfo-sync" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', userSelect: 'none' }}>
                 <input
                   type="checkbox"

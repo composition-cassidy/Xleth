@@ -2,18 +2,22 @@ import React from 'react';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   SampleSelectorDrawer,
   collapseSampleSelectorDrawer,
   openSampleSelectorDrawer,
 } from '../components/SampleSelectorDrawer';
 import {
-  DEFAULT_SAMPLE_SELECTOR_DOCK_WIDTH,
   createInitialDockRegionSizes,
   createInitialPanelStates,
   usePanelRegistry,
 } from '../registry/PanelRegistry';
+
+vi.mock('../../components/Toast.jsx', () => ({
+  ToastProvider: ({ children }: { children: unknown }) => children,
+  useToast: () => ({ dismiss: () => {}, showToast: () => undefined }),
+}));
 
 function readUiSource(relativePath: string) {
   return readFileSync(path.resolve(process.cwd(), 'src', relativePath), 'utf8');
@@ -24,7 +28,6 @@ function resetRegistry() {
   usePanelRegistry.setState({
     panels: createInitialPanelStates(),
     dockRegionSizes: createInitialDockRegionSizes(),
-    sampleSelectorDockWidth: DEFAULT_SAMPLE_SELECTOR_DOCK_WIDTH,
   });
 }
 
@@ -139,6 +142,19 @@ describe('SampleSelectorDrawer', () => {
     expect(html).not.toContain('xleth-sample-selector-drawer__chrome');
     expect(html).toContain('xleth-sample-selector-drawer__edge-toggle--expanded');
     expect(html).toContain('aria-label="Collapse Sample Selector drawer"');
+  });
+
+  it('renders a drawer resize handle for the left dock region', () => {
+    openSampleSelectorDrawer();
+
+    const html = renderToStaticMarkup(<SampleSelectorDrawer />);
+    const source = readUiSource('windowing/components/SampleSelectorDrawer.tsx');
+
+    expect(html).toContain('xleth-sample-selector-drawer__resize-handle');
+    expect(html).toContain('data-testid="xleth-sample-selector-drawer-resize-handle"');
+    expect(source).toContain("beginDockRegionResize('left', 'horizontal'");
+    expect(source).toContain('state.dockRegionSizes.left');
+    expect(source).not.toContain('sampleSelectorDockWidth');
   });
 
   it('collapses through the drawer helper', () => {
