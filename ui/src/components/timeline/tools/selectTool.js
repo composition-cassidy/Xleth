@@ -31,6 +31,7 @@ export function createSelectTool(deps) {
     patternBlocksRef, patternsRef, selectedBlockIdsRef,
     setSelectedBlockIds,
     onMovePatternBlock, onDuplicatePatternBlocks, onResizePatternBlock, onResizePatternBlockLeft,
+    onRequestPatternBlockContextMenu,
     // FXG.4-h-r1: derived row layout so macro automation child lanes shift the
     // track-index↔Y mapping. Optional — falls back to contiguous geometry.
     trackLayoutRef,
@@ -769,7 +770,13 @@ export function createSelectTool(deps) {
       const tracks = tracksRef.current
       const track = tracks?.[trackIndex]
       if (track?.type === 'Pattern') {
-        // No clip context menu for pattern tracks
+        const hitBlock = hitTestPatternBlock(beat, trackIndex)
+        if (hitBlock && onRequestPatternBlockContextMenu) {
+          if (!selectedBlockIdsRef?.current?.has(hitBlock.id)) {
+            setSelectedBlockIds(new Set([hitBlock.id]))
+          }
+          onRequestPatternBlockContextMenu(hitBlock, e.clientX, e.clientY)
+        }
         return
       }
       const hitClip = hitTestClip(beat, trackIndex)

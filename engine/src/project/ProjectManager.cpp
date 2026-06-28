@@ -443,6 +443,67 @@ void ProjectManager::resolveMediaPaths(Timeline& timeline) {
         }
         if (auto r = resolveMediaPath(src->proxyPath); r && *r != src->proxyPath)
             src->proxyPath = *r;
+
+        // ── Poster re-validation against disk (cross-session persistence) ────
+        // Lazy poster self-heal (engine, video thread) writes a JPEG sidecar to
+        // proxies/ but deliberately does NOT rewrite project.json from a
+        // background thread. So a poster generated in a previous session lands
+        // on disk while project.json still says posterReady=false. Re-detect it
+        // here at load so the work persists without a background save: if the
+        // sidecar exists (and is newer than the source), mark it ready; if a
+        // claimed poster is gone, clear the stale flag so it regenerates. Uses
+        // the same getProxiesDir()/getPosterPath() pair the writer uses, so the
+        // write and read paths can never diverge.
+        // Guarded by XLETH_HAS_DECODER — ProxyTranscoder (and its header) only
+        // exist in decoder-enabled builds; the model-only build skips this.
+#ifdef XLETH_HAS_DECODER
+        if (src->hasVideo) {
+            const std::string proxiesDir = getProxiesDir();
+            if (ProxyTranscoder::posterExists(src->filePath, proxiesDir)) {
+                const std::string poster =
+                    ProxyTranscoder::getPosterPath(src->filePath, proxiesDir);
+                if (!src->posterReady || src->posterPath != poster) {
+                    std::cout << "[Project] Poster re-validated on disk for source id="
+                              << src->id << " -> " << poster << "\n";
+                }
+                src->posterPath  = poster;
+                src->posterReady = true;
+            } else if (src->posterReady) {
+                std::cout << "[Project] Poster marked ready but missing on disk "
+                             "for source id=" << src->id
+                          << " — clearing (will self-heal)\n";
+                src->posterReady = false;
+                src->posterPath.clear();
+            }
+
+            // ── Whole-source preview proxy re-validation (cross-session) ──────
+            // Same rationale as poster re-validation above: the engine writes the
+            // proxy to proxies/ from a background thread but does NOT rewrite
+            // project.json, so a proxy built last session lands on disk while the
+            // JSON may say previewProxyReady=false. Re-detect it here against the
+            // height the JSON recorded; if the file is gone, clear the stale flag
+            // so the preview self-heal regenerates it.
+            if (src->hasVideo && src->previewProxyHeight > 0) {
+                if (ProxyTranscoder::sourcePreviewProxyExists(
+                        src->filePath, proxiesDir, src->previewProxyHeight)) {
+                    const std::string proxy = ProxyTranscoder::getSourcePreviewProxyPath(
+                        src->filePath, proxiesDir, src->previewProxyHeight);
+                    if (!src->previewProxyReady || src->previewProxyPath != proxy) {
+                        std::cout << "[Project] Preview proxy re-validated on disk for "
+                                     "source id=" << src->id << " -> " << proxy << "\n";
+                    }
+                    src->previewProxyPath  = proxy;
+                    src->previewProxyReady = true;
+                } else if (src->previewProxyReady) {
+                    std::cout << "[Project] Preview proxy marked ready but missing on "
+                                 "disk for source id=" << src->id
+                              << " — clearing (will self-heal)\n";
+                    src->previewProxyReady = false;
+                    src->previewProxyPath.clear();
+                }
+            }
+        }
+#endif // XLETH_HAS_DECODER
     }
 
     for (SampleRegion* reg : timeline.getAllRegionsMutable()) {
@@ -484,6 +545,11 @@ bool ProjectManager::relinkSource(Timeline& timeline, int sourceId,
     // The old proxy belongs to the old file — clear so it regenerates on demand.
     src->proxyPath  = "";
     src->proxyReady = true;
+    // The whole-source preview proxy + poster also belong to the old file —
+    // clear so the preview self-heal regenerates them for the new source.
+    src->previewProxyPath.clear();
+    src->previewProxyReady  = false;
+    src->previewProxyHeight = 0;
 
 #ifdef XLETH_HAS_DECODER
     // Best-effort re-probe so resolution/fps/duration match the new file.
@@ -670,6 +736,27 @@ int ProjectManager::importSource(Timeline& timeline,
     media.proxyPath   = "";    // no proxy at import time; generated on-demand
     media.proxyReady  = true;  // original file used directly — no transcode needed
     decoder.close();
+
+    // ── Poster fast-preview frame ────────────────────────────────────────────
+    // Extract ONE representative frame now so poster preview mode has a resident
+    // texture without per-frame decoding. Reuses the proxies/ sidecar dir. This
+    // is preview-only data; the render/export path never consults it. Failure is
+    // non-fatal — poster mode simply falls back to live frames for this source.
+    if (media.hasVideo) {
+        const std::string proxiesDir = getProxiesDir();
+        std::error_code ec;
+        fs::create_directories(proxiesDir, ec);
+        const std::string posterPath =
+            ProxyTranscoder::getPosterPath(filePath, proxiesDir);
+        if (ProxyTranscoder::posterExists(filePath, proxiesDir) ||
+            ProxyTranscoder::extractPoster(filePath, posterPath)) {
+            media.posterPath  = posterPath;
+            media.posterReady = true;
+        } else {
+            std::cerr << "[Project] Poster extraction failed for '"
+                      << media.fileName << "' — poster preview will use live frames\n";
+        }
+    }
 
     int srcId = timeline.addSource(media);
     std::cout << "[Project] Importing source id=" << srcId

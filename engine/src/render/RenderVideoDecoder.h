@@ -16,8 +16,11 @@
  * sequential reads don't re-open the file.  LRU eviction keeps at most
  * MAX_OPEN_CONTEXTS sources open simultaneously.
  *
- * Sequential hint: if the requested frame == lastDecodedFrame + 1, skip the
- * seek and just read forward (chorus tracks benefit hugely from this).
+ * Sequential fast path: if the requested frame == lastDecodedFrame + 1, skip
+ * the seek and just read forward (forward playback and chorus tracks benefit
+ * hugely from this). This is detected automatically inside seekToFrame() from
+ * lastDecodedFrame — it does NOT depend on the external sequentialHint flag,
+ * which was never wired up by any caller.
  *
  * DNxHR awareness: intra-frame codecs (every frame is a keyframe) never need
  * to decode a GOP — seeking lands exactly on the target frame.
@@ -28,6 +31,7 @@
 #include <map>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 // GpuDeviceManager.h guards NOMINMAX before <d3d11_4.h>
 #include "GpuDeviceManager.h"
@@ -56,8 +60,9 @@ struct DecoderContext {
     int              width        = 0;
     int              height       = 0;
     double           fps          = 30.0;
-    int64_t          lastDecodedFrame = -1;     // for sequential hint
-    bool             sequentialHint   = false;  // set by FrameCollector
+    int64_t          lastDecodedFrame = -1;     // drives the auto sequential fast path
+    bool             sequentialHint   = false;  // VESTIGIAL: never wired up; seekToFrame
+                                                // now auto-detects via lastDecodedFrame
     bool             isIntraOnly      = false;  // DNxHR, MJPEG, ProRes, etc.
     bool             isHwAccel        = false;  // using D3D11VA path
 
@@ -119,11 +124,37 @@ public:
      *  Call before destroying the D3D11 device (GpuDeviceManager). */
     void shutdown();
 
-    /** Set sequential hint for a source (called by FrameCollector). */
+    /** Set sequential hint for a source. VESTIGIAL — kept for API
+     *  compatibility only. seekToFrame() no longer consults this flag; the
+     *  sequential fast path is auto-detected from lastDecodedFrame. No caller
+     *  in engine/ or bridge/ ever invoked this. */
     void setSequentialHint(const std::string& sourcePath, bool hint);
 
     /** Number of currently open contexts. */
     int openContextCount() const { return static_cast<int>(contexts_.size()); }
+
+    // ── Decode-path introspection (diagnostics) ─────────────────────────────
+    // Reports the active decode path for each currently-open source so the
+    // Visual Preview Diagnostic Log can show whether a 1080p source is being
+    // hardware-decoded (D3D11VA) or software-decoded, and whether it is an
+    // intra-only codec (DNxHR proxy) or a long-GOP original.
+    enum class DecodePath { None, Hardware, Software };
+
+    struct OpenSourceInfo {
+        std::string sourcePath;
+        DecodePath  path        = DecodePath::None;
+        bool        intraOnly   = false;
+        int         width       = 0;
+        int         height      = 0;
+    };
+
+    /** Snapshot of every open decoder context (MRU→LRU order not guaranteed).
+     *  Cheap copy; safe to call from the diagnostic reader thread when no
+     *  decode is in flight (the preview pipeline is single-threaded). */
+    std::vector<OpenSourceInfo> openSourceInfos() const;
+
+    /** Active decode path for one source path, or None if it is not open. */
+    DecodePath decodePathFor(const std::string& sourcePath) const;
 
 private:
     // ── Context pool (LRU) ─────────────────────────────────────────────────

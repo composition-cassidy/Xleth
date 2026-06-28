@@ -6,6 +6,7 @@ import { TRACK_PALETTE_FALLBACK } from './trackColorResolver.js'
 
 export default function TrackHeader({
   track, index, trackColor, currentPattern, isFocused,
+  trackHeight = TRACK_HEIGHT,
   onMute, onSolo, onVisualOnly, onRename, onRemove, onRequestContextMenu, onFocus,
   onDragStart, onDragOver, onDrop,
   onOpenColorPicker,
@@ -52,7 +53,7 @@ export default function TrackHeader({
     <div
       className={`track-header${track.muted ? ' track-header--muted' : ''}${track.visualOnly ? ' track-header--visual-only' : ''}${isPatternTrack ? ' track-header--pattern' : ''}${isFocused ? ' track-header--focused' : ''}`}
       style={{
-        height: TRACK_HEIGHT,
+        height: trackHeight,
         '--track-header-fill': color,
       }}
       draggable

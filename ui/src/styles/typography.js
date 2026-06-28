@@ -1,5 +1,5 @@
 const UI_FONT_VARIABLE = '--xleth-global-font-family'
-const FALLBACK_UI_FONT_FAMILY = '"Inter", "Noto Sans", "Segoe UI", system-ui, sans-serif'
+const FALLBACK_UI_FONT_FAMILY = '"Neuzeit Grotesk", "Inter", "Noto Sans", "Segoe UI", system-ui, sans-serif'
 
 let cachedUiFontFamily = null
 

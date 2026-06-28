@@ -52,6 +52,15 @@
       "from": "../vendor/ffmpeg",
       "to": "ffmpeg",
       "filter": ["LICENSE", "README.txt"]
+    },
+    {
+      "from": "../vendor/node",
+      "to": "node",
+      "filter": ["node.exe"]
+    },
+    {
+      "from": "addon-worker.js",
+      "to": "worker/addon-worker.js"
     }
   ],
   "win": {
@@ -59,8 +68,15 @@
       {
         "target": "nsis",
         "arch": ["x64"]
+      },
+      {
+        "target": "portable",
+        "arch": ["x64"]
       }
     ]
+  },
+  "portable": {
+    "artifactName": "Xleth-${version}-portable.${ext}"
   },
   "nsis": {
     "oneClick": false,

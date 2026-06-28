@@ -188,6 +188,8 @@ window.xleth = ({
     setPreviewResolutionScale:     (scale)          => invoke('xleth:timeline:setPreviewResolutionScale', scale),
     getPreviewEffectsBypass:       ()               => invoke('xleth:timeline:getPreviewEffectsBypass'),
     setPreviewEffectsBypass:       (bypass)         => invoke('xleth:timeline:setPreviewEffectsBypass', bypass),
+    getPreviewPosterMode:          ()               => invoke('xleth:timeline:getPreviewPosterMode'),
+    setPreviewPosterMode:          (poster)         => invoke('xleth:timeline:setPreviewPosterMode', poster),
     setNoteSlide:                  (patternId, noteId, isSlide, cx, cy) =>
         invoke('xleth:timeline:setNoteSlide', patternId, noteId, isSlide, cx, cy),
     addVisualEffect:         (trackId, effectType) => invoke('xleth:timeline:addVisualEffect', trackId, effectType),
@@ -282,6 +284,15 @@ window.xleth = ({
     pause:    ()        => invoke('xleth:pause'),
     seek:     (beatPos) => invoke('xleth:transport:seek', beatPos),
     getState: ()        => invoke('xleth:transportState'),
+  },
+
+  // ── Preview-proxy build status ─────────────────────────────────────────────
+  // Read-only progress for the background proxy transcodes that warm up smooth
+  // preview. getStatus() resolves to { pending, inFlight, completed, total };
+  // wait for pending===0 after opening a project before the first Play so the
+  // first playback is smooth instead of decoding the slow original source.
+  proxy: {
+    getStatus: () => invoke('xleth:proxy:getStatus'),
   },
 
   // ── Waveform mipmap (replaces Pipeline A FFmpeg extraction) ────────────────

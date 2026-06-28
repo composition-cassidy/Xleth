@@ -14,6 +14,11 @@ import MeterNode   from './components/MeterNode.jsx'
 import VisualizerNode from './components/VisualizerNode.jsx'
 import LabelNode   from './components/LabelNode.jsx'
 import SpacerNode  from './components/SpacerNode.jsx'
+import CompressorCurveNode from './components/CompressorCurveNode.jsx'
+import CompressorSliderNode from './components/CompressorSliderNode.jsx'
+import CompressorHSliderNode from './components/CompressorHSliderNode.jsx'
+import CompressorDryWetNode from './components/CompressorDryWetNode.jsx'
+import CompressorLookaheadNode from './components/CompressorLookaheadNode.jsx'
 // Freeform-A additions:
 import FreeformLayerNode from './components/FreeformLayerNode.jsx'
 import DecorTextNode     from './components/DecorTextNode.jsx'
@@ -34,6 +39,11 @@ export const COMPONENT_REGISTRY = {
   visualizer:    VisualizerNode,
   label:         LabelNode,
   spacer:        SpacerNode,
+  compressorCurve:     CompressorCurveNode,
+  compressorSlider:    CompressorSliderNode,
+  compressorHSlider:   CompressorHSliderNode,
+  compressorDryWet:    CompressorDryWetNode,
+  compressorLookahead: CompressorLookaheadNode,
   // Freeform-A:
   freeformLayer: FreeformLayerNode,
   decorText:     DecorTextNode,

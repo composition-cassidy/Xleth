@@ -3,11 +3,11 @@
 include(FetchContent)
 
 # ── Vendored vcpkg packages ───────────────────────────────────────────────────
-# Reuse the bridge's already-installed vcpkg packages when they exist so the
-# standalone engine build can resolve FFmpeg/GLEW/GLFW without extra machine
-# setup. This mirrors the bridge CMake configuration.
-set(_VCPKG_INSTALLED "${CMAKE_CURRENT_SOURCE_DIR}/../bridge/build/vcpkg_installed/x64-windows"
-    CACHE PATH "Pre-installed vcpkg packages shared with the bridge build")
+# vcpkg installs to <build-root>/vcpkg_installed when the toolchain is active.
+# Point at that canonical location so incremental configures (no toolchain
+# needed) can reuse already-installed packages.
+set(_VCPKG_INSTALLED "${CMAKE_CURRENT_SOURCE_DIR}/../build/vcpkg_installed/x64-windows"
+    CACHE PATH "Pre-installed vcpkg packages in the main build directory")
 
 if(NOT EXISTS "${_VCPKG_INSTALLED}"
    AND EXISTS "${CMAKE_BINARY_DIR}/vcpkg_installed/x64-windows")

@@ -70,6 +70,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     onStretchClip, onStretchClipLeft,
     onSplitClip,
     onRequestClipContextMenu,
+    onRequestPatternBlockContextMenu,
     onSetClipVelocity, onSetClipFade,
     onMiddleMousePan,
     setSelectedClipIds,
@@ -333,6 +334,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       setSelectedBlockIds,
       onCreatePatternBlock, onMovePatternBlock, onDuplicatePatternBlocks, onResizePatternBlock, onResizePatternBlockLeft,
       onDeletePatternBlock, onSplitPatternBlock,
+      onRequestPatternBlockContextMenu,
     }
 
     const factories = {

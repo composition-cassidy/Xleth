@@ -41,6 +41,22 @@ describe('macroLaneLabel', () => {
 })
 
 describe('buildTimelineRows', () => {
+  it('scales track and macro-lane rows with a custom vertical zoom height', () => {
+    const tracks = [{ id: 't1', name: 'One' }, { id: 't2', name: 'Two' }]
+    const graphStates = {
+      t1: {
+        nodes: [{ id: 'm1', label: 'Macro 1' }],
+        macroAutomationLanes: [{ laneId: 'l1', macroNodeId: 'm1' }],
+      },
+    }
+    const layout = buildTrackLayout({ tracks, graphStates, trackHeight: 100 })
+
+    expect(layout.trackRows.map(row => row.height)).toEqual([100, 100])
+    expect(layout.macroRows[0].height).toBe(72)
+    expect(layout.trackTop(1)).toBe(172)
+    expect(layout.totalHeight).toBe(272)
+  })
+
   it('produces exactly one row for a track with no macro lanes', () => {
     const rows = buildTimelineRows({ tracks: [tracks[0]], graphStates: {} })
     expect(rows).toHaveLength(1)

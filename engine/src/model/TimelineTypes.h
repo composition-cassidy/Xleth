@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // ─── TickTime ─────────────────────────────────────────────────────────────────
@@ -92,6 +93,43 @@ struct SourceMedia {
     int         totalFrames = 0;
     bool        hasVideo    = false;
     bool        proxyReady  = false;
+
+    // ── Poster fast-preview sidecar (preview-only) ───────────────────────────
+    // posterPath points at a single representative JPEG frame extracted at
+    // import (see ProxyTranscoder::extractPoster). When poster preview mode is
+    // on, grid cells bind this frame instead of live-decoding — flip + opacity
+    // are still applied by the compositor exactly as for live frames. NEVER
+    // consulted by the render/export path.
+    std::string posterPath;
+    bool        posterReady = false;
+
+    // ── Whole-source preview proxy (preview-only) ────────────────────────────
+    // ONE small all-intra proxy of the ENTIRE source, downscaled to
+    // previewProxyHeight (aspect-preserved). When ready, ALL preview decode —
+    // grid cells AND fullscreen/backdrop layers — reads frames from this proxy
+    // instead of the 4K original (FrameCollector substitutes the path; frame
+    // indices map 1:1 because every source frame is kept at the source fps).
+    // Random access into the small intra proxy is cheap, so LIVE preview stays
+    // smooth even when scrubbing into previously-unvisited regions. Generated
+    // once in the background on the ProxyManager pool; persisted + reused across
+    // sessions (re-validated against disk on load, like posterPath). NEVER
+    // consulted by the render/export path (collectRequests is called with
+    // allowProxy=false there).
+    std::string previewProxyPath;
+    bool        previewProxyReady  = false;
+    int         previewProxyHeight = 0;   // resolved height of the proxy on disk
+
+    // ── Per-offset preview thumbnails (preview-only, runtime cache) ───────────
+    // Poster mode used to bind ONE poster (frame 0) per source, so every grid
+    // cell of the same source showed the SAME frame — useless when one source is
+    // placed at many time-offsets. Instead we cache a representative thumbnail
+    // per coarse source-time bucket (1-second buckets): key = floor(sourceStart),
+    // value = JPEG path on disk (<stem>.t<bucket>.xlposter.jpg). FrameCollector
+    // binds the cell's own bucket thumbnail, falling back to posterPath until it
+    // is generated, so cells are never blank. Generated lazily on the ProxyManager
+    // pool; NOT serialized (rebuilt from disk / regenerated). Touched only by the
+    // video thread (drain installs, FrameCollector reads).
+    std::unordered_map<int, std::string> thumbnailPaths;
 };
 
 // ─── SampleRegion ─────────────────────────────────────────────────────────────

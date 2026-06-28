@@ -231,7 +231,7 @@ export default function LimiterPanel() {
   const designerCloseGuardRef = useRef(null)
 
   const [panelPos, setPanelPos] = useState(() => ({
-    x: Math.round(window.innerWidth / 2 - 230),
+    x: Math.round(window.innerWidth / 2 - 240),
     y: 80,
   }))
   const panelDragRef = useRef(null)

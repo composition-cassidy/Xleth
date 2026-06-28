@@ -161,6 +161,36 @@ void RenderVideoDecoder::setSequentialHint(const std::string& sourcePath, bool h
 }
 
 // ===========================================================================
+// Decode-path introspection (diagnostics)
+// ===========================================================================
+
+std::vector<RenderVideoDecoder::OpenSourceInfo>
+RenderVideoDecoder::openSourceInfos() const
+{
+    std::vector<OpenSourceInfo> out;
+    out.reserve(contexts_.size());
+    for (const auto& kv : contexts_) {
+        const DecoderContext& c = kv.second.ctx;
+        OpenSourceInfo info;
+        info.sourcePath = kv.first;
+        info.path       = c.isHwAccel ? DecodePath::Hardware : DecodePath::Software;
+        info.intraOnly  = c.isIntraOnly;
+        info.width      = c.width;
+        info.height     = c.height;
+        out.push_back(std::move(info));
+    }
+    return out;
+}
+
+RenderVideoDecoder::DecodePath
+RenderVideoDecoder::decodePathFor(const std::string& sourcePath) const
+{
+    auto it = contexts_.find(sourcePath);
+    if (it == contexts_.end()) return DecodePath::None;
+    return it->second.ctx.isHwAccel ? DecodePath::Hardware : DecodePath::Software;
+}
+
+// ===========================================================================
 // Open a source file
 // ===========================================================================
 
@@ -315,10 +345,44 @@ bool RenderVideoDecoder::openSource(DecoderContext& ctx, const std::string& sour
 
 bool RenderVideoDecoder::seekToFrame(DecoderContext& ctx, int64_t frameIndex)
 {
-    // Sequential hint: if we just decoded the previous frame, skip the seek
-    if (ctx.sequentialHint && frameIndex == ctx.lastDecodedFrame + 1) {
+    // ── Automatic sequential fast path ──────────────────────────────────────
+    // If the requested frame is exactly the one after the frame we last decoded,
+    // the codec is already positioned to read it forward: no seek, no
+    // avcodec_flush_buffers(), no GOP re-decode. This is THE common case during
+    // forward playback, and skipping the seek+flush is what lets live preview
+    // run faster than ~1 FPS.
+    //
+    // This detection is self-contained on purpose. It used to be gated behind
+    // ctx.sequentialHint, which setSequentialHint() was meant to set "from
+    // FrameCollector" — but that setter was never actually called anywhere in
+    // engine/ or bridge/, so the hint was permanently false and this fast path
+    // was dead code. Every preview frame therefore paid for a full
+    // av_seek_frame() + flush + re-decode. We now derive the sequential case
+    // directly from lastDecodedFrame, so it works without any external wiring.
+    //
+    // The `lastDecodedFrame >= 0` guard is essential for correctness: a freshly
+    // opened context has lastDecodedFrame == -1, and we must NOT treat frame 0
+    // as "sequential" (0 == -1 + 1) — the first decode after open must seek.
+    // All other non-consecutive requests (random scrub, loop wraparound /
+    // seek-back where target < lastDecodedFrame, or a second different frame of
+    // the same source within one tick) fail the `+ 1` test and seek as before.
+    if (ctx.lastDecodedFrame >= 0 && frameIndex == ctx.lastDecodedFrame + 1) {
         std::fprintf(stderr, "[RenderDecoder] Sequential hint: skipping seek for frame %lld\n",
                      (long long)frameIndex);
+        return true;
+    }
+
+    // ── Fresh-open frame-0 short circuit ─────────────────────────────────────
+    // A just-opened context is already positioned at the first frame, so frame 0
+    // needs no seek. Critically, this also fixes single-frame image sources (the
+    // poster .xlposter.jpg is decoded by the demuxer 'jpeg_pipe', which is NOT
+    // seekable): calling av_seek_frame on it discards the one buffered packet and
+    // leaves nothing to read, so the poster "decodes" to nothing and the preview
+    // stays black. Skipping the seek lets decodeFrame() read that first packet
+    // and produce the poster frame. Harmless for normal video — a fresh decoder
+    // is at frame 0 regardless. (Seek-back to frame 0 on an already-used context,
+    // lastDecodedFrame >= 0, still seeks as before.)
+    if (ctx.lastDecodedFrame < 0 && frameIndex == 0) {
         return true;
     }
 

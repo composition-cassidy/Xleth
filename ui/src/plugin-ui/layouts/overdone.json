@@ -4,7 +4,7 @@
   "pluginId": "overdone",
   "name": "Default Overdone Layout",
   "panel": {
-    "preferredSize": { "width": 760, "height": 380 }
+    "preferredSize": { "width": 540, "height": 408 }
   },
   "root": {
     "id": "root",
@@ -13,7 +13,7 @@
       {
         "id": "viz-row",
         "type": "row",
-        "style": { "paddingPx": [12, 12, 6, 12] },
+        "style": { "paddingPx": [12, 12, 8, 12] },
         "children": [
           {
             "id": "overdone-viz",
@@ -22,31 +22,25 @@
             "props": {
               "source": "overdone.multiband",
               "preset": "overdoneMultiband",
-              "heightPx": 180
+              "heightPx": 214
             }
           }
         ]
       },
       {
-        "id": "controls-row",
+        "id": "body",
         "type": "row",
-        "style": { "paddingPx": [6, 12, 12, 12], "gapPx": 0, "justify": "center" },
+        "style": { "paddingPx": [12, 10, 10, 10], "gapPx": 0, "align": "start", "justify": "center" },
         "children": [
-          {
-            "id": "knob-grid",
-            "type": "group",
-            "style": { "growsToFill": true, "gapPx": 8 },
-            "props": { "columns": 7 },
-            "children": [
-              { "id": "k-depth",      "type": "knob", "props": { "param": "depth",      "label": "DEPTH",    "size": 56, "format": "pct0" } },
-              { "id": "k-time",       "type": "knob", "props": { "param": "time",       "label": "TIME",     "size": 52, "format": "pct0" } },
-              { "id": "k-gain-low",   "type": "knob", "props": { "param": "gain_low",   "label": "LOW",      "size": 52, "format": "dB1_signed" } },
-              { "id": "k-gain-mid",   "type": "knob", "props": { "param": "gain_mid",   "label": "MID",      "size": 52, "format": "dB1_signed" } },
-              { "id": "k-gain-high",  "type": "knob", "props": { "param": "gain_high",  "label": "HIGH",     "size": 52, "format": "dB1_signed" } },
-              { "id": "k-xover-low",  "type": "knob", "props": { "param": "xover_low",  "label": "LO XOVER","size": 48, "format": "hz_smart" } },
-              { "id": "k-xover-high", "type": "knob", "props": { "param": "xover_high", "label": "HI XOVER","size": 48, "format": "hz_smart" } }
-            ]
-          }
+          { "id": "s-depth",      "type": "compressorSlider", "style": { "widthPx": 58 }, "props": { "param": "depth",      "label": "DEPTH",    "format": "pct0" } },
+          { "id": "s-time",       "type": "compressorSlider", "style": { "widthPx": 58 }, "props": { "param": "time",       "label": "TIME",     "format": "pct0" } },
+          { "id": "divider-time-gain", "type": "spacer", "style": { "widthPx": 18, "heightPx": 122 } },
+          { "id": "s-gain-low",   "type": "compressorSlider", "style": { "widthPx": 58 }, "props": { "param": "gain_low",   "label": "LOW",      "format": "dB1_signed" } },
+          { "id": "s-gain-mid",   "type": "compressorSlider", "style": { "widthPx": 58 }, "props": { "param": "gain_mid",   "label": "MID",      "format": "dB1_signed" } },
+          { "id": "s-gain-high",  "type": "compressorSlider", "style": { "widthPx": 58 }, "props": { "param": "gain_high",  "label": "HIGH",     "format": "dB1_signed" } },
+          { "id": "divider-gain-xover", "type": "spacer", "style": { "widthPx": 18, "heightPx": 122 } },
+          { "id": "s-xover-low",  "type": "compressorSlider", "style": { "widthPx": 64 }, "props": { "param": "xover_low",  "label": "LO XOVER", "format": "hz_smart" } },
+          { "id": "s-xover-high", "type": "compressorSlider", "style": { "widthPx": 64 }, "props": { "param": "xover_high", "label": "HI XOVER", "format": "hz_smart" } }
         ]
       }
     ]

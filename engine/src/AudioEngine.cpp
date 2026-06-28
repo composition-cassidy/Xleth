@@ -1,5 +1,6 @@
 #include "AudioEngine.h"
 #include "render/RenderClock.h"
+#include "util/StartLatencyTrace.h"  // TEMP/DIAGNOSTIC — start-latency probe
 
 #include <algorithm>
 #include <chrono>
@@ -408,6 +409,12 @@ void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* device)
     refreshLivePresentationLatency();
 
 #if JUCE_WINDOWS
+    // Baseline RT priority on the audio callback thread itself. Complements the
+    // MMCSS "Pro Audio" boost below and guarantees TIME_CRITICAL even if MMCSS
+    // registration fails. Called from the audio device thread
+    // (audioDeviceAboutToStart), never from the message thread.
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+
     if (g_avSet != nullptr)
     {
         DWORD  taskIndex = 0;
@@ -466,6 +473,14 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     // Optional WAV capture (ThreadedWriter is lock-free)
     if (wavWriter_ != nullptr)
         wavWriter_->write(outputChannelData, numSamples);
+
+    // [StartLatencyTrace] TEMP/DIAGNOSTIC — (b) first audio block produced.
+    // Guarded by isPlaying() so silent blocks during the pre-play rebuild
+    // barrier are NOT counted. Lock-free single atomic store, RT-safe; the
+    // logging happens off-thread (preview loop flush). Remove with
+    // util/StartLatencyTrace.h.
+    if (transport_.isPlaying())
+        xleth::diag::StartLatencyTrace::instance().markFirstAudio();
 
     // Advance master clock — always last, after all processing
     transport_.advance(numSamples);

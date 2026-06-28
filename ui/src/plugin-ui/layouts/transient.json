@@ -4,7 +4,7 @@
   "pluginId": "transientproc",
   "name": "Default Transient Processor Layout",
   "panel": {
-    "preferredSize": { "width": 760, "height": 460 }
+    "preferredSize": { "width": 540, "height": 440 }
   },
   "root": {
     "id": "root",
@@ -13,7 +13,7 @@
       {
         "id": "viz-row",
         "type": "row",
-        "style": { "paddingPx": [12, 12, 8, 12] },
+        "style": { "paddingPx": [12, 12, 6, 12] },
         "children": [
           {
             "id": "transient-viz",
@@ -30,7 +30,8 @@
       {
         "id": "mode-row",
         "type": "row",
-        "style": { "paddingPx": [4, 12, 0, 12], "gapPx": 6, "align": "center" },
+        "style": { "paddingPx": [6, 12, 6, 12], "gapPx": 6, "align": "center", "justify": "center" },
+        "props": { "variant": "borderTop" },
         "children": [
           { "id": "mode-label", "type": "label", "props": { "text": "Mode:", "variant": "muted" } },
           {
@@ -48,27 +49,16 @@
       {
         "id": "body",
         "type": "row",
-        "style": { "paddingPx": [4, 12, 12, 12], "gapPx": 12 },
+        "style": { "paddingPx": [12, 10, 8, 10], "gapPx": 0, "align": "start" },
         "children": [
-          {
-            "id": "controls",
-            "type": "column",
-            "style": { "growsToFill": true, "gapPx": 10 },
-            "children": [
-              {
-                "id": "knob-row",
-                "type": "row",
-                "style": { "gapPx": 8, "justify": "center" },
-                "children": [
-                  { "id": "k-attack",       "type": "knob", "props": { "param": "attack",       "label": "ATTACK",  "size": 60, "format": "pct0" } },
-                  { "id": "k-sustain",      "type": "knob", "props": { "param": "sustain",      "label": "SUSTAIN", "size": 60, "format": "pct0" } },
-                  { "id": "k-attack-speed", "type": "knob", "props": { "param": "attack_speed", "label": "SPEED",   "size": 52, "format": "ms1"  } },
-                  { "id": "k-threshold",    "type": "knob", "props": { "param": "threshold",    "label": "THRESH",  "size": 52, "format": "dB1"  } },
-                  { "id": "k-mix",          "type": "knob", "props": { "param": "mix",          "label": "MIX",     "size": 52, "format": "pct0" } }
-                ]
-              }
-            ]
-          }
+          { "id": "s-attack",  "type": "compressorSlider", "style": { "growsToFill": true }, "props": { "param": "attack",       "label": "ATTACK",  "format": "pct0" } },
+          { "id": "s-sustain", "type": "compressorSlider", "style": { "growsToFill": true }, "props": { "param": "sustain",      "label": "SUSTAIN", "format": "pct0" } },
+          { "id": "tdiv-1", "type": "spacer", "style": { "widthPx": 18, "heightPx": 122 } },
+          { "id": "s-speed",   "type": "compressorSlider", "style": { "growsToFill": true }, "props": { "param": "attack_speed", "label": "SPEED",   "format": "ms1"  } },
+          { "id": "tdiv-2", "type": "spacer", "style": { "widthPx": 18, "heightPx": 122 } },
+          { "id": "s-thresh",  "type": "compressorSlider", "style": { "growsToFill": true }, "props": { "param": "threshold",    "label": "THRESH",  "format": "dB1"  } },
+          { "id": "tdiv-3", "type": "spacer", "style": { "widthPx": 18, "heightPx": 122 } },
+          { "id": "dry-wet",   "type": "compressorDryWet", "style": { "widthPx": 124 }, "props": { "mixParam": "mix", "dryParam": "dry", "wetParam": "wet", "linkParam": "mix_linked" } }
         ]
       }
     ]

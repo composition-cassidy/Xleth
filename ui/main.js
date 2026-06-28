@@ -367,6 +367,12 @@ function workerPathEnv(entries) {
   return pathEntries.join(path.delimiter);
 }
 
+// Cap V8 old-space so the renderer/main heaps don't balloon on long sessions.
+// Caps Electron's V8 heaps only; the forked engine worker runs under system Node
+// and is unaffected (intended — this targets UI-side memory growth).
+// Must be appended before the app 'ready' event fires.
+app.commandLine.appendSwitch('js-flags', '--max-old-space-size=512');
+
 // Register custom media protocol so renderer can play local files without CORS/CSP issues
 // Must be called before app.whenReady()
 protocol.registerSchemesAsPrivileged([
@@ -382,6 +388,8 @@ function startMediaServer() {
   const MIME_TYPES = {
     '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.avi': 'video/x-msvideo',
     '.mkv': 'video/x-matroska', '.webm': 'video/webm',
+    '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.flac': 'audio/flac',
+    '.ogg': 'audio/ogg', '.m4a': 'audio/mp4', '.aac': 'audio/aac',
     '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
   };
 
@@ -519,7 +527,7 @@ async function startWorker() {
 
   return new Promise((resolve, reject) => {
     worker = fork(workerPath, [], {
-      stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
       execPath: nodeExe,
       cwd: bridgeDir,
       env: {
@@ -530,6 +538,15 @@ async function startWorker() {
         PATH: workerPathEnv([bridgeDir, ffmpegDir]),
       },
       serialization: 'advanced',
+    });
+    // Forward C++ stdout/stderr into startup.log so proxy/engine logs are visible
+    worker.stdout.on('data', (chunk) => {
+      const lines = chunk.toString().split(/\r?\n/);
+      for (const line of lines) { if (line) log(`[engine] ${line}`); }
+    });
+    worker.stderr.on('data', (chunk) => {
+      const lines = chunk.toString().split(/\r?\n/);
+      for (const line of lines) { if (line) log(`[engine:err] ${line}`); }
     });
     let resolved = false;
     worker.on('message', (msg) => {
@@ -744,6 +761,7 @@ ipcMain.handle('xleth:stop',           safeHandler(() => callWorker('stop')));
 ipcMain.handle('xleth:pause',          safeHandler(() => callWorker('pause')));
 ipcMain.handle('xleth:trigger',    safeHandler((_, id, vel) => callWorker('triggerSample', [id, vel ?? 1.0])));
 ipcMain.handle('xleth:transportState', safeHandler(() => callWorker('getTransportState')));
+ipcMain.handle('xleth:proxy:getStatus', safeHandler(() => callWorker('proxy_getStatus')));
 ipcMain.handle('xleth:currentFrame',   safeHandler(() => callWorker('getFrameRGBA')));
 ipcMain.handle('xleth:frameRGBA',      safeHandler(() => callWorker('getFrameRGBA')));
 ipcMain.handle('xleth:syncStats',      safeHandler(() => callWorker('getSyncStats')));
@@ -1056,6 +1074,10 @@ ipcMain.handle('xleth:timeline:getPreviewEffectsBypass',
   safeHandler(() => callWorker('timeline_getPreviewEffectsBypass', [])));
 ipcMain.handle('xleth:timeline:setPreviewEffectsBypass',
   safeHandler((_, bypass) => callWorker('timeline_setPreviewEffectsBypass', [bypass])));
+ipcMain.handle('xleth:timeline:getPreviewPosterMode',
+  safeHandler(() => callWorker('timeline_getPreviewPosterMode', [])));
+ipcMain.handle('xleth:timeline:setPreviewPosterMode',
+  safeHandler((_, poster) => callWorker('timeline_setPreviewPosterMode', [poster])));
 
 ipcMain.handle('xleth:timeline:setNoteSlide',
   safeHandler((_, patternId, noteId, isSlide, cx, cy) =>
@@ -2565,6 +2587,18 @@ function buildVisualPreviewDiagnosticText({ engine, extras, settings, gpuInfo })
     const c = engine.counters;
     out.push(`  Video tick count:           ${c.videoTickCount}`);
     out.push(`  Compositor path entered:    ${c.compositorPathEntered}`);
+    // ── Render-gate per-term truth counts ────────────────────────────────────
+    // Each counter increments once per tick when that gate sub-condition is true,
+    // evaluated independently so short-circuit doesn't hide the false term.
+    // Whichever counter is ~0 (vs videoTickCount) is the term shutting the gate.
+    const vtc = c.videoTickCount || 1; // avoid divide-by-zero
+    const pct = (n) => `${(((n || 0) / vtc) * 100).toFixed(1)}%`;
+    out.push(`  gateIsPlayingTrueTicks:     ${c.gateIsPlayingTrueTicks || 0}  (${pct(c.gateIsPlayingTrueTicks)} of video ticks)`);
+    out.push(`  gateEventsNonEmptyTicks:    ${c.gateEventsNonEmptyTicks || 0}  (${pct(c.gateEventsNonEmptyTicks)} of video ticks)`);
+    out.push(`  gateForceRenderTicks:       ${c.gateForceRenderTicks || 0}  (${pct(c.gateForceRenderTicks)} of video ticks)`);
+    out.push(`  gatePreviewPausedTicks:     ${c.gatePreviewPausedTicks || 0}  (${pct(c.gatePreviewPausedTicks)} of video ticks)`);
+    out.push(`  gateBlockReachedTicks:      ${c.gateBlockReachedTicks || 0}  (${pct(c.gateBlockReachedTicks)} of video ticks)`);
+    out.push(`  gateBlockSkippedNoInit:     ${c.gateBlockSkippedNoInit || 0}  (${pct(c.gateBlockSkippedNoInit)} of video ticks)`);
     out.push(`  compositeFrame() calls:     ${c.compositeFrameCount}`);
     out.push(`  readback() valid:           ${c.readbackValidCount}`);
     out.push(`  readback() not-ready:       ${c.readbackNotReadyCount || 0}`);
@@ -2612,6 +2646,38 @@ function buildVisualPreviewDiagnosticText({ engine, extras, settings, gpuInfo })
       out.push(`    ✓ Engine readback healthy (policy=${policy}).`);
       out.push('      If preview is still blank, inspect section 5 delivery/WebGL counters.');
     }
+  }
+  out.push('');
+
+  // ── 4b. Preview tick stage timing ──────────────────────────────────────
+  // Per-stage wall-clock breakdown of the preview video-thread tick, measured
+  // in the engine (instrumentation only). Locates the dominant cost when the
+  // preview underperforms despite a fast readback / zero decode misses.
+  out.push('4b. PREVIEW TICK STAGE TIMING (per-stage wall clock, video thread)');
+  out.push(sep);
+  if (engine && engine.counters) {
+    const c = engine.counters;
+    const ms = (us) => ((us || 0) / 1000).toFixed(3);
+    const row = (label, last, avg, max) =>
+      out.push(`  ${label.padEnd(22)} last ${ms(last).padStart(8)} ms   avg ${ms(avg).padStart(8)} ms   max ${ms(max).padStart(8)} ms`);
+    row('1. collectRequests',   c.lastCollectUs,   c.avgCollectUs,   c.maxCollectUs);
+    row('2. dedup + resolve',   c.lastResolveUs,   c.avgResolveUs,   c.maxResolveUs);
+    row('3. decode-miss loop',  c.lastDecodeUs,    c.avgDecodeUs,    c.maxDecodeUs);
+    row('4. compositeFrame',    c.lastCompositeUs, c.avgCompositeUs, c.maxCompositeUs);
+    row('5. readback',          c.lastReadbackUs,  c.avgReadbackUs,  c.maxReadbackUs);
+    row('6. swizzle+shm copy',  c.lastSwizzleUs,   c.avgSwizzleUs,   c.maxSwizzleUs);
+    row('7. WHOLE TICK',        c.lastTickUs,      c.avgTickUs,      c.maxTickUs);
+    out.push('');
+    out.push(`  Delivered FPS (real 1s window): ${c.deliveredFps || 0}`);
+    out.push(`  Active cells this tick:         ${c.lastCellCount || 0} (peak ${c.maxCellCount || 0})`);
+    out.push('');
+    out.push('  Note: avg = trailing 60-sample window per stage; the readback avg uses');
+    out.push('        a ~1s wallclock window (shared with the readback-policy health gate).');
+    out.push('        Stages 1–6 are exclusive slices of the tick; their sum ≈ stage 7.');
+    out.push('        Delivered FPS counts frames actually written to the shm back buffer');
+    out.push('        per real second — NOT playhead time — so stalls show as a low number.');
+  } else {
+    out.push('  (no engine counters — preview tick has not run)');
   }
   out.push('');
 
@@ -3424,7 +3490,7 @@ async function buildProjectZip({ projectDir, destPath, mode, senderWin }) {
     archive.pipe(output);
 
     archive.append(JSON.stringify(proj, null, 4), { name: 'project.json' });
-    for (const sub of ['swapped', 'exports']) {
+    for (const sub of ['media', 'swapped', 'exports']) {
       const dir = path.join(projectDir, sub);
       if (fs.existsSync(dir)) archive.directory(dir, sub);
     }

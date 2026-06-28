@@ -1,0 +1,264 @@
+Xleth — Visual Preview Diagnostic Log
+────────────────────────────────────────────────────────────────────────
+Generated:        2026-06-22T18:32:11.471Z
+App version:      1.1.0-beta
+Electron:         41.1.1
+Chrome:           146.0.7680.166
+Node:             24.14.0
+OS:               Windows_NT 10.0.26200 (x64)
+OS platform:      win32
+CPU:              AMD Ryzen 5 7520U with Radeon Graphics          × 8
+Total memory:     15648 MB
+Free memory:      3504 MB
+Portable EXE:     no (dev build)
+
+1. SYSTEM / ADAPTER
+────────────────────────────────────────────────────────────────────────
+  Detected 1 DXGI adapter(s). Active index: 0
+  [0] AMD — AMD Radeon(TM) Graphics
+        vendorId=0x1002 deviceId=0x1506
+        LUID=00000000:0000D3DF  (compare against UNMASKED_RENDERER_WEBGL to confirm same adapter)
+        VRAM(dedicated)=486 MB  shared=7823 MB
+        discrete=yes  default=yes  index=0
+  D3D11 device created: yes
+  D3D feature level:    11_0
+  Device type:          hardware
+  D3D11 debug layer:    no
+  Engine compositor backend: D3D11 (GridCompositor) — NOT OpenGL
+  Renderer (Electron preview canvas) backend: WebGL / Canvas2D
+  Video encode/decode mode (requested): auto
+
+  Electron app.getGPUInfo('basic'):
+    [0] vendorId=0x1002 deviceId=0x1506 driverVersion=32.0.11038.3
+    [1] vendorId=0x1414 deviceId=0x008C driverVersion=10.0.26100.8521
+
+2. KNOWN-GOOD VIDEO PATHS
+────────────────────────────────────────────────────────────────────────
+  Sample Selector preview:    Chromium <video> element via local HTTP server
+                              → bypasses native GridCompositor + shared memory entirely.
+  Imported-video popup:       Chromium <video> element
+                              → bypasses native GridCompositor + shared memory entirely.
+  ⚠ A working Chromium video element does NOT prove the native GridCompositor
+    or the shared-memory → WebGL preview pipeline is working. Those use entirely
+    different code paths (D3D11 composite + Win32 named file mapping + WebGL).
+
+3. MAIN PREVIEW / GRID PIPELINE
+────────────────────────────────────────────────────────────────────────
+  compositorReady:        yes
+  compositorPresent:      yes
+  decoderPresent:         yes
+  collectorPresent:       yes
+  renderCachePresent:     yes
+  animMgrPresent:         yes
+  pauseForExport:         no
+  pauseForVisibility:     no
+  previewResolutionScale: 0.25
+  previewEffectsBypass:   yes
+  Grid layout:            4 cols × 4 rows @ 30 fps  gapScale=0
+  Last tick:              3 cell requests, 2 decode misses
+
+  TIMELINE / COLLECTOR CONTENT (latest preview tick):
+    Preview time used:        12.400 s
+    Active visual events:     1284  (events fed to the collector)
+    Project has visual events: yes
+    Cells requested:          3  (final compositor input count)
+    Unique decode keys:       3  (after dedup)
+    Cache hits:               1
+    Decode requests (misses): 2
+    Decode successes:         2
+    Decode failures:          0
+    Cells skipped (+reason):  unavailable — collectRequests does not currently
+                              expose a per-cell skip/reject reason list
+    Paused for export:        no
+    Paused for visibility:    no
+
+4. NATIVE COMPOSITOR (D3D11 GridCompositor)
+────────────────────────────────────────────────────────────────────────
+  Init dimensions:        960 × 540
+  Compositor RT:          960 × 540
+  Last readback:          240 × 135
+  lastReadbackHRESULT:    n/a (S_OK)
+  lastReadbackFailureStage: none
+  deviceRemovedReason:    n/a (S_OK)
+  Map type / flags:       1 / 0x00100000
+  Map RowPitch:           1024
+  expected bytes:         129600
+  actual copy bytes:      129600
+  source/staging dimensions match: yes
+  Source texture:         240 × 135 fmt=87 samples=1
+  Staging texture:        240 × 135 fmt=87 usage=3 cpu=0x00020000 bind=0x00000000 misc=0x00000000 samples=1
+  Video tick count:           3219
+  Compositor path entered:    6
+  compositeFrame() calls:     6
+  readback() valid:           3
+  readback() not-ready:       3
+  readback() invalid (fatal): 0
+  Canvas copy count:          3
+  Black frames written:       0
+  Compositor init failures:   0
+  Readback policy:            AsyncQueued
+  Policy switch reason:       map-stall-too-slow
+  Dropped pending frames:     0
+  Pending slots (ring):       3
+  Last readback:              0.31 ms
+  Avg readback (60-frame):    0.31 ms
+  Max readback:               46.25 ms
+
+  Interpretation:
+    ✓ AsyncQueued healthy — ring serving valid frames. (no ring drops)
+      FastImmediate switched away: reason=map-stall-too-slow
+
+4b. PREVIEW TICK STAGE TIMING (per-stage wall clock, video thread)
+────────────────────────────────────────────────────────────────────────
+  1. collectRequests     last    0.084 ms   avg    0.000 ms   max    0.171 ms
+  2. dedup + resolve     last    0.087 ms   avg    0.000 ms   max    0.102 ms
+  3. decode-miss loop    last   26.422 ms   avg    0.000 ms   max  130.635 ms
+  4. compositeFrame      last    0.196 ms   avg    0.000 ms   max    0.355 ms
+  5. readback            last    0.311 ms   avg    0.311 ms   max   46.246 ms
+  6. swizzle+shm copy    last    1.834 ms   avg    0.000 ms   max    2.332 ms
+  7. WHOLE TICK          last  187.955 ms   avg    0.000 ms   max  296.387 ms
+
+  Delivered FPS (real 1s window): 1
+  Active cells this tick:         3 (peak 7)
+
+  Note: avg = trailing 60-sample window per stage; the readback avg uses
+        a ~1s wallclock window (shared with the readback-policy health gate).
+        Stages 1–6 are exclusive slices of the tick; their sum ≈ stage 7.
+        Delivered FPS counts frames actually written to the shm back buffer
+        per real second — NOT playhead time — so stalls show as a low number.
+
+5. PREVIEW DELIVERY (shared memory → WebGL canvas)
+────────────────────────────────────────────────────────────────────────
+  Engine side:
+    FrameOutput initialized:    yes
+    FrameOutput dimensions:     960 × 540
+    FrameOutput buffer size:    2073600 bytes (per half)
+    FrameOutput current index:  1 (0 or 1; should change as engine swaps)
+    Shared-memory name:         XlethFrameBuffer
+
+  Renderer side — LIVE PREVIEW CANVAS (authoritative):
+    mode (component reports):   webgl
+    drawApi:                    webgl  (webgl | canvas2d | none)
+    last tick action:           no-frame  (frame | no-frame | upload-failed | no-shm | none)
+    last tick:                  15 ms ago
+    shm opened:                 yes
+    shm name:                   XlethFrameBuffer
+    shm open error:             none
+    last shm index seen:        1
+    frames received:            4
+    last frame dimensions:      960 × 540
+    texture upload success:     4
+    texture upload failures:    0
+    last texture upload error:  none
+    WebGL context lost count:   0
+    WebGL context restored:     0
+    Last fallback clear color:  not yet set (drawNoVideo never called) — canvas may show its CSS background
+
+    WebGL context info (FROM THE ACTUAL LIVE PREVIEW CANVAS):
+      GL_VENDOR:                WebKit
+      GL_RENDERER:              WebKit WebGL
+      GL_VERSION:               WebGL 1.0 (OpenGL ES 2.0 Chromium)
+      GL_SHADING_LANGUAGE_VER:  WebGL GLSL ES 1.0 (OpenGL ES GLSL ES 1.0 Chromium)
+      UNMASKED_VENDOR_WEBGL:    Google Inc. (AMD)
+      UNMASKED_RENDERER_WEBGL:  ANGLE (AMD, AMD Radeon(TM) Graphics (0x00001506) Direct3D11 vs_5_0 ps_5_0, D3D11)
+      MAX_TEXTURE_SIZE:         16384
+      Extensions (35):
+        ANGLE_instanced_arrays, EXT_blend_minmax, EXT_clip_control, EXT_color_buffer_half_float
+        EXT_depth_clamp, EXT_disjoint_timer_query, EXT_float_blend, EXT_frag_depth
+        EXT_polygon_offset_clamp, EXT_sRGB, EXT_shader_texture_lod, EXT_texture_compression_bptc
+        EXT_texture_compression_rgtc, EXT_texture_filter_anisotropic, EXT_texture_mirror_clamp_to_edge, KHR_parallel_shader_compile
+        OES_element_index_uint, OES_fbo_render_mipmap, OES_standard_derivatives, OES_texture_float
+        OES_texture_float_linear, OES_texture_half_float, OES_texture_half_float_linear, OES_vertex_array_object
+        WEBGL_blend_func_extended, WEBGL_color_buffer_float, WEBGL_compressed_texture_s3tc, WEBGL_compressed_texture_s3tc_srgb
+        WEBGL_debug_renderer_info, WEBGL_debug_shaders, WEBGL_depth_texture, WEBGL_draw_buffers
+        WEBGL_lose_context, WEBGL_multi_draw, WEBGL_polygon_mode
+
+  Renderer side — PROXY WEBGL PROBE (Settings tab, NOT the live canvas):
+    Chromium usually reuses the same GPU process for both contexts, but this is
+    NOT guaranteed. Treat this as a backup only — section 5a above is authoritative.
+    GL_VENDOR:                WebKit
+    GL_RENDERER:              WebKit WebGL
+    GL_VERSION:               WebGL 1.0 (OpenGL ES 2.0 Chromium)
+    UNMASKED_VENDOR_WEBGL:    Google Inc. (AMD)
+    UNMASKED_RENDERER_WEBGL:  ANGLE (AMD, AMD Radeon(TM) Graphics (0x00001506) Direct3D11 vs_5_0 ps_5_0, D3D11)
+    MAX_TEXTURE_SIZE:         16384
+
+  Interpretation:
+    ✓ Renderer is receiving frames AND uploading them successfully.
+      If the preview is still blank, the engine may be writing all-zero pixels
+      (check section 4 readbackValidCount > 0 vs actual pixel content).
+
+6. MEMORY / ALLOCATION
+────────────────────────────────────────────────────────────────────────
+  Per-frame buffer:           2073600 bytes (1.98 MB)
+  Shared-memory total:        ~3.96 MB (2 halves + 64-byte control)
+  Process memory (rss):       153.1 MB
+  GPU memory pressure:        not directly available from JS — see vendor tooling
+                              (Task Manager → Performance → GPU, or GPU-Z)
+
+7. PIXEL CONTENT VERIFICATION
+────────────────────────────────────────────────────────────────────────
+  This section proves whether REAL non-zero pixels exist at each stage of
+  the pipeline — not just that bytes moved. Native readback is BGRA; the
+  shared-memory / WebGL stages are RGBA (channel order is labelled per row,
+  so do NOT compare first-bytes across formats blindly).
+
+  Native pixel diag (XLETH_VISUAL_DIAG_PIXELS):   OFF
+  Renderer pixel diag (same flag, renderer):     OFF
+  Raw frame dumps (XLETH_VISUAL_DIAG_DUMP_FRAMES): OFF (max 3/stage)
+
+  ⚠ Pixel verification was NOT enabled for this run. To capture it:
+      1. Close Xleth.
+      2. Relaunch with the environment variable XLETH_VISUAL_DIAG_PIXELS=1
+         (PowerShell:  $env:XLETH_VISUAL_DIAG_PIXELS=1 ; .\Xleth.exe )
+      3. Open a project WITH visible video, let the preview run a moment,
+         start a short export if render also fails, then export this log again.
+
+  ── post-d3d11-readback ──
+     observed:        no
+     interpretation:  not-sampled (stage never recorded this run)
+
+  ── pre-frameoutput-write ──
+     observed:        no
+     interpretation:  not-sampled (stage never recorded this run)
+
+  ── post-frameoutput-write ──
+     observed:        no
+     interpretation:  not-sampled (stage never recorded this run)
+
+  ── renderer-pre-webgl-upload ──
+     observed:        no
+     interpretation:  not-sampled (stage never recorded this run)
+
+  ── renderer-post-webgl-readpixels ──
+     observed:        no
+     interpretation:  not-sampled (stage never recorded this run)
+
+  ── export-pre-encode ──
+     observed:        no
+     interpretation:  not-sampled (stage never recorded this run)
+
+  PLAIN-ENGLISH INTERPRETATION:
+  • No pixel data captured (diagnostic flag was off — see note above).
+
+────────────────────────────────────────────────────────────────────────
+Notes for the developer reading this report:
+  • The Sample Selector and the imported-video popup BOTH use Chromium <video>
+    elements served via http://127.0.0.1 — they are completely independent of the
+    GridCompositor / shared-memory / WebGL pipeline. They working tells you nothing
+    about the main preview path.
+  • The "Hardware/Software" video mode setting only affects DECODE/ENCODE; it does
+    NOT bypass the D3D11 GridCompositor or the WebGL canvas. There is no full CPU
+    fallback for the main preview.
+  • If section 4 shows readbackValid > 0 and section 5 shows framesReceived === 0,
+    the failure is between the engine writing to the file mapping and the renderer
+    reading from it — check shm_helper.node load and FRAME_SHM_NAME match.
+  • All GPUs start on FastImmediate (blocking Map, no DO_NOT_WAIT, ~0-2ms on NVIDIA).
+    If avgReadbackMs>8, fatalInvalids>3, or yield<25% in a 60-frame window,
+    the engine auto-switches to AsyncQueued (DO_NOT_WAIT ring, 5 slots).
+    D3D11_MAP_FLAG_DO_NOT_WAIT = 0x00100000 (confirmed in readbackMapFlags log).
+  • readbackInvalid(fatal)>0 = descriptor/device issue, not GPU latency.
+  • readbackNotReady in AsyncQueued = GPU behind tick rate; previous frame stays visible.
+  • droppedPendingFrames in AsyncQueued is non-fatal: oldest frame dropped, preview continues.
+────────────────────────────────────────────────────────────────────────
+End of report.

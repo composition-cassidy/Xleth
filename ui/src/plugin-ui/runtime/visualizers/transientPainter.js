@@ -422,10 +422,12 @@ function fillLevelEnvelope(ctx, columns, h, yForColumn, color, alpha) {
 // area below (cut). Centre line drawn dim. The columns are pre-smoothed so
 // a single curve traces the gain trajectory; the fill below it gives the
 // "where is shaping happening" hint.
-function drawGainChangeStrip(ctx, x, y, w, h, columns) {
+function drawGainChangeStrip(ctx, x, y, w, h, columns, theme) {
   if (!columns || columns.length === 0) return
   if (h < 8) return
   const centerY = Math.round(h / 2)
+  const boostColor = (theme && theme.accent) ? theme.accent : TRANSIENT_DISPLAY.gainChange.boostColor
+  const cutColor = TRANSIENT_DISPLAY.gainChange.cutColor
 
   ctx.save()
   ctx.translate(x, y)
@@ -443,7 +445,7 @@ function drawGainChangeStrip(ctx, x, y, w, h, columns) {
   // gainY < centerY). We split into two sub-paths so we don't fill across the
   // zero crossing as a single closed shape.
   ctx.globalAlpha = 0.32
-  ctx.fillStyle = TRANSIENT_DISPLAY.gainChange.boostColor
+  ctx.fillStyle = boostColor
   ctx.beginPath()
   ctx.moveTo(columns[0].x, centerY)
   for (let i = 0; i < columns.length; i++) {
@@ -456,7 +458,7 @@ function drawGainChangeStrip(ctx, x, y, w, h, columns) {
 
   // Cut fill (negative gain): area between centre and gainY where gainY >
   // centerY.
-  ctx.fillStyle = TRANSIENT_DISPLAY.gainChange.cutColor
+  ctx.fillStyle = cutColor
   ctx.beginPath()
   ctx.moveTo(columns[0].x, centerY)
   for (let i = 0; i < columns.length; i++) {
@@ -470,17 +472,17 @@ function drawGainChangeStrip(ctx, x, y, w, h, columns) {
   // Curve on top — picks up the boost / cut colour by sign of last value to
   // give the line a usable accent.
   const last = columns[columns.length - 1]
-  const trailingColor = (last && last.gainDb < 0)
-    ? TRANSIENT_DISPLAY.gainChange.cutColor
-    : TRANSIENT_DISPLAY.gainChange.boostColor
+  const trailingColor = (last && last.gainDb < 0) ? cutColor : boostColor
   strokeLinePath(ctx, columns, (c) => transientGainToY(c.gainDb, h), trailingColor, 1.5, 0.95)
 
   ctx.restore()
 }
 
-function drawEnvelopeLayer(ctx, x, y, w, h, columns, hasEnvelope) {
+function drawEnvelopeLayer(ctx, x, y, w, h, columns, hasEnvelope, theme) {
   if (!columns || columns.length === 0) return
   if (!hasEnvelope) return  // MIDI mode: envelopes weren't measured, skip
+
+  const fastEnvColor = (theme && theme.accent) ? theme.accent : COLORS.fastEnv
 
   ctx.save()
   ctx.translate(x, y)
@@ -490,20 +492,22 @@ function drawEnvelopeLayer(ctx, x, y, w, h, columns, hasEnvelope) {
   strokeLinePath(ctx, columns, (c) => transientLevelToY(c.slowEnvDb, h), COLORS.slowEnv, 1, 0.55)
 
   // Fast envelope on top — the transient detector
-  strokeLinePath(ctx, columns, (c) => transientLevelToY(c.fastEnvDb, h), COLORS.fastEnv, 1.5, 0.92)
+  strokeLinePath(ctx, columns, (c) => transientLevelToY(c.fastEnvDb, h), fastEnvColor, 1.5, 0.92)
 
   ctx.restore()
 }
 
-function drawInputOutputLayer(ctx, x, y, w, h, columns) {
+function drawInputOutputLayer(ctx, x, y, w, h, columns, theme) {
   if (!columns || columns.length === 0) return
+
+  const outputColor = (theme && theme.accent) ? theme.accent : COLORS.output
 
   ctx.save()
   ctx.translate(x, y)
 
   fillLevelEnvelope(ctx, columns, h, (c) => transientLevelToY(c.inputDb, h), COLORS.input, 0.10)
   strokeLinePath(ctx, columns, (c) => transientLevelToY(c.inputDb, h), COLORS.input, 1, 0.30)
-  strokeLinePath(ctx, columns, (c) => transientLevelToY(c.outputDb, h), COLORS.output, 1.5, 0.92)
+  strokeLinePath(ctx, columns, (c) => transientLevelToY(c.outputDb, h), outputColor, 1.5, 0.92)
 
   ctx.restore()
 }
@@ -534,7 +538,7 @@ function drawGainBadge(ctx, x, y, w, h, ring, theme) {
   const sign = meter.gainDb >= 0 ? '+' : ''
   const text = `${sign}${meter.gainDb.toFixed(1)} dB`
   const color = meter.gainDb >= 0
-    ? TRANSIENT_DISPLAY.gainChange.boostColor
+    ? ((theme && theme.accent) ? theme.accent : TRANSIENT_DISPLAY.gainChange.boostColor)
     : TRANSIENT_DISPLAY.gainChange.cutColor
 
   ctx.save()
@@ -586,16 +590,16 @@ export function drawTransientShaper(ctx, w, h, ring, theme, params) {
       drawThresholdLine(ctx, 0, 0, w, topH, theme, thresholdDb)
     }
 
-    drawEnvelopeLayer(ctx, 0, 0, w, topH, columns, hasEnvelope)
-    drawInputOutputLayer(ctx, 0, 0, w, topH, columns)
-    drawGainChangeStrip(ctx, 0, gainY, w, gainH, columns)
+    drawEnvelopeLayer(ctx, 0, 0, w, topH, columns, hasEnvelope, theme)
+    drawInputOutputLayer(ctx, 0, 0, w, topH, columns, theme)
+    drawGainChangeStrip(ctx, 0, gainY, w, gainH, columns, theme)
     drawGainBadge(ctx, 0, 0, w, h, ring, theme)
   } else {
     // Compact mode — overlay gain-change on top of envelope strip.
     drawLevelGrid(ctx, 0, 0, w, h, theme)
-    drawEnvelopeLayer(ctx, 0, 0, w, h, columns, hasEnvelope)
-    drawInputOutputLayer(ctx, 0, 0, w, h, columns)
-    drawGainChangeStrip(ctx, 0, 0, w, h, columns)
+    drawEnvelopeLayer(ctx, 0, 0, w, h, columns, hasEnvelope, theme)
+    drawInputOutputLayer(ctx, 0, 0, w, h, columns, theme)
+    drawGainChangeStrip(ctx, 0, 0, w, h, columns, theme)
   }
 }
 
@@ -605,15 +609,15 @@ export function drawTransientEnvelope(ctx, w, h, ring, theme) {
   const columns = buildTransientDisplayHistory(ring, w)
   const hasEnvelope = columns.some((c) => c.hasEnvelope !== false)
   drawLevelGrid(ctx, 0, 0, w, h, theme)
-  drawEnvelopeLayer(ctx, 0, 0, w, h, columns, hasEnvelope)
-  drawInputOutputLayer(ctx, 0, 0, w, h, columns)
+  drawEnvelopeLayer(ctx, 0, 0, w, h, columns, hasEnvelope, theme)
+  drawInputOutputLayer(ctx, 0, 0, w, h, columns, theme)
 }
 
 export function drawTransientGainChange(ctx, w, h, ring, theme) {
   if (!ctx || w < 4 || h < 4) return
   fillBackground(ctx, w, h, theme)
   const columns = buildTransientDisplayHistory(ring, w)
-  drawGainChangeStrip(ctx, 0, 0, w, h, columns)
+  drawGainChangeStrip(ctx, 0, 0, w, h, columns, theme)
   drawGainBadge(ctx, 0, 0, w, h, ring, theme)
 }
 

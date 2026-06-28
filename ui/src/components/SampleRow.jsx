@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { Play, Square, ArrowLeftRight } from 'lucide-react'
 import { labelColor, buildAudioUrl, formatDuration, midiToNoteName } from '../constants/labels.js'
 import { tokenValue } from '../theming/tokenValue.ts'
@@ -12,6 +12,7 @@ function stopPreview() {
   if (previewAudio) {
     previewAudio.pause()
     previewAudio.src = ''
+    previewAudio = null
   }
   if (previewStopTimer) {
     clearTimeout(previewStopTimer)
@@ -50,9 +51,20 @@ export default function SampleRow({
   rootNote,
 }) {
   const [isPlaying, setIsPlaying] = useState(false)
+  const [mediaPort, setMediaPort] = useState(null)
   const playingRef = useRef(false)
 
   const dur = Math.abs(region.endTime - region.startTime)
+
+  useEffect(() => {
+    let cancelled = false
+    window.xleth?.getMediaPort?.().then(port => {
+      if (!cancelled && port) setMediaPort(port)
+    }).catch(err => {
+      console.warn('[SampleSelector] Media server unavailable:', err?.message || err)
+    })
+    return () => { cancelled = true }
+  }, [])
 
   // ── Preview playback ───────────────────────────────────────────────────────
   const handleTogglePreview = useCallback((e) => {
@@ -72,35 +84,47 @@ export default function SampleRow({
 
     if (!sourceFilePath) return
 
-    previewAudio = new Audio(buildAudioUrl(sourceFilePath))
-    previewAudio.currentTime = region.startTime
+    const audioUrl = mediaPort
+      ? `http://127.0.0.1:${mediaPort}/media?path=${encodeURIComponent(sourceFilePath)}`
+      : buildAudioUrl(sourceFilePath)
+    const audio = new Audio(audioUrl)
+    previewAudio = audio
     activeRowId = region.id
 
-    // Schedule stop at endTime with a single timer (no polling)
-    const durationMs = Math.max(0, (region.endTime - region.startTime) * 1000)
-    previewStopTimer = setTimeout(() => {
+    const finishPreview = () => {
+      // A newer row may have replaced this audio element while it was loading.
+      if (previewAudio !== audio) return
       stopPreview()
       setIsPlaying(false)
       playingRef.current = false
-    }, durationMs)
+    }
 
-    previewAudio.addEventListener('ended', () => {
-      stopPreview()
-      setIsPlaying(false)
-      playingRef.current = false
-    })
+    audio.addEventListener('loadedmetadata', () => {
+      if (previewAudio !== audio) return
 
-    previewAudio.play().catch(err => {
-      console.error('[SampleSelector] Preview error:', err)
-      stopPreview()
-      setIsPlaying(false)
-      playingRef.current = false
-    })
+      try { audio.currentTime = region.startTime } catch (err) {
+        console.error('[SampleSelector] Preview seek error:', err)
+        finishPreview()
+        return
+      }
+
+      audio.play().then(() => {
+        if (previewAudio !== audio) return
+        // Start the cut timer only once media playback has genuinely begun.
+        const durationMs = Math.max(0, (region.endTime - region.startTime) * 1000)
+        previewStopTimer = setTimeout(finishPreview, durationMs)
+      }).catch(err => {
+        console.error('[SampleSelector] Preview error:', err?.name, err?.message || err)
+        finishPreview()
+      })
+    }, { once: true })
+
+    audio.addEventListener('ended', finishPreview, { once: true })
 
     setIsPlaying(true)
     playingRef.current = true
     console.log(`[SampleSelector] Preview: "${region.name}" ${region.startTime.toFixed(2)}–${region.endTime.toFixed(2)}s`)
-  }, [region, sourceFilePath])
+  }, [region, sourceFilePath, mediaPort])
 
   // ── Drag ───────────────────────────────────────────────────────────────────
   const handleDragStart = useCallback((e) => {

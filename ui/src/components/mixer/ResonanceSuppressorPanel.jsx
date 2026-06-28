@@ -12,7 +12,7 @@ const DesignerPreview = DESIGNER_ENABLED
   : null
 
 const PLUGIN_ID = 'resonancesuppressor'
-const PANEL_WIDTH = 760
+const PANEL_WIDTH = 960
 const RS_HQ_RISK_POLL_MS = 750
 
 export function shouldShowRsHqRealtimeWarning(snapshot) {

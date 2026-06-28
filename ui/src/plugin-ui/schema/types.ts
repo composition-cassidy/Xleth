@@ -135,6 +135,31 @@ export interface VisualizerProps {
   heightPx?: number
 }
 
+export interface CompressorCurveProps {
+  thresholdParam?: string
+  ratioParam?:     string
+  kneeParam?:      string
+}
+
+export interface CompressorSliderProps {
+  param:   string
+  label?:  string
+  format?: string
+}
+
+export interface CompressorDryWetProps {
+  mixParam?:  string
+  dryParam?:  string
+  wetParam?:  string
+  linkParam?: string
+}
+
+export interface CompressorLookaheadProps {
+  param?:  string
+  label?:  string
+  format?: string
+}
+
 export interface LabelProps {
   text:     string
   variant?: 'default' | 'muted' | 'header'

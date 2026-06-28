@@ -12,6 +12,10 @@ import MeterNode      from './components/MeterNode.jsx'
 import VisualizerNode from './components/VisualizerNode.jsx'
 import LabelNode      from './components/LabelNode.jsx'
 import SpacerNode     from './components/SpacerNode.jsx'
+import CompressorCurveNode from './components/CompressorCurveNode.jsx'
+import CompressorSliderNode from './components/CompressorSliderNode.jsx'
+import CompressorDryWetNode from './components/CompressorDryWetNode.jsx'
+import CompressorLookaheadNode from './components/CompressorLookaheadNode.jsx'
 import DecorTextNode  from './components/DecorTextNode.jsx'
 import DecorLineNode  from './components/DecorLineNode.jsx'
 import DecorShapeNode from './components/DecorShapeNode.jsx'
@@ -26,6 +30,10 @@ const FF_CHILD_COMPONENTS = {
   visualizer: VisualizerNode,
   label:      LabelNode,
   spacer:     SpacerNode,
+  compressorCurve:     CompressorCurveNode,
+  compressorSlider:    CompressorSliderNode,
+  compressorDryWet:    CompressorDryWetNode,
+  compressorLookahead: CompressorLookaheadNode,
   // Decoration types native to freeform layers
   decorText:  DecorTextNode,
   decorLine:  DecorLineNode,

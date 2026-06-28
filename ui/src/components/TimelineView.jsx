@@ -31,7 +31,8 @@ import { editCursor } from '../services/EditCursor.js'
 import { createXlethStoppedPreviewSeekScheduler } from '../services/stoppedPreviewSeekScheduler.js'
 import { timelineEvents } from '../timelineEvents.js'
 import {
-  BEATS_PER_BAR, TRACK_HEIGHT, PPQ, RULER_HEIGHT,
+  BEATS_PER_BAR, DEFAULT_TRACK_HEIGHT, TRACK_HEIGHT, PPQ, RULER_HEIGHT,
+  setTimelineTrackHeight, zoomTrackHeight,
   pixelToBeat, snapBeatToGrid, beatsToTicks, regionDurationToTicks, findFreePosition,
   GRANULARITY_BEATS,
 } from '../constants/timeline.js'
@@ -726,6 +727,7 @@ export default function TimelineView({
 
   // ── Track state ────────────────────────────────────────────────────────────
   const [tracks, setTracks] = useState([])
+  const [trackHeight, setTrackHeight] = useState(DEFAULT_TRACK_HEIGHT)
 
   // FXG.4-h-r1: derive the flattened timeline row model (track rows + macro
   // automation child-lane rows). Threaded into the canvas geometry, hit-testing,
@@ -733,8 +735,8 @@ export default function TimelineView({
   // truth for where each row sits. Recomputes only when tracks or graphStates
   // change — tracks with no lanes produce the original contiguous geometry.
   const trackLayout = useMemo(
-    () => buildTrackLayout({ tracks, graphStates }),
-    [tracks, graphStates],
+    () => buildTrackLayout({ tracks, graphStates, trackHeight }),
+    [tracks, graphStates, trackHeight],
   )
 
   const [contextMenu, setContextMenu] = useState(null)
@@ -1727,10 +1729,35 @@ export default function TimelineView({
   // ── Wheel handler (shared between ruler and canvas) ────────────────────────
 
   // Wheel on canvas/ruler:
-  //   Ctrl+wheel  = zoom (cursor-centered)
+  //   Ctrl+wheel  = horizontal zoom (cursor-centered)
+  //   Ctrl+Alt+wheel = vertical zoom (cursor-centered)
   //   Shift+wheel = horizontal scroll
   //   plain wheel = vertical track scroll
   const handleWheel = useCallback((e) => {
+    if (e.ctrlKey && e.altKey) {
+      e.preventDefault()
+      markUserScrolling()
+      const sc = scrollContainerRef.current
+      if (!sc || e.deltaY === 0) return
+
+      const nextHeight = zoomTrackHeight(trackHeight, e.deltaY)
+      if (nextHeight === trackHeight) return
+
+      const rect = sc.getBoundingClientRect()
+      const localY = Math.max(0, Math.min(sc.clientHeight, e.clientY - rect.top))
+      const contentY = sc.scrollTop + localY
+      const scale = nextHeight / trackHeight
+
+      setTimelineTrackHeight(nextHeight)
+      setTrackHeight(nextHeight)
+      requestAnimationFrame(() => {
+        const current = scrollContainerRef.current
+        if (!current) return
+        const maxScrollTop = Math.max(0, current.scrollHeight - current.clientHeight)
+        current.scrollTop = Math.max(0, Math.min(maxScrollTop, contentY * scale - localY))
+      })
+      return
+    }
     if (e.ctrlKey) {
       e.preventDefault()
       markUserScrolling()
@@ -1758,7 +1785,7 @@ export default function TimelineView({
       e.preventDefault()
       sc.scrollTop += e.deltaY
     }
-  }, [zoomAtCursor, scrollOffsetRef, applyScroll, scrollBy, markUserScrolling])
+  }, [trackHeight, zoomAtCursor, scrollOffsetRef, applyScroll, scrollBy, markUserScrolling])
 
   const handleMiddleMousePan = useCallback((deltaXPx, deltaYPx) => {
     markUserScrolling()
@@ -2460,6 +2487,57 @@ export default function TimelineView({
       console.error('[DeleteTool] removePatternBlock failed:', err)
     }
   }, [])
+
+  const handleMakeUniquePatternBlock = useCallback(async (blockId) => {
+    const block = patternBlocks.find(b => b.id === blockId)
+    if (!block) return
+    const orig = patterns[block.patternId]
+    if (!orig) return
+    try {
+      const newPatternId = await window.xleth?.timeline?.addPattern({
+        name: orig.name,
+        regionId: orig.regionId,
+        lengthTicks: orig.lengthTicks,
+      })
+      if (newPatternId == null || newPatternId < 0) return
+      if (orig.notes?.length > 0) {
+        await window.xleth?.timeline?.addNotesBatch(
+          newPatternId,
+          orig.notes.map(n => ({
+            positionTicks: n.positionTicks,
+            durationTicks: n.durationTicks,
+            pitch: n.pitch,
+            velocity: n.velocity,
+            isSlide: n.isSlide,
+            slideCurveCx: n.slideCurveCx,
+            slideCurveCy: n.slideCurveCy,
+          }))
+        )
+      }
+      await window.xleth?.timeline?.removePatternBlock(blockId)
+      const newBlockId = await window.xleth?.timeline?.addPatternBlock({
+        trackId: block.trackId,
+        patternId: newPatternId,
+        positionTicks: block.positionTicks,
+        durationTicks: block.durationTicks,
+        offsetTicks: block.offsetTicks ?? 0,
+      })
+      if (block.loopEnabled && newBlockId != null && newBlockId >= 0) {
+        await window.xleth?.timeline?.setPatternBlockLoop(newBlockId, true)
+      }
+      await fetchPatterns()
+      await fetchPatternBlocks()
+      timelineEvents.dispatchEvent(new Event('timeline-patterns-changed'))
+      timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
+      if (newBlockId != null && newBlockId >= 0) {
+        setSelectedBlockIds(new Set([newBlockId]))
+        setCurrentPatternIdByTrack(prev => ({ ...prev, [block.trackId]: newPatternId }))
+      }
+      console.log(`[SelectTool] Made unique copy: block ${blockId} → new pattern ${newPatternId}, new block ${newBlockId}`)
+    } catch (err) {
+      console.error('[SelectTool] makeUniquePatternBlock failed:', err)
+    }
+  }, [patternBlocks, patterns, fetchPatterns, fetchPatternBlocks, setCurrentPatternIdByTrack])
 
   const deleteSelectedTimelineItems = useCallback(async () => {
     if (selectedClipIds.size === 0 && selectedBlockIds.size === 0) return false
@@ -3509,7 +3587,13 @@ export default function TimelineView({
   ])
 
   const contextMenuItems = contextMenu
-    ? (contextMenu.type === 'clip'
+    ? (contextMenu.type === 'patternBlock'
+        ? [
+            { label: 'Make Unique Copy', onClick: () => { handleMakeUniquePatternBlock(contextMenu.blockId); closeClipContextMenu() } },
+            { type: 'separator' },
+            { label: 'Delete', danger: true, onClick: () => { handleDeletePatternBlock(contextMenu.blockId); closeClipContextMenu() } },
+          ]
+        : contextMenu.type === 'clip'
         ? [
             { label: 'Auto-Trim Silence (−54 dB)', onClick: () => handleAutoTrimClip(contextMenu.clipId) },
             { type: 'separator' },
@@ -3964,6 +4048,7 @@ export default function TimelineView({
               onSetTrackColor={handleSetTrackColor}
               scrollContainerRef={scrollContainerRef}
               width={timelineTrackHeaderWidth}
+              trackHeight={trackHeight}
               macroRows={trackLayout.macroRows}
               onHideMacroLane={(trackId, macroNodeId) =>
                 useEffectChainStore.getState().hideMacroAutomationLaneForTrack?.(trackId, macroNodeId)}
@@ -4044,6 +4129,10 @@ export default function TimelineView({
                   onRequestClipContextMenu={(clipId, x, y) => {
                     setQuickFxMenu(null)
                     setContextMenu({ type: 'clip', clipId, x, y })
+                  }}
+                  onRequestPatternBlockContextMenu={(block, x, y) => {
+                    setQuickFxMenu(null)
+                    setContextMenu({ type: 'patternBlock', blockId: block.id, x, y })
                   }}
                   onOpenClipFxQuickMenu={(clipId, anchor) => {
                     setContextMenu(null)

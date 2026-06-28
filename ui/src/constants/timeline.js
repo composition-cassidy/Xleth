@@ -1,6 +1,30 @@
 // Timeline canvas constants
 
-export const TRACK_HEIGHT = 50
+export const DEFAULT_TRACK_HEIGHT = 50
+export const MIN_TRACK_HEIGHT = 24
+export const MAX_TRACK_HEIGHT = 120
+export const TRACK_ZOOM_FACTOR = 1.15
+
+// This is a live ES-module binding because timeline geometry is also consumed by
+// pointer-tool modules outside React. TimelineView updates it before rendering.
+export let TRACK_HEIGHT = DEFAULT_TRACK_HEIGHT
+
+export function clampTrackHeight(height) {
+  const value = Number(height)
+  if (!Number.isFinite(value)) return DEFAULT_TRACK_HEIGHT
+  return Math.min(MAX_TRACK_HEIGHT, Math.max(MIN_TRACK_HEIGHT, value))
+}
+
+export function setTimelineTrackHeight(height) {
+  TRACK_HEIGHT = clampTrackHeight(height)
+  return TRACK_HEIGHT
+}
+
+export function zoomTrackHeight(height, deltaY) {
+  if (!Number.isFinite(deltaY) || deltaY === 0) return clampTrackHeight(height)
+  const factor = deltaY > 0 ? 1 / TRACK_ZOOM_FACTOR : TRACK_ZOOM_FACTOR
+  return clampTrackHeight(Math.round(clampTrackHeight(height) * factor))
+}
 export const RULER_HEIGHT = 26
 export const HEADER_WIDTH = 188
 

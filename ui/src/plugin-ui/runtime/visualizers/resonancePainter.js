@@ -28,6 +28,9 @@ const FREQ_TICKS = Object.freeze([
 const FREQ_MIN_HZ = 20
 const FREQ_MAX_HZ = 20000
 
+// Fallback palette (used only when no theme accent is supplied). The live
+// palette is derived from the user's settings accent via resolvePalette() so
+// the graph matches the rest of XLETH instead of a hardcoded cyan.
 const COLORS = Object.freeze({
   spectrumFill: 'rgba(56, 189, 248, 0.14)',
   spectrumLine: '#7dd3fc',
@@ -37,6 +40,47 @@ const COLORS = Object.freeze({
   weightingMid:  'rgba(82, 229, 255, 0.32)',
   boundary:      'rgba(226, 241, 255, 0.34)',
 })
+
+// Convert a "#rrggbb" (or "#rgb") hex string to an rgba() string. Returns the
+// input untouched if it is not a parseable hex (e.g. already rgba()).
+function hexToRgba(hex, alpha) {
+  if (typeof hex !== 'string') return hex
+  let m = /^#?([0-9a-f]{6})$/i.exec(hex.trim())
+  if (m) {
+    const n = parseInt(m[1], 16)
+    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`
+  }
+  m = /^#?([0-9a-f]{3})$/i.exec(hex.trim())
+  if (m) {
+    const r = parseInt(m[1][0] + m[1][0], 16)
+    const g = parseInt(m[1][1] + m[1][1], 16)
+    const b = parseInt(m[1][2] + m[1][2], 16)
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`
+  }
+  // Already an rgb()/rgba() string — re-wrap with the requested alpha.
+  m = /^rgba?\(\s*([0-9]+)[,\s]+([0-9]+)[,\s]+([0-9]+)/i.exec(hex.trim())
+  if (m) return `rgba(${m[1]}, ${m[2]}, ${m[3]}, ${alpha})`
+  return hex
+}
+
+// Build the live draw palette from the theme accent. Spectrum / reduction /
+// weighting all key off the same accent hue (distinguished by alpha + line
+// weight) so the visualizer follows the user's chosen accent color. Per-band
+// handle colors are intentionally NOT touched — those live in CSS and stay
+// distinct so bands remain individually identifiable.
+function resolvePalette(theme) {
+  const accent = theme?.accent
+  if (!accent) return COLORS
+  return {
+    spectrumFill:  hexToRgba(accent, 0.13),
+    spectrumLine:  accent,
+    reductionFill: hexToRgba(accent, 0.20),
+    reductionLine: accent,
+    weightingLine: accent,
+    weightingMid:  hexToRgba(accent, 0.32),
+    boundary:      COLORS.boundary,
+  }
+}
 
 function finiteOr(value, fallback) {
   return Number.isFinite(value) ? value : fallback
@@ -143,7 +187,7 @@ function drawBoundaryLines(ctx, w, h, theme, params) {
   ctx.restore()
 }
 
-function drawSpectrum(ctx, values, w, h) {
+function drawSpectrum(ctx, values, w, h, palette = COLORS) {
   if (!values.length) return
 
   ctx.save()
@@ -155,7 +199,7 @@ function drawSpectrum(ctx, values, w, h) {
   }
   ctx.lineTo(w, h)
   ctx.closePath()
-  ctx.fillStyle = COLORS.spectrumFill
+  ctx.fillStyle = palette.spectrumFill
   ctx.fill()
 
   ctx.beginPath()
@@ -166,14 +210,14 @@ function drawSpectrum(ctx, values, w, h) {
     if (i === 0) ctx.moveTo(x, y)
     else ctx.lineTo(x, y)
   }
-  ctx.strokeStyle = COLORS.spectrumLine
+  ctx.strokeStyle = palette.spectrumLine
   ctx.globalAlpha = 0.65
   ctx.lineWidth = 1.4
   ctx.stroke()
   ctx.restore()
 }
 
-function drawReduction(ctx, values, w, h) {
+function drawReduction(ctx, values, w, h, palette = COLORS) {
   if (!values.length) return
 
   ctx.save()
@@ -188,7 +232,7 @@ function drawReduction(ctx, values, w, h) {
   }
   ctx.lineTo(w, 0)
   ctx.closePath()
-  ctx.fillStyle = COLORS.reductionFill
+  ctx.fillStyle = palette.reductionFill
   ctx.fill()
 
   // Bright stroke at the bottom edge of the reduction region
@@ -200,20 +244,20 @@ function drawReduction(ctx, values, w, h) {
     if (i === 0) ctx.moveTo(x, y)
     else ctx.lineTo(x, y)
   }
-  ctx.strokeStyle = COLORS.reductionLine
+  ctx.strokeStyle = palette.reductionLine
   ctx.lineWidth = 1.6
   ctx.globalAlpha = 0.60
   ctx.stroke()
   ctx.restore()
 }
 
-function drawWeighting(ctx, values, w, h) {
+function drawWeighting(ctx, values, w, h, palette = COLORS) {
   if (!values.length) return
 
   ctx.save()
   // Centerline at weighting=1 ("neutral sensitivity"), values map [0, 2.5]
   // onto the canvas with 1.0 sitting at vertical mid.
-  ctx.strokeStyle = COLORS.weightingMid
+  ctx.strokeStyle = palette.weightingMid
   ctx.lineWidth = 1
   ctx.setLineDash([3, 3])
   const midY = Math.round(h - (1 / 2.5) * h) + 0.5
@@ -231,7 +275,7 @@ function drawWeighting(ctx, values, w, h) {
     if (i === 0) ctx.moveTo(x, y)
     else ctx.lineTo(x, y)
   }
-  ctx.strokeStyle = COLORS.weightingLine
+  ctx.strokeStyle = palette.weightingLine
   ctx.lineWidth = 1.8
   ctx.globalAlpha = 0.9
   ctx.stroke()
@@ -250,13 +294,13 @@ function drawNoSignal(ctx, w, h, theme) {
   ctx.restore()
 }
 
-function drawActivityChip(ctx, w, h, bucket) {
+function drawActivityChip(ctx, w, h, bucket, palette = COLORS) {
   const activity = clamp(finiteOr(bucket?.activity, 0), 0, 1)
   if (activity <= 0) return
   const r = 4
   ctx.save()
   ctx.globalAlpha = 0.4 + 0.6 * activity
-  ctx.fillStyle = COLORS.reductionLine
+  ctx.fillStyle = palette.reductionLine
   ctx.beginPath()
   ctx.arc(w - 10, 10, r, 0, Math.PI * 2)
   ctx.fill()
@@ -268,6 +312,7 @@ export function drawResonanceCombined(ctx, w, h, ring, theme, params) {
   clearBackground(ctx, w, h, theme)
   drawGrid(ctx, w, h, theme)
 
+  const palette = resolvePalette(theme)
   const bucket = latestBucket(ring)
   if (!bucket) {
     drawBoundaryLines(ctx, w, h, theme, params)
@@ -275,11 +320,11 @@ export function drawResonanceCombined(ctx, w, h, ring, theme, params) {
     return
   }
 
-  drawSpectrum(ctx, valueArray(bucket, 'spectrum'), w, h)
-  drawWeighting(ctx, valueArray(bucket, 'weighting'), w, h)
-  drawReduction(ctx, valueArray(bucket, 'reduction'), w, h)
+  drawSpectrum(ctx, valueArray(bucket, 'spectrum'), w, h, palette)
+  drawWeighting(ctx, valueArray(bucket, 'weighting'), w, h, palette)
+  drawReduction(ctx, valueArray(bucket, 'reduction'), w, h, palette)
   drawBoundaryLines(ctx, w, h, theme, params)
-  drawActivityChip(ctx, w, h, bucket)
+  drawActivityChip(ctx, w, h, bucket, palette)
 }
 
 export function drawResonanceSpectrum(ctx, w, h, ring, theme, params) {
@@ -287,7 +332,7 @@ export function drawResonanceSpectrum(ctx, w, h, ring, theme, params) {
   clearBackground(ctx, w, h, theme)
   drawGrid(ctx, w, h, theme)
   const bucket = latestBucket(ring)
-  drawSpectrum(ctx, valueArray(bucket, 'spectrum'), w, h)
+  drawSpectrum(ctx, valueArray(bucket, 'spectrum'), w, h, resolvePalette(theme))
   drawBoundaryLines(ctx, w, h, theme, params)
 }
 
@@ -295,9 +340,10 @@ export function drawResonanceReduction(ctx, w, h, ring, theme, params) {
   if (!ctx || w < 4 || h < 4) return
   clearBackground(ctx, w, h, theme)
   drawGrid(ctx, w, h, theme)
+  const palette = resolvePalette(theme)
   const bucket = latestBucket(ring)
-  drawReduction(ctx, valueArray(bucket, 'reduction'), w, h)
-  drawActivityChip(ctx, w, h, bucket)
+  drawReduction(ctx, valueArray(bucket, 'reduction'), w, h, palette)
+  drawActivityChip(ctx, w, h, bucket, palette)
   drawBoundaryLines(ctx, w, h, theme, params)
 }
 
@@ -306,7 +352,7 @@ export function drawResonanceWeighting(ctx, w, h, ring, theme, params) {
   clearBackground(ctx, w, h, theme)
   drawGrid(ctx, w, h, theme)
   const bucket = latestBucket(ring)
-  drawWeighting(ctx, valueArray(bucket, 'weighting'), w, h)
+  drawWeighting(ctx, valueArray(bucket, 'weighting'), w, h, resolvePalette(theme))
   drawBoundaryLines(ctx, w, h, theme, params)
 }
 

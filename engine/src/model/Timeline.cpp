@@ -34,7 +34,12 @@ static void sourceToJson(nlohmann::json& j, const SourceMedia& s) {
         {"duration",    s.duration},
         {"totalFrames", s.totalFrames},
         {"hasVideo",    s.hasVideo},
-        {"proxyReady",  s.proxyReady}
+        {"proxyReady",  s.proxyReady},
+        {"posterPath",  s.posterPath},
+        {"posterReady", s.posterReady},
+        {"previewProxyPath",   s.previewProxyPath},
+        {"previewProxyReady",  s.previewProxyReady},
+        {"previewProxyHeight", s.previewProxyHeight}
     };
 }
 
@@ -50,6 +55,17 @@ static void sourceFromJson(const nlohmann::json& j, SourceMedia& s) {
     j.at("totalFrames").get_to(s.totalFrames);
     j.at("hasVideo").get_to(s.hasVideo);
     j.at("proxyReady").get_to(s.proxyReady);
+    // Poster fields are newer than the original schema — read defensively so
+    // projects written before poster preview mode still load. posterReady is
+    // re-validated against disk by the caller, so a stale `true` is harmless.
+    s.posterPath  = j.value("posterPath", std::string{});
+    s.posterReady = j.value("posterReady", false);
+    // Whole-source preview proxy — newer than the original schema; read
+    // defensively. previewProxyReady is re-validated against disk by the loader
+    // (ProjectManager::resolveMediaPaths), so a stale `true` is harmless.
+    s.previewProxyPath   = j.value("previewProxyPath", std::string{});
+    s.previewProxyReady  = j.value("previewProxyReady", false);
+    s.previewProxyHeight = j.value("previewProxyHeight", 0);
 }
 
 // ─── Constructor ──────────────────────────────────────────────────────────────

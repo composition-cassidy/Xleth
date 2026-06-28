@@ -84,6 +84,16 @@ public:
     /** Cached adapter list from the last detectAdapters() call. */
     const std::vector<GpuAdapterInfo>& getAdapters() const { return adapters_; }
 
+    /**
+     * Highest DedicatedVideoMemory across all hardware DXGI adapters, in bytes.
+     * Static — needs no instance or created device, so it is safe to call very
+     * early in engine init (e.g. before the GpuDeviceManager exists, to size the
+     * frame cache). Picks the adapter with the most dedicated VRAM (the discrete
+     * GPU on a laptop). Returns 0 if DXGI is unavailable or no hardware adapter
+     * is found; callers should treat 0 as "unknown" and fall back.
+     */
+    static uint64_t queryMaxDedicatedVramBytes();
+
     /** Index of the highest-ranked (default) adapter, or -1 if none. */
     int getDefaultAdapterIndex() const;
 

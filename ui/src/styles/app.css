@@ -2069,6 +2069,60 @@ html[data-xleth-backdrop="video"] .app-body {
   color: var(--theme-accent);
 }
 
+/* Poster fast-preview toggle — mirrors the FX pill but icon + label */
+.preview-poster-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: 10px;
+  border: 1px solid var(--theme-border-subtle);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast),
+              border-color var(--transition-fast), box-shadow var(--transition-fast);
+  letter-spacing: 0.04em;
+  box-shadow: var(--theme-depth-elevation-1-top-highlight);
+}
+
+/* Poster mode ON — amber pill (a deliberate "not full fidelity" cue) */
+.preview-poster-btn.poster {
+  background: rgba(231, 174, 64, 0.18);
+  color: #e7ae40;
+  border-color: #e7ae40;
+  box-shadow: var(--theme-depth-pressed-inner-shadow);
+}
+
+/* Live mode — neutral surface */
+.preview-poster-btn.live {
+  background: var(--theme-bg-surface);
+  color: var(--text-muted);
+  border-color: var(--theme-border-subtle);
+}
+
+.preview-poster-btn:hover {
+  border-color: var(--theme-accent);
+  color: var(--theme-accent);
+}
+
+/* Persistent "preview is not render fidelity" badge */
+.preview-fidelity-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(231, 174, 64, 0.5);
+  background: rgba(231, 174, 64, 0.12);
+  color: #e7ae40;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  cursor: help;
+}
+
 .video-canvas-wrapper {
   position: relative;
   flex: 1;
@@ -3985,7 +4039,7 @@ html[data-xleth-backdrop="video"] .app-body {
 /* â”€â”€ Missing plugins dialog â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .missing-plugins-dialog {
-  width: 480px;
+  width: 540px;
 }
 
 .missing-plugins-body {
@@ -12110,7 +12164,7 @@ html.fx-drag-active * {
   display: flex;
   flex-direction: column;
   z-index: 200;
-  width: 480px;
+  width: 540px;
   box-shadow: 0 -4px 24px rgba(0,0,0,0.5);
   user-select: none;
 }
@@ -12249,13 +12303,14 @@ html.fx-drag-active * {
 
 .limiter-panel {
   position: fixed;
+  --theme-border-focus: #F0A3D0;
   background: var(--theme-bg-primary);
   border: 1px solid var(--theme-border-subtle);
   border-radius: var(--radius-md);
   display: flex;
   flex-direction: column;
   z-index: 200;
-  width: 420px;
+  width: 540px;
   box-shadow: 0 -4px 24px rgba(0,0,0,0.5);
   user-select: none;
 }
@@ -12428,6 +12483,72 @@ html.fx-drag-active * {
   height: 12px;
   background: var(--theme-border-subtle);
   margin: 0 4px;
+}
+
+.limiter-panel [data-pluginui-id="viz-row"] {
+  padding-bottom: 6px !important;
+}
+
+.limiter-panel [data-pluginui-id="limiter-viz"] {
+  border: 3px solid color-mix(in srgb, var(--theme-bg-inset) 80%, #000);
+  background: var(--theme-bg-inset);
+  overflow: hidden;
+}
+
+.limiter-panel [data-pluginui-id="body"] {
+  align-items: flex-start;
+}
+
+.limiter-panel [data-pluginui-id="s-gain"],
+.limiter-panel [data-pluginui-id="s-ceiling"],
+.limiter-panel [data-pluginui-id="s-release"] {
+  margin: 0 4px;
+}
+
+.limiter-panel [data-pluginui-id="divider-ceiling-release"],
+.limiter-panel [data-pluginui-id="divider-release-meter"] {
+  position: relative;
+  flex: 0 0 18px !important;
+  align-self: flex-start;
+  width: 18px !important;
+  height: 122px !important;
+  margin: 0;
+  background: transparent;
+}
+
+.limiter-panel [data-pluginui-id="divider-ceiling-release"]::before,
+.limiter-panel [data-pluginui-id="divider-release-meter"]::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 2px;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-0.5px);
+  background: color-mix(in srgb, var(--theme-text) 38%, transparent);
+}
+
+.limiter-panel [data-pluginui-id="gr-meter"] {
+  flex: 0 0 48px;
+  align-self: flex-start;
+  height: 122px !important;
+}
+
+.limiter-panel [data-pluginui-id="gr-meter"] .pluginui-meter-track {
+  width: 34px;
+  height: 104px;
+  min-height: 104px;
+  border: 3px solid color-mix(in srgb, var(--theme-text) 82%, transparent);
+  border-radius: 0;
+  background: transparent;
+}
+
+.limiter-panel [data-pluginui-id="gr-meter"] .pluginui-meter-fill {
+  background: var(--theme-accent);
+}
+
+.limiter-panel [data-pluginui-id="style-row"] {
+  border-top: 1px solid var(--theme-border-subtle);
 }
 
 /* â”€â”€ Distortion Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
@@ -13623,7 +13744,7 @@ html.fx-drag-active * {
   border-radius: var(--radius-md);
   box-shadow: var(--theme-fx-plugin-shadow);
   z-index: 1200;
-  width: 460px;
+  width: 540px;
   display: flex;
   flex-direction: column;
   user-select: none;
@@ -13747,6 +13868,53 @@ html.fx-drag-active * {
   text-align: center;
   white-space: nowrap;
   line-height: 1;
+}
+
+.ott-panel [data-pluginui-id="viz-row"] {
+  padding-bottom: 6px !important;
+}
+
+.ott-panel [data-pluginui-id="overdone-viz"] {
+  border: 3px solid color-mix(in srgb, var(--theme-bg-inset) 80%, #000);
+  background: var(--theme-bg-inset);
+  overflow: hidden;
+}
+
+.ott-panel [data-pluginui-id="body"] {
+  align-items: flex-start;
+}
+
+.ott-panel [data-pluginui-id="s-depth"],
+.ott-panel [data-pluginui-id="s-time"],
+.ott-panel [data-pluginui-id="s-gain-low"],
+.ott-panel [data-pluginui-id="s-gain-mid"],
+.ott-panel [data-pluginui-id="s-gain-high"],
+.ott-panel [data-pluginui-id="s-xover-low"],
+.ott-panel [data-pluginui-id="s-xover-high"] {
+  margin: 0 4px;
+}
+
+.ott-panel [data-pluginui-id="divider-time-gain"],
+.ott-panel [data-pluginui-id="divider-gain-xover"] {
+  position: relative;
+  flex: 0 0 18px !important;
+  align-self: flex-start;
+  width: 18px !important;
+  height: 122px !important;
+  margin: 0;
+  background: transparent;
+}
+
+.ott-panel [data-pluginui-id="divider-time-gain"]::before,
+.ott-panel [data-pluginui-id="divider-gain-xover"]::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 2px;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-0.5px);
+  background: color-mix(in srgb, var(--theme-text) 38%, transparent);
 }
 
 /* â”€â”€ Smart Balance Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
@@ -14050,7 +14218,7 @@ html.fx-drag-active * {
 .resonancesuppressor-panel {
   position: fixed;
   background:
-    radial-gradient(circle at 18% 0%, rgba(82, 229, 255, 0.12), transparent 30%),
+    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--theme-accent) 14%, transparent), transparent 30%),
     linear-gradient(180deg, #151a24 0%, #0a0f18 100%);
   border: 1px solid rgba(148, 163, 184, 0.18);
   border-radius: 18px;
@@ -14099,7 +14267,7 @@ html.fx-drag-active * {
 
 .resonancesuppressor-panel-close:hover {
   color: #e9fbff;
-  background: rgba(82, 229, 255, 0.12);
+  background: color-mix(in srgb, var(--theme-accent) 14%, transparent);
 }
 
 .resonancesuppressor-panel-edit-ui {
@@ -14116,8 +14284,8 @@ html.fx-drag-active * {
 
 .resonancesuppressor-panel-edit-ui:hover,
 .resonancesuppressor-panel-edit-ui--active {
-  border-color: rgba(82, 229, 255, 0.55);
-  background: rgba(82, 229, 255, 0.13);
+  border-color: color-mix(in srgb, var(--theme-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--theme-accent) 16%, transparent);
   color: #e9fbff;
 }
 
@@ -16774,6 +16942,7 @@ html, body, #root {
 .pluginui-panel {
   display: flex;
   flex-direction: column;
+  width: 100%;
 }
 
 .pluginui-row {
@@ -17292,7 +17461,7 @@ html, body, #root {
   width: 13px;
   height: 13px;
   margin: 0;
-  accent-color: #52e5ff;
+  accent-color: var(--theme-accent);
 }
 
 .pluginui-resonance-band-editor__button {
@@ -17312,8 +17481,8 @@ html, body, #root {
 }
 
 .pluginui-resonance-band-editor__button:hover:not(:disabled) {
-  border-color: rgba(82, 229, 255, 0.68);
-  background: rgba(82, 229, 255, 0.13);
+  border-color: color-mix(in srgb, var(--theme-accent) 68%, transparent);
+  background: color-mix(in srgb, var(--theme-accent) 16%, transparent);
 }
 
 .pluginui-resonance-band-editor__button:disabled {
@@ -17375,12 +17544,12 @@ html, body, #root {
 
 .pluginui-resonance-band-editor__type-btn:hover:not(:disabled) {
   color: #e9fbff;
-  background: rgba(82, 229, 255, 0.1);
+  background: color-mix(in srgb, var(--theme-accent) 12%, transparent);
 }
 
 .pluginui-resonance-band-editor__type-btn.is-selected {
-  background: #52e5ff;
-  color: #061019;
+  background: var(--theme-accent);
+  color: var(--theme-fg-inverse);
 }
 
 .pluginui-resonance-band-editor__type-btn:disabled {
@@ -17408,7 +17577,7 @@ html, body, #root {
   grid-column: 1 / -1;
   width: 100%;
   min-width: 0;
-  accent-color: #52e5ff;
+  accent-color: var(--theme-accent);
 }
 
 .pluginui-resonance-band-editor__control output {
@@ -17436,6 +17605,265 @@ html, body, #root {
 .pluginui-visualizer-canvas {
   display: block;
   width: 100%;
+}
+
+/* -- Compressor curve editor and block sliders ----------------------------- */
+
+[data-pluginui-id="knob-grid"] {
+  display: none !important;
+}
+
+.pluginui-compressor-curve {
+  width: 100%;
+  min-width: 0;
+  border: 3px solid color-mix(in srgb, var(--theme-bg-inset) 80%, #000);
+  background: var(--theme-bg-inset);
+  overflow: hidden;
+}
+
+.pluginui-compressor-curve-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 190px;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.pluginui-compressor-slider,
+.pluginui-compressor-drywet,
+.pluginui-compressor-lookahead {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+  min-width: 0;
+  color: var(--theme-text);
+}
+
+[data-pluginui-id="body"] > .pluginui-compressor-slider,
+[data-pluginui-id="body"] > .pluginui-compressor-drywet,
+[data-pluginui-id="body"] > .pluginui-compressor-lookahead {
+  margin: 0 4px;
+}
+
+[data-pluginui-id="divider-release-makeup"],
+[data-pluginui-id="divider-makeup-drywet"],
+[data-pluginui-id="divider-drywet-lookahead"] {
+  position: relative;
+  flex: 0 0 18px !important;
+  align-self: flex-start;
+  width: 18px !important;
+  height: 122px !important;
+  margin: 0;
+  background: transparent;
+}
+
+[data-pluginui-id="divider-release-makeup"]::before,
+[data-pluginui-id="divider-makeup-drywet"]::before,
+[data-pluginui-id="divider-drywet-lookahead"]::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 2px;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-0.5px);
+  background: color-mix(in srgb, var(--theme-text) 38%, transparent);
+}
+
+.pluginui-compressor-slider-track {
+  width: 36px;
+  height: 104px;
+  border: 3px solid color-mix(in srgb, var(--theme-text) 82%, transparent);
+  background: transparent;
+  display: flex;
+  align-items: flex-end;
+  justify-content: stretch;
+  overflow: hidden;
+  cursor: ns-resize;
+  touch-action: none;
+  outline: none;
+}
+
+.pluginui-compressor-slider-track:focus-visible,
+.pluginui-compressor-lookahead-box:focus-visible {
+  box-shadow: 0 0 0 1px var(--theme-bg-inset), 0 0 0 3px var(--theme-border-focus);
+}
+
+.pluginui-compressor-slider-fill {
+  width: 100%;
+  min-height: 2px;
+  background: var(--theme-accent);
+  opacity: 0.95;
+}
+
+.pluginui-compressor-slider-label {
+  width: 100%;
+  max-width: 72px;
+  color: var(--theme-text);
+  font-size: 10px;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Horizontal slider (e.g. Resonance Suppressor TRIM) — mirrors the vertical
+   compressor slider but fills from the left. */
+.pluginui-compressor-hslider {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 100%;
+}
+
+.pluginui-compressor-hslider-track {
+  width: 100%;
+  height: 18px;
+  border: 3px solid color-mix(in srgb, var(--theme-text) 82%, transparent);
+  background: transparent;
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-start;
+  overflow: hidden;
+  cursor: ew-resize;
+  touch-action: none;
+  outline: none;
+}
+
+.pluginui-compressor-hslider-track:focus-visible {
+  box-shadow: 0 0 0 1px var(--theme-bg-inset), 0 0 0 3px var(--theme-border-focus);
+}
+
+.pluginui-compressor-hslider-fill {
+  height: 100%;
+  min-width: 2px;
+  background: var(--theme-accent);
+  opacity: 0.95;
+}
+
+.pluginui-compressor-hslider-foot {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.pluginui-compressor-hslider-label {
+  color: var(--theme-text);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.pluginui-compressor-hslider-readout {
+  color: var(--theme-text-muted);
+  font-size: 10px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.pluginui-compressor-drywet {
+  gap: 5px;
+}
+
+.pluginui-compressor-drywet-rails {
+  display: flex;
+  gap: 6px;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.pluginui-compressor-drywet-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+}
+
+.pluginui-compressor-drywet .pluginui-compressor-slider-track {
+  width: 34px;
+}
+
+.pluginui-compressor-link-btn {
+  min-width: 40px;
+  height: 20px;
+  border: 1px solid color-mix(in srgb, var(--theme-text) 72%, transparent);
+  border-radius: 0;
+  background: transparent;
+  color: var(--theme-text);
+  font-size: 9px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pluginui-compressor-link-btn.active {
+  background: var(--theme-accent);
+  border-color: var(--theme-accent);
+  color: var(--theme-fg-inverse, var(--theme-bg-inset));
+}
+
+.pluginui-compressor-drywet-rails > .pluginui-compressor-link-btn {
+  align-self: center;
+}
+
+.pluginui-compressor-lookahead {
+  align-items: stretch;
+  gap: 7px;
+  flex: 0 0 150px !important;
+  min-width: 150px;
+}
+
+.pluginui-compressor-lookahead-box {
+  width: 100%;
+  height: 104px;
+  border: 3px solid color-mix(in srgb, var(--theme-text) 82%, transparent);
+  background: transparent;
+  cursor: ns-resize;
+  touch-action: none;
+  outline: none;
+  overflow: hidden;
+}
+
+.pluginui-compressor-lookahead-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* -- Transient Processor panel overrides ------------------------------------ */
+
+[data-pluginui-id="transient-viz"] {
+  border: 3px solid color-mix(in srgb, var(--theme-bg-inset) 80%, #000);
+  background: var(--theme-bg-inset);
+  overflow: hidden;
+}
+
+[data-pluginui-id="tdiv-1"],
+[data-pluginui-id="tdiv-2"],
+[data-pluginui-id="tdiv-3"] {
+  position: relative;
+  flex: 0 0 18px !important;
+  align-self: flex-start;
+  width: 18px !important;
+  height: 122px !important;
+  margin: 0;
+  background: transparent;
+}
+
+[data-pluginui-id="tdiv-1"]::before,
+[data-pluginui-id="tdiv-2"]::before,
+[data-pluginui-id="tdiv-3"]::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 2px;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-0.5px);
+  background: color-mix(in srgb, var(--theme-text) 38%, transparent);
 }
 
 /* ── Row variants: header / section / segmented ────────────────────────────
@@ -17504,12 +17932,11 @@ html, body, #root {
   --theme-bg-surface: #152033;
   --theme-bg-elevated: #1b293d;
   --theme-bg-inset: #050a12;
-  --theme-bg-hover: rgba(82, 229, 255, 0.1);
-  --theme-bg-active: rgba(82, 229, 255, 0.18);
-  --theme-accent: #52e5ff;
-  --theme-accent-hover: #2dd4bf;
-  --theme-border-focus: #a7f3ff;
-  --theme-border-subtle: rgba(148, 214, 230, 0.16);
+  --theme-bg-hover: var(--theme-accent-bg-medium, rgba(255, 255, 255, 0.08));
+  --theme-bg-active: var(--theme-accent-bg-subtle, rgba(255, 255, 255, 0.12));
+  /* Accent intentionally inherits from the global theme so the plugin follows
+     the user's settings accent color (no hardcoded cyan skin). */
+  --theme-border-subtle: rgba(148, 163, 184, 0.16);
   --theme-text: #e9fbff;
   --theme-text-muted: #aac4df;
   --theme-text-subtle: #7088a6;
@@ -17536,33 +17963,9 @@ html, body, #root {
   background: linear-gradient(180deg, rgba(17, 25, 39, 0.95), rgba(11, 16, 27, 0.95));
 }
 
-[data-pluginui-id="resonance-root"] [data-pluginui-id="title-cluster"]::before {
-  content: "";
-  width: 38px;
-  height: 38px;
-  flex: 0 0 38px;
-  border-radius: 13px;
-  background:
-    radial-gradient(circle at 50% 38%, transparent 0 8px, #061019 9px 11px, transparent 12px),
-    linear-gradient(135deg, #52e5ff 0%, #2dd4bf 100%);
-  box-shadow: 0 0 26px rgba(82, 229, 255, 0.28);
-}
-
-[data-pluginui-id="resonance-root"] [data-pluginui-id="title"] {
-  font-size: 16px;
-  font-weight: 800;
-  letter-spacing: 0;
-  color: #f5fdff;
-}
-
-[data-pluginui-id="resonance-root"] [data-pluginui-id="subtitle"] {
-  font-size: 11px;
-  color: #7da1c4;
-}
-
 [data-pluginui-id="resonance-root"] [data-pluginui-id="workspace"] {
   background:
-    linear-gradient(90deg, rgba(82, 229, 255, 0.03), transparent 44%),
+    linear-gradient(90deg, color-mix(in srgb, var(--theme-accent) 6%, transparent), transparent 44%),
     #070c14;
 }
 
@@ -17633,14 +18036,14 @@ html, body, #root {
 }
 
 [data-pluginui-id="resonance-root"] [data-pluginui-id="graph-view-tabs"] .pluginui-tabgroup-tab:hover {
-  border-color: rgba(82, 229, 255, 0.28);
+  border-color: color-mix(in srgb, var(--theme-accent) 30%, transparent);
   color: #f5fdff;
 }
 
 [data-pluginui-id="resonance-root"] [data-pluginui-id="graph-view-tabs"] .pluginui-tabgroup-tab.active {
-  border-color: rgba(82, 229, 255, 0.55);
-  background: #52e5ff;
-  color: #061019;
+  border-color: color-mix(in srgb, var(--theme-accent) 55%, transparent);
+  background: var(--theme-accent);
+  color: var(--theme-fg-inverse);
 }
 
 [data-pluginui-id="resonance-root"] [data-pluginui-id="graph-view-tabs"] .pluginui-tabgroup-body {
@@ -17697,12 +18100,12 @@ html, body, #root {
 
 [data-pluginui-id="resonance-root"] .pluginui-row--segmented > .pluginui-toggle-btn:hover {
   color: #f5fdff;
-  background: rgba(82, 229, 255, 0.1);
+  background: color-mix(in srgb, var(--theme-accent) 12%, transparent);
 }
 
 [data-pluginui-id="resonance-root"] .pluginui-row--segmented > .pluginui-toggle-btn.active {
-  background: #52e5ff;
-  color: #061019;
+  background: var(--theme-accent);
+  color: var(--theme-fg-inverse);
 }
 
 [data-pluginui-id="resonance-root"] [data-pluginui-id="quality-segmented"] > .pluginui-toggle-btn {
@@ -17722,9 +18125,9 @@ html, body, #root {
 }
 
 [data-pluginui-id="resonance-root"] [data-pluginui-id="output-actions"] .pluginui-toggle-btn.active {
-  background: #52e5ff;
-  border-color: #52e5ff;
-  color: #061019;
+  background: var(--theme-accent);
+  border-color: var(--theme-accent);
+  color: var(--theme-fg-inverse);
 }
 
 [data-pluginui-id="resonance-root"] [data-pluginui-id="stereo-main-row"] {
@@ -19482,6 +19885,37 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
 .preview-fx-btn:hover {
   border-color: var(--xleth-flat-accent);
   color: var(--xleth-flat-accent);
+}
+
+.preview-poster-btn {
+  border: 1px solid var(--xleth-flat-border-strong);
+  border-radius: 0;
+  background: var(--xleth-flat-tab);
+  color: var(--xleth-flat-text-muted);
+  box-shadow: none;
+}
+
+.preview-poster-btn.poster {
+  border-color: #e7ae40;
+  background: var(--xleth-flat-well);
+  color: #e7ae40;
+  box-shadow: none;
+}
+
+.preview-poster-btn.live {
+  border-color: var(--xleth-flat-border-strong);
+  background: var(--xleth-flat-tab);
+  color: var(--xleth-flat-text-subtle);
+  box-shadow: none;
+}
+
+.preview-poster-btn:hover {
+  border-color: var(--xleth-flat-accent);
+  color: var(--xleth-flat-accent);
+}
+
+.preview-fidelity-badge {
+  border-radius: 0;
 }
 
 .video-canvas-wrapper {

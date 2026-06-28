@@ -90,7 +90,9 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
     AVRational                     fps,
     const std::vector<VideoEvent>& events,
     bool                           allowProxy,
-    int64_t                        projectStartSample)
+    int64_t                        projectStartSample,
+    bool                           posterMode,
+    const std::unordered_map<int, std::string>* renderProxyBySource)
 {
     const double bpm = timeline.getBPM();
     const GridLayout& layout = timeline.getGridLayout();
@@ -183,22 +185,74 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
         std::string pickedPath  = src->filePath;
         int64_t     pickedFrame = srcFrame;
 
-        if (allowProxy && ev->regionId > 0 && !isFullscreen) {
-            const SampleRegion* r = timeline.getRegion(ev->regionId);
-            if (r && r->proxyReady && !r->proxyPath.empty()) {
-                if (sourceTime >= r->proxyStartTime &&
-                    sourceTime <  r->proxyEndTime) {
-                    pickedPath  = r->proxyPath;
-                    pickedFrame = computeSourceFrameFromTime(
-                                      sourceTime - r->proxyStartTime, src->fps);
+        // ── RENDER PATH: resolution-aware proxy plan (authoritative) ──────────
+        // When a render plan is supplied it fully owns the source-vs-proxy choice
+        // for every element (grid + fullscreen). A non-empty mapped path is a
+        // footprint-sized whole-source proxy (frame index 1:1); a missing/empty
+        // entry means decode the ORIGINAL. This deliberately bypasses ALL the
+        // preview substitution below (region/legacy/preview proxy, poster). Gated
+        // by allowProxy so the full-quality override (allowProxy=false) still
+        // delivers bit-exact original pixels to the encoder.
+        if (renderProxyBySource) {
+            // Authoritative render plan — no preview substitution.
+            if (allowProxy) {
+                auto it = renderProxyBySource->find(ev->sourceId);
+                if (it != renderProxyBySource->end() && !it->second.empty()) {
+                    pickedPath  = it->second;
+                    pickedFrame = srcFrame;   // whole-source proxy: 1:1 frame map
+                }
+                // else: leave pickedPath = original source.
+            }
+        } else {
+            // ── PREVIEW PATH substitution ladder ──────────────────────────────
+            if (allowProxy && ev->regionId > 0 && !isFullscreen) {
+                const SampleRegion* r = timeline.getRegion(ev->regionId);
+                if (r && r->proxyReady && !r->proxyPath.empty()) {
+                    if (sourceTime >= r->proxyStartTime &&
+                        sourceTime <  r->proxyEndTime) {
+                        pickedPath  = r->proxyPath;
+                        pickedFrame = computeSourceFrameFromTime(
+                                          sourceTime - r->proxyStartTime, src->fps);
+                    }
                 }
             }
-        }
 
-        // Legacy source-wide proxy fallback
-        if (allowProxy && pickedPath == src->filePath &&
-            src->proxyReady && !src->proxyPath.empty()) {
-            pickedPath = src->proxyPath;
+            // Legacy source-wide proxy fallback
+            if (allowProxy && pickedPath == src->filePath &&
+                src->proxyReady && !src->proxyPath.empty()) {
+                pickedPath = src->proxyPath;
+            }
+
+            // ── Whole-source preview proxy (PREVIEW-ONLY) ─────────────────────
+            // The primary preview path: ONE small all-intra proxy of the ENTIRE
+            // source, used for ALL cells — grid AND fullscreen/backdrop. Every
+            // source frame is kept at the source fps, so the frame index maps 1:1
+            // (no time-base remap like the region proxy). Random access into the
+            // small intra proxy is a cheap exact seek, so LIVE preview stays smooth
+            // even when scrubbing into previously-unvisited regions. This
+            // supersedes the region/legacy proxy pick above.
+            const bool previewProxyEngaged =
+                allowProxy && src->previewProxyReady && !src->previewProxyPath.empty();
+            if (previewProxyEngaged) {
+                pickedPath  = src->previewProxyPath;
+                pickedFrame = srcFrame;
+            }
+
+            // Poster fast-preview override (PREVIEW-ONLY). Bind a cached
+            // single-frame thumbnail instead of live-decoding — one resident
+            // texture per cell. Skipped once the preview proxy is engaged (live
+            // motion beats a static poster); poster is the fallback only WHILE the
+            // proxy is still building. Fullscreen layers are included so the 4K
+            // backdrop doesn't live-decode every frame.
+            if (!previewProxyEngaged &&
+                posterMode && src->posterReady && !src->posterPath.empty()) {
+                pickedPath = src->posterPath;
+                const int bucket = static_cast<int>(std::floor(std::max(0.0, ev->sourceStartTime)));
+                auto it = src->thumbnailPaths.find(bucket);
+                if (it != src->thumbnailPaths.end() && !it->second.empty())
+                    pickedPath = it->second;
+                pickedFrame = 0;
+            }
         }
 
         req.sourcePath       = pickedPath;

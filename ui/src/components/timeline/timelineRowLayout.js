@@ -21,7 +21,7 @@
 // TRACK_HEIGHT they always had — child rows only INSERT extra space, so the
 // arrangement of audio/pattern clips is unchanged when a track has no lanes.
 
-import { TRACK_HEIGHT } from '../../constants/timeline.js'
+import { DEFAULT_TRACK_HEIGHT, TRACK_HEIGHT } from '../../constants/timeline.js'
 
 // Child macro automation lanes are shorter than full tracks — enough vertical
 // room for a clip body + a small curve preview, but visibly subordinate to the
@@ -44,7 +44,13 @@ export function macroLaneLabel(macroNode) {
 // whose child lanes are hidden as a group (collapse affordance). A lane is also
 // hidden when its own `visible` flag is false. Orphaned lanes (targetUnavailable)
 // still render so the user can see/repair them — they are never silently dropped.
-export function buildTimelineRows({ tracks, graphStates = {}, collapsed = null } = {}) {
+export function buildTimelineRows({
+  tracks,
+  graphStates = {},
+  collapsed = null,
+  trackHeight = TRACK_HEIGHT,
+  macroLaneHeight = Math.round(MACRO_LANE_HEIGHT * trackHeight / DEFAULT_TRACK_HEIGHT),
+} = {}) {
   const rows = []
   if (!Array.isArray(tracks)) return rows
   const collapsedSet = collapsed instanceof Set ? collapsed : null
@@ -62,11 +68,11 @@ export function buildTimelineRows({ tracks, graphStates = {}, collapsed = null }
       macroNodeId: null,
       laneId: null,
       y,
-      height: TRACK_HEIGHT,
+      height: trackHeight,
       visible: true,
       label: track?.name ?? '',
     })
-    y += TRACK_HEIGHT
+    y += trackHeight
 
     const trackCollapsed = collapsedSet?.has(trackId)
     if (trackCollapsed) return
@@ -87,12 +93,12 @@ export function buildTimelineRows({ tracks, graphStates = {}, collapsed = null }
         macroNodeId: lane.macroNodeId,
         laneId: lane.laneId,
         y,
-        height: MACRO_LANE_HEIGHT,
+        height: macroLaneHeight,
         visible: true,
         targetUnavailable: lane.targetUnavailable === true,
         label: macroLaneLabel(macroNode),
       })
-      y += MACRO_LANE_HEIGHT
+      y += macroLaneHeight
     }
   })
 
@@ -102,8 +108,8 @@ export function buildTimelineRows({ tracks, graphStates = {}, collapsed = null }
 // Derives a layout "view" over the rows that the canvas + tools consult. Keeps
 // the `trackIndex → y` and `y → trackIndex` conversions in one place so the
 // shifted geometry is identical everywhere.
-export function buildTrackLayout({ tracks, graphStates = {}, collapsed = null } = {}) {
-  const rows = buildTimelineRows({ tracks, graphStates, collapsed })
+export function buildTrackLayout({ tracks, graphStates = {}, collapsed = null, trackHeight = TRACK_HEIGHT } = {}) {
+  const rows = buildTimelineRows({ tracks, graphStates, collapsed, trackHeight })
   const trackRows = rows.filter((r) => r.rowType === 'track')
   const macroRows = rows.filter((r) => r.rowType === 'macroAutomation')
   const trackCount = trackRows.length
@@ -119,7 +125,7 @@ export function buildTrackLayout({ tracks, graphStates = {}, collapsed = null } 
   function trackTop(trackIndex) {
     if (trackIndex == null || trackIndex < 0) return 0
     const t = trackTops[trackIndex]
-    return Number.isFinite(t) ? t : trackIndex * TRACK_HEIGHT
+    return Number.isFinite(t) ? t : trackIndex * trackHeight
   }
 
   // Maps a canvas-space Y to the owning track index. A Y inside a macro lane

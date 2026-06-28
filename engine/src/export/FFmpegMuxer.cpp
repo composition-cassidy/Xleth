@@ -573,6 +573,10 @@ bool FFmpegMuxer::initAudioStream(const ExportSettings& s)
     if (fmtCtx_->oformat->flags & AVFMT_GLOBALHEADER)
         audioCodecCtx_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
+    // libopus is marked experimental in some FFmpeg builds; opt in explicitly.
+    if (s.audioCodec == ExportSettings::AudioCodec::OPUS)
+        audioCodecCtx_->strict_std_compliance = FF_COMPLIANCE_EXPERIMENTAL;
+
     audioStream_->time_base = { 1, audioCodecCtx_->sample_rate };
 
     int ret = avcodec_open2(audioCodecCtx_, codec, nullptr);

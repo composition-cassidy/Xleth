@@ -226,6 +226,11 @@ Napi::Value GetTransportState(const Napi::CallbackInfo& info)
     return dispatchToService(info, "getTransportState");
 }
 
+Napi::Value Proxy_GetStatus(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "proxy_getStatus");
+}
+
 Napi::Value GetCurrentFrame(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "getCurrentFrame");
@@ -859,6 +864,16 @@ Napi::Value Timeline_GetPreviewEffectsBypass(const Napi::CallbackInfo& info)
 Napi::Value Timeline_SetPreviewEffectsBypass(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "timeline_setPreviewEffectsBypass");
+}
+
+Napi::Value Timeline_GetPreviewPosterMode(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_getPreviewPosterMode");
+}
+
+Napi::Value Timeline_SetPreviewPosterMode(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setPreviewPosterMode");
 }
 
 Napi::Value Timeline_AddVisualEffect(const Napi::CallbackInfo& info)
@@ -1610,6 +1625,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("pause",              Napi::Function::New(env, Pause));
     exports.Set("setBPM",             Napi::Function::New(env, SetBPM));
     exports.Set("getTransportState",  Napi::Function::New(env, GetTransportState));
+    exports.Set("proxy_getStatus",    Napi::Function::New(env, Proxy_GetStatus));
     exports.Set("getCurrentFrame",    Napi::Function::New(env, GetCurrentFrame));
     exports.Set("getFrameBuffer",     Napi::Function::New(env, GetFrameBuffer));
     exports.Set("initFrameOutput",    Napi::Function::New(env, InitFrameOutput));
@@ -1748,6 +1764,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("timeline_setPreviewResolutionScale", Napi::Function::New(env, Timeline_SetPreviewResolutionScale));
     exports.Set("timeline_getPreviewEffectsBypass",   Napi::Function::New(env, Timeline_GetPreviewEffectsBypass));
     exports.Set("timeline_setPreviewEffectsBypass",   Napi::Function::New(env, Timeline_SetPreviewEffectsBypass));
+    exports.Set("timeline_getPreviewPosterMode",      Napi::Function::New(env, Timeline_GetPreviewPosterMode));
+    exports.Set("timeline_setPreviewPosterMode",      Napi::Function::New(env, Timeline_SetPreviewPosterMode));
     exports.Set("timeline_addVisualEffect",           Napi::Function::New(env, Timeline_AddVisualEffect));
     exports.Set("timeline_removeVisualEffect",        Napi::Function::New(env, Timeline_RemoveVisualEffect));
     exports.Set("timeline_reorderVisualEffect",                Napi::Function::New(env, Timeline_ReorderVisualEffect));

@@ -81,6 +81,31 @@ bool GpuDeviceManager::detectAdapters()
     return true;
 }
 
+uint64_t GpuDeviceManager::queryMaxDedicatedVramBytes()
+{
+    // Standalone enumeration — does not touch the instance's factory_/adapters_,
+    // so it can run before any GpuDeviceManager exists. ComPtr releases on scope
+    // exit, so no manual cleanup is needed on any return path.
+    Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
+    HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1),
+                                    reinterpret_cast<void**>(factory.GetAddressOf()));
+    if (FAILED(hr) || !factory)
+        return 0;
+
+    uint64_t maxVram = 0;
+    Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+    for (UINT i = 0; factory->EnumAdapters1(i, adapter.ReleaseAndGetAddressOf()) != DXGI_ERROR_NOT_FOUND; ++i) {
+        DXGI_ADAPTER_DESC1 desc{};
+        if (FAILED(adapter->GetDesc1(&desc)))
+            continue;
+        if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)   // skip Basic Render Driver
+            continue;
+        if (desc.DedicatedVideoMemory > maxVram)
+            maxVram = desc.DedicatedVideoMemory;
+    }
+    return maxVram;
+}
+
 void GpuDeviceManager::rankAdapters()
 {
     // Sort: discrete first, then by VRAM descending

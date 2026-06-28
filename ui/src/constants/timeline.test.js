@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { beatToGridLinePixel, beatToPlayheadPixel, beatsToTicks, snapBeatToGrid } from './timeline.js'
+import {
+  MAX_TRACK_HEIGHT,
+  MIN_TRACK_HEIGHT,
+  beatToGridLinePixel,
+  beatToPlayheadPixel,
+  beatsToTicks,
+  snapBeatToGrid,
+  zoomTrackHeight,
+} from './timeline.js'
 
 describe('timeline coordinate helpers', () => {
   it('uses the active granularity when snapping beats', () => {
@@ -23,5 +31,12 @@ describe('timeline coordinate helpers', () => {
   it('can convert edit cursor beats without forcing the 1/16 grid', () => {
     expect(beatsToTicks(24.37)).toBe(23395)
     expect(beatsToTicks(snapBeatToGrid(24.37))).toBe(23280)
+  })
+
+  it('zooms track height in wheel direction and clamps the range', () => {
+    expect(zoomTrackHeight(50, -1)).toBe(57)
+    expect(zoomTrackHeight(50, 1)).toBe(43)
+    expect(zoomTrackHeight(MAX_TRACK_HEIGHT, -1)).toBe(MAX_TRACK_HEIGHT)
+    expect(zoomTrackHeight(MIN_TRACK_HEIGHT, 1)).toBe(MIN_TRACK_HEIGHT)
   })
 })

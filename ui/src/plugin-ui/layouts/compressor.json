@@ -2,9 +2,9 @@
   "$xleth": "plugin-ui-layout",
   "schemaVersion": 1,
   "pluginId": "compressor",
-  "name": "Default Compressor Layout",
+  "name": "Curve Compressor Layout",
   "panel": {
-    "preferredSize": { "width": 520, "height": 400 }
+    "preferredSize": { "width": 540, "height": 408 }
   },
   "root": {
     "id": "root",
@@ -16,13 +16,13 @@
         "style": { "paddingPx": [12, 12, 6, 12] },
         "children": [
           {
-            "id": "compressor-viz",
-            "type": "visualizer",
-            "style": { "growsToFill": true },
+            "id": "compressor-curve",
+            "type": "compressorCurve",
+            "style": { "growsToFill": true, "heightPx": 214 },
             "props": {
-              "source": "compressor.combined",
-              "preset": "compressorCombinedV2",
-              "heightPx": 180
+              "thresholdParam": "threshold",
+              "ratioParam": "ratio",
+              "kneeParam": "knee"
             }
           }
         ]
@@ -30,43 +30,22 @@
       {
         "id": "body",
         "type": "row",
-        "style": { "paddingPx": [6, 12, 6, 12], "gapPx": 12 },
+        "style": { "paddingPx": [12, 10, 8, 10], "gapPx": 0, "align": "start" },
         "children": [
-          {
-            "id": "knob-grid",
-            "type": "group",
-            "style": { "growsToFill": true, "gapPx": 8 },
-            "props": { "columns": 4 },
-            "children": [
-              { "id": "k-threshold", "type": "knob", "props": { "param": "threshold", "label": "THRESH",    "size": 52, "format": "dB1" } },
-              { "id": "k-ratio",     "type": "knob", "props": { "param": "ratio",     "label": "RATIO",     "size": 52, "format": "ratio" } },
-              { "id": "k-attack",    "type": "knob", "props": { "param": "attack",    "label": "ATTACK",    "size": 52, "format": "ms1" } },
-              { "id": "k-release",   "type": "knob", "props": { "param": "release",   "label": "RELEASE",   "size": 52, "format": "ms0" } },
-              { "id": "k-knee",      "type": "knob", "props": { "param": "knee",      "label": "KNEE",      "size": 52, "format": "dB1" } },
-              { "id": "k-makeup",    "type": "knob", "props": { "param": "makeup",    "label": "MAKEUP",    "size": 52, "format": "dB1" } },
-              { "id": "k-mix",       "type": "knob", "props": { "param": "mix",       "label": "MIX",       "size": 52, "format": "pct0" } },
-              { "id": "k-lookahead", "type": "knob", "props": { "param": "lookahead", "label": "LOOKAHEAD", "size": 52, "format": "ms1" } }
-            ]
-          },
-          {
-            "id": "gr-meter",
-            "type": "meter",
-            "style": { "widthPx": 32 },
-            "props": {
-              "source": { "kind": "effectMeter", "slot": "GAIN_REDUCTION" },
-              "label": "GR",
-              "unit": "dB",
-              "range": { "min": 0, "max": 40, "scale": "linear" },
-              "orientation": "vertical",
-              "format": "dB1"
-            }
-          }
+          { "id": "s-attack",  "type": "compressorSlider",    "style": { "growsToFill": true },  "props": { "param": "attack",  "label": "ATTACK",  "format": "ms1"  } },
+          { "id": "s-release", "type": "compressorSlider",    "style": { "growsToFill": true },  "props": { "param": "release", "label": "RELEASE", "format": "ms0"  } },
+          { "id": "divider-release-makeup", "type": "spacer", "style": { "widthPx": 18, "heightPx": 122 } },
+          { "id": "s-makeup",  "type": "compressorSlider",    "style": { "growsToFill": true },  "props": { "param": "makeup",  "label": "MAKEUP",  "format": "dB1"  } },
+          { "id": "divider-makeup-drywet", "type": "spacer", "style": { "widthPx": 18, "heightPx": 122 } },
+          { "id": "dry-wet",   "type": "compressorDryWet",    "style": { "widthPx": 124 }, "props": { "mixParam": "mix", "dryParam": "dry", "wetParam": "wet", "linkParam": "mix_linked" } },
+          { "id": "divider-drywet-lookahead", "type": "spacer", "style": { "widthPx": 18, "heightPx": 122 } },
+          { "id": "lookahead", "type": "compressorLookahead", "style": { "widthPx": 150 }, "props": { "param": "lookahead", "label": "LOOKAHEAD", "format": "ms1" } }
         ]
       },
       {
         "id": "detect-row",
         "type": "row",
-        "style": { "paddingPx": [6, 12, 10, 12], "gapPx": 6, "align": "center" },
+        "style": { "paddingPx": [6, 12, 10, 12], "gapPx": 6, "align": "center", "justify": "center" },
         "props": { "variant": "borderTop" },
         "children": [
           { "id": "detect-label", "type": "label", "props": { "text": "Detect:", "variant": "muted" } },
@@ -79,6 +58,45 @@
             "id": "btn-rms",
             "type": "toggle",
             "props": { "param": "detect_mode", "mode": "discreteValue", "valueWhenOn": 1, "label": "RMS" }
+          }
+        ]
+      },
+      {
+        "id": "knob-grid",
+        "type": "group",
+        "style": { "widthPx": 0, "heightPx": 0 },
+        "props": { "columns": 4 },
+        "children": [
+          { "id": "k-threshold", "type": "knob", "props": { "param": "threshold", "label": "THRESH",    "size": 52, "format": "dB1" } },
+          { "id": "k-ratio",     "type": "knob", "props": { "param": "ratio",     "label": "RATIO",     "size": 52, "format": "ratio" } },
+          { "id": "k-attack",    "type": "knob", "props": { "param": "attack",    "label": "ATTACK",    "size": 52, "format": "ms1" } },
+          { "id": "k-release",   "type": "knob", "props": { "param": "release",   "label": "RELEASE",   "size": 52, "format": "ms0" } },
+          { "id": "k-knee",      "type": "knob", "props": { "param": "knee",      "label": "KNEE",      "size": 52, "format": "dB1" } },
+          { "id": "k-makeup",    "type": "knob", "props": { "param": "makeup",    "label": "MAKEUP",    "size": 52, "format": "dB1" } },
+          { "id": "k-mix",       "type": "knob", "props": { "param": "mix",       "label": "MIX",       "size": 52, "format": "pct0" } },
+          { "id": "k-lookahead", "type": "knob", "props": { "param": "lookahead", "label": "LOOKAHEAD", "size": 52, "format": "ms1" } },
+          {
+            "id": "compressor-viz",
+            "type": "visualizer",
+            "style": { "widthPx": 0, "heightPx": 0 },
+            "props": {
+              "source": "compressor.combined",
+              "preset": "compressorCombinedV2",
+              "heightPx": 1
+            }
+          },
+          {
+            "id": "gr-meter",
+            "type": "meter",
+            "style": { "widthPx": 0, "heightPx": 0 },
+            "props": {
+              "source": { "kind": "effectMeter", "slot": "GAIN_REDUCTION" },
+              "label": "GR",
+              "unit": "dB",
+              "range": { "min": 0, "max": 40, "scale": "linear" },
+              "orientation": "vertical",
+              "format": "dB1"
+            }
           }
         ]
       }

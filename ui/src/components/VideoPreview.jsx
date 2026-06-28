@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
-import { Import, Grid3x3 } from 'lucide-react'
+import { Import, Grid3x3, Image, Film } from 'lucide-react'
 import GridEditorOverlay from './GridEditorOverlay.jsx'
 import GridEditorDock from './GridEditorDock.jsx'
 import { tokenValue } from '../theming/tokenValue.ts'
@@ -128,6 +128,9 @@ export default function VideoPreview() {
   // ── Preview performance controls ─────────────────────────────────────────
   const [resolutionScale, setResolutionScale] = useState(1.0)
   const [effectsBypass, setEffectsBypass] = useState(false)
+  // Poster fast-preview mode: grid cells show a single representative frame
+  // instead of live video. Default ON. Preview-only — never affects render.
+  const [posterMode, setPosterMode] = useState(true)
   const [initReady, setInitReady] = useState(false)
 
   // Restore persisted settings on mount
@@ -137,13 +140,18 @@ export default function VideoPreview() {
         // Read from settings store (workstation-local, not project)
         const scale  = await window.xleth?.settings?.get('previewResolutionScale')
         const bypass = await window.xleth?.settings?.get('previewEffectsBypass')
+        const poster = await window.xleth?.settings?.get('previewPosterMode')
         const resolvedScale  = (typeof scale  === 'number') ? scale  : 1.0
         const resolvedBypass = (typeof bypass === 'boolean') ? bypass : false
+        // Poster mode defaults ON when no preference is stored yet.
+        const resolvedPoster = (typeof poster === 'boolean') ? poster : true
         setResolutionScale(resolvedScale)
         setEffectsBypass(resolvedBypass)
+        setPosterMode(resolvedPoster)
         // Apply to engine
         await window.xleth?.timeline?.setPreviewResolutionScale(resolvedScale)
         await window.xleth?.timeline?.setPreviewEffectsBypass(resolvedBypass)
+        await window.xleth?.timeline?.setPreviewPosterMode(resolvedPoster)
       } catch (e) {
         console.error('[VideoPreview] Failed to restore preview settings:', e)
       }
@@ -170,6 +178,13 @@ export default function VideoPreview() {
     await window.xleth?.timeline?.setPreviewEffectsBypass(next)
     await window.xleth?.settings?.set('previewEffectsBypass', next)
   }, [effectsBypass])
+
+  const handlePosterModeToggle = useCallback(async () => {
+    const next = !posterMode
+    setPosterMode(next)
+    await window.xleth?.timeline?.setPreviewPosterMode(next)
+    await window.xleth?.settings?.set('previewPosterMode', next)
+  }, [posterMode])
 
   const handleImport = useCallback(async () => {
     setImporting(true)
@@ -603,6 +618,30 @@ export default function VideoPreview() {
           >
             FX
           </button>
+
+          {/* Poster fast-preview toggle. Poster = grid cells show one static
+              representative frame (fast); Live = full per-frame decode. */}
+          <button
+            className={`preview-poster-btn ${posterMode ? 'poster' : 'live'}`}
+            onClick={handlePosterModeToggle}
+            title={posterMode
+              ? 'Poster preview: grid cells show a static frame (fast). Click for live video.'
+              : 'Live preview: grid cells decode every frame. Click for fast poster mode.'}
+          >
+            {posterMode ? <Image size={13} /> : <Film size={13} />}
+            <span>{posterMode ? 'Poster' : 'Live'}</span>
+          </button>
+
+          {/* Persistent fidelity warning: poster preview does NOT match the
+              rendered output. Render is always frame-accurate regardless. */}
+          {posterMode && (
+            <span
+              className="preview-fidelity-badge"
+              title="Poster preview shows static frames for speed. The exported render is always full-fidelity, frame-accurate video — this preview does not match it."
+            >
+              Preview ≠ Render
+            </span>
+          )}
 
           <button
             className={`video-import-btn ${gridEditMode ? 'active' : ''}`}

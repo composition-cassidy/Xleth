@@ -25,7 +25,7 @@ describe('Transient manifest registry', () => {
 
   it('declares the Transient parameter set used by the legacy panel and engine', () => {
     expect(Object.keys(TRANSIENT_MANIFEST.params).sort())
-      .toEqual(['attack', 'attack_speed', 'midi_detect', 'mix', 'sustain', 'threshold'])
+      .toEqual(['attack', 'attack_speed', 'dry', 'midi_detect', 'mix', 'mix_linked', 'sustain', 'threshold', 'wet'])
     expect(TRANSIENT_MANIFEST.params.midi_detect.kind).toBe('discrete')
     expect(TRANSIENT_MANIFEST.params.attack.kind).toBe('continuous')
     expect(TRANSIENT_MANIFEST.params.attack.min).toBe(-100)
@@ -138,7 +138,7 @@ describe('Designer BindingPicker for Transient', () => {
   it('lists Transient params (not Compressor / Limiter params)', () => {
     const options = getParamPickerOptions(TRANSIENT_MANIFEST, null)
     const values = options.map(o => o.value).sort()
-    expect(values).toEqual(['attack', 'attack_speed', 'midi_detect', 'mix', 'sustain', 'threshold'])
+    expect(values).toEqual(['attack', 'attack_speed', 'dry', 'midi_detect', 'mix', 'mix_linked', 'sustain', 'threshold', 'wet'])
     expect(values).not.toContain('ratio')
     expect(values).not.toContain('ceiling')
     expect(values).not.toContain('release')

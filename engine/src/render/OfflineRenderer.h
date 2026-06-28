@@ -32,6 +32,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 
 // Forward declarations (avoid pulling heavy headers)
 struct ExportSettings;
@@ -147,6 +148,15 @@ public:
      */
     void setTailRenderPlan(const xleth::TailRenderPlan& plan) { tailPlan_ = plan; }
 
+    /**
+     * Directory where resolution-aware render proxies are cached/generated
+     * (ProjectManager::getProxiesDir()). Must be set BEFORE startRender() to
+     * enable proxy-mode renders. When empty, proxy-mode renders fall back to the
+     * original source (non-fatal). Ignored entirely for full-quality renders
+     * (settings.useSourceMedia == true).
+     */
+    void setProxiesDir(const std::string& dir) { proxiesDir_ = dir; }
+
     /** Request cancellation — sets the flag, checked every buffer iteration. */
     void requestCancel();
 
@@ -180,6 +190,26 @@ private:
     // Phase 3A tail policy (set via setTailRenderPlan before startRender). Default
     // = HardCut (no tail), preserving pre-3A behaviour.
     xleth::TailRenderPlan        tailPlan_{};
+
+    // Proxies directory for resolution-aware render proxies (set before render).
+    // Empty → proxy-mode renders fall back to original source.
+    std::string                  proxiesDir_;
+
+    /**
+     * Build the resolution-aware render proxy plan and GENERATE any missing
+     * proxies (blocking, on the render thread — offline, so this is fine).
+     * For each source referenced by `events`: compute its PEAK on-screen footprint
+     * height across the whole timeline (base cell/fullscreen size × peak animation
+     * scale), round UP to a resolution bucket, and — unless the footprint is at/
+     * above source resolution or the source is single-use — generate/reuse a
+     * footprint-sized whole-source proxy (10-bit preserved for 10-bit sources).
+     * Returns a map sourceId → proxy path; sources absent from the map are decoded
+     * from the original. Non-fatal: a source whose proxy fails to generate is
+     * simply omitted (falls back to original).
+     */
+    std::unordered_map<int, std::string> buildRenderProxyPlan(
+        const std::vector<struct VideoEvent>& events,
+        const ExportSettings&                 settings);
 
     // ── Internal ──────────────────────────────────────────────────────────
     void render(int64_t startSample, int64_t endSample,

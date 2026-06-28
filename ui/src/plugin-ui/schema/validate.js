@@ -17,6 +17,7 @@ const SCHEMA_VERSION = 1
 const ALLOWED_TYPES = new Set([
   'panel', 'group', 'row', 'column', 'tabGroup',
   'knob', 'toggle', 'button', 'meter', 'visualizer', 'label', 'spacer',
+  'compressorCurve', 'compressorSlider', 'compressorHSlider', 'compressorDryWet', 'compressorLookahead',
   // Freeform-A additions:
   'freeformLayer',
   'decorText', 'decorLine', 'decorShape', 'decal',
@@ -498,6 +499,52 @@ function validateNodeProps(node, errors, manifest) {
       break
     }
 
+    case 'compressorSlider': {
+      validateBoundParam(node, errors, manifest, 'compressorSlider')
+      break
+    }
+
+    case 'compressorHSlider': {
+      validateBoundParam(node, errors, manifest, 'compressorHSlider')
+      break
+    }
+
+    case 'compressorLookahead': {
+      if (p.param !== undefined) validateBoundParam(node, errors, manifest, 'compressorLookahead')
+      break
+    }
+
+    case 'compressorCurve': {
+      const bindings = [
+        p.thresholdParam || 'threshold',
+        p.ratioParam || 'ratio',
+        p.kneeParam || 'knee',
+      ]
+      for (const paramId of bindings) {
+        if (manifest && !manifest.params[paramId]) {
+          node._invalid = true
+          errors.push({ nodeId: node.id, code: 'UNKNOWN_PARAM', message: `Unknown param "${paramId}" for plugin "${manifest.pluginId}"` })
+        }
+      }
+      break
+    }
+
+    case 'compressorDryWet': {
+      const bindings = [
+        p.mixParam || 'mix',
+        p.dryParam || 'dry',
+        p.wetParam || 'wet',
+        p.linkParam || 'mix_linked',
+      ]
+      for (const paramId of bindings) {
+        if (manifest && !manifest.params[paramId]) {
+          node._invalid = true
+          errors.push({ nodeId: node.id, code: 'UNKNOWN_PARAM', message: `Unknown param "${paramId}" for plugin "${manifest.pluginId}"` })
+        }
+      }
+      break
+    }
+
     case 'toggle': {
       if (!p.param || typeof p.param !== 'string') {
         node._invalid = true
@@ -616,6 +663,19 @@ function validateNodeProps(node, errors, manifest) {
   }
 
   validateAppearance(node, errors)
+}
+
+function validateBoundParam(node, errors, manifest, typeName) {
+  const p = node.props || {}
+  if (!p.param || typeof p.param !== 'string') {
+    node._invalid = true
+    errors.push({ nodeId: node.id, code: 'MISSING_PARAM', message: `${typeName} requires props.param` })
+    return
+  }
+  if (manifest && !manifest.params[p.param]) {
+    node._invalid = true
+    errors.push({ nodeId: node.id, code: 'UNKNOWN_PARAM', message: `Unknown param "${p.param}" for plugin "${manifest.pluginId}"` })
+  }
 }
 
 // ── freeformLayer prop validation ─────────────────────────────────────────────

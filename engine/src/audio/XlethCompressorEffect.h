@@ -23,7 +23,10 @@
 //   release    10–1000 ms     (Linear 20ms smoothing, skew 0.3)
 //   knee        0–24 dB       (Linear 20ms smoothing)
 //   makeup      0–36 dB       (Linear 20ms smoothing)
-//   mix         0–100 %       (Linear 20ms smoothing)
+//   mix         0–100 %       (Linear 20ms smoothing, linked dry/wet mode)
+//   dry         0–100 %       (Linear 20ms smoothing, unlinked dry gain)
+//   wet         0–100 %       (Linear 20ms smoothing, unlinked wet gain)
+//   mix_linked  0=Dry/Wet separate, 1=linked crossfade (discrete; default 1)
 //   detect_mode 0=Peak, 1=RMS (discrete)
 //   lookahead   0–10 ms       (discrete, applied per block boundary)
 //   sc_external 0=internal, 1=external sidechain (discrete; default 0)
@@ -56,6 +59,8 @@ public:
         registerSmoothedParam("knee",      SmoothType::Linear, 20.0f);
         registerSmoothedParam("makeup",    SmoothType::Linear, 20.0f);
         registerSmoothedParam("mix",       SmoothType::Linear, 20.0f);
+        registerSmoothedParam("dry",       SmoothType::Linear, 20.0f);
+        registerSmoothedParam("wet",       SmoothType::Linear, 20.0f);
     }
 
     // ── External sidechain capability (Prompt 5A) ───────────────────────────
@@ -183,6 +188,7 @@ public:
         detectModePtr_ = apvts_.getRawParameterValue("detect_mode");
         lookaheadPtr_  = apvts_.getRawParameterValue("lookahead");
         scExternalPtr_ = apvts_.getRawParameterValue("sc_external");
+        mixLinkedPtr_  = apvts_.getRawParameterValue("mix_linked");
 
         // setMaximumDelayInSamples must be called BEFORE prepare() so the
         // buffer is allocated at the right size.
@@ -312,6 +318,8 @@ public:
             const float knee      = getNextSmoothedValue("knee");
             const float makeup    = getNextSmoothedValue("makeup");
             const float mixPct    = getNextSmoothedValue("mix");
+            const float dryPct    = getNextSmoothedValue("dry");
+            const float wetPct    = getNextSmoothedValue("wet");
 
             // Attack / release coefficients
             // coeff = exp(-1 / (timeInSeconds * sampleRate))
@@ -369,7 +377,11 @@ public:
 
             // Linear gain: compression + makeup gain (dB domain arithmetic)
             const float gainLin = std::pow(10.0f, (-grDB + makeup) / 20.0f);
-            const float mixNorm = mixPct / 100.0f;
+            const bool mixLinked = mixLinkedPtr_ == nullptr
+                                || mixLinkedPtr_->load(std::memory_order_relaxed) >= 0.5f;
+            const float mixNorm = juce::jlimit(0.0f, 1.0f, mixPct / 100.0f);
+            const float dryNorm = juce::jlimit(0.0f, 1.0f, dryPct / 100.0f);
+            const float wetNorm = juce::jlimit(0.0f, 1.0f, wetPct / 100.0f);
 
             // Delay input signal, apply gain, blend dry/wet
             // Both the wet path and dry-mix path use the delayed signal so that
@@ -381,7 +393,9 @@ public:
                 lookaheadDelay_.pushSample(ch, dry);
                 const float delayed = lookaheadDelay_.popSample(ch, popDelay, true);
                 const float wet     = delayed * gainLin;
-                const float mixed   = delayed * (1.0f - mixNorm) + wet * mixNorm;
+                const float mixed   = mixLinked
+                                    ? delayed * (1.0f - mixNorm) + wet * mixNorm
+                                    : delayed * dryNorm + wet * wetNorm;
                 mainBus.setSample(ch, s, mixed);
 
                 const float absOut = std::abs(mixed);
@@ -471,6 +485,12 @@ private:
                 Nar{0.0f,   36.0f,   0.0f, 1.0f  }, 0.0f,    "dB"),
             std::make_unique<Apf>(Pid{"mix",          1}, "Mix",
                 Nar{0.0f,   100.0f,  0.0f, 1.0f  }, 100.0f,  "%"),
+            std::make_unique<Apf>(Pid{"dry",          1}, "Dry",
+                Nar{0.0f,   100.0f,  0.0f, 1.0f  }, 0.0f,    "%"),
+            std::make_unique<Apf>(Pid{"wet",          1}, "Wet",
+                Nar{0.0f,   100.0f,  0.0f, 1.0f  }, 100.0f,  "%"),
+            std::make_unique<Apf>(Pid{"mix_linked",   1}, "Dry/Wet Linked",
+                Nar{0.0f,   1.0f,    1.0f, 1.0f  }, 1.0f,    ""),
             std::make_unique<Apf>(Pid{"detect_mode",  1}, "Detect Mode",
                 Nar{0.0f,   1.0f,    1.0f, 1.0f  }, 0.0f,    ""),
             std::make_unique<Apf>(Pid{"lookahead",    1}, "Lookahead",
@@ -489,6 +509,7 @@ private:
     std::atomic<float>* detectModePtr_ = nullptr;
     std::atomic<float>* lookaheadPtr_  = nullptr;
     std::atomic<float>* scExternalPtr_ = nullptr;
+    std::atomic<float>* mixLinkedPtr_  = nullptr;
 
     // Envelope follower state (shared for both Peak and RMS modes)
     // In RMS mode, peak_/env_ operate on the squared signal; sqrt is taken at the end.

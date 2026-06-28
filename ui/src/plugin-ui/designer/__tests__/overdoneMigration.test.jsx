@@ -101,6 +101,16 @@ describe('Overdone shipped layout registry', () => {
       expect(OVERDONE_MANIFEST.params[param]).toBeTruthy()
     }
   })
+
+  it('uses Compressor-style sliders for all Overdone controls', () => {
+    const types = collectNodeTypes(SHIPPED_LAYOUTS.overdone.root)
+    const sliderCount = types.filter(type => type === 'compressorSlider').length
+    expect(sliderCount).toBe(7)
+    expect(types).not.toContain('knob')
+
+    const refs = collectParamRefs(SHIPPED_LAYOUTS.overdone.root).sort()
+    expect(refs).toEqual(['depth', 'gain_high', 'gain_low', 'gain_mid', 'time', 'xover_high', 'xover_low'])
+  })
 })
 
 describe('Designer store — loadInitial("overdone")', () => {

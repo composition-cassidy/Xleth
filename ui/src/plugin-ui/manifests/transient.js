@@ -23,6 +23,9 @@ export const TRANSIENT_MANIFEST = {
     attack_speed: { kind: 'continuous', min: 0.5,  max: 20,   defaultValue: 5,    format: 'ms1',  label: 'Speed' },
     threshold:    { kind: 'continuous', min: -60,  max: 0,    defaultValue: -60,  format: 'dB1',  label: 'Threshold' },
     mix:          { kind: 'continuous', min: 0,    max: 100,  defaultValue: 100,  format: 'pct0', label: 'Mix' },
+    dry:          { kind: 'continuous', min: 0,    max: 100,  defaultValue: 0,    format: 'pct0', label: 'Dry' },
+    wet:          { kind: 'continuous', min: 0,    max: 100,  defaultValue: 100,  format: 'pct0', label: 'Wet' },
+    mix_linked:   { kind: 'discrete',   min: 0,    max: 1,    defaultValue: 1,    format: 'raw',  label: 'Dry/Wet Link' },
     midi_detect:  { kind: 'discrete',   min: 0,    max: 1,    defaultValue: 0,    format: 'raw',  label: 'MIDI Detect' },
   },
 

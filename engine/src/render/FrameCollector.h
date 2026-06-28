@@ -141,7 +141,29 @@ public:
      *                           collection, or pass the export range start sample
      *                           so source sampling follows absolute project time
      *                           while encoded frame indices still start at 0.
+     * @param posterMode         PREVIEW-ONLY fast path. When true, each GRID cell
+     *                           binds the source's cached poster frame
+     *                           (SourceMedia.posterPath, frame 0) instead of
+     *                           live-decoding the timeline frame — no per-frame
+     *                           decode for grid cells. Flip + opacity are still
+     *                           applied by the compositor exactly as for live
+     *                           frames. Fullscreen layers ignore this and stay
+     *                           live. The render/export path MUST leave this
+     *                           false (default) — poster pixels never reach an
+     *                           encoder.
      * @return  vector of requests — one per active cell (gaps excluded)
+     * @param renderProxyBySource  RENDER-PATH ONLY. When non-null, it is the
+     *                          authoritative resolution-aware proxy plan: a map
+     *                          sourceId → chosen file path. A non-empty path is a
+     *                          footprint-sized whole-source proxy to decode from
+     *                          (frame index maps 1:1); a missing entry or empty
+     *                          path means decode the ORIGINAL source. When present
+     *                          it fully replaces the preview region/legacy/preview-
+     *                          proxy/poster substitution below, so the render path
+     *                          reads exactly what the plan dictates. Still gated by
+     *                          allowProxy: when allowProxy=false (full-quality
+     *                          override) the plan is ignored and originals are used,
+     *                          guaranteeing bit-exact source pixels to the encoder.
      */
     std::vector<CellFrameRequest> collectRequests(
         int64_t                        outputFrameIndex,
@@ -150,7 +172,9 @@ public:
         AVRational                     fps,
         const std::vector<VideoEvent>& events,
         bool                           allowProxy = true,
-        int64_t                        projectStartSample = 0);
+        int64_t                        projectStartSample = 0,
+        bool                           posterMode = false,
+        const std::unordered_map<int, std::string>* renderProxyBySource = nullptr);
 
     // ── Step 2: Deduplicate ─────────────────────────────────────────────────
 

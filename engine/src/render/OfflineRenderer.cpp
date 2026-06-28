@@ -18,6 +18,7 @@
 #include "SyncManager.h"          // VideoEvent
 #include "render/ArpVideoExpander.h"
 #include "render/VideoFlipApplier.h"  // single resolver call site
+#include "ProxyTranscoder.h"          // resolution-aware render proxies
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -33,6 +34,7 @@ extern "C" {
 #include <cstring>
 #include <filesystem>
 #include <limits>
+#include <unordered_map>
 #include <vector>
 
 // Buffer size: 512 samples = ~10.67ms at 48kHz. Fixed for consistent
@@ -40,6 +42,82 @@ extern "C" {
 static constexpr int kBufferSize = 512;
 
 namespace {
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Resolution-aware render proxies
+//
+//  A 4K source composited into a 1080p render (or into a small grid cell) only
+//  ever needs as many pixels as its PEAK on-screen footprint. Decoding the full
+//  4K every frame wastes huge CPU/GPU; a footprint-sized all-intra proxy decodes
+//  far faster and — because we round the footprint UP to a bucket and never below
+//  it — shows no quality loss at the output resolution. Reuses the height-keyed
+//  whole-source proxy machinery from the preview-proxy work (ProxyTranscoder).
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Output-height buckets the per-source footprint is rounded UP into. Coarse so a
+// handful of proxy sizes cover every project; absorbs small footprint estimation
+// error. Anything above the top bucket falls back to the original source.
+constexpr int kResolutionBuckets[] = {360, 540, 720, 1080, 1440, 2160};
+
+// Smallest bucket >= h. Returns the top bucket if h exceeds all of them (caller
+// treats "needs more than the top bucket" as "use original").
+int roundUpToBucket(double h) {
+    for (int b : kResolutionBuckets)
+        if (h <= static_cast<double>(b)) return b;
+    return kResolutionBuckets[(sizeof(kResolutionBuckets) / sizeof(int)) - 1];
+}
+
+// Peak value an overshoot-capable easing can reach over t∈[0,1] (>=1.0). Used to
+// bound the maximum zoom/scale so the chosen bucket is NEVER below the true peak.
+float easingPeakFactor(int easingType, float overshoot) {
+    switch (easingType) {
+        case 3: { // easeOutBack: closed-form argmax of 1 + c3·u³ + c1·u² (u=t-1)
+            const float c1 = overshoot, c3 = c1 + 1.0f;
+            const float u  = -2.0f * c1 / (3.0f * c3);
+            const float pk = 1.0f + c3 * u * u * u + c1 * u * u;
+            return std::max(1.0f, pk);
+        }
+        case 4: return 1.10f;  // easeOutElastic — modest first overshoot (margin)
+        case 5: return 1.50f;  // easeOutSpring — overshoots to ~1.5× the delta
+        default: return 1.0f;  // linear / easeOut / easeInOut — monotone, no overshoot
+    }
+}
+
+// Conservative upper bound on the scale a track's animations can apply to its
+// cell across the timeline. Includes zoom (note + slide ZPR, with easing
+// overshoot) and bounce vertical stretch (1 + squashAmount, see AnimationManager
+// where bounceScaleY peaks at 1+squashAmount). Zoom and bounce can be active on
+// the same note, so they multiply. Over-estimating is safe (more resolution, the
+// task's "NEVER size below the peak footprint" rule); under-estimating is not.
+float maxAnimationScale(const TrackInfo& trk) {
+    auto zoomPeak = [](const ZoomPanRotSettings& z) -> float {
+        if (!z.enabled) return 1.0f;
+        const float pk    = easingPeakFactor(z.zoomEasing, z.overshoot);
+        const float delta = z.targetZoom - z.startZoom;
+        const float maxZ  = z.startZoom + std::max(0.0f, delta) * pk;
+        return std::max({1.0f, z.startZoom, maxZ});
+    };
+
+    // Note ZPR and slide ZPR are alternatives (slide overwrites the ZPR fields,
+    // it does not stack), so take the max of the two, not the product.
+    float zoom = zoomPeak(trk.zoomPanRot);
+    if (trk.slideNoteEffect.type == SlideNoteEffectSettings::EffectType::ZoomPanRot)
+        zoom = std::max(zoom, zoomPeak(trk.slideNoteEffect.zoomPanRot));
+
+    float bounce = 1.0f;
+    if (trk.bounce.enabled)
+        bounce = std::max(bounce, 1.0f + std::max(0.0f, trk.bounce.squashAmount));
+    if (trk.slideNoteEffect.type == SlideNoteEffectSettings::EffectType::Bounce)
+        bounce = std::max(bounce, 1.0f + std::max(0.0f, trk.slideNoteEffect.bounce.squashAmount));
+
+    return zoom * bounce;
+}
+
+// Number of placements at/above which a source is considered "reused enough" to
+// justify the one-time whole-source proxy transcode. A single linear placement
+// would cost more to proxy (decode the whole source once + encode) than it saves
+// (decode the original once), so it stays on the original.
+constexpr int kReuseThreshold = 2;
 
 // Opt-in (XLETH_VISUAL_DIAG_PIXELS=1) content fingerprint of a composed export
 // frame, taken immediately before it is handed to the encoder. `readback.pixels`
@@ -430,6 +508,119 @@ std::vector<VideoEvent> OfflineRenderer::buildVideoEvents(
 }
 
 // ===========================================================================
+// buildRenderProxyPlan — resolution-aware per-source proxy selection + gen
+// ===========================================================================
+
+std::unordered_map<int, std::string> OfflineRenderer::buildRenderProxyPlan(
+    const std::vector<VideoEvent>& events,
+    const ExportSettings&          settings)
+{
+    std::unordered_map<int, std::string> plan;
+    if (proxiesDir_.empty()) {
+        std::fprintf(stderr, "[RenderProxy] no proxies dir set — using original sources\n");
+        return plan;
+    }
+
+    const GridLayout& grid = timeline_.getGridLayout();
+    const int H_out = settings.height;
+    const int fullH = std::max(1, grid.rows * kGridSubUnitsPerRow);
+
+    // ── Per-track base footprint height (pixels) at the OUTPUT resolution ──────
+    // Fullscreen layer → full output height; grid slot → output height × the
+    // slot's vertical span fraction. A track present in several placements takes
+    // the largest. (Gaps/gapScale only shrink cells, so ignoring them is safe —
+    // it can only over-size, never under-size.)
+    std::unordered_map<int, double> baseHeightByTrack;
+    for (const auto& fl : grid.fullscreenLayers) {
+        if (fl.trackId < 0) continue;
+        double& b = baseHeightByTrack[fl.trackId];
+        b = std::max(b, static_cast<double>(H_out));
+    }
+    for (const auto& slot : grid.slots) {
+        if (slot.trackId < 0) continue;
+        const double cellH = static_cast<double>(H_out) * slot.spanY / fullH;
+        double& b = baseHeightByTrack[slot.trackId];
+        b = std::max(b, cellH);
+    }
+
+    // ── Per-source peak footprint + reference count across the whole timeline ──
+    std::unordered_map<int, double> peakBySource;   // max footprint height (px)
+    std::unordered_map<int, int>    refsBySource;    // placements (reuse signal)
+    for (const auto& ev : events) {
+        if (ev.sourceId <= 0) continue;
+        auto bit = baseHeightByTrack.find(ev.trackId);
+        if (bit == baseHeightByTrack.end()) continue;   // track not on screen
+        const TrackInfo* trk = timeline_.getTrack(ev.trackId);
+        const float scale = trk ? maxAnimationScale(*trk) : 1.0f;
+        const double footprint = bit->second * scale;
+        double& pk = peakBySource[ev.sourceId];
+        pk = std::max(pk, footprint);
+        ++refsBySource[ev.sourceId];
+    }
+
+    // ── Decide + generate per source ──────────────────────────────────────────
+    const int topBucket = kResolutionBuckets[(sizeof(kResolutionBuckets) / sizeof(int)) - 1];
+    for (const auto& [sourceId, peakH] : peakBySource) {
+        const SourceMedia* src = timeline_.getSource(sourceId);
+        if (!src || !src->hasVideo || src->filePath.empty() || src->height <= 0)
+            continue;
+
+        const int    bucket = roundUpToBucket(peakH);
+        const int    refs   = refsBySource[sourceId];
+
+        // Use the ORIGINAL when a proxy would not help:
+        //   • footprint at/above source resolution (bucket >= srcHeight) — a proxy
+        //     could only equal or upscale the source, so decode the original;
+        //   • footprint exceeds our largest bucket — don't undersize;
+        //   • single-use linear source — proxy gen costs more than it saves.
+        if (bucket >= src->height || peakH > static_cast<double>(topBucket)
+            || refs < kReuseThreshold) {
+            std::fprintf(stderr,
+                "[RenderProxy] source=%d peak=%.0fpx bucket=%dp refs=%d srcH=%d "
+                "-> ORIGINAL\n",
+                sourceId, peakH, bucket, refs, src->height);
+            continue;
+        }
+
+        // Preserve 10-bit through the proxy for 10-bit sources (avoids banding).
+        const bool highBitDepth = ProxyTranscoder::probeSourceBitDepth(src->filePath) > 8;
+        const std::string proxyPath = ProxyTranscoder::getSourcePreviewProxyPath(
+            src->filePath, proxiesDir_, bucket, highBitDepth);
+
+        // Idempotent: reuse a valid proxy already on disk (this or a prior render/
+        // preview session) instead of regenerating.
+        if (ProxyTranscoder::sourcePreviewProxyExists(
+                src->filePath, proxiesDir_, bucket, highBitDepth)) {
+            std::fprintf(stderr,
+                "[RenderProxy] source=%d peak=%.0fpx bucket=%dp refs=%d -> reuse %s\n",
+                sourceId, peakH, bucket, refs, proxyPath.c_str());
+            plan[sourceId] = proxyPath;
+            continue;
+        }
+
+        std::fprintf(stderr,
+            "[RenderProxy] source=%d peak=%.0fpx bucket=%dp refs=%d %s -> GENERATE %s\n",
+            sourceId, peakH, bucket, refs, highBitDepth ? "10-bit" : "8-bit",
+            proxyPath.c_str());
+
+        const bool ok = ProxyTranscoder::transcodeSourcePreview(
+            src->filePath, proxyPath, bucket, highBitDepth, /*progressCb=*/nullptr);
+        if (ok) {
+            plan[sourceId] = proxyPath;
+        } else {
+            // Non-fatal: leave this source out of the plan → render uses original.
+            std::fprintf(stderr,
+                "[RenderProxy] source=%d proxy generation FAILED — using original\n",
+                sourceId);
+        }
+    }
+
+    std::fprintf(stderr, "[RenderProxy] plan ready: %d/%d sources proxied\n",
+                 static_cast<int>(plan.size()), static_cast<int>(peakBySource.size()));
+    return plan;
+}
+
+// ===========================================================================
 // render — the main offline render loop (runs on dedicated thread)
 // ===========================================================================
 
@@ -548,6 +739,21 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
     // ── Build video events from timeline ─────────────────────────────────
     std::vector<SlideAnimationEvent> slideEvents;
     auto videoEvents = buildVideoEvents(timeline_, &slideEvents, sampleRate);
+
+    // ── Resolution-aware render proxy plan ────────────────────────────────
+    // Proxy-mode render (settings.useSourceMedia == false, i.e. "fast export"):
+    // build a footprint-sized proxy per heavily-reused source and decode from it.
+    // Full-quality render (useSourceMedia == true): planPtr stays null so every
+    // element decodes the ORIGINAL — bit-exact pixels reach the encoder.
+    // Generation is blocking here (offline thread); flag it as the preroll phase.
+    std::unordered_map<int, std::string> renderProxyPlan;
+    const bool useProxyMode = !settings.useSourceMedia;
+    if (useProxyMode) {
+        progress_.phase.store(1);   // preroll (proxy generation)
+        renderProxyPlan = buildRenderProxyPlan(videoEvents, settings);
+    }
+    const std::unordered_map<int, std::string>* planPtr =
+        useProxyMode ? &renderProxyPlan : nullptr;
 
     // ── Initialize pipeline components ───────────────────────────────────
     // Use fragmented MP4 for crash safety — remux to standard at the end
@@ -838,12 +1044,15 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
                 }
 
                 // Collect what each grid cell needs for this output frame.
-                // Export honors settings.useSourceMedia so the encoder gets
-                // original-source pixels by default; preview keeps proxy use.
+                // Export honors settings.useSourceMedia: full quality → originals
+                // (planPtr null, allowProxy false); fast export → resolution-aware
+                // render proxies via planPtr.
                 auto requests = collector.collectRequests(
                     f, timeline_, sampleRate, fps, videoEvents,
                     /*allowProxy=*/ !settings.useSourceMedia,
-                    /*projectStartSample=*/ startSample);
+                    /*projectStartSample=*/ startSample,
+                    /*posterMode=*/ false,
+                    /*renderProxyBySource=*/ planPtr);
 
                 // Deduplicate: multiple cells may reference the same source frame
                 auto deduplicated = FrameCollector::deduplicateRequests(requests);
@@ -1281,6 +1490,17 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
     std::vector<SlideAnimationEvent> slideEvents;
     auto videoEvents = buildVideoEvents(timeline_, &slideEvents, sampleRate);
 
+    // Resolution-aware render proxy plan (see renderImpl for the rationale). Wrap
+    // renders go through the same FrameCollector proxy path.
+    std::unordered_map<int, std::string> renderProxyPlan;
+    const bool useProxyMode = !settings.useSourceMedia;
+    if (useProxyMode) {
+        progress_.phase.store(1);   // preroll (proxy generation)
+        renderProxyPlan = buildRenderProxyPlan(videoEvents, settings);
+    }
+    const std::unordered_map<int, std::string>* planPtr =
+        useProxyMode ? &renderProxyPlan : nullptr;
+
     ExportSettings muxSettings = settings;
     std::string fragPath = settings.outputPath + ".frag.mp4";
     muxSettings.outputPath = fragPath;
@@ -1419,7 +1639,9 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
                 auto requests = collector.collectRequests(
                     f, timeline_, sampleRate, fps, videoEvents,
                     /*allowProxy=*/ !settings.useSourceMedia,
-                    /*projectStartSample=*/ startSample);
+                    /*projectStartSample=*/ startSample,
+                    /*posterMode=*/ false,
+                    /*renderProxyBySource=*/ planPtr);
                 auto deduplicated = FrameCollector::deduplicateRequests(requests);
                 auto misses = FrameCollector::resolveFrames(deduplicated, cache);
 

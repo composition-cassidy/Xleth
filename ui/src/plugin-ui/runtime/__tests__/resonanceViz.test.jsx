@@ -211,12 +211,15 @@ describe('Resonance Suppressor shipped layout', () => {
     expect(json).toContain('"resonance.spectrum"')
     expect(json).toContain('"resonance.reduction"')
     expect(json).toContain('"resonance.weighting"')
-    // Macro detection knobs.
-    for (const id of ['k-depth', 'k-sharpness', 'k-selectivity', 'k-attack', 'k-release']) {
+    // Macro detection controls are now vertical faders (compressorSlider),
+    // matching the polished XLETH plugin style (e.g. the Transient Processor).
+    for (const id of ['s-depth', 's-sharpness', 's-selectivity', 's-attack', 's-release']) {
       expect(json).toContain(`"${id}"`)
     }
-    // Output controls including the Δ Listen toggle (boolParam).
-    expect(json).toContain('"k-mix"')
+    expect(json).toContain('"compressorSlider"')
+    // Output controls including the Δ Listen toggle (boolParam). MIX is a
+    // fader; TRIM stays a compact knob.
+    expect(json).toContain('"s-mix"')
     expect(json).toContain('"k-trim"')
     expect(json).toContain('"delta-toggle"')
     expect(json).toContain('"boolParam"')
@@ -230,10 +233,13 @@ describe('Resonance Suppressor shipped layout', () => {
     }
     expect(json).not.toContain('Drag handles')
     expect(json).not.toContain('+ Band')
-    // Meters: PEAK_L, PEAK_R, GAIN_REDUCTION (slot 2 = activity).
-    expect(json).toContain('"PEAK_L"')
-    expect(json).toContain('"PEAK_R"')
-    expect(json).toContain('"GAIN_REDUCTION"')
+    // Meters were removed from the shipped layout to match the cleaner mockup
+    // (the engine still exposes the meter slots; they are simply not rendered).
+    expect(json).not.toContain('"PEAK_L"')
+    expect(json).not.toContain('"PEAK_R"')
+    expect(json).not.toContain('"GAIN_REDUCTION"')
+    // Stereo LINK knob was dropped; the Stereo/Mid/Side choice remains.
+    expect(json).not.toContain('"k-stereo-link"')
   })
 
   it('removes the temporary 8-band fallback grid and the legacy 4-band node-grid', () => {
@@ -294,23 +300,27 @@ describe('Resonance Suppressor shipped layout', () => {
     }
   })
 
-  it('declares the editable resonanceCurve overlay on the visualizer node', () => {
-    function findVizNode(node) {
-      if (!node) return null
-      if (node.type === 'visualizer') return node
+  it('declares the editable resonanceCurve overlay and defaults to the Reduction tab', () => {
+    function collectVizNodes(node, out = []) {
+      if (!node) return out
+      if (node.type === 'visualizer') out.push(node)
       if (Array.isArray(node.children)) {
-        for (const c of node.children) {
-          const found = findVizNode(c)
-          if (found) return found
-        }
+        for (const c of node.children) collectVizNodes(c, out)
       }
-      return null
+      return out
     }
-    const viz = findVizNode(resonanceLayout.root)
-    expect(viz).toBeTruthy()
-    expect(viz.props.source).toBe('resonance.combined')
-    expect(viz.props.preset).toBe('resonanceCombined')
-    expect(viz.props.overlay).toBe('resonanceCurve')
+    const vizNodes = collectVizNodes(resonanceLayout.root)
+    expect(vizNodes.length).toBeGreaterThanOrEqual(4)
+    // Every graph tab carries the editable resonanceCurve overlay.
+    for (const viz of vizNodes) {
+      expect(viz.props.overlay).toBe('resonanceCurve')
+    }
+    // The first tab is what the runtime selects by default — it must be the
+    // Reduction view (drag knobs to control how much resonance is suppressed).
+    expect(vizNodes[0].props.source).toBe('resonance.reduction')
+    expect(vizNodes[0].props.preset).toBe('resonanceReduction')
+    // The Combined view is still present, just no longer the default.
+    expect(vizNodes.some(v => v.props.source === 'resonance.combined')).toBe(true)
   })
 })
 

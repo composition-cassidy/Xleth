@@ -41,14 +41,6 @@ export const LIMITER_DISPLAY = Object.freeze({
   }),
 })
 
-const COLORS = Object.freeze({
-  output: '#7dd3fc',
-  outputDim: '#1f6f8e',
-  grFill: '#ff7a35',
-  grStroke: '#ffb067',
-  grText: '#ffd8b0',
-})
-
 const meterStateByContext = new WeakMap()
 
 function finiteOr(value, fallback) {
@@ -393,6 +385,17 @@ function fillBackground(ctx, w, h, theme) {
   ctx.fillRect(0, 0, w, h)
 }
 
+function limiterColors(theme = {}) {
+  const accent = theme.accent || '#F0A3D0'
+  return {
+    output: accent,
+    outputDim: accent,
+    grFill: accent,
+    grStroke: accent,
+    grText: theme.text || accent,
+  }
+}
+
 function strokeLinePath(ctx, columns, yForColumn, color, lineWidth, alpha = 1) {
   if (!columns || columns.length === 0) return
 
@@ -509,9 +512,10 @@ function drawCeilingLine(ctx, x, y, w, h, theme, ceilingDb) {
 function drawLevelLayers(ctx, x, y, w, h, columns, theme) {
   if (!columns || columns.length === 0) return
 
+  const colors = limiterColors(theme)
   const inputColor = theme.textMuted || '#9ca3af'
-  const outputColor = COLORS.output
-  const outputDimColor = COLORS.outputDim
+  const outputColor = colors.output
+  const outputDimColor = colors.outputDim
 
   ctx.save()
   ctx.translate(x, y)
@@ -526,16 +530,17 @@ function drawLevelLayers(ctx, x, y, w, h, columns, theme) {
   ctx.restore()
 }
 
-function drawGainReductionLayer(ctx, x, y, w, h, columns) {
+function drawGainReductionLayer(ctx, x, y, w, h, columns, theme) {
   if (!columns || columns.length === 0) return
   const hasReduction = columns.some((column) => labelValueForColumn(column) >= 0.18)
   if (!hasReduction) return
+  const colors = limiterColors(theme)
 
   ctx.save()
   ctx.translate(x, y)
 
-  ctx.globalAlpha = 0.26
-  ctx.fillStyle = COLORS.grFill
+  ctx.globalAlpha = 0.2
+  ctx.fillStyle = colors.grFill
   ctx.beginPath()
   ctx.moveTo(columns[0].x, 0)
   ctx.lineTo(columns[0].x, limiterGrToY(columns[0].grDb, h))
@@ -546,7 +551,7 @@ function drawGainReductionLayer(ctx, x, y, w, h, columns) {
   ctx.closePath()
   ctx.fill()
 
-  strokeLinePath(ctx, columns, (c) => limiterGrToY(c.grDb, h), COLORS.grStroke, 1.35, 0.9)
+  strokeLinePath(ctx, columns, (c) => limiterGrToY(c.grDb, h), colors.grStroke, 1.35, 0.86)
 
   ctx.restore()
 }
@@ -554,6 +559,7 @@ function drawGainReductionLayer(ctx, x, y, w, h, columns) {
 function drawPeakReductionLabels(ctx, x, y, w, h, columns, theme) {
   const labels = pickLimiterGrLabels(columns, w)
   if (labels.length === 0) return
+  const colors = limiterColors(theme)
 
   ctx.save()
   ctx.translate(x, y)
@@ -572,7 +578,7 @@ function drawPeakReductionLabels(ctx, x, y, w, h, columns, theme) {
     ctx.fillStyle = theme.surface || theme.bg || '#111'
     ctx.fillRect(boxX, labelY - 2, textWidth + padX * 2, 14)
     ctx.globalAlpha = 1
-    ctx.fillStyle = COLORS.grText
+    ctx.fillStyle = colors.grText
     ctx.fillText(label.text, textX, labelY)
   }
 
@@ -590,7 +596,8 @@ function meterWidthForCanvas(w) {
 
 function drawOutputMeter(ctx, x, y, w, h, ring, theme) {
   const meter = meterValuesForContext(ctx, ring)
-  const outputColor = COLORS.output
+  const colors = limiterColors(theme)
+  const outputColor = colors.output
 
   if (w < 24) {
     ctx.save()
@@ -604,7 +611,7 @@ function drawOutputMeter(ctx, x, y, w, h, ring, theme) {
     const grHeight = limiterGrToY(meter.gainReductionDb, h)
     if (grHeight > 0) {
       ctx.globalAlpha = 0.78
-      ctx.fillStyle = COLORS.grFill
+      ctx.fillStyle = colors.grFill
       ctx.fillRect(0, 0, w, grHeight)
     }
     ctx.restore()
@@ -635,7 +642,7 @@ function drawOutputMeter(ctx, x, y, w, h, ring, theme) {
   ctx.globalAlpha = 0.16
   ctx.fillStyle = outputColor
   ctx.fillRect(outputX, 0, laneW, h)
-  ctx.fillStyle = COLORS.grFill
+  ctx.fillStyle = colors.grFill
   ctx.fillRect(grX, 0, laneW, h)
 
   ctx.globalAlpha = 0.46
@@ -667,7 +674,7 @@ function drawOutputMeter(ctx, x, y, w, h, ring, theme) {
   const grHeight = limiterGrToY(meter.gainReductionDb, h)
   if (grHeight > 0) {
     ctx.globalAlpha = 0.9
-    ctx.fillStyle = COLORS.grFill
+    ctx.fillStyle = colors.grFill
     ctx.fillRect(grX, 0, laneW, grHeight)
   }
 
@@ -714,7 +721,7 @@ export function drawLimiterGainReduction(ctx, w, h, ring, theme) {
   if (!ctx || w < 2 || h < 2) return
   fillBackground(ctx, w, h, theme)
   const columns = buildLimiterDisplayHistory(ring, w)
-  drawGainReductionLayer(ctx, 0, 0, w, h, columns)
+  drawGainReductionLayer(ctx, 0, 0, w, h, columns, theme)
   drawPeakReductionLabels(ctx, 0, 0, w, h, columns, theme)
 }
 

@@ -2,9 +2,9 @@
   "$xleth": "plugin-ui-layout",
   "schemaVersion": 1,
   "pluginId": "limiter",
-  "name": "Default Limiter Layout",
+  "name": "Block Limiter Layout",
   "panel": {
-    "preferredSize": { "width": 760, "height": 460 }
+    "preferredSize": { "width": 540, "height": 408 }
   },
   "root": {
     "id": "root",
@@ -22,7 +22,7 @@
             "props": {
               "source": "limiter.realtime",
               "preset": "limiterRealtime",
-              "heightPx": 240
+              "heightPx": 214
             }
           }
         ]
@@ -30,52 +30,17 @@
       {
         "id": "body",
         "type": "row",
-        "style": { "paddingPx": [4, 12, 12, 12], "gapPx": 12 },
+        "style": { "paddingPx": [12, 10, 8, 10], "gapPx": 0, "align": "start", "justify": "center" },
         "children": [
-          {
-            "id": "controls",
-            "type": "column",
-            "style": { "growsToFill": true, "gapPx": 10 },
-            "children": [
-              {
-                "id": "knob-row",
-                "type": "row",
-                "style": { "gapPx": 8, "justify": "center" },
-                "children": [
-                  { "id": "k-gain",    "type": "knob", "props": { "param": "gain",    "label": "GAIN",    "size": 60, "format": "dB1" } },
-                  { "id": "k-ceiling", "type": "knob", "props": { "param": "ceiling", "label": "CEILING", "size": 52, "format": "dB1" } },
-                  { "id": "k-release", "type": "knob", "props": { "param": "release", "label": "RELEASE", "size": 52, "format": "ms0" } }
-                ]
-              },
-              {
-                "id": "style-row",
-                "type": "row",
-                "style": { "paddingPx": [0, 4, 0, 4], "gapPx": 6, "align": "center" },
-                "children": [
-                  { "id": "style-label", "type": "label", "props": { "text": "Style:", "variant": "muted" } },
-                  {
-                    "id": "btn-style-transparent",
-                    "type": "toggle",
-                    "props": { "param": "style", "mode": "discreteValue", "valueWhenOn": 0, "label": "Transparent" }
-                  },
-                  {
-                    "id": "btn-style-punchy",
-                    "type": "toggle",
-                    "props": { "param": "style", "mode": "discreteValue", "valueWhenOn": 1, "label": "Punchy" }
-                  },
-                  {
-                    "id": "btn-style-aggressive",
-                    "type": "toggle",
-                    "props": { "param": "style", "mode": "discreteValue", "valueWhenOn": 2, "label": "Aggressive" }
-                  }
-                ]
-              }
-            ]
-          },
+          { "id": "s-gain",    "type": "compressorSlider", "style": { "widthPx": 78 }, "props": { "param": "gain",    "label": "GAIN",    "format": "dB1" } },
+          { "id": "s-ceiling", "type": "compressorSlider", "style": { "widthPx": 78 }, "props": { "param": "ceiling", "label": "CEILING", "format": "dB1" } },
+          { "id": "divider-ceiling-release", "type": "spacer", "style": { "widthPx": 18, "heightPx": 122 } },
+          { "id": "s-release", "type": "compressorSlider", "style": { "widthPx": 78 }, "props": { "param": "release", "label": "RELEASE", "format": "ms0" } },
+          { "id": "divider-release-meter", "type": "spacer", "style": { "widthPx": 18, "heightPx": 122 } },
           {
             "id": "gr-meter",
             "type": "meter",
-            "style": { "widthPx": 32 },
+            "style": { "widthPx": 48, "heightPx": 122 },
             "props": {
               "source": { "kind": "effectMeter", "slot": "GAIN_REDUCTION" },
               "label": "GR",
@@ -84,6 +49,30 @@
               "orientation": "vertical",
               "format": "dB1"
             }
+          }
+        ]
+      },
+      {
+        "id": "style-row",
+        "type": "row",
+        "style": { "paddingPx": [6, 12, 10, 12], "gapPx": 6, "align": "center", "justify": "center" },
+        "props": { "variant": "borderTop" },
+        "children": [
+          { "id": "style-label", "type": "label", "props": { "text": "Style:", "variant": "muted" } },
+          {
+            "id": "btn-style-transparent",
+            "type": "toggle",
+            "props": { "param": "style", "mode": "discreteValue", "valueWhenOn": 0, "label": "Transparent" }
+          },
+          {
+            "id": "btn-style-punchy",
+            "type": "toggle",
+            "props": { "param": "style", "mode": "discreteValue", "valueWhenOn": 1, "label": "Punchy" }
+          },
+          {
+            "id": "btn-style-aggressive",
+            "type": "toggle",
+            "props": { "param": "style", "mode": "discreteValue", "valueWhenOn": 2, "label": "Aggressive" }
           }
         ]
       }

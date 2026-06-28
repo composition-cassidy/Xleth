@@ -41,11 +41,19 @@ struct SwrContext;
 struct ExportSettings {
     std::string outputPath;
 
-    // ── Render input ───────────────────────────────────────────────────────
-    // When true (default for export), FrameCollector reads the original source
-    // media. When false, it may substitute the DNxHR LB proxy — only meaningful
-    // for preview-style renders that prioritize speed over fidelity. Final
-    // export defaults to true so CRF/bitrate operate on full-quality pixels.
+    // ── Render input (full quality vs fast/proxy) ────────────────────────────
+    // true  = "Full quality (no render proxy)": every element decodes from the
+    //         ORIGINAL source, so bit-exact source pixels reach the encoder and
+    //         CRF/bitrate operate on full-quality input. This is the DEFAULT and
+    //         the recommended setting for final export.
+    // false = "Fast export (proxy)": the renderer builds a resolution-aware,
+    //         footprint-sized whole-source proxy per heavily-reused source (see
+    //         OfflineRenderer::buildRenderProxyPlan) and decodes from it. Sized to
+    //         each element's PEAK on-screen footprint at the output resolution and
+    //         rounded UP to a bucket, so there is no visible quality loss at output
+    //         resolution while a 4K→1080p grid render is dramatically faster.
+    //         Sources shown at/near full resolution, and single-use linear sources,
+    //         stay on the original. 10-bit sources keep 10-bit proxies.
     bool        useSourceMedia  = true;
 
     // ── Video ──────────────────────────────────────────────────────────────

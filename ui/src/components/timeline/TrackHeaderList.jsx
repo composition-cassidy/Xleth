@@ -3,7 +3,6 @@ import { Plus, EyeOff, Sliders } from 'lucide-react'
 import TrackHeader from './TrackHeader.jsx'
 import TrackColorPopover from './TrackColorPopover.jsx'
 import { RULER_HEIGHT, HEADER_WIDTH } from '../../constants/timeline.js'
-import { MACRO_LANE_HEIGHT } from './timelineRowLayout.js'
 import { resolveAutoTrackColor, normalizeTrackPalette, TRACK_PALETTE_FALLBACK } from './trackColorResolver.js'
 import { tokenValue } from '../../theming/tokenValue.ts'
 
@@ -14,6 +13,7 @@ export default function TrackHeaderList({
   onSetTrackColor,
   scrollContainerRef,
   width = HEADER_WIDTH,
+  trackHeight,
   // FXG.4-h-r1: macro automation child-lane rows (from the derived row layout),
   // rendered as compact labels directly below their parent track header so the
   // header column stays vertically aligned with the canvas lane bands.
@@ -120,6 +120,7 @@ export default function TrackHeaderList({
               <TrackHeader
                 track={track}
                 index={i}
+                trackHeight={trackHeight}
                 trackColor={trackColor}
                 currentPattern={currentPattern}
                 isFocused={focusedTrackId === track.id}
@@ -139,7 +140,7 @@ export default function TrackHeaderList({
                 <div
                   key={lane.id}
                   className={`track-header-macro-lane${lane.targetUnavailable ? ' track-header-macro-lane--orphan' : ''}`}
-                  style={{ height: MACRO_LANE_HEIGHT, borderLeftColor: trackColor }}
+                  style={{ height: lane.height, borderLeftColor: trackColor }}
                   title={lane.label}
                 >
                   <Sliders size={10} className="track-header-macro-lane-icon" strokeWidth={2} />
