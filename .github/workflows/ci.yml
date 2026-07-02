@@ -2,8 +2,11 @@
 #
 #   native : CMake engine build (engine + scanner + editor-host + test exes),
 #            then the Node-API bridge addon via cmake-js. Both must succeed.
+#            Uploads the built addon as an artifact for the ui job.
 #   ui     : Vite production build (must succeed) + vitest suite (reported,
-#            but NON-BLOCKING for now — see the step comment below).
+#            but NON-BLOCKING for now — see the step comment below). Runs
+#            after native: the vitest suite forks ui/addon-worker.js, which
+#            requires the addon binary the native job builds.
 #
 # Local reproduction of each step is documented in CONTRIBUTING.md.
 
@@ -94,8 +97,26 @@ jobs:
           if (-not (Test-Path $addon)) { throw "$addon was not produced" }
           Get-Item $addon | Format-List Name, Length
 
+      # Hand the addon to the ui job: its vitest suite (addonWorker.routing
+      # .test.js) forks ui/addon-worker.js, which requires xleth_native.node
+      # from bridge/build/Release. The FFmpeg DLLs beside it must come along —
+      # the addon links them, so require() fails without them on PATH. The
+      # scanner/editor-host exes are NOT included: nothing loads them at addon
+      # init, and no current test spawns them.
+      - name: Upload bridge addon for the ui job
+        uses: actions/upload-artifact@v4
+        with:
+          name: bridge-addon
+          if-no-files-found: error
+          path: |
+            bridge/build/Release/xleth_native.node
+            bridge/build/Release/*.dll
+
   ui:
     name: UI (Vite build + vitest)
+    # The vitest suite loads the native addon (see the download step below),
+    # so this job must wait for the native job's artifact.
+    needs: native
     runs-on: windows-2022 # pinned to match the native job
     timeout-minutes: 30
     defaults:
@@ -104,6 +125,16 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      # Place the addon + its DLLs at the same relative path the test expects
+      # (ui/src/addonWorker.routing.test.js points XLETH_BRIDGE_DIR here).
+      # Note: `uses` steps ignore the job's working-directory default, so this
+      # path is relative to the workspace root.
+      - name: Download bridge addon from the native job
+        uses: actions/download-artifact@v4
+        with:
+          name: bridge-addon
+          path: bridge/build/Release
 
       - uses: actions/setup-node@v4
         with:
