@@ -19,7 +19,9 @@ describe('Visual-B plugin UI knob runtime appearance', () => {
 
     expect(model.appearance.preset).toBe('xleth-default')
     expect(model.className).toContain('pluginui-knob--xleth-default')
-    expect(model.knobTokens.accentCssVar).toBe('--theme-accent')
+    // xleth-default's accentToken is accent.focus (retuned in da0ffd6 to
+    // match the saved Compressor user preset).
+    expect(model.knobTokens.accentCssVar).toBe('--theme-border-focus')
   })
 
   it('known studio-ring preset produces source-controlled classes and token CSS vars', () => {
@@ -44,7 +46,7 @@ describe('Visual-B plugin UI knob runtime appearance', () => {
     })
 
     expect(model.appearance.preset).toBe('xleth-default')
-    expect(model.knobTokens.accentCssVar).toBe('--theme-accent')
+    expect(model.knobTokens.accentCssVar).toBe('--theme-border-focus')
   })
 
   it('renders PluginUIKitKnob with known preset classes', () => {

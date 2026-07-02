@@ -48,7 +48,8 @@ describe('Visual-A appearance validator', () => {
     const result = validateWithKnobAppearance({ accentToken: 'accent.neonFuture' })
 
     expect(errorCodes(result)).toContain('UNKNOWN_APPEARANCE_TOKEN')
-    expect(findNode(result.doc, 'k-threshold').props.appearance.accentToken).toBe('accent.primary')
+    // Falls back to xleth-default's accentToken (accent.focus since da0ffd6).
+    expect(findNode(result.doc, 'k-threshold').props.appearance.accentToken).toBe('accent.focus')
     expect(isSaveAllowed(result)).toBe(false)
   })
 
