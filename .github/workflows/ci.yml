@@ -3,8 +3,7 @@
 #   native : CMake engine build (engine + scanner + editor-host + test exes),
 #            then the Node-API bridge addon via cmake-js. Both must succeed.
 #            Uploads the built addon as an artifact for the ui job.
-#   ui     : Vite production build (must succeed) + vitest suite (reported,
-#            but NON-BLOCKING for now — see the step comment below). Runs
+#   ui     : Vite production build + vitest suite (both must succeed). Runs
 #            after native: the vitest suite forks ui/addon-worker.js, which
 #            requires the addon binary the native job builds.
 #
@@ -163,11 +162,8 @@ jobs:
       - name: Vite production build
         run: npm run build
 
-      # NON-BLOCKING for now: the suite has known pre-existing failures
-      # (AUDIT.md §3.5). It runs on every PR so regressions are visible in
-      # the logs, but a red result does not fail the workflow. Once the
-      # suite is green (audit item Q12), delete the continue-on-error line
-      # to make it a required check.
-      - name: Vitest (non-blocking — known pre-existing failures)
-        continue-on-error: true
+      # Blocking since Q12: the pre-existing failures were triaged (all stale
+      # test expectations or never-committed fixtures) and fixed, so a red
+      # vitest result now fails the workflow.
+      - name: Vitest
         run: npm test
