@@ -7,7 +7,7 @@
 // What this suite asserts:
 //   - The new 'depth' subsystem appears in SUBSYSTEMS under Foundations.
 //   - Every expected --theme-depth-* token is registered in TOKENS_BY_NAME.
-//   - tokensBySubsystem() groups all 29 tokens under 'depth'.
+//   - tokensBySubsystem() groups all 35 tokens under 'depth'.
 //   - resolveTheme(default) produces a non-empty CSS string for each new
 //     token (the resolution path covers both `derived-var` ref tokens and
 //     `explicit` literal tokens).
@@ -46,8 +46,13 @@ const DEPTH_TOKENS_BY_KIND = {
     '--theme-depth-floating-shadow',
     '--theme-depth-floating-focused-shadow',
     '--theme-depth-well-inner-shadow',
+    '--theme-depth-well-inner-shadow-soft',
     '--theme-depth-well-top-shadow',
     '--theme-depth-pressed-inner-shadow',
+    '--theme-depth-hard-shadow',
+    '--theme-depth-panel-hard-shadow',
+    '--theme-depth-top-light-bevel',
+    '--theme-depth-control-hard-shadow-filter',
     '--theme-depth-accent-glow-subtle',
     '--theme-depth-accent-glow-medium',
     '--theme-depth-accent-glow-strong',
@@ -73,8 +78,8 @@ describe('depth subsystem — Pass 1 registration', () => {
     expect(depth?.displayName).toBe('Depth & elevation');
   });
 
-  it('registers all 30 depth tokens in the catalog', () => {
-    expect(ALL_DEPTH_TOKENS.length).toBe(30);
+  it('registers all 35 depth tokens in the catalog', () => {
+    expect(ALL_DEPTH_TOKENS.length).toBe(35);
     for (const name of ALL_DEPTH_TOKENS) {
       expect(TOKENS_BY_NAME[name], `missing catalog entry for ${name}`).toBeDefined();
       expect(TOKENS_BY_NAME[name].subsystem).toBe('depth');
@@ -148,10 +153,14 @@ describe('depth tokens — resolved through ThemeProvider pipeline', () => {
     });
     expect(values['--theme-depth-elevation-2-top-highlight'])
       .toBe('inset 0 1px 0 rgba(255, 255, 255, 0.06)');
+    // 3d6a832 flattened the shell: accent glows default to 'none' and the
+    // hard offset shadows carry the depth instead.
     expect(values['--theme-depth-accent-glow-medium'])
-      .toBe('0 0 16px rgba(51, 206, 214, 0.28)');
+      .toBe('none');
+    expect(values['--theme-depth-hard-shadow'])
+      .toBe('4px 5px 0 rgba(0,0,0,0.5)');
     expect(values['--theme-depth-floating-focused-shadow'])
-      .toBe('0 0 0 1px var(--theme-accent), 0 12px 40px rgba(0, 0, 0, 0.6)');
+      .toBe('var(--theme-depth-floating-shadow)');
   });
 
   it('user theme overrides win over catalog defaults for depth tokens', () => {
