@@ -106,11 +106,10 @@ describe('windowing external-store snapshot stability', () => {
       container.querySelectorAll<HTMLButtonElement>('.titlebar-menu-trigger'),
     );
     expect(menuTriggers.map((button) => button.textContent?.trim())).toEqual([
-      'FILE',
-      'EDIT',
-      'VIEW',
-      'SETTINGS',
-      'THEME',
+      'File',
+      'Edit',
+      'View',
+      'Settings',
     ]);
 
     for (let i = 0; i < 3; i += 1) {
