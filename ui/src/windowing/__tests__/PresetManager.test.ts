@@ -30,7 +30,7 @@ describe('PresetManager', () => {
 
   it('fl-compose carries dockRegionSizes', () => {
     const preset = loadPreset('fl-compose')!;
-    expect(preset.dockRegionSizes).toEqual({ left: 320, right: 280, top: 240, bottom: 320 });
+    expect(preset.dockRegionSizes).toEqual({ left: 258, right: 280, top: 240, bottom: 320 });
   });
 
   it('vegas-arrange: preview visible floating top-right, timeline floating bottom, mixer hidden', () => {
@@ -64,6 +64,6 @@ describe('PresetManager', () => {
     expect(state.panels.mixer.mode).toBe('docked');
     expect(state.panels.sampleSelector.mode).toBe('docked');
     expect(state.panels.preview.hidden).toBe(true);
-    expect(state.dockRegionSizes).toEqual({ left: 320, right: 280, top: 240, bottom: 320 });
+    expect(state.dockRegionSizes).toEqual({ left: 258, right: 280, top: 240, bottom: 320 });
   });
 });
