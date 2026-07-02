@@ -173,7 +173,7 @@ describe('Multiband parser (parseDrainResponse)', () => {
 
   it('rejects a Multiband payload whose bucketSize does not match the schema', () => {
     const resp = {
-      type: 'multiband', schema: 1,
+      type: 'multiband', schema: DYNAMICS_VIZ_SCHEMA_VERSION,
       bucketSize: 56, // Limiter / Transient size, wrong for Multiband (80)
       count: 0, frames: new ArrayBuffer(0),
     }
@@ -184,7 +184,7 @@ describe('Multiband parser (parseDrainResponse)', () => {
 
   it('rejects when the engine returns a Compressor payload but consumer asked for Multiband', () => {
     const resp = {
-      type: 'compressor', schema: 1,
+      type: 'compressor', schema: DYNAMICS_VIZ_SCHEMA_VERSION,
       bucketSize: COMPRESSOR_BUCKET.sizeBytes, count: 0, frames: new ArrayBuffer(0),
     }
     const parsed = parseDrainResponse(resp, VIZ_TYPE.MULTIBAND)
@@ -194,7 +194,7 @@ describe('Multiband parser (parseDrainResponse)', () => {
 
   it('rejects when the engine returns a Transient payload but consumer asked for Multiband', () => {
     const resp = {
-      type: 'transient', schema: 1,
+      type: 'transient', schema: DYNAMICS_VIZ_SCHEMA_VERSION,
       bucketSize: TRANSIENT_BUCKET.sizeBytes, count: 0, frames: new ArrayBuffer(0),
     }
     const parsed = parseDrainResponse(resp, VIZ_TYPE.MULTIBAND)
@@ -204,7 +204,7 @@ describe('Multiband parser (parseDrainResponse)', () => {
 
   it('rejects when the engine returns a Limiter payload but consumer asked for Multiband', () => {
     const resp = {
-      type: 'limiter', schema: 1,
+      type: 'limiter', schema: DYNAMICS_VIZ_SCHEMA_VERSION,
       bucketSize: LIMITER_BUCKET.sizeBytes, count: 0, frames: new ArrayBuffer(0),
     }
     const parsed = parseDrainResponse(resp, VIZ_TYPE.MULTIBAND)
@@ -224,15 +224,15 @@ describe('Multiband parser (parseDrainResponse)', () => {
 
   it('still accepts existing dynamics types for their own consumers (no regression)', () => {
     expect(parseDrainResponse({
-      type: 'compressor', schema: 1, bucketSize: COMPRESSOR_BUCKET.sizeBytes,
+      type: 'compressor', schema: DYNAMICS_VIZ_SCHEMA_VERSION, bucketSize: COMPRESSOR_BUCKET.sizeBytes,
       count: 0, frames: new ArrayBuffer(0),
     }, VIZ_TYPE.COMPRESSOR).ok).toBe(true)
     expect(parseDrainResponse({
-      type: 'limiter', schema: 1, bucketSize: LIMITER_BUCKET.sizeBytes,
+      type: 'limiter', schema: DYNAMICS_VIZ_SCHEMA_VERSION, bucketSize: LIMITER_BUCKET.sizeBytes,
       count: 0, frames: new ArrayBuffer(0),
     }, VIZ_TYPE.LIMITER).ok).toBe(true)
     expect(parseDrainResponse({
-      type: 'transient', schema: 1, bucketSize: TRANSIENT_BUCKET.sizeBytes,
+      type: 'transient', schema: DYNAMICS_VIZ_SCHEMA_VERSION, bucketSize: TRANSIENT_BUCKET.sizeBytes,
       count: 0, frames: new ArrayBuffer(0),
     }, VIZ_TYPE.TRANSIENT).ok).toBe(true)
   })

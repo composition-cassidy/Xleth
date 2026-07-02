@@ -152,7 +152,7 @@ describe('Limiter parser (parseDrainResponse)', () => {
 
   it('rejects a Limiter payload whose bucketSize does not match the schema', () => {
     const resp = {
-      type: 'limiter', schema: 1,
+      type: 'limiter', schema: DYNAMICS_VIZ_SCHEMA_VERSION,
       bucketSize: 40, // Compressor's size, wrong for Limiter
       count: 0, frames: new ArrayBuffer(0),
     }
@@ -163,7 +163,7 @@ describe('Limiter parser (parseDrainResponse)', () => {
 
   it('rejects when the engine returns a Compressor payload but the consumer asked for Limiter', () => {
     const resp = {
-      type: 'compressor', schema: 1,
+      type: 'compressor', schema: DYNAMICS_VIZ_SCHEMA_VERSION,
       bucketSize: COMPRESSOR_BUCKET.sizeBytes, count: 0, frames: new ArrayBuffer(0),
     }
     const parsed = parseDrainResponse(resp, VIZ_TYPE.LIMITER)
@@ -183,7 +183,7 @@ describe('Limiter parser (parseDrainResponse)', () => {
 
   it('still accepts a Compressor payload when the consumer asks for Compressor', () => {
     const resp = {
-      type: 'compressor', schema: 1,
+      type: 'compressor', schema: DYNAMICS_VIZ_SCHEMA_VERSION,
       bucketSize: COMPRESSOR_BUCKET.sizeBytes, count: 0, frames: new ArrayBuffer(0),
     }
     const parsed = parseDrainResponse(resp, VIZ_TYPE.COMPRESSOR)
