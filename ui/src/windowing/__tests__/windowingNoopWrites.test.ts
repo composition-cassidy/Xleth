@@ -78,16 +78,18 @@ describe('windowing no-op writes', () => {
     panels.timeline.docked = { region: 'bottom', orderInRegion: 0, sizeInRegion: 300 };
     panels.mixer.hidden = false;
     panels.mixer.mode = 'docked';
-    panels.mixer.docked = { region: 'bottom', orderInRegion: 1, sizeInRegion: 260 };
+    panels.mixer.docked = { region: 'bottom', orderInRegion: 1, sizeInRegion: 300 };
     usePanelRegistry.setState({ panels });
 
     const timelineFloating = { ...usePanelRegistry.getState().panels.timeline.floating };
     const mixerFloating = { ...usePanelRegistry.getState().panels.mixer.floating };
     const registry = usePanelRegistry.getState();
 
-    registry.resizeDockedPanelPair('bottom', 'timeline', 320, 'mixer', 240);
+    // 320/280 keeps both panels above MIN_DOCKED_PANEL_MAIN_SIZES (mixer: 260)
+    // so the write goes through unclamped.
+    registry.resizeDockedPanelPair('bottom', 'timeline', 320, 'mixer', 280);
     expect(usePanelRegistry.getState().panels.timeline.docked.sizeInRegion).toBe(320);
-    expect(usePanelRegistry.getState().panels.mixer.docked.sizeInRegion).toBe(240);
+    expect(usePanelRegistry.getState().panels.mixer.docked.sizeInRegion).toBe(280);
     expect(usePanelRegistry.getState().panels.timeline.floating).toEqual(timelineFloating);
     expect(usePanelRegistry.getState().panels.mixer.floating).toEqual(mixerFloating);
 
@@ -96,7 +98,7 @@ describe('windowing no-op writes', () => {
       'timeline',
       320,
       'mixer',
-      240,
+      280,
     ))).toBe(0);
   });
 

@@ -150,19 +150,21 @@ describe('StatePersistence', () => {
     panels.timeline.docked = { region: 'bottom', orderInRegion: 0, sizeInRegion: 300 };
     panels.mixer.hidden = false;
     panels.mixer.mode = 'docked';
-    panels.mixer.docked = { region: 'bottom', orderInRegion: 1, sizeInRegion: 260 };
+    panels.mixer.docked = { region: 'bottom', orderInRegion: 1, sizeInRegion: 300 };
     usePanelRegistry.setState({ panels });
 
     SP.setPersistenceAdapter(adapter);
     SP.init();
-    usePanelRegistry.getState().resizeDockedPanelPair('bottom', 'timeline', 320, 'mixer', 240);
+    // 320/280 keeps both panels above MIN_DOCKED_PANEL_MAIN_SIZES (mixer: 260);
+    // a clamped-to-current write would be a registry no-op and never persist.
+    usePanelRegistry.getState().resizeDockedPanelPair('bottom', 'timeline', 320, 'mixer', 280);
 
     await vi.waitFor(async () => {
       const raw = await adapter.read();
       expect(raw).not.toBeNull();
       const parsed = JSON.parse(raw!);
       expect(parsed.panels.timeline.docked.sizeInRegion).toBe(320);
-      expect(parsed.panels.mixer.docked.sizeInRegion).toBe(240);
+      expect(parsed.panels.mixer.docked.sizeInRegion).toBe(280);
     }, { timeout: 1200 });
   });
 

@@ -47,13 +47,15 @@ describe('DockedPanelResizeManager', () => {
   beforeEach(resetRegistry);
 
   it('resizes adjacent docked panel sizes while preserving their total', () => {
+    // +30 keeps the mixer above its 260px docked minimum and clear of the
+    // 340px snap target (threshold is 8px), so this exercises a plain resize.
     beginBottomResize();
-    updateDockedPanelResize(50, 0);
+    updateDockedPanelResize(30, 0);
     endDockedPanelResize();
 
     const panels = usePanelRegistry.getState().panels;
-    expect(panels.timeline.docked.sizeInRegion).toBe(350);
-    expect(panels.mixer.docked.sizeInRegion).toBe(250);
+    expect(panels.timeline.docked.sizeInRegion).toBe(330);
+    expect(panels.mixer.docked.sizeInRegion).toBe(270);
   });
 
   it('clamps adjacent panels at centralized docked minimums', () => {
@@ -108,11 +110,11 @@ describe('DockedPanelResizeManager', () => {
 
     beginBottomResize();
     updateDockedPanelResize(20, 0);
-    updateDockedPanelResize(50, 0);
+    updateDockedPanelResize(30, 0);
     expect(calls).toHaveLength(0);
 
     endDockedPanelResize();
-    expect(calls).toEqual([[350, 250]]);
+    expect(calls).toEqual([[330, 270]]);
   });
 
   it('cancelDockedPanelResizeIfActive returns true only while active', () => {
