@@ -97,12 +97,26 @@ jobs:
           if (-not (Test-Path $addon)) { throw "$addon was not produced" }
           Get-Item $addon | Format-List Name, Length
 
+      # The addon dynamically links FFmpeg (avcodec-62.dll etc.), but nothing
+      # in the build copies those DLLs next to it — vcpkg leaves them in
+      # build/vcpkg_installed/x64-windows/bin. Without them require() fails
+      # with Windows' misleading "The specified module could not be found"
+      # even though xleth_native.node itself exists. Copy ALL vcpkg runtime
+      # DLLs (not just av*/sw*) so transitive deps like zlib come along.
+      - name: Stage vcpkg runtime DLLs next to the addon
+        shell: pwsh
+        run: |
+          $bin = 'build\vcpkg_installed\x64-windows\bin'
+          $dlls = Get-ChildItem $bin -Filter '*.dll'
+          if (-not $dlls) { throw "no DLLs found in $bin" }
+          $dlls | Copy-Item -Destination 'bridge\build\Release\'
+          Get-ChildItem 'bridge\build\Release' | Format-Table Name, Length
+
       # Hand the addon to the ui job: its vitest suite (addonWorker.routing
       # .test.js) forks ui/addon-worker.js, which requires xleth_native.node
-      # from bridge/build/Release. The FFmpeg DLLs beside it must come along —
-      # the addon links them, so require() fails without them on PATH. The
-      # scanner/editor-host exes are NOT included: nothing loads them at addon
-      # init, and no current test spawns them.
+      # from bridge/build/Release and needs the DLLs staged above on PATH.
+      # The scanner/editor-host exes are NOT included: nothing loads them at
+      # addon init, and no current test spawns them.
       - name: Upload bridge addon for the ui job
         uses: actions/upload-artifact@v4
         with:
