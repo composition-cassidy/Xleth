@@ -198,43 +198,40 @@ describe('Resonance Suppressor shipped layout', () => {
 
   it('contains the polished structural hooks the runtime expects', () => {
     const json = JSON.stringify(resonanceLayout)
-    expect(json).toContain('"resonance.combined"')
-    expect(json).toContain('"resonanceCombined"')
-    // Mode / quality / stereo are segmented choices.
+    // Mode / processing-mode / quality / stereo are segmented choices.
     expect(json).toContain('"mode-segmented"')
+    expect(json).toContain('"processing-mode-low"')
+    expect(json).toContain('"processing-mode-hq"')
     expect(json).toContain('"quality-segmented"')
     expect(json).toContain('"stereo-mode-segmented"')
-    // Graph display tabs are backed by real shipped resonance visualizer
-    // sources; Delta is intentionally not a graph tab because it is an audio
-    // listen mode, not a distinct visualization source.
-    expect(json).toContain('"graph-view-tabs"')
-    expect(json).toContain('"resonance.spectrum"')
+    // The compact layout (d450e16) ships a single Reduction graph with the
+    // editable overlay; the combined/spectrum/weighting tab strip is gone.
     expect(json).toContain('"resonance.reduction"')
-    expect(json).toContain('"resonance.weighting"')
-    // Macro detection controls are now vertical faders (compressorSlider),
+    expect(json).not.toContain('"graph-view-tabs"')
+    expect(json).not.toContain('"resonance.combined"')
+    expect(json).not.toContain('"resonance.spectrum"')
+    expect(json).not.toContain('"resonance.weighting"')
+    // Macro detection controls are vertical faders (compressorSlider),
     // matching the polished XLETH plugin style (e.g. the Transient Processor).
     for (const id of ['s-depth', 's-sharpness', 's-selectivity', 's-attack', 's-release']) {
       expect(json).toContain(`"${id}"`)
     }
     expect(json).toContain('"compressorSlider"')
     // Output controls including the Δ Listen toggle (boolParam). MIX is a
-    // fader; TRIM stays a compact knob.
+    // fader; TRIM is a horizontal slider in the compact layout.
     expect(json).toContain('"s-mix"')
-    expect(json).toContain('"k-trim"')
+    expect(json).toContain('"h-trim"')
     expect(json).toContain('"delta-toggle"')
     expect(json).toContain('"boolParam"')
-    expect(json).toContain('"FOCUS CURVE"')
-    // Focus curve: HP/LP boundaries are still rendered as compact knobs; the
-    // 8 band slots now live entirely inside the dynamic graph overlay, so the
-    // legacy node-grid (k-b1-freq..k-b4-gain) and the temporary band-N grid
-    // are intentionally absent from the layout.
-    for (const id of ['k-wc-hp', 'k-wc-lp']) {
-      expect(json).toContain(`"${id}"`)
-    }
+    // Focus curve: HP/LP boundaries and the 8 band slots all live inside the
+    // dynamic graph overlay now, so the legacy HP/LP knobs, the node-grid
+    // (k-b1-freq..k-b4-gain), and the temporary band-N grid are absent.
+    expect(json).not.toContain('"k-wc-hp"')
+    expect(json).not.toContain('"k-wc-lp"')
     expect(json).not.toContain('Drag handles')
     expect(json).not.toContain('+ Band')
-    // Meters were removed from the shipped layout to match the cleaner mockup
-    // (the engine still exposes the meter slots; they are simply not rendered).
+    // Meters stay out of the shipped layout (the engine still exposes the
+    // meter slots; they are simply not rendered).
     expect(json).not.toContain('"PEAK_L"')
     expect(json).not.toContain('"PEAK_R"')
     expect(json).not.toContain('"GAIN_REDUCTION"')
@@ -265,15 +262,18 @@ describe('Resonance Suppressor shipped layout', () => {
   })
 
   it('uses a compact plugin-sized preferred panel without becoming oversized', () => {
-    expect(resonanceLayout.panel.preferredSize.width).toBeGreaterThanOrEqual(920)
-    expect(resonanceLayout.panel.preferredSize.width).toBeLessThanOrEqual(1020)
-    expect(resonanceLayout.panel.preferredSize.height).toBeLessThanOrEqual(660)
-    expect(resonanceLayout.panel.preferredSize.height).toBeGreaterThanOrEqual(580)
+    // d450e16 compacted the shipped panel to 700x470.
+    expect(resonanceLayout.panel.preferredSize.width).toBe(700)
+    expect(resonanceLayout.panel.preferredSize.height).toBe(470)
   })
 
-  it('manifest exposes 54 params with the Focus Curve v1.1 schema', () => {
+  it('manifest exposes 55 params with the Focus Curve v1.1 schema', () => {
+    // 14 top-level params (incl. processing_mode, added with the PDC work in
+    // 7072ad5, alongside the soft/hard mode param) + 8 bands x 5 wc_* params.
     const ids = Object.keys(RESONANCE_SUPPRESSOR_MANIFEST.params)
-    expect(ids).toHaveLength(54)
+    expect(ids).toHaveLength(55)
+    expect(ids).toContain('processing_mode')
+    expect(ids).toContain('mode')
     for (let n = 1; n <= 8; n++) {
       for (const suffix of ['active', 'type', 'freq', 'gain', 'q']) {
         expect(ids).toContain(`wc_b${n}_${suffix}`)
@@ -310,17 +310,15 @@ describe('Resonance Suppressor shipped layout', () => {
       return out
     }
     const vizNodes = collectVizNodes(resonanceLayout.root)
-    expect(vizNodes.length).toBeGreaterThanOrEqual(4)
-    // Every graph tab carries the editable resonanceCurve overlay.
+    // The compact layout ships exactly one graph: the Reduction view with
+    // the editable resonanceCurve overlay (drag handles control how much
+    // resonance is suppressed).
+    expect(vizNodes.length).toBe(1)
     for (const viz of vizNodes) {
       expect(viz.props.overlay).toBe('resonanceCurve')
     }
-    // The first tab is what the runtime selects by default — it must be the
-    // Reduction view (drag knobs to control how much resonance is suppressed).
     expect(vizNodes[0].props.source).toBe('resonance.reduction')
     expect(vizNodes[0].props.preset).toBe('resonanceReduction')
-    // The Combined view is still present, just no longer the default.
-    expect(vizNodes.some(v => v.props.source === 'resonance.combined')).toBe(true)
   })
 })
 
