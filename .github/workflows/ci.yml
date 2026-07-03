@@ -2,6 +2,8 @@
 #
 #   native : CMake engine build (engine + scanner + editor-host + test exes),
 #            then the Node-API bridge addon via cmake-js. Both must succeed.
+#            Also runs the engine's ctest suite (non-blocking for now; see
+#            the step comment for the known failures).
 #            Uploads the built addon as an artifact for the ui job.
 #   ui     : Vite production build + vitest suite (both must succeed). Runs
 #            after native: the vitest suite forks ui/addon-worker.js, which
@@ -73,6 +75,18 @@ jobs:
 
       - name: Build engine, scanner, editor-host, tests
         run: cmake --build build --config Release --parallel
+
+      # Runs the 46 test_* executables registered with CTest (engine/CMakeLists
+      # sets WORKING_DIRECTORY and the vcpkg DLL PATH via ENVIRONMENT_MODIFICATION).
+      # Non-blocking for now: 6 failures are known and pre-existing, NOT
+      # regressions — test_video_flip_applier, test_flip_orientation_golden,
+      # test_effects, test_reverb, test_frame_collector, test_real_render.
+      # See CONTRIBUTING.md for local reproduction and triage notes.
+      # TODO: once stable, drop continue-on-error and make this a required
+      # check (same path vitest took in Q12).
+      - name: Engine tests (ctest)
+        continue-on-error: true
+        run: ctest --test-dir build -C Release --output-on-failure
 
       - uses: actions/setup-node@v4
         with:
