@@ -1724,3 +1724,79 @@ target_compile_definitions(test_real_render PRIVATE
     JUCE_USE_WINDOWS_MEDIA_FORMAT=0
     JUCE_STANDALONE_APPLICATION=1
 )
+
+# ── CTest registration ────────────────────────────────────────────────────────
+# Every self-test executable declared above, runnable in one command:
+#     ctest --test-dir build -C Release          (from the repo root)
+# WORKING_DIRECTORY is the repo root to match how build.bat has always invoked
+# them (some tests resolve paths relative to the repo root, e.g. test_real_render
+# loads the XLETH\test project). enable_testing() lives in the top-level
+# CMakeLists.txt; the fallback below keeps standalone engine-only configures
+# (cmake -S engine ...) working too.
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    enable_testing()
+endif()
+
+set(XLETH_ENGINE_TESTS
+    test_timeline
+    test_loop_region
+    test_render_scope
+    test_tail_render
+    test_video_flip_resolver
+    test_canvas_fit
+    test_video_flip_applier
+    test_flip_determinism
+    test_flip_orientation_golden
+    test_project
+    test_undo
+    test_track_routing
+    test_sidechain_routes
+    test_clip_modulation_evaluator
+    test_clip_companion_fx_builder
+    test_clip_video_modulation_timing
+    test_clip_modulated_reader
+    test_mix
+    test_mixer_bus_routing
+    test_mixer_routing_pdc
+    test_sidechain_runtime
+    test_stock_compressor_sidechain
+    test_vst_sidechain
+    test_fxgraph_sidechain_input
+    test_clip_sr
+    test_audio_telemetry
+    test_audio_perf_scenarios
+    test_sampler
+    test_world_stretch
+    test_midi_importer
+    test_fsc_score_parser
+    test_effects
+    test_chain_effect_identity
+    test_pdc_stage1
+    test_distortion
+    test_reverb
+    test_graph_effect_parameters
+    test_frame_cache
+    test_frame_collector
+    test_render_decoder
+    test_animation_manager
+    test_compositor
+    test_muxer
+    test_hw_detect
+    test_offline_render
+    test_real_render
+)
+
+foreach(_xleth_test IN LISTS XLETH_ENGINE_TESTS)
+    add_test(NAME ${_xleth_test}
+        COMMAND ${_xleth_test}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..
+    )
+    # FFmpeg-linked tests need the vcpkg DLLs (avcodec etc.) on PATH — the
+    # manual invocations relied on this too; without it they die on startup
+    # with 0xc0000135 (STATUS_DLL_NOT_FOUND).
+    if(EXISTS "${_VCPKG_INSTALLED}/bin")
+        set_tests_properties(${_xleth_test} PROPERTIES
+            ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_VCPKG_INSTALLED}/bin"
+        )
+    endif()
+endforeach()
