@@ -1,7 +1,7 @@
 {
   "appId": "com.xleth.app",
   "productName": "XLETH",
-  "files": ["dist/**/*", "src/plugin-ui/layouts/*.json", "main.js", "preload.js", "runtimePaths.js", "workspaceBackdropCapability.js", "update-checker.js", "splash.html", "splash-preload.js"],
+  "files": ["dist/**/*", "src/plugin-ui/layouts/*.json", "main.js", "electron-main/**/*", "preload.js", "runtimePaths.js", "workspaceBackdropCapability.js", "update-checker.js", "splash.html", "splash-preload.js"],
   "directories": {
     "output": "../dist"
   },
