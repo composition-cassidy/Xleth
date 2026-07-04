@@ -50,4 +50,53 @@ Notes:
 
 - Close any running Xleth/Electron instance before rebuilding the bridge — the loaded `xleth_native.node` locks the output file (`build.bat` does this for you).
 - The Playwright baseline screenshots (`ui/tests/baseline`) are not part of CI; they require a built app and local snapshots.
-- Engine test executables are built by CI but not yet executed (no CTest registration yet — see `AUDIT.md` Q4). Run them locally via `build.bat tests`.
+
+## Running the tests
+
+**Engine (C++):** all 46 `test_*` executables are registered with CTest. After building, run them in one command from the repo root:
+
+```bat
+ctest --test-dir build -C Release --output-on-failure
+```
+
+`build.bat tests` (menu option 6) does exactly this. Tests execute with the repo root as working directory, matching how they were historically run.
+
+**Bridge (contract scripts):** `npm test` in `bridge/` runs every `test_*.js` script in the directory sequentially (each in its own node process) plus the compiled `test_export_naming.exe` (a C++ unit test built by the bridge's cmake-js build — it is *not* one of the 46 engine CTest targets). Individual scripts are still available via `npm run test:phase1`, `npm run test:transport`, etc.
+
+**UI unit tests (vitest):** `npm test` in `ui/` runs the vitest suite (`vitest run`, jsdom/node components). This is the suite CI runs (currently non-blocking — see "What CI checks" above).
+
+**UI Electron main-process smoke (`ui/tests/smoke`):** a Playwright suite that launches the *real* Electron app (`ui/main.js`) — forking the engine worker and driving the actual preload/IPC/worker stack, nothing stubbed — and asserts three things: the app boots without throwing, the forked engine worker reaches "ready", and a real read-only IPC round-trip (`timeline.getBPM`) completes. It exists so the planned `ui/main.js` decomposition (AUDIT.md S5) has a baseline that fails loudly if boot, worker startup, or the IPC round-trip regresses. Because it drives the built UI, run a UI build first:
+
+```bat
+cd ui
+npm run build        :: produces dist/index.html (main.js loads it under XLETH_PLAYWRIGHT=1)
+npm run test:smoke   :: playwright test --config playwright.smoke.config.ts
+```
+
+This suite is separate from the vitest suite (different runner + command) and from the screenshot baseline (`playwright.config.ts` / `ui/tests/baseline`). Like the baseline, it needs a built app and is **not** part of CI — it requires the native `xleth_native.node` addon (built via the Engine + Bridge steps above) and Windows audio/GPU, so it runs locally, not on the `windows-2022` runners.
+
+### Known first-run failures (registration baseline)
+
+The CTest/npm wiring registers the tests; it does not fix them. The following were already failing when first run through the unified commands (they fail the same way when invoked manually) and are tracked as pre-existing:
+
+Engine (`ctest`, 40/46 passed, baseline 2026-07-03):
+
+| Test | Failure |
+|------|---------|
+| `test_video_flip_applier` | assertion failure (exits almost immediately) |
+| `test_flip_orientation_golden` | assertion failure (GPU shader golden) |
+| `test_effects` | assertion failure |
+| `test_reverb` | assertion failure |
+| `test_frame_collector` | crashes with `0xc0000409` (fail-fast / stack buffer overrun) |
+| `test_real_render` | segfault — also hardcodes the project path `C:\Users\Krasen\Desktop\XLETH\test`, so it can only ever run on that machine |
+
+Engine note: the FFmpeg-linked tests need the vcpkg DLLs on `PATH`; the CTest registration prepends `<vcpkg_installed>/bin` per test (`ENVIRONMENT_MODIFICATION`), which is what manual runs always relied on. Without it, 15 additional tests die on startup with `0xc0000135` (DLL not found). A stale `test_envelope_voice_events.exe` may exist in old build trees — its target was removed and it is intentionally not registered.
+
+Bridge (`npm test`, 9/13 passed, baseline 2026-07-03):
+
+| Script | Failure |
+|--------|---------|
+| `test_dynamics_viz.js` | `drain.schema === 1 (got 2)` — schema version mismatch |
+| `test_midi_import.js` | expects `C:\Users\Krasen\Desktop\XLETH\test.wav` (missing on disk) and sampler-metadata round-trip fails (`rootNote`/`attackMs` come back `undefined`) |
+| `test_patterns.js` | sampler-metadata round-trip fails (`rootNote`/`attackMs`/`decayMs`/`sustain` come back `undefined`) |
+| `test_pdc_live_presentation_refresh.js` | `EPERM` deleting its scratch copy under `diagnostics\pdc-stage7c\` during cleanup |

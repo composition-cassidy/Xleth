@@ -1,0 +1,2 @@
+# Ephemeral Playwright run artifacts (last-run marker, traces/videos on failure).
+.output/

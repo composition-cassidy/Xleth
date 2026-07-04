@@ -13,6 +13,7 @@
     "start:designer": "npm run build:designer && electron .",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:smoke": "playwright test --config playwright.smoke.config.ts",
     "baseline:build": "vite build",
     "baseline:capture": "playwright test --update-snapshots --config playwright.config.ts",
     "baseline:check": "playwright test --config playwright.config.ts",
