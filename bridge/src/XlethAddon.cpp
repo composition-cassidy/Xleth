@@ -251,11 +251,6 @@ Napi::Value InitVideoSharedMemory(const Napi::CallbackInfo& info)
     return dispatchToService(info, "initVideoSharedMemory");
 }
 
-Napi::Value GetCurrentFrameRGBA(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "getFrameRGBA");
-}
-
 Napi::Value SetVideoResolution(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "setVideoResolution");
@@ -351,16 +346,6 @@ Napi::Value Project_IsExportRunning(const Napi::CallbackInfo& info)
     return dispatchToService(info, "project_isExportRunning");
 }
 
-Napi::Value Timeline_GetBPM(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_getBPM");
-}
-
-Napi::Value Timeline_GetTempoLocked(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_getTempoLocked");
-}
-
 Napi::Value Timeline_GetDeclickMs(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "timeline_getDeclickMs");
@@ -409,11 +394,6 @@ Napi::Value Timeline_GetClipsInRange(const Napi::CallbackInfo& info)
 Napi::Value Timeline_GetLoopRegion(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "timeline_getLoopRegion");
-}
-
-Napi::Value Timeline_SetBPM(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setBPM");
 }
 
 Napi::Value Timeline_SetLoopRegion(const Napi::CallbackInfo& info)
@@ -1613,6 +1593,21 @@ Napi::Value Midi_ExecuteImport(const Napi::CallbackInfo& info)
 
 Napi::Object Init(Napi::Env env, Napi::Object exports)
 {
+    // ── Manifest-generated exports (AUDIT.md S1) ─────────────────────────────
+    // One export per line of XlethRpcExports.inc, generated from
+    // ui/rpc-manifest.js (regenerate: node scripts/generate-rpc-registries.js).
+    // Every generated export is the same mechanical wrapper the hand-written
+    // functions below are: dispatchToService(info, "<name>"). As methods
+    // migrate to the manifest their hand-written wrapper + exports.Set line
+    // are deleted here.
+#define XLETH_RPC_EXPORT(name)                                                 \
+    exports.Set(name, Napi::Function::New(env,                                 \
+        [](const Napi::CallbackInfo& info) {                                   \
+            return dispatchToService(info, name);                              \
+        }));
+#include "XlethRpcExports.inc"
+#undef XLETH_RPC_EXPORT
+
     // ── Phase 0 (backward-compatible) ───────────────────────────────────────
     exports.Set("initialize",         Napi::Function::New(env, Initialize));
     exports.Set("shutdown",           Napi::Function::New(env, Shutdown));
@@ -1630,7 +1625,6 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("getFrameBuffer",     Napi::Function::New(env, GetFrameBuffer));
     exports.Set("initFrameOutput",    Napi::Function::New(env, InitFrameOutput));
     exports.Set("initVideoSharedMemory", Napi::Function::New(env, InitVideoSharedMemory));
-    exports.Set("getFrameRGBA",       Napi::Function::New(env, GetCurrentFrameRGBA));
     exports.Set("setVideoResolution", Napi::Function::New(env, SetVideoResolution));
     exports.Set("addAudioEvent",      Napi::Function::New(env, AddAudioEvent));
     exports.Set("addVideoEvent",      Napi::Function::New(env, AddVideoEvent));
@@ -1654,8 +1648,6 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("project_isExportRunning", Napi::Function::New(env, Project_IsExportRunning));
 
     // ── Phase 1 — Timeline queries ───────────────────────────────────────────
-    exports.Set("timeline_getBPM",           Napi::Function::New(env, Timeline_GetBPM));
-    exports.Set("timeline_getTempoLocked",   Napi::Function::New(env, Timeline_GetTempoLocked));
     exports.Set("timeline_getDeclickMs",     Napi::Function::New(env, Timeline_GetDeclickMs));
     exports.Set("timeline_getGlobalStretchMethod", Napi::Function::New(env, Timeline_GetGlobalStretchMethod));
     exports.Set("timeline_getSources",       Napi::Function::New(env, Timeline_GetSources));
@@ -1668,7 +1660,6 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("timeline_getLoopRegion",    Napi::Function::New(env, Timeline_GetLoopRegion));
 
     // ── Phase 1 — Timeline mutations (via UndoManager) ───────────────────────
-    exports.Set("timeline_setBPM",         Napi::Function::New(env, Timeline_SetBPM));
     exports.Set("timeline_setLoopRegion",  Napi::Function::New(env, Timeline_SetLoopRegion));
     exports.Set("timeline_setTempoLocked", Napi::Function::New(env, Timeline_SetTempoLocked));
     exports.Set("timeline_setDeclickMs",   Napi::Function::New(env, Timeline_SetDeclickMs));

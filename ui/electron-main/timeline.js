@@ -13,12 +13,8 @@ function init(deps) {
   const { safeHandler } = deps;
 
   // ── Timeline queries ───────────────────────────────────────────────────────
-
-  ipcMain.handle('xleth:timeline:getBPM',
-    safeHandler(() => callWorker('timeline_getBPM')));
-
-  ipcMain.handle('xleth:timeline:getTempoLocked',
-    safeHandler(() => callWorker('timeline_getTempoLocked')));
+  // getBPM / getTempoLocked / setBPM are registered by rpc-registry.js from
+  // ui/rpc-manifest.js (AUDIT.md S1).
 
   ipcMain.handle('xleth:timeline:getDeclickMs',
     safeHandler(() => callWorker('timeline_getDeclickMs')));
@@ -57,9 +53,6 @@ function init(deps) {
     safeHandler(() => callWorker('timeline_getLoopRegion')));
 
   // ── Timeline mutations ─────────────────────────────────────────────────────
-
-  ipcMain.handle('xleth:timeline:setBPM',
-    safeHandler((_, bpm) => callWorker('timeline_setBPM', [bpm])));
 
   ipcMain.handle('xleth:timeline:setLoopRegion',
     safeHandler((_, region, minLengthTicks) => callWorker('timeline_setLoopRegion', [region, minLengthTicks])));

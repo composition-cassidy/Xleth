@@ -127,6 +127,13 @@ vst3Handlers.init({ safeHandler, getWin: () => win });
 exportHandlers.init({ safeHandler, getWin: () => win });
 diagnosticsHandlers.init({ safeHandler, getWin: () => win, log });
 
+// ── Manifest-driven RPC handlers (AUDIT.md S1) ─────────────────────────────────
+// Pure pass-through channels declared once in ui/rpc-manifest.js; hand-written
+// registrations are deleted from the domain modules as methods migrate.
+// See docs/rpc-manifest.md.
+const rpcRegistry = require('./electron-main/rpc-registry');
+rpcRegistry.init({ safeHandler });
+
 let workspaceBackdropCapability = null;
 let workspaceBackdropState = {
   capability: null,

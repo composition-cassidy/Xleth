@@ -15453,6 +15453,20 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
                                             const nlohmann::json& args)
 {
     JsonApi::CallbackInfo info(args);
+
+    // ── Manifest-generated dispatch (AUDIT.md S1) ────────────────────────────
+    // One branch per line of XlethRpcDispatch.inc, generated from
+    // ui/rpc-manifest.js (regenerate: node scripts/generate-rpc-registries.js).
+    // Identical shape to the hand-written chain below; as methods migrate to
+    // the manifest their hand-written line here is deleted.
+#define XLETH_RPC_VALUE(name, Handler) \
+    if (method == name) return Handler(info).raw();
+#define XLETH_RPC_VOID(name, Handler) \
+    if (method == name) { Handler(info); return JsonApi::Env{}.Undefined().raw(); }
+#include "XlethRpcDispatch.inc"
+#undef XLETH_RPC_VALUE
+#undef XLETH_RPC_VOID
+
     if (method == "initialize") return Initialize(info).raw();
     if (method == "shutdown") { Shutdown(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "loadSample") return LoadSample(info).raw();
@@ -15469,7 +15483,6 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     if (method == "getFrameBuffer") return GetFrameBuffer(info).raw();
     if (method == "initFrameOutput") return InitFrameOutput(info).raw();
     if (method == "initVideoSharedMemory") return InitVideoSharedMemory(info).raw();
-    if (method == "getFrameRGBA") return GetCurrentFrameRGBA(info).raw();
     if (method == "setVideoResolution") { SetVideoResolution(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "addAudioEvent") { AddAudioEvent(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "addVideoEvent") { AddVideoEvent(info); return JsonApi::Env{}.Undefined().raw(); }
@@ -15489,8 +15502,6 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     if (method == "project_isDirty") return Project_IsDirty(info).raw();
     if (method == "project_newBlank") return Project_NewBlank(info).raw();
     if (method == "project_isExportRunning") return Project_IsExportRunning(info).raw();
-    if (method == "timeline_getBPM") return Timeline_GetBPM(info).raw();
-    if (method == "timeline_getTempoLocked") return Timeline_GetTempoLocked(info).raw();
     if (method == "timeline_getDeclickMs") return Timeline_GetDeclickMs(info).raw();
     if (method == "timeline_getGlobalStretchMethod") return Timeline_GetGlobalStretchMethod(info).raw();
     if (method == "timeline_getSources") return Timeline_GetSources(info).raw();
@@ -15501,7 +15512,6 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     if (method == "timeline_getClipsOnTrack") return Timeline_GetClipsOnTrack(info).raw();
     if (method == "timeline_getClipsInRange") return Timeline_GetClipsInRange(info).raw();
     if (method == "timeline_getLoopRegion") return Timeline_GetLoopRegion(info).raw();
-    if (method == "timeline_setBPM") { Timeline_SetBPM(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "timeline_setLoopRegion") { Timeline_SetLoopRegion(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "timeline_setTempoLocked") { Timeline_SetTempoLocked(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "timeline_setDeclickMs") { Timeline_SetDeclickMs(info); return JsonApi::Env{}.Undefined().raw(); }

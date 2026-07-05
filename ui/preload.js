@@ -2,6 +2,7 @@
 
 const { ipcRenderer, webUtils, shell } = require('electron');
 const { runtimeResource } = require('./runtimePaths');
+const { attachRpcWrappers } = require('./rpc-manifest');
 
 // Thin helper — keeps call sites concise
 const invoke = (ch, ...args) => ipcRenderer.invoke(ch, ...args);
@@ -95,8 +96,7 @@ window.xleth = ({
   pause:              ()      => invoke('xleth:pause'),
   triggerSample:      (id)    => invoke('xleth:trigger', id),
   getTransportState:  ()      => invoke('xleth:transportState'),
-  getCurrentFrame:    ()      => invoke('xleth:currentFrame'),
-  getFrameRGBA:       ()      => invoke('xleth:frameRGBA'),
+  // getCurrentFrame / getFrameRGBA come from the RPC manifest (attachRpcWrappers below)
   getSyncStats:       ()      => invoke('xleth:syncStats'),
   importVideo:        ()      => invoke('xleth:importVideo'),
   readStartupLog:     ()      => invoke('xleth:readStartupLog'),
@@ -139,9 +139,7 @@ window.xleth = ({
 
   // ── Phase 1: timeline ─────────────────────────────────────────────────────
   timeline: {
-    getBPM:           ()                    => invoke('xleth:timeline:getBPM'),
-    setBPM:           (bpm)                 => invoke('xleth:timeline:setBPM', bpm),
-    getTempoLocked:   ()                    => invoke('xleth:timeline:getTempoLocked'),
+    // getBPM / setBPM / getTempoLocked come from the RPC manifest (attachRpcWrappers below)
     setTempoLocked:   (locked)              => invoke('xleth:timeline:setTempoLocked', locked),
     getDeclickMs:     ()                    => invoke('xleth:timeline:getDeclickMs'),
     setDeclickMs:     (ms)                  => invoke('xleth:timeline:setDeclickMs', ms),
@@ -462,8 +460,7 @@ window.xleth = ({
   // ── Phase 1: video ────────────────────────────────────────────────────────
   video: {
     setResolution:  (w, h)  => invoke('xleth:setVideoResolution', w, h),
-    getFrameBuffer: ()      => invoke('xleth:currentFrame'),
-    getFrameRGBA:   ()      => invoke('xleth:frameRGBA'),
+    // getFrameBuffer / getFrameRGBA come from the RPC manifest (attachRpcWrappers below)
     // Open the Windows named-shared-memory region the engine writes frames
     // into. Zero-copy: renderer reads pixels directly via typed-array views.
     // Returns { buffer: ArrayBuffer, meta: {name, width, height, bufferSize, indexOffset, totalSize} }
@@ -700,4 +697,11 @@ window.xleth = ({
     return () => ipcRenderer.removeListener('xleth:update-available', h);
   },
 });
+
+// ── Manifest-generated RPC wrappers (AUDIT.md S1) ─────────────────────────────
+// Pure pass-through wrappers whose names live in ui/rpc-manifest.js — one entry
+// there wires preload, the ipcMain channel, the worker call, the addon export
+// and the engine dispatch. Hand-written wrappers above are deleted as their
+// methods migrate. See docs/rpc-manifest.md.
+attachRpcWrappers(window.xleth, invoke);
 

@@ -21,8 +21,8 @@ function init(deps) {
   ipcMain.handle('xleth:trigger',    safeHandler((_, id, vel) => callWorker('triggerSample', [id, vel ?? 1.0])));
   ipcMain.handle('xleth:transportState', safeHandler(() => callWorker('getTransportState')));
   ipcMain.handle('xleth:proxy:getStatus', safeHandler(() => callWorker('proxy_getStatus')));
-  ipcMain.handle('xleth:currentFrame',   safeHandler(() => callWorker('getFrameRGBA')));
-  ipcMain.handle('xleth:frameRGBA',      safeHandler(() => callWorker('getFrameRGBA')));
+  // xleth:currentFrame / xleth:frameRGBA are registered by rpc-registry.js
+  // from ui/rpc-manifest.js (AUDIT.md S1).
   ipcMain.handle('xleth:syncStats',      safeHandler(() => callWorker('getSyncStats')));
   ipcMain.handle('xleth:setVideoResolution', safeHandler((_, w, h) => callWorker('setVideoResolution', [w, h])));
 
