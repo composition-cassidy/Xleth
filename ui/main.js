@@ -94,6 +94,20 @@ clipProcessingDefaults.init({ safeHandler });
 undoRedoHandlers.init({ safeHandler });
 transportHandlers.init({ safeHandler });
 
+// ── Extracted Phase 1 Audio + Effects/Graph handler domains (S5 Stage 4) ──────
+// Audio (samples/mixer/peaks/diagnostics/output devices), the effect chain +
+// per-family parameter access (generic, EQ, SmartBalance, Waveshaper, dynamics
+// visualization) and graph-mode routing incl. graph-owned effect instances
+// (FXG.3-b) moved verbatim to ui/electron-main/. Channel names and behavior
+// unchanged. Chain/wire mutations broadcast xleth:graph:changed, so effects.js
+// and effects-graph.js take graphHandler alongside safeHandler.
+const audioHandlers = require('./electron-main/audio');
+const effectsHandlers = require('./electron-main/effects');
+const effectsGraphHandlers = require('./electron-main/effects-graph');
+audioHandlers.init({ safeHandler });
+effectsHandlers.init({ safeHandler, graphHandler });
+effectsGraphHandlers.init({ safeHandler, graphHandler });
+
 let workspaceBackdropCapability = null;
 let workspaceBackdropState = {
   capability: null,
@@ -860,263 +874,14 @@ ipcMain.handle('xleth:timeline:previewAllNotesOff',
 // Extracted to electron-main/transport.js (S5 Stage 3).
 
 // ── Phase 1 handlers — Audio ─────────────────────────────────────────────────
+// Extracted to electron-main/audio.js (S5 Stage 4).
 
-ipcMain.handle('xleth:audio:loadSample',
-  safeHandler((_, filePath) => callWorker('loadSample', [filePath])));
+// ── P3 — Effect Chain / effect parameter + meter access / EQ / SmartBalance /
+// Waveshaper / dynamics visualization ─────────────────────────────────────────
+// Extracted to electron-main/effects.js (S5 Stage 4).
 
-ipcMain.handle('xleth:audio:mapRegionToSample',
-  safeHandler((_, regionId, sampleId) => callWorker('audio_mapRegionToSample', [regionId, sampleId])));
-
-ipcMain.handle('xleth:audio:loadSourceRegion',
-  safeHandler((_, filePath, startTime, endTime) => callWorker('audio_loadSourceRegion', [filePath, startTime, endTime])));
-
-ipcMain.handle('xleth:audio:getMasterPeak',
-  safeHandler(() => callWorker('audio_getMasterPeak')));
-
-ipcMain.handle('xleth:audio:getTrackPeak',
-  safeHandler((_, trackId) => callWorker('audio_getTrackPeak', [trackId])));
-
-ipcMain.handle('xleth:audio:getAllPeaks',
-  safeHandler(() => callWorker('audio_getAllPeaks')));
-
-ipcMain.handle('xleth:audio:setRealtimeDiagnosticsEnabled',
-  safeHandler((_, enabled) => callWorker('audio_setRealtimeDiagnosticsEnabled', [Boolean(enabled)])));
-
-ipcMain.handle('xleth:audio:resetRealtimeDiagnostics',
-  safeHandler(() => callWorker('audio_resetRealtimeDiagnostics')));
-
-ipcMain.handle('xleth:audio:getRealtimeDiagnostics',
-  safeHandler(() => callWorker('audio_getRealtimeDiagnostics')));
-
-ipcMain.handle('xleth:audio:getAudioPerformanceTelemetry',
-  safeHandler(() => callWorker('audio_getAudioPerformanceTelemetry')));
-
-ipcMain.handle('xleth:audio:captureAudioPerformanceReport',
-  safeHandler((_, options = {}) => {
-    const reportOptions = {
-      ...(options && typeof options === 'object' ? options : {}),
-      outputDir: options?.outputDir || userDataPath('diagnostics', 'audio-performance'),
-    };
-    return callWorker('audio_captureAudioPerformanceReport', [reportOptions]);
-  }));
-
-ipcMain.handle('xleth:audio:setTrackVolume',
-  safeHandler((_, trackId, vol) => callWorker('audio_setTrackVolume', [trackId, vol])));
-
-ipcMain.handle('xleth:audio:setTrackPan',
-  safeHandler((_, trackId, pan) => callWorker('audio_setTrackPan', [trackId, pan])));
-
-ipcMain.handle('xleth:audio:setTrackSpread',
-  safeHandler((_, trackId, spread) => callWorker('audio_setTrackSpread', [trackId, spread])));
-
-ipcMain.handle('xleth:audio:setMasterVolume',
-  safeHandler((_, vol) => callWorker('audio_setMasterVolume', [vol])));
-
-ipcMain.handle('xleth:audio:getOutputDevices',
-  safeHandler(() => callWorker('audio_getOutputDevices')));
-ipcMain.handle('xleth:audio:getCurrentOutputDevice',
-  safeHandler(() => callWorker('audio_getCurrentOutputDevice')));
-ipcMain.handle('xleth:audio:setOutputDevice',
-  safeHandler((_, name) => callWorker('audio_setOutputDevice', [name])));
-
-// ── P3 — Effect Chain ───────────────────────────────────────────────────────
-
-const trackKey = (_, trackId) => String(trackId);
-const masterKey = () => 'master';
-
-ipcMain.handle('xleth:audio:addEffect',
-  graphHandler(trackKey, (_, trackId, pluginId, position) => callWorker('audio_addEffect', [trackId, pluginId, position])));
-
-ipcMain.handle('xleth:audio:removeEffect',
-  graphHandler(trackKey, (_, trackId, nodeId) => callWorker('audio_removeEffect', [trackId, nodeId])));
-
-ipcMain.handle('xleth:audio:moveEffect',
-  graphHandler(trackKey, (_, trackId, nodeId, newPosition) => callWorker('audio_moveEffect', [trackId, nodeId, newPosition])));
-
-ipcMain.handle('xleth:audio:setEffectBypass',
-  graphHandler(trackKey, (_, trackId, nodeId, bypassed) => callWorker('audio_setEffectBypass', [trackId, nodeId, bypassed])));
-
-ipcMain.handle('xleth:audio:getEffectChain',
-  safeHandler((_, trackId) => callWorker('audio_getEffectChain', [trackId])));
-
-ipcMain.handle('xleth:audio:addMasterEffect',
-  graphHandler(masterKey, (_, pluginId, position) => callWorker('audio_addMasterEffect', [pluginId, position])));
-
-ipcMain.handle('xleth:audio:removeMasterEffect',
-  graphHandler(masterKey, (_, nodeId) => callWorker('audio_removeMasterEffect', [nodeId])));
-
-ipcMain.handle('xleth:audio:moveMasterEffect',
-  graphHandler(masterKey, (_, nodeId, newPosition) => callWorker('audio_moveMasterEffect', [nodeId, newPosition])));
-
-ipcMain.handle('xleth:audio:setMasterEffectBypass',
-  graphHandler(masterKey, (_, nodeId, bypassed) => callWorker('audio_setMasterEffectBypass', [nodeId, bypassed])));
-
-ipcMain.handle('xleth:audio:getMasterEffectChain',
-  safeHandler(() => callWorker('audio_getMasterEffectChain')));
-
-// ── Generic effect parameter / meter access ───────────────────────────────
-
-ipcMain.handle('xleth:audio:getEffectParameters',
-  safeHandler((_, trackId, nodeId) => callWorker('audio_getEffectParameters', [trackId, nodeId])));
-
-ipcMain.handle('xleth:audio:setEffectParameter',
-  safeHandler((_, trackId, nodeId, paramId, value) => callWorker('audio_setEffectParameter', [trackId, nodeId, paramId, value])));
-
-ipcMain.handle('xleth:audio:getEffectMeter',
-  safeHandler((_, trackId, nodeId) => callWorker('audio_getEffectMeter', [trackId, nodeId])));
-
-// ── Effect visualization (dynamics; binary ArrayBuffer payload) ────────────
-ipcMain.handle('xleth:audio:setEffectVisualizationEnabled',
-  safeHandler((_, trackId, nodeId, enabled) =>
-    callWorker('audio_setEffectVisualizationEnabled', [trackId, nodeId, !!enabled])));
-
-ipcMain.handle('xleth:audio:drainEffectVizFrames',
-  safeHandler((_, trackId, nodeId, maxBuckets) =>
-    callWorker('audio_drainEffectVizFrames', [trackId, nodeId, maxBuckets | 0])));
-
-// ── EQ-specific ────────────────────────────────────────────────────────────
-
-ipcMain.handle('xleth:audio:eqAddBand',
-  safeHandler((_, trackId, nodeId) => callWorker('audio_eqAddBand', [trackId, nodeId])));
-
-ipcMain.handle('xleth:audio:eqRemoveBand',
-  safeHandler((_, trackId, nodeId, bandIndex) => callWorker('audio_eqRemoveBand', [trackId, nodeId, bandIndex])));
-
-ipcMain.handle('xleth:audio:eqSetBandParam',
-  safeHandler((_, trackId, nodeId, bandIndex, paramName, value) => callWorker('audio_eqSetBandParam', [trackId, nodeId, bandIndex, paramName, value])));
-
-ipcMain.handle('xleth:audio:eqGetResponseCurve',
-  safeHandler((_, trackId, nodeId) => callWorker('audio_eqGetResponseCurve', [trackId, nodeId])));
-
-ipcMain.handle('xleth:audio:eqGetSpectrumData',
-  safeHandler((_, trackId, nodeId) => callWorker('audio_eqGetSpectrumData', [trackId, nodeId])));
-
-ipcMain.handle('xleth:audio:eqSetPreSpectrum',
-  safeHandler((_, trackId, nodeId, enabled) => callWorker('audio_eqSetPreSpectrum', [trackId, nodeId, enabled])));
-
-ipcMain.handle('xleth:audio:eqGetBands',
-  safeHandler((_, trackId, nodeId) => callWorker('audio_eqGetBands', [trackId, nodeId])));
-
-ipcMain.handle('xleth:audio:eqGetBandGR',
-  safeHandler((_, trackId, nodeId) => callWorker('audio_eqGetBandGR', [trackId, nodeId])));
-
-ipcMain.handle('xleth:audio:eqSetGlobalParam',
-  safeHandler((_, trackId, nodeId, paramName, value) => callWorker('audio_eqSetGlobalParam', [trackId, nodeId, paramName, value])));
-
-ipcMain.handle('xleth:audio:eqGetGlobalParams',
-  safeHandler((_, trackId, nodeId) => callWorker('audio_eqGetGlobalParams', [trackId, nodeId])));
-
-ipcMain.handle('xleth:audio:eqGetSampleRate',
-  safeHandler((_, trackId, nodeId) => callWorker('audio_eqGetSampleRate', [trackId, nodeId])));
-
-// ── SmartBalance-specific ──────────────────────────────────────────────────
-
-ipcMain.handle('xleth:audio:smartBalanceGetDebug',
-  safeHandler((_, trackId, nodeId) => callWorker('audio_smartBalanceGetDebug', [trackId, nodeId])));
-
-// ── Waveshaper-specific ────────────────────────────────────────────────────
-
-ipcMain.handle('xleth:audio:wsGetCurvePoints',
-  safeHandler((_, trackId, nodeId) => callWorker('audio_wsGetCurvePoints', [trackId, nodeId])));
-
-ipcMain.handle('xleth:audio:wsSetCurvePoints',
-  safeHandler((_, trackId, nodeId, pointsJSON) => callWorker('audio_wsSetCurvePoints', [trackId, nodeId, pointsJSON])));
-
-ipcMain.handle('xleth:audio:wsSetPreset',
-  safeHandler((_, trackId, nodeId, presetIndex) => callWorker('audio_wsSetPreset', [trackId, nodeId, presetIndex])));
-
-// ── Graph-mode routing ──────────────────────────────────────────────────────
-
-ipcMain.handle('xleth:audio:addConnection',
-  graphHandler(trackKey, (_, trackId, srcId, dstId) => callWorker('audio_addConnection', [trackId, srcId, dstId])));
-
-ipcMain.handle('xleth:audio:removeConnection',
-  graphHandler(trackKey, (_, trackId, srcId, dstId) => callWorker('audio_removeConnection', [trackId, srcId, dstId])));
-
-ipcMain.handle('xleth:audio:setWireGain',
-  graphHandler(trackKey, (_, trackId, srcId, dstId, gain) => callWorker('audio_setWireGain', [trackId, srcId, dstId, gain])));
-
-ipcMain.handle('xleth:audio:setWireMute',
-  graphHandler(trackKey, (_, trackId, srcId, dstId, muted) => callWorker('audio_setWireMute', [trackId, srcId, dstId, muted])));
-
-ipcMain.handle('xleth:audio:getGraphTopology',
-  safeHandler((_, trackId) => callWorker('audio_getGraphTopology', [trackId])));
-
-ipcMain.handle('xleth:audio:setNodePosition',
-  safeHandler((_, trackId, nodeId, x, y) => callWorker('audio_setNodePosition', [trackId, nodeId, x, y])));
-
-ipcMain.handle('xleth:audio:isGraphLinear',
-  safeHandler((_, trackId) => callWorker('audio_isGraphLinear', [trackId])));
-
-// ── Graph-owned effect instances (FXG.3-b) ──────────────────────────────────
-// Separate from the chain add/remove handlers. These create/destroy graph-owned
-// engine processors keyed by a stable effectInstanceId and never rewire the
-// linear chain. safeHandler (no graph:changed broadcast) — graphState
-// persistence keeps the renderer in sync; a chain re-fetch is not wanted here.
-ipcMain.handle('xleth:audio:addGraphEffectNode',
-  safeHandler((_, trackId, effectInstanceId, pluginId) =>
-    callWorker('audio_addGraphEffectNode', [trackId, effectInstanceId, pluginId])));
-
-ipcMain.handle('xleth:audio:removeGraphEffectNode',
-  safeHandler((_, trackId, effectInstanceId) =>
-    callWorker('audio_removeGraphEffectNode', [trackId, effectInstanceId])));
-
-ipcMain.handle('xleth:audio:getGraphEffectEngineNodeId',
-  safeHandler((_, trackId, effectInstanceId) =>
-    callWorker('audio_getGraphEffectEngineNodeId', [trackId, effectInstanceId])));
-
-// FXG.4-a: graph-owned effect parameter descriptors. Renderer-facing identity
-// is (trackId, effectInstanceId, parameterId); engine node ids stay internal.
-ipcMain.handle('xleth:audio:getGraphEffectParameters',
-  safeHandler((_, trackId, effectInstanceId) =>
-    callWorker('audio_getGraphEffectParameters', [trackId, effectInstanceId])));
-
-ipcMain.handle('xleth:audio:getGraphEffectParameterValue',
-  safeHandler((_, trackId, effectInstanceId, parameterId) =>
-    callWorker('audio_getGraphEffectParameterValue', [trackId, effectInstanceId, parameterId])));
-
-ipcMain.handle('xleth:audio:setGraphEffectParameterNormalized',
-  safeHandler((_, trackId, effectInstanceId, parameterId, normalizedValue) =>
-    callWorker('audio_setGraphEffectParameterNormalized', [trackId, effectInstanceId, parameterId, normalizedValue])));
-
-ipcMain.handle('xleth:audio:hydrateGraphEffectNodes',
-  safeHandler((_, trackId, graphEffectNodes) =>
-    callWorker('audio_hydrateGraphEffectNodes', [trackId, graphEffectNodes])));
-
-ipcMain.handle('xleth:audio:syncLinearGraphTopology',
-  safeHandler((_, trackId, topology) =>
-    callWorker('audio_syncLinearGraphTopology', [trackId, topology])));
-
-// FXG.3-d: general graph-mode runtime routing (linear OR parallel) + chain
-// processor adoption on chain→graph conversion.
-ipcMain.handle('xleth:audio:syncGraphTopology',
-  safeHandler((_, trackId, topology) =>
-    callWorker('audio_syncGraphTopology', [trackId, topology])));
-
-ipcMain.handle('xleth:audio:adoptGraphEffectNodes',
-  safeHandler((_, trackId, mapping) =>
-    callWorker('audio_adoptGraphEffectNodes', [trackId, mapping])));
-
-ipcMain.handle('xleth:audio:addMasterConnection',
-  graphHandler(masterKey, (_, srcId, dstId) => callWorker('audio_addMasterConnection', [srcId, dstId])));
-
-ipcMain.handle('xleth:audio:removeMasterConnection',
-  graphHandler(masterKey, (_, srcId, dstId) => callWorker('audio_removeMasterConnection', [srcId, dstId])));
-
-ipcMain.handle('xleth:audio:setMasterWireGain',
-  graphHandler(masterKey, (_, srcId, dstId, gain) => callWorker('audio_setMasterWireGain', [srcId, dstId, gain])));
-
-ipcMain.handle('xleth:audio:setMasterWireMute',
-  graphHandler(masterKey, (_, srcId, dstId, muted) => callWorker('audio_setMasterWireMute', [srcId, dstId, muted])));
-
-ipcMain.handle('xleth:audio:getMasterGraphTopology',
-  safeHandler(() => callWorker('audio_getMasterGraphTopology')));
-
-ipcMain.handle('xleth:audio:setMasterNodePosition',
-  safeHandler((_, nodeId, x, y) => callWorker('audio_setMasterNodePosition', [nodeId, x, y])));
-
-ipcMain.handle('xleth:audio:isMasterGraphLinear',
-  safeHandler(() => callWorker('audio_isMasterGraphLinear')));
+// ── Graph-mode routing + graph-owned effect instances (FXG.3-b) ──────────────
+// Extracted to electron-main/effects-graph.js (S5 Stage 4).
 
 // ── VST3 plugin scanner ───────────────────────────────────────────────────────
 
