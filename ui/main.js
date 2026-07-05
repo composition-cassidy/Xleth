@@ -26,24 +26,10 @@ const BACKDROP_MEDIA_SOURCE_TYPES = new Set(['none', 'acrylic', 'image', 'video'
 
 
 // ── User settings (persisted across sessions, not per-project) ───────────────
-const settingsPath = userDataPath('xleth-settings.json')
-const layoutPath = userDataPath('layout.json')
-function loadSettings() {
-  try { return JSON.parse(fs.readFileSync(settingsPath, 'utf8')) } catch { return {} }
-}
-function saveSettings(s) {
-  try { fs.writeFileSync(settingsPath, JSON.stringify(s, null, 2), 'utf8') } catch {}
-}
-function sanitizeGlobalStretchMethod(method) {
-  const n = Number(method)
-  return Number.isInteger(n) && n >= 1 && n <= 5 ? n : 1
-}
-function getNewProjectGlobalStretchMethodDefault() {
-  const settings = loadSettings()
-  return sanitizeGlobalStretchMethod(
-    settings.defaultGlobalStretchMethod ?? settings.globalStretchMethod ?? 1
-  )
-}
+// Extracted to electron-main/settings.js (S5 Stage 2) together with the
+// xleth:layout:read/write handlers. loadSettings/saveSettings and
+// getNewProjectGlobalStretchMethodDefault come from the Stage 2 require block
+// below.
 
 // Log file for startup debugging
 const logPath = userDataPath('startup.log');
@@ -64,6 +50,32 @@ workerBridge.init({ log });
 mediaServer.init({ log });
 const { startWorker, callWorker, isWorkerReady, getAddonError, setAddonError, killWorker } = workerBridge;
 const { startMediaServer, getMediaPort } = mediaServer;
+
+// ── Extracted main-process persistence stores + autosave (S5 Stage 2) ────────
+// File-backed stores moved verbatim to ui/electron-main/: user settings +
+// layout.json (settings.js), user themes (themes.js), stock plugin UI layouts
+// (plugin-ui-layouts.js), knob appearance presets (knob-presets.js), decal
+// assets (decals.js), the autosave timer (autosave.js) and the Grid Layout
+// engine pass-throughs (grid-layout.js). Channel names, file paths and
+// defaults are unchanged. Handlers register at require time, except
+// grid-layout's, which are wrapped in safeHandler at registration and so
+// register inside init.
+const settingsStore = require('./electron-main/settings');
+const autosave = require('./electron-main/autosave');
+const themesStore = require('./electron-main/themes');
+const pluginUiLayouts = require('./electron-main/plugin-ui-layouts');
+const knobPresets = require('./electron-main/knob-presets');
+const decals = require('./electron-main/decals');
+const gridLayout = require('./electron-main/grid-layout');
+settingsStore.init();
+autosave.init({ log, isExportBusy: () => exportProgressInterval !== null || videoExportProgressInterval !== null });
+themesStore.init();
+pluginUiLayouts.init({ getWin: () => win });
+knobPresets.init();
+decals.init({ getWin: () => win });
+gridLayout.init({ safeHandler });
+const { loadSettings, saveSettings, getNewProjectGlobalStretchMethodDefault } = settingsStore;
+const { restartAutosaveTimer } = autosave;
 
 let workspaceBackdropCapability = null;
 let workspaceBackdropState = {
@@ -387,7 +399,6 @@ protocol.registerSchemesAsPrivileged([
 // autosave timer below remain here — they belong to later stages.
 
 let engineBackgroundTasksStarted = false;
-let autosaveIntervalId = null;
 
 async function applyEngineDefaults() {
   const saved = loadSettings();
@@ -936,7 +947,6 @@ ipcMain.handle('xleth:backdrop:getState', () => getWorkspaceBackdropStateSnapsho
 ipcMain.handle('xleth:backdrop:chooseImage', () => chooseWorkspaceBackdropImage())
 ipcMain.handle('xleth:backdrop:chooseVideo', () => chooseWorkspaceBackdropVideo())
 ipcMain.handle('xleth:backdrop:setMedia', (_, value) => setWorkspaceBackdropMedia(value))
-ipcMain.handle('xleth:autosave:restart', () => { restartAutosaveTimer() })
 
 // ── Quick Launchers ───────────────────────────────────────────────────────────
 ipcMain.handle('xleth:launcher:chooseExe', async () => {
@@ -967,540 +977,26 @@ ipcMain.handle('xleth:launcher:spawn', (_, exePath) => {
 })
 
 // ── Autosave timer ────────────────────────────────────────────────────────────
-
-function startAutosaveTimer(intervalMs) {
-  if (autosaveIntervalId !== null) {
-    clearInterval(autosaveIntervalId)
-    autosaveIntervalId = null
-  }
-  if (!(intervalMs > 0)) return
-  autosaveIntervalId = setInterval(async () => {
-    try {
-      if (!isWorkerReady()) return
-      if (exportProgressInterval !== null || videoExportProgressInterval !== null) return
-      const hasProjDir = await callWorker('project_hasProjectDir')
-      if (!hasProjDir) return
-      const dirty = await callWorker('project_isDirty')
-      if (!dirty) return
-      const ts = await callWorker('getTransportState')
-      if (ts && ts.isPlaying) return
-      await callWorker('project_save')
-      log('[autosave] Project saved automatically')
-    } catch (err) {
-      log('[autosave] Save failed:', err && err.message)
-    }
-  }, intervalMs)
-}
-
-function restartAutosaveTimer() {
-  const settings = loadSettings()
-  const minutes = settings.autosaveInterval ?? 5
-  startAutosaveTimer(minutes > 0 ? minutes * 60 * 1000 : 0)
-}
+// Extracted to electron-main/autosave.js (S5 Stage 2), including the
+// xleth:autosave:restart handler. Export-progress state stays here and is
+// probed via the injected isExportBusy.
 
 // ── Phase 7 — Preview visibility (panel show/hide) ─────────────────────────
 ipcMain.handle('xleth:preview:setEnabled',
   safeHandler((_, enabled) => callWorker('preview_setEnabled', [Boolean(enabled)])));
 
 // ── Themes (persisted to userData/themes/<slug>.json) ─────────────────────────
-// User-authored theme files. Shipped themes are bundled with the renderer and
-// don't hit disk — they're imported directly from ui/src/theming/shipped/.
-ipcMain.handle('xleth:layout:read', () => {
-  try { return fs.readFileSync(layoutPath, 'utf8') } catch { return null }
-})
-ipcMain.handle('xleth:layout:write', (_, raw) => {
-  if (typeof raw !== 'string') throw new Error('layout payload must be a string')
-  fs.writeFileSync(layoutPath, raw, 'utf8')
-  return true
-})
-
-const themesDir = userDataPath('themes')
-function ensureThemesDir() {
-  try { fs.mkdirSync(themesDir, { recursive: true }) } catch {}
-}
-function themeSlugSafe(slug) {
-  // Defence-in-depth: slugs come from the renderer and become filesystem
-  // paths. Permit letters, digits, dash, underscore only.
-  return typeof slug === 'string' && /^[A-Za-z0-9_-]+$/.test(slug) && slug.length <= 64
-}
-function themePath(slug) { return path.join(themesDir, `${slug}.json`) }
-
-ipcMain.handle('xleth:theme:loadUser', (_, slug) => {
-  if (!themeSlugSafe(slug)) throw new Error('invalid theme slug')
-  try { return JSON.parse(fs.readFileSync(themePath(slug), 'utf8')) }
-  catch { return null }
-})
-ipcMain.handle('xleth:theme:saveUser', (_, slug, theme) => {
-  if (!themeSlugSafe(slug)) throw new Error('invalid theme slug')
-  if (!theme || typeof theme !== 'object') throw new Error('theme must be an object')
-  ensureThemesDir()
-  fs.writeFileSync(themePath(slug), JSON.stringify(theme, null, 2), 'utf8')
-  return true
-})
-ipcMain.handle('xleth:theme:listUser', () => {
-  ensureThemesDir()
-  let entries = []
-  try { entries = fs.readdirSync(themesDir) } catch { return [] }
-  return entries
-    .filter(f => f.endsWith('.json'))
-    .map(f => f.slice(0, -5))
-    .filter(themeSlugSafe)
-})
-ipcMain.handle('xleth:theme:deleteUser', (_, slug) => {
-  if (!themeSlugSafe(slug)) throw new Error('invalid theme slug')
-  try { fs.unlinkSync(themePath(slug)); return true } catch { return false }
-})
+// Extracted to electron-main/themes.js (S5 Stage 2); the xleth:layout:read/
+// write handlers that lived here moved into electron-main/settings.js.
 // ── Stock plugin UI layouts (userData/plugin-ui/<pluginId>.json) ──────────────
-// Mirrors the user-themes pattern. Does NOT require the engine worker to be
-// ready — layout files are pure JSON on disk, no C++ involvement.
-
-const pluginUiDir = userDataPath('plugin-ui')
-const KNOWN_PLUGIN_IDS = new Set(['compressor', 'limiter', 'transientproc', 'overdone', 'distortion'])
-const PLUGIN_UI_LAYOUT_KIND = 'plugin-ui-layout'
-const SHIPPED_PLUGIN_UI_LAYOUT_FILES = {
-  compressor:    runtimeResource('app', 'src', 'plugin-ui', 'layouts', 'compressor.json'),
-  limiter:       runtimeResource('app', 'src', 'plugin-ui', 'layouts', 'limiter.json'),
-  transientproc: runtimeResource('app', 'src', 'plugin-ui', 'layouts', 'transient.json'),
-  overdone:      runtimeResource('app', 'src', 'plugin-ui', 'layouts', 'overdone.json'),
-  distortion:    runtimeResource('app', 'src', 'plugin-ui', 'layouts', 'distortion.json'),
-}
-
-function pluginIdSafe(id) {
-  return typeof id === 'string' && /^[a-z][a-z0-9_-]*$/.test(id) && id.length <= 64
-    && KNOWN_PLUGIN_IDS.has(id)
-}
-
-function pluginUiPath(pluginId) {
-  if (!pluginIdSafe(pluginId)) throw new Error('invalid pluginId')
-  const base = path.resolve(pluginUiDir)
-  const target = path.resolve(base, `${pluginId}.json`)
-  if (target !== path.join(base, `${pluginId}.json`)) throw new Error('invalid pluginId')
-  if (!target.startsWith(base + path.sep)) throw new Error('invalid pluginId')
-  return target
-}
-
-function ensurePluginUiDir() {
-  try { fs.mkdirSync(pluginUiDir, { recursive: true }) } catch {}
-}
-
-function broadcastPluginUiChanged(pluginId) {
-  const { webContents } = require('electron')
-  for (const wc of webContents.getAllWebContents()) {
-    if (!wc.isDestroyed()) wc.send('xleth:pluginUi:changed', pluginId)
-  }
-}
-
-ipcMain.handle('xleth:pluginUi:loadUserOverride', (_, pluginId) => {
-  if (!pluginIdSafe(pluginId)) throw new Error('invalid pluginId')
-  try {
-    const raw = fs.readFileSync(pluginUiPath(pluginId), 'utf8')
-    return JSON.parse(raw)
-  } catch { return null }
-})
-
-function validateLayoutStructure(layout, pluginId) {
-  if (!layout || typeof layout !== 'object') return 'layout must be an object'
-  if (layout.$xleth !== undefined && layout.$xleth !== PLUGIN_UI_LAYOUT_KIND) return 'invalid $xleth discriminator'
-  if (!Number.isInteger(layout.schemaVersion)) return 'missing schemaVersion'
-  if (typeof layout.pluginId !== 'string') return 'missing pluginId'
-  if (pluginId && layout.pluginId !== pluginId) return `pluginId "${layout.pluginId}" does not match "${pluginId}"`
-  if (!layout.root || layout.root.type !== 'panel') return 'root must be type "panel"'
-  return null
-}
-
-function readShippedPluginUiLayout(pluginId) {
-  if (!pluginIdSafe(pluginId)) throw new Error('invalid pluginId')
-  const shippedPath = SHIPPED_PLUGIN_UI_LAYOUT_FILES[pluginId]
-  if (!shippedPath) throw new Error(`No shipped layout for "${pluginId}"`)
-  try {
-    const layout = JSON.parse(fs.readFileSync(shippedPath, 'utf8'))
-    const structErr = validateLayoutStructure(layout, pluginId)
-    if (structErr) throw new Error(`Invalid shipped layout: ${structErr}`)
-    return layout
-  } catch (err) {
-    throw new Error(`Could not read shipped layout for "${pluginId}": ${err?.message || err}`)
-  }
-}
-
-function parseImportedPluginUiLayout(raw) {
-  let parsed
-  try {
-    parsed = JSON.parse(raw)
-  } catch (err) {
-    throw new Error(`Invalid JSON: ${err?.message || err}`)
-  }
-
-  if (!parsed || typeof parsed !== 'object') {
-    throw new Error('Layout file must contain a JSON object')
-  }
-
-  if (parsed.$xleth !== undefined && parsed.$xleth !== PLUGIN_UI_LAYOUT_KIND) {
-    throw new Error(`Invalid $xleth discriminator: ${parsed.$xleth}`)
-  }
-
-  const pluginId = parsed.pluginId
-  if (!pluginIdSafe(pluginId)) throw new Error('invalid pluginId')
-  const structErr = validateLayoutStructure(parsed, pluginId)
-  if (structErr) throw new Error(`Invalid layout: ${structErr}`)
-  return { pluginId, layout: parsed }
-}
-
-ipcMain.handle('xleth:pluginUi:getShipped', (_, pluginId) => {
-  return readShippedPluginUiLayout(pluginId)
-})
-
-ipcMain.handle('xleth:pluginUi:saveUserOverride', (_, pluginId, layout) => {
-  if (!pluginIdSafe(pluginId)) throw new Error('invalid pluginId')
-  if (!layout || typeof layout !== 'object') throw new Error('layout must be an object')
-  const structErr = validateLayoutStructure(layout, pluginId)
-  if (structErr) throw new Error(`Invalid layout: ${structErr}`)
-  ensurePluginUiDir()
-  fs.writeFileSync(pluginUiPath(pluginId), JSON.stringify(layout, null, 2), 'utf8')
-  broadcastPluginUiChanged(pluginId)
-  return true
-})
-
-ipcMain.handle('xleth:pluginUi:clearUserOverride', (_, pluginId) => {
-  if (!pluginIdSafe(pluginId)) throw new Error('invalid pluginId')
-  let removed = false
-  try { fs.unlinkSync(pluginUiPath(pluginId)); removed = true } catch { removed = false }
-  broadcastPluginUiChanged(pluginId)
-  return removed
-})
-
-ipcMain.handle('xleth:dialog:importPluginUi', async () => {
-  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-    title: 'Import Plugin UI Layout',
-    filters: [
-      { name: 'XLETH Plugin UI Layout', extensions: ['xlethui.json', 'json'] },
-      { name: 'JSON Files', extensions: ['json'] },
-    ],
-    properties: ['openFile'],
-  })
-  if (canceled || !filePaths.length) return null
-
-  const selectedPath = filePaths[0]
-  try {
-    const raw = fs.readFileSync(selectedPath, 'utf8')
-    const { pluginId, layout } = parseImportedPluginUiLayout(raw)
-    return { pluginId, layout, path: selectedPath }
-  } catch (err) {
-    throw new Error(`Import failed: ${err?.message || err}`)
-  }
-})
+// Extracted to electron-main/plugin-ui-layouts.js (S5 Stage 2), including the
+// xleth:dialog:importPluginUi / xleth:dialog:exportPluginUi handlers.
 
 // ── User-saved knob appearance presets ────────────────────────────────────────
-// Stored at userData/plugin-ui-presets/knob.json as an array of
-// { id, label, description, appearance } records. Layouts never reference
-// user-preset ids; "applying" a user preset just copies its appearance object
-// into the node — so missing presets after disk loss never invalidate layouts.
-
-const userKnobPresetsPath = userDataPath('plugin-ui-presets', 'knob.json')
-const USER_KNOB_PRESET_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i
-const USER_KNOB_PRESET_MAX_COUNT = 200
-
-function ensureUserKnobPresetsDir() {
-  try { fs.mkdirSync(path.dirname(userKnobPresetsPath), { recursive: true }) } catch {}
-}
-
-function readUserKnobPresets() {
-  try {
-    const raw = fs.readFileSync(userKnobPresetsPath, 'utf8')
-    const parsed = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-    return parsed.filter(isValidUserKnobPreset)
-  } catch { return [] }
-}
-
-function writeUserKnobPresets(presets) {
-  ensureUserKnobPresetsDir()
-  fs.writeFileSync(userKnobPresetsPath, JSON.stringify(presets, null, 2), 'utf8')
-}
-
-function isValidUserKnobPreset(entry) {
-  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false
-  if (typeof entry.id !== 'string' || !USER_KNOB_PRESET_ID_RE.test(entry.id)) return false
-  if (typeof entry.label !== 'string' || entry.label.trim().length === 0 || entry.label.length > 64) return false
-  if (entry.description !== undefined && (typeof entry.description !== 'string' || entry.description.length > 256)) return false
-  if (!entry.appearance || typeof entry.appearance !== 'object' || Array.isArray(entry.appearance)) return false
-  return true
-}
-
-ipcMain.handle('xleth:pluginUi:listKnobPresets', () => {
-  return readUserKnobPresets()
-})
-
-ipcMain.handle('xleth:pluginUi:saveKnobPreset', (_, preset) => {
-  if (!isValidUserKnobPreset(preset)) throw new Error('invalid knob preset')
-  const existing = readUserKnobPresets()
-  const index = existing.findIndex(entry => entry.id === preset.id)
-  const next = index >= 0
-    ? existing.map((entry, i) => i === index ? preset : entry)
-    : [...existing, preset]
-  if (next.length > USER_KNOB_PRESET_MAX_COUNT) throw new Error('too many user knob presets')
-  writeUserKnobPresets(next)
-  return next
-})
-
-ipcMain.handle('xleth:pluginUi:deleteKnobPreset', (_, id) => {
-  if (typeof id !== 'string' || !USER_KNOB_PRESET_ID_RE.test(id)) throw new Error('invalid preset id')
-  const existing = readUserKnobPresets()
-  const next = existing.filter(entry => entry.id !== id)
-  writeUserKnobPresets(next)
-  return next
-})
-
-ipcMain.handle('xleth:dialog:exportPluginUi', async (_, pluginId, layout) => {
-  if (!pluginIdSafe(pluginId)) throw new Error('invalid pluginId')
-  const structErr = validateLayoutStructure(layout, pluginId)
-  if (structErr) throw new Error(`Invalid layout: ${structErr}`)
-
-  const { canceled, filePath } = await dialog.showSaveDialog(win, {
-    title: 'Export Plugin UI Layout',
-    defaultPath: `${pluginId}.xlethui.json`,
-    filters: [
-      { name: 'XLETH Plugin UI Layout', extensions: ['xlethui.json'] },
-      { name: 'JSON Files', extensions: ['json'] },
-    ],
-  })
-  if (canceled || !filePath) return null
-
-  try {
-    fs.writeFileSync(filePath, JSON.stringify(layout, null, 2), 'utf8')
-    return { path: filePath }
-  } catch (err) {
-    throw new Error(`Export failed: ${err?.message || err}`)
-  }
-})
+// Extracted to electron-main/knob-presets.js (S5 Stage 2).
 
 // ── User-imported decal assets ─────────────────────────────────────────────────
-// Assets live under userData/plugin-ui-assets/.
-// index.json: [{ assetId, label, mime, ext, sizeBytes, importedAt }]
-// Asset files: <uuid>.<ext>
-// Layout JSON stores ONLY assetId — never a path, URL, data URI, or blob.
-// Dimension validation is deferred (no image-decode dependency in this phase).
-
-const _crypto = require('crypto')
-
-const DECAL_ASSET_DIR   = userDataPath('plugin-ui-assets')
-const DECAL_ASSET_INDEX = userDataPath('plugin-ui-assets', 'index.json')
-const DECAL_ASSET_MAX_BYTES = 1 * 1024 * 1024  // 1 MB
-const DECAL_ASSET_ID_RE = /^user\.imported\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-
-// PNG: 89 50 4E 47 0D 0A 1A 0A
-const _PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
-// WebP: RIFF????WEBP
-const _RIFF_MAGIC = Buffer.from([0x52, 0x49, 0x46, 0x46])
-const _WEBP_MAGIC = Buffer.from([0x57, 0x45, 0x42, 0x50])
-
-function _decalMagicCheck(buf) {
-  if (!buf || buf.length < 12) return { ok: false, error: 'File is too small to validate.' }
-  // Reject SVG / HTML (text starting with '<')
-  if (buf[0] === 0x3C) return { ok: false, error: 'SVG files are not supported. Please use PNG or WebP.' }
-  if (_PNG_MAGIC.equals(buf.slice(0, 8))) return { ok: true, mime: 'image/png', ext: 'png' }
-  if (buf.slice(0, 4).equals(_RIFF_MAGIC) && buf.slice(8, 12).equals(_WEBP_MAGIC)) {
-    return { ok: true, mime: 'image/webp', ext: 'webp' }
-  }
-  return { ok: false, error: 'Not a valid PNG or WebP image (magic bytes do not match). SVG is not supported.' }
-}
-
-function _ensureDecalAssetDir() {
-  try { fs.mkdirSync(DECAL_ASSET_DIR, { recursive: true }) } catch {}
-}
-
-function _readDecalAssetIndex() {
-  let raw
-  try {
-    raw = fs.readFileSync(DECAL_ASSET_INDEX, 'utf8')
-  } catch {
-    return []  // file missing — first run or clean install
-  }
-
-  let parsed
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    // Corrupt JSON — back up the file before recreating
-    const ts = Date.now()
-    const backup = path.join(DECAL_ASSET_DIR, `index.corrupt.${ts}.json`)
-    try { fs.copyFileSync(DECAL_ASSET_INDEX, backup) } catch {}
-    try { _writeDecalAssetIndex([]) } catch {}
-    console.warn(`[xleth:decalAssets] Corrupt index.json backed up to ${backup}; recreated empty index.`)
-    return []
-  }
-
-  if (!Array.isArray(parsed)) return []
-
-  // Keep only format-valid entries whose asset file still exists on disk.
-  return parsed.filter(e => {
-    if (!_isValidDecalEntry(e)) return false
-    try { return fs.existsSync(_decalAssetFilePath(e.assetId, e.ext)) } catch { return false }
-  })
-}
-
-function _writeDecalAssetIndex(entries) {
-  _ensureDecalAssetDir()
-  fs.writeFileSync(DECAL_ASSET_INDEX, JSON.stringify(entries, null, 2), 'utf8')
-}
-
-function _isValidDecalEntry(e) {
-  if (!e || typeof e !== 'object') return false
-  if (!DECAL_ASSET_ID_RE.test(e.assetId)) return false
-  if (typeof e.label !== 'string' || !e.label.trim()) return false
-  if (e.mime !== 'image/png' && e.mime !== 'image/webp') return false
-  if (e.ext !== 'png' && e.ext !== 'webp') return false
-  if (typeof e.sizeBytes !== 'number' || e.sizeBytes <= 0) return false
-  return true
-}
-
-// Constructs the safe on-disk path for a user asset.
-// Only accepts DECAL_ASSET_ID_RE-matched ids; verifies the result stays inside DECAL_ASSET_DIR.
-function _decalAssetFilePath(assetId, ext) {
-  if (!DECAL_ASSET_ID_RE.test(assetId)) throw new Error(`invalid assetId: "${assetId}"`)
-  const uuid = assetId.slice('user.imported.'.length)
-  const target = path.join(DECAL_ASSET_DIR, `${uuid}.${ext}`)
-  if (!target.startsWith(DECAL_ASSET_DIR + path.sep)) throw new Error('path escape detected')
-  return target
-}
-
-// Per-session data URL cache (cleared on restart — never persisted).
-const _decalDataUrlCache = new Map()
-
-const _PLACEHOLDER_META = {
-  assetId: 'builtin.placeholder.missing',
-  label:   'Missing Asset (Placeholder)',
-  builtin: true,
-}
-
-ipcMain.handle('xleth:pluginUiAssets:list', () => {
-  return [_PLACEHOLDER_META, ..._readDecalAssetIndex()]
-})
-
-ipcMain.handle('xleth:pluginUiAssets:import', async () => {
-  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-    title: 'Import Decal — PNG or WebP only',
-    filters: [{ name: 'Images (PNG, WebP)', extensions: ['png', 'webp'] }],
-    properties: ['openFile'],
-  })
-  if (canceled || !filePaths.length) return null
-
-  const srcPath = filePaths[0]
-  const srcExt  = path.extname(srcPath).toLowerCase().slice(1)
-  if (srcExt !== 'png' && srcExt !== 'webp') {
-    throw new Error('Only PNG and WebP files are supported.')
-  }
-
-  let buf
-  try { buf = fs.readFileSync(srcPath) }
-  catch (err) { throw new Error(`Could not read file: ${err.message}`) }
-
-  if (buf.length > DECAL_ASSET_MAX_BYTES) {
-    throw new Error(`File too large (${Math.round(buf.length / 1024)} KB). Maximum is ${DECAL_ASSET_MAX_BYTES / 1024} KB.`)
-  }
-
-  const magic = _decalMagicCheck(buf)
-  if (!magic.ok) throw new Error(magic.error)
-
-  const uuid    = _crypto.randomUUID()
-  const assetId = `user.imported.${uuid}`
-  const label   = path.basename(srcPath, path.extname(srcPath)).slice(0, 64) || 'Untitled'
-
-  _ensureDecalAssetDir()
-  const destPath = _decalAssetFilePath(assetId, magic.ext)
-  fs.writeFileSync(destPath, buf)
-
-  const meta = {
-    assetId,
-    label,
-    mime:       magic.mime,
-    ext:        magic.ext,
-    sizeBytes:  buf.length,
-    importedAt: new Date().toISOString(),
-  }
-
-  const index = _readDecalAssetIndex()
-  index.push(meta)
-  _writeDecalAssetIndex(index)
-  return meta
-})
-
-ipcMain.handle('xleth:pluginUiAssets:getDataUrl', (_, assetId) => {
-  if (assetId === 'builtin.placeholder.missing') return null
-
-  if (!DECAL_ASSET_ID_RE.test(assetId)) {
-    throw new Error(`Invalid assetId format: "${assetId}"`)
-  }
-
-  if (_decalDataUrlCache.has(assetId)) return _decalDataUrlCache.get(assetId)
-
-  const index = _readDecalAssetIndex()
-  const entry = index.find(e => e.assetId === assetId)
-  if (!entry) throw new Error(`Asset not found in index: "${assetId}"`)
-
-  const filePath = _decalAssetFilePath(assetId, entry.ext)
-  let buf
-  try { buf = fs.readFileSync(filePath) }
-  catch { throw new Error(`Asset file missing from disk for "${assetId}"`) }
-
-  const magic = _decalMagicCheck(buf)
-  if (!magic.ok) throw new Error(`Stored asset is corrupt: ${magic.error}`)
-
-  const dataUrl = `data:${magic.mime};base64,${buf.toString('base64')}`
-  _decalDataUrlCache.set(assetId, dataUrl)
-  return dataUrl
-})
-
-ipcMain.handle('xleth:pluginUiAssets:delete', (_, assetId) => {
-  if (!DECAL_ASSET_ID_RE.test(assetId)) throw new Error(`Invalid assetId: "${assetId}"`)
-
-  const index = _readDecalAssetIndex()
-  const entry = index.find(e => e.assetId === assetId)
-
-  if (entry) {
-    try { fs.unlinkSync(_decalAssetFilePath(assetId, entry.ext)) } catch {}
-  }
-
-  _decalDataUrlCache.delete(assetId)
-  _writeDecalAssetIndex(index.filter(e => e.assetId !== assetId))
-  return true
-})
-
-ipcMain.handle('xleth:pluginUiAssets:scanOrphans', () => {
-  _ensureDecalAssetDir()
-
-  // Read raw entries (format-valid but NOT filtered by file existence) so we can report missing files.
-  let rawEntries = []
-  try {
-    const raw = fs.readFileSync(DECAL_ASSET_INDEX, 'utf8')
-    try {
-      const parsed = JSON.parse(raw)
-      if (Array.isArray(parsed)) rawEntries = parsed.filter(_isValidDecalEntry)
-    } catch { /* corrupt — raw already [] */ }
-  } catch { /* file missing */ }
-
-  // Missing: index entries whose files are gone from disk.
-  const missing = rawEntries
-    .filter(e => {
-      try { return !fs.existsSync(_decalAssetFilePath(e.assetId, e.ext)) } catch { return true }
-    })
-    .map(e => ({ assetId: e.assetId, label: e.label }))
-
-  // Orphans: files in the asset dir that have no matching index entry.
-  let dirFiles = []
-  try { dirFiles = fs.readdirSync(DECAL_ASSET_DIR) } catch {}
-
-  const indexedFilenames = new Set(
-    rawEntries.map(e => {
-      try { return path.basename(_decalAssetFilePath(e.assetId, e.ext)) } catch { return null }
-    }).filter(Boolean),
-  )
-
-  const orphans = dirFiles
-    .filter(f => f !== 'index.json' && !f.startsWith('index.corrupt.') && !indexedFilenames.has(f))
-    .map(f => ({ filename: f }))
-
-  return { missing, orphans }
-})
+// Extracted to electron-main/decals.js (S5 Stage 2).
 
 ipcMain.handle('xleth:engine:setGlobalStretchMethod',
   safeHandler((_, m) => callWorker('engine_setGlobalStretchMethod', [m])))
@@ -1527,27 +1023,8 @@ ipcMain.handle('xleth:timeline:removeRegion',
   safeHandler((_, id) => callWorker('timeline_removeRegion', [id])));
 
 // ── Grid Layout ─────────────────────────────────────────────────────────────
-
-ipcMain.handle('xleth:timeline:getGridLayout',
-  safeHandler(() => callWorker('timeline_getGridLayout')));
-
-ipcMain.handle('xleth:timeline:setGridLayout',
-  safeHandler((_, layout) => callWorker('timeline_setGridLayout', [layout])));
-
-ipcMain.handle('xleth:timeline:assignTrackToGrid',
-  safeHandler((_, trackId, gx, gy, sx, sy) => callWorker('timeline_assignTrackToGrid', [trackId, gx, gy, sx, sy])));
-
-ipcMain.handle('xleth:timeline:assignTrackToGridWithZOrder',
-  safeHandler((_, trackId, gx, gy, sx, sy, z) => callWorker('timeline_assignTrackToGridWithZOrder', [trackId, gx, gy, sx, sy, z])));
-
-ipcMain.handle('xleth:timeline:removeTrackFromGrid',
-  safeHandler((_, trackId) => callWorker('timeline_removeTrackFromGrid', [trackId])));
-
-ipcMain.handle('xleth:timeline:setFullscreenLayers',
-  safeHandler((_, layers) => callWorker('timeline_setFullscreenLayers', [layers])));
-
-ipcMain.handle('xleth:timeline:setPreviewFps',
-  safeHandler((_, fps) => callWorker('timeline_setPreviewFps', [fps])));
+// Extracted to electron-main/grid-layout.js (S5 Stage 2) — engine pass-through
+// handlers, wired via gridLayout.init({ safeHandler }).
 
 // ── Pattern handlers ─────────────────────────────────────────────────────────
 
