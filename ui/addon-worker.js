@@ -49,13 +49,38 @@ process.env.PATH = pathEntries.join(path.delimiter);
 const addonPath = path.join(dllDir, 'xleth_native.node');
 const xleth = require(addonPath);
 
+// Strict-IPC opt-in: when set, an unimplemented method is a hard error instead
+// of a tolerated null. CI/tests turn this on so a broken RPC wiring (stale
+// binary, typo in any of the five name registries) fails loudly; local dev
+// leaves it off so an un-rebuilt addon keeps limping along. See AUDIT.md Q11.
+const STRICT_IPC = process.env.XLETH_STRICT_IPC === '1';
+
+// Log each unimplemented method name at most once per process lifetime so a
+// wiring mistake is visible without flooding the log on every poll/call.
+const warnedMissingMethods = new Set();
+
 // Listen for messages from the main process via IPC (child_process.fork)
 process.on('message', ({ id, method, args }) => {
   try {
     // Guard: if the native addon doesn't export this method yet (e.g. Phase 1
-    // functions before cmake-js rebuild), return null silently instead of
-    // throwing "xleth[method] is not a function" and flooding the log.
+    // functions before cmake-js rebuild), it used to fail silently — which made
+    // a wiring mistake look identical to "feature does nothing". Now it always
+    // logs (once per method), and throws when XLETH_STRICT_IPC=1 so CI catches
+    // it, while dev keeps tolerating un-rebuilt addons by returning null.
     if (typeof xleth[method] !== 'function') {
+      if (!warnedMissingMethods.has(method)) {
+        warnedMissingMethods.add(method);
+        console.error(
+          `[Worker] UNIMPLEMENTED method '${method}' — not exported by ` +
+          `xleth_native.node (stale binary or name-registry mismatch). ` +
+          (STRICT_IPC
+            ? 'XLETH_STRICT_IPC=1 → throwing.'
+            : 'Returning null (dev tolerance; set XLETH_STRICT_IPC=1 to fail hard).')
+        );
+      }
+      if (STRICT_IPC) {
+        throw new Error(`Unimplemented addon method '${method}' (XLETH_STRICT_IPC=1)`);
+      }
       process.send({ id, result: null, notImplemented: true });
       return;
     }
