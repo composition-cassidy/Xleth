@@ -45,6 +45,46 @@ describe('rpc-manifest invariants', () => {
     });
     expect(byMethod.getFrameRGBA.binary).toBe('frame');
   });
+
+  it('pins the undo / transport / timeline slice (AUDIT.md S1 slice 2)', () => {
+    const byMethod = Object.fromEntries(METHODS.map((m) => [m.method, m]));
+
+    // All six undo channels are value queries.
+    for (const short of ['undo', 'redo', 'canUndo', 'canRedo',
+                         'getUndoDescription', 'getRedoDescription']) {
+      const e = byMethod[`undo_${short}`];
+      expect(e, `undo_${short} missing`).toBeTruthy();
+      expect(e.channels).toEqual([`xleth:undo:${short}`]);
+      expect(e.api).toEqual({ [`undo.${short}`]: `xleth:undo:${short}` });
+      expect(e.returns).toBe('value');
+    }
+
+    // transport_seek is the one Phase-1 transport extension (void).
+    expect(byMethod.transport_seek.channels).toEqual(['xleth:transport:seek']);
+    expect(byMethod.transport_seek.api).toEqual({ 'transport.seek': 'xleth:transport:seek' });
+    expect(byMethod.transport_seek.returns).toBe('void');
+
+    // Representative timeline methods — value queries and single-entity mutations.
+    expect(byMethod.timeline_getClips.channels).toEqual(['xleth:timeline:getClips']);
+    expect(byMethod.timeline_getClips.returns).toBe('value');
+    expect(byMethod.timeline_getRouting.returns).toBe('value');
+    expect(byMethod.timeline_addTrack.returns).toBe('value');
+    expect(byMethod.timeline_setTrackMuted.channels).toEqual(['xleth:timeline:setTrackMuted']);
+    expect(byMethod.timeline_setTrackMuted.returns).toBe('void');
+    expect(byMethod.timeline_setNoteSlide.returns).toBe('void');
+    expect(byMethod.timeline_setClipModulation.returns).toBe('value');
+  });
+
+  it('excludes batch ops and the default-arg autoTrimClip from the manifest', () => {
+    const methods = new Set(METHODS.map((m) => m.method));
+    // Batch ops (batching logic) and autoTrimClip (preload default-arg fixup)
+    // stay hand-written in ui/electron-main/timeline.js — see docs/rpc-manifest.md.
+    for (const excluded of ['timeline_addClipsBatch',
+                            'timeline_spliceClipsAtPlayhead',
+                            'timeline_autoTrimClip']) {
+      expect(methods.has(excluded), `${excluded} must NOT be in the manifest`).toBe(false);
+    }
+  });
 });
 
 describe('attachRpcWrappers', () => {
@@ -71,5 +111,28 @@ describe('attachRpcWrappers', () => {
     ]);
     // Existing namespace objects are extended, not replaced.
     expect(target.video.existing).toBe(true);
+  });
+
+  it('creates the undo / transport namespaces on demand and forwards args', async () => {
+    const calls = [];
+    const invoke = (channel, ...args) => { calls.push([channel, ...args]); return Promise.resolve('ok'); };
+    // Fresh target: neither undo nor transport pre-exists (the committed preload
+    // no longer declares an `undo` object — attachRpcWrappers must create it).
+    const target = {};
+    attachRpcWrappers(target, invoke);
+
+    expect(typeof target.undo.undo).toBe('function');
+    expect(typeof target.undo.getRedoDescription).toBe('function');
+    expect(typeof target.transport.seek).toBe('function');
+
+    await target.undo.undo();
+    await target.transport.seek(12.5);
+    await target.timeline.setTrackMuted('t1', true);
+    await target.timeline.setNoteSlide('p1', 'n1', true, 0.2, 0.8);
+
+    expect(calls).toContainEqual(['xleth:undo:undo']);
+    expect(calls).toContainEqual(['xleth:transport:seek', 12.5]);
+    expect(calls).toContainEqual(['xleth:timeline:setTrackMuted', 't1', true]);
+    expect(calls).toContainEqual(['xleth:timeline:setNoteSlide', 'p1', 'n1', true, 0.2, 0.8]);
   });
 });

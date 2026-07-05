@@ -139,78 +139,14 @@ window.xleth = ({
 
   // ── Phase 1: timeline ─────────────────────────────────────────────────────
   timeline: {
-    // getBPM / setBPM / getTempoLocked come from the RPC manifest (attachRpcWrappers below)
-    setTempoLocked:   (locked)              => invoke('xleth:timeline:setTempoLocked', locked),
-    getDeclickMs:     ()                    => invoke('xleth:timeline:getDeclickMs'),
-    setDeclickMs:     (ms)                  => invoke('xleth:timeline:setDeclickMs', ms),
-    getGlobalStretchMethod: ()              => invoke('xleth:timeline:getGlobalStretchMethod'),
-    setGlobalStretchMethod: (method)        => invoke('xleth:timeline:setGlobalStretchMethod', method),
-    getSources:       ()                    => invoke('xleth:timeline:getSources'),
-    getRegions:       ()                    => invoke('xleth:timeline:getRegions'),
-    getRegionsByLabel:(label)               => invoke('xleth:timeline:getRegionsByLabel', label),
-    getTracks:        ()                    => invoke('xleth:timeline:getTracks'),
-    getClips:         ()                    => invoke('xleth:timeline:getClips'),
-    getClipsOnTrack:  (trackId)             => invoke('xleth:timeline:getClipsOnTrack', trackId),
-    getClipsInRange:  (startBeat, endBeat)  => invoke('xleth:timeline:getClipsInRange', startBeat, endBeat),
-    getLoopRegion:    ()                    => invoke('xleth:timeline:getLoopRegion'),
-    setLoopRegion:    (region, minLengthTicks) => invoke('xleth:timeline:setLoopRegion', region, minLengthTicks),
-    addTrack:         (info)                => invoke('xleth:timeline:addTrack', info),
-    removeTrack:      (id)                  => invoke('xleth:timeline:removeTrack', id),
-    setTrackMuted:        (trackId, muted)      => invoke('xleth:timeline:setTrackMuted', trackId, muted),
-    setTrackVisualOnly:   (trackId, visualOnly) => invoke('xleth:timeline:setTrackVisualOnly', trackId, visualOnly),
-    setTrackSolo:         (trackId, solo)       => invoke('xleth:timeline:setTrackSolo', trackId, solo),
-    setTrackOrder:        (trackIds)            => invoke('xleth:timeline:setTrackOrder', trackIds),
-    setTrackOutputRoute:  (trackId, targetTrackId) => invoke('xleth:timeline:setTrackOutputRoute', trackId, targetTrackId),
-    getRouting:           ()                    => invoke('xleth:timeline:getRouting'),
-    addSidechainRoute:        (sourceTrackId, route)        => invoke('xleth:timeline:addSidechainRoute', sourceTrackId, route),
-    removeSidechainRoute:     (sourceTrackId, routeId)      => invoke('xleth:timeline:removeSidechainRoute', sourceTrackId, routeId),
-    setSidechainRouteParams:  (sourceTrackId, routeId, params) => invoke('xleth:timeline:setSidechainRouteParams', sourceTrackId, routeId, params),
-    setTrackName:     (trackId, name)       => invoke('xleth:timeline:setTrackName', trackId, name),
-    setTrackFxMode:   (trackId, mode)       => invoke('xleth:timeline:setTrackFxMode', trackId, mode),
-    setTrackGraphState: (trackId, graphState) => invoke('xleth:timeline:setTrackGraphState', trackId, graphState),
-    setPatternName:   (patternId, name)     => invoke('xleth:timeline:setPatternName', patternId, name),
-    setPatternRegion: (patternId, regionId) => invoke('xleth:timeline:setPatternRegion', patternId, regionId),
-    convertToPatternTrack: (trackId)        => invoke('xleth:timeline:convertToPatternTrack', trackId),
-    convertToClipTrack: (trackId)           => invoke('xleth:timeline:convertToClipTrack', trackId),
-    setVideoFlipConfig: (trackId, config)   => invoke('xleth:timeline:setVideoFlipConfig', trackId, config),
-    setVideoHoldLastFrame: (trackId, hold) => invoke('xleth:timeline:setVideoHoldLastFrame', trackId, hold),
-    setTrackCornerRadius:     (trackId, v) => invoke('xleth:timeline:setTrackCornerRadius', trackId, v),
-    setTrackGapScaleOverride: (trackId, v) => invoke('xleth:timeline:setTrackGapScaleOverride', trackId, v),
-    setTrackSubdivisionFactor: (trackId, factor) => invoke('xleth:timeline:setTrackSubdivisionFactor', trackId, factor),
-    setTrackColor:            (trackId, assignment) => invoke('xleth:timeline:setTrackColor', trackId, assignment),
-    setTrackBounceSettings:        (trackId, bounce) => invoke('xleth:timeline:setTrackBounceSettings', trackId, bounce),
-    setTrackZoomPanRotSettings:    (trackId, zpr)   => invoke('xleth:timeline:setTrackZoomPanRotSettings', trackId, zpr),
-    setTrackPingPongSettings:      (trackId, pp)    => invoke('xleth:timeline:setTrackPingPongSettings', trackId, pp),
-    setTrackSlideNoteEffect:       (trackId, s)     => invoke('xleth:timeline:setTrackSlideNoteEffect', trackId, s),
-    getPreviewResolutionScale:     ()               => invoke('xleth:timeline:getPreviewResolutionScale'),
-    setPreviewResolutionScale:     (scale)          => invoke('xleth:timeline:setPreviewResolutionScale', scale),
-    getPreviewEffectsBypass:       ()               => invoke('xleth:timeline:getPreviewEffectsBypass'),
-    setPreviewEffectsBypass:       (bypass)         => invoke('xleth:timeline:setPreviewEffectsBypass', bypass),
-    getPreviewPosterMode:          ()               => invoke('xleth:timeline:getPreviewPosterMode'),
-    setPreviewPosterMode:          (poster)         => invoke('xleth:timeline:setPreviewPosterMode', poster),
-    setNoteSlide:                  (patternId, noteId, isSlide, cx, cy) =>
-        invoke('xleth:timeline:setNoteSlide', patternId, noteId, isSlide, cx, cy),
-    addVisualEffect:         (trackId, effectType) => invoke('xleth:timeline:addVisualEffect', trackId, effectType),
-    removeVisualEffect:      (trackId, idx)        => invoke('xleth:timeline:removeVisualEffect', trackId, idx),
-    reorderVisualEffect:          (trackId, from, to)   => invoke('xleth:timeline:reorderVisualEffect', trackId, from, to),
-    setTrackVisualEffectChainOrder: (trackId, newOrder) => invoke('xleth:timeline:setTrackVisualEffectChainOrder', trackId, newOrder),
-    setVisualEffectParam:    (trackId, ei, pi, val) => invoke('xleth:timeline:setVisualEffectParam', trackId, ei, pi, val),
-    setVisualEffectBypassed: (trackId, ei, bp)     => invoke('xleth:timeline:setVisualEffectBypassed', trackId, ei, bp),
-    getVisualEffectChain:    (trackId)             => invoke('xleth:timeline:getVisualEffectChain', trackId),
-    addClip:          (clip)                => invoke('xleth:timeline:addClip', clip),
+    // getBPM / setBPM / getTempoLocked and the timeline query + single-entity
+    // mutation surface come from the RPC manifest (attachRpcWrappers below).
+    // Still hand-written here: addClipsBatch / spliceClipsAtPlayhead (batch ops)
+    // and autoTrimClip (its thresholdDb=-54 default would be lost by the generic
+    // manifest wrapper). See docs/rpc-manifest.md.
     addClipsBatch:    (clips)               => invoke('xleth:timeline:addClipsBatch', clips),
-    removeClip:       (id)                  => invoke('xleth:timeline:removeClip', id),
-    moveClip:         (id, trackId, pos)    => invoke('xleth:timeline:moveClip', id, trackId, pos),
-    resizeClip:       (id, dur)             => invoke('xleth:timeline:resizeClip', id, dur),
-    resizeClipLeft:   (id, pos, dur, offset) => invoke('xleth:timeline:resizeClipLeft', id, pos, dur, offset),
-    stretchClip:      (id, dur)             => invoke('xleth:timeline:stretchClip', id, dur),
-    stretchClipLeft:  (id, pos, dur)        => invoke('xleth:timeline:stretchClipLeft', id, pos, dur),
-    pitchShiftClip:   (id, semi, cents)     => invoke('xleth:timeline:pitchShiftClip', id, semi, cents),
-    reverseClip:      (id)                  => invoke('xleth:timeline:reverseClip', id),
     autoTrimClip:            (id, thresholdDb=-54) => invoke('xleth:timeline:autoTrimClip', id, thresholdDb),
     spliceClipsAtPlayhead:   (entries)             => invoke('xleth:timeline:spliceClipsAtPlayhead', entries),
-    setClipParams:           (id, params)          => invoke('xleth:timeline:setClipParams', id, params),
-    setClipModulation:       (id, modulation)      => invoke('xleth:timeline:setClipModulation', id, modulation),
     addRegion:        (region)              => invoke('xleth:timeline:addRegion', region),
     modifyRegion:     (id, region)          => invoke('xleth:timeline:modifyRegion', id, region),
     setSyllables:     (id, syllables)       => invoke('xleth:timeline:setSyllables', id, syllables),
@@ -266,21 +202,15 @@ window.xleth = ({
   },
 
   // ── Phase 1: undo ─────────────────────────────────────────────────────────
-  undo: {
-    undo:               () => invoke('xleth:undo:undo'),
-    redo:               () => invoke('xleth:undo:redo'),
-    canUndo:            () => invoke('xleth:undo:canUndo'),
-    canRedo:            () => invoke('xleth:undo:canRedo'),
-    getUndoDescription: () => invoke('xleth:undo:getUndoDescription'),
-    getRedoDescription: () => invoke('xleth:undo:getRedoDescription'),
-  },
+  // undo.* (undo/redo/canUndo/canRedo/get{Undo,Redo}Description) come entirely
+  // from the RPC manifest (attachRpcWrappers below).
 
   // ── Phase 1: transport ────────────────────────────────────────────────────
   transport: {
     play:     ()        => invoke('xleth:play'),
     stop:     ()        => invoke('xleth:stop'),
     pause:    ()        => invoke('xleth:pause'),
-    seek:     (beatPos) => invoke('xleth:transport:seek', beatPos),
+    // seek comes from the RPC manifest (attachRpcWrappers below).
     getState: ()        => invoke('xleth:transportState'),
   },
 

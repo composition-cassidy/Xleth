@@ -1,33 +1,14 @@
 'use strict';
 
-// ── Phase 1 handlers — Undo / Redo ────────────────────────────────────────────────
-// Extracted from ui/main.js (S5 Stage 3 decomposition). Pure pass-throughs to
-// the engine-side undo manager. Wrapped in main.js's safeHandler, so
-// registration happens inside init().
+// ── Undo / Redo ───────────────────────────────────────────────────────────────
+// All six undo channels (undo/redo/canUndo/canRedo/get{Undo,Redo}Description)
+// are now registered by rpc-registry.js from ui/rpc-manifest.js (AUDIT.md S1) —
+// they are pure pass-throughs to the engine undo manager. This module is kept as
+// an empty init stub so main.js's wiring is unchanged; it has no handlers left.
+// See docs/rpc-manifest.md.
 
-const { ipcMain } = require('electron');
-const { callWorker } = require('./worker');
-
-function init(deps) {
-  const { safeHandler } = deps;
-
-  ipcMain.handle('xleth:undo:undo',
-    safeHandler(() => callWorker('undo_undo')));
-
-  ipcMain.handle('xleth:undo:redo',
-    safeHandler(() => callWorker('undo_redo')));
-
-  ipcMain.handle('xleth:undo:canUndo',
-    safeHandler(() => callWorker('undo_canUndo')));
-
-  ipcMain.handle('xleth:undo:canRedo',
-    safeHandler(() => callWorker('undo_canRedo')));
-
-  ipcMain.handle('xleth:undo:getUndoDescription',
-    safeHandler(() => callWorker('undo_getUndoDescription')));
-
-  ipcMain.handle('xleth:undo:getRedoDescription',
-    safeHandler(() => callWorker('undo_getRedoDescription')));
+function init(_deps) {
+  // intentionally empty — see header.
 }
 
 module.exports = { init };

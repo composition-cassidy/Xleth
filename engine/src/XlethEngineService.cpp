@@ -15502,48 +15502,7 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     if (method == "project_isDirty") return Project_IsDirty(info).raw();
     if (method == "project_newBlank") return Project_NewBlank(info).raw();
     if (method == "project_isExportRunning") return Project_IsExportRunning(info).raw();
-    if (method == "timeline_getDeclickMs") return Timeline_GetDeclickMs(info).raw();
-    if (method == "timeline_getGlobalStretchMethod") return Timeline_GetGlobalStretchMethod(info).raw();
-    if (method == "timeline_getSources") return Timeline_GetSources(info).raw();
-    if (method == "timeline_getRegions") return Timeline_GetRegions(info).raw();
-    if (method == "timeline_getRegionsByLabel") return Timeline_GetRegionsByLabel(info).raw();
-    if (method == "timeline_getTracks") return Timeline_GetTracks(info).raw();
-    if (method == "timeline_getClips") return Timeline_GetClips(info).raw();
-    if (method == "timeline_getClipsOnTrack") return Timeline_GetClipsOnTrack(info).raw();
-    if (method == "timeline_getClipsInRange") return Timeline_GetClipsInRange(info).raw();
-    if (method == "timeline_getLoopRegion") return Timeline_GetLoopRegion(info).raw();
-    if (method == "timeline_setLoopRegion") { Timeline_SetLoopRegion(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTempoLocked") { Timeline_SetTempoLocked(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setDeclickMs") { Timeline_SetDeclickMs(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setGlobalStretchMethod") { Timeline_SetGlobalStretchMethod(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_addTrack") return Timeline_AddTrack(info).raw();
-    if (method == "timeline_removeTrack") { Timeline_RemoveTrack(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTrackMuted") { Timeline_SetTrackMuted(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTrackVisualOnly") { Timeline_SetTrackVisualOnly(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTrackSolo") { Timeline_SetTrackSolo(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTrackOrder") return Timeline_SetTrackOrder(info).raw();
-    if (method == "timeline_setTrackOutputRoute") return Timeline_SetTrackOutputRoute(info).raw();
-    if (method == "timeline_getRouting") return Timeline_GetRouting(info).raw();
-    if (method == "timeline_addSidechainRoute") return Timeline_AddSidechainRoute(info).raw();
-    if (method == "timeline_removeSidechainRoute") return Timeline_RemoveSidechainRoute(info).raw();
-    if (method == "timeline_setSidechainRouteParams") return Timeline_SetSidechainRouteParams(info).raw();
-    if (method == "timeline_setTrackName") { Timeline_SetTrackName(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTrackFxMode") return Timeline_SetTrackFxMode(info).raw();
-    if (method == "timeline_setTrackGraphState") return Timeline_SetTrackGraphState(info).raw();
-    if (method == "timeline_setPatternName") { Timeline_SetPatternName(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setPatternRegion") { Timeline_SetPatternRegion(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_addClip") return Timeline_AddClip(info).raw();
     if (method == "timeline_addClipsBatch") return Timeline_AddClipsBatch(info).raw();
-    if (method == "timeline_removeClip") { Timeline_RemoveClip(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setClipParams") return Timeline_SetClipParams(info).raw();
-    if (method == "timeline_setClipModulation") return Timeline_SetClipModulation(info).raw();
-    if (method == "timeline_moveClip") { Timeline_MoveClip(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_resizeClip") { Timeline_ResizeClip(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_resizeClipLeft") { Timeline_ResizeClipLeft(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_stretchClip") { Timeline_StretchClip(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_stretchClipLeft") { Timeline_StretchClipLeft(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_pitchShiftClip") return Timeline_PitchShiftClip(info).raw();
-    if (method == "timeline_reverseClip") return Timeline_ReverseClip(info).raw();
     if (method == "timeline_autoTrimClip") return Timeline_AutoTrimClip(info).raw();
     if (method == "timeline_spliceClipsAtPlayhead") return Timeline_SpliceClipsAtPlayhead(info).raw();
     if (method == "timeline_addRegion") return Timeline_AddRegion(info).raw();
@@ -15585,42 +15544,9 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     if (method == "timeline_previewNote") { Timeline_PreviewNote(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "timeline_previewNoteOff") { Timeline_PreviewNoteOff(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "timeline_previewAllNotesOff") { Timeline_PreviewAllNotesOff(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_convertToPatternTrack") { Timeline_ConvertToPatternTrack(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_convertToClipTrack") { Timeline_ConvertToClipTrack(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setVideoFlipConfig") { Timeline_SetVideoFlipConfig(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setVideoHoldLastFrame") { Timeline_SetVideoHoldLastFrame(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTrackCornerRadius") { Timeline_SetTrackCornerRadius(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTrackGapScaleOverride") { Timeline_SetTrackGapScaleOverride(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTrackSubdivisionFactor") { Timeline_SetTrackSubdivisionFactor(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTrackColor") { Timeline_SetTrackColor(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTrackBounceSettings") { Timeline_SetTrackBounceSettings(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTrackZoomPanRotSettings") { Timeline_SetTrackZoomPanRotSettings(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTrackPingPongSettings") { Timeline_SetTrackPingPongSettings(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTrackSlideNoteEffect") { Timeline_SetTrackSlideNoteEffect(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setNoteSlide") { Timeline_SetNoteSlide(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_getPreviewResolutionScale") return Timeline_GetPreviewResolutionScale(info).raw();
-    if (method == "timeline_setPreviewResolutionScale") { Timeline_SetPreviewResolutionScale(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_getPreviewEffectsBypass") return Timeline_GetPreviewEffectsBypass(info).raw();
-    if (method == "timeline_setPreviewEffectsBypass") { Timeline_SetPreviewEffectsBypass(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_getPreviewPosterMode") return Timeline_GetPreviewPosterMode(info).raw();
-    if (method == "timeline_setPreviewPosterMode") { Timeline_SetPreviewPosterMode(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "timeline_getPreviewProxyHeight") return Timeline_GetPreviewProxyHeight(info).raw();
     if (method == "timeline_setPreviewProxyHeight") { Timeline_SetPreviewProxyHeight(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_addVisualEffect") return Timeline_AddVisualEffect(info).raw();
-    if (method == "timeline_removeVisualEffect") { Timeline_RemoveVisualEffect(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_reorderVisualEffect") { Timeline_ReorderVisualEffect(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTrackVisualEffectChainOrder") { Timeline_SetTrackVisualEffectChainOrder(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setVisualEffectParam") { Timeline_SetVisualEffectParam(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setVisualEffectBypassed") { Timeline_SetVisualEffectBypassed(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_getVisualEffectChain") return Timeline_GetVisualEffectChain(info).raw();
     if (method == "preview_setEnabled") return Preview_SetEnabled(info).raw();
-    if (method == "undo_undo") return Undo_Undo(info).raw();
-    if (method == "undo_redo") return Undo_Redo(info).raw();
-    if (method == "undo_canUndo") return Undo_CanUndo(info).raw();
-    if (method == "undo_canRedo") return Undo_CanRedo(info).raw();
-    if (method == "undo_getUndoDescription") return Undo_GetUndoDescription(info).raw();
-    if (method == "undo_getRedoDescription") return Undo_GetRedoDescription(info).raw();
-    if (method == "transport_seek") { Transport_Seek(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "transport_getState") return GetTransportState(info).raw();
     if (method == "cache_getWorldActiveJobs") return Cache_GetWorldActiveJobIds(info).raw();
     if (method == "engine_setGlobalStretchMethod") { Engine_SetGlobalStretchMethod(info); return JsonApi::Env{}.Undefined().raw(); }
