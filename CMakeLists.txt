@@ -12,6 +12,10 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Register the engine's self-test executables with CTest.
+# Run them all with:  ctest --test-dir build -C Release
+enable_testing()
+
 add_subdirectory(engine)
 add_subdirectory(scanner)
 add_subdirectory(editor-host)
