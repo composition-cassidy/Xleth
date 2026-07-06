@@ -667,6 +667,110 @@ const METHODS = [
     returns: 'value',
     binary: null,
   },
+
+  // ── Project lifecycle (AUDIT.md S1 slice 3) ──
+  // Pure engine pass-throughs from ui/electron-main/project.js. project.load /
+  // project.newBlank are NOT here: they own per-call main-process logic (broadcast
+  // xleth:project-loaded to all renderers + restartAutosaveTimer, and newBlank also
+  // reads the settings default to build its arg). The xleth:dialog:* handlers own
+  // Electron dialogs, not engine calls, and stay hand-written too. All engine
+  // handlers below dispatch with the value shape (return Handler(info).raw()).
+  {
+    method: 'project_create',
+    channels: ['xleth:project:create'],
+    api: { 'project.create': 'xleth:project:create' },
+    handler: 'Project_Create',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'project_save',
+    channels: ['xleth:project:save'],
+    api: { 'project.save': 'xleth:project:save' },
+    handler: 'Project_Save',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'project_saveAs',
+    channels: ['xleth:project:saveAs'],
+    api: { 'project.saveAs': 'xleth:project:saveAs' },
+    handler: 'Project_SaveAs',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'project_hasProjectDir',
+    channels: ['xleth:project:hasProjectDir'],
+    api: { 'project.hasProjectDir': 'xleth:project:hasProjectDir' },
+    handler: 'Project_HasProjectDir',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'project_importSource',
+    channels: ['xleth:project:importSource'],
+    api: { 'project.importSource': 'xleth:project:importSource' },
+    handler: 'Project_ImportSource',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'project_removeSource',
+    channels: ['xleth:project:removeSource'],
+    api: { 'project.removeSource': 'xleth:project:removeSource' },
+    handler: 'Project_RemoveSource',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'project_validateMedia',
+    channels: ['xleth:project:validateMedia'],
+    api: { 'project.validateMedia': 'xleth:project:validateMedia' },
+    handler: 'Project_ValidateMedia',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'project_relinkSource',
+    channels: ['xleth:project:relinkSource'],
+    api: { 'project.relinkSource': 'xleth:project:relinkSource' },
+    handler: 'Project_RelinkSource',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'project_relinkRegionAudio',
+    channels: ['xleth:project:relinkRegionAudio'],
+    api: { 'project.relinkRegionAudio': 'xleth:project:relinkRegionAudio' },
+    handler: 'Project_RelinkRegionAudio',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'project_getInfo',
+    channels: ['xleth:project:getInfo'],
+    api: { 'project.getInfo': 'xleth:project:getInfo' },
+    handler: 'Project_GetInfo',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'project_isDirty',
+    channels: ['xleth:project:isDirty'],
+    api: { 'project.isDirty': 'xleth:project:isDirty' },
+    handler: 'Project_IsDirty',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'project_isExportRunning',
+    channels: ['xleth:project:isExportRunning'],
+    api: { 'project.isExportRunning': 'xleth:project:isExportRunning' },
+    handler: 'Project_IsExportRunning',
+    returns: 'value',
+    binary: null,
+  },
 ];
 
 // Binary kinds addon-worker.js knows how to transport. A manifest entry with

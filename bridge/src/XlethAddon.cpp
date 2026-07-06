@@ -276,74 +276,22 @@ Napi::Value GetSyncStats(const Napi::CallbackInfo& info)
     return dispatchToService(info, "getSyncStats");
 }
 
-Napi::Value Project_Create(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "project_create");
-}
-
-Napi::Value Project_Save(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "project_save");
-}
-
-Napi::Value Project_SaveAs(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "project_saveAs");
-}
-
-Napi::Value Project_HasProjectDir(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "project_hasProjectDir");
-}
-
+// project_create / project_save / project_saveAs / project_hasProjectDir /
+// project_importSource / project_removeSource / project_validateMedia /
+// project_relinkSource / project_relinkRegionAudio / project_getInfo /
+// project_isDirty / project_isExportRunning are exported from the manifest
+// (XlethRpcExports.inc, AUDIT.md S1 slice 3). project_load / project_newBlank
+// keep hand-written wrappers because their electron-main handlers own per-call
+// logic (renderer broadcast + autosave restart) — the addon wrapper itself is
+// still the mechanical dispatchToService pass-through.
 Napi::Value Project_Load(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "project_load");
 }
 
-Napi::Value Project_ImportSource(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "project_importSource");
-}
-
-Napi::Value Project_RemoveSource(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "project_removeSource");
-}
-
-Napi::Value Project_ValidateMedia(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "project_validateMedia");
-}
-
-Napi::Value Project_RelinkSource(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "project_relinkSource");
-}
-
-Napi::Value Project_RelinkRegionAudio(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "project_relinkRegionAudio");
-}
-
-Napi::Value Project_GetInfo(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "project_getInfo");
-}
-
-Napi::Value Project_IsDirty(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "project_isDirty");
-}
-
 Napi::Value Project_NewBlank(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "project_newBlank");
-}
-
-Napi::Value Project_IsExportRunning(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "project_isExportRunning");
 }
 
 Napi::Value Timeline_AddClipsBatch(const Napi::CallbackInfo& info)
@@ -1262,20 +1210,11 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("getSyncStats",       Napi::Function::New(env, GetSyncStats));
 
     // ── Phase 1 — Project ────────────────────────────────────────────────────
-    exports.Set("project_create",          Napi::Function::New(env, Project_Create));
-    exports.Set("project_save",            Napi::Function::New(env, Project_Save));
-    exports.Set("project_saveAs",          Napi::Function::New(env, Project_SaveAs));
-    exports.Set("project_hasProjectDir",   Napi::Function::New(env, Project_HasProjectDir));
+    // Most project exports come from the manifest (XlethRpcExports.inc, S1 slice
+    // 3). Only project_load / project_newBlank stay hand-written — their
+    // electron-main handlers carry per-call logic (see the wrappers above).
     exports.Set("project_load",            Napi::Function::New(env, Project_Load));
-    exports.Set("project_importSource",    Napi::Function::New(env, Project_ImportSource));
-    exports.Set("project_removeSource",    Napi::Function::New(env, Project_RemoveSource));
-    exports.Set("project_validateMedia",   Napi::Function::New(env, Project_ValidateMedia));
-    exports.Set("project_relinkSource",    Napi::Function::New(env, Project_RelinkSource));
-    exports.Set("project_relinkRegionAudio", Napi::Function::New(env, Project_RelinkRegionAudio));
-    exports.Set("project_getInfo",         Napi::Function::New(env, Project_GetInfo));
-    exports.Set("project_isDirty",         Napi::Function::New(env, Project_IsDirty));
     exports.Set("project_newBlank",        Napi::Function::New(env, Project_NewBlank));
-    exports.Set("project_isExportRunning", Napi::Function::New(env, Project_IsExportRunning));
 
     // ── Phase 1 — Timeline queries ───────────────────────────────────────────
 

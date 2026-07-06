@@ -12,20 +12,16 @@ const { callWorker } = require('./worker');
 const { restartAutosaveTimer } = require('./autosave');
 const { getNewProjectGlobalStretchMethodDefault } = require('./settings');
 
+// Pure engine pass-throughs (create / save / saveAs / hasProjectDir /
+// importSource / removeSource / validateMedia / relinkSource /
+// relinkRegionAudio / getInfo / isDirty / isExportRunning) moved to the RPC
+// manifest (ui/rpc-manifest.js, AUDIT.md S1 slice 3) — registered by
+// ui/electron-main/rpc-registry.js. Only load + newBlank stay hand-written
+// here: they broadcast xleth:project-loaded to every renderer and restart the
+// autosave timer (and newBlank also builds its arg from the settings default),
+// so they are not pure pass-throughs.
 function init(deps) {
   const { safeHandler } = deps;
-
-  ipcMain.handle('xleth:project:create',
-    safeHandler((_, dir, name) => callWorker('project_create', [dir, name])));
-
-  ipcMain.handle('xleth:project:save',
-    safeHandler(() => callWorker('project_save')));
-
-  ipcMain.handle('xleth:project:saveAs',
-    safeHandler((_, dir, name) => callWorker('project_saveAs', [dir, name])));
-
-  ipcMain.handle('xleth:project:hasProjectDir',
-    safeHandler(() => callWorker('project_hasProjectDir')));
 
   ipcMain.handle('xleth:project:load',
     safeHandler(async (_, dir) => {
@@ -41,27 +37,6 @@ function init(deps) {
       return result;
     }));
 
-  ipcMain.handle('xleth:project:importSource',
-    safeHandler((_, filePath) => callWorker('project_importSource', [filePath])));
-
-  ipcMain.handle('xleth:project:removeSource',
-    safeHandler((_, sourceId) => callWorker('project_removeSource', [sourceId])));
-
-  ipcMain.handle('xleth:project:validateMedia',
-    safeHandler(() => callWorker('project_validateMedia')));
-
-  ipcMain.handle('xleth:project:relinkSource',
-    safeHandler((_, sourceId, newPath) => callWorker('project_relinkSource', [sourceId, newPath])));
-
-  ipcMain.handle('xleth:project:relinkRegionAudio',
-    safeHandler((_, regionId, newPath) => callWorker('project_relinkRegionAudio', [regionId, newPath])));
-
-  ipcMain.handle('xleth:project:getInfo',
-    safeHandler(() => callWorker('project_getInfo')));
-
-  ipcMain.handle('xleth:project:isDirty',
-    safeHandler(() => callWorker('project_isDirty')));
-
   ipcMain.handle('xleth:project:newBlank',
     safeHandler(async () => {
       const result = await callWorker('project_newBlank', [getNewProjectGlobalStretchMethodDefault()]);
@@ -76,9 +51,6 @@ function init(deps) {
       }
       return result;
     }));
-
-  ipcMain.handle('xleth:project:isExportRunning',
-    safeHandler(() => callWorker('project_isExportRunning')));
 }
 
 module.exports = { init };

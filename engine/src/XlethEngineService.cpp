@@ -15488,20 +15488,15 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     if (method == "addVideoEvent") { AddVideoEvent(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "clearTimeline") { ClearTimeline(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "getSyncStats") return GetSyncStats(info).raw();
-    if (method == "project_create") return Project_Create(info).raw();
-    if (method == "project_save") return Project_Save(info).raw();
-    if (method == "project_saveAs") return Project_SaveAs(info).raw();
-    if (method == "project_hasProjectDir") return Project_HasProjectDir(info).raw();
+    // project_create / project_save / project_saveAs / project_hasProjectDir /
+    // project_importSource / project_removeSource / project_validateMedia /
+    // project_relinkSource / project_relinkRegionAudio / project_getInfo /
+    // project_isDirty / project_isExportRunning dispatch from the manifest
+    // (XlethRpcDispatch.inc, AUDIT.md S1 slice 3). project_load / project_newBlank
+    // stay here — the engine call is a pure pass-through, but their electron-main
+    // handlers own the renderer broadcast + autosave restart.
     if (method == "project_load") return Project_Load(info).raw();
-    if (method == "project_importSource") return Project_ImportSource(info).raw();
-    if (method == "project_removeSource") return Project_RemoveSource(info).raw();
-    if (method == "project_validateMedia") return Project_ValidateMedia(info).raw();
-    if (method == "project_relinkSource") return Project_RelinkSource(info).raw();
-    if (method == "project_relinkRegionAudio") return Project_RelinkRegionAudio(info).raw();
-    if (method == "project_getInfo") return Project_GetInfo(info).raw();
-    if (method == "project_isDirty") return Project_IsDirty(info).raw();
     if (method == "project_newBlank") return Project_NewBlank(info).raw();
-    if (method == "project_isExportRunning") return Project_IsExportRunning(info).raw();
     if (method == "timeline_addClipsBatch") return Timeline_AddClipsBatch(info).raw();
     if (method == "timeline_autoTrimClip") return Timeline_AutoTrimClip(info).raw();
     if (method == "timeline_spliceClipsAtPlayhead") return Timeline_SpliceClipsAtPlayhead(info).raw();

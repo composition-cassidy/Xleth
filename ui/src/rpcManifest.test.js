@@ -75,13 +75,36 @@ describe('rpc-manifest invariants', () => {
     expect(byMethod.timeline_setClipModulation.returns).toBe('value');
   });
 
-  it('excludes batch ops and the default-arg autoTrimClip from the manifest', () => {
+  it('pins the project lifecycle slice (AUDIT.md S1 slice 3)', () => {
+    const byMethod = Object.fromEntries(METHODS.map((m) => [m.method, m]));
+
+    // Every migrated project pass-through dispatches with the value shape and
+    // keeps its verbatim xleth:project:* channel + project.* wrapper path.
+    for (const short of ['create', 'save', 'saveAs', 'hasProjectDir',
+                         'importSource', 'removeSource', 'validateMedia',
+                         'relinkSource', 'relinkRegionAudio', 'getInfo',
+                         'isDirty', 'isExportRunning']) {
+      const method = `project_${short}`;
+      const e = byMethod[method];
+      expect(e, `${method} missing`).toBeTruthy();
+      expect(e.channels).toEqual([`xleth:project:${short}`]);
+      expect(e.api).toEqual({ [`project.${short}`]: `xleth:project:${short}` });
+      expect(e.returns).toBe('value');
+      expect(e.binary).toBe(null);
+    }
+  });
+
+  it('excludes batch ops, default-arg autoTrimClip, and project load/newBlank', () => {
     const methods = new Set(METHODS.map((m) => m.method));
     // Batch ops (batching logic) and autoTrimClip (preload default-arg fixup)
-    // stay hand-written in ui/electron-main/timeline.js — see docs/rpc-manifest.md.
+    // stay hand-written in ui/electron-main/timeline.js. project_load /
+    // project_newBlank stay hand-written in ui/electron-main/project.js — they
+    // broadcast xleth:project-loaded + restart autosave. See docs/rpc-manifest.md.
     for (const excluded of ['timeline_addClipsBatch',
                             'timeline_spliceClipsAtPlayhead',
-                            'timeline_autoTrimClip']) {
+                            'timeline_autoTrimClip',
+                            'project_load',
+                            'project_newBlank']) {
       expect(methods.has(excluded), `${excluded} must NOT be in the manifest`).toBe(false);
     }
   });

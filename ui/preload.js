@@ -103,18 +103,15 @@ window.xleth = ({
   setVideoResolution: (w, h)  => invoke('xleth:setVideoResolution', w, h),
 
   // ── Phase 1: project ──────────────────────────────────────────────────────
+  // create / save / saveAs / hasProjectDir / importSource / removeSource /
+  // validateMedia / relinkSource / relinkRegionAudio / getInfo / isDirty /
+  // isExportRunning come from the RPC manifest (attachRpcWrappers below).
+  // load + newBlank stay here — main.js broadcasts xleth:project-loaded and
+  // restarts autosave for them, so they are not pure pass-throughs. The
+  // xleth:dialog:* wrappers own Electron dialogs; exportZip / getSourceThumbnail
+  // are handled outside project.js.
   project: {
-    create:             (dir, name) => invoke('xleth:project:create', dir, name),
-    save:               ()          => invoke('xleth:project:save'),
-    saveAs:             (dir, name) => invoke('xleth:project:saveAs', dir, name),
-    hasProjectDir:      ()          => invoke('xleth:project:hasProjectDir'),
     load:               (dir)       => invoke('xleth:project:load', dir),
-    importSource:       (filePath)  => invoke('xleth:project:importSource', filePath),
-    removeSource:       (sourceId)  => invoke('xleth:project:removeSource', sourceId),
-    validateMedia:      ()          => invoke('xleth:project:validateMedia'),
-    relinkSource:       (sourceId, newPath) => invoke('xleth:project:relinkSource', sourceId, newPath),
-    relinkRegionAudio:  (regionId, newPath) => invoke('xleth:project:relinkRegionAudio', regionId, newPath),
-    getInfo:            ()          => invoke('xleth:project:getInfo'),
     openNewProjectDialog: ()        => invoke('xleth:dialog:newProject'),
     openProjectDialog:   ()         => invoke('xleth:dialog:openProject'),
     openSaveAsDialog:    ()         => invoke('xleth:dialog:saveProjectAs'),
@@ -127,9 +124,7 @@ window.xleth = ({
       return () => ipcRenderer.removeListener('zip-export:progress', h);
     },
     getSourceThumbnail: (filePath, duration) => invoke('xleth:project:getSourceThumbnail', filePath, duration),
-    isDirty:            ()          => invoke('xleth:project:isDirty'),
     newBlank:           ()          => invoke('xleth:project:newBlank'),
-    isExportRunning:    ()          => invoke('xleth:project:isExportRunning'),
   },
 
   // ── Autosave ──────────────────────────────────────────────────────────────
