@@ -94,15 +94,72 @@ describe('rpc-manifest invariants', () => {
     }
   });
 
-  it('excludes batch ops, default-arg autoTrimClip, and project load/newBlank', () => {
+  it('pins the patterns / regions / notes slice (AUDIT.md S1 slice 4)', () => {
+    const byMethod = Object.fromEntries(METHODS.map((m) => [m.method, m]));
+
+    // Every migrated region / pattern / pattern-block / single-note pass-through
+    // keeps its verbatim xleth:timeline:* channel + timeline.* wrapper path, and
+    // dispatches with the shape below (mirrors the removed hand dispatch line).
+    const timelineShape = {
+      timeline_addRegion: 'value',
+      timeline_modifyRegion: 'void',
+      timeline_setSyllables: 'void',
+      timeline_getSyllables: 'value',
+      timeline_removeRegion: 'void',
+      timeline_addPattern: 'value',
+      timeline_getPattern: 'value',
+      timeline_getAllPatterns: 'value',
+      timeline_removePattern: 'void',
+      timeline_updateSamplerSettings: 'void',
+      timeline_getPatternAudioInfo: 'value',
+      timeline_getRegionAudioInfo: 'value',
+      timeline_addPatternBlock: 'value',
+      timeline_getPatternBlocks: 'value',
+      timeline_removePatternBlock: 'void',
+      timeline_movePatternBlock: 'void',
+      timeline_resizePatternBlock: 'void',
+      timeline_resizePatternBlockLeft: 'void',
+      timeline_setPatternBlockLoop: 'void',
+      timeline_addNote: 'value',
+      timeline_removeNote: 'void',
+      timeline_moveNote: 'void',
+      timeline_resizeNote: 'void',
+      timeline_setNoteVelocity: 'void',
+      timeline_previewNoteOff: 'void',
+      timeline_previewAllNotesOff: 'void',
+    };
+    for (const [method, shape] of Object.entries(timelineShape)) {
+      const e = byMethod[method];
+      expect(e, `${method} missing`).toBeTruthy();
+      const short = method.slice('timeline_'.length);
+      expect(e.channels).toEqual([`xleth:timeline:${short}`]);
+      expect(e.api).toEqual({ [`timeline.${short}`]: `xleth:timeline:${short}` });
+      expect(e.returns).toBe(shape);
+      expect(e.binary).toBe(null);
+    }
+
+    // fsc_parse keeps its own xleth:fsc:* namespace (not timeline.*).
+    expect(byMethod.fsc_parse.channels).toEqual(['xleth:fsc:parse']);
+    expect(byMethod.fsc_parse.api).toEqual({ 'fsc.parse': 'xleth:fsc:parse' });
+    expect(byMethod.fsc_parse.returns).toBe('value');
+    expect(byMethod.fsc_parse.binary).toBe(null);
+  });
+
+  it('excludes batch ops, default-arg autoTrimClip/previewNote, and project load/newBlank', () => {
     const methods = new Set(METHODS.map((m) => m.method));
-    // Batch ops (batching logic) and autoTrimClip (preload default-arg fixup)
-    // stay hand-written in ui/electron-main/timeline.js. project_load /
-    // project_newBlank stay hand-written in ui/electron-main/project.js — they
-    // broadcast xleth:project-loaded + restart autosave. See docs/rpc-manifest.md.
+    // Batch ops (batching logic) and the default-arg fixups autoTrimClip
+    // (thresholdDb=-54) / previewNote (velocity=0.8) stay hand-written in
+    // ui/electron-main/timeline.js + patterns.js. project_load / project_newBlank
+    // stay hand-written in ui/electron-main/project.js — they broadcast
+    // xleth:project-loaded + restart autosave. See docs/rpc-manifest.md.
     for (const excluded of ['timeline_addClipsBatch',
                             'timeline_spliceClipsAtPlayhead',
                             'timeline_autoTrimClip',
+                            'timeline_moveNotesBatch',
+                            'timeline_addNotesBatch',
+                            'timeline_quantizeClipsBatch',
+                            'timeline_resizeNotesBatch',
+                            'timeline_previewNote',
                             'project_load',
                             'project_newBlank']) {
       expect(methods.has(excluded), `${excluded} must NOT be in the manifest`).toBe(false);
@@ -147,15 +204,21 @@ describe('attachRpcWrappers', () => {
     expect(typeof target.undo.undo).toBe('function');
     expect(typeof target.undo.getRedoDescription).toBe('function');
     expect(typeof target.transport.seek).toBe('function');
+    // fsc is its own namespace (S1 slice 4), also created on demand.
+    expect(typeof target.fsc.parse).toBe('function');
 
     await target.undo.undo();
     await target.transport.seek(12.5);
     await target.timeline.setTrackMuted('t1', true);
     await target.timeline.setNoteSlide('p1', 'n1', true, 0.2, 0.8);
+    await target.timeline.addRegion({ name: 'r' });
+    await target.fsc.parse('/tmp/x.fsc');
 
     expect(calls).toContainEqual(['xleth:undo:undo']);
     expect(calls).toContainEqual(['xleth:transport:seek', 12.5]);
     expect(calls).toContainEqual(['xleth:timeline:setTrackMuted', 't1', true]);
     expect(calls).toContainEqual(['xleth:timeline:setNoteSlide', 'p1', 'n1', true, 0.2, 0.8]);
+    expect(calls).toContainEqual(['xleth:timeline:addRegion', { name: 'r' }]);
+    expect(calls).toContainEqual(['xleth:fsc:parse', '/tmp/x.fsc']);
   });
 });

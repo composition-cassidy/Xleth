@@ -309,31 +309,6 @@ Napi::Value Timeline_SpliceClipsAtPlayhead(const Napi::CallbackInfo& info)
     return dispatchToService(info, "timeline_spliceClipsAtPlayhead");
 }
 
-Napi::Value Timeline_AddRegion(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_addRegion");
-}
-
-Napi::Value Timeline_ModifyRegion(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_modifyRegion");
-}
-
-Napi::Value Timeline_SetSyllables(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setSyllables");
-}
-
-Napi::Value Timeline_GetSyllables(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_getSyllables");
-}
-
-Napi::Value Timeline_RemoveRegion(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_removeRegion");
-}
-
 Napi::Value Timeline_GetGridLayout(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "timeline_getGridLayout");
@@ -369,91 +344,6 @@ Napi::Value Timeline_SetPreviewFps(const Napi::CallbackInfo& info)
     return dispatchToService(info, "timeline_setPreviewFps");
 }
 
-Napi::Value Timeline_AddPattern(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_addPattern");
-}
-
-Napi::Value Timeline_GetPattern(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_getPattern");
-}
-
-Napi::Value Timeline_GetAllPatterns(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_getAllPatterns");
-}
-
-Napi::Value Timeline_RemovePattern(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_removePattern");
-}
-
-Napi::Value Timeline_UpdateSamplerSettings(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_updateSamplerSettings");
-}
-
-Napi::Value Timeline_GetPatternAudioInfo(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_getPatternAudioInfo");
-}
-
-Napi::Value Timeline_GetRegionAudioInfo(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_getRegionAudioInfo");
-}
-
-Napi::Value Timeline_AddPatternBlock(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_addPatternBlock");
-}
-
-Napi::Value Timeline_GetPatternBlocks(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_getPatternBlocks");
-}
-
-Napi::Value Timeline_RemovePatternBlock(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_removePatternBlock");
-}
-
-Napi::Value Timeline_MovePatternBlock(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_movePatternBlock");
-}
-
-Napi::Value Timeline_ResizePatternBlock(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_resizePatternBlock");
-}
-
-Napi::Value Timeline_ResizePatternBlockLeft(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_resizePatternBlockLeft");
-}
-
-Napi::Value Timeline_SetPatternBlockLoop(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setPatternBlockLoop");
-}
-
-Napi::Value Timeline_AddNote(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_addNote");
-}
-
-Napi::Value Timeline_RemoveNote(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_removeNote");
-}
-
-Napi::Value Timeline_MoveNote(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_moveNote");
-}
-
 Napi::Value Timeline_MoveNotesBatch(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "timeline_moveNotesBatch");
@@ -462,11 +352,6 @@ Napi::Value Timeline_MoveNotesBatch(const Napi::CallbackInfo& info)
 Napi::Value Timeline_AddNotesBatch(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "timeline_addNotesBatch");
-}
-
-Napi::Value Fsc_Parse(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "fsc_parse");
 }
 
 Napi::Value Timeline_QuantizeClipsBatch(const Napi::CallbackInfo& info)
@@ -479,29 +364,9 @@ Napi::Value Timeline_ResizeNotesBatch(const Napi::CallbackInfo& info)
     return dispatchToService(info, "timeline_resizeNotesBatch");
 }
 
-Napi::Value Timeline_ResizeNote(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_resizeNote");
-}
-
-Napi::Value Timeline_SetNoteVelocity(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setNoteVelocity");
-}
-
 Napi::Value Timeline_PreviewNote(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "timeline_previewNote");
-}
-
-Napi::Value Timeline_PreviewNoteOff(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_previewNoteOff");
-}
-
-Napi::Value Timeline_PreviewAllNotesOff(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_previewAllNotesOff");
 }
 
 Napi::Value Preview_SetEnabled(const Napi::CallbackInfo& info)
@@ -1222,11 +1087,6 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("timeline_addClipsBatch",    Napi::Function::New(env, Timeline_AddClipsBatch));
     exports.Set("timeline_autoTrimClip",            Napi::Function::New(env, Timeline_AutoTrimClip));
     exports.Set("timeline_spliceClipsAtPlayhead",   Napi::Function::New(env, Timeline_SpliceClipsAtPlayhead));
-    exports.Set("timeline_addRegion",    Napi::Function::New(env, Timeline_AddRegion));
-    exports.Set("timeline_modifyRegion", Napi::Function::New(env, Timeline_ModifyRegion));
-    exports.Set("timeline_setSyllables", Napi::Function::New(env, Timeline_SetSyllables));
-    exports.Set("timeline_getSyllables", Napi::Function::New(env, Timeline_GetSyllables));
-    exports.Set("timeline_removeRegion", Napi::Function::New(env, Timeline_RemoveRegion));
 
     // ── Grid Layout ──────────────────────────────────────────────────────────
     exports.Set("timeline_getGridLayout",       Napi::Function::New(env, Timeline_GetGridLayout));
@@ -1238,34 +1098,14 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("timeline_setPreviewFps",       Napi::Function::New(env, Timeline_SetPreviewFps));
 
     // ── Patterns / PatternBlocks / Notes ─────────────────────────────────────
-    exports.Set("timeline_addPattern",             Napi::Function::New(env, Timeline_AddPattern));
-    exports.Set("timeline_getPattern",             Napi::Function::New(env, Timeline_GetPattern));
-    exports.Set("timeline_getAllPatterns",         Napi::Function::New(env, Timeline_GetAllPatterns));
-    exports.Set("timeline_removePattern",          Napi::Function::New(env, Timeline_RemovePattern));
-    exports.Set("timeline_updateSamplerSettings",  Napi::Function::New(env, Timeline_UpdateSamplerSettings));
-    exports.Set("timeline_getPatternAudioInfo",    Napi::Function::New(env, Timeline_GetPatternAudioInfo));
-    exports.Set("timeline_getRegionAudioInfo",      Napi::Function::New(env, Timeline_GetRegionAudioInfo));
-    // Pipeline B (timeline_getRegionWaveformPeaks) retired — replaced by waveform_getRegionPeaks
-    exports.Set("timeline_addPatternBlock",        Napi::Function::New(env, Timeline_AddPatternBlock));
-    exports.Set("timeline_getPatternBlocks",       Napi::Function::New(env, Timeline_GetPatternBlocks));
-    exports.Set("timeline_removePatternBlock",     Napi::Function::New(env, Timeline_RemovePatternBlock));
-    exports.Set("timeline_movePatternBlock",       Napi::Function::New(env, Timeline_MovePatternBlock));
-    exports.Set("timeline_resizePatternBlock",     Napi::Function::New(env, Timeline_ResizePatternBlock));
-    exports.Set("timeline_resizePatternBlockLeft", Napi::Function::New(env, Timeline_ResizePatternBlockLeft));
-    exports.Set("timeline_setPatternBlockLoop",    Napi::Function::New(env, Timeline_SetPatternBlockLoop));
-    exports.Set("timeline_addNote",                Napi::Function::New(env, Timeline_AddNote));
-    exports.Set("timeline_removeNote",             Napi::Function::New(env, Timeline_RemoveNote));
-    exports.Set("timeline_moveNote",               Napi::Function::New(env, Timeline_MoveNote));
+    // The region / pattern / pattern-block / single-note pass-throughs and
+    // fsc_parse come from the manifest now (XlethRpcExports.inc, S1 slice 4).
+    // Only the batch ops and previewNote (preload default) stay hand-written.
     exports.Set("timeline_moveNotesBatch",         Napi::Function::New(env, Timeline_MoveNotesBatch));
     exports.Set("timeline_addNotesBatch",          Napi::Function::New(env, Timeline_AddNotesBatch));
-    exports.Set("fsc_parse",                       Napi::Function::New(env, Fsc_Parse));
     exports.Set("timeline_quantizeClipsBatch",     Napi::Function::New(env, Timeline_QuantizeClipsBatch));
     exports.Set("timeline_resizeNotesBatch",        Napi::Function::New(env, Timeline_ResizeNotesBatch));
-    exports.Set("timeline_resizeNote",             Napi::Function::New(env, Timeline_ResizeNote));
-    exports.Set("timeline_setNoteVelocity",        Napi::Function::New(env, Timeline_SetNoteVelocity));
     exports.Set("timeline_previewNote",            Napi::Function::New(env, Timeline_PreviewNote));
-    exports.Set("timeline_previewNoteOff",         Napi::Function::New(env, Timeline_PreviewNoteOff));
-    exports.Set("timeline_previewAllNotesOff",     Napi::Function::New(env, Timeline_PreviewAllNotesOff));
 
     // ── Phase 7 — Preview visibility ────────────────────────────────────────
     exports.Set("preview_setEnabled", Napi::Function::New(env, Preview_SetEnabled));

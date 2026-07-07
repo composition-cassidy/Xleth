@@ -82,9 +82,8 @@ window.xleth = ({
   // ── FL Studio Score (.fsc) parsing ─────────────────────────────────────────
   // Pure read-only parse: returns neutral note data (no Timeline mutation).
   // Pair with timeline.addNotesBatch to actually insert the parsed notes.
-  fsc: {
-    parse: (filePath) => invoke('xleth:fsc:parse', filePath),
-  },
+  // fsc.parse comes from the RPC manifest (attachRpcWrappers below, S1 slice 4);
+  // attachRpcWrappers creates the fsc.* namespace on demand.
 
   // Electron 41 removed File.path. Resolve a dropped/selected File to its
   // absolute filesystem path synchronously via webUtils.
@@ -135,18 +134,16 @@ window.xleth = ({
   // ── Phase 1: timeline ─────────────────────────────────────────────────────
   timeline: {
     // getBPM / setBPM / getTempoLocked and the timeline query + single-entity
-    // mutation surface come from the RPC manifest (attachRpcWrappers below).
-    // Still hand-written here: addClipsBatch / spliceClipsAtPlayhead (batch ops)
-    // and autoTrimClip (its thresholdDb=-54 default would be lost by the generic
-    // manifest wrapper). See docs/rpc-manifest.md.
+    // mutation surface come from the RPC manifest (attachRpcWrappers below). The
+    // region / syllable / pattern / pattern-block / single-note pass-throughs and
+    // fsc.parse also come from the manifest now (S1 slice 4). Still hand-written
+    // here: addClipsBatch / spliceClipsAtPlayhead and the *Batch note ops (batch
+    // ops), plus autoTrimClip (thresholdDb=-54) and previewNote (velocity=0.8) —
+    // their preload defaults would be lost by the generic manifest wrapper.
+    // See docs/rpc-manifest.md.
     addClipsBatch:    (clips)               => invoke('xleth:timeline:addClipsBatch', clips),
     autoTrimClip:            (id, thresholdDb=-54) => invoke('xleth:timeline:autoTrimClip', id, thresholdDb),
     spliceClipsAtPlayhead:   (entries)             => invoke('xleth:timeline:spliceClipsAtPlayhead', entries),
-    addRegion:        (region)              => invoke('xleth:timeline:addRegion', region),
-    modifyRegion:     (id, region)          => invoke('xleth:timeline:modifyRegion', id, region),
-    setSyllables:     (id, syllables)       => invoke('xleth:timeline:setSyllables', id, syllables),
-    getSyllables:     (id)                  => invoke('xleth:timeline:getSyllables', id),
-    removeRegion:     (id)                  => invoke('xleth:timeline:removeRegion', id),
     getGridLayout:       ()                              => invoke('xleth:timeline:getGridLayout'),
     setGridLayout:       (layout)                        => invoke('xleth:timeline:setGridLayout', layout),
     assignTrackToGrid:   (trackId, gx, gy, sx, sy)       => invoke('xleth:timeline:assignTrackToGrid', trackId, gx, gy, sx, sy),
@@ -166,34 +163,15 @@ window.xleth = ({
       if (!l) return;
       return invoke('xleth:timeline:setGridLayout', { ...l, gapScale: v });
     },
-    // ── Patterns ─────────────────────────────────────────────────────────
-    addPattern:             (info)                              => invoke('xleth:timeline:addPattern', info),
-    getPattern:             (id)                                => invoke('xleth:timeline:getPattern', id),
-    getAllPatterns:         ()                                  => invoke('xleth:timeline:getAllPatterns'),
-    removePattern:          (id)                                => invoke('xleth:timeline:removePattern', id),
-    updateSamplerSettings:  (regionId, settings)                => invoke('xleth:timeline:updateSamplerSettings', regionId, settings),
-    getPatternAudioInfo:    (id)                                => invoke('xleth:timeline:getPatternAudioInfo', id),
-    getRegionAudioInfo:      (regionId)                          => invoke('xleth:timeline:getRegionAudioInfo', regionId),
-    // Pipeline B (getRegionWaveformPeaks) retired — use waveform.getRegionPeaks instead
-    addPatternBlock:        (block)                             => invoke('xleth:timeline:addPatternBlock', block),
-    getPatternBlocks:       ()                                  => invoke('xleth:timeline:getPatternBlocks'),
-    removePatternBlock:     (id)                                => invoke('xleth:timeline:removePatternBlock', id),
-    movePatternBlock:       (id, trackId, posTicks)             => invoke('xleth:timeline:movePatternBlock', id, trackId, posTicks),
-    resizePatternBlock:     (id, durTicks)                      => invoke('xleth:timeline:resizePatternBlock', id, durTicks),
-    resizePatternBlockLeft: (id, posTicks, durTicks, offTicks)  => invoke('xleth:timeline:resizePatternBlockLeft', id, posTicks, durTicks, offTicks),
-    setPatternBlockLoop:    (id, enabled)                       => invoke('xleth:timeline:setPatternBlockLoop', id, enabled),
-    addNote:                (patternId, note)                   => invoke('xleth:timeline:addNote', patternId, note),
-    removeNote:             (patternId, noteId)                 => invoke('xleth:timeline:removeNote', patternId, noteId),
-    moveNote:               (patternId, noteId, posTicks, pitch)=> invoke('xleth:timeline:moveNote', patternId, noteId, posTicks, pitch),
+    // ── Patterns / regions / notes ───────────────────────────────────────
+    // The region, pattern, pattern-block and single-note pass-throughs (and
+    // fsc.parse) come from the RPC manifest (attachRpcWrappers below, S1 slice
+    // 4). Only the batch ops and previewNote (velocity=0.8 default) stay here.
     moveNotesBatch:         (patternId, moves)                  => invoke('xleth:timeline:moveNotesBatch', patternId, moves),
     addNotesBatch:          (patternId, notes)                  => invoke('xleth:timeline:addNotesBatch', patternId, notes),
     quantizeClipsBatch:     (specs)                             => invoke('xleth:timeline:quantizeClipsBatch', specs),
     resizeNotesBatch:       (patternId, resizes)                => invoke('xleth:timeline:resizeNotesBatch', patternId, resizes),
-    resizeNote:             (patternId, noteId, durTicks)       => invoke('xleth:timeline:resizeNote', patternId, noteId, durTicks),
-    setNoteVelocity:        (patternId, noteId, velocity)       => invoke('xleth:timeline:setNoteVelocity', patternId, noteId, velocity),
     previewNote:            (patternId, pitch, velocity=0.8)    => invoke('xleth:timeline:previewNote', patternId, pitch, velocity),
-    previewNoteOff:         (patternId, pitch)                  => invoke('xleth:timeline:previewNoteOff', patternId, pitch),
-    previewAllNotesOff:     (regionId)                          => invoke('xleth:timeline:previewAllNotesOff', regionId),
   },
 
   // ── Phase 1: undo ─────────────────────────────────────────────────────────
