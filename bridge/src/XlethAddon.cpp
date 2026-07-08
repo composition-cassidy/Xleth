@@ -497,46 +497,6 @@ Napi::Value Audio_RevertRegionAudio(const Napi::CallbackInfo& info)
     return dispatchToService(info, "audio_revertRegionAudio");
 }
 
-Napi::Value Audio_AddEffect(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_addEffect");
-}
-
-Napi::Value Audio_RemoveEffect(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_removeEffect");
-}
-
-Napi::Value Audio_MoveEffect(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_moveEffect");
-}
-
-Napi::Value Audio_SetEffectBypass(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setEffectBypass");
-}
-
-Napi::Value Audio_GetEffectChain(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getEffectChain");
-}
-
-Napi::Value Audio_GetEffectParameters(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getEffectParameters");
-}
-
-Napi::Value Audio_SetEffectParameter(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setEffectParameter");
-}
-
-Napi::Value Audio_GetEffectMeter(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getEffectMeter");
-}
-
 Napi::Value Audio_SetEffectVisualizationEnabled(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "audio_setEffectVisualizationEnabled");
@@ -545,106 +505,6 @@ Napi::Value Audio_SetEffectVisualizationEnabled(const Napi::CallbackInfo& info)
 Napi::Value Audio_DrainEffectVizFrames(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "audio_drainEffectVizFrames");
-}
-
-Napi::Value Audio_AddMasterEffect(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_addMasterEffect");
-}
-
-Napi::Value Audio_RemoveMasterEffect(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_removeMasterEffect");
-}
-
-Napi::Value Audio_MoveMasterEffect(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_moveMasterEffect");
-}
-
-Napi::Value Audio_SetMasterEffectBypass(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setMasterEffectBypass");
-}
-
-Napi::Value Audio_GetMasterEffectChain(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getMasterEffectChain");
-}
-
-Napi::Value Audio_EQ_AddBand(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_eqAddBand");
-}
-
-Napi::Value Audio_EQ_RemoveBand(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_eqRemoveBand");
-}
-
-Napi::Value Audio_EQ_SetBandParam(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_eqSetBandParam");
-}
-
-Napi::Value Audio_EQ_GetResponseCurve(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_eqGetResponseCurve");
-}
-
-Napi::Value Audio_EQ_GetSpectrumData(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_eqGetSpectrumData");
-}
-
-Napi::Value Audio_EQ_SetPreSpectrum(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_eqSetPreSpectrum");
-}
-
-Napi::Value Audio_EQ_GetBands(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_eqGetBands");
-}
-
-Napi::Value Audio_EQ_GetBandGR(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_eqGetBandGR");
-}
-
-Napi::Value Audio_EQ_SetGlobalParam(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_eqSetGlobalParam");
-}
-
-Napi::Value Audio_EQ_GetGlobalParams(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_eqGetGlobalParams");
-}
-
-Napi::Value Audio_EQ_GetSampleRate(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_eqGetSampleRate");
-}
-
-Napi::Value Audio_WS_GetCurvePoints(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_wsGetCurvePoints");
-}
-
-Napi::Value Audio_WS_SetCurvePoints(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_wsSetCurvePoints");
-}
-
-Napi::Value Audio_WS_SetPreset(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_wsSetPreset");
-}
-
-Napi::Value Audio_SmartBalance_GetDebug(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_smartBalanceGetDebug");
 }
 
 Napi::Value Audio_AddConnection(const Napi::CallbackInfo& info)
@@ -1099,45 +959,13 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("audio_probeAudioDuration", Napi::Function::New(env, Audio_ProbeAudioDuration));
     exports.Set("audio_revertRegionAudio", Napi::Function::New(env, Audio_RevertRegionAudio));
 
-    // ── P3 — Effect chain ───────────────────────────────────────────────────
-    exports.Set("audio_addEffect",            Napi::Function::New(env, Audio_AddEffect));
-    exports.Set("audio_removeEffect",         Napi::Function::New(env, Audio_RemoveEffect));
-    exports.Set("audio_moveEffect",           Napi::Function::New(env, Audio_MoveEffect));
-    exports.Set("audio_setEffectBypass",      Napi::Function::New(env, Audio_SetEffectBypass));
-    exports.Set("audio_getEffectChain",       Napi::Function::New(env, Audio_GetEffectChain));
-    exports.Set("audio_getEffectParameters",  Napi::Function::New(env, Audio_GetEffectParameters));
-    exports.Set("audio_setEffectParameter",   Napi::Function::New(env, Audio_SetEffectParameter));
-    exports.Set("audio_getEffectMeter",       Napi::Function::New(env, Audio_GetEffectMeter));
+    // ── P3 — Effect visualization (dynamics; binary payload) ────────────────
+    // The rest of the effect chain / EQ / Waveshaper / SmartBalance surface is
+    // manifest-generated (XlethRpcExports.inc, AUDIT.md S1 slice 6).
     exports.Set("audio_setEffectVisualizationEnabled",
                 Napi::Function::New(env, Audio_SetEffectVisualizationEnabled));
     exports.Set("audio_drainEffectVizFrames",
                 Napi::Function::New(env, Audio_DrainEffectVizFrames));
-    exports.Set("audio_addMasterEffect",      Napi::Function::New(env, Audio_AddMasterEffect));
-    exports.Set("audio_removeMasterEffect",   Napi::Function::New(env, Audio_RemoveMasterEffect));
-    exports.Set("audio_moveMasterEffect",     Napi::Function::New(env, Audio_MoveMasterEffect));
-    exports.Set("audio_setMasterEffectBypass", Napi::Function::New(env, Audio_SetMasterEffectBypass));
-    exports.Set("audio_getMasterEffectChain", Napi::Function::New(env, Audio_GetMasterEffectChain));
-
-    // ── EQ-specific ────────────────────────────────────────────────────────
-    exports.Set("audio_eqAddBand",          Napi::Function::New(env, Audio_EQ_AddBand));
-    exports.Set("audio_eqRemoveBand",       Napi::Function::New(env, Audio_EQ_RemoveBand));
-    exports.Set("audio_eqSetBandParam",     Napi::Function::New(env, Audio_EQ_SetBandParam));
-    exports.Set("audio_eqGetResponseCurve", Napi::Function::New(env, Audio_EQ_GetResponseCurve));
-    exports.Set("audio_eqGetSpectrumData",  Napi::Function::New(env, Audio_EQ_GetSpectrumData));
-    exports.Set("audio_eqSetPreSpectrum",   Napi::Function::New(env, Audio_EQ_SetPreSpectrum));
-    exports.Set("audio_eqGetBands",         Napi::Function::New(env, Audio_EQ_GetBands));
-    exports.Set("audio_eqGetBandGR",        Napi::Function::New(env, Audio_EQ_GetBandGR));
-    exports.Set("audio_eqSetGlobalParam",   Napi::Function::New(env, Audio_EQ_SetGlobalParam));
-    exports.Set("audio_eqGetGlobalParams",  Napi::Function::New(env, Audio_EQ_GetGlobalParams));
-    exports.Set("audio_eqGetSampleRate",   Napi::Function::New(env, Audio_EQ_GetSampleRate));
-
-    // ── Waveshaper-specific ────────────────────────────────────────────────
-    exports.Set("audio_wsGetCurvePoints", Napi::Function::New(env, Audio_WS_GetCurvePoints));
-    exports.Set("audio_wsSetCurvePoints", Napi::Function::New(env, Audio_WS_SetCurvePoints));
-    exports.Set("audio_wsSetPreset",      Napi::Function::New(env, Audio_WS_SetPreset));
-
-    // ── SmartBalance-specific ──────────────────────────────────────────────
-    exports.Set("audio_smartBalanceGetDebug", Napi::Function::New(env, Audio_SmartBalance_GetDebug));
 
     // ── Graph-mode routing ──────────────────────────────────────────────────
     exports.Set("audio_addConnection",           Napi::Function::New(env, Audio_AddConnection));

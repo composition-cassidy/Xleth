@@ -24,9 +24,21 @@
 //              EXPLICIT in ui/addon-worker.js (frames as Buffer sends, ArrayBuffer
 //              conversion); this field only declares which methods those explicit
 //              branches apply to. Do not genericize the binary paths.
+//   graph    — (optional) 'track' | 'master'. Declares a graph mutation: after
+//              the worker call resolves, main.js broadcasts xleth:graph:changed
+//              to every renderer, keyed by trackKey (first IPC arg is the
+//              trackId) or masterKey ('master'). rpc-registry.js maps the value
+//              to the canonical key fn (exported by electron-main/effects.js)
+//              and registers through main.js's graphHandler instead of plain
+//              safeHandler. Like `binary`, this is declarative metadata — the
+//              broadcast logic itself stays in main.js, unchanged. Absent
+//              (or null) means plain pass-through.
 //
 // Methods with per-call logic in main.js (arg fixups, dialogs, progress
-// intervals) do NOT belong here — only pure pass-throughs migrate.
+// intervals) do NOT belong here — only pure pass-throughs migrate. The one
+// sanctioned exception is the `graph` broadcast above: it is a fixed,
+// declarative post-call side effect shared by every chain/wire mutation, not
+// per-method business logic.
 
 const METHODS = [
   {
@@ -1149,11 +1161,261 @@ const METHODS = [
     returns: 'value',
     binary: null,
   },
+
+  // ── Effects: chain + parameters + EQ/SmartBalance/Waveshaper (AUDIT.md S1 slice 6) ──
+  // From ui/electron-main/effects.js. The 8 chain mutations (add/remove/move/
+  // bypass, track + master) carry `graph: 'track' | 'master'` — they broadcast
+  // xleth:graph:changed after the call resolves (see the field doc above); the
+  // rest are plain pass-throughs. Every returns shape mirrors the removed hand
+  // dispatch line verbatim (all 28 were `return Handler(info).raw()` = value).
+  // EXCLUDED and left hand-written in effects.js:
+  //   * setEffectVisualizationEnabled — its main-process handler coerces the
+  //     arg (!!enabled); the generic passthrough would drop that (arg-fixup
+  //     disqualifier, setRealtimeDiagnosticsEnabled class).
+  //   * drainEffectVizFrames — coerces maxBuckets|0 AND returns the dynamics-viz
+  //     binary payload ({ frames: ArrayBuffer }); stays fully explicit.
+  {
+    method: 'audio_addEffect',
+    channels: ['xleth:audio:addEffect'],
+    api: { 'audio.addEffect': 'xleth:audio:addEffect' },
+    handler: 'Audio_AddEffect',
+    returns: 'value',
+    binary: null,
+    graph: 'track',
+  },
+  {
+    method: 'audio_removeEffect',
+    channels: ['xleth:audio:removeEffect'],
+    api: { 'audio.removeEffect': 'xleth:audio:removeEffect' },
+    handler: 'Audio_RemoveEffect',
+    returns: 'value',
+    binary: null,
+    graph: 'track',
+  },
+  {
+    method: 'audio_moveEffect',
+    channels: ['xleth:audio:moveEffect'],
+    api: { 'audio.moveEffect': 'xleth:audio:moveEffect' },
+    handler: 'Audio_MoveEffect',
+    returns: 'value',
+    binary: null,
+    graph: 'track',
+  },
+  {
+    method: 'audio_setEffectBypass',
+    channels: ['xleth:audio:setEffectBypass'],
+    api: { 'audio.setEffectBypass': 'xleth:audio:setEffectBypass' },
+    handler: 'Audio_SetEffectBypass',
+    returns: 'value',
+    binary: null,
+    graph: 'track',
+  },
+  {
+    method: 'audio_addMasterEffect',
+    channels: ['xleth:audio:addMasterEffect'],
+    api: { 'audio.addMasterEffect': 'xleth:audio:addMasterEffect' },
+    handler: 'Audio_AddMasterEffect',
+    returns: 'value',
+    binary: null,
+    graph: 'master',
+  },
+  {
+    method: 'audio_removeMasterEffect',
+    channels: ['xleth:audio:removeMasterEffect'],
+    api: { 'audio.removeMasterEffect': 'xleth:audio:removeMasterEffect' },
+    handler: 'Audio_RemoveMasterEffect',
+    returns: 'value',
+    binary: null,
+    graph: 'master',
+  },
+  {
+    method: 'audio_moveMasterEffect',
+    channels: ['xleth:audio:moveMasterEffect'],
+    api: { 'audio.moveMasterEffect': 'xleth:audio:moveMasterEffect' },
+    handler: 'Audio_MoveMasterEffect',
+    returns: 'value',
+    binary: null,
+    graph: 'master',
+  },
+  {
+    method: 'audio_setMasterEffectBypass',
+    channels: ['xleth:audio:setMasterEffectBypass'],
+    api: { 'audio.setMasterEffectBypass': 'xleth:audio:setMasterEffectBypass' },
+    handler: 'Audio_SetMasterEffectBypass',
+    returns: 'value',
+    binary: null,
+    graph: 'master',
+  },
+  {
+    method: 'audio_getEffectChain',
+    channels: ['xleth:audio:getEffectChain'],
+    api: { 'audio.getEffectChain': 'xleth:audio:getEffectChain' },
+    handler: 'Audio_GetEffectChain',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getMasterEffectChain',
+    channels: ['xleth:audio:getMasterEffectChain'],
+    api: { 'audio.getMasterEffectChain': 'xleth:audio:getMasterEffectChain' },
+    handler: 'Audio_GetMasterEffectChain',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getEffectParameters',
+    channels: ['xleth:audio:getEffectParameters'],
+    api: { 'audio.getEffectParameters': 'xleth:audio:getEffectParameters' },
+    handler: 'Audio_GetEffectParameters',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_setEffectParameter',
+    channels: ['xleth:audio:setEffectParameter'],
+    api: { 'audio.setEffectParameter': 'xleth:audio:setEffectParameter' },
+    handler: 'Audio_SetEffectParameter',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getEffectMeter',
+    channels: ['xleth:audio:getEffectMeter'],
+    api: { 'audio.getEffectMeter': 'xleth:audio:getEffectMeter' },
+    handler: 'Audio_GetEffectMeter',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_eqAddBand',
+    channels: ['xleth:audio:eqAddBand'],
+    api: { 'audio.eqAddBand': 'xleth:audio:eqAddBand' },
+    handler: 'Audio_EQ_AddBand',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_eqRemoveBand',
+    channels: ['xleth:audio:eqRemoveBand'],
+    api: { 'audio.eqRemoveBand': 'xleth:audio:eqRemoveBand' },
+    handler: 'Audio_EQ_RemoveBand',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_eqSetBandParam',
+    channels: ['xleth:audio:eqSetBandParam'],
+    api: { 'audio.eqSetBandParam': 'xleth:audio:eqSetBandParam' },
+    handler: 'Audio_EQ_SetBandParam',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_eqGetResponseCurve',
+    channels: ['xleth:audio:eqGetResponseCurve'],
+    api: { 'audio.eqGetResponseCurve': 'xleth:audio:eqGetResponseCurve' },
+    handler: 'Audio_EQ_GetResponseCurve',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_eqGetSpectrumData',
+    channels: ['xleth:audio:eqGetSpectrumData'],
+    api: { 'audio.eqGetSpectrumData': 'xleth:audio:eqGetSpectrumData' },
+    handler: 'Audio_EQ_GetSpectrumData',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_eqSetPreSpectrum',
+    channels: ['xleth:audio:eqSetPreSpectrum'],
+    api: { 'audio.eqSetPreSpectrum': 'xleth:audio:eqSetPreSpectrum' },
+    handler: 'Audio_EQ_SetPreSpectrum',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_eqGetBands',
+    channels: ['xleth:audio:eqGetBands'],
+    api: { 'audio.eqGetBands': 'xleth:audio:eqGetBands' },
+    handler: 'Audio_EQ_GetBands',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_eqGetBandGR',
+    channels: ['xleth:audio:eqGetBandGR'],
+    api: { 'audio.eqGetBandGR': 'xleth:audio:eqGetBandGR' },
+    handler: 'Audio_EQ_GetBandGR',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_eqSetGlobalParam',
+    channels: ['xleth:audio:eqSetGlobalParam'],
+    api: { 'audio.eqSetGlobalParam': 'xleth:audio:eqSetGlobalParam' },
+    handler: 'Audio_EQ_SetGlobalParam',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_eqGetGlobalParams',
+    channels: ['xleth:audio:eqGetGlobalParams'],
+    api: { 'audio.eqGetGlobalParams': 'xleth:audio:eqGetGlobalParams' },
+    handler: 'Audio_EQ_GetGlobalParams',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_eqGetSampleRate',
+    channels: ['xleth:audio:eqGetSampleRate'],
+    api: { 'audio.eqGetSampleRate': 'xleth:audio:eqGetSampleRate' },
+    handler: 'Audio_EQ_GetSampleRate',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_smartBalanceGetDebug',
+    channels: ['xleth:audio:smartBalanceGetDebug'],
+    api: { 'audio.smartBalanceGetDebug': 'xleth:audio:smartBalanceGetDebug' },
+    handler: 'Audio_SmartBalance_GetDebug',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_wsGetCurvePoints',
+    channels: ['xleth:audio:wsGetCurvePoints'],
+    api: { 'audio.wsGetCurvePoints': 'xleth:audio:wsGetCurvePoints' },
+    handler: 'Audio_WS_GetCurvePoints',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_wsSetCurvePoints',
+    channels: ['xleth:audio:wsSetCurvePoints'],
+    api: { 'audio.wsSetCurvePoints': 'xleth:audio:wsSetCurvePoints' },
+    handler: 'Audio_WS_SetCurvePoints',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_wsSetPreset',
+    channels: ['xleth:audio:wsSetPreset'],
+    api: { 'audio.wsSetPreset': 'xleth:audio:wsSetPreset' },
+    handler: 'Audio_WS_SetPreset',
+    returns: 'value',
+    binary: null,
+  },
 ];
 
 // Binary kinds addon-worker.js knows how to transport. A manifest entry with
 // any other value is a wiring mistake, caught by validateManifest().
 const KNOWN_BINARY_KINDS = new Set(['frame', 'midiImport']);
+
+// Graph-broadcast keys rpc-registry.js knows how to map to a key function
+// (electron-main/effects.js's trackKey / masterKey). The field is optional —
+// absent or null means plain pass-through, no broadcast.
+const KNOWN_GRAPH_KEYS = new Set(['track', 'master']);
 
 function validateManifest() {
   const methods = new Set();
@@ -1188,6 +1450,8 @@ function validateManifest() {
       throw new Error(`rpc-manifest: '${m.method}' returns must be 'value' or 'void'`);
     if (m.binary !== null && !KNOWN_BINARY_KINDS.has(m.binary))
       throw new Error(`rpc-manifest: '${m.method}' has unknown binary kind '${m.binary}'`);
+    if (m.graph !== undefined && m.graph !== null && !KNOWN_GRAPH_KEYS.has(m.graph))
+      throw new Error(`rpc-manifest: '${m.method}' has unknown graph key '${m.graph}'`);
   }
   return true;
 }

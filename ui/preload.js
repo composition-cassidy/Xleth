@@ -246,44 +246,15 @@ window.xleth = ({
     revertRegionAudio:   (regionId)             => invoke('xleth:audio:revertRegionAudio', regionId),
     loadRegionAudio:     (regionId)             => invoke('xleth:audio:loadRegionAudio', regionId),
     probeAudioDuration:  (filePath)             => invoke('xleth:audio:probeAudioDuration', filePath),
-    // ── P3: Effect Chain ────────────────────────────────────────────────
-    addEffect:            (trackId, pluginId, position) => invoke('xleth:audio:addEffect', trackId, pluginId, position),
-    removeEffect:         (trackId, nodeId)             => invoke('xleth:audio:removeEffect', trackId, nodeId),
-    moveEffect:           (trackId, nodeId, newPosition) => invoke('xleth:audio:moveEffect', trackId, nodeId, newPosition),
-    setEffectBypass:      (trackId, nodeId, bypassed)   => invoke('xleth:audio:setEffectBypass', trackId, nodeId, bypassed),
-    getEffectChain:       (trackId)                     => invoke('xleth:audio:getEffectChain', trackId),
-    addMasterEffect:      (pluginId, position)          => invoke('xleth:audio:addMasterEffect', pluginId, position),
-    removeMasterEffect:   (nodeId)                      => invoke('xleth:audio:removeMasterEffect', nodeId),
-    moveMasterEffect:     (nodeId, newPosition)         => invoke('xleth:audio:moveMasterEffect', nodeId, newPosition),
-    setMasterEffectBypass:(nodeId, bypassed)             => invoke('xleth:audio:setMasterEffectBypass', nodeId, bypassed),
-    getMasterEffectChain: ()                             => invoke('xleth:audio:getMasterEffectChain'),
-    // ── Generic effect parameter / meter access ──────────────────────
-    getEffectParameters: (trackId, nodeId)                    => invoke('xleth:audio:getEffectParameters', trackId, nodeId),
-    setEffectParameter:  (trackId, nodeId, paramId, value)    => invoke('xleth:audio:setEffectParameter',  trackId, nodeId, paramId, value),
-    getEffectMeter:      (trackId, nodeId)                    => invoke('xleth:audio:getEffectMeter',      trackId, nodeId),
+    // ── P3: Effect Chain + parameter/meter + EQ/SmartBalance/Waveshaper ──
+    // Migrated to ui/rpc-manifest.js (AUDIT.md S1 slice 6) — attachRpcWrappers
+    // adds them to this namespace. Only the dynamics-viz pair stays literal:
+    // its main-process handlers coerce args (!!enabled / maxBuckets|0).
     // ── Effect visualization (dynamics; binary ArrayBuffer payload) ─
     setEffectVisualizationEnabled: (trackId, nodeId, enabled) =>
       invoke('xleth:audio:setEffectVisualizationEnabled', trackId, nodeId, enabled),
     drainEffectVizFrames:          (trackId, nodeId, maxBuckets) =>
       invoke('xleth:audio:drainEffectVizFrames', trackId, nodeId, maxBuckets),
-    // ── EQ-specific ─────────────────────────────────────────────────
-    eqAddBand:          (trackId, nodeId)                          => invoke('xleth:audio:eqAddBand', trackId, nodeId),
-    eqRemoveBand:       (trackId, nodeId, bandIndex)               => invoke('xleth:audio:eqRemoveBand', trackId, nodeId, bandIndex),
-    eqSetBandParam:     (trackId, nodeId, bandIndex, paramName, v) => invoke('xleth:audio:eqSetBandParam', trackId, nodeId, bandIndex, paramName, v),
-    eqGetResponseCurve: (trackId, nodeId)                          => invoke('xleth:audio:eqGetResponseCurve', trackId, nodeId),
-    eqGetSpectrumData:  (trackId, nodeId)                          => invoke('xleth:audio:eqGetSpectrumData', trackId, nodeId),
-    eqSetPreSpectrum:   (trackId, nodeId, enabled)                 => invoke('xleth:audio:eqSetPreSpectrum', trackId, nodeId, enabled),
-    eqGetBands:         (trackId, nodeId)                          => invoke('xleth:audio:eqGetBands', trackId, nodeId),
-    eqGetBandGR:        (trackId, nodeId)                          => invoke('xleth:audio:eqGetBandGR', trackId, nodeId),
-    eqSetGlobalParam:   (trackId, nodeId, paramName, value)        => invoke('xleth:audio:eqSetGlobalParam', trackId, nodeId, paramName, value),
-    eqGetGlobalParams:  (trackId, nodeId)                          => invoke('xleth:audio:eqGetGlobalParams', trackId, nodeId),
-    eqGetSampleRate:    (trackId, nodeId)                          => invoke('xleth:audio:eqGetSampleRate', trackId, nodeId),
-    // ── SmartBalance-specific ───────────────────────────────────────
-    smartBalanceGetDebug: (trackId, nodeId)                         => invoke('xleth:audio:smartBalanceGetDebug', trackId, nodeId),
-    // ── Waveshaper-specific ──────────────────────────────────────────
-    wsGetCurvePoints:   (trackId, nodeId)                          => invoke('xleth:audio:wsGetCurvePoints', trackId, nodeId),
-    wsSetCurvePoints:   (trackId, nodeId, pointsJSON)              => invoke('xleth:audio:wsSetCurvePoints', trackId, nodeId, pointsJSON),
-    wsSetPreset:        (trackId, nodeId, presetIndex)             => invoke('xleth:audio:wsSetPreset', trackId, nodeId, presetIndex),
     // ── Graph-mode routing ────────────────────────────────────────────
     addConnection:          (trackId, srcId, dstId)        => invoke('xleth:audio:addConnection', trackId, srcId, dstId),
     removeConnection:       (trackId, srcId, dstId)        => invoke('xleth:audio:removeConnection', trackId, srcId, dstId),

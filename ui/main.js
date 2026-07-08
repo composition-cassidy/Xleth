@@ -99,13 +99,14 @@ transportHandlers.init({ safeHandler });
 // per-family parameter access (generic, EQ, SmartBalance, Waveshaper, dynamics
 // visualization) and graph-mode routing incl. graph-owned effect instances
 // (FXG.3-b) moved verbatim to ui/electron-main/. Channel names and behavior
-// unchanged. Chain/wire mutations broadcast xleth:graph:changed, so effects.js
-// and effects-graph.js take graphHandler alongside safeHandler.
+// unchanged. Wire mutations broadcast xleth:graph:changed, so effects-graph.js
+// takes graphHandler alongside safeHandler; effects.js's chain mutations now
+// broadcast via their manifest `graph:` entries (AUDIT.md S1 slice 6).
 const audioHandlers = require('./electron-main/audio');
 const effectsHandlers = require('./electron-main/effects');
 const effectsGraphHandlers = require('./electron-main/effects-graph');
 audioHandlers.init({ safeHandler });
-effectsHandlers.init({ safeHandler, graphHandler });
+effectsHandlers.init({ safeHandler });
 effectsGraphHandlers.init({ safeHandler, graphHandler });
 
 // ── Extracted handler domains: Phase 0 compat / launchers / preview / patterns /
@@ -129,10 +130,11 @@ diagnosticsHandlers.init({ safeHandler, getWin: () => win, log });
 
 // ── Manifest-driven RPC handlers (AUDIT.md S1) ─────────────────────────────────
 // Pure pass-through channels declared once in ui/rpc-manifest.js; hand-written
-// registrations are deleted from the domain modules as methods migrate.
-// See docs/rpc-manifest.md.
+// registrations are deleted from the domain modules as methods migrate. Entries
+// declaring `graph: 'track' | 'master'` register through graphHandler (broadcast
+// xleth:graph:changed after the mutation). See docs/rpc-manifest.md.
 const rpcRegistry = require('./electron-main/rpc-registry');
-rpcRegistry.init({ safeHandler });
+rpcRegistry.init({ safeHandler, graphHandler });
 
 let workspaceBackdropCapability = null;
 let workspaceBackdropState = {
