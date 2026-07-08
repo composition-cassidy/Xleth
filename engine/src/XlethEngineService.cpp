@@ -15469,7 +15469,6 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
 
     if (method == "initialize") return Initialize(info).raw();
     if (method == "shutdown") { Shutdown(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "loadSample") return LoadSample(info).raw();
     if (method == "triggerSample") { TriggerSample(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "loadVideo") return LoadVideo(info).raw();
     if (method == "getVideoDuration") return GetVideoDuration(info).raw();
@@ -15521,19 +15520,14 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     if (method == "engine_getGlobalStretchMethod") return Engine_GetGlobalStretchMethod(info).raw();
     if (method == "engine_setGlobalFormantPreserve") { Engine_SetGlobalFormantPreserve(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "engine_getGlobalFormantPreserve") return Engine_GetGlobalFormantPreserve(info).raw();
-    if (method == "audio_mapRegionToSample") { Audio_MapRegionToSample(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "audio_loadSourceRegion") return Audio_LoadSourceRegion(info).raw();
-    if (method == "audio_getOutputDevices") return Audio_GetOutputDevices(info).raw();
-    if (method == "audio_getCurrentOutputDevice") return Audio_GetCurrentOutputDevice(info).raw();
-    if (method == "audio_setOutputDevice") return Audio_SetOutputDevice(info).raw();
-    if (method == "audio_getMasterPeak") return Audio_GetMasterPeak(info).raw();
-    if (method == "audio_getTrackPeak") return Audio_GetTrackPeak(info).raw();
-    if (method == "audio_getAllPeaks") return Audio_GetAllPeaks(info).raw();
+    // Most audio pass-throughs (loadSample, mapRegionToSample, loadSourceRegion,
+    // peak meters, realtime-diagnostics reset/get, performance telemetry, mixer
+    // volume/pan/spread + master volume, output-device get/set) dispatch from the
+    // manifest (XlethRpcDispatch.inc, S1 slice 5). Hand-written below: the excluded
+    // setRealtimeDiagnosticsEnabled + captureAudioPerformanceReport, the non-prefixed
+    // getAudioPerformanceTelemetry alias, and the capture lifecycle.
     if (method == "audio_setRealtimeDiagnosticsEnabled") return Audio_SetRealtimeDiagnosticsEnabled(info).raw();
-    if (method == "audio_resetRealtimeDiagnostics") return Audio_ResetRealtimeDiagnostics(info).raw();
-    if (method == "audio_getRealtimeDiagnostics") return Audio_GetRealtimeDiagnostics(info).raw();
     if (method == "getAudioPerformanceTelemetry") return Audio_GetAudioPerformanceTelemetry(info).raw();
-    if (method == "audio_getAudioPerformanceTelemetry") return Audio_GetAudioPerformanceTelemetry(info).raw();
     if (method == "startAudioPerformanceCapture") return Audio_StartAudioPerformanceCapture(info).raw();
     if (method == "audio_startAudioPerformanceCapture") return Audio_StartAudioPerformanceCapture(info).raw();
     if (method == "stopAudioPerformanceCapture") return Audio_StopAudioPerformanceCapture(info).raw();
@@ -15543,10 +15537,6 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     if (method == "captureAudioPerformanceReport") return Audio_CaptureAudioPerformanceReport(info).raw();
     if (method == "audio_captureAudioPerformanceReport") return Audio_CaptureAudioPerformanceReport(info).raw();
     if (method == "audio_setTestDeviceOutputLatencySamplesForDiagnostics") return Audio_SetTestDeviceOutputLatencySamplesForDiagnostics(info).raw();
-    if (method == "audio_setTrackVolume") return Audio_SetTrackVolume(info).raw();
-    if (method == "audio_setTrackPan") return Audio_SetTrackPan(info).raw();
-    if (method == "audio_setTrackSpread") return Audio_SetTrackSpread(info).raw();
-    if (method == "audio_setMasterVolume") return Audio_SetMasterVolume(info).raw();
     if (method == "audio_exportStart") return Audio_ExportStart(info).raw();
     if (method == "audio_exportGetProgress") return Audio_ExportGetProgress(info).raw();
     if (method == "audio_exportCancel") return Audio_ExportCancel(info).raw();

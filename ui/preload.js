@@ -209,23 +209,16 @@ window.xleth = ({
   },
 
   // ── Phase 1: audio ────────────────────────────────────────────────────────
+  // Most audio wrappers (loadSample, mapRegionToSample, loadSourceRegion, peak
+  // meters, realtime-diagnostics reset/get, performance telemetry, mixer
+  // volume/pan/spread + master volume, output-device get/set) come from the RPC
+  // manifest (attachRpcWrappers below, S1 slice 5). Left hand-written here:
+  // setRealtimeDiagnosticsEnabled (coerces !!enabled) and captureAudioPerformanceReport
+  // (main-process supplies a userDataPath outputDir default).
   audio: {
-    loadSample:        (path)               => invoke('xleth:audio:loadSample', path),
     triggerSample:     (id, vel)            => invoke('xleth:trigger', id, vel),
-    mapRegionToSample: (regionId, sampleId) => invoke('xleth:audio:mapRegionToSample', regionId, sampleId),
-    loadSourceRegion:  (filePath, startTime, endTime) => invoke('xleth:audio:loadSourceRegion', filePath, startTime, endTime),
-    getMasterPeak:     ()                   => invoke('xleth:audio:getMasterPeak'),
-    getTrackPeak:      (trackId)            => invoke('xleth:audio:getTrackPeak', trackId),
-    getAllPeaks:        ()                   => invoke('xleth:audio:getAllPeaks'),
     setRealtimeDiagnosticsEnabled: (enabled) => invoke('xleth:audio:setRealtimeDiagnosticsEnabled', !!enabled),
-    resetRealtimeDiagnostics: ()             => invoke('xleth:audio:resetRealtimeDiagnostics'),
-    getRealtimeDiagnostics: ()               => invoke('xleth:audio:getRealtimeDiagnostics'),
-    getAudioPerformanceTelemetry: ()         => invoke('xleth:audio:getAudioPerformanceTelemetry'),
     captureAudioPerformanceReport: (options) => invoke('xleth:audio:captureAudioPerformanceReport', options || {}),
-    setTrackVolume:    (trackId, vol)       => invoke('xleth:audio:setTrackVolume', trackId, vol),
-    setTrackPan:       (trackId, pan)       => invoke('xleth:audio:setTrackPan',    trackId, pan),
-    setTrackSpread:    (trackId, spread)    => invoke('xleth:audio:setTrackSpread', trackId, spread),
-    setMasterVolume:   (vol)               => invoke('xleth:audio:setMasterVolume', vol),
     // Replaced by WaveformMipmap N-API bindings — see window.xleth.waveform
     // getWaveformData / getWaveformRegion removed (Pipeline A)
     // Sample Selector: detect root note from WAV smpl chunk
@@ -241,10 +234,7 @@ window.xleth = ({
     getSourcePosition: ()          => invoke('xleth:audio:getSourcePosition'),
     isSourcePlaying:   ()          => invoke('xleth:audio:isSourcePlaying'),
     unloadSource:      ()          => invoke('xleth:audio:unloadSource'),
-    // ── Output device selection ───────────────────────────────────────────
-    getOutputDevices:       ()     => invoke('xleth:audio:getOutputDevices'),
-    getCurrentOutputDevice: ()     => invoke('xleth:audio:getCurrentOutputDevice'),
-    setOutputDevice:        (name) => invoke('xleth:audio:setOutputDevice', name),
+    // ── Output device selection (get/set come from the RPC manifest, S1 slice 5) ──
     // ── Audio Export ─────────────────────────────────────────────────────
     exportStart:       (cfg)          => invoke('xleth:audio:exportStart', cfg),
     exportGetProgress: ()             => invoke('xleth:audio:exportGetProgress'),

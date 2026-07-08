@@ -181,11 +181,6 @@ Napi::Value Shutdown(const Napi::CallbackInfo& info)
     return dispatchToService(info, "shutdown");
 }
 
-Napi::Value LoadSample(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "loadSample");
-}
-
 Napi::Value TriggerSample(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "triggerSample");
@@ -399,59 +394,17 @@ Napi::Value Engine_GetGlobalFormantPreserve(const Napi::CallbackInfo& info)
     return dispatchToService(info, "engine_getGlobalFormantPreserve");
 }
 
-Napi::Value Audio_MapRegionToSample(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_mapRegionToSample");
-}
-
-Napi::Value Audio_LoadSourceRegion(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_loadSourceRegion");
-}
-
-Napi::Value Audio_GetOutputDevices(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getOutputDevices");
-}
-
-Napi::Value Audio_GetCurrentOutputDevice(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getCurrentOutputDevice");
-}
-
-Napi::Value Audio_SetOutputDevice(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setOutputDevice");
-}
-
-Napi::Value Audio_GetMasterPeak(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getMasterPeak");
-}
-
-Napi::Value Audio_GetTrackPeak(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getTrackPeak");
-}
-
-Napi::Value Audio_GetAllPeaks(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getAllPeaks");
-}
-
+// Most audio pass-through wrappers (loadSample, mapRegionToSample,
+// loadSourceRegion, peak meters, realtime-diagnostics reset/get, mixer
+// volume/pan/spread + master volume, output-device get/set) are generated from
+// the manifest (XlethRpcExports.inc, AUDIT.md S1 slice 5). The hand-written
+// wrappers that remain: setRealtimeDiagnosticsEnabled (excluded — arg coercion),
+// the shared Audio_GetAudioPerformanceTelemetry (also serves the non-prefixed
+// getAudioPerformanceTelemetry alias), the capture-lifecycle exports, and
+// setTestDeviceOutputLatencySamplesForDiagnostics.
 Napi::Value Audio_SetRealtimeDiagnosticsEnabled(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "audio_setRealtimeDiagnosticsEnabled");
-}
-
-Napi::Value Audio_ResetRealtimeDiagnostics(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_resetRealtimeDiagnostics");
-}
-
-Napi::Value Audio_GetRealtimeDiagnostics(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getRealtimeDiagnostics");
 }
 
 Napi::Value Audio_GetAudioPerformanceTelemetry(const Napi::CallbackInfo& info)
@@ -482,26 +435,6 @@ Napi::Value Audio_CaptureAudioPerformanceReport(const Napi::CallbackInfo& info)
 Napi::Value Audio_SetTestDeviceOutputLatencySamplesForDiagnostics(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "audio_setTestDeviceOutputLatencySamplesForDiagnostics");
-}
-
-Napi::Value Audio_SetTrackVolume(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setTrackVolume");
-}
-
-Napi::Value Audio_SetTrackPan(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setTrackPan");
-}
-
-Napi::Value Audio_SetTrackSpread(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setTrackSpread");
-}
-
-Napi::Value Audio_SetMasterVolume(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setMasterVolume");
 }
 
 Napi::Value Audio_ExportStart(const Napi::CallbackInfo& info)
@@ -1054,7 +987,6 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     // ── Phase 0 (backward-compatible) ───────────────────────────────────────
     exports.Set("initialize",         Napi::Function::New(env, Initialize));
     exports.Set("shutdown",           Napi::Function::New(env, Shutdown));
-    exports.Set("loadSample",         Napi::Function::New(env, LoadSample));
     exports.Set("triggerSample",      Napi::Function::New(env, TriggerSample));
     exports.Set("loadVideo",          Napi::Function::New(env, LoadVideo));
     exports.Set("getVideoDuration",   Napi::Function::New(env, GetVideoDuration));
@@ -1126,23 +1058,15 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("engine_getGlobalFormantPreserve", Napi::Function::New(env, Engine_GetGlobalFormantPreserve));
 
     // ── Phase 1 — Audio / MixEngine ─────────────────────────────────────────
-    exports.Set("audio_mapRegionToSample",  Napi::Function::New(env, Audio_MapRegionToSample));
-    exports.Set("audio_loadSourceRegion",   Napi::Function::New(env, Audio_LoadSourceRegion));
-    exports.Set("audio_getOutputDevices",       Napi::Function::New(env, Audio_GetOutputDevices));
-    exports.Set("audio_getCurrentOutputDevice", Napi::Function::New(env, Audio_GetCurrentOutputDevice));
-    exports.Set("audio_setOutputDevice",        Napi::Function::New(env, Audio_SetOutputDevice));
-    exports.Set("audio_getMasterPeak",      Napi::Function::New(env, Audio_GetMasterPeak));
-    exports.Set("audio_getTrackPeak",      Napi::Function::New(env, Audio_GetTrackPeak));
-    exports.Set("audio_getAllPeaks",       Napi::Function::New(env, Audio_GetAllPeaks));
+    // Pure pass-through exports (loadSample, mapRegionToSample, loadSourceRegion,
+    // peak meters, realtime-diagnostics reset/get, performance telemetry, mixer
+    // volume/pan/spread + master volume, output-device get/set) come from the
+    // manifest (XlethRpcExports.inc, S1 slice 5). Hand-written below: the excluded
+    // setRealtimeDiagnosticsEnabled + captureAudioPerformanceReport, the
+    // non-prefixed getAudioPerformanceTelemetry alias, and the capture lifecycle.
     exports.Set("audio_setRealtimeDiagnosticsEnabled",
                 Napi::Function::New(env, Audio_SetRealtimeDiagnosticsEnabled));
-    exports.Set("audio_resetRealtimeDiagnostics",
-                Napi::Function::New(env, Audio_ResetRealtimeDiagnostics));
-    exports.Set("audio_getRealtimeDiagnostics",
-                Napi::Function::New(env, Audio_GetRealtimeDiagnostics));
     exports.Set("getAudioPerformanceTelemetry",
-                Napi::Function::New(env, Audio_GetAudioPerformanceTelemetry));
-    exports.Set("audio_getAudioPerformanceTelemetry",
                 Napi::Function::New(env, Audio_GetAudioPerformanceTelemetry));
     exports.Set("startAudioPerformanceCapture",
                 Napi::Function::New(env, Audio_StartAudioPerformanceCapture));
@@ -1162,10 +1086,6 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
                 Napi::Function::New(env, Audio_CaptureAudioPerformanceReport));
     exports.Set("audio_setTestDeviceOutputLatencySamplesForDiagnostics",
                 Napi::Function::New(env, Audio_SetTestDeviceOutputLatencySamplesForDiagnostics));
-    exports.Set("audio_setTrackVolume",    Napi::Function::New(env, Audio_SetTrackVolume));
-    exports.Set("audio_setTrackPan",       Napi::Function::New(env, Audio_SetTrackPan));
-    exports.Set("audio_setTrackSpread",    Napi::Function::New(env, Audio_SetTrackSpread));
-    exports.Set("audio_setMasterVolume",   Napi::Function::New(env, Audio_SetMasterVolume));
     exports.Set("audio_exportStart",       Napi::Function::New(env, Audio_ExportStart));
     exports.Set("audio_exportGetProgress", Napi::Function::New(env, Audio_ExportGetProgress));
     exports.Set("audio_exportCancel",      Napi::Function::New(env, Audio_ExportCancel));

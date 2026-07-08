@@ -1000,6 +1000,155 @@ const METHODS = [
     returns: 'value',
     binary: null,
   },
+
+  // ── Audio / MixEngine (AUDIT.md S1 slice 5) ──
+  // Pure engine pass-throughs from ui/electron-main/audio.js: sample loading,
+  // region->sample mapping, peak meters, realtime-diagnostics reset/get,
+  // performance telemetry, mixer volume/pan/spread + master volume, and
+  // output-device get/set. Each returns shape mirrors the removed hand dispatch
+  // line verbatim (setTrackVolume/Pan/Spread/MasterVolume are value: their
+  // engine handlers return JsonApi::Value even though semantically undefined).
+  // EXCLUDED and left hand-written in audio.js:
+  //   * setRealtimeDiagnosticsEnabled — preload (!!enabled) and the main-process
+  //     handler (Boolean(enabled)) both coerce the arg; the generic passthrough
+  //     wrappers would drop that (arg-fixup disqualifier, autoTrimClip class).
+  //   * captureAudioPerformanceReport — its handler injects a userDataPath
+  //     outputDir default (../runtimePaths), not a pure engine round-trip.
+  // loadSample is the Phase-0 unprefixed export (like getFrameRGBA); its single
+  // api path audio.loadSample routes the same worker string. getOutputDevices /
+  // setOutputDevice enumerate/select OS devices inside the C++ engine handler,
+  // which the migration leaves untouched — the JS side is a plain pass-through.
+  // audio_getAudioPerformanceTelemetry: only the prefixed name migrates here; the
+  // non-prefixed getAudioPerformanceTelemetry alias stays hand-written (shared
+  // bridge wrapper + engine branch, same engine handler, equivalent routing).
+  {
+    method: 'loadSample',
+    channels: ['xleth:audio:loadSample'],
+    api: { 'audio.loadSample': 'xleth:audio:loadSample' },
+    handler: 'LoadSample',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_mapRegionToSample',
+    channels: ['xleth:audio:mapRegionToSample'],
+    api: { 'audio.mapRegionToSample': 'xleth:audio:mapRegionToSample' },
+    handler: 'Audio_MapRegionToSample',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'audio_loadSourceRegion',
+    channels: ['xleth:audio:loadSourceRegion'],
+    api: { 'audio.loadSourceRegion': 'xleth:audio:loadSourceRegion' },
+    handler: 'Audio_LoadSourceRegion',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getMasterPeak',
+    channels: ['xleth:audio:getMasterPeak'],
+    api: { 'audio.getMasterPeak': 'xleth:audio:getMasterPeak' },
+    handler: 'Audio_GetMasterPeak',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getTrackPeak',
+    channels: ['xleth:audio:getTrackPeak'],
+    api: { 'audio.getTrackPeak': 'xleth:audio:getTrackPeak' },
+    handler: 'Audio_GetTrackPeak',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getAllPeaks',
+    channels: ['xleth:audio:getAllPeaks'],
+    api: { 'audio.getAllPeaks': 'xleth:audio:getAllPeaks' },
+    handler: 'Audio_GetAllPeaks',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_resetRealtimeDiagnostics',
+    channels: ['xleth:audio:resetRealtimeDiagnostics'],
+    api: { 'audio.resetRealtimeDiagnostics': 'xleth:audio:resetRealtimeDiagnostics' },
+    handler: 'Audio_ResetRealtimeDiagnostics',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getRealtimeDiagnostics',
+    channels: ['xleth:audio:getRealtimeDiagnostics'],
+    api: { 'audio.getRealtimeDiagnostics': 'xleth:audio:getRealtimeDiagnostics' },
+    handler: 'Audio_GetRealtimeDiagnostics',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getAudioPerformanceTelemetry',
+    channels: ['xleth:audio:getAudioPerformanceTelemetry'],
+    api: { 'audio.getAudioPerformanceTelemetry': 'xleth:audio:getAudioPerformanceTelemetry' },
+    handler: 'Audio_GetAudioPerformanceTelemetry',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_setTrackVolume',
+    channels: ['xleth:audio:setTrackVolume'],
+    api: { 'audio.setTrackVolume': 'xleth:audio:setTrackVolume' },
+    handler: 'Audio_SetTrackVolume',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_setTrackPan',
+    channels: ['xleth:audio:setTrackPan'],
+    api: { 'audio.setTrackPan': 'xleth:audio:setTrackPan' },
+    handler: 'Audio_SetTrackPan',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_setTrackSpread',
+    channels: ['xleth:audio:setTrackSpread'],
+    api: { 'audio.setTrackSpread': 'xleth:audio:setTrackSpread' },
+    handler: 'Audio_SetTrackSpread',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_setMasterVolume',
+    channels: ['xleth:audio:setMasterVolume'],
+    api: { 'audio.setMasterVolume': 'xleth:audio:setMasterVolume' },
+    handler: 'Audio_SetMasterVolume',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getOutputDevices',
+    channels: ['xleth:audio:getOutputDevices'],
+    api: { 'audio.getOutputDevices': 'xleth:audio:getOutputDevices' },
+    handler: 'Audio_GetOutputDevices',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getCurrentOutputDevice',
+    channels: ['xleth:audio:getCurrentOutputDevice'],
+    api: { 'audio.getCurrentOutputDevice': 'xleth:audio:getCurrentOutputDevice' },
+    handler: 'Audio_GetCurrentOutputDevice',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_setOutputDevice',
+    channels: ['xleth:audio:setOutputDevice'],
+    api: { 'audio.setOutputDevice': 'xleth:audio:setOutputDevice' },
+    handler: 'Audio_SetOutputDevice',
+    returns: 'value',
+    binary: null,
+  },
 ];
 
 // Binary kinds addon-worker.js knows how to transport. A manifest entry with
