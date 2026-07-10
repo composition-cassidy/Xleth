@@ -196,34 +196,9 @@ Napi::Value GetVideoDuration(const Napi::CallbackInfo& info)
     return dispatchToService(info, "getVideoDuration");
 }
 
-Napi::Value Play(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "play");
-}
-
-Napi::Value Stop(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "stop");
-}
-
-Napi::Value Pause(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "pause");
-}
-
 Napi::Value SetBPM(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "setBPM");
-}
-
-Napi::Value GetTransportState(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "getTransportState");
-}
-
-Napi::Value Proxy_GetStatus(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "proxy_getStatus");
 }
 
 Napi::Value GetCurrentFrame(const Napi::CallbackInfo& info)
@@ -246,11 +221,6 @@ Napi::Value InitVideoSharedMemory(const Napi::CallbackInfo& info)
     return dispatchToService(info, "initVideoSharedMemory");
 }
 
-Napi::Value SetVideoResolution(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "setVideoResolution");
-}
-
 Napi::Value AddAudioEvent(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "addAudioEvent");
@@ -264,11 +234,6 @@ Napi::Value AddVideoEvent(const Napi::CallbackInfo& info)
 Napi::Value ClearTimeline(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "clearTimeline");
-}
-
-Napi::Value GetSyncStats(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "getSyncStats");
 }
 
 // project_create / project_save / project_saveAs / project_hasProjectDir /
@@ -735,21 +700,14 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("triggerSample",      Napi::Function::New(env, TriggerSample));
     exports.Set("loadVideo",          Napi::Function::New(env, LoadVideo));
     exports.Set("getVideoDuration",   Napi::Function::New(env, GetVideoDuration));
-    exports.Set("play",               Napi::Function::New(env, Play));
-    exports.Set("stop",               Napi::Function::New(env, Stop));
-    exports.Set("pause",              Napi::Function::New(env, Pause));
     exports.Set("setBPM",             Napi::Function::New(env, SetBPM));
-    exports.Set("getTransportState",  Napi::Function::New(env, GetTransportState));
-    exports.Set("proxy_getStatus",    Napi::Function::New(env, Proxy_GetStatus));
     exports.Set("getCurrentFrame",    Napi::Function::New(env, GetCurrentFrame));
     exports.Set("getFrameBuffer",     Napi::Function::New(env, GetFrameBuffer));
     exports.Set("initFrameOutput",    Napi::Function::New(env, InitFrameOutput));
     exports.Set("initVideoSharedMemory", Napi::Function::New(env, InitVideoSharedMemory));
-    exports.Set("setVideoResolution", Napi::Function::New(env, SetVideoResolution));
     exports.Set("addAudioEvent",      Napi::Function::New(env, AddAudioEvent));
     exports.Set("addVideoEvent",      Napi::Function::New(env, AddVideoEvent));
     exports.Set("clearTimeline",      Napi::Function::New(env, ClearTimeline));
-    exports.Set("getSyncStats",       Napi::Function::New(env, GetSyncStats));
 
     // ── Phase 1 — Project ────────────────────────────────────────────────────
     // Most project exports come from the manifest (XlethRpcExports.inc, S1 slice
@@ -790,8 +748,11 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     // ── Phase 1 — Undo / Redo ────────────────────────────────────────────────
 
     // ── Phase 1 — Transport extensions ──────────────────────────────────────
-    // transport_getState = getTransportState (same function, aliased)
-    exports.Set("transport_getState",  Napi::Function::New(env, GetTransportState));
+    // transport_getState = getTransportState (same engine method, aliased)
+    exports.Set("transport_getState", Napi::Function::New(env,
+        [](const Napi::CallbackInfo& info) {
+            return dispatchToService(info, "getTransportState");
+        }));
 
     // ── WORLD processing indicator ───────────────────────────────────────────
     exports.Set("cache_getWorldActiveJobs", Napi::Function::New(env, Cache_GetWorldActiveJobIds));
@@ -881,8 +842,11 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("audio_setMainWindowHandle", Napi::Function::New(env, Audio_SetMainWindowHandle));
 
     // ── Phase 1 — Sync ───────────────────────────────────────────────────────
-    // sync_getStats = getSyncStats (aliased)
-    exports.Set("sync_getStats", Napi::Function::New(env, GetSyncStats));
+    // sync_getStats = getSyncStats (same engine method, aliased)
+    exports.Set("sync_getStats", Napi::Function::New(env,
+        [](const Napi::CallbackInfo& info) {
+            return dispatchToService(info, "getSyncStats");
+        }));
 
     // ── Phase 1B — SourcePlayer (Sample Picker preview) ─────────────────────
     exports.Set("source_loadSource",   Napi::Function::New(env, Source_LoadSource));

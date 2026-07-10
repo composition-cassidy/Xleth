@@ -15472,21 +15472,14 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     if (method == "triggerSample") { TriggerSample(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "loadVideo") return LoadVideo(info).raw();
     if (method == "getVideoDuration") return GetVideoDuration(info).raw();
-    if (method == "play") { Play(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "stop") { Stop(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "pause") { Pause(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "setBPM") { SetBPM(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "getTransportState") return GetTransportState(info).raw();
-    if (method == "proxy_getStatus") return Proxy_GetStatus(info).raw();
     if (method == "getCurrentFrame") return GetCurrentFrame(info).raw();
     if (method == "getFrameBuffer") return GetFrameBuffer(info).raw();
     if (method == "initFrameOutput") return InitFrameOutput(info).raw();
     if (method == "initVideoSharedMemory") return InitVideoSharedMemory(info).raw();
-    if (method == "setVideoResolution") { SetVideoResolution(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "addAudioEvent") { AddAudioEvent(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "addVideoEvent") { AddVideoEvent(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "clearTimeline") { ClearTimeline(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "getSyncStats") return GetSyncStats(info).raw();
     // project_create / project_save / project_saveAs / project_hasProjectDir /
     // project_importSource / project_removeSource / project_validateMedia /
     // project_relinkSource / project_relinkRegionAudio / project_getInfo /

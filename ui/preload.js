@@ -90,16 +90,11 @@ window.xleth = ({
   getDroppedFilePath: (file) => webUtils.getPathForFile(file),
 
   // ── Legacy flat API (Phase 0 backward compat) ─────────────────────────────
-  play:               ()      => invoke('xleth:play'),
-  stop:               ()      => invoke('xleth:stop'),
-  pause:              ()      => invoke('xleth:pause'),
   triggerSample:      (id)    => invoke('xleth:trigger', id),
-  getTransportState:  ()      => invoke('xleth:transportState'),
-  // getCurrentFrame / getFrameRGBA come from the RPC manifest (attachRpcWrappers below)
-  getSyncStats:       ()      => invoke('xleth:syncStats'),
+  // play / stop / pause / getTransportState / getCurrentFrame / getFrameRGBA /
+  // getSyncStats / setVideoResolution come from the RPC manifest below.
   importVideo:        ()      => invoke('xleth:importVideo'),
   readStartupLog:     ()      => invoke('xleth:readStartupLog'),
-  setVideoResolution: (w, h)  => invoke('xleth:setVideoResolution', w, h),
 
   // ── Phase 1: project ──────────────────────────────────────────────────────
   // create / save / saveAs / hasProjectDir / importSource / removeSource /
@@ -179,12 +174,9 @@ window.xleth = ({
   // from the RPC manifest (attachRpcWrappers below).
 
   // ── Phase 1: transport ────────────────────────────────────────────────────
+  // transport.play / stop / pause / getState / seek all come from the RPC
+  // manifest (attachRpcWrappers below).
   transport: {
-    play:     ()        => invoke('xleth:play'),
-    stop:     ()        => invoke('xleth:stop'),
-    pause:    ()        => invoke('xleth:pause'),
-    // seek comes from the RPC manifest (attachRpcWrappers below).
-    getState: ()        => invoke('xleth:transportState'),
   },
 
   // ── Preview-proxy build status ─────────────────────────────────────────────
@@ -192,8 +184,8 @@ window.xleth = ({
   // preview. getStatus() resolves to { pending, inFlight, completed, total };
   // wait for pending===0 after opening a project before the first Play so the
   // first playback is smooth instead of decoding the slow original source.
+  // getStatus comes from the RPC manifest (attachRpcWrappers below).
   proxy: {
-    getStatus: () => invoke('xleth:proxy:getStatus'),
   },
 
   // ── Waveform mipmap (replaces Pipeline A FFmpeg extraction) ────────────────
@@ -297,8 +289,7 @@ window.xleth = ({
 
   // ── Phase 1: video ────────────────────────────────────────────────────────
   video: {
-    setResolution:  (w, h)  => invoke('xleth:setVideoResolution', w, h),
-    // getFrameBuffer / getFrameRGBA come from the RPC manifest (attachRpcWrappers below)
+    // setResolution / getFrameBuffer / getFrameRGBA come from the RPC manifest below
     // Open the Windows named-shared-memory region the engine writes frames
     // into. Zero-copy: renderer reads pixels directly via typed-array views.
     // Returns { buffer: ArrayBuffer, meta: {name, width, height, bufferSize, indexOffset, totalSize} }
@@ -359,8 +350,8 @@ window.xleth = ({
   },
 
   // ── Phase 1: sync ─────────────────────────────────────────────────────────
+  // sync.getStats comes from the RPC manifest (attachRpcWrappers below).
   sync: {
-    getStats: () => invoke('xleth:syncStats'),
   },
 
   // ── User settings (persisted to userData/xleth-settings.json) ───────────────
