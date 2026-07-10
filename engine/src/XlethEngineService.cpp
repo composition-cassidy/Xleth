@@ -15531,11 +15531,7 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     if (method == "audio_captureAudioPerformanceReport") return Audio_CaptureAudioPerformanceReport(info).raw();
     if (method == "audio_setTestDeviceOutputLatencySamplesForDiagnostics") return Audio_SetTestDeviceOutputLatencySamplesForDiagnostics(info).raw();
     if (method == "audio_exportStart") return Audio_ExportStart(info).raw();
-    if (method == "audio_exportGetProgress") return Audio_ExportGetProgress(info).raw();
-    if (method == "audio_exportCancel") return Audio_ExportCancel(info).raw();
     if (method == "video_exportStart") return Video_ExportStart(info).raw();
-    if (method == "video_exportGetProgress") return Video_ExportGetProgress(info).raw();
-    if (method == "video_exportCancel") return Video_ExportCancel(info).raw();
     if (method == "video_computeDurationSeconds") return Video_ComputeDurationSeconds(info).raw();
     if (method == "audio_exportRegion") return Audio_ExportRegion(info).raw();
     if (method == "audio_swapRegionAudio") return Audio_SwapRegionAudio(info).raw();
@@ -15548,17 +15544,6 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     // hydrate-sync-adopt FXG.3-d, track + master) dispatches from the generated
     // XlethRpcDispatch.inc at the top of this function (AUDIT.md S1 slice 7).
     if (method == "audio_scanPlugins") return Audio_ScanPlugins(info).raw();
-    if (method == "audio_getScanProgress") return Audio_GetScanProgress(info).raw();
-    if (method == "audio_getScannedPlugins") return Audio_GetScannedPlugins(info).raw();
-    if (method == "audio_getFailedPlugins") return Audio_GetFailedPlugins(info).raw();
-    if (method == "audio_openPluginEditor") return Audio_OpenPluginEditor(info).raw();
-    if (method == "audio_closePluginEditor") return Audio_ClosePluginEditor(info).raw();
-    if (method == "audio_closeAllPluginEditors") return Audio_CloseAllPluginEditors(info).raw();
-    if (method == "audio_isPluginEditorOpen") return Audio_IsPluginEditorOpen(info).raw();
-    if (method == "audio_getMissingPlugins") return Audio_GetMissingPlugins(info).raw();
-    if (method == "audio_retryMissingPlugin") return Audio_RetryMissingPlugin(info).raw();
-    if (method == "audio_removeAllMissing") return Audio_RemoveAllMissing(info).raw();
-    if (method == "audio_resetCrashedPlugin") return Audio_ResetCrashedPlugin(info).raw();
     if (method == "audio_setMainWindowHandle") return Audio_SetMainWindowHandle(info).raw();
     if (method == "sync_getStats") return GetSyncStats(info).raw();
     if (method == "source_loadSource") return Source_LoadSource(info).raw();
@@ -15579,11 +15564,8 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     if (method == "waveform_getRawSamples") return Waveform_GetRawSamples(info).raw();
     if (method == "waveform_getFilePeaks") return Waveform_GetFilePeaks(info).raw();
     if (method == "waveform_getClipPeaks") return Waveform_GetClipPeaks(info).raw();
-    if (method == "gpu_getAvailableGpus") return Gpu_GetAvailableGpus(info).raw();
     if (method == "gpu_setAdapter") return Gpu_SetAdapter(info).raw();
     if (method == "diag_getVisualPreviewDiagnostic") return Diag_GetVisualPreviewDiagnostic(info).raw();
-    if (method == "hwenc_getAvailableEncoders") return HwEnc_GetAvailableEncoders(info).raw();
-    if (method == "hwenc_getDefaultEncoder") return HwEnc_GetDefaultEncoder(info).raw();
     if (method == "hwenc_refresh") return HwEnc_Refresh(info).raw();
     if (method == "midi_parseSummary") return Midi_ParseSummary(info).raw();
     if (method == "midi_importFull") return Midi_ImportFull(info).raw();

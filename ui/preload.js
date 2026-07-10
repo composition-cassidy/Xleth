@@ -228,9 +228,8 @@ window.xleth = ({
     unloadSource:      ()          => invoke('xleth:audio:unloadSource'),
     // ── Output device selection (get/set come from the RPC manifest, S1 slice 5) ──
     // ── Audio Export ─────────────────────────────────────────────────────
+    // exportGetProgress / exportCancel come from the RPC manifest (attachRpcWrappers below).
     exportStart:       (cfg)          => invoke('xleth:audio:exportStart', cfg),
-    exportGetProgress: ()             => invoke('xleth:audio:exportGetProgress'),
-    exportCancel:      ()             => invoke('xleth:audio:exportCancel'),
     exportSaveAsDialog:(defName, fmt) => invoke('xleth:dialog:exportAudio', defName, fmt),
     exportRegion:        (regionId)             => invoke('xleth:audio:exportRegion', regionId),
     openSwapAudioDialog: ()                     => invoke('xleth:dialog:swapAudio'),
@@ -269,22 +268,14 @@ window.xleth = ({
       return () => ipcRenderer.removeListener('stretch:worldProcessingComplete', h);
     },
     // ── VST3 plugin scanner ──────────────────────────────────────────────
+    // getScanProgress / getScannedPlugins / getFailedPlugins, the plugin-editor
+    // window methods (openPluginEditor / closePluginEditor / closeAllPluginEditors /
+    // isPluginEditorOpen), the missing-plugin helpers (getMissingPlugins /
+    // retryMissingPlugin / removeAllMissing), and resetCrashedPlugin all come
+    // from the RPC manifest (attachRpcWrappers below). scanPlugins stays here
+    // (its main handler reshapes the argument); addVstSearchPath owns a dialog.
     scanPlugins:          (paths)            => invoke('xleth:audio:scanPlugins', paths),
-    getScanProgress:      ()                 => invoke('xleth:audio:getScanProgress'),
-    getScannedPlugins:    ()                 => invoke('xleth:audio:getScannedPlugins'),
-    getFailedPlugins:     ()                 => invoke('xleth:audio:getFailedPlugins'),
-    // ── VST3 plugin editor windows ───────────────────────────────────────
-    openPluginEditor:     (trackId, nodeId)  => invoke('xleth:audio:openPluginEditor', trackId, nodeId),
-    closePluginEditor:    (trackId, nodeId)  => invoke('xleth:audio:closePluginEditor', trackId, nodeId),
-    closeAllPluginEditors: ()                => invoke('xleth:audio:closeAllPluginEditors'),
-    isPluginEditorOpen:   (trackId, nodeId)  => invoke('xleth:audio:isPluginEditorOpen', trackId, nodeId),
     addVstSearchPath:     ()                 => invoke('xleth:dialog:addVstSearchPath'),
-    // ── Missing-plugin helpers ────────────────────────────────────────────
-    getMissingPlugins:    ()                 => invoke('xleth:audio:getMissingPlugins'),
-    retryMissingPlugin:   (trackId, nodeId)  => invoke('xleth:audio:retryMissingPlugin', trackId, nodeId),
-    removeAllMissing:     ()                 => invoke('xleth:audio:removeAllMissing'),
-    // ── VST3 crash recovery ───────────────────────────────────────────────
-    resetCrashedPlugin:   (trackId, nodeId)  => invoke('xleth:audio:resetCrashedPlugin', trackId, nodeId),
   },
 
   // ── Phase 1: video ────────────────────────────────────────────────────────
@@ -307,12 +298,10 @@ window.xleth = ({
 
   // ── Video Export ──────────────────────────────────────────────────────────
   videoExport: {
+    // exportGetProgress / exportCancel / getAvailableEncoders / getDefaultEncoder
+    // come from the RPC manifest (attachRpcWrappers below).
     exportStart:          (cfg)   => invoke('xleth:video:exportStart', cfg),
-    exportGetProgress:    ()      => invoke('xleth:video:exportGetProgress'),
-    exportCancel:         ()      => invoke('xleth:video:exportCancel'),
     exportSaveAsDialog:   (name)  => invoke('xleth:dialog:exportVideo', name),
-    getAvailableEncoders: (codec) => invoke('xleth:video:getAvailableEncoders', codec),
-    getDefaultEncoder:    (codec) => invoke('xleth:video:getDefaultEncoder', codec),
     computeDurationSeconds: (startBeat, endBeat) =>
         invoke('xleth:video:computeDurationSeconds', startBeat, endBeat),
     getExportPresets:     ()       => invoke('xleth:video:getExportPresets'),
@@ -325,8 +314,8 @@ window.xleth = ({
   },
 
   // ── GPU adapter detection ─────────────────────────────────────────────────
+  // gpu.getAvailableGpus comes from the RPC manifest (attachRpcWrappers below).
   gpu: {
-    getAvailableGpus: () => invoke('xleth:gpu:getAvailableGpus'),
   },
 
   // ── Diagnostics (Settings → Graphics → Export Visual Preview Log) ────────

@@ -407,29 +407,9 @@ Napi::Value Audio_ExportStart(const Napi::CallbackInfo& info)
     return dispatchToService(info, "audio_exportStart");
 }
 
-Napi::Value Audio_ExportGetProgress(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_exportGetProgress");
-}
-
-Napi::Value Audio_ExportCancel(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_exportCancel");
-}
-
 Napi::Value Video_ExportStart(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "video_exportStart");
-}
-
-Napi::Value Video_ExportGetProgress(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "video_exportGetProgress");
-}
-
-Napi::Value Video_ExportCancel(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "video_exportCancel");
 }
 
 Napi::Value Video_ComputeDurationSeconds(const Napi::CallbackInfo& info)
@@ -480,61 +460,6 @@ Napi::Value Audio_DrainEffectVizFrames(const Napi::CallbackInfo& info)
 Napi::Value Audio_ScanPlugins(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "audio_scanPlugins");
-}
-
-Napi::Value Audio_GetScanProgress(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getScanProgress");
-}
-
-Napi::Value Audio_GetScannedPlugins(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getScannedPlugins");
-}
-
-Napi::Value Audio_GetFailedPlugins(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getFailedPlugins");
-}
-
-Napi::Value Audio_OpenPluginEditor(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_openPluginEditor");
-}
-
-Napi::Value Audio_ClosePluginEditor(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_closePluginEditor");
-}
-
-Napi::Value Audio_CloseAllPluginEditors(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_closeAllPluginEditors");
-}
-
-Napi::Value Audio_IsPluginEditorOpen(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_isPluginEditorOpen");
-}
-
-Napi::Value Audio_GetMissingPlugins(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getMissingPlugins");
-}
-
-Napi::Value Audio_RetryMissingPlugin(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_retryMissingPlugin");
-}
-
-Napi::Value Audio_RemoveAllMissing(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_removeAllMissing");
-}
-
-Napi::Value Audio_ResetCrashedPlugin(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_resetCrashedPlugin");
 }
 
 Napi::Value Audio_SetMainWindowHandle(const Napi::CallbackInfo& info)
@@ -632,11 +557,6 @@ Napi::Value Waveform_GetClipPeaks(const Napi::CallbackInfo& info)
     return dispatchToService(info, "waveform_getClipPeaks");
 }
 
-Napi::Value Gpu_GetAvailableGpus(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "gpu_getAvailableGpus");
-}
-
 Napi::Value Gpu_SetAdapter(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "gpu_setAdapter");
@@ -645,16 +565,6 @@ Napi::Value Gpu_SetAdapter(const Napi::CallbackInfo& info)
 Napi::Value Diag_GetVisualPreviewDiagnostic(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "diag_getVisualPreviewDiagnostic");
-}
-
-Napi::Value HwEnc_GetAvailableEncoders(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "hwenc_getAvailableEncoders");
-}
-
-Napi::Value HwEnc_GetDefaultEncoder(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "hwenc_getDefaultEncoder");
 }
 
 Napi::Value HwEnc_Refresh(const Napi::CallbackInfo& info)
@@ -792,12 +702,11 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
                 Napi::Function::New(env, Audio_CaptureAudioPerformanceReport));
     exports.Set("audio_setTestDeviceOutputLatencySamplesForDiagnostics",
                 Napi::Function::New(env, Audio_SetTestDeviceOutputLatencySamplesForDiagnostics));
+    // audio_exportStart / video_exportStart stay hand-written (each starts a
+    // progress-poll interval). exportGetProgress / exportCancel for both migrated
+    // to the RPC manifest (XlethRpcExports.inc).
     exports.Set("audio_exportStart",       Napi::Function::New(env, Audio_ExportStart));
-    exports.Set("audio_exportGetProgress", Napi::Function::New(env, Audio_ExportGetProgress));
-    exports.Set("audio_exportCancel",      Napi::Function::New(env, Audio_ExportCancel));
     exports.Set("video_exportStart",            Napi::Function::New(env, Video_ExportStart));
-    exports.Set("video_exportGetProgress",      Napi::Function::New(env, Video_ExportGetProgress));
-    exports.Set("video_exportCancel",           Napi::Function::New(env, Video_ExportCancel));
     exports.Set("video_computeDurationSeconds", Napi::Function::New(env, Video_ComputeDurationSeconds));
     exports.Set("audio_exportRegion",       Napi::Function::New(env, Audio_ExportRegion));
     exports.Set("audio_swapRegionAudio",    Napi::Function::New(env, Audio_SwapRegionAudio));
@@ -819,24 +728,11 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     //    (XlethRpcExports.inc, AUDIT.md S1 slice 7).
 
     // ── VST3 plugin scanner ─────────────────────────────────────────────────
+    // audio_scanPlugins stays hand-written (its vst3.js handler reshapes the
+    // argument before forwarding). The scan-progress/scanned/failed queries, the
+    // plugin-editor window methods, the missing-plugin helpers, and crash
+    // recovery all migrated to the RPC manifest (XlethRpcExports.inc).
     exports.Set("audio_scanPlugins",      Napi::Function::New(env, Audio_ScanPlugins));
-    exports.Set("audio_getScanProgress",  Napi::Function::New(env, Audio_GetScanProgress));
-    exports.Set("audio_getScannedPlugins", Napi::Function::New(env, Audio_GetScannedPlugins));
-    exports.Set("audio_getFailedPlugins", Napi::Function::New(env, Audio_GetFailedPlugins));
-
-    // ── VST3 plugin editor windows ──────────────────────────────────────────
-    exports.Set("audio_openPluginEditor",    Napi::Function::New(env, Audio_OpenPluginEditor));
-    exports.Set("audio_closePluginEditor",   Napi::Function::New(env, Audio_ClosePluginEditor));
-    exports.Set("audio_closeAllPluginEditors", Napi::Function::New(env, Audio_CloseAllPluginEditors));
-    exports.Set("audio_isPluginEditorOpen",  Napi::Function::New(env, Audio_IsPluginEditorOpen));
-
-    // ── Missing-plugin helpers ──────────────────────────────────────────────
-    exports.Set("audio_getMissingPlugins",   Napi::Function::New(env, Audio_GetMissingPlugins));
-    exports.Set("audio_retryMissingPlugin",  Napi::Function::New(env, Audio_RetryMissingPlugin));
-    exports.Set("audio_removeAllMissing",    Napi::Function::New(env, Audio_RemoveAllMissing));
-
-    // ── VST3 crash recovery ─────────────────────────────────────────────────
-    exports.Set("audio_resetCrashedPlugin",  Napi::Function::New(env, Audio_ResetCrashedPlugin));
 
     // ── Main window handle (for VST editor parenting) ───────────────────────
     exports.Set("audio_setMainWindowHandle", Napi::Function::New(env, Audio_SetMainWindowHandle));
@@ -874,7 +770,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("waveform_getClipPeaks",   Napi::Function::New(env, Waveform_GetClipPeaks));
 
     // ── GPU device management ────────────────────────────────────────────────
-    exports.Set("gpu_getAvailableGpus", Napi::Function::New(env, Gpu_GetAvailableGpus));
+    // gpu_getAvailableGpus migrated to the RPC manifest (XlethRpcExports.inc).
     exports.Set("gpu_setAdapter",       Napi::Function::New(env, Gpu_SetAdapter));
 
     // ── Diagnostics (Settings → Graphics → Export Visual Preview Log) ───────
@@ -882,8 +778,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
                 Napi::Function::New(env, Diag_GetVisualPreviewDiagnostic));
 
     // ── Hardware encoder detection ───────────────────────────────────────────
-    exports.Set("hwenc_getAvailableEncoders", Napi::Function::New(env, HwEnc_GetAvailableEncoders));
-    exports.Set("hwenc_getDefaultEncoder",    Napi::Function::New(env, HwEnc_GetDefaultEncoder));
+    // hwenc_getAvailableEncoders / hwenc_getDefaultEncoder migrated to the RPC
+    // manifest (XlethRpcExports.inc).
     exports.Set("hwenc_refresh",              Napi::Function::New(env, HwEnc_Refresh));
 
     // ── MIDI Import ──────────────────────────────────────────────────────────

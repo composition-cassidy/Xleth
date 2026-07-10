@@ -1689,6 +1689,165 @@ const METHODS = [
     returns: 'value',
     binary: null,
   },
+
+  // ── VST3 scanner / editor / missing-plugin / crash recovery (AUDIT.md S1) ──
+  // Pure engine pass-throughs from ui/electron-main/vst3.js. All dispatch with
+  // the value shape (engine returns Handler(info).raw() for every one, including
+  // the editor mutations). audio_scanPlugins is NOT here: its vst3.js handler
+  // reshapes the argument (paths && paths.length ? [paths] : []) before
+  // forwarding, so it stays hand-written. xleth:dialog:addVstSearchPath owns an
+  // Electron dialog, not an engine call, and stays hand-written too.
+  {
+    method: 'audio_getScanProgress',
+    channels: ['xleth:audio:getScanProgress'],
+    api: { 'audio.getScanProgress': 'xleth:audio:getScanProgress' },
+    handler: 'Audio_GetScanProgress',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getScannedPlugins',
+    channels: ['xleth:audio:getScannedPlugins'],
+    api: { 'audio.getScannedPlugins': 'xleth:audio:getScannedPlugins' },
+    handler: 'Audio_GetScannedPlugins',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getFailedPlugins',
+    channels: ['xleth:audio:getFailedPlugins'],
+    api: { 'audio.getFailedPlugins': 'xleth:audio:getFailedPlugins' },
+    handler: 'Audio_GetFailedPlugins',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_openPluginEditor',
+    channels: ['xleth:audio:openPluginEditor'],
+    api: { 'audio.openPluginEditor': 'xleth:audio:openPluginEditor' },
+    handler: 'Audio_OpenPluginEditor',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_closePluginEditor',
+    channels: ['xleth:audio:closePluginEditor'],
+    api: { 'audio.closePluginEditor': 'xleth:audio:closePluginEditor' },
+    handler: 'Audio_ClosePluginEditor',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_closeAllPluginEditors',
+    channels: ['xleth:audio:closeAllPluginEditors'],
+    api: { 'audio.closeAllPluginEditors': 'xleth:audio:closeAllPluginEditors' },
+    handler: 'Audio_CloseAllPluginEditors',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_isPluginEditorOpen',
+    channels: ['xleth:audio:isPluginEditorOpen'],
+    api: { 'audio.isPluginEditorOpen': 'xleth:audio:isPluginEditorOpen' },
+    handler: 'Audio_IsPluginEditorOpen',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getMissingPlugins',
+    channels: ['xleth:audio:getMissingPlugins'],
+    api: { 'audio.getMissingPlugins': 'xleth:audio:getMissingPlugins' },
+    handler: 'Audio_GetMissingPlugins',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_retryMissingPlugin',
+    channels: ['xleth:audio:retryMissingPlugin'],
+    api: { 'audio.retryMissingPlugin': 'xleth:audio:retryMissingPlugin' },
+    handler: 'Audio_RetryMissingPlugin',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_removeAllMissing',
+    channels: ['xleth:audio:removeAllMissing'],
+    api: { 'audio.removeAllMissing': 'xleth:audio:removeAllMissing' },
+    handler: 'Audio_RemoveAllMissing',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_resetCrashedPlugin',
+    channels: ['xleth:audio:resetCrashedPlugin'],
+    api: { 'audio.resetCrashedPlugin': 'xleth:audio:resetCrashedPlugin' },
+    handler: 'Audio_ResetCrashedPlugin',
+    returns: 'value',
+    binary: null,
+  },
+
+  // ── Export progress/cancel + HW encoders + GPU (AUDIT.md S1) ───────────────
+  // Pure engine pass-throughs from ui/electron-main/export.js. audio_exportStart
+  // and video_exportStart are NOT here: both kick off a 100ms progress-poll
+  // interval after forwarding, a real main-process side effect, so they stay
+  // hand-written. The video-export methods live under window.xleth.videoExport.*
+  // (not video.*); gpu_getAvailableGpus under window.xleth.gpu.*.
+  {
+    method: 'audio_exportGetProgress',
+    channels: ['xleth:audio:exportGetProgress'],
+    api: { 'audio.exportGetProgress': 'xleth:audio:exportGetProgress' },
+    handler: 'Audio_ExportGetProgress',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_exportCancel',
+    channels: ['xleth:audio:exportCancel'],
+    api: { 'audio.exportCancel': 'xleth:audio:exportCancel' },
+    handler: 'Audio_ExportCancel',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'video_exportGetProgress',
+    channels: ['xleth:video:exportGetProgress'],
+    api: { 'videoExport.exportGetProgress': 'xleth:video:exportGetProgress' },
+    handler: 'Video_ExportGetProgress',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'video_exportCancel',
+    channels: ['xleth:video:exportCancel'],
+    api: { 'videoExport.exportCancel': 'xleth:video:exportCancel' },
+    handler: 'Video_ExportCancel',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'hwenc_getAvailableEncoders',
+    channels: ['xleth:video:getAvailableEncoders'],
+    api: { 'videoExport.getAvailableEncoders': 'xleth:video:getAvailableEncoders' },
+    handler: 'HwEnc_GetAvailableEncoders',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'hwenc_getDefaultEncoder',
+    channels: ['xleth:video:getDefaultEncoder'],
+    api: { 'videoExport.getDefaultEncoder': 'xleth:video:getDefaultEncoder' },
+    handler: 'HwEnc_GetDefaultEncoder',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'gpu_getAvailableGpus',
+    channels: ['xleth:gpu:getAvailableGpus'],
+    api: { 'gpu.getAvailableGpus': 'xleth:gpu:getAvailableGpus' },
+    handler: 'Gpu_GetAvailableGpus',
+    returns: 'value',
+    binary: null,
+  },
 ];
 
 // Binary kinds addon-worker.js knows how to transport. A manifest entry with
