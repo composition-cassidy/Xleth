@@ -1406,6 +1406,225 @@ const METHODS = [
     returns: 'value',
     binary: null,
   },
+
+  // ── Effects graph: wire mutations + graph-owned instances + topology (AUDIT.md S1 slice 7) ──
+  // From ui/electron-main/effects-graph.js — the last of the audio/effects/graph
+  // trio. The 8 wire mutations (add/remove connection + setWire gain/mute, track +
+  // master) carry `graph: 'track' | 'master'`: they broadcast xleth:graph:changed
+  // after the call resolves — identical mechanism to effects.js's chain mutations.
+  // The other 16 are plain pass-throughs that deliberately do NOT broadcast:
+  //   * getGraphTopology / setNodePosition / isGraphLinear (+ master variants) —
+  //     topology reads and node-position persistence.
+  //   * the FXG.3-b graph-owned effect instances (add/remove/getEngineNodeId) and
+  //     the FXG.4-a parameter descriptors (getParameters, get/setParameter value):
+  //     graphState persistence, not a chain re-fetch, keeps the renderer in sync, so
+  //     they are safeHandler-only by design — plain entries preserve that (no graph:).
+  //   * hydrate / syncLinear / sync / adopt (FXG.3-d) — their batch init, topology
+  //     rebuild and adoption logic lives entirely in the engine C++ handler; the JS
+  //     layers are a single callWorker pass-through, so they migrate like the rest.
+  // Every returns shape mirrors the removed hand dispatch line verbatim (all 24 were
+  // `return Handler(info).raw()` = value). effects-graph.js has NO exclusions — it is
+  // fully migrated by this slice.
+  {
+    method: 'audio_addConnection',
+    channels: ['xleth:audio:addConnection'],
+    api: { 'audio.addConnection': 'xleth:audio:addConnection' },
+    handler: 'Audio_AddConnection',
+    returns: 'value',
+    binary: null,
+    graph: 'track',
+  },
+  {
+    method: 'audio_removeConnection',
+    channels: ['xleth:audio:removeConnection'],
+    api: { 'audio.removeConnection': 'xleth:audio:removeConnection' },
+    handler: 'Audio_RemoveConnection',
+    returns: 'value',
+    binary: null,
+    graph: 'track',
+  },
+  {
+    method: 'audio_setWireGain',
+    channels: ['xleth:audio:setWireGain'],
+    api: { 'audio.setWireGain': 'xleth:audio:setWireGain' },
+    handler: 'Audio_SetWireGain',
+    returns: 'value',
+    binary: null,
+    graph: 'track',
+  },
+  {
+    method: 'audio_setWireMute',
+    channels: ['xleth:audio:setWireMute'],
+    api: { 'audio.setWireMute': 'xleth:audio:setWireMute' },
+    handler: 'Audio_SetWireMute',
+    returns: 'value',
+    binary: null,
+    graph: 'track',
+  },
+  {
+    method: 'audio_getGraphTopology',
+    channels: ['xleth:audio:getGraphTopology'],
+    api: { 'audio.getGraphTopology': 'xleth:audio:getGraphTopology' },
+    handler: 'Audio_GetGraphTopology',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_setNodePosition',
+    channels: ['xleth:audio:setNodePosition'],
+    api: { 'audio.setNodePosition': 'xleth:audio:setNodePosition' },
+    handler: 'Audio_SetNodePosition',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_isGraphLinear',
+    channels: ['xleth:audio:isGraphLinear'],
+    api: { 'audio.isGraphLinear': 'xleth:audio:isGraphLinear' },
+    handler: 'Audio_IsGraphLinear',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_addGraphEffectNode',
+    channels: ['xleth:audio:addGraphEffectNode'],
+    api: { 'audio.addGraphEffectNode': 'xleth:audio:addGraphEffectNode' },
+    handler: 'Audio_AddGraphEffectNode',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_removeGraphEffectNode',
+    channels: ['xleth:audio:removeGraphEffectNode'],
+    api: { 'audio.removeGraphEffectNode': 'xleth:audio:removeGraphEffectNode' },
+    handler: 'Audio_RemoveGraphEffectNode',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getGraphEffectEngineNodeId',
+    channels: ['xleth:audio:getGraphEffectEngineNodeId'],
+    api: { 'audio.getGraphEffectEngineNodeId': 'xleth:audio:getGraphEffectEngineNodeId' },
+    handler: 'Audio_GetGraphEffectEngineNodeId',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getGraphEffectParameters',
+    channels: ['xleth:audio:getGraphEffectParameters'],
+    api: { 'audio.getGraphEffectParameters': 'xleth:audio:getGraphEffectParameters' },
+    handler: 'Audio_GetGraphEffectParameters',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getGraphEffectParameterValue',
+    channels: ['xleth:audio:getGraphEffectParameterValue'],
+    api: { 'audio.getGraphEffectParameterValue': 'xleth:audio:getGraphEffectParameterValue' },
+    handler: 'Audio_GetGraphEffectParameterValue',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_setGraphEffectParameterNormalized',
+    channels: ['xleth:audio:setGraphEffectParameterNormalized'],
+    api: { 'audio.setGraphEffectParameterNormalized': 'xleth:audio:setGraphEffectParameterNormalized' },
+    handler: 'Audio_SetGraphEffectParameterNormalized',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_hydrateGraphEffectNodes',
+    channels: ['xleth:audio:hydrateGraphEffectNodes'],
+    api: { 'audio.hydrateGraphEffectNodes': 'xleth:audio:hydrateGraphEffectNodes' },
+    handler: 'Audio_HydrateGraphEffectNodes',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_syncLinearGraphTopology',
+    channels: ['xleth:audio:syncLinearGraphTopology'],
+    api: { 'audio.syncLinearGraphTopology': 'xleth:audio:syncLinearGraphTopology' },
+    handler: 'Audio_SyncLinearGraphTopology',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_syncGraphTopology',
+    channels: ['xleth:audio:syncGraphTopology'],
+    api: { 'audio.syncGraphTopology': 'xleth:audio:syncGraphTopology' },
+    handler: 'Audio_SyncGraphTopology',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_adoptGraphEffectNodes',
+    channels: ['xleth:audio:adoptGraphEffectNodes'],
+    api: { 'audio.adoptGraphEffectNodes': 'xleth:audio:adoptGraphEffectNodes' },
+    handler: 'Audio_AdoptGraphEffectNodes',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_addMasterConnection',
+    channels: ['xleth:audio:addMasterConnection'],
+    api: { 'audio.addMasterConnection': 'xleth:audio:addMasterConnection' },
+    handler: 'Audio_AddMasterConnection',
+    returns: 'value',
+    binary: null,
+    graph: 'master',
+  },
+  {
+    method: 'audio_removeMasterConnection',
+    channels: ['xleth:audio:removeMasterConnection'],
+    api: { 'audio.removeMasterConnection': 'xleth:audio:removeMasterConnection' },
+    handler: 'Audio_RemoveMasterConnection',
+    returns: 'value',
+    binary: null,
+    graph: 'master',
+  },
+  {
+    method: 'audio_setMasterWireGain',
+    channels: ['xleth:audio:setMasterWireGain'],
+    api: { 'audio.setMasterWireGain': 'xleth:audio:setMasterWireGain' },
+    handler: 'Audio_SetMasterWireGain',
+    returns: 'value',
+    binary: null,
+    graph: 'master',
+  },
+  {
+    method: 'audio_setMasterWireMute',
+    channels: ['xleth:audio:setMasterWireMute'],
+    api: { 'audio.setMasterWireMute': 'xleth:audio:setMasterWireMute' },
+    handler: 'Audio_SetMasterWireMute',
+    returns: 'value',
+    binary: null,
+    graph: 'master',
+  },
+  {
+    method: 'audio_getMasterGraphTopology',
+    channels: ['xleth:audio:getMasterGraphTopology'],
+    api: { 'audio.getMasterGraphTopology': 'xleth:audio:getMasterGraphTopology' },
+    handler: 'Audio_GetMasterGraphTopology',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_setMasterNodePosition',
+    channels: ['xleth:audio:setMasterNodePosition'],
+    api: { 'audio.setMasterNodePosition': 'xleth:audio:setMasterNodePosition' },
+    handler: 'Audio_SetMasterNodePosition',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_isMasterGraphLinear',
+    channels: ['xleth:audio:isMasterGraphLinear'],
+    api: { 'audio.isMasterGraphLinear': 'xleth:audio:isMasterGraphLinear' },
+    handler: 'Audio_IsMasterGraphLinear',
+    returns: 'value',
+    binary: null,
+  },
 ];
 
 // Binary kinds addon-worker.js knows how to transport. A manifest entry with

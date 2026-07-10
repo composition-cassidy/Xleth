@@ -15551,30 +15551,9 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     if (method == "audio_revertRegionAudio") return Audio_RevertRegionAudio(info).raw();
     if (method == "audio_setEffectVisualizationEnabled") return Audio_SetEffectVisualizationEnabled(info).raw();
     if (method == "audio_drainEffectVizFrames") return Audio_DrainEffectVizFrames(info).raw();
-    if (method == "audio_addConnection") return Audio_AddConnection(info).raw();
-    if (method == "audio_removeConnection") return Audio_RemoveConnection(info).raw();
-    if (method == "audio_setWireGain") return Audio_SetWireGain(info).raw();
-    if (method == "audio_setWireMute") return Audio_SetWireMute(info).raw();
-    if (method == "audio_getGraphTopology") return Audio_GetGraphTopology(info).raw();
-    if (method == "audio_setNodePosition") return Audio_SetNodePosition(info).raw();
-    if (method == "audio_isGraphLinear") return Audio_IsGraphLinear(info).raw();
-    if (method == "audio_addGraphEffectNode") return Audio_AddGraphEffectNode(info).raw();
-    if (method == "audio_removeGraphEffectNode") return Audio_RemoveGraphEffectNode(info).raw();
-    if (method == "audio_getGraphEffectEngineNodeId") return Audio_GetGraphEffectEngineNodeId(info).raw();
-    if (method == "audio_getGraphEffectParameters") return Audio_GetGraphEffectParameters(info).raw();
-    if (method == "audio_getGraphEffectParameterValue") return Audio_GetGraphEffectParameterValue(info).raw();
-    if (method == "audio_setGraphEffectParameterNormalized") return Audio_SetGraphEffectParameterNormalized(info).raw();
-    if (method == "audio_hydrateGraphEffectNodes") return Audio_HydrateGraphEffectNodes(info).raw();
-    if (method == "audio_syncLinearGraphTopology") return Audio_SyncLinearGraphTopology(info).raw();
-    if (method == "audio_syncGraphTopology") return Audio_SyncGraphTopology(info).raw();
-    if (method == "audio_adoptGraphEffectNodes") return Audio_AdoptGraphEffectNodes(info).raw();
-    if (method == "audio_addMasterConnection") return Audio_AddMasterConnection(info).raw();
-    if (method == "audio_removeMasterConnection") return Audio_RemoveMasterConnection(info).raw();
-    if (method == "audio_setMasterWireGain") return Audio_SetMasterWireGain(info).raw();
-    if (method == "audio_setMasterWireMute") return Audio_SetMasterWireMute(info).raw();
-    if (method == "audio_getMasterGraphTopology") return Audio_GetMasterGraphTopology(info).raw();
-    if (method == "audio_setMasterNodePosition") return Audio_SetMasterNodePosition(info).raw();
-    if (method == "audio_isMasterGraphLinear") return Audio_IsMasterGraphLinear(info).raw();
+    // Graph-mode routing (wires + graph-owned effects FXG.3-b / params FXG.4-a /
+    // hydrate-sync-adopt FXG.3-d, track + master) dispatches from the generated
+    // XlethRpcDispatch.inc at the top of this function (AUDIT.md S1 slice 7).
     if (method == "audio_scanPlugins") return Audio_ScanPlugins(info).raw();
     if (method == "audio_getScanProgress") return Audio_GetScanProgress(info).raw();
     if (method == "audio_getScannedPlugins") return Audio_GetScannedPlugins(info).raw();

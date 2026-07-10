@@ -507,125 +507,10 @@ Napi::Value Audio_DrainEffectVizFrames(const Napi::CallbackInfo& info)
     return dispatchToService(info, "audio_drainEffectVizFrames");
 }
 
-Napi::Value Audio_AddConnection(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_addConnection");
-}
-
-Napi::Value Audio_RemoveConnection(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_removeConnection");
-}
-
-Napi::Value Audio_SetWireGain(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setWireGain");
-}
-
-Napi::Value Audio_SetWireMute(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setWireMute");
-}
-
-Napi::Value Audio_GetGraphTopology(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getGraphTopology");
-}
-
-Napi::Value Audio_SetNodePosition(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setNodePosition");
-}
-
-Napi::Value Audio_IsGraphLinear(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_isGraphLinear");
-}
-
-Napi::Value Audio_AddGraphEffectNode(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_addGraphEffectNode");
-}
-
-Napi::Value Audio_RemoveGraphEffectNode(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_removeGraphEffectNode");
-}
-
-Napi::Value Audio_GetGraphEffectEngineNodeId(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getGraphEffectEngineNodeId");
-}
-
-Napi::Value Audio_GetGraphEffectParameters(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getGraphEffectParameters");
-}
-
-Napi::Value Audio_GetGraphEffectParameterValue(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getGraphEffectParameterValue");
-}
-
-Napi::Value Audio_SetGraphEffectParameterNormalized(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setGraphEffectParameterNormalized");
-}
-
-Napi::Value Audio_HydrateGraphEffectNodes(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_hydrateGraphEffectNodes");
-}
-
-Napi::Value Audio_SyncLinearGraphTopology(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_syncLinearGraphTopology");
-}
-
-Napi::Value Audio_SyncGraphTopology(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_syncGraphTopology");
-}
-
-Napi::Value Audio_AdoptGraphEffectNodes(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_adoptGraphEffectNodes");
-}
-
-Napi::Value Audio_AddMasterConnection(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_addMasterConnection");
-}
-
-Napi::Value Audio_RemoveMasterConnection(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_removeMasterConnection");
-}
-
-Napi::Value Audio_SetMasterWireGain(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setMasterWireGain");
-}
-
-Napi::Value Audio_SetMasterWireMute(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setMasterWireMute");
-}
-
-Napi::Value Audio_GetMasterGraphTopology(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getMasterGraphTopology");
-}
-
-Napi::Value Audio_SetMasterNodePosition(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setMasterNodePosition");
-}
-
-Napi::Value Audio_IsMasterGraphLinear(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_isMasterGraphLinear");
-}
+// The graph-mode routing surface (wire mutations + graph-owned effect instances
+// FXG.3-b, parameter descriptors FXG.4-a, hydrate/sync/adopt topology ops
+// FXG.3-d, track + master) is manifest-generated now (XlethRpcExports.inc,
+// AUDIT.md S1 slice 7).
 
 Napi::Value Audio_ScanPlugins(const Napi::CallbackInfo& info)
 {
@@ -967,34 +852,10 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("audio_drainEffectVizFrames",
                 Napi::Function::New(env, Audio_DrainEffectVizFrames));
 
-    // ── Graph-mode routing ──────────────────────────────────────────────────
-    exports.Set("audio_addConnection",           Napi::Function::New(env, Audio_AddConnection));
-    exports.Set("audio_removeConnection",        Napi::Function::New(env, Audio_RemoveConnection));
-    exports.Set("audio_setWireGain",             Napi::Function::New(env, Audio_SetWireGain));
-    exports.Set("audio_setWireMute",             Napi::Function::New(env, Audio_SetWireMute));
-    exports.Set("audio_getGraphTopology",        Napi::Function::New(env, Audio_GetGraphTopology));
-    exports.Set("audio_setNodePosition",         Napi::Function::New(env, Audio_SetNodePosition));
-    exports.Set("audio_isGraphLinear",           Napi::Function::New(env, Audio_IsGraphLinear));
-    // ── Graph-owned effect instances (FXG.3-b) ───────────────────────────────
-    exports.Set("audio_addGraphEffectNode",          Napi::Function::New(env, Audio_AddGraphEffectNode));
-    exports.Set("audio_removeGraphEffectNode",       Napi::Function::New(env, Audio_RemoveGraphEffectNode));
-    exports.Set("audio_getGraphEffectEngineNodeId",  Napi::Function::New(env, Audio_GetGraphEffectEngineNodeId));
-    // ── Graph-owned effect parameter descriptors (FXG.4-a) ───────────────────
-    exports.Set("audio_getGraphEffectParameters",        Napi::Function::New(env, Audio_GetGraphEffectParameters));
-    exports.Set("audio_getGraphEffectParameterValue",    Napi::Function::New(env, Audio_GetGraphEffectParameterValue));
-    exports.Set("audio_setGraphEffectParameterNormalized", Napi::Function::New(env, Audio_SetGraphEffectParameterNormalized));
-    exports.Set("audio_hydrateGraphEffectNodes",     Napi::Function::New(env, Audio_HydrateGraphEffectNodes));
-    exports.Set("audio_syncLinearGraphTopology",     Napi::Function::New(env, Audio_SyncLinearGraphTopology));
-    // ── Graph runtime routing + adoption (FXG.3-d) ───────────────────────────
-    exports.Set("audio_syncGraphTopology",           Napi::Function::New(env, Audio_SyncGraphTopology));
-    exports.Set("audio_adoptGraphEffectNodes",       Napi::Function::New(env, Audio_AdoptGraphEffectNodes));
-    exports.Set("audio_addMasterConnection",     Napi::Function::New(env, Audio_AddMasterConnection));
-    exports.Set("audio_removeMasterConnection",  Napi::Function::New(env, Audio_RemoveMasterConnection));
-    exports.Set("audio_setMasterWireGain",       Napi::Function::New(env, Audio_SetMasterWireGain));
-    exports.Set("audio_setMasterWireMute",       Napi::Function::New(env, Audio_SetMasterWireMute));
-    exports.Set("audio_getMasterGraphTopology",  Napi::Function::New(env, Audio_GetMasterGraphTopology));
-    exports.Set("audio_setMasterNodePosition",   Napi::Function::New(env, Audio_SetMasterNodePosition));
-    exports.Set("audio_isMasterGraphLinear",     Napi::Function::New(env, Audio_IsMasterGraphLinear));
+    // ── Graph-mode routing surface (wire mutations + graph-owned effect
+    //    instances FXG.3-b / parameter descriptors FXG.4-a / hydrate-sync-adopt
+    //    topology ops FXG.3-d, track + master) is manifest-generated now
+    //    (XlethRpcExports.inc, AUDIT.md S1 slice 7).
 
     // ── VST3 plugin scanner ─────────────────────────────────────────────────
     exports.Set("audio_scanPlugins",      Napi::Function::New(env, Audio_ScanPlugins));

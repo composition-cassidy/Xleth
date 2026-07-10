@@ -1,8 +1,11 @@
 # RPC Method Manifest — single source of truth for the RPC surface (AUDIT.md S1)
 
-**Status:** slices 1–6 done (timeline/undo/transport, project, patterns, audio, effects —
-161 methods in the manifest, incl. the `graph:` broadcast mechanism proven on effects.js).
-Remaining methods migrate domain-by-domain in later passes (see "Migration plan" below).
+**Status:** slices 1–7 done (timeline/undo/transport, project, patterns, audio, effects,
+effects-graph — 185 methods in the manifest, incl. the `graph:` broadcast mechanism proven
+on effects.js and reused verbatim for effects-graph.js's 8 wire mutations). The
+audio/effects/graph trio is now complete; the only leftovers in it are four arg-coercion /
+binary-payload handlers deliberately kept hand-written (see item 5 below). Remaining methods
+migrate domain-by-domain in later passes (see "Migration plan" below).
 
 ## The problem
 
@@ -163,13 +166,22 @@ delete the hand-written lines + regenerate + full suite (contract tests, vitest,
 2. **project.js** — pass-throughs; keep the dialog handlers (`xleth:dialog:*`) hand-written (they own Electron dialogs, not engine calls)
 3. **patterns.js** — all `timeline_*` region/syllable/pattern/note pass-throughs
 4. **audio.js** — mostly pass-throughs; keep the device/diagnostics handlers that touch `runtimePaths`
-5. **effects.js** ✅ (slice 6) + **effects-graph.js** — the `graphHandler`-wrapped mutations
-   migrate with the `graph: 'track' | 'master'` field (see above; decided and proven on
-   effects.js's 8 chain mutations). effects-graph.js's 8 wire mutations use the identical
-   pattern — declare `graph:` on each, nothing new to design. Its graph-owned effect-instance
-   handlers must be re-verified individually (same pass-through discipline). Excluded from
-   effects.js and left hand-written there: `setEffectVisualizationEnabled` (`!!enabled`
-   coercion) and `drainEffectVizFrames` (`maxBuckets|0` + binary viz payload)
+5. **effects.js** ✅ (slice 6) + **effects-graph.js** ✅ (slice 7) — the `graphHandler`-wrapped
+   mutations migrate with the `graph: 'track' | 'master'` field (see above; decided and proven on
+   effects.js's 8 chain mutations). effects-graph.js's 8 wire mutations used the identical
+   pattern — declared `graph:` on each, nothing new to design. Its other 16 handlers were
+   re-verified individually and all migrated as **plain** entries: the topology reads /
+   node-position persistence, the FXG.3-b graph-owned effect instances and FXG.4-a parameter
+   descriptors (deliberately `safeHandler`-only — graphState persistence, not a chain re-fetch,
+   syncs the renderer, so they must NOT declare `graph:`), and the FXG.3-d hydrate / syncLinear /
+   sync / adopt topology ops (their batch-init / topology-rebuild / adoption logic lives entirely
+   in the untouched engine C++ handler; the JS layers are a single `callWorker` pass-through).
+   effects-graph.js has **no exclusions** — it is now an empty init stub. The whole
+   audio/effects/graph trio is complete; the only handlers left hand-written across it are four
+   arg-coercion / binary-payload cases: `setEffectVisualizationEnabled` (`!!enabled`) and
+   `drainEffectVizFrames` (`maxBuckets|0` + binary viz payload) in effects.js, and
+   `setRealtimeDiagnosticsEnabled` (double `Boolean()` coercion) and `captureAudioPerformanceReport`
+   (injects a `runtimePaths` outputDir default) in audio.js — none of them pure pass-throughs.
 6. **phase0-compat.js** (rest) — flat legacy channels incl. the `xleth:trigger` default-arg fixup (`vel ?? 1.0`): needs either a manifest `argDefaults` field or stays hand-written; the remaining binary paths (`getCurrentFrame` alias set is already done; `getFrameBuffer`) come here
 7. **vst3.js / export.js / diagnostics.js / quick-launchers.js / preview-visibility.js** — heavy main-process logic (dialogs, intervals, file IO); only their pure pass-through lines migrate, the rest is *not* RPC and stays
 8. **Last:** the 7 legacy alias exports (`transport_getState`, `audio_get/startAudioPerformanceCapture*`, `sync_getStats`) — fold into Q8 (kill aliases) rather than teaching the manifest about them

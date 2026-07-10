@@ -184,6 +184,48 @@ describe('rpc-manifest invariants', () => {
     }
   });
 
+  it('pins the effects-graph slice: wires broadcast, the rest are plain (AUDIT.md S1 slice 7)', () => {
+    const byMethod = Object.fromEntries(METHODS.map((m) => [m.method, m]));
+
+    // The 8 wire mutations broadcast xleth:graph:changed (track / master keys);
+    // rpc-registry.js registers them through main.js's graphHandler.
+    const graphShape = {
+      audio_addConnection: 'track',
+      audio_removeConnection: 'track',
+      audio_setWireGain: 'track',
+      audio_setWireMute: 'track',
+      audio_addMasterConnection: 'master',
+      audio_removeMasterConnection: 'master',
+      audio_setMasterWireGain: 'master',
+      audio_setMasterWireMute: 'master',
+    };
+    // The other 16 are plain safeHandler pass-throughs (no broadcast): topology
+    // reads / node-position persistence, the FXG.3-b graph-owned instances, the
+    // FXG.4-a parameter descriptors, and the FXG.3-d hydrate/sync/adopt ops.
+    const plain = ['audio_getGraphTopology', 'audio_setNodePosition', 'audio_isGraphLinear',
+                   'audio_addGraphEffectNode', 'audio_removeGraphEffectNode',
+                   'audio_getGraphEffectEngineNodeId', 'audio_getGraphEffectParameters',
+                   'audio_getGraphEffectParameterValue', 'audio_setGraphEffectParameterNormalized',
+                   'audio_hydrateGraphEffectNodes', 'audio_syncLinearGraphTopology',
+                   'audio_syncGraphTopology', 'audio_adoptGraphEffectNodes',
+                   'audio_getMasterGraphTopology', 'audio_setMasterNodePosition',
+                   'audio_isMasterGraphLinear'];
+
+    // The whole module migrated — no exclusions.
+    expect(Object.keys(graphShape).length + plain.length).toBe(24);
+
+    for (const method of [...Object.keys(graphShape), ...plain]) {
+      const e = byMethod[method];
+      expect(e, `${method} missing`).toBeTruthy();
+      const short = method.slice('audio_'.length);
+      expect(e.channels).toEqual([`xleth:audio:${short}`]);
+      expect(e.api).toEqual({ [`audio.${short}`]: `xleth:audio:${short}` });
+      expect(e.returns).toBe('value');
+      expect(e.binary).toBe(null);
+      expect(e.graph ?? null).toBe(graphShape[method] ?? null);
+    }
+  });
+
   it('rejects unknown graph keys', () => {
     METHODS.push({
       method: '__test_bad_graph', channels: ['xleth:__test:badGraph'],
