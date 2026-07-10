@@ -15507,6 +15507,7 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     if (method == "timeline_getPreviewProxyHeight") return Timeline_GetPreviewProxyHeight(info).raw();
     if (method == "timeline_setPreviewProxyHeight") { Timeline_SetPreviewProxyHeight(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "preview_setEnabled") return Preview_SetEnabled(info).raw();
+    // DEPRECATED: use getTransportState instead.
     if (method == "transport_getState") return GetTransportState(info).raw();
     if (method == "cache_getWorldActiveJobs") return Cache_GetWorldActiveJobIds(info).raw();
     if (method == "engine_setGlobalStretchMethod") { Engine_SetGlobalStretchMethod(info); return JsonApi::Env{}.Undefined().raw(); }
@@ -15517,16 +15518,21 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     // peak meters, realtime-diagnostics reset/get, performance telemetry, mixer
     // volume/pan/spread + master volume, output-device get/set) dispatch from the
     // manifest (XlethRpcDispatch.inc, S1 slice 5). Hand-written below: the excluded
-    // setRealtimeDiagnosticsEnabled + captureAudioPerformanceReport, the non-prefixed
-    // getAudioPerformanceTelemetry alias, and the capture lifecycle.
+    // setRealtimeDiagnosticsEnabled, deprecated performance aliases, and the
+    // canonical capture lifecycle exports.
     if (method == "audio_setRealtimeDiagnosticsEnabled") return Audio_SetRealtimeDiagnosticsEnabled(info).raw();
+    // DEPRECATED: use audio_getAudioPerformanceTelemetry instead.
     if (method == "getAudioPerformanceTelemetry") return Audio_GetAudioPerformanceTelemetry(info).raw();
+    // DEPRECATED: use audio_startAudioPerformanceCapture instead.
     if (method == "startAudioPerformanceCapture") return Audio_StartAudioPerformanceCapture(info).raw();
     if (method == "audio_startAudioPerformanceCapture") return Audio_StartAudioPerformanceCapture(info).raw();
+    // DEPRECATED: use audio_stopAudioPerformanceCapture instead.
     if (method == "stopAudioPerformanceCapture") return Audio_StopAudioPerformanceCapture(info).raw();
     if (method == "audio_stopAudioPerformanceCapture") return Audio_StopAudioPerformanceCapture(info).raw();
+    // DEPRECATED: use audio_exportAudioPerformanceCaptureReport instead.
     if (method == "exportAudioPerformanceCaptureReport") return Audio_ExportAudioPerformanceCaptureReport(info).raw();
     if (method == "audio_exportAudioPerformanceCaptureReport") return Audio_ExportAudioPerformanceCaptureReport(info).raw();
+    // DEPRECATED: use audio_captureAudioPerformanceReport instead.
     if (method == "captureAudioPerformanceReport") return Audio_CaptureAudioPerformanceReport(info).raw();
     if (method == "audio_captureAudioPerformanceReport") return Audio_CaptureAudioPerformanceReport(info).raw();
     if (method == "audio_setTestDeviceOutputLatencySamplesForDiagnostics") return Audio_SetTestDeviceOutputLatencySamplesForDiagnostics(info).raw();
@@ -15545,6 +15551,7 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     // XlethRpcDispatch.inc at the top of this function (AUDIT.md S1 slice 7).
     if (method == "audio_scanPlugins") return Audio_ScanPlugins(info).raw();
     if (method == "audio_setMainWindowHandle") return Audio_SetMainWindowHandle(info).raw();
+    // DEPRECATED: use getSyncStats instead.
     if (method == "sync_getStats") return GetSyncStats(info).raw();
     if (method == "source_loadSource") return Source_LoadSource(info).raw();
     if (method == "source_playSource") { Source_PlaySource(info); return JsonApi::Env{}.Undefined().raw(); }

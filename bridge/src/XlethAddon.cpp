@@ -374,27 +374,27 @@ Napi::Value Audio_SetRealtimeDiagnosticsEnabled(const Napi::CallbackInfo& info)
 
 Napi::Value Audio_GetAudioPerformanceTelemetry(const Napi::CallbackInfo& info)
 {
-    return dispatchToService(info, "getAudioPerformanceTelemetry");
+    return dispatchToService(info, "audio_getAudioPerformanceTelemetry");
 }
 
 Napi::Value Audio_StartAudioPerformanceCapture(const Napi::CallbackInfo& info)
 {
-    return dispatchToService(info, "startAudioPerformanceCapture");
+    return dispatchToService(info, "audio_startAudioPerformanceCapture");
 }
 
 Napi::Value Audio_StopAudioPerformanceCapture(const Napi::CallbackInfo& info)
 {
-    return dispatchToService(info, "stopAudioPerformanceCapture");
+    return dispatchToService(info, "audio_stopAudioPerformanceCapture");
 }
 
 Napi::Value Audio_ExportAudioPerformanceCaptureReport(const Napi::CallbackInfo& info)
 {
-    return dispatchToService(info, "exportAudioPerformanceCaptureReport");
+    return dispatchToService(info, "audio_exportAudioPerformanceCaptureReport");
 }
 
 Napi::Value Audio_CaptureAudioPerformanceReport(const Napi::CallbackInfo& info)
 {
-    return dispatchToService(info, "captureAudioPerformanceReport");
+    return dispatchToService(info, "audio_captureAudioPerformanceReport");
 }
 
 Napi::Value Audio_SetTestDeviceOutputLatencySamplesForDiagnostics(const Napi::CallbackInfo& info)
@@ -658,7 +658,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     // ── Phase 1 — Undo / Redo ────────────────────────────────────────────────
 
     // ── Phase 1 — Transport extensions ──────────────────────────────────────
-    // transport_getState = getTransportState (same engine method, aliased)
+    // DEPRECATED: use getTransportState instead.
     exports.Set("transport_getState", Napi::Function::New(env,
         [](const Napi::CallbackInfo& info) {
             return dispatchToService(info, "getTransportState");
@@ -678,26 +678,41 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     // peak meters, realtime-diagnostics reset/get, performance telemetry, mixer
     // volume/pan/spread + master volume, output-device get/set) come from the
     // manifest (XlethRpcExports.inc, S1 slice 5). Hand-written below: the excluded
-    // setRealtimeDiagnosticsEnabled + captureAudioPerformanceReport, the
-    // non-prefixed getAudioPerformanceTelemetry alias, and the capture lifecycle.
+    // setRealtimeDiagnosticsEnabled, deprecated performance aliases, and the
+    // canonical capture lifecycle exports.
     exports.Set("audio_setRealtimeDiagnosticsEnabled",
                 Napi::Function::New(env, Audio_SetRealtimeDiagnosticsEnabled));
-    exports.Set("getAudioPerformanceTelemetry",
-                Napi::Function::New(env, Audio_GetAudioPerformanceTelemetry));
-    exports.Set("startAudioPerformanceCapture",
-                Napi::Function::New(env, Audio_StartAudioPerformanceCapture));
+    // DEPRECATED: use audio_getAudioPerformanceTelemetry instead.
+    exports.Set("getAudioPerformanceTelemetry", Napi::Function::New(env,
+        [](const Napi::CallbackInfo& info) {
+            return dispatchToService(info, "audio_getAudioPerformanceTelemetry");
+        }));
+    // DEPRECATED: use audio_startAudioPerformanceCapture instead.
+    exports.Set("startAudioPerformanceCapture", Napi::Function::New(env,
+        [](const Napi::CallbackInfo& info) {
+            return dispatchToService(info, "audio_startAudioPerformanceCapture");
+        }));
     exports.Set("audio_startAudioPerformanceCapture",
                 Napi::Function::New(env, Audio_StartAudioPerformanceCapture));
-    exports.Set("stopAudioPerformanceCapture",
-                Napi::Function::New(env, Audio_StopAudioPerformanceCapture));
+    // DEPRECATED: use audio_stopAudioPerformanceCapture instead.
+    exports.Set("stopAudioPerformanceCapture", Napi::Function::New(env,
+        [](const Napi::CallbackInfo& info) {
+            return dispatchToService(info, "audio_stopAudioPerformanceCapture");
+        }));
     exports.Set("audio_stopAudioPerformanceCapture",
                 Napi::Function::New(env, Audio_StopAudioPerformanceCapture));
-    exports.Set("exportAudioPerformanceCaptureReport",
-                Napi::Function::New(env, Audio_ExportAudioPerformanceCaptureReport));
+    // DEPRECATED: use audio_exportAudioPerformanceCaptureReport instead.
+    exports.Set("exportAudioPerformanceCaptureReport", Napi::Function::New(env,
+        [](const Napi::CallbackInfo& info) {
+            return dispatchToService(info, "audio_exportAudioPerformanceCaptureReport");
+        }));
     exports.Set("audio_exportAudioPerformanceCaptureReport",
                 Napi::Function::New(env, Audio_ExportAudioPerformanceCaptureReport));
-    exports.Set("captureAudioPerformanceReport",
-                Napi::Function::New(env, Audio_CaptureAudioPerformanceReport));
+    // DEPRECATED: use audio_captureAudioPerformanceReport instead.
+    exports.Set("captureAudioPerformanceReport", Napi::Function::New(env,
+        [](const Napi::CallbackInfo& info) {
+            return dispatchToService(info, "audio_captureAudioPerformanceReport");
+        }));
     exports.Set("audio_captureAudioPerformanceReport",
                 Napi::Function::New(env, Audio_CaptureAudioPerformanceReport));
     exports.Set("audio_setTestDeviceOutputLatencySamplesForDiagnostics",
@@ -738,7 +753,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("audio_setMainWindowHandle", Napi::Function::New(env, Audio_SetMainWindowHandle));
 
     // ── Phase 1 — Sync ───────────────────────────────────────────────────────
-    // sync_getStats = getSyncStats (same engine method, aliased)
+    // DEPRECATED: use getSyncStats instead.
     exports.Set("sync_getStats", Napi::Function::New(env,
         [](const Napi::CallbackInfo& info) {
             return dispatchToService(info, "getSyncStats");
