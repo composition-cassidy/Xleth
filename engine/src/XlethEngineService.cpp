@@ -9459,9 +9459,17 @@ JsonApi::Value Timeline_AddVisualEffect(const JsonApi::CallbackInfo& info)
         return env.Undefined();
     }
     BridgeCallLog log("timeline.addVisualEffect");
+    // Bug 1 fix: syncEventsMutex now also guards visualEffectChain
+    // mutation, matching the pattern already used by grid-layout/
+    // fullscreen-layer bridge functions above (Timeline_SetGridLayout et
+    // al.) — the video thread's FrameCollector copies this same track's
+    // chain under the same lock every tick (see FrameCollector.cpp).
     auto* cmd = new AddVisualEffectCommand(trackId,
         static_cast<VisualEffect::Type>(effectType));
-    g_undoManager->execute(std::unique_ptr<Command>(cmd), *g_timeline);
+    {
+        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        g_undoManager->execute(std::unique_ptr<Command>(cmd), *g_timeline);
+    }
     g_previewDirty = true;
     int idx = cmd->getAddedIndex();
     log.done(std::to_string(idx));
@@ -9484,9 +9492,13 @@ void Timeline_RemoveVisualEffect(const JsonApi::CallbackInfo& info)
     int trackId     = info[0].As<JsonApi::Number>().Int32Value();
     int effectIndex = info[1].As<JsonApi::Number>().Int32Value();
     BridgeCallLog log("timeline.removeVisualEffect");
-    g_undoManager->execute(
-        std::make_unique<RemoveVisualEffectCommand>(trackId, effectIndex, *g_timeline),
-        *g_timeline);
+    {
+        // Bug 1 fix: see Timeline_AddVisualEffect above.
+        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        g_undoManager->execute(
+            std::make_unique<RemoveVisualEffectCommand>(trackId, effectIndex, *g_timeline),
+            *g_timeline);
+    }
     g_previewDirty = true;
     log.done();
 }
@@ -9508,9 +9520,13 @@ void Timeline_ReorderVisualEffect(const JsonApi::CallbackInfo& info)
     int fromIndex = info[1].As<JsonApi::Number>().Int32Value();
     int toIndex   = info[2].As<JsonApi::Number>().Int32Value();
     BridgeCallLog log("timeline.reorderVisualEffect");
-    g_undoManager->execute(
-        std::make_unique<ReorderVisualEffectCommand>(trackId, fromIndex, toIndex),
-        *g_timeline);
+    {
+        // Bug 1 fix: see Timeline_AddVisualEffect above.
+        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        g_undoManager->execute(
+            std::make_unique<ReorderVisualEffectCommand>(trackId, fromIndex, toIndex),
+            *g_timeline);
+    }
     g_previewDirty = true;
     log.done();
 }
@@ -9542,9 +9558,13 @@ void Timeline_SetTrackVisualEffectChainOrder(const JsonApi::CallbackInfo& info)
         newOrder.push_back(val.As<JsonApi::Number>().Int32Value());
     }
     BridgeCallLog log("timeline.setTrackVisualEffectChainOrder");
-    g_undoManager->execute(
-        std::make_unique<SetTrackVfxChainOrderCommand>(trackId, newOrder, *g_timeline),
-        *g_timeline);
+    {
+        // Bug 1 fix: see Timeline_AddVisualEffect above.
+        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        g_undoManager->execute(
+            std::make_unique<SetTrackVfxChainOrderCommand>(trackId, newOrder, *g_timeline),
+            *g_timeline);
+    }
     g_previewDirty = true;
     log.done();
 }
@@ -9569,10 +9589,14 @@ void Timeline_SetVisualEffectParam(const JsonApi::CallbackInfo& info)
     int   paramIndex  = info[2].As<JsonApi::Number>().Int32Value();
     float value       = info[3].As<JsonApi::Number>().FloatValue();
     BridgeCallLog log("timeline.setVisualEffectParam");
-    g_undoManager->execute(
-        std::make_unique<SetVisualEffectParamCommand>(trackId, effectIndex,
-                                                     paramIndex, value, *g_timeline),
-        *g_timeline);
+    {
+        // Bug 1 fix: see Timeline_AddVisualEffect above.
+        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        g_undoManager->execute(
+            std::make_unique<SetVisualEffectParamCommand>(trackId, effectIndex,
+                                                         paramIndex, value, *g_timeline),
+            *g_timeline);
+    }
     g_previewDirty = true;
     log.done();
 }
@@ -9595,10 +9619,14 @@ void Timeline_SetVisualEffectBypassed(const JsonApi::CallbackInfo& info)
     int  effectIndex = info[1].As<JsonApi::Number>().Int32Value();
     bool bypassed    = info[2].As<JsonApi::Boolean>().Value();
     BridgeCallLog log("timeline.setVisualEffectBypassed");
-    g_undoManager->execute(
-        std::make_unique<SetVisualEffectBypassedCommand>(trackId, effectIndex,
-                                                        bypassed, *g_timeline),
-        *g_timeline);
+    {
+        // Bug 1 fix: see Timeline_AddVisualEffect above.
+        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        g_undoManager->execute(
+            std::make_unique<SetVisualEffectBypassedCommand>(trackId, effectIndex,
+                                                            bypassed, *g_timeline),
+            *g_timeline);
+    }
     g_previewDirty = true;
     log.done();
 }

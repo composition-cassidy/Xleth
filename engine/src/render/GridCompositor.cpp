@@ -651,14 +651,14 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
         // Visual effect chain — skipped entirely when effectsBypass_ is set
         // (fast preview mode). Gap, bounce, corner-radius and opacity are
         // handled outside this block and are never bypassed.
-        if (!effectsBypass_ && req.visualChain && !req.visualChain->empty()) {
+        if (!effectsBypass_ && !req.visualChain.empty()) {
             // Compute cell pixel dimensions from UV rect and output resolution
             int cellPixelW = std::max(1, static_cast<int>(rw * width_));
             int cellPixelH = std::max(1, static_cast<int>(rh * height_));
 
             ID3D11ShaderResourceView* processedSRV = processEffectChain(
                 cellSRV, cellPixelW, cellPixelH,
-                *req.visualChain, req, time, /*rtSlot=*/0);
+                req.visualChain, req, time, /*rtSlot=*/0);
 
             if (processedSRV != cellSRV) {
                 // Chain was used — final orientation transform is applied by the
@@ -685,11 +685,9 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
         // Uses rtSlot=1 to avoid aliasing with the main chain's slot-0 render targets.
         if (!effectsBypass_) {
             bool chainHadZpr = false;
-            if (req.visualChain) {
-                for (const auto& cfx : *req.visualChain) {
-                    if (!cfx.bypassed && cfx.type == VisualEffect::Type::ZoomPanRotation)
-                        { chainHadZpr = true; break; }
-                }
+            for (const auto& cfx : req.visualChain) {
+                if (!cfx.bypassed && cfx.type == VisualEffect::Type::ZoomPanRotation)
+                    { chainHadZpr = true; break; }
             }
             bool zprNonDefault = (req.currentZoom != 1.0f || req.currentPanX != 0.0f ||
                                   req.currentPanY != 0.0f || req.currentRotDeg != 0.0f);

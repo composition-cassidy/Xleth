@@ -101,8 +101,20 @@ struct CellFrameRequest {
     int64_t pingPongSecondaryFrame = -1;
     float   pingPongBlendFactor    = 0.0f;  // 0.0 = full primary, 1.0 = full secondary
 
-    // Pointer to track's visual effect chain (owned by TrackInfo, valid for frame lifetime)
-    const std::vector<VisualEffect>* visualChain = nullptr;
+    // Value snapshot of the track's visual effect chain, taken at collect
+    // time. Bug 1 fix: this used to be `const std::vector<VisualEffect>*`
+    // aliasing TrackInfo::visualEffectChain directly. GridCompositor
+    // dereferences/iterates it during GPU compositing later in the same
+    // tick; the bridge-thread add/remove/reorder/param-write handlers
+    // (Timeline_*VisualEffect* in XlethEngineService.cpp) mutate that same
+    // vector (push_back/erase/insert — all potentially reallocating) and
+    // did not synchronize against the video thread at all. A copy taken
+    // under syncEventsMutex (the same lock those handlers now acquire, see
+    // XlethEngineService.cpp) removes the aliasing entirely — the compositor
+    // never again touches live, mutable Track state. Bounded cost: capped at
+    // 16 entries. Matches the no-pointers-to-mutable-state discipline
+    // already used by companionFx below.
+    std::vector<VisualEffect> visualChain;
 
     // Clip-local automatic visual FX snapshot. This intentionally contains
     // only plain values; never store pointers to mutable Clip objects here.

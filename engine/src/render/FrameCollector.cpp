@@ -269,7 +269,13 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
                 req.cornerRadius     = trk->cornerRadius;
                 req.gapScaleOverride = trk->gapScaleOverride;
                 if (!trk->visualEffectChain.empty()) {
-                    req.visualChain = &trk->visualEffectChain;
+                    // Copy, not address-of — see the comment on
+                    // CellFrameRequest::visualChain in FrameCollector.h
+                    // (Bug 1 fix). Safe here specifically because this
+                    // whole call runs under syncEventsMutex (eLock) in
+                    // the caller's video-tick loop, which the visual-
+                    // effect-chain mutation handlers now also acquire.
+                    req.visualChain = trk->visualEffectChain;
                 }
                 // Note trigger detection: fire onNoteStart when globalNoteIndex
                 // changes (grid cells only). VideoEvents are emitted only by
