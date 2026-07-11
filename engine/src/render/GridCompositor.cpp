@@ -563,43 +563,51 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
     deviceCtx_->RSSetState(rasterizerState_.Get());
     deviceCtx_->OMSetDepthStencilState(depthStencilState_.Get(), 0);
 
-    // ── Pass 1: Fullscreen-behind layers (full-screen, behind grid) ──────────
-    // Iterates in request order, which mirrors fullscreenLayers array order.
+    // ── Single global-order compositing pass ─────────────────────────────────
+    // `requests` arrives pre-sorted by FrameCollector's one global stable_sort on
+    // zOrder, with grid cells and fullscreen layers interleaved. Drawing them in
+    // exactly this order is what lets a fullscreen layer composite BETWEEN two
+    // grid cells. Each request is dispatched by layerKind: a fullscreen layer
+    // (behind or front — handled identically) fills the canvas-fit rect; a grid
+    // cell runs the full per-cell path (gap / bounce / effect chain / ZPR /
+    // ping-pong / companion FX). There is no longer any band-based re-grouping —
+    // request order IS draw order.
     for (const auto& req : requests) {
-        if (req.layerKind != CellLayerKind::FullscreenBehind) continue;
+        if (req.layerKind != CellLayerKind::Grid) {
+            // ── Fullscreen layer (behind or front) ──────────────────────────
+            const char* band =
+                (req.layerKind == CellLayerKind::FullscreenBehind) ? "behind" : "front";
+            FrameCacheKey fsKey;
+            fsKey.sourcePath = req.sourcePath;
+            fsKey.frameIndex = req.sourceFrameIndex;
+            FrameCacheEntry* fsEntry = cache.get(fsKey);
 
-        FrameCacheKey key;
-        key.sourcePath = req.sourcePath;
-        key.frameIndex = req.sourceFrameIndex;
-        FrameCacheEntry* entry = cache.get(key);
+            if (!fsEntry || !fsEntry->srv) {
+                std::fprintf(stderr, "[Compositor] WARN: Skipping FS-%s — texture is null (cache miss?)\n", band);
+                continue;
+            }
 
-        if (!entry || !entry->srv) {
-            std::fprintf(stderr, "[Compositor] WARN: Skipping FS-behind — texture is null (cache miss?)\n");
+            std::fprintf(stderr, "[Compositor] FS-%s: '%s' frame=%lld opacity=%.2f zOrder=%d\n",
+                         band, req.sourcePath.c_str(),
+                         (long long)req.sourceFrameIndex, req.opacity, req.zOrder);
+
+            ID3D11ShaderResourceView* layerSRV = fsEntry->srv.Get();
+            if (!effectsBypass_) {
+                ID3D11ShaderResourceView* processedSRV =
+                    processCompanionFx(layerSRV, width_, height_, req);
+                if (processedSRV != layerSRV) {
+                    layerSRV = processedSRV;
+                    restoreMainPipelineState();
+                }
+            }
+
+            drawCell(layerSRV,
+                     canvasFitX_, canvasFitY_, canvasFitW_, canvasFitH_,
+                     req.opacity, req.orientation, 0.0f);
             continue;
         }
 
-        std::fprintf(stderr, "[Compositor] FS-behind: '%s' frame=%lld opacity=%.2f\n",
-                     req.sourcePath.c_str(), (long long)req.sourceFrameIndex, req.opacity);
-
-        ID3D11ShaderResourceView* layerSRV = entry->srv.Get();
-        if (!effectsBypass_) {
-            ID3D11ShaderResourceView* processedSRV =
-                processCompanionFx(layerSRV, width_, height_, req);
-            if (processedSRV != layerSRV) {
-                layerSRV = processedSRV;
-                restoreMainPipelineState();
-            }
-        }
-
-        drawCell(layerSRV,
-                 canvasFitX_, canvasFitY_, canvasFitW_, canvasFitH_,
-                 req.opacity, req.orientation, 0.0f);
-    }
-
-    // ── Pass 2: Grid cells (each at its grid position) ───────────────────────
-    for (const auto& req : requests) {
-        if (req.layerKind != CellLayerKind::Grid) continue;
-
+        // ── Grid cell (at its grid position) ────────────────────────────────
         FrameCacheKey key;
         key.sourcePath = req.sourcePath;
         key.frameIndex = req.sourceFrameIndex;
@@ -819,39 +827,6 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
 
         drawCell(cellSRV, rx, ry, rw, rh,
                  req.opacity, req.orientation, req.cornerRadius);
-    }
-
-    // ── Pass 3: Fullscreen-in-front layers (full-screen, on top) ─────────────
-    // Iterates in request order, which mirrors fullscreenLayers array order.
-    for (const auto& req : requests) {
-        if (req.layerKind != CellLayerKind::FullscreenInFront) continue;
-
-        FrameCacheKey key;
-        key.sourcePath = req.sourcePath;
-        key.frameIndex = req.sourceFrameIndex;
-        FrameCacheEntry* entry = cache.get(key);
-
-        if (!entry || !entry->srv) {
-            std::fprintf(stderr, "[Compositor] WARN: Skipping FS-front — texture is null (cache miss?)\n");
-            continue;
-        }
-
-        std::fprintf(stderr, "[Compositor] FS-front: '%s' frame=%lld opacity=%.2f\n",
-                     req.sourcePath.c_str(), (long long)req.sourceFrameIndex, req.opacity);
-
-        ID3D11ShaderResourceView* layerSRV = entry->srv.Get();
-        if (!effectsBypass_) {
-            ID3D11ShaderResourceView* processedSRV =
-                processCompanionFx(layerSRV, width_, height_, req);
-            if (processedSRV != layerSRV) {
-                layerSRV = processedSRV;
-                restoreMainPipelineState();
-            }
-        }
-
-        drawCell(layerSRV,
-                 canvasFitX_, canvasFitY_, canvasFitW_, canvasFitH_,
-                 req.opacity, req.orientation, 0.0f);
     }
 
     // Unbind render target to allow subsequent SRV reads

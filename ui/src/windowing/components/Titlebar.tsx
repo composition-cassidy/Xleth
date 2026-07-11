@@ -1,5 +1,5 @@
 import React from 'react';
-import type { CSSProperties, MouseEvent } from 'react';
+import type { CSSProperties, MouseEvent, ReactNode } from 'react';
 import { Maximize2, Minus, Square, X } from 'lucide-react';
 import { beginDrag } from '../managers/DragManager';
 import { PANEL_CATALOG, panelTypeColorVar, type PanelId } from '../registry/panelCatalog';
@@ -10,6 +10,7 @@ import './windowing.css';
 export interface TitlebarProps {
   id: PanelId;
   focused: boolean;
+  children?: ReactNode;
 }
 
 export function isTitlebarControlTarget(target: EventTarget | null): boolean {
@@ -18,7 +19,7 @@ export function isTitlebarControlTarget(target: EventTarget | null): boolean {
     && Boolean(target.closest('button'));
 }
 
-export function Titlebar({ id, focused }: TitlebarProps) {
+export function Titlebar({ id, focused, children }: TitlebarProps) {
   const entry = PANEL_CATALOG[id];
   const reactiveMode = usePanelRegistry((state) => state.panels[id].mode);
   const reactiveFloatingX = usePanelRegistry((state) => state.panels[id].floating.x);
@@ -76,6 +77,7 @@ export function Titlebar({ id, focused }: TitlebarProps) {
         data-focused={focused}
         aria-hidden="true"
       />
+      {children ? <div className="xleth-windowing-titlebar-content">{children}</div> : null}
       <span className="xleth-windowing-drag-zone" aria-hidden="true" />
       <div className="xleth-windowing-controls" aria-label={`${entry.title} panel controls`}>
         <XlethIconButton

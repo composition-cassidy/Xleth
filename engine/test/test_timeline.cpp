@@ -568,6 +568,76 @@ static void testGraphStateOpaquePersistence() {
     }
 }
 
+// ─── Fullscreen layer zOrder (unified compositing order) ──────────────────────
+// Proves: (1) an old-format project — fullscreenLayers with NO per-layer zOrder —
+// migrates on load to canonical zOrders that reproduce the legacy behind<grid<front
+// banding exactly (lossless); (2) a new-format project with explicit (possibly
+// interleaved) zOrders round-trips verbatim; (3) setPlacementZOrder is undo-tracked.
+static void testFullscreenZOrderMigration() {
+    std::cout << "[Z] Fullscreen zOrder migration + round-trip\n";
+
+    Timeline tl(140.0, 48000.0);
+    TrackInfo a;  a.name  = "A";  int tA  = tl.addTrack(a);
+    TrackInfo b;  b.name  = "B";  int tB  = tl.addTrack(b);
+    TrackInfo bg; bg.name = "BG"; int tBG = tl.addTrack(bg);
+    TrackInfo fg; fg.name = "FG"; int tFG = tl.addTrack(fg);
+
+    const int FCOL = kGridSubUnitsPerColumn;
+    const int FROW = kGridSubUnitsPerRow;
+    GridLayout gl; gl.columns = 2; gl.rows = 1;
+    gl.slots.push_back({tA, 0,    0, FCOL, FROW, 1.0f, 0});    // grid zOrder 0
+    gl.slots.push_back({tB, FCOL, 0, FCOL, FROW, 1.0f, 10});   // grid zOrder 10
+    gl.fullscreenLayers.push_back({tBG, FullscreenLayerPlacement::BehindGrid,   1.0f, 0});
+    gl.fullscreenLayers.push_back({tFG, FullscreenLayerPlacement::InFrontOfGrid, 0.7f, 0});
+    tl.setGridLayout(gl);
+
+    // (1) Simulate an OLD project file: serialize, then strip zOrder from every
+    // fullscreen layer, then load into a fresh timeline.
+    nlohmann::json oldJson = tl.toJSON();
+    for (auto& flj : oldJson["gridLayout"]["fullscreenLayers"]) flj.erase("zOrder");
+
+    Timeline loadedOld(140.0, 48000.0);
+    CHECK(loadedOld.fromJSON(oldJson), "load old-format project (no fullscreen zOrder)");
+    const auto& oldFls = loadedOld.getFullscreenLayers();
+    CHECK(oldFls.size() == 2, "old-format: 2 fullscreen layers survived load");
+    // gridMin=0, gridMax=10. Behind must be < 0; front must be > 10.
+    if (oldFls.size() == 2) {
+        const FullscreenLayer& behind = oldFls[0].placement == FullscreenLayerPlacement::BehindGrid
+                                        ? oldFls[0] : oldFls[1];
+        const FullscreenLayer& front  = oldFls[0].placement == FullscreenLayerPlacement::InFrontOfGrid
+                                        ? oldFls[0] : oldFls[1];
+        CHECK(behind.zOrder < 0,  "migrated behind layer zOrder < min grid zOrder (0)");
+        CHECK(front.zOrder  > 10, "migrated front layer zOrder > max grid zOrder (10)");
+    }
+
+    // (2) NEW-format round-trip with an INTERLEAVED fullscreen zOrder. Move the
+    // behind layer between the two grid cells (0 < 5 < 10) via the undo-tracked
+    // command, then serialize/reload and confirm it survives verbatim.
+    int preCmdZ = 0;
+    for (const auto& fl : tl.getFullscreenLayers())
+        if (fl.trackId == tBG) preCmdZ = fl.zOrder;
+
+    SetPlacementZOrderCommand cmd(tBG, 5, tl);
+    cmd.execute(tl);
+    bool foundInterleaved = false;
+    for (const auto& fl : tl.getFullscreenLayers())
+        if (fl.trackId == tBG) { CHECK(fl.zOrder == 5, "setPlacementZOrder set behind layer to 5"); foundInterleaved = true; }
+    CHECK(foundInterleaved, "behind layer present after setPlacementZOrder");
+
+    nlohmann::json newJson = tl.toJSON();
+    Timeline loadedNew(140.0, 48000.0);
+    CHECK(loadedNew.fromJSON(newJson), "reload new-format project (with zOrder)");
+    bool interleavePreserved = false;
+    for (const auto& fl : loadedNew.getFullscreenLayers())
+        if (fl.trackId == tBG && fl.zOrder == 5) interleavePreserved = true;
+    CHECK(interleavePreserved, "interleaved fullscreen zOrder (5) round-trips verbatim");
+
+    // (3) Undo restores the exact pre-command zOrder.
+    cmd.undo(tl);
+    for (const auto& fl : tl.getFullscreenLayers())
+        if (fl.trackId == tBG) CHECK(fl.zOrder == preCmdZ, "undo restored the pre-command zOrder");
+}
+
 int main() {
     std::cout << "=== Xleth Timeline Test Suite (Phase 1) ===\n\n";
 
@@ -1226,6 +1296,9 @@ int main() {
                   "after undo: slot cleared back to 0");
         }
     }
+
+    // ── [Z] Fullscreen zOrder migration + round-trip ──────────────────────────
+    testFullscreenZOrderMigration();
 
     // ── Results ───────────────────────────────────────────────────────────────
     std::cout << "\n=== Results: "

@@ -5,7 +5,8 @@
   "scripts": {
     "build": "cmake-js compile",
     "rebuild": "cmake-js rebuild",
-    "test": "node test_phase1.js",
+    "test": "node run_contract_tests.js",
+    "test:phase1": "node test_phase1.js",
     "test:transport": "node test_transport_contract.js",
     "test:preview-seek": "node test_preview_seek_contract.js",
     "test:source-preview": "node test_source_preview_contract.js",

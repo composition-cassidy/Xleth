@@ -8,9 +8,12 @@
  *
  * Compositing order per output frame:
  *   1. Clear render target to black
- *   2. Chorus layer (full-screen, behind grid cells)
- *   3. Grid cells (each at its grid position, sorted by zOrder)
- *   4. Crash overlay (full-screen, on top)
+ *   2. Draw every request in the order handed in — grid cells AND fullscreen
+ *      layers interleaved. FrameCollector has already performed the single
+ *      global stable_sort by zOrder, so a fullscreen layer whose zOrder sits
+ *      between two grid cells' zOrders is drawn (and thus occludes/reveals)
+ *      between them. There is no separate behind/grid/front banding; request
+ *      order IS draw order.
  *
  * Each layer is drawn as a fullscreen quad with a pixel shader that clips
  * to the cell rectangle, applies flip mode, and modulates opacity.

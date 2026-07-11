@@ -24,11 +24,6 @@ bool isVideoModulationCompatible(const VideoEvent& event) noexcept
                event.modulation);
 }
 
-int resolvedFlipOrdinal(const VideoEvent& event) noexcept
-{
-    return event.monoOrdinal >= 0 ? event.monoOrdinal : event.globalNoteIndex;
-}
-
 xleth::clipmod::VideoModulationTimingContext makeVideoTimingContext(
     const VideoEvent& event,
     double beatPos,
@@ -62,10 +57,20 @@ xleth::clipmod::VideoModulationTimingContext makeVideoTimingContext(
     ctx.sourceClampStartTime = event.sourceClampStartTime;
     ctx.sourceEndTime = event.sourceEndTime;
     ctx.sourceFps = sourceFps;
+    // F.1: mirror MixEngine + SyncManager post-cache routing so export-time video
+    // source-time matches the audio readhead. Cache buffer bakes in static pitch
+    // for time-stretched OR formant-preserved (with pitch/stretch) clips, so zero
+    // the static pitch here. (Same global-formant caveat as SyncManager — the raw
+    // clip flag is used; the project-global toggle is not yet in VideoEvent.)
+    const bool clipCacheProcessed =
+        event.clipPitchOffsetSemis != 0
+        || event.clipPitchOffsetCents != 0
+        || event.clipStretchRatio != 1.0
+        || event.clipReversed;
     const bool postCacheStretchedModulation =
-        event.clipStretchRatio != 1.0
-        && !event.clipReversed
-        && !event.clipFormantPreserve;
+        !event.clipReversed
+        && clipCacheProcessed
+        && (event.clipStretchRatio != 1.0 || event.clipFormantPreserve);
     ctx.clipPitchOffsetSemis = postCacheStretchedModulation ? 0 : event.clipPitchOffsetSemis;
     ctx.clipPitchOffsetCents = postCacheStretchedModulation ? 0 : event.clipPitchOffsetCents;
     ctx.clipStartTimelineSamples = event.clipStartTimelineSamples;
@@ -231,27 +236,50 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
             // small intra proxy is a cheap exact seek, so LIVE preview stays smooth
             // even when scrubbing into previously-unvisited regions. This
             // supersedes the region/legacy proxy pick above.
+            // ── Poster fast-preview pick (PREVIEW-ONLY) ───────────────────────
+            // When the user explicitly selects Poster mode, a cached static frame
+            // is the AUTHORITATIVE pick and must WIN over the whole-source preview
+            // proxy. Binding one resident single-frame texture per cell is what
+            // makes poster mode faster than live: requests dedupe per distinct
+            // (source,bucket) and the decode-miss loop stays empty after warm-up.
+            //
+            // PER-CELL semantics (Fix 2): each cell prefers its OWN thumbnail
+            // decoded at this cell's source time-offset — keyed by the 1-second
+            // bucket floor(sourceStartTime) — so a source reused across many cells
+            // at different offsets shows a DIFFERENT frame per cell. The per-source
+            // base poster (src->posterPath) is only a FALLBACK, shown until this
+            // cell's own thumbnail is ready (or if its generation failed).
+            //
+            // ROOT CAUSE history: the poster used to be gated behind
+            // `!previewProxyEngaged`, but the whole-source preview-proxy self-heal
+            // runs even in poster mode, so as soon as a proxy existed it silently
+            // superseded the poster and poster mode did NO poster work. Making
+            // `previewProxyEngaged` yield to `posterEngaged` restores the intended
+            // static-frame behaviour. The proxy remains the live fallback ONLY while
+            // neither this cell's thumbnail nor the base poster is ready yet.
+            std::string posterPick;
+            if (posterMode) {
+                const int bucket = static_cast<int>(
+                    std::floor(std::max(0.0, ev->sourceStartTime)));
+                auto it = src->thumbnailPaths.find(bucket);
+                if (it != src->thumbnailPaths.end() && !it->second.empty())
+                    posterPick = it->second;                 // this cell's own frame
+                else if (src->posterReady && !src->posterPath.empty())
+                    posterPick = src->posterPath;            // per-source fallback
+            }
+            const bool posterEngaged = !posterPick.empty();
+
             const bool previewProxyEngaged =
-                allowProxy && src->previewProxyReady && !src->previewProxyPath.empty();
+                allowProxy && !posterEngaged
+                && src->previewProxyReady && !src->previewProxyPath.empty();
             if (previewProxyEngaged) {
                 pickedPath  = src->previewProxyPath;
                 pickedFrame = srcFrame;
             }
 
-            // Poster fast-preview override (PREVIEW-ONLY). Bind a cached
-            // single-frame thumbnail instead of live-decoding — one resident
-            // texture per cell. Skipped once the preview proxy is engaged (live
-            // motion beats a static poster); poster is the fallback only WHILE the
-            // proxy is still building. Fullscreen layers are included so the 4K
-            // backdrop doesn't live-decode every frame.
-            if (!previewProxyEngaged &&
-                posterMode && src->posterReady && !src->posterPath.empty()) {
-                pickedPath = src->posterPath;
-                const int bucket = static_cast<int>(std::floor(std::max(0.0, ev->sourceStartTime)));
-                auto it = src->thumbnailPaths.find(bucket);
-                if (it != src->thumbnailPaths.end() && !it->second.empty())
-                    pickedPath = it->second;
-                pickedFrame = 0;
+            if (posterEngaged) {
+                pickedPath  = posterPick;
+                pickedFrame = 0;   // single-frame texture; index is irrelevant
             }
         }
 
@@ -349,15 +377,24 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
     const int fullW = layout.columns * kGridSubUnitsPerColumn;
     const int fullH = layout.rows    * kGridSubUnitsPerRow;
 
-    // a) FULLSCREEN BEHIND LAYERS — array order = bottom-to-top within the
-    // back stack. Holds last frame during gaps when track has videoHoldLastFrame.
+    // ── Unified assembly ─────────────────────────────────────────────────────
+    // Every video placement (grid cell AND fullscreen layer) is appended below
+    // tagged with its own real, globally-comparable zOrder. The three sub-loops
+    // exist only to gather the placements and preserve deterministic tie-break
+    // order; the ACTUAL draw order is decided by the SINGLE stable_sort by zOrder
+    // performed once at the end. There are no hardcoded sentinel zOrders anymore,
+    // so a fullscreen layer whose zOrder sits between two grid cells' zOrders
+    // sorts — and therefore renders — interleaved between them.
+
+    // a) FULLSCREEN BEHIND LAYERS. Holds last frame during gaps when the track
+    // has videoHoldLastFrame. zOrder is the layer's own global key.
     for (const auto& fl : layout.fullscreenLayers) {
         if (fl.placement != FullscreenLayerPlacement::BehindGrid) continue;
         if (fl.trackId < 0) continue;
 
         const VideoEvent* ev = findActiveEvent(events, timeline, fl.trackId, beatPos);
         if (buildRequest(ev, fl.trackId, 0, 0, fullW, fullH,
-                         fl.opacity, /*zOrder*/-1,
+                         fl.opacity, fl.zOrder,
                          CellLayerKind::FullscreenBehind)) {
             // Active layer — record last frame for hold-through-gap
             const auto& r = requests.back();
@@ -381,7 +418,7 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
                 req.sourceFrameIndex = it->second.lastFrame;
                 req.opacity          = std::min(1.0f, std::max(0.0f, fl.opacity));
                 req.layerKind        = CellLayerKind::FullscreenBehind;
-                req.zOrder           = -1;
+                req.zOrder           = fl.zOrder;
                 req.orientation      = it->second.lastOrientation;
                 req.trackId          = fl.trackId;
                 requests.push_back(std::move(req));
@@ -391,12 +428,11 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
         }
     }
 
-    // b) GRID CELLS — sorted by zOrder
-    std::vector<GridSlot> slots = layout.slots;
-    std::stable_sort(slots.begin(), slots.end(),
-        [](const GridSlot& a, const GridSlot& b) { return a.zOrder < b.zOrder; });
-
-    for (const GridSlot& slot : slots) {
+    // b) GRID CELLS. Appended in layout.slots array order; the final stable_sort
+    // orders them by zOrder while preserving array order for equal keys (exactly
+    // the behavior of the old per-slot pre-sort, now folded into the one global
+    // sort below).
+    for (const GridSlot& slot : layout.slots) {
         if (slot.trackId < 0) { ++gapsSkipped; continue; }
 
         const VideoEvent* ev = findActiveEvent(events, timeline, slot.trackId, beatPos);
@@ -409,19 +445,31 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
         }
     }
 
-    // c) FULLSCREEN IN-FRONT LAYERS — array order = bottom-to-top within the
-    // front stack. Front layers are intentionally transient; no hold-through-gap.
+    // c) FULLSCREEN IN-FRONT LAYERS. Transient; no hold-through-gap. zOrder is
+    // the layer's own global key.
     for (const auto& fl : layout.fullscreenLayers) {
         if (fl.placement != FullscreenLayerPlacement::InFrontOfGrid) continue;
         if (fl.trackId < 0) continue;
 
         const VideoEvent* ev = findActiveEvent(events, timeline, fl.trackId, beatPos);
         if (!buildRequest(ev, fl.trackId, 0, 0, fullW, fullH,
-                          fl.opacity, /*zOrder*/999,
+                          fl.opacity, fl.zOrder,
                           CellLayerKind::FullscreenInFront)) {
             ++gapsSkipped;
         }
     }
+
+    // ── THE single global compositing sort ───────────────────────────────────
+    // One stable_sort over the complete request list (grid cells AND fullscreen
+    // layers together) by their shared zOrder. stable_sort keeps assembly order
+    // for equal keys, so: behind-vs-behind and front-vs-front keep array order,
+    // grid-vs-grid keep slot array order, and on an exact tie between a fullscreen
+    // layer and a grid cell the assembly order (behind < grid < front) breaks it
+    // deterministically. The compositor then draws requests in this exact order.
+    std::stable_sort(requests.begin(), requests.end(),
+        [](const CellFrameRequest& a, const CellFrameRequest& b) {
+            return a.zOrder < b.zOrder;
+        });
 
     std::fprintf(stderr, "[FrameCollector] Collecting for output frame %lld: %d active cells, %d gaps skipped\n",
                  (long long)outputFrameIndex,
@@ -530,9 +578,10 @@ const VideoEvent* FrameCollector::findActiveEvent(
     const TrackInfo* track = timeline.getTrack(trackId);
     if (track && track->muted) return nullptr;
 
-    // Find the latest-starting active event on this track. If multiple
-    // same-tick note-ons are active, choose the highest resolved flip ordinal
-    // so an EveryNote chord consumes every stacked note before drawing.
+    // Find the latest-starting active event on this track. Same-tick note-ons
+    // (a chord) now all carry the same resolved flip state, so any member draws
+    // an identical orientation — the tie-break just needs to be deterministic:
+    // lowest pitch, then lowest emission order.
     const VideoEvent* best = nullptr;
     for (const auto& ev : events) {
         if (ev.trackId != trackId) continue;
@@ -541,7 +590,9 @@ const VideoEvent* FrameCollector::findActiveEvent(
         if (!best
             || ev.startBeat > best->startBeat
             || (ev.startBeat == best->startBeat
-                && resolvedFlipOrdinal(ev) > resolvedFlipOrdinal(*best))) {
+                && (ev.pitch < best->pitch
+                    || (ev.pitch == best->pitch
+                        && ev.originalEmissionOrder < best->originalEmissionOrder)))) {
             best = &ev;
         }
     }

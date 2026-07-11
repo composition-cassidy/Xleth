@@ -7,6 +7,7 @@ import ContextMenu from './ContextMenu.jsx'
 import useSampleViewModeStore from '../stores/sampleViewModeStore.js'
 import useSplitSyllablesPanelStore from '../stores/splitSyllablesPanelStore.js'
 import { usePanelRegistry } from '../windowing/registry/PanelRegistry.ts'
+import { getPickerPath, openFilePicker } from './filePicker/filePickerService.js'
 
 /**
  * Sample Selector tab — organises all marked regions by label.
@@ -346,7 +347,21 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
         icon: ArrowLeftRight,
         onClick: async () => {
           try {
-            const filePath = await window.xleth?.audio?.openSwapAudioDialog()
+            let exportsDir = ''
+            try {
+              const info = await window.xleth?.project?.getInfo?.()
+              exportsDir = typeof info?.exportsDir === 'string' ? info.exportsDir : ''
+            } catch {}
+            const picked = await openFilePicker({
+              mode: 'openFile',
+              title: 'Select Processed Audio',
+              subtitle: 'Choose the replacement WAV for this sample.',
+              actionLabel: 'Select Sample',
+              initialDirectory: exportsDir || undefined,
+              filters: [{ name: 'WAV Audio', extensions: ['wav'] }],
+              legacyPicker: () => window.xleth?.audio?.openSwapAudioDialog(),
+            })
+            const filePath = getPickerPath(picked)
             if (!filePath) return
             const result = await window.xleth?.audio?.swapRegionAudio(region.id, filePath)
             if (result?.success) {

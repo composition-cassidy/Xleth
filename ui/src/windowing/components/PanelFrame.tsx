@@ -12,6 +12,7 @@ import './windowing.css';
 export interface PanelFrameProps {
   id: PanelId;
   children: ReactNode;
+  titlebarContent?: ReactNode;
 }
 
 export type PanelFrameRenderPath = 'hidden' | 'docked' | 'maximized' | 'floating';
@@ -21,7 +22,7 @@ export function getPanelFrameRenderPath(panel: PanelState | null | undefined): P
   return panel.mode;
 }
 
-export function PanelFrame({ id, children }: PanelFrameProps) {
+export function PanelFrame({ id, children, titlebarContent }: PanelFrameProps) {
   // ── Primitive selectors ──────────────────────────────────────────────────────
   // Zustand v5 wraps each selector in React.useCallback([api, selector]).  When
   // the selector is an inline arrow function it gets a new reference every render,
@@ -94,7 +95,7 @@ export function PanelFrame({ id, children }: PanelFrameProps) {
           style={{ '--xleth-windowing-panel-color': panelTypeColorVar(id) } as CSSProperties}
           onMouseDown={() => { focusPanel(id); panelRef.current?.focus(); }}
         >
-          <Titlebar id={id} focused={focused} />
+          <Titlebar id={id} focused={focused}>{titlebarContent}</Titlebar>
           <div className="xleth-panel-body">{children}</div>
         </section>
       </PanelVisibilityProvider>
@@ -133,7 +134,7 @@ export function PanelFrame({ id, children }: PanelFrameProps) {
         style={frameStyle}
         onMouseDown={() => { focusPanel(id); panelRef.current?.focus(); }}
       >
-        <Titlebar id={id} focused={focused} />
+        <Titlebar id={id} focused={focused}>{titlebarContent}</Titlebar>
         <div className="xleth-panel-body">{children}</div>
         {renderPath === 'floating' ? <ResizeHandles id={id} /> : null}
       </section>

@@ -1,11 +1,13 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
-import { Import, Grid3x3, Image, Film } from 'lucide-react'
+import { Import, Grid3x3, Image, Film, Loader2 } from 'lucide-react'
 import GridEditorOverlay from './GridEditorOverlay.jsx'
 import GridEditorDock from './GridEditorDock.jsx'
 import { tokenValue } from '../theming/tokenValue.ts'
 import useGridEditStore from '../stores/useGridEditStore.js'
 import { usePanelVisibility } from '../windowing/contexts/PanelVisibilityContext'
 import { uiCanvasFont } from '../styles/typography.js'
+import { getPickerPath, openFilePicker } from './filePicker/filePickerService.js'
+import { VIDEO_EXTENSIONS } from './filePicker/filePickerHelpers.js'
 
 // ── WebGL shaders ────────────────────────────────────────────────────────────
 const VERT_SRC = `
@@ -132,6 +134,12 @@ export default function VideoPreview() {
   // instead of live video. Default ON. Preview-only — never affects render.
   const [posterMode, setPosterMode] = useState(true)
   const [initReady, setInitReady] = useState(false)
+  // Poster prepass overlay state. holdingVideo === true means the engine is
+  // holding the video compositor while the one-poster-per-source cache warms up
+  // (audio keeps playing). { active, completed, total, pending, holdingVideo }.
+  const [posterLoad, setPosterLoad] = useState({
+    active: false, completed: 0, total: 0, pending: 0, holdingVideo: false,
+  })
 
   // Restore persisted settings on mount
   useEffect(() => {
@@ -189,7 +197,22 @@ export default function VideoPreview() {
   const handleImport = useCallback(async () => {
     setImporting(true)
     try {
-      const filePath = await window.xleth?.importVideo()
+      const picked = await openFilePicker({
+        mode: 'openFile',
+        title: 'Import Video',
+        subtitle: 'Choose a video source for the preview timeline.',
+        actionLabel: 'Import',
+        filters: [
+          { name: 'Video Files', extensions: VIDEO_EXTENSIONS },
+          { name: 'All Files', extensions: ['*'] },
+        ],
+        legacyPicker: () => window.xleth?.importVideo?.(),
+      })
+      const pickedPath = getPickerPath(picked)
+      if (!pickedPath) return
+      const filePath = picked.legacy
+        ? pickedPath
+        : await window.xleth?.importVideoFromPath?.(pickedPath)
       if (filePath) setVideoFile(filePath.replace(/^.*[\\/]/, ''))
     } catch (e) {
       console.error('Video import failed:', e)
@@ -577,6 +600,52 @@ export default function VideoPreview() {
     return () => observer.disconnect()
   }, [])
 
+  // Poll the poster prepass status while poster mode is on so the loading overlay
+  // can show progress and clear itself when the cache is warm. Polls slowly when
+  // idle and quickly while the engine is actually holding video, then stops once
+  // poster mode is off. Cheap: one IPC round-trip per interval reading a few ints.
+  useEffect(() => {
+    if (!posterMode) {
+      setPosterLoad({ active: false, completed: 0, total: 0, pending: 0, holdingVideo: false })
+      return
+    }
+    let cancelled = false
+    let timer = null
+    const poll = async () => {
+      try {
+        const st = await window.xleth?.posterPrepass?.getStatus?.()
+        if (!cancelled && st) {
+          setPosterLoad({
+            active:       !!st.active,
+            completed:    st.completed | 0,
+            total:        st.total | 0,
+            pending:      st.pending | 0,
+            holdingVideo: !!st.holdingVideo,
+          })
+          // Poll fast while holding video (responsive progress bar). When idle,
+          // still poll a few times a second so the overlay appears promptly after
+          // Play engages a hold — the call is just a few ints over IPC.
+          timer = setTimeout(poll, st.holdingVideo ? 150 : 250)
+        } else if (!cancelled) {
+          timer = setTimeout(poll, 250)
+        }
+      } catch {
+        if (!cancelled) timer = setTimeout(poll, 1000)
+      }
+    }
+    poll()
+    return () => { cancelled = true; if (timer) clearTimeout(timer) }
+  }, [posterMode])
+
+  const handlePosterSkip = useCallback(async () => {
+    try { await window.xleth?.posterPrepass?.skip?.() } catch { /* no-op */ }
+    setPosterLoad((p) => ({ ...p, holdingVideo: false, active: false }))
+  }, [])
+
+  const posterLoadPct = posterLoad.total > 0
+    ? Math.round((posterLoad.completed / posterLoad.total) * 100)
+    : 0
+
   return (
     <div className={`video-preview ${videoFile ? 'has-video' : 'is-empty'}`} ref={containerRef}>
       <div className="video-header">
@@ -661,6 +730,40 @@ export default function VideoPreview() {
         <div className="video-canvas-area" ref={canvasAreaRef}>
           <canvas ref={canvasRef} width={960} height={540} className="video-canvas" />
           {gridEditMode && <GridEditorOverlay />}
+
+          {/* Poster prepass loading overlay. Shown while the engine holds the
+              video compositor to warm the one-poster-per-source cache. Audio
+              keeps playing underneath; "Skip to live" drops the hold. */}
+          {posterMode && posterLoad.holdingVideo && (
+            <div className="poster-load-overlay" role="status" aria-live="polite">
+              <div className="poster-load-card">
+                <Loader2 size={22} className="poster-load-spin" />
+                <div className="poster-load-title">Loading sample previews</div>
+                <div className="poster-load-sub">
+                  Poster mode is caching one frame per sample on the timeline.
+                  Audio is playing — video resumes when loading finishes.
+                </div>
+                <div className="poster-load-bar">
+                  <div
+                    className="poster-load-bar-fill"
+                    style={{ width: `${posterLoadPct}%` }}
+                  />
+                </div>
+                <div className="poster-load-count">
+                  {posterLoad.completed} / {posterLoad.total} samples
+                  {posterLoad.total > 0 ? ` · ${posterLoadPct}%` : ''}
+                </div>
+                <button
+                  type="button"
+                  className="poster-load-skip"
+                  onClick={handlePosterSkip}
+                  title="Stop waiting and resume video now. Remaining frames keep loading in the background."
+                >
+                  Skip to live
+                </button>
+              </div>
+            </div>
+          )}
         </div>
         {gridEditMode && <GridEditorDock />}
       </div>

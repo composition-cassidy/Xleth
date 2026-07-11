@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <nlohmann/json.hpp>
@@ -1143,10 +1144,25 @@ struct GridSlot {
 };
 
 // ─── FullscreenLayer ──────────────────────────────────────────────────────────
-// One fullscreen video layer in the grid. Layers are ordered: index 0 sits at
-// the bottom of its placement stack; later entries draw on top within the same
-// placement. BehindGrid layers render before grid cells; InFrontOfGrid layers
-// render after. Replaces the pre-v3 chorus + crash special cases.
+// One fullscreen video layer in the grid. Replaces the pre-v3 chorus + crash
+// special cases.
+//
+// zOrder is the SINGLE, globally-comparable compositing key shared with
+// GridSlot::zOrder. The render path (FrameCollector) sorts grid cells and
+// fullscreen layers together by this one number, so a fullscreen layer whose
+// zOrder sits between two grid cells' zOrders renders interleaved between them
+// (its full-canvas quad occludes whatever was drawn before it and is occluded by
+// whatever comes after). zOrder — NOT `placement` — is now the source of truth
+// for draw order.
+//
+// `placement` is retained but demoted to a behavioral/semantic label only: it
+// still drives (a) hold-through-gap behavior (BehindGrid layers persist their
+// last frame through gaps when the track has videoHoldLastFrame; InFrontOfGrid
+// layers are transient), and (b) the setFullscreenLayers auto-enable of
+// videoHoldLastFrame for BehindGrid tracks. It no longer decides compositing
+// order. Old project files (no per-layer zOrder) and the legacy bulk
+// setFullscreenLayers bridge path derive zOrder from placement + array position
+// via assignCanonicalFullscreenZOrders() so their rendering is unchanged.
 
 enum class FullscreenLayerPlacement { BehindGrid, InFrontOfGrid };
 
@@ -1154,6 +1170,7 @@ struct FullscreenLayer {
     int                      trackId   = -1;
     FullscreenLayerPlacement placement = FullscreenLayerPlacement::BehindGrid;
     float                    opacity   = 1.0f;
+    int                      zOrder    = 0;   // global compositing key (see GridSlot::zOrder)
 };
 
 // ─── GridLayout ───────────────────────────────────────────────────────────────
@@ -1182,6 +1199,52 @@ struct GridLayout {
 
     float gapScale      = 0.0f;   // 0.0–0.5
 };
+
+// ─── assignCanonicalFullscreenZOrders ─────────────────────────────────────────
+// Assign globally-comparable compositing zOrders to fullscreen layers purely
+// from their placement + array position, relative to the current grid slots.
+// This reproduces the legacy fixed "behind < grid < front" banding EXACTLY:
+//   • BehindGrid layers get values strictly below the minimum grid-slot zOrder,
+//     with array index 0 = most-negative = furthest back.
+//   • InFrontOfGrid layers get values strictly above the maximum grid-slot
+//     zOrder, preserving array order (index 0 = bottom of the front stack).
+// When there are no grid slots the grid min/max default to 0.
+//
+// Used in exactly two places, both of which have ONLY placement + array order as
+// their ordering signal (no per-layer zOrder yet):
+//   1. Project-load migration for old files whose fullscreenLayers carry no
+//      zOrder — guarantees loading an old project renders pixel-identically.
+//   2. The legacy bulk setFullscreenLayers bridge path (the current UI has no
+//      per-layer zOrder concept). The future UI phase will pass explicit zOrders
+//      and bypass this canonicalization to enable true interleaving.
+// trackId / placement / opacity are untouched.
+inline void assignCanonicalFullscreenZOrders(std::vector<FullscreenLayer>& layers,
+                                             const std::vector<GridSlot>& slots) {
+    int  gridMin = 0, gridMax = 0;
+    bool hasSlot = false;
+    for (const auto& s : slots) {
+        if (!hasSlot) { gridMin = gridMax = s.zOrder; hasSlot = true; }
+        else          { gridMin = std::min(gridMin, s.zOrder);
+                        gridMax = std::max(gridMax, s.zOrder); }
+    }
+    int behindCount = 0;
+    for (const auto& fl : layers)
+        if (fl.placement == FullscreenLayerPlacement::BehindGrid) ++behindCount;
+
+    int iBehind = 0, iFront = 0;
+    for (auto& fl : layers) {
+        if (fl.placement == FullscreenLayerPlacement::BehindGrid) {
+            // [gridMin - behindCount, gridMin - 1], increasing with array index:
+            // index 0 lands most-negative (furthest back).
+            fl.zOrder = gridMin - behindCount + iBehind;
+            ++iBehind;
+        } else {
+            // [gridMax + 1, gridMax + frontCount], increasing with array index.
+            fl.zOrder = gridMax + 1 + iFront;
+            ++iFront;
+        }
+    }
+}
 
 // Clamp a project canvas dimension to the supported encoder range and force it
 // even (H.264/H.265 require even dimensions). Shared by the model loader and the

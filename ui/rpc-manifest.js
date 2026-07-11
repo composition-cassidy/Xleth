@@ -120,7 +120,87 @@ const METHODS = [
     binary: null,
   },
 
-  // ── Transport (Phase 1 extension; play/pause/stop stay Phase 0) (AUDIT.md S1 slice 2) ──
+  // ── Phase 0 transport / status compatibility (AUDIT.md S1) ───────────────
+  {
+    method: 'play',
+    channels: ['xleth:play'],
+    api: { play: 'xleth:play', 'transport.play': 'xleth:play' },
+    handler: 'Play',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'stop',
+    channels: ['xleth:stop'],
+    api: { stop: 'xleth:stop', 'transport.stop': 'xleth:stop' },
+    handler: 'Stop',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'pause',
+    channels: ['xleth:pause'],
+    api: { pause: 'xleth:pause', 'transport.pause': 'xleth:pause' },
+    handler: 'Pause',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'getTransportState',
+    channels: ['xleth:transportState'],
+    api: {
+      getTransportState: 'xleth:transportState',
+      'transport.getState': 'xleth:transportState',
+    },
+    handler: 'GetTransportState',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'proxy_getStatus',
+    channels: ['xleth:proxy:getStatus'],
+    api: { 'proxy.getStatus': 'xleth:proxy:getStatus' },
+    handler: 'Proxy_GetStatus',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'posterPrepass_getStatus',
+    channels: ['xleth:posterPrepass:getStatus'],
+    api: { 'posterPrepass.getStatus': 'xleth:posterPrepass:getStatus' },
+    handler: 'PosterPrepass_GetStatus',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'posterPrepass_skip',
+    channels: ['xleth:posterPrepass:skip'],
+    api: { 'posterPrepass.skip': 'xleth:posterPrepass:skip' },
+    handler: 'PosterPrepass_Skip',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'getSyncStats',
+    channels: ['xleth:syncStats'],
+    api: { getSyncStats: 'xleth:syncStats', 'sync.getStats': 'xleth:syncStats' },
+    handler: 'GetSyncStats',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'setVideoResolution',
+    channels: ['xleth:setVideoResolution'],
+    api: {
+      setVideoResolution: 'xleth:setVideoResolution',
+      'video.setResolution': 'xleth:setVideoResolution',
+    },
+    handler: 'SetVideoResolution',
+    returns: 'void',
+    binary: null,
+  },
+
+  // ── Transport (Phase 1 extension) (AUDIT.md S1 slice 2) ──────────────────
   {
     method: 'transport_seek',
     channels: ['xleth:transport:seek'],

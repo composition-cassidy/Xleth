@@ -1,24 +1,24 @@
 # Xleth Audio Performance Capture
 
 ## Summary
-- Captured at: 2026-05-09T16:13:58Z
+- Captured at: 2026-07-10T08:17:48Z
 - Diagnosis: Healthy
-- Duration: 0.251 s, blocks: 24
-- Sample rate: 48000 Hz, block size: 480
+- Duration: 0.25 s, blocks: 26
+- Sample rate: 44100 Hz, block size: 441
 
 ## Realtime CPU
 - CPU health: Healthy
 - Callback deadline: 10000 us
-- Callback p50/p95/p99/max: 271 / 2747 / 4441 / 4441 us
-- MixEngine p50/p95/p99/max: 262 / 2734 / 4430 / 4430 us
+- Callback p50/p95/p99/max: 187 / 2273 / 2647 / 2647 us
+- MixEngine p50/p95/p99/max: 184 / 2271 / 2644 / 2644 us
 - Callback overruns: 0, MixEngine overruns: 0
 - Lock misses: 0, stale chain reuse: 0, dropped telemetry samples: 0
 
 ## Telemetry Coverage
 - Coverage quality: good
 - Expected callback count: 25
-- Callback samples: 24 (96%)
-- MixEngine samples: 24 (96%)
+- Callback samples: 26 (104%)
+- MixEngine samples: 26 (104%)
 - Effect samples: 0
 - Dropped during capture: 0
 - Capture accumulator overflow drops: 0
@@ -27,8 +27,8 @@
 ## Latency / PDC
 - Max audible track latency: 0 samples
 - Master insert latency: 0 samples
-- Device output latency: 480 samples
-- Live presentation latency: 480 samples
+- Device output latency: 441 samples
+- Live presentation latency: 441 samples
 - Latency epoch changes: 0, compensation target changes: 0
 - Interpretation: PDC and presentation latency are expected compensated timing and are separate from CPU deadline pressure.
 

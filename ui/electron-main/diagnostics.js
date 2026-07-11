@@ -715,17 +715,24 @@ function init(deps) {
     let savedPath = null;
     let cancelled = false;
     try {
-      const defaultPath = path.join(app.getPath('desktop') || app.getPath('home') || '.', fileName);
-      const result = await dialog.showSaveDialog(senderWin, {
-        title: 'Export Visual Preview Diagnostic',
-        defaultPath,
-        filters: [{ name: 'Text', extensions: ['txt'] }],
-      });
-      if (result.canceled) {
-        cancelled = true;
-      } else if (result.filePath) {
-        fs.writeFileSync(result.filePath, body, 'utf8');
-        savedPath = result.filePath;
+      const explicitPath = typeof extras?.destPath === 'string' ? extras.destPath : '';
+      if (explicitPath) {
+        fs.mkdirSync(path.dirname(explicitPath), { recursive: true });
+        fs.writeFileSync(explicitPath, body, 'utf8');
+        savedPath = explicitPath;
+      } else {
+        const defaultPath = path.join(app.getPath('desktop') || app.getPath('home') || '.', fileName);
+        const result = await dialog.showSaveDialog(senderWin, {
+          title: 'Export Visual Preview Diagnostic',
+          defaultPath,
+          filters: [{ name: 'Text', extensions: ['txt'] }],
+        });
+        if (result.canceled) {
+          cancelled = true;
+        } else if (result.filePath) {
+          fs.writeFileSync(result.filePath, body, 'utf8');
+          savedPath = result.filePath;
+        }
       }
     } catch (e) {
       log(`[diag] showSaveDialog failed: ${e.message}`);

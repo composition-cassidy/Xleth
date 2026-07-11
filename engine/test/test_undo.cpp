@@ -414,6 +414,31 @@ static void test10_addNotesBatchUndoRedo() {
     CHECK(idsMatch, "redo restored notes keep their assigned IDs");
 }
 
+static void test11_visualEffectParamFailureDoesNotRecordHistory() {
+    std::cout << "\n[11] SetVisualEffectParamCommand rejects stale indices without history\n";
+
+    Timeline    tl2;
+    UndoManager um2;
+
+    TrackInfo track;
+    track.name = "VisualEffectTrack";
+    const int trackId = tl2.addTrack(track);
+
+    um2.execute(std::make_unique<SetVisualEffectParamCommand>(trackId, 0, 0, 0.75f, tl2), tl2);
+    CHECK(um2.getUndoCount() == 0, "failed visual-effect parameter write is not recorded");
+
+    tl2.addVisualEffect(trackId, VisualEffect::Type::Desaturation);
+    const float oldValue = tl2.getVisualEffectChain(trackId)->at(0).params[0];
+    um2.execute(std::make_unique<SetVisualEffectParamCommand>(trackId, 0, 0, 0.75f, tl2), tl2);
+    CHECK(um2.getUndoCount() == 1, "successful visual-effect parameter write is recorded");
+    CHECK(std::fabs(tl2.getVisualEffectChain(trackId)->at(0).params[0] - 0.75f) < 0.0001f,
+          "successful visual-effect parameter write updates the value");
+
+    CHECK(um2.undo(tl2), "successful visual-effect parameter write undoes");
+    CHECK(std::fabs(tl2.getVisualEffectChain(trackId)->at(0).params[0] - oldValue) < 0.0001f,
+          "undo restores the previous visual-effect parameter value");
+}
+
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
 int main() {
@@ -427,6 +452,7 @@ int main() {
     test8_clipModulationCommandUndoRedo();
     test9_clipModulationJsonRoundTrip();
     test10_addNotesBatchUndoRedo();
+    test11_visualEffectParamFailureDoesNotRecordHistory();
 
     std::cout << "\n";
     if (g_failed == 0) {

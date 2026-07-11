@@ -177,7 +177,6 @@ export default function SampleRow({
   return (
     <div
       className={`sample-row ${isActive ? 'active' : ''}`}
-      style={isActive ? { boxShadow: `inset 2px 0 0 ${getComputedLabelColor(region.label)}` } : undefined}
       onClick={() => onSelect(region.id)}
       onContextMenu={(e) => { e.preventDefault(); onContextMenu(e, region) }}
       draggable

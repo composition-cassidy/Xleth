@@ -27,6 +27,8 @@ import {
   backdropMediaFromBackdropState,
   useBackdropMediaSettingsStore,
 } from '../backdrop/backdropMediaSettings.js'
+import { getPickerPath, openFilePicker } from './filePicker/filePickerService.js'
+import { IMAGE_EXTENSIONS } from './filePicker/filePickerHelpers.js'
 
 const VALID_NAMING_FORMATS = ['sampleNameOnly', 'categoryAndName', 'sourceAndName', 'fullLegacy']
 
@@ -430,36 +432,80 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
   }
 
   async function chooseWorkspaceBackdropImage() {
-    const chooser = getXleth()?.backdrop?.chooseImage
-    if (!chooser) return
     try {
-      const state = await chooser()
-      if (state) {
-        setBackdropState(state)
-        syncBackdropMediaFromState(state)
+      const picked = await openFilePicker({
+        mode: 'openFile',
+        title: 'Choose Workspace Backdrop',
+        subtitle: 'Select a PNG, JPEG, or WebP image for the workspace.',
+        actionLabel: 'Use Image',
+        filters: [{ name: 'Images', extensions: IMAGE_EXTENSIONS }],
+        legacyPicker: async () => {
+          const state = await getXleth()?.backdrop?.chooseImage?.()
+          return state?.imagePath || null
+        },
+      })
+      const filePath = getPickerPath(picked)
+      if (!filePath) return
+      const settings = await setBackdropMediaSettings({
+        sourceType: 'image',
+        imagePath: filePath,
+        lastError: '',
+      })
+      const state = getXleth()?.backdrop?.current || {
+        capability: backdropState?.capability || null,
+        preference: 'image',
+        mode: 'image',
+        imagePath: settings.imagePath || filePath,
+        imageUrl: null,
+        videoPath: settings.videoPath || null,
+        videoUrl: null,
+        lastError: settings.lastError || null,
       }
+      setBackdropState(state)
+      syncBackdropMediaFromState(state)
     } catch (err) {
       console.warn('[Settings] workspace backdrop image chooser failed:', err?.message || err)
     }
   }
 
   async function chooseWorkspaceBackdropVideo() {
-    const chooser = getXleth()?.backdrop?.chooseVideo
-    if (!chooser) {
-      backdropVideoInputRef.current?.click()
-      return
-    }
     try {
-      const state = await chooser()
-      if (state) {
+      const picked = await openFilePicker({
+        mode: 'openFile',
+        title: 'Choose Workspace Background Video',
+        subtitle: 'Select an MP4 video loop for the workspace.',
+        actionLabel: 'Use Video',
+        filters: [{ name: 'MP4 Video', extensions: ['mp4'] }],
+        legacyPicker: async () => {
+          const state = await getXleth()?.backdrop?.chooseVideo?.()
+          return state?.videoPath || null
+        },
+      })
+      const filePath = getPickerPath(picked)
+      if (filePath) {
+        const settings = await setBackdropMediaSettings({
+          sourceType: 'video',
+          videoPath: filePath,
+          lastError: '',
+        })
+        const state = getXleth()?.backdrop?.current || {
+          capability: backdropState?.capability || null,
+          preference: 'video',
+          mode: 'video',
+          imagePath: settings.imagePath || null,
+          imageUrl: null,
+          videoPath: settings.videoPath || filePath,
+          videoUrl: null,
+          lastError: settings.lastError || null,
+        }
         setBackdropState(state)
         syncBackdropMediaFromState(state)
         return
       }
+      if (picked?.unavailable) backdropVideoInputRef.current?.click()
     } catch (err) {
       console.warn('[Settings] workspace backdrop video chooser failed:', err?.message || err)
     }
-    backdropVideoInputRef.current?.click()
   }
 
   async function handleBackdropVideoFileChange(event) {
@@ -556,15 +602,29 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
       setDiagState({ status: 'error', message: 'Diagnostic export unavailable in this build.', path: '' })
       return
     }
-    setDiagState({ status: 'working', message: 'Collecting diagnostic...', path: '' })
     try {
+      const picked = await openFilePicker({
+        mode: 'saveFile',
+        title: 'Export Visual Preview Diagnostic',
+        subtitle: 'Choose where to write the diagnostic text file.',
+        actionLabel: 'Export',
+        defaultName: 'xleth-visual-preview-diagnostic.txt',
+        defaultExtension: 'txt',
+        filters: [{ name: 'Text Log', extensions: ['txt'] }],
+      })
+      const destPath = getPickerPath(picked)
+      if (!destPath && !picked?.unavailable) {
+        setDiagState({ status: 'idle', message: '', path: '' })
+        return
+      }
+      setDiagState({ status: 'working', message: 'Collecting diagnostic...', path: '' })
       const preview = snapshotPreviewDiag()
       const extras = {
         preview,
         proxyWebgl: collectProxyWebGLInfo(),
         previewWasMounted: !!preview,
       }
-      const result = await exporter(extras)
+      const result = await exporter(destPath ? { ...extras, destPath } : extras)
       if (result?.cancelled) {
         setDiagState({ status: 'idle', message: '', path: '' })
       } else if (result?.error) {
@@ -1004,12 +1064,36 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
       return p ? p.replace(/\\/g, '/').split('/').pop() : ''
     }
 
+    async function chooseLauncherExe() {
+      const picked = await openFilePicker({
+        mode: 'openFile',
+        title: 'Choose Launcher EXE',
+        subtitle: 'Select the executable to launch from XLETH.',
+        actionLabel: 'Choose EXE',
+        filters: [{ name: 'Windows Executable', extensions: ['exe'] }],
+        legacyPicker: () => getXleth()?.launcher?.chooseExe?.(),
+      })
+      return getPickerPath(picked)
+    }
+
+    async function chooseLauncherPng() {
+      const picked = await openFilePicker({
+        mode: 'openFile',
+        title: 'Choose Launcher Icon',
+        subtitle: 'Select a PNG icon for this launcher.',
+        actionLabel: 'Choose PNG',
+        filters: [{ name: 'PNG Image', extensions: ['png'] }],
+        legacyPicker: () => getXleth()?.launcher?.choosePng?.(),
+      })
+      return getPickerPath(picked)
+    }
+
     async function browseExeForPending() {
-      const p = await getXleth()?.launcher?.chooseExe?.()
+      const p = await chooseLauncherExe()
       if (p) setPendingLauncher(prev => ({ ...prev, exePath: p }))
     }
     async function browsePngForPending() {
-      const p = await getXleth()?.launcher?.choosePng?.()
+      const p = await chooseLauncherPng()
       if (p) setPendingLauncher(prev => ({ ...prev, iconPngPath: p }))
     }
     async function confirmAdd() {
@@ -1024,11 +1108,11 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
     }
 
     async function browseExeForEdit() {
-      const p = await getXleth()?.launcher?.chooseExe?.()
+      const p = await chooseLauncherExe()
       if (p) setEditDraft(d => ({ ...d, exePath: p }))
     }
     async function browsePngForEdit() {
-      const p = await getXleth()?.launcher?.choosePng?.()
+      const p = await chooseLauncherPng()
       if (p) setEditDraft(d => ({ ...d, iconPngPath: p }))
     }
     async function confirmEdit() {

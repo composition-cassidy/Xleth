@@ -1268,7 +1268,7 @@ static void test_S15_activationFallbackReversedClip()
     const bool useModulatedReader3 =
         xleth::clipmod::isClipModulationCompatible(
             c.reversed, c.stretchRatio, c.formantPreserve, mod);
-    CHECK(!useModulatedReader3, "formantPreserve clip falls back to cache path");
+    CHECK(useModulatedReader3, "F.1: formantPreserve clip uses post-cache modulated path");
 
     c.formantPreserve = false;
     const bool useModulatedReader4 =
@@ -1499,8 +1499,8 @@ static void test_F0_compatibilityHelperAgreesWithLegacyPredicate()
     c.stretchRatio = 1.0;
 
     c.formantPreserve = true;
-    CHECK(!xleth::clipmod::isClipModulationCompatible(c.reversed, c.stretchRatio, c.formantPreserve, c.modulation),
-          "formant-preserve: helper says NOT compatible");
+    CHECK(xleth::clipmod::isClipModulationCompatible(c.reversed, c.stretchRatio, c.formantPreserve, c.modulation),
+          "F.1: formant-preserve helper says compatible (post-cache)");
 
     c.formantPreserve = false;
     c.modulation.enabled = false;

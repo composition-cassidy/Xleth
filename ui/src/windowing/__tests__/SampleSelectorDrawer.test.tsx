@@ -138,7 +138,9 @@ describe('SampleSelectorDrawer', () => {
     expect(html).toContain('xleth-sample-selector-drawer');
     expect(html).toContain('Project Media');
     expect(html).toContain('Sample Selector');
-    expect(html).toContain('Grid Settings');
+    // The GRID tab (Grid Settings) was removed in Phase 3 — grid/canvas/track
+    // video settings now live in the Timeline's Video tab, not the left drawer.
+    expect(html).not.toContain('Grid Settings');
     expect(html).not.toContain('xleth-sample-selector-drawer__chrome');
     expect(html).toContain('xleth-sample-selector-drawer__edge-toggle--expanded');
     expect(html).toContain('aria-label="Collapse Sample Selector drawer"');

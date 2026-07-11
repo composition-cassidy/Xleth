@@ -8,13 +8,13 @@
 // converge here. The applier:
 //   1. Groups events by trackId.
 //   2. Per track, sorts events by tick, preserving event order within ties.
-//   3. Builds a TriggerEvent list and runs `resolveStateIndex`
+//   3. Collapses same-tick note stacks into ONE TriggerEvent per group (a chord
+//      is a single flip trigger for every modifier), then runs `resolveStateIndex`
 //      (the pure resolver from VideoFlipResolver.h) ONCE per track.
-//   4. Writes monoOrdinal / stateIndex / orientation back to each event.
-//      EveryNote includes every note-on, including same-tick chord members.
-//      Other modifiers keep chord-transparent behavior: chord events inherit
-//      stateIndex from the most recent prior mono event (or startStateIndex if
-//      none), do not advance state, and are marked monoOrdinal = -1.
+//   4. Writes monoOrdinal / stateIndex / orientation back to each event. Every
+//      member of a same-tick group shares that group's single resolved state and
+//      its group ordinal (monoOrdinal), so a chord advances the flip exactly once
+//      and all members render identically regardless of which one is drawn.
 //
 // Determinism: same project + same input event list → same output. The
 // applier is pure, stateless, and threadsafe.

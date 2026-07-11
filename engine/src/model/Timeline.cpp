@@ -1184,6 +1184,28 @@ void Timeline::removeTrackFromGrid(int trackId) {
               << " (removed " << (before - m_gridLayout.slots.size()) << " slot(s))\n";
 }
 
+Timeline::PlacementKind Timeline::setPlacementZOrder(int trackId, int zOrder) {
+    // Grid placement wins (a track is grid-slotted OR fullscreen, never both).
+    for (auto& s : m_gridLayout.slots) {
+        if (s.trackId == trackId) {
+            s.zOrder = zOrder;
+            std::cout << "[Timeline] Set placement zOrder track " << trackId
+                      << " (grid) = " << zOrder << "\n";
+            return PlacementKind::Grid;
+        }
+    }
+    bool touched = false;
+    for (auto& fl : m_gridLayout.fullscreenLayers) {
+        if (fl.trackId == trackId) { fl.zOrder = zOrder; touched = true; }
+    }
+    if (touched) {
+        std::cout << "[Timeline] Set placement zOrder track " << trackId
+                  << " (fullscreen) = " << zOrder << "\n";
+        return PlacementKind::Fullscreen;
+    }
+    return PlacementKind::None;
+}
+
 void Timeline::setFullscreenLayers(std::vector<FullscreenLayer> layers) {
     m_gridLayout.fullscreenLayers = std::move(layers);
     // Auto-enable hold-last-frame on every BehindGrid layer's track — every
@@ -1379,6 +1401,11 @@ nlohmann::json Timeline::toJSON() const {
         flj["placement"] = (fl.placement == FullscreenLayerPlacement::BehindGrid)
                               ? "behind" : "front";
         flj["opacity"]   = fl.opacity;
+        // zOrder: the global compositing key. Additive field (like the canvas
+        // fields) — old readers ignore it; new readers use it verbatim so a
+        // project that interleaves a fullscreen layer between grid cells round-
+        // trips exactly. Its absence is what triggers load-time canonicalization.
+        flj["zOrder"]    = fl.zOrder;
         gl["fullscreenLayers"].push_back(flj);
     }
     gl["slots"] = nlohmann::json::array();
@@ -1564,6 +1591,12 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
                           << coordScale << ")\n";
             }
 
+            // Tracks whether ANY fullscreen layer arrived without a per-layer
+            // zOrder. Old files (pre-unified-zOrder) and the legacy chorus/crash
+            // synthesis path have none, so their draw order must be reconstructed
+            // from placement + array order via assignCanonicalFullscreenZOrders
+            // once the grid slots are known (done after the slots block below).
+            bool anyLayerMissingZOrder = false;
             if (gl.contains("fullscreenLayers") && gl.at("fullscreenLayers").is_array()) {
                 for (const auto& flj : gl.at("fullscreenLayers")) {
                     FullscreenLayer fl;
@@ -1581,6 +1614,10 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
                         float o = flj.at("opacity").get<float>();
                         fl.opacity = std::clamp(o, 0.0f, 1.0f);
                     }
+                    if (flj.contains("zOrder") && flj.at("zOrder").is_number())
+                        flj.at("zOrder").get_to(fl.zOrder);
+                    else
+                        anyLayerMissingZOrder = true;   // old-format layer
                     // Drop dangling track refs silently — the source track
                     // may have been deleted before this project was saved.
                     if (fl.trackId < 0 || m_tracks.find(fl.trackId) == m_tracks.end())
@@ -1615,6 +1652,8 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
                     m_gridLayout.fullscreenLayers.push_back(fl);
                 }
                 if (!m_gridLayout.fullscreenLayers.empty()) {
+                    // Synthesized legacy layers carry no zOrder → canonicalize below.
+                    anyLayerMissingZOrder = true;
                     std::cout << "[Timeline] Migrated " << m_gridLayout.fullscreenLayers.size()
                               << " legacy chorus/crash entries into fullscreenLayers\n";
                 }
@@ -1645,6 +1684,19 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
                     s.spanY *= coordScale;
                     m_gridLayout.slots.push_back(s);
                 }
+            }
+
+            // ── zOrder migration (lossless) ──────────────────────────────────
+            // Old projects (and legacy chorus/crash synthesis) have no per-layer
+            // zOrder. Reconstruct the exact legacy "behind < grid < front" draw
+            // order from placement + array position now that the grid slots (and
+            // therefore their min/max zOrder) are known. Files that already carry
+            // per-layer zOrder are used verbatim so interleaved orderings survive.
+            if (anyLayerMissingZOrder && !m_gridLayout.fullscreenLayers.empty()) {
+                assignCanonicalFullscreenZOrders(m_gridLayout.fullscreenLayers,
+                                                 m_gridLayout.slots);
+                std::cout << "[ZOrderMigration] Assigned canonical fullscreen zOrders for "
+                          << m_gridLayout.fullscreenLayers.size() << " layer(s)\n";
             }
         }
 

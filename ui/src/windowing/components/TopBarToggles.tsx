@@ -27,7 +27,6 @@ interface LayoutPresetButton {
 const LAYOUT_PRESETS: LayoutPresetButton[] = [
   { id: 'fl-compose', label: 'FL', title: 'Reset to FL Compose layout' },
   { id: 'vegas-arrange', label: 'VG', title: 'Switch to Vegas Arrange layout' },
-  { id: 'grid-edit', label: 'GR', title: 'Switch to Grid Edit layout' },
 ];
 
 const DOCK_BUTTONS: Array<{

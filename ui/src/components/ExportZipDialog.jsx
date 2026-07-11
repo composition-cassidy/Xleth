@@ -1,5 +1,16 @@
 import { useEffect, useState } from 'react'
 import ProgressBar from './ProgressBar.jsx'
+import { getPickerPath, openFilePicker } from './filePicker/filePickerService.js'
+
+function basename(filePath) {
+  return String(filePath || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop() || ''
+}
+
+function joinPath(dirPath, fileName) {
+  const dir = String(dirPath || '')
+  if (!dir) return fileName
+  return `${dir.replace(/[\\/]+$/, '')}\\${fileName}`
+}
 
 export default function ExportZipDialog({ isOpen, onClose }) {
   const [mode, setMode] = useState('full')
@@ -41,10 +52,33 @@ export default function ExportZipDialog({ isOpen, onClose }) {
   }, [isOpen])
 
   const start = async () => {
-    setPhase('preparing')
     setPercent(0)
     setErrorMsg('')
-    const result = await window.xleth?.project?.exportZip?.({ mode })
+
+    let info = null
+    try {
+      info = await window.xleth?.project?.getInfo?.()
+    } catch {}
+    const projectStem = basename(info?.projectDir) || 'project'
+    const defaultName = `${projectStem}.zip`
+    const picked = await openFilePicker({
+      mode: 'saveFile',
+      title: 'Export Project as ZIP',
+      subtitle: 'Choose where the project bundle should be written.',
+      actionLabel: 'Export',
+      defaultPath: info?.exportsDir ? joinPath(info.exportsDir, defaultName) : undefined,
+      defaultName,
+      defaultExtension: 'zip',
+      filters: [{ name: 'ZIP Archive', extensions: ['zip'] }],
+    })
+    const destPath = getPickerPath(picked)
+    if (!destPath && !picked?.unavailable) {
+      setPhase('idle')
+      return
+    }
+
+    setPhase('preparing')
+    const result = await window.xleth?.project?.exportZip?.(destPath ? { mode, destPath } : { mode })
     if (!result) {
       setPhase('error')
       setErrorMsg('No response from main process')

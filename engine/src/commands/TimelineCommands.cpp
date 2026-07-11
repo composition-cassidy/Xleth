@@ -1301,6 +1301,47 @@ std::string SetFullscreenLayersCommand::describe() const {
     return "Set Fullscreen Layers (count=" + std::to_string(newLayers_.size()) + ")";
 }
 
+// ─── SetPlacementZOrderCommand ────────────────────────────────────────────────
+
+SetPlacementZOrderCommand::SetPlacementZOrderCommand(int trackId, int newZOrder,
+                                                     const Timeline& timeline)
+    : trackId_(trackId), newZOrder_(newZOrder)
+{
+    // Snapshot the current placement zOrder for undo (grid slot wins; a track is
+    // grid-slotted OR fullscreen by construction).
+    const GridLayout& gl = timeline.getGridLayout();
+    for (const auto& s : gl.slots) {
+        if (s.trackId == trackId) {
+            hadPlacement_ = true;
+            oldZOrder_    = s.zOrder;
+            return;
+        }
+    }
+    for (const auto& fl : gl.fullscreenLayers) {
+        if (fl.trackId == trackId) {
+            hadPlacement_ = true;
+            oldZOrder_    = fl.zOrder;
+            return;
+        }
+    }
+    // hadPlacement_ stays false → execute/undo are no-ops.
+}
+
+void SetPlacementZOrderCommand::execute(Timeline& timeline) {
+    if (!hadPlacement_) return;
+    timeline.setPlacementZOrder(trackId_, newZOrder_);
+}
+
+void SetPlacementZOrderCommand::undo(Timeline& timeline) {
+    if (!hadPlacement_) return;
+    timeline.setPlacementZOrder(trackId_, oldZOrder_);
+}
+
+std::string SetPlacementZOrderCommand::describe() const {
+    return "Set Placement zOrder (track " + std::to_string(trackId_)
+         + " = " + std::to_string(newZOrder_) + ")";
+}
+
 // ─── SetPreviewFpsCommand ─────────────────────────────────────────────────────
 
 SetPreviewFpsCommand::SetPreviewFpsCommand(int fps, const Timeline& timeline)
@@ -2401,17 +2442,37 @@ SetVisualEffectParamCommand::SetVisualEffectParamCommand(
 }
 
 void SetVisualEffectParamCommand::execute(Timeline& timeline) {
-    timeline.setVisualEffectParam(trackId_, effectIndex_, paramIndex_, newValue_);
+    const bool applied = timeline.setVisualEffectParam(trackId_, effectIndex_, paramIndex_, newValue_);
+    applied_ = applied;
+    if (!applied) {
+        // A stale chain/index must not become a no-op undo-history entry.
+        std::cerr << "[Undo] ERROR SetVisualEffectParamCommand::execute: setVisualEffectParam failed"
+                  << " (trackId=" << trackId_
+                  << " effectIndex=" << effectIndex_
+                  << " paramIndex=" << paramIndex_
+                  << " value=" << newValue_ << ")\n";
+    }
 }
 
 void SetVisualEffectParamCommand::undo(Timeline& timeline) {
-    timeline.setVisualEffectParam(trackId_, effectIndex_, paramIndex_, oldValue_);
+    const bool restored = timeline.setVisualEffectParam(trackId_, effectIndex_, paramIndex_, oldValue_);
+    if (!restored) {
+        std::cerr << "[Undo] ERROR SetVisualEffectParamCommand::undo: setVisualEffectParam failed"
+                  << " (trackId=" << trackId_
+                  << " effectIndex=" << effectIndex_
+                  << " paramIndex=" << paramIndex_
+                  << " value=" << oldValue_ << ")\n";
+    }
 }
 
 std::string SetVisualEffectParamCommand::describe() const {
     return "Set Visual Effect Param (track=" + std::to_string(trackId_)
            + " effect=" + std::to_string(effectIndex_)
            + " param=" + std::to_string(paramIndex_) + ")";
+}
+
+bool SetVisualEffectParamCommand::shouldRecordInUndoHistory() const {
+    return applied_;
 }
 
 // ─── SetVisualEffectBypassedCommand ──────────────────────────────────────────

@@ -5,6 +5,7 @@ import DiscordTab from './exportPresets/DiscordTab.jsx'
 import CustomTab, { makeCustomDefaults } from './exportPresets/CustomTab.jsx'
 import ProgressPanel from './exportPresets/ProgressPanel.jsx'
 import TailRenderControls from './TailRenderControls.jsx'
+import { getPickerPath, openFilePicker } from './filePicker/filePickerService.js'
 import {
   computeDiscordVideoBitrate,
   DISCORD_MIN_VIDEO_BITRATE,
@@ -176,7 +177,17 @@ export default function VideoExportDialog({ isOpen, onClose }) {
 
   // ── Handlers ───────────────────────────────────────────────────────
   const browse = useCallback(async () => {
-    const p = await window.xleth?.videoExport?.exportSaveAsDialog('export.mp4')
+    const picked = await openFilePicker({
+      mode: 'saveFile',
+      title: 'Export Video As',
+      subtitle: 'Choose the video render destination.',
+      actionLabel: 'Export',
+      defaultName: 'export.mp4',
+      defaultExtension: 'mp4',
+      filters: [{ name: 'MP4 Video', extensions: ['mp4'] }],
+      legacyPicker: () => window.xleth?.videoExport?.exportSaveAsDialog('export.mp4'),
+    })
+    const p = getPickerPath(picked)
     if (p) setOutputPath(p)
   }, [])
 

@@ -43,16 +43,6 @@ describe('PresetManager', () => {
     expect(preset.panels.preview.focused).toBe(true);
   });
 
-  it('grid-edit: gridSettings focused floating, preview floating, timeline bottom, mixer hidden', () => {
-    const preset = loadPreset('grid-edit')!;
-    expect(preset.panels.gridSettings.hidden).toBe(false);
-    expect(preset.panels.gridSettings.mode).toBe('floating');
-    expect(preset.panels.preview.mode).toBe('floating');
-    expect(preset.panels.timeline.floating.y).toBe(660);
-    expect(preset.panels.mixer.hidden).toBe(true);
-    expect(preset.panels.gridSettings.focused).toBe(true);
-  });
-
   it('unknown preset returns null', () => {
     expect(loadPreset('nonexistent-preset')).toBeNull();
   });

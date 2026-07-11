@@ -150,7 +150,7 @@ html[data-xleth-backdrop="native-acrylic"] .xleth-backdrop-layer {
 .xleth-backdrop-native-acrylic .xleth-app-workarea,
 .xleth-backdrop-native-acrylic .xleth-center-column,
 .xleth-backdrop-native-acrylic .xleth-floating-work-area {
-  background: var(--theme-primitive-app-bg);
+  background: transparent;
   background-image: none;
 }
 
@@ -390,6 +390,16 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   align-self: stretch;
 }
 
+.xleth-windowing-titlebar-content {
+  display: flex;
+  align-items: stretch;
+  align-self: stretch;
+  min-width: 0;
+  flex: 0 1 auto;
+  -webkit-app-region: no-drag;
+  pointer-events: auto;
+}
+
 .xleth-windowing-controls {
   display: flex;
   align-items: center;
@@ -440,6 +450,81 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   width: 12px;
   height: 12px;
 }
+
+.timeline-titlebar-tabs {
+  display: flex;
+  align-items: stretch;
+  align-self: stretch;
+  min-width: 260px;
+  width: min(520px, 34vw);
+  border-left: 1px solid var(--xleth-flat-border, var(--theme-border-subtle));
+  border-right: 1px solid var(--xleth-flat-border, var(--theme-border-subtle));
+}
+
+.timeline-titlebar-tab,
+.timeline-titlebar-tab.xleth-button {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  padding: 0 12px;
+  border: 0;
+  border-right: 1px solid var(--xleth-flat-border, var(--theme-border-subtle));
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--xleth-flat-text-muted, var(--theme-text-muted));
+  font: inherit;
+  font-size: 9.5px;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.timeline-titlebar-tab:last-child {
+  border-right: 0;
+}
+
+.timeline-titlebar-tab span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline-titlebar-tab:hover,
+.timeline-titlebar-tab.xleth-button:hover:not(:disabled) {
+  background: transparent;
+  box-shadow: none;
+  color: var(--xleth-flat-text-secondary, var(--theme-text));
+}
+
+.timeline-titlebar-tab.active,
+.timeline-titlebar-tab.xleth-button[data-active="true"] {
+  background: var(--xleth-flat-panel, var(--theme-bg-primary));
+  color: var(--xleth-flat-text-secondary, var(--theme-text));
+  box-shadow: inset 0 -2px 0 var(--xleth-flat-accent, var(--theme-accent));
+}
+
+.timeline-titlebar-tab.xleth-button[data-active="true"]::after {
+  content: none;
+}
+
+.timeline-titlebar-tab:focus-visible,
+.timeline-titlebar-tab.xleth-button:focus-visible {
+  outline: 1px solid var(--xleth-flat-accent, var(--theme-border-focus));
+  outline-offset: -1px;
+}
+
+@media (max-width: 760px) {
+  .timeline-titlebar-tabs {
+    min-width: 156px;
+    width: 36vw;
+  }
+}
+
 
 .xleth-panel-body {
   flex: 1 1 auto;

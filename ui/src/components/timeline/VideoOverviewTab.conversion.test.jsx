@@ -1,15 +1,20 @@
 // @vitest-environment jsdom
 //
+// Ported from the deleted components/grid/GridSettingsPanel.conversion.test.jsx.
+//
 // Regression: canvas aspect/resolution/FPS changes and grid resize must never
 // silently lose user-authored grid placements or fullscreen layers.
 //
-// Reproduces the reported "placements become unplaced" bug using a layout that
-// mirrors the real FAMILY GUY REDBULL project (4:3, 3×3, 5 slots) and the
-// generic 16:9→9:16 conversion the spec calls out.
+// Phase 3 relocated these controls: canvas (aspect/resolution/FPS) now lives in
+// VideoCanvasSettingsPopover; grid size lives inline in VideoOverviewTab. The
+// slot-preservation logic (confirmGridResize keeps out-of-bounds placements;
+// persistCanvas re-reads the engine layout as its base) moved verbatim, so the
+// same regression assertions apply.
 import React, { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createRoot } from 'react-dom/client'
-import GridSettingsPanel from './GridSettingsPanel.jsx'
+import VideoOverviewTab from './VideoOverviewTab.jsx'
+import VideoCanvasSettingsPopover from './VideoCanvasSettingsPopover.jsx'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
@@ -44,21 +49,39 @@ const trackList = (layout) => [
   ...(layout.fullscreenLayers ?? []).map(l => ({ id: l.trackId, name: 'FS' + l.trackId })),
 ]
 
-let container, root, setGridLayout, setFullscreenLayers, setPreviewFps, getGridLayout
+let container, root, setGridLayout, setFullscreenLayers, setPreviewFps, getGridLayout, getTracks
 
 async function flush() { await act(async () => { await Promise.resolve() }) }
 
-async function render(layout) {
-  let cur = layout
-  const setLayout = (u) => { cur = typeof u === 'function' ? u(cur) : u }
+// VideoOverviewTab hosts the inline grid-size inputs. It fetches the layout from
+// the engine on mount, so seed getGridLayout with the layout under test.
+async function renderTab(layout) {
+  getGridLayout.mockResolvedValue(layout)
+  getTracks.mockResolvedValue(trackList(layout))
+  await act(async () => { root.render(<VideoOverviewTab />) })
+  await flush()
+  await flush()
+}
+
+// VideoCanvasSettingsPopover hosts aspect/resolution/FPS. persistCanvas re-reads
+// getGridLayout() as its base — the engine layout, not the React prop.
+async function renderPopover(propLayout, engineLayout = propLayout) {
+  getGridLayout.mockResolvedValue(engineLayout)
+  const setLayout = vi.fn()
   await act(async () => {
-    root.render(<GridSettingsPanel layout={layout} setLayout={setLayout} tracks={trackList(layout)} />)
+    root.render(
+      <VideoCanvasSettingsPopover
+        layout={propLayout}
+        setLayout={setLayout}
+        onClose={() => {}}
+        triggerRef={{ current: null }}
+      />
+    )
   })
   await flush()
 }
 
 async function changeSelect(trigger, value) {
-  // XlethSelect: click trigger to open portal, then click the option by data-value.
   await act(async () => { trigger.click() })
   await flush()
   const option = Array.from(document.querySelectorAll('[data-value]'))
@@ -76,8 +99,9 @@ async function changeInput(input, value) {
 
 const lastGridLayout = () => setGridLayout.mock.calls.at(-1)?.[0]
 const ids = (slots) => (slots ?? []).map(s => s.trackId).sort((a, b) => a - b)
+const canvasSelects = () => Array.from(container.querySelectorAll('.gsp-canvas-select'))
 
-describe('GridSettingsPanel — canvas conversion never loses placements', () => {
+describe('Video tab — canvas conversion never loses placements', () => {
   beforeEach(() => {
     container = document.createElement('div'); document.body.appendChild(container)
     root = createRoot(container)
@@ -85,15 +109,15 @@ describe('GridSettingsPanel — canvas conversion never loses placements', () =>
     setFullscreenLayers = vi.fn().mockResolvedValue(true)
     setPreviewFps = vi.fn().mockResolvedValue(true)
     getGridLayout = vi.fn()
-    window.xleth = { timeline: { setGridLayout, setFullscreenLayers, setPreviewFps, getGridLayout } }
+    getTracks = vi.fn().mockResolvedValue([])
+    window.xleth = { timeline: { setGridLayout, setFullscreenLayers, setPreviewFps, getGridLayout, getTracks } }
   })
   afterEach(() => { act(() => root.unmount()); container.remove(); vi.restoreAllMocks() })
 
   // ── The reported regression ────────────────────────────────────────────────
   it('aspect 16:9 -> 9:16 preserves every slot (count, IDs, geometry) and fullscreen layers', async () => {
-    getGridLayout.mockResolvedValue(SIXTEEN_NINE)
-    await render(SIXTEEN_NINE)
-    await changeSelect(container.querySelector('.gsp-canvas-select'), '9:16')
+    await renderPopover(SIXTEEN_NINE)
+    await changeSelect(canvasSelects()[0], '9:16')
 
     const p = lastGridLayout()
     expect(p.canvasAspectRatio).toBe('9:16')
@@ -105,9 +129,8 @@ describe('GridSettingsPanel — canvas conversion never loses placements', () =>
   })
 
   it('aspect 4:3 -> 9:16 on the real-project layout keeps all 5 slots + media refs (trackIds)', async () => {
-    getGridLayout.mockResolvedValue(REAL_LAYOUT)
-    await render(REAL_LAYOUT)
-    await changeSelect(container.querySelector('.gsp-canvas-select'), '9:16')
+    await renderPopover(REAL_LAYOUT)
+    await changeSelect(canvasSelects()[0], '9:16')
 
     const p = lastGridLayout()
     expect(p.slots).toHaveLength(5)
@@ -121,11 +144,10 @@ describe('GridSettingsPanel — canvas conversion never loses placements', () =>
   it('canvas change uses the engine layout as base — slots survive even if the React layout prop is partial', async () => {
     // The React prop arrives WITHOUT slots/fullscreen (simulating a stale/partial
     // render), but the engine still holds the real placements.
-    getGridLayout.mockResolvedValue(REAL_LAYOUT)
     const partial = { columns: 3, rows: 3, previewFps: 30, gapScale: 0,
       canvasWidth: 1024, canvasHeight: 768, canvasAspectRatio: '4:3' }
-    await render(partial)
-    await changeSelect(container.querySelector('.gsp-canvas-select'), '16:9')
+    await renderPopover(partial, REAL_LAYOUT)
+    await changeSelect(canvasSelects()[0], '16:9')
 
     const p = lastGridLayout()
     expect(p.canvasAspectRatio).toBe('16:9')
@@ -135,10 +157,8 @@ describe('GridSettingsPanel — canvas conversion never loses placements', () =>
 
   // ── Resolution-only (same aspect) is non-geometric ──────────────────────────
   it('resolution-only change (same aspect) leaves slot geometry untouched', async () => {
-    getGridLayout.mockResolvedValue(REAL_LAYOUT)
-    await render(REAL_LAYOUT)
-    const [, sizeSel] = Array.from(container.querySelectorAll('.gsp-canvas-select'))
-    await changeSelect(sizeSel, '2048x1536') // 4:3 -> 4:3, just bigger
+    await renderPopover(REAL_LAYOUT)
+    await changeSelect(canvasSelects()[1], '2048x1536') // 4:3 -> 4:3, just bigger
 
     const p = lastGridLayout()
     expect(p.canvasWidth).toBe(2048)
@@ -149,10 +169,8 @@ describe('GridSettingsPanel — canvas conversion never loses placements', () =>
 
   // ── FPS is timing-only ──────────────────────────────────────────────────────
   it('FPS change never touches geometry (no setGridLayout, only setPreviewFps)', async () => {
-    getGridLayout.mockResolvedValue(REAL_LAYOUT)
-    await render(REAL_LAYOUT)
-    const [, , fps] = Array.from(container.querySelectorAll('.gsp-canvas-select'))
-    await changeSelect(fps, '60')
+    await renderPopover(REAL_LAYOUT)
+    await changeSelect(canvasSelects()[2], '60')
 
     expect(setPreviewFps).toHaveBeenCalledWith(60)
     expect(setGridLayout).not.toHaveBeenCalled()
@@ -161,7 +179,7 @@ describe('GridSettingsPanel — canvas conversion never loses placements', () =>
   // ── Grid shrink: no silent deletion ─────────────────────────────────────────
   it('column reduction 3 -> 2 keeps ALL slots (out-of-bounds preserved, not deleted) when confirmed', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true)
-    await render(REAL_LAYOUT)
+    await renderTab(REAL_LAYOUT)
     await changeInput(container.querySelector('.gsp-dim-input'), '2')
 
     const p = lastGridLayout()
@@ -172,7 +190,7 @@ describe('GridSettingsPanel — canvas conversion never loses placements', () =>
 
   it('column reduction that would orphan a placement asks for confirmation and aborts on cancel', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    await render(REAL_LAYOUT)
+    await renderTab(REAL_LAYOUT)
     await changeInput(container.querySelector('.gsp-dim-input'), '1')
 
     expect(confirmSpy).toHaveBeenCalledTimes(1)
@@ -181,7 +199,7 @@ describe('GridSettingsPanel — canvas conversion never loses placements', () =>
 
   it('column INCREASE never prompts (no placement can be orphaned)', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    await render(REAL_LAYOUT)
+    await renderTab(REAL_LAYOUT)
     await changeInput(container.querySelector('.gsp-dim-input'), '5')
 
     expect(confirmSpy).not.toHaveBeenCalled()

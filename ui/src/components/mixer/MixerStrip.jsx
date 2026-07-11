@@ -4,9 +4,28 @@ import useTimelineFocusStore from '../../stores/timelineFocusStore.js'
 import Knob from '../sampler/Knob.jsx'
 import VolumeFader, { FaderReadout } from './VolumeFader.jsx'
 import PeakMeter from './PeakMeter.jsx'
-import EffectChainPanel from './EffectChainPanel.jsx'
+import useEffectChainStore, { resolveFxMode } from '../../stores/effectChainStore.js'
+
+const EMPTY_CHAIN = []
+
+function FxBadge({ chain = EMPTY_CHAIN, fxMode = 'chain' }) {
+  const graphModeActive = fxMode === 'graph'
+  const empty = chain.length === 0
+  const label = graphModeActive ? 'FX Graph' : empty ? 'No FX' : `FX ${chain.length}`
+
+  return (
+    <div
+      className={`mixer-strip-fx-badge${graphModeActive ? ' mixer-strip-fx-badge--graph' : ''}${empty && !graphModeActive ? ' mixer-strip-fx-badge--empty' : ''}`}
+      title={label}
+    >
+      {graphModeActive && <span className="mixer-strip-fx-badge-dot" aria-hidden="true" />}
+      <span className="mixer-strip-fx-badge-text">{label}</span>
+    </div>
+  )
+}
 
 export default function MixerStrip({ trackId }) {
+  const fxKey = String(trackId)
   const track = useMixerStore(s => s.tracks[trackId])
   const tracks = useMixerStore(s => s.tracks)
   const outputRoutes = useMixerStore(s => s.outputRoutes)
@@ -23,6 +42,8 @@ export default function MixerStrip({ trackId }) {
   const selectedChainKey = useMixerStore(s => s.selectedChainKey)
   const setSelectedChainKey = useMixerStore(s => s.setSelectedChainKey)
   const setFocusedTrackId = useTimelineFocusStore(s => s.setFocusedTrackId)
+  const chain = useEffectChainStore(s => s.chains[fxKey] ?? EMPTY_CHAIN)
+  const fxMode = useEffectChainStore(s => resolveFxMode(s.fxModes, fxKey))
 
   const handleVolume = useCallback((gain) => setVolume(trackId, gain), [trackId, setVolume])
   const handlePanLive = useCallback((v) => setPan(trackId, v), [trackId, setPan])
@@ -68,8 +89,7 @@ export default function MixerStrip({ trackId }) {
         {track.name}
       </div>
 
-      {/* Effects list preview */}
-      <EffectChainPanel trackId={trackId} mode="preview" />
+      <FxBadge chain={chain} fxMode={fxMode} />
 
       {/* Mute / Solo / Visual-only */}
       <div className="mixer-strip-controls">

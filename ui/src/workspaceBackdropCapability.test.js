@@ -154,6 +154,37 @@ describe('workspace backdrop capability helper', () => {
     expect(JSON.parse(fs.readFileSync(cachePath, 'utf8'))).toEqual(capability)
   })
 
+  it('applies native Acrylic when the runtime supports it', () => {
+    const win = {
+      calls: [],
+      setBackgroundMaterial(material) {
+        this.calls.push(material)
+      },
+    }
+
+    const result = applyWorkspaceBackdropMaterial(win, {
+      capability: { supportsNativeSystemBackdrop: true },
+      preference: 'acrylic',
+    })
+
+    expect(result).toMatchObject({
+      mode: 'native-acrylic',
+      requestedMaterial: 'acrylic',
+      appliedMaterial: 'acrylic',
+      applySucceeded: true,
+    })
+    expect(win.calls).toEqual(['acrylic'])
+  })
+
+  it('creates the main window with a transparent backing for native Acrylic', () => {
+    const source = fs.readFileSync(path.resolve(process.cwd(), 'main.js'), 'utf8')
+    const createWindow = source.match(/function createWindow\(\) \{[\s\S]*?applyMainWorkspaceBackdrop\('startup'\);/)?.[0] || ''
+
+    expect(createWindow).toMatch(/backgroundColor:\s*'#00000000'/)
+    expect(createWindow).toMatch(/backgroundMaterial:\s*'none'/)
+    expect(createWindow).toMatch(/transparent:\s*true/)
+  })
+
   it('treats image as a renderer backdrop while resetting native material', () => {
     const win = {
       calls: [],

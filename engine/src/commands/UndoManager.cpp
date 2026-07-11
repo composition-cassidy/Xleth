@@ -4,6 +4,10 @@
 UndoManager::UndoManager(int maxHistory) : maxHistory_(maxHistory) {}
 
 void UndoManager::execute(std::unique_ptr<Command> cmd, Timeline& timeline) {
+    const std::string desc = cmd->describe();
+    cmd->execute(timeline);
+    if (!cmd->shouldRecordInUndoHistory()) return;
+
     // Branch detection (pre-push): if the savepoint lies in the redo history
     // we're about to discard, the savepoint command is being destroyed.
     // In the pop-on-undo model, that's the case when savepointIndex_ is
@@ -19,8 +23,6 @@ void UndoManager::execute(std::unique_ptr<Command> cmd, Timeline& timeline) {
         redoStack_.clear();
     }
 
-    const std::string desc = cmd->describe();
-    cmd->execute(timeline);
     undoStack_.push_back(std::move(cmd));
 
     // Enforce history cap — drop the oldest entry if exceeded
@@ -69,6 +71,7 @@ bool UndoManager::redo(Timeline& timeline) {
     auto& cmd = redoStack_.back();
     const std::string desc = cmd->describe();
     cmd->execute(timeline);
+    if (!cmd->shouldRecordInUndoHistory()) return false;
     undoStack_.push_back(std::move(cmd));
     redoStack_.pop_back();
 

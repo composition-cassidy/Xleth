@@ -600,6 +600,65 @@ int main()
         std::fprintf(stderr, "[TEST:Compositor] Test 9: PASSED\n");
     }
 
+    // ── Test 10: fullscreen layer interleaved BETWEEN two grid cells ────────
+    // The core new behavior: a fullscreen layer is no longer forced fully behind
+    // or fully in front. Drawn in request order (grid red z0, fullscreen blue z5,
+    // grid green z10), the blue full-canvas layer must occlude the red left cell
+    // (blue is above red) yet be occluded by the green right cell (blue is below
+    // green) — i.e. it composites strictly between them.
+    {
+        std::fprintf(stderr, "\n[TEST:Compositor] --- Test 10: interleaved fullscreen layer ---\n");
+
+        GridCompositor compositor;
+        assert(compositor.init(g_device, g_deviceCtx, 320, 240));
+
+        std::vector<CellFrameRequest> requests;
+
+        // Grid red — left half, zOrder 0 (drawn first).
+        CellFrameRequest red{};
+        red.cellCol = 0; red.cellRow = 0;
+        red.spanX = kGridSubUnitsPerColumn; red.spanY = kGridSubUnitsPerRow;
+        red.sourcePath = "red.mp4"; red.sourceFrameIndex = 0;
+        red.opacity = 1.0f; red.layerKind = CellLayerKind::Grid; red.zOrder = 0;
+        requests.push_back(red);
+
+        // Fullscreen blue — zOrder 5, BETWEEN the two grid cells.
+        CellFrameRequest blue{};
+        blue.sourcePath = "blue.mp4"; blue.sourceFrameIndex = 0;
+        blue.opacity = 1.0f; blue.layerKind = CellLayerKind::FullscreenBehind; blue.zOrder = 5;
+        requests.push_back(blue);
+
+        // Grid green — right half, zOrder 10 (drawn last).
+        CellFrameRequest green{};
+        green.cellCol = kGridSubUnitsPerColumn; green.cellRow = 0;
+        green.spanX = kGridSubUnitsPerColumn; green.spanY = kGridSubUnitsPerRow;
+        green.sourcePath = "green.mp4"; green.sourceFrameIndex = 0;
+        green.opacity = 1.0f; green.layerKind = CellLayerKind::Grid; green.zOrder = 10;
+        requests.push_back(green);
+
+        compositor.compositeFrame(requests, cache, 2, 1);
+        ReadbackBuffer buf = compositor.readback();
+        assert(buf.valid);
+
+        // Left half (80,120): blue drew over red → BLUE.
+        {
+            uint8_t b, g, r, a;
+            extractBGRA(samplePixel(buf, 80, 120), b, g, r, a);
+            std::fprintf(stderr, "[TEST:Compositor] Left (over red): R=%d G=%d B=%d (expect blue)\n", r, g, b);
+            assert(b > 200 && r < 50 && g < 50 && "Fullscreen layer must occlude the lower-z grid cell");
+        }
+        // Right half (240,120): green drew over blue → GREEN.
+        {
+            uint8_t b, g, r, a;
+            extractBGRA(samplePixel(buf, 240, 120), b, g, r, a);
+            std::fprintf(stderr, "[TEST:Compositor] Right (over blue): R=%d G=%d B=%d (expect green)\n", r, g, b);
+            assert(g > 200 && b < 50 && r < 50 && "Higher-z grid cell must occlude the fullscreen layer");
+        }
+
+        compositor.shutdown();
+        std::fprintf(stderr, "[TEST:Compositor] Test 10: PASSED\n");
+    }
+
     std::fprintf(stderr, "\n[TEST:Compositor] ALL TESTS PASSED\n");
     std::_Exit(0);
 }

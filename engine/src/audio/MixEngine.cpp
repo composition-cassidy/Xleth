@@ -4395,11 +4395,57 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             ac.clip->stretchRatio,
             resolvedFormantPreserve,
             clipMod);
+        // F.1: route through the post-cache (ClipRenderCache) buffer whenever the
+        // clip is processed in a way the raw-PCM readhead can't reproduce — a real
+        // time-stretch OR formant-preserve. That buffer already bakes in the
+        // user's stretch quality, static pitch, and formant preservation; the
+        // modulated readhead then rides on top of it. `needsProcessing` guards the
+        // formant-only no-op case (formant flag on but no pitch/stretch → no cache
+        // buffer → fall through to the raw path, where formant-preserve is moot).
+        // Static-pitch-only clips stay on the raw path (locked by F.0 tests).
         const bool usePostCacheModulatedReader =
             useModulatedReader
-            && ac.clip->stretchRatio != 1.0
             && !ac.clip->reversed
-            && !resolvedFormantPreserve;
+            && needsProcessing
+            && (ac.clip->stretchRatio != 1.0 || resolvedFormantPreserve);
+
+        // ── DIAGNOSTIC (temporary): log the exact clip-modulation bypass reason.
+        // Audio-thread safe: emits ONE line per clip only when its reason changes
+        // (never per block), so it can't flood the log or jitter the audio thread.
+        // Remove once the vibrato/scratch bypass is diagnosed.
+        {
+            using R = xleth::clipmod::ClipModulationBypassReason;
+            const R reason = xleth::clipmod::classifyClipModulationBypass(
+                ac.clip->reversed, ac.clip->stretchRatio,
+                resolvedFormantPreserve, clipMod);
+            // +1 offset so the map's default 0 never equals a real reason → first
+            // observation of every clip always logs.
+            static thread_local std::unordered_map<int,int> sLastModBypass;
+            int& last = sLastModBypass[ac.clip->id];
+            if (last != static_cast<int>(reason) + 1) {
+                last = static_cast<int>(reason) + 1;
+                const char* msg = "?";
+                switch (reason) {
+                    case R::None:            msg = "ACTIVE (not bypassed)";                 break;
+                    case R::Disabled:        msg = "BYPASSED: modulation root disabled";    break;
+                    case R::NoActiveCurve:   msg = "BYPASSED: no vibrato/scratch curve on"; break;
+                    case R::Reversed:        msg = "BYPASSED: clip is reversed";            break;
+                    case R::Stretched:       msg = "BYPASSED: stretched (legacy)";          break;
+                    case R::FormantPreserve: msg = "BYPASSED: formant-preserve on";         break;
+                }
+                fprintf(stderr,
+                    "[ClipModFX] clip %d: %s "
+                    "(root=%d vib=%d scr=%d rev=%d formantPreserve=%d[clip=%d global=%d])\n",
+                    ac.clip->id, msg,
+                    (int)clipMod.enabled,
+                    (int)clipMod.vibrato.enabled,
+                    (int)clipMod.scratch.enabled,
+                    (int)ac.clip->reversed,
+                    (int)resolvedFormantPreserve,
+                    (int)ac.clip->formantPreserve,
+                    (int)globalFormantPreserve_);
+            }
+        }
 
         if (useModulatedReader)
         {

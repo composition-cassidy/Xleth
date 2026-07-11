@@ -21,24 +21,23 @@ import {
 } from '../../types/videoFlipTypes.js'
 
 /**
- * TrackFlipPropertiesPanel — inline popover replacing the legacy 4-option submenu.
+ * TrackFlipSection — the flip-cycle editor, extracted verbatim from the old
+ * floating TrackFlipPropertiesPanel popover. This is the INNER content only
+ * (master toggle, Flipping Style cards, Modifier picker, Start State, Live
+ * Preview, orientation submenu). The popover's OUTER shell (createPortal /
+ * fixed-position / anchorRect / outside-click-to-close) was deleted when the
+ * editor moved into the Video tab's Track Detail view.
  *
- * Spec: xleth-flip-v2-architecture-spec.md §6 (UI architecture).
- *
- * Anchored to the right of the track header; renders into a body-level portal so
- * it can overflow the timeline pane. All chrome reads `--theme-*` tokens —
- * no hardcoded colours (acceptance #9). The component is intentionally
- * self-contained so it can be lifted into the Track Properties tab once the
- * windowing spec ships, without rework.
+ * Behaviour is preserved exactly: ≥1 flip state required, max 12 states, and
+ * one atomic IPC commit per discrete edit (drag buffers locally, commits on
+ * mouseup). All chrome reads `--theme-*` tokens — no hardcoded colours.
  *
  * Props:
- *   track       – the track object (must include id, name, videoFlipConfig)
- *   anchorRect  – { right, top, ... } from getBoundingClientRect()
- *   onClose     – fires on outside click / Escape / explicit close
- *   onCommit    – (config) => void; called once per atomic edit (mouseup, blur)
+ *   track     – the track object (must include id, name, videoFlipConfig)
+ *   onCommit  – (config) => void; called once per atomic edit (mouseup, blur)
  */
-export default function TrackFlipPropertiesPanel({ track, anchorRect, onClose, onCommit }) {
-  const panelRef = useRef(null)
+export default function TrackFlipSection({ track, onCommit }) {
+  const sectionRef = useRef(null)
 
   // ── Local working copy of the config ────────────────────────────────────
   // Editing happens locally for instant feedback; we IPC-commit once per
@@ -50,7 +49,7 @@ export default function TrackFlipPropertiesPanel({ track, anchorRect, onClose, o
   )
 
   // ── Re-sync when the underlying track config changes externally ─────────
-  // (e.g., undo/redo, or another panel commits). Only re-sync when we're not
+  // (e.g., undo/redo, or another view commits). Only re-sync when we're not
   // mid-edit so a remote refresh doesn't clobber the user's in-flight changes.
   const editingRef = useRef(false)
   useEffect(() => {
@@ -59,47 +58,18 @@ export default function TrackFlipPropertiesPanel({ track, anchorRect, onClose, o
     setConfig(cloneConfig(track.videoFlipConfig))
   }, [track?.videoFlipConfig])
 
-  // ── Position the popover ────────────────────────────────────────────────
-  // Anchored to the right edge of the track header, top-aligned. Clamped to
-  // viewport once the actual content size is known.
-  const [pos, setPos] = useState(() => initialPos(anchorRect))
+  // ── Orientation picker submenu (portal, anchored to this section) ───────
+  const [pickerForCard, setPickerForCard] = useState(null) // { index, anchor }
   useEffect(() => {
-    const el = panelRef.current
-    if (!el) return
-    const r = el.getBoundingClientRect()
-    const vw = window.innerWidth
-    const vh = window.innerHeight
-    setPos((p) => {
-      let { left, top } = p
-      if (left + r.width  > vw - 8) left = Math.max(8, vw - r.width  - 8)
-      if (top  + r.height > vh - 8) top  = Math.max(8, vh - r.height - 8)
-      return (left === p.left && top === p.top) ? p : { left, top }
-    })
-  }, [anchorRect, config.states.length])
-
-  // ── Outside click / Escape — but ignore clicks inside our own portals
-  // (orientation picker submenu) which live outside panelRef.
-  const [pickerForCard, setPickerForCard] = useState(null) // state index whose picker is open
-  useEffect(() => {
-    const onMouseDown = (e) => {
-      if (panelRef.current && panelRef.current.contains(e.target)) return
-      // Picker is rendered into its own portal — let it handle its own dismissal
-      if (e.target.closest?.('[data-flip-picker]')) return
-      onClose()
-    }
     const onKey = (e) => {
-      if (e.key === 'Escape') {
-        if (pickerForCard != null) setPickerForCard(null)
-        else onClose()
+      if (e.key === 'Escape' && pickerForCard != null) {
+        e.stopPropagation()
+        setPickerForCard(null)
       }
     }
-    document.addEventListener('mousedown', onMouseDown)
     window.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onMouseDown)
-      window.removeEventListener('keydown', onKey)
-    }
-  }, [onClose, pickerForCard])
+    return () => window.removeEventListener('keydown', onKey)
+  }, [pickerForCard])
 
   // ── Atomic-commit helper ────────────────────────────────────────────────
   // Every discrete user action (toggle, reorder, modifier change, …) calls
@@ -239,71 +209,35 @@ export default function TrackFlipPropertiesPanel({ track, anchorRect, onClose, o
   // ── Render ──────────────────────────────────────────────────────────────
   const disabled = !config.enabled
 
-  return createPortal(
-    <div
-      ref={panelRef}
-      role="dialog"
-      aria-label={`Video Flip — ${track?.name ?? 'track'}`}
-      style={{
-        position: 'fixed',
-        left: pos.left,
-        top:  pos.top,
-        zIndex: 10000,
-        minWidth: 360,
-        maxWidth: 480,
-        background: 'var(--theme-contextmenu-bg)',
-        color: 'var(--theme-text)',
-        border: '1px solid var(--theme-contextmenu-border)',
-        borderRadius: 6,
-        boxShadow: 'var(--theme-chrome-shadow)',
-        padding: '12px 14px',
-        fontSize: 12,
-        userSelect: 'none',
-      }}
-      onMouseDown={(e) => e.stopPropagation()}
-    >
-      {/* ── Header ──────────────────────────────────────────────────────── */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                    marginBottom: 10, gap: 8 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <RefreshCw size={14} style={{ color: 'var(--theme-accent)' }} />
-          <strong>Video Flip</strong>
-          <span style={{ color: 'var(--theme-text-muted)', fontWeight: 'normal' }}>
-            — {track?.name ?? `Track ${track?.id ?? '?'}`}
-          </span>
-        </div>
-        <button
-          aria-label="Close"
-          onClick={onClose}
-          style={panelButtonStyle()}
-        >×</button>
-      </div>
-
+  return (
+    <div ref={sectionRef} className="track-flip-section">
       {/* ── 1. Master toggle ────────────────────────────────────────────── */}
-      <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10,
-                      cursor: 'pointer' }}>
+      <label className="track-flip-enable-row">
         <input
+          className="track-flip-checkbox"
           type="checkbox"
           checked={config.enabled}
           onChange={(e) => setEnabled(e.target.checked)}
         />
         <span>Enabled</span>
-        <span style={{ color: 'var(--theme-text-subtle)', fontSize: 11 }}>
+        <span className="track-flip-hint">
           (off = identity render, no resolver work)
         </span>
       </label>
 
       {/* The remainder is greyed out when disabled but stays in the DOM
           so screen readers / keyboard users can still inspect the values. */}
-      <div style={{ opacity: disabled ? 0.45 : 1, pointerEvents: disabled ? 'none' : 'auto' }}>
+      <div
+        className="track-flip-body"
+        style={{ opacity: disabled ? 0.45 : 1, pointerEvents: disabled ? 'none' : 'auto' }}
+      >
 
         {/* ── 2. Flipping Style row ─────────────────────────────────────── */}
         <SectionLabel>Flipping Style</SectionLabel>
         <div
+          className="track-flip-state-list"
           role="listbox"
           aria-label="Flip states"
-          style={{ display: 'flex', alignItems: 'center', gap: 6,
-                   overflowX: 'auto', paddingBottom: 4, marginBottom: 10 }}
           onKeyDown={(e) => onCardsKeyDown(e, displayStates, removeState, setPickerForCard)}
         >
           {displayStates.map((st, idx) => (
@@ -313,22 +247,17 @@ export default function TrackFlipPropertiesPanel({ track, anchorRect, onClose, o
               index={idx}
               isStart={idx === config.startStateIndex}
               canDelete={displayStates.length > 1}
-              onPick={() => setPickerForCard(idx)}
+              onPick={(anchor) => setPickerForCard({ index: idx, anchor })}
               onDelete={() => removeState(idx)}
               onDragStart={(e) => handleDragStart(st.id, idx, e)}
               onDragOver={() => handleDragOver(idx)}
             />
           ))}
           <button
+            className="track-flip-add-state"
             aria-label="Add state"
             disabled={displayStates.length >= MAX_FLIP_STATES}
             onClick={addState}
-            style={{
-              ...panelButtonStyle(),
-              padding: '4px 8px',
-              opacity: displayStates.length >= MAX_FLIP_STATES ? 0.4 : 1,
-              cursor: displayStates.length >= MAX_FLIP_STATES ? 'not-allowed' : 'pointer',
-            }}
             title={displayStates.length >= MAX_FLIP_STATES
               ? `Maximum ${MAX_FLIP_STATES} states`
               : 'Add state'}
@@ -339,11 +268,11 @@ export default function TrackFlipPropertiesPanel({ track, anchorRect, onClose, o
 
         {/* ── 3. Modifier ───────────────────────────────────────────────── */}
         <SectionLabel>Modifier</SectionLabel>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+        <div className="track-flip-control-row">
           <select
+            className="track-flip-select"
             value={config.modifier?.type ?? 'every-note'}
             onChange={(e) => setModifierType(e.target.value)}
-            style={panelSelectStyle()}
           >
             {MODIFIER_TYPES.map((t) => (
               <option key={t} value={t}>{MODIFIER_TYPE_LABELS[t]}</option>
@@ -359,7 +288,7 @@ export default function TrackFlipPropertiesPanel({ track, anchorRect, onClose, o
         )}
 
         {config.modifier?.type === 'every-n-beats' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <div className="track-flip-control-row">
             <NumberStepper
               label="N"
               value={clampInt(config.modifier.config?.n ?? 1, 1, 32)}
@@ -369,9 +298,9 @@ export default function TrackFlipPropertiesPanel({ track, anchorRect, onClose, o
               ariaLabel="Beats per advance"
             />
             <select
+              className="track-flip-select"
               value={config.modifier.config?.subdivision ?? 'beat'}
               onChange={(e) => setSubdivision(e.target.value)}
-              style={panelSelectStyle()}
               aria-label="Subdivision"
             >
               <option value="beat">beat</option>
@@ -382,7 +311,7 @@ export default function TrackFlipPropertiesPanel({ track, anchorRect, onClose, o
 
         {/* ── 4. Start state ────────────────────────────────────────────── */}
         <SectionLabel>Start State</SectionLabel>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+        <div className="track-flip-control-row">
           <NumberStepper
             label="#"
             // 1-indexed in the UI, 0-indexed in the config (spec §6.2 row 4).
@@ -392,7 +321,7 @@ export default function TrackFlipPropertiesPanel({ track, anchorRect, onClose, o
             onChange={(v) => setStartStateIndex((v | 0) - 1)}
             ariaLabel="Start state index (1-based)"
           />
-          <span style={{ color: 'var(--theme-text-subtle)' }}>
+          <span className="track-flip-muted">
             of {config.states.length}
           </span>
         </div>
@@ -400,16 +329,8 @@ export default function TrackFlipPropertiesPanel({ track, anchorRect, onClose, o
         {/* ── 5. Live preview hint ─────────────────────────────────────── */}
         <SectionLabel>Live Preview (next 8 ordinals)</SectionLabel>
         <div
+          className="track-flip-preview"
           aria-label="Live preview of resolved flip states"
-          style={{
-            display: 'flex', alignItems: 'center', gap: 4, padding: '6px 8px',
-            background: 'var(--theme-bg-elevated)',
-            border: '1px solid var(--theme-border-subtle)',
-            borderRadius: 4,
-            overflowX: 'auto',
-            fontSize: 11,
-            color: 'var(--theme-text-muted)',
-          }}
         >
           {previewItems.map((it, i) => (
             <PreviewChip key={i} item={it} />
@@ -420,29 +341,21 @@ export default function TrackFlipPropertiesPanel({ track, anchorRect, onClose, o
       {/* ── Orientation picker submenu (portal) ────────────────────────── */}
       {pickerForCard != null && (
         <OrientationPicker
-          anchor={panelRef.current}
-          current={config.states[pickerForCard]?.orientation ?? 'none'}
-          onPick={(o) => { setOrientationAt(pickerForCard, o); setPickerForCard(null) }}
+          key={pickerForCard.index}
+          anchor={pickerForCard.anchor ?? sectionRef.current}
+          current={config.states[pickerForCard.index]?.orientation ?? 'none'}
+          onPick={(o) => { setOrientationAt(pickerForCard.index, o); setPickerForCard(null) }}
           onClose={() => setPickerForCard(null)}
         />
       )}
-    </div>,
-    document.body
+    </div>
   )
 }
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
 
 function SectionLabel({ children }) {
-  return (
-    <div style={{
-      fontSize: 10,
-      textTransform: 'uppercase',
-      letterSpacing: 0.6,
-      color: 'var(--theme-text-subtle)',
-      marginBottom: 4,
-    }}>{children}</div>
-  )
+  return <div className="track-flip-label">{children}</div>
 }
 
 function StateCard({ state, index, isStart, canDelete, onPick, onDelete, onDragStart, onDragOver }) {
@@ -454,29 +367,21 @@ function StateCard({ state, index, isStart, canDelete, onPick, onDelete, onDragS
       data-index={index}
       onMouseEnter={onDragOver}
       onContextMenu={(e) => { e.preventDefault(); if (canDelete) onDelete() }}
-      style={{
-        display: 'flex', alignItems: 'center', gap: 4,
-        padding: '4px 6px',
-        minWidth: 56,
-        background: isStart ? 'var(--theme-accent-bg-subtle)' : 'var(--theme-bg-elevated)',
-        border: `1px solid ${isStart ? 'var(--theme-accent)' : 'var(--theme-border-subtle)'}`,
-        borderRadius: 4,
-        cursor: 'pointer',
-      }}
-      onClick={onPick}
+      className={`track-flip-state-card${isStart ? ' is-start' : ''}`}
+      onClick={(e) => onPick(e.currentTarget)}
       onKeyDown={(e) => {
-        if (e.key === 'Enter')  { e.preventDefault(); onPick() }
-        if (e.key === 'Delete' && canDelete) { e.preventDefault(); onDelete() }
+        if (e.key === 'Enter')  { e.preventDefault(); e.stopPropagation(); onPick(e.currentTarget) }
+        if (e.key === 'Delete' && canDelete) { e.preventDefault(); e.stopPropagation(); onDelete() }
       }}
     >
       <span
         onMouseDown={onDragStart}
         title="Drag to reorder"
-        style={{ cursor: 'grab', display: 'inline-flex', color: 'var(--theme-text-subtle)' }}
+        className="track-flip-card-handle"
       ><GripVertical size={11} /></span>
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+      <span className="track-flip-card-content">
         <OrientationGlyph orientation={state.orientation} size={14} />
-        <span style={{ fontSize: 10, color: 'var(--theme-text-muted)' }}>{index + 1}</span>
+        <span className="track-flip-card-index">{index + 1}</span>
       </span>
     </div>
   )
@@ -495,13 +400,31 @@ function OrientationGlyph({ orientation, size = 14 }) {
   }
 }
 
+function getPickerPosition(anchor) {
+  const popupWidth = 228
+  const estimatedHeight = 232
+  const pad = 8
+  const r = anchor?.getBoundingClientRect?.()
+  if (!r) return { left: 100, top: 100, width: popupWidth }
+
+  const maxLeft = Math.max(pad, window.innerWidth - popupWidth - pad)
+  const left = Math.min(Math.max(r.left, pad), maxLeft)
+  const below = r.bottom + 6
+  const shouldOpenAbove = below + estimatedHeight > window.innerHeight - pad && r.top > estimatedHeight + pad
+  const top = shouldOpenAbove
+    ? Math.max(pad, r.top - estimatedHeight - 6)
+    : Math.min(below, window.innerHeight - pad)
+
+  return { left, top, width: popupWidth }
+}
+
 function OrientationPicker({ anchor, current, onPick, onClose }) {
   const ref = useRef(null)
-  const [pos, setPos] = useState(() => {
-    const r = anchor?.getBoundingClientRect?.()
-    if (!r) return { left: 100, top: 100 }
-    return { left: r.left + 8, top: r.bottom + 4 }
-  })
+  const [pos, setPos] = useState(() => getPickerPosition(anchor))
+
+  useEffect(() => {
+    setPos(getPickerPosition(anchor))
+  }, [anchor])
 
   useEffect(() => {
     const el = ref.current
@@ -510,8 +433,12 @@ function OrientationPicker({ anchor, current, onPick, onClose }) {
     if (r.right > window.innerWidth - 8)
       setPos((p) => ({ ...p, left: window.innerWidth - r.width - 8 }))
     if (r.bottom > window.innerHeight - 8)
-      setPos((p) => ({ ...p, top: window.innerHeight - r.height - 8 }))
-  }, [])
+      setPos((p) => {
+        const ar = anchor?.getBoundingClientRect?.()
+        const above = ar ? ar.top - r.height - 6 : window.innerHeight - r.height - 8
+        return { ...p, top: Math.max(8, above) }
+      })
+  }, [anchor])
 
   useEffect(() => {
     const onDown = (e) => {
@@ -526,17 +453,11 @@ function OrientationPicker({ anchor, current, onPick, onClose }) {
       ref={ref}
       data-flip-picker
       role="menu"
+      className="track-flip-picker"
       style={{
-        position: 'fixed',
         left: pos.left,
         top:  pos.top,
-        zIndex: 10001,
-        background: 'var(--theme-contextmenu-bg)',
-        border: '1px solid var(--theme-contextmenu-border)',
-        borderRadius: 4,
-        boxShadow: 'var(--theme-chrome-shadow)',
-        padding: 4,
-        minWidth: 180,
+        width: pos.width,
       }}
       onMouseDown={(e) => e.stopPropagation()}
     >
@@ -545,24 +466,7 @@ function OrientationPicker({ anchor, current, onPick, onClose }) {
           key={o}
           role="menuitem"
           onClick={() => onPick(o)}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 8,
-            width: '100%',
-            padding: '6px 8px',
-            background: current === o ? 'var(--theme-accent-bg-subtle)' : 'transparent',
-            color: 'var(--theme-text)',
-            border: 'none',
-            borderRadius: 3,
-            cursor: 'pointer',
-            textAlign: 'left',
-            fontSize: 12,
-          }}
-          onMouseEnter={(e) => {
-            if (current !== o) e.currentTarget.style.background = 'var(--theme-contextmenu-item-hover-bg)'
-          }}
-          onMouseLeave={(e) => {
-            if (current !== o) e.currentTarget.style.background = 'transparent'
-          }}
+          className={`track-flip-picker-option${current === o ? ' is-active' : ''}`}
         >
           <OrientationGlyph orientation={o} size={14} />
           <span>{ORIENTATION_LABELS[o]}</span>
@@ -577,10 +481,11 @@ function NumberStepper({ label, value, min, max, onChange, ariaLabel }) {
   const dec = () => onChange(Math.max(min, value - 1))
   const inc = () => onChange(Math.min(max, value + 1))
   return (
-    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-      {label && <span style={{ color: 'var(--theme-text-subtle)' }}>{label}</span>}
+    <div className="track-flip-stepper">
+      {label && <span className="track-flip-stepper-label">{label}</span>}
       <button onClick={dec} disabled={value <= min} style={panelButtonStyle()}>−</button>
       <input
+        className="track-flip-stepper-input"
         type="number"
         aria-label={ariaLabel}
         min={min} max={max} value={value}
@@ -710,12 +615,6 @@ function panelSelectStyle() {
   }
 }
 
-function initialPos(anchorRect) {
-  if (!anchorRect) return { left: 100, top: 100 }
-  // Anchor to the right edge of the track header, top-aligned.
-  return { left: (anchorRect.right ?? 0) + 6, top: anchorRect.top ?? 0 }
-}
-
 function cloneConfig(c) {
   return {
     enabled: !!c.enabled,
@@ -821,6 +720,6 @@ function onCardsKeyDown(e, displayStates, removeState, openPicker) {
     removeState(idx)
   } else if (e.key === 'Enter') {
     e.preventDefault()
-    openPicker(idx)
+    openPicker({ index: idx, anchor: target })
   }
 }

@@ -10,7 +10,8 @@ class Timeline;
 // Owns two LIFO stacks of Commands (undo and redo).
 //
 // Rules:
-//   • execute() calls cmd->execute(), pushes onto undo stack, clears redo stack.
+//   • execute() calls cmd->execute(); rejected commands are not recorded,
+//     successful commands push onto undo stack and clear redo stack.
 //   • undo()    pops the undo stack, calls cmd->undo(), pushes onto redo stack.
 //   • redo()    pops the redo stack, calls cmd->execute(), pushes onto undo stack.
 //   • If undoStack exceeds maxHistory, the oldest entry is silently dropped.

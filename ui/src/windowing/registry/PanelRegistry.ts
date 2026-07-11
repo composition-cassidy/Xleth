@@ -4,7 +4,7 @@ import { PANEL_CATALOG, PANEL_IDS, type PanelId } from './panelCatalog';
 
 export type PanelMode = 'floating' | 'docked' | 'maximized';
 export type DockRegion = 'left' | 'right' | 'top' | 'bottom';
-export type PresetId = 'fl-compose' | 'vegas-arrange' | 'grid-edit' | string;
+export type PresetId = 'fl-compose' | 'vegas-arrange' | string;
 
 export interface FloatingPanelState {
   x: number;
@@ -56,7 +56,6 @@ export const MIN_DOCKED_PANEL_MAIN_SIZES: Record<PanelId, number> = {
   pianoRoll: 220,
   preview: 180,
   mixer: 260,
-  gridSettings: 180,
   fxGraph: 240,
   nodeEditor: 200,
   sampler: 220,

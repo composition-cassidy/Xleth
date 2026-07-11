@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import ProgressBar from './ProgressBar.jsx'
 import TailRenderControls from './TailRenderControls.jsx'
 import { BEATS_PER_BAR } from '../constants/timeline.js'
+import { getPickerPath, openFilePicker } from './filePicker/filePickerService.js'
 
 // ── Audio export dialog ──────────────────────────────────────────────────────
 // Drives the C++ AudioExporter via the xleth.audio bridge. Subscribes to
@@ -49,7 +50,17 @@ export default function ExportDialog({ isOpen, onClose }) {
 
   const browse = useCallback(async () => {
     const defName = `export.${format}`
-    const p = await window.xleth.audio.exportSaveAsDialog(defName, format)
+    const picked = await openFilePicker({
+      mode: 'saveFile',
+      title: 'Export Audio As',
+      subtitle: 'Choose the audio render destination.',
+      actionLabel: 'Export',
+      defaultName: defName,
+      defaultExtension: format,
+      filters: [{ name: `${format.toUpperCase()} Audio`, extensions: [format] }],
+      legacyPicker: () => window.xleth.audio.exportSaveAsDialog(defName, format),
+    })
+    const p = getPickerPath(picked)
     if (p) setOutputPath(p)
   }, [format])
 
@@ -214,7 +225,6 @@ export default function ExportDialog({ isOpen, onClose }) {
                 onChange={(e) => setOutputPath(e.target.value)}
                 placeholder="Click Browse…"
                 disabled={running}
-                readOnly
               />
               <button onClick={browse} disabled={running}>Browse…</button>
             </div>

@@ -15,6 +15,8 @@ import DevThemeSwitcher from './components/debug/DevThemeSwitcher.jsx'
 import { ToastProvider, useToast } from './components/Toast.jsx'
 import UpdateBanner from './components/UpdateBanner.jsx'
 import { showUnsavedChangesDialog } from './components/UnsavedChangesDialog.jsx'
+import XlethFilePickerProvider from './components/filePicker/XlethFilePickerProvider.jsx'
+import { getPickerPath, getPickerPaths, openFilePicker as openXlethFilePicker } from './components/filePicker/filePickerService.js'
 import usePianoRollStore from './stores/usePianoRollStore.js'
 import useWorldProcessingStore from './stores/worldProcessingStore.js'
 import AppShell from './windowing/AppShell.tsx'
@@ -32,6 +34,13 @@ const ZOOM_OUT_LABEL = 'Zoom Out'
 const RESET_ZOOM_LABEL = 'Reset Zoom'
 export const ROOT_APP_SHELL_MODE = 'production'
 
+const MEDIA_IMPORT_FILTERS = [
+  { name: 'All Supported', extensions: ['mp4', 'avi', 'mov', 'mkv', 'wav', 'mp3', 'flac', 'ogg', 'aac', 'm4a'] },
+  { name: 'Video Files', extensions: ['mp4', 'avi', 'mov', 'mkv'] },
+  { name: 'Audio Files', extensions: ['wav', 'mp3', 'flac', 'ogg', 'aac', 'm4a'] },
+  { name: 'All Files', extensions: ['*'] },
+]
+
 function sourceNameFromPath(filePath) {
   return String(filePath || '').replace(/^.*[\\/]/, '') || 'source'
 }
@@ -41,6 +50,15 @@ function assertImportedSourceId(sourceId) {
     throw new Error('Engine rejected the media file.')
   }
   return sourceId
+}
+
+async function currentProjectRoot(xl = window.xleth) {
+  try {
+    const info = await xl?.project?.getInfo?.()
+    return typeof info?.projectDir === 'string' && info.projectDir ? info.projectDir : ''
+  } catch {
+    return ''
+  }
 }
 
 export function getWorkspaceBackdropClassName(mode) {
@@ -60,12 +78,21 @@ export function getWorkspaceBackdropClassName(mode) {
  * showToast is passed in so this helper can surface failures from outside
  * the component scope.
  */
-async function saveCurrentProject(showToast, setProjectName) {
+async function saveCurrentProject(showToast, setProjectName, openFilePicker = openXlethFilePicker) {
   const xl = window.xleth
   try {
     const hasDir = await xl.project.hasProjectDir()
     if (!hasDir) {
-      const dir = await xl.project.openSaveAsDialog()
+      const projectDir = await currentProjectRoot(xl)
+      const picked = await openFilePicker({
+        mode: 'openDirectory',
+        title: 'Save Project As',
+        subtitle: 'Choose the folder where this XLETH project should live.',
+        actionLabel: 'Save Here',
+        initialDirectory: projectDir || undefined,
+        legacyPicker: () => xl.project.openSaveAsDialog(),
+      })
+      const dir = getPickerPath(picked)
       if (!dir) return 'cancelled'
       const name = dir.split(/[\\/]/).pop() || 'Untitled'
       const ok = await xl.project.saveAs(dir, name)
@@ -137,6 +164,7 @@ export async function handleXlethRootMenuAction(label, {
   setExportZipOpen,
   setShowSettings,
   setSettingsInitialCategory,
+  openFilePicker = openXlethFilePicker,
 } = {}) {
   switch (label) {
     case 'New Project': {
@@ -153,7 +181,7 @@ export async function handleXlethRootMenuAction(label, {
         const choice = await showUnsavedChangesDialog()
         if (choice === 'cancel') return
         if (choice === 'save') {
-          const result = await saveCurrentProject(showToast, setProjectName)
+          const result = await saveCurrentProject(showToast, setProjectName, openFilePicker)
           if (result === 'cancelled') return
           if (result !== true) return
         }
@@ -189,7 +217,14 @@ export async function handleXlethRootMenuAction(label, {
       break
     }
     case 'Open Project': {
-      const dir = await xl.project.openProjectDialog()
+      const picked = await openFilePicker({
+        mode: 'openDirectory',
+        title: 'Open Project',
+        subtitle: 'Choose an XLETH project folder.',
+        actionLabel: 'Open Project',
+        legacyPicker: () => xl.project.openProjectDialog(),
+      })
+      const dir = getPickerPath(picked)
       if (!dir) return
       await xl.project.load(dir)
       const info = await xl.project.getInfo()
@@ -222,12 +257,21 @@ export async function handleXlethRootMenuAction(label, {
       break
     }
     case 'Save': {
-      const result = await saveCurrentProject(showToast, setProjectName)
+      const result = await saveCurrentProject(showToast, setProjectName, openFilePicker)
       if (result === true) showToast?.('Project saved.', 'success')
       break
     }
     case 'Save As...': {
-      const dir = await xl.project.openSaveAsDialog()
+      const projectDir = await currentProjectRoot(xl)
+      const picked = await openFilePicker({
+        mode: 'openDirectory',
+        title: 'Save Project As',
+        subtitle: 'Choose the destination project folder.',
+        actionLabel: 'Save Here',
+        initialDirectory: projectDir || undefined,
+        legacyPicker: () => xl.project.openSaveAsDialog(),
+      })
+      const dir = getPickerPath(picked)
       if (!dir) return
       const name = dir.split(/[\\/]/).pop() || 'Untitled'
       const ok = await xl.project.saveAs(dir, name)
@@ -240,8 +284,16 @@ export async function handleXlethRootMenuAction(label, {
       break
     }
     case 'Import Source': {
-      const files = await xl.project.openImportDialog()
-      if (!files) return
+      const picked = await openFilePicker({
+        mode: 'openFiles',
+        title: 'Import Sources',
+        subtitle: 'Choose audio or video sources to add to the current project.',
+        actionLabel: 'Import',
+        filters: MEDIA_IMPORT_FILTERS,
+        legacyPicker: () => xl.project.openImportDialog(),
+      })
+      const files = getPickerPaths(picked)
+      if (!files.length) return
       let importedCount = 0
       for (const filePath of files) {
         try {
@@ -300,7 +352,9 @@ export async function handleXlethRootMenuAction(label, {
 export default function XlethRoot() {
   return (
     <ToastProvider>
-      <XlethRootInner />
+      <XlethFilePickerProvider>
+        <XlethRootInner />
+      </XlethFilePickerProvider>
     </ToastProvider>
   )
 }

@@ -3,6 +3,7 @@ import MidiTrackRow from './MidiTrackRow.jsx'
 import { findMatchingSample, gmDrumName } from './filenameMatch.js'
 import { useToast } from '../Toast.jsx'
 import { PPQ } from '../../constants/timeline.js'
+import { getPickerPath, openFilePicker } from '../filePicker/filePickerService.js'
 
 // ── Maximum note length clamp (MIDI import sanitation) ───────────────────────
 // FL Studio drum-roll exports often produce hugely long note-offs for sample
@@ -234,7 +235,18 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
     let cancelled = false
 
     async function run() {
-      const fp = initialFilePathRef.current || await window.xleth?.dialog?.openMidiDialog?.()
+      let fp = initialFilePathRef.current
+      if (!fp) {
+        const picked = await openFilePicker({
+          mode: 'openFile',
+          title: 'Import MIDI',
+          subtitle: 'Choose a MIDI file to map into the project.',
+          actionLabel: 'Import',
+          filters: [{ name: 'MIDI Files', extensions: ['mid', 'midi'] }],
+          legacyPicker: () => window.xleth?.dialog?.openMidiDialog?.(),
+        })
+        fp = getPickerPath(picked)
+      }
       if (!fp || cancelled) {
         if (!cancelled) {
           console.log('[MidiImport] File picker cancelled — closing dialog')

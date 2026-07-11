@@ -242,6 +242,12 @@ std::mutex          g_previewCompositorMutex;
 std::atomic<bool>   g_previewCompositorReady{false};
 std::atomic<bool>   g_previewPauseForExport{false};
 std::atomic<bool>   g_previewPauseForVisibility{false};   // Phase 7
+// Poster prepass hold (Option B): true while the one-poster-per-source cache is
+// still warming AND the user has pressed Play. Holds the VIDEO compositor only —
+// the audio transport keeps running, so audio plays while the preview shows the
+// UI "Loading sample previews" overlay. Cleared when the prepass drains (see
+// drainSourcePosterResults) or when the user skips to live (PosterPrepass_Skip).
+std::atomic<bool>   g_previewPauseForPosterLoad{false};
 
 // ── Visual preview diagnostic counters ───────────────────────────────────────
 // Lightweight instrumentation to support Settings → Graphics → Export Visual
@@ -422,6 +428,25 @@ static bool  g_previewEffectsBypass   = false;
 // default posterMode=false).
 static bool  g_previewPosterMode      = true;
 
+// ── Poster prepass counters (Option B warm-on-engage) ────────────────────────
+// One base poster per video source on the timeline. Counters are monotonic for
+// the CURRENT prepass run and guarded by g_posterPrepassMtx. active=true while a
+// run is in flight (used by the Play gate and the UI overlay). Lock order is
+// always syncEventsMutex → g_posterPrepassMtx; never the reverse.
+static std::mutex g_posterPrepassMtx;
+static int        g_posterPrepassTotal     = 0;   // cell thumbnails enqueued this run
+static int        g_posterPrepassCompleted = 0;   // results installed this run (ok OR fail)
+static std::atomic<bool> g_posterPrepassActive{false};
+// Exact set of PER-CELL (source,bucket) thumbnail keys THIS run is still waiting
+// on (thumbKey()). Poster mode shows each grid cell its OWN representative frame,
+// so the warm-up hold must wait for every distinct cell thumbnail across the
+// whole timeline — not one frame per source. Tracking the exact key set (rather
+// than counting results) keeps the per-tick self-heal — which can also enqueue
+// cell thumbnails — from overshooting completed and releasing the video hold
+// early. Base posters are a per-source fallback and are NOT tracked here.
+// Guarded by g_posterPrepassMtx.
+static std::unordered_set<long long> g_posterPrepassPending;
+
 // Whole-source preview-proxy target height (PREVIEW-ONLY). On first preview use
 // of a source, the engine builds ONE small all-intra proxy of the ENTIRE source
 // downscaled to min(this, srcHeight) (aspect-preserved). 720 is the default;
@@ -529,8 +554,9 @@ void blitYuvToCanvas(std::vector<uint8_t>& canvas,
 // Find the active VideoEvent on the given track at beatPos (mute-aware).
 // Returns nullptr when no event is active, or when the track is muted.
 // If multiple events on the same track are active, the latest-starting one
-// wins. Same-start ties choose the highest resolved ordinal so an EveryNote
-// chord shows the final state after all chord members fire.
+// wins. Same-tick note stacks (a chord) all carry the same resolved flip
+// state, so the same-start tie-break only needs to be deterministic: lowest
+// pitch, then lowest emission order.
 static const VideoEvent* findActiveEventOnTrack(
     const std::vector<VideoEvent>& events, int trackId, double beatPos)
 {
@@ -546,7 +572,9 @@ static const VideoEvent* findActiveEventOnTrack(
         if (!best
             || ev.startBeat > best->startBeat
             || (ev.startBeat == best->startBeat
-                && ev.globalNoteIndex > best->globalNoteIndex)) {
+                && (ev.pitch < best->pitch
+                    || (ev.pitch == best->pitch
+                        && ev.originalEmissionOrder < best->originalEmissionOrder)))) {
             best = &ev;
         }
     }
@@ -1117,6 +1145,9 @@ static void rebuildVideoEventsFromClips() {
         int counter = 0;
         int trackSkipped = 0;
         for (const Clip* clip : trackClips) {
+            const TrackInfo* clipTrack = g_timeline->getTrack(clip->trackId);
+            if (!clipTrack) { ++skipped; ++trackSkipped; continue; }  // Matches offline null-track safety.
+
             const SampleRegion* region = g_timeline->getRegion(clip->regionId);
             if (!region) { ++skipped; ++trackSkipped; continue; }
 
@@ -1177,7 +1208,7 @@ static void rebuildVideoEventsFromClips() {
             ev.layerIndex      = 0;          // Phase 1: all fullscreen, last-iterated wins
             ev.x = 0.0f; ev.y = 0.0f;
             ev.width = 1.0f; ev.height = 1.0f;
-            ev.opacity = 1.0f;
+            ev.opacity = clipTrack->videoOpacity * clip->velocity;
             const int clipEmissionOrder = counter++;
             ev.globalNoteIndex = clipEmissionOrder;
             ev.hasSourceTriggerOrder = true;
@@ -1649,10 +1680,36 @@ static void maybeEnqueueSourcePoster(int sourceId) {
     SourceMedia* src = g_timeline->getSourceMutable(sourceId);
     if (!src || !src->hasVideo) return;
 
+    // FAST PATH (perf-critical): once a poster is engaged in memory this session,
+    // there is nothing to do — skip the per-tick filesystem stat below. This block
+    // runs for every active event on EVERY preview tick in poster mode, and the
+    // posterExists() call underneath is up to three fs::exists/last_write_time
+    // syscalls per source. With a full grid that stat storm throttled poster
+    // preview to ~1/4 of live FPS. The on-disk sidecar is validated once at
+    // import / project-load / prepass; re-validating every frame buys nothing. A
+    // re-imported or edited source resets posterReady (see import path), so this
+    // early-out can never serve a stale poster.
+    if (src->posterReady && !src->posterPath.empty()) return;
+
+    // Per-session attempt guards BEFORE any filesystem stat. This function runs
+    // for every active event on EVERY poster-mode tick under syncEventsMutex, and
+    // the posterExists() probe below is up to three fs::exists/last_write_time
+    // syscalls. Once we have either given up on a source (genDisabled) or already
+    // enqueued an extraction this session (g_posterEnqueued), a per-tick disk stat
+    // tells us nothing drainSourcePosterResults() won't — so short-circuit here.
+    // Combined with the posterReady fast-path above, this bounds posterExists() to
+    // AT MOST ONE call per source per session (the first tick we see a not-yet-
+    // ready, not-yet-attempted source). The previous ordering ran posterExists()
+    // every tick for any source whose poster was still building or had failed
+    // generation — that stat storm throttled poster preview to ~1/4 of live FPS.
+    if (genDisabled(sourceId)) return;                  // failed too many times
+    if (g_posterEnqueued.count(sourceId) > 0) return;   // one attempt per session
+
     const std::string proxiesDir = g_projectManager->getProxiesDir();
 
-    // Already healthy: a VALID sidecar exists on disk (newer than the source).
-    // Use ProxyTranscoder::posterExists rather than std::filesystem::exists on
+    // First sighting of an unready source this session: ONE disk check for a
+    // VALID sidecar (newer than the source) from a prior session. Use
+    // ProxyTranscoder::posterExists rather than std::filesystem::exists on
     // posterPath: the latter mis-resolves non-ANSI Unicode filenames on Windows
     // (e.g. the fullwidth colon in "BFDIA 7： Intruder Alert.xlposter.jpg"),
     // reporting a present poster as missing and triggering a needless
@@ -1672,8 +1729,6 @@ static void maybeEnqueueSourcePoster(int sourceId) {
         return;
     }
 
-    if (genDisabled(sourceId)) return;                  // failed too many times
-    if (g_posterEnqueued.count(sourceId) > 0) return;   // one attempt per session
     g_posterEnqueued.insert(sourceId);
 
     ProxyManager::PosterRequest req;
@@ -1685,6 +1740,125 @@ static void maybeEnqueueSourcePoster(int sourceId) {
               << " proxiesDir=" << proxiesDir
               << " -> " << req.outputPath << "\n";
     g_proxyManager->enqueuePoster(req);
+}
+
+// ── Poster prepass (Option B — PER-CELL) ────────────────────────────────────────
+// Warm every PER-CELL poster thumbnail used anywhere on the timeline up-front, so
+// poster preview plays from a fully resident cache instead of decoding frames
+// lazily mid-playback. Poster mode shows each grid cell its OWN representative
+// frame at that cell's source time-offset, so the warm set is every DISTINCT
+// (sourceId, bucket) referenced by ANY note across the WHOLE song — not one frame
+// per source. (bucket = floor(sourceStartTime), 1s granularity.)
+//
+// The full set comes from syncManager->getEvents(): rebuildVideoEventsFromClips()
+// expands every clip/note into that list (it is the whole-timeline event set, not
+// just the active-tick events the video loop renders), so iterating it here covers
+// the entire timeline. For each distinct source we also ensure its base poster
+// exists as a per-cell FALLBACK (shown until a cell's own thumbnail lands); base
+// posters are NOT part of the per-cell hold set.
+//
+// Thumbnails/posters already on disk are engaged in memory immediately (no
+// regeneration, no enqueue); the rest are enqueued on the ProxyManager pool. Only
+// freshly-enqueued cell thumbnails are added to the hold set, so the Play gate
+// waits for exactly the work this run started and a result that already drained
+// can never leave the hold stuck. At most ONE filesystem check per (source,bucket)
+// per session (g_thumbnailEnqueued / g_posterEnqueued gates) — the stat-storm
+// discipline. Idempotent and non-blocking: a project whose thumbnails are all on
+// disk enqueues nothing and leaves g_posterPrepassActive=false (Play stays
+// instant). Only call when no prepass is active (callers guard on
+// !g_posterPrepassActive). Takes syncEventsMutex (reads timeline + the enqueue
+// guard sets + syncManager events), then briefly g_posterPrepassMtx — that order.
+static void buildPosterPrepass() {
+    if (!g_proxyManager || !g_timeline || !g_projectManager) return;
+
+    std::lock_guard<std::mutex> lk(syncEventsMutex);
+    const std::string proxiesDir = g_projectManager->getProxiesDir();
+
+    // ── Enumerate every distinct source and every distinct (source,bucket) cell
+    //    referenced by ANY note across the whole timeline. atTime keeps the actual
+    //    source offset of the first note in each bucket so the decode matches the
+    //    per-tick maybeEnqueueCellThumbnail path exactly.
+    struct CellKey { int sourceId; int bucket; double atTime; };
+    std::unordered_set<int>       distinctSources;
+    std::unordered_set<long long> seenCells;
+    std::vector<CellKey>          distinctCells;
+    if (syncManager) {
+        for (const VideoEvent& ev : syncManager->getEvents()) {
+            const SourceMedia* cs = g_timeline->getSource(ev.sourceId);
+            if (!cs || !cs->hasVideo) continue;
+            distinctSources.insert(ev.sourceId);
+            const double atTime = std::max(0.0, ev.sourceStartTime);
+            const int    bucket = static_cast<int>(std::floor(atTime));
+            const long long key = thumbKey(ev.sourceId, bucket);
+            if (seenCells.insert(key).second)
+                distinctCells.push_back({ ev.sourceId, bucket, atTime });
+        }
+    }
+
+    // ── Base posters (per-source FALLBACK; NOT part of the hold set) ─────────────
+    for (int sourceId : distinctSources) {
+        SourceMedia* src = g_timeline->getSourceMutable(sourceId);
+        if (!src) continue;
+        if (src->posterReady && !src->posterPath.empty()) continue;     // engaged
+        if (ProxyTranscoder::posterExists(src->filePath, proxiesDir)) { // on disk
+            src->posterPath  = ProxyTranscoder::getPosterPath(src->filePath, proxiesDir);
+            src->posterReady = true;
+            continue;
+        }
+        if (genDisabled(sourceId)) continue;                 // failed too many times
+        if (g_posterEnqueued.count(sourceId) > 0) continue;  // already in flight
+        g_posterEnqueued.insert(sourceId);
+        ProxyManager::PosterRequest req;
+        req.sourceId   = sourceId;
+        req.inputPath  = src->filePath;
+        req.outputPath = ProxyTranscoder::getPosterPath(src->filePath, proxiesDir);
+        // Base poster (atTimeSec<0, frameBucket=-1): one representative frame for
+        // the whole source, shared as a fallback by every cell that references it.
+        g_proxyManager->enqueuePoster(req);
+    }
+
+    // ── Per-cell thumbnails (the warm-up HOLD set) ──────────────────────────────
+    std::vector<long long> pendingKeys;
+    for (const CellKey& c : distinctCells) {
+        SourceMedia* src = g_timeline->getSourceMutable(c.sourceId);
+        if (!src) continue;
+        if (src->thumbnailPaths.count(c.bucket) > 0) continue;  // already in memory
+        if (genDisabled(c.sourceId)) continue;                  // falls back to base
+        const long long key = thumbKey(c.sourceId, c.bucket);
+        if (g_thumbnailEnqueued.count(key) > 0) continue;       // already attempted
+        g_thumbnailEnqueued.insert(key);
+
+        const std::string outPath =
+            ProxyTranscoder::getThumbnailPath(src->filePath, proxiesDir, c.bucket);
+        // Already on disk from a prior session → engage now, no regeneration.
+        if (posterFileExists(outPath)) {
+            src->thumbnailPaths[c.bucket] = outPath;
+            continue;
+        }
+
+        ProxyManager::PosterRequest req;
+        req.sourceId    = c.sourceId;
+        req.inputPath   = src->filePath;
+        req.outputPath  = outPath;
+        req.atTimeSec   = c.atTime;     // decode at this cell's source time-offset
+        req.frameBucket = c.bucket;     // >=0 marks a per-cell thumbnail result
+        g_proxyManager->enqueuePoster(req);
+        pendingKeys.push_back(key);
+    }
+
+    {
+        std::lock_guard<std::mutex> pk(g_posterPrepassMtx);
+        g_posterPrepassPending.clear();
+        g_posterPrepassPending.insert(pendingKeys.begin(), pendingKeys.end());
+        g_posterPrepassTotal     = static_cast<int>(g_posterPrepassPending.size());
+        g_posterPrepassCompleted = 0;
+        g_posterPrepassActive.store(g_posterPrepassTotal > 0, std::memory_order_relaxed);
+    }
+    if (!pendingKeys.empty()) g_previewDirty = true;
+    std::fprintf(stderr,
+                 "[PosterPrepass] armed: %d cell thumbnails to build across %d sources\n",
+                 static_cast<int>(pendingKeys.size()),
+                 static_cast<int>(distinctSources.size()));
 }
 
 // Enqueue a per-offset thumbnail (Fix 2) for a grid/backdrop cell whose source
@@ -1757,7 +1931,7 @@ static void drainSourcePosterResults() {
         const bool ok = r.ok && !r.outputPath.empty() && posterFileExists(r.outputPath);
 
         if (r.frameBucket >= 0) {
-            // ── Per-offset thumbnail (Fix 2) ──────────────────────────────────
+            // ── Per-cell thumbnail (Fix 2) ────────────────────────────────────
             if (ok) {
                 src->thumbnailPaths[r.frameBucket] = r.outputPath;
                 anyInstalled = true;
@@ -1770,6 +1944,24 @@ static void drainSourcePosterResults() {
                 std::cerr << "[Poster] thumbnail FAILED source=" << r.sourceId
                           << " bucket=" << r.frameBucket
                           << " — cell falls back to base poster\n";
+            }
+
+            // ── Per-cell prepass accounting ───────────────────────────────────
+            // The warm-up hold set tracks DISTINCT (source,bucket) cell thumbnails
+            // (thumbKey). Erase this cell's key on BOTH success and failure: a
+            // failed thumbnail must still leave the set (the cell falls back to the
+            // base poster) or the Play gate would hold video forever. Release the
+            // video hold the moment the last cell thumbnail resolves.
+            if (g_posterPrepassActive.load(std::memory_order_relaxed)) {
+                std::lock_guard<std::mutex> pk(g_posterPrepassMtx);
+                if (g_posterPrepassPending.erase(thumbKey(r.sourceId, r.frameBucket)) > 0) {
+                    ++g_posterPrepassCompleted;
+                    if (g_posterPrepassPending.empty()) {
+                        g_posterPrepassActive.store(false, std::memory_order_relaxed);
+                        g_previewPauseForPosterLoad.store(false);  // resume video
+                        g_previewDirty = true;
+                    }
+                }
             }
             continue;
         }
@@ -1789,6 +1981,9 @@ static void drainSourcePosterResults() {
             std::cerr << "[Poster] source=" << r.sourceId
                       << " extraction failed — poster preview uses live frames\n";
         }
+        // NOTE: base posters are a per-source FALLBACK and are intentionally NOT
+        // tracked by the prepass hold set — only per-cell thumbnails gate the video
+        // hold (see the frameBucket>=0 branch above).
     }
     // Force a re-render so a stopped preview reflects the newly-bound poster.
     if (anyInstalled) g_previewDirty = true;
@@ -2630,6 +2825,9 @@ static JsonApi::Object fullscreenLayerToJs(JsonApi::Env env, const FullscreenLay
     o.Set("placement", JsonApi::String::New(env,
         fl.placement == FullscreenLayerPlacement::BehindGrid ? "behind" : "front"));
     o.Set("opacity",   JsonApi::Number::New(env, fl.opacity));
+    // zOrder: the global compositing key shared with grid slots. Exposed so a
+    // future Video-tab reorder UI can read/round-trip it.
+    o.Set("zOrder",    JsonApi::Number::New(env, fl.zOrder));
     return o;
 }
 
@@ -2650,7 +2848,24 @@ static FullscreenLayer jsToFullscreenLayer(const JsonApi::Object& o) {
         if (v > 1.0f) v = 1.0f;
         fl.opacity = v;
     }
+    // zOrder is optional: the current UI omits it (draw order derived from
+    // placement + array position by the caller via assignCanonicalFullscreenZOrders).
+    // A future UI that manages interleaving will pass it explicitly.
+    if (o.Has("zOrder") && o.Get("zOrder").IsNumber())
+        fl.zOrder = o.Get("zOrder").As<JsonApi::Number>().Int32Value();
     return fl;
+}
+
+// True iff at least one JS layer object in the array carries an explicit numeric
+// zOrder. When false, the caller must derive canonical placement-based zOrders
+// (the current UI's only ordering signal is placement + array order).
+static bool jsFullscreenLayersHaveZOrder(const JsonApi::Array& arr) {
+    for (uint32_t i = 0; i < arr.Length(); ++i) {
+        if (!arr.Get(i).IsObject()) continue;
+        JsonApi::Object o = arr.Get(i).As<JsonApi::Object>();
+        if (o.Has("zOrder") && o.Get("zOrder").IsNumber()) return true;
+    }
+    return false;
 }
 
 static JsonApi::Object gridLayoutToJs(JsonApi::Env env, const GridLayout& g) {
@@ -2732,6 +2947,10 @@ static GridLayout jsToGridLayout(const JsonApi::Object& o) {
             if (arr.Get(i).IsObject())
                 g.fullscreenLayers.push_back(jsToFullscreenLayer(arr.Get(i).As<JsonApi::Object>()));
         }
+        // Derive canonical placement-based zOrders when the UI omitted them, so
+        // the full-replace path preserves the legacy behind<grid<front banding.
+        if (!jsFullscreenLayersHaveZOrder(arr))
+            assignCanonicalFullscreenZOrders(g.fullscreenLayers, g.slots);
     }
     return g;
 }
@@ -2880,7 +3099,8 @@ static void videoThreadBody()
             // Evaluate each gate sub-condition independently every tick so we can
             // identify which term is false during playback from a single log export.
             const bool previewPausedNow =
-                g_previewPauseForExport || g_previewPauseForVisibility;
+                g_previewPauseForExport || g_previewPauseForVisibility
+                || g_previewPauseForPosterLoad;
             if (isPlaying)
                 g_previewDiag.gateIsPlayingTrueTicks.fetch_add(1, std::memory_order_relaxed);
             if (!events.empty())
@@ -2893,7 +3113,8 @@ static void videoThreadBody()
             if ((isPlaying || forceRender) && !events.empty()) {
 
                 const bool previewPaused =
-                    g_previewPauseForExport || g_previewPauseForVisibility;
+                    g_previewPauseForExport || g_previewPauseForVisibility
+                    || g_previewPauseForPosterLoad;
 
                 // [PreviewUnify] GPU compositor path
                 if (g_previewCompositorReady && !previewPaused) {
@@ -3020,14 +3241,19 @@ static void videoThreadBody()
                     // maybeEnqueueSourcePoster requires.
                     if (g_previewPosterMode) {
                         for (const auto& ev : events) {
-                            // Base poster first (it is the fallback every cell of
-                            // this source uses until its own thumbnail is ready).
+                            // PER-CELL poster (Fix 2): ensure the source's base
+                            // poster exists as a FALLBACK, AND enqueue THIS cell's
+                            // own thumbnail decoded at its source time-offset so each
+                            // cell shows its OWN representative frame (a source reused
+                            // across cells at different offsets yields different
+                            // frames). Both are non-blocking and one-attempt-per-key-
+                            // per-session, so after the up-front per-cell prepass
+                            // these are cheap no-ops. The per-tick call is the safety
+                            // net for cells the prepass didn't cover — e.g. a note
+                            // added after warm-up, or one whose proxy/seek landed in
+                            // a new 1s bucket. FrameCollector binds thumbnailPaths
+                            // [bucket] when present and the base poster otherwise.
                             maybeEnqueueSourcePoster(ev.sourceId);
-                            // Per-offset thumbnail (Fix 2) so this cell shows its
-                            // OWN representative frame, not the shared frame-0
-                            // poster. Covers fullscreen/backdrop cells too (Fix 3) —
-                            // ev includes fullscreen-layer events — so the 4K
-                            // backdrop stops live-decoding every frame.
                             maybeEnqueueCellThumbnail(ev.sourceId, ev.sourceStartTime);
                         }
                     }
@@ -3049,14 +3275,23 @@ static void videoThreadBody()
                     }
 
                     // ── Whole-source preview-proxy self-heal ──────────────────
-                    // The primary preview optimization: build ONE small all-intra
-                    // proxy of each active source's ENTIRE timeline so live preview
-                    // decodes the cheap intra proxy instead of the 4K original.
-                    // `events` includes fullscreen-layer events, so backdrops are
-                    // covered too. Runs regardless of poster mode (so the live path
-                    // is prepped) and is idempotent / one-attempt-per-session.
-                    for (const auto& ev : events) {
-                        maybeEnqueueSourcePreviewProxy(ev.sourceId);
+                    // The primary LIVE preview optimization: build ONE small
+                    // all-intra proxy of each active source's ENTIRE timeline so
+                    // live preview decodes the cheap intra proxy instead of the 4K
+                    // original. `events` includes fullscreen-layer events, so
+                    // backdrops are covered too. Idempotent / one-attempt-per-session.
+                    //
+                    // SKIPPED while poster mode is active. In poster mode the static
+                    // poster is authoritative (see FrameCollector precedence), so a
+                    // live proxy is neither used nor wanted — building one would make
+                    // poster mode do background live-decode prep work AND contend for
+                    // the single one-at-a-time generation mutex (g_genMutex) that the
+                    // poster prepass needs, slowing warm-up. When the user toggles
+                    // poster OFF, this resumes and builds proxies on demand.
+                    if (!g_previewPosterMode) {
+                        for (const auto& ev : events) {
+                            maybeEnqueueSourcePreviewProxy(ev.sourceId);
+                        }
                     }
 
                     // [PreviewTickTiming] stage 2 (deduplicate + resolveFrames / cache resolve)
@@ -3835,6 +4070,8 @@ void Shutdown(const JsonApi::CallbackInfo& info)
         g_previewCompositorReady = false;
         g_previewPauseForExport     = false;
         g_previewPauseForVisibility = false;   // Phase 7
+        g_previewPauseForPosterLoad = false;
+        g_posterPrepassActive.store(false, std::memory_order_relaxed);
         if (g_previewCompositor)
             g_previewCompositor->shutdown();
         g_previewCompositor.reset();
@@ -4099,6 +4336,29 @@ void Play(const JsonApi::CallbackInfo& info)
                   << std::chrono::duration<double, std::milli>(tVideoDone - tSamplersDone).count()
                   << " ms (both block transport.play)\n" << std::flush;
     }
+
+    // ── Poster prepass gate (Option B) ───────────────────────────────────────
+    // If poster preview is on, make sure the one-poster-per-source cache is warm
+    // before the VIDEO starts. Warm-on-toggle/load usually finished this already,
+    // so the common case is a no-op and video starts instantly. If a fresh source
+    // was imported (or warming is still in flight), hold the video compositor —
+    // audio still plays — until the prepass drains. The UI shows a "Loading sample
+    // previews" overlay and can skip to live (PosterPrepass_Skip). buildPosterPrepass
+    // is only (re)armed when no run is active, so an in-flight run's counters and
+    // gate are never clobbered here.
+    if (g_previewPosterMode) {
+        if (!g_posterPrepassActive.load(std::memory_order_relaxed))
+            buildPosterPrepass();
+        // Decide the hold UNDER g_posterPrepassMtx so the drain thread (which
+        // flips active→false and clears the hold under the same lock) can't
+        // complete the run in the gap between this check and the store — which
+        // would otherwise leave the video held forever.
+        std::lock_guard<std::mutex> pk(g_posterPrepassMtx);
+        if (g_posterPrepassActive.load(std::memory_order_relaxed) &&
+            g_posterPrepassCompleted < g_posterPrepassTotal)
+            g_previewPauseForPosterLoad.store(true);
+    }
+
     audioEngine->playTimeline();
 }
 
@@ -4114,6 +4374,10 @@ void Stop(const JsonApi::CallbackInfo& info)
     // Main-thread safety net: kill all sampler voices immediately so no
     // sustained note rings past the stop click.
     audioEngine->getMixEngine().silenceAllSamplers();
+    // Drop any poster-load video hold — nothing is playing now, so the stopped
+    // preview should show normally. The prepass keeps building in the background
+    // (active flag untouched); the next Play re-evaluates whether to hold again.
+    g_previewPauseForPosterLoad.store(false);
 }
 
 void Pause(const JsonApi::CallbackInfo& info)
@@ -4127,6 +4391,9 @@ void Pause(const JsonApi::CallbackInfo& info)
     audioEngine->getTransport().pause();
     // Main-thread safety net: kill all sampler voices on pause too.
     audioEngine->getMixEngine().silenceAllSamplers();
+    // Drop any poster-load video hold on pause too (see Stop). Prepass keeps
+    // building; the next Play re-evaluates the hold.
+    g_previewPauseForPosterLoad.store(false);
 }
 
 // Legacy setBPM — sets transport BPM directly (no undo, for startup/audio-event use).
@@ -4223,6 +4490,56 @@ JsonApi::Value Proxy_GetStatus(const JsonApi::CallbackInfo& info)
     obj.Set("completed", JsonApi::Number::New(env, st.completed));
     obj.Set("total",     JsonApi::Number::New(env, st.total));
     return obj;
+}
+
+// posterPrepass_getStatus() — read-only snapshot of the PER-CELL poster warm pass.
+// The UI polls this to drive the "Loading sample previews X/Y" overlay and to know
+// whether video is currently held.
+//   active       — a prepass run is in flight
+//   total        — DISTINCT cell thumbnails (source,bucket) scheduled this run
+//   completed     — cell-thumbnail results installed this run (success OR failure)
+//   pending       — total - completed
+//   holdingVideo  — the video compositor is currently held for the load
+// active==false with total==0 means every cell thumbnail was already on disk
+// (instant Play). Counts cell thumbnails, NOT sources — a source reused across
+// many cells contributes one entry per distinct 1s bucket.
+JsonApi::Value PosterPrepass_GetStatus(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+
+    int  total = 0, completed = 0;
+    {
+        std::lock_guard<std::mutex> pk(g_posterPrepassMtx);
+        total     = g_posterPrepassTotal;
+        completed = g_posterPrepassCompleted;
+    }
+    const bool active      = g_posterPrepassActive.load(std::memory_order_relaxed);
+    const bool holding     = g_previewPauseForPosterLoad.load();
+
+    JsonApi::Object obj = JsonApi::Object::New(env);
+    obj.Set("active",       JsonApi::Boolean::New(env, active));
+    obj.Set("completed",    JsonApi::Number::New(env, completed));
+    obj.Set("total",        JsonApi::Number::New(env, total));
+    obj.Set("pending",      JsonApi::Number::New(env, total - completed));
+    obj.Set("holdingVideo", JsonApi::Boolean::New(env, holding));
+    return obj;
+}
+
+// posterPrepass_skip() — user escape hatch. Drops the video hold immediately and
+// abandons the WAIT (not the work): remaining posters keep building on the pool
+// and bind as they land. Video resumes from whatever is already cached or live.
+JsonApi::Value PosterPrepass_Skip(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    g_previewPauseForPosterLoad.store(false);
+    g_posterPrepassActive.store(false, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> pk(g_posterPrepassMtx);
+        g_posterPrepassPending.clear();
+    }
+    g_previewDirty = true;
+    std::fprintf(stderr, "[PosterPrepass] skipped by user — video resumed\n");
+    return env.Undefined();
 }
 
 // transport_seek(beatPos) — seek to a beat position
@@ -4945,6 +5262,13 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
     // clip. Idempotent: a project whose proxies already exist on disk enqueues
     // no new transcodes (proxy_getStatus stays at pending==0).
     enqueueAllRegionProxies();
+
+    // Warm the one-poster-per-source cache for poster preview (Option B). On a
+    // project whose posters already exist on disk this just engages them in
+    // memory (no regen) and leaves the prepass inactive, so the first Play stays
+    // instant. Only runs when poster mode is on and no run is already active.
+    if (g_previewPosterMode && !g_posterPrepassActive.load(std::memory_order_relaxed))
+        buildPosterPrepass();
 
     // Proactively kick off the whole-source preview proxy for every video source
     // and clear any stale previewProxyReady flags. The video-tick self-heal
@@ -5750,6 +6074,13 @@ void Timeline_SetFullscreenLayers(const JsonApi::CallbackInfo& info)
         if (!arr.Get(i).IsObject()) continue;
         layers.push_back(jsToFullscreenLayer(arr.Get(i).As<JsonApi::Object>()));
     }
+    // The current UI has no per-layer zOrder concept — its only ordering signal
+    // is placement + array position. Derive canonical zOrders (behind<grid<front)
+    // relative to the current grid so setFullscreenLayers stores a valid global
+    // ordering; the command/undo then preserve those exact values verbatim. A
+    // future interleaving UI will pass explicit zOrders and skip this.
+    if (!jsFullscreenLayersHaveZOrder(arr))
+        assignCanonicalFullscreenZOrders(layers, g_timeline->getGridLayout().slots);
 
     BridgeCallLog log("timeline.setFullscreenLayers");
     {
@@ -5776,6 +6107,36 @@ void Timeline_SetFullscreenLayers(const JsonApi::CallbackInfo& info)
     }
 
     log.done("count=" + std::to_string(layers.size()));
+}
+
+// timeline_setPlacementZOrder(trackId, zOrder)
+// Sets the single, globally-comparable compositing zOrder for a track's video
+// placement — grid slot OR fullscreen layer — in one undo step. This is the
+// engine entry point a future Video-tab reorder UI calls to slide a fullscreen
+// layer between two grid cells (or reorder grid cells). Compositing order only;
+// unrelated to timeline_setTrackOrder (audio/mixer arrangement).
+void Timeline_SetPlacementZOrder(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return;
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
+        JsonApi::TypeError::New(env, "timeline_setPlacementZOrder(trackId: number, zOrder: number)")
+            .ThrowAsJavaScriptException();
+        return;
+    }
+    int trackId = info[0].As<JsonApi::Number>().Int32Value();
+    int zOrder  = info[1].As<JsonApi::Number>().Int32Value();
+    BridgeCallLog log("timeline.setPlacementZOrder");
+    {
+        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        g_undoManager->execute(
+            std::make_unique<SetPlacementZOrderCommand>(trackId, zOrder, *g_timeline),
+            *g_timeline);
+    }
+    log.done(std::to_string(trackId) + " z=" + std::to_string(zOrder));
 }
 
 // timeline_setPreviewFps(fps)
@@ -9382,6 +9743,22 @@ void Timeline_SetPreviewPosterMode(const JsonApi::CallbackInfo& info)
     g_previewDirty = true;
     std::fprintf(stderr, "[Preview] Poster mode: %s\n",
                  g_previewPosterMode ? "ON" : "OFF");
+
+    // ── Warm-on-toggle (Option B) ────────────────────────────────────────────
+    // Turning poster ON: start warming the one-poster-per-source cache in the
+    // background now, so the next Play is instant (or shows only a short overlay
+    // for whatever is still building). Guarded on !active so we never clobber an
+    // in-flight run. Turning poster OFF: release any video hold and abandon the
+    // run — live preview resumes immediately.
+    if (g_previewPosterMode) {
+        if (!g_posterPrepassActive.load(std::memory_order_relaxed))
+            buildPosterPrepass();
+    } else {
+        g_previewPauseForPosterLoad.store(false);
+        g_posterPrepassActive.store(false, std::memory_order_relaxed);
+        std::lock_guard<std::mutex> pk(g_posterPrepassMtx);
+        g_posterPrepassPending.clear();
+    }
 }
 
 JsonApi::Value Timeline_GetPreviewProxyHeight(const JsonApi::CallbackInfo& info)
@@ -15501,21 +15878,14 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     if (method == "triggerSample") { TriggerSample(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "loadVideo") return LoadVideo(info).raw();
     if (method == "getVideoDuration") return GetVideoDuration(info).raw();
-    if (method == "play") { Play(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "stop") { Stop(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "pause") { Pause(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "setBPM") { SetBPM(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "getTransportState") return GetTransportState(info).raw();
-    if (method == "proxy_getStatus") return Proxy_GetStatus(info).raw();
     if (method == "getCurrentFrame") return GetCurrentFrame(info).raw();
     if (method == "getFrameBuffer") return GetFrameBuffer(info).raw();
     if (method == "initFrameOutput") return InitFrameOutput(info).raw();
     if (method == "initVideoSharedMemory") return InitVideoSharedMemory(info).raw();
-    if (method == "setVideoResolution") { SetVideoResolution(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "addAudioEvent") { AddAudioEvent(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "addVideoEvent") { AddVideoEvent(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "clearTimeline") { ClearTimeline(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "getSyncStats") return GetSyncStats(info).raw();
     // project_create / project_save / project_saveAs / project_hasProjectDir /
     // project_importSource / project_removeSource / project_validateMedia /
     // project_relinkSource / project_relinkRegionAudio / project_getInfo /
@@ -15525,7 +15895,48 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     // handlers own the renderer broadcast + autosave restart.
     if (method == "project_load") return Project_Load(info).raw();
     if (method == "project_newBlank") return Project_NewBlank(info).raw();
+    if (method == "timeline_getDeclickMs") return Timeline_GetDeclickMs(info).raw();
+    if (method == "timeline_getGlobalStretchMethod") return Timeline_GetGlobalStretchMethod(info).raw();
+    if (method == "timeline_getSources") return Timeline_GetSources(info).raw();
+    if (method == "timeline_getRegions") return Timeline_GetRegions(info).raw();
+    if (method == "timeline_getRegionsByLabel") return Timeline_GetRegionsByLabel(info).raw();
+    if (method == "timeline_getTracks") return Timeline_GetTracks(info).raw();
+    if (method == "timeline_getClips") return Timeline_GetClips(info).raw();
+    if (method == "timeline_getClipsOnTrack") return Timeline_GetClipsOnTrack(info).raw();
+    if (method == "timeline_getClipsInRange") return Timeline_GetClipsInRange(info).raw();
+    if (method == "timeline_getLoopRegion") return Timeline_GetLoopRegion(info).raw();
+    if (method == "timeline_setLoopRegion") { Timeline_SetLoopRegion(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_setTempoLocked") { Timeline_SetTempoLocked(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_setDeclickMs") { Timeline_SetDeclickMs(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_setGlobalStretchMethod") { Timeline_SetGlobalStretchMethod(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_addTrack") return Timeline_AddTrack(info).raw();
+    if (method == "timeline_removeTrack") { Timeline_RemoveTrack(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_setTrackMuted") { Timeline_SetTrackMuted(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_setTrackVisualOnly") { Timeline_SetTrackVisualOnly(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_setTrackSolo") { Timeline_SetTrackSolo(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_setTrackOrder") return Timeline_SetTrackOrder(info).raw();
+    if (method == "timeline_setTrackOutputRoute") return Timeline_SetTrackOutputRoute(info).raw();
+    if (method == "timeline_getRouting") return Timeline_GetRouting(info).raw();
+    if (method == "timeline_addSidechainRoute") return Timeline_AddSidechainRoute(info).raw();
+    if (method == "timeline_removeSidechainRoute") return Timeline_RemoveSidechainRoute(info).raw();
+    if (method == "timeline_setSidechainRouteParams") return Timeline_SetSidechainRouteParams(info).raw();
+    if (method == "timeline_setTrackName") { Timeline_SetTrackName(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_setTrackFxMode") return Timeline_SetTrackFxMode(info).raw();
+    if (method == "timeline_setTrackGraphState") return Timeline_SetTrackGraphState(info).raw();
+    if (method == "timeline_setPatternName") { Timeline_SetPatternName(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_setPatternRegion") { Timeline_SetPatternRegion(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_addClip") return Timeline_AddClip(info).raw();
     if (method == "timeline_addClipsBatch") return Timeline_AddClipsBatch(info).raw();
+    if (method == "timeline_removeClip") { Timeline_RemoveClip(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_setClipParams") return Timeline_SetClipParams(info).raw();
+    if (method == "timeline_setClipModulation") return Timeline_SetClipModulation(info).raw();
+    if (method == "timeline_moveClip") { Timeline_MoveClip(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_resizeClip") { Timeline_ResizeClip(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_resizeClipLeft") { Timeline_ResizeClipLeft(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_stretchClip") { Timeline_StretchClip(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_stretchClipLeft") { Timeline_StretchClipLeft(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_pitchShiftClip") return Timeline_PitchShiftClip(info).raw();
+    if (method == "timeline_reverseClip") return Timeline_ReverseClip(info).raw();
     if (method == "timeline_autoTrimClip") return Timeline_AutoTrimClip(info).raw();
     if (method == "timeline_spliceClipsAtPlayhead") return Timeline_SpliceClipsAtPlayhead(info).raw();
     if (method == "timeline_addRegion") return Timeline_AddRegion(info).raw();
@@ -15539,6 +15950,7 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     if (method == "timeline_assignTrackToGridWithZOrder") { Timeline_AssignTrackToGridWithZOrder(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "timeline_removeTrackFromGrid") { Timeline_RemoveTrackFromGrid(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "timeline_setFullscreenLayers") { Timeline_SetFullscreenLayers(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_setPlacementZOrder") { Timeline_SetPlacementZOrder(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "timeline_setPreviewFps") { Timeline_SetPreviewFps(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "timeline_addPattern") return Timeline_AddPattern(info).raw();
     if (method == "timeline_getPattern") return Timeline_GetPattern(info).raw();
@@ -15567,9 +15979,42 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     if (method == "timeline_previewNote") { Timeline_PreviewNote(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "timeline_previewNoteOff") { Timeline_PreviewNoteOff(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "timeline_previewAllNotesOff") { Timeline_PreviewAllNotesOff(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_convertToPatternTrack") { Timeline_ConvertToPatternTrack(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_convertToClipTrack") { Timeline_ConvertToClipTrack(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_setVideoFlipConfig") { Timeline_SetVideoFlipConfig(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_setVideoHoldLastFrame") { Timeline_SetVideoHoldLastFrame(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_setTrackCornerRadius") { Timeline_SetTrackCornerRadius(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_setTrackGapScaleOverride") { Timeline_SetTrackGapScaleOverride(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_setTrackSubdivisionFactor") { Timeline_SetTrackSubdivisionFactor(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_setTrackColor") { Timeline_SetTrackColor(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_setTrackBounceSettings") { Timeline_SetTrackBounceSettings(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_setTrackZoomPanRotSettings") { Timeline_SetTrackZoomPanRotSettings(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_setTrackPingPongSettings") { Timeline_SetTrackPingPongSettings(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_setTrackSlideNoteEffect") { Timeline_SetTrackSlideNoteEffect(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_setNoteSlide") { Timeline_SetNoteSlide(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_getPreviewResolutionScale") return Timeline_GetPreviewResolutionScale(info).raw();
+    if (method == "timeline_setPreviewResolutionScale") { Timeline_SetPreviewResolutionScale(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_getPreviewEffectsBypass") return Timeline_GetPreviewEffectsBypass(info).raw();
+    if (method == "timeline_setPreviewEffectsBypass") { Timeline_SetPreviewEffectsBypass(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_getPreviewPosterMode") return Timeline_GetPreviewPosterMode(info).raw();
+    if (method == "timeline_setPreviewPosterMode") { Timeline_SetPreviewPosterMode(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "timeline_getPreviewProxyHeight") return Timeline_GetPreviewProxyHeight(info).raw();
     if (method == "timeline_setPreviewProxyHeight") { Timeline_SetPreviewProxyHeight(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_addVisualEffect") return Timeline_AddVisualEffect(info).raw();
+    if (method == "timeline_removeVisualEffect") { Timeline_RemoveVisualEffect(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_reorderVisualEffect") { Timeline_ReorderVisualEffect(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_setTrackVisualEffectChainOrder") { Timeline_SetTrackVisualEffectChainOrder(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_setVisualEffectParam") { Timeline_SetVisualEffectParam(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_setVisualEffectBypassed") { Timeline_SetVisualEffectBypassed(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "timeline_getVisualEffectChain") return Timeline_GetVisualEffectChain(info).raw();
     if (method == "preview_setEnabled") return Preview_SetEnabled(info).raw();
+    if (method == "undo_undo") return Undo_Undo(info).raw();
+    if (method == "undo_redo") return Undo_Redo(info).raw();
+    if (method == "undo_canUndo") return Undo_CanUndo(info).raw();
+    if (method == "undo_canRedo") return Undo_CanRedo(info).raw();
+    if (method == "undo_getUndoDescription") return Undo_GetUndoDescription(info).raw();
+    if (method == "undo_getRedoDescription") return Undo_GetRedoDescription(info).raw();
+    if (method == "transport_seek") { Transport_Seek(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "transport_getState") return GetTransportState(info).raw();
     if (method == "cache_getWorldActiveJobs") return Cache_GetWorldActiveJobIds(info).raw();
     if (method == "engine_setGlobalStretchMethod") { Engine_SetGlobalStretchMethod(info); return JsonApi::Env{}.Undefined().raw(); }

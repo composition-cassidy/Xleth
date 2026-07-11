@@ -4,7 +4,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell, protocol, session } = requir
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
 const { runtimeResource, userDataPath } = require('./runtimePaths');
 const { checkForUpdates } = require('./update-checker');
 const {
@@ -133,6 +133,12 @@ diagnosticsHandlers.init({ safeHandler, getWin: () => win, log });
 // See docs/rpc-manifest.md.
 const rpcRegistry = require('./electron-main/rpc-registry');
 rpcRegistry.init({ safeHandler });
+
+// (uncommitted WIP compat) — store internals referenced by the in-progress
+// *FromPath handlers below; goes away when that WIP lands.
+const { pluginIdSafe, validateLayoutStructure, parseImportedPluginUiLayout } = pluginUiLayouts;
+const { DECAL_ASSET_MAX_BYTES, _decalMagicCheck, _ensureDecalAssetDir, _readDecalAssetIndex, _writeDecalAssetIndex, _decalAssetFilePath } = decals;
+const _crypto = require('crypto');
 
 let workspaceBackdropCapability = null;
 let workspaceBackdropState = {
@@ -434,6 +440,12 @@ function ffmpegExecutable() {
   return 'ffmpeg';
 }
 
+function ffprobeExecutable() {
+  const exe = runtimeResource('ffmpeg', process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
+  if (app.isPackaged || fs.existsSync(exe)) return exe;
+  return 'ffprobe';
+}
+
 // Cap V8 old-space so the renderer/main heaps don't balloon on long sessions.
 // Caps Electron's V8 heaps only; the forked engine worker runs under system Node
 // and is unaffected (intended — this targets UI-side memory growth).
@@ -522,9 +534,11 @@ function createWindow() {
     height: 800,
     minWidth: 900,
     minHeight: 600,
-    backgroundColor: '#0A0A0F',
+    backgroundColor: '#00000000',
+    backgroundMaterial: 'none',
     frame: false,
     show: false,
+    transparent: true,
     webPreferences: {
       // contextIsolation disabled so preload can hand the renderer a live
       // ArrayBuffer reference (shm_helper's file-mapped view). With isolation
@@ -629,16 +643,8 @@ ipcMain.handle('xleth:readStartupLog', () => {
   try { return fs.readFileSync(logPath, 'utf8'); } catch { return '(log unavailable)'; }
 });
 
-ipcMain.handle('xleth:importVideo', safeHandler(async () => {
-  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-    title: 'Import Video',
-    filters: [
-      { name: 'Video Files', extensions: ['mp4', 'avi', 'mkv', 'mov', 'webm', 'wmv'] },
-      { name: 'All Files', extensions: ['*'] },
-    ],
-    properties: ['openFile'],
-  });
-  if (canceled || !filePaths.length) return null;
+async function importVideoPathIntoDemoTimeline(filePath) {
+  if (!filePath || typeof filePath !== 'string') return null;
 
   await callWorker('clearTimeline');
 
@@ -658,7 +664,7 @@ ipcMain.handle('xleth:importVideo', safeHandler(async () => {
     }
   }
 
-  const sourceId = await callWorker('loadVideo', [filePaths[0]]);
+  const sourceId = await callWorker('loadVideo', [filePath]);
   log(`Video loaded: sourceId=${sourceId}`);
 
   const drums = {
@@ -685,7 +691,24 @@ ipcMain.handle('xleth:importVideo', safeHandler(async () => {
   }
 
   log(`Video chopped: ${8 * drumPattern.length} events`);
-  return filePaths[0];
+  return filePath;
+}
+
+ipcMain.handle('xleth:importVideoFromPath', safeHandler((_, filePath) => (
+  importVideoPathIntoDemoTimeline(filePath)
+)));
+
+ipcMain.handle('xleth:importVideo', safeHandler(async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+    title: 'Import Video',
+    filters: [
+      { name: 'Video Files', extensions: ['mp4', 'avi', 'mkv', 'mov', 'webm', 'wmv'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+    properties: ['openFile'],
+  });
+  if (canceled || !filePaths.length) return null;
+  return importVideoPathIntoDemoTimeline(filePaths[0]);
 }));
 
 // ── Phase 1 handlers — Project ────────────────────────────────────────────────
@@ -728,6 +751,246 @@ ipcMain.handle('xleth:backdrop:chooseImage', () => chooseWorkspaceBackdropImage(
 ipcMain.handle('xleth:backdrop:chooseVideo', () => chooseWorkspaceBackdropVideo())
 ipcMain.handle('xleth:backdrop:setMedia', (_, value) => setWorkspaceBackdropMedia(value))
 
+// -- Custom file picker filesystem bridge ------------------------------------
+
+const FILE_PICKER_FAVORITES_KEY = 'filePickerFavorites'
+const FILE_PICKER_MEDIA_EXTENSIONS = new Set([
+  '.wav', '.mp3', '.flac', '.ogg', '.aac', '.m4a',
+  '.mp4', '.avi', '.mov', '.mkv', '.webm', '.wmv',
+])
+
+function safeAppPath(name) {
+  try {
+    const value = app.getPath(name)
+    return value && fs.existsSync(value) ? value : null
+  } catch {
+    return null
+  }
+}
+
+function uniqueExistingPaths(paths) {
+  const seen = new Set()
+  const out = []
+  for (const value of paths) {
+    if (!value || typeof value !== 'string') continue
+    let resolved
+    try {
+      resolved = path.resolve(value)
+      if (!fs.existsSync(resolved)) continue
+    } catch {
+      continue
+    }
+    const key = process.platform === 'win32' ? resolved.toLowerCase() : resolved
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(resolved)
+  }
+  return out
+}
+
+function detectDriveRoots() {
+  if (process.platform !== 'win32') return ['/']
+  const roots = []
+  for (let code = 65; code <= 90; code += 1) {
+    const root = `${String.fromCharCode(code)}:\\`
+    try {
+      if (fs.existsSync(root)) roots.push(root)
+    } catch {}
+  }
+  return roots
+}
+
+function filePickerEntryFromPath(filePath, dirent = null) {
+  const stat = fs.statSync(filePath)
+  const isDirectory = dirent ? dirent.isDirectory() : stat.isDirectory()
+  const ext = isDirectory ? '' : path.extname(filePath).toLowerCase()
+  return {
+    name: path.basename(filePath) || filePath,
+    path: filePath,
+    isDirectory,
+    isFile: dirent ? dirent.isFile() : stat.isFile(),
+    extension: ext,
+    size: isDirectory ? 0 : stat.size,
+    modifiedMs: stat.mtimeMs,
+    isMedia: !isDirectory && FILE_PICKER_MEDIA_EXTENSIONS.has(ext),
+  }
+}
+
+function sanitizeFilePickerFavorites(value) {
+  return uniqueExistingPaths(Array.isArray(value) ? value : [])
+}
+
+ipcMain.handle('xleth:filePicker:getRoots', () => {
+  const locationSpecs = [
+    ['desktop', 'Desktop'],
+    ['documents', 'Documents'],
+    ['downloads', 'Downloads'],
+    ['music', 'Music'],
+    ['videos', 'Videos'],
+  ]
+  const locations = uniqueExistingPaths(locationSpecs.map(([name]) => safeAppPath(name)))
+    .map((locationPath) => {
+      const found = locationSpecs.find(([name]) => safeAppPath(name) === locationPath)
+      return {
+        label: found ? found[1] : path.basename(locationPath),
+        path: locationPath,
+      }
+    })
+
+  const drives = detectDriveRoots().map((drivePath) => ({
+    label: process.platform === 'win32' ? drivePath.replace(/\\$/, '') : drivePath,
+    path: drivePath,
+  }))
+
+  return {
+    home: safeAppPath('home'),
+    locations,
+    drives,
+    favorites: sanitizeFilePickerFavorites(loadSettings()[FILE_PICKER_FAVORITES_KEY]),
+  }
+})
+
+ipcMain.handle('xleth:filePicker:listDirectory', async (_, dirPath) => {
+  if (!dirPath || typeof dirPath !== 'string') throw new Error('Directory path is required.')
+  const resolved = path.resolve(dirPath)
+  const stat = fs.statSync(resolved)
+  if (!stat.isDirectory()) throw new Error('Path is not a folder.')
+
+  const dirents = await fs.promises.readdir(resolved, { withFileTypes: true })
+  const entries = []
+  for (const dirent of dirents) {
+    if (dirent.name === '.' || dirent.name === '..') continue
+    const fullPath = path.join(resolved, dirent.name)
+    try {
+      entries.push(filePickerEntryFromPath(fullPath, dirent))
+    } catch {
+      // Skip inaccessible entries instead of breaking the whole folder.
+    }
+  }
+
+  entries.sort((a, b) => {
+    if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1
+    return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
+  })
+
+  return {
+    path: resolved,
+    parentPath: path.dirname(resolved) !== resolved ? path.dirname(resolved) : null,
+    entries,
+  }
+})
+
+ipcMain.handle('xleth:filePicker:validatePath', (_, rawPath) => {
+  const text = typeof rawPath === 'string' ? rawPath.trim() : ''
+  if (!text) return { ok: false, error: 'Path is empty.' }
+  const resolved = path.resolve(text)
+  const parentPath = path.dirname(resolved)
+  let exists = false
+  let isDirectory = false
+  let isFile = false
+  let size = 0
+  let modifiedMs = 0
+  try {
+    const stat = fs.statSync(resolved)
+    exists = true
+    isDirectory = stat.isDirectory()
+    isFile = stat.isFile()
+    size = stat.size
+    modifiedMs = stat.mtimeMs
+  } catch {}
+
+  let parentExists = false
+  try {
+    parentExists = fs.statSync(parentPath).isDirectory()
+  } catch {}
+
+  return {
+    ok: true,
+    path: resolved,
+    name: path.basename(resolved),
+    parentPath,
+    parentExists,
+    exists,
+    isDirectory,
+    isFile,
+    extension: path.extname(resolved).toLowerCase(),
+    size,
+    modifiedMs,
+  }
+})
+
+ipcMain.handle('xleth:filePicker:createFolder', async (_, parentPath, folderName) => {
+  const parent = typeof parentPath === 'string' ? path.resolve(parentPath) : ''
+  const name = typeof folderName === 'string' ? folderName.trim() : ''
+  if (!parent || !fs.existsSync(parent) || !fs.statSync(parent).isDirectory()) {
+    throw new Error('Parent folder does not exist.')
+  }
+  if (!name || name !== path.basename(name) || /[<>:"/\\|?*]/.test(name)) {
+    throw new Error('Folder name is not valid.')
+  }
+  const target = path.join(parent, name)
+  await fs.promises.mkdir(target)
+  return filePickerEntryFromPath(target)
+})
+
+ipcMain.handle('xleth:filePicker:getFavorites', () => {
+  const settings = loadSettings()
+  return sanitizeFilePickerFavorites(settings[FILE_PICKER_FAVORITES_KEY])
+})
+
+ipcMain.handle('xleth:filePicker:setFavorites', (_, favorites) => {
+  const settings = loadSettings()
+  const sanitized = sanitizeFilePickerFavorites(favorites)
+  settings[FILE_PICKER_FAVORITES_KEY] = sanitized
+  saveSettings(settings)
+  return sanitized
+})
+
+function probeMediaDuration(filePath) {
+  return new Promise((resolve) => {
+    if (!filePath || typeof filePath !== 'string') {
+      resolve(null)
+      return
+    }
+    const ext = path.extname(filePath).toLowerCase()
+    if (!FILE_PICKER_MEDIA_EXTENSIONS.has(ext)) {
+      resolve(null)
+      return
+    }
+    execFile(ffprobeExecutable(), [
+      '-v', 'error',
+      '-show_entries', 'format=duration',
+      '-of', 'default=noprint_wrappers=1:nokey=1',
+      filePath,
+    ], { timeout: 6000 }, (err, stdout) => {
+      if (err) {
+        resolve(null)
+        return
+      }
+      const value = Number.parseFloat(String(stdout || '').trim())
+      resolve(Number.isFinite(value) && value >= 0 ? value : null)
+    })
+  })
+}
+
+ipcMain.handle('xleth:filePicker:probeDurations', async (_, filePaths) => {
+  const paths = Array.isArray(filePaths) ? filePaths.slice(0, 200) : []
+  const result = {}
+  let index = 0
+  const workers = Array.from({ length: Math.min(4, paths.length) }, async () => {
+    while (index < paths.length) {
+      const filePath = paths[index]
+      index += 1
+      try {
+        const duration = await probeMediaDuration(filePath)
+        if (duration != null) result[filePath] = duration
+      } catch {}
+    }
+  })
+  await Promise.all(workers)
+  return result
+})
+
 // ── Quick Launchers ──────────────────────────────────────────────────────────
 // Extracted to electron-main/quick-launchers.js (S5 Stage 5).
 
@@ -746,11 +1009,78 @@ ipcMain.handle('xleth:backdrop:setMedia', (_, value) => setWorkspaceBackdropMedi
 // Extracted to electron-main/plugin-ui-layouts.js (S5 Stage 2), including the
 // xleth:dialog:importPluginUi / xleth:dialog:exportPluginUi handlers.
 
+ipcMain.handle('xleth:pluginUi:importFromPath', (_, selectedPath) => {
+  if (!selectedPath || typeof selectedPath !== 'string') return null
+  try {
+    const raw = fs.readFileSync(selectedPath, 'utf8')
+    const { pluginId, layout } = parseImportedPluginUiLayout(raw)
+    return { pluginId, layout, path: selectedPath }
+  } catch (err) {
+    throw new Error(`Import failed: ${err?.message || err}`)
+  }
+})
+
 // ── User-saved knob appearance presets ────────────────────────────────────────
 // Extracted to electron-main/knob-presets.js (S5 Stage 2).
 
+ipcMain.handle('xleth:pluginUi:exportToPath', (_, pluginId, layout, filePath) => {
+  if (!pluginIdSafe(pluginId)) throw new Error('invalid pluginId')
+  const structErr = validateLayoutStructure(layout, pluginId)
+  if (structErr) throw new Error(`Invalid layout: ${structErr}`)
+  if (!filePath || typeof filePath !== 'string') return null
+
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true })
+    fs.writeFileSync(filePath, JSON.stringify(layout, null, 2), 'utf8')
+    return { path: filePath }
+  } catch (err) {
+    throw new Error(`Export failed: ${err?.message || err}`)
+  }
+})
+
 // ── User-imported decal assets ─────────────────────────────────────────────────
 // Extracted to electron-main/decals.js (S5 Stage 2).
+
+ipcMain.handle('xleth:pluginUiAssets:importFromPath', (_, srcPath) => {
+  if (!srcPath || typeof srcPath !== 'string') return null
+  const srcExt = path.extname(srcPath).toLowerCase().slice(1)
+  if (srcExt !== 'png' && srcExt !== 'webp') {
+    throw new Error('Only PNG and WebP files are supported.')
+  }
+
+  let buf
+  try { buf = fs.readFileSync(srcPath) }
+  catch (err) { throw new Error(`Could not read file: ${err.message}`) }
+
+  if (buf.length > DECAL_ASSET_MAX_BYTES) {
+    throw new Error(`File too large (${Math.round(buf.length / 1024)} KB). Maximum is ${DECAL_ASSET_MAX_BYTES / 1024} KB.`)
+  }
+
+  const magic = _decalMagicCheck(buf)
+  if (!magic.ok) throw new Error(magic.error)
+
+  const uuid = _crypto.randomUUID()
+  const assetId = `user.imported.${uuid}`
+  const label = path.basename(srcPath, path.extname(srcPath)).slice(0, 64) || 'Untitled'
+
+  _ensureDecalAssetDir()
+  const destPath = _decalAssetFilePath(assetId, magic.ext)
+  fs.writeFileSync(destPath, buf)
+
+  const meta = {
+    assetId,
+    label,
+    mime: magic.mime,
+    ext: magic.ext,
+    sizeBytes: buf.length,
+    importedAt: new Date().toISOString(),
+  }
+
+  const index = _readDecalAssetIndex()
+  index.push(meta)
+  _writeDecalAssetIndex(index)
+  return meta
+})
 
 // Engine-level global clip-processing defaults (stretch method / formant
 // preserve) extracted to electron-main/clip-processing-defaults.js (S5 Stage 3).
@@ -761,6 +1091,12 @@ ipcMain.handle('xleth:backdrop:setMedia', (_, value) => setWorkspaceBackdropMedi
 // ── Grid Layout ─────────────────────────────────────────────────────────────
 // Extracted to electron-main/grid-layout.js (S5 Stage 2) — engine pass-through
 // handlers, wired via gridLayout.init({ safeHandler }).
+
+// Set a track's global compositing zOrder (grid slot OR fullscreen layer), one
+// undo step. Engine entry point for the future Video-tab reorder UI; compositing
+// order only (unrelated to setTrackOrder / audio arrangement).
+ipcMain.handle('xleth:timeline:setPlacementZOrder',
+  safeHandler((_, trackId, zOrder) => callWorker('timeline_setPlacementZOrder', [trackId, zOrder])));
 
 // ── Pattern handlers ─────────────────────────────────────────────────────────
 // Extracted to electron-main/patterns.js (S5 Stage 5), together with the
@@ -901,8 +1237,14 @@ ipcMain.handle('xleth:video:saveExportPresets', safeHandler((_, presets) => {
 
 // Dialog: open a WAV file to swap in as processed audio
 ipcMain.handle('xleth:dialog:swapAudio', async () => {
+  let defaultPath = undefined;
+  try {
+    const info = await callWorker('project_getInfo');
+    if (info && typeof info.exportsDir === 'string' && info.exportsDir) defaultPath = info.exportsDir;
+  } catch {}
   const { canceled, filePaths } = await dialog.showOpenDialog(win, {
     title: 'Select Processed Audio',
+    defaultPath,
     filters: [{ name: 'WAV Audio', extensions: ['wav'] }],
     properties: ['openFile'],
   });
@@ -1117,8 +1459,14 @@ ipcMain.handle('xleth:dialog:openProject', async () => {
 });
 
 ipcMain.handle('xleth:dialog:saveProjectAs', async () => {
+  let defaultPath = undefined;
+  try {
+    const info = await callWorker('project_getInfo');
+    if (info && typeof info.projectDir === 'string' && info.projectDir) defaultPath = info.projectDir;
+  } catch {}
   const { canceled, filePaths } = await dialog.showOpenDialog(win, {
     title: 'Save Project As — Choose Folder',
+    defaultPath,
     properties: ['openDirectory', 'createDirectory'],
     buttonLabel: 'Save Here',
   });
@@ -1315,12 +1663,17 @@ ipcMain.handle('xleth:project:exportZip', async (event, opts) => {
     }
 
     const projectName = path.basename(projectDir) || 'project';
-    const { canceled, filePath: destPath } = await dialog.showSaveDialog(senderWin, {
-      title: 'Export Project as ZIP…',
-      defaultPath: `${projectName}.zip`,
-      filters: [{ name: 'ZIP Archive', extensions: ['zip'] }],
-    });
-    if (canceled || !destPath) return { ok: false, cancelled: true };
+    let destPath = typeof opts?.destPath === 'string' ? opts.destPath : '';
+    if (!destPath) {
+      const { canceled, filePath } = await dialog.showSaveDialog(senderWin, {
+        title: 'Export Project as ZIP…',
+        defaultPath: `${projectName}.zip`,
+        filters: [{ name: 'ZIP Archive', extensions: ['zip'] }],
+      });
+      if (canceled || !filePath) return { ok: false, cancelled: true };
+      destPath = filePath;
+    }
+    if (path.extname(destPath).toLowerCase() !== '.zip') destPath += '.zip';
 
     log(`[ZipExport] ${mode} → ${destPath}`);
     await buildProjectZip({ projectDir, destPath, mode, senderWin });

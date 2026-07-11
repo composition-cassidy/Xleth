@@ -7,6 +7,14 @@ import SourceCard from './SourceCard.jsx'
 import ContextMenu from './ContextMenu.jsx'
 import { useToast } from './Toast.jsx'
 import { DEFAULT_LABELS, loadCustomLabels, labelColor } from '../constants/labels.js'
+import { getPickerPaths, openFilePicker } from './filePicker/filePickerService.js'
+
+const SOURCE_IMPORT_FILTERS = [
+  { name: 'All Supported', extensions: ['mp4', 'avi', 'mov', 'mkv', 'wav', 'mp3', 'flac', 'ogg', 'aac', 'm4a'] },
+  { name: 'Video Files', extensions: ['mp4', 'avi', 'mov', 'mkv'] },
+  { name: 'Audio Files', extensions: ['wav', 'mp3', 'flac', 'ogg', 'aac', 'm4a'] },
+  { name: 'All Files', extensions: ['*'] },
+]
 
 export default function ProjectMediaTab({ onOpenPicker }) {
   const { onOpenMidiImport } = useXlethRootContext()
@@ -98,8 +106,16 @@ export default function ProjectMediaTab({ onOpenPicker }) {
     setImporting(true)
 
     try {
-      const filePaths = await window.xleth?.project?.openImportDialog()
-      if (!filePaths || filePaths.length === 0) {
+      const picked = await openFilePicker({
+        mode: 'openFiles',
+        title: 'Import Sources',
+        subtitle: 'Choose audio or video files to add to the current project.',
+        actionLabel: 'Import',
+        filters: SOURCE_IMPORT_FILTERS,
+        legacyPicker: () => window.xleth?.project?.openImportDialog(),
+      })
+      const filePaths = getPickerPaths(picked)
+      if (filePaths.length === 0) {
         console.log('[ProjectMedia] Import cancelled')
         return
       }

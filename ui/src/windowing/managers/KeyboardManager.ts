@@ -172,7 +172,6 @@ function registerDefaultBindings(): void {
   registerBinding('F7', () => usePanelRegistry.getState().togglePanel('pianoRoll'));
   registerBinding('F8', () => usePanelRegistry.getState().togglePanel('preview'));
   registerBinding('F9', () => usePanelRegistry.getState().togglePanel('mixer'));
-  registerBinding('F10', () => usePanelRegistry.getState().togglePanel('gridSettings'));
   registerBinding('F11', () => usePanelRegistry.getState().togglePanel('fxGraph'));
   registerBinding('F12', () => usePanelRegistry.getState().togglePanel('sampler'));
   registerBinding('Escape', () => {
@@ -191,7 +190,6 @@ function registerDefaultBindings(): void {
   });
   registerBinding('Ctrl+Shift+1', () => usePanelRegistry.getState().applyPreset('fl-compose'));
   registerBinding('Ctrl+Shift+2', () => usePanelRegistry.getState().applyPreset('vegas-arrange'));
-  registerBinding('Ctrl+Shift+3', () => usePanelRegistry.getState().applyPreset('grid-edit'));
 }
 
 // ─── Backward-compat API (legacy single-binding-per-combo semantics) ───────

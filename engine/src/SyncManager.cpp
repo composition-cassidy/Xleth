@@ -62,10 +62,24 @@ xleth::clipmod::VideoModulationTimingContext makeVideoTimingContext(
     ctx.sourceClampStartTime = event.sourceClampStartTime;
     ctx.sourceEndTime = event.sourceEndTime;
     ctx.sourceFps = sourceFps;
+    // F.1: mirror MixEngine's post-cache routing exactly so video source-time
+    // tracks the audio readhead. The cache buffer bakes in static pitch for any
+    // clip that is time-stretched OR formant-preserved (with pitch/stretch
+    // present), so zero the static pitch here to avoid double-applying it.
+    // NOTE: event.clipFormantPreserve is the RAW clip flag — the project-global
+    // formant toggle is not yet propagated into VideoEvent (see XlethEngineService
+    // .cpp:1172). Audio resolves the global toggle; video does not. For clips that
+    // inherit formant-preserve purely from the global setting, video timing can
+    // diverge by the static-pitch term. Tracked as a follow-up.
+    const bool clipCacheProcessed =
+        event.clipPitchOffsetSemis != 0
+        || event.clipPitchOffsetCents != 0
+        || event.clipStretchRatio != 1.0
+        || event.clipReversed;
     const bool postCacheStretchedModulation =
-        event.clipStretchRatio != 1.0
-        && !event.clipReversed
-        && !event.clipFormantPreserve;
+        !event.clipReversed
+        && clipCacheProcessed
+        && (event.clipStretchRatio != 1.0 || event.clipFormantPreserve);
     ctx.clipPitchOffsetSemis = postCacheStretchedModulation ? 0 : event.clipPitchOffsetSemis;
     ctx.clipPitchOffsetCents = postCacheStretchedModulation ? 0 : event.clipPitchOffsetCents;
     ctx.clipStartTimelineSamples = event.clipStartTimelineSamples;

@@ -19,4 +19,7 @@ public:
 
     // Human-readable description shown in undo/redo menu items.
     virtual std::string describe() const = 0;
+
+    // A rejected mutation must not be recorded as an undoable edit.
+    virtual bool shouldRecordInUndoHistory() const { return true; }
 };

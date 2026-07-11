@@ -634,6 +634,17 @@ describe('BackdropLayer', () => {
     expect(source).toMatch(/\.xleth-backdrop-off \.xleth-floating-work-area::after/)
     expect(source).not.toMatch(/(?:^|\n)\.xleth-floating-work-area::(?:before|after)\s*\{/)
   })
+
+  it('keeps native acrylic workspace surfaces transparent after flat palette rules', () => {
+    const appCss = readFileSync(path.resolve(process.cwd(), 'src/styles/app.css'), 'utf8')
+    const windowingCss = readFileSync(path.resolve(process.cwd(), 'src/windowing/components/windowing.css'), 'utf8')
+    const flatRuleIndex = appCss.lastIndexOf('.app,\n.app-body,\n.xleth-windowing-app')
+    const acrylicRuleIndex = appCss.lastIndexOf('html[data-xleth-backdrop="native-acrylic"] .xleth-floating-work-area')
+
+    expect(acrylicRuleIndex).toBeGreaterThan(flatRuleIndex)
+    expect(appCss).toMatch(/\.app\.xleth-backdrop-native-acrylic,[\s\S]*html\[data-xleth-backdrop="native-acrylic"\] \.xleth-floating-work-area\s*\{[\s\S]*background:\s*transparent/)
+    expect(windowingCss).toMatch(/\.xleth-backdrop-native-acrylic \.xleth-windowing-app,[\s\S]*\.xleth-backdrop-native-acrylic \.xleth-floating-work-area\s*\{[\s\S]*background:\s*transparent/)
+  })
 })
 
 describe('BackdropFxRenderer fallback', () => {

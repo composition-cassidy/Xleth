@@ -1,11 +1,14 @@
 {
     "bpm": 140.0,
     "clips": [],
-    "created_at": "2026-05-08T02:32:18Z",
+    "created_at": "2026-07-10T08:17:52Z",
     "custom_labels": [],
     "declickMs": 0.5,
     "globalStretchMethod": 1,
     "gridLayout": {
+        "canvasAspectRatio": "16:9",
+        "canvasHeight": 1080,
+        "canvasWidth": 1920,
         "columns": 3,
         "fullscreenLayers": [],
         "gridLayoutVersion": 3,
@@ -13,7 +16,7 @@
         "rows": 3,
         "slots": []
     },
-    "modified_at": "2026-05-08T02:32:18Z",
+    "modified_at": "2026-07-10T08:17:52Z",
     "patternBlocks": [],
     "patterns": [
         {
@@ -218,7 +221,7 @@
             "syllables": []
         }
     ],
-    "sample_rate": 48000.0,
+    "sample_rate": 44100.0,
     "sources": [],
     "time_signature": [
         4,
@@ -237,6 +240,7 @@
                 "squashAmount": 0.0
             },
             "cornerRadius": 0.0,
+            "fxMode": "chain",
             "gapScaleOverride": -1.0,
             "id": 2,
             "muted": false,
@@ -348,6 +352,7 @@
                 "squashAmount": 0.0
             },
             "cornerRadius": 0.0,
+            "fxMode": "chain",
             "gapScaleOverride": -1.0,
             "id": 3,
             "muted": false,
@@ -459,6 +464,7 @@
                 "squashAmount": 0.0
             },
             "cornerRadius": 0.0,
+            "fxMode": "chain",
             "gapScaleOverride": -1.0,
             "id": 4,
             "muted": false,

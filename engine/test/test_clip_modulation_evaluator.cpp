@@ -619,10 +619,11 @@ static void test22_compatibilityHelperMatrix() {
     }
     {
         const auto m = vib();
-        CHECK(!isClipModulationCompatible(false, 1.0, true, m),
-              "formant-preserve clip is NOT compatible");
-        CHECK(classifyClipModulationBypass(false, 1.0, true, m) == ClipModulationBypassReason::FormantPreserve,
-              "formant-preserve clip reports FormantPreserve");
+        // F.1: formant-preserve composes via the post-cache modulated path.
+        CHECK(isClipModulationCompatible(false, 1.0, true, m),
+              "formant-preserve clip is compatible (F.1 post-cache)");
+        CHECK(classifyClipModulationBypass(false, 1.0, true, m) == ClipModulationBypassReason::None,
+              "formant-preserve clip reports no bypass");
     }
 
     // ── Modulation root / curve disabled ────────────────────────────────────
@@ -646,26 +647,28 @@ static void test22_compatibilityHelperMatrix() {
               "no-active-curve clip reports NoActiveCurve");
     }
 
-    // ── Reason precedence: Disabled > NoActiveCurve > Reversed > FormantPreserve ──
+    // ── Reason precedence: Disabled > NoActiveCurve > Reversed ──────────────────
     // (matches the order in classifyClipModulationBypass; lock it in.)
+    // F.1: FormantPreserve is no longer a bypass reason — it composes via the
+    // post-cache modulated path, so it never appears here.
     {
         ClipModulation m;  // disabled root + reversed + stretched + formant
         CHECK(classifyClipModulationBypass(true, 1.5, true, m) == ClipModulationBypassReason::Disabled,
-              "Disabled wins over Reversed/FormantPreserve");
+              "Disabled wins over Reversed");
     }
     {
         ClipModulation m;
         m.enabled = true;
         // no curve enabled
         CHECK(classifyClipModulationBypass(true, 1.5, true, m) == ClipModulationBypassReason::NoActiveCurve,
-              "NoActiveCurve wins over Reversed/FormantPreserve");
+              "NoActiveCurve wins over Reversed");
     }
     {
         const auto m = vib();
         CHECK(classifyClipModulationBypass(true, 1.5, true, m) == ClipModulationBypassReason::Reversed,
-              "Reversed wins over FormantPreserve");
-        CHECK(classifyClipModulationBypass(false, 1.5, true, m) == ClipModulationBypassReason::FormantPreserve,
-              "FormantPreserve still bypasses stretched clips");
+              "Reversed bypasses even with stretch + formant present");
+        CHECK(classifyClipModulationBypass(false, 1.5, true, m) == ClipModulationBypassReason::None,
+              "F.1: stretched + formant-preserve (forward) is no longer bypassed");
     }
 }
 

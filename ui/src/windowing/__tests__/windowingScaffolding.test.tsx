@@ -175,7 +175,6 @@ describe('PanelFrame render paths', () => {
     expect(html).toContain('aria-label="Layout presets"');
     expect(html).toContain('Reset to FL Compose layout');
     expect(html).toContain('Switch to Vegas Arrange layout');
-    expect(html).toContain('Switch to Grid Edit layout');
     expect(html).toContain('aria-label="Dock focused panel"');
     expect(html).toContain('Dock focused panel left: Timeline');
     expect(html).toContain('Dock focused panel top: Timeline');

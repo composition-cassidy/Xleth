@@ -22,7 +22,6 @@ const MixerPanel = React.lazy(() => import('./panels/MixerPanel'));
 const PianoRollPanel = React.lazy(() => import('./panels/PianoRollPanel'));
 const SampleSelectorPanel = React.lazy(() => import('./panels/SampleSelectorPanel'));
 const PreviewPanel = React.lazy(() => import('./panels/PreviewPanel'));
-const GridSettingsPanel = React.lazy(() => import('./panels/GridSettingsPanel'));
 const FxGraphPanel = React.lazy(() => import('./panels/FxGraphPanel'));
 const NodeEditorPanel = React.lazy(() => import('./panels/NodeEditorPanel'));
 const SamplerWindowPanel = React.lazy(() => import('./panels/SamplerWindowPanel'));
@@ -120,7 +119,6 @@ const PANEL_BODY_FOR_6B: Record<PanelId, React.LazyExoticComponent<React.FC>> = 
   pianoRoll: PianoRollPanel,
   sampleSelector: SampleSelectorPanel,
   preview: PreviewPanel,
-  gridSettings: GridSettingsPanel,
   fxGraph: FxGraphPanel,
   nodeEditor: NodeEditorPanel,
   sampler: SamplerWindowPanel,
@@ -143,7 +141,6 @@ const SHELL_PANEL_IDS: Record<AppShellMode, PanelId[]> = {
     'pianoRoll',
     'sampleSelector',
     'preview',
-    'gridSettings',
     'fxGraph',
     'sampler',
   ],
@@ -153,7 +150,6 @@ const SHELL_PANEL_IDS: Record<AppShellMode, PanelId[]> = {
     'pianoRoll',
     'sampleSelector',
     'preview',
-    'gridSettings',
     'fxGraph',
     'sampler',
     'quickNotation',
@@ -164,7 +160,6 @@ const SHELL_PANEL_IDS: Record<AppShellMode, PanelId[]> = {
     'pianoRoll',
     'sampleSelector',
     'preview',
-    'gridSettings',
     'fxGraph',
     'sampler',
     'quickNotation',

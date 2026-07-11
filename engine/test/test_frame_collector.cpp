@@ -220,6 +220,111 @@ int main()
         std::fprintf(stderr, "[TEST:FrameCollector] Test 1: PASSED\n");
     }
 
+    // ── Test 1z-i: unified zOrder — fullscreen layer interleaved between cells ──
+    // A fullscreen layer whose zOrder sits between two grid cells' zOrders must
+    // come out of collectRequests globally sorted BETWEEN them — the whole point
+    // of this phase. Proves grid + fullscreen share one comparable ordering.
+    // (Placed here, before the flip-state-machine tests below, so it runs in this
+    // tree regardless of unrelated flip-subsystem state.)
+    {
+        std::fprintf(stderr, "\n[TEST:FrameCollector] --- Test 1z-i: interleaved fullscreen zOrder ---\n");
+
+        Timeline tl(140.0, 48000.0);
+        SourceMedia s; s.filePath = "iv.mp4"; s.hasVideo = true; s.fps = 30.0;
+        s.duration = 60.0; s.totalFrames = 1800; s.width = 1920; s.height = 1080;
+        int sid = tl.addSource(s);
+
+        TrackInfo a; a.type = TrackInfo::Type::Pattern; int tA = tl.addTrack(a);
+        TrackInfo b; b.type = TrackInfo::Type::Pattern; int tB = tl.addTrack(b);
+        TrackInfo f; f.type = TrackInfo::Type::Pattern; int tF = tl.addTrack(f);
+
+        const int FCOL = kGridSubUnitsPerColumn;
+        const int FROW = kGridSubUnitsPerRow;
+        GridLayout gl; gl.columns = 2; gl.rows = 1;
+        gl.slots.push_back({tA, 0,    0, FCOL, FROW, 1.0f, 0});    // grid z=0
+        gl.slots.push_back({tB, FCOL, 0, FCOL, FROW, 1.0f, 10});   // grid z=10
+        // A BehindGrid layer, but with an interleaved zOrder of 5 (set as the new
+        // command / migration would). Placement is NO LONGER the ordering signal.
+        gl.fullscreenLayers.push_back({tF, FullscreenLayerPlacement::BehindGrid, 1.0f, 5});
+        tl.setGridLayout(gl);
+
+        std::vector<VideoEvent> evs = {
+            makeEvent(tA, sid, 0.0, 4.0, 0.0, 1.0f, 0),
+            makeEvent(tB, sid, 0.0, 4.0, 1.0, 1.0f, 0),
+            makeEvent(tF, sid, 0.0, 4.0, 2.0, 1.0f, 0),
+        };
+        FrameCollector collector;
+        AVRational fps = {30, 1};
+        auto reqs = collector.collectRequests(0, tl, 48000, fps, evs);
+
+        assert(reqs.size() == 3);
+        // Globally sorted ascending: grid(0), fullscreen(5), grid(10).
+        assert(reqs[0].zOrder == 0  && reqs[0].layerKind == CellLayerKind::Grid            && reqs[0].trackId == tA);
+        assert(reqs[1].zOrder == 5  && reqs[1].layerKind == CellLayerKind::FullscreenBehind && reqs[1].trackId == tF);
+        assert(reqs[2].zOrder == 10 && reqs[2].layerKind == CellLayerKind::Grid            && reqs[2].trackId == tB);
+        std::fprintf(stderr, "[TEST:FrameCollector] order: z0(grid) < z5(FS) < z10(grid): PASSED\n");
+        std::fprintf(stderr, "[TEST:FrameCollector] Test 1z-i: PASSED\n");
+    }
+
+    // ── Test 1z-ii: pure-behind / pure-front canonical banding (legacy case) ──
+    // assignCanonicalFullscreenZOrders reproduces the old fixed banding: all
+    // behind layers below every grid cell, all front layers above, array order
+    // preserved. This is the "renders identically to today" special case.
+    {
+        std::fprintf(stderr, "\n[TEST:FrameCollector] --- Test 1z-ii: canonical behind/front banding ---\n");
+
+        Timeline tl(140.0, 48000.0);
+        SourceMedia s; s.filePath = "cv.mp4"; s.hasVideo = true; s.fps = 30.0;
+        s.duration = 60.0; s.totalFrames = 1800; s.width = 1920; s.height = 1080;
+        int sid = tl.addSource(s);
+
+        TrackInfo a;  a.type  = TrackInfo::Type::Pattern; int tA  = tl.addTrack(a);
+        TrackInfo b;  b.type  = TrackInfo::Type::Pattern; int tB  = tl.addTrack(b);
+        TrackInfo l0; l0.type = TrackInfo::Type::Pattern; int tL0 = tl.addTrack(l0);
+        TrackInfo l1; l1.type = TrackInfo::Type::Pattern; int tL1 = tl.addTrack(l1);
+        TrackInfo f0; f0.type = TrackInfo::Type::Pattern; int tF0 = tl.addTrack(f0);
+
+        const int FCOL = kGridSubUnitsPerColumn;
+        const int FROW = kGridSubUnitsPerRow;
+        GridLayout gl; gl.columns = 2; gl.rows = 1;
+        gl.slots.push_back({tA, 0,    0, FCOL, FROW, 1.0f, 0});   // grid z=0
+        gl.slots.push_back({tB, FCOL, 0, FCOL, FROW, 1.0f, 5});   // grid z=5
+        // Two behind (array order L0,L1) + one front. zOrder unset (=0).
+        gl.fullscreenLayers.push_back({tL0, FullscreenLayerPlacement::BehindGrid,   1.0f, 0});
+        gl.fullscreenLayers.push_back({tL1, FullscreenLayerPlacement::BehindGrid,   1.0f, 0});
+        gl.fullscreenLayers.push_back({tF0, FullscreenLayerPlacement::InFrontOfGrid, 1.0f, 0});
+        // Derive canonical zOrders the way project-load / bulk-setter does.
+        assignCanonicalFullscreenZOrders(gl.fullscreenLayers, gl.slots);
+        tl.setGridLayout(gl);
+
+        // gridMin=0,gridMax=5,behindCount=2 → L0=-2, L1=-1, F0=6.
+        assert(gl.fullscreenLayers[0].zOrder == -2);
+        assert(gl.fullscreenLayers[1].zOrder == -1);
+        assert(gl.fullscreenLayers[2].zOrder ==  6);
+
+        std::vector<VideoEvent> evs = {
+            makeEvent(tA,  sid, 0.0, 4.0, 0.0, 1.0f, 0),
+            makeEvent(tB,  sid, 0.0, 4.0, 1.0, 1.0f, 0),
+            makeEvent(tL0, sid, 0.0, 4.0, 2.0, 1.0f, 0),
+            makeEvent(tL1, sid, 0.0, 4.0, 3.0, 1.0f, 0),
+            makeEvent(tF0, sid, 0.0, 4.0, 4.0, 1.0f, 0),
+        };
+        FrameCollector collector;
+        AVRational fps = {30, 1};
+        auto reqs = collector.collectRequests(0, tl, 48000, fps, evs);
+        assert(reqs.size() == 5);
+        // Ascending zOrder: L0(-2), L1(-1), A(0), B(5), F0(6) — behind then grid
+        // then front, exactly the legacy three-pass order.
+        assert(reqs[0].trackId == tL0 && reqs[0].layerKind == CellLayerKind::FullscreenBehind);
+        assert(reqs[1].trackId == tL1 && reqs[1].layerKind == CellLayerKind::FullscreenBehind);
+        assert(reqs[2].trackId == tA  && reqs[2].layerKind == CellLayerKind::Grid);
+        assert(reqs[3].trackId == tB  && reqs[3].layerKind == CellLayerKind::Grid);
+        assert(reqs[4].trackId == tF0 && reqs[4].layerKind == CellLayerKind::FullscreenInFront);
+        // Global invariant: sorted non-decreasing.
+        for (size_t i = 1; i < reqs.size(); ++i) assert(reqs[i - 1].zOrder <= reqs[i].zOrder);
+        std::fprintf(stderr, "[TEST:FrameCollector] Test 1z-ii: PASSED\n");
+    }
+
     // ── Test 2: deduplicateRequests ──────────────────────────────────────────
     {
         std::fprintf(stderr, "\n[TEST:FrameCollector] --- Test 1a: same-start ordinal tiebreak ---\n");

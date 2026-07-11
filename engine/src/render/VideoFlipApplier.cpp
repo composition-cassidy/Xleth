@@ -70,36 +70,39 @@ void applyTrack(std::vector<VideoEvent*>& trackEvents,
     // ── Sort by tick (stable, preserves emission order within ties) ───────
     std::stable_sort(trackEvents.begin(), trackEvents.end(), eventTriggerLess);
 
-    // ── Detect chord groups; build resolver input ─────────────────────────
-    // EveryNote means every note-on, so same-tick chord members all enter the
-    // resolver. Other modifiers keep the existing chord-transparent behavior.
+    // ── Collapse same-tick note stacks into ONE trigger per group ─────────
+    // A chord — every note sharing a tick on this track — is a single flip
+    // trigger, for EveryNote and for the other walked modifiers (NewNote,
+    // SpecificPitches) alike. every-n-beats is clock-driven, so every member of
+    // a group resolves to the same state from its shared tick anyway; collapsing
+    // is a no-op for correctness there but keeps a single code path.
+    //
+    // groupOf[k] maps each event to its group ordinal. groupTriggers holds one
+    // TriggerEvent per group: the shared tick plus the group's identity pitch,
+    // defined as its lowest note (the chord root) so NewNote / SpecificPitches
+    // compare against a deterministic, order-independent pitch.
     const std::size_t n = trackEvents.size();
-    std::vector<bool>         isMono(n, false);
-    std::vector<TriggerEvent> monoEvents;
-    monoEvents.reserve(n);
+    std::vector<int>          groupOf(n, 0);
+    std::vector<TriggerEvent> groupTriggers;
+    groupTriggers.reserve(n);
 
-    const bool everyNote = config.modifier.type == VideoFlipModifier::Type::EveryNote;
-    if (everyNote) {
-        for (std::size_t i = 0; i < n; ++i) {
-            isMono[i] = true;
-            monoEvents.push_back({eventTick(*trackEvents[i]), trackEvents[i]->pitch});
+    for (std::size_t i = 0; i < n; ) {
+        const int64_t tick        = eventTick(*trackEvents[i]);
+        int           lowestPitch = trackEvents[i]->pitch;
+        std::size_t   j           = i + 1;
+        while (j < n && eventTick(*trackEvents[j]) == tick) {
+            lowestPitch = std::min(lowestPitch, trackEvents[j]->pitch);
+            ++j;
         }
-    } else {
-        for (std::size_t i = 0; i < n; ) {
-            const int64_t tick = eventTick(*trackEvents[i]);
-            std::size_t j = i + 1;
-            while (j < n && eventTick(*trackEvents[j]) == tick) ++j;
-            if (j - i == 1) {
-                isMono[i] = true;
-                monoEvents.push_back({tick, trackEvents[i]->pitch});
-            }
-            i = j;
-        }
+        const int groupIdx = static_cast<int>(groupTriggers.size());
+        for (std::size_t k = i; k < j; ++k) groupOf[k] = groupIdx;
+        groupTriggers.push_back({tick, lowestPitch});
+        i = j;
     }
 
-    // ── Run the pure resolver once for this track ─────────────────────────
+    // ── Run the pure resolver once for this track (one entry per group) ───
     const std::vector<int> resolved =
-        resolveStateIndex(config, monoEvents, ticksPerBeat, beatsPerBar);
+        resolveStateIndex(config, groupTriggers, ticksPerBeat, beatsPerBar);
 
     // Compute the safe lookup parameters (defensively clamped — the resolver
     // already does the same internally, but the orientation lookup needs them
@@ -117,31 +120,16 @@ void applyTrack(std::vector<VideoEvent*>& trackEvents,
         return config.states[stateIdx].orientation;
     };
 
-    // ── Write back. Chord events inherit the most-recent prior mono state. ─
-    int  monoCounter   = 0;
-    int  lastMonoState = startIdx;
-    bool hasPriorMono  = false;
-
+    // ── Write back: every member of a group shares its group's state ──────
+    // monoOrdinal is now the group (trigger) ordinal, shared by all chord
+    // members so downstream selection is state-agnostic to which member draws.
     for (std::size_t k = 0; k < n; ++k) {
         VideoEvent* ev = trackEvents[k];
-        int stateIdx;
-        if (isMono[k]) {
-            stateIdx = (monoCounter < static_cast<int>(resolved.size()))
-                ? resolved[monoCounter]
-                : startIdx;
-            ev->monoOrdinal = monoCounter;
-            if (everyNote)
-                ev->globalNoteIndex = monoCounter;
-            ++monoCounter;
-            lastMonoState = stateIdx;
-            hasPriorMono  = true;
-        } else {
-            // Chord event: render the inherited state, do NOT advance, do NOT
-            // bump the mono ordinal. With no prior mono on this track, fall
-            // back to startStateIndex (spec §4.4 row 2).
-            stateIdx = hasPriorMono ? lastMonoState : startIdx;
-            ev->monoOrdinal = -1;
-        }
+        const int   g  = groupOf[k];
+        const int stateIdx = (g < static_cast<int>(resolved.size()))
+            ? resolved[g]
+            : startIdx;
+        ev->monoOrdinal = g;
         ev->stateIndex  = stateIdx;
         ev->orientation = orientationOf(stateIdx);
     }

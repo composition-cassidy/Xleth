@@ -1,14 +1,12 @@
 import { useState, useCallback } from 'react'
-import { FolderOpen, Music, Grid3x3 } from 'lucide-react'
+import { FolderOpen, Music } from 'lucide-react'
 import ProjectMediaTab from './ProjectMediaTab.jsx'
 import SampleSelectorTab from './SampleSelectorTab.jsx'
-import GridLayoutTab from './GridLayoutTab.jsx'
 import { XlethButton } from './common/XlethButton.jsx'
 
 const TABS = [
   { id: 'media',   label: 'MEDIA',   title: 'Project Media',    icon: FolderOpen },
   { id: 'samples', label: 'SAMPLES', title: 'Sample Selector',   icon: Music },
-  { id: 'grid',    label: 'GRID',    title: 'Grid Settings',     icon: Grid3x3 },
 ]
 
 export default function LeftPanel({ onOpenPicker, activeSampleId, setActiveSampleId }) {
@@ -37,9 +35,12 @@ export default function LeftPanel({ onOpenPicker, activeSampleId, setActiveSampl
         ))}
       </div>
       <div className="left-panel-content">
-        {activeTab === 'media'   && <ProjectMediaTab onOpenPicker={onOpenPicker} />}
-        {activeTab === 'samples' && <SampleSelectorTab onOpenPicker={onOpenPicker} activeSampleId={activeSampleId} setActiveSampleId={setActiveSampleId} />}
-        {activeTab === 'grid'    && <GridLayoutTab />}
+        <div style={{ display: activeTab === 'media' ? 'contents' : 'none' }}>
+          <ProjectMediaTab onOpenPicker={onOpenPicker} />
+        </div>
+        <div style={{ display: activeTab === 'samples' ? 'contents' : 'none' }}>
+          <SampleSelectorTab onOpenPicker={onOpenPicker} activeSampleId={activeSampleId} setActiveSampleId={setActiveSampleId} />
+        </div>
       </div>
     </div>
   )

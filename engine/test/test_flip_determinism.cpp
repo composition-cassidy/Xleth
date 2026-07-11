@@ -317,6 +317,51 @@ static Timeline fixture_patternTrack_withChords() {
     return tl;
 }
 
+// Fixture 5b: back-to-back 4-note chords under a 2-state EveryNote config.
+// This is the regression fixture for the "video-flip freeze on stacked chords"
+// bug: before the fix, each chord consumed one ordinal PER NOTE, so with an even
+// chord size and 2 states the displayed state never changed (frozen). After the
+// fix each chord is ONE trigger, so consecutive chords must alternate state.
+static Timeline fixture_backToBack4NoteChords() {
+    Timeline tl(120.0, 48000.0, 4, 4);
+    int regionId = addVideoSourceAndRegion(tl);
+
+    TrackInfo t{};
+    t.name = "StackedChordTrack";
+    t.type = TrackInfo::Type::Pattern;
+    t.videoOpacity = 1.0f;
+    t.videoFlipConfig = cfgEveryNote(2);   // 2 states: [none, horizontal]
+    int trackId = tl.addTrack(t);
+
+    Pattern p{};
+    p.name = "StackedChords";
+    p.regionId = regionId;
+    p.length = TickTime::fromBeats(4);
+    // Four back-to-back 4-note chords at beats 0,1,2,3.
+    int noteId = 1;
+    const int chordPitches[4] = { 60, 64, 67, 72 };  // C major + octave
+    for (int beat = 0; beat < 4; ++beat) {
+        for (int voice = 0; voice < 4; ++voice) {
+            PatternNote n{};
+            n.id       = noteId++;
+            n.position = TickTime::fromBeats(beat);
+            n.duration = TickTime::fromBeats(0.5);
+            n.pitch    = chordPitches[voice];
+            n.velocity = 1.0f;
+            p.notes.push_back(n);
+        }
+    }
+    int patId = tl.addPattern(p);
+
+    PatternBlock b{};
+    b.trackId   = trackId;
+    b.patternId = patId;
+    b.position  = TickTime{0};
+    b.duration  = TickTime::fromBeats(4);
+    tl.addPatternBlock(b);
+    return tl;
+}
+
 // Fixture 6: 12-state max stress config across 12 tracks — used for the
 // performance baseline (acceptance #10).
 static Timeline fixture_stress_12tracks_12states() {
@@ -416,8 +461,16 @@ static void testChordHandling() {
 #endif
 
 static void testEveryNoteChordHandling() {
-    std::cout << "[2] EveryNote chord events advance by note count (acceptance #6)\n";
+    std::cout << "[2] EveryNote same-tick chord collapses to ONE flip trigger\n";
 
+    // Fixture: 2 states [none, horizontal], EveryNote. Timeline is
+    //   tick 0 : single D5
+    //   tick 1 : chord [D5, F#5, A5]   (3 notes, same tick)
+    //   tick 2 : single D5
+    //   tick 3 : single D#5
+    // A chord is ONE trigger, so the group ordinals are 0,1,2,3 and the state
+    // walk is 0 (first, no advance), 1, 0, 1 — i.e. it alternates per group.
+    // Every member of the tick-1 chord shares group ordinal 1 and state 1.
     Timeline tl = fixture_patternTrack_withChords();
     auto events = OfflineRenderer::buildVideoEvents(tl);
 
@@ -429,21 +482,73 @@ static void testEveryNoteChordHandling() {
 
     CHECK(events.size() == 6, "fixture: 6 events (1 single + 3 chord + 2 singles)");
     CHECK(events[0].monoOrdinal == 0 && events[0].stateIndex == 0,
-          "tick 0 single -> ord 0, state 0");
+          "tick 0 single -> group 0, state 0 (first trigger, no advance)");
+    // The three chord members share ONE group ordinal and ONE state.
     CHECK(events[1].monoOrdinal == 1 && events[1].stateIndex == 1,
-          "tick 1 chord member 1 -> ord 1, state 1");
-    CHECK(events[2].monoOrdinal == 2 && events[2].stateIndex == 0,
-          "tick 1 chord member 2 -> ord 2, state 0");
-    CHECK(events[3].monoOrdinal == 3 && events[3].stateIndex == 1,
-          "tick 1 chord member 3 -> ord 3, state 1");
-    CHECK(events[4].monoOrdinal == 4 && events[4].stateIndex == 0,
-          "tick 2 single -> ord 4, state 0");
-    CHECK(events[5].monoOrdinal == 5 && events[5].stateIndex == 1,
-          "tick 3 single -> ord 5, state 1");
-    CHECK(events[3].orientation == Orientation::Horizontal,
-          "tick 1 final chord member exposes render-consumed orientation");
+          "tick 1 chord member 1 -> group 1, state 1");
+    CHECK(events[2].monoOrdinal == 1 && events[2].stateIndex == 1,
+          "tick 1 chord member 2 -> group 1, state 1 (same as member 1)");
+    CHECK(events[3].monoOrdinal == 1 && events[3].stateIndex == 1,
+          "tick 1 chord member 3 -> group 1, state 1 (same as member 1)");
+    CHECK(events[4].monoOrdinal == 2 && events[4].stateIndex == 0,
+          "tick 2 single -> group 2, state 0 (advance)");
+    CHECK(events[5].monoOrdinal == 3 && events[5].stateIndex == 1,
+          "tick 3 single -> group 3, state 1 (advance)");
+    // Orientation follows stateIndex: state 0 = none, state 1 = horizontal.
+    CHECK(events[1].orientation == Orientation::Horizontal
+          && events[2].orientation == Orientation::Horizontal
+          && events[3].orientation == Orientation::Horizontal,
+          "all chord members expose the SAME orientation (horizontal)");
     CHECK(events[4].orientation == Orientation::None,
-          "single after chord exposes next render-consumed orientation");
+          "single after chord returns to none");
+}
+
+static void testStackedChordsAlternate_Regression() {
+    std::cout << "[2b] REGRESSION: 2-state EveryNote over back-to-back 4-note "
+                 "chords alternates per chord (does NOT freeze)\n";
+
+    Timeline tl = fixture_backToBack4NoteChords();
+    auto events = OfflineRenderer::buildVideoEvents(tl);
+
+    CHECK(events.size() == 16, "fixture: 16 events (4 chords x 4 notes)");
+
+    // Bucket events by beat (each beat is one chord group).
+    std::vector<std::vector<const VideoEvent*>> chords(4);
+    for (const auto& ev : events) {
+        int beat = static_cast<int>(ev.startBeat + 0.5);
+        if (beat >= 0 && beat < 4) chords[beat].push_back(&ev);
+    }
+
+    for (int c = 0; c < 4; ++c) {
+        CHECK(chords[c].size() == 4,
+              ("chord " + std::to_string(c) + " has 4 members").c_str());
+        // Every member of a chord shares one state + orientation.
+        const int state0 = chords[c][0]->stateIndex;
+        bool uniform = true;
+        for (const auto* ev : chords[c])
+            if (ev->stateIndex != state0 || ev->orientation != chords[c][0]->orientation)
+                uniform = false;
+        CHECK(uniform,
+              ("chord " + std::to_string(c) + ": all members share one state/orientation").c_str());
+    }
+
+    // The heart of the regression: consecutive chords must NOT be frozen on the
+    // same state. With 2 states + EveryNote the walk is 0,1,0,1 across chords.
+    const int s0 = chords[0][0]->stateIndex;
+    const int s1 = chords[1][0]->stateIndex;
+    const int s2 = chords[2][0]->stateIndex;
+    const int s3 = chords[3][0]->stateIndex;
+    CHECK(s0 == 0, "chord 0 -> state 0 (first trigger, no advance)");
+    CHECK(s1 == 1, "chord 1 -> state 1 (flipped, NOT frozen)");
+    CHECK(s2 == 0, "chord 2 -> state 0 (flipped back)");
+    CHECK(s3 == 1, "chord 3 -> state 1");
+    CHECK(s0 != s1 && s1 != s2 && s2 != s3,
+          "each chord flips relative to its neighbour (freeze bug is gone)");
+    // Green region (state 0) and red region (state 1) both appear.
+    CHECK(chords[0][0]->orientation == Orientation::None,
+          "chord 0 orientation = none");
+    CHECK(chords[1][0]->orientation == Orientation::Horizontal,
+          "chord 1 orientation = horizontal");
 }
 
 static void testMigrationParity_EngineEnd() {
@@ -713,6 +818,7 @@ int main() {
 
     testDeterminism_AcrossCalls();
     testEveryNoteChordHandling();
+    testStackedChordsAlternate_Regression();
     testMigrationParity_EngineEnd();
     testInsertionStability();
     testStateRangeCoverage();

@@ -4,6 +4,7 @@
 // Never accepts raw filesystem paths, URLs, or base64 strings as sources.
 
 import { PLACEHOLDER_DECAL_ID, PLACEHOLDER_DECAL } from './placeholder.js'
+import { getPickerPath, openFilePicker } from '../../../components/filePicker/filePickerService.js'
 
 // In-memory data URL cache. Keyed by assetId.
 // Cleared on page load; survives within a session to avoid redundant IPC round-trips.
@@ -45,7 +46,23 @@ export async function listDecalAssets() {
 export async function importDecalAsset() {
   const api = getApi()
   if (!api) throw new Error('Import is only available in the Electron desktop app.')
-  const result = await api.import()
+  const picked = await openFilePicker({
+    mode: 'openFile',
+    title: 'Import Decal Asset',
+    subtitle: 'Choose a PNG or WebP decal image.',
+    actionLabel: 'Import Decal',
+    filters: [{ name: 'Decal Images', extensions: ['png', 'webp'] }],
+  })
+  const filePath = getPickerPath(picked)
+  let result = null
+  if (filePath) {
+    if (typeof api.importFromPath !== 'function') {
+      throw new Error('Decal import-from-path IPC is unavailable in this build.')
+    }
+    result = await api.importFromPath(filePath)
+  } else if (picked?.unavailable) {
+    result = await api.import()
+  }
   if (result) {
     // Invalidate any stale cache entry for this id (shouldn't exist yet, but be safe).
     _dataUrlCache.delete(result.assetId)

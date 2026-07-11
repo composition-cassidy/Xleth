@@ -201,34 +201,9 @@ Napi::Value GetVideoDuration(const Napi::CallbackInfo& info)
     return dispatchToService(info, "getVideoDuration");
 }
 
-Napi::Value Play(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "play");
-}
-
-Napi::Value Stop(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "stop");
-}
-
-Napi::Value Pause(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "pause");
-}
-
 Napi::Value SetBPM(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "setBPM");
-}
-
-Napi::Value GetTransportState(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "getTransportState");
-}
-
-Napi::Value Proxy_GetStatus(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "proxy_getStatus");
 }
 
 Napi::Value GetCurrentFrame(const Napi::CallbackInfo& info)
@@ -251,11 +226,6 @@ Napi::Value InitVideoSharedMemory(const Napi::CallbackInfo& info)
     return dispatchToService(info, "initVideoSharedMemory");
 }
 
-Napi::Value SetVideoResolution(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "setVideoResolution");
-}
-
 Napi::Value AddAudioEvent(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "addAudioEvent");
@@ -269,11 +239,6 @@ Napi::Value AddVideoEvent(const Napi::CallbackInfo& info)
 Napi::Value ClearTimeline(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "clearTimeline");
-}
-
-Napi::Value GetSyncStats(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "getSyncStats");
 }
 
 // project_create / project_save / project_saveAs / project_hasProjectDir /
@@ -294,9 +259,214 @@ Napi::Value Project_NewBlank(const Napi::CallbackInfo& info)
     return dispatchToService(info, "project_newBlank");
 }
 
+Napi::Value Timeline_GetDeclickMs(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_getDeclickMs");
+}
+
+Napi::Value Timeline_GetGlobalStretchMethod(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_getGlobalStretchMethod");
+}
+
+Napi::Value Timeline_GetSources(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_getSources");
+}
+
+Napi::Value Timeline_GetRegions(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_getRegions");
+}
+
+Napi::Value Timeline_GetRegionsByLabel(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_getRegionsByLabel");
+}
+
+Napi::Value Timeline_GetTracks(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_getTracks");
+}
+
+Napi::Value Timeline_GetClips(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_getClips");
+}
+
+Napi::Value Timeline_GetClipsOnTrack(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_getClipsOnTrack");
+}
+
+Napi::Value Timeline_GetClipsInRange(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_getClipsInRange");
+}
+
+Napi::Value Timeline_GetLoopRegion(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_getLoopRegion");
+}
+
+Napi::Value Timeline_SetLoopRegion(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setLoopRegion");
+}
+
+Napi::Value Timeline_SetTempoLocked(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setTempoLocked");
+}
+
+Napi::Value Timeline_SetDeclickMs(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setDeclickMs");
+}
+
+Napi::Value Timeline_SetGlobalStretchMethod(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setGlobalStretchMethod");
+}
+
+Napi::Value Timeline_AddTrack(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_addTrack");
+}
+
+Napi::Value Timeline_RemoveTrack(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_removeTrack");
+}
+
+Napi::Value Timeline_SetTrackMuted(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setTrackMuted");
+}
+
+Napi::Value Timeline_SetTrackVisualOnly(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setTrackVisualOnly");
+}
+
+Napi::Value Timeline_SetTrackSolo(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setTrackSolo");
+}
+
+Napi::Value Timeline_SetTrackOrder(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setTrackOrder");
+}
+
+Napi::Value Timeline_SetTrackOutputRoute(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setTrackOutputRoute");
+}
+
+Napi::Value Timeline_GetRouting(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_getRouting");
+}
+
+Napi::Value Timeline_AddSidechainRoute(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_addSidechainRoute");
+}
+
+Napi::Value Timeline_RemoveSidechainRoute(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_removeSidechainRoute");
+}
+
+Napi::Value Timeline_SetSidechainRouteParams(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setSidechainRouteParams");
+}
+
+Napi::Value Timeline_SetTrackName(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setTrackName");
+}
+
+Napi::Value Timeline_SetTrackFxMode(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setTrackFxMode");
+}
+
+Napi::Value Timeline_SetTrackGraphState(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setTrackGraphState");
+}
+
+Napi::Value Timeline_SetPatternName(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setPatternName");
+}
+
+Napi::Value Timeline_SetPatternRegion(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setPatternRegion");
+}
+
+Napi::Value Timeline_AddClip(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_addClip");
+}
+
 Napi::Value Timeline_AddClipsBatch(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "timeline_addClipsBatch");
+}
+
+Napi::Value Timeline_RemoveClip(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_removeClip");
+}
+
+Napi::Value Timeline_SetClipParams(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setClipParams");
+}
+
+Napi::Value Timeline_SetClipModulation(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setClipModulation");
+}
+
+Napi::Value Timeline_MoveClip(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_moveClip");
+}
+
+Napi::Value Timeline_ResizeClip(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_resizeClip");
+}
+
+Napi::Value Timeline_ResizeClipLeft(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_resizeClipLeft");
+}
+
+Napi::Value Timeline_StretchClip(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_stretchClip");
+}
+
+Napi::Value Timeline_StretchClipLeft(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_stretchClipLeft");
+}
+
+Napi::Value Timeline_PitchShiftClip(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_pitchShiftClip");
+}
+
+Napi::Value Timeline_ReverseClip(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_reverseClip");
 }
 
 Napi::Value Timeline_AutoTrimClip(const Napi::CallbackInfo& info)
@@ -362,6 +532,11 @@ Napi::Value Timeline_RemoveTrackFromGrid(const Napi::CallbackInfo& info)
 Napi::Value Timeline_SetFullscreenLayers(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "timeline_setFullscreenLayers");
+}
+
+Napi::Value Timeline_SetPlacementZOrder(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setPlacementZOrder");
 }
 
 Napi::Value Timeline_SetPreviewFps(const Napi::CallbackInfo& info)
@@ -504,9 +679,174 @@ Napi::Value Timeline_PreviewAllNotesOff(const Napi::CallbackInfo& info)
     return dispatchToService(info, "timeline_previewAllNotesOff");
 }
 
+Napi::Value Timeline_ConvertToPatternTrack(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_convertToPatternTrack");
+}
+
+Napi::Value Timeline_ConvertToClipTrack(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_convertToClipTrack");
+}
+
+Napi::Value Timeline_SetVideoFlipConfig(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setVideoFlipConfig");
+}
+
+Napi::Value Timeline_SetVideoHoldLastFrame(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setVideoHoldLastFrame");
+}
+
+Napi::Value Timeline_SetTrackCornerRadius(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setTrackCornerRadius");
+}
+
+Napi::Value Timeline_SetTrackGapScaleOverride(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setTrackGapScaleOverride");
+}
+
+Napi::Value Timeline_SetTrackSubdivisionFactor(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setTrackSubdivisionFactor");
+}
+
+Napi::Value Timeline_SetTrackColor(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setTrackColor");
+}
+
+Napi::Value Timeline_SetTrackBounceSettings(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setTrackBounceSettings");
+}
+
+Napi::Value Timeline_SetTrackZoomPanRotSettings(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setTrackZoomPanRotSettings");
+}
+
+Napi::Value Timeline_SetTrackPingPongSettings(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setTrackPingPongSettings");
+}
+
+Napi::Value Timeline_SetTrackSlideNoteEffect(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setTrackSlideNoteEffect");
+}
+
+Napi::Value Timeline_SetNoteSlide(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setNoteSlide");
+}
+
+Napi::Value Timeline_GetPreviewResolutionScale(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_getPreviewResolutionScale");
+}
+
+Napi::Value Timeline_SetPreviewResolutionScale(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setPreviewResolutionScale");
+}
+
+Napi::Value Timeline_GetPreviewEffectsBypass(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_getPreviewEffectsBypass");
+}
+
+Napi::Value Timeline_SetPreviewEffectsBypass(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setPreviewEffectsBypass");
+}
+
+Napi::Value Timeline_GetPreviewPosterMode(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_getPreviewPosterMode");
+}
+
+Napi::Value Timeline_SetPreviewPosterMode(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setPreviewPosterMode");
+}
+
+Napi::Value Timeline_AddVisualEffect(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_addVisualEffect");
+}
+
+Napi::Value Timeline_RemoveVisualEffect(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_removeVisualEffect");
+}
+
+Napi::Value Timeline_ReorderVisualEffect(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_reorderVisualEffect");
+}
+
+Napi::Value Timeline_SetTrackVisualEffectChainOrder(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setTrackVisualEffectChainOrder");
+}
+
+Napi::Value Timeline_SetVisualEffectParam(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setVisualEffectParam");
+}
+
+Napi::Value Timeline_SetVisualEffectBypassed(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setVisualEffectBypassed");
+}
+
+Napi::Value Timeline_GetVisualEffectChain(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_getVisualEffectChain");
+}
+
 Napi::Value Preview_SetEnabled(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "preview_setEnabled");
+}
+
+Napi::Value Undo_Undo(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "undo_undo");
+}
+
+Napi::Value Undo_Redo(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "undo_redo");
+}
+
+Napi::Value Undo_CanUndo(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "undo_canUndo");
+}
+
+Napi::Value Undo_CanRedo(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "undo_canRedo");
+}
+
+Napi::Value Undo_GetUndoDescription(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "undo_getUndoDescription");
+}
+
+Napi::Value Undo_GetRedoDescription(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "undo_getRedoDescription");
+}
+
+Napi::Value Transport_Seek(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "transport_seek");
 }
 
 Napi::Value Cache_GetWorldActiveJobIds(const Napi::CallbackInfo& info)
@@ -1193,21 +1533,14 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("triggerSample",      Napi::Function::New(env, TriggerSample));
     exports.Set("loadVideo",          Napi::Function::New(env, LoadVideo));
     exports.Set("getVideoDuration",   Napi::Function::New(env, GetVideoDuration));
-    exports.Set("play",               Napi::Function::New(env, Play));
-    exports.Set("stop",               Napi::Function::New(env, Stop));
-    exports.Set("pause",              Napi::Function::New(env, Pause));
     exports.Set("setBPM",             Napi::Function::New(env, SetBPM));
-    exports.Set("getTransportState",  Napi::Function::New(env, GetTransportState));
-    exports.Set("proxy_getStatus",    Napi::Function::New(env, Proxy_GetStatus));
     exports.Set("getCurrentFrame",    Napi::Function::New(env, GetCurrentFrame));
     exports.Set("getFrameBuffer",     Napi::Function::New(env, GetFrameBuffer));
     exports.Set("initFrameOutput",    Napi::Function::New(env, InitFrameOutput));
     exports.Set("initVideoSharedMemory", Napi::Function::New(env, InitVideoSharedMemory));
-    exports.Set("setVideoResolution", Napi::Function::New(env, SetVideoResolution));
     exports.Set("addAudioEvent",      Napi::Function::New(env, AddAudioEvent));
     exports.Set("addVideoEvent",      Napi::Function::New(env, AddVideoEvent));
     exports.Set("clearTimeline",      Napi::Function::New(env, ClearTimeline));
-    exports.Set("getSyncStats",       Napi::Function::New(env, GetSyncStats));
 
     // ── Phase 1 — Project ────────────────────────────────────────────────────
     // Most project exports come from the manifest (XlethRpcExports.inc, S1 slice
@@ -1217,9 +1550,50 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("project_newBlank",        Napi::Function::New(env, Project_NewBlank));
 
     // ── Phase 1 — Timeline queries ───────────────────────────────────────────
+    exports.Set("timeline_getDeclickMs",     Napi::Function::New(env, Timeline_GetDeclickMs));
+    exports.Set("timeline_getGlobalStretchMethod", Napi::Function::New(env, Timeline_GetGlobalStretchMethod));
+    exports.Set("timeline_getSources",       Napi::Function::New(env, Timeline_GetSources));
+    exports.Set("timeline_getRegions",       Napi::Function::New(env, Timeline_GetRegions));
+    exports.Set("timeline_getRegionsByLabel",Napi::Function::New(env, Timeline_GetRegionsByLabel));
+    exports.Set("timeline_getTracks",        Napi::Function::New(env, Timeline_GetTracks));
+    exports.Set("timeline_getClips",         Napi::Function::New(env, Timeline_GetClips));
+    exports.Set("timeline_getClipsOnTrack",  Napi::Function::New(env, Timeline_GetClipsOnTrack));
+    exports.Set("timeline_getClipsInRange",  Napi::Function::New(env, Timeline_GetClipsInRange));
+    exports.Set("timeline_getLoopRegion",    Napi::Function::New(env, Timeline_GetLoopRegion));
 
     // ── Phase 1 — Timeline mutations (via UndoManager) ───────────────────────
+    exports.Set("timeline_setLoopRegion",  Napi::Function::New(env, Timeline_SetLoopRegion));
+    exports.Set("timeline_setTempoLocked", Napi::Function::New(env, Timeline_SetTempoLocked));
+    exports.Set("timeline_setDeclickMs",   Napi::Function::New(env, Timeline_SetDeclickMs));
+    exports.Set("timeline_setGlobalStretchMethod", Napi::Function::New(env, Timeline_SetGlobalStretchMethod));
+    exports.Set("timeline_addTrack",     Napi::Function::New(env, Timeline_AddTrack));
+    exports.Set("timeline_removeTrack",  Napi::Function::New(env, Timeline_RemoveTrack));
+    exports.Set("timeline_setTrackMuted",       Napi::Function::New(env, Timeline_SetTrackMuted));
+    exports.Set("timeline_setTrackVisualOnly",  Napi::Function::New(env, Timeline_SetTrackVisualOnly));
+    exports.Set("timeline_setTrackSolo",        Napi::Function::New(env, Timeline_SetTrackSolo));
+    exports.Set("timeline_setTrackOrder",       Napi::Function::New(env, Timeline_SetTrackOrder));
+    exports.Set("timeline_setTrackOutputRoute", Napi::Function::New(env, Timeline_SetTrackOutputRoute));
+    exports.Set("timeline_getRouting",          Napi::Function::New(env, Timeline_GetRouting));
+    exports.Set("timeline_addSidechainRoute",       Napi::Function::New(env, Timeline_AddSidechainRoute));
+    exports.Set("timeline_removeSidechainRoute",    Napi::Function::New(env, Timeline_RemoveSidechainRoute));
+    exports.Set("timeline_setSidechainRouteParams", Napi::Function::New(env, Timeline_SetSidechainRouteParams));
+    exports.Set("timeline_setTrackName", Napi::Function::New(env, Timeline_SetTrackName));
+    exports.Set("timeline_setTrackFxMode", Napi::Function::New(env, Timeline_SetTrackFxMode));
+    exports.Set("timeline_setTrackGraphState", Napi::Function::New(env, Timeline_SetTrackGraphState));
+    exports.Set("timeline_setPatternName",   Napi::Function::New(env, Timeline_SetPatternName));
+    exports.Set("timeline_setPatternRegion", Napi::Function::New(env, Timeline_SetPatternRegion));
+    exports.Set("timeline_addClip",          Napi::Function::New(env, Timeline_AddClip));
     exports.Set("timeline_addClipsBatch",    Napi::Function::New(env, Timeline_AddClipsBatch));
+    exports.Set("timeline_removeClip",       Napi::Function::New(env, Timeline_RemoveClip));
+    exports.Set("timeline_setClipParams",    Napi::Function::New(env, Timeline_SetClipParams));
+    exports.Set("timeline_setClipModulation",Napi::Function::New(env, Timeline_SetClipModulation));
+    exports.Set("timeline_moveClip",         Napi::Function::New(env, Timeline_MoveClip));
+    exports.Set("timeline_resizeClip",       Napi::Function::New(env, Timeline_ResizeClip));
+    exports.Set("timeline_resizeClipLeft",   Napi::Function::New(env, Timeline_ResizeClipLeft));
+    exports.Set("timeline_stretchClip",      Napi::Function::New(env, Timeline_StretchClip));
+    exports.Set("timeline_stretchClipLeft",  Napi::Function::New(env, Timeline_StretchClipLeft));
+    exports.Set("timeline_pitchShiftClip",   Napi::Function::New(env, Timeline_PitchShiftClip));
+    exports.Set("timeline_reverseClip",             Napi::Function::New(env, Timeline_ReverseClip));
     exports.Set("timeline_autoTrimClip",            Napi::Function::New(env, Timeline_AutoTrimClip));
     exports.Set("timeline_spliceClipsAtPlayhead",   Napi::Function::New(env, Timeline_SpliceClipsAtPlayhead));
     exports.Set("timeline_addRegion",    Napi::Function::New(env, Timeline_AddRegion));
@@ -1235,6 +1609,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("timeline_assignTrackToGridWithZOrder",  Napi::Function::New(env, Timeline_AssignTrackToGridWithZOrder));
     exports.Set("timeline_removeTrackFromGrid",          Napi::Function::New(env, Timeline_RemoveTrackFromGrid));
     exports.Set("timeline_setFullscreenLayers", Napi::Function::New(env, Timeline_SetFullscreenLayers));
+    exports.Set("timeline_setPlacementZOrder",  Napi::Function::New(env, Timeline_SetPlacementZOrder));
     exports.Set("timeline_setPreviewFps",       Napi::Function::New(env, Timeline_SetPreviewFps));
 
     // ── Patterns / PatternBlocks / Notes ─────────────────────────────────────
@@ -1266,15 +1641,51 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("timeline_previewNote",            Napi::Function::New(env, Timeline_PreviewNote));
     exports.Set("timeline_previewNoteOff",         Napi::Function::New(env, Timeline_PreviewNoteOff));
     exports.Set("timeline_previewAllNotesOff",     Napi::Function::New(env, Timeline_PreviewAllNotesOff));
+    exports.Set("timeline_convertToPatternTrack",  Napi::Function::New(env, Timeline_ConvertToPatternTrack));
+    exports.Set("timeline_convertToClipTrack",     Napi::Function::New(env, Timeline_ConvertToClipTrack));
+    exports.Set("timeline_setVideoFlipConfig", Napi::Function::New(env, Timeline_SetVideoFlipConfig));
+    exports.Set("timeline_setVideoHoldLastFrame",     Napi::Function::New(env, Timeline_SetVideoHoldLastFrame));
+    exports.Set("timeline_setTrackCornerRadius",      Napi::Function::New(env, Timeline_SetTrackCornerRadius));
+    exports.Set("timeline_setTrackGapScaleOverride",  Napi::Function::New(env, Timeline_SetTrackGapScaleOverride));
+    exports.Set("timeline_setTrackSubdivisionFactor", Napi::Function::New(env, Timeline_SetTrackSubdivisionFactor));
+    exports.Set("timeline_setTrackColor",             Napi::Function::New(env, Timeline_SetTrackColor));
+    exports.Set("timeline_setTrackBounceSettings",       Napi::Function::New(env, Timeline_SetTrackBounceSettings));
+    exports.Set("timeline_setTrackZoomPanRotSettings",   Napi::Function::New(env, Timeline_SetTrackZoomPanRotSettings));
+    exports.Set("timeline_setTrackPingPongSettings",     Napi::Function::New(env, Timeline_SetTrackPingPongSettings));
+    exports.Set("timeline_setTrackSlideNoteEffect",      Napi::Function::New(env, Timeline_SetTrackSlideNoteEffect));
+    exports.Set("timeline_setNoteSlide",                 Napi::Function::New(env, Timeline_SetNoteSlide));
+    exports.Set("timeline_getPreviewResolutionScale", Napi::Function::New(env, Timeline_GetPreviewResolutionScale));
+    exports.Set("timeline_setPreviewResolutionScale", Napi::Function::New(env, Timeline_SetPreviewResolutionScale));
+    exports.Set("timeline_getPreviewEffectsBypass",   Napi::Function::New(env, Timeline_GetPreviewEffectsBypass));
+    exports.Set("timeline_setPreviewEffectsBypass",   Napi::Function::New(env, Timeline_SetPreviewEffectsBypass));
+    exports.Set("timeline_getPreviewPosterMode",      Napi::Function::New(env, Timeline_GetPreviewPosterMode));
+    exports.Set("timeline_setPreviewPosterMode",      Napi::Function::New(env, Timeline_SetPreviewPosterMode));
+    exports.Set("timeline_addVisualEffect",           Napi::Function::New(env, Timeline_AddVisualEffect));
+    exports.Set("timeline_removeVisualEffect",        Napi::Function::New(env, Timeline_RemoveVisualEffect));
+    exports.Set("timeline_reorderVisualEffect",                Napi::Function::New(env, Timeline_ReorderVisualEffect));
+    exports.Set("timeline_setTrackVisualEffectChainOrder",     Napi::Function::New(env, Timeline_SetTrackVisualEffectChainOrder));
+    exports.Set("timeline_setVisualEffectParam",               Napi::Function::New(env, Timeline_SetVisualEffectParam));
+    exports.Set("timeline_setVisualEffectBypassed",   Napi::Function::New(env, Timeline_SetVisualEffectBypassed));
+    exports.Set("timeline_getVisualEffectChain",      Napi::Function::New(env, Timeline_GetVisualEffectChain));
 
     // ── Phase 7 — Preview visibility ────────────────────────────────────────
     exports.Set("preview_setEnabled", Napi::Function::New(env, Preview_SetEnabled));
 
     // ── Phase 1 — Undo / Redo ────────────────────────────────────────────────
+    exports.Set("undo_undo",               Napi::Function::New(env, Undo_Undo));
+    exports.Set("undo_redo",               Napi::Function::New(env, Undo_Redo));
+    exports.Set("undo_canUndo",            Napi::Function::New(env, Undo_CanUndo));
+    exports.Set("undo_canRedo",            Napi::Function::New(env, Undo_CanRedo));
+    exports.Set("undo_getUndoDescription", Napi::Function::New(env, Undo_GetUndoDescription));
+    exports.Set("undo_getRedoDescription", Napi::Function::New(env, Undo_GetRedoDescription));
 
     // ── Phase 1 — Transport extensions ──────────────────────────────────────
-    // transport_getState = getTransportState (same function, aliased)
-    exports.Set("transport_getState",  Napi::Function::New(env, GetTransportState));
+    exports.Set("transport_seek",      Napi::Function::New(env, Transport_Seek));
+    // transport_getState = getTransportState (same engine method, aliased)
+    exports.Set("transport_getState", Napi::Function::New(env,
+        [](const Napi::CallbackInfo& info) {
+            return dispatchToService(info, "getTransportState");
+        }));
 
     // ── WORLD processing indicator ───────────────────────────────────────────
     exports.Set("cache_getWorldActiveJobs", Napi::Function::New(env, Cache_GetWorldActiveJobIds));
@@ -1432,8 +1843,11 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("audio_setMainWindowHandle", Napi::Function::New(env, Audio_SetMainWindowHandle));
 
     // ── Phase 1 — Sync ───────────────────────────────────────────────────────
-    // sync_getStats = getSyncStats (aliased)
-    exports.Set("sync_getStats", Napi::Function::New(env, GetSyncStats));
+    // sync_getStats = getSyncStats (same engine method, aliased)
+    exports.Set("sync_getStats", Napi::Function::New(env,
+        [](const Napi::CallbackInfo& info) {
+            return dispatchToService(info, "getSyncStats");
+        }));
 
     // ── Phase 1B — SourcePlayer (Sample Picker preview) ─────────────────────
     exports.Set("source_loadSource",   Napi::Function::New(env, Source_LoadSource));

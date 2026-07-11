@@ -51,7 +51,7 @@ import useMixerStore from '../stores/mixerStore.js'
 import { useToast } from './Toast.jsx'
 import { usePanelVisibility } from '../windowing/contexts/PanelVisibilityContext'
 import { usePanelRegistry } from '../windowing/registry/PanelRegistry.ts'
-import TrackFlipPropertiesPanel from './timeline/TrackFlipPropertiesPanel.jsx'
+import useVideoTabStore from '../stores/useVideoTabStore.js'
 import { register as registerKeyboardBinding } from '../windowing/managers/KeyboardManager'
 import { registerEditorCommand } from '../windowing/managers/EditorCommandRegistry'
 
@@ -312,8 +312,10 @@ function hasVideoCompanionIntent(modulation) {
 }
 
 function isClipModulationBypassed(clip) {
-  // stretchRatio is supported (Phase F.1) — NOT a bypass condition.
-  return Boolean(clip?.reversed) || Boolean(clip?.formantPreserve)
+  // stretchRatio AND formantPreserve are supported (Phase F.1) — NOT bypass
+  // conditions. Modulation composes on top of the post-cache processed buffer.
+  // Only reverse still bypasses (unresolved scratch source-time semantics).
+  return Boolean(clip?.reversed)
 }
 
 function getClipModulationStatus(clip) {
@@ -325,7 +327,6 @@ function getClipModulationStatus(clip) {
   if (anyIntent && isClipModulationBypassed(clip)) {
     const reasons = []
     if (clip.reversed) reasons.push('Reverse is enabled')
-    if (clip.formantPreserve) reasons.push('Formant Preserve is enabled')
     return { kind: 'bypassed', label: `Bypassed: ${reasons.join(' and ')}` }
   }
 
@@ -745,11 +746,13 @@ export default function TimelineView({
   const [audioModSectionOpen, setAudioModSectionOpen] = useState(true)
   const [videoModSectionOpen, setVideoModSectionOpen] = useState(false)
   const [trackMenu, setTrackMenu] = useState(null)         // { track, x, y }
-  const [flipPanel, setFlipPanel] = useState(null)         // { track, anchorRect }
   const [confirmDialog, setConfirmDialog] = useState(null)  // { title, message, onConfirm }
   const [quantizeOpen, setQuantizeOpen] = useState(false)
   const nextTrackNum = useRef(1)
   const focusTimelinePanel = usePanelRegistry((s) => s.focusPanel)
+  // Track right-click → "Video Properties…" jumps to the Video tab's Track
+  // Detail view for this track (replaces the old floating flip popover).
+  const openTrackVideoProperties = useVideoTabStore((s) => s.openTrackVideoProperties)
 
   // ── Clip state ─────────────────────────────────────────────────────────────
   const [clips, setClips] = useState([])
@@ -2110,18 +2113,9 @@ export default function TimelineView({
     console.log(`[Timeline] Track ${trackId} current pattern → ${patternId}`)
   }, [setCurrentPatternIdByTrack])
 
-  // Phase 5: every flip-config edit goes through this single commit path.
-  // The popover (TrackFlipPropertiesPanel) buffers in-flight edits locally
-  // and only calls this on atomic actions (toggle, reorder mouseup, modifier
-  // change, stepper change). One IPC per commit — no per-tick round-trips.
-  const handleSetVideoFlipConfig = useCallback(async (trackId, config) => {
-    try {
-      await window.xleth?.timeline?.setVideoFlipConfig(trackId, config)
-      await fetchTracks()
-    } catch (err) {
-      console.error('[Timeline] setVideoFlipConfig failed:', err)
-    }
-  }, [fetchTracks])
+  // Flip-config editing moved to the Video tab's Track Detail view
+  // (TrackVideoProperties → TrackFlipSection), which commits directly via the
+  // setVideoFlipConfig IPC. The context menu now just navigates there.
 
   const handleSetVideoHoldLastFrame = useCallback(async (trackId, hold) => {
     try {
@@ -2170,22 +2164,14 @@ export default function TimelineView({
       })
     }
 
-    // Video Flip — opens the inline Track Flip Properties popover (spec §6.1).
-    // The popover replaces the legacy 4-option submenu. Mark "✓" when the
-    // flip cycle is enabled so the menu still surfaces the on/off state.
+    // Video Properties — switches the Timeline panel to the Video tab and opens
+    // this track's consolidated Track Detail view (Flip · Hold Last Frame ·
+    // Corner Radius · Gap · Visual FX · Slide Note FX). Mark "✓" when the flip
+    // cycle is enabled so the menu still surfaces the on/off state at a glance.
     items.push({
-      label: 'Video Flip…',
+      label: 'Video Properties…',
       checked: !!track.videoFlipConfig?.enabled,
-      onClick: () => {
-        // Anchor the popover at the menu's click position; the popover then
-        // clamps itself to the viewport. (When the windowing spec lands and
-        // this UI moves into the Track Properties tab, anchorRect can come
-        // from the tab's bounding box instead.)
-        const anchorRect = trackMenu
-          ? { right: trackMenu.x, top: trackMenu.y }
-          : { right: 200, top: 200 }
-        setFlipPanel({ track, anchorRect })
-      },
+      onClick: () => openTrackVideoProperties(track.id),
     })
 
     const currentHold = track.videoHoldLastFrame || false
@@ -2195,6 +2181,12 @@ export default function TimelineView({
       onClick: () => handleSetVideoHoldLastFrame(track.id, !currentHold),
     })
 
+    // Placement-mode actions (Assign to Grid / Make Fullscreen / Convert /
+    // Unplace) are deliberately NOT shown here — this is the Audio-tab track
+    // menu. Those actions live only in the Video-tab list's own menu builder
+    // (VideoTrackList.jsx), which is where the grid/fullscreen state is
+    // actually visualized and relevant.
+
     items.push({ type: 'separator' })
     items.push({
       label: 'Delete Track',
@@ -2202,7 +2194,7 @@ export default function TimelineView({
       onClick: () => handleRemove(track.id),
     })
     return items
-  }, [patterns, currentPatternIdByTrack, handleNewPatternForTrack, handleSelectPatternForTrack, handleSetVideoHoldLastFrame, handleConvertToClipTrack, confirmAndConvertToPatternTrack, handleRemove, trackMenu])
+  }, [patterns, currentPatternIdByTrack, handleNewPatternForTrack, handleSelectPatternForTrack, handleSetVideoHoldLastFrame, handleConvertToClipTrack, confirmAndConvertToPatternTrack, handleRemove, openTrackVideoProperties])
 
   // ── Seek via ruler ─────────────────────────────────────────────────────────
 
@@ -4420,18 +4412,6 @@ export default function TimelineView({
           y={trackMenu.y}
           items={buildTrackMenuItems(trackMenu.track)}
           onClose={() => setTrackMenu(null)}
-        />
-      )}
-
-      {/* ── Track Flip Properties popover (replaces the legacy submenu) ──── */}
-      {flipPanel && (
-        <TrackFlipPropertiesPanel
-          // Look the track up from the live `tracks` array so undo/redo and
-          // remote commits propagate into the panel without remounting it.
-          track={tracks.find(t => t.id === flipPanel.track.id) ?? flipPanel.track}
-          anchorRect={flipPanel.anchorRect}
-          onClose={() => setFlipPanel(null)}
-          onCommit={(config) => handleSetVideoFlipConfig(flipPanel.track.id, config)}
         />
       )}
 

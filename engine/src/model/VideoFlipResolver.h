@@ -3,14 +3,16 @@
 //
 // Spec: xleth-flip-v2-architecture-spec.md §4 ("State resolution algorithm").
 //
-// Given a track's VideoFlipConfig and the ordered list of mono trigger events
-// on that track, returns one stateIndex per event. The function is deterministic
+// Given a track's VideoFlipConfig and the ordered list of trigger events on
+// that track, returns one stateIndex per event. The function is deterministic
 // (same inputs → same output, always) and stateless (no globals, no caches).
 //
-// **Trigger contract.** EveryNote callers pass every note-on, including
-// same-tick chord members. Other modifiers filter chord events upstream; the
-// caller fills those chord-event stateIndex values from the most recent prior
-// mono event (or startStateIndex if none).
+// **Trigger contract.** The caller passes ONE TriggerEvent per flip trigger.
+// A same-tick note stack (a chord) is collapsed by the caller into a single
+// trigger for every modifier, so the resolver never sees intra-chord members;
+// the caller then writes the group's single resolved stateIndex back onto every
+// member of the chord. A group's identity pitch (for new-note / specific-pitches)
+// is its lowest note.
 //
 // **First-trigger rule.** every-note and new-note never advance on the first
 // mono trigger; specific-pitches advances on the first trigger if the pitch is
@@ -24,19 +26,20 @@
 #include <cstdint>
 #include <vector>
 
-// Single mono trigger event seen by the resolver.
+// A single flip trigger seen by the resolver (one per note or collapsed chord).
 //   tick  — absolute timeline tick (960 PPQ). Strictly ascending across the input.
 //   pitch — MIDI note number (0..127). For clip tracks this is the clip's pitch
-//           offset semitones; for pattern tracks it is the note's MIDI pitch.
+//           offset semitones; for pattern tracks it is the note's MIDI pitch. For
+//           a collapsed chord it is the group's identity (lowest) pitch.
 struct TriggerEvent {
     int64_t tick  = 0;
     int     pitch = 60;
 };
 
-// Resolves stateIndex for each mono trigger event on a track.
+// Resolves stateIndex for each trigger on a track.
 //
 //   config             — per-track flip configuration (states, modifier, start, enabled).
-//   monoTriggerEvents  — chord-filtered, ascending-tick mono events on this track.
+//   monoTriggerEvents  — ascending-tick triggers on this track, one per collapsed group.
 //   ticksPerBeat       — project PPQ (960 in Xleth).
 //   beatsPerBar        — time-signature numerator; required for every-n-beats with
 //                        subdivision='bar'. Defaulted for tests/users on 4/4 projects.

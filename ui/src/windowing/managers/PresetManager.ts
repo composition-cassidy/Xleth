@@ -1,5 +1,4 @@
 import flCompose from '../presets/fl-compose.json';
-import gridEdit from '../presets/grid-edit.json';
 import vegasArrange from '../presets/vegas-arrange.json';
 import {
   DEFAULT_DOCK_REGION_SIZES,
@@ -20,7 +19,6 @@ interface RawPreset {
 const RAW_PRESETS: Record<string, RawPreset> = {
   'fl-compose': flCompose as RawPreset,
   'vegas-arrange': vegasArrange as RawPreset,
-  'grid-edit': gridEdit as RawPreset,
 };
 
 function normalizeDockRegionSizes(value: unknown): DockRegionSizes {

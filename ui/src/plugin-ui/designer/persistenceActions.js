@@ -5,8 +5,17 @@ import {
   isExportAllowed,
   isSaveAllowed,
 } from './validationStatus.js'
+import { getPickerPath, openFilePicker } from '../../components/filePicker/filePickerService.js'
 
 const PLUGIN_UI_LAYOUT_KIND = 'plugin-ui-layout'
+
+function layoutExportFileName(pluginId) {
+  const safeId = String(pluginId || 'plugin')
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    || 'plugin'
+  return `${safeId}.xlethui.json`
+}
 
 export async function saveCurrentLayout() {
   const store = usePluginUIDesignerStore.getState()
@@ -95,7 +104,7 @@ export async function importLayoutFromDialog() {
   const store = usePluginUIDesignerStore.getState()
   const ipc = getPluginUiIpc()
 
-  if (!ipc || typeof ipc.importDialog !== 'function') {
+  if (!ipc || (typeof ipc.importFromPath !== 'function' && typeof ipc.importDialog !== 'function')) {
     return fail(store, 'pluginUi import IPC unavailable')
   }
 
@@ -106,7 +115,26 @@ export async function importLayoutFromDialog() {
   store.setPersistenceBusy?.('importing', true)
   store.setSaveError?.(null)
   try {
-    const imported = await ipc.importDialog()
+    const picked = await openFilePicker({
+      mode: 'openFile',
+      title: 'Import Plugin UI Layout',
+      subtitle: 'Choose a saved XLETH plugin UI layout JSON file.',
+      actionLabel: 'Import',
+      filters: [
+        { name: 'XLETH UI Layout', extensions: ['xlethui.json', 'json'] },
+        { name: 'JSON', extensions: ['json'] },
+      ],
+    })
+    const filePath = getPickerPath(picked)
+    let imported = null
+    if (filePath) {
+      if (typeof ipc.importFromPath !== 'function') {
+        return fail(usePluginUIDesignerStore.getState(), 'pluginUi import-from-path IPC unavailable')
+      }
+      imported = await ipc.importFromPath(filePath)
+    } else if (picked?.unavailable && typeof ipc.importDialog === 'function') {
+      imported = await ipc.importDialog()
+    }
     if (!imported) {
       usePluginUIDesignerStore.getState().setPersistenceMessage?.('Import canceled.')
       return { ok: false, canceled: true }
@@ -141,14 +169,32 @@ export async function exportCurrentLayout() {
   const checked = validateForPersistence(store.workingLayout, 'export', store.manifest)
   if (!checked.ok) return fail(store, checked.error)
 
-  if (!ipc || typeof ipc.exportDialog !== 'function') {
+  if (!ipc || (typeof ipc.exportToPath !== 'function' && typeof ipc.exportDialog !== 'function')) {
     return fail(store, 'pluginUi export IPC unavailable')
   }
 
   store.setPersistenceBusy?.('exporting', true)
   store.setSaveError?.(null)
   try {
-    const result = await ipc.exportDialog(store.pluginId, checked.layout)
+    const picked = await openFilePicker({
+      mode: 'saveFile',
+      title: 'Export Plugin UI Layout',
+      subtitle: 'Choose where to save this plugin UI layout.',
+      actionLabel: 'Export',
+      defaultName: layoutExportFileName(store.pluginId),
+      defaultExtension: 'json',
+      filters: [{ name: 'XLETH UI Layout', extensions: ['json'] }],
+    })
+    const filePath = getPickerPath(picked)
+    let result = null
+    if (filePath) {
+      if (typeof ipc.exportToPath !== 'function') {
+        return fail(usePluginUIDesignerStore.getState(), 'pluginUi export-to-path IPC unavailable')
+      }
+      result = await ipc.exportToPath(store.pluginId, checked.layout, filePath)
+    } else if (picked?.unavailable && typeof ipc.exportDialog === 'function') {
+      result = await ipc.exportDialog(store.pluginId, checked.layout)
+    }
     if (!result) {
       usePluginUIDesignerStore.getState().setPersistenceMessage?.('Export canceled.')
       return { ok: false, canceled: true }

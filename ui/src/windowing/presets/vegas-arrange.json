@@ -50,16 +50,6 @@
       "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 240 },
       "preMaximizeState": null
     },
-    "gridSettings": {
-      "id": "gridSettings",
-      "hidden": true,
-      "focused": false,
-      "zIndex": 0,
-      "mode": "floating",
-      "floating": { "x": 300, "y": 120, "width": 520, "height": 720 },
-      "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 280 },
-      "preMaximizeState": null
-    },
     "fxGraph": {
       "id": "fxGraph",
       "hidden": true,

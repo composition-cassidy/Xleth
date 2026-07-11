@@ -96,6 +96,17 @@ public:
     void   assignTrackToGridWithZOrder(int trackId, int gridX, int gridY,
                                        int spanX, int spanY, int zOrder);
     void   removeTrackFromGrid(int trackId);
+
+    // Which kind of video placement a track currently holds. A track is either
+    // grid-slotted OR fullscreen (never both, by construction), or has no video
+    // placement at all.
+    enum class PlacementKind { None, Grid, Fullscreen };
+    // Set the single, globally-comparable compositing zOrder for a track's video
+    // placement (see GridSlot::zOrder / FullscreenLayer::zOrder). Updates the
+    // track's grid slot if it is grid-placed; otherwise every fullscreen layer
+    // that references the track. Returns which placement was affected (None if
+    // the track has no video placement). Undo-tracked via SetPlacementZOrderCommand.
+    PlacementKind setPlacementZOrder(int trackId, int zOrder);
     // Bulk-replace the fullscreen layer stack. Auto-enables videoHoldLastFrame
     // on every BehindGrid layer's track (preserves chorus continuity semantic).
     void   setFullscreenLayers(std::vector<FullscreenLayer> layers);

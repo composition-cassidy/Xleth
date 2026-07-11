@@ -1,7 +1,6 @@
 import {
   AudioWaveform,
   Clock3,
-  Grid3x3,
   Music2,
   PanelLeft,
   Piano,
@@ -18,7 +17,6 @@ export const PANEL_IDS = [
   'pianoRoll',
   'preview',
   'mixer',
-  'gridSettings',
   'fxGraph',
   'nodeEditor',
   'sampler',
@@ -42,7 +40,6 @@ export type PanelTypeColorToken =
   | '--theme-panel-pianoroll'
   | '--theme-panel-preview'
   | '--theme-panel-mixer'
-  | '--theme-panel-grid'
   | '--theme-panel-node';
 
 export interface FloatingDimensions {
@@ -106,15 +103,6 @@ export const PANEL_CATALOG = {
     icon: SlidersHorizontal,
     fKey: 'F9',
     defaultFloating: { x: 220, y: 420, width: 1040, height: 320 },
-    keepAliveWhenHidden: false,
-  },
-  gridSettings: {
-    id: 'gridSettings',
-    title: 'Grid Settings',
-    typeColorToken: '--theme-panel-grid',
-    icon: Grid3x3,
-    fKey: 'F10',
-    defaultFloating: { x: 300, y: 120, width: 520, height: 720 },
     keepAliveWhenHidden: false,
   },
   fxGraph: {

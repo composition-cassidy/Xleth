@@ -17,6 +17,43 @@ function clearActivePreview(stopFn) {
   if (stopActivePreview === stopFn) stopActivePreview = null
 }
 
+// ── Module-scope LRU cache of captured still frames ─────────────────────────
+// Keyed by `${region.id}:${region.startTime}` so trimming a region's start
+// (which changes what the still should show) naturally invalidates the entry
+// instead of painting a stale frame. Capped so browsing large projects can't
+// grow this unbounded — oldest entry is evicted once the cap is exceeded.
+const STILL_FRAME_CACHE_LIMIT = 200
+const stillFrameCache = new Map() // key -> dataURL, Map iteration order = LRU order (oldest first)
+
+function getCachedStillFrame(key) {
+  if (!key || !stillFrameCache.has(key)) return null
+  const value = stillFrameCache.get(key)
+  stillFrameCache.delete(key)
+  stillFrameCache.set(key, value) // touch: move to most-recently-used position
+  return value
+}
+
+function setCachedStillFrame(key, dataUrl) {
+  if (!key) return
+  stillFrameCache.delete(key)
+  stillFrameCache.set(key, dataUrl)
+  if (stillFrameCache.size > STILL_FRAME_CACHE_LIMIT) {
+    const oldestKey = stillFrameCache.keys().next().value
+    stillFrameCache.delete(oldestKey)
+  }
+}
+
+// ── Module-scope shared mediaPort lookup ─────────────────────────────────────
+// The port is a single constant for the app's lifetime, so every thumbnail
+// instance shares one IPC round trip instead of firing its own.
+let mediaPortPromise = null
+function getMediaPort() {
+  if (mediaPortPromise === null) {
+    mediaPortPromise = Promise.resolve(window.xleth?.getMediaPort?.())
+  }
+  return mediaPortPromise
+}
+
 /**
  * Props mirror SampleRow except the visual layout is a tile.
  *   region, isActive, onSelect, onContextMenu
@@ -49,9 +86,26 @@ export default function SampleThumbnail({
   const dur = Math.abs(region.endTime - region.startTime)
   const accentHex = useMemo(() => labelHexColor(region.label), [region.label])
 
+  // ── Still-frame cache lookup ────────────────────────────────────────────
+  const stillCacheKey = isVideo ? `${region.id}:${region.startTime}` : null
+  const [cachedStillUrl, setCachedStillUrl] = useState(
+    () => getCachedStillFrame(stillCacheKey)
+  )
+  // On a cache hit, defer mounting the real <video> (and its metadata load +
+  // seek) until the user actually hovers. On a cache miss, load eagerly as
+  // before so the still can be captured.
+  const [videoActivated, setVideoActivated] = useState(() => cachedStillUrl == null)
+  useEffect(() => {
+    const cached = getCachedStillFrame(stillCacheKey)
+    setCachedStillUrl(cached)
+    if (cached) setStillReady(true)
+  }, [stillCacheKey])
+
   useEffect(() => {
     if (!isVideo) return
-    window.xleth?.getMediaPort?.().then(port => setMediaPort(port))
+    let cancelled = false
+    getMediaPort().then(port => { if (!cancelled) setMediaPort(port) })
+    return () => { cancelled = true }
   }, [isVideo])
 
   const videoUrl = useMemo(() => {
@@ -78,6 +132,27 @@ export default function SampleThumbnail({
     try { v.currentTime = Math.max(0, region.startTime + STILL_FRAME_OFFSET_S) }
     catch { /* video not seekable yet */ }
   }, [region.startTime])
+
+  // ── Handle the initial still-frame seek: paint, then cache the frame ───────
+  // so the next mount of this same region+startTime can skip the seek entirely.
+  const handleStillSeeked = useCallback(() => {
+    setStillReady(true)
+    if (!stillCacheKey || stillFrameCache.has(stillCacheKey)) return
+    const v = videoRef.current
+    if (!v || !v.videoWidth || !v.videoHeight) return
+    try {
+      const canvas = document.createElement('canvas')
+      canvas.width = v.videoWidth
+      canvas.height = v.videoHeight
+      canvas.getContext('2d').drawImage(v, 0, 0, canvas.width, canvas.height)
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.72)
+      setCachedStillFrame(stillCacheKey, dataUrl)
+      setCachedStillUrl(dataUrl)
+    } catch (e) {
+      // Cross-origin canvas taint or other capture failure — non-fatal, just skip caching.
+      console.warn('[SampleThumbnail] Still-frame capture failed:', e?.message || e)
+    }
+  }, [stillCacheKey])
 
   // ── Stop any currently-playing preview on this tile ────────────────────────
   const stopThisPreview = useCallback(() => {
@@ -153,12 +228,15 @@ export default function SampleThumbnail({
   }, [isPreviewing, region.endTime, stopThisPreview])
 
   const handleMouseEnter = useCallback(() => {
+    // Activate the real <video> immediately (ahead of the preview delay) so
+    // a cache-hit tile has time to load metadata before startPreview() needs it.
+    if (isVideo) setVideoActivated(true)
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
     hoverTimerRef.current = setTimeout(() => {
       hoverTimerRef.current = null
       startPreview()
     }, HOVER_PREVIEW_DELAY_MS)
-  }, [startPreview])
+  }, [isVideo, startPreview])
 
   const handleMouseLeave = useCallback(() => {
     stopThisPreview()
@@ -224,7 +302,7 @@ export default function SampleThumbnail({
           </div>
         )}
 
-        {isVideo && inView && videoUrl && (
+        {isVideo && inView && videoUrl && videoActivated && (
           <video
             ref={videoRef}
             className="sample-thumbnail-video"
@@ -234,10 +312,22 @@ export default function SampleThumbnail({
             preload="metadata"
             draggable={false}
             onLoadedMetadata={seekToStill}
-            onSeeked={() => setStillReady(true)}
+            onSeeked={handleStillSeeked}
             onTimeUpdate={handleTimeUpdate}
             onError={() => console.warn('[SampleThumbnail] Video error:',
               videoRef.current?.error?.code, videoRef.current?.error?.message)}
+          />
+        )}
+
+        {/* Cached still frame — painted on top of the <video> so a cache hit
+            shows instantly without waiting for a fresh decode/seek. Hidden
+            during hover preview so the live video is visible instead. */}
+        {isVideo && cachedStillUrl && !isPreviewing && (
+          <img
+            className="sample-thumbnail-video sample-thumbnail-still-cache"
+            src={cachedStillUrl}
+            draggable={false}
+            alt=""
           />
         )}
 

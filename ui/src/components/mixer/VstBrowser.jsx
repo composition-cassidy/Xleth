@@ -3,6 +3,7 @@ import { X, Search, FolderPlus, RefreshCw, ChevronDown, ChevronRight } from 'luc
 import useVstStore from '../../stores/vstStore.js'
 import useEffectChainStore from '../../stores/effectChainStore.js'
 import ScanProgressBar from './ScanProgressBar.jsx'
+import { getPickerPath, openFilePicker } from '../filePicker/filePickerService.js'
 
 const PATHS_KEY = 'xleth.vstSearchPaths'
 
@@ -47,7 +48,14 @@ export default function VstBrowser({ embedded = false }) {
   }
 
   const handleAddPath = async () => {
-    const dir = await window.xleth?.audio?.addVstSearchPath?.()
+    const picked = await openFilePicker({
+      mode: 'openDirectory',
+      title: 'Add VST3 Search Folder',
+      subtitle: 'Choose a folder to scan for VST3 plugins.',
+      actionLabel: 'Add Path',
+      legacyPicker: () => window.xleth?.audio?.addVstSearchPath?.(),
+    })
+    const dir = getPickerPath(picked)
     if (!dir) return
     const next = [...paths, dir]
     setPaths(next)

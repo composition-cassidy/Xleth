@@ -190,21 +190,6 @@ describe('KeyboardManager', () => {
       expect(panels.mixer.hidden).toBe(true);
     });
 
-    it('Ctrl+Shift+3 applies grid-edit preset', () => {
-      handleKeyEvent({
-        key: '3',
-        type: 'keydown',
-        ctrlKey: true,
-        shiftKey: true,
-      } as KeyboardEvent);
-
-      const panels = usePanelRegistry.getState().panels;
-      expect(panels.gridSettings.hidden).toBe(false);
-      expect(panels.gridSettings.mode).toBe('floating');
-      expect(panels.preview.mode).toBe('floating');
-      expect(panels.mixer.hidden).toBe(true);
-    });
-
     it('plain 1 without modifiers does not trigger preset', () => {
       handleKeyEvent({ key: '1', type: 'keydown' } as KeyboardEvent);
 

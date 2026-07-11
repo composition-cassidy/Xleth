@@ -629,6 +629,29 @@ private:
     std::unordered_map<int, bool> oldHoldByTrackId_;  // pre-execute videoHoldLastFrame, keyed by trackId
 };
 
+// ─── SetPlacementZOrderCommand ────────────────────────────────────────────────
+// Sets the single, globally-comparable compositing zOrder for a track's video
+// placement — grid slot OR fullscreen layer — through one undo-tracked command.
+// This is the entry point a future Video-tab reorder UI calls to slide a
+// fullscreen layer between two grid cells (or vice versa). Follows the
+// AssignTrackToGridCommand pattern: the constructor snapshots the current
+// placement kind + zOrder so undo() restores it exactly. NOTE: this is compositing
+// order only — it is completely independent of SetTrackOrderCommand /
+// TrackInfo::order, which is the audio/mixer arrangement order.
+
+class SetPlacementZOrderCommand : public Command {
+public:
+    SetPlacementZOrderCommand(int trackId, int newZOrder, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int  trackId_;
+    int  newZOrder_;
+    bool hadPlacement_ = false;  // false → track had no video placement; execute/undo no-op
+    int  oldZOrder_    = 0;
+};
+
 // ─── SetPreviewFpsCommand ─────────────────────────────────────────────────────
 
 class SetPreviewFpsCommand : public Command {
@@ -1250,12 +1273,14 @@ public:
     void execute(Timeline& timeline) override;
     void undo(Timeline& timeline) override;
     std::string describe() const override;
+    bool shouldRecordInUndoHistory() const override;
 private:
     int   trackId_;
     int   effectIndex_;
     int   paramIndex_;
     float oldValue_;
     float newValue_;
+    bool  applied_ = true;
 };
 
 // ─── SetVisualEffectBypassedCommand ──────────────────────────────────────────
