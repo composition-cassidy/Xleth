@@ -5,11 +5,14 @@
 //
 // Coverage map:
 //   §4.4 row 1 — first mono trigger never advances           (testFirstMonoNoAdvance)
-//   EveryNote   — same-tick chord notes each trigger          (testEveryNoteChordTriggers)
-//   §4.4 row 3 — mono trigger between chords keeps memory     (testMonoBetweenChords)
+//   all modifiers — same-tick note stack collapses to ONE flip
+//               trigger; every member shares one group ordinal
+//               and one resolved state                        (testEveryNoteChordTriggers)
+//   §4.4 row 3 — new-note "previous pitch" memory is updated by
+//               a chord's identity (lowest) pitch, same as any
+//               other trigger                                 (testMonoBetweenChords)
 //   §4.4 row 4 — pattern loop (no reset)                      (covered in resolver tests)
 //   §3.1       — disabled config = identity                    (testDisabledShortCircuit)
-//   §4.3       — non-EveryNote chord transparency              (testMonoBetweenChords)
 //   §1         — startStateIndex honored for first chord note  (testChordBeforeAnyMono)
 //   misc       — multi-track applyAll grouping                  (testMultiTrackApplyAll)
 //
@@ -134,10 +137,10 @@ static void testFirstMonoNoAdvance() {
     CHECK(events[2].orientation == Orientation::None,        "ev2 orientation=none (wrap)");
 }
 
-// ─── [3] EveryNote chord notes each trigger ─────────────────────────────────
+// ─── [3] Same-tick chord collapses to ONE flip trigger ──────────────────────
 
 static void testEveryNoteChordTriggers() {
-    std::cout << "[3] EveryNote chord notes each trigger\n";
+    std::cout << "[3] EveryNote same-tick chord collapses to ONE trigger\n";
 
     auto cfg = configHorizontalEven();
     // Three events at tick 0 (chord), then a single event at tick 960.
@@ -152,20 +155,21 @@ static void testEveryNoteChordTriggers() {
 
     videoFlipApplier::applyTrack(ptrs, cfg, kPPQ);
 
+    // All three chord members share ONE group (ordinal 0) and ONE state — the
+    // chord is a single trigger, so it does not advance past the first-trigger
+    // rule any more than a single mono note would.
     CHECK(events[0].monoOrdinal == 0 && events[0].stateIndex == 0,
-          "chord member 0 -> ordinal 0, state 0");
-    CHECK(events[1].monoOrdinal == 1 && events[1].stateIndex == 1,
-          "chord member 1 -> ordinal 1, state 1");
-    CHECK(events[2].monoOrdinal == 2 && events[2].stateIndex == 0,
-          "chord member 2 -> ordinal 2, state 0");
-    CHECK(events[3].monoOrdinal == 3 && events[3].stateIndex == 1,
-          "single after chord -> ordinal 3, state 1");
-    CHECK(events[0].globalNoteIndex == 0, "globalNoteIndex rewritten to ordinal 0");
-    CHECK(events[3].globalNoteIndex == 3, "globalNoteIndex rewritten to ordinal 3");
+          "chord member 0 -> group 0, state 0 (first trigger, no advance)");
+    CHECK(events[1].monoOrdinal == 0 && events[1].stateIndex == 0,
+          "chord member 1 -> group 0, state 0 (same group as member 0)");
+    CHECK(events[2].monoOrdinal == 0 && events[2].stateIndex == 0,
+          "chord member 2 -> group 0, state 0 (same group as member 0)");
+    CHECK(events[3].monoOrdinal == 1 && events[3].stateIndex == 1,
+          "single after chord -> group 1, state 1 (advance)");
 }
 
 static void testEveryNoteFourNoteStackTriggersEveryMember() {
-    std::cout << "[3b] EveryNote 4-note stack advances every member\n";
+    std::cout << "[3b] EveryNote 4-note stack collapses to ONE trigger\n";
 
     auto cfg = configEveryNoteStates(4);
     std::vector<VideoEvent> events = {
@@ -190,28 +194,29 @@ static void testEveryNoteFourNoteStackTriggersEveryMember() {
 
     videoFlipApplier::applyTrack(ptrs, cfg, kPPQ);
 
-    for (int i = 0; i < static_cast<int>(events.size()); ++i) {
+    // All four stack members are ONE group (ordinal 0) — a same-tick note
+    // stack is a single flip trigger regardless of size.
+    for (int i = 0; i < 4; ++i) {
         const auto& ev = events[static_cast<std::size_t>(i)];
-        CHECK(ev.monoOrdinal == i,
-              "4-note stack: every note-on gets the next ordinal");
-        CHECK(ev.globalNoteIndex == i,
-              "4-note stack: globalNoteIndex mirrors the EveryNote ordinal");
-        CHECK(ev.stateIndex == (i % 4),
-              "4-note stack: stateIndex follows the next flipped state");
-        CHECK(ev.orientation == cfg.states[static_cast<std::size_t>(i % 4)].orientation,
-              "4-note stack: orientation follows stateIndex");
+        CHECK(ev.monoOrdinal == 0,
+              "4-note stack: every member shares group 0");
+        CHECK(ev.stateIndex == 0,
+              "4-note stack: every member shares state 0 (first trigger, no advance)");
+        CHECK(ev.orientation == cfg.states[0].orientation,
+              "4-note stack: every member shares the group's orientation");
     }
-    CHECK(events[3].stateIndex == 3,
-          "fourth simultaneous note lands on the fourth flipped state");
-    CHECK(events[4].stateIndex == 0,
-          "next note after the stack continues from the consumed chord count");
+    CHECK(events[4].monoOrdinal == 1 && events[4].stateIndex == 1,
+          "next note after the stack advances to group 1, state 1");
 }
 
 // ─── [4] Chord followed by single advances immediately ──────────────────────
 
 static void testSameTickUsesSourceOrderBeforePitch() {
-    std::cout << "[3a] Same-tick EveryNote order prefers source note order before pitch\n";
+    std::cout << "[3a] Same-tick chord collapse is order- and pitch-independent (EveryNote)\n";
 
+    // A same-tick note stack is a single flip trigger regardless of its
+    // members' source order or pitch order — EveryNote doesn't consult either
+    // when deciding whether/how much to advance.
     auto cfg = configEveryNoteStates(6);
     std::vector<VideoEvent> events = {
         makeEvent(0.0, 72),  // source order 10, pitch highest
@@ -234,22 +239,23 @@ static void testSameTickUsesSourceOrderBeforePitch() {
     videoFlipApplier::applyTrack(ptrs, cfg, kPPQ);
 
     CHECK(events[0].monoOrdinal == 0 && events[0].orientation == Orientation::None,
-          "source-order first event gets ordinal 0, not pitch-sorted last");
-    CHECK(events[1].monoOrdinal == 1 && events[1].orientation == Orientation::Horizontal,
-          "source-order second event gets ordinal 1");
-    CHECK(events[2].monoOrdinal == 2 && events[2].orientation == Orientation::Vertical,
-          "source-order third event gets ordinal 2");
+          "chord member (source order 10) -> group 0, first trigger no advance");
+    CHECK(events[1].monoOrdinal == 0 && events[1].orientation == Orientation::None,
+          "chord member (source order 11) -> group 0, same as member above");
+    CHECK(events[2].monoOrdinal == 0 && events[2].orientation == Orientation::None,
+          "chord member (source order 12) -> group 0, same as member above");
 }
 
 static void testChordFollowedBySingle() {
-    std::cout << "[4] EveryNote chord followed by single advances immediately\n";
+    std::cout << "[4] EveryNote chord (one trigger) followed by single advances\n";
 
     auto cfg = configHorizontalEven();  // 2 states, every-note, startIdx=0
     // Sequence on one track:
-    //   tick 0    : mono D5     (first → state 0, no advance)
-    //   tick 960  : mono D#5    (advance → state 1)
-    //   tick 1920 : chord [E5, G5]  (two more note-ons)
-    //   tick 2880 : mono A5     (advance → state 0 wrap)
+    //   tick 0    : mono D5        (first → state 0, no advance)
+    //   tick 960  : mono D#5       (advance → state 1)
+    //   tick 1920 : chord [E5, G5] (ONE trigger → advance → state 0 wrap;
+    //                                both members share group 2 / state 0)
+    //   tick 2880 : mono A5        (advance → state 1)
     std::vector<VideoEvent> events = {
         makeEvent(0.0, 74),   // mono
         makeEvent(1.0, 75),   // mono
@@ -267,17 +273,17 @@ static void testChordFollowedBySingle() {
     CHECK(events[1].stateIndex  == 1 && events[1].monoOrdinal == 1,
           "ev1 mono advance -> state 1, ord 1");
     CHECK(events[2].stateIndex  == 0 && events[2].monoOrdinal == 2,
-          "ev2 chord member advances -> state 0, ord 2");
-    CHECK(events[3].stateIndex  == 1 && events[3].monoOrdinal == 3,
-          "ev3 chord member advances -> state 1, ord 3");
-    CHECK(events[4].stateIndex  == 0 && events[4].monoOrdinal == 4,
-          "ev4 single after chord advances -> state 0, ord 4");
+          "ev2 chord group advances -> state 0, ord 2");
+    CHECK(events[3].stateIndex  == 0 && events[3].monoOrdinal == 2,
+          "ev3 chord member shares ev2's group -> state 0, ord 2");
+    CHECK(events[4].stateIndex  == 1 && events[4].monoOrdinal == 3,
+          "ev4 single after chord advances -> state 1, ord 3");
 }
 
-// ─── [5] new-note across chord gap remembers last mono pitch ─────────────────
+// ─── [5] new-note: a chord's identity pitch feeds "previous pitch" memory ────
 
 static void testMonoBetweenChords() {
-    std::cout << "[5] new-note remembers last mono pitch across chord events\n";
+    std::cout << "[5] new-note: chord (one trigger) updates last-pitch memory via its identity pitch\n";
 
     VideoFlipConfig cfg;
     cfg.enabled         = true;
@@ -289,10 +295,13 @@ static void testMonoBetweenChords() {
     };
     cfg.modifier.type = VideoFlipModifier::Type::NewNote;
 
-    // tick 0    : mono D5  (first → state 0)
-    // tick 1920 : chord [G5, C6]  (inherits state 0)
-    // tick 2880 : mono D5  (same pitch as last mono → no advance, state 0)
-    // tick 3840 : mono D#5 (different from last mono D5 → advance → state 1)
+    // tick 0    : mono D5        (first → state 0)
+    // tick 1920 : chord [G5, C6] (ONE trigger; identity pitch = lowest = G5.
+    //                              G5 != previous pitch D5 → advance → state 1)
+    // tick 2880 : mono D5        (D5 != previous pitch G5 (the chord's
+    //                              identity) → advance → state 2)
+    // tick 3840 : mono D#5       (D#5 != previous pitch D5 → advance →
+    //                              state 0, wrap)
     std::vector<VideoEvent> events = {
         makeEvent(0.0, 74),
         makeEvent(2.0, 79),    // chord
@@ -305,15 +314,16 @@ static void testMonoBetweenChords() {
 
     videoFlipApplier::applyTrack(ptrs, cfg, kPPQ);
 
-    CHECK(events[0].stateIndex  == 0,                "ev0 first mono D5 -> state 0");
-    CHECK(events[1].stateIndex  == 0 && events[1].monoOrdinal == -1,
-          "ev1 chord inherits state 0");
-    CHECK(events[2].stateIndex  == 0 && events[2].monoOrdinal == -1,
-          "ev2 chord inherits state 0");
-    CHECK(events[3].stateIndex  == 0,                "ev3 D5 again (same as last mono) -> state 0");
-    CHECK(events[3].monoOrdinal == 1,                "ev3 monoOrdinal = 1");
-    CHECK(events[4].stateIndex  == 1,                "ev4 D#5 (different) -> state 1");
-    CHECK(events[4].monoOrdinal == 2,                "ev4 monoOrdinal = 2");
+    CHECK(events[0].stateIndex  == 0 && events[0].monoOrdinal == 0,
+          "ev0 first mono D5 -> group 0, state 0");
+    CHECK(events[1].stateIndex  == 1 && events[1].monoOrdinal == 1,
+          "ev1 chord (identity G5 != D5) -> group 1, state 1 (advance)");
+    CHECK(events[2].stateIndex  == 1 && events[2].monoOrdinal == 1,
+          "ev2 chord member shares ev1's group -> state 1");
+    CHECK(events[3].stateIndex  == 2,                "ev3 D5 (!= chord's identity G5) -> state 2");
+    CHECK(events[3].monoOrdinal == 2,                "ev3 monoOrdinal = 2");
+    CHECK(events[4].stateIndex  == 0,                "ev4 D#5 (!= D5) -> state 0 (wrap)");
+    CHECK(events[4].monoOrdinal == 3,                "ev4 monoOrdinal = 3");
 }
 
 // ─── [6] Chord before any single starts from startStateIndex ─────────────────
@@ -336,17 +346,18 @@ static void testChordBeforeAnyMono() {
     videoFlipApplier::applyTrack(ptrs, cfg, kPPQ);
 
     CHECK(events[0].stateIndex  == 1 && events[0].monoOrdinal == 0,
-          "first chord member -> startStateIndex=1, ord 0");
-    CHECK(events[1].stateIndex  == 0 && events[1].monoOrdinal == 1,
-          "second chord member advances and wraps -> state 0, ord 1");
-    CHECK(events[2].stateIndex  == 1 && events[2].monoOrdinal == 2,
-          "single after opening chord advances -> state 1, ord 2");
+          "first chord member -> startStateIndex=1, group 0 (first trigger, no advance)");
+    CHECK(events[1].stateIndex  == 1 && events[1].monoOrdinal == 0,
+          "second chord member shares group 0 -> state 1");
+    CHECK(events[2].stateIndex  == 0 && events[2].monoOrdinal == 1,
+          "single after opening chord advances and wraps -> state 0, group 1");
 }
 
 // ─── [7] applyAll groups by trackId and routes to per-track config ───────────
 
-// Repro: first chord, two singles, later chord. The single immediately after
-// the first chord must advance from the chord's final note-on state.
+// Repro: first chord, two singles, later chord. Each chord is ONE trigger
+// (one group ordinal, one state, shared by every member); the singles that
+// follow advance from the chord's group, not from an individual member.
 static void testEveryNoteChordReproSequence() {
     std::cout << "[7] EveryNote repro sequence: chord, singles, later chord\n";
 
@@ -366,20 +377,23 @@ static void testEveryNoteChordReproSequence() {
 
     videoFlipApplier::applyTrack(ptrs, cfg, kPPQ);
 
+    // Groups: [0]=beat0 chord (3 members), [1]=beat0.5 single,
+    //         [2]=beat0.75 single, [3]=beat1.5 chord (3 members).
+    const int expectedGroup[8] = { 0, 0, 0, 1, 2, 3, 3, 3 };
     for (int i = 0; i < static_cast<int>(events.size()); ++i) {
-        CHECK(events[static_cast<size_t>(i)].monoOrdinal == i,
-              "every note-on gets the next ordinal");
-        CHECK(events[static_cast<size_t>(i)].globalNoteIndex == i,
-              "globalNoteIndex mirrors the resolved EveryNote ordinal");
-        CHECK(events[static_cast<size_t>(i)].stateIndex == (i % 4),
-              "stateIndex follows ordinal modulo state count");
-        CHECK(events[static_cast<size_t>(i)].orientation == cfg.states[static_cast<size_t>(i % 4)].orientation,
-              "orientation follows the render-consumed state");
+        const auto& ev = events[static_cast<size_t>(i)];
+        const int g = expectedGroup[i];
+        CHECK(ev.monoOrdinal == g,
+              "every event's group ordinal matches its same-tick cluster");
+        CHECK(ev.stateIndex == (g % 4),
+              "stateIndex follows the group ordinal modulo state count");
+        CHECK(ev.orientation == cfg.states[static_cast<size_t>(g % 4)].orientation,
+              "orientation follows the group's resolved state");
     }
-    CHECK(events[2].stateIndex == 2, "first chord final visible member -> state 2");
-    CHECK(events[3].stateIndex == 3, "single immediately after chord -> state 3");
-    CHECK(events[4].stateIndex == 0, "next single advances again -> state 0");
-    CHECK(events[7].stateIndex == 3, "later chord final member -> state 3");
+    CHECK(events[2].stateIndex == 0, "first chord (group 0) -> state 0 (first trigger, no advance)");
+    CHECK(events[3].stateIndex == 1, "single immediately after chord (group 1) -> state 1");
+    CHECK(events[4].stateIndex == 2, "next single (group 2) advances again -> state 2");
+    CHECK(events[7].stateIndex == 3, "later chord (group 3) -> state 3");
 }
 
 static void testMultiTrackApplyAll() {

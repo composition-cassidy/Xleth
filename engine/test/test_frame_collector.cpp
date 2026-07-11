@@ -377,7 +377,9 @@ int main()
         std::vector<VideoEvent> flipEvents = {
             noteEvent(0.0, 0.5, 60, 1, 0),
             noteEvent(1.0, 0.5, 62, 2, 1),
-            // Same-tick chord intentionally not pitch-sorted; source order wins.
+            // Same-tick chord: collapses to ONE flip trigger (VideoFlipApplier
+            // groups same-tick note stacks), so all three members share a single
+            // resolved state/orientation regardless of source order or pitch.
             noteEvent(2.0, 2.0, 72, 10, 2),
             noteEvent(2.0, 2.0, 60, 11, 3),
             noteEvent(2.0, 2.0, 67, 12, 4),
@@ -387,8 +389,8 @@ int main()
             noteEvent(5.0, 1.5, 76, 20, 7),
             noteEvent(5.0, 1.5, 64, 21, 8),
             noteEvent(5.0, 1.5, 79, 22, 9),
-            // Four-note stack: every same-tick member must consume the next
-            // flip state before the collector chooses the visible event.
+            // Four-note stack: collapses to ONE flip trigger, same as the
+            // three-note chord above — all four members share one state.
             noteEvent(6.0, 1.0, 84, 30, 10),
             noteEvent(6.0, 1.0, 60, 31, 11),
             noteEvent(6.0, 1.0, 67, 32, 12),
@@ -431,13 +433,13 @@ int main()
 
         assertOrientationAtBeat(0.0, Orientation::None);
         assertOrientationAtBeat(1.0, Orientation::Horizontal);
-        assertOrientationAtBeat(2.0, Orientation::Rotate90CW);
-        assertOrientationAtBeat(2.75, Orientation::Rotate90CW);
-        assertOrientationAtBeat(3.0, Orientation::Rotate90CCW);
-        assertOrientationAtBeat(4.0, Orientation::None);
-        assertOrientationAtBeat(5.0, Orientation::Rotate180);
-        assertOrientationAtBeat(6.0, Orientation::Horizontal);
-        assertOrientationAtBeat(6.25, Orientation::Horizontal);
+        assertOrientationAtBeat(2.0, Orientation::Vertical);
+        assertOrientationAtBeat(2.75, Orientation::Vertical);
+        assertOrientationAtBeat(3.0, Orientation::Rotate180);
+        assertOrientationAtBeat(4.0, Orientation::Rotate90CW);
+        assertOrientationAtBeat(5.0, Orientation::Rotate90CCW);
+        assertOrientationAtBeat(6.0, Orientation::None);
+        assertOrientationAtBeat(6.25, Orientation::None);
 
         std::fprintf(stderr, "[TEST:FrameCollector] Test 1b: PASSED\n");
     }
