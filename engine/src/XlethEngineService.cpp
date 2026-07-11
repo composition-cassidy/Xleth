@@ -15874,7 +15874,6 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
 
     if (method == "initialize") return Initialize(info).raw();
     if (method == "shutdown") { Shutdown(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "loadSample") return LoadSample(info).raw();
     if (method == "triggerSample") { TriggerSample(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "loadVideo") return LoadVideo(info).raw();
     if (method == "getVideoDuration") return GetVideoDuration(info).raw();
@@ -15895,55 +15894,9 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     // handlers own the renderer broadcast + autosave restart.
     if (method == "project_load") return Project_Load(info).raw();
     if (method == "project_newBlank") return Project_NewBlank(info).raw();
-    if (method == "timeline_getDeclickMs") return Timeline_GetDeclickMs(info).raw();
-    if (method == "timeline_getGlobalStretchMethod") return Timeline_GetGlobalStretchMethod(info).raw();
-    if (method == "timeline_getSources") return Timeline_GetSources(info).raw();
-    if (method == "timeline_getRegions") return Timeline_GetRegions(info).raw();
-    if (method == "timeline_getRegionsByLabel") return Timeline_GetRegionsByLabel(info).raw();
-    if (method == "timeline_getTracks") return Timeline_GetTracks(info).raw();
-    if (method == "timeline_getClips") return Timeline_GetClips(info).raw();
-    if (method == "timeline_getClipsOnTrack") return Timeline_GetClipsOnTrack(info).raw();
-    if (method == "timeline_getClipsInRange") return Timeline_GetClipsInRange(info).raw();
-    if (method == "timeline_getLoopRegion") return Timeline_GetLoopRegion(info).raw();
-    if (method == "timeline_setLoopRegion") { Timeline_SetLoopRegion(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTempoLocked") { Timeline_SetTempoLocked(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setDeclickMs") { Timeline_SetDeclickMs(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setGlobalStretchMethod") { Timeline_SetGlobalStretchMethod(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_addTrack") return Timeline_AddTrack(info).raw();
-    if (method == "timeline_removeTrack") { Timeline_RemoveTrack(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTrackMuted") { Timeline_SetTrackMuted(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTrackVisualOnly") { Timeline_SetTrackVisualOnly(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTrackSolo") { Timeline_SetTrackSolo(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTrackOrder") return Timeline_SetTrackOrder(info).raw();
-    if (method == "timeline_setTrackOutputRoute") return Timeline_SetTrackOutputRoute(info).raw();
-    if (method == "timeline_getRouting") return Timeline_GetRouting(info).raw();
-    if (method == "timeline_addSidechainRoute") return Timeline_AddSidechainRoute(info).raw();
-    if (method == "timeline_removeSidechainRoute") return Timeline_RemoveSidechainRoute(info).raw();
-    if (method == "timeline_setSidechainRouteParams") return Timeline_SetSidechainRouteParams(info).raw();
-    if (method == "timeline_setTrackName") { Timeline_SetTrackName(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTrackFxMode") return Timeline_SetTrackFxMode(info).raw();
-    if (method == "timeline_setTrackGraphState") return Timeline_SetTrackGraphState(info).raw();
-    if (method == "timeline_setPatternName") { Timeline_SetPatternName(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setPatternRegion") { Timeline_SetPatternRegion(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_addClip") return Timeline_AddClip(info).raw();
     if (method == "timeline_addClipsBatch") return Timeline_AddClipsBatch(info).raw();
-    if (method == "timeline_removeClip") { Timeline_RemoveClip(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setClipParams") return Timeline_SetClipParams(info).raw();
-    if (method == "timeline_setClipModulation") return Timeline_SetClipModulation(info).raw();
-    if (method == "timeline_moveClip") { Timeline_MoveClip(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_resizeClip") { Timeline_ResizeClip(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_resizeClipLeft") { Timeline_ResizeClipLeft(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_stretchClip") { Timeline_StretchClip(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_stretchClipLeft") { Timeline_StretchClipLeft(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_pitchShiftClip") return Timeline_PitchShiftClip(info).raw();
-    if (method == "timeline_reverseClip") return Timeline_ReverseClip(info).raw();
     if (method == "timeline_autoTrimClip") return Timeline_AutoTrimClip(info).raw();
     if (method == "timeline_spliceClipsAtPlayhead") return Timeline_SpliceClipsAtPlayhead(info).raw();
-    if (method == "timeline_addRegion") return Timeline_AddRegion(info).raw();
-    if (method == "timeline_modifyRegion") { Timeline_ModifyRegion(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setSyllables") { Timeline_SetSyllables(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_getSyllables") return Timeline_GetSyllables(info).raw();
-    if (method == "timeline_removeRegion") { Timeline_RemoveRegion(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "timeline_getGridLayout") return Timeline_GetGridLayout(info).raw();
     if (method == "timeline_setGridLayout") { Timeline_SetGridLayout(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "timeline_assignTrackToGrid") { Timeline_AssignTrackToGrid(info); return JsonApi::Env{}.Undefined().raw(); }
@@ -15952,180 +15905,59 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     if (method == "timeline_setFullscreenLayers") { Timeline_SetFullscreenLayers(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "timeline_setPlacementZOrder") { Timeline_SetPlacementZOrder(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "timeline_setPreviewFps") { Timeline_SetPreviewFps(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_addPattern") return Timeline_AddPattern(info).raw();
-    if (method == "timeline_getPattern") return Timeline_GetPattern(info).raw();
-    if (method == "timeline_getAllPatterns") return Timeline_GetAllPatterns(info).raw();
-    if (method == "timeline_removePattern") { Timeline_RemovePattern(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_updateSamplerSettings") { Timeline_UpdateSamplerSettings(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_getPatternAudioInfo") return Timeline_GetPatternAudioInfo(info).raw();
-    if (method == "timeline_getRegionAudioInfo") return Timeline_GetRegionAudioInfo(info).raw();
-    if (method == "timeline_addPatternBlock") return Timeline_AddPatternBlock(info).raw();
-    if (method == "timeline_getPatternBlocks") return Timeline_GetPatternBlocks(info).raw();
-    if (method == "timeline_removePatternBlock") { Timeline_RemovePatternBlock(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_movePatternBlock") { Timeline_MovePatternBlock(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_resizePatternBlock") { Timeline_ResizePatternBlock(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_resizePatternBlockLeft") { Timeline_ResizePatternBlockLeft(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setPatternBlockLoop") { Timeline_SetPatternBlockLoop(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_addNote") return Timeline_AddNote(info).raw();
-    if (method == "timeline_removeNote") { Timeline_RemoveNote(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_moveNote") { Timeline_MoveNote(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "timeline_moveNotesBatch") { Timeline_MoveNotesBatch(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "timeline_addNotesBatch") return Timeline_AddNotesBatch(info).raw();
-    if (method == "fsc_parse") return Fsc_Parse(info).raw();
     if (method == "timeline_quantizeClipsBatch") { Timeline_QuantizeClipsBatch(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "timeline_resizeNotesBatch") { Timeline_ResizeNotesBatch(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_resizeNote") { Timeline_ResizeNote(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setNoteVelocity") { Timeline_SetNoteVelocity(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "timeline_previewNote") { Timeline_PreviewNote(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_previewNoteOff") { Timeline_PreviewNoteOff(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_previewAllNotesOff") { Timeline_PreviewAllNotesOff(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_convertToPatternTrack") { Timeline_ConvertToPatternTrack(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_convertToClipTrack") { Timeline_ConvertToClipTrack(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setVideoFlipConfig") { Timeline_SetVideoFlipConfig(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setVideoHoldLastFrame") { Timeline_SetVideoHoldLastFrame(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTrackCornerRadius") { Timeline_SetTrackCornerRadius(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTrackGapScaleOverride") { Timeline_SetTrackGapScaleOverride(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTrackSubdivisionFactor") { Timeline_SetTrackSubdivisionFactor(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTrackColor") { Timeline_SetTrackColor(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTrackBounceSettings") { Timeline_SetTrackBounceSettings(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTrackZoomPanRotSettings") { Timeline_SetTrackZoomPanRotSettings(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTrackPingPongSettings") { Timeline_SetTrackPingPongSettings(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTrackSlideNoteEffect") { Timeline_SetTrackSlideNoteEffect(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setNoteSlide") { Timeline_SetNoteSlide(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_getPreviewResolutionScale") return Timeline_GetPreviewResolutionScale(info).raw();
-    if (method == "timeline_setPreviewResolutionScale") { Timeline_SetPreviewResolutionScale(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_getPreviewEffectsBypass") return Timeline_GetPreviewEffectsBypass(info).raw();
-    if (method == "timeline_setPreviewEffectsBypass") { Timeline_SetPreviewEffectsBypass(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_getPreviewPosterMode") return Timeline_GetPreviewPosterMode(info).raw();
-    if (method == "timeline_setPreviewPosterMode") { Timeline_SetPreviewPosterMode(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "timeline_getPreviewProxyHeight") return Timeline_GetPreviewProxyHeight(info).raw();
     if (method == "timeline_setPreviewProxyHeight") { Timeline_SetPreviewProxyHeight(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_addVisualEffect") return Timeline_AddVisualEffect(info).raw();
-    if (method == "timeline_removeVisualEffect") { Timeline_RemoveVisualEffect(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_reorderVisualEffect") { Timeline_ReorderVisualEffect(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setTrackVisualEffectChainOrder") { Timeline_SetTrackVisualEffectChainOrder(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setVisualEffectParam") { Timeline_SetVisualEffectParam(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_setVisualEffectBypassed") { Timeline_SetVisualEffectBypassed(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "timeline_getVisualEffectChain") return Timeline_GetVisualEffectChain(info).raw();
     if (method == "preview_setEnabled") return Preview_SetEnabled(info).raw();
-    if (method == "undo_undo") return Undo_Undo(info).raw();
-    if (method == "undo_redo") return Undo_Redo(info).raw();
-    if (method == "undo_canUndo") return Undo_CanUndo(info).raw();
-    if (method == "undo_canRedo") return Undo_CanRedo(info).raw();
-    if (method == "undo_getUndoDescription") return Undo_GetUndoDescription(info).raw();
-    if (method == "undo_getRedoDescription") return Undo_GetRedoDescription(info).raw();
-    if (method == "transport_seek") { Transport_Seek(info); return JsonApi::Env{}.Undefined().raw(); }
+    // DEPRECATED: use getTransportState instead.
     if (method == "transport_getState") return GetTransportState(info).raw();
     if (method == "cache_getWorldActiveJobs") return Cache_GetWorldActiveJobIds(info).raw();
     if (method == "engine_setGlobalStretchMethod") { Engine_SetGlobalStretchMethod(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "engine_getGlobalStretchMethod") return Engine_GetGlobalStretchMethod(info).raw();
     if (method == "engine_setGlobalFormantPreserve") { Engine_SetGlobalFormantPreserve(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "engine_getGlobalFormantPreserve") return Engine_GetGlobalFormantPreserve(info).raw();
-    if (method == "audio_mapRegionToSample") { Audio_MapRegionToSample(info); return JsonApi::Env{}.Undefined().raw(); }
-    if (method == "audio_loadSourceRegion") return Audio_LoadSourceRegion(info).raw();
-    if (method == "audio_getOutputDevices") return Audio_GetOutputDevices(info).raw();
-    if (method == "audio_getCurrentOutputDevice") return Audio_GetCurrentOutputDevice(info).raw();
-    if (method == "audio_setOutputDevice") return Audio_SetOutputDevice(info).raw();
-    if (method == "audio_getMasterPeak") return Audio_GetMasterPeak(info).raw();
-    if (method == "audio_getTrackPeak") return Audio_GetTrackPeak(info).raw();
-    if (method == "audio_getAllPeaks") return Audio_GetAllPeaks(info).raw();
+    // Most audio pass-throughs (loadSample, mapRegionToSample, loadSourceRegion,
+    // peak meters, realtime-diagnostics reset/get, performance telemetry, mixer
+    // volume/pan/spread + master volume, output-device get/set) dispatch from the
+    // manifest (XlethRpcDispatch.inc, S1 slice 5). Hand-written below: the excluded
+    // setRealtimeDiagnosticsEnabled, deprecated performance aliases, and the
+    // canonical capture lifecycle exports.
     if (method == "audio_setRealtimeDiagnosticsEnabled") return Audio_SetRealtimeDiagnosticsEnabled(info).raw();
-    if (method == "audio_resetRealtimeDiagnostics") return Audio_ResetRealtimeDiagnostics(info).raw();
-    if (method == "audio_getRealtimeDiagnostics") return Audio_GetRealtimeDiagnostics(info).raw();
+    // DEPRECATED: use audio_getAudioPerformanceTelemetry instead.
     if (method == "getAudioPerformanceTelemetry") return Audio_GetAudioPerformanceTelemetry(info).raw();
-    if (method == "audio_getAudioPerformanceTelemetry") return Audio_GetAudioPerformanceTelemetry(info).raw();
+    // DEPRECATED: use audio_startAudioPerformanceCapture instead.
     if (method == "startAudioPerformanceCapture") return Audio_StartAudioPerformanceCapture(info).raw();
     if (method == "audio_startAudioPerformanceCapture") return Audio_StartAudioPerformanceCapture(info).raw();
+    // DEPRECATED: use audio_stopAudioPerformanceCapture instead.
     if (method == "stopAudioPerformanceCapture") return Audio_StopAudioPerformanceCapture(info).raw();
     if (method == "audio_stopAudioPerformanceCapture") return Audio_StopAudioPerformanceCapture(info).raw();
+    // DEPRECATED: use audio_exportAudioPerformanceCaptureReport instead.
     if (method == "exportAudioPerformanceCaptureReport") return Audio_ExportAudioPerformanceCaptureReport(info).raw();
     if (method == "audio_exportAudioPerformanceCaptureReport") return Audio_ExportAudioPerformanceCaptureReport(info).raw();
+    // DEPRECATED: use audio_captureAudioPerformanceReport instead.
     if (method == "captureAudioPerformanceReport") return Audio_CaptureAudioPerformanceReport(info).raw();
     if (method == "audio_captureAudioPerformanceReport") return Audio_CaptureAudioPerformanceReport(info).raw();
     if (method == "audio_setTestDeviceOutputLatencySamplesForDiagnostics") return Audio_SetTestDeviceOutputLatencySamplesForDiagnostics(info).raw();
-    if (method == "audio_setTrackVolume") return Audio_SetTrackVolume(info).raw();
-    if (method == "audio_setTrackPan") return Audio_SetTrackPan(info).raw();
-    if (method == "audio_setTrackSpread") return Audio_SetTrackSpread(info).raw();
-    if (method == "audio_setMasterVolume") return Audio_SetMasterVolume(info).raw();
     if (method == "audio_exportStart") return Audio_ExportStart(info).raw();
-    if (method == "audio_exportGetProgress") return Audio_ExportGetProgress(info).raw();
-    if (method == "audio_exportCancel") return Audio_ExportCancel(info).raw();
     if (method == "video_exportStart") return Video_ExportStart(info).raw();
-    if (method == "video_exportGetProgress") return Video_ExportGetProgress(info).raw();
-    if (method == "video_exportCancel") return Video_ExportCancel(info).raw();
     if (method == "video_computeDurationSeconds") return Video_ComputeDurationSeconds(info).raw();
     if (method == "audio_exportRegion") return Audio_ExportRegion(info).raw();
     if (method == "audio_swapRegionAudio") return Audio_SwapRegionAudio(info).raw();
     if (method == "audio_loadRegionAudio") return Audio_LoadRegionAudio(info).raw();
     if (method == "audio_probeAudioDuration") return Audio_ProbeAudioDuration(info).raw();
     if (method == "audio_revertRegionAudio") return Audio_RevertRegionAudio(info).raw();
-    if (method == "audio_addEffect") return Audio_AddEffect(info).raw();
-    if (method == "audio_removeEffect") return Audio_RemoveEffect(info).raw();
-    if (method == "audio_moveEffect") return Audio_MoveEffect(info).raw();
-    if (method == "audio_setEffectBypass") return Audio_SetEffectBypass(info).raw();
-    if (method == "audio_getEffectChain") return Audio_GetEffectChain(info).raw();
-    if (method == "audio_getEffectParameters") return Audio_GetEffectParameters(info).raw();
-    if (method == "audio_setEffectParameter") return Audio_SetEffectParameter(info).raw();
-    if (method == "audio_getEffectMeter") return Audio_GetEffectMeter(info).raw();
     if (method == "audio_setEffectVisualizationEnabled") return Audio_SetEffectVisualizationEnabled(info).raw();
     if (method == "audio_drainEffectVizFrames") return Audio_DrainEffectVizFrames(info).raw();
-    if (method == "audio_addMasterEffect") return Audio_AddMasterEffect(info).raw();
-    if (method == "audio_removeMasterEffect") return Audio_RemoveMasterEffect(info).raw();
-    if (method == "audio_moveMasterEffect") return Audio_MoveMasterEffect(info).raw();
-    if (method == "audio_setMasterEffectBypass") return Audio_SetMasterEffectBypass(info).raw();
-    if (method == "audio_getMasterEffectChain") return Audio_GetMasterEffectChain(info).raw();
-    if (method == "audio_eqAddBand") return Audio_EQ_AddBand(info).raw();
-    if (method == "audio_eqRemoveBand") return Audio_EQ_RemoveBand(info).raw();
-    if (method == "audio_eqSetBandParam") return Audio_EQ_SetBandParam(info).raw();
-    if (method == "audio_eqGetResponseCurve") return Audio_EQ_GetResponseCurve(info).raw();
-    if (method == "audio_eqGetSpectrumData") return Audio_EQ_GetSpectrumData(info).raw();
-    if (method == "audio_eqSetPreSpectrum") return Audio_EQ_SetPreSpectrum(info).raw();
-    if (method == "audio_eqGetBands") return Audio_EQ_GetBands(info).raw();
-    if (method == "audio_eqGetBandGR") return Audio_EQ_GetBandGR(info).raw();
-    if (method == "audio_eqSetGlobalParam") return Audio_EQ_SetGlobalParam(info).raw();
-    if (method == "audio_eqGetGlobalParams") return Audio_EQ_GetGlobalParams(info).raw();
-    if (method == "audio_eqGetSampleRate") return Audio_EQ_GetSampleRate(info).raw();
-    if (method == "audio_wsGetCurvePoints") return Audio_WS_GetCurvePoints(info).raw();
-    if (method == "audio_wsSetCurvePoints") return Audio_WS_SetCurvePoints(info).raw();
-    if (method == "audio_wsSetPreset") return Audio_WS_SetPreset(info).raw();
-    if (method == "audio_smartBalanceGetDebug") return Audio_SmartBalance_GetDebug(info).raw();
-    if (method == "audio_addConnection") return Audio_AddConnection(info).raw();
-    if (method == "audio_removeConnection") return Audio_RemoveConnection(info).raw();
-    if (method == "audio_setWireGain") return Audio_SetWireGain(info).raw();
-    if (method == "audio_setWireMute") return Audio_SetWireMute(info).raw();
-    if (method == "audio_getGraphTopology") return Audio_GetGraphTopology(info).raw();
-    if (method == "audio_setNodePosition") return Audio_SetNodePosition(info).raw();
-    if (method == "audio_isGraphLinear") return Audio_IsGraphLinear(info).raw();
-    if (method == "audio_addGraphEffectNode") return Audio_AddGraphEffectNode(info).raw();
-    if (method == "audio_removeGraphEffectNode") return Audio_RemoveGraphEffectNode(info).raw();
-    if (method == "audio_getGraphEffectEngineNodeId") return Audio_GetGraphEffectEngineNodeId(info).raw();
-    if (method == "audio_getGraphEffectParameters") return Audio_GetGraphEffectParameters(info).raw();
-    if (method == "audio_getGraphEffectParameterValue") return Audio_GetGraphEffectParameterValue(info).raw();
-    if (method == "audio_setGraphEffectParameterNormalized") return Audio_SetGraphEffectParameterNormalized(info).raw();
-    if (method == "audio_hydrateGraphEffectNodes") return Audio_HydrateGraphEffectNodes(info).raw();
-    if (method == "audio_syncLinearGraphTopology") return Audio_SyncLinearGraphTopology(info).raw();
-    if (method == "audio_syncGraphTopology") return Audio_SyncGraphTopology(info).raw();
-    if (method == "audio_adoptGraphEffectNodes") return Audio_AdoptGraphEffectNodes(info).raw();
-    if (method == "audio_addMasterConnection") return Audio_AddMasterConnection(info).raw();
-    if (method == "audio_removeMasterConnection") return Audio_RemoveMasterConnection(info).raw();
-    if (method == "audio_setMasterWireGain") return Audio_SetMasterWireGain(info).raw();
-    if (method == "audio_setMasterWireMute") return Audio_SetMasterWireMute(info).raw();
-    if (method == "audio_getMasterGraphTopology") return Audio_GetMasterGraphTopology(info).raw();
-    if (method == "audio_setMasterNodePosition") return Audio_SetMasterNodePosition(info).raw();
-    if (method == "audio_isMasterGraphLinear") return Audio_IsMasterGraphLinear(info).raw();
+    // Graph-mode routing (wires + graph-owned effects FXG.3-b / params FXG.4-a /
+    // hydrate-sync-adopt FXG.3-d, track + master) dispatches from the generated
+    // XlethRpcDispatch.inc at the top of this function (AUDIT.md S1 slice 7).
     if (method == "audio_scanPlugins") return Audio_ScanPlugins(info).raw();
-    if (method == "audio_getScanProgress") return Audio_GetScanProgress(info).raw();
-    if (method == "audio_getScannedPlugins") return Audio_GetScannedPlugins(info).raw();
-    if (method == "audio_getFailedPlugins") return Audio_GetFailedPlugins(info).raw();
-    if (method == "audio_openPluginEditor") return Audio_OpenPluginEditor(info).raw();
-    if (method == "audio_closePluginEditor") return Audio_ClosePluginEditor(info).raw();
-    if (method == "audio_closeAllPluginEditors") return Audio_CloseAllPluginEditors(info).raw();
-    if (method == "audio_isPluginEditorOpen") return Audio_IsPluginEditorOpen(info).raw();
-    if (method == "audio_getMissingPlugins") return Audio_GetMissingPlugins(info).raw();
-    if (method == "audio_retryMissingPlugin") return Audio_RetryMissingPlugin(info).raw();
-    if (method == "audio_removeAllMissing") return Audio_RemoveAllMissing(info).raw();
-    if (method == "audio_resetCrashedPlugin") return Audio_ResetCrashedPlugin(info).raw();
     if (method == "audio_setMainWindowHandle") return Audio_SetMainWindowHandle(info).raw();
+    // DEPRECATED: use getSyncStats instead.
     if (method == "sync_getStats") return GetSyncStats(info).raw();
     if (method == "source_loadSource") return Source_LoadSource(info).raw();
     if (method == "source_playSource") { Source_PlaySource(info); return JsonApi::Env{}.Undefined().raw(); }
@@ -16145,11 +15977,8 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     if (method == "waveform_getRawSamples") return Waveform_GetRawSamples(info).raw();
     if (method == "waveform_getFilePeaks") return Waveform_GetFilePeaks(info).raw();
     if (method == "waveform_getClipPeaks") return Waveform_GetClipPeaks(info).raw();
-    if (method == "gpu_getAvailableGpus") return Gpu_GetAvailableGpus(info).raw();
     if (method == "gpu_setAdapter") return Gpu_SetAdapter(info).raw();
     if (method == "diag_getVisualPreviewDiagnostic") return Diag_GetVisualPreviewDiagnostic(info).raw();
-    if (method == "hwenc_getAvailableEncoders") return HwEnc_GetAvailableEncoders(info).raw();
-    if (method == "hwenc_getDefaultEncoder") return HwEnc_GetDefaultEncoder(info).raw();
     if (method == "hwenc_refresh") return HwEnc_Refresh(info).raw();
     if (method == "midi_parseSummary") return Midi_ParseSummary(info).raw();
     if (method == "midi_importFull") return Midi_ImportFull(info).raw();

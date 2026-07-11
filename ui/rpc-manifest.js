@@ -24,9 +24,21 @@
 //              EXPLICIT in ui/addon-worker.js (frames as Buffer sends, ArrayBuffer
 //              conversion); this field only declares which methods those explicit
 //              branches apply to. Do not genericize the binary paths.
+//   graph    — (optional) 'track' | 'master'. Declares a graph mutation: after
+//              the worker call resolves, main.js broadcasts xleth:graph:changed
+//              to every renderer, keyed by trackKey (first IPC arg is the
+//              trackId) or masterKey ('master'). rpc-registry.js maps the value
+//              to the canonical key fn (exported by electron-main/effects.js)
+//              and registers through main.js's graphHandler instead of plain
+//              safeHandler. Like `binary`, this is declarative metadata — the
+//              broadcast logic itself stays in main.js, unchanged. Absent
+//              (or null) means plain pass-through.
 //
 // Methods with per-call logic in main.js (arg fixups, dialogs, progress
-// intervals) do NOT belong here — only pure pass-throughs migrate.
+// intervals) do NOT belong here — only pure pass-throughs migrate. The one
+// sanctioned exception is the `graph` broadcast above: it is a fixed,
+// declarative post-call side effect shared by every chain/wire mutation, not
+// per-method business logic.
 
 const METHODS = [
   {
@@ -851,11 +863,1017 @@ const METHODS = [
     returns: 'value',
     binary: null,
   },
+
+  // ── Patterns / regions / notes (AUDIT.md S1 slice 4) ──
+  // Pure engine pass-throughs from ui/electron-main/patterns.js: the region /
+  // syllable group, patterns, pattern-blocks, single-note editing, and the
+  // read-only .fsc parse. The value/void shape below mirrors each removed hand
+  // dispatch line verbatim. EXCLUDED and left hand-written in patterns.js:
+  //   • timeline_previewNote — its preload wrapper supplies a velocity=0.8
+  //     default the generic attachRpcWrappers forward would drop (behavior
+  //     change on a 2-arg call), same disqualifier class as autoTrimClip.
+  //   • moveNotesBatch / addNotesBatch / quantizeClipsBatch / resizeNotesBatch —
+  //     batch / multi-entry ops, excluded per the timeline.js batch precedent.
+  // fsc_parse keeps its own xleth:fsc:* namespace (attachRpcWrappers creates the
+  // fsc.* wrapper namespace on demand).
+  {
+    method: 'timeline_addRegion',
+    channels: ['xleth:timeline:addRegion'],
+    api: { 'timeline.addRegion': 'xleth:timeline:addRegion' },
+    handler: 'Timeline_AddRegion',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_modifyRegion',
+    channels: ['xleth:timeline:modifyRegion'],
+    api: { 'timeline.modifyRegion': 'xleth:timeline:modifyRegion' },
+    handler: 'Timeline_ModifyRegion',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'timeline_setSyllables',
+    channels: ['xleth:timeline:setSyllables'],
+    api: { 'timeline.setSyllables': 'xleth:timeline:setSyllables' },
+    handler: 'Timeline_SetSyllables',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'timeline_getSyllables',
+    channels: ['xleth:timeline:getSyllables'],
+    api: { 'timeline.getSyllables': 'xleth:timeline:getSyllables' },
+    handler: 'Timeline_GetSyllables',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_removeRegion',
+    channels: ['xleth:timeline:removeRegion'],
+    api: { 'timeline.removeRegion': 'xleth:timeline:removeRegion' },
+    handler: 'Timeline_RemoveRegion',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'timeline_addPattern',
+    channels: ['xleth:timeline:addPattern'],
+    api: { 'timeline.addPattern': 'xleth:timeline:addPattern' },
+    handler: 'Timeline_AddPattern',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_getPattern',
+    channels: ['xleth:timeline:getPattern'],
+    api: { 'timeline.getPattern': 'xleth:timeline:getPattern' },
+    handler: 'Timeline_GetPattern',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_getAllPatterns',
+    channels: ['xleth:timeline:getAllPatterns'],
+    api: { 'timeline.getAllPatterns': 'xleth:timeline:getAllPatterns' },
+    handler: 'Timeline_GetAllPatterns',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_removePattern',
+    channels: ['xleth:timeline:removePattern'],
+    api: { 'timeline.removePattern': 'xleth:timeline:removePattern' },
+    handler: 'Timeline_RemovePattern',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'timeline_updateSamplerSettings',
+    channels: ['xleth:timeline:updateSamplerSettings'],
+    api: { 'timeline.updateSamplerSettings': 'xleth:timeline:updateSamplerSettings' },
+    handler: 'Timeline_UpdateSamplerSettings',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'timeline_getPatternAudioInfo',
+    channels: ['xleth:timeline:getPatternAudioInfo'],
+    api: { 'timeline.getPatternAudioInfo': 'xleth:timeline:getPatternAudioInfo' },
+    handler: 'Timeline_GetPatternAudioInfo',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_getRegionAudioInfo',
+    channels: ['xleth:timeline:getRegionAudioInfo'],
+    api: { 'timeline.getRegionAudioInfo': 'xleth:timeline:getRegionAudioInfo' },
+    handler: 'Timeline_GetRegionAudioInfo',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_addPatternBlock',
+    channels: ['xleth:timeline:addPatternBlock'],
+    api: { 'timeline.addPatternBlock': 'xleth:timeline:addPatternBlock' },
+    handler: 'Timeline_AddPatternBlock',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_getPatternBlocks',
+    channels: ['xleth:timeline:getPatternBlocks'],
+    api: { 'timeline.getPatternBlocks': 'xleth:timeline:getPatternBlocks' },
+    handler: 'Timeline_GetPatternBlocks',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_removePatternBlock',
+    channels: ['xleth:timeline:removePatternBlock'],
+    api: { 'timeline.removePatternBlock': 'xleth:timeline:removePatternBlock' },
+    handler: 'Timeline_RemovePatternBlock',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'timeline_movePatternBlock',
+    channels: ['xleth:timeline:movePatternBlock'],
+    api: { 'timeline.movePatternBlock': 'xleth:timeline:movePatternBlock' },
+    handler: 'Timeline_MovePatternBlock',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'timeline_resizePatternBlock',
+    channels: ['xleth:timeline:resizePatternBlock'],
+    api: { 'timeline.resizePatternBlock': 'xleth:timeline:resizePatternBlock' },
+    handler: 'Timeline_ResizePatternBlock',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'timeline_resizePatternBlockLeft',
+    channels: ['xleth:timeline:resizePatternBlockLeft'],
+    api: { 'timeline.resizePatternBlockLeft': 'xleth:timeline:resizePatternBlockLeft' },
+    handler: 'Timeline_ResizePatternBlockLeft',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'timeline_setPatternBlockLoop',
+    channels: ['xleth:timeline:setPatternBlockLoop'],
+    api: { 'timeline.setPatternBlockLoop': 'xleth:timeline:setPatternBlockLoop' },
+    handler: 'Timeline_SetPatternBlockLoop',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'timeline_addNote',
+    channels: ['xleth:timeline:addNote'],
+    api: { 'timeline.addNote': 'xleth:timeline:addNote' },
+    handler: 'Timeline_AddNote',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_removeNote',
+    channels: ['xleth:timeline:removeNote'],
+    api: { 'timeline.removeNote': 'xleth:timeline:removeNote' },
+    handler: 'Timeline_RemoveNote',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'timeline_moveNote',
+    channels: ['xleth:timeline:moveNote'],
+    api: { 'timeline.moveNote': 'xleth:timeline:moveNote' },
+    handler: 'Timeline_MoveNote',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'timeline_resizeNote',
+    channels: ['xleth:timeline:resizeNote'],
+    api: { 'timeline.resizeNote': 'xleth:timeline:resizeNote' },
+    handler: 'Timeline_ResizeNote',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'timeline_setNoteVelocity',
+    channels: ['xleth:timeline:setNoteVelocity'],
+    api: { 'timeline.setNoteVelocity': 'xleth:timeline:setNoteVelocity' },
+    handler: 'Timeline_SetNoteVelocity',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'timeline_previewNoteOff',
+    channels: ['xleth:timeline:previewNoteOff'],
+    api: { 'timeline.previewNoteOff': 'xleth:timeline:previewNoteOff' },
+    handler: 'Timeline_PreviewNoteOff',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'timeline_previewAllNotesOff',
+    channels: ['xleth:timeline:previewAllNotesOff'],
+    api: { 'timeline.previewAllNotesOff': 'xleth:timeline:previewAllNotesOff' },
+    handler: 'Timeline_PreviewAllNotesOff',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'fsc_parse',
+    channels: ['xleth:fsc:parse'],
+    api: { 'fsc.parse': 'xleth:fsc:parse' },
+    handler: 'Fsc_Parse',
+    returns: 'value',
+    binary: null,
+  },
+
+  // ── Audio / MixEngine (AUDIT.md S1 slice 5) ──
+  // Pure engine pass-throughs from ui/electron-main/audio.js: sample loading,
+  // region->sample mapping, peak meters, realtime-diagnostics reset/get,
+  // performance telemetry, mixer volume/pan/spread + master volume, and
+  // output-device get/set. Each returns shape mirrors the removed hand dispatch
+  // line verbatim (setTrackVolume/Pan/Spread/MasterVolume are value: their
+  // engine handlers return JsonApi::Value even though semantically undefined).
+  // EXCLUDED and left hand-written in audio.js:
+  //   * setRealtimeDiagnosticsEnabled — preload (!!enabled) and the main-process
+  //     handler (Boolean(enabled)) both coerce the arg; the generic passthrough
+  //     wrappers would drop that (arg-fixup disqualifier, autoTrimClip class).
+  //   * captureAudioPerformanceReport — its handler injects a userDataPath
+  //     outputDir default (../runtimePaths), not a pure engine round-trip.
+  // loadSample is the Phase-0 unprefixed export (like getFrameRGBA); its single
+  // api path audio.loadSample routes the same worker string. getOutputDevices /
+  // setOutputDevice enumerate/select OS devices inside the C++ engine handler,
+  // which the migration leaves untouched — the JS side is a plain pass-through.
+  // audio_getAudioPerformanceTelemetry: only the prefixed name migrates here; the
+  // non-prefixed getAudioPerformanceTelemetry alias stays hand-written (shared
+  // bridge wrapper + engine branch, same engine handler, equivalent routing).
+  {
+    method: 'loadSample',
+    channels: ['xleth:audio:loadSample'],
+    api: { 'audio.loadSample': 'xleth:audio:loadSample' },
+    handler: 'LoadSample',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_mapRegionToSample',
+    channels: ['xleth:audio:mapRegionToSample'],
+    api: { 'audio.mapRegionToSample': 'xleth:audio:mapRegionToSample' },
+    handler: 'Audio_MapRegionToSample',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'audio_loadSourceRegion',
+    channels: ['xleth:audio:loadSourceRegion'],
+    api: { 'audio.loadSourceRegion': 'xleth:audio:loadSourceRegion' },
+    handler: 'Audio_LoadSourceRegion',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getMasterPeak',
+    channels: ['xleth:audio:getMasterPeak'],
+    api: { 'audio.getMasterPeak': 'xleth:audio:getMasterPeak' },
+    handler: 'Audio_GetMasterPeak',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getTrackPeak',
+    channels: ['xleth:audio:getTrackPeak'],
+    api: { 'audio.getTrackPeak': 'xleth:audio:getTrackPeak' },
+    handler: 'Audio_GetTrackPeak',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getAllPeaks',
+    channels: ['xleth:audio:getAllPeaks'],
+    api: { 'audio.getAllPeaks': 'xleth:audio:getAllPeaks' },
+    handler: 'Audio_GetAllPeaks',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_resetRealtimeDiagnostics',
+    channels: ['xleth:audio:resetRealtimeDiagnostics'],
+    api: { 'audio.resetRealtimeDiagnostics': 'xleth:audio:resetRealtimeDiagnostics' },
+    handler: 'Audio_ResetRealtimeDiagnostics',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getRealtimeDiagnostics',
+    channels: ['xleth:audio:getRealtimeDiagnostics'],
+    api: { 'audio.getRealtimeDiagnostics': 'xleth:audio:getRealtimeDiagnostics' },
+    handler: 'Audio_GetRealtimeDiagnostics',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getAudioPerformanceTelemetry',
+    channels: ['xleth:audio:getAudioPerformanceTelemetry'],
+    api: { 'audio.getAudioPerformanceTelemetry': 'xleth:audio:getAudioPerformanceTelemetry' },
+    handler: 'Audio_GetAudioPerformanceTelemetry',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_setTrackVolume',
+    channels: ['xleth:audio:setTrackVolume'],
+    api: { 'audio.setTrackVolume': 'xleth:audio:setTrackVolume' },
+    handler: 'Audio_SetTrackVolume',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_setTrackPan',
+    channels: ['xleth:audio:setTrackPan'],
+    api: { 'audio.setTrackPan': 'xleth:audio:setTrackPan' },
+    handler: 'Audio_SetTrackPan',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_setTrackSpread',
+    channels: ['xleth:audio:setTrackSpread'],
+    api: { 'audio.setTrackSpread': 'xleth:audio:setTrackSpread' },
+    handler: 'Audio_SetTrackSpread',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_setMasterVolume',
+    channels: ['xleth:audio:setMasterVolume'],
+    api: { 'audio.setMasterVolume': 'xleth:audio:setMasterVolume' },
+    handler: 'Audio_SetMasterVolume',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getOutputDevices',
+    channels: ['xleth:audio:getOutputDevices'],
+    api: { 'audio.getOutputDevices': 'xleth:audio:getOutputDevices' },
+    handler: 'Audio_GetOutputDevices',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getCurrentOutputDevice',
+    channels: ['xleth:audio:getCurrentOutputDevice'],
+    api: { 'audio.getCurrentOutputDevice': 'xleth:audio:getCurrentOutputDevice' },
+    handler: 'Audio_GetCurrentOutputDevice',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_setOutputDevice',
+    channels: ['xleth:audio:setOutputDevice'],
+    api: { 'audio.setOutputDevice': 'xleth:audio:setOutputDevice' },
+    handler: 'Audio_SetOutputDevice',
+    returns: 'value',
+    binary: null,
+  },
+
+  // ── Effects: chain + parameters + EQ/SmartBalance/Waveshaper (AUDIT.md S1 slice 6) ──
+  // From ui/electron-main/effects.js. The 8 chain mutations (add/remove/move/
+  // bypass, track + master) carry `graph: 'track' | 'master'` — they broadcast
+  // xleth:graph:changed after the call resolves (see the field doc above); the
+  // rest are plain pass-throughs. Every returns shape mirrors the removed hand
+  // dispatch line verbatim (all 28 were `return Handler(info).raw()` = value).
+  // EXCLUDED and left hand-written in effects.js:
+  //   * setEffectVisualizationEnabled — its main-process handler coerces the
+  //     arg (!!enabled); the generic passthrough would drop that (arg-fixup
+  //     disqualifier, setRealtimeDiagnosticsEnabled class).
+  //   * drainEffectVizFrames — coerces maxBuckets|0 AND returns the dynamics-viz
+  //     binary payload ({ frames: ArrayBuffer }); stays fully explicit.
+  {
+    method: 'audio_addEffect',
+    channels: ['xleth:audio:addEffect'],
+    api: { 'audio.addEffect': 'xleth:audio:addEffect' },
+    handler: 'Audio_AddEffect',
+    returns: 'value',
+    binary: null,
+    graph: 'track',
+  },
+  {
+    method: 'audio_removeEffect',
+    channels: ['xleth:audio:removeEffect'],
+    api: { 'audio.removeEffect': 'xleth:audio:removeEffect' },
+    handler: 'Audio_RemoveEffect',
+    returns: 'value',
+    binary: null,
+    graph: 'track',
+  },
+  {
+    method: 'audio_moveEffect',
+    channels: ['xleth:audio:moveEffect'],
+    api: { 'audio.moveEffect': 'xleth:audio:moveEffect' },
+    handler: 'Audio_MoveEffect',
+    returns: 'value',
+    binary: null,
+    graph: 'track',
+  },
+  {
+    method: 'audio_setEffectBypass',
+    channels: ['xleth:audio:setEffectBypass'],
+    api: { 'audio.setEffectBypass': 'xleth:audio:setEffectBypass' },
+    handler: 'Audio_SetEffectBypass',
+    returns: 'value',
+    binary: null,
+    graph: 'track',
+  },
+  {
+    method: 'audio_addMasterEffect',
+    channels: ['xleth:audio:addMasterEffect'],
+    api: { 'audio.addMasterEffect': 'xleth:audio:addMasterEffect' },
+    handler: 'Audio_AddMasterEffect',
+    returns: 'value',
+    binary: null,
+    graph: 'master',
+  },
+  {
+    method: 'audio_removeMasterEffect',
+    channels: ['xleth:audio:removeMasterEffect'],
+    api: { 'audio.removeMasterEffect': 'xleth:audio:removeMasterEffect' },
+    handler: 'Audio_RemoveMasterEffect',
+    returns: 'value',
+    binary: null,
+    graph: 'master',
+  },
+  {
+    method: 'audio_moveMasterEffect',
+    channels: ['xleth:audio:moveMasterEffect'],
+    api: { 'audio.moveMasterEffect': 'xleth:audio:moveMasterEffect' },
+    handler: 'Audio_MoveMasterEffect',
+    returns: 'value',
+    binary: null,
+    graph: 'master',
+  },
+  {
+    method: 'audio_setMasterEffectBypass',
+    channels: ['xleth:audio:setMasterEffectBypass'],
+    api: { 'audio.setMasterEffectBypass': 'xleth:audio:setMasterEffectBypass' },
+    handler: 'Audio_SetMasterEffectBypass',
+    returns: 'value',
+    binary: null,
+    graph: 'master',
+  },
+  {
+    method: 'audio_getEffectChain',
+    channels: ['xleth:audio:getEffectChain'],
+    api: { 'audio.getEffectChain': 'xleth:audio:getEffectChain' },
+    handler: 'Audio_GetEffectChain',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getMasterEffectChain',
+    channels: ['xleth:audio:getMasterEffectChain'],
+    api: { 'audio.getMasterEffectChain': 'xleth:audio:getMasterEffectChain' },
+    handler: 'Audio_GetMasterEffectChain',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getEffectParameters',
+    channels: ['xleth:audio:getEffectParameters'],
+    api: { 'audio.getEffectParameters': 'xleth:audio:getEffectParameters' },
+    handler: 'Audio_GetEffectParameters',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_setEffectParameter',
+    channels: ['xleth:audio:setEffectParameter'],
+    api: { 'audio.setEffectParameter': 'xleth:audio:setEffectParameter' },
+    handler: 'Audio_SetEffectParameter',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getEffectMeter',
+    channels: ['xleth:audio:getEffectMeter'],
+    api: { 'audio.getEffectMeter': 'xleth:audio:getEffectMeter' },
+    handler: 'Audio_GetEffectMeter',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_eqAddBand',
+    channels: ['xleth:audio:eqAddBand'],
+    api: { 'audio.eqAddBand': 'xleth:audio:eqAddBand' },
+    handler: 'Audio_EQ_AddBand',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_eqRemoveBand',
+    channels: ['xleth:audio:eqRemoveBand'],
+    api: { 'audio.eqRemoveBand': 'xleth:audio:eqRemoveBand' },
+    handler: 'Audio_EQ_RemoveBand',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_eqSetBandParam',
+    channels: ['xleth:audio:eqSetBandParam'],
+    api: { 'audio.eqSetBandParam': 'xleth:audio:eqSetBandParam' },
+    handler: 'Audio_EQ_SetBandParam',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_eqGetResponseCurve',
+    channels: ['xleth:audio:eqGetResponseCurve'],
+    api: { 'audio.eqGetResponseCurve': 'xleth:audio:eqGetResponseCurve' },
+    handler: 'Audio_EQ_GetResponseCurve',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_eqGetSpectrumData',
+    channels: ['xleth:audio:eqGetSpectrumData'],
+    api: { 'audio.eqGetSpectrumData': 'xleth:audio:eqGetSpectrumData' },
+    handler: 'Audio_EQ_GetSpectrumData',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_eqSetPreSpectrum',
+    channels: ['xleth:audio:eqSetPreSpectrum'],
+    api: { 'audio.eqSetPreSpectrum': 'xleth:audio:eqSetPreSpectrum' },
+    handler: 'Audio_EQ_SetPreSpectrum',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_eqGetBands',
+    channels: ['xleth:audio:eqGetBands'],
+    api: { 'audio.eqGetBands': 'xleth:audio:eqGetBands' },
+    handler: 'Audio_EQ_GetBands',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_eqGetBandGR',
+    channels: ['xleth:audio:eqGetBandGR'],
+    api: { 'audio.eqGetBandGR': 'xleth:audio:eqGetBandGR' },
+    handler: 'Audio_EQ_GetBandGR',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_eqSetGlobalParam',
+    channels: ['xleth:audio:eqSetGlobalParam'],
+    api: { 'audio.eqSetGlobalParam': 'xleth:audio:eqSetGlobalParam' },
+    handler: 'Audio_EQ_SetGlobalParam',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_eqGetGlobalParams',
+    channels: ['xleth:audio:eqGetGlobalParams'],
+    api: { 'audio.eqGetGlobalParams': 'xleth:audio:eqGetGlobalParams' },
+    handler: 'Audio_EQ_GetGlobalParams',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_eqGetSampleRate',
+    channels: ['xleth:audio:eqGetSampleRate'],
+    api: { 'audio.eqGetSampleRate': 'xleth:audio:eqGetSampleRate' },
+    handler: 'Audio_EQ_GetSampleRate',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_smartBalanceGetDebug',
+    channels: ['xleth:audio:smartBalanceGetDebug'],
+    api: { 'audio.smartBalanceGetDebug': 'xleth:audio:smartBalanceGetDebug' },
+    handler: 'Audio_SmartBalance_GetDebug',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_wsGetCurvePoints',
+    channels: ['xleth:audio:wsGetCurvePoints'],
+    api: { 'audio.wsGetCurvePoints': 'xleth:audio:wsGetCurvePoints' },
+    handler: 'Audio_WS_GetCurvePoints',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_wsSetCurvePoints',
+    channels: ['xleth:audio:wsSetCurvePoints'],
+    api: { 'audio.wsSetCurvePoints': 'xleth:audio:wsSetCurvePoints' },
+    handler: 'Audio_WS_SetCurvePoints',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_wsSetPreset',
+    channels: ['xleth:audio:wsSetPreset'],
+    api: { 'audio.wsSetPreset': 'xleth:audio:wsSetPreset' },
+    handler: 'Audio_WS_SetPreset',
+    returns: 'value',
+    binary: null,
+  },
+
+  // ── Effects graph: wire mutations + graph-owned instances + topology (AUDIT.md S1 slice 7) ──
+  // From ui/electron-main/effects-graph.js — the last of the audio/effects/graph
+  // trio. The 8 wire mutations (add/remove connection + setWire gain/mute, track +
+  // master) carry `graph: 'track' | 'master'`: they broadcast xleth:graph:changed
+  // after the call resolves — identical mechanism to effects.js's chain mutations.
+  // The other 16 are plain pass-throughs that deliberately do NOT broadcast:
+  //   * getGraphTopology / setNodePosition / isGraphLinear (+ master variants) —
+  //     topology reads and node-position persistence.
+  //   * the FXG.3-b graph-owned effect instances (add/remove/getEngineNodeId) and
+  //     the FXG.4-a parameter descriptors (getParameters, get/setParameter value):
+  //     graphState persistence, not a chain re-fetch, keeps the renderer in sync, so
+  //     they are safeHandler-only by design — plain entries preserve that (no graph:).
+  //   * hydrate / syncLinear / sync / adopt (FXG.3-d) — their batch init, topology
+  //     rebuild and adoption logic lives entirely in the engine C++ handler; the JS
+  //     layers are a single callWorker pass-through, so they migrate like the rest.
+  // Every returns shape mirrors the removed hand dispatch line verbatim (all 24 were
+  // `return Handler(info).raw()` = value). effects-graph.js has NO exclusions — it is
+  // fully migrated by this slice.
+  {
+    method: 'audio_addConnection',
+    channels: ['xleth:audio:addConnection'],
+    api: { 'audio.addConnection': 'xleth:audio:addConnection' },
+    handler: 'Audio_AddConnection',
+    returns: 'value',
+    binary: null,
+    graph: 'track',
+  },
+  {
+    method: 'audio_removeConnection',
+    channels: ['xleth:audio:removeConnection'],
+    api: { 'audio.removeConnection': 'xleth:audio:removeConnection' },
+    handler: 'Audio_RemoveConnection',
+    returns: 'value',
+    binary: null,
+    graph: 'track',
+  },
+  {
+    method: 'audio_setWireGain',
+    channels: ['xleth:audio:setWireGain'],
+    api: { 'audio.setWireGain': 'xleth:audio:setWireGain' },
+    handler: 'Audio_SetWireGain',
+    returns: 'value',
+    binary: null,
+    graph: 'track',
+  },
+  {
+    method: 'audio_setWireMute',
+    channels: ['xleth:audio:setWireMute'],
+    api: { 'audio.setWireMute': 'xleth:audio:setWireMute' },
+    handler: 'Audio_SetWireMute',
+    returns: 'value',
+    binary: null,
+    graph: 'track',
+  },
+  {
+    method: 'audio_getGraphTopology',
+    channels: ['xleth:audio:getGraphTopology'],
+    api: { 'audio.getGraphTopology': 'xleth:audio:getGraphTopology' },
+    handler: 'Audio_GetGraphTopology',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_setNodePosition',
+    channels: ['xleth:audio:setNodePosition'],
+    api: { 'audio.setNodePosition': 'xleth:audio:setNodePosition' },
+    handler: 'Audio_SetNodePosition',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_isGraphLinear',
+    channels: ['xleth:audio:isGraphLinear'],
+    api: { 'audio.isGraphLinear': 'xleth:audio:isGraphLinear' },
+    handler: 'Audio_IsGraphLinear',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_addGraphEffectNode',
+    channels: ['xleth:audio:addGraphEffectNode'],
+    api: { 'audio.addGraphEffectNode': 'xleth:audio:addGraphEffectNode' },
+    handler: 'Audio_AddGraphEffectNode',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_removeGraphEffectNode',
+    channels: ['xleth:audio:removeGraphEffectNode'],
+    api: { 'audio.removeGraphEffectNode': 'xleth:audio:removeGraphEffectNode' },
+    handler: 'Audio_RemoveGraphEffectNode',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getGraphEffectEngineNodeId',
+    channels: ['xleth:audio:getGraphEffectEngineNodeId'],
+    api: { 'audio.getGraphEffectEngineNodeId': 'xleth:audio:getGraphEffectEngineNodeId' },
+    handler: 'Audio_GetGraphEffectEngineNodeId',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getGraphEffectParameters',
+    channels: ['xleth:audio:getGraphEffectParameters'],
+    api: { 'audio.getGraphEffectParameters': 'xleth:audio:getGraphEffectParameters' },
+    handler: 'Audio_GetGraphEffectParameters',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getGraphEffectParameterValue',
+    channels: ['xleth:audio:getGraphEffectParameterValue'],
+    api: { 'audio.getGraphEffectParameterValue': 'xleth:audio:getGraphEffectParameterValue' },
+    handler: 'Audio_GetGraphEffectParameterValue',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_setGraphEffectParameterNormalized',
+    channels: ['xleth:audio:setGraphEffectParameterNormalized'],
+    api: { 'audio.setGraphEffectParameterNormalized': 'xleth:audio:setGraphEffectParameterNormalized' },
+    handler: 'Audio_SetGraphEffectParameterNormalized',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_hydrateGraphEffectNodes',
+    channels: ['xleth:audio:hydrateGraphEffectNodes'],
+    api: { 'audio.hydrateGraphEffectNodes': 'xleth:audio:hydrateGraphEffectNodes' },
+    handler: 'Audio_HydrateGraphEffectNodes',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_syncLinearGraphTopology',
+    channels: ['xleth:audio:syncLinearGraphTopology'],
+    api: { 'audio.syncLinearGraphTopology': 'xleth:audio:syncLinearGraphTopology' },
+    handler: 'Audio_SyncLinearGraphTopology',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_syncGraphTopology',
+    channels: ['xleth:audio:syncGraphTopology'],
+    api: { 'audio.syncGraphTopology': 'xleth:audio:syncGraphTopology' },
+    handler: 'Audio_SyncGraphTopology',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_adoptGraphEffectNodes',
+    channels: ['xleth:audio:adoptGraphEffectNodes'],
+    api: { 'audio.adoptGraphEffectNodes': 'xleth:audio:adoptGraphEffectNodes' },
+    handler: 'Audio_AdoptGraphEffectNodes',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_addMasterConnection',
+    channels: ['xleth:audio:addMasterConnection'],
+    api: { 'audio.addMasterConnection': 'xleth:audio:addMasterConnection' },
+    handler: 'Audio_AddMasterConnection',
+    returns: 'value',
+    binary: null,
+    graph: 'master',
+  },
+  {
+    method: 'audio_removeMasterConnection',
+    channels: ['xleth:audio:removeMasterConnection'],
+    api: { 'audio.removeMasterConnection': 'xleth:audio:removeMasterConnection' },
+    handler: 'Audio_RemoveMasterConnection',
+    returns: 'value',
+    binary: null,
+    graph: 'master',
+  },
+  {
+    method: 'audio_setMasterWireGain',
+    channels: ['xleth:audio:setMasterWireGain'],
+    api: { 'audio.setMasterWireGain': 'xleth:audio:setMasterWireGain' },
+    handler: 'Audio_SetMasterWireGain',
+    returns: 'value',
+    binary: null,
+    graph: 'master',
+  },
+  {
+    method: 'audio_setMasterWireMute',
+    channels: ['xleth:audio:setMasterWireMute'],
+    api: { 'audio.setMasterWireMute': 'xleth:audio:setMasterWireMute' },
+    handler: 'Audio_SetMasterWireMute',
+    returns: 'value',
+    binary: null,
+    graph: 'master',
+  },
+  {
+    method: 'audio_getMasterGraphTopology',
+    channels: ['xleth:audio:getMasterGraphTopology'],
+    api: { 'audio.getMasterGraphTopology': 'xleth:audio:getMasterGraphTopology' },
+    handler: 'Audio_GetMasterGraphTopology',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_setMasterNodePosition',
+    channels: ['xleth:audio:setMasterNodePosition'],
+    api: { 'audio.setMasterNodePosition': 'xleth:audio:setMasterNodePosition' },
+    handler: 'Audio_SetMasterNodePosition',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_isMasterGraphLinear',
+    channels: ['xleth:audio:isMasterGraphLinear'],
+    api: { 'audio.isMasterGraphLinear': 'xleth:audio:isMasterGraphLinear' },
+    handler: 'Audio_IsMasterGraphLinear',
+    returns: 'value',
+    binary: null,
+  },
+
+  // ── VST3 scanner / editor / missing-plugin / crash recovery (AUDIT.md S1) ──
+  // Pure engine pass-throughs from ui/electron-main/vst3.js. All dispatch with
+  // the value shape (engine returns Handler(info).raw() for every one, including
+  // the editor mutations). audio_scanPlugins is NOT here: its vst3.js handler
+  // reshapes the argument (paths && paths.length ? [paths] : []) before
+  // forwarding, so it stays hand-written. xleth:dialog:addVstSearchPath owns an
+  // Electron dialog, not an engine call, and stays hand-written too.
+  {
+    method: 'audio_getScanProgress',
+    channels: ['xleth:audio:getScanProgress'],
+    api: { 'audio.getScanProgress': 'xleth:audio:getScanProgress' },
+    handler: 'Audio_GetScanProgress',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getScannedPlugins',
+    channels: ['xleth:audio:getScannedPlugins'],
+    api: { 'audio.getScannedPlugins': 'xleth:audio:getScannedPlugins' },
+    handler: 'Audio_GetScannedPlugins',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getFailedPlugins',
+    channels: ['xleth:audio:getFailedPlugins'],
+    api: { 'audio.getFailedPlugins': 'xleth:audio:getFailedPlugins' },
+    handler: 'Audio_GetFailedPlugins',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_openPluginEditor',
+    channels: ['xleth:audio:openPluginEditor'],
+    api: { 'audio.openPluginEditor': 'xleth:audio:openPluginEditor' },
+    handler: 'Audio_OpenPluginEditor',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_closePluginEditor',
+    channels: ['xleth:audio:closePluginEditor'],
+    api: { 'audio.closePluginEditor': 'xleth:audio:closePluginEditor' },
+    handler: 'Audio_ClosePluginEditor',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_closeAllPluginEditors',
+    channels: ['xleth:audio:closeAllPluginEditors'],
+    api: { 'audio.closeAllPluginEditors': 'xleth:audio:closeAllPluginEditors' },
+    handler: 'Audio_CloseAllPluginEditors',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_isPluginEditorOpen',
+    channels: ['xleth:audio:isPluginEditorOpen'],
+    api: { 'audio.isPluginEditorOpen': 'xleth:audio:isPluginEditorOpen' },
+    handler: 'Audio_IsPluginEditorOpen',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getMissingPlugins',
+    channels: ['xleth:audio:getMissingPlugins'],
+    api: { 'audio.getMissingPlugins': 'xleth:audio:getMissingPlugins' },
+    handler: 'Audio_GetMissingPlugins',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_retryMissingPlugin',
+    channels: ['xleth:audio:retryMissingPlugin'],
+    api: { 'audio.retryMissingPlugin': 'xleth:audio:retryMissingPlugin' },
+    handler: 'Audio_RetryMissingPlugin',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_removeAllMissing',
+    channels: ['xleth:audio:removeAllMissing'],
+    api: { 'audio.removeAllMissing': 'xleth:audio:removeAllMissing' },
+    handler: 'Audio_RemoveAllMissing',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_resetCrashedPlugin',
+    channels: ['xleth:audio:resetCrashedPlugin'],
+    api: { 'audio.resetCrashedPlugin': 'xleth:audio:resetCrashedPlugin' },
+    handler: 'Audio_ResetCrashedPlugin',
+    returns: 'value',
+    binary: null,
+  },
+
+  // ── Export progress/cancel + HW encoders + GPU (AUDIT.md S1) ───────────────
+  // Pure engine pass-throughs from ui/electron-main/export.js. audio_exportStart
+  // and video_exportStart are NOT here: both kick off a 100ms progress-poll
+  // interval after forwarding, a real main-process side effect, so they stay
+  // hand-written. The video-export methods live under window.xleth.videoExport.*
+  // (not video.*); gpu_getAvailableGpus under window.xleth.gpu.*.
+  {
+    method: 'audio_exportGetProgress',
+    channels: ['xleth:audio:exportGetProgress'],
+    api: { 'audio.exportGetProgress': 'xleth:audio:exportGetProgress' },
+    handler: 'Audio_ExportGetProgress',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_exportCancel',
+    channels: ['xleth:audio:exportCancel'],
+    api: { 'audio.exportCancel': 'xleth:audio:exportCancel' },
+    handler: 'Audio_ExportCancel',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'video_exportGetProgress',
+    channels: ['xleth:video:exportGetProgress'],
+    api: { 'videoExport.exportGetProgress': 'xleth:video:exportGetProgress' },
+    handler: 'Video_ExportGetProgress',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'video_exportCancel',
+    channels: ['xleth:video:exportCancel'],
+    api: { 'videoExport.exportCancel': 'xleth:video:exportCancel' },
+    handler: 'Video_ExportCancel',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'hwenc_getAvailableEncoders',
+    channels: ['xleth:video:getAvailableEncoders'],
+    api: { 'videoExport.getAvailableEncoders': 'xleth:video:getAvailableEncoders' },
+    handler: 'HwEnc_GetAvailableEncoders',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'hwenc_getDefaultEncoder',
+    channels: ['xleth:video:getDefaultEncoder'],
+    api: { 'videoExport.getDefaultEncoder': 'xleth:video:getDefaultEncoder' },
+    handler: 'HwEnc_GetDefaultEncoder',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'gpu_getAvailableGpus',
+    channels: ['xleth:gpu:getAvailableGpus'],
+    api: { 'gpu.getAvailableGpus': 'xleth:gpu:getAvailableGpus' },
+    handler: 'Gpu_GetAvailableGpus',
+    returns: 'value',
+    binary: null,
+  },
 ];
 
 // Binary kinds addon-worker.js knows how to transport. A manifest entry with
 // any other value is a wiring mistake, caught by validateManifest().
 const KNOWN_BINARY_KINDS = new Set(['frame', 'midiImport']);
+
+// Graph-broadcast keys rpc-registry.js knows how to map to a key function
+// (electron-main/effects.js's trackKey / masterKey). The field is optional —
+// absent or null means plain pass-through, no broadcast.
+const KNOWN_GRAPH_KEYS = new Set(['track', 'master']);
 
 function validateManifest() {
   const methods = new Set();
@@ -890,6 +1908,8 @@ function validateManifest() {
       throw new Error(`rpc-manifest: '${m.method}' returns must be 'value' or 'void'`);
     if (m.binary !== null && !KNOWN_BINARY_KINDS.has(m.binary))
       throw new Error(`rpc-manifest: '${m.method}' has unknown binary kind '${m.binary}'`);
+    if (m.graph !== undefined && m.graph !== null && !KNOWN_GRAPH_KEYS.has(m.graph))
+      throw new Error(`rpc-manifest: '${m.method}' has unknown graph key '${m.graph}'`);
   }
   return true;
 }

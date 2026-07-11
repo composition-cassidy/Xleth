@@ -181,11 +181,6 @@ Napi::Value Shutdown(const Napi::CallbackInfo& info)
     return dispatchToService(info, "shutdown");
 }
 
-Napi::Value LoadSample(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "loadSample");
-}
-
 Napi::Value TriggerSample(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "triggerSample");
@@ -259,214 +254,9 @@ Napi::Value Project_NewBlank(const Napi::CallbackInfo& info)
     return dispatchToService(info, "project_newBlank");
 }
 
-Napi::Value Timeline_GetDeclickMs(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_getDeclickMs");
-}
-
-Napi::Value Timeline_GetGlobalStretchMethod(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_getGlobalStretchMethod");
-}
-
-Napi::Value Timeline_GetSources(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_getSources");
-}
-
-Napi::Value Timeline_GetRegions(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_getRegions");
-}
-
-Napi::Value Timeline_GetRegionsByLabel(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_getRegionsByLabel");
-}
-
-Napi::Value Timeline_GetTracks(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_getTracks");
-}
-
-Napi::Value Timeline_GetClips(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_getClips");
-}
-
-Napi::Value Timeline_GetClipsOnTrack(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_getClipsOnTrack");
-}
-
-Napi::Value Timeline_GetClipsInRange(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_getClipsInRange");
-}
-
-Napi::Value Timeline_GetLoopRegion(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_getLoopRegion");
-}
-
-Napi::Value Timeline_SetLoopRegion(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setLoopRegion");
-}
-
-Napi::Value Timeline_SetTempoLocked(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setTempoLocked");
-}
-
-Napi::Value Timeline_SetDeclickMs(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setDeclickMs");
-}
-
-Napi::Value Timeline_SetGlobalStretchMethod(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setGlobalStretchMethod");
-}
-
-Napi::Value Timeline_AddTrack(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_addTrack");
-}
-
-Napi::Value Timeline_RemoveTrack(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_removeTrack");
-}
-
-Napi::Value Timeline_SetTrackMuted(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setTrackMuted");
-}
-
-Napi::Value Timeline_SetTrackVisualOnly(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setTrackVisualOnly");
-}
-
-Napi::Value Timeline_SetTrackSolo(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setTrackSolo");
-}
-
-Napi::Value Timeline_SetTrackOrder(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setTrackOrder");
-}
-
-Napi::Value Timeline_SetTrackOutputRoute(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setTrackOutputRoute");
-}
-
-Napi::Value Timeline_GetRouting(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_getRouting");
-}
-
-Napi::Value Timeline_AddSidechainRoute(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_addSidechainRoute");
-}
-
-Napi::Value Timeline_RemoveSidechainRoute(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_removeSidechainRoute");
-}
-
-Napi::Value Timeline_SetSidechainRouteParams(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setSidechainRouteParams");
-}
-
-Napi::Value Timeline_SetTrackName(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setTrackName");
-}
-
-Napi::Value Timeline_SetTrackFxMode(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setTrackFxMode");
-}
-
-Napi::Value Timeline_SetTrackGraphState(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setTrackGraphState");
-}
-
-Napi::Value Timeline_SetPatternName(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setPatternName");
-}
-
-Napi::Value Timeline_SetPatternRegion(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setPatternRegion");
-}
-
-Napi::Value Timeline_AddClip(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_addClip");
-}
-
 Napi::Value Timeline_AddClipsBatch(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "timeline_addClipsBatch");
-}
-
-Napi::Value Timeline_RemoveClip(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_removeClip");
-}
-
-Napi::Value Timeline_SetClipParams(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setClipParams");
-}
-
-Napi::Value Timeline_SetClipModulation(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setClipModulation");
-}
-
-Napi::Value Timeline_MoveClip(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_moveClip");
-}
-
-Napi::Value Timeline_ResizeClip(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_resizeClip");
-}
-
-Napi::Value Timeline_ResizeClipLeft(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_resizeClipLeft");
-}
-
-Napi::Value Timeline_StretchClip(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_stretchClip");
-}
-
-Napi::Value Timeline_StretchClipLeft(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_stretchClipLeft");
-}
-
-Napi::Value Timeline_PitchShiftClip(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_pitchShiftClip");
-}
-
-Napi::Value Timeline_ReverseClip(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_reverseClip");
 }
 
 Napi::Value Timeline_AutoTrimClip(const Napi::CallbackInfo& info)
@@ -477,31 +267,6 @@ Napi::Value Timeline_AutoTrimClip(const Napi::CallbackInfo& info)
 Napi::Value Timeline_SpliceClipsAtPlayhead(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "timeline_spliceClipsAtPlayhead");
-}
-
-Napi::Value Timeline_AddRegion(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_addRegion");
-}
-
-Napi::Value Timeline_ModifyRegion(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_modifyRegion");
-}
-
-Napi::Value Timeline_SetSyllables(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setSyllables");
-}
-
-Napi::Value Timeline_GetSyllables(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_getSyllables");
-}
-
-Napi::Value Timeline_RemoveRegion(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_removeRegion");
 }
 
 Napi::Value Timeline_GetGridLayout(const Napi::CallbackInfo& info)
@@ -544,91 +309,6 @@ Napi::Value Timeline_SetPreviewFps(const Napi::CallbackInfo& info)
     return dispatchToService(info, "timeline_setPreviewFps");
 }
 
-Napi::Value Timeline_AddPattern(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_addPattern");
-}
-
-Napi::Value Timeline_GetPattern(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_getPattern");
-}
-
-Napi::Value Timeline_GetAllPatterns(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_getAllPatterns");
-}
-
-Napi::Value Timeline_RemovePattern(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_removePattern");
-}
-
-Napi::Value Timeline_UpdateSamplerSettings(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_updateSamplerSettings");
-}
-
-Napi::Value Timeline_GetPatternAudioInfo(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_getPatternAudioInfo");
-}
-
-Napi::Value Timeline_GetRegionAudioInfo(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_getRegionAudioInfo");
-}
-
-Napi::Value Timeline_AddPatternBlock(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_addPatternBlock");
-}
-
-Napi::Value Timeline_GetPatternBlocks(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_getPatternBlocks");
-}
-
-Napi::Value Timeline_RemovePatternBlock(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_removePatternBlock");
-}
-
-Napi::Value Timeline_MovePatternBlock(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_movePatternBlock");
-}
-
-Napi::Value Timeline_ResizePatternBlock(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_resizePatternBlock");
-}
-
-Napi::Value Timeline_ResizePatternBlockLeft(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_resizePatternBlockLeft");
-}
-
-Napi::Value Timeline_SetPatternBlockLoop(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setPatternBlockLoop");
-}
-
-Napi::Value Timeline_AddNote(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_addNote");
-}
-
-Napi::Value Timeline_RemoveNote(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_removeNote");
-}
-
-Napi::Value Timeline_MoveNote(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_moveNote");
-}
-
 Napi::Value Timeline_MoveNotesBatch(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "timeline_moveNotesBatch");
@@ -637,11 +317,6 @@ Napi::Value Timeline_MoveNotesBatch(const Napi::CallbackInfo& info)
 Napi::Value Timeline_AddNotesBatch(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "timeline_addNotesBatch");
-}
-
-Napi::Value Fsc_Parse(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "fsc_parse");
 }
 
 Napi::Value Timeline_QuantizeClipsBatch(const Napi::CallbackInfo& info)
@@ -654,199 +329,14 @@ Napi::Value Timeline_ResizeNotesBatch(const Napi::CallbackInfo& info)
     return dispatchToService(info, "timeline_resizeNotesBatch");
 }
 
-Napi::Value Timeline_ResizeNote(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_resizeNote");
-}
-
-Napi::Value Timeline_SetNoteVelocity(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setNoteVelocity");
-}
-
 Napi::Value Timeline_PreviewNote(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "timeline_previewNote");
 }
 
-Napi::Value Timeline_PreviewNoteOff(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_previewNoteOff");
-}
-
-Napi::Value Timeline_PreviewAllNotesOff(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_previewAllNotesOff");
-}
-
-Napi::Value Timeline_ConvertToPatternTrack(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_convertToPatternTrack");
-}
-
-Napi::Value Timeline_ConvertToClipTrack(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_convertToClipTrack");
-}
-
-Napi::Value Timeline_SetVideoFlipConfig(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setVideoFlipConfig");
-}
-
-Napi::Value Timeline_SetVideoHoldLastFrame(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setVideoHoldLastFrame");
-}
-
-Napi::Value Timeline_SetTrackCornerRadius(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setTrackCornerRadius");
-}
-
-Napi::Value Timeline_SetTrackGapScaleOverride(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setTrackGapScaleOverride");
-}
-
-Napi::Value Timeline_SetTrackSubdivisionFactor(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setTrackSubdivisionFactor");
-}
-
-Napi::Value Timeline_SetTrackColor(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setTrackColor");
-}
-
-Napi::Value Timeline_SetTrackBounceSettings(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setTrackBounceSettings");
-}
-
-Napi::Value Timeline_SetTrackZoomPanRotSettings(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setTrackZoomPanRotSettings");
-}
-
-Napi::Value Timeline_SetTrackPingPongSettings(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setTrackPingPongSettings");
-}
-
-Napi::Value Timeline_SetTrackSlideNoteEffect(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setTrackSlideNoteEffect");
-}
-
-Napi::Value Timeline_SetNoteSlide(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setNoteSlide");
-}
-
-Napi::Value Timeline_GetPreviewResolutionScale(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_getPreviewResolutionScale");
-}
-
-Napi::Value Timeline_SetPreviewResolutionScale(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setPreviewResolutionScale");
-}
-
-Napi::Value Timeline_GetPreviewEffectsBypass(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_getPreviewEffectsBypass");
-}
-
-Napi::Value Timeline_SetPreviewEffectsBypass(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setPreviewEffectsBypass");
-}
-
-Napi::Value Timeline_GetPreviewPosterMode(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_getPreviewPosterMode");
-}
-
-Napi::Value Timeline_SetPreviewPosterMode(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setPreviewPosterMode");
-}
-
-Napi::Value Timeline_AddVisualEffect(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_addVisualEffect");
-}
-
-Napi::Value Timeline_RemoveVisualEffect(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_removeVisualEffect");
-}
-
-Napi::Value Timeline_ReorderVisualEffect(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_reorderVisualEffect");
-}
-
-Napi::Value Timeline_SetTrackVisualEffectChainOrder(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setTrackVisualEffectChainOrder");
-}
-
-Napi::Value Timeline_SetVisualEffectParam(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setVisualEffectParam");
-}
-
-Napi::Value Timeline_SetVisualEffectBypassed(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_setVisualEffectBypassed");
-}
-
-Napi::Value Timeline_GetVisualEffectChain(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "timeline_getVisualEffectChain");
-}
-
 Napi::Value Preview_SetEnabled(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "preview_setEnabled");
-}
-
-Napi::Value Undo_Undo(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "undo_undo");
-}
-
-Napi::Value Undo_Redo(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "undo_redo");
-}
-
-Napi::Value Undo_CanUndo(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "undo_canUndo");
-}
-
-Napi::Value Undo_CanRedo(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "undo_canRedo");
-}
-
-Napi::Value Undo_GetUndoDescription(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "undo_getUndoDescription");
-}
-
-Napi::Value Undo_GetRedoDescription(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "undo_getRedoDescription");
-}
-
-Napi::Value Transport_Seek(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "transport_seek");
 }
 
 Napi::Value Cache_GetWorldActiveJobIds(const Napi::CallbackInfo& info)
@@ -874,84 +364,42 @@ Napi::Value Engine_GetGlobalFormantPreserve(const Napi::CallbackInfo& info)
     return dispatchToService(info, "engine_getGlobalFormantPreserve");
 }
 
-Napi::Value Audio_MapRegionToSample(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_mapRegionToSample");
-}
-
-Napi::Value Audio_LoadSourceRegion(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_loadSourceRegion");
-}
-
-Napi::Value Audio_GetOutputDevices(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getOutputDevices");
-}
-
-Napi::Value Audio_GetCurrentOutputDevice(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getCurrentOutputDevice");
-}
-
-Napi::Value Audio_SetOutputDevice(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setOutputDevice");
-}
-
-Napi::Value Audio_GetMasterPeak(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getMasterPeak");
-}
-
-Napi::Value Audio_GetTrackPeak(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getTrackPeak");
-}
-
-Napi::Value Audio_GetAllPeaks(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getAllPeaks");
-}
-
+// Most audio pass-through wrappers (loadSample, mapRegionToSample,
+// loadSourceRegion, peak meters, realtime-diagnostics reset/get, mixer
+// volume/pan/spread + master volume, output-device get/set) are generated from
+// the manifest (XlethRpcExports.inc, AUDIT.md S1 slice 5). The hand-written
+// wrappers that remain: setRealtimeDiagnosticsEnabled (excluded — arg coercion),
+// the shared Audio_GetAudioPerformanceTelemetry (also serves the non-prefixed
+// getAudioPerformanceTelemetry alias), the capture-lifecycle exports, and
+// setTestDeviceOutputLatencySamplesForDiagnostics.
 Napi::Value Audio_SetRealtimeDiagnosticsEnabled(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "audio_setRealtimeDiagnosticsEnabled");
 }
 
-Napi::Value Audio_ResetRealtimeDiagnostics(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_resetRealtimeDiagnostics");
-}
-
-Napi::Value Audio_GetRealtimeDiagnostics(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getRealtimeDiagnostics");
-}
-
 Napi::Value Audio_GetAudioPerformanceTelemetry(const Napi::CallbackInfo& info)
 {
-    return dispatchToService(info, "getAudioPerformanceTelemetry");
+    return dispatchToService(info, "audio_getAudioPerformanceTelemetry");
 }
 
 Napi::Value Audio_StartAudioPerformanceCapture(const Napi::CallbackInfo& info)
 {
-    return dispatchToService(info, "startAudioPerformanceCapture");
+    return dispatchToService(info, "audio_startAudioPerformanceCapture");
 }
 
 Napi::Value Audio_StopAudioPerformanceCapture(const Napi::CallbackInfo& info)
 {
-    return dispatchToService(info, "stopAudioPerformanceCapture");
+    return dispatchToService(info, "audio_stopAudioPerformanceCapture");
 }
 
 Napi::Value Audio_ExportAudioPerformanceCaptureReport(const Napi::CallbackInfo& info)
 {
-    return dispatchToService(info, "exportAudioPerformanceCaptureReport");
+    return dispatchToService(info, "audio_exportAudioPerformanceCaptureReport");
 }
 
 Napi::Value Audio_CaptureAudioPerformanceReport(const Napi::CallbackInfo& info)
 {
-    return dispatchToService(info, "captureAudioPerformanceReport");
+    return dispatchToService(info, "audio_captureAudioPerformanceReport");
 }
 
 Napi::Value Audio_SetTestDeviceOutputLatencySamplesForDiagnostics(const Napi::CallbackInfo& info)
@@ -959,54 +407,14 @@ Napi::Value Audio_SetTestDeviceOutputLatencySamplesForDiagnostics(const Napi::Ca
     return dispatchToService(info, "audio_setTestDeviceOutputLatencySamplesForDiagnostics");
 }
 
-Napi::Value Audio_SetTrackVolume(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setTrackVolume");
-}
-
-Napi::Value Audio_SetTrackPan(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setTrackPan");
-}
-
-Napi::Value Audio_SetTrackSpread(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setTrackSpread");
-}
-
-Napi::Value Audio_SetMasterVolume(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setMasterVolume");
-}
-
 Napi::Value Audio_ExportStart(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "audio_exportStart");
 }
 
-Napi::Value Audio_ExportGetProgress(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_exportGetProgress");
-}
-
-Napi::Value Audio_ExportCancel(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_exportCancel");
-}
-
 Napi::Value Video_ExportStart(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "video_exportStart");
-}
-
-Napi::Value Video_ExportGetProgress(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "video_exportGetProgress");
-}
-
-Napi::Value Video_ExportCancel(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "video_exportCancel");
 }
 
 Napi::Value Video_ComputeDurationSeconds(const Napi::CallbackInfo& info)
@@ -1039,46 +447,6 @@ Napi::Value Audio_RevertRegionAudio(const Napi::CallbackInfo& info)
     return dispatchToService(info, "audio_revertRegionAudio");
 }
 
-Napi::Value Audio_AddEffect(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_addEffect");
-}
-
-Napi::Value Audio_RemoveEffect(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_removeEffect");
-}
-
-Napi::Value Audio_MoveEffect(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_moveEffect");
-}
-
-Napi::Value Audio_SetEffectBypass(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setEffectBypass");
-}
-
-Napi::Value Audio_GetEffectChain(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getEffectChain");
-}
-
-Napi::Value Audio_GetEffectParameters(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getEffectParameters");
-}
-
-Napi::Value Audio_SetEffectParameter(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setEffectParameter");
-}
-
-Napi::Value Audio_GetEffectMeter(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getEffectMeter");
-}
-
 Napi::Value Audio_SetEffectVisualizationEnabled(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "audio_setEffectVisualizationEnabled");
@@ -1089,284 +457,14 @@ Napi::Value Audio_DrainEffectVizFrames(const Napi::CallbackInfo& info)
     return dispatchToService(info, "audio_drainEffectVizFrames");
 }
 
-Napi::Value Audio_AddMasterEffect(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_addMasterEffect");
-}
-
-Napi::Value Audio_RemoveMasterEffect(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_removeMasterEffect");
-}
-
-Napi::Value Audio_MoveMasterEffect(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_moveMasterEffect");
-}
-
-Napi::Value Audio_SetMasterEffectBypass(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setMasterEffectBypass");
-}
-
-Napi::Value Audio_GetMasterEffectChain(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getMasterEffectChain");
-}
-
-Napi::Value Audio_EQ_AddBand(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_eqAddBand");
-}
-
-Napi::Value Audio_EQ_RemoveBand(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_eqRemoveBand");
-}
-
-Napi::Value Audio_EQ_SetBandParam(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_eqSetBandParam");
-}
-
-Napi::Value Audio_EQ_GetResponseCurve(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_eqGetResponseCurve");
-}
-
-Napi::Value Audio_EQ_GetSpectrumData(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_eqGetSpectrumData");
-}
-
-Napi::Value Audio_EQ_SetPreSpectrum(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_eqSetPreSpectrum");
-}
-
-Napi::Value Audio_EQ_GetBands(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_eqGetBands");
-}
-
-Napi::Value Audio_EQ_GetBandGR(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_eqGetBandGR");
-}
-
-Napi::Value Audio_EQ_SetGlobalParam(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_eqSetGlobalParam");
-}
-
-Napi::Value Audio_EQ_GetGlobalParams(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_eqGetGlobalParams");
-}
-
-Napi::Value Audio_EQ_GetSampleRate(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_eqGetSampleRate");
-}
-
-Napi::Value Audio_WS_GetCurvePoints(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_wsGetCurvePoints");
-}
-
-Napi::Value Audio_WS_SetCurvePoints(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_wsSetCurvePoints");
-}
-
-Napi::Value Audio_WS_SetPreset(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_wsSetPreset");
-}
-
-Napi::Value Audio_SmartBalance_GetDebug(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_smartBalanceGetDebug");
-}
-
-Napi::Value Audio_AddConnection(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_addConnection");
-}
-
-Napi::Value Audio_RemoveConnection(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_removeConnection");
-}
-
-Napi::Value Audio_SetWireGain(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setWireGain");
-}
-
-Napi::Value Audio_SetWireMute(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setWireMute");
-}
-
-Napi::Value Audio_GetGraphTopology(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getGraphTopology");
-}
-
-Napi::Value Audio_SetNodePosition(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setNodePosition");
-}
-
-Napi::Value Audio_IsGraphLinear(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_isGraphLinear");
-}
-
-Napi::Value Audio_AddGraphEffectNode(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_addGraphEffectNode");
-}
-
-Napi::Value Audio_RemoveGraphEffectNode(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_removeGraphEffectNode");
-}
-
-Napi::Value Audio_GetGraphEffectEngineNodeId(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getGraphEffectEngineNodeId");
-}
-
-Napi::Value Audio_GetGraphEffectParameters(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getGraphEffectParameters");
-}
-
-Napi::Value Audio_GetGraphEffectParameterValue(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getGraphEffectParameterValue");
-}
-
-Napi::Value Audio_SetGraphEffectParameterNormalized(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setGraphEffectParameterNormalized");
-}
-
-Napi::Value Audio_HydrateGraphEffectNodes(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_hydrateGraphEffectNodes");
-}
-
-Napi::Value Audio_SyncLinearGraphTopology(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_syncLinearGraphTopology");
-}
-
-Napi::Value Audio_SyncGraphTopology(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_syncGraphTopology");
-}
-
-Napi::Value Audio_AdoptGraphEffectNodes(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_adoptGraphEffectNodes");
-}
-
-Napi::Value Audio_AddMasterConnection(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_addMasterConnection");
-}
-
-Napi::Value Audio_RemoveMasterConnection(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_removeMasterConnection");
-}
-
-Napi::Value Audio_SetMasterWireGain(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setMasterWireGain");
-}
-
-Napi::Value Audio_SetMasterWireMute(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setMasterWireMute");
-}
-
-Napi::Value Audio_GetMasterGraphTopology(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getMasterGraphTopology");
-}
-
-Napi::Value Audio_SetMasterNodePosition(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_setMasterNodePosition");
-}
-
-Napi::Value Audio_IsMasterGraphLinear(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_isMasterGraphLinear");
-}
+// The graph-mode routing surface (wire mutations + graph-owned effect instances
+// FXG.3-b, parameter descriptors FXG.4-a, hydrate/sync/adopt topology ops
+// FXG.3-d, track + master) is manifest-generated now (XlethRpcExports.inc,
+// AUDIT.md S1 slice 7).
 
 Napi::Value Audio_ScanPlugins(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "audio_scanPlugins");
-}
-
-Napi::Value Audio_GetScanProgress(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getScanProgress");
-}
-
-Napi::Value Audio_GetScannedPlugins(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getScannedPlugins");
-}
-
-Napi::Value Audio_GetFailedPlugins(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getFailedPlugins");
-}
-
-Napi::Value Audio_OpenPluginEditor(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_openPluginEditor");
-}
-
-Napi::Value Audio_ClosePluginEditor(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_closePluginEditor");
-}
-
-Napi::Value Audio_CloseAllPluginEditors(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_closeAllPluginEditors");
-}
-
-Napi::Value Audio_IsPluginEditorOpen(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_isPluginEditorOpen");
-}
-
-Napi::Value Audio_GetMissingPlugins(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_getMissingPlugins");
-}
-
-Napi::Value Audio_RetryMissingPlugin(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_retryMissingPlugin");
-}
-
-Napi::Value Audio_RemoveAllMissing(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_removeAllMissing");
-}
-
-Napi::Value Audio_ResetCrashedPlugin(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "audio_resetCrashedPlugin");
 }
 
 Napi::Value Audio_SetMainWindowHandle(const Napi::CallbackInfo& info)
@@ -1464,11 +562,6 @@ Napi::Value Waveform_GetClipPeaks(const Napi::CallbackInfo& info)
     return dispatchToService(info, "waveform_getClipPeaks");
 }
 
-Napi::Value Gpu_GetAvailableGpus(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "gpu_getAvailableGpus");
-}
-
 Napi::Value Gpu_SetAdapter(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "gpu_setAdapter");
@@ -1477,16 +570,6 @@ Napi::Value Gpu_SetAdapter(const Napi::CallbackInfo& info)
 Napi::Value Diag_GetVisualPreviewDiagnostic(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "diag_getVisualPreviewDiagnostic");
-}
-
-Napi::Value HwEnc_GetAvailableEncoders(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "hwenc_getAvailableEncoders");
-}
-
-Napi::Value HwEnc_GetDefaultEncoder(const Napi::CallbackInfo& info)
-{
-    return dispatchToService(info, "hwenc_getDefaultEncoder");
 }
 
 Napi::Value HwEnc_Refresh(const Napi::CallbackInfo& info)
@@ -1529,7 +612,6 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     // ── Phase 0 (backward-compatible) ───────────────────────────────────────
     exports.Set("initialize",         Napi::Function::New(env, Initialize));
     exports.Set("shutdown",           Napi::Function::New(env, Shutdown));
-    exports.Set("loadSample",         Napi::Function::New(env, LoadSample));
     exports.Set("triggerSample",      Napi::Function::New(env, TriggerSample));
     exports.Set("loadVideo",          Napi::Function::New(env, LoadVideo));
     exports.Set("getVideoDuration",   Napi::Function::New(env, GetVideoDuration));
@@ -1549,58 +631,10 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("project_load",            Napi::Function::New(env, Project_Load));
     exports.Set("project_newBlank",        Napi::Function::New(env, Project_NewBlank));
 
-    // ── Phase 1 — Timeline queries ───────────────────────────────────────────
-    exports.Set("timeline_getDeclickMs",     Napi::Function::New(env, Timeline_GetDeclickMs));
-    exports.Set("timeline_getGlobalStretchMethod", Napi::Function::New(env, Timeline_GetGlobalStretchMethod));
-    exports.Set("timeline_getSources",       Napi::Function::New(env, Timeline_GetSources));
-    exports.Set("timeline_getRegions",       Napi::Function::New(env, Timeline_GetRegions));
-    exports.Set("timeline_getRegionsByLabel",Napi::Function::New(env, Timeline_GetRegionsByLabel));
-    exports.Set("timeline_getTracks",        Napi::Function::New(env, Timeline_GetTracks));
-    exports.Set("timeline_getClips",         Napi::Function::New(env, Timeline_GetClips));
-    exports.Set("timeline_getClipsOnTrack",  Napi::Function::New(env, Timeline_GetClipsOnTrack));
-    exports.Set("timeline_getClipsInRange",  Napi::Function::New(env, Timeline_GetClipsInRange));
-    exports.Set("timeline_getLoopRegion",    Napi::Function::New(env, Timeline_GetLoopRegion));
-
     // ── Phase 1 — Timeline mutations (via UndoManager) ───────────────────────
-    exports.Set("timeline_setLoopRegion",  Napi::Function::New(env, Timeline_SetLoopRegion));
-    exports.Set("timeline_setTempoLocked", Napi::Function::New(env, Timeline_SetTempoLocked));
-    exports.Set("timeline_setDeclickMs",   Napi::Function::New(env, Timeline_SetDeclickMs));
-    exports.Set("timeline_setGlobalStretchMethod", Napi::Function::New(env, Timeline_SetGlobalStretchMethod));
-    exports.Set("timeline_addTrack",     Napi::Function::New(env, Timeline_AddTrack));
-    exports.Set("timeline_removeTrack",  Napi::Function::New(env, Timeline_RemoveTrack));
-    exports.Set("timeline_setTrackMuted",       Napi::Function::New(env, Timeline_SetTrackMuted));
-    exports.Set("timeline_setTrackVisualOnly",  Napi::Function::New(env, Timeline_SetTrackVisualOnly));
-    exports.Set("timeline_setTrackSolo",        Napi::Function::New(env, Timeline_SetTrackSolo));
-    exports.Set("timeline_setTrackOrder",       Napi::Function::New(env, Timeline_SetTrackOrder));
-    exports.Set("timeline_setTrackOutputRoute", Napi::Function::New(env, Timeline_SetTrackOutputRoute));
-    exports.Set("timeline_getRouting",          Napi::Function::New(env, Timeline_GetRouting));
-    exports.Set("timeline_addSidechainRoute",       Napi::Function::New(env, Timeline_AddSidechainRoute));
-    exports.Set("timeline_removeSidechainRoute",    Napi::Function::New(env, Timeline_RemoveSidechainRoute));
-    exports.Set("timeline_setSidechainRouteParams", Napi::Function::New(env, Timeline_SetSidechainRouteParams));
-    exports.Set("timeline_setTrackName", Napi::Function::New(env, Timeline_SetTrackName));
-    exports.Set("timeline_setTrackFxMode", Napi::Function::New(env, Timeline_SetTrackFxMode));
-    exports.Set("timeline_setTrackGraphState", Napi::Function::New(env, Timeline_SetTrackGraphState));
-    exports.Set("timeline_setPatternName",   Napi::Function::New(env, Timeline_SetPatternName));
-    exports.Set("timeline_setPatternRegion", Napi::Function::New(env, Timeline_SetPatternRegion));
-    exports.Set("timeline_addClip",          Napi::Function::New(env, Timeline_AddClip));
-    exports.Set("timeline_addClipsBatch",    Napi::Function::New(env, Timeline_AddClipsBatch));
-    exports.Set("timeline_removeClip",       Napi::Function::New(env, Timeline_RemoveClip));
-    exports.Set("timeline_setClipParams",    Napi::Function::New(env, Timeline_SetClipParams));
-    exports.Set("timeline_setClipModulation",Napi::Function::New(env, Timeline_SetClipModulation));
-    exports.Set("timeline_moveClip",         Napi::Function::New(env, Timeline_MoveClip));
-    exports.Set("timeline_resizeClip",       Napi::Function::New(env, Timeline_ResizeClip));
-    exports.Set("timeline_resizeClipLeft",   Napi::Function::New(env, Timeline_ResizeClipLeft));
-    exports.Set("timeline_stretchClip",      Napi::Function::New(env, Timeline_StretchClip));
-    exports.Set("timeline_stretchClipLeft",  Napi::Function::New(env, Timeline_StretchClipLeft));
-    exports.Set("timeline_pitchShiftClip",   Napi::Function::New(env, Timeline_PitchShiftClip));
-    exports.Set("timeline_reverseClip",             Napi::Function::New(env, Timeline_ReverseClip));
+    exports.Set("timeline_addClipsBatch",           Napi::Function::New(env, Timeline_AddClipsBatch));
     exports.Set("timeline_autoTrimClip",            Napi::Function::New(env, Timeline_AutoTrimClip));
     exports.Set("timeline_spliceClipsAtPlayhead",   Napi::Function::New(env, Timeline_SpliceClipsAtPlayhead));
-    exports.Set("timeline_addRegion",    Napi::Function::New(env, Timeline_AddRegion));
-    exports.Set("timeline_modifyRegion", Napi::Function::New(env, Timeline_ModifyRegion));
-    exports.Set("timeline_setSyllables", Napi::Function::New(env, Timeline_SetSyllables));
-    exports.Set("timeline_getSyllables", Napi::Function::New(env, Timeline_GetSyllables));
-    exports.Set("timeline_removeRegion", Napi::Function::New(env, Timeline_RemoveRegion));
 
     // ── Grid Layout ──────────────────────────────────────────────────────────
     exports.Set("timeline_getGridLayout",       Napi::Function::New(env, Timeline_GetGridLayout));
@@ -1613,75 +647,20 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("timeline_setPreviewFps",       Napi::Function::New(env, Timeline_SetPreviewFps));
 
     // ── Patterns / PatternBlocks / Notes ─────────────────────────────────────
-    exports.Set("timeline_addPattern",             Napi::Function::New(env, Timeline_AddPattern));
-    exports.Set("timeline_getPattern",             Napi::Function::New(env, Timeline_GetPattern));
-    exports.Set("timeline_getAllPatterns",         Napi::Function::New(env, Timeline_GetAllPatterns));
-    exports.Set("timeline_removePattern",          Napi::Function::New(env, Timeline_RemovePattern));
-    exports.Set("timeline_updateSamplerSettings",  Napi::Function::New(env, Timeline_UpdateSamplerSettings));
-    exports.Set("timeline_getPatternAudioInfo",    Napi::Function::New(env, Timeline_GetPatternAudioInfo));
-    exports.Set("timeline_getRegionAudioInfo",      Napi::Function::New(env, Timeline_GetRegionAudioInfo));
-    // Pipeline B (timeline_getRegionWaveformPeaks) retired — replaced by waveform_getRegionPeaks
-    exports.Set("timeline_addPatternBlock",        Napi::Function::New(env, Timeline_AddPatternBlock));
-    exports.Set("timeline_getPatternBlocks",       Napi::Function::New(env, Timeline_GetPatternBlocks));
-    exports.Set("timeline_removePatternBlock",     Napi::Function::New(env, Timeline_RemovePatternBlock));
-    exports.Set("timeline_movePatternBlock",       Napi::Function::New(env, Timeline_MovePatternBlock));
-    exports.Set("timeline_resizePatternBlock",     Napi::Function::New(env, Timeline_ResizePatternBlock));
-    exports.Set("timeline_resizePatternBlockLeft", Napi::Function::New(env, Timeline_ResizePatternBlockLeft));
-    exports.Set("timeline_setPatternBlockLoop",    Napi::Function::New(env, Timeline_SetPatternBlockLoop));
-    exports.Set("timeline_addNote",                Napi::Function::New(env, Timeline_AddNote));
-    exports.Set("timeline_removeNote",             Napi::Function::New(env, Timeline_RemoveNote));
-    exports.Set("timeline_moveNote",               Napi::Function::New(env, Timeline_MoveNote));
+    // The region / pattern / pattern-block / single-note pass-throughs and
+    // fsc_parse come from the manifest now (XlethRpcExports.inc, S1 slice 4).
+    // Only the batch ops and previewNote (preload default) stay hand-written.
     exports.Set("timeline_moveNotesBatch",         Napi::Function::New(env, Timeline_MoveNotesBatch));
     exports.Set("timeline_addNotesBatch",          Napi::Function::New(env, Timeline_AddNotesBatch));
-    exports.Set("fsc_parse",                       Napi::Function::New(env, Fsc_Parse));
     exports.Set("timeline_quantizeClipsBatch",     Napi::Function::New(env, Timeline_QuantizeClipsBatch));
     exports.Set("timeline_resizeNotesBatch",        Napi::Function::New(env, Timeline_ResizeNotesBatch));
-    exports.Set("timeline_resizeNote",             Napi::Function::New(env, Timeline_ResizeNote));
-    exports.Set("timeline_setNoteVelocity",        Napi::Function::New(env, Timeline_SetNoteVelocity));
     exports.Set("timeline_previewNote",            Napi::Function::New(env, Timeline_PreviewNote));
-    exports.Set("timeline_previewNoteOff",         Napi::Function::New(env, Timeline_PreviewNoteOff));
-    exports.Set("timeline_previewAllNotesOff",     Napi::Function::New(env, Timeline_PreviewAllNotesOff));
-    exports.Set("timeline_convertToPatternTrack",  Napi::Function::New(env, Timeline_ConvertToPatternTrack));
-    exports.Set("timeline_convertToClipTrack",     Napi::Function::New(env, Timeline_ConvertToClipTrack));
-    exports.Set("timeline_setVideoFlipConfig", Napi::Function::New(env, Timeline_SetVideoFlipConfig));
-    exports.Set("timeline_setVideoHoldLastFrame",     Napi::Function::New(env, Timeline_SetVideoHoldLastFrame));
-    exports.Set("timeline_setTrackCornerRadius",      Napi::Function::New(env, Timeline_SetTrackCornerRadius));
-    exports.Set("timeline_setTrackGapScaleOverride",  Napi::Function::New(env, Timeline_SetTrackGapScaleOverride));
-    exports.Set("timeline_setTrackSubdivisionFactor", Napi::Function::New(env, Timeline_SetTrackSubdivisionFactor));
-    exports.Set("timeline_setTrackColor",             Napi::Function::New(env, Timeline_SetTrackColor));
-    exports.Set("timeline_setTrackBounceSettings",       Napi::Function::New(env, Timeline_SetTrackBounceSettings));
-    exports.Set("timeline_setTrackZoomPanRotSettings",   Napi::Function::New(env, Timeline_SetTrackZoomPanRotSettings));
-    exports.Set("timeline_setTrackPingPongSettings",     Napi::Function::New(env, Timeline_SetTrackPingPongSettings));
-    exports.Set("timeline_setTrackSlideNoteEffect",      Napi::Function::New(env, Timeline_SetTrackSlideNoteEffect));
-    exports.Set("timeline_setNoteSlide",                 Napi::Function::New(env, Timeline_SetNoteSlide));
-    exports.Set("timeline_getPreviewResolutionScale", Napi::Function::New(env, Timeline_GetPreviewResolutionScale));
-    exports.Set("timeline_setPreviewResolutionScale", Napi::Function::New(env, Timeline_SetPreviewResolutionScale));
-    exports.Set("timeline_getPreviewEffectsBypass",   Napi::Function::New(env, Timeline_GetPreviewEffectsBypass));
-    exports.Set("timeline_setPreviewEffectsBypass",   Napi::Function::New(env, Timeline_SetPreviewEffectsBypass));
-    exports.Set("timeline_getPreviewPosterMode",      Napi::Function::New(env, Timeline_GetPreviewPosterMode));
-    exports.Set("timeline_setPreviewPosterMode",      Napi::Function::New(env, Timeline_SetPreviewPosterMode));
-    exports.Set("timeline_addVisualEffect",           Napi::Function::New(env, Timeline_AddVisualEffect));
-    exports.Set("timeline_removeVisualEffect",        Napi::Function::New(env, Timeline_RemoveVisualEffect));
-    exports.Set("timeline_reorderVisualEffect",                Napi::Function::New(env, Timeline_ReorderVisualEffect));
-    exports.Set("timeline_setTrackVisualEffectChainOrder",     Napi::Function::New(env, Timeline_SetTrackVisualEffectChainOrder));
-    exports.Set("timeline_setVisualEffectParam",               Napi::Function::New(env, Timeline_SetVisualEffectParam));
-    exports.Set("timeline_setVisualEffectBypassed",   Napi::Function::New(env, Timeline_SetVisualEffectBypassed));
-    exports.Set("timeline_getVisualEffectChain",      Napi::Function::New(env, Timeline_GetVisualEffectChain));
 
     // ── Phase 7 — Preview visibility ────────────────────────────────────────
     exports.Set("preview_setEnabled", Napi::Function::New(env, Preview_SetEnabled));
 
-    // ── Phase 1 — Undo / Redo ────────────────────────────────────────────────
-    exports.Set("undo_undo",               Napi::Function::New(env, Undo_Undo));
-    exports.Set("undo_redo",               Napi::Function::New(env, Undo_Redo));
-    exports.Set("undo_canUndo",            Napi::Function::New(env, Undo_CanUndo));
-    exports.Set("undo_canRedo",            Napi::Function::New(env, Undo_CanRedo));
-    exports.Set("undo_getUndoDescription", Napi::Function::New(env, Undo_GetUndoDescription));
-    exports.Set("undo_getRedoDescription", Napi::Function::New(env, Undo_GetRedoDescription));
-
     // ── Phase 1 — Transport extensions ──────────────────────────────────────
-    exports.Set("transport_seek",      Napi::Function::New(env, Transport_Seek));
-    // transport_getState = getTransportState (same engine method, aliased)
+    // DEPRECATED: use getTransportState instead.
     exports.Set("transport_getState", Napi::Function::New(env,
         [](const Napi::CallbackInfo& info) {
             return dispatchToService(info, "getTransportState");
@@ -1697,52 +676,54 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("engine_getGlobalFormantPreserve", Napi::Function::New(env, Engine_GetGlobalFormantPreserve));
 
     // ── Phase 1 — Audio / MixEngine ─────────────────────────────────────────
-    exports.Set("audio_mapRegionToSample",  Napi::Function::New(env, Audio_MapRegionToSample));
-    exports.Set("audio_loadSourceRegion",   Napi::Function::New(env, Audio_LoadSourceRegion));
-    exports.Set("audio_getOutputDevices",       Napi::Function::New(env, Audio_GetOutputDevices));
-    exports.Set("audio_getCurrentOutputDevice", Napi::Function::New(env, Audio_GetCurrentOutputDevice));
-    exports.Set("audio_setOutputDevice",        Napi::Function::New(env, Audio_SetOutputDevice));
-    exports.Set("audio_getMasterPeak",      Napi::Function::New(env, Audio_GetMasterPeak));
-    exports.Set("audio_getTrackPeak",      Napi::Function::New(env, Audio_GetTrackPeak));
-    exports.Set("audio_getAllPeaks",       Napi::Function::New(env, Audio_GetAllPeaks));
+    // Pure pass-through exports (loadSample, mapRegionToSample, loadSourceRegion,
+    // peak meters, realtime-diagnostics reset/get, performance telemetry, mixer
+    // volume/pan/spread + master volume, output-device get/set) come from the
+    // manifest (XlethRpcExports.inc, S1 slice 5). Hand-written below: the excluded
+    // setRealtimeDiagnosticsEnabled, deprecated performance aliases, and the
+    // canonical capture lifecycle exports.
     exports.Set("audio_setRealtimeDiagnosticsEnabled",
                 Napi::Function::New(env, Audio_SetRealtimeDiagnosticsEnabled));
-    exports.Set("audio_resetRealtimeDiagnostics",
-                Napi::Function::New(env, Audio_ResetRealtimeDiagnostics));
-    exports.Set("audio_getRealtimeDiagnostics",
-                Napi::Function::New(env, Audio_GetRealtimeDiagnostics));
-    exports.Set("getAudioPerformanceTelemetry",
-                Napi::Function::New(env, Audio_GetAudioPerformanceTelemetry));
-    exports.Set("audio_getAudioPerformanceTelemetry",
-                Napi::Function::New(env, Audio_GetAudioPerformanceTelemetry));
-    exports.Set("startAudioPerformanceCapture",
-                Napi::Function::New(env, Audio_StartAudioPerformanceCapture));
+    // DEPRECATED: use audio_getAudioPerformanceTelemetry instead.
+    exports.Set("getAudioPerformanceTelemetry", Napi::Function::New(env,
+        [](const Napi::CallbackInfo& info) {
+            return dispatchToService(info, "audio_getAudioPerformanceTelemetry");
+        }));
+    // DEPRECATED: use audio_startAudioPerformanceCapture instead.
+    exports.Set("startAudioPerformanceCapture", Napi::Function::New(env,
+        [](const Napi::CallbackInfo& info) {
+            return dispatchToService(info, "audio_startAudioPerformanceCapture");
+        }));
     exports.Set("audio_startAudioPerformanceCapture",
                 Napi::Function::New(env, Audio_StartAudioPerformanceCapture));
-    exports.Set("stopAudioPerformanceCapture",
-                Napi::Function::New(env, Audio_StopAudioPerformanceCapture));
+    // DEPRECATED: use audio_stopAudioPerformanceCapture instead.
+    exports.Set("stopAudioPerformanceCapture", Napi::Function::New(env,
+        [](const Napi::CallbackInfo& info) {
+            return dispatchToService(info, "audio_stopAudioPerformanceCapture");
+        }));
     exports.Set("audio_stopAudioPerformanceCapture",
                 Napi::Function::New(env, Audio_StopAudioPerformanceCapture));
-    exports.Set("exportAudioPerformanceCaptureReport",
-                Napi::Function::New(env, Audio_ExportAudioPerformanceCaptureReport));
+    // DEPRECATED: use audio_exportAudioPerformanceCaptureReport instead.
+    exports.Set("exportAudioPerformanceCaptureReport", Napi::Function::New(env,
+        [](const Napi::CallbackInfo& info) {
+            return dispatchToService(info, "audio_exportAudioPerformanceCaptureReport");
+        }));
     exports.Set("audio_exportAudioPerformanceCaptureReport",
                 Napi::Function::New(env, Audio_ExportAudioPerformanceCaptureReport));
-    exports.Set("captureAudioPerformanceReport",
-                Napi::Function::New(env, Audio_CaptureAudioPerformanceReport));
+    // DEPRECATED: use audio_captureAudioPerformanceReport instead.
+    exports.Set("captureAudioPerformanceReport", Napi::Function::New(env,
+        [](const Napi::CallbackInfo& info) {
+            return dispatchToService(info, "audio_captureAudioPerformanceReport");
+        }));
     exports.Set("audio_captureAudioPerformanceReport",
                 Napi::Function::New(env, Audio_CaptureAudioPerformanceReport));
     exports.Set("audio_setTestDeviceOutputLatencySamplesForDiagnostics",
                 Napi::Function::New(env, Audio_SetTestDeviceOutputLatencySamplesForDiagnostics));
-    exports.Set("audio_setTrackVolume",    Napi::Function::New(env, Audio_SetTrackVolume));
-    exports.Set("audio_setTrackPan",       Napi::Function::New(env, Audio_SetTrackPan));
-    exports.Set("audio_setTrackSpread",    Napi::Function::New(env, Audio_SetTrackSpread));
-    exports.Set("audio_setMasterVolume",   Napi::Function::New(env, Audio_SetMasterVolume));
+    // audio_exportStart / video_exportStart stay hand-written (each starts a
+    // progress-poll interval). exportGetProgress / exportCancel for both migrated
+    // to the RPC manifest (XlethRpcExports.inc).
     exports.Set("audio_exportStart",       Napi::Function::New(env, Audio_ExportStart));
-    exports.Set("audio_exportGetProgress", Napi::Function::New(env, Audio_ExportGetProgress));
-    exports.Set("audio_exportCancel",      Napi::Function::New(env, Audio_ExportCancel));
     exports.Set("video_exportStart",            Napi::Function::New(env, Video_ExportStart));
-    exports.Set("video_exportGetProgress",      Napi::Function::New(env, Video_ExportGetProgress));
-    exports.Set("video_exportCancel",           Napi::Function::New(env, Video_ExportCancel));
     exports.Set("video_computeDurationSeconds", Napi::Function::New(env, Video_ComputeDurationSeconds));
     exports.Set("audio_exportRegion",       Napi::Function::New(env, Audio_ExportRegion));
     exports.Set("audio_swapRegionAudio",    Napi::Function::New(env, Audio_SwapRegionAudio));
@@ -1750,100 +731,31 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("audio_probeAudioDuration", Napi::Function::New(env, Audio_ProbeAudioDuration));
     exports.Set("audio_revertRegionAudio", Napi::Function::New(env, Audio_RevertRegionAudio));
 
-    // ── P3 — Effect chain ───────────────────────────────────────────────────
-    exports.Set("audio_addEffect",            Napi::Function::New(env, Audio_AddEffect));
-    exports.Set("audio_removeEffect",         Napi::Function::New(env, Audio_RemoveEffect));
-    exports.Set("audio_moveEffect",           Napi::Function::New(env, Audio_MoveEffect));
-    exports.Set("audio_setEffectBypass",      Napi::Function::New(env, Audio_SetEffectBypass));
-    exports.Set("audio_getEffectChain",       Napi::Function::New(env, Audio_GetEffectChain));
-    exports.Set("audio_getEffectParameters",  Napi::Function::New(env, Audio_GetEffectParameters));
-    exports.Set("audio_setEffectParameter",   Napi::Function::New(env, Audio_SetEffectParameter));
-    exports.Set("audio_getEffectMeter",       Napi::Function::New(env, Audio_GetEffectMeter));
+    // ── P3 — Effect visualization (dynamics; binary payload) ────────────────
+    // The rest of the effect chain / EQ / Waveshaper / SmartBalance surface is
+    // manifest-generated (XlethRpcExports.inc, AUDIT.md S1 slice 6).
     exports.Set("audio_setEffectVisualizationEnabled",
                 Napi::Function::New(env, Audio_SetEffectVisualizationEnabled));
     exports.Set("audio_drainEffectVizFrames",
                 Napi::Function::New(env, Audio_DrainEffectVizFrames));
-    exports.Set("audio_addMasterEffect",      Napi::Function::New(env, Audio_AddMasterEffect));
-    exports.Set("audio_removeMasterEffect",   Napi::Function::New(env, Audio_RemoveMasterEffect));
-    exports.Set("audio_moveMasterEffect",     Napi::Function::New(env, Audio_MoveMasterEffect));
-    exports.Set("audio_setMasterEffectBypass", Napi::Function::New(env, Audio_SetMasterEffectBypass));
-    exports.Set("audio_getMasterEffectChain", Napi::Function::New(env, Audio_GetMasterEffectChain));
 
-    // ── EQ-specific ────────────────────────────────────────────────────────
-    exports.Set("audio_eqAddBand",          Napi::Function::New(env, Audio_EQ_AddBand));
-    exports.Set("audio_eqRemoveBand",       Napi::Function::New(env, Audio_EQ_RemoveBand));
-    exports.Set("audio_eqSetBandParam",     Napi::Function::New(env, Audio_EQ_SetBandParam));
-    exports.Set("audio_eqGetResponseCurve", Napi::Function::New(env, Audio_EQ_GetResponseCurve));
-    exports.Set("audio_eqGetSpectrumData",  Napi::Function::New(env, Audio_EQ_GetSpectrumData));
-    exports.Set("audio_eqSetPreSpectrum",   Napi::Function::New(env, Audio_EQ_SetPreSpectrum));
-    exports.Set("audio_eqGetBands",         Napi::Function::New(env, Audio_EQ_GetBands));
-    exports.Set("audio_eqGetBandGR",        Napi::Function::New(env, Audio_EQ_GetBandGR));
-    exports.Set("audio_eqSetGlobalParam",   Napi::Function::New(env, Audio_EQ_SetGlobalParam));
-    exports.Set("audio_eqGetGlobalParams",  Napi::Function::New(env, Audio_EQ_GetGlobalParams));
-    exports.Set("audio_eqGetSampleRate",   Napi::Function::New(env, Audio_EQ_GetSampleRate));
-
-    // ── Waveshaper-specific ────────────────────────────────────────────────
-    exports.Set("audio_wsGetCurvePoints", Napi::Function::New(env, Audio_WS_GetCurvePoints));
-    exports.Set("audio_wsSetCurvePoints", Napi::Function::New(env, Audio_WS_SetCurvePoints));
-    exports.Set("audio_wsSetPreset",      Napi::Function::New(env, Audio_WS_SetPreset));
-
-    // ── SmartBalance-specific ──────────────────────────────────────────────
-    exports.Set("audio_smartBalanceGetDebug", Napi::Function::New(env, Audio_SmartBalance_GetDebug));
-
-    // ── Graph-mode routing ──────────────────────────────────────────────────
-    exports.Set("audio_addConnection",           Napi::Function::New(env, Audio_AddConnection));
-    exports.Set("audio_removeConnection",        Napi::Function::New(env, Audio_RemoveConnection));
-    exports.Set("audio_setWireGain",             Napi::Function::New(env, Audio_SetWireGain));
-    exports.Set("audio_setWireMute",             Napi::Function::New(env, Audio_SetWireMute));
-    exports.Set("audio_getGraphTopology",        Napi::Function::New(env, Audio_GetGraphTopology));
-    exports.Set("audio_setNodePosition",         Napi::Function::New(env, Audio_SetNodePosition));
-    exports.Set("audio_isGraphLinear",           Napi::Function::New(env, Audio_IsGraphLinear));
-    // ── Graph-owned effect instances (FXG.3-b) ───────────────────────────────
-    exports.Set("audio_addGraphEffectNode",          Napi::Function::New(env, Audio_AddGraphEffectNode));
-    exports.Set("audio_removeGraphEffectNode",       Napi::Function::New(env, Audio_RemoveGraphEffectNode));
-    exports.Set("audio_getGraphEffectEngineNodeId",  Napi::Function::New(env, Audio_GetGraphEffectEngineNodeId));
-    // ── Graph-owned effect parameter descriptors (FXG.4-a) ───────────────────
-    exports.Set("audio_getGraphEffectParameters",        Napi::Function::New(env, Audio_GetGraphEffectParameters));
-    exports.Set("audio_getGraphEffectParameterValue",    Napi::Function::New(env, Audio_GetGraphEffectParameterValue));
-    exports.Set("audio_setGraphEffectParameterNormalized", Napi::Function::New(env, Audio_SetGraphEffectParameterNormalized));
-    exports.Set("audio_hydrateGraphEffectNodes",     Napi::Function::New(env, Audio_HydrateGraphEffectNodes));
-    exports.Set("audio_syncLinearGraphTopology",     Napi::Function::New(env, Audio_SyncLinearGraphTopology));
-    // ── Graph runtime routing + adoption (FXG.3-d) ───────────────────────────
-    exports.Set("audio_syncGraphTopology",           Napi::Function::New(env, Audio_SyncGraphTopology));
-    exports.Set("audio_adoptGraphEffectNodes",       Napi::Function::New(env, Audio_AdoptGraphEffectNodes));
-    exports.Set("audio_addMasterConnection",     Napi::Function::New(env, Audio_AddMasterConnection));
-    exports.Set("audio_removeMasterConnection",  Napi::Function::New(env, Audio_RemoveMasterConnection));
-    exports.Set("audio_setMasterWireGain",       Napi::Function::New(env, Audio_SetMasterWireGain));
-    exports.Set("audio_setMasterWireMute",       Napi::Function::New(env, Audio_SetMasterWireMute));
-    exports.Set("audio_getMasterGraphTopology",  Napi::Function::New(env, Audio_GetMasterGraphTopology));
-    exports.Set("audio_setMasterNodePosition",   Napi::Function::New(env, Audio_SetMasterNodePosition));
-    exports.Set("audio_isMasterGraphLinear",     Napi::Function::New(env, Audio_IsMasterGraphLinear));
+    // ── Graph-mode routing surface (wire mutations + graph-owned effect
+    //    instances FXG.3-b / parameter descriptors FXG.4-a / hydrate-sync-adopt
+    //    topology ops FXG.3-d, track + master) is manifest-generated now
+    //    (XlethRpcExports.inc, AUDIT.md S1 slice 7).
 
     // ── VST3 plugin scanner ─────────────────────────────────────────────────
+    // audio_scanPlugins stays hand-written (its vst3.js handler reshapes the
+    // argument before forwarding). The scan-progress/scanned/failed queries, the
+    // plugin-editor window methods, the missing-plugin helpers, and crash
+    // recovery all migrated to the RPC manifest (XlethRpcExports.inc).
     exports.Set("audio_scanPlugins",      Napi::Function::New(env, Audio_ScanPlugins));
-    exports.Set("audio_getScanProgress",  Napi::Function::New(env, Audio_GetScanProgress));
-    exports.Set("audio_getScannedPlugins", Napi::Function::New(env, Audio_GetScannedPlugins));
-    exports.Set("audio_getFailedPlugins", Napi::Function::New(env, Audio_GetFailedPlugins));
-
-    // ── VST3 plugin editor windows ──────────────────────────────────────────
-    exports.Set("audio_openPluginEditor",    Napi::Function::New(env, Audio_OpenPluginEditor));
-    exports.Set("audio_closePluginEditor",   Napi::Function::New(env, Audio_ClosePluginEditor));
-    exports.Set("audio_closeAllPluginEditors", Napi::Function::New(env, Audio_CloseAllPluginEditors));
-    exports.Set("audio_isPluginEditorOpen",  Napi::Function::New(env, Audio_IsPluginEditorOpen));
-
-    // ── Missing-plugin helpers ──────────────────────────────────────────────
-    exports.Set("audio_getMissingPlugins",   Napi::Function::New(env, Audio_GetMissingPlugins));
-    exports.Set("audio_retryMissingPlugin",  Napi::Function::New(env, Audio_RetryMissingPlugin));
-    exports.Set("audio_removeAllMissing",    Napi::Function::New(env, Audio_RemoveAllMissing));
-
-    // ── VST3 crash recovery ─────────────────────────────────────────────────
-    exports.Set("audio_resetCrashedPlugin",  Napi::Function::New(env, Audio_ResetCrashedPlugin));
 
     // ── Main window handle (for VST editor parenting) ───────────────────────
     exports.Set("audio_setMainWindowHandle", Napi::Function::New(env, Audio_SetMainWindowHandle));
 
     // ── Phase 1 — Sync ───────────────────────────────────────────────────────
-    // sync_getStats = getSyncStats (same engine method, aliased)
+    // DEPRECATED: use getSyncStats instead.
     exports.Set("sync_getStats", Napi::Function::New(env,
         [](const Napi::CallbackInfo& info) {
             return dispatchToService(info, "getSyncStats");
@@ -1875,7 +787,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("waveform_getClipPeaks",   Napi::Function::New(env, Waveform_GetClipPeaks));
 
     // ── GPU device management ────────────────────────────────────────────────
-    exports.Set("gpu_getAvailableGpus", Napi::Function::New(env, Gpu_GetAvailableGpus));
+    // gpu_getAvailableGpus migrated to the RPC manifest (XlethRpcExports.inc).
     exports.Set("gpu_setAdapter",       Napi::Function::New(env, Gpu_SetAdapter));
 
     // ── Diagnostics (Settings → Graphics → Export Visual Preview Log) ───────
@@ -1883,8 +795,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
                 Napi::Function::New(env, Diag_GetVisualPreviewDiagnostic));
 
     // ── Hardware encoder detection ───────────────────────────────────────────
-    exports.Set("hwenc_getAvailableEncoders", Napi::Function::New(env, HwEnc_GetAvailableEncoders));
-    exports.Set("hwenc_getDefaultEncoder",    Napi::Function::New(env, HwEnc_GetDefaultEncoder));
+    // hwenc_getAvailableEncoders / hwenc_getDefaultEncoder migrated to the RPC
+    // manifest (XlethRpcExports.inc).
     exports.Set("hwenc_refresh",              Napi::Function::New(env, HwEnc_Refresh));
 
     // ── MIDI Import ──────────────────────────────────────────────────────────

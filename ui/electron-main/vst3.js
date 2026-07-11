@@ -16,44 +16,16 @@ function init(deps) {
 
   // ── VST3 plugin scanner ───────────────────────────────────────────────────────
 
+  // scanPlugins stays hand-written: it reshapes its argument
+  // (paths && paths.length ? [paths] : []) before forwarding, which a generic
+  // manifest pass-through cannot express. The scan-progress/scanned/failed
+  // queries, the plugin-editor window methods, the missing-plugin helpers, and
+  // crash recovery all migrated to the RPC manifest (ui/rpc-manifest.js).
   ipcMain.handle('xleth:audio:scanPlugins',
     safeHandler((_, paths) => callWorker('audio_scanPlugins', paths && paths.length ? [paths] : [])));
 
-  ipcMain.handle('xleth:audio:getScanProgress',
-    safeHandler(() => callWorker('audio_getScanProgress', [])));
-
-  ipcMain.handle('xleth:audio:getScannedPlugins',
-    safeHandler(() => callWorker('audio_getScannedPlugins', [])));
-
-  ipcMain.handle('xleth:audio:getFailedPlugins',
-    safeHandler(() => callWorker('audio_getFailedPlugins', [])));
-
-  // ── VST3 plugin editor windows ────────────────────────────────────────────────
-
-  ipcMain.handle('xleth:audio:openPluginEditor',
-    safeHandler((_, trackId, nodeId) => callWorker('audio_openPluginEditor', [trackId, nodeId])));
-
-  ipcMain.handle('xleth:audio:closePluginEditor',
-    safeHandler((_, trackId, nodeId) => callWorker('audio_closePluginEditor', [trackId, nodeId])));
-
-  ipcMain.handle('xleth:audio:closeAllPluginEditors',
-    safeHandler(() => callWorker('audio_closeAllPluginEditors', [])));
-
-  ipcMain.handle('xleth:audio:isPluginEditorOpen',
-    safeHandler((_, trackId, nodeId) => callWorker('audio_isPluginEditorOpen', [trackId, nodeId])));
-
-  ipcMain.handle('xleth:audio:getMissingPlugins',
-    safeHandler(() => callWorker('audio_getMissingPlugins', [])));
-
-  ipcMain.handle('xleth:audio:retryMissingPlugin',
-    safeHandler((_, trackId, nodeId) => callWorker('audio_retryMissingPlugin', [trackId, nodeId])));
-
-  ipcMain.handle('xleth:audio:removeAllMissing',
-    safeHandler(() => callWorker('audio_removeAllMissing', [])));
-
-  ipcMain.handle('xleth:audio:resetCrashedPlugin',
-    safeHandler((_, trackId, nodeId) => callWorker('audio_resetCrashedPlugin', [trackId, nodeId])));
-
+  // addVstSearchPath owns a native Electron directory picker, not an engine
+  // call, so it stays hand-written (the established xleth:dialog:* pattern).
   ipcMain.handle('xleth:dialog:addVstSearchPath', async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog(getWin(), {
       title: 'Add VST3 Search Path',

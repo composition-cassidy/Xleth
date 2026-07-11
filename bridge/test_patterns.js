@@ -56,6 +56,10 @@ async function main() {
     name: 'Lead pattern',
     regionId: regionId,
     lengthTicks: 4 * PPQ,
+  });
+  assert(patId >= 1, `patternId=${patId}`);
+
+  addon.timeline_updateSamplerSettings(regionId, {
     rootNote: 60,
     attackMs: 5.0,
     decayMs: 20.0,
@@ -66,7 +70,6 @@ async function main() {
     loopEnd: 5000,
     crossfadeEnabled: true,
   });
-  assert(patId >= 1, `patternId=${patId}`);
 
   const noteIds = [];
   for (let i = 0; i < 10; i++) {
@@ -93,15 +96,6 @@ async function main() {
   eq(p.name, 'Lead pattern', 'name preserved');
   eq(p.regionId, regionId, 'regionId preserved');
   eq(p.lengthTicks, 4 * PPQ, 'lengthTicks preserved');
-  eq(p.rootNote, 60, 'rootNote preserved');
-  eq(p.attackMs, 5.0, 'attackMs preserved');
-  eq(p.decayMs, 20.0, 'decayMs preserved');
-  assert(Math.abs(p.sustain - 0.7) < 1e-5, `sustain ≈ 0.7 (got ${p.sustain})`);
-  eq(p.releaseMs, 100.0, 'releaseMs preserved');
-  eq(p.loopEnabled, true, 'loopEnabled preserved');
-  eq(p.loopStart, 1000, 'loopStart preserved');
-  eq(p.loopEnd, 5000, 'loopEnd preserved');
-  eq(p.crossfadeEnabled, true, 'crossfadeEnabled preserved');
   eq(p.notes.length, 10, 'notes.length === 10');
   for (let i = 0; i < 10; i++) {
     const n = p.notes[i];
@@ -111,6 +105,19 @@ async function main() {
     eq(n.pitch, 60 + i, `note[${i}].pitch`);
     assert(Math.abs(n.velocity - (0.5 + i * 0.05)) < 1e-5, `note[${i}].velocity`);
   }
+
+  const persistedRegion = addon.timeline_getRegions().find(r => r.id === regionId);
+  assert(persistedRegion, `region ${regionId} preserved`);
+  eq(persistedRegion.rootNote, 60, 'rootNote preserved');
+  eq(persistedRegion.attackMs, 5.0, 'attackMs preserved');
+  eq(persistedRegion.decayMs, 20.0, 'decayMs preserved');
+  assert(Math.abs(persistedRegion.sustain - 0.7) < 1e-5,
+         `sustain ≈ 0.7 (got ${persistedRegion.sustain})`);
+  eq(persistedRegion.releaseMs, 100.0, 'releaseMs preserved');
+  eq(persistedRegion.loopEnabled, true, 'loopEnabled preserved');
+  eq(persistedRegion.loopStart, 1000, 'loopStart preserved');
+  eq(persistedRegion.loopEnd, 5000, 'loopEnd preserved');
+  eq(persistedRegion.crossfadeEnabled, true, 'crossfadeEnabled preserved');
 
   // ── TEST 2 — PatternBlock on timeline ──────────────────────────────────────
   console.log('\n[ Test 2 — PatternBlock add/get ]');
@@ -225,14 +232,15 @@ async function main() {
   eq(afterRm.notes.length, 9, 'removeNote → 9 notes remain');
 
   // Update sampler settings
-  addon.timeline_updateSamplerSettings(patId, { attackMs: 15.5, releaseMs: 250.0 });
-  const patAfterSampler = addon.timeline_getPattern(patId);
-  assert(Math.abs(patAfterSampler.attackMs - 15.5) < 1e-5,
-         `updateSamplerSettings → attackMs=15.5 (got ${patAfterSampler.attackMs})`);
-  assert(Math.abs(patAfterSampler.releaseMs - 250.0) < 1e-5,
-         `updateSamplerSettings → releaseMs=250 (got ${patAfterSampler.releaseMs})`);
+  addon.timeline_updateSamplerSettings(regionId, { attackMs: 15.5, releaseMs: 250.0 });
+  const regionAfterSampler = addon.timeline_getRegions().find(r => r.id === regionId);
+  assert(regionAfterSampler, `region ${regionId} found after sampler update`);
+  assert(Math.abs(regionAfterSampler.attackMs - 15.5) < 1e-5,
+         `updateSamplerSettings → attackMs=15.5 (got ${regionAfterSampler.attackMs})`);
+  assert(Math.abs(regionAfterSampler.releaseMs - 250.0) < 1e-5,
+         `updateSamplerSettings → releaseMs=250 (got ${regionAfterSampler.releaseMs})`);
   // Non-overridden fields preserved
-  eq(patAfterSampler.rootNote, 60, 'rootNote preserved through partial update');
+  eq(regionAfterSampler.rootNote, 60, 'rootNote preserved through partial update');
 
   // ── SetVideoFlipConfig IPC round-trip (Phase 6 acceptance test) ────────
   // Sends a Clockwise-equivalent config, reads it back via the track marshalling,
@@ -329,7 +337,8 @@ async function main() {
   addon.timeline_convertToClipTrack(trackBId);
   const tb = addon.timeline_getTracks().find(x => x.id === trackBId);
   eq(tb.type, 'Clip', 'convertToClipTrack → type="Clip"');
-  eq(tb.assignedRegionId, -1, 'convertToClipTrack → assignedRegionId=-1');
+  assert(!Object.hasOwn(tb, 'assignedRegionId'),
+         'convertToClipTrack → assignedRegionId omitted from track payload');
   // trackB's block should be cascade-removed.
   const afterClipConvert = addon.timeline_getPatternBlocks();
   eq(afterClipConvert.length, 0, 'cascaded: trackB block removed');
@@ -380,8 +389,10 @@ async function main() {
   eq(legacyTracks.length, 1, 'legacy: 1 track loaded');
   const ltr = legacyTracks[0];
   eq(ltr.type, 'Clip', 'legacy track defaults to type="Clip"');
-  eq(ltr.assignedRegionId, -1, 'legacy track assignedRegionId=-1');
-  eq(ltr.assignedPatternId, -1, 'legacy track assignedPatternId=-1');
+  assert(!Object.hasOwn(ltr, 'assignedRegionId'),
+         'legacy track assignedRegionId omitted from track payload');
+  assert(!Object.hasOwn(ltr, 'assignedPatternId'),
+         'legacy track assignedPatternId omitted from track payload');
   eq(ltr.videoFlipMode, 'None', 'legacy track videoFlipMode="None"');
   eq(addon.timeline_getAllPatterns().length, 0, 'legacy: no patterns');
   eq(addon.timeline_getPatternBlocks().length, 0, 'legacy: no blocks');

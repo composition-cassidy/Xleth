@@ -82,9 +82,8 @@ window.xleth = ({
   // ── FL Studio Score (.fsc) parsing ─────────────────────────────────────────
   // Pure read-only parse: returns neutral note data (no Timeline mutation).
   // Pair with timeline.addNotesBatch to actually insert the parsed notes.
-  fsc: {
-    parse: (filePath) => invoke('xleth:fsc:parse', filePath),
-  },
+  // fsc.parse comes from the RPC manifest (attachRpcWrappers below, S1 slice 4);
+  // attachRpcWrappers creates the fsc.* namespace on demand.
 
   // Electron 41 removed File.path. Resolve a dropped/selected File to its
   // absolute filesystem path synchronously via webUtils.
@@ -130,65 +129,14 @@ window.xleth = ({
 
   // ── Phase 1: timeline ─────────────────────────────────────────────────────
   timeline: {
-    // getBPM / setBPM / getTempoLocked come from the RPC manifest (attachRpcWrappers below)
-    setTempoLocked:   (locked)              => invoke('xleth:timeline:setTempoLocked', locked),
-    getDeclickMs:     ()                    => invoke('xleth:timeline:getDeclickMs'),
-    setDeclickMs:     (ms)                  => invoke('xleth:timeline:setDeclickMs', ms),
-    getGlobalStretchMethod: ()              => invoke('xleth:timeline:getGlobalStretchMethod'),
-    setGlobalStretchMethod: (method)        => invoke('xleth:timeline:setGlobalStretchMethod', method),
-    getSources:       ()                    => invoke('xleth:timeline:getSources'),
-    getRegions:       ()                    => invoke('xleth:timeline:getRegions'),
-    getRegionsByLabel:(label)               => invoke('xleth:timeline:getRegionsByLabel', label),
-    getTracks:        ()                    => invoke('xleth:timeline:getTracks'),
-    getClips:         ()                    => invoke('xleth:timeline:getClips'),
-    getClipsOnTrack:  (trackId)             => invoke('xleth:timeline:getClipsOnTrack', trackId),
-    getClipsInRange:  (startBeat, endBeat)  => invoke('xleth:timeline:getClipsInRange', startBeat, endBeat),
-    getLoopRegion:    ()                    => invoke('xleth:timeline:getLoopRegion'),
-    setLoopRegion:    (region, minLengthTicks) => invoke('xleth:timeline:setLoopRegion', region, minLengthTicks),
-    addTrack:         (info)                => invoke('xleth:timeline:addTrack', info),
-    removeTrack:      (id)                  => invoke('xleth:timeline:removeTrack', id),
-    setTrackMuted:        (trackId, muted)      => invoke('xleth:timeline:setTrackMuted', trackId, muted),
-    setTrackVisualOnly:   (trackId, visualOnly) => invoke('xleth:timeline:setTrackVisualOnly', trackId, visualOnly),
-    setTrackSolo:         (trackId, solo)       => invoke('xleth:timeline:setTrackSolo', trackId, solo),
-    setTrackOrder:        (trackIds)            => invoke('xleth:timeline:setTrackOrder', trackIds),
-    setTrackOutputRoute:  (trackId, targetTrackId) => invoke('xleth:timeline:setTrackOutputRoute', trackId, targetTrackId),
-    getRouting:           ()                    => invoke('xleth:timeline:getRouting'),
-    addSidechainRoute:        (sourceTrackId, route)        => invoke('xleth:timeline:addSidechainRoute', sourceTrackId, route),
-    removeSidechainRoute:     (sourceTrackId, routeId)      => invoke('xleth:timeline:removeSidechainRoute', sourceTrackId, routeId),
-    setSidechainRouteParams:  (sourceTrackId, routeId, params) => invoke('xleth:timeline:setSidechainRouteParams', sourceTrackId, routeId, params),
-    setTrackName:     (trackId, name)       => invoke('xleth:timeline:setTrackName', trackId, name),
-    setTrackFxMode:   (trackId, mode)       => invoke('xleth:timeline:setTrackFxMode', trackId, mode),
-    setTrackGraphState: (trackId, graphState) => invoke('xleth:timeline:setTrackGraphState', trackId, graphState),
-    setPatternName:   (patternId, name)     => invoke('xleth:timeline:setPatternName', patternId, name),
-    setPatternRegion: (patternId, regionId) => invoke('xleth:timeline:setPatternRegion', patternId, regionId),
-    convertToPatternTrack: (trackId)        => invoke('xleth:timeline:convertToPatternTrack', trackId),
-    convertToClipTrack: (trackId)           => invoke('xleth:timeline:convertToClipTrack', trackId),
-    setVideoFlipConfig: (trackId, config)   => invoke('xleth:timeline:setVideoFlipConfig', trackId, config),
-    setVideoHoldLastFrame: (trackId, hold) => invoke('xleth:timeline:setVideoHoldLastFrame', trackId, hold),
-    setTrackCornerRadius:     (trackId, v) => invoke('xleth:timeline:setTrackCornerRadius', trackId, v),
-    setTrackGapScaleOverride: (trackId, v) => invoke('xleth:timeline:setTrackGapScaleOverride', trackId, v),
-    setTrackSubdivisionFactor: (trackId, factor) => invoke('xleth:timeline:setTrackSubdivisionFactor', trackId, factor),
-    setTrackColor:            (trackId, assignment) => invoke('xleth:timeline:setTrackColor', trackId, assignment),
-    setTrackBounceSettings:        (trackId, bounce) => invoke('xleth:timeline:setTrackBounceSettings', trackId, bounce),
-    setTrackZoomPanRotSettings:    (trackId, zpr)   => invoke('xleth:timeline:setTrackZoomPanRotSettings', trackId, zpr),
-    setTrackPingPongSettings:      (trackId, pp)    => invoke('xleth:timeline:setTrackPingPongSettings', trackId, pp),
-    setTrackSlideNoteEffect:       (trackId, s)     => invoke('xleth:timeline:setTrackSlideNoteEffect', trackId, s),
-    getPreviewResolutionScale:     ()               => invoke('xleth:timeline:getPreviewResolutionScale'),
-    setPreviewResolutionScale:     (scale)          => invoke('xleth:timeline:setPreviewResolutionScale', scale),
-    getPreviewEffectsBypass:       ()               => invoke('xleth:timeline:getPreviewEffectsBypass'),
-    setPreviewEffectsBypass:       (bypass)         => invoke('xleth:timeline:setPreviewEffectsBypass', bypass),
-    getPreviewPosterMode:          ()               => invoke('xleth:timeline:getPreviewPosterMode'),
-    setPreviewPosterMode:          (poster)         => invoke('xleth:timeline:setPreviewPosterMode', poster),
-    setNoteSlide:                  (patternId, noteId, isSlide, cx, cy) =>
-        invoke('xleth:timeline:setNoteSlide', patternId, noteId, isSlide, cx, cy),
-    addVisualEffect:         (trackId, effectType) => invoke('xleth:timeline:addVisualEffect', trackId, effectType),
-    removeVisualEffect:      (trackId, idx)        => invoke('xleth:timeline:removeVisualEffect', trackId, idx),
-    reorderVisualEffect:          (trackId, from, to)   => invoke('xleth:timeline:reorderVisualEffect', trackId, from, to),
-    setTrackVisualEffectChainOrder: (trackId, newOrder) => invoke('xleth:timeline:setTrackVisualEffectChainOrder', trackId, newOrder),
-    setVisualEffectParam:    (trackId, ei, pi, val) => invoke('xleth:timeline:setVisualEffectParam', trackId, ei, pi, val),
-    setVisualEffectBypassed: (trackId, ei, bp)     => invoke('xleth:timeline:setVisualEffectBypassed', trackId, ei, bp),
-    getVisualEffectChain:    (trackId)             => invoke('xleth:timeline:getVisualEffectChain', trackId),
-    addClip:          (clip)                => invoke('xleth:timeline:addClip', clip),
+    // getBPM / setBPM / getTempoLocked and the timeline query + single-entity
+    // mutation surface come from the RPC manifest (attachRpcWrappers below). The
+    // region / syllable / pattern / pattern-block / single-note pass-throughs and
+    // fsc.parse also come from the manifest now (S1 slice 4). Still hand-written
+    // here: addClipsBatch / spliceClipsAtPlayhead and the *Batch note ops (batch
+    // ops), plus autoTrimClip (thresholdDb=-54) and previewNote (velocity=0.8) —
+    // their preload defaults would be lost by the generic manifest wrapper.
+    // See docs/rpc-manifest.md.
     addClipsBatch:    (clips)               => invoke('xleth:timeline:addClipsBatch', clips),
     removeClip:       (id)                  => invoke('xleth:timeline:removeClip', id),
     moveClip:         (id, trackId, pos)    => invoke('xleth:timeline:moveClip', id, trackId, pos),
@@ -200,13 +148,6 @@ window.xleth = ({
     reverseClip:      (id)                  => invoke('xleth:timeline:reverseClip', id),
     autoTrimClip:            (id, thresholdDb=-54) => invoke('xleth:timeline:autoTrimClip', id, thresholdDb),
     spliceClipsAtPlayhead:   (entries)             => invoke('xleth:timeline:spliceClipsAtPlayhead', entries),
-    setClipParams:           (id, params)          => invoke('xleth:timeline:setClipParams', id, params),
-    setClipModulation:       (id, modulation)      => invoke('xleth:timeline:setClipModulation', id, modulation),
-    addRegion:        (region)              => invoke('xleth:timeline:addRegion', region),
-    modifyRegion:     (id, region)          => invoke('xleth:timeline:modifyRegion', id, region),
-    setSyllables:     (id, syllables)       => invoke('xleth:timeline:setSyllables', id, syllables),
-    getSyllables:     (id)                  => invoke('xleth:timeline:getSyllables', id),
-    removeRegion:     (id)                  => invoke('xleth:timeline:removeRegion', id),
     getGridLayout:       ()                              => invoke('xleth:timeline:getGridLayout'),
     setGridLayout:       (layout)                        => invoke('xleth:timeline:setGridLayout', layout),
     assignTrackToGrid:   (trackId, gx, gy, sx, sy)       => invoke('xleth:timeline:assignTrackToGrid', trackId, gx, gy, sx, sy),
@@ -227,34 +168,15 @@ window.xleth = ({
       if (!l) return;
       return invoke('xleth:timeline:setGridLayout', { ...l, gapScale: v });
     },
-    // ── Patterns ─────────────────────────────────────────────────────────
-    addPattern:             (info)                              => invoke('xleth:timeline:addPattern', info),
-    getPattern:             (id)                                => invoke('xleth:timeline:getPattern', id),
-    getAllPatterns:         ()                                  => invoke('xleth:timeline:getAllPatterns'),
-    removePattern:          (id)                                => invoke('xleth:timeline:removePattern', id),
-    updateSamplerSettings:  (regionId, settings)                => invoke('xleth:timeline:updateSamplerSettings', regionId, settings),
-    getPatternAudioInfo:    (id)                                => invoke('xleth:timeline:getPatternAudioInfo', id),
-    getRegionAudioInfo:      (regionId)                          => invoke('xleth:timeline:getRegionAudioInfo', regionId),
-    // Pipeline B (getRegionWaveformPeaks) retired — use waveform.getRegionPeaks instead
-    addPatternBlock:        (block)                             => invoke('xleth:timeline:addPatternBlock', block),
-    getPatternBlocks:       ()                                  => invoke('xleth:timeline:getPatternBlocks'),
-    removePatternBlock:     (id)                                => invoke('xleth:timeline:removePatternBlock', id),
-    movePatternBlock:       (id, trackId, posTicks)             => invoke('xleth:timeline:movePatternBlock', id, trackId, posTicks),
-    resizePatternBlock:     (id, durTicks)                      => invoke('xleth:timeline:resizePatternBlock', id, durTicks),
-    resizePatternBlockLeft: (id, posTicks, durTicks, offTicks)  => invoke('xleth:timeline:resizePatternBlockLeft', id, posTicks, durTicks, offTicks),
-    setPatternBlockLoop:    (id, enabled)                       => invoke('xleth:timeline:setPatternBlockLoop', id, enabled),
-    addNote:                (patternId, note)                   => invoke('xleth:timeline:addNote', patternId, note),
-    removeNote:             (patternId, noteId)                 => invoke('xleth:timeline:removeNote', patternId, noteId),
-    moveNote:               (patternId, noteId, posTicks, pitch)=> invoke('xleth:timeline:moveNote', patternId, noteId, posTicks, pitch),
+    // ── Patterns / regions / notes ───────────────────────────────────────
+    // The region, pattern, pattern-block and single-note pass-throughs (and
+    // fsc.parse) come from the RPC manifest (attachRpcWrappers below, S1 slice
+    // 4). Only the batch ops and previewNote (velocity=0.8 default) stay here.
     moveNotesBatch:         (patternId, moves)                  => invoke('xleth:timeline:moveNotesBatch', patternId, moves),
     addNotesBatch:          (patternId, notes)                  => invoke('xleth:timeline:addNotesBatch', patternId, notes),
     quantizeClipsBatch:     (specs)                             => invoke('xleth:timeline:quantizeClipsBatch', specs),
     resizeNotesBatch:       (patternId, resizes)                => invoke('xleth:timeline:resizeNotesBatch', patternId, resizes),
-    resizeNote:             (patternId, noteId, durTicks)       => invoke('xleth:timeline:resizeNote', patternId, noteId, durTicks),
-    setNoteVelocity:        (patternId, noteId, velocity)       => invoke('xleth:timeline:setNoteVelocity', patternId, noteId, velocity),
     previewNote:            (patternId, pitch, velocity=0.8)    => invoke('xleth:timeline:previewNote', patternId, pitch, velocity),
-    previewNoteOff:         (patternId, pitch)                  => invoke('xleth:timeline:previewNoteOff', patternId, pitch),
-    previewAllNotesOff:     (regionId)                          => invoke('xleth:timeline:previewAllNotesOff', regionId),
   },
 
   // ── Phase 1: undo ─────────────────────────────────────────────────────────
@@ -268,8 +190,9 @@ window.xleth = ({
   },
 
   // ── Phase 1: transport ────────────────────────────────────────────────────
+  // transport.play / stop / pause / getState / seek all come from the RPC
+  // manifest (attachRpcWrappers below).
   transport: {
-    seek:     (beatPos) => invoke('xleth:transport:seek', beatPos),
   },
 
   // ── Preview-proxy build status ─────────────────────────────────────────────
@@ -277,6 +200,7 @@ window.xleth = ({
   // preview. getStatus() resolves to { pending, inFlight, completed, total };
   // wait for pending===0 after opening a project before the first Play so the
   // first playback is smooth instead of decoding the slow original source.
+  // getStatus comes from the RPC manifest (attachRpcWrappers below).
   proxy: {
   },
 
@@ -302,23 +226,16 @@ window.xleth = ({
   },
 
   // ── Phase 1: audio ────────────────────────────────────────────────────────
+  // Most audio wrappers (loadSample, mapRegionToSample, loadSourceRegion, peak
+  // meters, realtime-diagnostics reset/get, performance telemetry, mixer
+  // volume/pan/spread + master volume, output-device get/set) come from the RPC
+  // manifest (attachRpcWrappers below, S1 slice 5). Left hand-written here:
+  // setRealtimeDiagnosticsEnabled (coerces !!enabled) and captureAudioPerformanceReport
+  // (main-process supplies a userDataPath outputDir default).
   audio: {
-    loadSample:        (path)               => invoke('xleth:audio:loadSample', path),
     triggerSample:     (id, vel)            => invoke('xleth:trigger', id, vel),
-    mapRegionToSample: (regionId, sampleId) => invoke('xleth:audio:mapRegionToSample', regionId, sampleId),
-    loadSourceRegion:  (filePath, startTime, endTime) => invoke('xleth:audio:loadSourceRegion', filePath, startTime, endTime),
-    getMasterPeak:     ()                   => invoke('xleth:audio:getMasterPeak'),
-    getTrackPeak:      (trackId)            => invoke('xleth:audio:getTrackPeak', trackId),
-    getAllPeaks:        ()                   => invoke('xleth:audio:getAllPeaks'),
     setRealtimeDiagnosticsEnabled: (enabled) => invoke('xleth:audio:setRealtimeDiagnosticsEnabled', !!enabled),
-    resetRealtimeDiagnostics: ()             => invoke('xleth:audio:resetRealtimeDiagnostics'),
-    getRealtimeDiagnostics: ()               => invoke('xleth:audio:getRealtimeDiagnostics'),
-    getAudioPerformanceTelemetry: ()         => invoke('xleth:audio:getAudioPerformanceTelemetry'),
     captureAudioPerformanceReport: (options) => invoke('xleth:audio:captureAudioPerformanceReport', options || {}),
-    setTrackVolume:    (trackId, vol)       => invoke('xleth:audio:setTrackVolume', trackId, vol),
-    setTrackPan:       (trackId, pan)       => invoke('xleth:audio:setTrackPan',    trackId, pan),
-    setTrackSpread:    (trackId, spread)    => invoke('xleth:audio:setTrackSpread', trackId, spread),
-    setMasterVolume:   (vol)               => invoke('xleth:audio:setMasterVolume', vol),
     // Replaced by WaveformMipmap N-API bindings — see window.xleth.waveform
     // getWaveformData / getWaveformRegion removed (Pipeline A)
     // Sample Selector: detect root note from WAV smpl chunk
@@ -334,14 +251,10 @@ window.xleth = ({
     getSourcePosition: ()          => invoke('xleth:audio:getSourcePosition'),
     isSourcePlaying:   ()          => invoke('xleth:audio:isSourcePlaying'),
     unloadSource:      ()          => invoke('xleth:audio:unloadSource'),
-    // ── Output device selection ───────────────────────────────────────────
-    getOutputDevices:       ()     => invoke('xleth:audio:getOutputDevices'),
-    getCurrentOutputDevice: ()     => invoke('xleth:audio:getCurrentOutputDevice'),
-    setOutputDevice:        (name) => invoke('xleth:audio:setOutputDevice', name),
+    // ── Output device selection (get/set come from the RPC manifest, S1 slice 5) ──
     // ── Audio Export ─────────────────────────────────────────────────────
+    // exportGetProgress / exportCancel come from the RPC manifest (attachRpcWrappers below).
     exportStart:       (cfg)          => invoke('xleth:audio:exportStart', cfg),
-    exportGetProgress: ()             => invoke('xleth:audio:exportGetProgress'),
-    exportCancel:      ()             => invoke('xleth:audio:exportCancel'),
     exportSaveAsDialog:(defName, fmt) => invoke('xleth:dialog:exportAudio', defName, fmt),
     exportRegion:        (regionId)             => invoke('xleth:audio:exportRegion', regionId),
     openSwapAudioDialog: ()                     => invoke('xleth:dialog:swapAudio'),
@@ -349,76 +262,21 @@ window.xleth = ({
     revertRegionAudio:   (regionId)             => invoke('xleth:audio:revertRegionAudio', regionId),
     loadRegionAudio:     (regionId)             => invoke('xleth:audio:loadRegionAudio', regionId),
     probeAudioDuration:  (filePath)             => invoke('xleth:audio:probeAudioDuration', filePath),
-    // ── P3: Effect Chain ────────────────────────────────────────────────
-    addEffect:            (trackId, pluginId, position) => invoke('xleth:audio:addEffect', trackId, pluginId, position),
-    removeEffect:         (trackId, nodeId)             => invoke('xleth:audio:removeEffect', trackId, nodeId),
-    moveEffect:           (trackId, nodeId, newPosition) => invoke('xleth:audio:moveEffect', trackId, nodeId, newPosition),
-    setEffectBypass:      (trackId, nodeId, bypassed)   => invoke('xleth:audio:setEffectBypass', trackId, nodeId, bypassed),
-    getEffectChain:       (trackId)                     => invoke('xleth:audio:getEffectChain', trackId),
-    addMasterEffect:      (pluginId, position)          => invoke('xleth:audio:addMasterEffect', pluginId, position),
-    removeMasterEffect:   (nodeId)                      => invoke('xleth:audio:removeMasterEffect', nodeId),
-    moveMasterEffect:     (nodeId, newPosition)         => invoke('xleth:audio:moveMasterEffect', nodeId, newPosition),
-    setMasterEffectBypass:(nodeId, bypassed)             => invoke('xleth:audio:setMasterEffectBypass', nodeId, bypassed),
-    getMasterEffectChain: ()                             => invoke('xleth:audio:getMasterEffectChain'),
-    // ── Generic effect parameter / meter access ──────────────────────
-    getEffectParameters: (trackId, nodeId)                    => invoke('xleth:audio:getEffectParameters', trackId, nodeId),
-    setEffectParameter:  (trackId, nodeId, paramId, value)    => invoke('xleth:audio:setEffectParameter',  trackId, nodeId, paramId, value),
-    getEffectMeter:      (trackId, nodeId)                    => invoke('xleth:audio:getEffectMeter',      trackId, nodeId),
+    // ── P3: Effect Chain + parameter/meter + EQ/SmartBalance/Waveshaper ──
+    // Migrated to ui/rpc-manifest.js (AUDIT.md S1 slice 6) — attachRpcWrappers
+    // adds them to this namespace. Only the dynamics-viz pair stays literal:
+    // its main-process handlers coerce args (!!enabled / maxBuckets|0).
     // ── Effect visualization (dynamics; binary ArrayBuffer payload) ─
     setEffectVisualizationEnabled: (trackId, nodeId, enabled) =>
       invoke('xleth:audio:setEffectVisualizationEnabled', trackId, nodeId, enabled),
     drainEffectVizFrames:          (trackId, nodeId, maxBuckets) =>
       invoke('xleth:audio:drainEffectVizFrames', trackId, nodeId, maxBuckets),
-    // ── EQ-specific ─────────────────────────────────────────────────
-    eqAddBand:          (trackId, nodeId)                          => invoke('xleth:audio:eqAddBand', trackId, nodeId),
-    eqRemoveBand:       (trackId, nodeId, bandIndex)               => invoke('xleth:audio:eqRemoveBand', trackId, nodeId, bandIndex),
-    eqSetBandParam:     (trackId, nodeId, bandIndex, paramName, v) => invoke('xleth:audio:eqSetBandParam', trackId, nodeId, bandIndex, paramName, v),
-    eqGetResponseCurve: (trackId, nodeId)                          => invoke('xleth:audio:eqGetResponseCurve', trackId, nodeId),
-    eqGetSpectrumData:  (trackId, nodeId)                          => invoke('xleth:audio:eqGetSpectrumData', trackId, nodeId),
-    eqSetPreSpectrum:   (trackId, nodeId, enabled)                 => invoke('xleth:audio:eqSetPreSpectrum', trackId, nodeId, enabled),
-    eqGetBands:         (trackId, nodeId)                          => invoke('xleth:audio:eqGetBands', trackId, nodeId),
-    eqGetBandGR:        (trackId, nodeId)                          => invoke('xleth:audio:eqGetBandGR', trackId, nodeId),
-    eqSetGlobalParam:   (trackId, nodeId, paramName, value)        => invoke('xleth:audio:eqSetGlobalParam', trackId, nodeId, paramName, value),
-    eqGetGlobalParams:  (trackId, nodeId)                          => invoke('xleth:audio:eqGetGlobalParams', trackId, nodeId),
-    eqGetSampleRate:    (trackId, nodeId)                          => invoke('xleth:audio:eqGetSampleRate', trackId, nodeId),
-    // ── SmartBalance-specific ───────────────────────────────────────
-    smartBalanceGetDebug: (trackId, nodeId)                         => invoke('xleth:audio:smartBalanceGetDebug', trackId, nodeId),
-    // ── Waveshaper-specific ──────────────────────────────────────────
-    wsGetCurvePoints:   (trackId, nodeId)                          => invoke('xleth:audio:wsGetCurvePoints', trackId, nodeId),
-    wsSetCurvePoints:   (trackId, nodeId, pointsJSON)              => invoke('xleth:audio:wsSetCurvePoints', trackId, nodeId, pointsJSON),
-    wsSetPreset:        (trackId, nodeId, presetIndex)             => invoke('xleth:audio:wsSetPreset', trackId, nodeId, presetIndex),
-    // ── Graph-mode routing ────────────────────────────────────────────
-    addConnection:          (trackId, srcId, dstId)        => invoke('xleth:audio:addConnection', trackId, srcId, dstId),
-    removeConnection:       (trackId, srcId, dstId)        => invoke('xleth:audio:removeConnection', trackId, srcId, dstId),
-    setWireGain:            (trackId, srcId, dstId, gain)  => invoke('xleth:audio:setWireGain', trackId, srcId, dstId, gain),
-    setWireMute:            (trackId, srcId, dstId, muted) => invoke('xleth:audio:setWireMute', trackId, srcId, dstId, muted),
-    getGraphTopology:       (trackId)                      => invoke('xleth:audio:getGraphTopology', trackId),
-    setNodePosition:        (trackId, nodeId, x, y)        => invoke('xleth:audio:setNodePosition', trackId, nodeId, x, y),
-    isGraphLinear:          (trackId)                      => invoke('xleth:audio:isGraphLinear', trackId),
-    // ── Graph-owned effect instances (FXG.3-b) ─────────────────────────
-    // Stable effectInstanceId ↔ transient engine nodeId. Separate from the
-    // chain add/remove APIs above; never rewires the linear chain.
-    addGraphEffectNode:        (trackId, effectInstanceId, pluginId) => invoke('xleth:audio:addGraphEffectNode', trackId, effectInstanceId, pluginId),
-    removeGraphEffectNode:     (trackId, effectInstanceId)           => invoke('xleth:audio:removeGraphEffectNode', trackId, effectInstanceId),
-    getGraphEffectEngineNodeId:(trackId, effectInstanceId)           => invoke('xleth:audio:getGraphEffectEngineNodeId', trackId, effectInstanceId),
-    // FXG.4-a: graph-owned effect parameter descriptors (normalized [0,1]).
-    // Prefer stable (trackId, effectInstanceId, parameterId) identity; engine
-    // node ids are never surfaced to the renderer here.
-    getGraphEffectParameters:        (trackId, effectInstanceId)                          => invoke('xleth:audio:getGraphEffectParameters', trackId, effectInstanceId),
-    getGraphEffectParameterValue:    (trackId, effectInstanceId, parameterId)             => invoke('xleth:audio:getGraphEffectParameterValue', trackId, effectInstanceId, parameterId),
-    setGraphEffectParameterNormalized:(trackId, effectInstanceId, parameterId, value)     => invoke('xleth:audio:setGraphEffectParameterNormalized', trackId, effectInstanceId, parameterId, value),
-    hydrateGraphEffectNodes:   (trackId, graphEffectNodes)           => invoke('xleth:audio:hydrateGraphEffectNodes', trackId, graphEffectNodes),
-    syncLinearGraphTopology:   (trackId, topology)                   => invoke('xleth:audio:syncLinearGraphTopology', trackId, topology),
-    // FXG.3-d: general graph routing (linear + parallel) + chain→graph adoption.
-    syncGraphTopology:         (trackId, topology)                   => invoke('xleth:audio:syncGraphTopology', trackId, topology),
-    adoptGraphEffectNodes:     (trackId, mapping)                    => invoke('xleth:audio:adoptGraphEffectNodes', trackId, mapping),
-    addMasterConnection:    (srcId, dstId)                 => invoke('xleth:audio:addMasterConnection', srcId, dstId),
-    removeMasterConnection: (srcId, dstId)                 => invoke('xleth:audio:removeMasterConnection', srcId, dstId),
-    setMasterWireGain:      (srcId, dstId, gain)           => invoke('xleth:audio:setMasterWireGain', srcId, dstId, gain),
-    setMasterWireMute:      (srcId, dstId, muted)          => invoke('xleth:audio:setMasterWireMute', srcId, dstId, muted),
-    getMasterGraphTopology: ()                             => invoke('xleth:audio:getMasterGraphTopology'),
-    setMasterNodePosition:  (nodeId, x, y)                => invoke('xleth:audio:setMasterNodePosition', nodeId, x, y),
-    isMasterGraphLinear:    ()                             => invoke('xleth:audio:isMasterGraphLinear'),
+    // ── Graph-mode routing + graph-owned instances + topology ──────────
+    // Migrated to ui/rpc-manifest.js (AUDIT.md S1 slice 7) — attachRpcWrappers
+    // adds all 24 to this namespace. The 8 wire mutations broadcast
+    // xleth:graph:changed via their manifest `graph:` entries; the FXG.3-b
+    // graph-owned instances, FXG.4-a parameter descriptors and FXG.3-d
+    // hydrate/sync/adopt topology ops are plain safeHandler pass-throughs.
     onExportProgress:  (cb) => {
       const h = (_e, data) => cb(data);
       ipcRenderer.on('export:progress', h);
@@ -435,22 +293,14 @@ window.xleth = ({
       return () => ipcRenderer.removeListener('stretch:worldProcessingComplete', h);
     },
     // ── VST3 plugin scanner ──────────────────────────────────────────────
+    // getScanProgress / getScannedPlugins / getFailedPlugins, the plugin-editor
+    // window methods (openPluginEditor / closePluginEditor / closeAllPluginEditors /
+    // isPluginEditorOpen), the missing-plugin helpers (getMissingPlugins /
+    // retryMissingPlugin / removeAllMissing), and resetCrashedPlugin all come
+    // from the RPC manifest (attachRpcWrappers below). scanPlugins stays here
+    // (its main handler reshapes the argument); addVstSearchPath owns a dialog.
     scanPlugins:          (paths)            => invoke('xleth:audio:scanPlugins', paths),
-    getScanProgress:      ()                 => invoke('xleth:audio:getScanProgress'),
-    getScannedPlugins:    ()                 => invoke('xleth:audio:getScannedPlugins'),
-    getFailedPlugins:     ()                 => invoke('xleth:audio:getFailedPlugins'),
-    // ── VST3 plugin editor windows ───────────────────────────────────────
-    openPluginEditor:     (trackId, nodeId)  => invoke('xleth:audio:openPluginEditor', trackId, nodeId),
-    closePluginEditor:    (trackId, nodeId)  => invoke('xleth:audio:closePluginEditor', trackId, nodeId),
-    closeAllPluginEditors: ()                => invoke('xleth:audio:closeAllPluginEditors'),
-    isPluginEditorOpen:   (trackId, nodeId)  => invoke('xleth:audio:isPluginEditorOpen', trackId, nodeId),
     addVstSearchPath:     ()                 => invoke('xleth:dialog:addVstSearchPath'),
-    // ── Missing-plugin helpers ────────────────────────────────────────────
-    getMissingPlugins:    ()                 => invoke('xleth:audio:getMissingPlugins'),
-    retryMissingPlugin:   (trackId, nodeId)  => invoke('xleth:audio:retryMissingPlugin', trackId, nodeId),
-    removeAllMissing:     ()                 => invoke('xleth:audio:removeAllMissing'),
-    // ── VST3 crash recovery ───────────────────────────────────────────────
-    resetCrashedPlugin:   (trackId, nodeId)  => invoke('xleth:audio:resetCrashedPlugin', trackId, nodeId),
   },
 
   // ── Phase 1: video ────────────────────────────────────────────────────────
@@ -473,12 +323,10 @@ window.xleth = ({
 
   // ── Video Export ──────────────────────────────────────────────────────────
   videoExport: {
+    // exportGetProgress / exportCancel / getAvailableEncoders / getDefaultEncoder
+    // come from the RPC manifest (attachRpcWrappers below).
     exportStart:          (cfg)   => invoke('xleth:video:exportStart', cfg),
-    exportGetProgress:    ()      => invoke('xleth:video:exportGetProgress'),
-    exportCancel:         ()      => invoke('xleth:video:exportCancel'),
     exportSaveAsDialog:   (name)  => invoke('xleth:dialog:exportVideo', name),
-    getAvailableEncoders: (codec) => invoke('xleth:video:getAvailableEncoders', codec),
-    getDefaultEncoder:    (codec) => invoke('xleth:video:getDefaultEncoder', codec),
     computeDurationSeconds: (startBeat, endBeat) =>
         invoke('xleth:video:computeDurationSeconds', startBeat, endBeat),
     getExportPresets:     ()       => invoke('xleth:video:getExportPresets'),
@@ -491,8 +339,8 @@ window.xleth = ({
   },
 
   // ── GPU adapter detection ─────────────────────────────────────────────────
+  // gpu.getAvailableGpus comes from the RPC manifest (attachRpcWrappers below).
   gpu: {
-    getAvailableGpus: () => invoke('xleth:gpu:getAvailableGpus'),
   },
 
   // ── Diagnostics (Settings → Graphics → Export Visual Preview Log) ────────
@@ -516,6 +364,7 @@ window.xleth = ({
   },
 
   // ── Phase 1: sync ─────────────────────────────────────────────────────────
+  // sync.getStats comes from the RPC manifest (attachRpcWrappers below).
   sync: {
   },
 

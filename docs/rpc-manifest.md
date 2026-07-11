@@ -1,7 +1,11 @@
 # RPC Method Manifest — single source of truth for the RPC surface (AUDIT.md S1)
 
-**Status:** Phase 1 — mechanism proven on a 4-method slice. Remaining ~292 methods migrate
-domain-by-domain in later passes (see "Migration plan" below).
+**Status:** slices 1–7 done (timeline/undo/transport, project, patterns, audio, effects,
+effects-graph — 185 methods in the manifest, incl. the `graph:` broadcast mechanism proven
+on effects.js and reused verbatim for effects-graph.js's 8 wire mutations). The
+audio/effects/graph trio is now complete; the only leftovers in it are four arg-coercion /
+binary-payload handlers deliberately kept hand-written (see item 5 below). Remaining methods
+migrate domain-by-domain in later passes (see "Migration plan" below).
 
 ## The problem
 
@@ -55,8 +59,39 @@ bridge contract tests, vitest, and the generator). One entry per engine method:
   handler:  'Timeline_GetBPM',                     // C++ handler symbol in XlethEngineService.cpp
   returns:  'value',                               // 'value' | 'void' (dispatch wrapper shape)
   binary:   null,                                  // null | 'frame' | 'midiImport' — stays explicit in addon-worker.js
+  graph:    'track',                               // (optional) 'track' | 'master' — graph mutation, broadcasts
+                                                   // xleth:graph:changed via main.js's graphHandler; absent = plain
 }
 ```
+
+### The `graph` field — declarative graph-changed broadcast (S1 slice 6)
+
+The effect-chain and wire mutations (`effects.js`, later `effects-graph.js`) are pure
+engine pass-throughs **plus one fixed post-call side effect**: after the worker call
+resolves, main.js broadcasts `xleth:graph:changed` to every renderer (main window +
+node-editor children), keyed by the track id (`trackKey = (_, trackId) => String(trackId)`,
+first IPC arg) or by `'master'` (`masterKey`). Hand-written modules expressed this by
+wrapping the handler in `graphHandler(keyFn, fn)` instead of `safeHandler(fn)`.
+
+The manifest expresses it as **data**, exactly like `binary` declares the worker's
+explicit binary branches without genericizing them:
+
+- `graph: 'track' | 'master'` on an entry declares the broadcast and its key.
+- `rpc-registry.js` maps the value to the canonical key function (imported from
+  `electron-main/effects.js`, the same functions `effects-graph.js` shares) and
+  registers the channel through main.js's `graphHandler` instead of plain `safeHandler`.
+- `graphHandler`, `broadcastGraphChanged` and the key functions themselves are
+  **unchanged and stay in main.js / effects.js** — the manifest only selects the wrapper
+  at registration time.
+- `validateManifest()` rejects any value outside `{'track', 'master'}`; absent or `null`
+  means plain pass-through.
+- The C++ side is untouched by the field: generated exports/dispatch lines are identical
+  to a plain pass-through (the broadcast is a main-process concern only).
+
+This is the **one sanctioned exception** to "no per-call main-process logic in the
+manifest": the broadcast is a fixed, declarative side effect shared by every graph
+mutation, not per-method business logic. Anything beyond it (dialogs, arg fixups,
+timers, settings reads) still disqualifies an entry.
 
 `channels` is a list because the phase0 legacy surface maps two channels to one method
 (`xleth:currentFrame` + `xleth:frameRGBA`). `api` is a map because several wrapper paths
@@ -68,7 +103,7 @@ can point at the same channel (`getCurrentFrame` and `video.getFrameBuffer` both
 | Layer | Mechanism | Runtime or generated |
 |-------|-----------|----------------------|
 | preload wrappers | `attachRpcWrappers(window.xleth, invoke)` (exported by the manifest) sets each `api` path to `(...args) => invoke(channel, ...args)` | runtime |
-| ipcMain channels | `ui/electron-main/rpc-registry.js` → `init({ safeHandler })` loops the manifest: `ipcMain.handle(channel, safeHandler((_evt, ...args) => callWorker(method, args)))` | runtime |
+| ipcMain channels | `ui/electron-main/rpc-registry.js` → `init({ safeHandler, graphHandler })` loops the manifest: `ipcMain.handle(channel, wrap((_evt, ...args) => callWorker(method, args)))` where `wrap` is `safeHandler`, or `graphHandler(trackKey \| masterKey, …)` when the entry declares `graph:` | runtime |
 | worker method string | same `method` field, passed by the generated handler | runtime |
 | addon exports | `bridge/src/XlethRpcExports.inc` — X-macro list `XLETH_RPC_EXPORT("timeline_getBPM")`, expanded in `XlethAddon.cpp::Init()` to `exports.Set(name, Function::New(env, …dispatchToService(info, name)…))` | **generated, checked in** |
 | engine dispatch | `engine/src/XlethRpcDispatch.inc` — `XLETH_RPC_VALUE("timeline_getBPM", Timeline_GetBPM)` / `XLETH_RPC_VOID(…)`, expanded at the top of `XlethEngineService::dispatch()` | **generated, checked in** |
@@ -131,7 +166,22 @@ delete the hand-written lines + regenerate + full suite (contract tests, vitest,
 2. **project.js** — pass-throughs; keep the dialog handlers (`xleth:dialog:*`) hand-written (they own Electron dialogs, not engine calls)
 3. **patterns.js** — all `timeline_*` region/syllable/pattern/note pass-throughs
 4. **audio.js** — mostly pass-throughs; keep the device/diagnostics handlers that touch `runtimePaths`
-5. **effects.js** + **effects-graph.js** — the `graphHandler`-wrapped mutations need a manifest flag (`wrap: 'graph'`) or stay hand-written; decide when reached
+5. **effects.js** ✅ (slice 6) + **effects-graph.js** ✅ (slice 7) — the `graphHandler`-wrapped
+   mutations migrate with the `graph: 'track' | 'master'` field (see above; decided and proven on
+   effects.js's 8 chain mutations). effects-graph.js's 8 wire mutations used the identical
+   pattern — declared `graph:` on each, nothing new to design. Its other 16 handlers were
+   re-verified individually and all migrated as **plain** entries: the topology reads /
+   node-position persistence, the FXG.3-b graph-owned effect instances and FXG.4-a parameter
+   descriptors (deliberately `safeHandler`-only — graphState persistence, not a chain re-fetch,
+   syncs the renderer, so they must NOT declare `graph:`), and the FXG.3-d hydrate / syncLinear /
+   sync / adopt topology ops (their batch-init / topology-rebuild / adoption logic lives entirely
+   in the untouched engine C++ handler; the JS layers are a single `callWorker` pass-through).
+   effects-graph.js has **no exclusions** — it is now an empty init stub. The whole
+   audio/effects/graph trio is complete; the only handlers left hand-written across it are four
+   arg-coercion / binary-payload cases: `setEffectVisualizationEnabled` (`!!enabled`) and
+   `drainEffectVizFrames` (`maxBuckets|0` + binary viz payload) in effects.js, and
+   `setRealtimeDiagnosticsEnabled` (double `Boolean()` coercion) and `captureAudioPerformanceReport`
+   (injects a `runtimePaths` outputDir default) in audio.js — none of them pure pass-throughs.
 6. **phase0-compat.js** (rest) — flat legacy channels incl. the `xleth:trigger` default-arg fixup (`vel ?? 1.0`): needs either a manifest `argDefaults` field or stays hand-written; the remaining binary paths (`getCurrentFrame` alias set is already done; `getFrameBuffer`) come here
 7. **vst3.js / export.js / diagnostics.js / quick-launchers.js / preview-visibility.js** — heavy main-process logic (dialogs, intervals, file IO); only their pure pass-through lines migrate, the rest is *not* RPC and stays
 8. **Last:** the 7 legacy alias exports (`transport_getState`, `audio_get/startAudioPerformanceCapture*`, `sync_getStats`) — fold into Q8 (kill aliases) rather than teaching the manifest about them
