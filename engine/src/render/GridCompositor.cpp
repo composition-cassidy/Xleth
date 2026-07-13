@@ -18,6 +18,7 @@
 #include "shaders/FX_ZoomPanRotationPS.h"
 #include "shaders/FX_VibratoSwirlPS.h"
 #include "shaders/FX_ScratchWaveSmearPS.h"
+#include "shaders/SnapshotTransitionPS.h"
 
 #include "model/TimelineTypes.h"  // VisualEffect
 #include "VisualFrameDiagnostics.h"  // opt-in pixel-content instrumentation
@@ -485,9 +486,14 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
                                      RenderFrameCache& cache,
                                      int gridCols, int gridRows,
                                      float time,
-                                     float gapScale)
+                                     float gapScale,
+                                     ID3D11RenderTargetView* targetRTV)
 {
     if (!initialized_) return;
+
+    // [Safety audit: Default-path regression] nullptr selects the same member
+    // render target used before custom whole-frame targets were supported.
+    ID3D11RenderTargetView* activeRTV = targetRTV ? targetRTV : renderTargetRTV_.Get();
 
     auto frameStart = std::chrono::high_resolution_clock::now();
 
@@ -511,13 +517,13 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
     deviceCtx_->PSSetShaderResources(0, 1, &nullSRV);
 
     // Set render target
-    deviceCtx_->OMSetRenderTargets(1, renderTargetRTV_.GetAddressOf(), nullptr);
+    deviceCtx_->OMSetRenderTargets(1, &activeRTV, nullptr);
 
     // Clear to transparent black — areas with no content will be transparent.
     // The chorus layer provides the background; gaps without chorus encode
     // as black in H.264 (which has no alpha channel).
     const float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-    deviceCtx_->ClearRenderTargetView(renderTargetRTV_.Get(), clearColor);
+    deviceCtx_->ClearRenderTargetView(activeRTV, clearColor);
 
     // Set viewport
     D3D11_VIEWPORT viewport = {};
@@ -597,7 +603,7 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
                     processCompanionFx(layerSRV, width_, height_, req);
                 if (processedSRV != layerSRV) {
                     layerSRV = processedSRV;
-                    restoreMainPipelineState();
+                    restoreMainPipelineState(activeRTV);
                 }
             }
 
@@ -680,7 +686,7 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
                 mainVP.MinDepth = 0.0f;
                 mainVP.MaxDepth = 1.0f;
                 deviceCtx_->RSSetViewports(1, &mainVP);
-                deviceCtx_->OMSetRenderTargets(1, renderTargetRTV_.GetAddressOf(), nullptr);
+                deviceCtx_->OMSetRenderTargets(1, &activeRTV, nullptr);
                 deviceCtx_->PSSetShader(pixelShader_.Get(), nullptr, 0);
                 deviceCtx_->PSSetConstantBuffers(0, 1, constantBuffer_.GetAddressOf());
                 deviceCtx_->PSSetSamplers(0, 1, samplerState_.GetAddressOf());
@@ -716,7 +722,7 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
                     mainVP.Height   = static_cast<float>(height_);
                     mainVP.MaxDepth = 1.0f;
                     deviceCtx_->RSSetViewports(1, &mainVP);
-                    deviceCtx_->OMSetRenderTargets(1, renderTargetRTV_.GetAddressOf(), nullptr);
+                    deviceCtx_->OMSetRenderTargets(1, &activeRTV, nullptr);
                     deviceCtx_->PSSetShader(pixelShader_.Get(), nullptr, 0);
                     deviceCtx_->PSSetConstantBuffers(0, 1, constantBuffer_.GetAddressOf());
                     deviceCtx_->PSSetSamplers(0, 1, samplerState_.GetAddressOf());
@@ -796,7 +802,7 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
                     mainVP2.Height   = static_cast<float>(height_);
                     mainVP2.MaxDepth = 1.0f;
                     deviceCtx_->RSSetViewports(1, &mainVP2);
-                    deviceCtx_->OMSetRenderTargets(1, renderTargetRTV_.GetAddressOf(), nullptr);
+                    deviceCtx_->OMSetRenderTargets(1, &activeRTV, nullptr);
                     deviceCtx_->PSSetShader(pixelShader_.Get(), nullptr, 0);
                     deviceCtx_->PSSetConstantBuffers(0, 1, constantBuffer_.GetAddressOf());
                     deviceCtx_->PSSetSamplers(0, 1, samplerState_.GetAddressOf());
@@ -814,7 +820,7 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
                 processCompanionFx(cellSRV, companionW, companionH, req);
             if (companionSRV != cellSRV) {
                 cellSRV = companionSRV;
-                restoreMainPipelineState();
+                restoreMainPipelineState(activeRTV);
             }
         }
 
@@ -836,6 +842,71 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
     auto frameEnd = std::chrono::high_resolution_clock::now();
     double ms = std::chrono::duration<double, std::milli>(frameEnd - frameStart).count();
     std::fprintf(stderr, "[Compositor] Frame composited in %.2fms\n", ms);
+}
+
+RTPool::RTPair& GridCompositor::acquireTransitionTargets()
+{
+    assert(initialized_ && device_);
+    // [Safety audit: No per-frame allocation] RTPool returns the cached slot-4
+    // pair after its first acquisition for this output size.
+    return rtPool_.acquire(device_, width_, height_, kTransitionRtSlot);
+}
+
+void GridCompositor::transitionPass(ID3D11ShaderResourceView* srvA,
+                                    ID3D11ShaderResourceView* srvB,
+                                    int mode, float t, float angleRad)
+{
+    if (!initialized_ || !srvA || !srvB ||
+        !effectShaders_.transitionPS || !effectShaders_.transitionCB) {
+        return;
+    }
+
+    // [Safety audit: Read/write hazard] Binding the final target first releases
+    // RT_A/RT_B from OM before those same textures are bound as transition SRVs.
+    ID3D11RenderTargetView* outputRTV = renderTargetRTV_.Get();
+    deviceCtx_->OMSetRenderTargets(1, &outputRTV, nullptr);
+
+    D3D11_VIEWPORT viewport{};
+    viewport.Width    = static_cast<float>(width_);
+    viewport.Height   = static_cast<float>(height_);
+    viewport.MinDepth = 0.0f;
+    viewport.MaxDepth = 1.0f;
+    deviceCtx_->RSSetViewports(1, &viewport);
+
+    deviceCtx_->IASetInputLayout(inputLayout_.Get());
+    deviceCtx_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    UINT stride = sizeof(QuadVertex);
+    UINT offset = 0;
+    deviceCtx_->IASetVertexBuffers(0, 1, vertexBuffer_.GetAddressOf(), &stride, &offset);
+    deviceCtx_->IASetIndexBuffer(indexBuffer_.Get(), DXGI_FORMAT_R16_UINT, 0);
+    deviceCtx_->VSSetShader(vertexShader_.Get(), nullptr, 0);
+    deviceCtx_->PSSetShader(effectShaders_.transitionPS.Get(), nullptr, 0);
+    deviceCtx_->PSSetSamplers(0, 1, samplerState_.GetAddressOf());
+    deviceCtx_->RSSetState(rasterizerState_.Get());
+    deviceCtx_->OMSetDepthStencilState(depthStencilState_.Get(), 0);
+    deviceCtx_->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
+
+    TransitionConstants constants{};
+    constants.mode     = mode;
+    constants.t        = t;
+    constants.angleRad = angleRad;
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(deviceCtx_->Map(effectShaders_.transitionCB.Get(), 0,
+                               D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+        return;
+    }
+    std::memcpy(mapped.pData, &constants, sizeof(constants));
+    deviceCtx_->Unmap(effectShaders_.transitionCB.Get(), 0);
+    deviceCtx_->PSSetConstantBuffers(2, 1, effectShaders_.transitionCB.GetAddressOf());
+
+    ID3D11ShaderResourceView* inputs[2] = { srvA, srvB };
+    deviceCtx_->PSSetShaderResources(0, 2, inputs);
+    deviceCtx_->DrawIndexed(6, 0, 0);
+
+    // [Safety audit: Clean SRV state] The next frame's per-cell t0 binds and
+    // transition-target RTV binds cannot conflict with stale t0/t1 inputs.
+    ID3D11ShaderResourceView* nullInputs[2] = { nullptr, nullptr };
+    deviceCtx_->PSSetShaderResources(0, 2, nullInputs);
 }
 
 // ===========================================================================
@@ -1414,6 +1485,13 @@ bool EffectShaderCache::init(ID3D11Device* device)
         return false;
     }
 
+    hr = device->CreatePixelShader(g_SnapshotTransitionPS, sizeof(g_SnapshotTransitionPS),
+                                   nullptr, &transitionPS);
+    if (FAILED(hr)) {
+        std::fprintf(stderr, "[EffectShaders] Failed: SnapshotTransition PS\n");
+        return false;
+    }
+
     // Create per-effect constant buffers at b2
     if (!createEffectCB(device, 16, desatCB,      "Desaturation"))    return false;
     if (!createEffectCB(device, 32, tintCB,        "Tint"))            return false;
@@ -1422,9 +1500,11 @@ bool EffectShaderCache::init(ID3D11Device* device)
     if (!createEffectCB(device, 16, zoomPanRotCB,  "ZoomPanRotation")) return false;
     if (!createEffectCB(device, 32, vibratoSwirlCB, "VibratoSwirl"))   return false;
     if (!createEffectCB(device, 32, scratchWaveSmearCB, "ScratchWaveSmear")) return false;
+    if (!createEffectCB(device, sizeof(TransitionConstants), transitionCB,
+                        "SnapshotTransition")) return false;
 
     initialized = true;
-    std::fprintf(stderr, "[EffectShaders] All 7 effect shaders + CBs created\n");
+    std::fprintf(stderr, "[EffectShaders] All 8 effect shaders + CBs created\n");
     return true;
 }
 
@@ -1437,6 +1517,7 @@ void EffectShaderCache::shutdown()
     zoomPanRotPS.Reset();
     vibratoSwirlPS.Reset();
     scratchWaveSmearPS.Reset();
+    transitionPS.Reset();
     desatCB.Reset();
     tintCB.Reset();
     brightContCB.Reset();
@@ -1444,6 +1525,7 @@ void EffectShaderCache::shutdown()
     zoomPanRotCB.Reset();
     vibratoSwirlCB.Reset();
     scratchWaveSmearCB.Reset();
+    transitionCB.Reset();
     initialized = false;
 }
 
@@ -1471,7 +1553,7 @@ void GridCompositor::drawEffectPass(ID3D11ShaderResourceView* srv)
     deviceCtx_->DrawIndexed(6, 0, 0);
 }
 
-void GridCompositor::restoreMainPipelineState()
+void GridCompositor::restoreMainPipelineState(ID3D11RenderTargetView* targetRTV)
 {
     D3D11_VIEWPORT mainVP{};
     mainVP.Width    = static_cast<float>(width_);
@@ -1479,7 +1561,8 @@ void GridCompositor::restoreMainPipelineState()
     mainVP.MinDepth = 0.0f;
     mainVP.MaxDepth = 1.0f;
     deviceCtx_->RSSetViewports(1, &mainVP);
-    deviceCtx_->OMSetRenderTargets(1, renderTargetRTV_.GetAddressOf(), nullptr);
+    ID3D11RenderTargetView* activeRTV = targetRTV ? targetRTV : renderTargetRTV_.Get();
+    deviceCtx_->OMSetRenderTargets(1, &activeRTV, nullptr);
     deviceCtx_->PSSetShader(pixelShader_.Get(), nullptr, 0);
     deviceCtx_->PSSetConstantBuffers(0, 1, constantBuffer_.GetAddressOf());
     deviceCtx_->PSSetSamplers(0, 1, samplerState_.GetAddressOf());

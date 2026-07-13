@@ -64,6 +64,18 @@ struct alignas(16) GlobalConstants {
 };
 static_assert(sizeof(GlobalConstants) == 16, "GlobalConstants must be 16 bytes (1 x float4)");
 
+// ---------------------------------------------------------------------------
+// TransitionConstants — whole-frame snapshot transition parameters at b2
+// ---------------------------------------------------------------------------
+struct alignas(16) TransitionConstants {
+    int   mode;
+    float t;
+    float angleRad;
+    float pad;
+};
+// [Safety audit: CB alignment] D3D11 constant buffers are 16-byte aligned.
+static_assert(sizeof(TransitionConstants) == 16, "TransitionConstants must be 16 bytes");
+
 struct alignas(16) VibratoSwirlConstants {
     float amount;
     float radius;
@@ -122,6 +134,7 @@ struct EffectShaderCache {
     Microsoft::WRL::ComPtr<ID3D11PixelShader> zoomPanRotPS;
     Microsoft::WRL::ComPtr<ID3D11PixelShader> vibratoSwirlPS;
     Microsoft::WRL::ComPtr<ID3D11PixelShader> scratchWaveSmearPS;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> transitionPS;
 
     // Per-effect constant buffers at b2 (small, updated per draw)
     Microsoft::WRL::ComPtr<ID3D11Buffer> desatCB;       // 16 bytes
@@ -131,6 +144,8 @@ struct EffectShaderCache {
     Microsoft::WRL::ComPtr<ID3D11Buffer> zoomPanRotCB;  // 16 bytes
     Microsoft::WRL::ComPtr<ID3D11Buffer> vibratoSwirlCB;     // 32 bytes
     Microsoft::WRL::ComPtr<ID3D11Buffer> scratchWaveSmearCB; // 32 bytes
+    // [Safety audit: No per-frame allocation] Created once in init() and reused.
+    Microsoft::WRL::ComPtr<ID3D11Buffer> transitionCB;       // 16 bytes
 
     bool initialized = false;
 
@@ -283,12 +298,24 @@ public:
      * @param cache       Frame cache containing decoded textures
      * @param gridCols    Grid columns (from GridLayout)
      * @param gridRows    Grid rows (from GridLayout)
+     * @param targetRTV   Optional output target; nullptr preserves the member target path
      */
     void compositeFrame(const std::vector<CellFrameRequest>& requests,
                         RenderFrameCache& cache,
                         int gridCols, int gridRows,
                         float time = 0.0f,
-                        float gapScale = 0.0f);
+                        float gapScale = 0.0f,
+                        ID3D11RenderTargetView* targetRTV = nullptr);
+
+    /** Acquire the cached whole-frame pair used for snapshot A and snapshot B.
+     *  Requires a successfully initialized compositor. */
+    RTPool::RTPair& acquireTransitionTargets();
+
+    /** Blend two whole-frame snapshot SRVs into the compositor's readback target.
+     *  mode 0 is a linear crossfade; mode 1 is an angle-directed line sweep. */
+    void transitionPass(ID3D11ShaderResourceView* srvA,
+                        ID3D11ShaderResourceView* srvB,
+                        int mode, float t, float angleRad);
 
     // ── Readback ───────────────────────────────────────────────────────────
 
@@ -386,12 +413,20 @@ private:
     RTPool             rtPool_;
     EffectShaderCache  effectShaders_;
 
+    // Snapshot-transition safety audit:
+    //  1. Read/write hazard: unbind RT_A/RT_B as RTVs before sampling their SRVs.
+    //  2. Clean SRV state: unbind transition t0/t1 after the pass.
+    //  3. Default-path regression: nullptr target resolves to renderTargetRTV_.
+    //  4. No per-frame allocation: cache shader/CB and the slot-4 RTPair.
+    //  5. CB alignment: TransitionConstants is statically asserted to 16 bytes.
+    //
     // RTPool encodes slot + dimensions in its key and has no fixed slot
     // capacity. Slot ownership in compositeFrame/processEffectChain:
-    //   0 = track visual chain, 1 = standalone ZPR, 2 = ping-pong crossfade.
-    // This named slot is reserved for clip-local companion FX so SRV/RTV
-    // aliasing cannot occur with existing passes.
+    //   0 = track visual chain, 1 = standalone ZPR, 2 = ping-pong crossfade,
+    //   3 = companion FX, 4 = whole-frame snapshot transition.
     static constexpr int kCompanionFxRtSlot = 3;
+    // [Safety audit: No per-frame allocation] Slot 4 retains one full-frame pair.
+    static constexpr int kTransitionRtSlot = 4;
 
     // ── Internal helpers ───────────────────────────────────────────────────
     bool createRenderTarget();
@@ -419,7 +454,7 @@ private:
      *  Binds srv at t0, draws the quad. Caller must set the PS and CB beforehand. */
     void drawEffectPass(ID3D11ShaderResourceView* srv);
 
-    void restoreMainPipelineState();
+    void restoreMainPipelineState(ID3D11RenderTargetView* targetRTV = nullptr);
 
     ID3D11ShaderResourceView* processCompanionFx(
         ID3D11ShaderResourceView* sourceSRV,

@@ -1588,6 +1588,29 @@ target_compile_definitions(test_compositor PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_snapshot_transition ─────────────────────────────────────────────────
+# Verifies the two-target whole-frame transition pass with real D3D11 rendering.
+add_executable(test_snapshot_transition
+    test/test_snapshot_transition.cpp
+)
+
+target_link_libraries(test_snapshot_transition PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    d3d11
+    dxgi
+)
+
+target_compile_definitions(test_snapshot_transition PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_muxer ───────────────────────────────────────────────────────────────
 # Verifies FFmpegMuxer with built-in mpeg4 + aac encoders.
 # No GPU needed — uses only FFmpeg C API.
@@ -1780,6 +1803,7 @@ set(XLETH_ENGINE_TESTS
     test_render_decoder
     test_animation_manager
     test_compositor
+    test_snapshot_transition
     test_muxer
     test_hw_detect
     test_offline_render
