@@ -176,6 +176,16 @@ public:
      *                          allowProxy: when allowProxy=false (full-quality
      *                          override) the plan is ignored and originals are used,
      *                          guaranteeing bit-exact source pixels to the encoder.
+     * @param layoutOverride    SNAPSHOT-TRANSITION ONLY. When non-null, this exact
+     *                          GridLayout is used as the frame's arrangement instead
+     *                          of the tick-resolved layout (timeline.gridLayoutAt).
+     *                          Event timing (beatPos, source frame indices) is still
+     *                          driven by the frame's absolute project tick — only the
+     *                          grid/fullscreen ARRANGEMENT is forced. This lets the
+     *                          transition path composite a SPECIFIC snapshot (the
+     *                          outgoing A or incoming B) at a given frame. The caller
+     *                          owns the layout by value; the pointer is not retained
+     *                          past this call. Default (nullptr) is unchanged.
      */
     std::vector<CellFrameRequest> collectRequests(
         int64_t                        outputFrameIndex,
@@ -186,7 +196,8 @@ public:
         bool                           allowProxy = true,
         int64_t                        projectStartSample = 0,
         bool                           posterMode = false,
-        const std::unordered_map<int, std::string>* renderProxyBySource = nullptr);
+        const std::unordered_map<int, std::string>* renderProxyBySource = nullptr,
+        const GridLayout*              layoutOverride = nullptr);
 
     // ── Step 2: Deduplicate ─────────────────────────────────────────────────
 

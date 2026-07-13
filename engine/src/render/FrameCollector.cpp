@@ -97,10 +97,10 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
     bool                           allowProxy,
     int64_t                        projectStartSample,
     bool                           posterMode,
-    const std::unordered_map<int, std::string>* renderProxyBySource)
+    const std::unordered_map<int, std::string>* renderProxyBySource,
+    const GridLayout*              layoutOverride)
 {
     const double bpm = timeline.getBPM();
-    const GridLayout& layout = timeline.getGridLayout();
 
     // Output frame indices stay local to the export / preview starting at 0.
     // Project sampling must instead happen at the matching absolute timeline
@@ -112,6 +112,24 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
         projectFrameSample, sampleRate, bpm);
     const double ticksPerBeat = static_cast<double>(TickTime::fromBeats(1).ticks);
     const double beatPos = static_cast<double>(projectFramePpq) / ticksPerBeat;
+
+    // Time-based snapshot resolution — RENDER PATH ONLY. Editing reads stay on the
+    // active snapshot (Timeline::getGridLayout); the render/export path instead
+    // resolves the grid arrangement for THIS frame's absolute project tick, so a
+    // cue timeline can switch snapshots over time. Returned BY VALUE: a self-
+    // contained GridLayout this thread owns, never an alias into the editor's
+    // active-snapshot cache. Global canvas/previewFps fields are identical to the
+    // active layout regardless of tick.
+    //
+    // Snapshot-transition override: when layoutOverride is non-null the caller
+    // forces a SPECIFIC snapshot's arrangement (outgoing A or incoming B) for this
+    // frame while event timing above still follows the frame's absolute tick. Copy
+    // by value so this thread owns the arrangement outright, exactly like the
+    // gridLayoutAt result — never an alias into a live GridCue/GridSnapshot the
+    // caller might mutate between the two transition composites.
+    const GridLayout layout = layoutOverride
+        ? *layoutOverride
+        : timeline.gridLayoutAt(TickTime{ projectFramePpq });
 
     std::vector<CellFrameRequest> requests;
     int gapsSkipped = 0;

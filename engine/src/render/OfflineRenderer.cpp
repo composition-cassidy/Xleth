@@ -11,6 +11,7 @@
 #include "render/FrameCollector.h"
 #include "render/RenderVideoDecoder.h"
 #include "render/GridCompositor.h"
+#include "render/SnapshotTransitionRenderer.h"  // snapshot transition export seam (Slice 3b)
 #include "render/VisualFrameDiagnostics.h"  // opt-in pixel-content instrumentation
 #include "render/CanvasFit.h"
 #include "render/AnimationManager.h"
@@ -923,6 +924,10 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
     const auto renderStartTime = std::chrono::steady_clock::now();
     const GridLayout& grid = timeline_.getGridLayout();
 
+    // [Slice 3b] Outgoing-snapshot freeze cache for transition windows. Persists
+    // across the whole export so a frozen A composited once at the pin is reused.
+    xleth::TransitionFreezeState transitionFreeze;
+
     while (currentSample < renderEnd && audioSamplesWritten < totalSamples) {
         // ── Check cancel every buffer ────────────────────────────────────
         if (progress_.cancelRequested.load()) {
@@ -1073,14 +1078,53 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
 
                 // Composite
                 if (compositor.isInitialized()) {
-                    // Global shader time drives visual-state evaluation, so
-                    // subrange exports must sample it in absolute project time
-                    // even while encoded frame numbers stay local from zero.
-                    const float currentTime = static_cast<float>(
-                        RenderClock::sampleToSeconds(projectFrameSample, sampleRate));
-                    compositor.compositeFrame(requests, cache,
-                                              grid.columns, grid.rows,
-                                              currentTime, grid.gapScale);
+                    // ── Snapshot transition (Slice 3b) ──────────────────────
+                    // Inside an enabled cue window, blend outgoing (layoutA) and
+                    // incoming (layoutB) snapshots through the ONE shared path
+                    // preview also uses, so export==preview frame for frame.
+                    // Outside a window this returns false and the single-composite
+                    // path below runs unchanged.
+                    bool didTransition = false;
+                    {
+                        const int64_t txTick = RenderClock::sampleToPPQ(
+                            projectFrameSample, sampleRate, bpm);
+                        const Timeline::ResolvedTransition tx =
+                            timeline_.transitionAt(TickTime{ txTick });
+                        if (tx.active) {
+                            xleth::SnapshotTransitionFrameCtx txCtx;
+                            txCtx.sampleRate          = sampleRate;
+                            txCtx.bpm                 = bpm;
+                            txCtx.fps                 = fps;
+                            txCtx.outputFrameIndex    = f;
+                            txCtx.projectStartSample  = startSample;
+                            txCtx.allowProxy          = !settings.useSourceMedia;
+                            txCtx.posterMode          = false;
+                            txCtx.renderProxyBySource = planPtr;
+                            auto decodeMisses = [&](const std::vector<FrameCacheKey>& misses) {
+                                if (!device || !devCtx) return;
+                                for (const auto& key : misses) {
+                                    auto entry = decoder.decode(
+                                        key.sourcePath, key.frameIndex, device, devCtx);
+                                    if (entry.texture) cache.put(key, std::move(entry));
+                                }
+                            };
+                            didTransition = xleth::renderSnapshotTransition(
+                                tx, timeline_, videoEvents, compositor, collector,
+                                cache, txCtx, decodeMisses, transitionFreeze);
+                        } else {
+                            transitionFreeze.invalidate();
+                        }
+                    }
+                    if (!didTransition) {
+                        // Global shader time drives visual-state evaluation, so
+                        // subrange exports must sample it in absolute project time
+                        // even while encoded frame numbers stay local from zero.
+                        const float currentTime = static_cast<float>(
+                            RenderClock::sampleToSeconds(projectFrameSample, sampleRate));
+                        compositor.compositeFrame(requests, cache,
+                                                  grid.columns, grid.rows,
+                                                  currentTime, grid.gapScale);
+                    }
 
                     // Readback composited pixels from GPU
                     auto readback = compositor.readback();
@@ -1571,6 +1615,9 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
     int     iterationCount = 0;
     double  prevBeat = -1.0;
 
+    // [Slice 3b] Outgoing-snapshot freeze cache — see renderImpl for rationale.
+    xleth::TransitionFreezeState transitionFreeze;
+
     while (audioSamplesWritten < totalSamples) {
         if (progress_.cancelRequested.load()) {
             muxer.finalize();
@@ -1653,10 +1700,45 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
                 }
 
                 if (compositor.isInitialized()) {
-                    const float currentTime = static_cast<float>(
-                        RenderClock::sampleToSeconds(projectFrameSample, sampleRate));
-                    compositor.compositeFrame(requests, cache, grid.columns, grid.rows,
-                                              currentTime, grid.gapScale);
+                    // ── Snapshot transition (Slice 3b) ──────────────────────
+                    // Same shared path as renderImpl / preview (export==preview).
+                    bool didTransition = false;
+                    {
+                        const int64_t txTick = RenderClock::sampleToPPQ(
+                            projectFrameSample, sampleRate, bpm);
+                        const Timeline::ResolvedTransition tx =
+                            timeline_.transitionAt(TickTime{ txTick });
+                        if (tx.active) {
+                            xleth::SnapshotTransitionFrameCtx txCtx;
+                            txCtx.sampleRate          = sampleRate;
+                            txCtx.bpm                 = bpm;
+                            txCtx.fps                 = fps;
+                            txCtx.outputFrameIndex    = f;
+                            txCtx.projectStartSample  = startSample;
+                            txCtx.allowProxy          = !settings.useSourceMedia;
+                            txCtx.posterMode          = false;
+                            txCtx.renderProxyBySource = planPtr;
+                            auto decodeMisses = [&](const std::vector<FrameCacheKey>& misses) {
+                                if (!device || !devCtx) return;
+                                for (const auto& key : misses) {
+                                    auto entry = decoder.decode(
+                                        key.sourcePath, key.frameIndex, device, devCtx);
+                                    if (entry.texture) cache.put(key, std::move(entry));
+                                }
+                            };
+                            didTransition = xleth::renderSnapshotTransition(
+                                tx, timeline_, videoEvents, compositor, collector,
+                                cache, txCtx, decodeMisses, transitionFreeze);
+                        } else {
+                            transitionFreeze.invalidate();
+                        }
+                    }
+                    if (!didTransition) {
+                        const float currentTime = static_cast<float>(
+                            RenderClock::sampleToSeconds(projectFrameSample, sampleRate));
+                        compositor.compositeFrame(requests, cache, grid.columns, grid.rows,
+                                                  currentTime, grid.gapScale);
+                    }
                     auto readback = compositor.readback();
                     ++videoFramesAttempted;
                     if (readback.valid) {

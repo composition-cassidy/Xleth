@@ -64,6 +64,7 @@
 #include "render/CanvasFit.h"
 #include "render/FrameCollector.h"
 #include "render/FrameCache.h"          // RenderFrameCache
+#include "render/SnapshotTransitionRenderer.h"  // snapshot transition preview seam (Slice 3b)
 #include "render/RenderVideoDecoder.h"
 #include "render/AnimationManager.h"
 #include "render/RenderClock.h"
@@ -237,6 +238,11 @@ std::unique_ptr<RenderFrameCache>   g_previewRenderCache;
 std::unique_ptr<RenderVideoDecoder> g_previewRenderDecoder;
 std::unique_ptr<AnimationManager>   g_previewAnimMgr;
 std::unique_ptr<FrameCollector>     g_previewCollector;
+
+// [Slice 3b] Freeze cache for the outgoing snapshot during a live-preview
+// transition window. Touched only on the video/preview tick under
+// g_previewCompositorMutex; invalidated when no window is active or the pin moves.
+xleth::TransitionFreezeState        g_previewTransitionFreeze;
 
 std::mutex          g_previewCompositorMutex;
 std::atomic<bool>   g_previewCompositorReady{false};
@@ -3152,6 +3158,22 @@ static void videoThreadBody()
                     const int64_t collectorProjectStartSample =
                         hasStoppedPreviewRequest ? samplePos : 0;
 
+                    // ── Snapshot transition resolve (Slice 3b) ────────────────
+                    // Resolve the transition window for THIS frame's absolute
+                    // project tick while we already hold syncEventsMutex (eLock),
+                    // taking ResolvedTransition BY VALUE (layoutA/layoutB copied) so
+                    // nothing aliases a live GridCue/GridSnapshot across the two
+                    // composite calls below. The tick uses the SAME sample basis the
+                    // collector resolves layouts at: projectStart + frame→sample.
+                    const double previewBpm = g_timeline ? g_timeline->getBPM() : t.getBPM();
+                    const int64_t frameProjectSample = collectorProjectStartSample
+                        + RenderClock::videoFrameToSample(collectorOutputFrame, sampleRate, fpsRat);
+                    const int64_t frameProjectTick = RenderClock::sampleToPPQ(
+                        frameProjectSample, sampleRate, previewBpm);
+                    Timeline::ResolvedTransition previewTransition;
+                    if (g_timeline)
+                        previewTransition = g_timeline->transitionAt(TickTime{ frameProjectTick });
+
                     // ── Slide-note beat-crossing dispatch ─────────────
                     // Fire SlideAnimationEvents whose startBeat fell between
                     // the previous tick's beat and the current tick's beat.
@@ -3363,10 +3385,54 @@ static void videoThreadBody()
                             static_cast<int>(currentTime * 1000.0f), std::memory_order_relaxed);
                         // [PreviewTickTiming] stage 4 (compositeFrame — GPU submit)
                         const auto tCompositeStart = TickClock::now();
-                        g_previewCompositor->compositeFrame(
-                            requests, *g_previewRenderCache,
-                            layout.columns, layout.rows,
-                            currentTime, layout.gapScale);
+                        // ── Snapshot transition (Slice 3b) ────────────────────
+                        // Inside an enabled cue window, blend outgoing (layoutA) and
+                        // incoming (layoutB) snapshots through the ONE shared path
+                        // used by export, so preview==export frame for frame. Outside
+                        // a window renderSnapshotTransition returns false and we keep
+                        // today's single-composite path (byte-identical, zero cost).
+                        bool didTransition = false;
+                        if (previewTransition.active && g_timeline) {
+                            xleth::SnapshotTransitionFrameCtx txCtx;
+                            txCtx.sampleRate         = sampleRate;
+                            txCtx.bpm                = previewBpm;
+                            txCtx.fps                = fpsRat;
+                            txCtx.outputFrameIndex   = collectorOutputFrame;
+                            txCtx.projectStartSample = collectorProjectStartSample;
+                            txCtx.allowProxy         = true;
+                            txCtx.posterMode         = g_previewPosterMode;
+                            txCtx.renderProxyBySource = nullptr;
+
+                            // Reuse the same device/context the decode-miss loop
+                            // above uses (both in scope here); mirrors that loop's
+                            // decode→put so transition frames decode identically.
+                            auto decodeMisses = [&](const std::vector<FrameCacheKey>& misses) {
+                                if (!device || !devCtx) return;
+                                for (const auto& key : misses) {
+                                    auto entry = g_previewRenderDecoder->decode(
+                                        key.sourcePath, key.frameIndex, device, devCtx);
+                                    if (entry.texture)
+                                        g_previewRenderCache->put(key, std::move(entry));
+                                }
+                            };
+
+                            didTransition = xleth::renderSnapshotTransition(
+                                previewTransition, *g_timeline,
+                                syncManager->getEvents(),
+                                *g_previewCompositor, *g_previewCollector,
+                                *g_previewRenderCache, txCtx, decodeMisses,
+                                g_previewTransitionFreeze);
+                        } else {
+                            // No active window — drop any held frozen outgoing frame
+                            // so a later re-entry recomposites A (Edge: seek-out).
+                            g_previewTransitionFreeze.invalidate();
+                        }
+                        if (!didTransition) {
+                            g_previewCompositor->compositeFrame(
+                                requests, *g_previewRenderCache,
+                                layout.columns, layout.rows,
+                                currentTime, layout.gapScale);
+                        }
                         s_compositeTimer.record(
                             tickUsBetween(tCompositeStart, TickClock::now()),
                             g_previewDiag.lastCompositeUs, g_previewDiag.avgCompositeUs,
