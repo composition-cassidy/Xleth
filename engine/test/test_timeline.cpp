@@ -6,6 +6,7 @@
 
 #include "model/Timeline.h"
 #include "commands/TimelineCommands.h"
+#include "render/SnapshotTransitionTiming.h"
 #include <cassert>
 #include <cmath>
 #include <iostream>
@@ -592,9 +593,12 @@ static void testFullscreenZOrderMigration() {
     tl.setGridLayout(gl);
 
     // (1) Simulate an OLD project file: serialize, then strip zOrder from every
-    // fullscreen layer, then load into a fresh timeline.
+    // fullscreen layer, then load into a fresh timeline. Since the persisted
+    // arrangement now nests under the active snapshot, the layers live at
+    // gridLayout.snapshots[0].fullscreenLayers (see Timeline::toJSON).
     nlohmann::json oldJson = tl.toJSON();
-    for (auto& flj : oldJson["gridLayout"]["fullscreenLayers"]) flj.erase("zOrder");
+    for (auto& flj : oldJson["gridLayout"]["snapshots"][0]["fullscreenLayers"])
+        flj.erase("zOrder");
 
     Timeline loadedOld(140.0, 48000.0);
     CHECK(loadedOld.fromJSON(oldJson), "load old-format project (no fullscreen zOrder)");
@@ -636,6 +640,612 @@ static void testFullscreenZOrderMigration() {
     cmd.undo(tl);
     for (const auto& fl : tl.getFullscreenLayers())
         if (fl.trackId == tBG) CHECK(fl.zOrder == preCmdZ, "undo restored the pre-command zOrder");
+}
+
+// ─── Grid snapshot container migration + round-trip (Phase 1) ─────────────────
+// Structural equality of two flat getGridLayout() DTOs — the exact object the
+// IPC surface exchanges. Used to prove the snapshot refactor is invisible to
+// callers (the flat DTO must survive a serialize/reload unchanged).
+static bool gridLayoutDtoEqual(const GridLayout& a, const GridLayout& b) {
+    if (a.columns != b.columns || a.rows != b.rows) return false;
+    if (a.previewFps != b.previewFps) return false;
+    if (a.canvasWidth != b.canvasWidth || a.canvasHeight != b.canvasHeight) return false;
+    if (a.canvasAspectRatio != b.canvasAspectRatio) return false;
+    if (std::abs(a.gapScale - b.gapScale) > 1e-6f) return false;
+    if (a.slots.size() != b.slots.size()) return false;
+    for (size_t i = 0; i < a.slots.size(); ++i) {
+        const GridSlot& x = a.slots[i];
+        const GridSlot& y = b.slots[i];
+        if (x.trackId != y.trackId || x.gridX != y.gridX || x.gridY != y.gridY
+            || x.spanX != y.spanX || x.spanY != y.spanY || x.zOrder != y.zOrder
+            || std::abs(x.opacity - y.opacity) > 1e-6f) return false;
+    }
+    if (a.fullscreenLayers.size() != b.fullscreenLayers.size()) return false;
+    for (size_t i = 0; i < a.fullscreenLayers.size(); ++i) {
+        const FullscreenLayer& x = a.fullscreenLayers[i];
+        const FullscreenLayer& y = b.fullscreenLayers[i];
+        if (x.trackId != y.trackId || x.placement != y.placement || x.zOrder != y.zOrder
+            || std::abs(x.opacity - y.opacity) > 1e-6f) return false;
+    }
+    return true;
+}
+
+// Proves the snapshot refactor is behavior-preserving at the persistence layer:
+//   (A) the flat active layout serializes into a nested snapshot container
+//       (canvas/fps global; columns/rows/gapScale/slots/fullscreenLayers under a
+//       single "Base" snapshot; activeSnapshotId + cues reserved), and reloading
+//       yields an identical flat getGridLayout() DTO;
+//   (B) a LEGACY flat gridLayout (no `snapshots` key) migrates on load into the
+//       "Base" snapshot and returns the identical flat DTO, and re-saving it
+//       produces the nested container form.
+static void testGridSnapshotContainerMigration() {
+    std::cout << "[S] Grid snapshot container migration + round-trip\n";
+
+    const int FCOL = kGridSubUnitsPerColumn;
+    const int FROW = kGridSubUnitsPerRow;
+
+    // Timeline with tracks + a known non-default flat grid layout.
+    Timeline tl(120.0, 48000.0);
+    TrackInfo a;  a.name  = "A";  int tA  = tl.addTrack(a);
+    TrackInfo b;  b.name  = "B";  int tB  = tl.addTrack(b);
+    TrackInfo bg; bg.name = "BG"; int tBG = tl.addTrack(bg);
+
+    GridLayout gl = tl.getGridLayout();
+    gl.columns = 2; gl.rows = 1; gl.gapScale = 0.25f;
+    gl.canvasWidth = 1280; gl.canvasHeight = 720; gl.canvasAspectRatio = "16:9";
+    gl.previewFps = 24;
+    gl.slots.push_back({tA, 0,    0, FCOL, FROW, 1.0f, 0});
+    gl.slots.push_back({tB, FCOL, 0, FCOL, FROW, 0.5f, 3});
+    gl.fullscreenLayers.push_back({tBG, FullscreenLayerPlacement::BehindGrid, 0.8f, -1});
+    tl.setGridLayout(gl);
+
+    const GridLayout before = tl.getGridLayout();  // flat DTO baseline
+
+    // ── (A) Nested serialization shape + round-trip ───────────────────────────
+    nlohmann::json saved = tl.toJSON();
+    const nlohmann::json& sgl = saved["gridLayout"];
+    CHECK(sgl.contains("snapshots") && sgl["snapshots"].is_array()
+          && sgl["snapshots"].size() == 1, "toJSON writes exactly one snapshot");
+    CHECK(sgl.contains("activeSnapshotId"), "toJSON writes activeSnapshotId");
+    CHECK(sgl.contains("cues") && sgl["cues"].is_array() && sgl["cues"].empty(),
+          "toJSON writes an empty reserved cues array");
+    CHECK(sgl["snapshots"][0]["name"] == "Base", "single snapshot is named Base");
+    CHECK(sgl["snapshots"][0]["id"] == sgl["activeSnapshotId"],
+          "activeSnapshotId points at the Base snapshot");
+    // Global fields stay at the container level ...
+    CHECK(sgl["canvasWidth"] == 1280 && sgl["canvasHeight"] == 720
+          && sgl["canvasAspectRatio"] == "16:9" && sgl["previewFps"] == 24,
+          "canvas + previewFps persist at the container level (not per-snapshot)");
+    CHECK(!sgl["snapshots"][0].contains("canvasWidth")
+          && !sgl["snapshots"][0].contains("previewFps"),
+          "snapshot does not carry the global canvas/fps fields");
+    // ... while the arrangement nests inside the snapshot.
+    CHECK(sgl["snapshots"][0]["columns"] == 2 && sgl["snapshots"][0]["rows"] == 1,
+          "snapshot carries the grid geometry");
+    CHECK(sgl["snapshots"][0]["slots"].size() == 2
+          && sgl["snapshots"][0]["fullscreenLayers"].size() == 1,
+          "snapshot carries the slots + fullscreen layers");
+    CHECK(sgl["snapshots"][0]["slots"][0].contains("eventActions")
+          && sgl["snapshots"][0]["slots"][0]["eventActions"].is_array()
+          && sgl["snapshots"][0]["slots"][0]["eventActions"].empty(),
+          "slot reserves an empty eventActions array");
+    CHECK(sgl["snapshots"][0]["fullscreenLayers"][0].contains("eventActions"),
+          "fullscreen layer reserves an eventActions array");
+
+    Timeline reloaded(140.0, 48000.0);
+    CHECK(reloaded.fromJSON(saved), "reload nested-format project");
+    CHECK(gridLayoutDtoEqual(reloaded.getGridLayout(), before),
+          "nested round-trip returns an identical flat getGridLayout DTO");
+    CHECK(reloaded.getActiveSnapshotName() == "Base",
+          "reloaded active snapshot is named Base");
+    CHECK(!reloaded.getActiveSnapshotId().empty(),
+          "reloaded active snapshot id is non-empty");
+
+    // ── (B) LEGACY flat gridLayout migrates → Base snapshot → identical DTO ────
+    // Rewrite the persisted gridLayout to the pre-snapshot flat shape (arrangement
+    // fields inline, no `snapshots` key), reusing the same track ids so no
+    // fullscreen layer is dropped as a dangling reference.
+    nlohmann::json legacy = saved;   // keep tracks[] so ids resolve on reload
+    nlohmann::json flat;
+    flat["gridLayoutVersion"] = kGridLayoutVersionFineUnits;  // fine-grid coords
+    flat["columns"]           = 2;
+    flat["rows"]              = 1;
+    flat["gapScale"]          = before.gapScale;
+    flat["previewFps"]        = 24;
+    flat["canvasWidth"]       = 1280;
+    flat["canvasHeight"]      = 720;
+    flat["canvasAspectRatio"] = "16:9";
+    flat["slots"]             = nlohmann::json::array();
+    for (const GridSlot& s : before.slots) {
+        nlohmann::json sj;
+        sj["trackId"] = s.trackId; sj["gridX"] = s.gridX; sj["gridY"] = s.gridY;
+        sj["spanX"] = s.spanX; sj["spanY"] = s.spanY;
+        sj["opacity"] = s.opacity; sj["zOrder"] = s.zOrder;
+        flat["slots"].push_back(sj);
+    }
+    flat["fullscreenLayers"] = nlohmann::json::array();
+    for (const FullscreenLayer& fl : before.fullscreenLayers) {
+        nlohmann::json flj;
+        flj["trackId"]   = fl.trackId;
+        flj["placement"] = (fl.placement == FullscreenLayerPlacement::BehindGrid)
+                             ? "behind" : "front";
+        flj["opacity"]   = fl.opacity;
+        flj["zOrder"]    = fl.zOrder;
+        flat["fullscreenLayers"].push_back(flj);
+    }
+    legacy["gridLayout"] = flat;
+
+    Timeline legacyTl(140.0, 48000.0);
+    CHECK(legacyTl.fromJSON(legacy), "legacy flat gridLayout loads");
+    CHECK(legacyTl.getActiveSnapshotName() == "Base",
+          "legacy flat layout is wrapped as the Base snapshot");
+    CHECK(!legacyTl.getActiveSnapshotId().empty(),
+          "legacy migration mints a Base snapshot id");
+    CHECK(gridLayoutDtoEqual(legacyTl.getGridLayout(), before),
+          "legacy flat layout migrates to an identical flat getGridLayout DTO");
+
+    // Re-saving the migrated project produces the nested container form.
+    nlohmann::json resaved = legacyTl.toJSON();
+    CHECK(resaved["gridLayout"].contains("snapshots"),
+          "re-saving a migrated legacy project produces the snapshot container");
+    CHECK(resaved["gridLayout"]["snapshots"][0]["name"] == "Base",
+          "re-saved snapshot retains the Base name");
+}
+
+static void testLiveGridSnapshotCrudAndRoundTrip() {
+    std::cout << "[SN] Live grid snapshot CRUD + multi-snapshot round-trip\n";
+
+    Timeline source(120.0, 48000.0);
+    TrackInfo track; track.name = "Snapshot track";
+    const int trackId = source.addTrack(track);
+    TrackInfo backdrop; backdrop.name = "Snapshot backdrop";
+    const int backdropId = source.addTrack(backdrop);
+    GridLayout layout = source.getGridLayout();
+    layout.columns = 4;
+    layout.rows = 2;
+    layout.gapScale = 0.2f;
+    layout.canvasWidth = 1280;
+    layout.canvasHeight = 720;
+    layout.previewFps = 24;
+    GridSlot slot;
+    slot.trackId = trackId;
+    slot.gridX = 2;
+    slot.spanX = kGridSubUnitsPerColumn;
+    slot.spanY = kGridSubUnitsPerRow;
+    layout.slots.push_back(slot);
+    FullscreenLayer layer;
+    layer.trackId = backdropId;
+    layer.placement = FullscreenLayerPlacement::BehindGrid;
+    layer.zOrder = -1;
+    layout.fullscreenLayers.push_back(layer);
+    source.setGridLayout(layout);
+
+    // Seed opaque future data through persistence because it is intentionally
+    // absent from the flat GridLayout bridge DTO.
+    nlohmann::json seededJson = source.toJSON();
+    seededJson["gridLayout"]["snapshots"][0]["slots"][0]["eventActions"] =
+        nlohmann::json::array({{{"type", "futureAction"}, {"amount", 0.75}}});
+    seededJson["gridLayout"]["snapshots"][0]["fullscreenLayers"][0]["eventActions"] =
+        nlohmann::json::array({{{"type", "futureLayerAction"}, {"enabled", true}}});
+    Timeline tl;
+    CHECK(tl.fromJSON(seededJson), "seed snapshot with opaque eventActions loads");
+
+    const std::string baseId = tl.getActiveSnapshotId();
+    CHECK(tl.getGridSnapshots().size() == 1, "new/live model starts with one Base");
+    CHECK(!tl.deleteGridSnapshot(baseId), "deleting the last snapshot is blocked");
+
+    GridLayout dtoMutation = tl.getGridLayout();
+    dtoMutation.slots[0].eventActions.clear();
+    dtoMutation.fullscreenLayers[0].eventActions.clear();
+    dtoMutation.gapScale = 0.21f;
+    tl.setGridLayout(dtoMutation);
+    CHECK(tl.getGridSnapshots()[0].slots[0].eventActions.size() == 1
+          && tl.getGridSnapshots()[0].fullscreenLayers[0].eventActions.size() == 1,
+          "flat DTO mutation preserves opaque actions in the authoritative vector");
+
+    const std::string cloneId = tl.createGridSnapshot(true, "Take");
+    CHECK(cloneId != baseId && tl.getActiveSnapshotId() == cloneId,
+          "create clone generates a unique id and activates it");
+    CHECK(tl.getGridLayout().slots.size() == 1,
+          "cloned snapshot materializes the active arrangement");
+    CHECK(tl.getGridSnapshots().back().slots[0].eventActions.size() == 1,
+          "clone deep-copies opaque slot eventActions");
+    CHECK(tl.getGridSnapshots().back().fullscreenLayers[0].eventActions.size() == 1,
+          "clone deep-copies opaque fullscreen eventActions");
+
+    const std::string emptyId = tl.createGridSnapshot(false, "Blank");
+    CHECK(tl.getGridLayout().slots.empty()
+          && tl.getGridLayout().fullscreenLayers.empty(),
+          "empty snapshot has no slots or fullscreen placements");
+    CHECK(tl.getGridLayout().columns == 4 && tl.getGridLayout().rows == 2
+          && std::abs(tl.getGridLayout().gapScale - 0.21f) < 1e-6f,
+          "empty snapshot inherits active geometry");
+    CHECK(tl.renameGridSnapshot(emptyId, "Take"),
+          "rename succeeds and duplicate names are allowed");
+
+    const std::string unknown = "snap-does-not-exist";
+    const size_t beforeUnknown = tl.getGridSnapshots().size();
+    CHECK(!tl.renameGridSnapshot(unknown, "Nope")
+          && !tl.setActiveGridSnapshot(unknown)
+          && !tl.deleteGridSnapshot(unknown)
+          && tl.getGridSnapshots().size() == beforeUnknown,
+          "unknown rename/activate/delete return false with zero mutation");
+
+    CHECK(tl.setActiveGridSnapshot(cloneId), "setActive accepts an existing id");
+    CHECK(tl.deleteGridSnapshot(cloneId), "deleting active snapshot succeeds");
+    CHECK(tl.getActiveSnapshotId() == baseId && tl.getGridLayout().slots.size() == 1,
+          "active deletion selects first survivor and rematerializes it");
+
+    const std::string finalCloneId = tl.createGridSnapshot(true, "RoundTrip Clone");
+    const GridLayout activeBefore = tl.getGridLayout();
+    const auto snapshotsBefore = tl.getGridSnapshots();
+    nlohmann::json saved = tl.toJSON();
+    CHECK(saved["gridLayout"]["snapshots"].size() == snapshotsBefore.size(),
+          "toJSON serializes every live snapshot");
+
+    Timeline loaded;
+    CHECK(loaded.fromJSON(saved), "multi-snapshot project reloads");
+    CHECK(loaded.getGridSnapshots().size() == snapshotsBefore.size(),
+          "multi-snapshot count round-trips");
+    CHECK(loaded.getActiveSnapshotId() == finalCloneId
+          && gridLayoutDtoEqual(loaded.getGridLayout(), activeBefore),
+          "active id and flat active DTO round-trip unchanged");
+    bool metadataAndActionsMatch = true;
+    for (size_t i = 0; i < snapshotsBefore.size(); ++i) {
+        const auto& a = snapshotsBefore[i];
+        const auto& b = loaded.getGridSnapshots()[i];
+        metadataAndActionsMatch = metadataAndActionsMatch
+            && a.id == b.id && a.name == b.name
+            && a.slots.size() == b.slots.size();
+        for (size_t k = 0; metadataAndActionsMatch && k < a.slots.size(); ++k)
+            metadataAndActionsMatch =
+                a.slots[k].eventActions == b.slots[k].eventActions;
+        metadataAndActionsMatch = metadataAndActionsMatch
+            && a.fullscreenLayers.size() == b.fullscreenLayers.size();
+        for (size_t k = 0; metadataAndActionsMatch
+             && k < a.fullscreenLayers.size(); ++k)
+            metadataAndActionsMatch = a.fullscreenLayers[k].eventActions
+                                   == b.fullscreenLayers[k].eventActions;
+    }
+    CHECK(metadataAndActionsMatch,
+          "ids, names, and opaque eventActions round-trip for N snapshots");
+
+    nlohmann::json badActive = saved;
+    badActive["gridLayout"]["activeSnapshotId"] = unknown;
+    Timeline clamped;
+    CHECK(clamped.fromJSON(badActive)
+          && clamped.getActiveSnapshotId() == snapshotsBefore.front().id,
+          "missing persisted activeSnapshotId clamps to first snapshot");
+
+    tl.clear();
+    CHECK(tl.getGridSnapshots().size() == 1
+          && tl.getGridSnapshots()[0].name == "Base"
+          && tl.getActiveSnapshotId() == tl.getGridSnapshots()[0].id,
+          "clear remints exactly one active Base snapshot");
+}
+
+// ─── Grid cue time-based snapshot resolution + round-trip ─────────────────────
+// Proves the render-path resolver (Timeline::gridLayoutAt) picks the right
+// snapshot for a tick, that cue CRUD keeps the sorted-by-tick invariant, that a
+// cue pointing at a deleted/absent snapshot is skipped (and pruned on delete),
+// that the editing read (getGridLayout) is unaffected, and that cues +
+// defaultSnapshotId round-trip through toJSON/fromJSON.
+static void testGridCueResolutionAndRoundTrip() {
+    std::cout << "[CUE] Grid cue resolution + CRUD + round-trip\n";
+
+    auto firstSlotTrack = [](const GridLayout& gl) {
+        return gl.slots.empty() ? -1 : gl.slots[0].trackId;
+    };
+    auto placeSingle = [](Timeline& t, int trackId) {
+        GridLayout gl = t.getGridLayout();
+        gl.slots.clear();
+        GridSlot s;
+        s.trackId = trackId;
+        s.gridX = 0; s.gridY = 0;
+        s.spanX = kGridSubUnitsPerColumn;
+        s.spanY = kGridSubUnitsPerRow;
+        gl.slots.push_back(s);
+        t.setGridLayout(gl);
+    };
+
+    Timeline tl(140.0, 48000.0);
+    TrackInfo a; a.name = "A"; const int tA = tl.addTrack(a);
+    TrackInfo b; b.name = "B"; const int tB = tl.addTrack(b);
+    TrackInfo c; c.name = "C"; const int tC = tl.addTrack(c);
+
+    // Base snapshot shows track A. The default id must be the initial Base.
+    placeSingle(tl, tA);
+    const std::string baseId = tl.getActiveSnapshotId();
+    CHECK(tl.getDefaultSnapshotId() == baseId,
+          "default snapshot id is the initial Base snapshot");
+
+    // Alt snapshot shows B; Mid snapshot shows C. Editing returns to Base.
+    const std::string altId = tl.createGridSnapshot(false, "Alt");
+    placeSingle(tl, tB);
+    const std::string midId = tl.createGridSnapshot(false, "Mid");
+    placeSingle(tl, tC);
+    CHECK(tl.setActiveGridSnapshot(baseId), "editing returns to Base snapshot");
+
+    // ── Resolution: Base before the first cue, exact switch at each cue tick ──
+    tl.addGridCue(TickTime{1000}, altId);
+    tl.addGridCue(TickTime{2000}, midId);
+    CHECK(firstSlotTrack(tl.gridLayoutAt(TickTime{0}))    == tA, "t=0 → Base (A)");
+    CHECK(firstSlotTrack(tl.gridLayoutAt(TickTime{999}))  == tA, "t<first cue → Base (A)");
+    CHECK(firstSlotTrack(tl.gridLayoutAt(TickTime{1000})) == tB, "t=1000 switches to Alt (B)");
+    CHECK(firstSlotTrack(tl.gridLayoutAt(TickTime{1500})) == tB, "t between cues → last cue (Alt)");
+    CHECK(firstSlotTrack(tl.gridLayoutAt(TickTime{2000})) == tC, "t=2000 switches to Mid (C)");
+    CHECK(firstSlotTrack(tl.gridLayoutAt(TickTime{9999})) == tC, "t past last cue → last cue (Mid)");
+
+    // Editing read is unaffected — still the active (Base) arrangement.
+    CHECK(firstSlotTrack(tl.getGridLayout()) == tA,
+          "getGridLayout stays on the active (Base) snapshot regardless of cues");
+
+    // Global canvas fields are identical regardless of tick (they live on the
+    // container, not the snapshot).
+    CHECK(tl.gridLayoutAt(TickTime{0}).canvasWidth == tl.getGridLayout().canvasWidth
+          && tl.gridLayoutAt(TickTime{2000}).canvasWidth == tl.getGridLayout().canvasWidth
+          && tl.gridLayoutAt(TickTime{2000}).previewFps == tl.getGridLayout().previewFps,
+          "canvas/previewFps are tick-independent");
+
+    // ── Dangling cue is skipped (addGridCue does not validate the id) ────────
+    tl.addGridCue(TickTime{1500}, "snap-does-not-exist");
+    CHECK(firstSlotTrack(tl.gridLayoutAt(TickTime{1600})) == tB,
+          "cue at 1500 pointing at a missing snapshot is skipped → last valid (Alt)");
+    CHECK(tl.removeGridCue(TickTime{1500}), "removeGridCue deletes the dangling cue");
+    CHECK(tl.getGridCues().size() == 2, "cue count back to 2 after removal");
+
+    // ── addGridCue replace-on-collision + move + remove semantics ────────────
+    tl.addGridCue(TickTime{1000}, midId);   // replace Alt→Mid at the same tick
+    CHECK(tl.getGridCues().size() == 2, "same-tick add replaces, does not insert");
+    CHECK(firstSlotTrack(tl.gridLayoutAt(TickTime{1000})) == tC, "collision replaced target");
+    tl.addGridCue(TickTime{1000}, altId);   // restore Alt at 1000
+    CHECK(!tl.removeGridCue(TickTime{1234}), "removeGridCue on absent tick → false");
+    CHECK(tl.moveGridCue(TickTime{2000}, TickTime{2500}), "moveGridCue relocates a cue");
+    CHECK(!tl.moveGridCue(TickTime{2000}, TickTime{2600}), "moveGridCue on absent old tick → false");
+    CHECK(tl.getGridCues().size() == 2 && tl.getGridCues()[0].tick.ticks == 1000
+          && tl.getGridCues()[1].tick.ticks == 2500, "cues stay sorted after move");
+    CHECK(firstSlotTrack(tl.gridLayoutAt(TickTime{2400})) == tB, "moved Mid cue no longer covers 2400");
+    CHECK(firstSlotTrack(tl.gridLayoutAt(TickTime{2500})) == tC, "moved Mid cue covers 2500");
+    CHECK(tl.moveGridCue(TickTime{2500}, TickTime{2000}), "restore Mid cue tick");
+
+    // ── deleteGridSnapshot prunes referencing cues (no dangling refs) ─────────
+    CHECK(tl.deleteGridSnapshot(midId), "delete the Mid snapshot");
+    CHECK(tl.getGridCues().size() == 1 && tl.getGridCues()[0].snapshotId == altId,
+          "cue referencing the deleted snapshot is pruned");
+    CHECK(firstSlotTrack(tl.gridLayoutAt(TickTime{2000})) == tB,
+          "after prune, t=2000 falls back to the last valid cue (Alt)");
+    CHECK(tl.getDefaultSnapshotId() == baseId,
+          "default snapshot id unchanged when a non-default snapshot is deleted");
+
+    // ── Round-trip: cues + defaultSnapshotId survive toJSON/fromJSON ─────────
+    nlohmann::json saved = tl.toJSON();
+    CHECK(saved["gridLayout"]["cues"].is_array()
+          && saved["gridLayout"]["cues"].size() == 1,
+          "toJSON serializes the typed cue list");
+    CHECK(saved["gridLayout"]["cues"][0]["tick"] == 1000
+          && saved["gridLayout"]["cues"][0]["snapshotId"] == altId,
+          "cue serializes as { tick, snapshotId }");
+    CHECK(saved["gridLayout"].contains("defaultSnapshotId")
+          && saved["gridLayout"]["defaultSnapshotId"] == baseId,
+          "toJSON serializes defaultSnapshotId");
+
+    Timeline loaded;
+    CHECK(loaded.fromJSON(saved), "project with cues reloads");
+    CHECK(loaded.getGridCues().size() == 1
+          && loaded.getGridCues()[0].tick.ticks == 1000
+          && loaded.getGridCues()[0].snapshotId == altId,
+          "cues round-trip");
+    CHECK(loaded.getDefaultSnapshotId() == baseId, "defaultSnapshotId round-trips");
+    CHECK(firstSlotTrack(loaded.gridLayoutAt(TickTime{0}))    == tA
+          && firstSlotTrack(loaded.gridLayoutAt(TickTime{1000})) == tB,
+          "cue-driven resolution survives the round-trip");
+
+    // A legacy empty cues array must load without error and leave no cues.
+    nlohmann::json legacy = saved;
+    legacy["gridLayout"]["cues"] = nlohmann::json::array();
+    Timeline legacyTl;
+    CHECK(legacyTl.fromJSON(legacy) && legacyTl.getGridCues().empty(),
+          "empty/legacy cues array tolerated");
+}
+
+// ─── Snapshot transition — deterministic time→progress mapping ────────────────
+// Exercises the ONLY sample-domain code in Slice 2 (SnapshotTransitionTiming.h):
+// the piecewise progressForSample formula. The pin is always pinned to t=0.5;
+// every divide is guarded; the result is clamped to [0,1].
+static void testProgressForSample() {
+    std::cout << "[TR1] progressForSample piecewise mapping\n";
+    using xleth::progressForSample;
+    const double eps = 1e-9;
+
+    // ── Symmetric window [0, 100, 200] — 0.5 lands on the pin ────────────────
+    CHECK_NEAR(progressForSample(-10, 0, 100, 200), 0.0,  eps, "sym: before start → 0");
+    CHECK_NEAR(progressForSample(0,   0, 100, 200), 0.0,  eps, "sym: at start → 0");
+    CHECK_NEAR(progressForSample(50,  0, 100, 200), 0.25, eps, "sym: quarter of left tail → 0.25");
+    CHECK_NEAR(progressForSample(100, 0, 100, 200), 0.5,  eps, "sym: at pin → 0.5");
+    CHECK_NEAR(progressForSample(150, 0, 100, 200), 0.75, eps, "sym: quarter of right tail → 0.75");
+    CHECK_NEAR(progressForSample(200, 0, 100, 200), 1.0,  eps, "sym: at end → 1");
+    CHECK_NEAR(progressForSample(999, 0, 100, 200), 1.0,  eps, "sym: past end → 1 (clamped)");
+
+    // ── Asymmetric window: long left tail, short right tail. 0.5 MUST still land
+    //    exactly on the pin, and each tail warps independently. ────────────────
+    //    start=0, pin=800, end=900.
+    CHECK_NEAR(progressForSample(800, 0, 800, 900), 0.5,   eps, "asym: 0.5 lands exactly on the pin");
+    CHECK_NEAR(progressForSample(400, 0, 800, 900), 0.25,  eps, "asym: mid of the long left tail → 0.25");
+    CHECK_NEAR(progressForSample(850, 0, 800, 900), 0.75,  eps, "asym: mid of the short right tail → 0.75");
+    // The two tails advance at different real rates: 400 ticks buys 0.25 on the
+    // left, only 50 ticks buys 0.25 on the right.
+    CHECK(progressForSample(801, 0, 800, 900) > progressForSample(799, 0, 800, 900),
+          "asym: right tail rises faster than left per tick");
+
+    // ── Zero-length window (start==pin==end) — a hard-cut STEP. ───────────────
+    CHECK_NEAR(progressForSample(99,  100, 100, 100), 0.0, eps, "hard cut: s<pin → 0");
+    CHECK_NEAR(progressForSample(100, 100, 100, 100), 1.0, eps, "hard cut: s==pin → 1");
+    CHECK_NEAR(progressForSample(101, 100, 100, 100), 1.0, eps, "hard cut: s>pin → 1");
+
+    // ── Zero LEFT tail (start==pin, right tail present): 0 before, ≥0.5 at/after.
+    CHECK_NEAR(progressForSample(99,  100, 100, 200), 0.0,  eps, "zero-left: s<pin → 0");
+    CHECK_NEAR(progressForSample(100, 100, 100, 200), 0.5,  eps, "zero-left: at pin → 0.5");
+    CHECK_NEAR(progressForSample(150, 100, 100, 200), 0.75, eps, "zero-left: fades in on the right");
+    CHECK_NEAR(progressForSample(200, 100, 100, 200), 1.0,  eps, "zero-left: at end → 1");
+
+    // ── Zero RIGHT tail (pin==end, left tail present): fades to pin, then 1. ───
+    CHECK_NEAR(progressForSample(0,   0, 100, 100), 0.0,  eps, "zero-right: at start → 0");
+    CHECK_NEAR(progressForSample(50,  0, 100, 100), 0.25, eps, "zero-right: fades on the left");
+    CHECK_NEAR(progressForSample(100, 0, 100, 100), 1.0,  eps, "zero-right: at/after pin → 1");
+    CHECK_NEAR(progressForSample(101, 0, 100, 100), 1.0,  eps, "zero-right: past pin → 1");
+
+    // ── Clamping / degenerate ordering never yields <0 or >1, never divides by 0.
+    const double p = progressForSample(-5, 0, 100, 200);
+    CHECK(p >= 0.0 && p <= 1.0, "result clamped to [0,1] below range");
+    const double q = progressForSample(9999, 0, 100, 200);
+    CHECK(q >= 0.0 && q <= 1.0, "result clamped to [0,1] above range");
+    // Out-of-order inputs (end < pin < start) fall back to degenerate tails, not junk.
+    const double r = progressForSample(150, 200, 100, 50);
+    CHECK(r >= 0.0 && r <= 1.0, "out-of-order window stays in [0,1]");
+}
+
+// ─── Snapshot transition — cue.transition persistence + hard-cut omission ─────
+// setCueTransition round-trips every field; an enabled=false transition writes NO
+// `transition` key (byte-compatible hard cut); a cue whose JSON lacks the key
+// loads as a hard cut. Proves the additive/back-compat persistence contract.
+static void testCueTransitionRoundTrip() {
+    std::cout << "[TR2] cue transition persistence + hard-cut omission\n";
+
+    Timeline tl(120.0, 48000.0);
+    TrackInfo a; a.name = "A"; tl.addTrack(a);
+    const std::string baseId = tl.getActiveSnapshotId();
+    const std::string altId  = tl.createGridSnapshot(false, "Alt");
+    CHECK(tl.setActiveGridSnapshot(baseId), "back to Base for cue setup");
+
+    tl.addGridCue(TickTime{1920}, altId);
+
+    // A cue with no transition set writes NO transition key (default = hard cut).
+    {
+        nlohmann::json saved = tl.toJSON();
+        const auto& cue0 = saved["gridLayout"]["cues"][0];
+        CHECK(!cue0.contains("transition"),
+              "default (disabled) transition omits the key entirely");
+        Timeline loaded;
+        CHECK(loaded.fromJSON(saved), "project with a hard-cut cue reloads");
+        CHECK(!loaded.getGridCues().empty()
+              && loaded.getGridCues()[0].transition.enabled == false,
+              "cue with no transition key loads as a hard cut");
+    }
+
+    // Set a fully-specified enabled transition and round-trip every field.
+    SnapshotTransition tr;
+    tr.enabled          = true;
+    tr.startOffsetTicks = 480;
+    tr.endOffsetTicks   = 240;
+    tr.type             = SnapshotTransition::Type::LineSweep;
+    tr.freezeOutgoing   = false;
+    tr.geomAngleDeg     = 45.0f;
+    tl.setCueTransition(TickTime{1920}, tr);
+
+    // setCueTransition is a no-op when no cue exists at that tick.
+    tl.setCueTransition(TickTime{99999}, tr);
+    CHECK(tl.getGridCues().size() == 1, "setCueTransition on an absent tick is a no-op");
+
+    nlohmann::json saved = tl.toJSON();
+    const auto& cj = saved["gridLayout"]["cues"][0];
+    CHECK(cj.contains("transition"), "enabled transition writes the key");
+    const auto& tj = cj["transition"];
+    CHECK(tj["enabled"] == true
+          && tj["startOffsetTicks"] == 480
+          && tj["endOffsetTicks"] == 240
+          && tj["type"] == "lineSweep"
+          && tj["freezeOutgoing"] == false
+          && std::abs(tj["geomAngleDeg"].get<double>() - 45.0) < 1e-6,
+          "transition serializes every field");
+
+    Timeline loaded;
+    CHECK(loaded.fromJSON(saved), "project with an enabled transition reloads");
+    const SnapshotTransition& rt = loaded.getGridCues()[0].transition;
+    CHECK(rt.enabled == true
+          && rt.startOffsetTicks == 480
+          && rt.endOffsetTicks == 240
+          && rt.type == SnapshotTransition::Type::LineSweep
+          && rt.freezeOutgoing == false
+          && std::abs(rt.geomAngleDeg - 45.0f) < 1e-6f,
+          "every transition field round-trips through fromJSON");
+
+    // Toggling back to disabled must drop the key again (hard-cut omission holds
+    // after a prior enable).
+    SnapshotTransition off;  // default: disabled
+    loaded.setCueTransition(TickTime{1920}, off);
+    nlohmann::json resaved = loaded.toJSON();
+    CHECK(!resaved["gridLayout"]["cues"][0].contains("transition"),
+          "re-disabling a transition omits the key again");
+}
+
+// ─── Snapshot transition — transitionAt render-path resolver ──────────────────
+// Proves transitionAt returns active only inside an enabled cue's
+// [pin-startOffset, pin+endOffset] window, that the pin/start/end derive from the
+// cue tick + offsets, and that layoutA/layoutB resolve to the OUTGOING (pin-1) and
+// INCOMING (pin) snapshots respectively.
+static void testTransitionResolver() {
+    std::cout << "[TR3] transitionAt window + A/B layout resolution\n";
+
+    auto firstSlotTrack = [](const GridLayout& gl) {
+        return gl.slots.empty() ? -1 : gl.slots[0].trackId;
+    };
+    auto placeSingle = [](Timeline& t, int trackId) {
+        GridLayout gl = t.getGridLayout();
+        gl.slots.clear();
+        GridSlot s;
+        s.trackId = trackId;
+        s.gridX = 0; s.gridY = 0;
+        s.spanX = kGridSubUnitsPerColumn;
+        s.spanY = kGridSubUnitsPerRow;
+        gl.slots.push_back(s);
+        t.setGridLayout(gl);
+    };
+
+    Timeline tl(120.0, 48000.0);
+    TrackInfo a; a.name = "A"; const int tA = tl.addTrack(a);
+    TrackInfo b; b.name = "B"; const int tB = tl.addTrack(b);
+
+    // Base shows A; Alt shows B. A cue at tick 1000 switches Base→Alt (the pin).
+    placeSingle(tl, tA);
+    const std::string baseId = tl.getActiveSnapshotId();
+    const std::string altId  = tl.createGridSnapshot(false, "Alt");
+    placeSingle(tl, tB);
+    CHECK(tl.setActiveGridSnapshot(baseId), "editing back to Base");
+    tl.addGridCue(TickTime{1000}, altId);
+
+    // No transition enabled yet → resolver inactive everywhere.
+    CHECK(!tl.transitionAt(TickTime{1000}).active,
+          "no enabled transition → transitionAt inactive at the pin");
+
+    // Enable an ASYMMETRIC window: start 600 before, end 200 after the pin.
+    SnapshotTransition tr;
+    tr.enabled          = true;
+    tr.startOffsetTicks = 600;   // window start = 400
+    tr.endOffsetTicks   = 200;   // window end   = 1200
+    tr.type             = SnapshotTransition::Type::Crossfade;
+    tl.setCueTransition(TickTime{1000}, tr);
+
+    // Outside the window (both sides) → inactive.
+    CHECK(!tl.transitionAt(TickTime{399}).active,  "before window start → inactive");
+    CHECK(!tl.transitionAt(TickTime{1201}).active, "after window end → inactive");
+
+    // Inside / on the boundaries → active with the right pin/start/end.
+    auto rt = tl.transitionAt(TickTime{1000});
+    CHECK(rt.active, "at the pin → active");
+    CHECK(rt.pinTick.ticks == 1000
+          && rt.startTick.ticks == 400
+          && rt.endTick.ticks == 1200,
+          "pin/start/end derive from cue tick + asymmetric offsets");
+    CHECK(rt.type == SnapshotTransition::Type::Crossfade && rt.freezeOutgoing == true,
+          "resolved type + freezeOutgoing copied from the cue");
+    CHECK(tl.transitionAt(TickTime{400}).active && tl.transitionAt(TickTime{1200}).active,
+          "inclusive on both window boundaries");
+    CHECK(tl.transitionAt(TickTime{700}).active,
+          "a tick inside the window resolves active");
+
+    // layoutA = outgoing (pin-1 → Base/A); layoutB = incoming (pin → Alt/B).
+    CHECK(firstSlotTrack(rt.layoutA) == tA, "layoutA is the outgoing snapshot (Base/A)");
+    CHECK(firstSlotTrack(rt.layoutB) == tB, "layoutB is the incoming snapshot (Alt/B)");
 }
 
 int main() {
@@ -1299,6 +1909,16 @@ int main() {
 
     // ── [Z] Fullscreen zOrder migration + round-trip ──────────────────────────
     testFullscreenZOrderMigration();
+
+    // ── [S] Grid snapshot container migration + round-trip ─────────────────────
+    testGridSnapshotContainerMigration();
+    testLiveGridSnapshotCrudAndRoundTrip();
+    testGridCueResolutionAndRoundTrip();
+
+    // ── [TR] Snapshot transition — timing + persistence + resolver ─────────────
+    testProgressForSample();
+    testCueTransitionRoundTrip();
+    testTransitionResolver();
 
     // ── Results ───────────────────────────────────────────────────────────────
     std::cout << "\n=== Results: "

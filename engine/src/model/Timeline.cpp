@@ -75,6 +75,8 @@ Timeline::Timeline(double bpm, double sampleRate, int timeSigNum, int timeSigDen
       m_timeSigNum(timeSigNum), m_timeSigDen(timeSigDen),
       m_nextId(1)
 {
+    m_gridSnapshots.push_back(
+        makeGridSnapshot(m_gridLayout, m_activeSnapshotId, m_activeSnapshotName));
     std::cout << "[Timeline] Created new timeline: BPM=" << bpm
               << ", SR=" << sampleRate
               << ", TimeSig=" << timeSigNum << "/" << timeSigDen << "\n";
@@ -1121,8 +1123,244 @@ void Timeline::setDeclickMs(double ms) {
 
 // ─── Grid Layout ──────────────────────────────────────────────────────────────
 
+void Timeline::syncActiveToVector() {
+    auto it = std::find_if(m_gridSnapshots.begin(), m_gridSnapshots.end(),
+        [&](const GridSnapshot& s) { return s.id == m_activeSnapshotId; });
+    if (it == m_gridSnapshots.end()) return;
+
+    // eventActions are deliberately absent from the flat bridge DTO. Preserve
+    // opaque actions for matching placements when a DTO mutation rebuilds them.
+    for (auto& slot : m_gridLayout.slots) {
+        if (!slot.eventActions.empty()) continue;
+        auto old = std::find_if(it->slots.begin(), it->slots.end(),
+            [&](const GridSlot& s) { return s.trackId == slot.trackId; });
+        if (old != it->slots.end()) slot.eventActions = old->eventActions;
+    }
+    std::vector<bool> used(it->fullscreenLayers.size(), false);
+    for (auto& layer : m_gridLayout.fullscreenLayers) {
+        for (size_t i = 0; i < it->fullscreenLayers.size(); ++i) {
+            const auto& old = it->fullscreenLayers[i];
+            if (!used[i] && old.trackId == layer.trackId
+                && old.placement == layer.placement) {
+                used[i] = true;
+                if (layer.eventActions.empty())
+                    layer.eventActions = old.eventActions;
+                break;
+            }
+        }
+    }
+    *it = makeGridSnapshot(m_gridLayout, it->id, it->name);
+}
+
+void Timeline::materializeActive() {
+    auto it = std::find_if(m_gridSnapshots.begin(), m_gridSnapshots.end(),
+        [&](const GridSnapshot& s) { return s.id == m_activeSnapshotId; });
+    if (it == m_gridSnapshots.end()) {
+        if (m_gridSnapshots.empty()) {
+            m_activeSnapshotId = generateSnapshotId();
+            m_activeSnapshotName = "Base";
+            m_gridSnapshots.push_back(
+                makeGridSnapshot(m_gridLayout, m_activeSnapshotId, m_activeSnapshotName));
+            it = m_gridSnapshots.begin();
+        } else {
+            // Invalid persisted activeSnapshotId clamps to the first entry.
+            it = m_gridSnapshots.begin();
+            m_activeSnapshotId = it->id;
+        }
+    }
+    m_activeSnapshotName = it->name;
+    applyGridSnapshot(m_gridLayout, *it);
+    for (const auto& layer : m_gridLayout.fullscreenLayers) {
+        if (layer.placement != FullscreenLayerPlacement::BehindGrid
+            || layer.trackId < 0) continue;
+        auto track = m_tracks.find(layer.trackId);
+        if (track != m_tracks.end()) track->second.videoHoldLastFrame = true;
+    }
+}
+
+std::string Timeline::createGridSnapshot(bool cloneActive, const std::string& name) {
+    GridSnapshot snap;
+    if (cloneActive) {
+        auto active = std::find_if(m_gridSnapshots.begin(), m_gridSnapshots.end(),
+            [&](const GridSnapshot& s) { return s.id == m_activeSnapshotId; });
+        snap = (active != m_gridSnapshots.end())
+             ? *active : makeGridSnapshot(m_gridLayout, {}, {});
+    } else {
+        snap.columns = m_gridLayout.columns;
+        snap.rows = m_gridLayout.rows;
+        snap.gapScale = m_gridLayout.gapScale;
+    }
+    snap.id = generateSnapshotId();
+    snap.name = name;
+    m_gridSnapshots.push_back(std::move(snap));
+    m_activeSnapshotId = m_gridSnapshots.back().id;
+    m_activeSnapshotName = m_gridSnapshots.back().name;
+    materializeActive();
+    return m_activeSnapshotId;
+}
+
+bool Timeline::renameGridSnapshot(const std::string& id, const std::string& name) {
+    auto it = std::find_if(m_gridSnapshots.begin(), m_gridSnapshots.end(),
+        [&](const GridSnapshot& s) { return s.id == id; });
+    if (it == m_gridSnapshots.end()) return false; // unknown id: zero mutation
+    it->name = name; // duplicate display names are intentionally allowed
+    if (id == m_activeSnapshotId) m_activeSnapshotName = name;
+    return true;
+}
+
+bool Timeline::deleteGridSnapshot(const std::string& id) {
+    auto it = std::find_if(m_gridSnapshots.begin(), m_gridSnapshots.end(),
+        [&](const GridSnapshot& s) { return s.id == id; });
+    if (it == m_gridSnapshots.end()) return false; // unknown id: zero mutation
+    if (m_gridSnapshots.size() == 1) return false; // block last-snapshot deletion
+    const bool deletingActive = id == m_activeSnapshotId;
+    m_gridSnapshots.erase(it);
+    // Prune every cue that referenced the deleted snapshot so the render-path
+    // resolver never sees a dangling id (it tolerates one, but we don't keep it).
+    m_gridCues.erase(std::remove_if(m_gridCues.begin(), m_gridCues.end(),
+        [&](const GridCue& cue) { return cue.snapshotId == id; }),
+        m_gridCues.end());
+    // If the deleted snapshot was the default ("Base"), re-point the default to
+    // the first survivor so gridLayoutAt keeps a valid explicit fallback.
+    if (id == m_defaultSnapshotId && !m_gridSnapshots.empty())
+        m_defaultSnapshotId = m_gridSnapshots.front().id;
+    if (deletingActive) {
+        // Active deletion selects the first survivor and rematerializes its DTO.
+        m_activeSnapshotId = m_gridSnapshots.front().id;
+        m_activeSnapshotName = m_gridSnapshots.front().name;
+        materializeActive();
+    }
+    return true;
+}
+
+bool Timeline::setActiveGridSnapshot(const std::string& id) {
+    auto it = std::find_if(m_gridSnapshots.begin(), m_gridSnapshots.end(),
+        [&](const GridSnapshot& s) { return s.id == id; });
+    if (it == m_gridSnapshots.end()) return false; // unknown id: zero mutation
+    m_activeSnapshotId = it->id;
+    m_activeSnapshotName = it->name;
+    materializeActive();
+    return true;
+}
+
+const GridSnapshot* Timeline::findSnapshot(const std::string& id) const {
+    if (id.empty()) return nullptr;
+    for (const auto& s : m_gridSnapshots)
+        if (s.id == id) return &s;
+    return nullptr;
+}
+
+// ── Time-based snapshot resolution (RENDER path only) ─────────────────────────
+GridLayout Timeline::gridLayoutAt(TickTime t) const {
+    // Start from the flat active layout: this seeds the GLOBAL fields
+    // (canvas*, previewFps) — identical regardless of tick — which do NOT live
+    // on snapshots. The arrangement portion is then overwritten below by the
+    // resolved snapshot (or left as the active arrangement if nothing resolves).
+    // This is a value copy the caller (render thread) owns outright; we never
+    // return a reference into m_gridLayout.
+    GridLayout out = m_gridLayout;
+
+    // Walk cues in ascending tick order, keeping the LAST cue whose tick <= t
+    // that still resolves to a live snapshot. A cue pointing at a deleted
+    // snapshot is skipped (treated as absent), so the previous valid cue wins.
+    const GridSnapshot* chosen = nullptr;
+    for (const auto& cue : m_gridCues) {
+        if (cue.tick > t) break;                 // cues are sorted; no later match
+        if (const GridSnapshot* s = findSnapshot(cue.snapshotId))
+            chosen = s;
+    }
+
+    // No cue at/before t (or all such cues dangled) → the default ("Base")
+    // snapshot, falling back to the first live snapshot when the default id is
+    // absent or dangling.
+    if (!chosen) {
+        chosen = findSnapshot(m_defaultSnapshotId);
+        if (!chosen && !m_gridSnapshots.empty())
+            chosen = &m_gridSnapshots.front();
+    }
+
+    // applyGridSnapshot overwrites ONLY the arrangement (columns/rows/gapScale/
+    // slots/fullscreenLayers), leaving the global fields seeded above untouched.
+    // GridSlot/FullscreenLayer eventActions ride along via the snapshot copy.
+    if (chosen) applyGridSnapshot(out, *chosen);
+    return out;
+}
+
+void Timeline::addGridCue(TickTime tick, const std::string& snapshotId) {
+    auto pos = std::lower_bound(m_gridCues.begin(), m_gridCues.end(), tick,
+        [](const GridCue& c, TickTime tk) { return c.tick < tk; });
+    if (pos != m_gridCues.end() && pos->tick == tick)
+        pos->snapshotId = snapshotId;            // replace the cue at this exact tick
+    else
+        m_gridCues.insert(pos, GridCue{ tick, snapshotId });
+}
+
+bool Timeline::moveGridCue(TickTime oldTick, TickTime newTick) {
+    auto pos = std::lower_bound(m_gridCues.begin(), m_gridCues.end(), oldTick,
+        [](const GridCue& c, TickTime tk) { return c.tick < tk; });
+    if (pos == m_gridCues.end() || !(pos->tick == oldTick)) return false;
+    if (oldTick == newTick) return true;         // no-op move
+    std::string id = std::move(pos->snapshotId);
+    m_gridCues.erase(pos);
+    addGridCue(newTick, id);                     // sorted insert; replaces on collision
+    return true;
+}
+
+bool Timeline::removeGridCue(TickTime tick) {
+    auto pos = std::lower_bound(m_gridCues.begin(), m_gridCues.end(), tick,
+        [](const GridCue& c, TickTime tk) { return c.tick < tk; });
+    if (pos == m_gridCues.end() || !(pos->tick == tick)) return false;
+    m_gridCues.erase(pos);
+    return true;
+}
+
+void Timeline::setCueTransition(TickTime cueTick, const SnapshotTransition& tr) {
+    auto pos = std::lower_bound(m_gridCues.begin(), m_gridCues.end(), cueTick,
+        [](const GridCue& c, TickTime tk) { return c.tick < tk; });
+    if (pos == m_gridCues.end() || !(pos->tick == cueTick)) return;  // no cue here
+    pos->transition = tr;
+}
+
+// ── Time-based transition resolution (RENDER path only) ───────────────────────
+Timeline::ResolvedTransition Timeline::transitionAt(TickTime t) const {
+    ResolvedTransition out;
+
+    // Cues are tick-sorted; scan for the LATEST-pinned enabled window that
+    // contains t. "Latest wins" mirrors gridLayoutAt so overlapping windows
+    // resolve consistently. We take a value copy of the winning cue's transition
+    // fields — never a pointer into m_gridCues — before touching layouts.
+    const GridCue* winner = nullptr;
+    for (const auto& cue : m_gridCues) {
+        if (!cue.transition.enabled) continue;
+        const TickTime start{ cue.tick.ticks - cue.transition.startOffsetTicks };
+        const TickTime end  { cue.tick.ticks + cue.transition.endOffsetTicks };
+        if (t >= start && t <= end)
+            winner = &cue;                       // keep scanning; later pin overrides
+    }
+    if (!winner) return out;                     // active stays false
+
+    // Copy scalar fields by value, then release the pointer conceptually: the
+    // gridLayoutAt calls below only read stable snapshot/cue data.
+    const SnapshotTransition tr = winner->transition;
+    out.active         = true;
+    out.pinTick        = winner->tick;
+    out.startTick      = TickTime{ winner->tick.ticks - tr.startOffsetTicks };
+    out.endTick        = TickTime{ winner->tick.ticks + tr.endOffsetTicks };
+    out.type           = tr.type;
+    out.freezeOutgoing = tr.freezeOutgoing;
+    out.geomAngleDeg   = tr.geomAngleDeg;
+
+    // Outgoing = the arrangement just BEFORE the pin; incoming = at the pin. Each
+    // resolves through gridLayoutAt (by value), so layoutA/layoutB carry their own
+    // columns/rows/gapScale.
+    out.layoutA = gridLayoutAt(TickTime{ winner->tick.ticks - 1 });
+    out.layoutB = gridLayoutAt(winner->tick);
+    return out;
+}
+
 void Timeline::setGridLayout(const GridLayout& layout) {
     m_gridLayout = layout;
+    syncActiveToVector();
     std::cout << "[Timeline] Set GridLayout " << layout.columns << "x" << layout.rows
               << " slots=" << layout.slots.size()
               << " fsLayers=" << layout.fullscreenLayers.size()
@@ -1145,6 +1383,7 @@ void Timeline::assignTrackToGrid(int trackId, int gridX, int gridY, int spanX, i
     s.opacity = 1.0f;
     s.zOrder  = 0;
     m_gridLayout.slots.push_back(s);
+    syncActiveToVector();
     std::cout << "[Timeline] Grid assign track " << trackId
               << " @ (" << gridX << "," << gridY << ") span "
               << spanX << "x" << spanY << "\n";
@@ -1169,6 +1408,7 @@ void Timeline::assignTrackToGridWithZOrder(int trackId, int gridX, int gridY,
     s.opacity = 1.0f;
     s.zOrder  = zOrder;
     m_gridLayout.slots.push_back(s);
+    syncActiveToVector();
     std::cout << "[Timeline] Grid assign track " << trackId
               << " @ (" << gridX << "," << gridY << ") span "
               << spanX << "x" << spanY << " zOrder " << zOrder << "\n";
@@ -1180,6 +1420,7 @@ void Timeline::removeTrackFromGrid(int trackId) {
         std::remove_if(m_gridLayout.slots.begin(), m_gridLayout.slots.end(),
                        [trackId](const GridSlot& s) { return s.trackId == trackId; }),
         m_gridLayout.slots.end());
+    syncActiveToVector();
     std::cout << "[Timeline] Grid remove track " << trackId
               << " (removed " << (before - m_gridLayout.slots.size()) << " slot(s))\n";
 }
@@ -1189,6 +1430,7 @@ Timeline::PlacementKind Timeline::setPlacementZOrder(int trackId, int zOrder) {
     for (auto& s : m_gridLayout.slots) {
         if (s.trackId == trackId) {
             s.zOrder = zOrder;
+            syncActiveToVector();
             std::cout << "[Timeline] Set placement zOrder track " << trackId
                       << " (grid) = " << zOrder << "\n";
             return PlacementKind::Grid;
@@ -1199,6 +1441,7 @@ Timeline::PlacementKind Timeline::setPlacementZOrder(int trackId, int zOrder) {
         if (fl.trackId == trackId) { fl.zOrder = zOrder; touched = true; }
     }
     if (touched) {
+        syncActiveToVector();
         std::cout << "[Timeline] Set placement zOrder track " << trackId
                   << " (fullscreen) = " << zOrder << "\n";
         return PlacementKind::Fullscreen;
@@ -1208,6 +1451,7 @@ Timeline::PlacementKind Timeline::setPlacementZOrder(int trackId, int zOrder) {
 
 void Timeline::setFullscreenLayers(std::vector<FullscreenLayer> layers) {
     m_gridLayout.fullscreenLayers = std::move(layers);
+    syncActiveToVector();
     // Auto-enable hold-last-frame on every BehindGrid layer's track — every
     // Sparta Remix expects the backdrop to persist through gaps.
     for (const auto& fl : m_gridLayout.fullscreenLayers) {
@@ -1227,6 +1471,7 @@ void Timeline::removeFullscreenLayersForTrack(int trackId) {
     v.erase(std::remove_if(v.begin(), v.end(),
                 [trackId](const FullscreenLayer& fl) { return fl.trackId == trackId; }),
             v.end());
+    syncActiveToVector();
     std::cout << "[Timeline] Removed " << (before - v.size())
               << " fullscreen layer(s) for track " << trackId << "\n";
 }
@@ -1235,6 +1480,7 @@ void Timeline::restoreFullscreenLayer(size_t index, const FullscreenLayer& layer
     auto& v = m_gridLayout.fullscreenLayers;
     if (index > v.size()) index = v.size();
     v.insert(v.begin() + static_cast<std::ptrdiff_t>(index), layer);
+    syncActiveToVector();
     if (layer.placement == FullscreenLayerPlacement::BehindGrid && layer.trackId >= 0) {
         auto it = m_tracks.find(layer.trackId);
         if (it != m_tracks.end())
@@ -1381,35 +1627,61 @@ nlohmann::json Timeline::toJSON() const {
         j["patternBlocks"].push_back(bj);
     }
 
+    // ── Grid layout — snapshot container ──────────────────────────────────────
+    // The persisted `gridLayout` is a snapshot container, not the flat GridLayout:
+    //   • GLOBAL fields (canvas*, previewFps) stay at the container top level;
+    //   • the arrangement (columns/rows/gapScale/slots/fullscreenLayers) is nested
+    //     inside snapshots[] for every live snapshot,
+    //     from the live authoritative vector (N entries supported);
+    //   • activeSnapshotId names the active entry; cues[] is reserved (empty now).
+    // The flat GridLayout is recovered on load by applyGridSnapshot() (see
+    // fromJSON), so this shape change is invisible to every runtime consumer.
+    // Legacy loaders that expect the old flat shape are gone (the engine owns
+    // project.json); readers of THIS build detect the container via `snapshots`.
     nlohmann::json gl;
-    gl["columns"]       = m_gridLayout.columns;
-    gl["rows"]          = m_gridLayout.rows;
-    // gridLayoutVersion: bumped to 3 when the chorus/crash special-cases were
-    // unified into fullscreenLayers. v<2 projects also need slot-coordinate
-    // migration (half-grid → fine-grid) — see fromJSON.
+    // gridLayoutVersion: 3 == fine-grid coords + unified fullscreenLayers. The
+    // snapshot container is detected structurally (presence of `snapshots`), so
+    // no version bump is required; v<2 slot-coordinate migration still keys off
+    // this value on the legacy flat path in fromJSON.
     gl["gridLayoutVersion"] = kGridLayoutVersionFineUnits;
-    gl["previewFps"]    = m_gridLayout.previewFps;
-    // Project video canvas (added after gridLayoutVersion 3 — additive, so no
-    // version bump is needed; absent fields default on load for old projects).
+    // GLOBAL project video canvas + preview/frame rate — one per project, never
+    // per-snapshot. Absent fields default on load for old projects.
     gl["canvasWidth"]        = m_gridLayout.canvasWidth;
     gl["canvasHeight"]       = m_gridLayout.canvasHeight;
     gl["canvasAspectRatio"]  = m_gridLayout.canvasAspectRatio;
-    gl["fullscreenLayers"] = nlohmann::json::array();
-    for (const auto& fl : m_gridLayout.fullscreenLayers) {
+    gl["previewFps"]         = m_gridLayout.previewFps;
+    gl["activeSnapshotId"]   = m_activeSnapshotId;
+    // Default ("Base") snapshot id — the render-path fallback before the first
+    // cue. Persisted explicitly so it is stable across edits (not index 0).
+    gl["defaultSnapshotId"]  = m_defaultSnapshotId;
+
+    // Serialize every live snapshot; the flat active layout is only a cache.
+    gl["snapshots"] = nlohmann::json::array();
+    for (const auto& active : m_gridSnapshots) {
+
+    nlohmann::json snapJson;
+    snapJson["id"]       = active.id;
+    snapJson["name"]     = active.name;
+    snapJson["columns"]  = active.columns;
+    snapJson["rows"]     = active.rows;
+    snapJson["gapScale"] = active.gapScale;
+    snapJson["fullscreenLayers"] = nlohmann::json::array();
+    for (const auto& fl : active.fullscreenLayers) {
         nlohmann::json flj;
         flj["trackId"]   = fl.trackId;
         flj["placement"] = (fl.placement == FullscreenLayerPlacement::BehindGrid)
                               ? "behind" : "front";
         flj["opacity"]   = fl.opacity;
-        // zOrder: the global compositing key. Additive field (like the canvas
-        // fields) — old readers ignore it; new readers use it verbatim so a
+        // zOrder: the global compositing key. New readers use it verbatim so a
         // project that interleaves a fullscreen layer between grid cells round-
         // trips exactly. Its absence is what triggers load-time canonicalization.
         flj["zOrder"]    = fl.zOrder;
-        gl["fullscreenLayers"].push_back(flj);
+        // Reserved keyframe seam — empty today; round-tripped for forward compat.
+        flj["eventActions"] = fl.eventActions;
+        snapJson["fullscreenLayers"].push_back(flj);
     }
-    gl["slots"] = nlohmann::json::array();
-    for (const auto& s : m_gridLayout.slots) {
+    snapJson["slots"] = nlohmann::json::array();
+    for (const auto& s : active.slots) {
         nlohmann::json sj;
         sj["trackId"] = s.trackId;
         sj["gridX"]   = s.gridX;
@@ -1418,7 +1690,34 @@ nlohmann::json Timeline::toJSON() const {
         sj["spanY"]   = s.spanY;
         sj["opacity"] = s.opacity;
         sj["zOrder"]  = s.zOrder;
-        gl["slots"].push_back(sj);
+        // Reserved keyframe seam — empty today; round-tripped for forward compat.
+        sj["eventActions"] = s.eventActions;
+        snapJson["slots"].push_back(sj);
+    }
+
+        gl["snapshots"].push_back(std::move(snapJson));
+    }
+    // Typed snapshot cue list (time-based render automation). Serialized as an
+    // array of { tick, snapshotId }; empty when the project has no cues. A cue's
+    // boundary animation is written ADDITIVELY as a `transition` object and ONLY
+    // when enabled — a hard cut omits the key entirely, so pre-transition
+    // projects round-trip byte-for-byte and forward-load unchanged.
+    gl["cues"] = nlohmann::json::array();
+    for (const auto& cue : m_gridCues) {
+        nlohmann::json cj;
+        cj["tick"]       = cue.tick.ticks;
+        cj["snapshotId"] = cue.snapshotId;
+        if (cue.transition.enabled) {
+            nlohmann::json tj;
+            tj["enabled"]          = cue.transition.enabled;
+            tj["startOffsetTicks"] = cue.transition.startOffsetTicks;
+            tj["endOffsetTicks"]   = cue.transition.endOffsetTicks;
+            tj["type"]             = snapshotTransitionTypeToString(cue.transition.type);
+            tj["freezeOutgoing"]   = cue.transition.freezeOutgoing;
+            tj["geomAngleDeg"]     = cue.transition.geomAngleDeg;
+            cj["transition"] = std::move(tj);
+        }
+        gl["cues"].push_back(std::move(cj));
     }
     j["gridLayout"] = gl;
 
@@ -1549,18 +1848,30 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
             }
         }
 
-        m_gridLayout = GridLayout{};  // reset to defaults
+        // ── Grid layout — snapshot container (+ legacy flat migration) ────────
+        // The persisted `gridLayout` is a snapshot container (see toJSON). This
+        // build loads every snapshot and materializes the ACTIVE entry into the
+        // unchanged flat m_gridLayout cache. Pre-snapshot
+        // project files carry the arrangement fields (columns/rows/slots/
+        // fullscreenLayers or the even older chorus/crash flats) directly on the
+        // gridLayout object with no `snapshots` array — those are wrapped as the
+        // single "Base" snapshot, so old projects load and render identically.
+        m_gridLayout         = GridLayout{};          // reset to defaults
+        m_activeSnapshotId   = generateSnapshotId();  // fresh Base identity unless a
+        m_activeSnapshotName = "Base";                // snapshot supplies its own
+        m_defaultSnapshotId  = m_activeSnapshotId;    // overridden by gl below / validated
+        m_gridSnapshots.clear();
+        m_gridCues.clear();
         if (j.contains("gridLayout")) {
             const auto& gl = j.at("gridLayout");
-            if (gl.contains("columns"))       gl.at("columns").get_to(m_gridLayout.columns);
-            if (gl.contains("rows"))          gl.at("rows").get_to(m_gridLayout.rows);
-            if (gl.contains("previewFps"))    gl.at("previewFps").get_to(m_gridLayout.previewFps);
 
-            // Project video canvas. Old projects (pre-canvas) omit these; the
-            // GridLayout defaults (1920×1080 / "16:9") then stand, preserving
-            // backward compatibility. Dimensions are normalized to the supported
-            // even-pixel range so a hand-edited or corrupt value can't reach the
+            // GLOBAL fields live at the container top level in BOTH the snapshot
+            // format and the pre-snapshot flat format, so read them the same way.
+            // Old projects (pre-canvas) omit the canvas fields; the GridLayout
+            // defaults (1920×1080 / "16:9") then stand. Dimensions normalize to
+            // the supported even-pixel range so a corrupt value can't reach the
             // encoder.
+            if (gl.contains("previewFps"))    gl.at("previewFps").get_to(m_gridLayout.previewFps);
             if (gl.contains("canvasWidth"))
                 m_gridLayout.canvasWidth = normalizeCanvasDim(
                     gl.value("canvasWidth", m_gridLayout.canvasWidth),
@@ -1572,23 +1883,41 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
             if (gl.contains("canvasAspectRatio") && gl.at("canvasAspectRatio").is_string())
                 gl.at("canvasAspectRatio").get_to(m_gridLayout.canvasAspectRatio);
 
-            // Coordinate space migration: pre-v2 projects stored slot
-            // coordinates in half-grid units (2 per column). v2+ uses
-            // fine-grid units (kGridSubUnitsPerColumn per column). Scale
-            // legacy values up by kGridLegacyToFineScale so the same logical
-            // placements survive intact.
-            //
-            // Layer model migration: pre-v3 projects stored a single chorus
-            // backdrop (chorusTrackId) and an optional crash overlay
-            // (crashEnabled / crashTrackId / crashOpacity) as flat fields.
-            // v3+ unifies them into the fullscreenLayers array.
-            const int gridLayoutVersion = gl.value("gridLayoutVersion", 1);
-            const int coordScale = (gridLayoutVersion < 2)
-                                 ? kGridLegacyToFineScale : 1;
-            if (coordScale != 1) {
-                std::cout << "[Timeline] Migrating gridLayout slots from v"
-                          << gridLayoutVersion << " (half-grid) to fine-grid (x"
-                          << coordScale << ")\n";
+            // Persisted default ("Base") snapshot id; validated against the loaded
+            // snapshot set after they are parsed (falls back to the first snapshot).
+            if (gl.contains("defaultSnapshotId") && gl.at("defaultSnapshotId").is_string())
+                gl.at("defaultSnapshotId").get_to(m_defaultSnapshotId);
+
+            // Typed snapshot cue list. Parse { tick, snapshotId } entries; tolerate
+            // an empty/legacy array (the pre-typed stub always wrote []). Entries
+            // without a usable snapshotId are dropped; dangling snapshot refs are
+            // kept (the resolver skips them and deleteGridSnapshot prunes them).
+            if (gl.contains("cues") && gl.at("cues").is_array()) {
+                for (const auto& c : gl.at("cues")) {
+                    if (!c.is_object()) continue;
+                    GridCue cue;
+                    if (c.contains("tick") && c.at("tick").is_number())
+                        cue.tick.ticks = c.at("tick").get<int64_t>();
+                    cue.snapshotId = c.value("snapshotId", std::string());
+                    if (cue.snapshotId.empty()) continue;   // unusable / legacy stub
+                    // Additive transition object; absent => hard cut (default).
+                    if (c.contains("transition") && c.at("transition").is_object()) {
+                        const auto& tj = c.at("transition");
+                        SnapshotTransition tr;
+                        tr.enabled          = tj.value("enabled", false);
+                        tr.startOffsetTicks = tj.value("startOffsetTicks", int64_t{0});
+                        tr.endOffsetTicks   = tj.value("endOffsetTicks",   int64_t{0});
+                        tr.type             = stringToSnapshotTransitionType(
+                                                  tj.value("type", std::string("crossfade")));
+                        tr.freezeOutgoing   = tj.value("freezeOutgoing", true);
+                        tr.geomAngleDeg     = tj.value("geomAngleDeg", 0.0f);
+                        cue.transition = tr;
+                    }
+                    m_gridCues.push_back(std::move(cue));
+                }
+                // Enforce the sorted-by-tick invariant regardless of file order.
+                std::stable_sort(m_gridCues.begin(), m_gridCues.end(),
+                    [](const GridCue& a, const GridCue& b) { return a.tick < b.tick; });
             }
 
             // Tracks whether ANY fullscreen layer arrived without a per-layer
@@ -1597,67 +1926,175 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
             // from placement + array order via assignCanonicalFullscreenZOrders
             // once the grid slots are known (done after the slots block below).
             bool anyLayerMissingZOrder = false;
-            if (gl.contains("fullscreenLayers") && gl.at("fullscreenLayers").is_array()) {
-                for (const auto& flj : gl.at("fullscreenLayers")) {
-                    FullscreenLayer fl;
-                    if (flj.contains("trackId") && flj.at("trackId").is_number())
-                        flj.at("trackId").get_to(fl.trackId);
-                    if (flj.contains("placement") && flj.at("placement").is_string()) {
-                        // Unknown placement strings default to BehindGrid for
-                        // forward compatibility with future placement values.
-                        const std::string p = flj.at("placement").get<std::string>();
-                        fl.placement = (p == "front")
-                            ? FullscreenLayerPlacement::InFrontOfGrid
-                            : FullscreenLayerPlacement::BehindGrid;
-                    }
-                    if (flj.contains("opacity") && flj.at("opacity").is_number()) {
-                        float o = flj.at("opacity").get<float>();
-                        fl.opacity = std::clamp(o, 0.0f, 1.0f);
-                    }
-                    if (flj.contains("zOrder") && flj.at("zOrder").is_number())
-                        flj.at("zOrder").get_to(fl.zOrder);
-                    else
-                        anyLayerMissingZOrder = true;   // old-format layer
-                    // Drop dangling track refs silently — the source track
-                    // may have been deleted before this project was saved.
-                    if (fl.trackId < 0 || m_tracks.find(fl.trackId) == m_tracks.end())
-                        continue;
-                    m_gridLayout.fullscreenLayers.push_back(fl);
+
+            // Parse one fullscreen-layer JSON object into the active layout,
+            // dropping dangling track refs. Shared by both formats (the legacy
+            // format simply lacks the eventActions key, which is guarded).
+            auto parseFullscreenLayer = [&](const nlohmann::json& flj) {
+                FullscreenLayer fl;
+                if (flj.contains("trackId") && flj.at("trackId").is_number())
+                    flj.at("trackId").get_to(fl.trackId);
+                if (flj.contains("placement") && flj.at("placement").is_string()) {
+                    // Unknown placement strings default to BehindGrid for forward
+                    // compatibility with future placement values.
+                    const std::string p = flj.at("placement").get<std::string>();
+                    fl.placement = (p == "front")
+                        ? FullscreenLayerPlacement::InFrontOfGrid
+                        : FullscreenLayerPlacement::BehindGrid;
                 }
+                if (flj.contains("opacity") && flj.at("opacity").is_number())
+                    fl.opacity = std::clamp(flj.at("opacity").get<float>(), 0.0f, 1.0f);
+                if (flj.contains("zOrder") && flj.at("zOrder").is_number())
+                    flj.at("zOrder").get_to(fl.zOrder);
+                else
+                    anyLayerMissingZOrder = true;   // old-format layer
+                if (flj.contains("eventActions") && flj.at("eventActions").is_array())
+                    for (const auto& a : flj.at("eventActions")) fl.eventActions.push_back(a);
+                // Drop dangling track refs silently — the source track may have
+                // been deleted before this project was saved.
+                if (fl.trackId < 0 || m_tracks.find(fl.trackId) == m_tracks.end())
+                    return;
+                m_gridLayout.fullscreenLayers.push_back(std::move(fl));
+            };
+
+            // Parse one slot JSON object into the active layout. coordScale is 1
+            // for the fine-grid snapshot format; the legacy pre-v2 flat path
+            // passes kGridLegacyToFineScale to upscale half-grid coordinates.
+            auto parseSlot = [&](const nlohmann::json& sj, int coordScale) {
+                GridSlot s;
+                if (sj.contains("trackId")) sj.at("trackId").get_to(s.trackId);
+                if (sj.contains("gridX"))   sj.at("gridX").get_to(s.gridX);
+                if (sj.contains("gridY"))   sj.at("gridY").get_to(s.gridY);
+                if (sj.contains("spanX"))   sj.at("spanX").get_to(s.spanX);
+                if (sj.contains("spanY"))   sj.at("spanY").get_to(s.spanY);
+                if (sj.contains("opacity")) sj.at("opacity").get_to(s.opacity);
+                if (sj.contains("zOrder"))  sj.at("zOrder").get_to(s.zOrder);
+                if (sj.contains("eventActions") && sj.at("eventActions").is_array())
+                    for (const auto& a : sj.at("eventActions")) s.eventActions.push_back(a);
+                s.gridX *= coordScale;
+                s.gridY *= coordScale;
+                s.spanX *= coordScale;
+                s.spanY *= coordScale;
+                m_gridLayout.slots.push_back(std::move(s));
+            };
+
+            const bool hasSnapshots = gl.contains("snapshots")
+                                   && gl.at("snapshots").is_array()
+                                   && !gl.at("snapshots").empty();
+            if (hasSnapshots) {
+                // ── Snapshot-container format ─────────────────────────────────
+                // Choose the snapshot named by activeSnapshotId; fall back to the
+                // first entry. Only the active snapshot is projected into the
+                // runtime layout this phase (inactive snapshots do not exist yet).
+                const std::string wantId = gl.value("activeSnapshotId", std::string());
+                std::set<std::string> seenSnapshotIds;
+                for (const auto& snap : gl.at("snapshots")) {
+                    if (!snap.is_object()) continue;
+                    m_gridLayout.columns = 3;
+                    m_gridLayout.rows = 3;
+                    m_gridLayout.gapScale = 0.0f;
+                    m_gridLayout.slots.clear();
+                    m_gridLayout.fullscreenLayers.clear();
+                    anyLayerMissingZOrder = false;
+
+                    std::string id = snap.value("id", std::string());
+                    while (id.empty() || seenSnapshotIds.count(id) != 0)
+                        id = generateSnapshotId();
+                    seenSnapshotIds.insert(id);
+                    const std::string name = snap.value("name", std::string("Base"));
+                    if (snap.contains("columns")) snap.at("columns").get_to(m_gridLayout.columns);
+                    if (snap.contains("rows"))    snap.at("rows").get_to(m_gridLayout.rows);
+                    if (snap.contains("gapScale") && snap.at("gapScale").is_number())
+                        m_gridLayout.gapScale =
+                            std::clamp(snap.at("gapScale").get<float>(), 0.0f, 0.5f);
+                    if (snap.contains("fullscreenLayers") && snap.at("fullscreenLayers").is_array())
+                        for (const auto& flj : snap.at("fullscreenLayers"))
+                            parseFullscreenLayer(flj);
+                    if (snap.contains("slots") && snap.at("slots").is_array())
+                        for (const auto& sj : snap.at("slots"))
+                            parseSlot(sj, /*coordScale=*/1);
+                    if (anyLayerMissingZOrder && !m_gridLayout.fullscreenLayers.empty())
+                        assignCanonicalFullscreenZOrders(m_gridLayout.fullscreenLayers,
+                                                         m_gridLayout.slots);
+                    m_gridSnapshots.push_back(
+                        makeGridSnapshot(m_gridLayout, std::move(id), name));
+                }
+                m_activeSnapshotId = wantId;
+                materializeActive(); // clamps missing active id to the first entry
+                anyLayerMissingZOrder = false; // each snapshot was migrated above
             } else {
-                // Legacy v≤2 path: synthesize layers from the old flat fields.
-                if (gl.contains("chorusTrackId")) {
-                    int cid = -1;
-                    gl.at("chorusTrackId").get_to(cid);
-                    if (cid >= 0 && m_tracks.find(cid) != m_tracks.end()) {
+                // ── Legacy pre-snapshot flat format ───────────────────────────
+                // The arrangement fields sit directly on the gridLayout object.
+                // Coordinate migration: pre-v2 projects stored slot coordinates in
+                // half-grid units (2 per column); v2+ uses fine-grid units. Layer
+                // migration: pre-v3 projects stored a single chorus backdrop
+                // (chorusTrackId) + optional crash overlay (crashEnabled/
+                // crashTrackId/crashOpacity); v3+ unifies them into fullscreenLayers.
+                if (gl.contains("columns")) gl.at("columns").get_to(m_gridLayout.columns);
+                if (gl.contains("rows"))    gl.at("rows").get_to(m_gridLayout.rows);
+                // gapScale was never written by pre-snapshot builds (so it
+                // defaults to 0.0, exactly as before), but honor it if a hand-
+                // authored legacy file supplies one. Clamped to [0.0, 0.5].
+                if (gl.contains("gapScale") && gl.at("gapScale").is_number())
+                    m_gridLayout.gapScale =
+                        std::clamp(gl.at("gapScale").get<float>(), 0.0f, 0.5f);
+
+                const int gridLayoutVersion = gl.value("gridLayoutVersion", 1);
+                const int coordScale = (gridLayoutVersion < 2)
+                                     ? kGridLegacyToFineScale : 1;
+                if (coordScale != 1) {
+                    std::cout << "[Timeline] Migrating gridLayout slots from v"
+                              << gridLayoutVersion << " (half-grid) to fine-grid (x"
+                              << coordScale << ")\n";
+                }
+
+                if (gl.contains("fullscreenLayers") && gl.at("fullscreenLayers").is_array()) {
+                    for (const auto& flj : gl.at("fullscreenLayers"))
+                        parseFullscreenLayer(flj);
+                } else {
+                    // Legacy v≤2 path: synthesize layers from the old flat fields.
+                    if (gl.contains("chorusTrackId")) {
+                        int cid = -1;
+                        gl.at("chorusTrackId").get_to(cid);
+                        if (cid >= 0 && m_tracks.find(cid) != m_tracks.end()) {
+                            FullscreenLayer fl;
+                            fl.trackId   = cid;
+                            fl.placement = FullscreenLayerPlacement::BehindGrid;
+                            fl.opacity   = 1.0f;
+                            m_gridLayout.fullscreenLayers.push_back(fl);
+                        }
+                    }
+                    bool  legacyCrashEnabled = false;
+                    int   legacyCrashTrack   = -1;
+                    float legacyCrashOp      = 0.7f;
+                    if (gl.contains("crashEnabled")) gl.at("crashEnabled").get_to(legacyCrashEnabled);
+                    if (gl.contains("crashTrackId")) gl.at("crashTrackId").get_to(legacyCrashTrack);
+                    if (gl.contains("crashOpacity")) gl.at("crashOpacity").get_to(legacyCrashOp);
+                    if (legacyCrashEnabled && legacyCrashTrack >= 0
+                        && m_tracks.find(legacyCrashTrack) != m_tracks.end()) {
                         FullscreenLayer fl;
-                        fl.trackId   = cid;
-                        fl.placement = FullscreenLayerPlacement::BehindGrid;
-                        fl.opacity   = 1.0f;
+                        fl.trackId   = legacyCrashTrack;
+                        fl.placement = FullscreenLayerPlacement::InFrontOfGrid;
+                        fl.opacity   = std::clamp(legacyCrashOp, 0.0f, 1.0f);
                         m_gridLayout.fullscreenLayers.push_back(fl);
                     }
+                    if (!m_gridLayout.fullscreenLayers.empty()) {
+                        // Synthesized legacy layers carry no zOrder → canonicalize below.
+                        anyLayerMissingZOrder = true;
+                        std::cout << "[Timeline] Migrated " << m_gridLayout.fullscreenLayers.size()
+                                  << " legacy chorus/crash entries into fullscreenLayers\n";
+                    }
                 }
-                bool legacyCrashEnabled = false;
-                int  legacyCrashTrack   = -1;
-                float legacyCrashOp     = 0.7f;
-                if (gl.contains("crashEnabled")) gl.at("crashEnabled").get_to(legacyCrashEnabled);
-                if (gl.contains("crashTrackId")) gl.at("crashTrackId").get_to(legacyCrashTrack);
-                if (gl.contains("crashOpacity")) gl.at("crashOpacity").get_to(legacyCrashOp);
-                if (legacyCrashEnabled && legacyCrashTrack >= 0
-                    && m_tracks.find(legacyCrashTrack) != m_tracks.end()) {
-                    FullscreenLayer fl;
-                    fl.trackId   = legacyCrashTrack;
-                    fl.placement = FullscreenLayerPlacement::InFrontOfGrid;
-                    fl.opacity   = std::clamp(legacyCrashOp, 0.0f, 1.0f);
-                    m_gridLayout.fullscreenLayers.push_back(fl);
-                }
-                if (!m_gridLayout.fullscreenLayers.empty()) {
-                    // Synthesized legacy layers carry no zOrder → canonicalize below.
-                    anyLayerMissingZOrder = true;
-                    std::cout << "[Timeline] Migrated " << m_gridLayout.fullscreenLayers.size()
-                              << " legacy chorus/crash entries into fullscreenLayers\n";
-                }
+
+                if (gl.contains("slots"))
+                    for (const auto& sj : gl.at("slots"))
+                        parseSlot(sj, coordScale);
+
+                m_gridSnapshots.push_back(makeGridSnapshot(
+                    m_gridLayout, m_activeSnapshotId, m_activeSnapshotName));
             }
+
+            // ── Post-processing shared by both formats ────────────────────────
             // Auto-enable hold-last-frame on every BehindGrid track (the
             // setFullscreenLayers() invariant) without going through the setter
             // — the setter logs and we don't want to double-log on load.
@@ -1666,24 +2103,6 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
                 if (fl.trackId < 0) continue;
                 auto it = m_tracks.find(fl.trackId);
                 if (it != m_tracks.end()) it->second.videoHoldLastFrame = true;
-            }
-
-            if (gl.contains("slots")) {
-                for (const auto& sj : gl.at("slots")) {
-                    GridSlot s;
-                    if (sj.contains("trackId")) sj.at("trackId").get_to(s.trackId);
-                    if (sj.contains("gridX"))   sj.at("gridX").get_to(s.gridX);
-                    if (sj.contains("gridY"))   sj.at("gridY").get_to(s.gridY);
-                    if (sj.contains("spanX"))   sj.at("spanX").get_to(s.spanX);
-                    if (sj.contains("spanY"))   sj.at("spanY").get_to(s.spanY);
-                    if (sj.contains("opacity")) sj.at("opacity").get_to(s.opacity);
-                    if (sj.contains("zOrder"))  sj.at("zOrder").get_to(s.zOrder);
-                    s.gridX *= coordScale;
-                    s.gridY *= coordScale;
-                    s.spanX *= coordScale;
-                    s.spanY *= coordScale;
-                    m_gridLayout.slots.push_back(s);
-                }
             }
 
             // ── zOrder migration (lossless) ──────────────────────────────────
@@ -1702,6 +2121,24 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
 
         // Loop / render region. Absent in pre-loop projects → keep defaults.
         // renderScoped is never read from JSON (it is derived from loopEnabled).
+        if (m_gridSnapshots.empty()) {
+            m_activeSnapshotId = generateSnapshotId();
+            m_activeSnapshotName = "Base";
+            m_gridSnapshots.push_back(makeGridSnapshot(
+                m_gridLayout, m_activeSnapshotId, m_activeSnapshotName));
+        } else {
+            syncActiveToVector();
+        }
+        materializeActive();
+
+        // Resolve the default ("Base") snapshot id now that m_gridSnapshots is
+        // finalized. When the persisted id is absent or dangling (legacy files,
+        // regenerated-on-collision ids), fall back to the first live snapshot so
+        // gridLayoutAt always has an explicit Base.
+        if (findSnapshot(m_defaultSnapshotId) == nullptr)
+            m_defaultSnapshotId = m_gridSnapshots.empty()
+                ? std::string() : m_gridSnapshots.front().id;
+
         m_loopRegion = LoopRegion{};
         if (j.contains("loopRegion")) {
             const auto& lr = j.at("loopRegion");
@@ -1748,7 +2185,14 @@ void Timeline::clear() {
     m_patterns.clear();
     m_patternBlocks.clear();
 
-    m_gridLayout = GridLayout{};
+    m_gridLayout         = GridLayout{};
+    m_activeSnapshotId   = generateSnapshotId();  // fresh "Base" snapshot identity
+    m_activeSnapshotName = "Base";
+    m_defaultSnapshotId  = m_activeSnapshotId;    // the remitted Base is the default
+    m_gridSnapshots.clear();
+    m_gridSnapshots.push_back(
+        makeGridSnapshot(m_gridLayout, m_activeSnapshotId, m_activeSnapshotName));
+    m_gridCues.clear();
     m_loopRegion = LoopRegion{};
 
     m_bpm        = 140.0;

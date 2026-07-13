@@ -5900,6 +5900,266 @@ void Timeline_SetTempoLocked(const JsonApi::CallbackInfo& info)
 // ─── Grid Layout bridge functions ─────────────────────────────────────────────
 
 // timeline_getGridLayout() → { columns, rows, slots, fullscreenLayers, previewFps, gapScale }
+static JsonApi::Value createGridSnapshotBridge(const JsonApi::CallbackInfo& info,
+                                                bool cloneActive,
+                                                const char* signature)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsString()) {
+        JsonApi::TypeError::New(env, signature).ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    std::lock_guard<std::mutex> lock(syncEventsMutex);
+    return JsonApi::String::New(env, g_timeline->createGridSnapshot(
+        cloneActive, info[0].As<JsonApi::String>().Utf8Value()));
+}
+
+JsonApi::Value Timeline_CreateSnapshot(const JsonApi::CallbackInfo& info) {
+    return createGridSnapshotBridge(info, false,
+        "timeline_createSnapshot(name: string)");
+}
+
+JsonApi::Value Timeline_DuplicateSnapshot(const JsonApi::CallbackInfo& info) {
+    return createGridSnapshotBridge(info, true,
+        "timeline_duplicateSnapshot(name: string)");
+}
+
+JsonApi::Value Timeline_DeleteSnapshot(const JsonApi::CallbackInfo& info) {
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsString()) {
+        JsonApi::TypeError::New(env, "timeline_deleteSnapshot(id: string)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    std::lock_guard<std::mutex> lock(syncEventsMutex);
+    return JsonApi::Boolean::New(env, g_timeline->deleteGridSnapshot(
+        info[0].As<JsonApi::String>().Utf8Value()));
+}
+
+JsonApi::Value Timeline_RenameSnapshot(const JsonApi::CallbackInfo& info) {
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsString() || !info[1].IsString()) {
+        JsonApi::TypeError::New(env,
+            "timeline_renameSnapshot(id: string, name: string)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    std::lock_guard<std::mutex> lock(syncEventsMutex);
+    return JsonApi::Boolean::New(env, g_timeline->renameGridSnapshot(
+        info[0].As<JsonApi::String>().Utf8Value(),
+        info[1].As<JsonApi::String>().Utf8Value()));
+}
+
+JsonApi::Value Timeline_SetActiveSnapshot(const JsonApi::CallbackInfo& info) {
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsString()) {
+        JsonApi::TypeError::New(env, "timeline_setActiveSnapshot(id: string)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    std::lock_guard<std::mutex> lock(syncEventsMutex);
+    return JsonApi::Boolean::New(env, g_timeline->setActiveGridSnapshot(
+        info[0].As<JsonApi::String>().Utf8Value()));
+}
+
+JsonApi::Value Timeline_ListSnapshots(const JsonApi::CallbackInfo& info) {
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    std::lock_guard<std::mutex> lock(syncEventsMutex);
+    const auto& snapshots = g_timeline->getGridSnapshots();
+    JsonApi::Array result = JsonApi::Array::New(env, snapshots.size());
+    for (size_t i = 0; i < snapshots.size(); ++i) {
+        JsonApi::Object item = JsonApi::Object::New(env);
+        item.Set("id", JsonApi::String::New(env, snapshots[i].id));
+        item.Set("name", JsonApi::String::New(env, snapshots[i].name));
+        item.Set("active", JsonApi::Boolean::New(
+            env, snapshots[i].id == g_timeline->getActiveSnapshotId()));
+        result.Set(static_cast<uint32_t>(i), item);
+    }
+    return result;
+}
+
+// ─── Grid Cue bridge functions ────────────────────────────────────────────────
+// Time-based snapshot cues: a cue { tick, snapshotId } says "at absolute project
+// tick `tick`, switch the grid arrangement to snapshot `snapshotId`". The engine
+// (Timeline cue API + gridLayoutAt resolver) owns all logic — sorted insert,
+// exact-tick replace, dangling-ref tolerance. These handlers are thin marshalling
+// over that API and add NO validation of their own.
+
+// Marshal the engine's ascending-ordered cue vector to a JS array of
+// { tick: <integer ticks>, snapshotId: <string> }. tick uses the same
+// double-encoded integer-tick convention as clip position/duration (see
+// clipToJs / Timeline_MoveClip): a TickTime.ticks (int64) carried in a JS
+// number. Exact integers are lossless up to 2^53, i.e. ~9.0e15 ticks
+// (~9.4e12 quarter-notes @ 960 PPQ) — far above any realistic timeline.
+static JsonApi::Value gridCuesToJs(JsonApi::Env env, const std::vector<GridCue>& cues) {
+    JsonApi::Array result = JsonApi::Array::New(env, cues.size());
+    for (size_t i = 0; i < cues.size(); ++i) {
+        JsonApi::Object item = JsonApi::Object::New(env);
+        item.Set("tick",       JsonApi::Number::New(env, static_cast<double>(cues[i].tick.ticks)));
+        item.Set("snapshotId", JsonApi::String::New(env, cues[i].snapshotId));
+        // Boundary animation, always present in the JS shape (offsets in ticks,
+        // matching the tick convention above). enabled=false = a hard cut.
+        const SnapshotTransition& tr = cues[i].transition;
+        JsonApi::Object trJs = JsonApi::Object::New(env);
+        trJs.Set("enabled",          JsonApi::Boolean::New(env, tr.enabled));
+        trJs.Set("startOffsetTicks", JsonApi::Number::New(env, static_cast<double>(tr.startOffsetTicks)));
+        trJs.Set("endOffsetTicks",   JsonApi::Number::New(env, static_cast<double>(tr.endOffsetTicks)));
+        trJs.Set("type",             JsonApi::String::New(env, snapshotTransitionTypeToString(tr.type)));
+        trJs.Set("freezeOutgoing",   JsonApi::Boolean::New(env, tr.freezeOutgoing));
+        trJs.Set("geomAngleDeg",     JsonApi::Number::New(env, static_cast<double>(tr.geomAngleDeg)));
+        item.Set("transition", trJs);
+        result.Set(static_cast<uint32_t>(i), item);
+    }
+    return result;
+}
+
+// timeline_addCue(tick: number, snapshotId: string) → GridCue[] (post-mutation)
+// Engine does the sorted insert and, on an exact-tick collision, REPLACES the
+// existing snapshotId (never a double-insert — the bridge does not pre-check).
+// snapshotId is passed through verbatim: a reference to a non-existent snapshot
+// is deliberately NOT rejected here (the resolver skips dangling cues at render
+// time). Returns the resulting cue list so the renderer gets the new state in one
+// round-trip (Timeline::addGridCue itself returns void; mirroring the read-style
+// snapshot methods for a useful bridge return).
+JsonApi::Value Timeline_AddCue(const JsonApi::CallbackInfo& info) {
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsString()) {
+        JsonApi::TypeError::New(env, "timeline_addCue(tick: number, snapshotId: string)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    TickTime tick; tick.ticks = static_cast<int64_t>(info[0].As<JsonApi::Number>().DoubleValue());
+    const std::string snapshotId = info[1].As<JsonApi::String>().Utf8Value();
+    std::lock_guard<std::mutex> lock(syncEventsMutex);
+    g_timeline->addGridCue(tick, snapshotId);
+    return gridCuesToJs(env, g_timeline->getGridCues());
+}
+
+// timeline_moveCue(oldTick: number, newTick: number) → bool
+// Relocates the cue at oldTick to newTick. Engine returns false if no cue exists
+// at oldTick; that bool is propagated unchanged (no throw on a missing cue).
+JsonApi::Value Timeline_MoveCue(const JsonApi::CallbackInfo& info) {
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
+        JsonApi::TypeError::New(env, "timeline_moveCue(oldTick: number, newTick: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    TickTime oldTick; oldTick.ticks = static_cast<int64_t>(info[0].As<JsonApi::Number>().DoubleValue());
+    TickTime newTick; newTick.ticks = static_cast<int64_t>(info[1].As<JsonApi::Number>().DoubleValue());
+    std::lock_guard<std::mutex> lock(syncEventsMutex);
+    return JsonApi::Boolean::New(env, g_timeline->moveGridCue(oldTick, newTick));
+}
+
+// timeline_removeCue(tick: number) → bool
+// Deletes the cue at the exact tick. Engine returns false if none exists there;
+// that bool is propagated unchanged (no throw on a missing cue).
+JsonApi::Value Timeline_RemoveCue(const JsonApi::CallbackInfo& info) {
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        JsonApi::TypeError::New(env, "timeline_removeCue(tick: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    TickTime tick; tick.ticks = static_cast<int64_t>(info[0].As<JsonApi::Number>().DoubleValue());
+    std::lock_guard<std::mutex> lock(syncEventsMutex);
+    return JsonApi::Boolean::New(env, g_timeline->removeGridCue(tick));
+}
+
+// timeline_listCues() → GridCue[] in ascending tick order (as stored by the engine).
+JsonApi::Value Timeline_ListCues(const JsonApi::CallbackInfo& info) {
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    std::lock_guard<std::mutex> lock(syncEventsMutex);
+    return gridCuesToJs(env, g_timeline->getGridCues());
+}
+
+// timeline_setCueTransition(tick: number, transition: object) → GridCue[] (post-mutation)
+// Replaces the boundary animation on the cue at `tick`. The transition object is
+// { enabled, startOffsetTicks, endOffsetTicks, type, freezeOutgoing, geomAngleDeg };
+// missing fields fall back to the SnapshotTransition defaults (a disabled/hard-cut
+// transition). No-op in the engine if no cue exists at that exact tick. Returns the
+// resulting cue list so the renderer refreshes in one round-trip (mirrors
+// Timeline_AddCue). Offsets are in ticks (same convention as the cue tick itself).
+JsonApi::Value Timeline_SetCueTransition(const JsonApi::CallbackInfo& info) {
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsObject()) {
+        JsonApi::TypeError::New(env, "timeline_setCueTransition(tick: number, transition: object)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    TickTime tick; tick.ticks = static_cast<int64_t>(info[0].As<JsonApi::Number>().DoubleValue());
+    JsonApi::Object trJs = info[1].As<JsonApi::Object>();
+
+    SnapshotTransition tr;  // defaults = disabled hard cut
+    if (trJs.Has("enabled") && trJs.Get("enabled").IsBoolean())
+        tr.enabled = trJs.Get("enabled").As<JsonApi::Boolean>().Value();
+    if (trJs.Has("startOffsetTicks") && trJs.Get("startOffsetTicks").IsNumber())
+        tr.startOffsetTicks = static_cast<int64_t>(trJs.Get("startOffsetTicks").As<JsonApi::Number>().DoubleValue());
+    if (trJs.Has("endOffsetTicks") && trJs.Get("endOffsetTicks").IsNumber())
+        tr.endOffsetTicks = static_cast<int64_t>(trJs.Get("endOffsetTicks").As<JsonApi::Number>().DoubleValue());
+    if (trJs.Has("type") && trJs.Get("type").IsString())
+        tr.type = stringToSnapshotTransitionType(trJs.Get("type").As<JsonApi::String>().Utf8Value());
+    if (trJs.Has("freezeOutgoing") && trJs.Get("freezeOutgoing").IsBoolean())
+        tr.freezeOutgoing = trJs.Get("freezeOutgoing").As<JsonApi::Boolean>().Value();
+    if (trJs.Has("geomAngleDeg") && trJs.Get("geomAngleDeg").IsNumber())
+        tr.geomAngleDeg = static_cast<float>(trJs.Get("geomAngleDeg").As<JsonApi::Number>().DoubleValue());
+
+    std::lock_guard<std::mutex> lock(syncEventsMutex);
+    g_timeline->setCueTransition(tick, tr);
+    return gridCuesToJs(env, g_timeline->getGridCues());
+}
+
+// timeline_getDefaultSnapshot() → string (the default/"Base" snapshot id).
+JsonApi::Value Timeline_GetDefaultSnapshot(const JsonApi::CallbackInfo& info) {
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    std::lock_guard<std::mutex> lock(syncEventsMutex);
+    return JsonApi::String::New(env, g_timeline->getDefaultSnapshotId());
+}
+
 JsonApi::Value Timeline_GetGridLayout(const JsonApi::CallbackInfo& info)
 {
     JsonApi::Env env = info.Env();
@@ -15897,6 +16157,18 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     if (method == "timeline_addClipsBatch") return Timeline_AddClipsBatch(info).raw();
     if (method == "timeline_autoTrimClip") return Timeline_AutoTrimClip(info).raw();
     if (method == "timeline_spliceClipsAtPlayhead") return Timeline_SpliceClipsAtPlayhead(info).raw();
+    if (method == "timeline_createSnapshot") return Timeline_CreateSnapshot(info).raw();
+    if (method == "timeline_duplicateSnapshot") return Timeline_DuplicateSnapshot(info).raw();
+    if (method == "timeline_deleteSnapshot") return Timeline_DeleteSnapshot(info).raw();
+    if (method == "timeline_renameSnapshot") return Timeline_RenameSnapshot(info).raw();
+    if (method == "timeline_setActiveSnapshot") return Timeline_SetActiveSnapshot(info).raw();
+    if (method == "timeline_listSnapshots") return Timeline_ListSnapshots(info).raw();
+    if (method == "timeline_addCue") return Timeline_AddCue(info).raw();
+    if (method == "timeline_moveCue") return Timeline_MoveCue(info).raw();
+    if (method == "timeline_removeCue") return Timeline_RemoveCue(info).raw();
+    if (method == "timeline_listCues") return Timeline_ListCues(info).raw();
+    if (method == "timeline_setCueTransition") return Timeline_SetCueTransition(info).raw();
+    if (method == "timeline_getDefaultSnapshot") return Timeline_GetDefaultSnapshot(info).raw();
     if (method == "timeline_getGridLayout") return Timeline_GetGridLayout(info).raw();
     if (method == "timeline_setGridLayout") { Timeline_SetGridLayout(info); return JsonApi::Env{}.Undefined().raw(); }
     if (method == "timeline_assignTrackToGrid") { Timeline_AssignTrackToGrid(info); return JsonApi::Env{}.Undefined().raw(); }

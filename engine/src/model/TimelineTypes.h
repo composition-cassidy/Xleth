@@ -1,8 +1,11 @@
 #pragma once
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <nlohmann/json.hpp>
+#include <random>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -1141,6 +1144,15 @@ struct GridSlot {
     int   spanY   = kGridSubUnitsPerRow;
     float opacity = 1.0f;
     int   zOrder  = 0;
+
+    // ── Reserved seam: snapshot-scoped procedural actions (future phase) ──────
+    // Always empty in projects written today. A later snapshot/keyframe phase
+    // will populate this with per-slot event actions (e.g. show/hide, opacity or
+    // transform ramps) scoped to the owning snapshot's timeline. Stored as opaque
+    // JSON so a future- or hand-authored file round-trips through this build
+    // unchanged. NO engine code reads it yet, and it is NOT part of the
+    // getGridLayout IPC DTO — it lives only in the persisted snapshot model.
+    std::vector<nlohmann::json> eventActions;
 };
 
 // ─── FullscreenLayer ──────────────────────────────────────────────────────────
@@ -1171,12 +1183,30 @@ struct FullscreenLayer {
     FullscreenLayerPlacement placement = FullscreenLayerPlacement::BehindGrid;
     float                    opacity   = 1.0f;
     int                      zOrder    = 0;   // global compositing key (see GridSlot::zOrder)
+
+    // ── Reserved seam: snapshot-scoped procedural actions (future phase) ──────
+    // Mirror of GridSlot::eventActions for fullscreen layers. Always empty today;
+    // persisted verbatim as opaque JSON for forward compatibility; unread by the
+    // engine and absent from the getGridLayout IPC DTO.
+    std::vector<nlohmann::json> eventActions;
 };
 
 // ─── GridLayout ───────────────────────────────────────────────────────────────
 // Project-level video grid configuration. Each track can be assigned to one
 // slot in the N×M grid. Any number of fullscreen layers can be stacked behind
 // or in front of the grid via fullscreenLayers.
+//
+// This flat struct is the composed *working view* the engine operates on at
+// runtime and the exact shape exchanged over IPC (getGridLayout/setGridLayout).
+// It is the union of two things the persisted model keeps separate:
+//   • the GLOBAL project canvas + previewFps (canvasWidth/Height/aspectRatio,
+//     previewFps) — project-wide, one per file; and
+//   • the ACTIVE snapshot's arrangement (columns/rows/gapScale/slots/
+//     fullscreenLayers) — see GridSnapshot below.
+// On disk the arrangement is nested inside a snapshot container (Timeline::toJSON
+// / fromJSON); at runtime it is flattened back into this struct so the render
+// path, commands, and bridge are unaffected by the snapshot model. Keeping this
+// shape stable is what makes the snapshot phase invisible to callers.
 
 struct GridLayout {
     int   columns       = 3;       // N (1-8)
@@ -1199,6 +1229,171 @@ struct GridLayout {
 
     float gapScale      = 0.0f;   // 0.0–0.5
 };
+
+// ─── GridSnapshot ─────────────────────────────────────────────────────────────
+// A named arrangement of the video grid: the geometry (columns/rows/gapScale)
+// plus the placement of every track (slots + fullscreenLayers). This is the unit
+// a future phase will let users switch between over time (via GridLayoutContainer
+// cues) and keyframe (via each slot/layer's reserved eventActions).
+//
+// The GLOBAL project canvas (canvasWidth/Height/aspectRatio) and previewFps do
+// NOT live here — those are project-wide and stay on the container (persisted
+// alongside the snapshot list; at runtime they occupy the matching GridLayout
+// fields). A snapshot owns ONLY the arrangement + grid geometry.
+//
+// Runtime status: Timeline owns N live snapshots and materializes the active one
+// into the flat GridLayout cache. makeGridSnapshot() /
+// applyGridSnapshot() convert between the two. Because the engine keeps operating
+// on the flat GridLayout (the active snapshot) at runtime, no render/bridge/
+// command code changed; only the model + serialization gained the wrapper.
+struct GridSnapshot {
+    std::string id;                 // stable within a project file; see generateSnapshotId
+    std::string name = "Base";
+    int   columns  = 3;
+    int   rows     = 3;
+    float gapScale = 0.0f;
+    std::vector<GridSlot>        slots;
+    std::vector<FullscreenLayer> fullscreenLayers;
+};
+
+// ─── SnapshotTransition ───────────────────────────────────────────────────────
+// Optional animated transition that plays as the show crosses a snapshot
+// boundary (a GridCue). By DESIGN the transition is owned by the GridCue, not by
+// a GridSnapshot: a snapshot is reused across many cues, so the cue — the actual
+// boundary/pin — is the only place a transition can unambiguously live. The UI
+// still presents it as the incoming snapshot's "in" transition (PowerPoint-style).
+//
+// Geometry model (see snapshot-transition-system-spec.md §2):
+//   • The cue's tick is the PIN — the fixed anchor on the beat, the 50% blend
+//     point. Editing a transition never moves the pin.
+//   • startOffsetTicks / endOffsetTicks are the only draggable handles: the Start
+//     handle sits `startOffsetTicks` BEFORE the pin, the End handle sits
+//     `endOffsetTicks` AFTER it. Both are >= 0 and may be ASYMMETRIC. The window
+//     is [pin - startOffsetTicks, pin + endOffsetTicks].
+//   • enabled == false — or a zero-length window (both offsets 0) — is a HARD CUT
+//     and is the default. Transitions are strictly opt-in.
+//
+// Offsets are stored in TICKS (snap-native, tempo-stable), NOT samples; the
+// render path converts tick->sample via RenderClock::ppqToSample only at
+// resolve time (Slice 3). This struct carries no sample-domain state.
+struct SnapshotTransition {
+    bool     enabled          = false;  // false = hard cut (also true when both offsets == 0)
+    int64_t  startOffsetTicks = 0;      // Start handle distance BEFORE the pin (>= 0)
+    int64_t  endOffsetTicks   = 0;      // End handle distance AFTER  the pin (>= 0)
+    enum class Type { Crossfade, LineSweep, Push, Slide, Zoom, Dissolve, OutThenIn }
+             type = Type::Crossfade;
+    bool     freezeOutgoing   = true;   // composite outgoing snapshot once, hold RT; only incoming advances
+    float    geomAngleDeg     = 0.0f;   // typeGeometry (e.g. sweep angle) — fixed default for v1
+};
+
+inline std::string snapshotTransitionTypeToString(SnapshotTransition::Type t) {
+    switch (t) {
+        case SnapshotTransition::Type::Crossfade: return "crossfade";
+        case SnapshotTransition::Type::LineSweep: return "lineSweep";
+        case SnapshotTransition::Type::Push:      return "push";
+        case SnapshotTransition::Type::Slide:     return "slide";
+        case SnapshotTransition::Type::Zoom:      return "zoom";
+        case SnapshotTransition::Type::Dissolve:  return "dissolve";
+        case SnapshotTransition::Type::OutThenIn: return "outThenIn";
+        default:                                  return "crossfade";
+    }
+}
+
+inline SnapshotTransition::Type stringToSnapshotTransitionType(const std::string& s) {
+    if (s == "lineSweep") return SnapshotTransition::Type::LineSweep;
+    if (s == "push")      return SnapshotTransition::Type::Push;
+    if (s == "slide")     return SnapshotTransition::Type::Slide;
+    if (s == "zoom")      return SnapshotTransition::Type::Zoom;
+    if (s == "dissolve")  return SnapshotTransition::Type::Dissolve;
+    if (s == "outThenIn") return SnapshotTransition::Type::OutThenIn;
+    return SnapshotTransition::Type::Crossfade;
+}
+
+// ─── GridCue ──────────────────────────────────────────────────────────────────
+// One entry in the project's time-based snapshot automation. It binds an
+// absolute project tick to a snapshot: at render time the grid arrangement in
+// effect at tick `t` is the snapshot named by the LAST cue whose `tick` <= t
+// (see Timeline::gridLayoutAt); before the first cue the project's default
+// ("Base") snapshot applies.
+//
+// Cues are kept sorted ascending by tick and are consulted ONLY by the render /
+// export path (FrameCollector), never by the editing path — so the arrangement
+// being edited (the active snapshot) and the arrangement being rendered at a
+// given tick can legitimately differ. A cue whose target snapshot has been
+// deleted is skipped by the resolver (treated as absent) rather than crashing;
+// Timeline::deleteGridSnapshot also prunes referencing cues eagerly.
+//
+// A cue optionally carries a `transition` describing how the boundary AT this
+// cue animates (the cue tick is the transition pin). A default-constructed
+// (disabled) transition means the boundary hard-cuts, exactly as before.
+struct GridCue {
+    TickTime           tick;         // absolute project tick where snapshotId takes effect
+    std::string        snapshotId;   // -> GridSnapshot::id
+    SnapshotTransition transition{}; // boundary animation; disabled default = hard cut
+};
+
+// ─── GridLayoutContainer (persisted shape, documented for reference) ──────────
+// The on-disk `gridLayout` object is a snapshot container, NOT the flat
+// GridLayout. Its schema (see Timeline::toJSON) is:
+//
+//   { canvasWidth, canvasHeight, canvasAspectRatio, previewFps,   // GLOBAL
+//     activeSnapshotId,                                           // -> snapshots[].id
+//     defaultSnapshotId,                                          // -> Base snapshot
+//     snapshots: [ GridSnapshot, ... ],                           // >=1 ("Base")
+//     cues: [ GridCue, ... ] }                                    // time automation
+//
+// Each cue is { tick, snapshotId } and MAY carry an additive `transition` object
+// { enabled, startOffsetTicks, endOffsetTicks, type, freezeOutgoing, geomAngleDeg }
+// describing the boundary animation at that cue. The transition object is written
+// ONLY when enabled (omitted entirely for a hard cut) and defaults to a hard cut
+// when absent, so projects saved before transitions existed load unchanged.
+//
+// A dedicated container struct is intentionally unnecessary: Timeline owns the
+// std::vector<GridSnapshot>, active + default identity, global flat cache, and
+// the typed cue list.
+
+// Generate a fresh snapshot id ("snap-XXXXXXXX", 8 hex). Ids only need to be
+// unique within one project file (activeSnapshotId references one of them), so a
+// random suffix mixed with a process-local counter is sufficient — no external
+// UUID dependency. Never throws.
+inline std::string generateSnapshotId() {
+    static std::atomic<uint64_t> seq{1};
+    std::random_device rd;
+    const uint64_t mixed =
+        (static_cast<uint64_t>(rd()) << 32)
+        ^ (seq.fetch_add(1, std::memory_order_relaxed) * 0x9E3779B97F4A7C15ull);
+    const uint32_t folded = static_cast<uint32_t>(mixed ^ (mixed >> 32));
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "snap-%08x", folded);
+    return std::string(buf);
+}
+
+// Copy a flat GridLayout's arrangement + geometry into a named snapshot. The
+// global canvas/previewFps fields are deliberately ignored (they live on the
+// container). Used by serialization to nest the active layout.
+inline GridSnapshot makeGridSnapshot(const GridLayout& flat,
+                                     std::string id, std::string name) {
+    GridSnapshot snap;
+    snap.id               = std::move(id);
+    snap.name             = std::move(name);
+    snap.columns          = flat.columns;
+    snap.rows             = flat.rows;
+    snap.gapScale         = flat.gapScale;
+    snap.slots            = flat.slots;
+    snap.fullscreenLayers = flat.fullscreenLayers;
+    return snap;
+}
+
+// Project a snapshot's arrangement back onto a flat GridLayout, leaving the
+// container's global fields (canvas*, previewFps) untouched. Used on load to
+// flatten the active snapshot into the runtime layout the engine operates on.
+inline void applyGridSnapshot(GridLayout& flat, const GridSnapshot& snap) {
+    flat.columns          = snap.columns;
+    flat.rows             = snap.rows;
+    flat.gapScale         = snap.gapScale;
+    flat.slots            = snap.slots;
+    flat.fullscreenLayers = snap.fullscreenLayers;
+}
 
 // ─── assignCanonicalFullscreenZOrders ─────────────────────────────────────────
 // Assign globally-comparable compositing zOrders to fullscreen layers purely

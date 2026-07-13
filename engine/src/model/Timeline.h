@@ -87,8 +87,81 @@ public:
     bool   isRenderScoped() const { return m_loopRegion.loopEnabled; }
 
     // ── Grid Layout ───────────────────────────────────────────────────────────
+    // m_gridLayout is the materialized view of the ACTIVE snapshot (arrangement +
+    // geometry) fused with the global canvas/previewFps fields. Every runtime
+    // consumer — render path, bridge IPC, undo commands — reads/writes it exactly
+    // as before the snapshot model existed. m_gridSnapshots is authoritative;
+    // every arrangement mutation writes the active cache back to that vector.
     const GridLayout& getGridLayout() const { return m_gridLayout; }
     void   setGridLayout(const GridLayout& layout);
+    // Id/name of the active entry in the live snapshot vector.
+    const std::string& getActiveSnapshotId()   const { return m_activeSnapshotId; }
+    const std::string& getActiveSnapshotName() const { return m_activeSnapshotName; }
+    std::string createGridSnapshot(bool cloneActive, const std::string& name);
+    bool renameGridSnapshot(const std::string& id, const std::string& name);
+    bool deleteGridSnapshot(const std::string& id);
+    bool setActiveGridSnapshot(const std::string& id);
+    const std::vector<GridSnapshot>& getGridSnapshots() const { return m_gridSnapshots; }
+    // Id of the project's default ("Base") snapshot — the arrangement used by the
+    // render path before the first cue and when no cue at/before a tick resolves.
+    // Persisted; resolved on load, falling back to the first snapshot if absent.
+    const std::string& getDefaultSnapshotId() const { return m_defaultSnapshotId; }
+
+    // ── Time-based snapshot resolution (RENDER path only) ─────────────────────
+    // Resolve the grid arrangement in effect at absolute project tick `t` and
+    // return a SELF-CONTAINED GridLayout by value (never an alias into the
+    // editor's active-snapshot cache). The global canvas/previewFps fields are
+    // taken from the container and are identical regardless of tick; only the
+    // arrangement (columns/rows/gapScale/slots/fullscreenLayers) is time-resolved:
+    //   • no cues, or t before the first cue → the default ("Base") snapshot;
+    //   • otherwise → the snapshot of the LAST cue whose tick <= t, skipping any
+    //     cue whose snapshotId no longer resolves (treated as absent).
+    // const + allocates its own layout + reads only stable snapshot/cue data, so
+    // it is safe to call from the render thread while edits run on the main
+    // thread. The editing path keeps reading getGridLayout() (the active snapshot).
+    GridLayout gridLayoutAt(TickTime t) const;
+
+    // ── Grid cues (CRUD; sorted-by-tick invariant maintained internally) ──────
+    // addGridCue inserts keeping ascending tick order; if a cue already exists at
+    // the exact tick its snapshotId is replaced. moveGridCue relocates the cue at
+    // oldTick to newTick (false if none at oldTick). removeGridCue deletes the cue
+    // at that exact tick (false if none). snapshotId is NOT validated here —
+    // dangling refs are tolerated by the resolver and pruned on snapshot delete.
+    void addGridCue(TickTime tick, const std::string& snapshotId);
+    bool moveGridCue(TickTime oldTick, TickTime newTick);
+    bool removeGridCue(TickTime tick);
+    const std::vector<GridCue>& getGridCues() const { return m_gridCues; }
+
+    // Set (replace) the transition on the cue at `cueTick`. No-op if there is no
+    // cue at that exact tick. Follows the same by-value / under-lock discipline as
+    // the other cue mutators — the bridge writer holds syncEventsMutex.
+    void setCueTransition(TickTime cueTick, const SnapshotTransition& tr);
+
+    // ── Time-based transition resolution (RENDER path only) ───────────────────
+    // A fully self-contained snapshot of the transition (if any) active at tick
+    // `t`. Like gridLayoutAt, everything is copied BY VALUE — the render thread
+    // owns the result outright and never aliases a live GridCue/GridSnapshot. The
+    // two layouts each carry their own columns/rows/gapScale so Slice 3 can place
+    // each snapshot's cells with its OWN geometry (fixing the latent cue-switch
+    // geometry bug); this slice does not touch the compositor.
+    struct ResolvedTransition {
+        bool     active = false;              // false = no active transition window at t (hard cut)
+        TickTime pinTick{};                   // the cue tick (transition pin, 50% point)
+        TickTime startTick{};                 // pinTick - transition.startOffsetTicks
+        TickTime endTick{};                   // pinTick + transition.endOffsetTicks
+        SnapshotTransition::Type type = SnapshotTransition::Type::Crossfade;
+        bool     freezeOutgoing = true;
+        float    geomAngleDeg = 0.0f;
+        GridLayout layoutA;                   // outgoing snapshot = gridLayoutAt(pinTick - 1)
+        GridLayout layoutB;                   // incoming snapshot = gridLayoutAt(pinTick)
+    };
+
+    // Resolve the transition whose window [pin - startOffset, pin + endOffset]
+    // contains `t` and whose transition.enabled is set (pin = cue.tick). When more
+    // than one enabled window overlaps t, the latest-pinned one wins (consistent
+    // with gridLayoutAt's "last cue wins"). If none is active, returns
+    // { active = false }. const + self-allocating: safe on the render thread.
+    ResolvedTransition transitionAt(TickTime t) const;
     void   assignTrackToGrid(int trackId, int gridX, int gridY, int spanX, int spanY);
     // Same as assignTrackToGrid but stores the supplied zOrder on the slot
     // instead of resetting to 0. Used by the grid editor's drag-to-place flow
@@ -248,6 +321,11 @@ public:
     void clear();
 
 private:
+    void syncActiveToVector();
+    void materializeActive();
+    // Look up a live snapshot by id (nullptr if none / empty id). Used by the
+    // cue resolver and the default-snapshot fallback.
+    const GridSnapshot* findSnapshot(const std::string& id) const;
     int getNextId();
 
     // Derived-state helpers: keep pattern.length in sync with its notes, and
@@ -269,7 +347,29 @@ private:
     std::map<int, Pattern>      m_patterns;
     std::map<int, PatternBlock> m_patternBlocks;
 
+    // Grid layout — snapshot container, decomposed for the runtime.
+    //   m_gridLayout        : flat working view = global canvas/fps ⊕ ACTIVE
+    //                         snapshot's arrangement (materialized cache served
+    //                         over the unchanged flat IPC contract).
+    //   m_activeSnapshotId  : id of the active snapshot (matches persisted
+    //                         activeSnapshotId + snapshots[].id). Minted on
+    //                         create/clear and on legacy-project migration.
+    //   m_activeSnapshotName: display name of the active snapshot.
+    //   m_gridSnapshots      : authoritative live arrangements (always >= 1).
+    //   m_defaultSnapshotId : id of the "Base" snapshot the render path falls back
+    //                         to before the first cue / when no cue resolves.
+    //                         Initialized to the initial active snapshot; persisted
+    //                         and re-resolved on load (falls back to the first
+    //                         snapshot when absent or dangling).
+    //   m_gridCues          : typed, tick-sorted snapshot automation. Consulted
+    //                         ONLY by the render path (Timeline::gridLayoutAt);
+    //                         the editing path never resolves by tick.
     GridLayout                  m_gridLayout;
+    std::string                 m_activeSnapshotId   = generateSnapshotId();
+    std::string                 m_activeSnapshotName = "Base";
+    std::string                 m_defaultSnapshotId  = m_activeSnapshotId;
+    std::vector<GridSnapshot>   m_gridSnapshots;
+    std::vector<GridCue>        m_gridCues;
     LoopRegion                  m_loopRegion;   // single global loop/render region
     double m_declickMs = 0.5; // global clip boundary fade duration in ms (0 = disabled)
     int    m_globalStretchMethod = static_cast<int>(StretchMethod::PSOLA);

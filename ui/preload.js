@@ -149,6 +149,26 @@ window.xleth = ({
     autoTrimClip:            (id, thresholdDb=-54) => invoke('xleth:timeline:autoTrimClip', id, thresholdDb),
     spliceClipsAtPlayhead:   (entries)             => invoke('xleth:timeline:spliceClipsAtPlayhead', entries),
     getGridLayout:       ()                              => invoke('xleth:timeline:getGridLayout'),
+    createSnapshot:      (name)                          => invoke('xleth:timeline:createSnapshot', name),
+    duplicateSnapshot:   (name)                          => invoke('xleth:timeline:duplicateSnapshot', name),
+    deleteSnapshot:      (id)                            => invoke('xleth:timeline:deleteSnapshot', id),
+    renameSnapshot:      (id, name)                      => invoke('xleth:timeline:renameSnapshot', id, name),
+    setActiveSnapshot:   (id)                            => invoke('xleth:timeline:setActiveSnapshot', id),
+    listSnapshots:       ()                              => invoke('xleth:timeline:listSnapshots'),
+    // Grid cues (time-based snapshot resolution). tick is an integer tick count
+    // (same unit as clip position/duration). addCue → updated cue list;
+    // moveCue/removeCue → bool (false when no cue exists at that tick);
+    // listCues → GridCue[] ascending; getDefaultSnapshot → snapshot id string.
+    addCue:              (tick, snapshotId)              => invoke('xleth:timeline:addCue', tick, snapshotId),
+    moveCue:             (oldTick, newTick)              => invoke('xleth:timeline:moveCue', oldTick, newTick),
+    removeCue:           (tick)                          => invoke('xleth:timeline:removeCue', tick),
+    listCues:            ()                              => invoke('xleth:timeline:listCues'),
+    // Set the boundary animation on the cue at `tick`. transition is
+    // { enabled, startOffsetTicks, endOffsetTicks, type, freezeOutgoing, geomAngleDeg }
+    // with offsets in ticks; enabled=false (or a zero-length window) is a hard cut.
+    // Returns the updated cue list. No-op if no cue exists at that tick.
+    setCueTransition:    (tick, transition)              => invoke('xleth:timeline:setCueTransition', tick, transition),
+    getDefaultSnapshot:  ()                              => invoke('xleth:timeline:getDefaultSnapshot'),
     setGridLayout:       (layout)                        => invoke('xleth:timeline:setGridLayout', layout),
     assignTrackToGrid:   (trackId, gx, gy, sx, sy)       => invoke('xleth:timeline:assignTrackToGrid', trackId, gx, gy, sx, sy),
     assignTrackToGridWithZOrder: (trackId, gx, gy, sx, sy, z) => invoke('xleth:timeline:assignTrackToGridWithZOrder', trackId, gx, gy, sx, sy, z),
