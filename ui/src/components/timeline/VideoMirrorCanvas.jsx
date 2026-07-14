@@ -1,0 +1,478 @@
+import {
+  useEffect, useRef, useState, useCallback, useImperativeHandle, forwardRef,
+} from 'react'
+import {
+  drawGrid, drawClips, drawPatternBlocks, resolveTimelinePalette, withAlpha,
+} from './timelineDrawing.js'
+import { buildResolvedTrackColorMap } from './trackColorResolver.js'
+import {
+  TRACK_HEIGHT, PPQ, pixelToBeat, beatToPlayheadPixel, snapBeatToGrid,
+} from '../../constants/timeline.js'
+import { playheadClock } from '../../services/PlayheadClock.js'
+import XlethSelect from '../common/XlethSelect.jsx'
+
+const PLAYHEAD_LINE_WIDTH = 1
+
+export const CUE_LANE_HEIGHT = 30
+
+// Cue stems and the shared DOM playhead both call this exact tick-to-x mapping.
+// The half-pixel grid alignment is folded into beatToPlayheadPixel for a 1px line.
+export function mirrorTickToPixel(tick, scrollOffset, pixelsPerBeat) {
+  return beatToPlayheadPixel(tick / PPQ, scrollOffset, pixelsPerBeat, PLAYHEAD_LINE_WIDTH)
+}
+
+function CueMarker({
+  cue, x, laneWidth, snapshots, selected, onSelect, onMoveCue, onRemoveCue, onRepointCue,
+  pixelsPerBeatRef, scrollOffsetRef, containerRef,
+}) {
+  const markerRef = useRef(null)
+
+  const handlePointerDown = useCallback((e) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    e.stopPropagation()
+    const startClientX = e.clientX
+    const startX = x
+    let dragTick = cue.tick
+    let dragged = false
+
+    const onMove = (moveEvent) => {
+      const delta = moveEvent.clientX - startClientX
+      if (!dragged && Math.abs(delta) < 3) return
+      dragged = true
+      const rect = containerRef.current?.getBoundingClientRect()
+      if (!rect) return
+      const localX = Math.max(0, Math.min(laneWidth, moveEvent.clientX - rect.left))
+      const beat = pixelToBeat(localX, scrollOffsetRef.current, pixelsPerBeatRef.current)
+      dragTick = Math.max(0, Math.round(beat * PPQ))
+      const dragX = mirrorTickToPixel(dragTick, scrollOffsetRef.current, pixelsPerBeatRef.current)
+      if (markerRef.current) markerRef.current.style.transform = 'translateX(' + dragX + 'px)'
+    }
+
+    const onUp = async () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      if (!dragged) {
+        onSelect(cue.tick)
+        return
+      }
+      const moved = await onMoveCue(cue.tick, dragTick)
+      // Collision/IPC failure: restore the original pixel immediately. The
+      // parent's mandatory listCues reconciliation supplies the durable position.
+      if (!moved && markerRef.current) {
+        markerRef.current.style.transform = 'translateX(' + startX + 'px)'
+      }
+    }
+
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp, { once: true })
+  }, [containerRef, cue.tick, laneWidth, onMoveCue, onSelect, pixelsPerBeatRef, scrollOffsetRef, x])
+
+  const options = snapshots.map((snapshot) => ({ value: snapshot.id, label: snapshot.name }))
+
+  return (
+    <div
+      ref={markerRef}
+      className={'vmt-cue-marker-wrap' + (selected ? ' is-selected' : '') + (x > laneWidth - 160 ? ' is-editor-left' : '')}
+      style={{ transform: 'translateX(' + x + 'px)' }}
+      data-tick={cue.tick}
+    >
+      <button
+        type="button"
+        className="vmt-cue-marker"
+        onPointerDown={handlePointerDown}
+        onMouseDown={(e) => e.stopPropagation()}
+        aria-label={'Snapshot cue at tick ' + cue.tick}
+        title="Drag to move; click to choose snapshot"
+      />
+      {selected && (
+        <div className="vmt-cue-editor" onMouseDown={(e) => e.stopPropagation()}>
+          <XlethSelect
+            className="vmt-cue-select"
+            value={cue.snapshotId}
+            options={options}
+            onChange={(snapshotId) => onRepointCue(cue.tick, snapshotId)}
+            ariaLabel={'Snapshot for cue at tick ' + cue.tick}
+            disabled={options.length === 0}
+          />
+          <button
+            type="button"
+            className="vmt-delete-cue"
+            onClick={() => onRemoveCue(cue.tick)}
+            aria-label={'Delete cue at tick ' + cue.tick}
+            title="Delete cue"
+          >
+            ×
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CueLane({
+  top, width, cues, snapshots, defaultSnapshotId, totalBeats,
+  pixelsPerBeatRef, scrollOffsetRef, containerRef,
+  onMoveCue, onRemoveCue, onRepointCue,
+}) {
+  const [selectedTick, setSelectedTick] = useState(null)
+  const names = new Map(snapshots.map((snapshot) => [snapshot.id, snapshot.name]))
+  const sorted = [...cues].sort((a, b) => a.tick - b.tick)
+  const lastCueTick = sorted.length > 0 ? sorted[sorted.length - 1].tick : 0
+  const endTick = Math.max(Math.round(totalBeats * PPQ), lastCueTick)
+
+  useEffect(() => {
+    if (selectedTick !== null && !cues.some((cue) => cue.tick === selectedTick)) {
+      setSelectedTick(null)
+    }
+  }, [cues, selectedTick])
+
+  // Safety audit: with no cues this still creates one default/Base span from
+  // tick zero through the visible song extent.
+  const spans = []
+  let startTick = 0
+  let snapshotId = defaultSnapshotId
+  for (const cue of sorted) {
+    spans.push({ startTick, endTick: cue.tick, snapshotId })
+    startTick = cue.tick
+    snapshotId = cue.snapshotId
+  }
+  spans.push({ startTick, endTick, snapshotId })
+
+  return (
+    <div
+      className="vmt-cue-lane"
+      style={{ top, height: CUE_LANE_HEIGHT }}
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) setSelectedTick(null)
+      }}
+    >
+      <div className="vmt-cue-spans" aria-hidden="true">
+        {spans.map((span, index) => {
+          const left = mirrorTickToPixel(span.startTick, scrollOffsetRef.current, pixelsPerBeatRef.current)
+          const right = mirrorTickToPixel(span.endTick, scrollOffsetRef.current, pixelsPerBeatRef.current)
+          const label = names.get(span.snapshotId) || 'Base'
+          return (
+            <div
+              key={span.startTick + '-' + span.endTick + '-' + index}
+              className={'vmt-cue-span vmt-cue-span-' + (index % 2)}
+              style={{ left, width: Math.max(0, right - left) }}
+            >
+              <span>{label}</span>
+            </div>
+          )
+        })}
+      </div>
+      {sorted.map((cue) => {
+        const x = mirrorTickToPixel(cue.tick, scrollOffsetRef.current, pixelsPerBeatRef.current)
+        return (
+          <CueMarker
+            key={cue.tick}
+            cue={cue}
+            x={x}
+            laneWidth={width}
+            snapshots={snapshots}
+            selected={selectedTick === cue.tick}
+            onSelect={setSelectedTick}
+            onMoveCue={async (oldTick, newTick) => {
+              const moved = await onMoveCue(oldTick, newTick)
+              if (moved) setSelectedTick(newTick)
+              return moved
+            }}
+            onRemoveCue={onRemoveCue}
+            onRepointCue={onRepointCue}
+            pixelsPerBeatRef={pixelsPerBeatRef}
+            scrollOffsetRef={scrollOffsetRef}
+            containerRef={containerRef}
+          />
+        )
+      })}
+    </div>
+  )
+}
+
+// Simplified, read-only clip/pattern rendering: reuse the audio timeline's
+// draw primitives with waveforms forced off so each clip/pattern reads as a
+// plain locked colour block that matches the editor's geometry + palette.
+const MIRROR_DISPLAY_SETTINGS = { timelineShowWaveforms: 'never' }
+const EMPTY_SELECTION = new Set()
+
+/**
+ * Read-only mirror of the audio timeline's canvas. Draws the shared grid,
+ * clips and pattern-blocks as simplified locked blocks (no waveforms, no
+ * interaction), plus a reserved cue-lane band and the shared playhead line.
+ *
+ * Pointer-down / drag anywhere on the strip seeks the shared transport — the
+ * same seek the audio ruler performs — via the parent's onScrub callback. It
+ * never mutates timeline data.
+ *
+ * Props:
+ *   pixelsPerBeatRef, scrollOffsetRef, playheadBeatRef  — shared scale + playhead
+ *   tracks, clips, regions, patternBlocks, patterns, bpmRef  — timeline data
+ *   snapGranularity  — for seek snapping (matches the audio ruler)
+ *   onScrub(beat, { phase })  — seek/scrub the shared transport
+ *   onWheel(e)  — shared zoom/scroll handler
+ *
+ * Imperative handle: redraw(), positionPlayhead(beat), getWidth()
+ */
+const VideoMirrorCanvas = forwardRef(function VideoMirrorCanvas(
+  {
+    pixelsPerBeatRef, scrollOffsetRef, playheadBeatRef,
+    tracks, clips, regions, patternBlocks, patterns, bpmRef,
+    cues = [], snapshots = [], defaultSnapshotId = '', totalBeats = 0,
+    snapGranularity = '1/16', onScrub, onWheel,
+    onMoveCue, onRemoveCue, onRepointCue,
+  },
+  ref,
+) {
+  const containerRef = useRef(null)
+  const bgRef = useRef(null)          // grid + cue-lane band
+  const ctRef = useRef(null)          // clips + pattern blocks
+  const playheadLineRef = useRef(null)
+  const sizeRef = useRef({ w: 0, h: 0 })
+
+  // Stable refs so the draw path never reads stale closures.
+  const tracksRef = useRef(tracks)
+  const clipsRef = useRef(clips)
+  const regionsRef = useRef(regions)
+  const patternBlocksRef = useRef(patternBlocks)
+  const patternsRef = useRef(patterns)
+  const snapGranularityRef = useRef(snapGranularity)
+  const trackIdToIndexRef = useRef({})
+  tracksRef.current = tracks
+  clipsRef.current = clips
+  regionsRef.current = regions
+  patternBlocksRef.current = patternBlocks
+  patternsRef.current = patterns
+  snapGranularityRef.current = snapGranularity
+
+  useEffect(() => {
+    const map = {}
+    for (let i = 0; i < tracks.length; i++) map[tracks[i].id] = i
+    trackIdToIndexRef.current = map
+  }, [tracks])
+
+  function applySize(canvas, w, h, dpr) {
+    canvas.width = w * dpr
+    canvas.height = h * dpr
+    canvas.style.width = `${w}px`
+    canvas.style.height = `${h}px`
+    const ctx = canvas.getContext('2d')
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    return ctx
+  }
+
+  // ── Draw wrappers ─────────────────────────────────────────────────────────
+
+  function redrawGrid() {
+    const { w, h } = sizeRef.current
+    if (w === 0 || h === 0) return
+    const ctx = bgRef.current?.getContext('2d')
+    if (!ctx) return
+    const dpr = window.devicePixelRatio || 1
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    const palette = resolveTimelinePalette()
+    ctx.clearRect(0, 0, w, h)
+    // Tracks retain their original indexing, shifted below the first snapshot lane.
+    ctx.save()
+    ctx.translate(0, CUE_LANE_HEIGHT)
+    drawGrid(
+      ctx, w, h - CUE_LANE_HEIGHT,
+      scrollOffsetRef.current, pixelsPerBeatRef.current,
+      tracksRef.current.length, tracksRef.current, palette, null,
+      snapGranularityRef.current,
+    )
+    ctx.restore()
+    // Snapshot cue lane background; editable DOM cues are layered above it.
+    ctx.fillStyle = withAlpha(palette.laneSeparator, 0.12)
+    ctx.fillRect(0, 0, w, CUE_LANE_HEIGHT)
+    ctx.strokeStyle = palette.laneSeparator
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    ctx.moveTo(0, CUE_LANE_HEIGHT - 0.5)
+    ctx.lineTo(w, CUE_LANE_HEIGHT - 0.5)
+    ctx.stroke()
+  }
+
+  function redrawContent() {
+    const { w, h } = sizeRef.current
+    if (w === 0 || h === 0) return
+    const ctx = ctRef.current?.getContext('2d')
+    if (!ctx) return
+    const dpr = window.devicePixelRatio || 1
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    const palette = resolveTimelinePalette()
+    const tidx = trackIdToIndexRef.current
+    const mutedTrackIds = new Set(
+      (tracksRef.current || []).filter((t) => t.muted).map((t) => t.id),
+    )
+    const trackColorById = buildResolvedTrackColorMap(tracksRef.current, palette.trackPalette)
+
+    ctx.save()
+    ctx.translate(0, CUE_LANE_HEIGHT)
+    drawClips(
+      ctx, w, h - CUE_LANE_HEIGHT,
+      scrollOffsetRef.current, pixelsPerBeatRef.current,
+      clipsRef.current, tidx, regionsRef.current,
+      EMPTY_SELECTION, {}, {}, {}, bpmRef?.current,
+      mutedTrackIds, palette, MIRROR_DISPLAY_SETTINGS, trackColorById, null,
+    )
+    drawPatternBlocks(
+      ctx, w, h - CUE_LANE_HEIGHT,
+      scrollOffsetRef.current, pixelsPerBeatRef.current,
+      patternBlocksRef.current, tidx, patternsRef.current, regionsRef.current,
+      EMPTY_SELECTION, mutedTrackIds, palette, MIRROR_DISPLAY_SETTINGS, trackColorById, null,
+    )
+    ctx.restore()
+  }
+
+  function positionPlayhead(beat) {
+    const el = playheadLineRef.current
+    if (!el) return
+    const px = mirrorTickToPixel(Math.round(beat * PPQ), scrollOffsetRef.current, pixelsPerBeatRef.current)
+    const rawPx = px
+    const w = sizeRef.current.w || 9999
+    if (rawPx >= -PLAYHEAD_LINE_WIDTH && rawPx <= w + PLAYHEAD_LINE_WIDTH) {
+      el.style.transform = `translateX(${px}px)`
+      el.style.opacity = '1'
+    } else {
+      el.style.opacity = '0'
+    }
+  }
+
+  function redraw() {
+    redrawGrid()
+    redrawContent()
+    positionPlayhead(playheadBeatRef.current)
+  }
+
+  useImperativeHandle(ref, () => ({
+    redraw,
+    positionPlayhead,
+    getWidth: () => sizeRef.current.w,
+  }), [])
+
+  // ── Sizing ────────────────────────────────────────────────────────────────
+
+  function sizeAndDraw(container) {
+    const rw = Math.floor(container.clientWidth)
+    const rh = Math.floor(container.clientHeight)
+    if (rw === 0 || rh === 0) return
+    if (rw === sizeRef.current.w && rh === sizeRef.current.h) return
+    sizeRef.current = { w: rw, h: rh }
+    const dpr = window.devicePixelRatio || 1
+    ;[bgRef, ctRef].forEach((r) => { if (r.current) applySize(r.current, rw, rh, dpr) })
+    redraw()
+  }
+
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+    sizeAndDraw(container)
+    const timerId = setTimeout(() => sizeAndDraw(container), 50)
+    const observer = new ResizeObserver(() => sizeAndDraw(container))
+    observer.observe(container)
+    return () => { clearTimeout(timerId); observer.disconnect() }
+  }, [])
+
+  // ── Shared playhead: reposition on every 60fps frame (no local clock) ──────
+
+  useEffect(() => {
+    const unsub = playheadClock.onFrame((posMs, bpm, positionBeats) => {
+      const beat = Number.isFinite(positionBeats) ? positionBeats : posMs * bpm / 60000
+      playheadBeatRef.current = beat
+      positionPlayhead(beat)
+    })
+    return unsub
+  }, [])
+
+  // ── Wheel (non-passive so preventDefault works) ───────────────────────────
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el || !onWheel) return
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [onWheel])
+
+  // ── Theme repaint ─────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    const onTheme = () => redraw()
+    window.addEventListener('xleth-theme-changed', onTheme)
+    return () => window.removeEventListener('xleth-theme-changed', onTheme)
+  }, [])
+
+  // ── Pointer-down / drag → seek the shared transport (read-only scrub) ──────
+
+  const seekFromClientX = useCallback((clientX, phase, e) => {
+    const rect = containerRef.current?.getBoundingClientRect()
+    if (!rect || !onScrub) return
+    const localX = clientX - rect.left
+    const beat = pixelToBeat(localX, scrollOffsetRef.current, pixelsPerBeatRef.current)
+    const modifiers = { alt: e.altKey, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey }
+    const snapped = snapBeatToGrid(Math.max(0, beat), modifiers, snapGranularityRef.current)
+    onScrub(snapped, { phase })
+  }, [onScrub, pixelsPerBeatRef, scrollOffsetRef])
+
+  const handleMouseDown = useCallback((e) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    seekFromClientX(e.clientX, 'move', e)
+    const onMove = (me) => seekFromClientX(me.clientX, 'move', me)
+    const onUp = (me) => {
+      seekFromClientX(me.clientX, 'commit', me)
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [seekFromClientX])
+
+  const contentH = Math.max(tracks.length * TRACK_HEIGHT + CUE_LANE_HEIGHT, TRACK_HEIGHT + CUE_LANE_HEIGHT)
+
+  return (
+    <div
+      ref={containerRef}
+      className="vmt-canvas-container"
+      style={{ minHeight: contentH, height: contentH }}
+      onMouseDown={handleMouseDown}
+    >
+      <canvas ref={bgRef} className="timeline-canvas-layer" />
+      <canvas ref={ctRef} className="timeline-canvas-layer" />
+      <CueLane
+        top={0}
+        width={sizeRef.current.w}
+        cues={cues}
+        snapshots={snapshots}
+        defaultSnapshotId={defaultSnapshotId}
+        totalBeats={totalBeats}
+        pixelsPerBeatRef={pixelsPerBeatRef}
+        scrollOffsetRef={scrollOffsetRef}
+        containerRef={containerRef}
+        onMoveCue={onMoveCue}
+        onRemoveCue={onRemoveCue}
+        onRepointCue={onRepointCue}
+      />
+      <div
+        ref={playheadLineRef}
+        className="timeline-playhead-line"
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: `${PLAYHEAD_LINE_WIDTH}px`,
+          height: '100%',
+          backgroundColor: 'var(--theme-timeline-playhead-line)',
+          pointerEvents: 'none',
+          zIndex: 10,
+          willChange: 'transform',
+          transform: 'translateX(-10px)',
+        }}
+      />
+    </div>
+  )
+})
+
+export default VideoMirrorCanvas

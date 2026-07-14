@@ -11,6 +11,7 @@
  *   'timeline-patterns-changed' — pattern added / updated / removed
  *   'timeline-pattern-blocks-changed' — pattern block added / moved / removed
  *   'timeline-pattern-changed'  — individual pattern notes/settings mutated (detail: { patternId })
+ *   'timeline-grid-changed'    — grid, snapshot, or snapshot-cue data mutated
  *   'open-piano-roll'           — request to open piano roll (detail: { patternId, blockId })
  *   'close-piano-roll'          — request to close piano roll
  *   'open-sampler-settings'     — request to open sampler panel (detail: { patternId })

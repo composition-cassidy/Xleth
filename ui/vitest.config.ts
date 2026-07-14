@@ -8,6 +8,7 @@ export default defineConfig({
   esbuild: { jsx: 'automatic' },
   test: {
     environment: 'node',
+    setupFiles: ['./src/test-setup.js'],
     include: ['src/**/*.{test,spec}.{ts,tsx,js,jsx}'],
     exclude: [
       '**/build/**',

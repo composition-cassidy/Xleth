@@ -4,8 +4,10 @@ import { timelineEvents } from '../../timelineEvents.js'
 import useGridEditStore from '../../stores/useGridEditStore.js'
 import { XlethButton, XlethIconButton } from '../common/XlethButton.jsx'
 import XlethPanelHeader from '../common/XlethPanelHeader.jsx'
+import XlethSelect from '../common/XlethSelect.jsx'
 import VideoCanvasSettingsPopover from './VideoCanvasSettingsPopover.jsx'
 import VideoTrackList from './VideoTrackList.jsx'
+import VideoMirrorTimeline from './VideoMirrorTimeline.jsx'
 
 const SUB_UNITS_PER_COLUMN = 8
 const SUB_UNITS_PER_ROW    = 8
@@ -110,9 +112,16 @@ export default function VideoOverviewTab() {
 
   const [layout, setLayout] = useState(DEFAULT_LAYOUT)
   const [tracks, setTracks] = useState([])
+  const [snapshots, setSnapshots] = useState([])
   const [linked, setLinked] = useState(false)
   const [showCanvasPopover, setShowCanvasPopover] = useState(false)
+  const [renamingSnapshot, setRenamingSnapshot] = useState(null)
+  const [renameValue, setRenameValue] = useState('')
+  const [snapshotMutationPending, setSnapshotMutationPending] = useState(false)
   const canvasTriggerRef = useRef(null)
+  const renameInputRef = useRef(null)
+  const snapshotMutationRef = useRef(false)
+  const renameCancelRef = useRef(false)
 
   const fetchLayout = useCallback(async () => {
     try {
@@ -132,11 +141,21 @@ export default function VideoOverviewTab() {
     }
   }, [])
 
+  const fetchSnapshots = useCallback(async () => {
+    try {
+      const next = await window.xleth?.timeline?.listSnapshots?.()
+      if (Array.isArray(next)) setSnapshots(next)
+    } catch (e) {
+      console.error('[VideoTab] listSnapshots failed:', e)
+    }
+  }, [])
+
   useEffect(() => {
     console.log('[VideoTab] mounted')
     fetchLayout()
     fetchTracks()
-    const onGrid   = () => fetchLayout()
+    fetchSnapshots()
+    const onGrid   = () => { fetchLayout(); fetchSnapshots() }
     const onTracks = () => fetchTracks()
     timelineEvents.addEventListener('timeline-grid-changed',  onGrid)
     timelineEvents.addEventListener('timeline-tracks-changed', onTracks)
@@ -145,7 +164,11 @@ export default function VideoOverviewTab() {
       timelineEvents.removeEventListener('timeline-grid-changed',  onGrid)
       timelineEvents.removeEventListener('timeline-tracks-changed', onTracks)
     }
-  }, [fetchLayout, fetchTracks])
+  }, [fetchLayout, fetchTracks, fetchSnapshots])
+
+  useEffect(() => {
+    if (renamingSnapshot) renameInputRef.current?.focus()
+  }, [renamingSnapshot])
 
   const canvasW    = layout.canvasWidth  ?? 1920
   const canvasH    = layout.canvasHeight ?? 1080
@@ -186,32 +209,163 @@ export default function VideoOverviewTab() {
     notify()
   }, [layout])
 
+  const activeSnapshot = snapshots.find(snapshot => snapshot.active) ?? snapshots[0] ?? null
+  const snapshotOptions = snapshots.map(snapshot => ({ value: snapshot.id, label: snapshot.name }))
+
+  // The editing snapshot is deliberately independent of playback/transport.
+  // Each operation re-reads the engine source of truth before refreshing the grid.
+  const refreshSnapshotsAfterMutation = useCallback(async () => {
+    await fetchSnapshots()
+    notify()
+  }, [fetchSnapshots])
+
+  const recoverSnapshotState = useCallback(async () => {
+    await Promise.all([fetchSnapshots(), fetchLayout()])
+  }, [fetchLayout, fetchSnapshots])
+
+  const beginSnapshotMutation = useCallback(() => {
+    if (snapshotMutationRef.current) return false
+    snapshotMutationRef.current = true
+    setSnapshotMutationPending(true)
+    return true
+  }, [])
+
+  const endSnapshotMutation = useCallback(() => {
+    snapshotMutationRef.current = false
+    setSnapshotMutationPending(false)
+  }, [])
+
+  const handleSetActiveSnapshot = useCallback(async (id) => {
+    if (!id || id === activeSnapshot?.id || !beginSnapshotMutation()) return
+    try {
+      await window.xleth?.timeline?.setActiveSnapshot?.(id)
+      await refreshSnapshotsAfterMutation()
+    } catch (e) {
+      console.error('[VideoTab] setActiveSnapshot failed:', e)
+      await recoverSnapshotState()
+    } finally {
+      endSnapshotMutation()
+    }
+  }, [activeSnapshot?.id, beginSnapshotMutation, endSnapshotMutation, recoverSnapshotState, refreshSnapshotsAfterMutation])
+
+  const handleCreateSnapshot = useCallback(async () => {
+    if (!beginSnapshotMutation()) return
+    try {
+      const timeline = window.xleth?.timeline
+      // Both Run 1 bridge signatures create an empty snapshot here.
+      if (timeline?.createSnapshot?.length >= 2) {
+        await timeline.createSnapshot(false, 'New Snapshot')
+      } else {
+        await timeline?.createSnapshot?.('New Snapshot')
+      }
+      await refreshSnapshotsAfterMutation()
+    } catch (e) {
+      console.error('[VideoTab] createSnapshot failed:', e)
+      await recoverSnapshotState()
+    } finally {
+      endSnapshotMutation()
+    }
+  }, [beginSnapshotMutation, endSnapshotMutation, recoverSnapshotState, refreshSnapshotsAfterMutation])
+
+  const handleDuplicateSnapshot = useCallback(async () => {
+    if (!beginSnapshotMutation()) return
+    try {
+      const timeline = window.xleth?.timeline
+      if (timeline?.duplicateSnapshot?.length >= 1) {
+        await timeline.duplicateSnapshot('Snapshot Copy')
+      } else {
+        await timeline?.duplicateSnapshot?.()
+      }
+      await refreshSnapshotsAfterMutation()
+    } catch (e) {
+      console.error('[VideoTab] duplicateSnapshot failed:', e)
+      await recoverSnapshotState()
+    } finally {
+      endSnapshotMutation()
+    }
+  }, [beginSnapshotMutation, endSnapshotMutation, recoverSnapshotState, refreshSnapshotsAfterMutation])
+
+  const startRenameSnapshot = useCallback(() => {
+    if (!activeSnapshot || snapshotMutationPending) return
+    renameCancelRef.current = false
+    setRenameValue(activeSnapshot.name)
+    setRenamingSnapshot(activeSnapshot)
+  }, [activeSnapshot, snapshotMutationPending])
+
+  const cancelRenameSnapshot = useCallback(() => {
+    renameCancelRef.current = true
+    setRenamingSnapshot(null)
+    setRenameValue('')
+  }, [])
+
+  const commitRenameSnapshot = useCallback(async () => {
+    if (renameCancelRef.current) {
+      renameCancelRef.current = false
+      return
+    }
+    const snapshot = renamingSnapshot
+    if (!snapshot || snapshotMutationPending || !beginSnapshotMutation()) return
+    const name = renameValue.trim()
+    if (!name || name === snapshot.name) {
+      endSnapshotMutation()
+      cancelRenameSnapshot()
+      return
+    }
+    try {
+      await window.xleth?.timeline?.renameSnapshot?.(snapshot.id, name)
+      await refreshSnapshotsAfterMutation()
+    } catch (e) {
+      console.error('[VideoTab] renameSnapshot failed:', e)
+      await recoverSnapshotState()
+    } finally {
+      endSnapshotMutation()
+      cancelRenameSnapshot()
+    }
+  }, [beginSnapshotMutation, cancelRenameSnapshot, endSnapshotMutation, recoverSnapshotState, refreshSnapshotsAfterMutation, renameValue, renamingSnapshot, snapshotMutationPending])
+
+  const handleDeleteSnapshot = useCallback(async () => {
+    if (!activeSnapshot || snapshots.length <= 1 || snapshotMutationPending) return
+    if (!window.confirm(`Delete snapshot "${activeSnapshot.name}"?`)) return
+    if (!beginSnapshotMutation()) return
+    try {
+      await window.xleth?.timeline?.deleteSnapshot?.(activeSnapshot.id)
+      await refreshSnapshotsAfterMutation()
+    } catch (e) {
+      console.error('[VideoTab] deleteSnapshot failed:', e)
+      await recoverSnapshotState()
+    } finally {
+      endSnapshotMutation()
+    }
+  }, [activeSnapshot, beginSnapshotMutation, endSnapshotMutation, recoverSnapshotState, refreshSnapshotsAfterMutation, snapshotMutationPending, snapshots.length])
+
   return (
     <div className="grid-tab video-overview-tab">
       {/* ── Grid Layout: columns×rows + link + gap + preview ── */}
       <div className="grid-tab-section gsp-compact-section">
         <XlethPanelHeader title="Grid Layout">
-          <span className="tl-display-root">
-            <button
-              ref={canvasTriggerRef}
-              type="button"
-              className={`grid-tab-btn${showCanvasPopover ? ' active' : ''}`}
-              onClick={() => setShowCanvasPopover(v => !v)}
-              title="Canvas settings"
-            >
-                    <span className="vot-canvas-label">Canvas</span>
-                    <span className="vot-canvas-value">{canvasW}×{canvasH} · {previewFps}fps</span>
-              <ChevronDown size={12} aria-hidden="true" />
-            </button>
-            {showCanvasPopover && (
-              <VideoCanvasSettingsPopover
-                layout={layout}
-                setLayout={setLayout}
-                onClose={() => setShowCanvasPopover(false)}
-                triggerRef={canvasTriggerRef}
-              />
-            )}
-          </span>
+          <div className="vot-header-controls">
+            <span className="tl-display-root">
+              <button
+                ref={canvasTriggerRef}
+                type="button"
+                className={`grid-tab-btn${showCanvasPopover ? ' active' : ''}`}
+                onClick={() => setShowCanvasPopover(v => !v)}
+                title="Canvas settings"
+              >
+                <span className="vot-canvas-label">Canvas</span>
+                <span className="vot-canvas-value">{canvasW}×{canvasH} · {previewFps}fps</span>
+                <ChevronDown size={12} aria-hidden="true" />
+              </button>
+              {showCanvasPopover && (
+                <VideoCanvasSettingsPopover
+                  layout={layout}
+                  setLayout={setLayout}
+                  onClose={() => setShowCanvasPopover(false)}
+                  triggerRef={canvasTriggerRef}
+                />
+              )}
+            </span>
+          </div>
         </XlethPanelHeader>
         <div className="gsp-body">
           <div className="gsp-controls">
@@ -316,6 +470,58 @@ export default function VideoOverviewTab() {
             <span>Clear Layout</span>
           </XlethButton>
         </div>
+      </div>
+
+      <div className="vot-timeline-section">
+        <section className="vot-snapshot-toolbar" aria-label="Snapshot controls">
+          <div className="vot-snapshot-controls" aria-label="Editing snapshot">
+            <span className="vot-snapshot-label">Editing:</span>
+            {renamingSnapshot ? (
+              <input
+                ref={renameInputRef}
+                className="vot-snapshot-rename"
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                onBlur={commitRenameSnapshot}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') { e.preventDefault(); commitRenameSnapshot() }
+                  if (e.key === 'Escape') { e.preventDefault(); cancelRenameSnapshot() }
+                }}
+                aria-label="Snapshot name"
+              />
+            ) : (
+              <XlethSelect
+                className="vot-snapshot-select"
+                value={activeSnapshot?.id ?? ''}
+                options={snapshotOptions}
+                onChange={handleSetActiveSnapshot}
+                disabled={snapshotMutationPending || snapshotOptions.length === 0}
+                ariaLabel="Editing snapshot"
+                placeholder="Loading snapshots..."
+              />
+            )}
+            <XlethButton className="vot-snapshot-button" onClick={handleCreateSnapshot} disabled={snapshotMutationPending}>
+              + New
+            </XlethButton>
+            <XlethButton className="vot-snapshot-button" onClick={handleDuplicateSnapshot} disabled={!activeSnapshot || snapshotMutationPending}>
+              Duplicate
+            </XlethButton>
+            <XlethButton className="vot-snapshot-button" onClick={startRenameSnapshot} disabled={!activeSnapshot || snapshotMutationPending}>
+              Rename
+            </XlethButton>
+            <XlethButton
+              className="vot-snapshot-button vot-snapshot-button--danger"
+              onClick={handleDeleteSnapshot}
+              disabled={!activeSnapshot || snapshots.length <= 1 || snapshotMutationPending}
+              title={snapshots.length <= 1 ? 'At least one snapshot is required' : 'Delete editing snapshot'}
+            >
+              Delete
+            </XlethButton>
+          </div>
+        </section>
+
+        {/* ── Read-only mirror of the Audio timeline (shared playhead + scale) ── */}
+        <VideoMirrorTimeline />
       </div>
     </div>
   )
