@@ -18,7 +18,18 @@ if(EXISTS "${_VCPKG_INSTALLED}")
     list(APPEND CMAKE_PREFIX_PATH "${_VCPKG_INSTALLED}")
     list(APPEND CMAKE_PREFIX_PATH "${_VCPKG_INSTALLED}/debug")
     list(APPEND CMAKE_MODULE_PATH "${_VCPKG_INSTALLED}/share/ffmpeg")
-    set(VCPKG_MANIFEST_MODE OFF CACHE BOOL "" FORCE)
+    # Only force manifest mode OFF when NO vcpkg toolchain is driving this build
+    # directory. If a toolchain is active (VCPKG_ROOT in the environment, or a
+    # CMAKE_TOOLCHAIN_FILE cached from the first configure), it owns manifest
+    # mode for the lifetime of the build dir — and it already ran a manifest
+    # install into ${CMAKE_BINARY_DIR}/vcpkg_installed. Flipping the mode OFF
+    # underneath it writes an inconsistent cache; the very next configure then
+    # dies in vcpkg.cmake with "manifest mode was disabled for a build directory
+    # where it was initially enabled". Leave the toolchain in charge instead
+    # (find_package still resolves the installed packages, manifest stays ON).
+    if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+        set(VCPKG_MANIFEST_MODE OFF CACHE BOOL "" FORCE)
+    endif()
     message(STATUS "Using pre-installed vcpkg packages at ${_VCPKG_INSTALLED}")
 endif()
 

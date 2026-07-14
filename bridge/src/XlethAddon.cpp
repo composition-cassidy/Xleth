@@ -274,6 +274,71 @@ Napi::Value Timeline_GetGridLayout(const Napi::CallbackInfo& info)
     return dispatchToService(info, "timeline_getGridLayout");
 }
 
+Napi::Value Timeline_CreateSnapshot(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_createSnapshot");
+}
+
+Napi::Value Timeline_DuplicateSnapshot(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_duplicateSnapshot");
+}
+
+Napi::Value Timeline_DeleteSnapshot(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_deleteSnapshot");
+}
+
+Napi::Value Timeline_RenameSnapshot(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_renameSnapshot");
+}
+
+Napi::Value Timeline_SetActiveSnapshot(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setActiveSnapshot");
+}
+
+Napi::Value Timeline_ListSnapshots(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_listSnapshots");
+}
+
+Napi::Value Timeline_AddCue(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_addCue");
+}
+
+Napi::Value Timeline_MoveCue(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_moveCue");
+}
+
+Napi::Value Timeline_RemoveCue(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_removeCue");
+}
+
+Napi::Value Timeline_ListCues(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_listCues");
+}
+
+Napi::Value Timeline_GetDefaultSnapshot(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_getDefaultSnapshot");
+}
+
+// Slice 2 snapshot-transition authoring IPC. The service handler
+// (XlethEngineService Timeline_SetCueTransition) and its dispatch entry already
+// exist, as do the preload / electron-main bindings that call
+// callWorker('timeline_setCueTransition', ...); this named export is the missing
+// link that makes the transition-authoring path reachable through the addon.
+Napi::Value Timeline_SetCueTransition(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_setCueTransition");
+}
+
 Napi::Value Timeline_SetGridLayout(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "timeline_setGridLayout");
@@ -637,6 +702,19 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("timeline_spliceClipsAtPlayhead",   Napi::Function::New(env, Timeline_SpliceClipsAtPlayhead));
 
     // ── Grid Layout ──────────────────────────────────────────────────────────
+    exports.Set("timeline_createSnapshot",    Napi::Function::New(env, Timeline_CreateSnapshot));
+    exports.Set("timeline_duplicateSnapshot", Napi::Function::New(env, Timeline_DuplicateSnapshot));
+    exports.Set("timeline_deleteSnapshot",    Napi::Function::New(env, Timeline_DeleteSnapshot));
+    exports.Set("timeline_renameSnapshot",    Napi::Function::New(env, Timeline_RenameSnapshot));
+    exports.Set("timeline_setActiveSnapshot", Napi::Function::New(env, Timeline_SetActiveSnapshot));
+    exports.Set("timeline_listSnapshots",      Napi::Function::New(env, Timeline_ListSnapshots));
+    // ── Grid Cues (time-based snapshot resolution) ───────────────────────────
+    exports.Set("timeline_addCue",             Napi::Function::New(env, Timeline_AddCue));
+    exports.Set("timeline_moveCue",            Napi::Function::New(env, Timeline_MoveCue));
+    exports.Set("timeline_removeCue",          Napi::Function::New(env, Timeline_RemoveCue));
+    exports.Set("timeline_listCues",           Napi::Function::New(env, Timeline_ListCues));
+    exports.Set("timeline_getDefaultSnapshot", Napi::Function::New(env, Timeline_GetDefaultSnapshot));
+    exports.Set("timeline_setCueTransition",   Napi::Function::New(env, Timeline_SetCueTransition));
     exports.Set("timeline_getGridLayout",       Napi::Function::New(env, Timeline_GetGridLayout));
     exports.Set("timeline_setGridLayout",       Napi::Function::New(env, Timeline_SetGridLayout));
     exports.Set("timeline_assignTrackToGrid",            Napi::Function::New(env, Timeline_AssignTrackToGrid));
