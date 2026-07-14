@@ -21,9 +21,73 @@ export function mirrorTickToPixel(tick, scrollOffset, pixelsPerBeat) {
   return beatToPlayheadPixel(tick / PPQ, scrollOffset, pixelsPerBeat, PLAYHEAD_LINE_WIDTH)
 }
 
+// ── Snapshot transition editing (Slice 4) ──────────────────────────────────
+// The cue MARKER is the fixed pin (the boundary = 50% blend, on the beat) and is
+// never moved by the transition editor. The two draggable handles around it —
+// Start (left of the pin) and End (right of it) — author the only two values
+// that change: startOffsetTicks / endOffsetTicks (>= 0, in TICKS). A hard cut is
+// both offsets 0 (the default); transitions are opt-in via the Enable toggle.
+
+// Only the two styles the engine renders distinctly in v1 are exposed. The
+// engine silently falls back every other Type to Crossfade, so surfacing
+// Zoom / Push / Slide / Dissolve / OutThenIn would misrepresent what actually
+// renders. Add each here as the engine gains a real shader for it.
+export const TRANSITION_TYPE_OPTIONS = [
+  { value: 'crossfade', label: 'Crossfade' },
+  { value: 'lineSweep', label: 'Line Sweep' },
+]
+
+// Window seeded on both sides of the pin the moment a hard-cut cue is switched
+// to a transition, so the Start/End handles appear off the pin and are grabbable.
+export const DEFAULT_TRANSITION_WINDOW_TICKS = PPQ  // one beat
+
+// Snap a handle's pointer position to a whole tick. Offsets are authored in
+// ticks, so every drag resolves to an integer tick: by default it snaps to the
+// musical grid; holding Alt frees the snap but STILL quantizes to a whole tick
+// (the engine's progress curve is sample-deterministic either way).
+export function transitionHandleTick(localX, scrollOffset, pixelsPerBeat, modifiers, granularity) {
+  const beat = pixelToBeat(localX, scrollOffset, pixelsPerBeat)
+  const snappedBeat = snapBeatToGrid(Math.max(0, beat), modifiers, granularity)
+  return Math.max(0, Math.round(snappedBeat * PPQ))
+}
+
+// Offsets are stored >= 0 and never cross the pin: Start sits at or left of the
+// pin, End at or right of it.
+export function clampStartOffsetTicks(pinTick, handleTick) {
+  return Math.max(0, pinTick - handleTick)
+}
+export function clampEndOffsetTicks(pinTick, handleTick) {
+  return Math.max(0, handleTick - pinTick)
+}
+
+// Merge a partial edit into the FULL six-field transition object the engine
+// expects. setCueTransition replaces the whole transition (any omitted field
+// reverts to its engine default), so every write must send all six fields.
+export function buildCueTransition(current, patch = {}) {
+  const pick = (key, fallback) => (
+    patch[key] !== undefined ? patch[key]
+      : (current && current[key] !== undefined ? current[key] : fallback)
+  )
+  const merged = {
+    enabled:          !!pick('enabled', false),
+    startOffsetTicks: Math.max(0, Math.round(pick('startOffsetTicks', 0))),
+    endOffsetTicks:   Math.max(0, Math.round(pick('endOffsetTicks', 0))),
+    type:             pick('type', 'crossfade'),
+    freezeOutgoing:   !!pick('freezeOutgoing', true),
+    geomAngleDeg:     Number(pick('geomAngleDeg', 0)) || 0,
+  }
+  // Seed a visible window only when THIS edit is the one enabling a collapsed
+  // (hard-cut) transition — never when merely changing type/freeze later.
+  if (patch.enabled === true && merged.startOffsetTicks === 0 && merged.endOffsetTicks === 0) {
+    merged.startOffsetTicks = DEFAULT_TRANSITION_WINDOW_TICKS
+    merged.endOffsetTicks   = DEFAULT_TRANSITION_WINDOW_TICKS
+  }
+  return merged
+}
+
 function CueMarker({
   cue, x, laneWidth, snapshots, selected, onSelect, onMoveCue, onRemoveCue, onRepointCue,
-  pixelsPerBeatRef, scrollOffsetRef, containerRef,
+  onSetCueTransition, pixelsPerBeatRef, scrollOffsetRef, containerRef,
 }) {
   const markerRef = useRef(null)
 
@@ -87,33 +151,171 @@ function CueMarker({
       />
       {selected && (
         <div className="vmt-cue-editor" onMouseDown={(e) => e.stopPropagation()}>
-          <XlethSelect
-            className="vmt-cue-select"
-            value={cue.snapshotId}
-            options={options}
-            onChange={(snapshotId) => onRepointCue(cue.tick, snapshotId)}
-            ariaLabel={'Snapshot for cue at tick ' + cue.tick}
-            disabled={options.length === 0}
-          />
-          <button
-            type="button"
-            className="vmt-delete-cue"
-            onClick={() => onRemoveCue(cue.tick)}
-            aria-label={'Delete cue at tick ' + cue.tick}
-            title="Delete cue"
-          >
-            ×
-          </button>
+          <div className="vmt-cue-editor-row">
+            <XlethSelect
+              className="vmt-cue-select"
+              value={cue.snapshotId}
+              options={options}
+              onChange={(snapshotId) => onRepointCue(cue.tick, snapshotId)}
+              ariaLabel={'Snapshot for cue at tick ' + cue.tick}
+              disabled={options.length === 0}
+            />
+            <button
+              type="button"
+              className="vmt-delete-cue"
+              onClick={() => onRemoveCue(cue.tick)}
+              aria-label={'Delete cue at tick ' + cue.tick}
+              title="Delete cue"
+            >
+              ×
+            </button>
+          </div>
+          {/* Boundary animation. The pin (this marker) stays put; only the
+              Start/End handles on the timeline and these fields change. */}
+          <div className="vmt-transition-editor">
+            <label className="vmt-transition-row">
+              <input
+                type="checkbox"
+                className="vmt-transition-enable"
+                checked={!!cue.transition?.enabled}
+                onChange={(e) => onSetCueTransition(
+                  cue.tick, buildCueTransition(cue.transition, { enabled: e.target.checked }),
+                )}
+              />
+              <span>Transition</span>
+            </label>
+            {cue.transition?.enabled && (
+              <div className="vmt-transition-fields">
+                <XlethSelect
+                  className="vmt-transition-type"
+                  value={cue.transition?.type || 'crossfade'}
+                  options={TRANSITION_TYPE_OPTIONS}
+                  onChange={(type) => onSetCueTransition(
+                    cue.tick, buildCueTransition(cue.transition, { type }),
+                  )}
+                  ariaLabel={'Animation type for cue at tick ' + cue.tick}
+                />
+                <label className="vmt-transition-row">
+                  <input
+                    type="checkbox"
+                    checked={cue.transition?.freezeOutgoing !== false}
+                    onChange={(e) => onSetCueTransition(
+                      cue.tick, buildCueTransition(cue.transition, { freezeOutgoing: e.target.checked }),
+                    )}
+                  />
+                  <span>Freeze outgoing</span>
+                </label>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
   )
 }
 
+// The transition editor's on-timeline half: a shaded window around a cue's fixed
+// pin. The pin never moves here (that stays the CueMarker's drag) — only the two
+// offsets change. Rendered for every enabled cue as a visualization; the
+// selected cue additionally gets the draggable Start/End handles.
+function TransitionBand({
+  cue, laneWidth, interactive,
+  pixelsPerBeatRef, scrollOffsetRef, snapGranularityRef, containerRef,
+  onSetCueTransition,
+}) {
+  const bandRef = useRef(null)
+  const startRef = useRef(null)
+  const endRef = useRef(null)
+
+  const tr = cue.transition || {}
+  const pinTick = cue.tick
+  const startOffset = Math.max(0, tr.startOffsetTicks || 0)
+  const endOffset = Math.max(0, tr.endOffsetTicks || 0)
+  const scroll = scrollOffsetRef.current
+  const ppb = pixelsPerBeatRef.current
+  const startX = mirrorTickToPixel(Math.max(0, pinTick - startOffset), scroll, ppb)
+  const endX = mirrorTickToPixel(pinTick + endOffset, scroll, ppb)
+
+  const startDrag = useCallback((which) => (e) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    e.stopPropagation()
+    // Keep the outgoing offset fixed while dragging one handle; buildCueTransition
+    // supplies the full six-field object each write needs.
+    let next = buildCueTransition(tr, { enabled: true })
+    const paint = () => {
+      const s = mirrorTickToPixel(Math.max(0, pinTick - next.startOffsetTicks), scrollOffsetRef.current, pixelsPerBeatRef.current)
+      const en = mirrorTickToPixel(pinTick + next.endOffsetTicks, scrollOffsetRef.current, pixelsPerBeatRef.current)
+      if (bandRef.current) {
+        bandRef.current.style.left = s + 'px'
+        bandRef.current.style.width = Math.max(0, en - s) + 'px'
+      }
+      if (startRef.current) startRef.current.style.transform = 'translateX(' + s + 'px)'
+      if (endRef.current) endRef.current.style.transform = 'translateX(' + en + 'px)'
+    }
+    const onMove = (moveEvent) => {
+      const rect = containerRef.current?.getBoundingClientRect()
+      if (!rect) return
+      const localX = Math.max(0, Math.min(laneWidth, moveEvent.clientX - rect.left))
+      const modifiers = { alt: moveEvent.altKey, shift: moveEvent.shiftKey, ctrl: moveEvent.ctrlKey || moveEvent.metaKey }
+      const handleTick = transitionHandleTick(localX, scrollOffsetRef.current, pixelsPerBeatRef.current, modifiers, snapGranularityRef.current)
+      const patch = which === 'start'
+        ? { startOffsetTicks: clampStartOffsetTicks(pinTick, handleTick) }
+        : { endOffsetTicks: clampEndOffsetTicks(pinTick, handleTick) }
+      next = buildCueTransition(next, patch)
+      paint()
+    }
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      onSetCueTransition(pinTick, next)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp, { once: true })
+  }, [tr, pinTick, laneWidth, containerRef, scrollOffsetRef, pixelsPerBeatRef, snapGranularityRef, onSetCueTransition])
+
+  return (
+    <>
+      <div
+        ref={bandRef}
+        className="vmt-transition-band"
+        style={{ left: startX, width: Math.max(0, endX - startX) }}
+        aria-hidden="true"
+      />
+      {interactive && (
+        <>
+          <div
+            ref={startRef}
+            className="vmt-transition-handle vmt-transition-handle-start"
+            style={{ transform: 'translateX(' + startX + 'px)' }}
+            onPointerDown={startDrag('start')}
+            onMouseDown={(e) => e.stopPropagation()}
+            role="slider"
+            aria-label={'Transition start for cue at tick ' + pinTick}
+            aria-valuenow={startOffset}
+            title="Drag to set the transition start (snaps to grid; hold Alt to free)"
+          />
+          <div
+            ref={endRef}
+            className="vmt-transition-handle vmt-transition-handle-end"
+            style={{ transform: 'translateX(' + endX + 'px)' }}
+            onPointerDown={startDrag('end')}
+            onMouseDown={(e) => e.stopPropagation()}
+            role="slider"
+            aria-label={'Transition end for cue at tick ' + pinTick}
+            aria-valuenow={endOffset}
+            title="Drag to set the transition end (snaps to grid; hold Alt to free)"
+          />
+        </>
+      )}
+    </>
+  )
+}
+
 function CueLane({
   top, width, cues, snapshots, defaultSnapshotId, totalBeats,
-  pixelsPerBeatRef, scrollOffsetRef, containerRef,
-  onMoveCue, onRemoveCue, onRepointCue,
+  pixelsPerBeatRef, scrollOffsetRef, snapGranularityRef, containerRef,
+  onMoveCue, onRemoveCue, onRepointCue, onSetCueTransition,
 }) {
   const [selectedTick, setSelectedTick] = useState(null)
   const names = new Map(snapshots.map((snapshot) => [snapshot.id, snapshot.name]))
@@ -164,6 +366,22 @@ function CueLane({
           )
         })}
       </div>
+      {/* Transition windows (visualization for every enabled cue; the selected
+          cue also gets draggable Start/End handles). Rendered under the markers
+          so the fixed pin stays on top. */}
+      {sorted.filter((cue) => cue.transition?.enabled).map((cue) => (
+        <TransitionBand
+          key={'tb-' + cue.tick}
+          cue={cue}
+          laneWidth={width}
+          interactive={selectedTick === cue.tick}
+          pixelsPerBeatRef={pixelsPerBeatRef}
+          scrollOffsetRef={scrollOffsetRef}
+          snapGranularityRef={snapGranularityRef}
+          containerRef={containerRef}
+          onSetCueTransition={onSetCueTransition}
+        />
+      ))}
       {sorted.map((cue) => {
         const x = mirrorTickToPixel(cue.tick, scrollOffsetRef.current, pixelsPerBeatRef.current)
         return (
@@ -182,6 +400,7 @@ function CueLane({
             }}
             onRemoveCue={onRemoveCue}
             onRepointCue={onRepointCue}
+            onSetCueTransition={onSetCueTransition}
             pixelsPerBeatRef={pixelsPerBeatRef}
             scrollOffsetRef={scrollOffsetRef}
             containerRef={containerRef}
@@ -222,7 +441,7 @@ const VideoMirrorCanvas = forwardRef(function VideoMirrorCanvas(
     tracks, clips, regions, patternBlocks, patterns, bpmRef,
     cues = [], snapshots = [], defaultSnapshotId = '', totalBeats = 0,
     snapGranularity = '1/16', onScrub, onWheel,
-    onMoveCue, onRemoveCue, onRepointCue,
+    onMoveCue, onRemoveCue, onRepointCue, onSetCueTransition,
   },
   ref,
 ) {
@@ -450,10 +669,12 @@ const VideoMirrorCanvas = forwardRef(function VideoMirrorCanvas(
         totalBeats={totalBeats}
         pixelsPerBeatRef={pixelsPerBeatRef}
         scrollOffsetRef={scrollOffsetRef}
+        snapGranularityRef={snapGranularityRef}
         containerRef={containerRef}
         onMoveCue={onMoveCue}
         onRemoveCue={onRemoveCue}
         onRepointCue={onRepointCue}
+        onSetCueTransition={onSetCueTransition}
       />
       <div
         ref={playheadLineRef}

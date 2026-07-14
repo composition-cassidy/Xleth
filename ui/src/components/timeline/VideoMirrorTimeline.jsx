@@ -222,6 +222,18 @@ export default function VideoMirrorTimeline() {
     mutateCue('removeCue', (timeline) => timeline.removeCue(tick))
   ), [mutateCue])
 
+  // Replace the boundary animation on the cue at `tick`. The caller (the
+  // Start/End handles + popover in VideoMirrorCanvas) always passes the full
+  // six-field transition object because setCueTransition replaces the whole
+  // transition; missing fields would revert to engine defaults. The engine
+  // renders the result through the shm preview seam — the UI never animates it.
+  const handleSetCueTransition = useCallback((tick, transition) => (
+    mutateCue('setCueTransition', (timeline) => {
+      if (typeof timeline.setCueTransition !== 'function') return false
+      return timeline.setCueTransition(tick, transition)
+    })
+  ), [mutateCue])
+
   // ── Track transport bpm / play state (shared poller) ───────────────────────
   useEffect(() => subscribe((s) => {
     bpmRef.current = s.bpm
@@ -409,6 +421,7 @@ export default function VideoMirrorTimeline() {
               onMoveCue={handleMoveCue}
               onRemoveCue={handleRemoveCue}
               onRepointCue={handleRepointCue}
+              onSetCueTransition={handleSetCueTransition}
             />
           </div>
           <TimelineScrollbar
