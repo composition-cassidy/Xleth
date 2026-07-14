@@ -95,6 +95,10 @@ vcpkg_installed/
 *.log
 .codex-backups/
 fsc_test/
+# Bridge test-scratch projects & capture output — recreated by the test scripts
+# on every run (timestamps/ids churn), so they are generated, not fixtures.
+bridge/_test_*/
+bridge/_tmp_*
 
 # Design working files (PSDs etc. — not shipped source)
 art/
