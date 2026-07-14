@@ -79,24 +79,25 @@ This suite is separate from the vitest suite (different runner + command) and fr
 
 The CTest/npm wiring registers the tests; it does not fix them. The following were already failing when first run through the unified commands (they fail the same way when invoked manually) and are tracked as pre-existing:
 
-Engine (`ctest`, 40/46 passed, baseline 2026-07-03):
+Engine (`ctest`, 43/47 passed, baseline 2026-07-14):
 
 | Test | Failure |
 |------|---------|
-| `test_video_flip_applier` | assertion failure (exits almost immediately) |
 | `test_flip_orientation_golden` | assertion failure (GPU shader golden) |
 | `test_effects` | assertion failure |
 | `test_reverb` | assertion failure |
-| `test_frame_collector` | crashes with `0xc0000409` (fail-fast / stack buffer overrun) |
 | `test_real_render` | segfault — also hardcodes the project path `C:\Users\Krasen\Desktop\XLETH\test`, so it can only ever run on that machine |
+
+`test_video_flip_applier` and `test_frame_collector`, previously listed here, now pass on the current build — in particular `test_frame_collector` runs Tests 1–6 to `ALL TESTS PASSED` and the old `0xc0000409` fail-fast crash no longer reproduces. The suite is now 47 tests because the snapshot-transition feature added `test_snapshot_transition` (passing).
 
 Engine note: the FFmpeg-linked tests need the vcpkg DLLs on `PATH`; the CTest registration prepends `<vcpkg_installed>/bin` per test (`ENVIRONMENT_MODIFICATION`), which is what manual runs always relied on. Without it, 15 additional tests die on startup with `0xc0000135` (DLL not found). A stale `test_envelope_voice_events.exe` may exist in old build trees — its target was removed and it is intentionally not registered.
 
-Bridge (`npm test`, 9/13 passed, baseline 2026-07-03):
+Bridge (`npm test` → `run_contract_tests.js`, 12/15 passed, baseline 2026-07-14):
 
 | Script | Failure |
 |--------|---------|
 | `test_dynamics_viz.js` | `drain.schema === 1 (got 2)` — schema version mismatch |
 | `test_midi_import.js` | expects `C:\Users\Krasen\Desktop\XLETH\test.wav` (missing on disk) and sampler-metadata round-trip fails (`rootNote`/`attackMs` come back `undefined`) |
-| `test_patterns.js` | sampler-metadata round-trip fails (`rootNote`/`attackMs`/`decayMs`/`sustain` come back `undefined`) |
 | `test_pdc_live_presentation_refresh.js` | `EPERM` deleting its scratch copy under `diagnostics\pdc-stage7c\` during cleanup |
+
+`test_patterns.js`, previously listed here, now passes on the current build. `test_snapshot_transition_preview_contract.js` (the snapshot-transition live preview seam) passes.
