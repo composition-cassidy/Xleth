@@ -1257,6 +1257,38 @@ target_compile_definitions(test_tdpsola PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_loop_analysis ───────────────────────────────────────────────────────
+# Unit-tests the seam-similarity primitives in dsp/LoopAnalysis.h (NCC, phase-
+# alignment search, spectral distance) against synthetic signals with known
+# closed-form answers. These feed the Auto Loop Optimizer's cost function.
+add_executable(test_loop_analysis
+    test/test_loop_analysis.cpp
+)
+
+target_link_libraries(test_loop_analysis PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_loop_analysis PRIVATE
+    _CRT_SECURE_NO_WARNINGS=1
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_midi_importer ────────────────────────────────────────────────────────
 # Smoke test for MIDI summary parsing using a tiny generated SMF fixture file.
 add_executable(test_midi_importer
@@ -1835,6 +1867,7 @@ set(XLETH_ENGINE_TESTS
     test_sampler
     test_world_stretch
     test_tdpsola
+    test_loop_analysis
     test_midi_importer
     test_fsc_score_parser
     test_effects
