@@ -33,63 +33,158 @@ int64_t minViableWindowSamples(double sampleRate)
     return (int64_t)(kMinViablePeriods * sampleRate / kMinPitchHz);
 }
 
+// One analysis hop's result. The shared pass emits one of these per hop across
+// the queried range; detectSteadyStateWindow reads .period/.rms to place the
+// window, generateLoopCandidates reads .period/.clarity to gate voicing and pick
+// the fundamental.
+struct HopAnalysis {
+    int   startSample;  // sample index where this hop's analysis frame begins
+    int   period;       // detectPeriod result in samples; 0 == unvoiced
+    float clarity;      // NSDF peak height at .period (0 when unvoiced)
+    float rms;          // level over the first kEnvelopeFrameMs of this hop (see analyzeHops)
+};
+
+// The single shared voicing pass, called by BOTH public functions so they can
+// never drift apart on frame size, hop, lag bounds, or the definition of
+// "voiced". Runs kAnalysisFrame-long frames (clamped to the range) at kAnalysisHop
+// spacing over [wStart, wEnd), lag-bounded by the supported pitch range. A hop is
+// emitted only where its whole frame fits, so no sample outside [wStart, wEnd) is
+// read — this is also where the old degenerate-range guards live now: an empty
+// return means the range was shorter than one frame or the lag range collapsed
+// (tauMax <= tauMin, or winLen <= tauMin). Unvoiced hops are recorded as
+// period == 0, never gap-filled: the unvoiced hops are themselves the signal both
+// callers measure.
+std::vector<HopAnalysis> analyzeHops(const float* x, double sampleRate,
+                                     int wStart, int wEnd)
+{
+    std::vector<HopAnalysis> hops;
+    const int winLen = wEnd - wStart;
+    if (winLen <= 0) return hops;
+
+    const int tauMin = std::max(1, (int)(sampleRate / kMaxPitchHz));
+    const int tauMax = (int)(sampleRate / kMinPitchHz);
+    if (tauMax <= tauMin || winLen <= tauMin) return hops;
+
+    const int frameLen = std::min(kAnalysisFrame, winLen);
+
+    // The level envelope is measured over a SHORT kEnvelopeFrameMs window at the
+    // hop's start, NOT over the whole NSDF frame. Reading the level across the full
+    // 46 ms frame would look that far ahead of the hop, so on a swelling note each
+    // hop would report the louder material in front of it and the attack skip would
+    // fire early. It always fits: envLen <= frameLen and the frame is in bounds.
+    const int envLen = std::max(1, std::min(frameLen, (int)(kEnvelopeFrameMs * 0.001 * sampleRate)));
+
+    for (int s = wStart; s + frameLen <= wEnd; s += kAnalysisHop) {
+        HopAnalysis h{ s, 0, 0.0f, computeRMS(x + s, envLen) };
+        const std::vector<float> nsdf = computeNSDF(x + s, frameLen, tauMin, tauMax);
+        const int period = detectPeriod(nsdf, tauMin);
+        if (period > 0) {
+            // detectPeriod returns the lag but not its height, so read the clarity
+            // (the McLeod peak height = voicing confidence) back out of the NSDF.
+            const int idx = period - tauMin;
+            if (idx >= 0 && idx < (int)nsdf.size()) {  // defensive; always in range
+                h.period  = period;
+                h.clarity = nsdf[(size_t)idx];
+            }
+        }
+        hops.push_back(h);
+    }
+    return hops;
+}
+
 } // namespace
 
 LoopWindow detectSteadyStateWindow(const float* x, int N, double sampleRate)
 {
     if (x == nullptr || N <= 0 || sampleRate <= 0.0) return kNoWindow;
 
-    const int frameLen = (int)(kEnvelopeFrameMs * 0.001 * sampleRate);
-    if (frameLen <= 0) return kNoWindow;
+    // Voicing is the PRIMARY signal. One shared per-hop pass over the whole buffer;
+    // RMS is read back from the same hops as a secondary level cue.
+    const std::vector<HopAnalysis> hops = analyzeHops(x, sampleRate, 0, N);
+    if (hops.empty()) return kNoWindow;  // buffer too short for a single frame
 
-    // Whole frames only. A partial tail frame would average fewer samples and so
-    // read as a level dip that isn't there, which could truncate a plateau that
-    // actually runs to the end of the buffer. Dropping it costs at most one frame.
-    const int numFrames = N / frameLen;
-    if (numFrames <= 0) return kNoWindow;  // buffer shorter than one frame
+    // Fundamental period = median over ALL voiced hops, the same robust estimate
+    // generateLoopCandidates trusts. Body hops outnumber the occasional overtone-
+    // locked hop, so the median lands on the true fundamental.
+    std::vector<int> voicedPeriods;
+    for (const HopAnalysis& h : hops)
+        if (h.period > 0) voicedPeriods.push_back(h.period);
+    if (voicedPeriods.empty()) return kNoWindow;   // no voiced hop: true one-shot / texture
+    const int fundamental = medianOf(voicedPeriods);
+    if (fundamental <= 0) return kNoWindow;
 
-    std::vector<float> env((size_t)numFrames);
-    for (int f = 0; f < numFrames; ++f)
-        env[(size_t)f] = computeRMS(x + (size_t)f * frameLen, frameLen);
+    // A hop is TONAL when voiced at (near) the fundamental. This is the heart of the
+    // fix and a deliberate strengthening of a plain voiced/unvoiced test: the corpus
+    // proved a loud, non-loopable region need not be unvoiced — on Pitch_17_C3 the
+    // loud tail is sparsely voiced at a ~800 Hz overtone (≈6× the 131 Hz body).
+    // "Voiced" alone let that tail set the level bar and be chosen; "voiced at the
+    // fundamental" excludes it, its period being far outside the ±tolerance band.
+    // Octave locks (½× / 2×) fall outside the band too.
+    const auto isTonal = [&](const HopAnalysis& h) {
+        if (h.period <= 0) return false;
+        const double ratio = (double)h.period / (double)fundamental;
+        return ratio >= 1.0 - kFundamentalPeriodTolerance
+            && ratio <= 1.0 + kFundamentalPeriodTolerance;
+    };
 
-    const float peak = *std::max_element(env.begin(), env.end());
-
-    // Nothing anywhere in the buffer reaches audibility: there is no envelope to
-    // find a plateau in, and every threshold below would be a fraction of noise.
-    if (peak < kSilenceRMS) return kNoWindow;
-
-    // Skip the attack transient: first frame reaching kAttackSkipFrac of peak.
-    // The peak frame itself always clears this, so the search always succeeds;
-    // the guard below is defensive, not a real branch.
-    const float attackThr = kAttackSkipFrac * peak;
-    int attackEnd = -1;
-    for (int f = 0; f < numFrames; ++f)
-        if (env[(size_t)f] >= attackThr) { attackEnd = f; break; }
-    if (attackEnd < 0) return kNoWindow;
-
-    // Longest contiguous run at or above kSustainThresholdFrac of peak, starting
-    // no earlier than the attack. Ties keep the earliest run: on a decaying
-    // sustain the earlier region is the louder and more periodic one.
-    const float sustainThr = kSustainThresholdFrac * peak;
-    int bestStart = -1, bestLen = 0, curStart = -1, curLen = 0;
-    for (int f = attackEnd; f < numFrames; ++f) {
-        if (env[(size_t)f] >= sustainThr) {
-            if (curLen == 0) curStart = f;
-            ++curLen;
-            if (curLen > bestLen) { bestLen = curLen; bestStart = curStart; }
-        } else {
-            curLen = 0;
+    // Pick the loudest VIABLE tonal run. Scan maximal contiguous runs of tonal
+    // hops, keep those spanning at least the viability floor, and take the one with
+    // the greatest mean RMS. Loudness, not length, is the discriminant: where a
+    // sample has two tonal stretches — e.g. Pitch_64_D4's loud clean onset and its
+    // quieter, slightly longer decay — the loud one gives usable seams and the
+    // quiet one does not, and the overtone tail that used to hijack loudness is no
+    // longer in the running (it is not tonal).
+    const int64_t minSpan = minViableWindowSamples(sampleRate);
+    int    bestStart = -1, bestEnd = -1;
+    double bestMeanRms = -1.0;
+    for (int i = 0; i < (int)hops.size();) {
+        if (!isTonal(hops[(size_t)i])) { ++i; continue; }
+        int    j   = i;
+        double sum = 0.0;
+        while (j < (int)hops.size() && isTonal(hops[(size_t)j])) { sum += hops[(size_t)j].rms; ++j; }
+        const int     re   = j - 1;  // inclusive end of the run [i, re]
+        const int64_t span = (int64_t)hops[(size_t)re].startSample - hops[(size_t)i].startSample;
+        if (span >= minSpan) {
+            const double meanRms = sum / (double)(j - i);
+            if (meanRms > bestMeanRms) { bestMeanRms = meanRms; bestStart = i; bestEnd = re; }
         }
+        i = j;
     }
-    if (bestLen <= 0) return kNoWindow;
+    if (bestStart < 0) return kNoWindow;  // no tonal run long enough to loop
 
-    const LoopWindow w{ (int64_t)bestStart * frameLen,
-                        (int64_t)(bestStart + bestLen) * frameLen };
+    // Within the chosen run, anchor the level thresholds to the RUN's own peak RMS
+    // (never the file's), then apply the classic attack-skip and sustain trim:
+    //   • attack skip — advance to the first hop at kAttackSkipFrac of the run peak,
+    //     dropping the onset ramp so loopStart does not land in the attack.
+    //   • sustain trim — pull the tail in past any trailing hops below
+    //     kSustainThresholdFrac of the run peak (a decay that is still tonal but
+    //     fading). Internal dips are kept; only the trailing decay is trimmed.
+    double runPeak = 0.0;
+    for (int i = bestStart; i <= bestEnd; ++i) runPeak = std::max(runPeak, (double)hops[(size_t)i].rms);
+    const double attackThr  = kAttackSkipFrac * runPeak;
+    const double sustainThr = kSustainThresholdFrac * runPeak;
 
-    // The refusal case that matters: a one-shot's plateau is a handful of frames
-    // of decay, not a sustain. Below the viability floor we say so instead of
-    // returning a window too short to loop.
-    if (w.end - w.start < minViableWindowSamples(sampleRate)) return kNoWindow;
+    int startHop = bestStart;
+    for (int i = bestStart; i <= bestEnd; ++i)
+        if ((double)hops[(size_t)i].rms >= attackThr) { startHop = i; break; }
+
+    int endHop = bestEnd;
+    while (endHop > startHop && (double)hops[(size_t)endHop].rms < sustainThr) --endHop;
+
+    const int frameLen = std::min(kAnalysisFrame, N);
+    const LoopWindow w{
+        (int64_t)hops[(size_t)startHop].startSample,
+        std::min<int64_t>(N, (int64_t)hops[(size_t)endHop].startSample + frameLen)
+    };
+
+    // Viability on the post-trim sustain span (distance between the first and last
+    // kept hop starts), not the raw window length: a single tonal hop already spans
+    // a whole analysis frame, so a window-length test would let a lone voiced frame
+    // slip through, while the span between hop starts is 0 there and only grows with
+    // real sustain. The attack/sustain trims can shrink the run, so re-check here.
+    const int64_t sustainSpan = (int64_t)hops[(size_t)endHop].startSample
+                              - (int64_t)hops[(size_t)startHop].startSample;
+    if (sustainSpan < minSpan) return kNoWindow;
 
     return w;
 }
@@ -108,49 +203,23 @@ std::vector<LoopCandidate> generateLoopCandidates(const float* x, int N,
     const int winLen = wEnd - wStart;
     if (winLen <= 0) return out;
 
-    // Lag bounds from the supported pitch range. Below tauMin there is nothing to
-    // search; computeNSDF clamps tauMax to the frame length itself, so a short
-    // window degrades to a narrower lag range rather than reading out of bounds.
-    const int tauMin = std::max(1, (int)(sampleRate / kMaxPitchHz));
-    const int tauMax = (int)(sampleRate / kMinPitchHz);
-    if (tauMax <= tauMin) return out;
-    if (winLen <= tauMin) return out;  // no room for even the shortest period
-
     // ── Per-hop period estimate + voicing gate ───────────────────────────────
-    // This mirrors the structure of TDPSOLA.cpp's detectAllPeriods, reimplemented
-    // locally on the shared computeNSDF/detectPeriod primitives, with two
-    // deliberate differences:
-    //   • No unvoiced gap-filling. TDPSOLA forward/backward-fills because it needs
-    //     a period at every hop to drive synthesis. The unvoiced hops ARE the
-    //     signal here — filling them would erase the very thing the gate measures.
-    //   • A plain median over voiced hops instead of a running 5-point median.
-    //     TDPSOLA needs a smooth per-hop track; we need one robust number.
-    // Frames never straddle the window edge: a frame is taken only where it fits
-    // whole, so no sample outside the window is ever read. (TDPSOLA zero-pads its
-    // tail frame instead, because it must emit an estimate for every hop; we only
-    // need statistics, so dropping a partial frame is strictly cleaner.)
-    const int frameLen = std::min(kAnalysisFrame, winLen);
+    // The single shared voicing pass — identical to the one detectSteadyStateWindow
+    // runs — so the two never disagree on frame size, hop, lag bounds, or what
+    // "voiced" means. An empty result also subsumes the old degenerate-range
+    // guards (tauMax <= tauMin, winLen <= tauMin): analyzeHops emits no hops there.
+    const std::vector<HopAnalysis> hops = analyzeHops(x, sampleRate, wStart, wEnd);
+    if (hops.empty()) return out;
 
     std::vector<int>   voicedPeriods;
     std::vector<float> voicedClarity;
-    int totalHops = 0;
-
-    for (int s = wStart; s + frameLen <= wEnd; s += kAnalysisHop) {
-        ++totalHops;
-        const std::vector<float> nsdf = computeNSDF(x + s, frameLen, tauMin, tauMax);
-        const int period = detectPeriod(nsdf, tauMin);
-        if (period <= 0) continue;  // unvoiced: counted in totalHops, never filled
-
-        // detectPeriod returns the lag but not its height, so read the clarity
-        // back out of the NSDF at the lag it chose. That height is the McLeod
-        // clarity measure and is what "voicing confidence" means here.
-        const int idx = period - tauMin;
-        if (idx < 0 || idx >= (int)nsdf.size()) continue;  // defensive; unreachable
-        voicedPeriods.push_back(period);
-        voicedClarity.push_back(nsdf[(size_t)idx]);
+    for (const HopAnalysis& h : hops) {
+        if (h.period > 0) {
+            voicedPeriods.push_back(h.period);
+            voicedClarity.push_back(h.clarity);
+        }
     }
-
-    if (totalHops == 0) return out;
+    const int totalHops = (int)hops.size();
 
     // Strict majority: at exactly half voiced the material is as much unpitched as
     // pitched, and a fundamental derived from the rest describes half the window.

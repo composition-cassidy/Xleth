@@ -54,22 +54,33 @@ struct LoopCandidate {
 // intent is to calibrate them against the real sample corpus once the diagnostic
 // tool has been run over enough material.
 
-// RMS envelope frame for steady-state detection, in milliseconds. 20 ms is long
-// enough to average out the waveform of the lowest supported pitch (75 Hz = 13.3
-// ms per cycle, so every frame spans at least one full cycle and the envelope
-// measures level rather than phase) and short enough to resolve an attack
-// transient, which is typically 5–50 ms on plucked and struck material.
+// Length of the RMS level measurement taken at each analysis hop, in milliseconds.
+// Deliberately SHORTER than kAnalysisFrame and measured separately from it. The
+// two answer different questions and must not be conflated: NSDF needs a long
+// (kAnalysisFrame = 46 ms) frame to resolve low-pitch lags, but a level envelope
+// read over that same frame looks ~46 ms into the future, so on a swelling note a
+// hop reports the level of the louder material *ahead* of it. That made the attack
+// skip fire early and drop loopStart into the rising onset — measurably worse
+// seams on Pitch_26_E3 (best seam 0.997 → 0.795) until the two were separated.
+// 20 ms is long enough to average out the waveform of the lowest supported pitch
+// (75 Hz = 13.3 ms per cycle, so a frame always spans a full cycle and measures
+// level rather than phase) and short enough to resolve an attack, typically
+// 5–50 ms on plucked and struck material.
 inline constexpr double kEnvelopeFrameMs = 20.0;
 
-// Fraction of peak RMS a frame must reach to be considered past the attack
-// transient. At 70% of peak the level has arrived but is not required to have
-// hit the exact peak frame, which on material with a sharp spike would push the
-// window start needlessly late.
+// Fraction of the chosen tonal run's peak RMS a hop must reach to count as past
+// the attack transient. Measured against the run's OWN peak, never the file's
+// global peak (see detectSteadyStateWindow) — so a loud region elsewhere cannot
+// move this bar. At 70% the tonal level has arrived without requiring the exact
+// peak hop, which on material with a sharp spike would push the window start
+// needlessly late; dropping the onset ramp also keeps loopStart out of the attack.
 inline constexpr float kAttackSkipFrac = 0.70f;
 
-// Fraction of peak RMS a frame must hold to count as part of the sustain
-// plateau. 50% (≈ -6 dB below peak) tolerates natural decay and tremolo across a
-// long sustain without letting the plateau run down into the release tail.
+// Fraction of the chosen tonal run's peak RMS a hop must hold to remain part of
+// the sustain. 50% (≈ -6 dB below the run peak) tolerates natural decay and
+// tremolo without letting the window's tail run down into a fading release. Used
+// to trim trailing sub-threshold decay from the run; relative to the run peak, not
+// the file peak, for the same reason as kAttackSkipFrac.
 inline constexpr float kSustainThresholdFrac = 0.50f;
 
 // Lowest pitch treated as loopable, in Hz. Carried over from TDPSOLA's voicing
@@ -133,6 +144,17 @@ inline constexpr float kMinVoicedFrac = 0.5f;
 // some. Placeholder pending corpus calibration.
 inline constexpr float kMinMedianClarity = 0.7f;
 
+// Half-width of the "at the fundamental" band that detectSteadyStateWindow uses to
+// decide which hops are TONAL, as a fraction of the fundamental period. A hop
+// counts as tonal only if its detected period lies within ±20% of the median
+// fundamental. 20% is wide enough to admit ordinary period jitter and vibrato
+// (which stay within a few percent) yet far too narrow to admit an octave lock: a
+// half-period overtone sits at 0.5× and a subharmonic at 2×, both nowhere near the
+// band. This is what stops a loud region that happens to be voiced at an OVERTONE
+// (Pitch_17_C3's ~800 Hz tail over its 131 Hz body) from being mistaken for the
+// tonal sustain. Corpus-tunable.
+inline constexpr double kFundamentalPeriodTolerance = 0.20;
+
 // Longest loop we will propose, in seconds. Past a couple of seconds a "loop"
 // has stopped being a sustain loop and become a phrase repeat, which is a
 // different feature with different criteria. Also bounds the candidate count on
@@ -164,20 +186,35 @@ inline constexpr int64_t kMinClickSuppressionSamples = 64;
 
 // ─── Analysis entry points ───────────────────────────────────────────────────
 
-// Finds the sustained region of a sample, for use ONLY when the caller has no
-// user selection to search within.
+// Finds the sustained, TONAL region of a sample, for use ONLY when the caller has
+// no user selection to search within.
 //
-// x: N samples of mono audio, linear amplitude. sampleRate in Hz. Computes an
-// RMS envelope in kEnvelopeFrameMs frames, skips forward to the first frame
-// reaching kAttackSkipFrac of the envelope's own peak (the attack transient), and
-// returns the longest contiguous run from there of frames holding at least
-// kSustainThresholdFrac of that peak.
+// x: N samples of mono audio, linear amplitude. sampleRate in Hz. Voicing is the
+// PRIMARY signal. It runs the same shared per-hop NSDF/detectPeriod pass
+// generateLoopCandidates uses, takes the median voiced period as the fundamental,
+// marks each hop TONAL when it is voiced within kFundamentalPeriodTolerance of
+// that fundamental, and among the maximal contiguous tonal runs that are long
+// enough to loop it selects the LOUDEST (greatest mean RMS). It then trims that
+// run's onset (kAttackSkipFrac) and trailing decay (kSustainThresholdFrac) against
+// the run's OWN peak RMS.
 //
-// Returns {0, 0} — an empty window — when the material has no sustain to loop:
-// a silent buffer, a buffer shorter than one frame, or a plateau shorter than
-// kMinViablePeriods periods at kMinPitchHz. That empty window is the one-shot
-// refusal signal, and callers are expected to treat it as "this sample cannot be
-// looped", not as an error.
+// Two diagnostic-driven refinements over a naive "peak RMS of the loudest sustain"
+// rule, each earning its keep on a real corpus sample:
+//   • Tonal, not merely voiced. A loud, non-loopable region need not be unvoiced.
+//     Pitch_17_C3's loud tail is sparsely voiced at a ~800 Hz OVERTONE of its
+//     131 Hz body; gating on voicing alone let that tail set the level bar and be
+//     chosen. Requiring voicing AT THE FUNDAMENTAL excludes it — anchoring the
+//     level thresholds to a peak that is not itself the tonal fundamental was the
+//     whole bug, the same peak-relative fix shape spectralDistance's floor needed.
+//   • Loudest run, not longest. Pitch_64_D4 has two tonal stretches — a loud clean
+//     onset and a quieter, slightly longer decay. The loud one yields usable seams;
+//     the quiet one does not. Length would pick the wrong one, loudness the right.
+//
+// Returns {0, 0} — an empty window — for genuinely unloopable material: a buffer
+// too short for one analysis frame, one with NO voiced hop anywhere (a true
+// one-shot or texture), or no tonal run spanning at least kMinViablePeriods periods
+// at kMinPitchHz. That empty window is the refusal signal; callers treat it as
+// "cannot be looped", not an error. This change narrows FALSE refusals only.
 LoopWindow detectSteadyStateWindow(const float* x, int N, double sampleRate);
 
 // Generates period-quantized, phase-aligned loop candidates within a window.

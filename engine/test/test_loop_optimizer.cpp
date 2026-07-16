@@ -82,6 +82,20 @@ static std::vector<float> makeOneShot(int n, double freqHz, double sampleRate, d
     return v;
 }
 
+// Deterministic uniform noise in [-amp, amp] — a fixed LCG keeps the "loud
+// unvoiced segment" reproducible across runs and platforms.
+static std::vector<float> makeNoise(int n, double amp, std::uint32_t seed)
+{
+    std::vector<float> v((size_t)n);
+    std::uint32_t s = seed;
+    for (int i = 0; i < n; ++i) {
+        s = s * 1664525u + 1013904223u;
+        const float u = (float)((double)(s >> 8) / (double)(1u << 24)) * 2.0f - 1.0f;
+        v[(size_t)i] = (float)(amp * u);
+    }
+    return v;
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 // Pure sine: period detected within a sample, and a k=1 candidate exists whose
@@ -185,6 +199,50 @@ static void testOneShotRefused()
     const LoopWindow w = detectSteadyStateWindow(x.data(), N, kSR);
     CHECK(w.start == 0 && w.end == 0,
           "one-shot: expected empty window, got [" << w.start << "," << w.end << ")");
+}
+
+// Regression guard for the exact failure this fix addresses (observed on
+// Pitch_17_C3): a QUIET but cleanly-voiced tone sitting next to a LOUDER unvoiced
+// noise burst. RMS-only windowing anchors its threshold to the loud noise and
+// selects it, so the optimizer refuses a perfectly loopable tone. Voicing-aware
+// windowing must land on the tonal region instead — the noise is never voiced, so
+// it can neither set the level bar nor be chosen as the plateau.
+static void testVoicedRegionOverLoudNoise()
+{
+    const int toneLen = (int)(0.5 * kSR);        // 0.5 s of quiet clean tone
+    const int noiseLen = (int)(0.5 * kSR);       // 0.5 s of loud noise after it
+    const int N = toneLen + noiseLen;
+    const double freq = 200.0;                   // 240-sample period
+    const int    period = (int)std::lround(kSR / freq);
+
+    std::vector<float> x((size_t)N, 0.0f);
+    const auto tone  = makeSine(toneLen, freq, kSR);          // amplitude 1.0…
+    for (int i = 0; i < toneLen; ++i) x[(size_t)i] = 0.2f * tone[(size_t)i];  // …scaled quiet
+    const auto noise = makeNoise(noiseLen, /*amp*/ 0.9, /*seed*/ 0xC0FFEEu);  // loud, unvoiced
+    for (int i = 0; i < noiseLen; ++i) x[(size_t)(toneLen + i)] = noise[(size_t)i];
+
+    // Sanity: the noise really is louder than the tone, so an RMS-only detector
+    // would be pulled onto it. (This is what makes the test meaningful.)
+    const float toneRms  = computeRMS(x.data(), toneLen);
+    const float noiseRms = computeRMS(x.data() + toneLen, noiseLen);
+    CHECK(noiseRms > toneRms, "noise-vs-tone: setup should have louder noise than tone");
+
+    const LoopWindow w = detectSteadyStateWindow(x.data(), N, kSR);
+    CHECK(w.end > w.start, "noise-adjacent: expected a non-empty window on the tone");
+    // The window must sit on the tonal region, not the loud noise. A frame that
+    // straddles the tone→noise boundary can be voiced, so allow at most one
+    // analysis frame of spill past toneLen; the start must be inside the tone.
+    CHECK(w.start < toneLen, "noise-adjacent: window started in the loud noise region ("
+                                 << w.start << " >= " << toneLen << ")");
+    CHECK(w.end <= (int64_t)toneLen + kAnalysisFrame,
+          "noise-adjacent: window extended into the loud noise region (end " << w.end << ")");
+
+    // And the window must be usable: candidates at the tone's true period.
+    const auto cands = generateLoopCandidates(x.data(), N, kSR, w);
+    CHECK(!cands.empty(), "noise-adjacent: expected candidates on the tonal window");
+    if (!cands.empty())
+        CHECK(std::abs(cands[0].periodSamples - period) <= 3,
+              "noise-adjacent: periodSamples " << cands[0].periodSamples << " != " << period);
 }
 
 // A window narrower than one period must return empty rather than crash or emit a
@@ -330,6 +388,7 @@ int main(int argc, char** argv)
     testHarmonicFundamental();
     testSilenceAndDC();
     testOneShotRefused();
+    testVoicedRegionOverLoudNoise();
     testSubPeriodWindow();
     testDegenerateWindows();
 
