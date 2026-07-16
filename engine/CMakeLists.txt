@@ -274,6 +274,7 @@ add_library(XlethEngineCore STATIC
     src/audio/WaveformMipmap.cpp
     src/dsp/DeclickEnvelope.cpp
     src/dsp/LoopAnalysis.cpp
+    src/dsp/LoopOptimizer.cpp
     src/dsp/TDPSOLA.cpp
     src/dsp/RubberBandWrapper.cpp
     src/dsp/WSOLA.cpp
@@ -1289,6 +1290,45 @@ target_compile_definitions(test_loop_analysis PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_loop_optimizer ──────────────────────────────────────────────────────
+# Unit-tests the Auto Loop Optimizer's steady-state window detection and loop-
+# candidate generation (dsp/LoopOptimizer.h) against synthetic signals with known
+# correct answers. This is the highest-risk phase in the feature, so the cases
+# assert real numeric answers (true period within a sample, k=1 seam ≈ 1, no
+# harmonic lock on additive tones) rather than pinning a captured baseline.
+#
+# The same executable doubles as a standalone diagnostic: run with a path to a
+# mono 16-bit WAV as argv[1] and it prints the detected window, period and every
+# candidate to stdout instead of running the unit tests. That mode is a real-
+# material sanity tool, not a pass/fail gate.
+add_executable(test_loop_optimizer
+    test/test_loop_optimizer.cpp
+)
+
+target_link_libraries(test_loop_optimizer PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_loop_optimizer PRIVATE
+    _CRT_SECURE_NO_WARNINGS=1
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_midi_importer ────────────────────────────────────────────────────────
 # Smoke test for MIDI summary parsing using a tiny generated SMF fixture file.
 add_executable(test_midi_importer
@@ -1868,6 +1908,7 @@ set(XLETH_ENGINE_TESTS
     test_world_stretch
     test_tdpsola
     test_loop_analysis
+    test_loop_optimizer
     test_midi_importer
     test_fsc_score_parser
     test_effects
