@@ -1,4 +1,4 @@
-// XlethAddon.cpp — Node-API bridge for the Xleth engine  (Phase 1)
+// XlethEngineService.cpp — host-neutral orchestration + command dispatch  (Phase 1)
 //
 // Uses node-addon-api (C++ wrapper around raw host bridge).
 // HOST_BRIDGE_DISABLE_CPP_EXCEPTIONS is defined via CMake; functions that can fail
@@ -116,49 +116,14 @@ extern "C" {
 #include <libavutil/pixfmt.h>
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// IPC slow-call diagnostic
-// ─────────────────────────────────────────────────────────────────────────────
-// The host bridge main thread is also the JUCE message thread.  Any host bridge call that
-// blocks this thread for >5ms delays JUCE timer/paint dispatch for VST editors.
-// At 30+ IPC calls/second (peak meter loop) even 5ms stalls add up and can cause
-// Win32 to mark the Electron main window as "Not Responding".
-//
-// IPC_TIME_START / IPC_TIME_END bracket a function's body.  If the call exceeds
-// IPC_SLOW_THRESHOLD_US microseconds, a [IPC-SLOW] line is printed to stderr so
-// you can identify which function is the bottleneck in production.
-#ifdef XLETH_DEBUG
-  #define IPC_SLOW_THRESHOLD_US  10000   // 10 ms
-  #define IPC_TIME_START \
-    const auto _ipc_t0 = std::chrono::steady_clock::now()
-  #define IPC_TIME_END(name) \
-    do { \
-        const auto _ipc_dt = std::chrono::duration_cast<std::chrono::microseconds>( \
-            std::chrono::steady_clock::now() - _ipc_t0).count(); \
-        if (_ipc_dt > IPC_SLOW_THRESHOLD_US) \
-            std::fprintf(stderr, "[IPC-SLOW] %s took %lld us\n", \
-                         (name), static_cast<long long>(_ipc_dt)); \
-    } while(0)
-  // IPC_GAP_CHECK(fname) — tracks wall-clock gaps between successive calls to
-  // the same host bridge function.  A gap > 1 s means the host bridge thread (= JUCE
-  // message thread) was blocked for that interval between polls.
-  #define IPC_GAP_CHECK(fname) \
-    do { \
-        static auto _gap_last = std::chrono::steady_clock::now(); \
-        auto _gap_now = std::chrono::steady_clock::now(); \
-        auto _gap_ms  = std::chrono::duration_cast<std::chrono::milliseconds>( \
-                          _gap_now - _gap_last).count(); \
-        _gap_last = _gap_now; \
-        if (_gap_ms > 1000) \
-            std::fprintf(stderr, \
-                "[MsgThread] Gap of %lldms between calls to %s — host bridge thread was blocked\n", \
-                (long long)_gap_ms, (fname)); \
-    } while(0)
-#else
-  #define IPC_TIME_START      do {} while(0)
-  #define IPC_TIME_END(name)  do {} while(0)
-  #define IPC_GAP_CHECK(fname) do {} while(0)
-#endif
+// Engine-service globals (xleth::svc) and cross-cutting helpers (IPC_TIME_*
+// macros, isInitialised(), BridgeCallLog, syncTransportLoopFromTimeline) were
+// extracted in S2 Stage 1. The using-directive keeps every existing unqualified
+// use site compiling unchanged. See docs/S2_SPLIT_PLAN.md §3.
+#include "service/XlethSvcGlobals.h"
+#include "service/XlethSvcShared.h"
+
+using namespace xleth::svc;
 
 // Forward declaration — defined near the plugin scanner code below.
 static juce::File getThisModuleDir();
@@ -166,201 +131,12 @@ static juce::File getThisModuleDir();
 // ─────────────────────────────────────────────────────────────────────────────
 // Global engine state
 // ─────────────────────────────────────────────────────────────────────────────
+// Engine-service global state was extracted to xleth::svc in S2 Stage 1
+// (see service/XlethSvcGlobals.h). What remains in this anonymous namespace
+// are internal-linkage helper functions kept verbatim with their call sites;
+// they operate on the now-external globals via the file-level
+// `using namespace xleth::svc;` directive above.
 namespace {
-
-// JUCE must be initialised before any JUCE objects are created and torn down
-// last. ScopedJuceInitialiser_GUI also initialises COM on Windows which is
-// required by JUCE's Windows audio device layer.
-std::unique_ptr<juce::ScopedJuceInitialiser_GUI> juceInit;
-
-std::unique_ptr<SampleBank>  sampleBank;
-std::unique_ptr<AudioEngine> audioEngine;
-std::unique_ptr<FrameCache>  frameCache;
-
-// Waveform mipmap cache — multi-resolution peak data for waveform display.
-// Keyed by std::to_string(sampleBankId). Accessible from host bridge bindings.
-std::unique_ptr<WaveformMipmapCache> g_mipmapCache;
-
-// Phase 1 — data model, undo, project
-std::unique_ptr<Timeline>       g_timeline;
-std::unique_ptr<UndoManager>    g_undoManager;
-std::unique_ptr<ProjectManager> g_projectManager;
-
-// Phase 1B — FrameServer (fast frame extraction for SamplePicker)
-std::unique_ptr<FrameServer> g_frameServer;
-
-// Phase 0: no GPU compositor in the Electron process.
-// SyncManager accepts nullptr — it still decodes frames into FrameCache
-// but skips all GL upload/render calls (XLETH_CORE_ONLY compile guard).
-
-// Decoder ownership uses std::deque so that push_back never invalidates
-// existing element pointers. SyncManager holds std::vector<VideoDecoder*>&
-// (a reference to the vector itself), which remains valid across push_backs.
-std::deque<std::unique_ptr<VideoDecoder>> decoderOwner;
-std::vector<VideoDecoder*>                decoderPtrs;
-
-// Per-region proxy decoders. Keyed by regionId.
-//   regionDecoderOwner : actual ownership (unique_ptr); erase == clean close.
-//   regionDecoderPtrs  : raw-pointer view shared with SyncManager by ref.
-// Both must be mutated together under syncEventsMutex so SyncManager never
-// sees a raw pointer whose owning unique_ptr has been destroyed.
-std::unordered_map<int, std::unique_ptr<VideoDecoder>> regionDecoderOwner;
-std::unordered_map<int, VideoDecoder*>                 regionDecoderPtrs;
-
-std::unique_ptr<ProxyManager> g_proxyManager;
-
-std::unique_ptr<SyncManager> syncManager;
-
-// ── Video thread ──────────────────────────────────────────────────────────
-std::thread       videoThread;
-std::atomic<bool> videoRunning{false};
-std::atomic<uint64_t> videoThreadCompletedTicks{0};
-std::atomic<bool> g_previewDirty{false};  // set by bridge functions to force a re-render while stopped
-std::atomic<uint64_t> g_latestStoppedPreviewSeq{0};
-std::atomic<uint64_t> g_pendingStoppedPreviewSeq{0};
-std::atomic<uint64_t> g_publishedStoppedPreviewSeq{0};
-std::atomic<uint64_t> g_discardedStoppedPreviewSeq{0};
-std::atomic<int64_t>  g_pendingStoppedPreviewSample{0};
-
-// Guards both SyncManager event mutations (main thread) and videoTick() calls
-// (video thread) to prevent data races on events_ / driftSamples_ etc.
-std::mutex syncEventsMutex;
-
-// ── Frame output (double-buffered, lock-free) ─────────────────────────────
-FrameOutput frameOutput;
-
-// ── GPU device (D3D11 — adapter enum + device for decode/composite) ──────
-std::unique_ptr<GpuDeviceManager> g_gpuDevice;
-
-// [PreviewUnify] GPU compositor pipeline for real-time preview
-std::unique_ptr<GridCompositor>     g_previewCompositor;
-std::unique_ptr<RenderFrameCache>   g_previewRenderCache;
-std::unique_ptr<RenderVideoDecoder> g_previewRenderDecoder;
-std::unique_ptr<AnimationManager>   g_previewAnimMgr;
-std::unique_ptr<FrameCollector>     g_previewCollector;
-
-// [Slice 3b] Freeze cache for the outgoing snapshot during a live-preview
-// transition window. Touched only on the video/preview tick under
-// g_previewCompositorMutex; invalidated when no window is active or the pin moves.
-xleth::TransitionFreezeState        g_previewTransitionFreeze;
-
-std::mutex          g_previewCompositorMutex;
-std::atomic<bool>   g_previewCompositorReady{false};
-std::atomic<bool>   g_previewPauseForExport{false};
-std::atomic<bool>   g_previewPauseForVisibility{false};   // Phase 7
-// Poster prepass hold (Option B): true while the one-poster-per-source cache is
-// still warming AND the user has pressed Play. Holds the VIDEO compositor only —
-// the audio transport keeps running, so audio plays while the preview shows the
-// UI "Loading sample previews" overlay. Cleared when the prepass drains (see
-// drainSourcePosterResults) or when the user skips to live (PosterPrepass_Skip).
-std::atomic<bool>   g_previewPauseForPosterLoad{false};
-
-// ── Visual preview diagnostic counters ───────────────────────────────────────
-// Lightweight instrumentation to support Settings → Graphics → Export Visual
-// Preview Diagnostic Log. Read by Diag_GetVisualPreviewDiagnostic on the JS
-// thread, written by the video thread; all counters are std::atomic.
-struct PreviewDiagCounters {
-    std::atomic<uint64_t> videoTickCount        {0};
-    std::atomic<uint64_t> compositorPathEntered {0};
-    // ── Render-gate per-term truth counts (written video thread, read JS thread)
-    // Each counter increments once per video tick when that term evaluates true,
-    // independently of the gate's short-circuit. Whichever counter is ~0 relative
-    // to videoTickCount is the term that keeps the compositor shut during playback.
-    std::atomic<uint64_t> gateIsPlayingTrueTicks    {0};
-    std::atomic<uint64_t> gateEventsNonEmptyTicks   {0};
-    std::atomic<uint64_t> gateForceRenderTicks      {0};
-    std::atomic<uint64_t> gatePreviewPausedTicks    {0};
-    std::atomic<uint64_t> gateBlockReachedTicks  {0};  // outer if-block entered (audioEngine && syncManager && frameOutput.isInitialized())
-    std::atomic<uint64_t> gateBlockSkippedNoInit {0};  // outer if-condition was false
-    std::atomic<uint64_t> compositeFrameCount   {0};
-    std::atomic<uint64_t> readbackValidCount    {0};
-    std::atomic<uint64_t> readbackNotReadyCount {0};
-    std::atomic<uint64_t> readbackInvalidCount  {0};
-    std::atomic<uint64_t> canvasCopyCount       {0};
-    std::atomic<uint64_t> blackFrameCount       {0};
-    std::atomic<uint64_t> initInitFailures      {0};
-    std::atomic<int32_t>  lastReadbackHRESULT   {0};  // S_OK(0) or failing HRESULT
-    std::atomic<int32_t>  lastDeviceRemovedReason {0};
-    std::atomic<int>      lastReadbackFailureStage {0};
-    std::atomic<int>      lastReadbackMapType   {0};
-    std::atomic<int>      lastReadbackMapFlags  {0};
-    std::atomic<int>      lastReadbackRowPitch  {0};
-    std::atomic<uint64_t> lastReadbackExpectedBytes {0};
-    std::atomic<uint64_t> lastReadbackActualCopyBytes {0};
-    std::atomic<bool>     lastReadbackDimensionsMatch {false};
-    std::atomic<int>      lastReadbackSourceWidth {0};
-    std::atomic<int>      lastReadbackSourceHeight {0};
-    std::atomic<int>      lastReadbackSourceFormat {0};
-    std::atomic<int>      lastReadbackSourceSampleCount {0};
-    std::atomic<int>      lastReadbackStagingWidth {0};
-    std::atomic<int>      lastReadbackStagingHeight {0};
-    std::atomic<int>      lastReadbackStagingFormat {0};
-    std::atomic<int>      lastReadbackStagingUsage {0};
-    std::atomic<int>      lastReadbackStagingCPUAccessFlags {0};
-    std::atomic<int>      lastReadbackStagingBindFlags {0};
-    std::atomic<int>      lastReadbackStagingMiscFlags {0};
-    std::atomic<int>      lastReadbackStagingSampleCount {0};
-    std::atomic<int>      lastReadbackWidth     {0};
-    std::atomic<int>      lastReadbackHeight    {0};
-    std::atomic<int>      lastRequestCount      {0};
-    std::atomic<int>      lastDecodeMissCount   {0};
-    // ── Collector content counters (per preview tick) ────────────────────────
-    std::atomic<int>      lastActiveVisualEvents {0};  // events fed to collectRequests
-    std::atomic<int>      lastDedupKeyCount      {0};  // unique decode keys (frames needed)
-    std::atomic<int>      lastCacheHitCount      {0};  // keys already in render cache
-    std::atomic<int>      lastDecodeSuccessCount {0};  // misses decoded → texture this tick
-    std::atomic<int>      lastDecodeFailCount    {0};  // misses that produced no texture
-    std::atomic<int>      lastPreviewTimeMs      {0};  // compositor `time` used (ms)
-    std::atomic<int>      lastLayoutColumns     {0};
-    std::atomic<int>      lastLayoutRows        {0};
-    std::atomic<int>      lastCompositorWidth   {0};
-    std::atomic<int>      lastCompositorHeight  {0};
-    std::atomic<int>      lastInitW             {0};
-    std::atomic<int>      lastInitH             {0};
-    // ── Readback policy + timing diagnostics ─────────────────────────────────
-    std::atomic<int>      readbackPolicyActive       {0};  // 0=FastImmediate 1=AsyncQueued
-    std::atomic<int>      readbackPolicySwitchReason  {0};  // PolicySwitchReason enum (see below)
-    std::atomic<uint64_t> droppedPendingFrames        {0};
-    std::atomic<int>      pendingSlotsCount           {0};
-    std::atomic<int32_t>  lastReadbackUs              {0};  // last readback() call duration (µs)
-    std::atomic<int32_t>  avgReadbackUs               {0};  // windowed average (µs)
-    std::atomic<int32_t>  maxReadbackUs               {0};  // peak since start
-    // ── Preview-tick per-stage wall-clock timing (µs, video thread) ──────────
-    // INSTRUMENTATION ONLY. Each stage keeps last / windowed-avg / peak in µs so
-    // the dominant cost of a slow preview tick is unambiguous. Stage 5 (readback)
-    // reuses lastReadbackUs/avgReadbackUs/maxReadbackUs above — no separate field.
-    std::atomic<int32_t>  lastCollectUs    {0};  // 1. collectRequests
-    std::atomic<int32_t>  avgCollectUs     {0};
-    std::atomic<int32_t>  maxCollectUs     {0};
-    std::atomic<int32_t>  lastResolveUs    {0};  // 2. deduplicate + resolveFrames (cache resolve)
-    std::atomic<int32_t>  avgResolveUs     {0};
-    std::atomic<int32_t>  maxResolveUs     {0};
-    std::atomic<int32_t>  lastDecodeUs     {0};  // 3. decode-miss loop
-    std::atomic<int32_t>  avgDecodeUs      {0};
-    std::atomic<int32_t>  maxDecodeUs      {0};
-    std::atomic<int32_t>  lastCompositeUs  {0};  // 4. compositeFrame (GPU submit)
-    std::atomic<int32_t>  avgCompositeUs   {0};
-    std::atomic<int32_t>  maxCompositeUs   {0};
-    std::atomic<int32_t>  lastSwizzleUs    {0};  // 6. CPU swizzle + shared-memory copy
-    std::atomic<int32_t>  avgSwizzleUs     {0};
-    std::atomic<int32_t>  maxSwizzleUs     {0};
-    std::atomic<int32_t>  lastTickUs       {0};  // 7. whole tick (collect → shm copy)
-    std::atomic<int32_t>  avgTickUs        {0};
-    std::atomic<int32_t>  maxTickUs        {0};
-    // Real-wall-clock delivered throughput + per-tick active cell count.
-    std::atomic<int32_t>  deliveredFps     {0};  // frames written to shm in the last real second
-    std::atomic<int32_t>  lastCellCount    {0};  // active cells (render requests) this tick
-    std::atomic<int32_t>  maxCellCount     {0};  // peak active cells since start
-};
-PreviewDiagCounters g_previewDiag;
-
-enum class PolicySwitchReason : int {
-    None           = 0,
-    FatalInvalids  = 1,   // too many fatal readback failures in a window
-    MapStallTooSlow = 2,  // avgMs > threshold (blocking Map too slow)
-    PoorYield      = 3    // valid frames < 25% of compositor ticks in a window
-};
-
 static const char* readbackHRESULTText(int32_t hrValue)
 {
     const HRESULT hr = static_cast<HRESULT>(hrValue);
@@ -413,61 +189,6 @@ static const char* readbackFailureStageText(int stage)
     }
 }
 
-// ── Hardware encoder detection (NVENC/AMF/QSV probing) ──────────────────
-std::unique_ptr<HwEncoderDetector> g_hwEncoderDetector;
-
-// ── CPU YUV420P → RGBA conversion + compositing ─────────────────────────
-
-// Output canvas size (fixed)
-constexpr int CANVAS_W = 960;
-constexpr int CANVAS_H = 540;
-
-// ── Preview performance settings (workstation-local, NOT per-project) ────────
-// Persisted in xleth-settings.json via the existing settings store; the engine
-// holds a live copy so it can resize the compositor and set the bypass flag.
-static float g_previewResolutionScale = 1.0f;  // 1.0 / 0.75 / 0.5 / 0.25
-static bool  g_previewEffectsBypass   = false;
-// Poster fast-preview mode (PREVIEW-ONLY). When true, grid cells bind each
-// source's cached poster frame instead of live-decoding per frame; flip +
-// opacity still apply, fullscreen layers stay live. Default ON. Never reaches
-// the render/export path (OfflineRenderer calls collectRequests with the
-// default posterMode=false).
-static bool  g_previewPosterMode      = true;
-
-// ── Poster prepass counters (Option B warm-on-engage) ────────────────────────
-// One base poster per video source on the timeline. Counters are monotonic for
-// the CURRENT prepass run and guarded by g_posterPrepassMtx. active=true while a
-// run is in flight (used by the Play gate and the UI overlay). Lock order is
-// always syncEventsMutex → g_posterPrepassMtx; never the reverse.
-static std::mutex g_posterPrepassMtx;
-static int        g_posterPrepassTotal     = 0;   // cell thumbnails enqueued this run
-static int        g_posterPrepassCompleted = 0;   // results installed this run (ok OR fail)
-static std::atomic<bool> g_posterPrepassActive{false};
-// Exact set of PER-CELL (source,bucket) thumbnail keys THIS run is still waiting
-// on (thumbKey()). Poster mode shows each grid cell its OWN representative frame,
-// so the warm-up hold must wait for every distinct cell thumbnail across the
-// whole timeline — not one frame per source. Tracking the exact key set (rather
-// than counting results) keeps the per-tick self-heal — which can also enqueue
-// cell thumbnails — from overshooting completed and releasing the video hold
-// early. Base posters are a per-source fallback and are NOT tracked here.
-// Guarded by g_posterPrepassMtx.
-static std::unordered_set<long long> g_posterPrepassPending;
-
-// Whole-source preview-proxy target height (PREVIEW-ONLY). On first preview use
-// of a source, the engine builds ONE small all-intra proxy of the ENTIRE source
-// downscaled to min(this, srcHeight) (aspect-preserved). 720 is the default;
-// 480 is exposed for very weak machines (smaller files, even cheaper decode).
-// Changing it (Timeline_SetPreviewProxyHeight) re-resolves every source against
-// the new height so a fresh proxy is built/engaged at the new size.
-static int   g_previewProxyTargetHeight = 720;
-
-// Per-source scaler cache (source dimensions may differ)
-struct ScalerEntry {
-    SwsContext* ctx = nullptr;
-    int srcW = 0, srcH = 0;
-    int dstW = 0, dstH = 0;
-};
-std::unordered_map<int, ScalerEntry> scalerCache;
 
 // Convert a YUV CachedFrame and blit it onto the canvas at (dx,dy,dw,dh).
 // opacity < 1.0f performs per-pixel alpha blending into the existing canvas;
@@ -625,48 +346,12 @@ static const CachedFrame* getCachedFrameAtSourceTime(
     return frameCache ? frameCache->get(key) : nullptr;
 }
 
-// ── Sync stats snapshot ───────────────────────────────────────────────────
-struct StatsSnapshot {
-    double avgDriftMs  = 0.0;
-    double maxDriftMs  = 0.0;
-    int    frameDrops  = 0;
-    double cacheHitRate = 0.0;
-};
-std::mutex    statsMutex;
-StatsSnapshot statsSnapshot;
-
-// ── Audio export state (accessed from bridge thread + export worker thread) ─
-struct ExportProgressSnapshot {
-    bool        running    = false;
-    float       percent    = 0.0f;
-    std::string phase;         // "rendering" | "encoding" | "done" | "error" | "cancelled" | ""
-    std::string outputPath;
-    std::string error;
-};
-std::mutex                   g_exportStateMutex;
-ExportProgressSnapshot       g_exportProgress;
-std::atomic<bool>            g_exportCancel{false};
-std::atomic<bool>            g_exportRunning{false};
-std::unique_ptr<std::thread> g_exportThread;
-
-// ── Video export (offline A/V render via OfflineRenderer) ───────────────
-std::unique_ptr<OfflineRenderer> g_videoRenderer;
-std::atomic<bool>                g_audioSuspendedForExport{false};
-
 } // anonymous namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Push the committed LoopRegion (ticks) into the live transport (samples). Must
-// run after every loop mutation, undo/redo, project load, and BPM change so the
-// audio-thread playback trap always matches the model. Message-thread only.
-// Defined below near the loop-region handlers; forward-declared here so the
-// earlier project-load path can call it.
-static void syncTransportLoopFromTimeline();
-
-static bool isInitialised() { return audioEngine != nullptr; }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Audio-health diagnostic trace (read-only instrumentation)
@@ -675,16 +360,6 @@ static bool isInitialised() { return audioEngine != nullptr; }
 // JUCE message thread (start/stop) or a dedicated background sampler thread
 // (1s reads). NOTHING here touches the audio thread or chainsMutex_. Enabled
 // only when XLETH_AUDIO_TRACE is set, so default builds are unaffected.
-namespace {
-
-std::mutex   g_audioTraceMutex;
-std::ofstream g_audioTraceFile;
-bool         g_audioTraceInit = false;
-
-std::thread       g_audioHealthThread;
-std::atomic<bool> g_audioHealthStop{false};
-
-} // namespace
 
 void XlethEngineService::audioTrace(const std::string& line)
 {
@@ -1014,23 +689,6 @@ static void syncClipFadeToMixEngine()
     const int n = static_cast<int>(std::round(g_timeline->getDeclickMs() * sr / 1000.0));
     audioEngine->getMixEngine().setClipBoundaryFadeSamples(n);
 }
-
-// Simple timing wrapper for debug logging
-struct BridgeCallLog {
-    const char* name;
-    std::chrono::high_resolution_clock::time_point t0;
-    explicit BridgeCallLog(const char* n) : name(n) {
-        t0 = std::chrono::high_resolution_clock::now();
-        std::cout << "[Bridge] → " << name << "\n" << std::flush;
-    }
-    void done(const std::string& summary = "") {
-        auto us = std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::high_resolution_clock::now() - t0).count();
-        std::cout << "[Bridge] ← " << name
-                  << (summary.empty() ? "" : " = " + summary)
-                  << " (" << us << "µs)\n" << std::flush;
-    }
-};
 
 // Ensure a VideoDecoder is open for the given source and slot it into
 // decoderPtrs[id]. Opens the proxy if ready, else the original file.
@@ -1580,43 +1238,6 @@ static void drainProxyResults() {
                   << " ready -> " << r.outputPath << "\n";
     }
 }
-
-// ── Lazy poster self-heal ─────────────────────────────────────────────────────
-// Sources whose poster extraction has already been attempted this session
-// (success OR failure). Prevents the video thread from re-spawning an ffmpeg
-// poster job every tick for a source whose poster cannot be produced (e.g.
-// ffmpeg CLI missing). Touched only while holding syncEventsMutex.
-static std::unordered_set<int> g_posterEnqueued;
-
-// Regions for which a preview-time proxy self-heal was already attempted this
-// session. The edit-time trigger (maybeEnqueueRegionProxy on clip CRUD) only
-// fires for newly placed cells; projects opened with existing cells never had
-// it called. This guard lets the video loop attempt a proxy exactly once per
-// active region without re-statting the disk every tick. Touched only while
-// holding syncEventsMutex.
-static std::unordered_set<int> g_proxyEnqueuedRegions;
-
-// ── Failed-generation backoff (Fix 1) ─────────────────────────────────────────
-// Generation can legitimately fail for a source (e.g. a codec this build cannot
-// decode even with hwaccel). Without a cap, ProxyManager would keep enqueuing
-// ~one job per active region/cell every session and the workers would churn
-// forever for nothing, making playback WORSE than plain live decode. So we count
-// consecutive poster/proxy/thumbnail failures per source and, after
-// kGenMaxFailures, disable ALL further generation for that source this session.
-// Any success resets the streak. Touched only while holding syncEventsMutex.
-static constexpr int kGenMaxFailures = 2;
-static std::unordered_map<int,int> g_genFailCount;   // sourceId -> consecutive failures
-static std::unordered_set<int>     g_genDisabled;     // sources with generation off
-
-// One attempt per (sourceId, frameBucket) per session for per-offset thumbnails
-// (Fix 2). Mirrors g_posterEnqueued but keyed by source+bucket. Touched only
-// while holding syncEventsMutex.
-static std::unordered_set<long long> g_thumbnailEnqueued;
-
-// One whole-source preview-proxy build attempt per source per session. Mirrors
-// g_posterEnqueued. Cleared when the target height changes (so the new size is
-// rebuilt) and on project new/load. Touched only while holding syncEventsMutex.
-static std::unordered_set<int> g_sourcePreviewEnqueued;
 
 static inline long long thumbKey(int sourceId, int bucket) {
     return (static_cast<long long>(sourceId) << 32)
@@ -10974,40 +10595,6 @@ JsonApi::Array MakeStringArray(JsonApi::Env env, const std::vector<std::string>&
     return arr;
 }
 
-struct AudioPerformanceCaptureOptions
-{
-    int durationSeconds = 10;
-    std::string outputDir;
-    bool includeJson = true;
-    bool includeMarkdown = true;
-    bool strict = false;
-    std::string label;
-};
-
-struct AudioPerformanceCaptureState
-{
-    bool active = false;
-    AudioPerformanceCaptureOptions options;
-    std::string capturedAtIso;
-    std::chrono::steady_clock::time_point startedAt;
-    MixEngine::RealtimeDiagnosticsSnapshot startSnapshot;
-    bool previousDiagnosticsEnabled = false;
-    int64_t startRawPositionSamples = 0;
-    int64_t startPresentationPositionSamples = 0;
-    bool startPlaying = false;
-    uint64_t minTimingSequence = 1;
-    uint64_t accumulatedTimingSampleCount = 0;
-    uint64_t accumulatorOverflowDrops = 0;
-};
-
-std::mutex g_audioPerformanceCaptureMutex;
-AudioPerformanceCaptureState g_audioPerformanceCapture;
-nlohmann::json g_lastAudioPerformanceCaptureReport;
-std::string g_lastAudioPerformanceCaptureJsonPath;
-std::string g_lastAudioPerformanceCaptureMarkdownPath;
-std::thread g_audioPerformanceCaptureDrainThread;
-std::atomic<bool> g_audioPerformanceCaptureDrainStop{false};
-
 std::string isoUtcNow()
 {
     const auto now = std::chrono::system_clock::now();
@@ -13356,16 +12943,6 @@ JsonApi::Value Audio_GetFailedPlugins(const JsonApi::CallbackInfo& info)
     json += "]";
     return JsonApi::String::New(env, json.toStdString());
 }
-
-// ── Main window HWND (for VST editor parenting) ───────────────────────────────
-//
-// Stored here so Audio_SetMainWindowHandle can also push the value into the
-// MixEngine; MixEngine then passes it to EditorProcessCoordinator so each
-// editor-host.exe can call SetWindowLongPtrW(GWLP_HWNDPARENT).
-
-#ifdef _WIN32
-static std::atomic<uintptr_t> g_mainXlethHwnd{0};
-#endif
 
 // audio_setMainWindowHandle(hwndHex: string) → void
 // Called once from main.js after the BrowserWindow is created.
