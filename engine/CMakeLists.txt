@@ -408,6 +408,7 @@ target_compile_definitions(XlethEngineHeaders INTERFACE
 add_library(XlethEngineService STATIC
     src/XlethEngineService.cpp
     src/service/XlethSvcGlobals.cpp   # S2 Stage 1 — the ONE definition of every service global
+    src/service/XlethSvcMidi.cpp      # S2 Stage 2 — MIDI Import domain
 )
 
 target_include_directories(XlethEngineService
