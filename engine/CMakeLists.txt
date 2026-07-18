@@ -411,6 +411,7 @@ add_library(XlethEngineService STATIC
     src/service/XlethSvcMidi.cpp      # S2 Stage 2 — MIDI Import domain
     src/service/XlethSvcGpuDiag.cpp   # S2 Stage 3 — GPU/Diag/HwEnc/PreviewVis domain
     src/service/XlethSvcWaveform.cpp  # S2 Stage 4 — Waveform mipmap domain
+    src/service/XlethSvcVst3.cpp      # S2 Stage 5 — VST3 plugin scanner / editor-window / missing-plugin domain
 )
 
 target_include_directories(XlethEngineService
