@@ -23,3 +23,9 @@ void syncMixerTrackSlots(bool snapVolumeSmoothers = false);
 void triggerMipmapGeneration(int sampleBankId,
                               const std::string& sourcePath,
                               bool saveXlpeak);
+
+// S2 Stage 5 (VST3): locates the directory containing xleth_native.node, so
+// the plugin scanner/editor-host sibling exes can be found. Definition stays
+// in XlethEngineService.cpp (was `static`, line ~12242) because Lifecycle's
+// Initialize() calls it directly and Lifecycle stays in the main TU.
+juce::File getThisModuleDir();
