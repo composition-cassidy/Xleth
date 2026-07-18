@@ -409,6 +409,7 @@ add_library(XlethEngineService STATIC
     src/XlethEngineService.cpp
     src/service/XlethSvcGlobals.cpp   # S2 Stage 1 — the ONE definition of every service global
     src/service/XlethSvcMidi.cpp      # S2 Stage 2 — MIDI Import domain
+    src/service/XlethSvcGpuDiag.cpp   # S2 Stage 3 — GPU/Diag/HwEnc/PreviewVis domain
     src/service/XlethSvcWaveform.cpp  # S2 Stage 4 — Waveform mipmap domain
 )
 
