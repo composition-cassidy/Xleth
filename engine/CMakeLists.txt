@@ -407,6 +407,7 @@ target_compile_definitions(XlethEngineHeaders INTERFACE
 # archive ensures neither Node headers nor node.lib enter the reusable service.
 add_library(XlethEngineService STATIC
     src/XlethEngineService.cpp
+    src/service/XlethSvcGlobals.cpp   # S2 Stage 1 — the ONE definition of every service global
 )
 
 target_include_directories(XlethEngineService
