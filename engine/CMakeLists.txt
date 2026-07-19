@@ -412,6 +412,7 @@ add_library(XlethEngineService STATIC
     src/service/XlethSvcGpuDiag.cpp   # S2 Stage 3 — GPU/Diag/HwEnc/PreviewVis domain
     src/service/XlethSvcWaveform.cpp  # S2 Stage 4 — Waveform mipmap domain
     src/service/XlethSvcVst3.cpp      # S2 Stage 5 — VST3 plugin scanner / editor-window / missing-plugin domain
+    src/service/XlethSvcEqWs.cpp      # S2 Stage 6 — EQ / Waveshaper / SmartBalance host bridge bindings domain
 )
 
 target_include_directories(XlethEngineService
