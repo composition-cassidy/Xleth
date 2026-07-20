@@ -152,6 +152,10 @@ extern "C" {
 // audio_eq*/audio_ws*/audio_smartBalanceGetDebug.
 #include "service/XlethSvcEqWs.h"
 
+// Sampler / Auto Loop Optimizer domain handler; declared here so dispatch()
+// below resolves sampler_analyzeLoop.
+#include "service/XlethSvcSampler.h"
+
 using namespace xleth::svc;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -13689,5 +13693,6 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     if (method == "midi_parseSummary") return Midi_ParseSummary(info).raw();
     if (method == "midi_importFull") return Midi_ImportFull(info).raw();
     if (method == "midi_executeImport") { Midi_ExecuteImport(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "sampler_analyzeLoop") return Sampler_AnalyzeLoop(info).raw();
     throw std::runtime_error("Unknown engine command: " + method);
 }

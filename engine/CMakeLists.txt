@@ -415,6 +415,7 @@ add_library(XlethEngineService STATIC
     src/service/XlethSvcWaveform.cpp  # S2 Stage 4 — Waveform mipmap domain
     src/service/XlethSvcVst3.cpp      # S2 Stage 5 — VST3 plugin scanner / editor-window / missing-plugin domain
     src/service/XlethSvcEqWs.cpp      # S2 Stage 6 — EQ / Waveshaper / SmartBalance host bridge bindings domain
+    src/service/XlethSvcSampler.cpp   # Auto Loop Optimizer bridge — sampler_analyzeLoop domain
 )
 
 target_include_directories(XlethEngineService
