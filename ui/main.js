@@ -1690,6 +1690,80 @@ ipcMain.handle('xleth:project:exportZip', async (event, opts) => {
   }
 });
 
+// ─── Loop Lab (DEV dataset-authoring tool) ───────────────────────────────────
+// Main-process helpers for the Loop Lab panel: a WAV multi-picker, a WAV-header
+// probe (authoritative file rate/channels/frame-count), and the dataset ZIP
+// export. All renderer-side loop authoring is done through existing engine RPCs
+// (see docs/loop-lab-codepath-report.md); these handlers only touch the
+// filesystem, which the renderer cannot. The parsing/conversion/dataset logic
+// lives in electron-main/loopLabExport.js so it can be unit-tested.
+const loopLabExport = require('./electron-main/loopLabExport');
+
+// xleth:loopLab:pickWavs → string[] of absolute file paths (empty if cancelled).
+ipcMain.handle('xleth:loopLab:pickWavs', async (event) => {
+  const senderWin = BrowserWindow.fromWebContents(event.sender) || win;
+  const { canceled, filePaths } = await dialog.showOpenDialog(senderWin, {
+    title: 'Loop Lab — Import WAV samples',
+    properties: ['openFile', 'multiSelections'],
+    filters: [{ name: 'WAV audio', extensions: ['wav'] }],
+  });
+  return canceled ? [] : filePaths;
+});
+
+// xleth:loopLab:probeWav(filePath) → header info | null
+ipcMain.handle('xleth:loopLab:probeWav', async (_, filePath) => {
+  return loopLabExport.parseWavHeader(filePath);
+});
+
+// xleth:loopLab:exportDataset({ destPath?, samples: [...] }) → { ok, path } | { ok:false, ... }
+// samples[i] = { filePath, name, className, instrumentName|null, source, rootNote|null,
+//                behaviorFamily, engineSampleRate, gold: { start, end, xfade } }  // gold in ENGINE-buffer samples
+ipcMain.handle('xleth:loopLab:exportDataset', async (event, payload) => {
+  const senderWin = BrowserWindow.fromWebContents(event.sender) || win;
+  const samples = Array.isArray(payload?.samples) ? payload.samples : [];
+  if (samples.length === 0) return { ok: false, error: 'No samples to export.' };
+  try {
+    let dataset, zipEntries;
+    try {
+      ({ dataset, zipEntries } = loopLabExport.buildDataset(samples));
+    } catch (be) {
+      return { ok: false, error: be.message };
+    }
+
+    let destPath = typeof payload?.destPath === 'string' ? payload.destPath : '';
+    if (!destPath) {
+      const { canceled, filePath } = await dialog.showSaveDialog(senderWin, {
+        title: 'Loop Lab — Export corpus + dataset.json…',
+        defaultPath: 'loop-lab-corpus.zip',
+        filters: [{ name: 'ZIP Archive', extensions: ['zip'] }],
+      });
+      if (canceled || !filePath) return { ok: false, cancelled: true };
+      destPath = filePath;
+    }
+    if (path.extname(destPath).toLowerCase() !== '.zip') destPath += '.zip';
+
+    const archiver = require('archiver');
+    await new Promise((resolve, reject) => {
+      const output = fs.createWriteStream(destPath);
+      const archive = archiver('zip', { zlib: { level: 9 } });
+      output.on('close', resolve);
+      output.on('error', reject);
+      archive.on('error', reject);
+      archive.on('warning', (w) => log(`[LoopLab] zip warning: ${w.message}`));
+      archive.pipe(output);
+      archive.append(JSON.stringify(dataset, null, 2), { name: 'dataset.json' });
+      for (const e of zipEntries) archive.file(e.src, { name: e.name });
+      archive.finalize();
+    });
+
+    log(`[LoopLab] exported ${dataset.length} samples → ${destPath}`);
+    return { ok: true, path: destPath, count: dataset.length };
+  } catch (e) {
+    log(`[LoopLab] export error: ${e && e.message}`);
+    return { ok: false, error: (e && e.message) || 'Export failed' };
+  }
+});
+
 ipcMain.handle('xleth:project:getSourceThumbnail', async (_, filePath, duration) => {
   const { execFile } = require('child_process');
   const os = require('os');

@@ -542,6 +542,15 @@ window.xleth = ({
     openMidiDialog: () => invoke('xleth:dialog:importMIDI'),
   },
 
+  // ── Loop Lab (DEV dataset-authoring tool) ─────────────────────────────────
+  // Filesystem-only helpers for the Loop Lab panel; all loop authoring goes
+  // through existing engine RPCs (see docs/loop-lab-codepath-report.md).
+  loopLab: {
+    pickWavs:      ()          => invoke('xleth:loopLab:pickWavs'),
+    probeWav:      (filePath)  => invoke('xleth:loopLab:probeWav', filePath),
+    exportDataset: (payload)   => invoke('xleth:loopLab:exportDataset', payload),
+  },
+
   // ── Window controls (frameless title bar) ─────────────────────────────────
   window: {
     minimize: () => ipcRenderer.send('xleth:window:minimize'),
