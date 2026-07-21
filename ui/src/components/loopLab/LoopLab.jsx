@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import LoopLabWaveform from './LoopLabWaveform.jsx'
+import Knob from '../sampler/Knob.jsx'
 import {
   LOOP_LAB_CLASSES, BEHAVIOR_FAMILIES, deriveBehaviorFamily,
   autoName, loadStickyMeta, saveStickyMeta, metaIsComplete,
@@ -25,6 +26,13 @@ function bridgeFn(pathStr) {
   for (const p of parts) o = o?.[p]
   if (typeof o !== 'function') throw new Error(`window.xleth.${pathStr} unavailable`)
   return o
+}
+
+const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+// MIDI note number → scientific pitch name (60 → "C4"), for the Root Note knob.
+function midiToNoteName(v) {
+  const m = Math.round(v)
+  return `${NOTE_NAMES[((m % 12) + 12) % 12]}${Math.floor(m / 12) - 1}`
 }
 
 let uidCounter = 1
@@ -113,7 +121,7 @@ export default function LoopLab({ onClose }) {
             className: capturedMeta.className,
             instrumentName: capturedMeta.className === 'Instrument' ? capturedMeta.instrumentName : '',
             source: capturedMeta.source,
-            rootNote: null,
+            rootNote: 60,   // C4 default; editable via the Root Note knob
             behaviorFamily,
             regionId, sampleId,
             sampleRate,
@@ -349,10 +357,16 @@ function SampleEditor({ sample, previewing, onTogglePreview, onUpdate }) {
     onUpdate(id, c)
   }, [id, numSamples, onUpdate])
 
-  const num = (v, fallback) => {
-    const n = parseInt(v, 10)
-    return Number.isFinite(n) ? n : fallback
-  }
+  // ── Knob handlers (Sampler-style; sample-count / note-name readouts) ────────
+  // Knobs emit continuous floats during drag; we round to whole samples and keep
+  // loop-start < loop-end. onUpdate's debounced push rebakes the engine loop.
+  const setStart = (v) => onUpdate(id, { loopStart: Math.max(0, Math.min(Math.round(v), sample.loopEnd - 1)) })
+  const setEnd = (v) => onUpdate(id, { loopEnd: Math.min(numSamples, Math.max(Math.round(v), sample.loopStart + 1)) })
+  const setXfade = (v) => onUpdate(id, { xfade: Math.max(0, Math.round(v)) })
+  const setRoot = (v) => onUpdate(id, { rootNote: Math.max(0, Math.min(127, Math.round(v))) })
+  // Crossfade is clamped by the engine to half the loop length — cap the knob to
+  // the usable range so it maps intuitively.
+  const xfadeMax = Math.max(1, Math.floor((sample.loopEnd - sample.loopStart) / 2))
 
   return (
     <>
@@ -385,30 +399,31 @@ function SampleEditor({ sample, previewing, onTogglePreview, onUpdate }) {
         </span>
       </div>
 
-      <div className="ll-controls">
-        <label className="ll-num">
-          <span>Loop start</span>
-          <input type="number" min={0} max={numSamples - 1} value={sample.loopStart}
-            onChange={(e) => onUpdate(id, clampLoop(num(e.target.value, sample.loopStart), sample.loopEnd))} />
-        </label>
-        <label className="ll-num">
-          <span>Loop end</span>
-          <input type="number" min={1} max={numSamples} value={sample.loopEnd}
-            onChange={(e) => onUpdate(id, clampLoop(sample.loopStart, num(e.target.value, sample.loopEnd)))} />
-        </label>
-        <label className="ll-num">
-          <span>Crossfade</span>
-          <input type="number" min={0} value={sample.xfade}
-            onChange={(e) => onUpdate(id, { xfade: Math.max(0, num(e.target.value, sample.xfade)) })} />
-        </label>
-        <label className="ll-num">
-          <span>Root note</span>
-          <input type="number" min={0} max={127} value={sample.rootNote ?? ''} placeholder="—"
-            onChange={(e) => {
-              const v = e.target.value === '' ? null : Math.max(0, Math.min(127, num(e.target.value, 60)))
-              onUpdate(id, { rootNote: v })
-            }} />
-        </label>
+      <div className="ll-knobs">
+        <Knob
+          size={52} label="Loop Start" min={0} max={Math.max(1, numSamples - 1)}
+          value={sample.loopStart} defaultValue={Math.round(numSamples * 0.25)}
+          formatValue={(v) => String(Math.round(v))}
+          onLiveChange={setStart} onCommit={setStart}
+        />
+        <Knob
+          size={52} label="Loop End" min={1} max={numSamples}
+          value={sample.loopEnd} defaultValue={Math.round(numSamples * 0.75)}
+          formatValue={(v) => String(Math.round(v))}
+          onLiveChange={setEnd} onCommit={setEnd}
+        />
+        <Knob
+          size={52} label="Crossfade" min={0} max={xfadeMax}
+          value={Math.min(sample.xfade, xfadeMax)} defaultValue={0}
+          formatValue={(v) => String(Math.round(v))}
+          onLiveChange={setXfade} onCommit={setXfade}
+        />
+        <Knob
+          size={52} label="Root Note" min={0} max={127}
+          value={sample.rootNote ?? 60} defaultValue={60}
+          formatValue={midiToNoteName}
+          onLiveChange={setRoot} onCommit={setRoot}
+        />
       </div>
 
       <div className="ll-controls">

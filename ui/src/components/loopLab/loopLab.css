@@ -132,6 +132,8 @@
 .ll-zoom-row { display: flex; align-items: center; gap: 10px; margin: 6px 0 12px; }
 .ll-zoom-info, .ll-loopinfo { font-size: 10px; color: var(--theme-text-muted); }
 
+.ll-knobs { display: flex; gap: 22px; align-items: flex-start; margin: 4px 0 14px; flex-wrap: wrap; }
+
 .ll-controls { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 10px; }
 .ll-num { display: flex; flex-direction: column; gap: 3px; width: 110px; }
 .ll-num--wide { width: 200px; }
