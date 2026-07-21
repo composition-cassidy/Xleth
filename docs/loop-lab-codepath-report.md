@@ -409,3 +409,44 @@ functionality; run it only if the audit turns out to need an engine tweak. The
 mandatory verification is the **runtime console smoke test** (import → set loops →
 audible preview → sticky-metadata auto-apply → export → inspect ZIP + parse
 `dataset.json`).
+
+---
+
+## 9. Verification status & manual smoke test
+
+**Implemented (commit `feat(loop-lab): …`).** Files:
+`ui/src/components/loopLab/{LoopLab,LoopLabWaveform,LoopLabDevMount}.jsx`,
+`loopLabMeta.js`, `loopLab.css`, `__tests__/*`;
+`ui/electron-main/loopLabExport.js`; IPC in `ui/main.js`; wrappers in
+`ui/preload.js`; DEV mount in `ui/src/XlethRoot.jsx`.
+
+**Automatically verified (no audio needed):**
+- `npm run build` (vite) clean — the whole Loop Lab module graph is statically
+  imported by `XlethRoot`, so a clean build proves it all transforms/resolves.
+- `npm run test` (vitest): full suite green except the 2 pre-existing mixer
+  failures (`MasterStrip`, `MixerStrip.routing` — unrelated, untouched files).
+- 20 dedicated Loop Lab unit tests pass, covering behaviour-family derivation,
+  auto-naming, sticky-metadata persistence, WAV-header parsing, the
+  engine→file **domain conversion** (identity + off-rate scaling + clamping),
+  the full `dataset.json` schema/paths, id/name disambiguation, and a **real
+  archiver ZIP round-trip**.
+- No C++ changed → `build.bat bridge-clean` not required.
+
+**Manual smoke test (audible part — run in the app, `npm run dev`):**
+1. Bottom-left shows a **🔁 Loop Lab** launcher (DEV only). Click it.
+2. Set the sticky bar: Class = *Hard-tuned vocal*, Source = `ep12`. Click
+   **Import WAVs**, pick **3** WAVs. They appear named `hard_tuned_vocal_ep12_0001..3`.
+3. Select each; drag the loop-start/end handles (or edit the numeric fields),
+   set a crossfade width; press **Space** — the loop should audibly cycle
+   continuously with the seam you hear updating as you edit (rebake is debounced).
+   Wheel = zoom, drag empty = pan, **Fit** resets.
+4. Change the sticky Class to *Instrument*, type Instrument = `flute`, import a
+   **4th** WAV → it is named `flute_0004` and its behavior family auto-derives to
+   `stable_periodic`; confirm the earlier three kept their vocal metadata.
+5. Click **Export ZIP**, choose a path. Then verify on disk:
+   ```
+   unzip -l corpus.zip           # corpus/Hard-tuned vocal/*.wav, corpus/Instrument/flute/*.wav, dataset.json
+   unzip -p corpus.zip dataset.json | python -m json.tool   # parses; one entry per sample matching the §6 schema
+   ```
+   Each `gold_loop {start,end,xfade}` is in the WAV's own sample domain, and the
+   WAVs are byte-identical copies of the originals.
