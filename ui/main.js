@@ -1715,6 +1715,42 @@ ipcMain.handle('xleth:loopLab:probeWav', async (_, filePath) => {
   return loopLabExport.parseWavHeader(filePath);
 });
 
+// ── Loop Lab persistent state ────────────────────────────────────────────────
+// ONE permanent JSON file in the app's userData dir, independent of any project.
+// The panel autosaves its whole working set here on every change and re-hydrates
+// from it on open — so imported WAVs + loop edits survive app restarts and
+// project switches. Written atomically (tmp + rename) so a crash mid-write can't
+// corrupt it.
+function loopLabStatePath() {
+  return path.join(app.getPath('userData'), 'loop-lab-state.json');
+}
+
+// xleth:loopLab:loadState() → state object | null
+ipcMain.handle('xleth:loopLab:loadState', async () => {
+  try {
+    const f = loopLabStatePath();
+    if (!fs.existsSync(f)) return null;
+    return JSON.parse(fs.readFileSync(f, 'utf8'));
+  } catch (e) {
+    log(`[LoopLab] loadState error: ${e && e.message}`);
+    return null;
+  }
+});
+
+// xleth:loopLab:saveState(state) → { ok } | { ok:false, error }
+ipcMain.handle('xleth:loopLab:saveState', async (_, state) => {
+  try {
+    const f = loopLabStatePath();
+    const tmp = `${f}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(state, null, 2), 'utf8');
+    fs.renameSync(tmp, f);
+    return { ok: true };
+  } catch (e) {
+    log(`[LoopLab] saveState error: ${e && e.message}`);
+    return { ok: false, error: (e && e.message) || 'save failed' };
+  }
+});
+
 // xleth:loopLab:exportDataset({ destPath?, samples: [...] }) → { ok, path } | { ok:false, ... }
 // samples[i] = { filePath, name, className, instrumentName|null, source, rootNote|null,
 //                behaviorFamily, engineSampleRate, gold: { start, end, xfade } }  // gold in ENGINE-buffer samples

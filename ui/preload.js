@@ -549,6 +549,8 @@ window.xleth = ({
     pickWavs:      ()          => invoke('xleth:loopLab:pickWavs'),
     probeWav:      (filePath)  => invoke('xleth:loopLab:probeWav', filePath),
     exportDataset: (payload)   => invoke('xleth:loopLab:exportDataset', payload),
+    loadState:     ()          => invoke('xleth:loopLab:loadState'),
+    saveState:     (state)     => invoke('xleth:loopLab:saveState', state),
   },
 
   // ── Window controls (frameless title bar) ─────────────────────────────────

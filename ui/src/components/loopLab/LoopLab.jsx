@@ -52,11 +52,31 @@ export default function LoopLab({ onClose }) {
   samplesRef.current = samples
   const previewingRef = useRef(null)
   previewingRef.current = previewingId
+  const stickyRef = useRef(sticky)
+  stickyRef.current = sticky
+  const readyRef = useRef(false)          // true once initial restore finishes
+  const saveTimer = useRef(null)          // debounced persistent-save timer
+  const restoreStartedRef = useRef(false) // one-shot guard (survives StrictMode remount)
 
   const selected = samples.find((s) => s.id === selectedId) || null
 
   // Persist sticky metadata whenever it changes (survives app restarts).
   useEffect(() => { saveStickyMeta(sticky) }, [sticky])
+
+  // Snapshot of the whole working set for the ONE permanent disk save. Reads
+  // refs so it is safe to call from unmount. Engine-session ids (regionId/
+  // sampleId) are intentionally NOT saved — they are re-created on restore.
+  const buildState = useCallback(() => ({
+    version: 1,
+    sticky: stickyRef.current,
+    importCounter: importCounter.current,
+    samples: samplesRef.current.map((s) => ({
+      filePath: s.filePath, name: s.name,
+      className: s.className, instrumentName: s.instrumentName, source: s.source,
+      rootNote: s.rootNote, behaviorFamily: s.behaviorFamily,
+      loopStart: s.loopStart, loopEnd: s.loopEnd, xfade: s.xfade,
+    })),
+  }), [])
 
   // ── Engine settings push (debounced) + preview re-arm ───────────────────────
   const pushSettings = useCallback((sample, { reArm = true } = {}) => {
@@ -84,6 +104,57 @@ export default function LoopLab({ onClose }) {
     }, PUSH_DEBOUNCE_MS)
   }, [])
 
+  // ── Import one WAV through the engine ────────────────────────────────────────
+  // Decodes the file into a scratch region and builds the panel sample. `saved`
+  // (from the persisted state) supplies authoring fields to restore; when absent,
+  // fresh defaults are used (quarter/three-quarter loop, C4). Loop points are
+  // clamped to the region's actual length so a rate/length change across sessions
+  // can't push them out of bounds. Returns the sample; caller appends it.
+  const importOne = useCallback(async (filePath, authoring, saved) => {
+    const hdr = await bridgeFn('loopLab.probeWav')(filePath)
+    if (!hdr) throw new Error('not a readable WAV')
+    const sampleId = await bridgeFn('audio.loadSourceRegion')(filePath, 0, hdr.durationSec)
+    if (typeof sampleId !== 'number' || sampleId < 0) throw new Error('decode failed')
+    const regionId = await bridgeFn('timeline.addRegion')({ name: authoring.name, audioFilePath: filePath })
+    if (typeof regionId !== 'number' || regionId < 0) throw new Error('addRegion failed')
+    await bridgeFn('audio.mapRegionToSample')(regionId, sampleId)
+    const info = await bridgeFn('timeline.getRegionAudioInfo')(regionId)
+    const numSamples = Number(info?.numSamples) || 0
+    const sampleRate = Number(info?.engineSampleRate) || hdr.sampleRate
+    if (numSamples <= 0) throw new Error('region has no audio')
+
+    const clampN = (v) => Math.max(0, Math.min(Math.round(v), numSamples))
+    let loopStart = saved && saved.loopStart != null ? clampN(saved.loopStart) : Math.round(numSamples * 0.25)
+    let loopEnd = saved && saved.loopEnd != null ? clampN(saved.loopEnd) : Math.round(numSamples * 0.75)
+    if (loopEnd <= loopStart) loopEnd = Math.min(numSamples, loopStart + 1)
+    const xfade = saved && saved.xfade != null
+      ? Math.max(0, Math.round(saved.xfade))
+      : Math.min(2048, Math.floor((loopEnd - loopStart) / 4))
+
+    const sample = {
+      id: uidCounter++,
+      filePath, name: authoring.name,
+      className: authoring.className,
+      instrumentName: authoring.className === 'Instrument' ? (authoring.instrumentName || '') : '',
+      source: authoring.source || '',
+      rootNote: authoring.rootNote != null ? authoring.rootNote : 60,
+      behaviorFamily: authoring.behaviorFamily
+        || deriveBehaviorFamily(authoring.className, authoring.instrumentName),
+      regionId, sampleId, sampleRate,
+      originalSampleRate: Number(info?.originalSampleRate) || hdr.sampleRate,
+      channels: hdr.channels,
+      numSamples,
+      durationSec: Number(info?.duration) || hdr.durationSec,
+      loopStart, loopEnd, xfade,
+      view: { start: 0, end: numSamples },
+    }
+    // Prime the engine preview sampler with this loop.
+    pushSettings(sample, { reArm: false })
+    return sample
+  }, [pushSettings])
+
+  const baseName = (p) => String(p).split(/[\\/]/).pop()
+
   // ── Import a batch of WAVs ───────────────────────────────────────────────────
   const handleImport = useCallback(async () => {
     if (importing) return
@@ -96,48 +167,20 @@ export default function LoopLab({ onClose }) {
       let firstNewId = null
       for (const filePath of paths) {
         try {
-          setStatus(`Importing ${filePath.split(/[\\/]/).pop()}…`)
-          const hdr = await bridgeFn('loopLab.probeWav')(filePath)
-          if (!hdr) throw new Error('not a readable WAV')
-          const sampleId = await bridgeFn('audio.loadSourceRegion')(filePath, 0, hdr.durationSec)
-          if (typeof sampleId !== 'number' || sampleId < 0) throw new Error('decode failed')
-          const name = autoName(capturedMeta, importCounter.current++)
-          const regionId = await bridgeFn('timeline.addRegion')({ name, audioFilePath: filePath })
-          if (typeof regionId !== 'number' || regionId < 0) throw new Error('addRegion failed')
-          await bridgeFn('audio.mapRegionToSample')(regionId, sampleId)
-          const info = await bridgeFn('timeline.getRegionAudioInfo')(regionId)
-          const numSamples = Number(info?.numSamples) || 0
-          const sampleRate = Number(info?.engineSampleRate) || hdr.sampleRate
-          if (numSamples <= 0) throw new Error('region has no audio')
-
-          const loopStart = Math.round(numSamples * 0.25)
-          const loopEnd = Math.round(numSamples * 0.75)
-          const xfade = Math.min(2048, Math.floor((loopEnd - loopStart) / 4))
-          const behaviorFamily = deriveBehaviorFamily(capturedMeta.className, capturedMeta.instrumentName)
-
-          const sample = {
-            id: uidCounter++,
-            filePath, name,
+          setStatus(`Importing ${baseName(filePath)}…`)
+          const authoring = {
+            name: autoName(capturedMeta, importCounter.current++),
             className: capturedMeta.className,
-            instrumentName: capturedMeta.className === 'Instrument' ? capturedMeta.instrumentName : '',
+            instrumentName: capturedMeta.instrumentName,
             source: capturedMeta.source,
-            rootNote: 60,   // C4 default; editable via the Root Note knob
-            behaviorFamily,
-            regionId, sampleId,
-            sampleRate,
-            originalSampleRate: Number(info?.originalSampleRate) || hdr.sampleRate,
-            channels: hdr.channels,
-            numSamples,
-            durationSec: Number(info?.duration) || hdr.durationSec,
-            loopStart, loopEnd, xfade,
-            view: { start: 0, end: numSamples },
+            rootNote: 60,
+            behaviorFamily: deriveBehaviorFamily(capturedMeta.className, capturedMeta.instrumentName),
           }
+          const sample = await importOne(filePath, authoring, null)
           setSamples((prev) => [...prev, sample])
           if (firstNewId == null) firstNewId = sample.id
-          // Prime the engine preview sampler with the initial loop.
-          pushSettings(sample, { reArm: false })
         } catch (e) {
-          setStatus(`Failed on ${filePath.split(/[\\/]/).pop()}: ${e.message}`)
+          setStatus(`Failed on ${baseName(filePath)}: ${e.message}`)
         }
       }
       if (firstNewId != null) setSelectedId(firstNewId)
@@ -147,7 +190,7 @@ export default function LoopLab({ onClose }) {
     } finally {
       setImporting(false)
     }
-  }, [importing, sticky, pushSettings])
+  }, [importing, sticky, importOne])
 
   // ── Mutate a sample field + push to engine ──────────────────────────────────
   const updateSample = useCallback((id, patch, { push = true } = {}) => {
@@ -205,14 +248,70 @@ export default function LoopLab({ onClose }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [togglePreview])
 
-  // Cleanup: stop all preview notes + delete scratch regions on unmount.
+  // ── Restore the permanent working set on mount ──────────────────────────────
+  // Re-imports every saved WAV (from its path) through the engine and reapplies
+  // the saved loop edits + metadata. Runs once. Files that have since moved or
+  // been deleted are skipped with a note.
+  useEffect(() => {
+    // One-shot guard: the ref persists across StrictMode's dev remount (same
+    // fiber), so the async restore body never runs twice (which would double-
+    // import and orphan regions).
+    if (restoreStartedRef.current) return
+    restoreStartedRef.current = true
+    ;(async () => {
+      try {
+        const saved = await window.xleth?.loopLab?.loadState?.()
+        if (!saved) return
+        if (saved.sticky) setSticky((m) => ({ ...m, ...saved.sticky }))
+        if (Number.isFinite(saved.importCounter)) importCounter.current = saved.importCounter
+        const list = Array.isArray(saved.samples) ? saved.samples : []
+        if (list.length) setStatus(`Restoring ${list.length} sample(s)…`)
+        let firstId = null
+        let restored = 0
+        let skipped = 0
+        for (const sv of list) {
+          try {
+            const sample = await importOne(sv.filePath, sv, sv)
+            setSamples((prev) => [...prev, sample])
+            if (firstId == null) firstId = sample.id
+            restored++
+          } catch (e) {
+            skipped++
+            setStatus(`Skipped ${baseName(sv.filePath)}: ${e.message}`)
+          }
+        }
+        if (firstId != null) setSelectedId(firstId)
+        if (list.length) setStatus(`Restored ${restored} sample(s)${skipped ? `, skipped ${skipped}` : ''}.`)
+      } catch (e) {
+        setStatus(`Restore error: ${e.message}`)
+      } finally {
+        readyRef.current = true   // gate autosave until restore is done
+      }
+    })()
+  }, [importOne])
+
+  // ── Autosave the permanent state on every change (debounced) ────────────────
+  useEffect(() => {
+    if (!readyRef.current) return   // don't clobber the file during initial restore
+    clearTimeout(saveTimer.current)
+    saveTimer.current = setTimeout(() => {
+      window.xleth?.loopLab?.saveState?.(buildState())
+    }, 500)
+    return () => clearTimeout(saveTimer.current)
+  }, [samples, sticky, buildState])
+
+  // Cleanup: flush a final save, stop preview notes, delete scratch regions.
   useEffect(() => () => {
+    if (readyRef.current) {
+      clearTimeout(saveTimer.current)
+      try { window.xleth?.loopLab?.saveState?.(buildState()) } catch {}
+    }
     for (const s of samplesRef.current) {
       if (s.regionId == null) continue
       try { bridgeFn('timeline.previewAllNotesOff')(s.regionId) } catch {}
       try { window.xleth?.timeline?.removeRegion?.(s.regionId) } catch {}
     }
-  }, [])
+  }, [buildState])
 
   const handleRemoveSample = useCallback((id) => {
     const s = samplesRef.current.find((x) => x.id === id)
