@@ -153,6 +153,38 @@ export function parseCandidatesDoc(text) {
   }
 }
 
+// ── Content hashing ──────────────────────────────────────────────────────────
+// A rater session must never treat a verdict recorded against one set of loop
+// points as covering a DIFFERENT set that happens to share a trial_id. This bit
+// the corpus for real: candidates.json was regenerated with a new ranking,
+// sample_id + arm pairing stayed the same so every trial_id was unchanged, and
+// every optimizer trial was silently marked "already rated" against loops
+// nobody had actually heard — a whole session produced zero valid verdicts with
+// no warning. `armContentHash` is the fix's unit: a stable fingerprint of what
+// an arm actually IS (its loop + provenance), independent of arm_id naming or
+// presentation order, computed here rather than trusted from whatever the
+// exporter wrote — so it works identically whether or not the candidates.json
+// on disk predates this feature.
+export function armContentHash(arm) {
+  const l = arm.loop
+  return seedFromString(`${arm.provenance}|${l.start}|${l.end}|${l.xfade}`)
+}
+
+// Order-independent fingerprint of the pair of loops a trial compares. Sorted
+// so re-blinding (arm_order flipping which is A and which is B) never changes
+// it — a trial's identity is "these two loops", not "this presentation".
+function armPairHash(hashA, hashB) {
+  return [hashA, hashB].sort((a, b) => a - b).join(':')
+}
+
+// A trial_id's stable FAMILY: the sample+pairing slot shared by every content
+// variant that has ever occupied it across regenerations of candidates.json.
+// `::rN` is the disambiguating suffix `reconcileTrialsWithRatings` assigns when
+// a slot's content changes out from under an otherwise-unchanged trial_id.
+function trialFamilyId(trialId) {
+  return String(trialId).replace(/::r\d+$/, '')
+}
+
 // ── Trial construction ───────────────────────────────────────────────────────
 
 const armById = (sample, id) => sample.arms.find((a) => a.arm_id === id) || null
@@ -218,6 +250,10 @@ export function buildTrials(doc, { anchorCount = ANCHOR_TRIAL_COUNT, sessionSeed
         kind,
         seed,
         arm_order: armsInOrder.map((a) => a.arm_id),
+        // Content fingerprint of the two loops being compared, in arm_order's
+        // order. This is what `reconcileTrialsWithRatings` checks a verdict
+        // against — never the trial_id alone.
+        arm_hashes: armsInOrder.map((a) => armContentHash(a)),
         arms: armsInOrder,
         sample,
       })
@@ -299,6 +335,105 @@ export function firstPendingIndex(trials, completed) {
   return -1
 }
 
+// Reconcile freshly-built trials against previously recorded verdicts, using
+// arm CONTENT rather than trial_id alone. This is the actual fix: a verdict
+// only counts as completing a trial when its recorded arm_hashes match what
+// THIS candidates.json currently holds for that trial_id.
+//
+// When a trial_id is reused for genuinely different content (a regenerated
+// candidates.json with a new ranking, same sample/pairing), the OLD verdict is
+// left exactly where it is — nothing is deleted or rewritten — and the trial
+// is offered again under a suffixed id (`::r2`, `::r3`, ...) so the new
+// verdict can never collide with the old line in ratings.jsonl.
+//
+// Verdicts written before this fix existed carry no `arm_hashes` at all —
+// trial_id is the only signal they have. Those are trusted by id, exactly as
+// before, so an existing session still resumes as completed. The FIRST time a
+// legacy verdict is loaded against matching content, it is silently upgraded:
+// a new line is appended carrying that content's hash, so a LATER
+// regeneration can be correctly detected as a mismatch even though the
+// original verdict predates hashing. Once that upgrade has happened, this
+// exact bug cannot recur for that trial again.
+//
+// Returns:
+//   trials     - the input trials, each carrying a possibly-suffixed
+//                `trial_id` (every other field unchanged)
+//   completed  - Set of (resolved) trial_ids that already have a matching verdict
+//   archived   - count of ratings.jsonl records that belong to a different
+//                candidate set (a removed sample/pairing, or mismatched content)
+//   toBackfill - legacy records to re-append with their content hash filled in,
+//                preserving the original verdict's winner/tags/timestamp
+export function reconcileTrialsWithRatings(trials, records) {
+  const byFamily = new Map()
+  for (const r of records || []) {
+    if (!r || typeof r.trial_id !== 'string') continue
+    const fam = trialFamilyId(r.trial_id)
+    if (!byFamily.has(fam)) byFamily.set(fam, [])
+    byFamily.get(fam).push(r)
+  }
+
+  const isHashed = (r) => Array.isArray(r.arm_hashes) && r.arm_hashes.length === 2
+  const recordPairHash = (r) => armPairHash(r.arm_hashes[0], r.arm_hashes[1])
+
+  const familiesInDoc = new Set(trials.map((t) => t.trial_id))
+  const completed = new Set()
+  const toBackfill = []
+  const resolved = []
+
+  for (const trial of trials) {
+    const fam = trial.trial_id
+    const pairHash = armPairHash(trial.arm_hashes[0], trial.arm_hashes[1])
+    const familyRecords = byFamily.get(fam) || []
+    const hashed = familyRecords.filter(isHashed)
+    const legacy = familyRecords.filter((r) => !isHashed(r))
+
+    const match = hashed.find((r) => recordPairHash(r) === pairHash)
+
+    if (match) {
+      // A verdict already exists for exactly this content — resume under
+      // whichever trial_id that verdict used (its own base or a prior suffix).
+      resolved.push({ ...trial, trial_id: match.trial_id })
+      completed.add(match.trial_id)
+    } else if (hashed.length > 0) {
+      // This slot has a recorded content fingerprint and it does NOT match —
+      // the candidate set has genuinely changed under an unchanged trial_id.
+      // Offer it again under a suffix distinct from every variant on file.
+      const distinct = new Set(hashed.map(recordPairHash))
+      resolved.push({ ...trial, trial_id: `${fam}::r${distinct.size + 1}` })
+    } else if (legacy.length > 0) {
+      // Pre-fix verdict: trusted by id alone, the only signal it carries.
+      // Upgrade it — append a new line carrying this content's hash — so a
+      // FUTURE regeneration can be detected even though this one predates
+      // hashing.
+      resolved.push({ ...trial, trial_id: fam })
+      completed.add(fam)
+      const last = legacy[legacy.length - 1]
+      toBackfill.push({
+        ...last,
+        trial_id: fam,
+        arm_hashes: trial.arm_hashes.slice(),
+        migrated_from_legacy: true,
+      })
+    } else {
+      // Brand new trial, never rated under any content.
+      resolved.push({ ...trial, trial_id: fam })
+    }
+  }
+
+  let archived = 0
+  for (const r of records || []) {
+    if (!r || typeof r.trial_id !== 'string') continue
+    const fam = trialFamilyId(r.trial_id)
+    if (!familiesInDoc.has(fam)) { archived++; continue } // sample/pairing no longer exists
+    if (!isHashed(r)) continue // legacy: no content to judge a mismatch by
+    const trial = trials.find((t) => t.trial_id === fam)
+    const pairHash = armPairHash(trial.arm_hashes[0], trial.arm_hashes[1])
+    if (recordPairHash(r) !== pairHash) archived++
+  }
+
+  return { trials: resolved, completed, archived, toBackfill }
+}
+
 // Build the record appended to ratings.jsonl. This is where the blinding is
 // lifted: `arm_order` names which arm was A and which was B, and `seed`
 // reproduces that assignment from candidates.json alone. `winner_arm_id` /
@@ -314,6 +449,10 @@ export function makeRatingRecord(trial, { winner, failureTags = [], timestamp } 
     kind: trial.kind,
     seed: trial.seed,
     arm_order: trial.arm_order.slice(),
+    // What content this verdict actually judged, in arm_order's order — the
+    // field `reconcileTrialsWithRatings` checks before ever trusting trial_id
+    // alone.
+    arm_hashes: trial.arm_hashes.slice(),
     winner,
     winner_arm_id: winIdx < 0 ? null : trial.arm_order[winIdx],
     // Tags describe the WORSE arm, so a tie has no arm to hang them on.

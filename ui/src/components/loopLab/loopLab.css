@@ -187,6 +187,14 @@
 .ll-rate-sub { color: var(--theme-text-muted); font-size: 10px; font-weight: 400; }
 .ll-rate-canvas { flex: 1; min-width: 0; display: block; }
 
+.ll-rate-archived {
+  padding: 7px 10px;
+  margin-bottom: 12px;
+  border: 1px solid var(--theme-warning, var(--theme-border-strong));
+  color: var(--theme-warning, var(--theme-text-muted));
+  font-size: 11px;
+}
+
 .ll-rate-sample { display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; }
 .ll-rate-sampleid { font-size: 14px; letter-spacing: 0.01em; }
 

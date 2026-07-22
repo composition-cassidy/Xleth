@@ -5,7 +5,7 @@ import {
   FAILURE_TAGS, RATINGS_FILENAME,
   parseCandidatesDoc, buildTrials,
   indexSamplesForCandidates, resolveLoopLabSample, armEngineLoop,
-  parseRatingsJsonl, completedTrialIds, firstPendingIndex,
+  parseRatingsJsonl, firstPendingIndex, reconcileTrialsWithRatings,
   makeRatingRecord, serializeRatingLine,
 } from './loopLabRater.js'
 
@@ -46,6 +46,11 @@ export default function LoopLabRater({ samples, onStatus }) {
   const [ratingsPath, setRatingsPath] = useState('')
   const [trials, setTrials] = useState([])
   const [completed, setCompleted] = useState(() => new Set())
+  // Count of ratings.jsonl records that belong to a DIFFERENT candidate set —
+  // either a removed sample/pairing, or a trial_id whose recorded arm content
+  // no longer matches what candidates.json currently holds for it. 0 hides
+  // the notice entirely.
+  const [archivedCount, setArchivedCount] = useState(0)
   const [index, setIndex] = useState(0)
   const [arm, setArm] = useState('A')
   const [playing, setPlaying] = useState(false)
@@ -181,28 +186,47 @@ export default function LoopLabRater({ samples, onStatus }) {
     const built = buildTrials(parsed)
     setDoc(parsed)
     setCandidatesPath(res.path)
-    setTrials(built)
     try { localStorage.setItem(CANDIDATES_PATH_KEY, res.path) } catch { /* non-fatal */ }
 
-    // Resume: every trial already in ratings.jsonl is skipped.
+    // Resume: a trial only counts as rated if a verdict exists for the SAME
+    // sample+pairing AND the same arm content — see reconcileTrialsWithRatings.
+    // A trial_id match alone is not enough: candidates.json can be regenerated
+    // with a new ranking while sample_id + pairing (and so trial_id) stay the
+    // same, and a verdict recorded against the OLD arms must not silently
+    // count as covering the new ones.
     let done = new Set()
     let malformed = 0
+    let archived = 0
+    let finalTrials = built
     try {
       const r = await bridgeFn('loopLab.loadRatings')(res.path)
       if (r?.ok) {
         const parsedRatings = parseRatingsJsonl(r.text)
-        done = completedTrialIds(parsedRatings.records)
         malformed = parsedRatings.malformed
+        const reconciled = reconcileTrialsWithRatings(built, parsedRatings.records)
+        finalTrials = reconciled.trials
+        done = reconciled.completed
+        archived = reconciled.archived
         setRatingsPath(r.path)
+        // Silently upgrade pre-fix verdicts (no recorded arm content) so a
+        // FUTURE regeneration of candidates.json can be detected even though
+        // these predate content hashing. Fire-and-forget bookkeeping — the
+        // rater does not need to wait on it, and a failure here just means the
+        // upgrade is retried on the next load.
+        for (const rec of reconciled.toBackfill) {
+          bridgeFn('loopLab.appendRating')(res.path, serializeRatingLine(rec)).catch(() => {})
+        }
       } else if (r) setError(r.error || 'could not read ratings.jsonl')
     } catch (e) { setError(`loadRatings failed: ${e.message}`) }
 
+    setTrials(finalTrials)
     setCompleted(done)
-    const next = firstPendingIndex(built, done)
-    setIndex(next < 0 ? Math.max(0, built.length - 1) : next)
+    setArchivedCount(archived)
+    const next = firstPendingIndex(finalTrials, done)
+    setIndex(next < 0 ? Math.max(0, finalTrials.length - 1) : next)
     resetStaging()
     status(
-      `Loaded ${built.length} trial(s) from ${res.path}` +
+      `Loaded ${finalTrials.length} trial(s) from ${res.path}` +
       (done.size ? ` — resuming, ${done.size} already rated` : '') +
       (malformed ? ` (${malformed} unreadable line(s) in ${RATINGS_FILENAME}, ignored)` : '')
     )
@@ -344,6 +368,13 @@ export default function LoopLabRater({ samples, onStatus }) {
         <TrialProgressCanvas trials={resolved} completed={completed} current={index} width={420} height={12} />
         <button className="ll-btn ll-btn--sm" onClick={openCandidates} disabled={busy}>Change set…</button>
       </div>
+
+      {archivedCount > 0 && (
+        <div className="ll-rate-archived">
+          {archivedCount} prior verdict{archivedCount === 1 ? '' : 's'} belong{archivedCount === 1 ? 's' : ''} to a
+          different candidate set — archived, not resumed.
+        </div>
+      )}
 
       {isDone && (
         <div className="ll-rate-done">

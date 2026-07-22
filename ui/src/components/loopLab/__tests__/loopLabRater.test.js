@@ -7,6 +7,7 @@ import {
   indexSamplesForCandidates, resolveLoopLabSample, armEngineLoop,
   parseRatingsJsonl, completedTrialIds, firstPendingIndex,
   makeRatingRecord, serializeRatingLine,
+  armContentHash, reconcileTrialsWithRatings,
 } from '../loopLabRater.js'
 import { fileToEngineLoop, sampleIdFromName } from '../loopLabMeta.js'
 
@@ -324,6 +325,7 @@ describe('ratings.jsonl', () => {
       kind: trial.kind,
       seed: trial.seed,
       arm_order: trial.arm_order,
+      arm_hashes: trial.arm_hashes,
       winner: 'B',
       winner_arm_id: trial.arm_order[1],
       loser_arm_id: trial.arm_order[0],
@@ -425,6 +427,165 @@ describe('resume', () => {
   it('ignores a stale trial_id left over from a different candidate set', () => {
     const done = completedTrialIds([{ trial_id: 'some_other_sample::optimizer_1_vs_gold' }])
     expect(firstPendingIndex(trials, done)).toBe(0)
+  })
+})
+
+// ── Content-addressed resume (arm content, not trial_id alone) ──────────────
+// Regression coverage for the real incident: candidates.json got regenerated
+// with a new ranking, sample_id + pairing (and so trial_id) stayed the same,
+// and every optimizer trial was silently marked "already rated" against loops
+// nobody had heard. A whole session produced zero valid verdicts, no warning.
+
+describe('armContentHash', () => {
+  const a = (loop, provenance = 'optimizer') => ({ arm_id: 'x', provenance, loop, metrics: {} })
+
+  it('is stable for identical content', () => {
+    const loop = { start: 100, end: 500, xfade: 40 }
+    expect(armContentHash(a(loop))).toBe(armContentHash(a({ ...loop })))
+  })
+
+  it('changes when any loop point changes', () => {
+    const base = armContentHash(a({ start: 100, end: 500, xfade: 40 }))
+    expect(armContentHash(a({ start: 101, end: 500, xfade: 40 }))).not.toBe(base)
+    expect(armContentHash(a({ start: 100, end: 501, xfade: 40 }))).not.toBe(base)
+    expect(armContentHash(a({ start: 100, end: 500, xfade: 41 }))).not.toBe(base)
+  })
+
+  it('changes with provenance even for identical loop points', () => {
+    const loop = { start: 100, end: 500, xfade: 40 }
+    expect(armContentHash(a(loop, 'optimizer'))).not.toBe(armContentHash(a(loop, 'gold')))
+  })
+})
+
+describe('reconcileTrialsWithRatings', () => {
+  const doc = makeDoc(26)
+  const trials = buildTrials(doc)
+  const optTrial = trials.find((t) => t.kind === 'optimizer')
+
+  // A record indistinguishable from a genuine pre-fix verdict: everything
+  // makeRatingRecord writes today, MINUS arm_hashes.
+  function legacyRecordFor(trial, overrides = {}) {
+    const rec = makeRatingRecord(trial, { winner: 'A', timestamp: 'T0' })
+    delete rec.arm_hashes
+    return { ...rec, ...overrides }
+  }
+
+  it('round-1 back-compat: a legacy verdict with matching content resumes as completed', () => {
+    const legacy = legacyRecordFor(optTrial)
+    const { trials: resolved, completed, archived, toBackfill } =
+      reconcileTrialsWithRatings(trials, [legacy])
+
+    expect(completed.has(optTrial.trial_id)).toBe(true)
+    expect(resolved.find((t) => t.sample_id === optTrial.sample_id && t.kind === 'optimizer').trial_id)
+      .toBe(optTrial.trial_id) // unsuffixed — this IS the trial, not a new variant
+    expect(archived).toBe(0)
+
+    // ...and it schedules an upgrade so a FUTURE regeneration can be caught.
+    expect(toBackfill).toHaveLength(1)
+    expect(toBackfill[0].trial_id).toBe(optTrial.trial_id)
+    expect(toBackfill[0].arm_hashes).toEqual(optTrial.arm_hashes)
+    expect(toBackfill[0].winner).toBe('A') // original verdict preserved
+    expect(toBackfill[0].migrated_from_legacy).toBe(true)
+  })
+
+  it('a full round-1 ratings.jsonl + matching candidates.json validates as a completed session', () => {
+    // Every trial gets its own legacy verdict — the real shape of an existing
+    // production ratings.jsonl predating this fix.
+    const legacyFile = trials.map((t) => legacyRecordFor(t))
+    const { completed, archived } = reconcileTrialsWithRatings(trials, legacyFile)
+    expect(completed.size).toBe(trials.length)
+    expect(archived).toBe(0)
+  })
+
+  it('same trial_id, different arm content: offered again under a suffixed id, not skipped', () => {
+    // A record that LOOKS like it belongs to this trial_id but carries a
+    // content hash from a different (already-migrated) candidate set.
+    const staleHashes = [optTrial.arm_hashes[0] + 1, optTrial.arm_hashes[1] + 1]
+    const stale = { ...legacyRecordFor(optTrial), arm_hashes: staleHashes }
+
+    const { trials: resolved, completed } = reconcileTrialsWithRatings(trials, [stale])
+
+    const thisTrial = resolved.find((t) => t.sample_id === optTrial.sample_id && t.kind === 'optimizer')
+    expect(thisTrial.trial_id).toBe(`${optTrial.trial_id}::r2`)
+    // Offered, not skipped: neither the old id nor the new suffixed one is
+    // in the completed set.
+    expect(completed.has(optTrial.trial_id)).toBe(false)
+    expect(completed.has(thisTrial.trial_id)).toBe(false)
+  })
+
+  it('hash-mismatch is counted for the archived-verdicts notice', () => {
+    const staleHashes = [optTrial.arm_hashes[0] + 1, optTrial.arm_hashes[1] + 1]
+    const stale = { ...legacyRecordFor(optTrial), arm_hashes: staleHashes }
+    const { archived } = reconcileTrialsWithRatings(trials, [stale])
+    expect(archived).toBe(1)
+  })
+
+  it('a verdict for a sample no longer in the candidate set is archived, not resumed', () => {
+    const orphan = { ...legacyRecordFor(optTrial), trial_id: 'sample_removed::optimizer_1_vs_gold' }
+    const { completed, archived } = reconcileTrialsWithRatings(trials, [orphan])
+    expect(completed.size).toBe(0)
+    expect(archived).toBe(1)
+  })
+
+  it('re-rating the same suffixed variant resumes it correctly on a later load', () => {
+    // Round 2's own verdict, once written, must be recognised on a subsequent
+    // reload of the SAME (round-2) candidates.json.
+    const staleHashes = [optTrial.arm_hashes[0] + 1, optTrial.arm_hashes[1] + 1]
+    const stale = { ...legacyRecordFor(optTrial), arm_hashes: staleHashes }
+    const first = reconcileTrialsWithRatings(trials, [stale])
+    const suffixedTrial = first.trials.find((t) => t.sample_id === optTrial.sample_id && t.kind === 'optimizer')
+
+    const round2Verdict = makeRatingRecord(suffixedTrial, { winner: 'B', timestamp: 'T1' })
+    const second = reconcileTrialsWithRatings(trials, [stale, round2Verdict])
+
+    expect(second.completed.has(`${optTrial.trial_id}::r2`)).toBe(true)
+    // The genuinely stale verdict is still the only OTHER thing on file for
+    // this slot and still doesn't match current content.
+    expect(second.archived).toBe(1)
+  })
+
+  it('brand new trial with no prior verdict at all is simply offered, not flagged', () => {
+    const { trials: resolved, completed, archived } = reconcileTrialsWithRatings(trials, [])
+    expect(completed.size).toBe(0)
+    expect(archived).toBe(0)
+    expect(resolved.find((t) => t.trial_id === optTrial.trial_id)).toBeTruthy()
+  })
+
+  it('end-to-end: round-1 legacy ratings, migrated, then round-2 candidates correctly re-offers', () => {
+    // Step 1 — round 1: legacy verdicts for every trial (the real corpus shape).
+    const round1Legacy = trials.map((t) => legacyRecordFor(t))
+    const pass1 = reconcileTrialsWithRatings(trials, round1Legacy)
+    expect(pass1.completed.size).toBe(trials.length)
+    expect(pass1.toBackfill).toHaveLength(trials.length)
+
+    // Persist the migration, exactly as the app would (append, never rewrite).
+    const migratedFile = [...round1Legacy, ...pass1.toBackfill]
+
+    // Step 2 — round 2: regenerate candidates.json with different loop points
+    // for ONE optimizer arm on ONE sample. Same sample_id/arm_id, so the SAME
+    // trial_id as before — this is exactly the bug's shape.
+    const doc2 = JSON.parse(JSON.stringify(doc))
+    const targetSample = doc2.samples.find((s) => s.sample_id === optTrial.sample_id)
+    const targetArm = targetSample.arms.find((a) => a.arm_id === 'optimizer_1')
+    targetArm.loop.start += 500
+    targetArm.loop.end += 500
+    const trials2 = buildTrials(parseCandidatesDoc(JSON.stringify(doc2)))
+
+    const pass2 = reconcileTrialsWithRatings(trials2, migratedFile)
+
+    // The changed sample's optimizer trial is OFFERED again, not skipped.
+    const changedTrial = pass2.trials.find((t) => t.sample_id === optTrial.sample_id && t.kind === 'optimizer')
+    expect(changedTrial.trial_id).toBe(`${optTrial.trial_id}::r2`)
+    expect(pass2.completed.has(optTrial.trial_id)).toBe(false)
+    expect(pass2.completed.has(changedTrial.trial_id)).toBe(false)
+
+    // Every OTHER trial (unchanged content) is still correctly resumed.
+    const otherTrials = pass2.trials.filter((t) => t.sample_id !== optTrial.sample_id)
+    for (const t of otherTrials) expect(pass2.completed.has(t.trial_id)).toBe(true)
+
+    // The notice fires: the stale round-1 verdict for the changed sample
+    // belongs to a different candidate set now.
+    expect(pass2.archived).toBeGreaterThanOrEqual(1)
   })
 })
 
