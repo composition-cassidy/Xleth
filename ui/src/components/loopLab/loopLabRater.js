@@ -347,13 +347,31 @@ export function firstPendingIndex(trials, completed) {
 // verdict can never collide with the old line in ratings.jsonl.
 //
 // Verdicts written before this fix existed carry no `arm_hashes` at all —
-// trial_id is the only signal they have. Those are trusted by id, exactly as
-// before, so an existing session still resumes as completed. The FIRST time a
-// legacy verdict is loaded against matching content, it is silently upgraded:
-// a new line is appended carrying that content's hash, so a LATER
-// regeneration can be correctly detected as a mismatch even though the
-// original verdict predates hashing. Once that upgrade has happened, this
-// exact bug cannot recur for that trial again.
+// trial_id is the only signal they had, until now. Trial_id alone is NOT
+// enough to safely upgrade one of these: the fix's whole premise is that a
+// trial_id can silently point at different content, so trusting "whatever
+// candidates.json happens to be open right now" as ground truth for a legacy
+// record is exactly the same mistake with an extra step. This actually
+// happened during testing — a legacy verdict rated against round 1 got
+// silently stamped with round 2's loop points the first time round 2 was
+// opened, because nothing had ever validated it against round 1 first.
+//
+// The guard: every record, legacy or not, already carries the `seed` field
+// (`seedFromString(`${documentSeed(doc)}:${trialId}`)`), and `documentSeed`
+// depends on `schema|selection|rank_by|sample_ids` — not on this function's
+// arm-content hashing at all, so it is unaffected by anything below. A legacy
+// record is only upgraded when ITS OWN stored seed matches what the
+// CURRENTLY loaded document recomputes for that trial_id — i.e., the
+// currently-open file plausibly has the same overall identity (in
+// particular, the same rank_by) as whatever produced the record, not just an
+// accidentally-matching trial_id. A regenerated candidates.json with a
+// different ranking has a different rank_by and therefore a different seed
+// for every trial, so this guard correctly refuses to adopt round 1's
+// verdicts as round 2's — the record stays untouched, legacy, and the trial
+// is offered fresh. A legacy record that fails this check is not "wrong", it
+// is simply unverifiable against what's currently open, so it neither
+// completes the trial nor gets backfilled; it is left exactly as it is for
+// whichever document it actually matches to pick up later.
 //
 // Returns:
 //   trials     - the input trials, each carrying a possibly-suffixed
@@ -400,14 +418,18 @@ export function reconcileTrialsWithRatings(trials, records) {
       // Offer it again under a suffix distinct from every variant on file.
       const distinct = new Set(hashed.map(recordPairHash))
       resolved.push({ ...trial, trial_id: `${fam}::r${distinct.size + 1}` })
-    } else if (legacy.length > 0) {
-      // Pre-fix verdict: trusted by id alone, the only signal it carries.
-      // Upgrade it — append a new line carrying this content's hash — so a
-      // FUTURE regeneration can be detected even though this one predates
+    } else if (legacy.some((r) => r.seed === trial.seed)) {
+      // Pre-fix verdict whose seed proves it was built from a document with
+      // the SAME overall identity (schema/selection/rank_by/sample set) as
+      // what's currently open — the closest thing to "this is plausibly the
+      // file it was rated against" available without an arm-content hash to
+      // check. Upgrade it: append a new line carrying this content's hash, so
+      // a FUTURE regeneration can be detected even though this one predates
       // hashing.
       resolved.push({ ...trial, trial_id: fam })
       completed.add(fam)
-      const last = legacy[legacy.length - 1]
+      const matching = legacy.filter((r) => r.seed === trial.seed)
+      const last = matching[matching.length - 1]
       toBackfill.push({
         ...last,
         trial_id: fam,
@@ -415,7 +437,9 @@ export function reconcileTrialsWithRatings(trials, records) {
         migrated_from_legacy: true,
       })
     } else {
-      // Brand new trial, never rated under any content.
+      // Either brand new (no records at all), or every legacy record here has
+      // a seed from a DIFFERENT document identity — unverifiable against what
+      // is currently open, so it is left untouched rather than guessed at.
       resolved.push({ ...trial, trial_id: fam })
     }
   }
@@ -425,8 +449,16 @@ export function reconcileTrialsWithRatings(trials, records) {
     if (!r || typeof r.trial_id !== 'string') continue
     const fam = trialFamilyId(r.trial_id)
     if (!familiesInDoc.has(fam)) { archived++; continue } // sample/pairing no longer exists
-    if (!isHashed(r)) continue // legacy: no content to judge a mismatch by
     const trial = trials.find((t) => t.trial_id === fam)
+    if (!isHashed(r)) {
+      // Legacy: no content hash to compare, but its seed still says whether it
+      // came from a document with the same overall identity as what's open
+      // now. A seed mismatch here is exactly "different candidate set" — it
+      // just predates hashing, so it never got the chance to be caught by
+      // content comparison instead.
+      if (r.seed !== trial.seed) archived++
+      continue
+    }
     const pairHash = armPairHash(trial.arm_hashes[0], trial.arm_hashes[1])
     if (recordPairHash(r) !== pairHash) archived++
   }

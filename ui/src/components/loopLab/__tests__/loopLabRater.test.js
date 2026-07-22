@@ -497,6 +497,39 @@ describe('reconcileTrialsWithRatings', () => {
     expect(archived).toBe(0)
   })
 
+  it('REGRESSION: a legacy-only verdict is never adopted by a document with a different rank_by, even on the FIRST load', () => {
+    // This is the actual incident, reproduced exactly. A legacy (never
+    // migrated) ratings.jsonl exists. The user opens a REGENERATED
+    // candidates.json (rank_by changed, real optimizer content changed) for
+    // the very first time — there is no prior hash-bearing record to compare
+    // against, only the original legacy verdict. Trusting "whatever's
+    // currently open" here silently stamped round-2's loop points onto a
+    // verdict that was actually rated against round-1's, and every optimizer
+    // trial showed complete without ever being freshly judged.
+    const legacyFile = trials.map((t) => legacyRecordFor(t)) // NEVER reconciled/migrated before
+    const doc2 = JSON.parse(JSON.stringify(doc))
+    doc2.rank_by = 'perceptual' // round-1 used 'seam_step' — this is the real diff
+    const targetSample = doc2.samples.find((s) => s.sample_id === optTrial.sample_id)
+    targetSample.arms.find((a) => a.arm_id === 'optimizer_1').loop.start += 500
+    const trials2 = buildTrials(parseCandidatesDoc(JSON.stringify(doc2)))
+
+    const { trials: resolved, completed, toBackfill } = reconcileTrialsWithRatings(trials2, legacyFile)
+
+    const changedTrial = resolved.find((t) => t.sample_id === optTrial.sample_id && t.kind === 'optimizer')
+    expect(completed.has(changedTrial.trial_id)).toBe(false) // NOT silently completed
+    expect(changedTrial.trial_id).toBe(optTrial.trial_id) // offered under the base id — nothing to disambiguate a suffix from yet
+    expect(toBackfill).toHaveLength(0) // round-1's verdict must NOT be stamped with round-2's content
+  })
+
+  it('DOES migrate a legacy verdict when the currently-open document truly is the one it was rated against', () => {
+    // The positive case the guard must not break: opening round-1's OWN file
+    // (same rank_by, same everything) still upgrades its legacy verdicts.
+    const legacyFile = trials.map((t) => legacyRecordFor(t))
+    const { completed, toBackfill } = reconcileTrialsWithRatings(trials, legacyFile)
+    expect(completed.size).toBe(trials.length)
+    expect(toBackfill).toHaveLength(trials.length)
+  })
+
   it('same trial_id, different arm content: offered again under a suffixed id, not skipped', () => {
     // A record that LOOKS like it belongs to this trial_id but carries a
     // content hash from a different (already-migrated) candidate set.
