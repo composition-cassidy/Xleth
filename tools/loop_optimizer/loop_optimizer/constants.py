@@ -80,6 +80,17 @@ MIN_VIABLE_PERIODS = 3
 #: "loop" has become a phrase repeat, which is a different feature.
 MAX_LOOP_DURATION_SEC = 2.0
 
+#: Shortest loop we will propose, in seconds. The symmetric counterpart to
+#: MAX_LOOP_DURATION_SEC, and it exists because its absence was exploitable: the
+#: perceptual ruler scores a one-period zero-crossfade loop perfectly (no blend,
+#: so no blend artefact), and ranking on it promoted 85-sample "loops" — 1.9 ms —
+#: to first place on three corpus samples. Below roughly this length the loop
+#: repetition rate climbs into the roughness band and stops being heard as a
+#: loop at all: the result is a static comb tone that no longer resembles the
+#: material it was cut from. A policy bound on what counts as a loop, deliberately
+#: NOT a quality threshold - the ruler still decides which of the survivors is best.
+MIN_LOOP_DURATION_SEC = 0.05
+
 #: Length of the seam correlation window, in periods (kSeamCorrelationPeriods).
 SEAM_CORRELATION_PERIODS = 1
 

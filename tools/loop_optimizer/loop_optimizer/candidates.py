@@ -43,6 +43,7 @@ import numpy as np
 from .constants import (
     ENGINE_SAMPLE_RATE,
     MAX_LOOP_DURATION_SEC,
+    MIN_LOOP_DURATION_SEC,
     MAX_PERIOD_MULTIPLES,
     MAX_XFADE_PERIOD_MULTIPLES,
     MIN_SEAM_NCC,
@@ -136,11 +137,16 @@ def generate_candidates(
         return []
 
     k_max = min(int(max_len // period), MAX_PERIOD_MULTIPLES)
+    # A loop must be long enough to still be a loop. Without this floor the
+    # shortest viable k wins outright under any metric that scores a
+    # zero-crossfade single-period loop as seamless — which it genuinely is, and
+    # which is exactly why the bound belongs here rather than in the ruler.
+    min_len = int(MIN_LOOP_DURATION_SEC * sample_rate)
     out: list[Candidate] = []
 
     for k in range(1, k_max + 1):
         length = int(round(k * period))
-        if length <= 0:
+        if length <= 0 or length < min_len:
             continue
         lo = window_start
         hi = window_end - length - w

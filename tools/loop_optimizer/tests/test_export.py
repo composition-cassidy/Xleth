@@ -79,12 +79,14 @@ def test_top_k_is_respected(tmp_path, capsys):
     assert sum(1 for a in arms if a["provenance"] == "optimizer") == 1
 
 
-def test_every_arm_carries_the_six_metrics_and_a_file_domain_loop(tmp_path, capsys):
+def test_every_arm_carries_the_metric_suite_and_a_file_domain_loop(tmp_path, capsys):
     payload, _ = _export(tmp_path, capsys, n_samples=1)
     sample = payload["samples"][0]
+    # Six perceptual metrics plus the retained cents_err_per_loop.
+    assert len(payload["metric_names"]) == 7
+    assert "click" in payload["metric_names"] and "seam_step" not in payload["metric_names"]
     for arm in sample["arms"]:
         assert set(arm["metrics"]) == set(payload["metric_names"])
-        assert len(payload["metric_names"]) == 6
         loop = arm["loop"]
         assert set(loop) == {"start", "end", "xfade"}
         assert 0 <= loop["start"] < loop["end"] <= sample["file_num_samples"]

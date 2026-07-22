@@ -44,7 +44,12 @@ from .analysis import METRIC_NAMES, SampleResult
 from .corpus import GoldLoop
 from .engine_emu import LoopConfig, resolve
 from .ingest import IngestedSample
-from .metrics import SeamMetrics, measure
+from .perceptual import (
+    PerceptualMetrics,
+    _filterbank_for,
+    measure_perceptual,
+    source_reference,
+)
 
 #: Naive crossfade width, as a fraction of the loop length. Chosen by the task
 #: brief, not by measurement: it is what an implementation that never thought
@@ -80,8 +85,8 @@ def _lerp_frac(key: str, salt: str, lo: float, hi: float) -> float:
     return lo + (hi - lo) * _stable_frac(key, salt)
 
 
-def _six_metrics(metrics: SeamMetrics) -> dict[str, float]:
-    """Just the six. The rest of :class:`SeamMetrics` is context, not a metric."""
+def _six_metrics(metrics: PerceptualMetrics) -> dict[str, float]:
+    """Just the headline metrics. The sub-terms and context are not metrics."""
     return {name: getattr(metrics, name) for name in METRIC_NAMES}
 
 
@@ -101,7 +106,7 @@ def _arm(
     arm_id: str,
     provenance: str,
     cfg: LoopConfig,
-    metrics: SeamMetrics,
+    metrics: PerceptualMetrics,
     eff_xfade: int,
     rank: int | None = None,
 ) -> dict[str, Any]:
@@ -218,13 +223,17 @@ def build_sample_payload(result: SampleResult, top_k: int) -> dict[str, Any]:
             notes.append("gold region too short for a naive anchor; none emitted")
         else:
             naive_eff = resolve(naive_cfg, sample.num_samples, sample.sample_rate)
+            fb, n_fft = _filterbank_for(result.period, sample.sample_rate)
+            ref = source_reference(sample.x, result.period, sample.sample_rate, fb, n_fft)
             arms.append(
                 _arm(
                     sample,
                     arm_id="naive",
                     provenance="naive",
                     cfg=naive_cfg,
-                    metrics=measure(sample.x, naive_cfg, result.period, sample.sample_rate),
+                    metrics=measure_perceptual(
+                        sample.x, naive_cfg, result.period, sample.sample_rate, ref
+                    ),
                     eff_xfade=naive_eff.eff_xfade,
                 )
             )

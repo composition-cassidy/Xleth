@@ -199,39 +199,64 @@ def test_measure_uses_the_measured_period_not_the_declared_one():
 # ── ranking and gold comparison helpers ──────────────────────────────────────
 
 
-def test_ranking_puts_nan_metrics_last():
-    period = 100.0
-    x = sine(SR / period, 20_000)
+def _scored_perceptual(x, cands, period):
     from loop_optimizer.analysis import ScoredCandidate
+    from loop_optimizer.perceptual import measure_perceptual
 
-    cands = generate_candidates(x, period, 2000, 12_000)[:6]
-    scored = [
-        ScoredCandidate(c, measure(x, c.to_config(), period), resolve(c.to_config(), x.size).eff_xfade)
+    return [
+        ScoredCandidate(
+            c,
+            measure_perceptual(x, c.to_config(), period),
+            resolve(c.to_config(), x.size).eff_xfade,
+        )
         for c in cands
     ]
-    # Force one NaN and check it sinks.
+
+
+def test_ranking_puts_nan_metrics_last():
+    """A candidate nothing could be measured on must not sort to the top.
+
+    Ranks on `click` now rather than `seam_step`: the seam suite was replaced
+    after the blind A/B round showed it anti-correlated with the listeners
+    (loop_optimizer.perceptual). The ordering INVARIANT is unchanged.
+    """
     import dataclasses
 
+    period = 100.0
+    x = sine(SR / period, 20_000)
+    cands = generate_candidates(x, period, 2000, 12_000)[:6]
+    scored = _scored_perceptual(x, cands, period)
     scored[0] = dataclasses.replace(
-        scored[0], metrics=dataclasses.replace(scored[0].metrics, seam_step=float("nan"))
+        scored[0], metrics=dataclasses.replace(scored[0].metrics, click=float("nan"))
     )
-    ranked = rank_candidates(scored, "seam_step")
-    assert np.isnan(ranked[-1].metrics.seam_step)
+    ranked = rank_candidates(scored, "click")
+    assert np.isnan(ranked[-1].metrics.click)
 
 
 def test_ranking_is_deterministic():
     period = 100.0
     x = sine(SR / period, 20_000)
-    from loop_optimizer.analysis import ScoredCandidate
-
     cands = generate_candidates(x, period, 2000, 12_000)
-    scored = [
-        ScoredCandidate(c, measure(x, c.to_config(), period), resolve(c.to_config(), x.size).eff_xfade)
-        for c in cands
+    scored = _scored_perceptual(x, cands, period)
+    first = [(s.candidate.loop_start, s.eff_xfade) for s in rank_candidates(scored, "click")]
+    second = [
+        (s.candidate.loop_start, s.eff_xfade)
+        for s in rank_candidates(list(reversed(scored)), "click")
     ]
-    first = [(s.candidate.loop_start, s.eff_xfade) for s in rank_candidates(scored, "seam_step")]
-    second = [(s.candidate.loop_start, s.eff_xfade) for s in rank_candidates(list(reversed(scored)), "seam_step")]
     assert first == second
+
+
+def test_perceptual_rank_key_orders_by_the_collapsed_cost():
+    """The default key collapses the suite instead of naming one metric."""
+    from loop_optimizer.analysis import PERCEPTUAL_RANK_KEY
+    from loop_optimizer.perceptual import perceptual_cost
+
+    period = 100.0
+    x = sine(SR / period, 20_000)
+    cands = generate_candidates(x, period, 2000, 12_000)[:12]
+    ranked = rank_candidates(_scored_perceptual(x, cands, period), PERCEPTUAL_RANK_KEY)
+    costs = [perceptual_cost(s.metrics) for s in ranked]
+    assert costs == sorted(costs)
 
 
 def test_xfade_ratio_handles_the_zero_cases_explicitly():
@@ -242,12 +267,12 @@ def test_xfade_ratio_handles_the_zero_cases_explicitly():
 
 
 def test_compare_metric_respects_each_metric_direction():
-    assert _compare_metric("seam_step", 0.1, 0.5) == "tool"  # lower is better
-    assert _compare_metric("seam_ncc", 0.99, 0.5) == "tool"  # higher is better
+    assert _compare_metric("click", 0.1, 0.5) == "tool"  # lower is better
+    assert _compare_metric("timbre_jump", 0.1, 0.5) == "tool"  # lower is better
     # cents error is judged on magnitude, so a negative can still win.
     assert _compare_metric("cents_err_per_loop", -1.0, 50.0) == "tool"
-    assert _compare_metric("seam_step", 0.5, 0.5) == "tie"
-    assert _compare_metric("seam_step", float("nan"), 0.5) == "n/a"
+    assert _compare_metric("click", 0.5, 0.5) == "tie"
+    assert _compare_metric("click", float("nan"), 0.5) == "n/a"
 
 
 # ── corpus IO ────────────────────────────────────────────────────────────────

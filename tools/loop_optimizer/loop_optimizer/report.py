@@ -47,8 +47,8 @@ def format_sample_row(result: SampleResult) -> str:
         f"k={top.candidate.period_multiple:<4d} "
         f"loop=[{top.candidate.loop_start:>7d},{top.candidate.loop_end:>7d}) "
         f"xf={top.eff_xfade:>6d} "
-        f"step={_num(m.seam_step, 7, 4)} "
-        f"ncc={_num(m.seam_ncc, 6, 3)} "
+        f"click={_num(m.click, 7, 3)} "
+        f"timb={_num(m.timbre_jump, 6, 2)} "
         f"cents={_num(m.cents_err_per_loop, 7, 2)} "
         f"{match:>6}"
     )

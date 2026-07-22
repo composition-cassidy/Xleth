@@ -47,14 +47,15 @@ def test_report_runs_and_prints_a_table_and_aggregate(tmp_path, capsys):
     assert "XLETH LOOP OPTIMIZER LAB" in out
     assert "AGGREGATE" in out
     assert "tone_0000" in out and "tone_0001" in out
-    # Every metric must appear as a column.
+    # Every metric of the REDESIGNED suite must appear as a column.
     for name in (
-        "seam_step",
-        "seam_ncc",
-        "zero_lag_corr",
+        "click",
+        "hollow",
+        "wobble",
+        "chorusing",
+        "flam",
+        "timbre_jump",
         "cents_err_per_loop",
-        "rms_ripple_db",
-        "spectral_dist",
     ):
         assert name in out
     assert "top-1 matches gold" in out
@@ -99,7 +100,7 @@ def test_json_and_feature_writeback(tmp_path, capsys):
 
     payload = json.loads(json_out.read_text(encoding="utf-8"))
     assert len(payload["samples"]) == 2
-    assert payload["samples"][0]["top_candidate"]["metrics"]["seam_step"] is not None
+    assert payload["samples"][0]["top_candidate"]["metrics"]["click"] is not None
     assert payload["samples"][0]["gold"]["engine_domain"]["start"] == round(10000 * 48000 / 44100)
 
     # The original corpus is untouched; the copy carries the features.

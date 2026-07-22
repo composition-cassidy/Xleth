@@ -27,11 +27,34 @@ from .corpus import CorpusEntry, GoldLoop
 from .engine_emu import LoopConfig, resolve
 from .features import MeasuredFeatures, measure_features
 from .ingest import IngestedSample, ingest_file
-from .metrics import METRIC_DIRECTION, SeamMetrics, measure
+from .metrics import METRIC_DIRECTION as OLD_METRIC_DIRECTION  # noqa: F401  (kept: the old ruler is the baseline `validate` compares against)
+from .perceptual import (
+    METRIC_DIRECTION,
+    PerceptualMetrics,
+    SourceReference,
+    _filterbank_for,
+    measure_click_only,
+    measure_perceptual,
+    perceptual_cost,
+    source_reference,
+)
 from .pitch import PitchTrack, SteadyStateWindow, detect_steady_state_window, track_pitch
 
-#: Metrics reported in the per-candidate table, in order.
+#: Metrics reported in the per-candidate table, in order. These are now the
+#: PERCEPTUAL suite (loop_optimizer.perceptual); the original seam suite is kept
+#: in loop_optimizer.metrics as the baseline `validate` scores the redesign
+#: against. See the perceptual module docstring for why the first one failed.
 METRIC_NAMES = tuple(METRIC_DIRECTION.keys())
+
+#: Ranking key meaning "collapse the perceptual suite with perceptual_cost"
+#: rather than "order by this single metric". The default.
+PERCEPTUAL_RANK_KEY = "perceptual"
+
+#: How many top-ranked candidates get the FULL seven-metric measurement. Ranking
+#: consults only `click` (RANKING_METRICS), so measuring the rest changes no
+#: ordering — it only costs time, and at 53,675 candidates it costs minutes.
+#: Everything reported or exported comes from this head of the list.
+FULL_METRIC_TOP_N = 32
 
 
 class Selection(str, Enum):
@@ -51,7 +74,7 @@ class Selection(str, Enum):
 @dataclass(frozen=True)
 class ScoredCandidate:
     candidate: Candidate
-    metrics: SeamMetrics
+    metrics: PerceptualMetrics
     #: Crossfade after the engine's clamp — what actually plays.
     eff_xfade: int
 
@@ -61,7 +84,7 @@ class GoldComparison:
     """How the tool's answer relates to the human-authored one."""
 
     gold_engine: GoldLoop
-    gold_metrics: SeamMetrics
+    gold_metrics: PerceptualMetrics
     gold_eff_xfade: int
     #: Did the top-ranked candidate land within tolerance of gold, on BOTH the
     #: loop points and the crossfade?
@@ -170,6 +193,16 @@ def _rank_key(sc: ScoredCandidate, key: str) -> tuple:
     report change between runs for no reason.
     """
     metrics = sc.metrics
+    if key == PERCEPTUAL_RANK_KEY:
+        # The whole suite collapsed to one number, which is the default now that
+        # the ruler has been validated against ears. Lower is better.
+        primary = perceptual_cost(metrics)
+        if not math.isfinite(primary):
+            primary = math.inf
+        cents = abs(metrics.cents_err_per_loop) if math.isfinite(metrics.cents_err_per_loop) else math.inf
+        click = metrics.click if math.isfinite(metrics.click) else math.inf
+        return (primary, cents, click, sc.candidate.period_multiple, sc.candidate.loop_start)
+
     value = getattr(metrics, key, None)
     if value is None:
         value = getattr(sc.candidate, key, float("nan"))
@@ -186,8 +219,8 @@ def _rank_key(sc: ScoredCandidate, key: str) -> tuple:
         primary = math.inf  # NaN sorts last, always
 
     cents = abs(metrics.cents_err_per_loop) if math.isfinite(metrics.cents_err_per_loop) else math.inf
-    step = metrics.seam_step if math.isfinite(metrics.seam_step) else math.inf
-    return (primary, cents, step, sc.candidate.period_multiple, sc.candidate.loop_start)
+    click = metrics.click if math.isfinite(metrics.click) else math.inf
+    return (primary, cents, click, sc.candidate.period_multiple, sc.candidate.loop_start)
 
 
 def rank_candidates(scored: list[ScoredCandidate], key: str) -> list[ScoredCandidate]:
@@ -252,7 +285,7 @@ def _compare_metric(name: str, tool_value: float, gold_value: float, rel_tol: fl
 def analyse_entry(
     entry: CorpusEntry,
     selection: Selection = Selection.AUTO,
-    rank_key: str = "seam_step",
+    rank_key: str = PERCEPTUAL_RANK_KEY,
     margin_periods: float = 8.0,
     engine_rate: float = ENGINE_SAMPLE_RATE,
 ) -> SampleResult:
@@ -314,18 +347,50 @@ def analyse_entry(
             )
 
     raw = generate_candidates(sample.x, period, window.start, window.end, sample.sample_rate)
+    # The source's own rate of change, measured ONCE for the whole sample and
+    # shared by every candidate: it is the reference the rate-based metrics are
+    # quoted against, and a per-candidate one would let a candidate move its own
+    # bar. See perceptual.SourceReference.
+    fb, n_fft = _filterbank_for(period, sample.sample_rate)
+    ref = source_reference(sample.x, period, sample.sample_rate, fb, n_fft)
+    # Two passes. The first measures only the metric the ranking consults, for
+    # every candidate; the second measures the full suite for the head of the
+    # resulting order. Ranking on a single metric makes this exact rather than
+    # an approximation — see measure_click_only.
+    cheap_rank = rank_key == PERCEPTUAL_RANK_KEY
     scored: list[ScoredCandidate] = []
     for cand in raw:
         cfg = cand.to_config()
         eff = resolve(cfg, sample.num_samples, sample.sample_rate)
-        scored.append(
-            ScoredCandidate(
-                candidate=cand,
-                metrics=measure(sample.x, cfg, period, sample.sample_rate),
-                eff_xfade=eff.eff_xfade,
+        if cheap_rank:
+            click = measure_click_only(sample.x, cfg, period, sample.sample_rate, ref)
+            metrics = PerceptualMetrics(
+                click=click, hollow=float("nan"), wobble=float("nan"),
+                chorusing=float("nan"), flam=float("nan"), timbre_jump=float("nan"),
+                cents_err_per_loop=float("nan"),
+                wrap_advance=eff.wrap_advance, eff_xfade=eff.eff_xfade,
             )
-        )
+        else:
+            metrics = measure_perceptual(sample.x, cfg, period, sample.sample_rate, ref)
+        scored.append(ScoredCandidate(candidate=cand, metrics=metrics, eff_xfade=eff.eff_xfade))
     ranked = rank_candidates(scored, rank_key)
+
+    if cheap_rank:
+        # Fill in the full suite for the head of the order, which is everything
+        # the report prints and everything `export` writes.
+        for i, sc in enumerate(ranked[:FULL_METRIC_TOP_N]):
+            ranked[i] = ScoredCandidate(
+                candidate=sc.candidate,
+                metrics=measure_perceptual(
+                    sample.x, sc.candidate.to_config(), period, sample.sample_rate, ref
+                ),
+                eff_xfade=sc.eff_xfade,
+            )
+        # Per-metric aggregates below can only speak for candidates that were
+        # fully measured; restrict the pool rather than count NaNs as ties.
+        measured = ranked[:FULL_METRIC_TOP_N]
+    else:
+        measured = ranked
     if not ranked:
         notes.append("no candidate cleared the seam-NCC floor")
 
@@ -337,7 +402,7 @@ def analyse_entry(
             crossfade_samples=gold_engine.xfade,
         )
         gold_eff = resolve(gold_cfg, sample.num_samples, sample.sample_rate)
-        gold_metrics = measure(sample.x, gold_cfg, period, sample.sample_rate)
+        gold_metrics = measure_perceptual(sample.x, gold_cfg, period, sample.sample_rate, ref)
         gold_advance = gold_metrics.wrap_advance
 
         best_rank = None
@@ -369,7 +434,7 @@ def analyse_entry(
         better = {
             name: sum(
                 1
-                for sc in ranked
+                for sc in measured
                 if _compare_metric(name, getattr(sc.metrics, name), getattr(gold_metrics, name)) == "tool"
             )
             for name in METRIC_NAMES
@@ -396,7 +461,7 @@ def analyse_entry(
             xfade_ratio=_xfade_ratio(top.eff_xfade, gold_engine.xfade) if top else float("nan"),
             metric_winners=winners,
             candidates_better_than_gold=better,
-            candidate_count=len(ranked),
+            candidate_count=len(measured),
         )
 
     return SampleResult(entry, sample, track, features, window, selection, period, ranked, gold_cmp, notes)

@@ -9,10 +9,11 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
-from .analysis import METRIC_NAMES, Selection, analyse_entry
+from .analysis import METRIC_NAMES, PERCEPTUAL_RANK_KEY, Selection, analyse_entry
 from .corpus import load_dataset, write_dataset_with_features
 from .export import build_payload
 from .report import format_report
+from .validate import evaluate_trials, format_validation
 
 
 def _json_safe(obj):
@@ -185,18 +186,29 @@ def _add_corpus_args(p: argparse.ArgumentParser) -> None:
     )
     p.add_argument(
         "--rank-by",
-        choices=list(METRIC_NAMES) + ["search_ncc"],
-        default="seam_step",
+        choices=[PERCEPTUAL_RANK_KEY] + list(METRIC_NAMES) + ["search_ncc"],
+        default=PERCEPTUAL_RANK_KEY,
         help=(
-            "single metric used to order candidates. An UNTUNED placeholder so the report has "
-            "a 'top' to compare against gold - not a cost function. seam_step is the default "
-            "because it is the only one of the six that stays meaningful at every loop length: "
-            "seam_ncc, for instance, is 1.0 by construction for a one-period loop and so ranks "
-            "degenerate micro-loops first. (default: seam_step)"
+            "how to order candidates. 'perceptual' (the default) collapses the perceptual "
+            "suite with perceptual_cost, which after validation against 36 blind A/B verdicts "
+            "means ranking on `click` - see RANKING_METRICS in perceptual.py for why a single "
+            "metric beat the composite. Naming one metric instead orders by it alone, which is "
+            "how the FIRST suite worked and how it went wrong: its default, seam_step, scores "
+            "AUC 0.21 against the verdicts, i.e. significantly anti-correlated. "
+            f"(default: {PERCEPTUAL_RANK_KEY})"
         ),
     )
     p.add_argument("--only", nargs="+", metavar="SAMPLE_ID", help="restrict to these sample ids")
     p.add_argument("--progress", action="store_true", help="log each sample id to stderr as it runs")
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    trials = evaluate_trials(args.corpus, args.candidates, progress=args.progress)
+    if not trials:
+        print("no trials could be evaluated (need ratings.jsonl + candidates.json)", file=sys.stderr)
+        return 2
+    print(format_validation(trials, rule=args.rule))
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -245,6 +257,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="destination (default: candidates.json beside dataset.json)",
     )
     exp.set_defaults(func=cmd_export)
+
+    val = sub.add_parser(
+        "validate",
+        help="score the redesigned metric suite against the recorded blind A/B verdicts",
+        description=(
+            "Replay every trial in ratings.jsonl, score both arms with the old and the new "
+            "suite, and report concordance with the listeners, per-metric discriminative "
+            "power, and what the content-free baselines score on the same trials."
+        ),
+    )
+    val.add_argument("--corpus", required=True, help="corpus directory (holding ratings.jsonl)")
+    val.add_argument("--candidates", metavar="PATH", help="candidates.json (default: beside the corpus)")
+    val.add_argument("--rule", choices=["max", "sum", "rms"], default="max",
+                     help="how perceptual_cost collapses the suite (default: max)")
+    val.add_argument("--progress", action="store_true", help="log ingest progress to stdout")
+    val.set_defaults(func=cmd_validate)
 
     return parser
 
