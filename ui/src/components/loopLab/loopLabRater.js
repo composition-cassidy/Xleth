@@ -115,7 +115,7 @@ export function parseCandidatesDoc(text) {
       const armId = String((a && a.arm_id) || '')
       const provenance = String((a && a.provenance) || '')
       if (!armId) throw new Error(`candidates.json: ${sampleId} has an arm with no arm_id`)
-      if (!['optimizer', 'gold', 'naive'].includes(provenance)) {
+      if (!['optimizer', 'gold', 'naive', 'policy'].includes(provenance)) {
         throw new Error(`candidates.json: ${sampleId}/${armId} has unknown provenance ${JSON.stringify(provenance)}`)
       }
       return {
@@ -193,6 +193,23 @@ const topOptimizerArm = (sample) =>
   sample.arms.find((a) => a.provenance === 'optimizer') ||
   null
 
+//: Provenances that stand as gold's REAL challenger — each gets its own
+//: vs-gold trial, unlike `naive`, which is the session's own calibration
+//: anchor and handled separately via `anchorCount`. A document carries
+//: whichever of these its round exported: rounds 1-2 wrote `optimizer` only
+//: (full-auto ranking); round 3 writes `policy` only (the selection-first
+//: arm — see loop_optimizer/export.py, not metric-ranked). Trying every
+//: kind and skipping whichever a given document doesn't have keeps
+//: `buildTrials` correct for any of these shapes without a "which round is
+//: this" flag anywhere in the rater.
+const CHALLENGER_PROVENANCES = ['optimizer', 'policy']
+
+//: `optimizer` may have several ranked arms (topOptimizerArm picks rank 1);
+//: every other challenger provenance is a single unranked arm named after
+//: itself (arm_id === provenance), so a plain lookup is exact.
+const challengerArm = (sample, provenance) =>
+  provenance === 'optimizer' ? topOptimizerArm(sample) : armById(sample, provenance)
+
 // The default session seed comes from the document itself, not from a clock or
 // an RNG: two people rating the same candidates.json then see the same trials in
 // the same order with the same blinding, and a resumed session after a crash
@@ -206,8 +223,10 @@ export function documentSeed(doc) {
   return seedFromString(`${doc.schema}|${doc.selection}|${doc.rank_by}|${ids}`)
 }
 
-// Build the full trial list: one optimizer-top-vs-gold trial per sample, plus a
-// naive-vs-gold anchor for `anchorCount` of them.
+// Build the full trial list: one vs-gold trial per sample for each challenger
+// provenance the document actually has (see CHALLENGER_PROVENANCES — rounds
+// 1-2 that's `optimizer`, round 3 that's `policy`), plus a naive-vs-gold
+// anchor for `anchorCount` of them.
 //
 // Presentation order is shuffled across the whole list rather than appending the
 // anchors at the end, because a run of obviously-bad trials at a known position
@@ -220,7 +239,7 @@ export function buildTrials(doc, { anchorCount = ANCHOR_TRIAL_COUNT, sessionSeed
 
   const eligible = (s, provenance) => {
     const gold = armById(s, 'gold')
-    const challenger = provenance === 'optimizer' ? topOptimizerArm(s) : armById(s, 'naive')
+    const challenger = challengerArm(s, provenance)
     return gold && challenger ? { gold, challenger } : null
   }
 
@@ -232,7 +251,7 @@ export function buildTrials(doc, { anchorCount = ANCHOR_TRIAL_COUNT, sessionSeed
 
   const trials = []
   for (const sample of samples) {
-    const kinds = ['optimizer']
+    const kinds = CHALLENGER_PROVENANCES.filter((p) => eligible(sample, p))
     if (anchorIds.has(sample.sample_id)) kinds.push('naive')
     for (const kind of kinds) {
       const pair = eligible(sample, kind)

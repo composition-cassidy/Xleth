@@ -252,6 +252,11 @@ def format_validation(trials: list[TrialEval], rule: str = "max") -> str:
 
     decided = [t for t in trials if t.decided]
     opt = [t for t in trials if t.kind == "optimizer"]
+    # `policy` is the round-3 challenger kind (see loopLabRater.js's
+    # CHALLENGER_PROVENANCES / export.policy_loop) — a document carries
+    # `optimizer` trials, `policy` trials, or both, never neither, so both
+    # buckets are always computed even though one is typically empty.
+    policy = [t for t in trials if t.kind == "policy"]
     anchor = [t for t in trials if t.kind == "naive"]
 
     w("=" * 100)
@@ -290,6 +295,7 @@ def format_validation(trials: list[TrialEval], rule: str = "max") -> str:
     w("-" * 100)
     groups = [("all decided trials", decided),
               ("optimizer vs gold", [t for t in opt if t.decided]),
+              ("policy vs gold", [t for t in policy if t.decided]),
               ("naive anchors", [t for t in anchor if t.decided])]
     w("%-24s %14s %14s" % ("", "NEW suite", "OLD seam_step"))
     for label, group in groups:

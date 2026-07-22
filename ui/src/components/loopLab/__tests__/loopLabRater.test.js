@@ -17,7 +17,7 @@ const arm = (armId, provenance, rank, loop, metrics = {}) => ({
   arm_id: armId, provenance, rank, loop, metrics,
 })
 
-function makeSample(i, { withNaive = true } = {}) {
+function makeSample(i, { withNaive = true, withPolicy = false, withOptimizer = true } = {}) {
   const id = `tone_${String(i).padStart(4, '0')}`
   return {
     sample_id: id,
@@ -28,9 +28,12 @@ function makeSample(i, { withNaive = true } = {}) {
     file_sample_rate: 44100,
     file_num_samples: 44100,
     arms: [
-      arm('optimizer_1', 'optimizer', 1, { start: 1000, end: 5000, xfade: 400 }),
-      arm('optimizer_2', 'optimizer', 2, { start: 1100, end: 5100, xfade: 400 }),
+      ...(withOptimizer ? [
+        arm('optimizer_1', 'optimizer', 1, { start: 1000, end: 5000, xfade: 400 }),
+        arm('optimizer_2', 'optimizer', 2, { start: 1100, end: 5100, xfade: 400 }),
+      ] : []),
       arm('gold', 'gold', null, { start: 8000, end: 34000, xfade: 1000 }),
+      ...(withPolicy ? [arm('policy', 'policy', null, { start: 7500, end: 34800, xfade: 3200 })] : []),
       ...(withNaive ? [arm('naive', 'naive', null, { start: 9000, end: 30000, xfade: 2625 })] : []),
     ],
   }
@@ -46,6 +49,12 @@ function makeDoc(n = 26, opts) {
     metric_names: ['seam_step', 'seam_ncc', 'zero_lag_corr', 'cents_err_per_loop', 'rms_ripple_db', 'spectral_dist'],
     samples: Array.from({ length: n }, (_, i) => makeSample(i + 1, opts)),
   }
+}
+
+// A round-3-shaped document: gold + policy + naive, no optimizer arms at all —
+// exactly what `export --top-k 0` writes.
+function makeRound3Doc(n = 26) {
+  return makeDoc(n, { withOptimizer: false, withPolicy: true, withNaive: true })
 }
 
 // ── candidates.json parsing ──────────────────────────────────────────────────
@@ -73,6 +82,11 @@ describe('parseCandidatesDoc', () => {
     const raw = makeDoc(1)
     raw.samples[0].arms[0].provenance = 'handmade'
     expect(() => parseCandidatesDoc(JSON.stringify(raw))).toThrow(/unknown provenance/)
+  })
+
+  it('accepts the round-3 "policy" provenance', () => {
+    const doc = parseCandidatesDoc(JSON.stringify(makeRound3Doc(1)))
+    expect(doc.samples[0].arms.map((a) => a.provenance)).toEqual(['gold', 'policy', 'naive'])
   })
 
   it('rejects a degenerate loop instead of auditioning silence', () => {
@@ -188,6 +202,34 @@ describe('buildTrials', () => {
 
   it('produces the 36 trials the corpus calls for', () => {
     expect(buildTrials(makeDoc(26))).toHaveLength(36)
+  })
+
+  describe('round 3: policy-only documents (no optimizer arms at all)', () => {
+    const round3 = makeRound3Doc(26)
+
+    it('still builds one challenger trial per sample, now kind "policy"', () => {
+      const trials = buildTrials(round3)
+      expect(trials.filter((t) => t.kind === 'policy')).toHaveLength(26)
+      expect(trials.filter((t) => t.kind === 'optimizer')).toHaveLength(0)
+      expect(trials.filter((t) => t.kind === 'naive')).toHaveLength(ANCHOR_TRIAL_COUNT)
+    })
+
+    it('pairs the policy arm against gold', () => {
+      for (const t of buildTrials(round3).filter((x) => x.kind === 'policy')) {
+        expect(t.arm_order.slice().sort()).toEqual(['gold', 'policy'])
+      }
+    })
+
+    it('emits the same trial-id shape as the optimizer case, named after the policy arm', () => {
+      const t = buildTrials(makeRound3Doc(1)).find((x) => x.kind === 'policy')
+      expect(t.trial_id).toBe('tone_0001::policy_vs_gold')
+    })
+
+    it('a document with BOTH optimizer and policy arms gets a trial for each', () => {
+      const both = makeDoc(1, { withOptimizer: true, withPolicy: true, withNaive: false })
+      const trials = buildTrials(both)
+      expect(trials.map((t) => t.kind).sort()).toEqual(['optimizer', 'policy'])
+    })
   })
 })
 
