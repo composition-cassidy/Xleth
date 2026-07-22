@@ -177,6 +177,50 @@ def test_metrics_are_nan_not_zero_for_a_loop_that_cannot_play():
         assert np.isnan(getattr(m, name))
 
 
+def test_hollow_chorusing_flam_are_invalid_not_perfect_without_a_fade_zone():
+    """The degenerate-trap family: a zero-crossfade loop plays fine (click and
+    wobble are genuinely measurable) but hollow/chorusing/flam have nothing to
+    probe. Reporting 0.0 there would rank it as a candidate that was checked
+    for comb notching/beating/doubled onsets and found clean, when it was
+    never checked at all — exactly the trap that let a 1.9 ms "loop" win on
+    click alone (see MIN_LOOP_DURATION_SEC). NaN is the only honest answer.
+    """
+    x = sine(SR / 100.0, 40_000)
+    no_fade = LoopConfig(loop_start=5_000, loop_end=15_000, crossfade_samples=0)
+    m = measure_perceptual(x, no_fade, 100.0)
+
+    assert np.isfinite(m.click)
+    assert np.isfinite(m.wobble)
+    assert np.isnan(m.hollow)
+    assert np.isnan(m.chorusing)
+    assert np.isnan(m.flam)
+
+
+def test_hollow_chorusing_flam_become_real_numbers_once_a_fade_zone_exists():
+    """The other half of the invariant: once there IS material to probe, these
+    three must report an actual measurement, not carry NaN forward forever.
+    """
+    x = sine(SR / 100.0, 40_000)
+    with_fade = LoopConfig(loop_start=5_000, loop_end=15_000, crossfade_samples=1_000)
+    m = measure_perceptual(x, with_fade, 100.0)
+
+    assert np.isfinite(m.hollow)
+    assert np.isfinite(m.flam)
+    # chorusing additionally needs MIN_CHORUS_PERIODS of fade; 1000 samples at
+    # a 100-sample period clears that (10 >= 2), so it too must be a number.
+    assert np.isfinite(m.chorusing)
+
+
+def test_flam_is_a_real_zero_not_nan_when_neither_source_has_a_prominent_onset():
+    """Once the fade zone is actually probed and finds nothing to double, 0.0
+    IS the right answer — only the "never probed" case must read NaN.
+    """
+    x = sine(SR / 100.0, 40_000)  # steady tone: no attack to double anywhere
+    cfg = LoopConfig(loop_start=5_000, loop_end=15_000, crossfade_samples=1_000)
+    m = measure_perceptual(x, cfg, 100.0)
+    assert m.flam == pytest.approx(0.0)
+
+
 # ── The fast path ───────────────────────────────────────────────────────────
 
 

@@ -718,12 +718,20 @@ def _hollow(rc: RenderedCycles, src_a: np.ndarray, src_b: np.ndarray, period: fl
     measurement is the per-band deficit of the real blend against what an
     incoherent sum of the same two sources would give — zero when the sources
     are unrelated, large when they are the same sound slightly displaced.
+
+    Returns NaN (not 0.0) when there is no fade zone to probe, or a fade zone
+    exists but every probe landed on silence: those are "cannot evaluate comb
+    notching here", and reporting the score a candidate WITH real notching
+    gets when it has none would rank a candidate this metric never actually
+    measured ahead of one it did — the degenerate-trap family this belongs to
+    (see the ``candidates.py`` module docstring and ``MIN_LOOP_DURATION_SEC``).
     """
     if src_a.size < n_fft or src_b.size != src_a.size or fb is None:
-        return 0.0, 0.0, 0.0
+        return float("nan"), float("nan"), float("nan")
 
     window = np.hanning(n_fft)
     worst = 0.0
+    measured = False
     n_probe = 5
     for j in range(n_probe):
         # Sample across the fade, weighted toward the middle where both sources
@@ -750,7 +758,10 @@ def _hollow(rc: RenderedCycles, src_a: np.ndarray, src_b: np.ndarray, period: fl
             continue
         deficit_db = 10.0 * np.log10(np.maximum(band_inc[keep], _EPS) / np.maximum(band_mix[keep], _EPS))
         worst = max(worst, float(np.mean(np.maximum(deficit_db, 0.0))))
+        measured = True
 
+    if not measured:
+        return float("nan"), float("nan"), float("nan")
     return worst, worst, 0.0
 
 
@@ -792,13 +803,19 @@ def _chorusing(rc: RenderedCycles, period: float) -> float:
 
     Measured on the RENDER, not the sources: beating between two nearly-tuned
     copies is created by the blend and exists nowhere else.
+
+    Returns NaN, not 0.0, whenever there is no fade zone (or too short a one)
+    to have tracked a pitch in — that is "cannot evaluate", not "no beating
+    found", and the distinction is exactly what keeps a zero-crossfade
+    candidate from reading as tied with a candidate that was actually checked.
     """
     if rc.xfade <= 0 or not np.isfinite(period) or period <= 1.0:
-        return 0.0
+        # No fade zone to measure beating in at all — INVALID, not "no beating".
+        return float("nan")
     if rc.xfade < MIN_CHORUS_PERIODS * period:
         # Too short to sustain audible beating; a pitch read from it would be
-        # measuring the window, not the loop.
-        return 0.0
+        # measuring the window, not the loop. Cannot evaluate, so INVALID.
+        return float("nan")
 
     frame = int(max(4.0 * period, 512))
     need = int(period * 2.0) * 2 + 8
@@ -833,9 +850,14 @@ def _flam(rc: RenderedCycles, src_a: np.ndarray, src_b: np.ndarray) -> float:
 
     Only onsets INSIDE the fade matter: that is the only place the two sources
     are audible at once, and it is the doubling that reads as a flam.
+
+    Returns NaN, not 0.0, when there is no fade zone (or too short a probe
+    window) to have looked for a doubled onset in — "cannot evaluate", not "no
+    flam found". Once both sources are actually probed and neither shows a
+    prominent onset, 0.0 is the right answer: there is nothing to double.
     """
     if src_a.size < 8 or src_b.size != src_a.size:
-        return 0.0
+        return float("nan")
     win = max(2, int(ENVELOPE_WIN_MS * 0.001 * rc.sample_rate))
 
     # Only the stretch where BOTH sources are actually audible can produce a
@@ -847,7 +869,7 @@ def _flam(rc: RenderedCycles, src_a: np.ndarray, src_b: np.ndarray) -> float:
     lo = int(0.08 * src_a.size)
     hi = int(0.92 * src_a.size)
     if hi - lo < 4:
-        return 0.0
+        return float("nan")
     ia, ra = strongest_onset(circular_rms(src_a[lo:hi], win), rc.sample_rate)
     ib, rb = strongest_onset(circular_rms(src_b[lo:hi], win), rc.sample_rate)
     if ia < 0 or ib < 0 or min(ra, rb) < ONSET_RISE_DB:

@@ -7,17 +7,28 @@ metrics measure something the ear does not care about. Only listening settles
 that, so this module writes the arms out in a form Loop Lab can load and play
 through the real sampler.
 
-Three provenances per sample:
+Four provenances per sample:
 
 ``optimizer``
     The top-K candidates, in rank order, exactly as the report ranks them.
+    Full-auto: the search covers whatever window ``--selection`` picked. Lost
+    43-3-3 to gold across rounds 1-2 — the metric suite agreeing with itself
+    is not the same as agreeing with a listener.
 ``gold``
     The human-authored loop, unmodified.
+``policy``
+    :func:`policy_loop` — the round-3 arm. NOT metric-ranked: it snaps the
+    period-aligned length closest to a rough drag around the gold region
+    (gold +/- 15%) and takes the longest crossfade the engine clamp allows at
+    that length. Tests the shipping product's actual shape (user drags a
+    rough region, machine snaps) rather than full-auto placement, and leans on
+    the one taste signal that beat the metric suite outright: longer,
+    period-aligned crossfades.
 ``naive``
     A deliberately period-UNALIGNED loop inside the gold region, with
     ``xfade = len/8``. The anchor: a rater who cannot hear it lose to gold is
-    not hearing loop quality, and every optimizer-vs-gold verdict in the same
-    session should be read with that in mind.
+    not hearing loop quality, and every optimizer/policy-vs-gold verdict in
+    the same session should be read with that in mind.
 
 Loop points are written in the FILE sample domain, matching ``gold_loop`` in
 dataset.json and the WAV that ships beside it. Everything measured here happens
@@ -29,8 +40,11 @@ way at 44.1k -> 48k, which is well under the tolerances every metric here is
 quoted to.
 
 The naive arm is derived deterministically — its "arbitrary" start comes from a
-stable hash of the sample id, not from an RNG — so re-running ``export`` on the
-same corpus reproduces the same file byte for byte.
+stable hash of the sample id, not from an RNG. The policy arm is derived from
+the same joint (length, crossfade) search :mod:`loop_optimizer.candidates` uses
+for the optimizer arms, restricted to a fixed window and read off with no
+metric involved. Both make re-running ``export`` on the same corpus reproduce
+the same file byte for byte.
 """
 
 from __future__ import annotations
@@ -41,6 +55,7 @@ from typing import Any
 import numpy as np
 
 from .analysis import METRIC_NAMES, SampleResult
+from .candidates import Candidate, generate_candidates
 from .corpus import GoldLoop
 from .engine_emu import LoopConfig, resolve
 from .ingest import IngestedSample
@@ -55,6 +70,14 @@ from .perceptual import (
 #: brief, not by measurement: it is what an implementation that never thought
 #: about periods would reach for.
 NAIVE_XFADE_DIVISOR = 8
+
+#: How far the policy arm's search window extends past the gold region on each
+#: side, as a fraction of the region's own length. Stands in for the slop in a
+#: user's rough drag in the selection-first product: the shipping flow is
+#: "user drags a rough region, machine snaps", not "machine searches the whole
+#: file", so the policy arm's window is deliberately narrow and anchored on a
+#: real region rather than run auto-detection again.
+POLICY_SELECTION_MARGIN_FRAC = 0.15
 
 #: The naive loop starts this far into the gold region and ends this far short
 #: of its end, as fractions of the region. Ranges, not constants: the exact
@@ -176,6 +199,79 @@ def naive_loop(
     )
 
 
+def policy_loop(
+    x: np.ndarray,
+    gold: GoldLoop,
+    period: float,
+    sample_rate: float,
+) -> Candidate | None:
+    """The selection-first policy arm (engine domain): no metric ranking at all.
+
+    Round 1/2 tested full-auto candidate generation against gold and lost
+    43-3-3; the strongest signal in those verdicts was "prefer the longer
+    period-multiple fade" (16-5-2), and the persistent complaint was
+    timbre-jump — the loop sitting on the wrong vowel moment, a PLACEMENT
+    error, not a seam-mechanics one. The shipping product does not do
+    full-auto placement: the user drags a rough region and the machine snaps.
+    This arm tests exactly that.
+
+    The window stands in for the user's rough drag: gold's own region,
+    expanded by :data:`POLICY_SELECTION_MARGIN_FRAC` on each side (a real
+    human already placed gold approximately right, so widening it a little is
+    a more honest stand-in for "rough" than picking an arbitrary offset would
+    be). Inside that window, :func:`generate_candidates` already does the two
+    things the policy needs and enforces the invariant this task cares about
+    by construction:
+
+      * every (length, crossfade) pair it returns is quantised to whole
+        periods, so ``advance = length - crossfade`` is an integer number of
+        periods automatically — there is no separate alignment step here;
+      * every crossfade it returns already survived ``resolve()`` unchanged
+        (candidates.py rejects anything the engine's clamp would cut down),
+        so "the longest the clamp allows" is just "the largest survivor".
+
+    So the policy is two lookups, not a search:
+
+      1. pick the length (period multiple) closest to the FULL dragged span
+         — the snap a selection-first tool performs is choosing where the
+         period-aligned loop points fall inside what the user selected, not
+         second-guessing how much they selected;
+      2. among candidates at that length, take the one with the longest
+         crossfade — the corpus's own strongest taste signal.
+
+    Returns ``None`` when the window cannot support any candidate (mirrors
+    :func:`naive_loop`'s failure mode: better no arm than a degenerate one).
+    """
+    region = gold.end - gold.start
+    if not (math.isfinite(period) and period > 1.0) or region <= 0:
+        return None
+
+    n = x.shape[0]
+    margin = int(round(POLICY_SELECTION_MARGIN_FRAC * region))
+    window_start = max(0, gold.start - margin)
+    window_end = min(n, gold.end + margin)
+    selection_span = window_end - window_start
+    if selection_span < period:
+        return None
+
+    candidates = generate_candidates(x, period, window_start, window_end, sample_rate)
+    if not candidates:
+        return None
+
+    by_k: dict[int, list[Candidate]] = {}
+    for c in candidates:
+        by_k.setdefault(c.period_multiple, []).append(c)
+
+    # Step 1: snap the length to the period multiple closest to the dragged
+    # span. All candidates sharing a k share the same (loop_start, loop_end) —
+    # generate_candidates fixes the start via its own NCC search per k before
+    # sweeping crossfade widths — so this also fixes the start.
+    k_star = min(by_k, key=lambda k: abs(by_k[k][0].length - selection_span))
+    # Step 2: the longest period-multiple crossfade the engine clamp allowed
+    # at that length.
+    return max(by_k[k_star], key=lambda c: c.crossfade_samples)
+
+
 def build_sample_payload(result: SampleResult, top_k: int) -> dict[str, Any]:
     """One sample's entry in candidates.json: its arms plus the context to read them."""
     sample = result.sample
@@ -216,6 +312,28 @@ def build_sample_payload(result: SampleResult, top_k: int) -> dict[str, Any]:
             )
         )
 
+        fb, n_fft = _filterbank_for(result.period, sample.sample_rate)
+        ref = source_reference(sample.x, result.period, sample.sample_rate, fb, n_fft)
+
+        policy_cand = policy_loop(sample.x, gold_engine, result.period, sample.sample_rate)
+        if policy_cand is None:
+            notes.append("gold region too short for a policy arm; none emitted")
+        else:
+            policy_cfg = policy_cand.to_config()
+            policy_eff = resolve(policy_cfg, sample.num_samples, sample.sample_rate)
+            arms.append(
+                _arm(
+                    sample,
+                    arm_id="policy",
+                    provenance="policy",
+                    cfg=policy_cfg,
+                    metrics=measure_perceptual(
+                        sample.x, policy_cfg, result.period, sample.sample_rate, ref
+                    ),
+                    eff_xfade=policy_eff.eff_xfade,
+                )
+            )
+
         naive_cfg = naive_loop(
             result.entry.sample_id, gold_engine, result.period, sample.num_samples
         )
@@ -223,8 +341,6 @@ def build_sample_payload(result: SampleResult, top_k: int) -> dict[str, Any]:
             notes.append("gold region too short for a naive anchor; none emitted")
         else:
             naive_eff = resolve(naive_cfg, sample.num_samples, sample.sample_rate)
-            fb, n_fft = _filterbank_for(result.period, sample.sample_rate)
-            ref = source_reference(sample.x, result.period, sample.sample_rate, fb, n_fft)
             arms.append(
                 _arm(
                     sample,

@@ -246,6 +246,52 @@ def test_ranking_is_deterministic():
     assert first == second
 
 
+def test_top_invalid_guard_fires_when_an_unmeasured_candidate_would_outrank_a_measured_one():
+    """The metric-invariant assertion, tested directly against the guard rather
+    than hoping to provoke it through `_rank_key` (which already excludes NaN
+    from rank 1 by sorting it to infinity — the guard exists to CATCH a
+    regression in that sort, so it has to be exercised with an input the sort
+    itself would never produce).
+    """
+    from loop_optimizer.analysis import PERCEPTUAL_RANK_KEY, ScoredCandidate, _assert_top_not_invalid
+
+    period = 100.0
+    x = sine(SR / period, 20_000)
+    cands = generate_candidates(x, period, 2000, 12_000)[:2]
+    scored = _scored_perceptual(x, cands, period)
+
+    import dataclasses
+
+    invalid_top = dataclasses.replace(
+        scored[0], metrics=dataclasses.replace(scored[0].metrics, click=float("nan"))
+    )
+    valid_second = dataclasses.replace(
+        scored[1], metrics=dataclasses.replace(scored[1].metrics, click=0.1)
+    )
+    with pytest.raises(AssertionError):
+        _assert_top_not_invalid([invalid_top, valid_second], PERCEPTUAL_RANK_KEY)
+
+
+def test_top_invalid_guard_allows_an_invalid_top_when_nothing_else_was_measurable():
+    """If every candidate is unmeasurable, an INVALID one at rank 1 is not a
+    ranking failure — there was no valid alternative to have preferred.
+    """
+    from loop_optimizer.analysis import PERCEPTUAL_RANK_KEY, _assert_top_not_invalid
+
+    period = 100.0
+    x = sine(SR / period, 20_000)
+    cands = generate_candidates(x, period, 2000, 12_000)[:2]
+    scored = _scored_perceptual(x, cands, period)
+
+    import dataclasses
+
+    all_invalid = [
+        dataclasses.replace(sc, metrics=dataclasses.replace(sc.metrics, click=float("nan")))
+        for sc in scored
+    ]
+    _assert_top_not_invalid(all_invalid, PERCEPTUAL_RANK_KEY)  # must not raise
+
+
 def test_perceptual_rank_key_orders_by_the_collapsed_cost():
     """The default key collapses the suite instead of naming one metric."""
     from loop_optimizer.analysis import PERCEPTUAL_RANK_KEY

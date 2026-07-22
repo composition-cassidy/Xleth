@@ -14,7 +14,12 @@ import pytest
 
 from loop_optimizer.__main__ import main
 from loop_optimizer.corpus import GoldLoop
-from loop_optimizer.export import NAIVE_MIN_PHASE_ERROR, NAIVE_XFADE_DIVISOR, naive_loop
+from loop_optimizer.export import (
+    NAIVE_MIN_PHASE_ERROR,
+    NAIVE_XFADE_DIVISOR,
+    naive_loop,
+    policy_loop,
+)
 from loop_optimizer.wavio import write_wav
 
 GOLD = {"start": 8000, "end": 34000, "xfade": 1000}
@@ -71,6 +76,41 @@ def test_export_writes_top_k_plus_gold_plus_naive(tmp_path, capsys):
         # Optimizer arms carry their rank; the other two are not ranked at all.
         assert [a["rank"] for a in sample["arms"] if a["provenance"] == "optimizer"] == [1, 2, 3]
         assert all(a["rank"] is None for a in sample["arms"] if a["provenance"] != "optimizer")
+
+
+def test_round3_recipe_is_gold_policy_naive_with_top_k_zero(tmp_path, capsys):
+    """The round-3 export: selection-first, no full-auto optimizer arms."""
+    payload, _ = _export(tmp_path, capsys, "--top-k", "0")
+
+    for sample in payload["samples"]:
+        provenances = [a["provenance"] for a in sample["arms"]]
+        assert provenances.count("optimizer") == 0
+        assert provenances.count("gold") == 1
+        assert provenances.count("policy") == 1
+        assert provenances.count("naive") == 1
+        assert provenances == ["gold", "policy", "naive"]
+        policy = next(a for a in sample["arms"] if a["provenance"] == "policy")
+        assert policy["rank"] is None
+
+
+def test_policy_arm_is_period_aligned_and_matches_the_standalone_helper(tmp_path, capsys):
+    payload, _ = _export(tmp_path, capsys, "--top-k", "0", n_samples=1)
+    sample = payload["samples"][0]
+    policy = next(a for a in sample["arms"] if a["provenance"] == "policy")
+
+    period = sample["period_engine"]
+    engine = policy["loop_engine"]
+    length = engine["end"] - engine["start"]
+    advance = length - engine["xfade"]
+    # length and crossfade are each independently rounded to the nearest
+    # sample from a period multiple, so their DIFFERENCE is aligned to within
+    # about a sample, not to floating-point precision — unlike the exact
+    # integer periods used in tests/test_policy_arm.py's synthetic cases.
+    nearest_multiple = round(advance / period)
+    assert abs(advance - nearest_multiple * period) < 1.0
+    # With this much room (the GOLD region is 26000 samples), the longest
+    # valid fade should never be zero.
+    assert engine["xfade"] > 0
 
 
 def test_top_k_is_respected(tmp_path, capsys):
@@ -151,6 +191,15 @@ def test_naive_is_skipped_when_the_gold_region_is_too_short():
     assert naive_loop("x", GoldLoop(start=0, end=300, xfade=0), period=100.0, num_samples=44100) is None
     assert naive_loop("x", GoldLoop(start=0, end=20000, xfade=0), period=float("nan"), num_samples=44100) is None
     assert naive_loop("x", GoldLoop(start=0, end=20000, xfade=0), period=100.0, num_samples=44100) is not None
+
+
+def test_policy_is_skipped_when_the_gold_region_is_too_short():
+    """Better no arm than a degenerate one — same failure mode as naive_loop."""
+    x = np.zeros(44100, dtype=np.float32)
+    assert policy_loop(x, GoldLoop(start=0, end=300, xfade=0), period=100.0, sample_rate=44100.0) is None
+    assert policy_loop(
+        x, GoldLoop(start=0, end=20000, xfade=0), period=float("nan"), sample_rate=44100.0
+    ) is None
 
 
 def test_export_json_has_no_nan_literals(tmp_path, capsys):

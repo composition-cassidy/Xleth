@@ -30,6 +30,7 @@ from .ingest import IngestedSample, ingest_file
 from .metrics import METRIC_DIRECTION as OLD_METRIC_DIRECTION  # noqa: F401  (kept: the old ruler is the baseline `validate` compares against)
 from .perceptual import (
     METRIC_DIRECTION,
+    RANKING_METRICS,
     PerceptualMetrics,
     SourceReference,
     _filterbank_for,
@@ -223,8 +224,42 @@ def _rank_key(sc: ScoredCandidate, key: str) -> tuple:
     return (primary, cents, click, sc.candidate.period_multiple, sc.candidate.loop_start)
 
 
+def _assert_top_not_invalid(ranked: list[ScoredCandidate], key: str) -> None:
+    """The metric-invariant guard: a candidate whose ranking metric could not
+    be evaluated (INVALID/NaN) must never sort to rank 1 ahead of a candidate
+    it actually beat.
+
+    This is a correctness check on the SORT, not a re-measurement: every
+    metric below the rank key already treats "cannot evaluate" as NaN, not as
+    0/perfect (see ``perceptual.py``), and ``_rank_key`` already sends NaN to
+    ``math.inf`` so it sorts last. If this ever fires, that invariant broke —
+    a fake-perfect score reached rank 1 instead of losing to a real one.
+    """
+    if not ranked:
+        return
+    names = RANKING_METRICS if key == PERCEPTUAL_RANK_KEY else (key,)
+    metric_names = [n for n in names if n in METRIC_NAMES]
+    if not metric_names:
+        return  # ranking on a candidate-geometry field (e.g. search_ncc), not a metric
+    top_metrics = ranked[0].metrics
+    if all(not math.isfinite(getattr(top_metrics, n, float("nan"))) for n in metric_names):
+        # Only a real problem if some OTHER candidate had a valid value the
+        # sort should have preferred instead.
+        if any(
+            math.isfinite(getattr(sc.metrics, n, float("nan")))
+            for sc in ranked
+            for n in metric_names
+        ):
+            raise AssertionError(
+                f"top-ranked candidate has no valid value for ranking metric(s) {metric_names}, "
+                "but another candidate did; an INVALID metric must never outrank a measured one"
+            )
+
+
 def rank_candidates(scored: list[ScoredCandidate], key: str) -> list[ScoredCandidate]:
-    return sorted(scored, key=lambda sc: _rank_key(sc, key))
+    ranked = sorted(scored, key=lambda sc: _rank_key(sc, key))
+    _assert_top_not_invalid(ranked, key)
+    return ranked
 
 
 def _xfade_ratio(candidate_xfade: int, gold_xfade: int) -> float:
