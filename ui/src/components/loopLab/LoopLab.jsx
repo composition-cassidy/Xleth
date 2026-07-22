@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import LoopLabWaveform from './LoopLabWaveform.jsx'
+import LoopLabRater from './LoopLabRater.jsx'
 import Knob from '../sampler/Knob.jsx'
 import {
   LOOP_LAB_CLASSES, BEHAVIOR_FAMILIES, deriveBehaviorFamily,
-  autoName, loadStickyMeta, saveStickyMeta, metaIsComplete,
+  autoName, loadStickyMeta, saveStickyMeta, metaIsComplete, clampCrossfade,
 } from './loopLabMeta.js'
 import './loopLab.css'
 
@@ -39,6 +40,10 @@ let uidCounter = 1
 
 export default function LoopLab({ onClose }) {
   const [sticky, setSticky] = useState(loadStickyMeta)
+  // 'author' = label gold loops and export the corpus; 'rate' = blind A/B the
+  // optimizer's candidates against those gold loops. Both drive the same engine
+  // regions, so only one may hold the preview at a time.
+  const [mode, setMode] = useState('author')
   const [samples, setSamples] = useState([])
   const [selectedId, setSelectedId] = useState(null)
   const [status, setStatus] = useState('')
@@ -127,9 +132,10 @@ export default function LoopLab({ onClose }) {
     let loopStart = saved && saved.loopStart != null ? clampN(saved.loopStart) : Math.round(numSamples * 0.25)
     let loopEnd = saved && saved.loopEnd != null ? clampN(saved.loopEnd) : Math.round(numSamples * 0.75)
     if (loopEnd <= loopStart) loopEnd = Math.min(numSamples, loopStart + 1)
-    const xfade = saved && saved.xfade != null
+    const rawXfade = saved && saved.xfade != null
       ? Math.max(0, Math.round(saved.xfade))
       : Math.min(2048, Math.floor((loopEnd - loopStart) / 4))
+    const xfade = clampCrossfade(loopStart, loopEnd, rawXfade, numSamples)
 
     const sample = {
       id: uidCounter++,
@@ -197,6 +203,12 @@ export default function LoopLab({ onClose }) {
     setSamples((prev) => prev.map((s) => {
       if (s.id !== id) return s
       const next = { ...s, ...patch }
+      // Re-clamp the canonical xfade whenever it or the loop bounds change, so
+      // it can never drift past what the engine will actually play (e.g. a
+      // stale xfade left over from before the loop was shortened).
+      if ('loopStart' in patch || 'loopEnd' in patch || 'xfade' in patch) {
+        next.xfade = clampCrossfade(next.loopStart, next.loopEnd, next.xfade, next.numSamples)
+      }
       if (push && ('loopStart' in patch || 'loopEnd' in patch || 'xfade' in patch || 'rootNote' in patch)) {
         pushSettings(next)
       }
@@ -235,8 +247,10 @@ export default function LoopLab({ onClose }) {
     else startPreview(selected)
   }, [selected, startPreview, stopPreview])
 
-  // Spacebar toggles preview (ignored while typing in an input).
+  // Spacebar toggles preview (ignored while typing in an input). Rate mode owns
+  // the keyboard and the preview voice while it is up, so this stands down.
   useEffect(() => {
+    if (mode !== 'author') return undefined
     const onKey = (e) => {
       if (e.code !== 'Space') return
       const t = e.target
@@ -246,7 +260,16 @@ export default function LoopLab({ onClose }) {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [togglePreview])
+  }, [togglePreview, mode])
+
+  // Entering rate mode drops the authoring preview: the rater re-points the
+  // same region's sampler at an arm, and a note held from here would keep
+  // playing whichever loop the author was last editing.
+  const switchMode = useCallback((next) => {
+    if (next === 'rate') stopPreview()
+    setStatus('')
+    setMode(next)
+  }, [stopPreview])
 
   // ── Restore the permanent working set on mount ──────────────────────────────
   // Re-imports every saved WAV (from its path) through the engine and reapplies
@@ -340,6 +363,7 @@ export default function LoopLab({ onClose }) {
           rootNote: s.rootNote,
           behaviorFamily: s.behaviorFamily,
           engineSampleRate: s.sampleRate,
+          numSamples: s.numSamples,
           gold: { start: s.loopStart, end: s.loopEnd, xfade: s.xfade },
         })),
       }
@@ -359,21 +383,34 @@ export default function LoopLab({ onClose }) {
   return (
     <div className="ll-overlay" role="dialog" aria-label="Loop Lab">
       <div className="ll-header">
-        <div className="ll-title">Loop Lab <span className="ll-badge">DEV</span></div>
+        <div className="ll-title">
+          Loop Lab <span className="ll-badge">DEV</span>
+          <span className="ll-tabs" role="tablist">
+            {[['author', 'Author'], ['rate', 'Rate A/B']].map(([id, label]) => (
+              <button key={id} role="tab" aria-selected={mode === id}
+                className={`ll-tab${mode === id ? ' is-active' : ''}`}
+                onClick={() => switchMode(id)}>{label}</button>
+            ))}
+          </span>
+        </div>
         <div className="ll-header-actions">
-          <button className="ll-btn" onClick={handleImport} disabled={importing || instrumentRequired}>
-            {importing ? 'Importing…' : 'Import WAVs'}
-          </button>
-          <button className="ll-btn ll-btn--accent" onClick={handleExport}
-            disabled={exporting || samples.length === 0}>
-            {exporting ? 'Exporting…' : `Export ZIP (${samples.length})`}
-          </button>
+          {mode === 'author' && (
+            <>
+              <button className="ll-btn" onClick={handleImport} disabled={importing || instrumentRequired}>
+                {importing ? 'Importing…' : 'Import WAVs'}
+              </button>
+              <button className="ll-btn ll-btn--accent" onClick={handleExport}
+                disabled={exporting || samples.length === 0}>
+                {exporting ? 'Exporting…' : `Export ZIP (${samples.length})`}
+              </button>
+            </>
+          )}
           <button className="ll-btn ll-btn--ghost" onClick={onClose} aria-label="Close">✕</button>
         </div>
       </div>
 
       {/* Sticky metadata bar — applied to every new import until changed. */}
-      <div className="ll-sticky">
+      {mode === 'author' && <div className="ll-sticky">
         <label className="ll-field">
           <span>Class</span>
           <select value={sticky.className}
@@ -395,9 +432,15 @@ export default function LoopLab({ onClose }) {
             onChange={(e) => setSticky((m) => ({ ...m, source: e.target.value }))} />
         </label>
         {instrumentRequired && <span className="ll-hint">Instrument name required to import.</span>}
-      </div>
+      </div>}
 
-      <div className="ll-body">
+      {mode === 'rate' && (
+        <div className="ll-body">
+          <LoopLabRater samples={samples} onStatus={setStatus} />
+        </div>
+      )}
+
+      {mode === 'author' && <div className="ll-body">
         {/* Sample list */}
         <div className="ll-list">
           {samples.length === 0 && <div className="ll-empty">No samples. Import WAVs to begin.</div>}
@@ -433,9 +476,13 @@ export default function LoopLab({ onClose }) {
             />
           )}
         </div>
-      </div>
+      </div>}
 
-      <div className="ll-statusbar">{status || 'Space = preview · wheel = zoom · drag empty = pan'}</div>
+      <div className="ll-statusbar">
+        {status || (mode === 'rate'
+          ? 'A / B = switch arm · space = play · 1 / 2 / 3 = verdict · enter = save & next'
+          : 'Space = preview · wheel = zoom · drag empty = pan')}
+      </div>
     </div>
   )
 }

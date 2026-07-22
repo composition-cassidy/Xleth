@@ -551,6 +551,12 @@ window.xleth = ({
     exportDataset: (payload)   => invoke('xleth:loopLab:exportDataset', payload),
     loadState:     ()          => invoke('xleth:loopLab:loadState'),
     saveState:     (state)     => invoke('xleth:loopLab:saveState', state),
+    // Blind A/B rater: read the optimizer's candidate set, append verdicts to
+    // ratings.jsonl beside it.
+    pickCandidates:  ()                 => invoke('xleth:loopLab:pickCandidates'),
+    readCandidates:  (filePath)         => invoke('xleth:loopLab:readCandidates', filePath),
+    loadRatings:     (candidatesPath)   => invoke('xleth:loopLab:loadRatings', candidatesPath),
+    appendRating:    (candidatesPath, line) => invoke('xleth:loopLab:appendRating', candidatesPath, line),
   },
 
   // ── Window controls (frameless title bar) ─────────────────────────────────

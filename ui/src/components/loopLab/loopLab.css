@@ -152,6 +152,111 @@
   text-overflow: ellipsis;
 }
 
+/* ── Mode tabs (Author / Rate A/B) ── */
+.ll-tabs { display: inline-flex; gap: 2px; margin-left: 14px; vertical-align: middle; }
+.ll-tab {
+  font: inherit;
+  font-size: 11px;
+  font-weight: 400;
+  padding: 3px 10px;
+  background: transparent;
+  color: var(--theme-text-muted);
+  border: 1px solid var(--theme-border-subtle);
+  cursor: pointer;
+}
+.ll-tab:hover { color: var(--theme-text); }
+.ll-tab.is-active {
+  color: var(--theme-accent);
+  border-color: var(--theme-accent);
+  background: var(--theme-bg-elevated);
+}
+
+/* ── Blind A/B rater ── */
+.ll-rate { flex: 1; padding: 14px 16px; overflow-y: auto; min-width: 0; }
+
+.ll-rate-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--theme-border-subtle);
+  margin-bottom: 14px;
+}
+.ll-rate-progress { font-size: 12px; white-space: nowrap; }
+.ll-rate-progress strong { color: var(--theme-accent); }
+.ll-rate-sub { color: var(--theme-text-muted); font-size: 10px; font-weight: 400; }
+.ll-rate-canvas { flex: 1; min-width: 0; display: block; }
+
+.ll-rate-sample { display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; }
+.ll-rate-sampleid { font-size: 14px; letter-spacing: 0.01em; }
+
+/* The two arms. Identical by construction — any styling difference between
+   them would be a blinding leak, so `is-active` marks only which one is
+   CURRENTLY AUDIBLE, never which arm it is. */
+.ll-rate-arms { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
+.ll-arm {
+  font: inherit;
+  font-size: 20px;
+  font-weight: 600;
+  width: 72px;
+  height: 56px;
+  background: var(--theme-bg-surface);
+  color: var(--theme-text-muted);
+  border: 1px solid var(--theme-border-strong);
+  cursor: pointer;
+}
+.ll-arm:hover:not(:disabled) { color: var(--theme-text); }
+.ll-arm.is-active {
+  background: var(--theme-bg-elevated);
+  color: var(--theme-accent);
+  border-color: var(--theme-accent);
+  box-shadow: inset 0 -2px 0 var(--theme-accent);
+}
+.ll-arm:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.ll-rate-label {
+  display: block;
+  font-size: 10px;
+  color: var(--theme-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
+.ll-rate-verdict { display: flex; align-items: center; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
+.ll-rate-verdict .ll-rate-label { margin-bottom: 0; align-self: center; }
+.ll-rate-key { color: var(--theme-text-placeholder); font-size: 10px; margin-left: 3px; }
+.ll-btn.is-chosen { background: var(--theme-bg-elevated); }
+
+.ll-rate-tags { margin-bottom: 20px; }
+.ll-tag-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.ll-tag {
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 9px;
+  background: transparent;
+  color: var(--theme-text-muted);
+  border: 1px solid var(--theme-border-subtle);
+  cursor: pointer;
+}
+.ll-tag:hover:not(:disabled) { border-color: var(--theme-border-strong); color: var(--theme-text); }
+.ll-tag.is-on { color: var(--theme-danger); border-color: var(--theme-danger); }
+.ll-tag:disabled { opacity: 0.35; cursor: not-allowed; }
+
+.ll-rate-actions { display: flex; gap: 8px; align-items: center; }
+.ll-rate-error { margin-top: 12px; font-size: 11px; color: var(--theme-danger); }
+.ll-rate-done {
+  padding: 10px 12px;
+  border: 1px solid var(--theme-accent);
+  color: var(--theme-accent);
+  font-size: 12px;
+}
+.ll-rate code {
+  font-family: var(--theme-font-mono, monospace);
+  color: var(--theme-text);
+  background: var(--theme-bg-surface);
+  padding: 1px 4px;
+}
+
 /* ── DEV launcher button ── */
 .ll-launcher {
   position: fixed;

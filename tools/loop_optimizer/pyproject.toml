@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "loop-optimizer-lab"
+version = "0.1.0"
+description = "XLETH auto-loop-optimizer reference implementation and regression harness"
+requires-python = ">=3.10"
+# numpy only. The engine emulation, resampler, YIN tracker and FFT metrics are
+# all implemented in-tree on purpose: this is the reference the C++ port is read
+# against, so every DSP decision has to be visible here rather than delegated to
+# a library. In particular librosa is deliberately NOT a dependency.
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[tool.setuptools.packages.find]
+include = ["loop_optimizer*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["error::RuntimeWarning"]

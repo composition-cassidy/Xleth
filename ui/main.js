@@ -1800,6 +1800,76 @@ ipcMain.handle('xleth:loopLab:exportDataset', async (event, payload) => {
   }
 });
 
+// ── Loop Lab blind A/B rater: candidates.json in, ratings.jsonl out ──────────
+// The rater loads the arm set written by `python -m loop_optimizer export` and
+// appends one verdict per line to ratings.jsonl BESIDE it, so a corpus, the
+// candidates generated from it and the verdicts collected on them stay in one
+// directory. Parsing lives in the renderer (loopLabRater.js, unit-tested);
+// these handlers only read and append text, which the renderer cannot.
+const RATINGS_FILENAME = 'ratings.jsonl';
+
+function loopLabRatingsPath(candidatesPath) {
+  return path.join(path.dirname(candidatesPath), RATINGS_FILENAME);
+}
+
+function readCandidatesFile(filePath) {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) return { ok: false, error: `no candidates file at ${filePath}` };
+    return { ok: true, path: filePath, text: fs.readFileSync(filePath, 'utf8') };
+  } catch (e) {
+    log(`[LoopLab] readCandidates error: ${e && e.message}`);
+    return { ok: false, error: (e && e.message) || 'read failed' };
+  }
+}
+
+// xleth:loopLab:pickCandidates() → { ok, path, text } | { cancelled } | { ok:false, error }
+ipcMain.handle('xleth:loopLab:pickCandidates', async (event) => {
+  const senderWin = BrowserWindow.fromWebContents(event.sender) || win;
+  const { canceled, filePaths } = await dialog.showOpenDialog(senderWin, {
+    title: 'Loop Lab — Open candidates.json',
+    properties: ['openFile'],
+    filters: [{ name: 'Candidate set', extensions: ['json'] }],
+  });
+  if (canceled || !filePaths || !filePaths[0]) return { cancelled: true };
+  return readCandidatesFile(filePaths[0]);
+});
+
+// xleth:loopLab:readCandidates(path) → { ok, path, text } | { ok:false, error }
+// Re-opens the file the panel was last pointed at, so a session resumes without
+// the user having to find it again.
+ipcMain.handle('xleth:loopLab:readCandidates', async (_, filePath) => readCandidatesFile(filePath));
+
+// xleth:loopLab:loadRatings(candidatesPath) → { ok, path, text }
+// A missing file is the normal first-run case, not an error: it reads as empty.
+ipcMain.handle('xleth:loopLab:loadRatings', async (_, candidatesPath) => {
+  try {
+    const f = loopLabRatingsPath(candidatesPath);
+    if (!fs.existsSync(f)) return { ok: true, path: f, text: '' };
+    return { ok: true, path: f, text: fs.readFileSync(f, 'utf8') };
+  } catch (e) {
+    log(`[LoopLab] loadRatings error: ${e && e.message}`);
+    return { ok: false, error: (e && e.message) || 'load failed' };
+  }
+});
+
+// xleth:loopLab:appendRating(candidatesPath, line) → { ok, path } | { ok:false, error }
+// A single appendFileSync per verdict, deliberately: a 36-trial session is a
+// long sit, and a crash at trial 30 must not cost the previous 29. Rewriting a
+// whole ratings array would put every earlier verdict at risk on every write.
+ipcMain.handle('xleth:loopLab:appendRating', async (_, candidatesPath, line) => {
+  try {
+    if (typeof line !== 'string' || !line.endsWith('\n')) {
+      return { ok: false, error: 'rating line must be a newline-terminated string' };
+    }
+    const f = loopLabRatingsPath(candidatesPath);
+    fs.appendFileSync(f, line, 'utf8');
+    return { ok: true, path: f };
+  } catch (e) {
+    log(`[LoopLab] appendRating error: ${e && e.message}`);
+    return { ok: false, error: (e && e.message) || 'append failed' };
+  }
+});
+
 ipcMain.handle('xleth:project:getSourceThumbnail', async (_, filePath, duration) => {
   const { execFile } = require('child_process');
   const os = require('os');

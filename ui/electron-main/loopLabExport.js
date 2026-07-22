@@ -69,6 +69,27 @@ function sanitizeSegment(name) {
     .replace(/[. ]+$/, '') || 'unnamed';
 }
 
+// Mirrors the engine's per-voice crossfade clamp (engine/src/audio/Sampler.cpp:
+// 898-909) so dataset.json can never record a wider crossfade than the engine
+// actually plays. Loop Lab never sets a sample trim, so the engine's trim
+// defaults are in force: smpStart_=0 and the trim end is the full buffer
+// (numSamples) — the two terms below are those defaults folded in. Sibling
+// implementation: ui/src/components/loopLab/loopLabMeta.js clampCrossfade
+// (keeps the renderer's canonical state in sync); duplicated rather than
+// shared because this module is CommonJS (electron main) and that one is ESM
+// (renderer bundle). `numSamples` is the ENGINE-domain buffer length; when
+// absent, the buffer-bound term is skipped (the half-loop-length term below
+// still applies and is the one that binds in practice).
+function effectiveCrossfade(loopStart, loopEnd, xfade, numSamples) {
+  const start = Math.max(0, Number(loopStart) || 0);
+  const end = Math.max(start, Number(loopEnd) || 0);
+  let eff = Math.max(0, Math.round(Number(xfade) || 0));
+  eff = Math.min(eff, Math.floor((end - start) / 2));
+  eff = Math.min(eff, end); // effLoopEnd - smpStart_ (smpStart_ is always 0 here)
+  if (Number(numSamples) > 0) eff = Math.min(eff, Number(numSamples) - start); // clampedEnd - loopStart
+  return Math.max(0, eff);
+}
+
 // Convert engine-buffer-domain gold loop points to the file's sample domain.
 // ratio == 1 when file rate already matches the engine rate (the common case).
 function convertGold(gold, engineSampleRate, hdr) {
@@ -101,7 +122,9 @@ function buildDataset(samples) {
     const hdr = parseWavHeader(s.filePath);
     if (!hdr) { const e = new Error(`Not a readable WAV: ${s.filePath}`); e.code = 'BADWAV'; throw e; }
 
-    const gold = convertGold(s.gold || {}, s.engineSampleRate, hdr);
+    const rawGold = s.gold || {};
+    const clampedXfade = effectiveCrossfade(rawGold.start, rawGold.end, rawGold.xfade, s.numSamples);
+    const gold = convertGold({ start: rawGold.start, end: rawGold.end, xfade: clampedXfade }, s.engineSampleRate, hdr);
 
     const classSeg = sanitizeSegment(s.className);
     const nameSeg = sanitizeSegment(s.name);
@@ -139,4 +162,4 @@ function buildDataset(samples) {
   return { dataset, zipEntries };
 }
 
-module.exports = { parseWavHeader, sanitizeSegment, convertGold, buildDataset, path };
+module.exports = { parseWavHeader, sanitizeSegment, convertGold, effectiveCrossfade, buildDataset, path };

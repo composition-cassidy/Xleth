@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import {
   deriveBehaviorFamily, autoName, slug, metaIsComplete,
-  loadStickyMeta, saveStickyMeta, DEFAULT_STICKY_META,
+  loadStickyMeta, saveStickyMeta, DEFAULT_STICKY_META, clampCrossfade,
 } from '../loopLabMeta.js'
 
 describe('deriveBehaviorFamily', () => {
@@ -40,6 +40,20 @@ describe('slug + autoName', () => {
   it('omits an empty source token', () => {
     expect(autoName({ className: 'Natural vocal', source: '' }, 42))
       .toBe('natural_vocal_0042')
+  })
+})
+
+describe('clampCrossfade (mirrors the engine clamp, engine/src/audio/Sampler.cpp:898-909)', () => {
+  it('clamps a crossfade wider than half the loop length', () => {
+    expect(clampCrossfade(24000, 72000, 30000, 96000)).toBe(24000)
+  })
+  it('leaves a crossfade exactly at half the loop length unchanged', () => {
+    expect(clampCrossfade(20000, 60000, 20000, 96000)).toBe(20000)
+  })
+  it('re-clamps a stale xfade after the loop is shortened', () => {
+    // xfade was valid for a longer loop; the loop then shrank without xfade
+    // being touched — the canonical value must track the new bound.
+    expect(clampCrossfade(10000, 15000, 11520, 96000)).toBe(2500)
   })
 })
 

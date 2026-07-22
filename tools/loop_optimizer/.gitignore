@@ -1,0 +1,8 @@
+# Generated analysis output. Regenerate with:
+#   python -m loop_optimizer report --corpus ../../loop-lab-corpus --selection gold \
+#       --json out/results_gold.json > out/report_gold.txt
+# The regression harness is the pytest suite, not these files.
+out/
+__pycache__/
+*.egg-info/
+.pytest_cache/

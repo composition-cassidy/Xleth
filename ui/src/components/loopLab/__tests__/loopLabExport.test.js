@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import loopLabExport from '../../../../electron-main/loopLabExport.js'
 
-const { parseWavHeader, convertGold, buildDataset, sanitizeSegment } = loopLabExport
+const { parseWavHeader, convertGold, buildDataset, sanitizeSegment, effectiveCrossfade } = loopLabExport
 
 // Minimal 16-bit PCM WAV (silence). Only the header matters for these tests.
 function makeWav(filePath, { sampleRate, channels = 1, numFrames, bits = 16 }) {
@@ -55,6 +55,52 @@ describe('convertGold (engine-buffer → file domain)', () => {
     expect(g.start).toBe(Math.round(24000 * 44100 / 48000)) // 22050
     expect(g.end).toBe(44100)                               // clamped to frame count
     expect(g.xfade).toBe(Math.round(960 * 44100 / 48000))   // 882
+  })
+})
+
+describe('effectiveCrossfade (engine clamp mirror)', () => {
+  it('clamps a crossfade wider than half the loop length', () => {
+    // loop 24000-72000 → len 48000, half 24000; raw xfade 30000 exceeds it.
+    expect(effectiveCrossfade(24000, 72000, 30000, 96000)).toBe(24000)
+  })
+  it('leaves a crossfade exactly at half the loop length unchanged', () => {
+    // loop 20000-60000 → len 40000, half exactly 20000.
+    expect(effectiveCrossfade(20000, 60000, 20000, 96000)).toBe(20000)
+  })
+  it('leaves a crossfade under half the loop length unchanged', () => {
+    expect(effectiveCrossfade(20000, 60000, 5000, 96000)).toBe(5000)
+  })
+})
+
+describe('buildDataset — exported gold_loop.xfade is the engine-effective value', () => {
+  it('clamps xfade wider than half the loop length before export (on-rate)', () => {
+    const { dataset } = buildDataset([{
+      filePath: wav48, name: 'over_half', className: 'Natural vocal',
+      engineSampleRate: 48000, numSamples: 96000,
+      gold: { start: 24000, end: 72000, xfade: 30000 }, // len 48000, half 24000
+    }])
+    expect(dataset[0].gold_loop).toEqual({ start: 24000, end: 72000, xfade: 24000 })
+  })
+
+  it('leaves xfade exactly at the half-loop boundary unchanged', () => {
+    const { dataset } = buildDataset([{
+      filePath: wav48, name: 'exact_half', className: 'Natural vocal',
+      engineSampleRate: 48000, numSamples: 96000,
+      gold: { start: 20000, end: 60000, xfade: 20000 }, // len 40000, half exactly 20000
+    }])
+    expect(dataset[0].gold_loop.xfade).toBe(20000)
+  })
+
+  it('clamps in the engine domain before off-rate conversion (44.1kHz file, 48kHz engine)', () => {
+    // Engine domain: loop 5000-45000 → len 40000, half 20000; raw xfade 30000
+    // exceeds it, so the clamp (not the raw 30000) is what gets converted.
+    // ratio = 44100/48000 = 0.91875 → 20000 * 0.91875 = 18375 (exact).
+    const { dataset } = buildDataset([{
+      filePath: wav441, name: 'offrate_clamp', className: 'Natural vocal',
+      engineSampleRate: 48000, numSamples: 96000,
+      gold: { start: 5000, end: 45000, xfade: 30000 },
+    }])
+    expect(dataset[0].gold_loop.xfade).toBe(18375)
   })
 })
 

@@ -96,6 +96,70 @@ export function saveStickyMeta(meta) {
   } catch { /* localStorage unavailable — sticky meta simply won't persist */ }
 }
 
+// Mirrors the engine's per-voice crossfade clamp (engine/src/audio/Sampler.cpp:
+// 898-909) so the panel's canonical xfade can never exceed what the engine
+// actually plays. Loop Lab never sets a sample trim, so the engine's trim
+// defaults are in force: smpStart_=0 and the trim end is the full buffer
+// (numSamples) — the two terms below are those defaults folded in. Sibling
+// implementation: electron-main/loopLabExport.js effectiveCrossfade (used at
+// export time); duplicated rather than shared because this module is ESM
+// (renderer bundle) and that one is CommonJS (electron main). `numSamples` is
+// the ENGINE-domain buffer length; when absent, the buffer-bound term is
+// skipped (the half-loop-length term below still applies and is the one that
+// binds in practice).
+export function clampCrossfade(loopStart, loopEnd, xfade, numSamples) {
+  const start = Math.max(0, Number(loopStart) || 0)
+  const end = Math.max(start, Number(loopEnd) || 0)
+  let eff = Math.max(0, Math.round(Number(xfade) || 0))
+  eff = Math.min(eff, Math.floor((end - start) / 2))
+  eff = Math.min(eff, end) // effLoopEnd - smpStart_ (smpStart_ is always 0 here)
+  if (Number(numSamples) > 0) eff = Math.min(eff, Number(numSamples) - start) // clampedEnd - loopStart
+  return Math.max(0, eff)
+}
+
+// Convert a FILE-domain loop ({ start, end, xfade }) into the ENGINE-buffer
+// domain the sampler indexes. The exact inverse of `convertGold` in
+// electron-main/loopLabExport.js, which the Loop Lab export path uses to write
+// dataset.json (and therefore candidates.json) in file-domain samples: that
+// multiplies by fileRate/engineRate, so this multiplies by engineRate/fileRate,
+// and both round. A loop authored here, exported, analysed and read back makes
+// one round trip through the pair — worth at most a sample either way at
+// 44.1k -> 48k. The two live in different modules because that one is CommonJS
+// (electron main) and this is ESM (renderer bundle); they are inverses of each
+// other and must be changed together.
+//
+// `end` is clamped into the buffer; `xfade` deliberately is NOT clamped here.
+// The engine applies its own crossfade clamp (see clampCrossfade above) and the
+// analysis that produced these numbers measured the REQUESTED width against
+// that same clamp — pre-clamping would hand the engine a different request than
+// the one that was measured.
+export function fileToEngineLoop(loop, fileSampleRate, engineSampleRate, numSamples) {
+  const fileRate = Number(fileSampleRate) > 0 ? Number(fileSampleRate) : 0
+  const engRate = Number(engineSampleRate) > 0 ? Number(engineSampleRate) : 0
+  const ratio = fileRate > 0 && engRate > 0 ? engRate / fileRate : 1
+  const n = Number(numSamples) > 0 ? Number(numSamples) : Infinity
+  const conv = (v) => Math.max(0, Math.min(n, Math.round((Number(v) || 0) * ratio)))
+  return {
+    loopStart: conv(loop && loop.start),
+    loopEnd: conv(loop && loop.end),
+    xfade: Math.max(0, Math.round(((loop && Number(loop.xfade)) || 0) * ratio)),
+  }
+}
+
+// Derive the dataset `sample_id` a Loop Lab sample name would export as.
+// Mirrors the id derivation in electron-main/loopLabExport.js buildDataset
+// (sanitizeSegment -> lowercase -> non-alphanumerics to underscore), minus its
+// uniquifying suffix, which only exists to break collisions within one export.
+// Used to line a loaded candidates.json back up with the working set.
+export function sampleIdFromName(name) {
+  const seg = String(name == null ? '' : name)
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[. ]+$/, '') || 'unnamed'
+  return seg.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'sample'
+}
+
 // Instrument is required only when class === 'Instrument'.
 export function metaIsComplete(meta) {
   if (meta.className === 'Instrument') return String(meta.instrumentName || '').trim().length > 0;
