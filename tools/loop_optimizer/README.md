@@ -80,12 +80,14 @@ produces — subtract, and the render dips in the middle of the fade.
 | `ingest.py` | File → engine domain: mono merge, resample to 48 kHz, `SampleBank::applyFades`. |
 | `engine_emu.py` | The `Sampler::processVoice` mirror. Scalar reference + vectorised window renderer, proven bit-identical. |
 | `pitch.py` | YIN tracker and steady-state window detection. |
-| `candidates.py` | `k*T` loop lengths, WSOLA-style NCC start search, crossfade variants. |
+| `candidates.py` | `k*T` loop lengths, WSOLA-style NCC start search, crossfade variants. `xfade_variants` is where the engine-clamp invariant is enforced. |
+| `formants.py` | LPC formant tracking (F1–F3). A **search** objective, not a metric — it decides where the loop goes, not how good it is. |
 | `metrics.py` | The six metrics. |
 | `features.py` | Per-sample `measured_features`. |
 | `corpus.py` | `dataset.json` IO and the file↔engine domain conversion. |
 | `analysis.py` | Per-sample pipeline, ranking, gold comparison. |
-| `report.py` / `__main__.py` | Text report and CLI. |
+| `export.py` | `candidates.json`: the arms the blind A/B rater auditions, and the selection-first policies that generate them. |
+| `report.py` / `__main__.py` | Text report, the policy gate table, and CLI. |
 
 `engine_emu.py` provides two renderers on purpose. `render_reference` is a slow,
 literal transcription of the C++ loop in C++ statement order — it is the readable
@@ -256,3 +258,75 @@ tool's `stride = 1.0` is already the post-fix behaviour.
 other sampler worth comparing against uses `loopEnd - loopStart` as the loop
 period. XLETH does not. If the ported metrics disagree with this reference,
 check that first.
+
+
+## The selection-first policy arm, rounds 3 and 4
+
+Full-auto candidate generation ranked by the metric suite lost to human gold
+43–3–3 across rounds 1–2. The shipping product does not do full-auto placement
+anyway — the user drags a rough region and the machine snaps — so rounds 3 and 4
+test that shape instead. Both are closed-form policies with no metric ranking
+anywhere in them.
+
+| | round 3 (`--policy v1`) | round 4 (`--policy v2`, default) |
+| --- | --- | --- |
+| length | snapped to the whole dragged span | longest span whose F1–F3 drift passes the gate |
+| placement | best seam NCC | best NCC among the stable spans |
+| fade | longest the engine clamp allows | longest whose two sources are still the same vowel |
+| result | 7–17–1 vs gold; mechanical tags gone, 12 of 17 losses tagged timbre-jump | pending |
+
+### Setting the gates: a threshold that refuses gold is a bug
+
+Every gate was implemented from an audibility figure first and then measured
+against the corpus's own human answers, on the principle that a gate whose job
+is to catch a bad tail must not be refusing what the winner does. Two of the
+three failed that test and changed:
+
+| gate | audibility figure | what gold actually does | shipped |
+| --- | --- | --- | --- |
+| fade formant distance | 150 cents (~5–8% JND) | median 127, p90 303, **max 494** — over 150 on 8 of 19 | 300 (gold's p90), labelled corpus-bounded |
+| fade envelope RMS | 3 dB (`hollow`'s reference) | up to 5.1 dB | **removed** — see below |
+| click / flam | 2.0 / 20.0 (`PERCEPTUAL_REFERENCE`) | 0.79–1.07 and 0.0 | kept unchanged |
+
+The RMS gate was removed for a second and more basic reason than firing on gold:
+it is **anti-monotone in the thing it controls**. "Shorten until it passes" is
+only a procedure if shortening helps, and here it does the opposite — the two
+fade sources are windows at the loop's end and start, so a longer fade averages
+them towards each other while a shorter one converges on the raw level step at
+the seam. On `hard_tuned_vocal_0001` the difference runs 4.6 dB at the longest
+fade and 10.2 dB at the one-period floor. The reading is still computed and
+reported; it just decides nothing.
+
+### What the placement gate is betting on
+
+The round-3 losses were tagged as placement errors, and the two measurements
+point that way without settling it. Paired against gold across the corpus, the
+losing round-3 arm has the higher fade-source formant distance on 11 of 15
+samples (median 174 vs 127) and the higher span drift on 17 of 25 (73 vs 66).
+Both are around p = 0.06 — suggestive, not significant, and neither is evidence
+the gate will help. Round 4 is the test.
+
+### What round 4 actually changed
+
+`python -m loop_optimizer export --corpus ../../loop-lab-corpus --selection gold
+--top-k 0 --policy-table out/policy_table_round4.txt` produced
+`candidates.round4.json` (25 policy arms; `hard_tuned_vocal_0019`'s gold region
+is too short for one, as in round 3):
+
+* the **placement gate shortened 18 of 25** loops, median length 0.81 of the
+  longest span available. Where the material moves it moves a lot —
+  `hard_tuned_vocal_0004` went from a span drifting 313 cents to one drifting
+  29, `natural_vocal_0024` from 253 to 49;
+* the **fade gate never fired**, on any sample. It was not close either: the
+  largest fade-source distance at any chosen span is 216 cents against a gate of
+  300. Once placement is fixed, the fades stop spanning transitions on their
+  own, which is a result about the mechanism rather than about the threshold;
+* **7 of 25 arms are byte-identical to round 3's**, which is the gate correctly
+  doing nothing on material that does not drift — and a free consistency check,
+  since those trials should reproduce their round-3 verdicts.
+
+The two generations are separate provenances (`policy`, `policy_v2`) rather than
+one slot whose meaning depends on the file. `armContentHash` mixes provenance
+in, so a round-3 verdict can never be silently credited to a round-4 arm that
+lands on the same loop points — the failure mode 2d5c5d1 had to fix once
+already.

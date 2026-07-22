@@ -11,6 +11,7 @@ import math
 from collections import Counter
 
 from .analysis import METRIC_NAMES, SampleResult
+from .export import FORMANT_FADE_GATE_CENTS
 
 
 def _num(value: float, width: int = 8, places: int = 3) -> str:
@@ -274,3 +275,159 @@ def format_report(results: list[SampleResult], rank_key: str, detail: bool = Tru
             parts.append("")
     parts.append(format_aggregate(results, rank_key))
     return "\n".join(parts)
+
+
+def format_policy_table(payload: dict) -> str:
+    """The policy-v2 gate table, rendered from a candidates.json payload.
+
+    Read from the PAYLOAD rather than from the in-memory trace so that the table
+    describes the document that shipped. A verdict recorded weeks later is
+    recorded against the file, and a table generated from anything else could
+    quietly stop matching it.
+
+    Three questions, in the order the round-4 brief asks them:
+
+      * did the placement gate find calmer material than the selection's
+        typical placement? (``drift`` against ``median``, and their ratio)
+      * did the fade gate shorten the fade, and from what? (``xfade`` against
+        ``max``, which is what round-3 policy would have taken at this span)
+      * which gate was binding, and how often? (the last column, and the
+        tally underneath)
+
+    Returns "" when the document carries no gate traces at all — a v1 export or
+    an optimizer-only one — so the caller can simply not print it.
+    """
+    rows = []
+    for s in payload.get("samples") or []:
+        for arm in s.get("arms") or []:
+            p = arm.get("policy")
+            if p:
+                rows.append((s.get("sample_id", ""), arm, p))
+    if not rows:
+        return ""
+
+    lines: list[str] = []
+    lines.append(_rule("=", 120))
+    lines.append("POLICY v2 GATE TABLE - formant-gated placement, drift-gated fade")
+    lines.append(_rule("=", 120))
+    lines.append("")
+    lines.append(
+        "  drift/median: chosen span's F1-F3 drift (cents) vs the median over every span "
+        "considered"
+    )
+    lines.append(
+        "  drift@long:   drift of the LONGEST span - what round-3 policy would have taken. "
+        "The gate worked where this is high and drift is not."
+    )
+    lines.append(
+        "                chosen drift normally EXCEEDS the median: survivors are taken "
+        "longest-first, so the policy spends drift up to the cut."
+    )
+    lines.append(
+        "  len/longest:  loop length chosen vs the longest the selection could hold; short "
+        "means the gate refused a drifting tail"
+    )
+    lines.append(
+        "  xfade/max:    fade chosen vs the longest the engine clamp allowed at this span "
+        "(= what round-3 policy took)"
+    )
+    lines.append(
+        "  dF:           formant distance (cents) of the fade that was REFUSED, or of the "
+        "chosen one where nothing was refused"
+    )
+    lines.append(
+        "  bound:        which gate refused the next-longer fade; 'floor' marks a fade that "
+        "fell back to one period"
+    )
+    lines.append("")
+    header = (
+        f"{'sample':<26} {'k':>4} {'drift':>8} {'median':>8} {'drift@long':>10} {'cut':>6} "
+        f"{'kept':>11} {'len':>7} {'longest':>7} {'xfade':>7} {'max':>7} {'frac':>6} "
+        f"{'dF':>7} {'bound':>10}"
+    )
+    lines.append(header)
+    lines.append(_rule("-", 120))
+
+    bound = Counter()
+    floors = 0
+    seen_df: list[float] = []
+    ratios: list[float] = []
+    frac: list[float] = []
+    len_frac: list[float] = []
+
+    for sid, arm, p in rows:
+        drift = p.get("span_drift_cents")
+        median = p.get("selection_median_drift_cents")
+        xf = int(p.get("chosen_xfade") or 0)
+        mx = int(p.get("max_xfade") or 0)
+        gate = str(p.get("binding_gate") or "none")
+        # The reading that bound where one exists, else the chosen fade's own.
+        dF = p.get("binding_distance_cents")
+        if dF is None or not math.isfinite(float(dF)):
+            dF = p.get("formant_distance_cents")
+        if dF is not None and math.isfinite(float(dF)):
+            seen_df.append(float(dF))
+        if p.get("hit_floor"):
+            gate = f"{gate}/floor"
+            floors += 1
+        bound[str(p.get("binding_gate") or "none") if xf < mx else "none"] += 1
+
+        ratio = (
+            float(drift) / float(median)
+            if drift is not None and median not in (None, 0) and math.isfinite(float(median))
+            and float(median) > 0
+            else float("nan")
+        )
+        if math.isfinite(ratio):
+            ratios.append(ratio)
+        fr = float(xf) / mx if mx > 0 else float("nan")
+        if math.isfinite(fr):
+            frac.append(fr)
+        longest = int(p.get("longest_span") or 0)
+        if longest > 0:
+            len_frac.append(float(int(p.get("length") or 0)) / longest)
+
+        lines.append(
+            f"{sid[:26]:<26} {int(p.get('period_multiple') or 0):>4} "
+            f"{_num(drift, 8, 1)} {_num(median, 8, 1)} "
+            f"{_num(p.get('longest_span_drift_cents'), 10, 1)} {_num(p.get('drift_cut_cents'), 6, 1)} "
+            f"{str(p.get('spans_kept')) + '/' + str(p.get('spans_considered')):>11} "
+            f"{int(p.get('length') or 0):>7} {int(p.get('longest_span') or 0):>7} "
+            f"{xf:>7} {mx:>7} {_num(fr, 6, 2)} "
+            f"{_num(dF, 7, 0)} {gate:>10}"
+        )
+
+    lines.append(_rule("-", 120))
+    lines.append("")
+    lines.append(f"  samples with a policy arm      {len(rows)}")
+    if ratios:
+        lines.append(
+            "  chosen drift / selection median  median %.2f, worst %.2f"
+            % (float(sorted(ratios)[len(ratios) // 2]), float(max(ratios)))
+        )
+    if len_frac:
+        shortened = sum(1 for f in len_frac if f < 1.0)
+        lines.append(
+            "  length / longest available       median %.2f; placement gate shortened %d of %d"
+            % (float(sorted(len_frac)[len(len_frac) // 2]), shortened, len(len_frac))
+        )
+    if frac:
+        shortened = sum(1 for f in frac if f < 1.0)
+        lines.append(
+            "  fade kept / drift-free maximum   median %.2f; fade gate shortened %d of %d"
+            % (float(sorted(frac)[len(frac) // 2]), shortened, len(frac))
+        )
+    lines.append(f"  fell back to the one-period floor  {floors}")
+    if seen_df:
+        # Stated as a number rather than left as a row of zeros: "the gate never
+        # fired" and "the gate was never close to firing" are different results,
+        # and only the second one says the threshold is not merely untested.
+        lines.append(
+            "  largest fade formant distance    %.0f cents, against a gate of %.0f"
+            % (max(seen_df), FORMANT_FADE_GATE_CENTS)
+        )
+    lines.append("")
+    lines.append("  binding gate")
+    for name in ("none", "formant", "click", "flam"):
+        lines.append(f"    {name:<10} {bound.get(name, 0):>4}")
+    return "\n".join(lines)

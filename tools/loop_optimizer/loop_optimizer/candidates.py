@@ -116,6 +116,105 @@ def sliding_end_match_ncc(x: np.ndarray, length: int, w: int, lo: int, hi: int) 
     return ncc
 
 
+def seam_window(period: float) -> int:
+    """Width of the correlation window the start search matches over, in samples."""
+    return max(2, int(round(SEAM_CORRELATION_PERIODS * period)))
+
+
+def viable_lengths(
+    period: float, window_span: int, sample_rate: float = ENGINE_SAMPLE_RATE
+) -> list[tuple[int, int]]:
+    """``(k, length)`` for every loop length that fits ``window_span`` samples.
+
+    Split out of :func:`generate_candidates` so the placement search in
+    :mod:`loop_optimizer.export` enumerates lengths under exactly the same
+    bounds the generator does. Two implementations of "which k are allowed"
+    would drift apart, and the one the policy used would be the one nothing
+    tested.
+    """
+    if not np.isfinite(period) or period <= 1.0 or window_span < 4:
+        return []
+    w = seam_window(period)
+    max_len = int(min(MAX_LOOP_DURATION_SEC * sample_rate, window_span - w))
+    if max_len < period:
+        return []
+    # A loop must be long enough to still be a loop. Without this floor the
+    # shortest viable k wins outright under any metric that scores a
+    # zero-crossfade single-period loop as seamless — which it genuinely is, and
+    # which is exactly why the bound belongs here rather than in the ruler.
+    min_len = int(MIN_LOOP_DURATION_SEC * sample_rate)
+    k_max = min(int(max_len // period), MAX_PERIOD_MULTIPLES)
+
+    out: list[tuple[int, int]] = []
+    for k in range(1, k_max + 1):
+        length = int(round(k * period))
+        if length <= 0 or length < min_len:
+            continue
+        out.append((k, length))
+    return out
+
+
+def xfade_variants(
+    num_samples: int,
+    period: float,
+    loop_start: int,
+    loop_end: int,
+    period_multiple: int,
+    search_ncc: float,
+    sample_rate: float = ENGINE_SAMPLE_RATE,
+) -> list[Candidate]:
+    """Every period-multiple crossfade the engine's clamp leaves untouched, at one span.
+
+    Also split out of :func:`generate_candidates`, and for a stronger reason
+    than :func:`viable_lengths`: this function IS the INVALID invariant. Every
+    request is capped at ``floor(length/2)`` — the engine's own half-loop clamp
+    bound (``Sampler.cpp:905``) — and then verified against ``resolve()``, so a
+    crossfade that would be silently cut down is dropped rather than emitted at
+    whatever width the clamp produced. The policy arm picks its fade from this
+    list precisely so that it cannot reintroduce the trap by hand.
+    """
+    length = loop_end - loop_start
+    if length <= 0 or not np.isfinite(period) or period <= 0.0:
+        return []
+
+    max_xfade_samples = length // 2
+    j_max = min(int(max_xfade_samples // period), MAX_XFADE_PERIOD_MULTIPLES)
+
+    out: list[Candidate] = []
+    seen_requested: set[int] = set()
+    for j in range(0, j_max + 1):
+        requested = int(round(j * period))
+        if requested > max_xfade_samples or requested in seen_requested:
+            continue
+        seen_requested.add(requested)
+
+        cfg = LoopConfig(loop_start=loop_start, loop_end=loop_end, crossfade_samples=requested)
+        eff = resolve(cfg, num_samples, sample_rate)
+        if eff.wrap_advance <= 0:
+            # The engine's clamp already prevents this, but a degenerate loop
+            # would render as a stuck position rather than as audio.
+            continue
+        if eff.eff_xfade != requested:
+            # A clamp bound other than the half-loop one fired (fade region
+            # vs. trim bounds). Emitting this would be the exact
+            # hard_tuned_vocal_0009 trap: a request that was period-aligned
+            # on paper, silently detuned by the engine. Reject rather than
+            # emit at the clamped width.
+            continue
+
+        out.append(
+            Candidate(
+                loop_start=loop_start,
+                loop_end=loop_end,
+                crossfade_samples=requested,
+                period=float(period),
+                period_multiple=period_multiple,
+                search_ncc=search_ncc,
+            )
+        )
+    return out
+
+
 def generate_candidates(
     x: np.ndarray,
     period: float,
@@ -131,23 +230,10 @@ def generate_candidates(
     if not np.isfinite(period) or period <= 1.0 or window_end - window_start < 4:
         return []
 
-    w = max(2, int(round(SEAM_CORRELATION_PERIODS * period)))
-    max_len = int(min(MAX_LOOP_DURATION_SEC * sample_rate, (window_end - window_start) - w))
-    if max_len < period:
-        return []
-
-    k_max = min(int(max_len // period), MAX_PERIOD_MULTIPLES)
-    # A loop must be long enough to still be a loop. Without this floor the
-    # shortest viable k wins outright under any metric that scores a
-    # zero-crossfade single-period loop as seamless — which it genuinely is, and
-    # which is exactly why the bound belongs here rather than in the ruler.
-    min_len = int(MIN_LOOP_DURATION_SEC * sample_rate)
+    w = seam_window(period)
     out: list[Candidate] = []
 
-    for k in range(1, k_max + 1):
-        length = int(round(k * period))
-        if length <= 0 or length < min_len:
-            continue
+    for k, length in viable_lengths(period, window_end - window_start, sample_rate):
         lo = window_start
         hi = window_end - length - w
         if hi <= lo:
@@ -164,47 +250,8 @@ def generate_candidates(
             continue
 
         loop_start = lo + best_offset
-        loop_end = loop_start + length
-
-        # Every requested xfade below is capped at floor(length/2), which is
-        # exactly the engine's own half-loop clamp bound (Sampler.cpp:905). A
-        # request built to satisfy that bound in advance either survives
-        # resolve() unchanged, or gets cut further by one of the *other*
-        # clamps (fade region vs. trim bounds) — in which case it is rejected
-        # outright rather than emitted at whatever width the clamp produced.
-        max_xfade_samples = length // 2
-        j_max = min(int(max_xfade_samples // period), MAX_XFADE_PERIOD_MULTIPLES) if period > 0 else -1
-
-        seen_requested: set[int] = set()
-        for j in range(0, j_max + 1):
-            requested = int(round(j * period))
-            if requested > max_xfade_samples or requested in seen_requested:
-                continue
-            seen_requested.add(requested)
-
-            cfg = LoopConfig(loop_start=loop_start, loop_end=loop_end, crossfade_samples=requested)
-            eff = resolve(cfg, n, sample_rate)
-            if eff.wrap_advance <= 0:
-                # The engine's clamp already prevents this, but a degenerate loop
-                # would render as a stuck position rather than as audio.
-                continue
-            if eff.eff_xfade != requested:
-                # A clamp bound other than the half-loop one fired (fade region
-                # vs. trim bounds). Emitting this would be the exact
-                # hard_tuned_vocal_0009 trap: a request that was period-aligned
-                # on paper, silently detuned by the engine. Reject rather than
-                # emit at the clamped width.
-                continue
-
-            out.append(
-                Candidate(
-                    loop_start=loop_start,
-                    loop_end=loop_end,
-                    crossfade_samples=requested,
-                    period=float(period),
-                    period_multiple=k,
-                    search_ncc=best_ncc,
-                )
-            )
+        out.extend(
+            xfade_variants(n, period, loop_start, loop_start + length, k, best_ncc, sample_rate)
+        )
 
     return out

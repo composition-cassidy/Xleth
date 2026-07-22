@@ -11,8 +11,8 @@ from pathlib import Path
 
 from .analysis import METRIC_NAMES, PERCEPTUAL_RANK_KEY, Selection, analyse_entry
 from .corpus import load_dataset, write_dataset_with_features
-from .export import build_payload
-from .report import format_report
+from .export import POLICY_VERSION, POLICY_VERSIONS, build_payload
+from .report import format_policy_table, format_report
 from .validate import evaluate_trials, format_validation
 
 
@@ -148,13 +148,28 @@ def cmd_export(args: argparse.Namespace) -> int:
         return 2
     results, _rows, dataset_path = analysed
 
-    payload = _json_safe(build_payload(results, dataset_path, args.selection, args.rank_by, args.top_k))
+    payload = _json_safe(
+        build_payload(results, dataset_path, args.selection, args.rank_by, args.top_k, args.policy)
+    )
     out = Path(args.out) if args.out else Path(dataset_path).parent / "candidates.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
     arms = sum(len(s["arms"]) for s in payload["samples"])
     print(f"wrote {len(payload['samples'])} samples / {arms} arms to {out}")
+
+    # What the gates actually did, printed from the payload rather than from the
+    # in-memory trace: the table then describes the file that shipped, which is
+    # the thing a later verdict will have been recorded against.
+    table = format_policy_table(payload)
+    if table:
+        print()
+        print(table)
+        if args.policy_table:
+            Path(args.policy_table).parent.mkdir(parents=True, exist_ok=True)
+            Path(args.policy_table).write_text(table + "\n", encoding="utf-8")
+            print(f"\nwrote policy gate table to {args.policy_table}", file=sys.stderr)
+
     for s in payload["samples"]:
         for note in s["notes"]:
             print(f"  {s['sample_id']}: {note}", file=sys.stderr)
@@ -255,6 +270,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--out",
         metavar="PATH",
         help="destination (default: candidates.json beside dataset.json)",
+    )
+    exp.add_argument(
+        "--policy",
+        choices=list(POLICY_VERSIONS),
+        default=POLICY_VERSION,
+        help=(
+            "which selection-first policy generates the policy arm. 'v2' (the default, round 4) "
+            "gates placement on F1-F3 stability and fade length on formant/level distance between "
+            "the two fade sources; 'v1' is the round-3 arm — snap the length, take the longest "
+            f"fade the clamp allows — kept so candidates.round3.json stays reproducible. "
+            f"(default: {POLICY_VERSION})"
+        ),
+    )
+    exp.add_argument(
+        "--policy-table",
+        metavar="PATH",
+        help="also write the policy gate table (always printed) to this file",
     )
     exp.set_defaults(func=cmd_export)
 

@@ -252,11 +252,14 @@ def format_validation(trials: list[TrialEval], rule: str = "max") -> str:
 
     decided = [t for t in trials if t.decided]
     opt = [t for t in trials if t.kind == "optimizer"]
-    # `policy` is the round-3 challenger kind (see loopLabRater.js's
-    # CHALLENGER_PROVENANCES / export.policy_loop) — a document carries
-    # `optimizer` trials, `policy` trials, or both, never neither, so both
-    # buckets are always computed even though one is typically empty.
-    policy = [t for t in trials if t.kind == "policy"]
+    # `policy` (round 3) and `policy_v2` (round 4) are the selection-first
+    # challenger kinds (see loopLabRater.js's CHALLENGER_PROVENANCES and
+    # export.policy_loop / policy_v2_loop). A document carries `optimizer`
+    # trials, one of the policy kinds, or a mix, never none, so both buckets are
+    # always computed even though one is typically empty. Matched by prefix so a
+    # later generation does not silently fall out of the report — an arm missing
+    # from every bucket would be counted in the overall figure and nowhere else.
+    policy = [t for t in trials if t.kind.startswith("policy")]
     anchor = [t for t in trials if t.kind == "naive"]
 
     w("=" * 100)

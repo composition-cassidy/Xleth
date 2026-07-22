@@ -115,7 +115,7 @@ export function parseCandidatesDoc(text) {
       const armId = String((a && a.arm_id) || '')
       const provenance = String((a && a.provenance) || '')
       if (!armId) throw new Error(`candidates.json: ${sampleId} has an arm with no arm_id`)
-      if (!['optimizer', 'gold', 'naive', 'policy'].includes(provenance)) {
+      if (!['optimizer', 'gold', 'naive', 'policy', 'policy_v2'].includes(provenance)) {
         throw new Error(`candidates.json: ${sampleId}/${armId} has unknown provenance ${JSON.stringify(provenance)}`)
       }
       return {
@@ -198,11 +198,18 @@ const topOptimizerArm = (sample) =>
 //: anchor and handled separately via `anchorCount`. A document carries
 //: whichever of these its round exported: rounds 1-2 wrote `optimizer` only
 //: (full-auto ranking); round 3 writes `policy` only (the selection-first
-//: arm — see loop_optimizer/export.py, not metric-ranked). Trying every
-//: kind and skipping whichever a given document doesn't have keeps
-//: `buildTrials` correct for any of these shapes without a "which round is
-//: this" flag anywhere in the rater.
-const CHALLENGER_PROVENANCES = ['optimizer', 'policy']
+//: arm — see loop_optimizer/export.py, not metric-ranked); round 4 writes
+//: `policy_v2` only (the same arm with formant-gated placement and a
+//: drift-gated fade length). Trying every kind and skipping whichever a
+//: given document doesn't have keeps `buildTrials` correct for any of these
+//: shapes without a "which round is this" flag anywhere in the rater.
+//:
+//: The generations are separate provenances rather than one `policy` slot
+//: whose meaning changes with the file, and that is load-bearing:
+//: `armContentHash` mixes the provenance in, so a round-3 verdict can never
+//: be silently credited to a round-4 arm that happens to land on the same
+//: loop points. That is the same failure 2d5c5d1 had to fix.
+const CHALLENGER_PROVENANCES = ['optimizer', 'policy', 'policy_v2']
 
 //: `optimizer` may have several ranked arms (topOptimizerArm picks rank 1);
 //: every other challenger provenance is a single unranked arm named after

@@ -17,7 +17,7 @@ const arm = (armId, provenance, rank, loop, metrics = {}) => ({
   arm_id: armId, provenance, rank, loop, metrics,
 })
 
-function makeSample(i, { withNaive = true, withPolicy = false, withOptimizer = true } = {}) {
+function makeSample(i, { withNaive = true, withPolicy = false, withPolicyV2 = false, withOptimizer = true } = {}) {
   const id = `tone_${String(i).padStart(4, '0')}`
   return {
     sample_id: id,
@@ -34,6 +34,7 @@ function makeSample(i, { withNaive = true, withPolicy = false, withOptimizer = t
       ] : []),
       arm('gold', 'gold', null, { start: 8000, end: 34000, xfade: 1000 }),
       ...(withPolicy ? [arm('policy', 'policy', null, { start: 7500, end: 34800, xfade: 3200 })] : []),
+      ...(withPolicyV2 ? [arm('policy_v2', 'policy_v2', null, { start: 7500, end: 28400, xfade: 2100 })] : []),
       ...(withNaive ? [arm('naive', 'naive', null, { start: 9000, end: 30000, xfade: 2625 })] : []),
     ],
   }
@@ -55,6 +56,13 @@ function makeDoc(n = 26, opts) {
 // exactly what `export --top-k 0` writes.
 function makeRound3Doc(n = 26) {
   return makeDoc(n, { withOptimizer: false, withPolicy: true, withNaive: true })
+}
+
+// A round-4-shaped document: gold + policy_v2 + naive. Same three slots, but
+// the challenger is a different provenance so its verdicts can never be
+// confused with round 3's.
+function makeRound4Doc(n = 26) {
+  return makeDoc(n, { withOptimizer: false, withPolicyV2: true, withNaive: true })
 }
 
 // ── candidates.json parsing ──────────────────────────────────────────────────
@@ -87,6 +95,11 @@ describe('parseCandidatesDoc', () => {
   it('accepts the round-3 "policy" provenance', () => {
     const doc = parseCandidatesDoc(JSON.stringify(makeRound3Doc(1)))
     expect(doc.samples[0].arms.map((a) => a.provenance)).toEqual(['gold', 'policy', 'naive'])
+  })
+
+  it('accepts the round-4 "policy_v2" provenance', () => {
+    const doc = parseCandidatesDoc(JSON.stringify(makeRound4Doc(1)))
+    expect(doc.samples[0].arms.map((a) => a.provenance)).toEqual(['gold', 'policy_v2', 'naive'])
   })
 
   it('rejects a degenerate loop instead of auditioning silence', () => {
@@ -229,6 +242,38 @@ describe('buildTrials', () => {
       const both = makeDoc(1, { withOptimizer: true, withPolicy: true, withNaive: false })
       const trials = buildTrials(both)
       expect(trials.map((t) => t.kind).sort()).toEqual(['optimizer', 'policy'])
+    })
+  })
+
+  describe('round 4: policy_v2-only documents', () => {
+    const round4 = makeRound4Doc(26)
+
+    it('builds one policy_v2 challenger trial per sample', () => {
+      const trials = buildTrials(round4)
+      expect(trials.filter((t) => t.kind === 'policy_v2')).toHaveLength(26)
+      expect(trials.filter((t) => t.kind === 'policy')).toHaveLength(0)
+      expect(trials.filter((t) => t.kind === 'optimizer')).toHaveLength(0)
+      expect(trials.filter((t) => t.kind === 'naive')).toHaveLength(ANCHOR_TRIAL_COUNT)
+    })
+
+    it('pairs the policy_v2 arm against gold', () => {
+      for (const t of buildTrials(round4).filter((x) => x.kind === 'policy_v2')) {
+        expect(t.arm_order.slice().sort()).toEqual(['gold', 'policy_v2'])
+      }
+    })
+
+    it('emits a trial id named after the policy_v2 arm', () => {
+      const t = buildTrials(makeRound4Doc(1)).find((x) => x.kind === 'policy_v2')
+      expect(t.trial_id).toBe('tone_0001::policy_v2_vs_gold')
+    })
+
+    it('hashes differently from a round-3 arm on identical loop points', () => {
+      // The whole reason the generations are separate provenances: a round-3
+      // verdict must never be credited to a round-4 arm that happens to land on
+      // the same loop, which is the failure 2d5c5d1 fixed for regenerated files.
+      const loop = { start: 7500, end: 34800, xfade: 3200 }
+      expect(armContentHash({ provenance: 'policy', loop }))
+        .not.toBe(armContentHash({ provenance: 'policy_v2', loop }))
     })
   })
 })

@@ -79,9 +79,16 @@ def test_export_writes_top_k_plus_gold_plus_naive(tmp_path, capsys):
 
 
 def test_round3_recipe_is_gold_policy_naive_with_top_k_zero(tmp_path, capsys):
-    """The round-3 export: selection-first, no full-auto optimizer arms."""
-    payload, _ = _export(tmp_path, capsys, "--top-k", "0")
+    """The round-3 export: selection-first, no full-auto optimizer arms.
 
+    Reachable only via ``--policy v1`` now that v2 is the default. Kept
+    exercised rather than deleted: candidates.round3.json is the document the
+    round-3 verdicts were recorded against, and a document that can no longer
+    be regenerated cannot be checked against those verdicts.
+    """
+    payload, _ = _export(tmp_path, capsys, "--top-k", "0", "--policy", "v1")
+
+    assert payload["policy_version"] == "v1"
     for sample in payload["samples"]:
         provenances = [a["provenance"] for a in sample["arms"]]
         assert provenances.count("optimizer") == 0
@@ -93,10 +100,30 @@ def test_round3_recipe_is_gold_policy_naive_with_top_k_zero(tmp_path, capsys):
         assert policy["rank"] is None
 
 
-def test_policy_arm_is_period_aligned_and_matches_the_standalone_helper(tmp_path, capsys):
-    payload, _ = _export(tmp_path, capsys, "--top-k", "0", n_samples=1)
+def test_round4_recipe_is_gold_policy_v2_naive_and_is_the_default(tmp_path, capsys):
+    """The round-4 export: same three slots, the policy arm now gated."""
+    payload, _ = _export(tmp_path, capsys, "--top-k", "0")
+
+    assert payload["policy_version"] == "v2"
+    for sample in payload["samples"]:
+        provenances = [a["provenance"] for a in sample["arms"]]
+        assert provenances == ["gold", "policy_v2", "naive"]
+        policy = next(a for a in sample["arms"] if a["provenance"] == "policy_v2")
+        assert policy["rank"] is None
+        # The gate trace ships WITH the arm: a verdict recorded against this
+        # document has to be readable against what the gates did to produce it.
+        assert policy["policy"]["chosen_xfade"] <= policy["policy"]["max_xfade"]
+        assert policy["policy"]["spans_kept"] <= policy["policy"]["spans_considered"]
+        assert policy["policy"]["length"] <= policy["policy"]["longest_span"]
+
+
+@pytest.mark.parametrize("version,provenance", [("v1", "policy"), ("v2", "policy_v2")])
+def test_policy_arm_is_period_aligned_and_matches_the_standalone_helper(
+    tmp_path, capsys, version, provenance
+):
+    payload, _ = _export(tmp_path, capsys, "--top-k", "0", "--policy", version, n_samples=1)
     sample = payload["samples"][0]
-    policy = next(a for a in sample["arms"] if a["provenance"] == "policy")
+    policy = next(a for a in sample["arms"] if a["provenance"] == provenance)
 
     period = sample["period_engine"]
     engine = policy["loop_engine"]
@@ -218,3 +245,37 @@ def test_export_defaults_beside_dataset_json(tmp_path, capsys):
 def test_unknown_sample_id_is_an_error(tmp_path, capsys):
     root = _make_corpus(tmp_path, 1)
     assert main(["export", "--corpus", str(root), "--only", "nope"]) == 2
+
+
+def test_policy_table_reports_what_each_gate_did(tmp_path, capsys):
+    """The deliverable table, rendered from the shipped document.
+
+    It is generated from the payload rather than from the in-memory trace so
+    that it describes the file a verdict will later be recorded against.
+    """
+    from loop_optimizer.report import format_policy_table
+
+    payload, _ = _export(tmp_path, capsys, "--top-k", "0", n_samples=1)
+    table = format_policy_table(payload)
+
+    assert "POLICY v2 GATE TABLE" in table
+    for column in ("drift", "median", "drift@long", "len", "longest", "xfade", "max", "bound"):
+        assert column in table
+    # Every gate that can bind is tallied, including the ones that did not —
+    # "formant never fired" is a result, and a table that omits the row cannot
+    # distinguish it from "formant was not checked".
+    for gate in ("none", "formant", "click", "flam"):
+        assert f"    {gate:<10}" in table
+    assert "fell back to the one-period floor" in table
+
+    # A v1 document carries no traces, so there is no table to print.
+    v1_payload, _ = _export(tmp_path / "v1", capsys, "--top-k", "0", "--policy", "v1")
+    assert format_policy_table(v1_payload) == ""
+
+
+def test_export_is_reproducible(tmp_path, capsys):
+    """Same corpus in, byte-identical candidates.json out — including the trace."""
+    a, path_a = _export(tmp_path / "a", capsys, "--top-k", "0")
+    b, path_b = _export(tmp_path / "b", capsys, "--top-k", "0")
+    a["dataset"] = b["dataset"] = ""
+    assert json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
