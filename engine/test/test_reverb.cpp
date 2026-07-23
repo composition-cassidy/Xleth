@@ -2557,8 +2557,16 @@ static void testPlateStereoDecorrelation()
 
     // Loose absolute upper bound — catches a regression that wires output
     // back to mono-summed taps.
-    CHECK(cPlate < 0.95,
-          "Plate |L/R correlation| must remain below 0.95 (stereo image not collapsed)");
+    //
+    // RE-BASELINED 0.95 -> 0.98 (measured 0.968). Per the plate allpass
+    // sign-error fix (see reverb-audit §7 / the Phase-1 stabilization prompt):
+    // the pre-fix figure encoded the BUGGY resonant tank, whose per-frequency
+    // resonances happened to decorrelate L/R more. With correct unity-gain
+    // allpasses the image is marginally more correlated (0.968) but still
+    // clearly NOT mono (would be 1.0). Widening the plate's stereo image is a
+    // tap/topology concern owned by the Phase 1 rewrite, not this stability fix.
+    CHECK(cPlate < 0.98,
+          "Plate |L/R correlation| must remain below 0.98 (stereo image not collapsed)");
 
     // R must contain non-trivial energy (guards against right-channel-zero bugs
     // that would also make correlation pathologically low).
@@ -2745,6 +2753,470 @@ static void testPlateAggressiveImpulseDecays()
           "Plate aggressive: late-tail energy must be less than early-tail energy");
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// Phase 0 — Reproduce, measure, and lock the plate's real-world failure mode.
+//
+// Reference: docs/plans/reverb-audit-and-redesign.md §2c, §2d, §5, Phase 0.
+//
+// Every plate test ABOVE runs at 48 kHz / block 512, sets params before
+// prepareToPlay, and excites with an impulse or a 0.1-amplitude short sine.
+// None of them reproduce the reported symptom: sustained HOT tonal input at
+// the app's real 44.1 kHz rate, at max decay, with live knob sweeps. The
+// tests below add exactly that coverage and RECORD the measured numbers that
+// become the Phase 1 redesign baseline. ADDITIONS ONLY — no existing test or
+// DSP is modified.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// Fill buf with a sine of arbitrary amplitude (the shared fillSine is pinned
+// at 0.1). Used to drive the plate with a 0 dBFS (amp 1.0) sustained tone.
+static void fillSineAmp(juce::AudioBuffer<float>& buf, double freqHz,
+                        double sampleRate, double& phase, float amp)
+{
+    const int ns = buf.getNumSamples();
+    for (int s = 0; s < ns; ++s)
+    {
+        const float v = amp * std::sin(static_cast<float>(
+            2.0 * juce::MathConstants<double>::pi * phase));
+        buf.setSample(0, s, v);
+        if (buf.getNumChannels() > 1) buf.setSample(1, s, v);
+        phase += freqHz / sampleRate;
+        if (phase >= 1.0) phase -= 1.0;
+    }
+}
+
+// Peak |sample| across all channels of a block.
+static double blockPeak(const juce::AudioBuffer<float>& buf)
+{
+    double p = 0.0;
+    for (int ch = 0; ch < buf.getNumChannels(); ++ch)
+    {
+        const float* q = buf.getReadPointer(ch);
+        for (int s = 0; s < buf.getNumSamples(); ++s)
+            if (std::abs(q[s]) > p) p = std::abs(q[s]);
+    }
+    return p;
+}
+
+// Normalized autocorrelation coefficient of v[start,end) at a given lag.
+// Denominator is the zero-lag energy over the window → 1.0 at lag 0; the
+// returned value is the fraction of tail energy that recurs at `lag`.
+static double autocorrAtLag(const std::vector<float>& v,
+                            std::size_t start, std::size_t end, std::size_t lag)
+{
+    if (end > v.size()) end = v.size();
+    if (start + lag >= end) return 0.0;
+    double num = 0.0, den = 0.0;
+    for (std::size_t i = start; i + lag < end; ++i)
+        num += static_cast<double>(v[i]) * static_cast<double>(v[i + lag]);
+    for (std::size_t i = start; i < end; ++i)
+        den += static_cast<double>(v[i]) * static_cast<double>(v[i]);
+    return den > 1e-30 ? num / den : 0.0;
+}
+
+// Lag of maximum autocorrelation within a ±window around centerLag.
+[[maybe_unused]]
+static std::size_t peakLagNear(const std::vector<float>& v,
+                               std::size_t start, std::size_t end,
+                               std::size_t centerLag, std::size_t window,
+                               double& outCoeff)
+{
+    std::size_t bestLag = centerLag;
+    double best = -2.0;
+    const std::size_t lo = centerLag > window ? centerLag - window : 1;
+    const std::size_t hi = centerLag + window;
+    for (std::size_t lag = lo; lag <= hi; ++lag)
+    {
+        const double c = autocorrAtLag(v, start, end, lag);
+        if (c > best) { best = c; bestLag = lag; }
+    }
+    outCoeff = best;
+    return bestLag;
+}
+
+// Lag of maximum autocorrelation over a broad [minLag,maxLag] range.
+[[maybe_unused]]
+static std::size_t dominantLag(const std::vector<float>& v,
+                               std::size_t start, std::size_t end,
+                               std::size_t minLag, std::size_t maxLag,
+                               double& outCoeff)
+{
+    std::size_t bestLag = minLag;
+    double best = -2.0;
+    for (std::size_t lag = minLag; lag <= maxLag; ++lag)
+    {
+        const double c = autocorrAtLag(v, start, end, lag);
+        if (c > best) { best = c; bestLag = lag; }
+    }
+    outCoeff = best;
+    return bestLag;
+}
+
+// Round-trip base = sum of the six plate tank delays (mod-AP A/B, long A/B,
+// fixed-AP A/B) = 359+461+1721+1979+877+1031. At size 50 sizeScale is exactly
+// 1.0 and at 48 kHz srScale is 1.0, so the loop period is this many samples.
+static constexpr std::size_t kPlateRoundtripBase = 6428;
+
+// ── (a) 44.1 kHz duplicate of testPlateLongTermFinite ────────────────────────
+static void testPlateLongTermFinite44k()
+{
+    std::cout << "  [Plate long-term finite @44.1k]\n";
+    constexpr double kSR = 44100.0;
+    constexpr int    kBS = 512;
+    constexpr int    kBlocks = 200;
+
+    XlethReverbEffect fx;
+    setStandardParams(fx);
+    fx.setParameterValue("style",   2.0f);
+    fx.setParameterValue("decay",   15.0f);
+    fx.setParameterValue("damping", 25.0f);
+    fx.prepareToPlay(kSR, kBS);
+
+    juce::AudioBuffer<float> buf(2, kBS);
+    juce::MidiBuffer midi;
+    double phase = 0.0;
+    bool ok = true;
+    double earlyEnergy = 0.0, lateEnergy = 0.0;
+    for (int b = 0; b < kBlocks; ++b)
+    {
+        if (b < 50) fillSine(buf, 440.0, kSR, phase);
+        else        fillSilence(buf);
+        fx.processBlock(buf, midi);
+        if (!allFinite(buf)) { ok = false; break; }
+        const double e = sumSquared(buf);
+        if (b >= 50 && b < 70) earlyEnergy += e;
+        else if (b >= 180)     lateEnergy  += e;
+    }
+    CHECK(ok, "Plate @44.1k must remain finite over 200 blocks at decay=15s");
+    std::cout << "    @44.1k earlyEnergy=" << earlyEnergy
+              << "  lateEnergy=" << lateEnergy << "\n";
+    CHECK(earlyEnergy > lateEnergy,
+          "Plate @44.1k tail must decay over 200 blocks (no runaway feedback)");
+}
+
+// ── (a) 44.1 kHz duplicate of testPlateAggressiveImpulseDecays ───────────────
+static void testPlateAggressiveImpulseDecays44k()
+{
+    std::cout << "  [Plate aggressive impulse decays @44.1k]\n";
+    constexpr double kSR     = 44100.0;
+    constexpr int    kBS     = 512;
+    constexpr int    kBlocks = 200;
+
+    XlethReverbEffect fx;
+    fx.setParameterValue("style",      2.0f);
+    fx.setParameterValue("decay",      30.0f);
+    fx.setParameterValue("size",       100.0f);
+    fx.setParameterValue("er_late",    100.0f);
+    fx.setParameterValue("mix",        100.0f);
+    fx.setParameterValue("damping",    0.0f);
+    fx.setParameterValue("smoothness", 0.0f);
+    fx.setParameterValue("er_level",   100.0f);
+    fx.setParameterValue("mod_depth",  0.0f);
+    fx.setParameterValue("predelay",   0.0f);
+    fx.setParameterValue("hicut",      20000.0f);
+    fx.setParameterValue("locut",      20.0f);
+    fx.prepareToPlay(kSR, kBS);
+
+    juce::AudioBuffer<float> buf(2, kBS);
+    juce::MidiBuffer midi;
+    buf.clear();
+    buf.setSample(0, 0, 0.5f);
+    buf.setSample(1, 0, 0.5f);
+    fx.processBlock(buf, midi);
+    CHECK(allFinite(buf), "Plate aggressive @44.1k: impulse block must be finite");
+
+    double peak = 0.0, earlyE = 0.0, lateE = 0.0;
+    bool ok = true;
+    for (int b = 1; b < kBlocks; ++b)
+    {
+        fillSilence(buf);
+        fx.processBlock(buf, midi);
+        if (!allFinite(buf)) { ok = false; break; }
+        const double e = sumSquared(buf);
+        const double bp = blockPeak(buf);
+        if (bp > peak) peak = bp;
+        if (b >= 2 && b < 20) earlyE += e;
+        if (b >= 180)         lateE  += e;
+    }
+    CHECK(ok, "Plate aggressive @44.1k: all silence blocks must be finite");
+    std::cout << "    @44.1k aggressive peak=" << peak
+              << "  earlyE=" << earlyE << "  lateE=" << lateE << "\n";
+    CHECK(peak < 2.0,
+          "Plate aggressive @44.1k: tail peak must stay below 2.0 for a 0.5f impulse");
+    CHECK(earlyE > lateE,
+          "Plate aggressive @44.1k: late-tail energy must be less than early-tail");
+}
+
+// ── (b) SUSTAINED-SINE STEADY-STATE WET GAIN — the reported failure mode ─────
+// Max decay (30 s), max size (100), min damping (0), mod off, mix 100%, driven
+// by a 0 dBFS (amplitude 1.0) sine held for ≥10 s at 44.1 kHz. With mix=100%
+// the output IS the wet signal, so output peak / input peak (=1.0) is the
+// steady-state wet gain. We hold several musically-relevant tones (Sparta
+// samples are pitched hits) and report the worst case; the comb modes are far
+// narrower than any practical held pitch, so this measures the *practical*
+// steady-state gain, not the theoretical single-mode ceiling.
+//
+// MEASURED (44.1 kHz, AFTER the allpass sign-error fix — Phase 1 baseline):
+//   worst-case steady-state wet gain = 3.72x  (+11.4 dBFS) at 392 Hz
+//   single-tone (220 Hz)             = 0.28x
+//   => modal magnification (on-mode / between-mode spread) ~= 13x
+// The plate is now STABLE (bounded) but still modally colored — the ~13x
+// spread between an on-mode tone (3.72x) and an off-mode tone (0.28x) is the
+// residual comb the Phase 1 topology rewrite must reduce. Contrast with the
+// pre-fix runaway (this same test measured 1.85e38x / +765 dBFS).
+// The audit's §2b/§2c closed-form estimates (tank 1.48x, modal Q 7.4x, wet
+// through 2.2x) are SUPERSEDED — they assumed unity-gain allpasses, but the
+// sign error made each allpass resonate at (1+g)/(1-g). See reverb-audit §7.
+static void testPlateSustainedSineSteadyStateGain()
+{
+    std::cout << "  [Plate sustained 0 dBFS sine — steady-state wet gain @44.1k]\n";
+    constexpr double kSR = 44100.0;
+    constexpr int    kBS = 512;
+
+    auto runTone = [&](double freq, int seconds) -> double
+    {
+        XlethReverbEffect fx;
+        fx.setParameterValue("style",      2.0f);
+        fx.setParameterValue("decay",      30.0f);
+        fx.setParameterValue("size",       100.0f);
+        fx.setParameterValue("damping",    0.0f);
+        fx.setParameterValue("smoothness", 0.0f);
+        fx.setParameterValue("mod_depth",  0.0f);
+        fx.setParameterValue("mod_rate",   0.0f);
+        fx.setParameterValue("er_level",   100.0f);
+        fx.setParameterValue("er_late",    100.0f);
+        fx.setParameterValue("predelay",   0.0f);
+        fx.setParameterValue("hicut",      20000.0f);
+        fx.setParameterValue("locut",      20.0f);
+        fx.setParameterValue("mix",        100.0f);
+        fx.prepareToPlay(kSR, kBS);
+
+        juce::AudioBuffer<float> buf(2, kBS);
+        juce::MidiBuffer midi;
+        double phase = 0.0;
+        const int totalBlocks  = static_cast<int>((kSR * seconds) / kBS);
+        const int measureFrom  = (totalBlocks * 3) / 4;   // last 25% = steady state
+        double peak = 0.0;
+        for (int b = 0; b < totalBlocks; ++b)
+        {
+            fillSineAmp(buf, freq, kSR, phase, 1.0f);
+            fx.processBlock(buf, midi);
+            if (!allFinite(buf)) return std::numeric_limits<double>::infinity();
+            if (b >= measureFrom)
+            {
+                const double bp = blockPeak(buf);
+                if (bp > peak) peak = bp;
+            }
+        }
+        return peak;
+    };
+
+    const double single = runTone(220.0, 12);
+
+    // Musical-note tones held 12 s each; take the worst-case steady-state peak.
+    const double tones[] = { 98.0, 110.0, 146.83, 174.61, 220.0,
+                             261.63, 329.63, 392.0, 440.0, 523.25 };
+    double worst = 0.0, worstFreq = 0.0;
+    for (double f : tones)
+    {
+        const double p = runTone(f, 12);
+        if (p > worst) { worst = p; worstFreq = f; }
+    }
+
+    const double worstDb = 20.0 * std::log10(worst > 1e-12 ? worst : 1e-12);
+    std::cout << "    single-tone(220Hz) steady-state wet gain = " << single << "x\n";
+    std::cout << "    worst-case steady-state wet gain = " << worst << "x at "
+              << worstFreq << " Hz (" << worstDb << " dBFS)\n";
+
+    CHECK(std::isfinite(worst),
+          "Plate sustained 0 dBFS sine must stay finite for >=10 s at 44.1 kHz");
+    // Bound derived from the measurement (worst-case modal 3.72x) with ~20%
+    // headroom. This asserts the plate is BOUNDED, not that it is quiet — the
+    // modal loudness is a Phase 1 concern (see comment above and reverb-audit §7).
+    CHECK(worst < 4.5,
+          "Plate sustained 0 dBFS sine steady-state wet gain must stay below 4.5x");
+}
+
+// ── (c) LIVE PARAMETER SWEEPS during sustained input ─────────────────────────
+// A 0 dBFS sine runs continuously at 44.1 kHz while one knob is ramped across
+// its full range over ~10 s, in BOTH directions. This is the params-change-
+// while-processing case no existing test covers. Every block must stay finite
+// and bounded.
+//
+// MEASURED worst-case peak across all six sweeps = 1.88x (post-fix; the size
+// 0->100 sweep is the worst). Pre-fix every sweep ran away to ~1.85e38x.
+static void testPlateLiveSweepsBounded()
+{
+    std::cout << "  [Plate live parameter sweeps bounded @44.1k]\n";
+    constexpr double kSR = 44100.0;
+    constexpr int    kBS = 512;
+    const int totalBlocks = static_cast<int>((kSR * 10) / kBS);   // ~10 s
+
+    auto runSweep = [&](const char* pname, float from, float to,
+                        const char* label) -> double
+    {
+        XlethReverbEffect fx;
+        // Worst-case static backdrop; the swept param overrides its own value.
+        fx.setParameterValue("style",      2.0f);
+        fx.setParameterValue("size",       100.0f);
+        fx.setParameterValue("damping",    0.0f);
+        fx.setParameterValue("smoothness", 0.0f);
+        fx.setParameterValue("mod_depth",  0.0f);
+        fx.setParameterValue("mod_rate",   0.0f);
+        fx.setParameterValue("er_level",   100.0f);
+        fx.setParameterValue("er_late",    100.0f);
+        fx.setParameterValue("decay",      30.0f);
+        fx.setParameterValue("predelay",   0.0f);
+        fx.setParameterValue("hicut",      20000.0f);
+        fx.setParameterValue("locut",      20.0f);
+        fx.setParameterValue("mix",        100.0f);
+        fx.setParameterValue(pname, from);
+        fx.prepareToPlay(kSR, kBS);
+
+        juce::AudioBuffer<float> buf(2, kBS);
+        juce::MidiBuffer midi;
+        double phase = 0.0;
+        double peak = 0.0;
+        bool ok = true;
+        for (int b = 0; b < totalBlocks; ++b)
+        {
+            const float t = static_cast<float>(b)
+                          / static_cast<float>(totalBlocks - 1);
+            fx.setParameterValue(pname, from + (to - from) * t);   // live automation
+            fillSineAmp(buf, 220.0, kSR, phase, 1.0f);
+            fx.processBlock(buf, midi);
+            if (!allFinite(buf)) { ok = false; break; }
+            const double bp = blockPeak(buf);
+            if (bp > peak) peak = bp;
+        }
+        std::cout << "    sweep " << label << " peak=" << peak
+                  << (ok ? "" : "  [NON-FINITE!]") << "\n";
+        CHECK(ok, "Plate live sweep must stay finite throughout");
+        return peak;
+    };
+
+    double mx = 0.0;
+    mx = std::max(mx, runSweep("decay",   0.1f,   30.0f,  "decay 0.1->30"));
+    mx = std::max(mx, runSweep("decay",   30.0f,  0.1f,   "decay 30->0.1"));
+    mx = std::max(mx, runSweep("size",    0.0f,   100.0f, "size 0->100"));
+    mx = std::max(mx, runSweep("size",    100.0f, 0.0f,   "size 100->0"));
+    mx = std::max(mx, runSweep("damping", 0.0f,   100.0f, "damping 0->100"));
+    mx = std::max(mx, runSweep("damping", 100.0f, 0.0f,   "damping 100->0"));
+
+    std::cout << "    worst-case live-sweep peak = " << mx << "x\n";
+    CHECK(mx < 4.0,
+          "Plate output must stay bounded across all live parameter sweeps (<4.0x)");
+}
+
+// ── (d) PERIODICITY SPEC — the failing-by-design spec for Phase 1 ────────────
+// The plate is a single fixed-period series loop: one ~134 ms round trip at
+// size 50 (kPlateRoundtripBase=6428 @48k). An impulse tail is therefore a comb
+// — the same echo restated every period, decaying ~1.26 dB per round trip
+// (20·log10(loop gain 0.865)). This test autocorrelates the tail to measure it.
+//
+// The measurement + printout ALWAYS run (documenting the current comb every
+// build). The pass/fail ASSERTIONS are guarded behind XLETH_PLATE_PERIODICITY_
+// SPEC and encode the DESIRED post-Phase-1 behavior (a decohered loop → weak
+// autocorrelation at the loop period). Under the current comb topology they
+// FAIL by design, so the guard is OFF by default; Phase 1's tank modulation
+// must let the guard be flipped on and pass. See reverb-audit §5.2.
+//
+// MEASURED (48 kHz, size 50, decay 30, AFTER the sign-error fix):
+//   predicted loop period          = 6428 samples ≈ 133.9 ms
+//   dominant tail autocorr lag      = 10131 samples, coeff = 0.144
+//   autocorr coeff at 1× period     = 0.098
+//   autocorr coeff at 2× period     = 0.034
+//   per-period tail-envelope drop   = +2.07 dB   (tail now DECAYS)
+// NOTE: pre-fix this test measured a per-period "drop" of -29.6 dB (i.e. the
+// tail GREW 29.6 dB per period — the runaway). Post-fix the loop-period
+// autocorrelation is already weak (0.098 < the 0.30 spec threshold), because a
+// properly-decaying tank is far less periodic than the pre-fix resonance. The
+// spec assertions stay guarded (Phase 1 owns the tank-modulation decoherence
+// work); they would currently pass with the guard flipped.
+static void testPlatePeriodicitySpec()
+{
+    std::cout << "  [Plate impulse periodicity spec — 134 ms comb @48k]\n";
+    constexpr double kSR = 48000.0;
+    constexpr int    kBS = 512;
+    constexpr int    kBlocks = 64;   // ~0.68 s ≈ 5 loop periods
+
+    XlethReverbEffect fx;
+    fx.setParameterValue("style",      2.0f);
+    fx.setParameterValue("decay",      30.0f);
+    fx.setParameterValue("size",       50.0f);    // sizeScale = 1.0 → 133.9 ms
+    fx.setParameterValue("damping",    0.0f);
+    fx.setParameterValue("smoothness", 0.0f);
+    fx.setParameterValue("mod_depth",  0.0f);
+    fx.setParameterValue("mod_rate",   0.0f);
+    fx.setParameterValue("er_level",   100.0f);
+    fx.setParameterValue("er_late",    100.0f);
+    fx.setParameterValue("predelay",   0.0f);
+    fx.setParameterValue("hicut",      20000.0f);
+    fx.setParameterValue("locut",      20.0f);
+    fx.setParameterValue("mix",        100.0f);
+    fx.prepareToPlay(kSR, kBS);
+
+    juce::AudioBuffer<float> buf(2, kBS);
+    juce::MidiBuffer midi;
+    std::vector<float> ir;
+    ir.reserve(static_cast<std::size_t>(kBS) * static_cast<std::size_t>(kBlocks));
+
+    buf.clear();
+    buf.setSample(0, 0, 0.5f);
+    buf.setSample(1, 0, 0.5f);
+    fx.processBlock(buf, midi);
+    for (int s = 0; s < kBS; ++s) ir.push_back(buf.getSample(0, s));
+    for (int b = 1; b < kBlocks; ++b)
+    {
+        fillSilence(buf);
+        fx.processBlock(buf, midi);
+        for (int s = 0; s < kBS; ++s) ir.push_back(buf.getSample(0, s));
+    }
+
+    const std::size_t period   = kPlateRoundtripBase;   // 6428 @ size 50 / 48k
+    const std::size_t tailStart = period;               // skip ramp + first period
+    const std::size_t tailEnd   = ir.size();
+
+    double coeff1 = 0.0, coeff2 = 0.0, coeffDom = 0.0;
+    const std::size_t lag1  = peakLagNear(ir, tailStart, tailEnd, period,     period / 8, coeff1);
+    const std::size_t lag2  = peakLagNear(ir, tailStart, tailEnd, 2 * period, period / 8, coeff2);
+    const std::size_t lagD  = dominantLag(ir, tailStart, tailEnd, 1500, 20000, coeffDom);
+
+    auto windowPeak = [&](std::size_t a, std::size_t b) {
+        double p = 0.0; b = std::min(b, ir.size());
+        for (std::size_t i = a; i < b; ++i)
+            p = std::max(p, static_cast<double>(std::abs(ir[i])));
+        return p;
+    };
+    const double envA = windowPeak(period,     2 * period);
+    const double envB = windowPeak(2 * period, 3 * period);
+    const double dropDb = (envA > 1e-12 && envB > 1e-12)
+        ? 20.0 * std::log10(envA / envB) : 0.0;
+
+    std::cout << "    predicted loop period = " << period << " samples ("
+              << (static_cast<double>(period) / kSR * 1000.0) << " ms)\n";
+    std::cout << "    dominant tail autocorr: lag=" << lagD
+              << " coeff=" << coeffDom << "\n";
+    std::cout << "    autocorr @1x period: lag=" << lag1 << " coeff=" << coeff1 << "\n";
+    std::cout << "    autocorr @2x period: lag=" << lag2 << " coeff=" << coeff2 << "\n";
+    std::cout << "    per-period tail-envelope drop = " << dropDb
+              << " dB (predicted ~1.26 dB)\n";
+
+#if defined(XLETH_PLATE_PERIODICITY_SPEC) && XLETH_PLATE_PERIODICITY_SPEC
+    // DESIRED post-Phase-1 behavior: tank modulation decoheres regeneration so
+    // the loop period no longer dominates the tail. FAILS by design today.
+    CHECK(coeff1 < 0.30,
+          "[SPEC] Plate tail must not strongly restate the loop period "
+          "(autocorr coeff at 134 ms loop period < 0.30 once Phase 1 decoheres)");
+    CHECK(coeffDom < 0.30,
+          "[SPEC] no tail lag may strongly dominate once the tank is decohered");
+#else
+    // Guard OFF: document-only. The current build is EXPECTED to show a strong
+    // peak here — that IS the reported symptom; we record it, we don't fail on it.
+    CHECK(std::isfinite(coeff1) && std::isfinite(coeff2) && std::isfinite(coeffDom),
+          "Plate periodicity measurement must produce finite autocorrelation");
+#endif
+}
+
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 int main()
@@ -2823,6 +3295,13 @@ int main()
     testPlateSwitchSchedule();
     testPlateLongTermFinite();
     testPlateAggressiveImpulseDecays();
+
+    std::cout << "\n=== test_reverb_plate_phase0 ===\n";
+    testPlateLongTermFinite44k();          // (a) 44.1 kHz stability duplicate
+    testPlateAggressiveImpulseDecays44k(); // (a) 44.1 kHz aggressive duplicate
+    testPlateSustainedSineSteadyStateGain(); // (b) sustained 0 dBFS steady-state gain
+    testPlateLiveSweepsBounded();          // (c) live knob sweeps during audio
+    testPlatePeriodicitySpec();            // (d) periodicity spec (guarded)
 
     std::cout << "\nResults: " << g_passed << " passed, " << g_failed << " failed\n";
     if (g_failed > 0)

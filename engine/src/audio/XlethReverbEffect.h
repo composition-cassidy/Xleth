@@ -110,11 +110,31 @@ struct AllpassDiffuser
 
     void reset() { line.reset(); }
 
+    // Original diffuser used by the Hall input-diffusion stage. NOTE: this
+    // computes v = x - g·delayed, giving H(z) = (z^-D - g)/(1 + g·z^-D), which
+    // is NOT a unity-gain allpass — it resonates with peak (1+g)/(1-g). It is
+    // harmless there (Hall uses it feed-forward, outside any feedback loop) and
+    // Hall's tuning depends on it, so it is left bit-identical. The Plate,
+    // which puts allpasses INSIDE its feedback loop, must use processAllpass().
+    // See docs/plans/reverb-audit-and-redesign.md §7 (errata).
     inline float process(float x)
     {
         const float delayed = line.popSample(0,
             static_cast<float>(delaySamples), true);
         const float v = x - coeff * delayed;
+        line.pushSample(0, v);
+        return -coeff * v + delayed;
+    }
+
+    // Correct unity-gain Schroeder allpass: v = x + g·delayed →
+    // H(z) = (z^-D - g)/(1 - g·z^-D), |H| = 1 at every frequency. Required for
+    // any allpass placed inside a feedback loop; the Plate tank uses this for
+    // its input diffusers and fixed allpasses so the loop gain stays bounded.
+    inline float processAllpass(float x)
+    {
+        const float delayed = line.popSample(0,
+            static_cast<float>(delaySamples), true);
+        const float v = x + coeff * delayed;
         line.pushSample(0, v);
         return -coeff * v + delayed;
     }
@@ -489,10 +509,16 @@ constexpr float kPlateModRateA_Hz      = 0.43f;
 constexpr float kPlateModRateB_Hz      = 0.71f;
 // Input gain scales the diffused signal injected into arm A of the tank.
 // Arm B receives no direct input injection (driven by cross-feed only).
-// 0.20 is calibrated so steady-state tank amplitude stays ≤ 1.5× the input
-// amplitude even at the maximum feedback ceiling, preventing the gain
-// explosion that occurred at 0.6f with near-unity feedback.
-constexpr float kPlateInputGain        = 0.20f;
+//
+// This is a LEVEL control, not a stability control: it scales the injected
+// signal only and does NOT appear in the recirculating loop gain (which is
+// feedbackGain² × the tank's unity-gain allpass/delay elements). The prior
+// 0.20 value was a symptom-patch for the runaway that was actually caused by
+// the Schroeder allpass sign error (fixed in processAllpass()); with the real
+// cause fixed, 0.20 merely left the plate ~25 dB quieter than the FDN styles.
+// Restored to the original 0.60 to bring the wet level back into range. Full
+// equal-loudness calibration across styles is Phase 2 (see reverb-audit §7).
+constexpr float kPlateInputGain        = 0.60f;
 
 // 6 stereo output taps (3 per arm) at deterministic positions inside the
 // long delay lines.  Σg² ≈ 1.3 per channel × kPlateLateOutputGain — the
@@ -1628,7 +1654,7 @@ private:
             // "front bloom" amount instead of room ER taps.
             float diffused = preOut;
             for (int d = 0; d < 4; ++d)
-                diffused = plateLate_.inputDiffusers[d].process(diffused);
+                diffused = plateLate_.inputDiffusers[d].processAllpass(diffused);
             const float bloomBlend = std::clamp(erLevel / 100.0f, 0.0f, 1.0f);
             diffused = preOut * (1.0f - bloomBlend) + diffused * bloomBlend;
 
@@ -1687,7 +1713,7 @@ private:
                 plateLate_.modApBaseA + lfoA * modAmt,
                 1.0f, plateLate_.modApMaxF_A);
             const float delayedVA = plateLate_.modApA.popSample(0, modDelayA, true);
-            const float vA = armA_in - kPlateModApA_Coeff * delayedVA;
+            const float vA = armA_in + kPlateModApA_Coeff * delayedVA;
             plateLate_.modApA.pushSample(0, vA);
             const float modApA_out = -kPlateModApA_Coeff * vA + delayedVA;
 
@@ -1720,7 +1746,7 @@ private:
                 (1.0f - dampG) * longA_out + dampG * plateLate_.dampStateA;
 
             // Fixed allpass A (own buffer).
-            const float fixedApA_out = plateLate_.fixedApA.process(plateLate_.dampStateA);
+            const float fixedApA_out = plateLate_.fixedApA.processAllpass(plateLate_.dampStateA);
 
             // DC blocker A.
             const float dcOutA = fixedApA_out
@@ -1747,7 +1773,7 @@ private:
                 plateLate_.modApBaseB + lfoB * modAmt,
                 1.0f, plateLate_.modApMaxF_B);
             const float delayedVB = plateLate_.modApB.popSample(0, modDelayB, true);
-            const float vB = armB_in - kPlateModApB_Coeff * delayedVB;
+            const float vB = armB_in + kPlateModApB_Coeff * delayedVB;
             plateLate_.modApB.pushSample(0, vB);
             const float modApB_out = -kPlateModApB_Coeff * vB + delayedVB;
 
@@ -1774,7 +1800,7 @@ private:
             plateLate_.dampStateB =
                 (1.0f - dampG) * longB_out + dampG * plateLate_.dampStateB;
 
-            const float fixedApB_out = plateLate_.fixedApB.process(plateLate_.dampStateB);
+            const float fixedApB_out = plateLate_.fixedApB.processAllpass(plateLate_.dampStateB);
 
             const float dcOutB = fixedApB_out
                                 - plateLate_.dcXB
