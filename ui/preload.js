@@ -559,6 +559,15 @@ window.xleth = ({
     appendRating:    (candidatesPath, line) => invoke('xleth:loopLab:appendRating', candidatesPath, line),
   },
 
+  // ── AUTO-loop telemetry (local JSONL, no network) ─────────────────────────
+  // append() records one event (apply or nudge) beside the current project (or
+  // in userData when unsaved); export() saves the whole log via a dialog. See
+  // ui/electron-main/loopTelemetry.js.
+  loopTelemetry: {
+    append: (event)     => invoke('xleth:loopTelemetry:append', event),
+    export: ()          => invoke('xleth:loopTelemetry:export'),
+  },
+
   // ── Window controls (frameless title bar) ─────────────────────────────────
   window: {
     minimize: () => ipcRenderer.send('xleth:window:minimize'),

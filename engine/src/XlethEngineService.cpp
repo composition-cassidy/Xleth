@@ -48,6 +48,7 @@
 #include "project/ProxyManager.h"
 #include "export/AudioExporter.h"
 #include "audio/WaveformMipmap.h"
+#include "dsp/AutoLoopPolicy.h"          // selection-first AUTO loop policy (policy v2 port)
 #include "audio/XlethEQEffect.h"
 #include "audio/XlethWaveshaperEffect.h"
 #include "audio/SmartBalanceEffect.h"
@@ -860,6 +861,86 @@ static void refreshSamplerForRegion(int regionId)
     // rebuildAllSamplers prunes stale pairs and recreates every needed one
     // from scratch — settings are re-read from the region in the process.
     mix.rebuildAllSamplers();
+}
+
+// Full snapshot of a region's current sampler state as a SamplerSettings, so a
+// command that means to change only a few fields still round-trips the rest
+// unchanged. Mirrors the field-by-field copy at the head of
+// Timeline_UpdateSamplerSettings; used by handlers (e.g. AUTO loop) that compute
+// a partial change and want the same undoable path.
+static SamplerSettings samplerSettingsFromRegion(const SampleRegion& r)
+{
+    SamplerSettings s;
+    s.rootNote         = r.rootNote;
+    s.attackMs         = r.attackMs;
+    s.decayMs          = r.decayMs;
+    s.sustain          = r.sustain;
+    s.releaseMs        = r.releaseMs;
+    s.delayMs          = r.delayMs;
+    s.holdMs           = r.holdMs;
+    s.attackTension    = r.attackTension;
+    s.decayTension     = r.decayTension;
+    s.releaseTension   = r.releaseTension;
+    s.pitchEnvEnabled       = r.pitchEnvEnabled;
+    s.pitchEnvAmount        = r.pitchEnvAmount;
+    s.pitchEnvDelayMs       = r.pitchEnvDelayMs;
+    s.pitchEnvAttackMs      = r.pitchEnvAttackMs;
+    s.pitchEnvHoldMs        = r.pitchEnvHoldMs;
+    s.pitchEnvDecayMs       = r.pitchEnvDecayMs;
+    s.pitchEnvSustain       = r.pitchEnvSustain;
+    s.pitchEnvReleaseMs     = r.pitchEnvReleaseMs;
+    s.pitchEnvAttackTension = r.pitchEnvAttackTension;
+    s.pitchEnvDecayTension  = r.pitchEnvDecayTension;
+    s.pitchEnvReleaseTension = r.pitchEnvReleaseTension;
+    s.loopEnabled      = r.loopEnabled;
+    s.loopStart        = r.loopStart;
+    s.loopEnd          = r.loopEnd;
+    s.crossfadeEnabled = r.crossfadeEnabled;
+    s.smpStart         = r.smpStart;
+    s.smpLength        = r.smpLength;
+    s.declickMs        = r.declickMs;
+    s.fadeInMs         = r.fadeInMs;
+    s.fadeOutMs        = r.fadeOutMs;
+    s.crossfadeSamples = r.crossfadeSamples;
+    s.dcOffsetRemoved  = r.dcOffsetRemoved;
+    s.normalized       = r.normalized;
+    s.polarityReversed = r.polarityReversed;
+    s.reversed         = r.reversed;
+    s.monoEnabled       = r.monoEnabled;
+    s.portamentoEnabled = r.portamentoEnabled;
+    s.portamentoTimeMs  = r.portamentoTimeMs;
+    s.arpEnabled        = r.arpEnabled;
+    s.arpTempoSync      = r.arpTempoSync;
+    s.arpDivision       = r.arpDivision;
+    s.arpFreeTimeMs     = r.arpFreeTimeMs;
+    s.arpGate           = r.arpGate;
+    s.arpRange          = r.arpRange;
+    s.arpDirection      = r.arpDirection;
+    s.lfoVolEnabled       = r.lfoVolEnabled;
+    s.lfoVolAmount        = r.lfoVolAmount;
+    s.lfoVolSpeedHz       = r.lfoVolSpeedHz;
+    s.lfoVolTempoSync     = r.lfoVolTempoSync;
+    s.lfoVolTempoDivision = r.lfoVolTempoDivision;
+    s.lfoVolAttackMs      = r.lfoVolAttackMs;
+    s.lfoVolDelayMs       = r.lfoVolDelayMs;
+    s.lfoVolWaveform      = r.lfoVolWaveform;
+    s.lfoPanEnabled       = r.lfoPanEnabled;
+    s.lfoPanAmount        = r.lfoPanAmount;
+    s.lfoPanSpeedHz       = r.lfoPanSpeedHz;
+    s.lfoPanTempoSync     = r.lfoPanTempoSync;
+    s.lfoPanTempoDivision = r.lfoPanTempoDivision;
+    s.lfoPanAttackMs      = r.lfoPanAttackMs;
+    s.lfoPanDelayMs       = r.lfoPanDelayMs;
+    s.lfoPanWaveform      = r.lfoPanWaveform;
+    s.lfoPitchEnabled       = r.lfoPitchEnabled;
+    s.lfoPitchAmount        = r.lfoPitchAmount;
+    s.lfoPitchSpeedHz       = r.lfoPitchSpeedHz;
+    s.lfoPitchTempoSync     = r.lfoPitchTempoSync;
+    s.lfoPitchTempoDivision = r.lfoPitchTempoDivision;
+    s.lfoPitchAttackMs      = r.lfoPitchAttackMs;
+    s.lfoPitchDelayMs       = r.lfoPitchDelayMs;
+    s.lfoPitchWaveform      = r.lfoPitchWaveform;
+    return s;
 }
 
 // Look up a pattern's region and refresh every sampler pair bound to it.
@@ -8828,6 +8909,114 @@ void Timeline_UpdateSamplerSettings(const JsonApi::CallbackInfo& info)
                            *g_timeline);
     refreshSamplerForRegion(regionId);
     log.done();
+}
+
+// timeline_autoLoopForSelection(regionId, selStart?, selEnd?)
+//   → { valid, loopStart, loopEnd, crossfadeSamples, period, periodMultiple,
+//       spanDriftCents, driftCutCents, spansConsidered, spansKept, longestSpan,
+//       sampleDurationSec, engineSampleRate, gatesBound: string[], reason }
+//
+// Runs the selection-first AUTO loop policy (policy v2 port, dsp/AutoLoopPolicy.h)
+// over the region's decoded ENGINE-domain buffer, then — when a loop is found —
+// writes loopStart/loopEnd/crossfadeSamples (+ loopEnabled/crossfadeEnabled) to
+// the region through the SAME undoable SetSamplerSettingsCommand path the manual
+// knobs use, so AUTO is a single undo step and both the preview and playback
+// samplers rebuild from it. selStart/selEnd are engine-buffer samples; passing
+// selEnd <= selStart (or omitting them) auto-loops the whole sample.
+//
+// All work is on the UI action thread — allocations fine, never the audio
+// callback. The engine rate is MEASURED (audioEngine->getSampleRate()), never
+// assumed, because SampleBank stores at the device rate (44100 on some machines).
+JsonApi::Value Timeline_AutoLoopForSelection(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager || !audioEngine || !sampleBank) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        JsonApi::TypeError::New(env, "timeline_autoLoopForSelection(regionId, selStart?, selEnd?)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int regionId = info[0].As<JsonApi::Number>().Int32Value();
+    const SampleRegion* r = g_timeline->getRegion(regionId);
+    if (!r) { JsonApi::Error::New(env, "Region not found.").ThrowAsJavaScriptException(); return env.Undefined(); }
+
+    const double engineSR = audioEngine->getSampleRate();
+    const int sampleBankId = audioEngine->getMixEngine().getSampleIdForRegion(regionId);
+    const juce::AudioBuffer<float>* buf =
+        sampleBankId >= 0 ? sampleBank->getSample(sampleBankId) : nullptr;
+
+    auto emit = [&](const xleth::dsp::AutoLoopResult& res, double durSec) {
+        JsonApi::Object o = JsonApi::Object::New(env);
+        o.Set("valid", res.valid);
+        o.Set("loopStart",        static_cast<double>(res.loopStart));
+        o.Set("loopEnd",          static_cast<double>(res.loopEnd));
+        o.Set("crossfadeSamples", static_cast<double>(res.crossfadeSamples));
+        o.Set("period",           res.period);
+        o.Set("periodMultiple",   res.periodMultiple);
+        o.Set("spanDriftCents",   res.spanDriftCents);
+        o.Set("driftCutCents",    res.driftCutCents);
+        o.Set("spansConsidered",  res.spansConsidered);
+        o.Set("spansKept",        res.spansKept);
+        o.Set("longestSpan",      static_cast<double>(res.longestSpan));
+        o.Set("sampleDurationSec", durSec);
+        o.Set("engineSampleRate", engineSR);
+        o.Set("reason",           res.reason);
+        JsonApi::Array gates = JsonApi::Array::New(env, res.gatesBound.size());
+        for (size_t i = 0; i < res.gatesBound.size(); ++i)
+            gates.Set(static_cast<uint32_t>(i), JsonApi::String::New(env, res.gatesBound[i]));
+        o.Set("gatesBound", gates);
+        return o;
+    };
+
+    if (!buf || buf->getNumSamples() == 0 || engineSR <= 0.0) {
+        xleth::dsp::AutoLoopResult none;
+        none.reason = "region has no decoded audio";
+        return emit(none, 0.0);
+    }
+
+    const int N   = buf->getNumSamples();
+    const int nch = buf->getNumChannels();
+    const double durSec = static_cast<double>(N) / engineSR;
+
+    // Merge to mono — the policy measures a single seam, and AUTO's target
+    // (monophonic tonal material) has near-identical channels.
+    std::vector<float> mono(static_cast<size_t>(N), 0.0f);
+    for (int ch = 0; ch < nch; ++ch) {
+        const float* src = buf->getReadPointer(ch);
+        for (int i = 0; i < N; ++i) mono[static_cast<size_t>(i)] += src[i];
+    }
+    if (nch > 1) {
+        const float inv = 1.0f / static_cast<float>(nch);
+        for (int i = 0; i < N; ++i) mono[static_cast<size_t>(i)] *= inv;
+    }
+
+    int64_t selStart = 0, selEnd = N;
+    if (info.Length() >= 3 && info[1].IsNumber() && info[2].IsNumber()) {
+        selStart = static_cast<int64_t>(info[1].As<JsonApi::Number>().DoubleValue());
+        selEnd   = static_cast<int64_t>(info[2].As<JsonApi::Number>().DoubleValue());
+    }
+    if (selEnd <= selStart) { selStart = 0; selEnd = N; }  // no selection → whole sample
+
+    BridgeCallLog log("timeline.autoLoopForSelection");
+    const xleth::dsp::AutoLoopResult res =
+        xleth::dsp::autoLoopForSelection(mono.data(), N, engineSR, selStart, selEnd);
+
+    if (res.valid) {
+        SamplerSettings s = samplerSettingsFromRegion(*r);
+        s.loopEnabled      = true;
+        s.crossfadeEnabled = true;
+        s.loopStart        = res.loopStart;
+        s.loopEnd          = res.loopEnd;
+        s.crossfadeSamples = res.crossfadeSamples;
+        g_undoManager->execute(std::make_unique<SetSamplerSettingsCommand>(regionId, s, *g_timeline),
+                               *g_timeline);
+        refreshSamplerForRegion(regionId);
+    }
+    log.done(res.valid ? "loop" : res.reason);
+    return emit(res, durSec);
 }
 
 // timeline_addPatternBlock({ trackId, patternId, positionTicks, durationTicks, offsetTicks? })

@@ -275,6 +275,7 @@ add_library(XlethEngineCore STATIC
     src/dsp/DeclickEnvelope.cpp
     src/dsp/LoopAnalysis.cpp
     src/dsp/LoopOptimizer.cpp
+    src/dsp/AutoLoopPolicy.cpp
     src/dsp/TDPSOLA.cpp
     src/dsp/RubberBandWrapper.cpp
     src/dsp/WSOLA.cpp
@@ -1329,6 +1330,40 @@ target_compile_definitions(test_loop_optimizer PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_auto_loop_policy ─────────────────────────────────────────────────────
+# Unit-tests the selection-first AUTO loop policy (dsp/AutoLoopPolicy.h), the C++
+# port of loop_optimizer's policy v2. Doubles as the parity/diagnostic CLI: given
+# a raw float32 mono buffer + selection it prints the chosen loop as JSON (see the
+# file header). The buffer-in-JSON-out shape is what the Python parity harness
+# drives to compare C++ output against the reference optimizer sample-for-sample.
+add_executable(test_auto_loop_policy
+    test/test_auto_loop_policy.cpp
+)
+
+target_link_libraries(test_auto_loop_policy PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_auto_loop_policy PRIVATE
+    _CRT_SECURE_NO_WARNINGS=1
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_midi_importer ────────────────────────────────────────────────────────
 # Smoke test for MIDI summary parsing using a tiny generated SMF fixture file.
 add_executable(test_midi_importer
@@ -1909,6 +1944,7 @@ set(XLETH_ENGINE_TESTS
     test_tdpsola
     test_loop_analysis
     test_loop_optimizer
+    test_auto_loop_policy
     test_midi_importer
     test_fsc_score_parser
     test_effects

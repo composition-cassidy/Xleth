@@ -973,6 +973,19 @@ const METHODS = [
     binary: null,
   },
   {
+    // Selection-first AUTO loop (policy v2 port). Computes + writes a period-
+    // aligned, formant-stable loop inside the given selection (engine-buffer
+    // samples; omit/collapse to auto-loop the whole sample) and returns the
+    // chosen loop plus telemetry. Undoable — routes through the same
+    // sampler-settings command as manual loop edits.
+    method: 'timeline_autoLoopForSelection',
+    channels: ['xleth:timeline:autoLoopForSelection'],
+    api: { 'timeline.autoLoopForSelection': 'xleth:timeline:autoLoopForSelection' },
+    handler: 'Timeline_AutoLoopForSelection',
+    returns: 'value',
+    binary: null,
+  },
+  {
     method: 'timeline_addPatternBlock',
     channels: ['xleth:timeline:addPatternBlock'],
     api: { 'timeline.addPatternBlock': 'xleth:timeline:addPatternBlock' },

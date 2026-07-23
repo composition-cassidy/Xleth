@@ -6,6 +6,7 @@ import EnvelopeEditor from './EnvelopeEditor.jsx'
 import Knob from './Knob.jsx'
 import LfoSection from './LfoSection.jsx'
 import { tokenValue } from '../../theming/tokenValue.ts'
+import { nudgeEventFor, applyRecordFor } from './autoLoopTelemetry.js'
 
 const WAVE_WIDTH = 800
 const WAVE_HEIGHT = 158
@@ -299,14 +300,27 @@ export default function SamplerPanelContent({ regionId, onClose }) {
     }
   }, [regionId])
 
+  // AUTO-loop telemetry: remember the last apply so an edit to loopStart/loopEnd/
+  // crossfade within 30 s of it is logged as a "nudge" (the only signal for how
+  // often the snap is kept vs. adjusted — there is no confidence model).
+  const lastAutoApplyRef = useRef(null)
+
+  const maybeLogNudge = useCallback((partial) => {
+    const event = nudgeEventFor(lastAutoApplyRef.current, partial, regionId)
+    if (!event) return
+    window.xleth?.loopTelemetry?.append?.(event)
+    lastAutoApplyRef.current = null  // one nudge per apply
+  }, [regionId])
+
   const commit = useCallback(async (partial) => {
     if (regionId == null) return
+    maybeLogNudge(partial)
     try {
       await window.xleth?.timeline?.updateSamplerSettings(regionId, partial)
       timelineEvents.dispatchEvent(new CustomEvent('timeline-sampler-changed', { detail: { regionId } }))
       timelineEvents.dispatchEvent(new CustomEvent('timeline-pattern-changed', { detail: {} }))
     } catch (e) { console.warn('[SamplerPanelContent] updateSamplerSettings failed:', e.message) }
-  }, [regionId])
+  }, [regionId, maybeLogNudge])
 
   const setField = useCallback((field, val) => {
     setSettings((s) => ({ ...s, [field]: val }))
@@ -350,6 +364,58 @@ export default function SamplerPanelContent({ regionId, onClose }) {
     setFields({ smpStart, smpLength })
     commit({ smpStart, smpLength })
   }, [commit, setFields])
+
+  const [autoBusy, setAutoBusy] = useState(false)
+
+  // AUTO loop: snap a period-aligned, formant-stable loop inside the current
+  // trim selection (whole sample if untrimmed). The engine writes the loop
+  // undoably and returns it; we mirror it into local state, log telemetry, and
+  // fire an instant audible preview through the existing preview-note path.
+  const runAutoLoop = useCallback(async () => {
+    if (regionId == null || autoBusy) return
+    const s = settingsRef.current
+    const total = audioInfo?.numSamples || 0
+    const hasTrim = (s.smpLength || 0) > 0
+    const selStart = hasTrim ? (s.smpStart || 0) : 0
+    const selEnd = hasTrim ? (s.smpStart || 0) + s.smpLength : total
+    setAutoBusy(true)
+    try {
+      const res = await window.xleth?.timeline?.autoLoopForSelection?.(regionId, selStart, selEnd)
+      if (!res || !res.valid) {
+        console.warn('[AUTO] no loop found:', res?.reason || 'unavailable')
+        return
+      }
+      // The engine already wrote + rebuilt the samplers; mirror into local state.
+      setFields({
+        loopEnabled: true, crossfadeEnabled: true,
+        loopStart: res.loopStart, loopEnd: res.loopEnd, crossfadeSamples: res.crossfadeSamples,
+      })
+      timelineEvents.dispatchEvent(new CustomEvent('timeline-sampler-changed', { detail: { regionId } }))
+      timelineEvents.dispatchEvent(new CustomEvent('timeline-pattern-changed', { detail: {} }))
+
+      // Arm nudge detection + log the apply.
+      lastAutoApplyRef.current = applyRecordFor(res, regionId)
+      window.xleth?.loopTelemetry?.append?.({
+        kind: 'apply',
+        sample_duration: res.sampleDurationSec,
+        gates_bound: res.gatesBound || [],
+        loop: {
+          loopStart: res.loopStart, loopEnd: res.loopEnd, crossfadeSamples: res.crossfadeSamples,
+          period: res.period, periodMultiple: res.periodMultiple,
+        },
+      })
+
+      // Instant audible preview: hold the root note (loops while sounding), then
+      // release after a short burst so the seam cycles a few times.
+      const note = s.rootNote ?? 60
+      window.xleth?.timeline?.previewNote?.(regionId, note, 0.8)
+      setTimeout(() => window.xleth?.timeline?.previewNoteOff?.(regionId, note), 2500)
+    } catch (e) {
+      console.warn('[AUTO] autoLoopForSelection failed:', e?.message)
+    } finally {
+      setAutoBusy(false)
+    }
+  }, [regionId, autoBusy, audioInfo, setFields])
 
   const numSamples = audioInfo?.numSamples || 0
   const sampleRate = audioInfo?.originalSampleRate || 48000
@@ -481,6 +547,15 @@ export default function SamplerPanelContent({ regionId, onClose }) {
         <section className={`sampler-range-card sampler-range-card--loop${settings.loopEnabled ? '' : ' is-disabled'}`}>
           <header>
             <i /><span>Loop</span>
+            <button
+              type="button"
+              className="sampler-auto-loop"
+              onClick={runAutoLoop}
+              disabled={autoBusy || numSamples === 0}
+              title="Auto-loop: snap a period-aligned, formant-stable loop inside the trim selection (whole sample if untrimmed)"
+            >
+              {autoBusy ? '…' : 'AUTO'}
+            </button>
             <button type="button" className={settings.loopEnabled ? 'is-active' : ''} onClick={() => commitField('loopEnabled', !settings.loopEnabled)}>
               {settings.loopEnabled ? 'On' : 'Off'}
             </button>

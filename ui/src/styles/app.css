@@ -22861,6 +22861,21 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   color: var(--sampler-loop);
 }
 
+/* AUTO loop: an action button carrying the loop accent, sat left of On/Off. */
+.sampler-range-card > header button.sampler-auto-loop {
+  margin-left: auto;
+  border-color: rgba(199, 154, 74, 0.35);
+  color: var(--sampler-loop);
+}
+.sampler-range-card > header button.sampler-auto-loop + button { margin-left: 4px; }
+.sampler-range-card > header button.sampler-auto-loop:hover:not(:disabled) {
+  background: rgba(199, 154, 74, 0.16);
+}
+.sampler-range-card > header button.sampler-auto-loop:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .sampler-range-knobs {
   min-height: 92px;
   display: flex;

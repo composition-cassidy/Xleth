@@ -1870,6 +1870,55 @@ ipcMain.handle('xleth:loopLab:appendRating', async (_, candidatesPath, line) => 
   }
 });
 
+// ── AUTO-loop telemetry (local JSONL, no network) ────────────────────────────
+// The sampler AUTO button appends one line per event: an "apply" when a loop is
+// snapped, and a "nudge" when the user edits loopStart/loopEnd/crossfade within
+// 30 s of an apply. No confidence model exists (measured features cannot predict
+// acceptance — LOO AUC 0.53), so this replaces it: it is the only signal for how
+// often the snap is kept vs. adjusted.
+//
+// Written beside the current project when one is known; the main process does not
+// track a project path (project state lives in the renderer/engine), so this
+// lands in userData — the same durable, per-user location loop-lab-state.json
+// uses. "Export loop telemetry" (dev menu) saves a copy wherever the user picks.
+// The append/read logic lives in electron-main/loopTelemetry.js so it is unit-
+// testable without Electron.
+const loopTelemetry = require('./electron-main/loopTelemetry');
+function loopTelemetryPath() {
+  return loopTelemetry.telemetryFile(app.getPath('userData'));
+}
+
+// xleth:loopTelemetry:append(event) → { ok, path } | { ok:false, error }
+ipcMain.handle('xleth:loopTelemetry:append', async (_, event) => {
+  try {
+    const file = loopTelemetry.appendEvent(app.getPath('userData'), event);
+    return { ok: true, path: file };
+  } catch (e) {
+    log(`[LoopTelemetry] append error: ${e && e.message}`);
+    return { ok: false, error: (e && e.message) || 'append failed' };
+  }
+});
+
+// xleth:loopTelemetry:export() → { ok, path } | { ok:false, error } | { ok:false, canceled }
+ipcMain.handle('xleth:loopTelemetry:export', async (event) => {
+  try {
+    const src = loopTelemetryPath();
+    if (!fs.existsSync(src)) return { ok: false, error: 'No telemetry recorded yet.' };
+    const senderWin = BrowserWindow.fromWebContents(event.sender) || win;
+    const { canceled, filePath } = await dialog.showSaveDialog(senderWin, {
+      title: 'Export loop telemetry',
+      defaultPath: path.join(app.getPath('desktop') || app.getPath('home') || '.', 'loop-telemetry.jsonl'),
+      filters: [{ name: 'JSON Lines', extensions: ['jsonl'] }],
+    });
+    if (canceled || !filePath) return { ok: false, canceled: true };
+    fs.copyFileSync(src, filePath);
+    return { ok: true, path: filePath };
+  } catch (e) {
+    log(`[LoopTelemetry] export error: ${e && e.message}`);
+    return { ok: false, error: (e && e.message) || 'export failed' };
+  }
+});
+
 ipcMain.handle('xleth:project:getSourceThumbnail', async (_, filePath, duration) => {
   const { execFile } = require('child_process');
   const os = require('os');
