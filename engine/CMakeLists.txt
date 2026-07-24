@@ -1564,6 +1564,42 @@ target_compile_definitions(test_reverb PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── hall_measure (reverb re-tune measurement + A/B render tool) ──────────────
+# Not a ctest test — a diagnostic/render tool for the ongoing stock-reverb
+# redesign (docs/plans/reverb-audit-and-redesign.md). Prints a backend's
+# character metrics (crest, stereo corr, RT60-vs-knob, calibration wet RMS,
+# echo density) and writes before/after stereo WAV snippets. Gated OFF by
+# default so it does not add to the CI build; enable ad-hoc with
+#   cmake -S . -B build -DXLETH_BUILD_HALL_MEASURE=ON
+#   cmake --build build --config Release --target hall_measure
+option(XLETH_BUILD_HALL_MEASURE "Build the reverb measurement/render tool" OFF)
+if(XLETH_BUILD_HALL_MEASURE)
+    add_executable(hall_measure
+        test/hall_measure.cpp
+    )
+    target_link_libraries(hall_measure PRIVATE
+        XlethEngineCore
+        XlethEngineModel
+        juce::juce_core
+        juce::juce_audio_basics
+        juce::juce_audio_processors
+        juce::juce_dsp
+        juce::juce_events
+        juce::juce_gui_basics
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+    )
+    target_compile_definitions(hall_measure PRIVATE
+        JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+        JUCE_USE_CURL=0
+        JUCE_WEB_BROWSER=0
+        JUCE_MODAL_LOOPS_PERMITTED=1
+        JUCE_DIRECTSOUND=0
+        JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+        JUCE_STANDALONE_APPLICATION=1
+    )
+endif()
+
 # ── test_graph_effect_parameters ─────────────────────────────────────────────
 # FXG.4-a: unified graph-owned parameter descriptor + normalized read/write
 # foundation. Exercises stock (APVTS) enumeration, normalized clamping,

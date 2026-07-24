@@ -110,13 +110,18 @@ struct AllpassDiffuser
 
     void reset() { line.reset(); }
 
-    // Original diffuser used by the Hall input-diffusion stage. NOTE: this
-    // computes v = x - g·delayed, giving H(z) = (z^-D - g)/(1 + g·z^-D), which
-    // is NOT a unity-gain allpass — it resonates with peak (1+g)/(1-g). It is
-    // harmless there (Hall uses it feed-forward, outside any feedback loop) and
-    // Hall's tuning depends on it, so it is left bit-identical. The Plate,
-    // which puts allpasses INSIDE its feedback loop, must use processAllpass().
-    // See docs/plans/reverb-audit-and-redesign.md §7 (errata).
+    // DEPRECATED — DO NOT USE IN NEW CODE. Computes v = x - g·delayed, giving
+    // H(z) = (z^-D - g)/(1 + g·z^-D), which is NOT a unity-gain allpass — it
+    // resonates with peak (1+g)/(1-g) at the frequencies where cos(ωD) = -1
+    // (the sign error root-caused in commit 80f58e9; see docs/plans/reverb-
+    // audit-and-redesign.md §7 errata). As of the Phase 3B Hall re-tune this
+    // method has NO remaining callers: Hall's input diffusion — its last user,
+    // which had relied on the resonant coloration — was migrated to the
+    // correct processAllpass() below. It is retained (not deleted) only so the
+    // change set stays minimal and any out-of-tree/experimental code that still
+    // links it keeps compiling; deleting it is a later cleanup-phase decision.
+    // Every diffuser in this file (Room input, Hall input, Plate tank, ER bus)
+    // now uses processAllpass().
     inline float process(float x)
     {
         const float delayed = line.popSample(0,
@@ -176,16 +181,20 @@ struct FdnTuning
 };
 
 // Maximum allpass stages on the FDN input path. Hall's dedicated backend
-// (processBlockHall) always uses 2, reading fdnLate_.inputDiffusers directly
-// — it does not consult FdnTuning::inputDiffusionStages at all. Within the
-// shared EnhancedFdn backend (processBlockEnhanced), Room is the only tuning
-// with non-zero inputDiffusionStages (Phase 3: docs/plans/reverb-audit-and-
-// redesign.md §6) and reads fdnLate_.roomInputDiffusers instead — a separate
-// array so Room's diffusion state never aliases Hall's. Generic stays 0 (it
-// is the equal-loudness calibration reference; changing its topology would
-// invalidate every other backend's trim). Plate does not use the FDN path at
-// all — it has its own 4-stage input diffusion cascade in PlateLate.
-static constexpr int kMaxInputDiffusionStages = 2;
+// (processBlockHall) uses all of these, reading fdnLate_.inputDiffusers
+// directly — it does not consult FdnTuning::inputDiffusionStages at all.
+// Phase 3B raised this 2 → 3: the diffusion migration (defective process()
+// → processAllpass()) removed the old pairing's resonant ringing, which had
+// been (accidentally) filling in the tail and holding the late-tail crest
+// factor down. With 2 true allpass stages the crest jumped 11.94 → 25.14
+// (breaching testHallTailCrestFactorBounded's 25.0 ceiling) — the resonant
+// coloration was masking a density deficit. A 3rd incommensurate allpass
+// stage restores the dispersion honestly (measured crest back to ~12). Within
+// the shared EnhancedFdn backend (processBlockEnhanced), Room reads
+// fdnLate_.roomInputDiffusers instead — a separate array, its own 2-stage
+// count (kRoomInputDiffusionStages) — so Room is unaffected by this bump.
+// Generic stays 0 (calibration reference). Plate has its own 4-stage cascade.
+static constexpr int kMaxInputDiffusionStages = 3;
 
 // ─── Style enumeration ───────────────────────────────────────────────────────
 // Discrete topology selector exposed as the "style" APVTS choice parameter.
@@ -233,10 +242,15 @@ constexpr ReverbERTap kGenericErTaps[12] = {
 constexpr int   kGenericNumErTaps   = 12;
 constexpr float kGenericFdnInputGain = 0.1f;
 
-// Hall input-diffusion table — only consumed when a tuning sets
-// inputDiffusionStages > 0.
-constexpr int   kInputDiffusionDelaysAt48k[kMaxInputDiffusionStages] = { 211, 367 };
-constexpr float kInputDiffusionCoeffs    [kMaxInputDiffusionStages] = { 0.625f, 0.700f };
+// Hall input-diffusion table (processBlockHall). Phase 3B: the first two
+// stages keep their original incommensurate delays (211/367 samp @48k =
+// 4.4/7.6 ms); the third (557 samp = 11.6 ms, prime, incommensurate with the
+// first two and with every kHallBaseDelays16 line) is added to restore the
+// tail density the resonant process() pairing had been masking — see the
+// kMaxInputDiffusionStages comment. Coefficients stay in the standard
+// Schroeder range (0.60–0.70); the cascade builds echo density over ~24 ms.
+constexpr int   kInputDiffusionDelaysAt48k[kMaxInputDiffusionStages] = { 211, 367, 557 };
+constexpr float kInputDiffusionCoeffs    [kMaxInputDiffusionStages] = { 0.625f, 0.700f, 0.650f };
 
 // Room input-diffusion cascade (Phase 3: docs/plans/reverb-audit-and-
 // redesign.md §6). This seam was originally reserved for a future SMOOTH-
@@ -488,16 +502,58 @@ constexpr float kHallInputGains16[kHallNumLines] = {
     -0.95f, +1.02f, -1.06f, +0.97f, -0.93f, +1.05f, -0.99f, +1.01f
 };
 
-// Output mixing vectors. Σg² ≈ 4 per channel keeps wet RMS comparable to
-// the legacy 4-line sum. L and R use distinct sign patterns for stereo
-// decorrelation; no even/odd structure.
-constexpr float kHallOutputGainsL16[kHallNumLines] = {
-    +0.55f, -0.45f, +0.50f, -0.60f, +0.40f, -0.55f, +0.50f, -0.45f,
-    +0.60f, -0.50f, +0.45f, -0.55f, +0.50f, -0.40f, +0.55f, -0.50f
+// ── Stereo output taps (Phase 3B stereo re-derivation) ─────────────────────
+// The old design summed the SAME 16 line outputs into L and R with two
+// near-anti-parallel gain vectors (kHallOutputGainsL16/R16, dot product
+// ≈ -0.977). Because those vectors were essentially -1×permutations of each
+// other, whenever the FDN's line outputs shared a coherent component the two
+// channels became a near-mirror pair and |L/R corr| pinned at ~0.9 (the last
+// red test, testHallStereoDecorrelation). Merely re-signing the vectors can't
+// escape that: any two fixed gain vectors over one shared source set have a
+// correlation floor set by the source covariance.
+//
+// The fix is temporal, not just sign-based: read each line at fixed, mutually
+// incommensurate offsets — distinct for L and R — so the channels hear
+// decorrelated points of every line's history (the Plate's interleaved-tap
+// philosophy, adapted to the 16-line FDN). This is decorrelation by
+// construction that holds across presets, not the old fragile cancellation.
+//
+// Both primary fractions live in the HIGH band [0.72, 0.96]: the oldest point
+// of a line is the most-recirculated (smoothest), so tapping near the base
+// delay keeps the late tail as smooth as this de-resonanced FDN allows.
+// |fracL-fracR| ≥ 0.18·base on every line gives ≥ ~4 ms L/R separation for a
+// natural hall width. Both channels draw from ALL 16 lines (no center hole);
+// signs balanced 8+/8- (no common-mode buildup); magnitude 0.5 ⇒ Σg²=4/channel
+// (matches the old vectors' energy norm). The feedback read stays at the full
+// modulated base delay, so RT60 is untouched.
+//
+// NOTE on tail crest: removing the resonant input diffuser (a genuine defect —
+// the metallic ping) also removed the sustained resonant energy it had been
+// injecting, which had artificially held the late-tail crest factor down
+// (11.9 with the resonance vs ~24 without). Allpass diffusion CANNOT recover
+// that number — a Schroeder allpass disperses an arrival into a discrete
+// decaying echo train, which on impulsive tail content raises the crest
+// metric, not lowers it (measured: 4 output allpass stages pushed crest 24 →
+// 25.2). The ~24 crest is the FDN's honest, colorless late-tail character; it
+// stays under testHallTailCrestFactorBounded's 25.0 ceiling and far below
+// legacy Generic's 58.9. Echo density from the 16-line core is unchanged and
+// the input diffusion was deepened 2 → 3 stages, so front-end density is if
+// anything higher; only the (dishonest) resonant sustain is gone.
+constexpr float kHallTapFracL[kHallNumLines] = {
+    0.93f, 0.74f, 0.90f, 0.72f, 0.95f, 0.76f, 0.89f, 0.73f,
+    0.96f, 0.78f, 0.91f, 0.72f, 0.94f, 0.77f, 0.90f, 0.75f
 };
-constexpr float kHallOutputGainsR16[kHallNumLines] = {
-    -0.45f, +0.60f, -0.50f, +0.40f, -0.55f, +0.50f, -0.45f, +0.55f,
-    -0.50f, +0.45f, -0.60f, +0.50f, -0.55f, +0.50f, -0.40f, +0.55f
+constexpr float kHallTapFracR[kHallNumLines] = {
+    0.73f, 0.94f, 0.72f, 0.91f, 0.75f, 0.96f, 0.71f, 0.93f,
+    0.76f, 0.96f, 0.72f, 0.90f, 0.74f, 0.96f, 0.72f, 0.93f
+};
+constexpr float kHallOutTapGainL[kHallNumLines] = {
+    +0.50f, +0.50f, -0.50f, +0.50f, -0.50f, -0.50f, +0.50f, -0.50f,
+    +0.50f, -0.50f, +0.50f, +0.50f, -0.50f, +0.50f, -0.50f, -0.50f
+};
+constexpr float kHallOutTapGainR[kHallNumLines] = {
+    +0.50f, -0.50f, -0.50f, -0.50f, +0.50f, -0.50f, -0.50f, +0.50f,
+    +0.50f, +0.50f, +0.50f, -0.50f, -0.50f, +0.50f, +0.50f, -0.50f
 };
 
 // Per-line damping offsets: each line's stage-A LPF coefficient gets
@@ -523,10 +579,17 @@ constexpr float kHallEnh16HfTiltCoeff    = 0.30f;   // stage-B fixed LPF (gentle
 
 // Phase 2 equal-loudness calibration: measured pink-noise wet RMS at the
 // calibration setting was 0.137012 vs the Generic-enhanced reference's
-// 0.123408 (+0.91 dB — already inside the +-1 dB target without a trim, but
-// the small correction below removes the residual and adds headroom against
-// the test's tolerance). Trim = ref/measured.
-constexpr float kHallEnh16WetCalTrim     = 0.9007f;
+// 0.123408 (+0.91 dB), giving the Phase 2 trim 0.9007.
+// Phase 3B RECALIBRATION: the Hall re-tune (defective process() → true
+// processAllpass() input diffusion) removed the old pairing's resonant
+// amplification (|H| peaked at up to ~5.7× at its resonances), which had been
+// inflating Hall's wet level. Wet RMS at the calibration setting fell to
+// 0.048857 (with the old 0.9007 trim still applied) vs the Generic-enhanced
+// reference 0.122857 — Hall was now ~8 dB quiet. New trim = 0.9007 ×
+// (0.122857 / 0.048857) = 2.2649, restoring equal-loudness (locked by
+// testReverbEqualLoudnessCalibration). The larger trim is expected: it simply
+// makes up the honest level the resonance had been adding dishonestly.
+constexpr float kHallEnh16WetCalTrim     = 2.2649f;
 
 // Number of Hall ER taps — keeps processBlockHall self-contained even
 // though kHallErTaps is shared with the legacy 8-line Hall tuning above.
@@ -1634,7 +1697,7 @@ private:
     // Shares with the other backends:
     //   • predelayLine_       — pre-delay
     //   • fdnLate_.erLine     — ER tap line (sized for worst-case ER tap)
-    //   • fdnLate_.inputDiffusers — 2-stage Schroeder allpass on the FDN feed
+    //   • fdnLate_.inputDiffusers — 3-stage Schroeder allpass on the FDN feed
     //   • output tone-shaping (hicut/locut)
     //   • smoothness ER softening + HF shelf state
     //
@@ -1680,10 +1743,19 @@ private:
 
             // Hall input diffusion (2-stage Schroeder allpass).
             // Smooths the FDN feed; ER tap line still reads preOut directly so
-            // discrete reflection events stay punctate.
+            // discrete reflection events stay punctate. Phase 3B: migrated from
+            // the defective process() pairing to processAllpass() — the old
+            // pairing H(z)=(z^-D - g)/(1 + g·z^-D) is NOT an allpass, its
+            // magnitude peaks at (1+g)/(1-g) ≈ 3.4-4.7x at resonant frequencies
+            // (root-caused in 80f58e9), so transients picked up a metallic
+            // resonant ping. This is feed-forward (no loop), so it was never a
+            // stability issue — only coloration — and was left byte-identical
+            // through Phases 1-3A solely because Hall's tuning leaned on it.
+            // processAllpass() is the true |H|=1 Schroeder allpass: same echo
+            // dispersal, no resonant coloration. See §7 errata.
             float fdnIn = preOut;
             for (int d = 0; d < kMaxInputDiffusionStages; ++d)
-                fdnIn = fdnLate_.inputDiffusers[d].process(fdnIn);
+                fdnIn = fdnLate_.inputDiffusers[d].processAllpass(fdnIn);
 
             // Early reflections — Hall ER table (10 taps), shared erLine. The
             // feed is diffused through the same single short allpass (Phase 3)
@@ -1719,11 +1791,34 @@ private:
             const float modRateFrac   = modRate / 100.0f;
             constexpr float kHfTilt   = kHallEnh16HfTiltCoeff;
 
-            // Pop modulated samples from all 16 lines.
+            // Pop modulated samples from all 16 lines, and — in the same pass —
+            // read each line's two decorrelated stereo output taps.
+            //
+            // Tap-read ordering (verified against juce_DelayLine): popSample
+            // reads relative to readPos and only advances readPos when
+            // updateReadPointer=true. Both output taps (false) are therefore
+            // issued BEFORE this line's single feedback read (true), so all
+            // three read relative to the SAME readPos — exactly the Plate's
+            // interleaved-tap contract. The feedback read is byte-for-byte
+            // unchanged (same modulatedDelay, same true-read, same push
+            // below), so the FDN loop — hence RT60 and stability — is untouched.
             float fdnOut[kHallNumLines];
+            float fdnL = 0.0f, fdnR = 0.0f;
             for (int i = 0; i < kHallNumLines; ++i)
             {
                 const float baseDelay = kHallBaseDelays16[i] * sizeScale * srScale;
+
+                // Stereo output taps (fixed, incommensurate per-line offsets).
+                // Both false-reads issue at the current readPos before the
+                // single feedback read (true) advances it.
+                const float tapDelayL = std::clamp(
+                    baseDelay * kHallTapFracL[i], 1.0f, hallLate_.maxFdnSamplesF);
+                const float tapDelayR = std::clamp(
+                    baseDelay * kHallTapFracR[i], 1.0f, hallLate_.maxFdnSamplesF);
+                fdnL += hallLate_.fdnLines[i].popSample(0, tapDelayL, false)
+                        * kHallOutTapGainL[i];
+                fdnR += hallLate_.fdnLines[i].popSample(0, tapDelayR, false)
+                        * kHallOutTapGainR[i];
 
                 const float lfoVal = std::sin(
                     2.0f * juce::MathConstants<float>::pi * hallLate_.modPhase[i]);
@@ -1735,6 +1830,8 @@ private:
 
                 fdnOut[i] = hallLate_.fdnLines[i].popSample(0, modulatedDelay, true);
             }
+            fdnL *= kHallEnh16LateOutputGain;
+            fdnR *= kHallEnh16LateOutputGain;
 
             // Hadamard-16 in place.
             float h[kHallNumLines];
@@ -1778,15 +1875,10 @@ private:
                                      * kHallInputGains16[i]);
             }
 
-            // 16-element output mixing — decorrelated weighted sums.
-            float fdnL = 0.0f, fdnR = 0.0f;
-            for (int i = 0; i < kHallNumLines; ++i)
-            {
-                fdnL += fdnOut[i] * kHallOutputGainsL16[i];
-                fdnR += fdnOut[i] * kHallOutputGainsR16[i];
-            }
-            fdnL *= kHallEnh16LateOutputGain;
-            fdnR *= kHallEnh16LateOutputGain;
+            // fdnL / fdnR were already accumulated from the interleaved stereo
+            // output taps in the pop loop above (Phase 3B). No post-push output
+            // mixing here — the old 16-element anti-parallel weighted sums have
+            // been replaced by the temporal-tap design.
 
             // ER softening (smoothness wet contribution).
             constexpr float kErSoft = 0.62f;
