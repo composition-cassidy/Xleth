@@ -467,82 +467,116 @@ constexpr float kHallEnh16HfTiltCoeff    = 0.30f;   // stage-B fixed LPF (gentle
 // though kHallErTaps is shared with the legacy 8-line Hall tuning above.
 constexpr int kHallNumErTaps = 10;
 
-// ─── Plate backend constants (Dattorro/Griesinger-inspired, original) ────
+// ─── Plate backend constants — true Dattorro (JAES 1997) plate ───────────
 //
-// The Plate topology is intentionally NOT an FDN. It is a pair of
-// cross-coupled allpass-and-delay chains forming a single long feedback
-// path that traverses both arms in turn. That path looks like:
+// Phase 1 rewrite (see docs/plans/reverb-audit-and-redesign.md §6 Phase 1
+// and §7 errata). The tank is Dattorro's cross-coupled figure-8 plate:
+// two arms, four long tank delays, decay applied INSIDE each arm, tank
+// modulation on the first allpass of each arm, and 7 interleaved output
+// taps per channel spanning all four delays. Topology per arm:
 //
-//   diffused → arm A: [modulated AP] → [long delay] → [damping LPF] → [fixed AP] →
-//                            ↓
-//             arm B: [modulated AP] → [long delay] → [damping LPF] → [fixed AP] →
-//                            ↓
-//                          (× decay) → back into arm A
+//   arm_in → [damping LPF] → [modulated AP] → [delay1] → (× decay)
+//                → [fixed AP2] → [delay2] → [DC blocker] → arm_out
 //
-// All arrays here are deterministic. Delays and coefficients were chosen
-// to be coprime with every other delay in the file (FDN, Hall ER, Hall
-// input diffusion, the abandoned smoothness allpass pair) so no two
-// systems share a comb mode. Allpass coefficients sit in 0.55–0.68 — well
-// below the 0.9+ region where allpasses themselves start to ring.
+//   figure-8: diffused source injects into arm A; arm A → arm B → arm A.
+//
+// Delays are Dattorro's plate figure (samples @ 29761 Hz) scaled to a
+// 48 kHz base by ×(48000/29761) = ×1.61285; srScale = sr/48000 applies the
+// final runtime-rate correction, sizeScale (0.75..1.25) scales the two long
+// delays. Dattorro chose these lengths mutually incommensurate so no two
+// tank delays share a comb mode; the linear scaling preserves the ratios.
+//
+// TWO named deviations from Dattorro's published figure (justified in the
+// processBlockPlate header):
+//   (1) the in-loop damping LPF is placed at the ARM INPUT (not between
+//       delay1 and delay2) so every tap point is post-damping — the audit's
+//       "no pre-damping taps" rule. |loop gain| is unchanged (series loop).
+//   (2) the two output taps Dattorro reads from the AP2 lines are folded
+//       onto the sibling delay2 line (nearby offsets) so taps span only the
+//       four addressable delay lines; AllpassDiffuser hides its buffer.
 
 constexpr int   kPlateInputDiffuserDelays[4] = { 149, 263, 421, 587 };
 constexpr float kPlateInputDiffuserCoeffs[4] = { 0.65f, 0.62f, 0.68f, 0.60f };
 
-// Tank arm A
-constexpr int   kPlateModApA_BaseDelay = 359;     // ~7.5 ms @ 48 kHz
-constexpr float kPlateModApA_Coeff     = 0.55f;
-constexpr int   kPlateLongA_Delay      = 1721;    // ~35.9 ms
-constexpr int   kPlateFixedApA_Delay   = 877;     // ~18.3 ms
-constexpr float kPlateFixedApA_Coeff   = 0.62f;
+// ── Tank arm A (Dattorro "left" half; 29761→48k values in the comment) ──
+constexpr int   kPlateModApA_Delay  = 1084;   // Dattorro 672  (decay-diffusion-1, modulated)
+constexpr int   kPlateDelay1A_Delay = 7182;   // Dattorro 4453
+constexpr int   kPlateAp2A_Delay    = 2903;   // Dattorro 1800 (decay-diffusion-2)
+constexpr int   kPlateDelay2A_Delay = 6000;   // Dattorro 3720
 
-// Tank arm B
-constexpr int   kPlateModApB_BaseDelay = 461;     // ~9.6 ms
-constexpr float kPlateModApB_Coeff     = 0.58f;
-constexpr int   kPlateLongB_Delay      = 1979;    // ~41.2 ms
-constexpr int   kPlateFixedApB_Delay   = 1031;    // ~21.5 ms
-constexpr float kPlateFixedApB_Coeff   = 0.65f;
+// ── Tank arm B (Dattorro "right" half) ──
+constexpr int   kPlateModApB_Delay  = 1465;   // Dattorro 908
+constexpr int   kPlateDelay1B_Delay = 6801;   // Dattorro 4217
+constexpr int   kPlateAp2B_Delay    = 4283;   // Dattorro 2656
+constexpr int   kPlateDelay2B_Delay = 5102;   // Dattorro 3163
 
-// Tank-wide
-constexpr float kPlateModDepthSamples  = 3.0f;    // peak ±3 samples LFO depth
-constexpr float kPlateModDepthScalar   = 0.5f;    // halves user mod_depth — Plate stays non-chorussy
-constexpr float kPlateModRateA_Hz      = 0.43f;
-constexpr float kPlateModRateB_Hz      = 0.71f;
-// Input gain scales the diffused signal injected into arm A of the tank.
-// Arm B receives no direct input injection (driven by cross-feed only).
-//
-// This is a LEVEL control, not a stability control: it scales the injected
-// signal only and does NOT appear in the recirculating loop gain (which is
-// feedbackGain² × the tank's unity-gain allpass/delay elements). The prior
-// 0.20 value was a symptom-patch for the runaway that was actually caused by
-// the Schroeder allpass sign error (fixed in processAllpass()); with the real
-// cause fixed, 0.20 merely left the plate ~25 dB quieter than the FDN styles.
-// Restored to the original 0.60 to bring the wet level back into range. Full
-// equal-loudness calibration across styles is Phase 2 (see reverb-audit §7).
-constexpr float kPlateInputGain        = 0.60f;
+// Decay-diffusion allpass coefficients. Dattorro: decayDiffusion1 = 0.70,
+// decayDiffusion2 ∈ [0.25, 0.50] — we pin it at the 0.50 ceiling. Both use
+// the CORRECTED unity-gain form (processAllpass); never the broken sign
+// pairing (see §7 errata). Round-trip: 17169 + 17651 = 34820 samples @ 48k
+// = 725 ms (≫ the 400 ms floor; ×1.25 at size 100 → 906 ms).
+constexpr float kPlateDecayDiffusion1 = 0.70f;
+constexpr float kPlateDecayDiffusion2 = 0.50f;
 
-// 6 stereo output taps (3 per arm) at deterministic positions inside the
-// long delay lines.  Σg² ≈ 1.3 per channel × kPlateLateOutputGain — the
-// tank's recirculating energy is much higher than a single FDN line, so
-// modest tap gains plus an output trim land Plate at a comparable wet
-// level to the 8-line FDN styles.
-struct PlateOutputTap
-{
-    int   armIndex;       // 0 = arm A long delay, 1 = arm B long delay
-    int   delaySamplesAt48k;
-    float gainL;
-    float gainR;
+// Tank modulation — Dattorro modulates the first tank allpass ±8 samples to
+// decohere regeneration (this is what kills the comb percept at long decay).
+// mod_depth 0..100% maps to 0..kPlateModDepthSamples of peak excursion on
+// each arm's modulated allpass; the two LFO rates are incommensurate.
+constexpr float kPlateModDepthSamples = 24.0f;
+constexpr float kPlateModRateA_Hz     = 0.70f;
+constexpr float kPlateModRateB_Hz     = 1.13f;
+
+// Input injection level — a LEVEL control, NOT a stability control (it scales
+// the injected signal only; the recirculating loop gain is gA·gB from the
+// honest-T60 relation below). See §7 errata.
+constexpr float kPlateInputGain = 0.60f;
+
+// Honest-RT60 safety ceiling on the per-arm decay gain. With the long
+// Dattorro tank the per-arm gain never approaches this even at the worst
+// corner (decay 30 / size 0 → ~0.94, round-trip 0.88 < 1), so stability
+// comes from the exact T60 relation and the in-loop damping, not this clamp.
+// It exists only as NaN/edge insurance so an extreme automated value can
+// never reach unity. (Contrast the old 0.93 clamp that killed 80% of the
+// decay knob.)
+constexpr float kPlateDecayCeiling = 0.9995f;
+
+// ── 7 output taps per channel across all four tank delays ──
+// Offsets are Dattorro's accumulator tap table (samples @ 29761 Hz) scaled
+// ×1.61285 to the 48 kHz base, then ×sizeScale×srScale at runtime. Left reads
+// mostly from arm B and vice-versa (spatial interleave); the offsets differ
+// per line (temporal interleave). Signs are Dattorro's. Magnitudes are all
+// equal and normalized so Σg² = 1 per channel (7 taps → 1/√7 = 0.377964),
+// then a single calibrated wet trim (kPlateLateOutputGain) is applied once.
+// All four delays are post-damping (deviation (1) above) — no pre-damping taps.
+enum PlateDelayId { PL_D1A = 0, PL_D2A = 1, PL_D1B = 2, PL_D2B = 3 };
+struct PlateOutputTap { int delayId; int offsetAt48k; float sign; };
+
+constexpr float kPlateTapMag = 0.3779645f;   // 1/sqrt(7) — normalizes Σg²=1
+
+// Left channel accumulator (Dattorro left; AP2 taps folded onto delay2).
+constexpr PlateOutputTap kPlateTapsL[7] = {
+    { PL_D1B,  429, +1.0f },   // Dattorro rightDelay1 @266
+    { PL_D1B, 4797, +1.0f },   //           rightDelay1 @2974
+    { PL_D2B, 3086, -1.0f },   //           rightAP2    @1913 → delay2B
+    { PL_D2B, 3219, +1.0f },   //           rightDelay2 @1996
+    { PL_D1A, 3210, -1.0f },   //           leftDelay1  @1990
+    { PL_D2A,  302, -1.0f },   //           leftAP2     @187  → delay2A
+    { PL_D2A, 1719, -1.0f },   //           leftDelay2  @1066
 };
-
-constexpr PlateOutputTap kPlateOutputTaps[6] = {
-    { 0,  271,  +0.55f, -0.40f },
-    { 0, 1019,  -0.40f, +0.55f },
-    { 0, 1453,  +0.50f, -0.45f },
-    { 1,  353,  -0.45f, +0.60f },
-    { 1, 1109,  +0.50f, -0.40f },
-    { 1, 1487,  -0.35f, +0.50f },
+// Right channel accumulator (Dattorro right).
+constexpr PlateOutputTap kPlateTapsR[7] = {
+    { PL_D1A,  569, +1.0f },   // Dattorro leftDelay1  @353
+    { PL_D1A, 5850, +1.0f },   //           leftDelay1  @3627
+    { PL_D2A, 1981, -1.0f },   //           leftAP2     @1228 → delay2A
+    { PL_D2A, 4311, +1.0f },   //           leftDelay2  @2673
+    { PL_D1B, 3405, -1.0f },   //           rightDelay1 @2111
+    { PL_D2B,  540, -1.0f },   //           rightAP2    @335  → delay2B
+    { PL_D2B,  195, -1.0f },   //           rightDelay2 @121
 };
-constexpr int   kPlateNumOutputTaps   = 6;
-constexpr float kPlateLateOutputGain  = 0.55f;     // overall tap-bus trim
+constexpr int   kPlateNumOutputTaps  = 7;
+// Single calibrated wet trim (measured — see testPlateWetLevelBounded and the
+// measured-level row in the Phase 1 report). Lands Plate near the FDN styles.
+constexpr float kPlateLateOutputGain = 1.45f;
 
 // Mode-entry wet ramp length (samples). Wet output fades 0→1 over this many
 // samples after each PlateLate::reset(), preventing a click or sudden blast
@@ -741,39 +775,41 @@ struct HallLate
 };
 
 // ─── PlateLate ───────────────────────────────────────────────────────────────
-// Dedicated Dattorro/Griesinger-inspired plate tank. Owns:
-//   • 4-stage input diffusion cascade
-//   • per-arm modulated allpass (Lagrange3rd interpolation)
-//   • per-arm long delay line (no interpolation; modulation lives in the
-//     modulated allpass stage instead)
-//   • per-arm fixed-delay Schroeder allpass
-//   • per-arm damping LPF state
-//   • per-arm DC blocker
-//   • per-arm modulation phase + cross-feed memory
+// True Dattorro (JAES 1997) plate tank. Owns, per arm:
+//   • damping LPF (at the arm input — deviation (1), all taps post-damping)
+//   • modulated allpass  (decay-diffusion-1, Lagrange3rd, tank modulation)
+//   • long delay1        (None interp; multi-tap source)
+//   • fixed allpass AP2  (decay-diffusion-2, AllpassDiffuser)
+//   • long delay2        (None interp; multi-tap source)
+//   • DC blocker
+// Plus the shared 4-stage input diffusion cascade and the cross-feed memory.
 //
+// The decay gain is applied inside each arm (between delay1 and AP2); it is
+// NOT stored here — it is recomputed per sample from the honest-T60 relation.
 // All buffers allocated in prepare(); no heap traffic in process().
 
 struct PlateLate
 {
     std::array<AllpassDiffuser, 4> inputDiffusers;
 
-    // Modulated allpasses — implemented as a Lagrange3rd delay line for the
-    // internal "v" state plus a fixed coefficient. The allpass arithmetic
-    // is inlined in processBlockPlate.
+    // Modulated allpasses (decay-diffusion-1). Lagrange3rd delay line for the
+    // internal "v" state; allpass arithmetic inlined in processBlockPlate.
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Lagrange3rd> modApA;
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Lagrange3rd> modApB;
 
-    // Long delay lines — also serve as the source for the 6 output taps,
-    // hence sized to comfortably cover both the line's full delay and the
-    // largest tap offset (× 1.25 size headroom × srScale).
-    juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None> longA;
-    juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None> longB;
+    // The four long tank delays — also the source for the 7 output taps.
+    // Size-scaled (0.75..1.25) at runtime; buffers cover the ×1.25 worst case.
+    juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None> delay1A;
+    juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None> delay2A;
+    juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None> delay1B;
+    juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None> delay2B;
 
-    // Fixed allpasses — the existing AllpassDiffuser type fits exactly.
-    AllpassDiffuser fixedApA;
-    AllpassDiffuser fixedApB;
+    // Fixed allpasses (decay-diffusion-2). Not size-scaled (fixed length),
+    // their length is still folded into τ so RT60 stays honest.
+    AllpassDiffuser ap2A;
+    AllpassDiffuser ap2B;
 
-    // Damping LPF state per arm.
+    // Damping LPF state per arm (one-pole, at the arm input).
     float dampStateA = 0.0f;
     float dampStateB = 0.0f;
 
@@ -782,30 +818,44 @@ struct PlateLate
     float dcXB = 0.0f, dcYB = 0.0f;
     float dcR  = 0.0f;
 
-    // Cross-feed memory: arm A consumes B's *previous* output and arm B
-    // consumes A's *current-sample* output. The lastB store provides the
-    // single-sample delay that breaks the otherwise instantaneous loop.
+    // Cross-feed memory: arm A consumes B's *previous-sample* output; the
+    // single-sample lag resolves the compute ordering of the figure-8 loop
+    // (each arm already carries thousands of samples of true delay).
     float lastB = 0.0f;
 
     // Modulation phases.
     float modPhaseA = 0.0f;
     float modPhaseB = 0.0f;
 
-    // Mode-entry wet ramp counter. Increments from 0 to kPlateEntryRampSamples
-    // on the first samples after each reset(). Wet output is scaled by
-    // rampPos / kPlateEntryRampSamples during the ramp window, then stays at
-    // 1.0. Zeroed in reset() so every style-entry triggers the ramp.
+    // Mode-entry wet ramp counter (fades 0→1 over kPlateEntryRampSamples after
+    // each reset(), i.e. on every style switch into Plate).
     int rampPos = 0;
 
-    // Cached sample-rate-scaled bases & buffer max bounds.
-    float modApBaseA  = 0.0f;
-    float modApBaseB  = 0.0f;
-    float modApMaxF_A = 0.0f;
-    float modApMaxF_B = 0.0f;
-    float longBaseA   = 0.0f;
-    float longBaseB   = 0.0f;
-    float longMaxF_A  = 0.0f;
-    float longMaxF_B  = 0.0f;
+    // Cached sample-rate-scaled bases & buffer max bounds (samples @ runtime
+    // SR, size 50 — delay1/delay2 get the extra ×sizeScale at runtime).
+    float modApBaseA = 0.0f, modApBaseB = 0.0f;
+    float modApMaxF_A = 0.0f, modApMaxF_B = 0.0f;
+    float delay1BaseA = 0.0f, delay2BaseA = 0.0f;
+    float delay1BaseB = 0.0f, delay2BaseB = 0.0f;
+    float delay1MaxF_A = 0.0f, delay2MaxF_A = 0.0f;
+    float delay1MaxF_B = 0.0f, delay2MaxF_B = 0.0f;
+    // AP2 lengths in samples @ runtime SR (fixed; used for τ / RT60).
+    float ap2LenA = 0.0f, ap2LenB = 0.0f;
+
+    // Prepare a None-interp long delay, returning its max-read float bound.
+    static float prepareLongDelay(
+        juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None>& line,
+        const juce::dsp::ProcessSpec& spec, int base48k, float srScale)
+    {
+        // Cover the full delay AND every tap offset (< base) at the ×1.25
+        // size ceiling, + interpolation/rounding margin.
+        const int maxSamp =
+            static_cast<int>(static_cast<float>(base48k) * 1.25f * srScale + 8.0f) + 4;
+        line.setMaximumDelayInSamples(maxSamp);
+        line.prepare(spec);
+        line.reset();
+        return static_cast<float>(maxSamp - 1);
+    }
 
     void prepare(double sampleRate, int maxBlockSize)
     {
@@ -813,25 +863,23 @@ struct PlateLate
         const float srScale = sr / 48000.0f;
 
         for (int d = 0; d < 4; ++d)
-        {
             inputDiffusers[d].prepare(
                 sampleRate, maxBlockSize,
                 kPlateInputDiffuserDelays[d],
                 kPlateInputDiffuserCoeffs[d]);
-        }
 
         juce::dsp::ProcessSpec spec;
         spec.sampleRate       = sampleRate;
         spec.maximumBlockSize = static_cast<juce::uint32>(maxBlockSize);
         spec.numChannels      = 1;
 
-        // Modulated allpasses — buffer covers base ± mod depth.
-        modApBaseA = static_cast<float>(kPlateModApA_BaseDelay) * srScale;
-        modApBaseB = static_cast<float>(kPlateModApB_BaseDelay) * srScale;
-        const int modApMaxA =
-            static_cast<int>(modApBaseA + kPlateModDepthSamples + 8.0f) + 4;
-        const int modApMaxB =
-            static_cast<int>(modApBaseB + kPlateModDepthSamples + 8.0f) + 4;
+        // Modulated allpasses — not size-scaled; buffer covers base ± mod depth
+        // (+ Lagrange margin). Modulation excursion is kPlateModDepthSamples.
+        modApBaseA = static_cast<float>(kPlateModApA_Delay) * srScale;
+        modApBaseB = static_cast<float>(kPlateModApB_Delay) * srScale;
+        const float modExc = kPlateModDepthSamples * srScale;
+        const int modApMaxA = static_cast<int>(modApBaseA + modExc + 8.0f) + 4;
+        const int modApMaxB = static_cast<int>(modApBaseB + modExc + 8.0f) + 4;
         modApA.setMaximumDelayInSamples(modApMaxA);
         modApB.setMaximumDelayInSamples(modApMaxB);
         modApA.prepare(spec);  modApA.reset();
@@ -839,28 +887,21 @@ struct PlateLate
         modApMaxF_A = static_cast<float>(modApMaxA - 1);
         modApMaxF_B = static_cast<float>(modApMaxB - 1);
 
-        // Long delays — sized for max(line delay, longest tap offset) × 1.25
-        // size headroom × srScale.
-        const float worstLongA = static_cast<float>(std::max(
-            kPlateLongA_Delay, kPlateOutputTaps[2].delaySamplesAt48k));   // largest A-tap = 1453
-        const float worstLongB = static_cast<float>(std::max(
-            kPlateLongB_Delay, kPlateOutputTaps[5].delaySamplesAt48k));   // largest B-tap = 1487
-        longBaseA = static_cast<float>(kPlateLongA_Delay) * srScale;
-        longBaseB = static_cast<float>(kPlateLongB_Delay) * srScale;
-        const int longMaxA = static_cast<int>(worstLongA * 1.25f * srScale + 8.0f) + 4;
-        const int longMaxB = static_cast<int>(worstLongB * 1.25f * srScale + 8.0f) + 4;
-        longA.setMaximumDelayInSamples(longMaxA);
-        longB.setMaximumDelayInSamples(longMaxB);
-        longA.prepare(spec);  longA.reset();
-        longB.prepare(spec);  longB.reset();
-        longMaxF_A = static_cast<float>(longMaxA - 1);
-        longMaxF_B = static_cast<float>(longMaxB - 1);
+        // Four long tank delays (size-scaled at runtime).
+        delay1BaseA = static_cast<float>(kPlateDelay1A_Delay) * srScale;
+        delay2BaseA = static_cast<float>(kPlateDelay2A_Delay) * srScale;
+        delay1BaseB = static_cast<float>(kPlateDelay1B_Delay) * srScale;
+        delay2BaseB = static_cast<float>(kPlateDelay2B_Delay) * srScale;
+        delay1MaxF_A = prepareLongDelay(delay1A, spec, kPlateDelay1A_Delay, srScale);
+        delay2MaxF_A = prepareLongDelay(delay2A, spec, kPlateDelay2A_Delay, srScale);
+        delay1MaxF_B = prepareLongDelay(delay1B, spec, kPlateDelay1B_Delay, srScale);
+        delay2MaxF_B = prepareLongDelay(delay2B, spec, kPlateDelay2B_Delay, srScale);
 
-        // Fixed allpasses (own their delay buffers internally).
-        fixedApA.prepare(sampleRate, maxBlockSize,
-                         kPlateFixedApA_Delay, kPlateFixedApA_Coeff);
-        fixedApB.prepare(sampleRate, maxBlockSize,
-                         kPlateFixedApB_Delay, kPlateFixedApB_Coeff);
+        // Fixed AP2 allpasses (own their delay buffers internally).
+        ap2A.prepare(sampleRate, maxBlockSize, kPlateAp2A_Delay, kPlateDecayDiffusion2);
+        ap2B.prepare(sampleRate, maxBlockSize, kPlateAp2B_Delay, kPlateDecayDiffusion2);
+        ap2LenA = static_cast<float>(kPlateAp2A_Delay) * srScale;
+        ap2LenB = static_cast<float>(kPlateAp2B_Delay) * srScale;
 
         dcR = 1.0f - 2.0f * juce::MathConstants<float>::pi * 5.0f / sr;
 
@@ -869,20 +910,22 @@ struct PlateLate
         dcXA = 0.0f; dcYA = 0.0f;
         dcXB = 0.0f; dcYB = 0.0f;
         modPhaseA = 0.0f; modPhaseB = 0.0f;
+        rampPos    = 0;
     }
 
     void reset()
     {
         for (auto& d : inputDiffusers) d.reset();
         modApA.reset(); modApB.reset();
-        longA.reset();  longB.reset();
-        fixedApA.reset(); fixedApB.reset();
+        delay1A.reset(); delay2A.reset();
+        delay1B.reset(); delay2B.reset();
+        ap2A.reset(); ap2B.reset();
         dampStateA = 0.0f; dampStateB = 0.0f;
         lastB      = 0.0f;
         dcXA = 0.0f; dcYA = 0.0f;
         dcXB = 0.0f; dcYB = 0.0f;
         modPhaseA = 0.0f; modPhaseB = 0.0f;
-        rampPos   = 0;
+        rampPos    = 0;
     }
 };
 
@@ -1581,29 +1624,54 @@ private:
         }
     }
 
-    // ─── PLATE backend ───────────────────────────────────────────────────────
-    // Dattorro/Griesinger-inspired plate tank — designed from scratch (no
-    // third-party constants). Topology:
+    // ─── PLATE backend — true Dattorro (JAES 1997) plate ────────────────────
+    // Phase 1 rewrite. Cross-coupled figure-8 tank, four long delays, honest
+    // T60, tank modulation, 7 interleaved post-damping taps per channel.
     //
-    //   predelay → 4-stage allpass diffusion →
-    //     ↳ arm A: [modAP] → [longA] → [LPF] → [fixedAP] → A_out
-    //     ↳ arm B: [modAP] → [longB] → [LPF] → [fixedAP] → B_out
-    //   feedback path: arm A reads (B's previous-sample output × decay);
-    //                  arm B reads (A's just-computed output × decay).
-    //   The single-sample lag on B→A breaks the otherwise instantaneous loop.
+    //   predelay → 4-stage input diffusion (er_level = bloom blend) →
+    //     inject into arm A. Single loop A→B→A:
     //
-    // Stereo output = 6 deterministic taps (3 from each arm's long delay)
-    // mixed into L and R with signed gains and a separate pattern per
-    // channel.
+    //   arm: in → [damping LPF] → [mod AP] → [delay1] → (× decay g)
+    //            → [AP2] → [delay2] → [DC blocker] → out
     //
-    // Style-specific parameter mapping:
+    //   figure-8: armA_in = diffused·inputGain + lastB(=prev armB_out);
+    //             armB_in = armA_out(this sample); lastB = armB_out.
+    //   Each arm carries thousands of samples of true delay; the single-sample
+    //   lastB lag only fixes the compute order of the two halves.
+    //
+    // Honest T60: the decay gain is applied ONCE per arm (between delay1 and
+    // AP2). Per-arm gain g = 10^(-3·τ_arm/T60) where τ_arm is the arm's ACTUAL
+    // runtime traversal time (mod-AP + delay1 + AP2 + delay2, size-scaled). Over
+    // a full round trip the gain is gA·gB = 10^(-3·(τA+τB)/T60) = 10^(-3·τ_rt/T60)
+    // — an exact 60 dB drop per T60 seconds, monotonic across the full 0.1–30 s
+    // knob with NO dead zone. With the 725 ms Dattorro round trip, gA·gB stays
+    // well below 1 even at decay 30 / size 0 (~0.88) → unconditional decay; the
+    // ceiling clamp (kPlateDecayCeiling) never engages in the knob range and is
+    // pure NaN insurance. Stability is PROVEN BY MEASUREMENT — see the
+    // decay×size×damping×mod grid test testPlatePerRoundTripGainUnderUnity.
+    //
+    // TWO named deviations from Dattorro's published figure:
+    //   (1) The in-loop damping one-pole sits at the ARM INPUT rather than
+    //       between delay1 and delay2. In a series loop |H| is the product of
+    //       the element magnitudes, so LPF position does not change the loop
+    //       gain or RT60 — but it makes ALL four delays (and hence every output
+    //       tap) post-damping, satisfying the audit's "no pre-damping taps"
+    //       rule (the old plate's bright-spike defect). Decay gain stays inside
+    //       the arm between delay1 and AP2 per the spec.
+    //   (2) The two taps Dattorro reads from the AP2 (decay-diffusion-2) lines
+    //       are folded onto the sibling delay2 line at nearby offsets, so the 7
+    //       taps span only the four addressable delay lines (AllpassDiffuser
+    //       hides its buffer). All other tap offsets/signs are Dattorro's.
+    //
+    // Style-specific parameter mapping (unchanged surface):
     //   er_level  — input diffusion / front-bloom blend (NOT room ER taps)
     //   er_late   — tank tail level
-    //   damping   — tank HF damping
-    //   decay     — tank feedback (RT60 for the round-trip path)
-    //   size      — scales tank delays + tap offsets
-    //   mod_*     — subtle decorrelated modulation in the modulated allpasses
-    //   smoothness — slightly raises damping AND drives the wet HF shelf
+    //   damping   — in-loop HF damping
+    //   decay     — honest RT60 of the round-trip path
+    //   size      — scales the two long tank delays + tap offsets (±25%)
+    //   mod_*     — tank modulation on each arm's first allpass (decoheres the
+    //               comb; ±kPlateModDepthSamples at mod_depth=100%)
+    //   smoothness — raises damping AND drives the wet HF shelf
     void processBlockPlate(juce::AudioBuffer<float>& buffer,
                            float& peakL, float& peakR)
     {
@@ -1617,12 +1685,12 @@ private:
         const float predelaySamples = std::clamp(
             predelayMs * 0.001f * sr, 0.0f, maxPredelaySamplesF_);
 
-        // Round-trip distance (in samples) is a constant for given delays
-        // but scales with size + sample rate.  Computed once per block.
-        const float roundtripBaseSamples =
-            static_cast<float>(kPlateLongA_Delay + kPlateLongB_Delay
-                               + kPlateModApA_BaseDelay + kPlateModApB_BaseDelay
-                               + kPlateFixedApA_Delay + kPlateFixedApB_Delay);
+        PlateLate& P = plateLate_;
+
+        // NOTE on tap reads: JUCE's DelayLine reads relative to readPos, which
+        // advances only on the ONE popSample(...,true) call per line per sample.
+        // Every tapRead below (updateReadPointer=false) is therefore issued
+        // BEFORE that line's single main read, or it would be off by one sample.
 
         for (int s = 0; s < numSamples; ++s)
         {
@@ -1649,204 +1717,160 @@ private:
             const float preOut = predelayLine_.popSample(0, predelaySamples);
 
             // ── Input diffusion (4 stages) ───────────────────────────────────
-            // er_level acts as a wet/dry blend between the un-diffused
-            // pre-delay output and the fully-diffused signal — controls
-            // "front bloom" amount instead of room ER taps.
             float diffused = preOut;
             for (int d = 0; d < 4; ++d)
-                diffused = plateLate_.inputDiffusers[d].processAllpass(diffused);
+                diffused = P.inputDiffusers[d].processAllpass(diffused);
             const float bloomBlend = std::clamp(erLevel / 100.0f, 0.0f, 1.0f);
             diffused = preOut * (1.0f - bloomBlend) + diffused * bloomBlend;
 
-            // ── Tank coefficients ────────────────────────────────────────────
+            // ── Tank coefficients (per sample; size + decay are smoothed) ─────
             const float sizeScale = (size / 100.0f) * 0.5f + 0.75f;
+            const float scl       = sizeScale * srScale;
 
-            // Plate HF damping.  A floor of 0.20 ensures some high-frequency
-            // attenuation even at damping=0%, preventing full-bandwidth
-            // metallic resonances.  The user's damping knob adds up to 0.75
-            // on top of that, keeping the full range musically useful.
-            // Smoothness contributes 0.25 (stronger than other backends:
-            // the allpass topology builds narrowband resonances faster than
-            // an FDN, so Ring Tame needs more authority here).
+            // In-loop HF damping one-pole (at arm input). A light floor keeps
+            // some HF loss even at damping=0 without touching low-mid modes.
             const float dampG = std::clamp(
-                0.20f + (damping / 100.0f) * 0.75f + smoothFrac * 0.25f,
-                0.0f, 0.95f);
+                0.05f + (damping / 100.0f) * 0.55f + smoothFrac * 0.20f,
+                0.0f, 0.9f);
 
-            // Decay → feedback gain.  The plate's main loop traverses both
-            // arms in turn, so feedbackGain is applied TWICE per full round
-            // trip (A→B and the lastB→A handoff).  The target full-round-
-            // trip gain equals 10^(-3·τ/T) (the standard RT60 relation), so
-            // the per-application gain is the square root of that, i.e.
-            // 10^(-1.5·τ/T).
-            const float roundtripSec =
-                (roundtripBaseSamples * sizeScale * srScale) / sr;
+            // Size-scaled long-delay read lengths.
+            const float len1A = std::clamp(P.delay1BaseA * sizeScale, 1.0f, P.delay1MaxF_A);
+            const float len2A = std::clamp(P.delay2BaseA * sizeScale, 1.0f, P.delay2MaxF_A);
+            const float len1B = std::clamp(P.delay1BaseB * sizeScale, 1.0f, P.delay1MaxF_B);
+            const float len2B = std::clamp(P.delay2BaseB * sizeScale, 1.0f, P.delay2MaxF_B);
+
+            // Honest per-arm decay gains. τ_arm = actual traversal time (mod-AP
+            // + delay1 + AP2 + delay2) at the runtime SR; g = 10^(-3·τ/T60).
+            const float tauA = (P.modApBaseA + len1A + P.ap2LenA + len2A) / sr;
+            const float tauB = (P.modApBaseB + len1B + P.ap2LenB + len2B) / sr;
             const float safeDecay = std::max(decay, 0.1f);
-            // Plate feedback ceiling.  0.93 is the safe maximum — at this
-            // ceiling and with single-arm input injection, the steady-state
-            // tank amplitude is bounded by kPlateInputGain / (1 − 0.93²)
-            // ≈ 1.48× input, compared to ≈ 20× with the old 0.97 ceiling.
-            // Smoothness (Ring Tame) lowers the ceiling further: at 100%
-            // smoothness the ceiling drops to 0.85, taming long-decay ringing
-            // more aggressively than damping alone.
-            const float feedbackCeiling = 0.93f - smoothFrac * 0.08f;
-            const float feedbackGain = std::clamp(
-                std::pow(10.0f, -1.5f * roundtripSec / safeDecay),
-                0.0f, feedbackCeiling);
+            const float gA = std::clamp(
+                std::pow(10.0f, -3.0f * tauA / safeDecay), 0.0f, kPlateDecayCeiling);
+            const float gB = std::clamp(
+                std::pow(10.0f, -3.0f * tauB / safeDecay), 0.0f, kPlateDecayCeiling);
 
-            const float modAmt = (modDepth / 100.0f)
-                                * kPlateModDepthSamples
-                                * kPlateModDepthScalar;
+            // Tank modulation excursion (samples @ runtime SR) + LFO rate frac.
+            const float modAmt      = (modDepth / 100.0f) * kPlateModDepthSamples * srScale;
             const float modRateFrac = modRate / 100.0f;
+            const float c1          = kPlateDecayDiffusion1;
+
+            auto tapRead = [&](juce::dsp::DelayLine<float,
+                                 juce::dsp::DelayLineInterpolationTypes::None>& line,
+                               float off48, float maxF) -> float
+            {
+                return line.popSample(0,
+                    std::clamp(off48 * scl, 0.0f, maxF), false);
+            };
 
             // ── Arm A ────────────────────────────────────────────────────────
-            // Cross-fed by B's *previous-sample* output (single-sample delay
-            // breaks the instantaneous loop).
-            const float armA_in = diffused * kPlateInputGain
-                                 + plateLate_.lastB * feedbackGain;
+            const float armA_in = diffused * kPlateInputGain + P.lastB;
+            P.dampStateA = (1.0f - dampG) * armA_in + dampG * P.dampStateA;
+            const float xA = P.dampStateA;
 
-            // Modulated allpass A.
+            // Modulated allpass A (decay-diffusion-1).
             const float lfoA = std::sin(
-                2.0f * juce::MathConstants<float>::pi * plateLate_.modPhaseA);
-            plateLate_.modPhaseA += kPlateModRateA_Hz * modRateFrac / sr;
-            if (plateLate_.modPhaseA >= 1.0f) plateLate_.modPhaseA -= 1.0f;
+                2.0f * juce::MathConstants<float>::pi * P.modPhaseA);
+            P.modPhaseA += kPlateModRateA_Hz * modRateFrac / sr;
+            if (P.modPhaseA >= 1.0f) P.modPhaseA -= 1.0f;
             const float modDelayA = std::clamp(
-                plateLate_.modApBaseA + lfoA * modAmt,
-                1.0f, plateLate_.modApMaxF_A);
-            const float delayedVA = plateLate_.modApA.popSample(0, modDelayA, true);
-            const float vA = armA_in + kPlateModApA_Coeff * delayedVA;
-            plateLate_.modApA.pushSample(0, vA);
-            const float modApA_out = -kPlateModApA_Coeff * vA + delayedVA;
+                P.modApBaseA + lfoA * modAmt, 1.0f, P.modApMaxF_A);
+            const float delayedVA = P.modApA.popSample(0, modDelayA, true);
+            const float vA = xA + c1 * delayedVA;      // CORRECTED unity allpass (+ sign)
+            P.modApA.pushSample(0, vA);
+            const float mA = -c1 * vA + delayedVA;
 
-            // Long delay A — push first so taps read fresh history.
-            plateLate_.longA.pushSample(0, modApA_out);
+            // delay1 A — push, taps (false), then the single main read (true).
+            P.delay1A.pushSample(0, mA);
+            const float La_d1a = tapRead(P.delay1A, 3210.0f, P.delay1MaxF_A); // L
+            const float Ra0_d1a = tapRead(P.delay1A, 569.0f, P.delay1MaxF_A); // R
+            const float Ra1_d1a = tapRead(P.delay1A, 5850.0f, P.delay1MaxF_A);// R
+            const float d1A = P.delay1A.popSample(0, len1A, true);
 
-            // Multi-tap reads from longA (no read-pointer advance — independent
-            // taps).  Indices 0–2 of kPlateOutputTaps belong to arm A.
-            const float tapA0 = plateLate_.longA.popSample(0,
-                std::clamp(static_cast<float>(kPlateOutputTaps[0].delaySamplesAt48k)
-                           * sizeScale * srScale,
-                           0.0f, plateLate_.longMaxF_A), false);
-            const float tapA1 = plateLate_.longA.popSample(0,
-                std::clamp(static_cast<float>(kPlateOutputTaps[1].delaySamplesAt48k)
-                           * sizeScale * srScale,
-                           0.0f, plateLate_.longMaxF_A), false);
-            const float tapA2 = plateLate_.longA.popSample(0,
-                std::clamp(static_cast<float>(kPlateOutputTaps[2].delaySamplesAt48k)
-                           * sizeScale * srScale,
-                           0.0f, plateLate_.longMaxF_A), false);
+            // Decay gain INSIDE the arm (between delay1 and AP2).
+            const float afterDecayA = d1A * gA;
+            const float a2A = P.ap2A.processAllpass(afterDecayA);
 
-            // Main read from longA (chain output).
-            const float longAoutDelay = std::clamp(
-                plateLate_.longBaseA * sizeScale,
-                1.0f, plateLate_.longMaxF_A);
-            const float longA_out = plateLate_.longA.popSample(0, longAoutDelay, true);
+            // delay2 A — push, taps (false), main (true).
+            P.delay2A.pushSample(0, a2A);
+            const float La0_d2a = tapRead(P.delay2A, 302.0f,  P.delay2MaxF_A);// L
+            const float La1_d2a = tapRead(P.delay2A, 1719.0f, P.delay2MaxF_A);// L
+            const float Ra0_d2a = tapRead(P.delay2A, 1981.0f, P.delay2MaxF_A);// R
+            const float Ra1_d2a = tapRead(P.delay2A, 4311.0f, P.delay2MaxF_A);// R
+            const float d2A = P.delay2A.popSample(0, len2A, true);
 
-            // Damping LPF A.
-            plateLate_.dampStateA =
-                (1.0f - dampG) * longA_out + dampG * plateLate_.dampStateA;
-
-            // Fixed allpass A (own buffer).
-            const float fixedApA_out = plateLate_.fixedApA.processAllpass(plateLate_.dampStateA);
-
-            // DC blocker A.
-            const float dcOutA = fixedApA_out
-                                - plateLate_.dcXA
-                                + plateLate_.dcR * plateLate_.dcYA;
-            plateLate_.dcXA = fixedApA_out;
-            plateLate_.dcYA = dcOutA;
-
+            // DC blocker A → arm output.
+            const float dcOutA = d2A - P.dcXA + P.dcR * P.dcYA;
+            P.dcXA = d2A; P.dcYA = dcOutA;
             const float armA_out = dcOutA;
 
             // ── Arm B ────────────────────────────────────────────────────────
-            // Arm B is driven solely by arm A's cross-feed.  No direct input
-            // injection here — that was the original bug: injecting the full
-            // diffused signal into both arms doubled the per-round-trip
-            // excitation and caused ~20× steady-state gain at high decay.
-            // Standard Dattorro topology: diffused → arm A → arm B → arm A.
-            const float armB_in = armA_out * feedbackGain;
+            const float armB_in = armA_out;
+            P.dampStateB = (1.0f - dampG) * armB_in + dampG * P.dampStateB;
+            const float xB = P.dampStateB;
 
             const float lfoB = std::sin(
-                2.0f * juce::MathConstants<float>::pi * plateLate_.modPhaseB);
-            plateLate_.modPhaseB += kPlateModRateB_Hz * modRateFrac / sr;
-            if (plateLate_.modPhaseB >= 1.0f) plateLate_.modPhaseB -= 1.0f;
+                2.0f * juce::MathConstants<float>::pi * P.modPhaseB);
+            P.modPhaseB += kPlateModRateB_Hz * modRateFrac / sr;
+            if (P.modPhaseB >= 1.0f) P.modPhaseB -= 1.0f;
             const float modDelayB = std::clamp(
-                plateLate_.modApBaseB + lfoB * modAmt,
-                1.0f, plateLate_.modApMaxF_B);
-            const float delayedVB = plateLate_.modApB.popSample(0, modDelayB, true);
-            const float vB = armB_in + kPlateModApB_Coeff * delayedVB;
-            plateLate_.modApB.pushSample(0, vB);
-            const float modApB_out = -kPlateModApB_Coeff * vB + delayedVB;
+                P.modApBaseB + lfoB * modAmt, 1.0f, P.modApMaxF_B);
+            const float delayedVB = P.modApB.popSample(0, modDelayB, true);
+            const float vB = xB + c1 * delayedVB;
+            P.modApB.pushSample(0, vB);
+            const float mB = -c1 * vB + delayedVB;
 
-            plateLate_.longB.pushSample(0, modApB_out);
+            P.delay1B.pushSample(0, mB);
+            const float La0_d1b = tapRead(P.delay1B, 429.0f,  P.delay1MaxF_B);// L
+            const float La1_d1b = tapRead(P.delay1B, 4797.0f, P.delay1MaxF_B);// L
+            const float Ra_d1b  = tapRead(P.delay1B, 3405.0f, P.delay1MaxF_B);// R
+            const float d1B = P.delay1B.popSample(0, len1B, true);
 
-            const float tapB0 = plateLate_.longB.popSample(0,
-                std::clamp(static_cast<float>(kPlateOutputTaps[3].delaySamplesAt48k)
-                           * sizeScale * srScale,
-                           0.0f, plateLate_.longMaxF_B), false);
-            const float tapB1 = plateLate_.longB.popSample(0,
-                std::clamp(static_cast<float>(kPlateOutputTaps[4].delaySamplesAt48k)
-                           * sizeScale * srScale,
-                           0.0f, plateLate_.longMaxF_B), false);
-            const float tapB2 = plateLate_.longB.popSample(0,
-                std::clamp(static_cast<float>(kPlateOutputTaps[5].delaySamplesAt48k)
-                           * sizeScale * srScale,
-                           0.0f, plateLate_.longMaxF_B), false);
+            const float afterDecayB = d1B * gB;
+            const float a2B = P.ap2B.processAllpass(afterDecayB);
 
-            const float longBoutDelay = std::clamp(
-                plateLate_.longBaseB * sizeScale,
-                1.0f, plateLate_.longMaxF_B);
-            const float longB_out = plateLate_.longB.popSample(0, longBoutDelay, true);
+            P.delay2B.pushSample(0, a2B);
+            const float La0_d2b = tapRead(P.delay2B, 3086.0f, P.delay2MaxF_B);// L
+            const float La1_d2b = tapRead(P.delay2B, 3219.0f, P.delay2MaxF_B);// L
+            const float Ra0_d2b = tapRead(P.delay2B, 540.0f,  P.delay2MaxF_B);// R
+            const float Ra1_d2b = tapRead(P.delay2B, 195.0f,  P.delay2MaxF_B);// R
+            const float d2B = P.delay2B.popSample(0, len2B, true);
 
-            plateLate_.dampStateB =
-                (1.0f - dampG) * longB_out + dampG * plateLate_.dampStateB;
-
-            const float fixedApB_out = plateLate_.fixedApB.processAllpass(plateLate_.dampStateB);
-
-            const float dcOutB = fixedApB_out
-                                - plateLate_.dcXB
-                                + plateLate_.dcR * plateLate_.dcYB;
-            plateLate_.dcXB = fixedApB_out;
-            plateLate_.dcYB = dcOutB;
-
+            const float dcOutB = d2B - P.dcXB + P.dcR * P.dcYB;
+            P.dcXB = d2B; P.dcYB = dcOutB;
             const float armB_out = dcOutB;
 
-            // Safety: if either arm produced a non-finite value (e.g. due to
-            // extreme parameter automation), reset the entire tank and output
-            // dry for this sample rather than feeding garbage back into the
-            // loop.  Under normal use this branch is never taken.
+            // Non-finite guard — reset the tank and pass dry for this sample
+            // rather than feeding garbage back into the loop. Never taken in use.
             if (!std::isfinite(armA_out) || !std::isfinite(armB_out))
             {
-                plateLate_.reset();
+                P.reset();
                 const float mixN = mixPct / 100.0f;
                 buffer.setSample(0, s, inputL * (1.0f - mixN));
                 if (numCh > 1) buffer.setSample(1, s, inputR * (1.0f - mixN));
                 continue;
             }
 
-            // Save arm B for next sample's cross-feed into arm A.
-            plateLate_.lastB = armB_out;
+            // Cross-feed store for next sample's arm A.
+            P.lastB = armB_out;
 
-            // ── 6-tap stereo output mixing ───────────────────────────────────
-            float plateL =
-                ( tapA0 * kPlateOutputTaps[0].gainL
-                + tapA1 * kPlateOutputTaps[1].gainL
-                + tapA2 * kPlateOutputTaps[2].gainL
-                + tapB0 * kPlateOutputTaps[3].gainL
-                + tapB1 * kPlateOutputTaps[4].gainL
-                + tapB2 * kPlateOutputTaps[5].gainL) * kPlateLateOutputGain;
+            // ── 7-tap stereo output (Σg²=1 per channel, single trim) ─────────
+            // Signs are Dattorro's accumulator; left reads mostly arm B, right
+            // reads mostly arm A (spatial interleave).
+            float plateL = kPlateTapMag * (
+                  La0_d1b + La1_d1b            // + rightDelay1 @266,@2974
+                - La0_d2b + La1_d2b            // - rightAP2 @1913, + rightDelay2 @1996
+                - La_d1a                       // - leftDelay1 @1990
+                - La0_d2a - La1_d2a            // - leftAP2 @187, - leftDelay2 @1066
+                ) * kPlateLateOutputGain;
 
-            float plateR =
-                ( tapA0 * kPlateOutputTaps[0].gainR
-                + tapA1 * kPlateOutputTaps[1].gainR
-                + tapA2 * kPlateOutputTaps[2].gainR
-                + tapB0 * kPlateOutputTaps[3].gainR
-                + tapB1 * kPlateOutputTaps[4].gainR
-                + tapB2 * kPlateOutputTaps[5].gainR) * kPlateLateOutputGain;
+            float plateR = kPlateTapMag * (
+                  Ra0_d1a + Ra1_d1a            // + leftDelay1 @353,@3627
+                - Ra0_d2a + Ra1_d2a            // - leftAP2 @1228, + leftDelay2 @2673
+                - Ra_d1b                       // - rightDelay1 @2111
+                - Ra0_d2b - Ra1_d2b            // - rightAP2 @335, - rightDelay2 @121
+                ) * kPlateLateOutputGain;
 
-            // ── Wet output stage ─────────────────────────────────────────────
-            // Second-layer output guard — catches any non-finite tap sum that
-            // survived the per-arm check above (e.g. an allpass coefficient
-            // producing +Inf on an edge case).
+            // ── Wet output stage (shared with the FDN backends) ──────────────
             if (!std::isfinite(plateL)) plateL = 0.0f;
             if (!std::isfinite(plateR)) plateR = 0.0f;
 
@@ -1854,16 +1878,14 @@ private:
             float wetL = plateL * wetGain;
             float wetR = plateR * wetGain;
 
-            // Mode-entry wet ramp: fades 0→1 over kPlateEntryRampSamples
-            // after each plateLate_.reset() (i.e. on every style switch into
-            // Plate).  Has no effect once rampPos reaches the ceiling.
-            if (plateLate_.rampPos < kPlateEntryRampSamples)
+            // Mode-entry wet ramp (fades 0→1 over kPlateEntryRampSamples).
+            if (P.rampPos < kPlateEntryRampSamples)
             {
-                const float rampGain = static_cast<float>(plateLate_.rampPos)
+                const float rampGain = static_cast<float>(P.rampPos)
                                       / static_cast<float>(kPlateEntryRampSamples);
                 wetL *= rampGain;
                 wetR *= rampGain;
-                ++plateLate_.rampPos;
+                ++P.rampPos;
             }
 
             // SMOOTH HF shelf on wet output (shared with FDN backends).
