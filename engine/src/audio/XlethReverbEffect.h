@@ -175,10 +175,16 @@ struct FdnTuning
     float        wetCalTrim;
 };
 
-// Maximum allpass stages on the FDN input path. Only Hall currently uses
-// non-zero stages (2). Generic and Room set 0, so the diffusion loop in the
-// enhanced backend runs zero iterations. Plate does not use the FDN path
-// at all — it has its own 4-stage input diffusion cascade in PlateLate.
+// Maximum allpass stages on the FDN input path. Hall's dedicated backend
+// (processBlockHall) always uses 2, reading fdnLate_.inputDiffusers directly
+// — it does not consult FdnTuning::inputDiffusionStages at all. Within the
+// shared EnhancedFdn backend (processBlockEnhanced), Room is the only tuning
+// with non-zero inputDiffusionStages (Phase 3: docs/plans/reverb-audit-and-
+// redesign.md §6) and reads fdnLate_.roomInputDiffusers instead — a separate
+// array so Room's diffusion state never aliases Hall's. Generic stays 0 (it
+// is the equal-loudness calibration reference; changing its topology would
+// invalidate every other backend's trim). Plate does not use the FDN path at
+// all — it has its own 4-stage input diffusion cascade in PlateLate.
 static constexpr int kMaxInputDiffusionStages = 2;
 
 // ─── Style enumeration ───────────────────────────────────────────────────────
@@ -232,13 +238,38 @@ constexpr float kGenericFdnInputGain = 0.1f;
 constexpr int   kInputDiffusionDelaysAt48k[kMaxInputDiffusionStages] = { 211, 367 };
 constexpr float kInputDiffusionCoeffs    [kMaxInputDiffusionStages] = { 0.625f, 0.700f };
 
-// SMOOTH-driven diffuser cascade — currently allocated/processed but its
-// wet contribution is not mixed into the FDN feed (see history: short
-// 197/313 sample delays caused audible comb resonances). Kept here as a
-// reserved slot for a future DIFFUSE control inside the EnhancedFdn backend.
-static constexpr int   kSmoothDiffusionStages = 2;
-constexpr int   kSmoothDiffusionDelaysAt48k[kSmoothDiffusionStages] = { 197, 313 };
-constexpr float kSmoothDiffusionCoeffs     [kSmoothDiffusionStages] = { 0.600f, 0.550f };
+// Room input-diffusion cascade (Phase 3: docs/plans/reverb-audit-and-
+// redesign.md §6). This seam was originally reserved for a future SMOOTH-
+// driven diffuser and was never wired in — its original 197/313-sample
+// delays are documented (in the prior revision of this comment) as having
+// caused audible comb resonances when tried, i.e. they were too short: a
+// two-stage Schroeder allpass's own impulse response is a pulse train spaced
+// at its delay length, and 197/313 samples (~4.1/6.5 ms @ 48 kHz) put those
+// pulses close enough together to read as a metallic ring in their own
+// right rather than as diffuse texture. Resized here to 251/419 samples
+// (~5.2/8.7 ms @ 48 kHz) — both prime, mutually incommensurate, and clear of
+// small-integer ratios against every kRoomBaseDelays entry (277–797) — before
+// wiring it as Room's 2-stage input diffusion ahead of the FDN feed. Gains
+// are in the standard Schroeder range (~0.5–0.7).
+static constexpr int   kRoomInputDiffusionStages = 2;
+constexpr int   kRoomInputDiffusionDelaysAt48k[kRoomInputDiffusionStages] = { 251, 419 };
+constexpr float kRoomInputDiffusionCoeffs     [kRoomInputDiffusionStages] = { 0.62f, 0.58f };
+
+// ER bus decorrelation (Phase 3: docs/plans/reverb-audit-and-redesign.md §6).
+// The shared ER tap line (FdnLate::erLine) feeds every non-legacy style's ER
+// taps (Generic-enhanced, Room, Hall — legacy Generic is bit-frozen; Plate
+// doesn't use erLine, it has its own diffusion). A single short allpass
+// diffuses the signal that feeds erLine, so the taps read an already-smeared
+// cluster instead of one clean impulse — de-spiking the discrete tap-arrival
+// bundle. 443 samples (~9.2 ms @ 48 kHz) sits in the requested 5-15 ms range,
+// is prime, and doesn't coincide with any FDN base delay, input-diffuser, or
+// Plate tank delay already in use. This is architecturally disjoint from the
+// FDN recirculating state (fdnLines/hallLate_.fdnLines, their damping/DC-
+// blocker/feedback gain) that RT60 is a property of — erLine never feeds the
+// FDN, only the ER taps — so it cannot change RT60 (measured/locked in
+// test_reverb.cpp's testErBusDecorrelationPreservesRT60).
+constexpr int   kErBusDiffuserDelayAt48k = 443;
+constexpr float kErBusDiffuserCoeff      = 0.60f;
 
 // ─── Enhanced anti-metal vectors (pass 1) ────────────────────────────────
 //
@@ -337,12 +368,18 @@ constexpr float kRoomLateOutputGain = 0.96f;
 // Phase 2 equal-loudness calibration: measured pink-noise wet RMS at the
 // calibration setting was 0.140111 vs the Generic-enhanced reference's
 // 0.123408 (+1.10 dB — just outside the +-1 dB target). Trim = ref/measured.
-constexpr float kRoomWetCalTrim = 0.8808f;
+// Phase 3 (docs/plans/reverb-audit-and-redesign.md §6): wiring Room's input
+// diffusion (kRoomInputDiffusionStages) shifted the measured wet RMS at the
+// same calibration setting to 0.124744 vs the 0.8808-trimmed value (+0.093 dB
+// — still comfortably inside +-1 dB, but re-measured and re-trimmed anyway
+// per the "any change that moves wet RMS must recalibrate in the same
+// commit" rule). New trim = 0.8808 * (0.123408 / 0.124744) = 0.8714.
+constexpr float kRoomWetCalTrim = 0.8714f;
 
 const FdnTuning kRoomTuning = {
     kRoomBaseDelays, kRoomModRates, kRoomErTaps, 8, 0.1f,
     1.15f, 0.75f, 0.15f, 0.45f, 0.75f,
-    0,
+    kRoomInputDiffusionStages,
     kRoomInputGains, kRoomOutputGainsL, kRoomOutputGainsR,
     kRoomLateOutputGain, kRoomWetCalTrim
 };
@@ -657,9 +694,19 @@ struct FdnLate
     float maxErSamplesF  = 0.0f;
     float maxFdnSamplesF = 0.0f;
 
-    // Enhanced-only state: input diffusers (Hall) and SMOOTH-reserved diffusers.
-    std::array<AllpassDiffuser, kMaxInputDiffusionStages> inputDiffusers;
-    std::array<AllpassDiffuser, kSmoothDiffusionStages>   smoothDiffusers;
+    // Enhanced-only state: Hall's dedicated input diffusers (processBlockHall,
+    // 211/367-sample delays) and Room's dedicated input diffusers
+    // (processBlockEnhanced, 251/419-sample delays) — separate arrays so
+    // the two styles' diffusion state never aliases (both are reset on style
+    // switch regardless, but keeping them distinct avoids any confusion about
+    // which tuning a given buffer's history belongs to).
+    std::array<AllpassDiffuser, kMaxInputDiffusionStages>   inputDiffusers;
+    std::array<AllpassDiffuser, kRoomInputDiffusionStages>  roomInputDiffusers;
+
+    // ER bus decorrelation (Phase 3): single short allpass on erLine's feed,
+    // shared by every non-legacy style that uses erLine (Generic-enhanced,
+    // Room, Hall). See kErBusDiffuserDelayAt48k above.
+    AllpassDiffuser erDiffuser;
 
     float erSoftStateL = 0.0f;
     float erSoftStateR = 0.0f;
@@ -708,13 +755,16 @@ struct FdnLate
                 kInputDiffusionCoeffs[d]);
         }
 
-        for (int d = 0; d < kSmoothDiffusionStages; ++d)
+        for (int d = 0; d < kRoomInputDiffusionStages; ++d)
         {
-            smoothDiffusers[d].prepare(
+            roomInputDiffusers[d].prepare(
                 sampleRate, maxBlockSize,
-                kSmoothDiffusionDelaysAt48k[d],
-                kSmoothDiffusionCoeffs[d]);
+                kRoomInputDiffusionDelaysAt48k[d],
+                kRoomInputDiffusionCoeffs[d]);
         }
+
+        erDiffuser.prepare(sampleRate, maxBlockSize,
+                            kErBusDiffuserDelayAt48k, kErBusDiffuserCoeff);
 
         dampState.fill(0.0f);
         dcX.fill(0.0f);
@@ -729,8 +779,9 @@ struct FdnLate
         erLine.reset();
         for (int i = 0; i < 8; ++i)
             fdnLines[i].reset();
-        for (auto& d : inputDiffusers)  d.reset();
-        for (auto& d : smoothDiffusers) d.reset();
+        for (auto& d : inputDiffusers)     d.reset();
+        for (auto& d : roomInputDiffusers) d.reset();
+        erDiffuser.reset();
         dampState.fill(0.0f);
         dcX.fill(0.0f);
         dcY.fill(0.0f);
@@ -980,6 +1031,11 @@ public:
         registerSmoothedParam("locut",     SmoothType::Multiplicative,  30.0f);
         registerSmoothedParam("mix",       SmoothType::Linear,          20.0f);
         registerSmoothedParam("smoothness",SmoothType::Linear,          30.0f);
+        // Phase 3 (docs/plans/reverb-audit-and-redesign.md §6): predelay was
+        // unsmoothed and read at block rate, so dragging it live zipper-
+        // clicked. Registered here for the Enhanced/Hall/Plate backends;
+        // processBlockLegacy still advances-and-discards it (bit-frozen).
+        registerSmoothedParam("predelay",  SmoothType::Linear,          30.0f);
     }
 
     // ── prepareEffect ────────────────────────────────────────────────────────
@@ -991,9 +1047,14 @@ public:
         stylePtr_      = apvts_.getRawParameterValue("style");
         smoothnessPtr_ = apvts_.getRawParameterValue("smoothness");
 
-        // Pre-delay
+        // Pre-delay. Two parallel lines share the same max length: predelayLine_
+        // (None interpolation) stays exclusively on processBlockLegacy's raw,
+        // unsmoothed atomic read (bit-frozen); predelayLineInterp_ (Linear
+        // interpolation) is driven by the "predelay" smoother and used by
+        // processBlockEnhanced/Hall/Plate (Phase 3).
         const int maxPredelay = static_cast<int>(0.1 * sampleRate) + 1;
         predelayLine_.setMaximumDelayInSamples(maxPredelay);
+        predelayLineInterp_.setMaximumDelayInSamples(maxPredelay);
         {
             juce::dsp::ProcessSpec spec;
             spec.sampleRate       = sampleRate;
@@ -1001,6 +1062,8 @@ public:
             spec.numChannels      = 1;
             predelayLine_.prepare(spec);
             predelayLine_.reset();
+            predelayLineInterp_.prepare(spec);
+            predelayLineInterp_.reset();
         }
         maxPredelaySamplesF_ = static_cast<float>(maxPredelay - 1);
 
@@ -1042,6 +1105,7 @@ public:
     void resetEffect() override
     {
         predelayLine_.reset();
+        predelayLineInterp_.reset();
         fdnLate_.reset();
         hallLate_.reset();
         plateLate_.reset();
@@ -1049,6 +1113,12 @@ public:
         hicutStateL_ = 0.0f;  hicutStateR_ = 0.0f;
         locutStateL_ = 0.0f;  locutStateR_ = 0.0f;
         smoothHfStateL_ = 0.0f;  smoothHfStateR_ = 0.0f;
+
+        // A true host reset (transport stop, bypass toggle) has no meaningful
+        // "held" pre-reset sample to fade from — drop any pending crossfade.
+        xfadeRemaining_  = 0;
+        xfadeHeldL_      = 0.0f;  xfadeHeldR_      = 0.0f;
+        runningLastOutL_ = 0.0f;  runningLastOutR_ = 0.0f;
     }
 
     double getTailLengthSeconds() const override
@@ -1095,7 +1165,11 @@ public:
     {
         // ── Style-change detection (once per block) ──────────────────────────
         // A switch resets all FDN/ER buffers and the predelay; output tone
-        // filters are intentionally preserved (style-independent).
+        // filters are intentionally preserved (style-independent). The hard
+        // reset itself is unavoidable — a different style's tank state can't
+        // be reinterpreted under a new topology — but its audible dropout is
+        // masked below (Phase 3: docs/plans/reverb-audit-and-redesign.md §6)
+        // by arming a short output crossfade.
         {
             const float rawStyle = stylePtr_
                 ? stylePtr_->load(std::memory_order_relaxed) : 0.0f;
@@ -1107,10 +1181,38 @@ public:
             {
                 tuning_ = kReverbStyleTunings[idx];
                 predelayLine_.reset();
+                predelayLineInterp_.reset();
                 fdnLate_.reset();
                 hallLate_.reset();
                 plateLate_.reset();
                 currentStyle_ = newStyle;
+
+                // Arm the crossfade: hold the outgoing style's last actual
+                // output sample (captured at the tail of the previous block,
+                // below) and fade it out while the incoming style's own
+                // freshly-reset (near-silent) output fades in over the same
+                // window. This is a pure post-processing pass over the
+                // buffer that whichever backend already produced — it needs
+                // zero new state or per-sample logic INSIDE any backend
+                // (Legacy included, which stays byte-identical) and reuses
+                // the same "linear 0->1 ramp over N samples" idea as Plate's
+                // existing entry ramp (kPlateEntryRampSamples), generalized
+                // to every style and to the outgoing side too.
+                //
+                // Skip arming on an instance's very first block: currentStyle_
+                // defaults to Generic, so a project that loads with a
+                // different style already selected would otherwise see a
+                // "switch" fire before any real audio ever played — fading in
+                // from silence that was never audible isn't fixing a click,
+                // it's just delaying the true onset (and corrupts onset-
+                // transient measurements/tests that set style before the
+                // first processBlock).
+                if (hasProcessedBlock_)
+                {
+                    xfadeHeldL_ = runningLastOutL_;
+                    xfadeHeldR_ = runningLastOutR_;
+                    xfadeRemaining_ = kStyleXfadeSamples;
+                }
             }
         }
 
@@ -1139,6 +1241,34 @@ public:
             processBlockPlate(buffer, peakL, peakR);
         else
             processBlockEnhanced(buffer, peakL, peakR);
+
+        // ── Style-switch crossfade (Phase 3) ─────────────────────────────────
+        // Post-processing pass over the block the backend above just wrote.
+        // A no-op whenever xfadeRemaining_ is 0 (i.e. almost always — only
+        // active for kStyleXfadeSamples after a style switch), so normal
+        // playback is untouched. Blends toward the held pre-switch sample so
+        // the reset's discontinuity is inaudible instead of a hard cut.
+        const int numSamples = buffer.getNumSamples();
+        const int numCh      = buffer.getNumChannels();
+        for (int s = 0; s < numSamples && xfadeRemaining_ > 0; ++s)
+        {
+            const float t = 1.0f - static_cast<float>(xfadeRemaining_)
+                                  / static_cast<float>(kStyleXfadeSamples);
+            const float newL = buffer.getSample(0, s);
+            const float newR = numCh > 1 ? buffer.getSample(1, s) : newL;
+            const float blendedL = newL * t + xfadeHeldL_ * (1.0f - t);
+            const float blendedR = newR * t + xfadeHeldR_ * (1.0f - t);
+            buffer.setSample(0, s, blendedL);
+            if (numCh > 1) buffer.setSample(1, s, blendedR);
+            --xfadeRemaining_;
+        }
+        if (numSamples > 0)
+        {
+            runningLastOutL_ = buffer.getSample(0, numSamples - 1);
+            runningLastOutR_ = numCh > 1 ? buffer.getSample(1, numSamples - 1)
+                                          : runningLastOutL_;
+        }
+        hasProcessedBlock_ = true;
 
         writeMeterValue(0, peakL);
         writeMeterValue(1, buffer.getNumChannels() > 1 ? peakR : peakL);
@@ -1185,6 +1315,9 @@ private:
             const float locut    = getNextSmoothedValue("locut");
             const float mixPct   = getNextSmoothedValue("mix");
             (void)getNextSmoothedValue("smoothness");  // advance, discard
+            (void)getNextSmoothedValue("predelay");    // advance, discard — legacy
+                                                        // stays on the raw unsmoothed
+                                                        // atomic below (bit-frozen)
 
             const float inputL = buffer.getSample(0, s);
             const float inputR = numCh > 1 ? buffer.getSample(1, s) : inputL;
@@ -1312,11 +1445,6 @@ private:
         const int   numCh      = buffer.getNumChannels();
         const float sr         = static_cast<float>(sampleRate_);
 
-        const float predelayMs = predelayPtr_
-            ? predelayPtr_->load(std::memory_order_relaxed) : 10.0f;
-        const float predelaySamples = std::clamp(
-            predelayMs * 0.001f * sr, 0.0f, maxPredelaySamplesF_);
-
         const FdnTuning* const t = tuning_;
 
         for (int s = 0; s < numSamples; ++s)
@@ -1332,6 +1460,13 @@ private:
             const float locut    = getNextSmoothedValue("locut");
             const float mixPct   = getNextSmoothedValue("mix");
             const float smoothPct= getNextSmoothedValue("smoothness");
+            // Phase 3: predelay is now sample-smoothed (30 ms Linear) and read
+            // through an interpolated delay line, so dragging it live no
+            // longer zipper-clicks (contrast processBlockLegacy above, which
+            // stays on the raw unsmoothed/uninterpolated read).
+            const float predelayMs = getNextSmoothedValue("predelay");
+            const float predelaySamples = std::clamp(
+                predelayMs * 0.001f * sr, 0.0f, maxPredelaySamplesF_);
 
             const float smoothFrac = std::clamp(smoothPct * 0.01f, 0.0f, 1.0f);
 
@@ -1340,17 +1475,26 @@ private:
             const float monoIn = (inputL + inputR) * 0.5f;
 
             // Pre-delay
-            predelayLine_.pushSample(0, monoIn);
-            const float preOut = predelayLine_.popSample(0, predelaySamples);
+            predelayLineInterp_.pushSample(0, monoIn);
+            const float preOut = predelayLineInterp_.popSample(0, predelaySamples);
 
-            // Optional input diffusion (FDN feed only)
+            // Optional input diffusion (FDN feed only). Within this shared
+            // backend only Room sets inputDiffusionStages > 0 (Hall has its
+            // own dedicated processBlockHall path and never reaches here;
+            // Generic stays at 0, the calibration reference). Uses the
+            // CORRECTED unity-gain allpass pairing (processAllpass) per the
+            // ground rule that no new code may wire the legacy sign-broken
+            // process() pairing — see AllpassDiffuser's docs and §7 errata.
             float fdnIn = preOut;
             for (int d = 0; d < t->inputDiffusionStages; ++d)
-                fdnIn = fdnLate_.inputDiffusers[d].process(fdnIn);
+                fdnIn = fdnLate_.roomInputDiffusers[d].processAllpass(fdnIn);
 
-            // Early reflections
+            // Early reflections. The shared ER bus feed is diffused through a
+            // single short allpass (Phase 3) before hitting the tap line, so
+            // the discrete tap arrivals read as an already-smeared cluster
+            // rather than one clean impulse.
             const float sizeScale = (size / 100.0f) * 0.5f + 0.75f;
-            fdnLate_.erLine.pushSample(0, preOut);
+            fdnLate_.erLine.pushSample(0, fdnLate_.erDiffuser.processAllpass(preOut));
 
             float erL = 0.0f, erR = 0.0f;
             for (int ti = 0; ti < t->numErTaps; ++ti)
@@ -1507,11 +1651,6 @@ private:
         const float sr         = static_cast<float>(sampleRate_);
         const float srScale    = sr / 48000.0f;
 
-        const float predelayMs = predelayPtr_
-            ? predelayPtr_->load(std::memory_order_relaxed) : 10.0f;
-        const float predelaySamples = std::clamp(
-            predelayMs * 0.001f * sr, 0.0f, maxPredelaySamplesF_);
-
         for (int s = 0; s < numSamples; ++s)
         {
             const float decay    = getNextSmoothedValue("decay");
@@ -1525,6 +1664,9 @@ private:
             const float locut    = getNextSmoothedValue("locut");
             const float mixPct   = getNextSmoothedValue("mix");
             const float smoothPct= getNextSmoothedValue("smoothness");
+            const float predelayMs = getNextSmoothedValue("predelay");   // Phase 3
+            const float predelaySamples = std::clamp(
+                predelayMs * 0.001f * sr, 0.0f, maxPredelaySamplesF_);
 
             const float smoothFrac = std::clamp(smoothPct * 0.01f, 0.0f, 1.0f);
 
@@ -1533,8 +1675,8 @@ private:
             const float monoIn = (inputL + inputR) * 0.5f;
 
             // Pre-delay
-            predelayLine_.pushSample(0, monoIn);
-            const float preOut = predelayLine_.popSample(0, predelaySamples);
+            predelayLineInterp_.pushSample(0, monoIn);
+            const float preOut = predelayLineInterp_.popSample(0, predelaySamples);
 
             // Hall input diffusion (2-stage Schroeder allpass).
             // Smooths the FDN feed; ER tap line still reads preOut directly so
@@ -1543,9 +1685,11 @@ private:
             for (int d = 0; d < kMaxInputDiffusionStages; ++d)
                 fdnIn = fdnLate_.inputDiffusers[d].process(fdnIn);
 
-            // Early reflections — Hall ER table (10 taps), shared erLine.
+            // Early reflections — Hall ER table (10 taps), shared erLine. The
+            // feed is diffused through the same single short allpass (Phase 3)
+            // as processBlockEnhanced uses, ahead of the tap reads.
             const float sizeScale = (size / 100.0f) * 0.5f + 0.75f;
-            fdnLate_.erLine.pushSample(0, preOut);
+            fdnLate_.erLine.pushSample(0, fdnLate_.erDiffuser.processAllpass(preOut));
 
             float erL = 0.0f, erR = 0.0f;
             for (int t = 0; t < kHallNumErTaps; ++t)
@@ -1750,11 +1894,6 @@ private:
         const float sr         = static_cast<float>(sampleRate_);
         const float srScale    = sr / 48000.0f;
 
-        const float predelayMs = predelayPtr_
-            ? predelayPtr_->load(std::memory_order_relaxed) : 10.0f;
-        const float predelaySamples = std::clamp(
-            predelayMs * 0.001f * sr, 0.0f, maxPredelaySamplesF_);
-
         PlateLate& P = plateLate_;
 
         // NOTE on tap reads: JUCE's DelayLine reads relative to readPos, which
@@ -1775,6 +1914,9 @@ private:
             const float locut    = getNextSmoothedValue("locut");
             const float mixPct   = getNextSmoothedValue("mix");
             const float smoothPct= getNextSmoothedValue("smoothness");
+            const float predelayMs = getNextSmoothedValue("predelay");   // Phase 3
+            const float predelaySamples = std::clamp(
+                predelayMs * 0.001f * sr, 0.0f, maxPredelaySamplesF_);
 
             const float smoothFrac = std::clamp(smoothPct * 0.01f, 0.0f, 1.0f);
 
@@ -1782,9 +1924,10 @@ private:
             const float inputR = numCh > 1 ? buffer.getSample(1, s) : inputL;
             const float monoIn = (inputL + inputR) * 0.5f;
 
-            // Pre-delay (shared)
-            predelayLine_.pushSample(0, monoIn);
-            const float preOut = predelayLine_.popSample(0, predelaySamples);
+            // Pre-delay (Phase 3: smoothed/interpolated line, shared with the
+            // Enhanced and Hall backends)
+            predelayLineInterp_.pushSample(0, monoIn);
+            const float preOut = predelayLineInterp_.popSample(0, predelaySamples);
 
             // ── Input diffusion (4 stages) ───────────────────────────────────
             float diffused = preOut;
@@ -2120,8 +2263,13 @@ private:
 
     // ── Pre-delay ────────────────────────────────────────────────────────────
     std::atomic<float>* predelayPtr_ = nullptr;
+    // Legacy-only: None interpolation, raw unsmoothed atomic read (bit-frozen).
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None>
         predelayLine_;
+    // Enhanced/Hall/Plate (Phase 3): Linear interpolation, driven by the
+    // "predelay" smoother — kills the zipper-click when dragging live.
+    juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear>
+        predelayLineInterp_;
     float maxPredelaySamplesF_ = 0.0f;
 
     // ── Shared FDN state ─────────────────────────────────────────────────────
@@ -2141,6 +2289,15 @@ private:
     float hicutStateL_ = 0.0f, hicutStateR_ = 0.0f;
     float locutStateL_ = 0.0f, locutStateR_ = 0.0f;
     float smoothHfStateL_ = 0.0f, smoothHfStateR_ = 0.0f;
+
+    // ── Style-switch click-free transition (Phase 3) ─────────────────────────
+    // See processEffect()'s style-change-detection block. A pure output-level
+    // crossfade applied after backend dispatch; touches no backend internals.
+    static constexpr int kStyleXfadeSamples = 1440;   // ~30ms @48k / ~32.7ms @44.1k
+    float xfadeHeldL_      = 0.0f, xfadeHeldR_      = 0.0f;   // pre-switch held sample
+    int   xfadeRemaining_  = 0;                                // 0 = no crossfade active
+    float runningLastOutL_ = 0.0f, runningLastOutR_ = 0.0f;    // last sample of the block just written
+    bool  hasProcessedBlock_ = false;   // true once processEffect has run at least once
 
     // ── State ─────────────────────────────────────────────────────────────────
     double sampleRate_ = 44100.0;
