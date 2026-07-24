@@ -23,6 +23,24 @@ const KNOBS_ROW2 = [
   { id: 'er_late',  label: 'LATE LEVEL', min: 0, max: 100, default: 50, fmt: v => `${v.toFixed(0)} %`  },
 ]
 
+// er_level / er_late keep the same APVTS ids on every style (no engine/bridge
+// change) but change MEANING on Plate — engine/src/audio/StockParameterCatalog.cpp
+// documents this per-style semantics table; engine/src/audio/XlethReverbEffect.h
+// has the full mapping comment above processBlockPlate(). On the FDN styles
+// (Generic/Room/Hall) these are literally the early-reflection tap level and
+// the ER-bus-routed-to-late-tail level. On Plate there are no discrete ER
+// taps: er_level instead blends the 4-stage input-diffusion cascade against
+// the raw pre-delay signal (front-end "bloom"), and er_late scales the 7-tap
+// tank output level.
+const PLATE_STYLE_INDEX = 2
+const KNOB_LABEL_OVERRIDES_BY_STYLE = {
+  [PLATE_STYLE_INDEX]: { er_level: 'BLOOM', er_late: 'TANK LEVEL' },
+}
+
+function knobLabelFor(knob, styleIdx) {
+  return KNOB_LABEL_OVERRIDES_BY_STYLE[styleIdx]?.[knob.id] ?? knob.label
+}
+
 const KNOBS_ROW3 = [
   { id: 'mod_rate',  label: 'MOD RATE',  min: 0,    max: 100,   default: 30,    fmt: v => `${v.toFixed(0)} %`   },
   { id: 'mod_depth', label: 'MOD DEPTH', min: 0,    max: 100,   default: 20,    fmt: v => `${v.toFixed(0)} %`   },
@@ -143,7 +161,7 @@ export default function ReverbPanel() {
             min={k.min}
             max={k.max}
             defaultValue={k.default}
-            label={k.label}
+            label={knobLabelFor(k, activeStyleIdx)}
             formatValue={k.fmt}
             onLiveChange={v => setParam(k.id, v)}
             onCommit={v => setParam(k.id, v)}

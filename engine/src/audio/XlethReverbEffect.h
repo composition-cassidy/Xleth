@@ -168,6 +168,11 @@ struct FdnTuning
     const float* outputGainsL;   // [8]
     const float* outputGainsR;   // [8]
     float        lateOutputGain; // overall late output normalisation
+    // Phase 2 equal-loudness calibration (docs/plans/reverb-audit-and-redesign.md
+    // Phase 2): applied once to the final wet sum, on top of lateOutputGain.
+    // Generic-enhanced is the calibration reference (trim = 1.0 by definition);
+    // Room's trim is measurement-derived. See kGenericWetCalTrim / kRoomWetCalTrim.
+    float        wetCalTrim;
 };
 
 // Maximum allpass stages on the FDN input path. Only Hall currently uses
@@ -274,6 +279,14 @@ constexpr float kEnhGenericOutputGainsR[8] = {
 };
 constexpr float kEnhGenericLateOutputGain = 1.0f;
 
+// Phase 2 equal-loudness calibration: Generic-enhanced (style Generic,
+// smoothness > 0) IS the calibration reference (docs/plans/reverb-audit-and-
+// redesign.md Phase 2) — its trim is the identity value by definition. All
+// other non-legacy styles are trimmed to match ITS pink-noise wet RMS at the
+// calibration setting (decay 2s / size 50 / damping 50 / mix 100, 44.1 kHz),
+// within +-1 dB, locked by testReverbEqualLoudnessCalibration.
+constexpr float kGenericWetCalTrim = 1.0f;
+
 // Generic intentionally locks every behaviour scalar to its identity value
 // (1.0 / 0.0) and uses zero diffusion stages.  When the EnhancedFdn backend
 // runs Generic at smoothness>0 it consumes this tuning; smoothness=0 still
@@ -285,7 +298,7 @@ const FdnTuning kGenericTuning = {
     1.0f, 1.0f, 0.0f, 1.0f, 1.0f,
     0,
     kEnhGenericInputGains, kEnhGenericOutputGainsL, kEnhGenericOutputGainsR,
-    kEnhGenericLateOutputGain
+    kEnhGenericLateOutputGain, kGenericWetCalTrim
 };
 
 // ─── Room tuning ─────────────────────────────────────────────────────────
@@ -321,12 +334,17 @@ constexpr float kRoomOutputGainsR[8] = {
 };
 constexpr float kRoomLateOutputGain = 0.96f;
 
+// Phase 2 equal-loudness calibration: measured pink-noise wet RMS at the
+// calibration setting was 0.140111 vs the Generic-enhanced reference's
+// 0.123408 (+1.10 dB — just outside the +-1 dB target). Trim = ref/measured.
+constexpr float kRoomWetCalTrim = 0.8808f;
+
 const FdnTuning kRoomTuning = {
     kRoomBaseDelays, kRoomModRates, kRoomErTaps, 8, 0.1f,
     1.15f, 0.75f, 0.15f, 0.45f, 0.75f,
     0,
     kRoomInputGains, kRoomOutputGainsL, kRoomOutputGainsR,
-    kRoomLateOutputGain
+    kRoomLateOutputGain, kRoomWetCalTrim
 };
 
 // ─── Hall tuning ─────────────────────────────────────────────────────────
@@ -363,12 +381,15 @@ constexpr float kHallOutputGainsR[8] = {
 };
 constexpr float kHallLateOutputGain = 1.0f;
 
+// wetCalTrim is irrelevant here — processBlockHall does not consult
+// kHallTuning at runtime (its own kHallEnh16WetCalTrim below is what's
+// actually applied); 1.0f keeps this struct's aggregate init well-formed.
 const FdnTuning kHallTuning = {
     kHallBaseDelays, kHallModRates, kHallErTaps, 10, 0.1f,
     0.45f, 1.25f, -0.08f, 1.0f, 1.4f,
     2,
     kHallInputGains, kHallOutputGainsL, kHallOutputGainsR,
-    kHallLateOutputGain
+    kHallLateOutputGain, 1.0f
 };
 
 // ─── Hall 16-line FDN backend (Enhanced Hall pass 1) ─────────────────────
@@ -462,6 +483,13 @@ constexpr float kHallEnh16ModDepthScale  = 0.45f;   // halved vs. 8-line Hall �
 constexpr float kHallEnh16DecayScale     = 1.40f;
 constexpr float kHallEnh16LateOutputGain = 1.00f;
 constexpr float kHallEnh16HfTiltCoeff    = 0.30f;   // stage-B fixed LPF (gentle additional HF damp per line)
+
+// Phase 2 equal-loudness calibration: measured pink-noise wet RMS at the
+// calibration setting was 0.137012 vs the Generic-enhanced reference's
+// 0.123408 (+0.91 dB — already inside the +-1 dB target without a trim, but
+// the small correction below removes the residual and adds headroom against
+// the test's tolerance). Trim = ref/measured.
+constexpr float kHallEnh16WetCalTrim     = 0.9007f;
 
 // Number of Hall ER taps — keeps processBlockHall self-contained even
 // though kHallErTaps is shared with the legacy 8-line Hall tuning above.
@@ -574,9 +602,14 @@ constexpr PlateOutputTap kPlateTapsR[7] = {
     { PL_D2B,  195, -1.0f },   //           rightDelay2 @121
 };
 constexpr int   kPlateNumOutputTaps  = 7;
-// Single calibrated wet trim (measured — see testPlateWetLevelBounded and the
-// measured-level row in the Phase 1 report). Lands Plate near the FDN styles.
-constexpr float kPlateLateOutputGain = 1.45f;
+// Single calibrated wet trim. Phase 2 equal-loudness calibration (docs/plans/
+// reverb-audit-and-redesign.md Phase 2): measured pink-noise wet RMS at the
+// calibration setting (decay 2s/size50/damping50/mix100, 44.1kHz) with the
+// Phase 1 trim (1.45) was 0.0310256 vs the Generic-enhanced reference's
+// 0.123408 (-11.99 dB — Plate was still ~16% of reference level, matching
+// the Phase 1 report's uncalibrated-level note). New trim = 1.45 *
+// (ref/measured) = 5.7675, locked by testReverbEqualLoudnessCalibration.
+constexpr float kPlateLateOutputGain = 5.7675f;
 
 // Mode-entry wet ramp length (samples). Wet output fades 0→1 over this many
 // samples after each PlateLate::reset(), preventing a click or sudden blast
@@ -1020,7 +1053,40 @@ public:
 
     double getTailLengthSeconds() const override
     {
-        return static_cast<double>(getSmoothedValue("decay"));
+        const double decay = static_cast<double>(getSmoothedValue("decay"));
+        const int    idx   = std::clamp(
+            static_cast<int>(stylePtr_ ? stylePtr_->load(std::memory_order_relaxed) + 0.5f : 0.0f),
+            0, kNumReverbStyles - 1);
+        switch (static_cast<ReverbStyle>(idx))
+        {
+            case ReverbStyle::Plate:
+                // Honest ceiling: the in-loop DC blockers + damping floor cap
+                // measured RT60 at ~20.1 s even when the knob reads 30 s (see
+                // testPlateRT60MonotonicWithDecay and docs/plans/reverb-audit-
+                // and-redesign.md Phase 1 report). Reporting min(knob, ceiling)
+                // keeps callers of getTailLengthSeconds() honest; MixEngine's
+                // realtime tail drain does NOT consult this value (it drains by
+                // measured output level instead — see MixEngine.cpp:33-40), so
+                // this has no effect on realtime/export tail behaviour today.
+                return std::min(decay, 20.1);
+            case ReverbStyle::Hall:
+                // Hall's decayScale silently targets 1.4x the knob's face value
+                // (kHallEnh16DecayScale) — the knob reads e.g. 30 s but the
+                // FDN's per-line RT60 gain is computed against 42 s. Reporting
+                // the true target instead of the face value.
+                return decay * static_cast<double>(kHallEnh16DecayScale);
+            default:
+                return decay;
+        }
+    }
+
+    // Test-only accessor for the equal-power mix crossfade law (Phase 2).
+    // Exposes the private static helper so test_reverb.cpp can lock the
+    // dryGain^2 + wetGain^2 == 1 invariant directly, without depending on
+    // audio-domain dry/wet correlation. Not part of the bridge/RPC surface.
+    static void computeEqualPowerMixGainsForTest(float mixN, float& dryGain, float& wetGain)
+    {
+        equalPowerMixGains(mixN, dryGain, wetGain);
     }
 
     // ── processEffect ────────────────────────────────────────────────────────
@@ -1375,10 +1441,10 @@ private:
             erL = erL + (fdnLate_.erSoftStateL - erL) * erBlend;
             erR = erR + (fdnLate_.erSoftStateR - erR) * erBlend;
 
-            float wetL = erL  * (erLevel / 100.0f) * t->erGainScale
-                       + fdnL * (erLate  / 100.0f) * t->lateGainScale;
-            float wetR = erR  * (erLevel / 100.0f) * t->erGainScale
-                       + fdnR * (erLate  / 100.0f) * t->lateGainScale;
+            float wetL = (erL  * (erLevel / 100.0f) * t->erGainScale
+                        + fdnL * (erLate  / 100.0f) * t->lateGainScale) * t->wetCalTrim;
+            float wetR = (erR  * (erLevel / 100.0f) * t->erGainScale
+                        + fdnR * (erLate  / 100.0f) * t->lateGainScale) * t->wetCalTrim;
 
             // SMOOTH HF shelf
             constexpr float kSmoothShelfK = 0.45f;
@@ -1404,9 +1470,11 @@ private:
             wetR = hicutStateR_ - locutStateR_;
 
             const float mixN = mixPct / 100.0f;
-            buffer.setSample(0, s, inputL * (1.0f - mixN) + wetL * mixN);
+            float dryGain, wetGain;
+            equalPowerMixGains(mixN, dryGain, wetGain);
+            buffer.setSample(0, s, inputL * dryGain + wetL * wetGain);
             if (numCh > 1)
-                buffer.setSample(1, s, inputR * (1.0f - mixN) + wetR * mixN);
+                buffer.setSample(1, s, inputR * dryGain + wetR * wetGain);
 
             peakL = std::max(peakL, std::abs(wetL));
             peakR = std::max(peakR, std::abs(wetR));
@@ -1586,10 +1654,10 @@ private:
             erL = erL + (fdnLate_.erSoftStateL - erL) * erBlend;
             erR = erR + (fdnLate_.erSoftStateR - erR) * erBlend;
 
-            float wetL = erL  * (erLevel / 100.0f) * kHallEnh16ErGainScale
-                       + fdnL * (erLate  / 100.0f) * kHallEnh16LateGainScale;
-            float wetR = erR  * (erLevel / 100.0f) * kHallEnh16ErGainScale
-                       + fdnR * (erLate  / 100.0f) * kHallEnh16LateGainScale;
+            float wetL = (erL  * (erLevel / 100.0f) * kHallEnh16ErGainScale
+                        + fdnL * (erLate  / 100.0f) * kHallEnh16LateGainScale) * kHallEnh16WetCalTrim;
+            float wetR = (erR  * (erLevel / 100.0f) * kHallEnh16ErGainScale
+                        + fdnR * (erLate  / 100.0f) * kHallEnh16LateGainScale) * kHallEnh16WetCalTrim;
 
             // SMOOTH HF shelf on wet output.
             constexpr float kSmoothShelfK = 0.45f;
@@ -1615,9 +1683,11 @@ private:
             wetR = hicutStateR_ - locutStateR_;
 
             const float mixN = mixPct / 100.0f;
-            buffer.setSample(0, s, inputL * (1.0f - mixN) + wetL * mixN);
+            float dryGain, wetGain;
+            equalPowerMixGains(mixN, dryGain, wetGain);
+            buffer.setSample(0, s, inputL * dryGain + wetL * wetGain);
             if (numCh > 1)
-                buffer.setSample(1, s, inputR * (1.0f - mixN) + wetR * mixN);
+                buffer.setSample(1, s, inputR * dryGain + wetR * wetGain);
 
             peakL = std::max(peakL, std::abs(wetL));
             peakR = std::max(peakR, std::abs(wetR));
@@ -1845,8 +1915,10 @@ private:
             {
                 P.reset();
                 const float mixN = mixPct / 100.0f;
-                buffer.setSample(0, s, inputL * (1.0f - mixN));
-                if (numCh > 1) buffer.setSample(1, s, inputR * (1.0f - mixN));
+                float mixDryGain, mixWetGain;
+                equalPowerMixGains(mixN, mixDryGain, mixWetGain);
+                buffer.setSample(0, s, inputL * mixDryGain);
+                if (numCh > 1) buffer.setSample(1, s, inputR * mixDryGain);
                 continue;
             }
 
@@ -1912,9 +1984,11 @@ private:
             wetR = hicutStateR_ - locutStateR_;
 
             const float mixN = mixPct / 100.0f;
-            buffer.setSample(0, s, inputL * (1.0f - mixN) + wetL * mixN);
+            float mixDryGain, mixWetGain;
+            equalPowerMixGains(mixN, mixDryGain, mixWetGain);
+            buffer.setSample(0, s, inputL * mixDryGain + wetL * mixWetGain);
             if (numCh > 1)
-                buffer.setSample(1, s, inputR * (1.0f - mixN) + wetR * mixN);
+                buffer.setSample(1, s, inputR * mixDryGain + wetR * mixWetGain);
 
             peakL = std::max(peakL, std::abs(wetL));
             peakR = std::max(peakR, std::abs(wetR));
@@ -1963,6 +2037,21 @@ private:
                 juce::StringArray{"Generic", "Room", "Plate", "Hall"},
                 static_cast<int>(ReverbStyle::Generic)),
         };
+    }
+
+    // ── Equal-power (constant-power) mix crossfade ───────────────────────────
+    // Phase 2 (docs/plans/reverb-audit-and-redesign.md Phase 2): replaces the
+    // linear crossfade's -6 dB center dip with a √-law pairing where
+    // dryGain² + wetGain² == 1 at every mix position, so perceived loudness
+    // stays constant as mix is automated. The +3 dB level shift at mix≈50%
+    // vs. the old linear law is INTENTIONAL — it's why this ships in the same
+    // phase as the wet-level calibration above. Used by every non-legacy
+    // backend (Enhanced/Hall/Plate); processBlockLegacy keeps its linear
+    // crossfade untouched (bit-frozen).
+    static inline void equalPowerMixGains(float mixN, float& dryGain, float& wetGain)
+    {
+        dryGain = std::sqrt(std::max(0.0f, 1.0f - mixN));
+        wetGain = std::sqrt(std::max(0.0f, mixN));
     }
 
     // ── Hadamard 8×8 via Fast Walsh-Hadamard Transform (in-place) ────────────

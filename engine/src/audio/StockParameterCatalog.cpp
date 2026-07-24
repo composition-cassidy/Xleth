@@ -43,12 +43,35 @@ const DescTable& tableFor(const std::string& pluginId)
             { "duck_amount",  "Duck Amount",   "Duck",   "Dynamics", "%",   ""    },
             { "mix",          "Mix",           "Mix",    "Output",   "%",   ""    },
         }},
+        // reverb ("pluginId reverb", XlethReverbEffect):
+        //   • mod_rate is a 0-100% scalar that scales each backend's per-line
+        //     LFO-rate TABLE (e.g. kGenericModRates/kHallModRates16, all in
+        //     Hz) — it is NOT itself a Hz value, unlike delay/chorus/flanger's
+        //     mod_rate, which IS a direct Hz parameter. Unit/scale corrected
+        //     to "%" / linear below (cosmetic metadata fix only — the engine's
+        //     APVTS range for reverb's mod_rate has always been 0-100%; only
+        //     this display label was wrong).
+        //   • er_level / er_late change MEANING per style (same APVTS ids,
+        //     kept for save/load + bridge compatibility — no engine/UI param
+        //     surface change):
+        //       - Generic / Room / Hall (FDN backends): er_level scales the
+        //         early-reflection tap bus, er_late scales the FDN late-tail
+        //         bus — i.e. literally "ER level" / "(ER routed to) late
+        //         level", matching the labels below.
+        //       - Plate (processBlockPlate): there are no discrete ER taps.
+        //         er_level instead blends the 4-stage input-diffusion cascade
+        //         against the raw pre-delay signal ("bloomBlend" — how much
+        //         front-end diffusion smears the attack); er_late scales the
+        //         7-tap tank output level ("tank level"). See the per-style
+        //         mapping comment above processBlockPlate() in
+        //         XlethReverbEffect.h. ReverbPanel.jsx relabels these two
+        //         knobs per style using this same mapping (UI text only).
         { "reverb", {
             { "predelay",   "Predelay",     "PreDly", "Time",     "ms",  ""    },
             { "decay",      "Decay",        "Decay",  "Time",     "s",   "log" },
             { "size",       "Size",         "Size",   "Space",    "",    ""    },
             { "damping",    "Damping",      "Damp",   "Tone",     "%",   ""    },
-            { "mod_rate",   "Mod Rate",     "Rate",   "Mod",      "Hz",  "log" },
+            { "mod_rate",   "Mod Rate",     "Rate",   "Mod",      "%",   ""    },
             { "mod_depth",  "Mod Depth",    "Depth",  "Mod",      "%",   ""    },
             { "er_level",   "ER Level",     "ER",     "ER",       "dB",  ""    },
             { "er_late",    "ER → Late",    "ER→L",   "ER",       "",    ""    },

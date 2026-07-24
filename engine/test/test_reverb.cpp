@@ -19,6 +19,7 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -61,6 +62,41 @@ static void fillSine(juce::AudioBuffer<float>& buf, double freqHz,
             buf.setSample(1, s, v);
         phase += freqHz / sampleRate;
         if (phase >= 1.0) phase -= 1.0;
+    }
+}
+
+// Deterministic pink noise (Paul Kellet's economy method) driven by a fixed-
+// seed PRNG. Reproducible across runs/platforms (std::mt19937 + std::uniform_
+// real_distribution are both fully specified by the C++ standard). Used for
+// the equal-loudness calibration measurement — a stationary broadband signal
+// makes wet-RMS matching meaningful in a way a single sine tone (which can
+// land on or off a style's modal peaks) does not.
+struct PinkNoiseState
+{
+    std::mt19937 rng;
+    std::array<float, 7> b{};
+    explicit PinkNoiseState(unsigned seed) : rng(seed) {}
+};
+
+static void fillPinkNoise(juce::AudioBuffer<float>& buf, PinkNoiseState& st)
+{
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    const int ns = buf.getNumSamples();
+    for (int s = 0; s < ns; ++s)
+    {
+        const float white = dist(st.rng);
+        st.b[0] = 0.99886f * st.b[0] + white * 0.0555179f;
+        st.b[1] = 0.99332f * st.b[1] + white * 0.0750759f;
+        st.b[2] = 0.96900f * st.b[2] + white * 0.1538520f;
+        st.b[3] = 0.86650f * st.b[3] + white * 0.3104856f;
+        st.b[4] = 0.55000f * st.b[4] + white * 0.5329522f;
+        st.b[5] = -0.7616f * st.b[5] - white * 0.0168980f;
+        const float pink = st.b[0] + st.b[1] + st.b[2] + st.b[3] + st.b[4]
+                          + st.b[5] + st.b[6] + white * 0.5362f;
+        st.b[6] = white * 0.115926f;
+        const float v = pink * 0.05f;   // scaled to a sane -20 dBFS-ish level
+        buf.setSample(0, s, v);
+        if (buf.getNumChannels() > 1) buf.setSample(1, s, v);
     }
 }
 
@@ -2533,14 +2569,32 @@ static void testPlateWetLevelBounded()
     std::cout << "    legacy Generic peak=" << genPeak << " rms=" << genRms
               << " | Plate peak=" << plPeak << " rms=" << plRms << "\n";
 
-    CHECK(plPeak < genPeak * 4.0,
-          "Plate peak should not exceed legacy Generic peak by more than 4×");
-    CHECK(plPeak > genPeak * 0.15,
-          "Plate peak should not fall below 15% of legacy Generic peak");
-    CHECK(plRms  < genRms  * 4.0,
-          "Plate RMS should not exceed legacy Generic RMS by more than 4×");
-    CHECK(plRms  > genRms  * 0.15,
-          "Plate RMS should not fall below 15% of legacy Generic RMS");
+    // Tightened by Phase 2 equal-loudness calibration (docs/plans/reverb-
+    // audit-and-redesign.md Phase 2): Plate's wet trim is now measurement-
+    // calibrated to match the Generic-enhanced reference within +-1 dB (see
+    // testReverbEqualLoudnessCalibration), so its level relative to legacy
+    // Generic is no longer "loosely level-matched" — it's pinned. This test
+    // uses the SAME param setting as the calibration measurement (decay 2s/
+    // size 50/damping 50/mix 100) but compares against legacy Generic (not
+    // the enhanced reference), and legacy vs. enhanced Generic themselves
+    // differ by ~+1.3 dB (see testEnhancedWetLevelBounded) — so the expected
+    // band is centered near, not exactly at, 1.0×. MEASURED post-calibration:
+    // peak 0.806× / RMS 0.648× of legacy Generic. Old tolerance was ±4×/0.15×;
+    // tightened to a band that still comfortably covers both measurements
+    // with headroom for FP/platform variance, while catching any regression
+    // that silently drops or re-scales the calibration trim.
+    CHECK(plPeak < genPeak * 1.1,
+          "Plate peak should not exceed 1.1× legacy Generic peak "
+          "(measured ~0.81× post Phase-2 calibration)");
+    CHECK(plPeak > genPeak * 0.5,
+          "Plate peak should not fall below 50% of legacy Generic peak "
+          "(measured ~0.81× post Phase-2 calibration)");
+    CHECK(plRms  < genRms  * 0.9,
+          "Plate RMS should not exceed 0.9× legacy Generic RMS "
+          "(measured ~0.65× post Phase-2 calibration)");
+    CHECK(plRms  > genRms  * 0.4,
+          "Plate RMS should not fall below 40% of legacy Generic RMS "
+          "(measured ~0.65× post Phase-2 calibration)");
 }
 
 // Plate stereo image is decorrelated but not broken.
@@ -3063,11 +3117,18 @@ static void testPlateSustainedSineSteadyStateGain()
     CHECK(std::isfinite(worstOff) && std::isfinite(worstOn),
           "Plate sustained 0 dBFS sine must stay finite for >=12 s at 44.1 kHz");
     // Mod-off bound: the honest 30 s tank rings at on-mode frequencies (loop
-    // gain ~0.81 → ~1/(1-0.81) internal). Bounded/decaying is the requirement;
-    // 4.5× is the measured raw comb (~4.3×) + headroom. Real-use loudness is
-    // the mod-on bar below, not this pathological unmodulated stress input.
-    CHECK(worstOff < 4.5,
-          "Plate mod-off sustained sine must stay bounded below 4.5x");
+    // gain ~0.81 → ~1/(1-0.81) internal). Bounded/decaying is the requirement.
+    // Phase 2 equal-loudness calibration raised kPlateLateOutputGain 1.45→5.77
+    // (~3.98×, see reverb-audit-and-redesign.md Phase 2) to match Plate's
+    // musical-setting loudness to the other backends; this is a flat output-
+    // stage trim so it scales EVERY absolute wet-level number by the same
+    // factor, including this pathological corner's — that's expected, not a
+    // regression (the audit explicitly notes calibration targets musical
+    // settings, not this corner). 19.0× is the measured raw comb (~17.3×,
+    // was ~4.3× pre-calibration) + headroom.
+    CHECK(worstOff < 19.0,
+          "Plate mod-off sustained sine must stay bounded below 19.0x "
+          "(measured ~17.3x post Phase-2 calibration; see comment)");
     // ── Kill the comb (modal magnification), measured in REAL USE (mod on) ────
     // The spec target is modal magnification ≤ 3× (on-mode/off-mode spread).
     // MEASURED: mod-off raw comb = 8.55× (down from the 13× baseline: the dense
@@ -3080,24 +3141,33 @@ static void testPlateSustainedSineSteadyStateGain()
           "Plate mod-on modal magnification (worst/best across pitches) must be "
           "< 3x (baseline 13x — dense tank + modulation must un-cluster the modes)");
     // ── Kill the comb (absolute level), mod on ───────────────────────────────
-    // Spec ASPIRATION: worst-case steady-state wet gain ≤ 1.5×. MEASURED best
-    // achievable = 2.74× (+8.8 dBFS) at 523 Hz, down from the 3.72× (+11.4 dBFS)
-    // baseline. The ≤1.5× target is NOT physically reachable for this input:
-    // a SUSTAINED full-scale pure sine into an HONEST 30 s-RT60 tank accumulates
-    // toward 1/(1-loopGain) ≈ 5× internally (this is what 30 s RT60 MEANS), and
-    // the only levers that reduce it are (a) lowering loop gain — which breaks
+    // Spec ASPIRATION: worst-case steady-state wet gain ≤ 1.5×. Pre-Phase-2
+    // measured best achievable = 2.74× (+8.8 dBFS) at 523 Hz, down from the
+    // 3.72× (+11.4 dBFS) baseline. The ≤1.5× target was NOT physically
+    // reachable for this input even before calibration: a SUSTAINED full-scale
+    // pure sine into an HONEST 30 s-RT60 tank accumulates toward
+    // 1/(1-loopGain) ≈ 5× internally (this is what 30 s RT60 MEANS), and the
+    // only levers that reduce it are (a) lowering loop gain — which breaks
     // RT60 honesty and reintroduces the forbidden dead zone — or (b) deeper
-    // modulation, which past ~24 samples FM-spreads the sine into sidebands that
-    // pump the loop and RAISE the peak (measured: depth 32 + fast rate → 4.4×,
-    // WORSE). The chosen 24-sample modulation is the empirical minimum. No real
-    // musical signal is a sustained 0 dBFS sine; transient pitched hits (the
-    // Sparta use case) never approach this ceiling. Threshold locks the measured
-    // 2.74× against regression; the residual gap to 1.5× is a level-calibration
-    // concern owned by Phase 2 (equal-loudness), documented in reverb-audit §7.
-    CHECK(worstOn < 3.0,
-          "Plate mod-on steady-state wet gain must stay below 3.0x "
-          "(measured 2.74x; honest 30 s RT60 forbids the sub-1.5x aspiration — "
-          "see comment + reverb-audit §7)");
+    // modulation, which past ~24 samples FM-spreads the sine into sidebands
+    // that pump the loop and RAISE the peak (measured: depth 32 + fast rate →
+    // 4.4×, WORSE). The chosen 24-sample modulation is the empirical minimum.
+    //
+    // Phase 2 equal-loudness calibration then raised kPlateLateOutputGain
+    // 1.45→5.77 (~3.98×) to match Plate's musical-setting loudness to the
+    // other backends (see reverb-audit-and-redesign.md Phase 2 and this
+    // file's testReverbEqualLoudnessCalibration). That is a flat output-stage
+    // trim, so it scales this pathological corner's absolute number by the
+    // same ~3.98× too — MEASURED now 10.91× (+20.8 dBFS). This is expected,
+    // not a regression: the audit explicitly scopes calibration to musical
+    // settings, not this corner, and no real musical signal is a sustained
+    // 0 dBFS sine (transient pitched hits — the Sparta use case — never
+    // approach this ceiling). Threshold locks the new measured value +
+    // headroom against further regression.
+    CHECK(worstOn < 12.0,
+          "Plate mod-on steady-state wet gain must stay below 12.0x "
+          "(measured ~10.9x post Phase-2 calibration; honest 30 s RT60 forbids "
+          "the sub-1.5x aspiration — see comment + reverb-audit §7)");
 }
 
 // ── (c) LIVE PARAMETER SWEEPS during sustained input ─────────────────────────
@@ -3110,10 +3180,15 @@ static void testPlateSustainedSineSteadyStateGain()
 // Phase 1 rewrite is level-calibrated ~1.9× louder (Σg²=1 taps + a 1.45 wet
 // trim) AND has honest long decay, so its mod-off worst-case sustained-sine
 // resonance is higher in ABSOLUTE terms (~4.9×) while remaining bounded and
-// decaying — the point of this test. This is the unmodulated pathological
-// stress input; real-use loudness (mod on) is bounded ≤1.5× by
+// decaying — the point of this test. Phase 2 equal-loudness calibration then
+// raised kPlateLateOutputGain 1.45→5.77 (~3.98×, see reverb-audit-and-
+// redesign.md Phase 2) to match Plate's musical-setting loudness to the
+// other backends — a flat output-stage trim, so it scales this absolute
+// number by the same factor too: MEASURED now 18.6×. This is the unmodulated
+// pathological stress input; real-use loudness (mod on) is bounded by
 // testPlateSustainedSineSteadyStateGain. Threshold re-baselined to the
-// measured mod-off peak + headroom; see that comment and reverb-audit §7.
+// measured post-calibration peak + headroom; see that comment and
+// reverb-audit §7.
 static void testPlateLiveSweepsBounded()
 {
     std::cout << "  [Plate live parameter sweeps bounded @44.1k]\n";
@@ -3173,8 +3248,9 @@ static void testPlateLiveSweepsBounded()
     mx = std::max(mx, runSweep("damping", 100.0f, 0.0f,   "damping 100->0"));
 
     std::cout << "    worst-case live-sweep peak = " << mx << "x\n";
-    CHECK(mx < 6.0,
-          "Plate output must stay bounded across all live parameter sweeps (<6.0x)");
+    CHECK(mx < 20.5,
+          "Plate output must stay bounded across all live parameter sweeps "
+          "(<20.5x; measured ~18.6x post Phase-2 calibration)");
 }
 
 // ── (d) PERIODICITY SPEC — NOW UNGUARDED (Phase 1 owns the decoherence) ──────
@@ -3504,6 +3580,273 @@ static void testPlateRT60MonotonicWithDecay()
     }
 }
 
+// ─── Phase 2: equal-loudness wet calibration ─────────────────────────────────
+//
+// Calibration setting (docs/plans/reverb-audit-and-redesign.md Phase 2):
+// decay=2s, size=50%, damping=50%, mix=100% (isolates pure wet — at mix=100
+// both the old linear law and the new equal-power law apply a wet coefficient
+// of exactly 1.0, so this measurement is independent of the mix-law change),
+// smoothness=1% (the minimum needed to route Generic through the EnhancedFdn
+// backend instead of LegacyFdn — Legacy is excluded from calibration per
+// spec; applied uniformly to Room/Plate/Hall too so smoothness's shared
+// damping/HF-shelf contribution doesn't confound the comparison), 44.1 kHz.
+// Reference = Generic-enhanced (style 0). Driven with deterministic pink
+// noise (stationary, broadband) rather than a single sine tone so the RMS
+// isn't confounded by landing on/off a style's modal peaks.
+constexpr float  kCalDecay      = 2.0f;
+constexpr float  kCalSize       = 50.0f;
+constexpr float  kCalDamping    = 50.0f;
+constexpr float  kCalMix        = 100.0f;
+constexpr float  kCalSmoothness = 1.0f;
+constexpr double kCalSR         = 44100.0;
+
+static double measureCalibrationWetRms(float styleIdx)
+{
+    constexpr int kBS = 512;
+    // 4 s total, skip the first 2 s (~1 decay time) so the tail reaches
+    // steady state against continuous noise excitation before measuring.
+    const int totalBlocks = static_cast<int>(4.0 * kCalSR / kBS);
+    const int skipBlocks  = static_cast<int>(2.0 * kCalSR / kBS);
+
+    XlethReverbEffect fx;
+    fx.setParameterValue("decay",      kCalDecay);
+    fx.setParameterValue("predelay",   0.0f);
+    fx.setParameterValue("size",       kCalSize);
+    fx.setParameterValue("damping",    kCalDamping);
+    fx.setParameterValue("mod_rate",   0.0f);
+    fx.setParameterValue("mod_depth",  0.0f);
+    fx.setParameterValue("er_level",   100.0f);
+    fx.setParameterValue("er_late",    100.0f);
+    fx.setParameterValue("hicut",      20000.0f);
+    fx.setParameterValue("locut",      20.0f);
+    fx.setParameterValue("mix",        kCalMix);
+    fx.setParameterValue("style",      styleIdx);
+    fx.setParameterValue("smoothness", kCalSmoothness);
+    fx.prepareToPlay(kCalSR, kBS);
+
+    juce::AudioBuffer<float> buf(2, kBS);
+    juce::MidiBuffer midi;
+    PinkNoiseState pink(0xC0FFEEu);
+
+    double sumSq = 0.0;
+    std::size_t count = 0;
+    for (int b = 0; b < totalBlocks; ++b)
+    {
+        fillPinkNoise(buf, pink);
+        fx.processBlock(buf, midi);
+        if (b >= skipBlocks)
+        {
+            for (int ch = 0; ch < buf.getNumChannels(); ++ch)
+            {
+                const float* p = buf.getReadPointer(ch);
+                for (int s = 0; s < kBS; ++s)
+                {
+                    sumSq += static_cast<double>(p[s]) * static_cast<double>(p[s]);
+                    ++count;
+                }
+            }
+        }
+    }
+    return std::sqrt(sumSq / static_cast<double>(count));
+}
+
+// ─── Phase 2: equal-power mix law ────────────────────────────────────────────
+//
+// The defining property of an equal-power (constant-power) crossfade is that
+// dryGain(m)^2 + wetGain(m)^2 == 1 for every mix position m in [0,1] — total
+// power stays constant across the sweep, unlike a linear crossfade where it
+// dips to 0.5 (-3 dB centre dip vs. either endpoint) at m=0.5. We test the
+// actual gain law used by the non-legacy backends directly (via the test-only
+// accessor XlethReverbEffect::computeEqualPowerMixGainsForTest) rather than
+// through full audio-domain measurement, because the audio-domain result
+// depends on dry/wet correlation (confounding a pure DSP-law check).
+static void testReverbEqualPowerMixLaw()
+{
+    std::cout << "  [equal-power mix law: dryGain^2 + wetGain^2 == 1]\n";
+
+    const float mixPoints[] = { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f };
+    for (float m : mixPoints)
+    {
+        float dryGain = 0.0f, wetGain = 0.0f;
+        XlethReverbEffect::computeEqualPowerMixGainsForTest(m, dryGain, wetGain);
+        const double power = static_cast<double>(dryGain) * dryGain
+                            + static_cast<double>(wetGain) * wetGain;
+        std::cout << "    mix=" << m << "  dryGain=" << dryGain
+                  << "  wetGain=" << wetGain << "  power=" << power << "\n";
+        CHECK_NEAR(power, 1.0, 1e-5,
+                   "equal-power crossfade must keep dryGain^2 + wetGain^2 == 1 "
+                   "at every mix position (mix-0.5 power must match the 0/1 endpoints)");
+    }
+
+    // Endpoints must be exactly pass-through (no attenuation of the selected
+    // side) — this is what makes mix=0/100 behave identically to the old
+    // linear law even though the interior curve changed.
+    float dryAt0 = 0.0f, wetAt0 = 0.0f;
+    XlethReverbEffect::computeEqualPowerMixGainsForTest(0.0f, dryAt0, wetAt0);
+    CHECK_NEAR(dryAt0, 1.0, 1e-6, "mix=0 dryGain must be exactly 1.0 (pure dry)");
+    CHECK_NEAR(wetAt0, 0.0, 1e-6, "mix=0 wetGain must be exactly 0.0 (pure dry)");
+
+    float dryAt1 = 0.0f, wetAt1 = 0.0f;
+    XlethReverbEffect::computeEqualPowerMixGainsForTest(1.0f, dryAt1, wetAt1);
+    CHECK_NEAR(dryAt1, 0.0, 1e-6, "mix=100 dryGain must be exactly 0.0 (pure wet)");
+    CHECK_NEAR(wetAt1, 1.0, 1e-6, "mix=100 wetGain must be exactly 1.0 (pure wet)");
+
+    // At mix=50%, both gains equal 1/sqrt(2) (~0.7071), the classic equal-
+    // power midpoint, and are +3 dB louder than the linear law's 0.5/0.5.
+    float dryAt50 = 0.0f, wetAt50 = 0.0f;
+    XlethReverbEffect::computeEqualPowerMixGainsForTest(0.5f, dryAt50, wetAt50);
+    const double kInvSqrt2 = 0.70710678118;
+    CHECK_NEAR(dryAt50, kInvSqrt2, 1e-5, "mix=50% dryGain must equal 1/sqrt(2)");
+    CHECK_NEAR(wetAt50, kInvSqrt2, 1e-5, "mix=50% wetGain must equal 1/sqrt(2)");
+    CHECK(dryAt50 > 0.5 + 1e-4,
+          "mix=50% gains must exceed the OLD linear law's 0.5 (the intentional "
+          "+3 dB centre-shift documented in reverb-audit-and-redesign.md Phase 2)");
+}
+
+// Legacy (processBlockLegacy) must keep its ORIGINAL linear crossfade — the
+// equal-power law change is explicitly scoped to non-legacy backends only.
+// We can't call the private linear-law arithmetic directly, so this is an
+// audio-domain regression check: testLegacyGenericRegressionSignature (run
+// elsewhere in this suite) already locks legacy's full byte-identical output
+// including its mix stage, so a linear-vs-equal-power swap on that path would
+// fail there. This test additionally locks the specific mix=50% ratio
+// algebraically: legacy output at mix=50%, silence input, non-zero wet must
+// equal exactly 0.5 * wet (linear), not 1/sqrt(2) * wet (equal-power).
+static void testLegacyMixStaysLinear()
+{
+    std::cout << "  [legacy Generic mix crossfade stays linear (unchanged)]\n";
+    constexpr double kSR = 48000.0;
+    constexpr int    kBS = 512;
+
+    XlethReverbEffect fxFull, fxHalf;
+    auto setup = [&](XlethReverbEffect& fx, float mixPct)
+    {
+        setStandardParams(fx);
+        fx.setParameterValue("mix", mixPct);
+        fx.prepareToPlay(kSR, kBS);
+    };
+    setup(fxFull, 100.0f);
+    setup(fxHalf, 50.0f);
+
+    juce::AudioBuffer<float> bufFull(2, kBS), bufHalf(2, kBS);
+    juce::MidiBuffer midi;
+    double phaseFull = 0.0, phaseHalf = 0.0;
+    // Warm up the tail past the onset transient so wet is non-trivial and
+    // dry has settled to a comparable phase in both runs.
+    for (int b = 0; b < 8; ++b)
+    {
+        fillSine(bufFull, 440.0, kSR, phaseFull);
+        fxFull.processBlock(bufFull, midi);
+        fillSine(bufHalf, 440.0, kSR, phaseHalf);
+        fxHalf.processBlock(bufHalf, midi);
+    }
+    // One more block: input silence isolates pure wet (mix=100) vs. the
+    // mix=50 crossfade of that SAME wet signal against zero dry.
+    fillSilence(bufFull);
+    fxFull.processBlock(bufFull, midi);
+    fillSilence(bufHalf);
+    fxHalf.processBlock(bufHalf, midi);
+
+    double sumSqFull = sumSquared(bufFull);
+    double sumSqHalf = sumSquared(bufHalf);
+    CHECK(sumSqFull > 1e-8, "legacy wet reference must be non-trivial");
+
+    // With zero dry input, output = wetGain(mix) * wet in both laws — so this
+    // sample alone can't distinguish 0.5 (linear) from 1/sqrt(2) (equal-power).
+    // The distinguishing ratio is power(half)/power(full): linear -> 0.25,
+    // equal-power -> 0.5.
+    const double ratio = sumSqHalf / sumSqFull;
+    std::cout << "    power ratio (mix50/mix100) = " << ratio
+              << "  (linear expects ~0.25, equal-power expects ~0.5)\n";
+    CHECK(ratio < 0.35,
+          "legacy Generic's mix crossfade must remain LINEAR (power ratio ~0.25 "
+          "at mix 50 vs 100) — the equal-power law change must not leak into "
+          "the bit-frozen legacy path");
+}
+
+// ─── Phase 2: knob/tail honesty ──────────────────────────────────────────────
+//
+// getTailLengthSeconds() must report the EFFECTIVE RT60, not the raw decay
+// knob: Plate caps at its measured physical ceiling (~20.1 s, see
+// testPlateRT60MonotonicWithDecay); Hall scales by its true decayScale target
+// (1.4x, kHallEnh16DecayScale — the knob silently undersells Hall's actual
+// target per the audit); Generic/Room report the knob verbatim (honest by
+// construction — their decayScale is 1.0).
+static void testGetTailLengthSecondsReportsEffectiveRT60()
+{
+    std::cout << "  [getTailLengthSeconds reports effective RT60 per style]\n";
+    constexpr double kSR = 48000.0;
+    constexpr int    kBS = 512;
+
+    auto tailFor = [&](float styleIdx, float decayKnob) -> double
+    {
+        XlethReverbEffect fx;
+        fx.setParameterValue("style", styleIdx);
+        fx.setParameterValue("decay", decayKnob);
+        fx.prepareToPlay(kSR, kBS);
+        // decay is smoothed (30 ms Linear) — settle it before reading.
+        juce::AudioBuffer<float> buf(2, kBS);
+        juce::MidiBuffer midi;
+        for (int b = 0; b < 10; ++b) { fillSilence(buf); fx.processBlock(buf, midi); }
+        return fx.getTailLengthSeconds();
+    };
+
+    // Generic / Room: honest passthrough of the knob.
+    const double genTail  = tailFor(0.0f, 10.0f);
+    const double roomTail = tailFor(1.0f, 10.0f);
+    std::cout << "    Generic decay=10s -> tail=" << genTail
+              << "  Room decay=10s -> tail=" << roomTail << "\n";
+    CHECK_NEAR(genTail,  10.0, 0.05, "Generic getTailLengthSeconds must equal the decay knob");
+    CHECK_NEAR(roomTail, 10.0, 0.05, "Room getTailLengthSeconds must equal the decay knob");
+
+    // Plate: capped at the measured ~20.1 s ceiling for knob values above it,
+    // but honest (== knob) below the ceiling.
+    const double plateTailLow  = tailFor(2.0f, 5.0f);
+    const double plateTailHigh = tailFor(2.0f, 30.0f);
+    std::cout << "    Plate decay=5s -> tail=" << plateTailLow
+              << "  Plate decay=30s -> tail=" << plateTailHigh << "\n";
+    CHECK_NEAR(plateTailLow, 5.0, 0.05,
+               "Plate getTailLengthSeconds below the ceiling must equal the decay knob");
+    CHECK_NEAR(plateTailHigh, 20.1, 0.05,
+               "Plate getTailLengthSeconds at knob=30s must report the ~20.1s "
+               "measured physical ceiling, not the raw 30s knob value");
+    CHECK(plateTailHigh < 30.0,
+          "Plate getTailLengthSeconds must never report the raw knob value "
+          "above its measured ceiling");
+
+    // Hall: reports knob * kHallEnh16DecayScale (1.4x) — its true RT60 target.
+    const double hallTail = tailFor(3.0f, 10.0f);
+    std::cout << "    Hall decay=10s -> tail=" << hallTail << " (expect 14.0s)\n";
+    CHECK_NEAR(hallTail, 14.0, 0.05,
+               "Hall getTailLengthSeconds must report knob*1.4 (its true "
+               "decayScale target), not the face value of the knob");
+}
+
+static void testReverbEqualLoudnessCalibration()
+{
+    std::cout << "  [equal-loudness wet calibration vs Generic-enhanced]\n";
+
+    const double refRms   = measureCalibrationWetRms(0.0f);  // Generic-enhanced
+    const double roomRms  = measureCalibrationWetRms(1.0f);
+    const double plateRms = measureCalibrationWetRms(2.0f);
+    const double hallRms  = measureCalibrationWetRms(3.0f);
+
+    auto dB = [](double ratio) { return 20.0 * std::log10(ratio); };
+
+    std::cout << "    ref(Generic-enh)=" << refRms
+              << "  Room=" << roomRms  << " (" << dB(roomRms / refRms)  << " dB)"
+              << "  Plate=" << plateRms << " (" << dB(plateRms / refRms) << " dB)"
+              << "  Hall=" << hallRms  << " (" << dB(hallRms / refRms)  << " dB)\n";
+
+    constexpr double kTolDb = 1.0;
+    CHECK(std::abs(dB(roomRms  / refRms)) < kTolDb,
+          "Room wet RMS must be within +-1 dB of Generic-enhanced at the calibration setting");
+    CHECK(std::abs(dB(plateRms / refRms)) < kTolDb,
+          "Plate wet RMS must be within +-1 dB of Generic-enhanced at the calibration setting");
+    CHECK(std::abs(dB(hallRms  / refRms)) < kTolDb,
+          "Hall wet RMS must be within +-1 dB of Generic-enhanced at the calibration setting");
+}
+
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 int main()
@@ -3591,6 +3934,16 @@ int main()
     testPlatePeriodicitySpec();            // (d) periodicity spec (UNGUARDED — Phase 1)
     testPlatePerRoundTripGainUnderUnity(); // (e) per-round-trip gain < 1 grid (stability)
     testPlateRT60MonotonicWithDecay();     // (f) RT60 monotonic with decay knob
+
+    std::cout << "\n=== test_reverb_phase2_calibration ===\n";
+    testReverbEqualLoudnessCalibration();
+
+    std::cout << "\n=== test_reverb_phase2_mixlaw ===\n";
+    testReverbEqualPowerMixLaw();
+    testLegacyMixStaysLinear();
+
+    std::cout << "\n=== test_reverb_phase2_tail_honesty ===\n";
+    testGetTailLengthSecondsReportsEffectiveRT60();
 
     std::cout << "\nResults: " << g_passed << " passed, " << g_failed << " failed\n";
     if (g_failed > 0)
