@@ -105,6 +105,17 @@ public:
         duckReleaseCoeff_ = std::exp(-1.0f / (0.200f * static_cast<float>(sampleRate)));
         duckEnvelope_ = 0.0f;
 
+        // Handle-based smoother access (Phase 4 CPU pass): resolved once
+        // here instead of hashing a std::string per sample per param.
+        hFeedback_    = resolveSmoothed("feedback");
+        hFilterLo_    = resolveSmoothed("filter_lo");
+        hFilterHi_    = resolveSmoothed("filter_hi");
+        hModRate_     = resolveSmoothed("mod_rate");
+        hModDepth_    = resolveSmoothed("mod_depth");
+        hStereoWidth_ = resolveSmoothed("stereo_width");
+        hDuckAmount_  = resolveSmoothed("duck_amount");
+        hMix_         = resolveSmoothed("mix");
+
 #ifdef XLETH_DEBUG
         DBG("[Delay] prepareToPlay sr=" + juce::String(sampleRate)
             + " blockSize=" + juce::String(maxBlockSize)
@@ -207,14 +218,14 @@ public:
         for (int s = 0; s < numSamples; ++s)
         {
             // Advance base-class smoothers
-            const float feedbackPct  = getNextSmoothedValue("feedback");
-            const float filterLo     = getNextSmoothedValue("filter_lo");
-            const float filterHi     = getNextSmoothedValue("filter_hi");
-            const float modRate      = getNextSmoothedValue("mod_rate");
-            const float modDepth     = getNextSmoothedValue("mod_depth");
-            const float stereoWidth  = getNextSmoothedValue("stereo_width");
-            const float duckAmount   = getNextSmoothedValue("duck_amount");
-            const float mixPct       = getNextSmoothedValue("mix");
+            const float feedbackPct  = hFeedback_.next();
+            const float filterLo     = hFilterLo_.next();
+            const float filterHi     = hFilterHi_.next();
+            const float modRate      = hModRate_.next();
+            const float modDepth     = hModDepth_.next();
+            const float stereoWidth  = hStereoWidth_.next();
+            const float duckAmount   = hDuckAmount_.next();
+            const float mixPct       = hMix_.next();
 
             // ── 1. Cascaded one-pole delay time smoothing (2 stages) ────────
             smoothTimeL_[0] += smoothCoeff_ * (targetTimeL - smoothTimeL_[0]);
@@ -399,4 +410,8 @@ private:
 
     // ── State ───────────────────────────────────────────────────────────────
     double sampleRate_ = 44100.0;
+
+    // ── Handle-based smoother access (Phase 4 CPU pass) ──────────────────────
+    SmoothedHandle hFeedback_, hFilterLo_, hFilterHi_, hModRate_, hModDepth_,
+                   hStereoWidth_, hDuckAmount_, hMix_;
 };

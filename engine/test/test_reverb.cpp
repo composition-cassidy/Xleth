@@ -16,7 +16,9 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include <array>
+#include <atomic>
 #include <cmath>
+#include <cstdint>
 #include <iostream>
 #include <limits>
 #include <random>
@@ -4271,11 +4273,210 @@ static void testStyleSwitchNoClick()
     }
 }
 
+// ─── Phase 4: base-class CPU pass — behavior preservation ───────────────────
+//
+// docs/plans/reverb-audit-and-redesign.md Phase 4: string-keyed per-sample
+// smoother lookups replaced with prepare-time-resolved handles, hicut/locut
+// + RT60 decay-gain coefficients hoisted to block rate (linearly interpolated
+// per sample), and the FDN/tank LFOs' std::sin swapped for a phasor +
+// parabolic-approximation sine. This is a pure CPU optimization — phase-exact
+// match against the pre-change code is NOT expected (the LFO swap changes the
+// modulator's phase-to-amplitude mapping by up to ~1.1e-3 per sample), but
+// energy (RMS) and envelope (crest factor) over a long window must match
+// closely. Reference values below were captured from the pre-Phase-4 code
+// (string-keyed getNextSmoothedValue + std::sin + full per-sample std::pow/
+// std::exp, at commit c625beb — the parent of the Phase 4 commit) on this
+// exact 5 s deterministic-pink-noise program material, same seed, same
+// static params, at 44.1 kHz. Tolerance (±1% RMS, ±2% crest) is
+// intentionally far tighter than the style-tuning tolerances
+// used elsewhere in this file (±30% crest, ±1 dB calibration) — this test's
+// only job is to prove the optimization didn't change behavior, not to
+// re-litigate style tuning.
+struct BackendRmsCrest { double rms; double crest; };
+
+static BackendRmsCrest measureBackendRmsCrest(float styleIdx, double sampleRate)
+{
+    constexpr int kBS = 512;
+    const int totalBlocks = static_cast<int>(5.0 * sampleRate / kBS);
+
+    XlethReverbEffect fx;
+    fx.setParameterValue("decay",      3.0f);
+    fx.setParameterValue("predelay",   10.0f);
+    fx.setParameterValue("size",       60.0f);
+    fx.setParameterValue("damping",    40.0f);
+    fx.setParameterValue("mod_rate",   35.0f);
+    fx.setParameterValue("mod_depth",  50.0f);
+    fx.setParameterValue("er_level",   70.0f);
+    fx.setParameterValue("er_late",    80.0f);
+    fx.setParameterValue("hicut",      12000.0f);
+    fx.setParameterValue("locut",      80.0f);
+    fx.setParameterValue("mix",        100.0f);
+    fx.setParameterValue("style",      styleIdx);
+    fx.setParameterValue("smoothness", 25.0f);
+    fx.prepareToPlay(sampleRate, kBS);
+
+    juce::AudioBuffer<float> buf(2, kBS);
+    juce::MidiBuffer midi;
+    PinkNoiseState pink(0xB16B00Bu);
+
+    double sumSq = 0.0, peak = 0.0;
+    std::size_t count = 0;
+    for (int b = 0; b < totalBlocks; ++b)
+    {
+        fillPinkNoise(buf, pink);
+        fx.processBlock(buf, midi);
+        for (int s = 0; s < kBS; ++s)
+        {
+            const double v = static_cast<double>(buf.getSample(0, s));
+            sumSq += v * v;
+            peak = std::max(peak, std::abs(v));
+            ++count;
+        }
+    }
+    const double rms = std::sqrt(sumSq / static_cast<double>(count));
+    return { rms, rms > 1e-30 ? peak / rms : 0.0 };
+}
+
+static void checkBackendRmsCrestPreserved(const char* label, float styleIdx,
+                                          double refRms, double refCrest)
+{
+    std::cout << "  [" << label << " Phase 4 CPU pass: RMS/crest preserved]\n";
+    const auto m44 = measureBackendRmsCrest(styleIdx, 44100.0);
+    std::cout << "    @44100: rms=" << m44.rms << " (ref " << refRms << ")"
+              << "  crest=" << m44.crest << " (ref " << refCrest << ")\n";
+    CHECK_NEAR(m44.rms, refRms, refRms * 0.01,
+              "RMS over 5s of pink-noise program material must stay within "
+              "1% of the pre-Phase-4 reference");
+    CHECK_NEAR(m44.crest, refCrest, refCrest * 0.02,
+              "crest factor over 5s of pink-noise program material must stay "
+              "within 2% of the pre-Phase-4 reference");
+}
+
+// Enhanced backend family (Room; also covers Generic+smoothness>0, same code
+// path). Reference captured pre-Phase-4 (measured on the exact commit prior
+// to this change, same test harness, same seed): rms=0.0695975 crest=4.67331
+static void testEnhancedBackendRmsCrestPreserved()
+{
+    checkBackendRmsCrestPreserved("Enhanced/Room", 1.0f, 0.0695975, 4.67331);
+}
+
+// Hall backend family. Reference captured pre-Phase-4: rms=0.0797964 crest=5.10677
+static void testHallBackendRmsCrestPreserved()
+{
+    checkBackendRmsCrestPreserved("Hall", 3.0f, 0.0797964, 5.10677);
+}
+
+// Plate backend family. Reference captured pre-Phase-4: rms=0.0662169 crest=4.8988
+static void testPlateBackendRmsCrestPreserved()
+{
+    checkBackendRmsCrestPreserved("Plate", 2.0f, 0.0662169, 4.8988);
+}
+
+// ─── Ad-hoc CPU benchmark (Phase 4) ─────────────────────────────────────────
+// Not part of the pass/fail suite. Run `test_reverb.exe --bench` (a RELEASE
+// build — Debug numbers are meaningless for a CPU comparison) to print
+// ns/block per backend at both sample rates. Uses XlethEffectBase's own
+// RealtimeTimingContext instrumentation — the exact per-plugin timing hook
+// XlethEngineService wires up in production (see processBlock's TimingScope
+// in XlethEffectBase.h) — rather than an external stopwatch around
+// processBlock(), so the measurement exercises the real production path.
+namespace bench {
+
+struct Accum { std::atomic<std::uint64_t> totalNs{0}; std::atomic<std::uint64_t> count{0}; };
+static Accum g_accum;
+
+static void recordPluginCb(void* /*userData*/, const char* /*pluginId*/,
+                           int /*trackId*/, int /*nodeId*/, std::uint64_t elapsedNs)
+{
+    g_accum.totalNs.fetch_add(elapsedNs, std::memory_order_relaxed);
+    g_accum.count.fetch_add(1, std::memory_order_relaxed);
+}
+
+static double benchBackend(const char* label, float styleIdx, float smoothness,
+                           double sampleRate, int blockSize, int numBlocks)
+{
+    XlethReverbEffect fx;
+    fx.setParameterValue("decay",      3.0f);
+    fx.setParameterValue("predelay",   10.0f);
+    fx.setParameterValue("size",       60.0f);
+    fx.setParameterValue("damping",    40.0f);
+    fx.setParameterValue("mod_rate",   35.0f);
+    fx.setParameterValue("mod_depth",  50.0f);
+    fx.setParameterValue("er_level",   70.0f);
+    fx.setParameterValue("er_late",    80.0f);
+    fx.setParameterValue("hicut",      12000.0f);
+    fx.setParameterValue("locut",      80.0f);
+    fx.setParameterValue("mix",        100.0f);
+    fx.setParameterValue("style",      styleIdx);
+    fx.setParameterValue("smoothness", smoothness);
+    fx.prepareToPlay(sampleRate, blockSize);
+    fx.setHostNodeId(1);
+
+    juce::AudioBuffer<float> buf(2, blockSize);
+    juce::MidiBuffer midi;
+    PinkNoiseState pink(0xB16B00Bu);
+
+    // Warm-up: fill delay lines / touch pages before timing starts.
+    for (int b = 0; b < 200; ++b) { fillPinkNoise(buf, pink); fx.processBlock(buf, midi); }
+
+    g_accum.totalNs.store(0, std::memory_order_relaxed);
+    g_accum.count.store(0, std::memory_order_relaxed);
+    for (int b = 0; b < numBlocks; ++b)
+    {
+        fillPinkNoise(buf, pink);
+        fx.processBlock(buf, midi);
+    }
+
+    const std::uint64_t n = g_accum.count.load(std::memory_order_relaxed);
+    const double avgNs = n > 0
+        ? static_cast<double>(g_accum.totalNs.load(std::memory_order_relaxed))
+              / static_cast<double>(n)
+        : 0.0;
+    std::cout << "    " << label << " @ " << static_cast<int>(sampleRate)
+              << "Hz, block=" << blockSize << ": " << avgNs << " ns/block  ("
+              << n << " blocks)\n";
+    return avgNs;
+}
+
+static void runBench()
+{
+    XlethEffectBase::RealtimeTimingContext ctx;
+    ctx.enabled      = true;
+    ctx.trackId      = 1;
+    ctx.userData     = nullptr;
+    ctx.recordPlugin = &recordPluginCb;
+    XlethEffectBase::setRealtimeTimingContext(ctx);
+
+    std::cout << "\n=== reverb CPU benchmark (Phase 4) ===\n";
+    constexpr int kBS        = 512;
+    constexpr int kNumBlocks = 2000;
+
+    for (double sr : { 44100.0, 48000.0 })
+    {
+        benchBackend("Legacy (Generic, smoothness=0)", 0.0f, 0.0f,   sr, kBS, kNumBlocks);
+        benchBackend("Enhanced (Room)",                 1.0f, 25.0f, sr, kBS, kNumBlocks);
+        benchBackend("Hall",                            3.0f, 25.0f, sr, kBS, kNumBlocks);
+        benchBackend("Plate",                           2.0f, 25.0f, sr, kBS, kNumBlocks);
+    }
+
+    XlethEffectBase::RealtimeTimingContext off{};
+    XlethEffectBase::setRealtimeTimingContext(off);
+}
+
+} // namespace bench
+
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
-int main()
+int main(int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
+
+    if (argc > 1 && std::string(argv[1]) == "--bench")
+    {
+        bench::runBench();
+        return 0;
+    }
+
 
     std::cout << "=== test_reverb ===\n";
 
@@ -4381,6 +4582,11 @@ int main()
 
     std::cout << "\n=== test_reverb_phase3_style_switch_transition ===\n";
     testStyleSwitchNoClick();
+
+    std::cout << "\n=== test_reverb_phase4_cpu_pass ===\n";
+    testEnhancedBackendRmsCrestPreserved();
+    testHallBackendRmsCrestPreserved();
+    testPlateBackendRmsCrestPreserved();
 
     std::cout << "\nResults: " << g_passed << " passed, " << g_failed << " failed\n";
     if (g_failed > 0)

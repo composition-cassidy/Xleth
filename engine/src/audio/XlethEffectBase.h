@@ -37,6 +37,11 @@ public:
     // ── Smoothing type ──────────────────────────────────────────────────────
     enum class SmoothType { Linear, Multiplicative, OnePole };
 
+private:
+    // Forward-declared here (private, matching its full definition further
+    // below) so SmoothedHandle can hold a pointer to it before it's complete.
+    struct SmoothedEntry;
+public:
     // ── Constructor ─────────────────────────────────────────────────────────
     // Subclass builds the parameter layout in a static factory function and
     // passes it here so the APVTS member is initialised in the MIL with *this
@@ -451,6 +456,64 @@ public:
         return it->second.current();
     }
 
+    // ── Handle-based smoother access (audio thread only, RT-safe) ────────────
+    // resolveSmoothed() below does the std::string construction + unordered_map
+    // hash/find ONCE. Call it from prepareEffect() (which runs after the base
+    // class has resolved every registered param's atomic pointer in
+    // prepareToPlay — see initSmoothers()) and keep the returned handle as a
+    // member. handle.next()/.current() then do zero hashing and zero string
+    // construction per sample — a raw pointer dereference into map-stable
+    // storage (registerSmoothedParam() only runs from the subclass
+    // constructor, before any handle is ever resolved, so no further
+    // insertions can invalidate the pointer). The string API above keeps
+    // working unchanged for cold/rarely-called paths.
+    class SmoothedHandle
+    {
+    public:
+        SmoothedHandle() = default;
+
+        // Advance by one sample, return its value. Mirrors
+        // getNextSmoothedValue(); same 1.0f fallback for an unresolved handle.
+        float next();
+
+        // Read without advancing. Mirrors getSmoothedValue().
+        float current() const;
+
+        // Non-mutating projection of the value numSamples samples from now —
+        // does NOT advance the real smoother. Used to hoist per-sample
+        // transcendental coefficient math (exp/pow) to block rate: read the
+        // block-start value via current(), the projected block-end value via
+        // peekAfter(numSamplesInBlock), derive the (expensive) coefficient at
+        // each endpoint, then linearly interpolate the *coefficient* per
+        // sample — no per-sample transcendental call, no discontinuity at the
+        // next block's start (whose block-start value is exactly this call's
+        // result once skip() below is applied).
+        float peekAfter(int numSamples) const;
+
+        // Advance by numSamples in one call, discarding intermediate values.
+        // For a param whose per-sample value is never consumed directly
+        // (only a derived coefficient computed via peekAfter() is), this
+        // keeps the smoother's ramp position correct without paying for
+        // numSamples individual advances.
+        void skip(int numSamples);
+
+        bool isValid() const { return entry_ != nullptr; }
+
+    private:
+        friend class XlethEffectBase;
+        explicit SmoothedHandle(SmoothedEntry* e) noexcept : entry_(e) {}
+        SmoothedEntry* entry_ = nullptr;
+    };
+
+    // Resolve a registered param id to a handle. Call once (e.g. from
+    // prepareEffect()), not per sample — this is the only place the string
+    // hash/lookup still happens on the handle-based path.
+    SmoothedHandle resolveSmoothed(const std::string& paramId)
+    {
+        auto it = smoothedParams_.find(paramId);
+        return SmoothedHandle(it == smoothedParams_.end() ? nullptr : &it->second);
+    }
+
     // ── Boilerplate AudioProcessor overrides (headless — no GUI) ─────────────
     const juce::String getName() const override { return juce::String(pluginId_); }
 
@@ -611,6 +674,34 @@ private:
                     break;
             }
         }
+
+        // Non-mutating projection of the value n samples ahead: copies the
+        // (small, value-type) smoother state and skips the copy, leaving the
+        // real smoother untouched. See SmoothedHandle::peekAfter().
+        float peekAfter(int n) const
+        {
+            if (n <= 0) return current();
+            switch (type)
+            {
+                case SmoothType::Linear:
+                {
+                    auto copy = linear;
+                    copy.skip(n);
+                    return copy.getCurrentValue();
+                }
+                case SmoothType::Multiplicative:
+                {
+                    auto copy = multi;
+                    copy.skip(n);
+                    return copy.getCurrentValue();
+                }
+                case SmoothType::OnePole:
+                    return onePoleTarget
+                         + (onePoleState - onePoleTarget)
+                         * std::pow(1.0f - onePoleAlpha, static_cast<float>(n));
+            }
+            return current(); // unreachable
+        }
     };
 
     // ── Smoother lifecycle helpers ────────────────────────────────────────────
@@ -663,3 +754,28 @@ private:
     // array aggregate init with {} is fine in C++17/20).
     std::atomic<float> meterSlots_[kNumMeterSlots] {};
 };
+
+// ─── SmoothedHandle out-of-line definitions ─────────────────────────────────
+// Placed after XlethEffectBase's closing brace: SmoothedHandle is declared
+// (public) at a point where SmoothedEntry is only forward-declared, so these
+// bodies — which dereference entry_ — must wait until SmoothedEntry's full
+// definition above is in scope, which it is by here.
+inline float XlethEffectBase::SmoothedHandle::next()
+{
+    return entry_ ? entry_->advance() : 1.0f;
+}
+
+inline float XlethEffectBase::SmoothedHandle::current() const
+{
+    return entry_ ? entry_->current() : 1.0f;
+}
+
+inline float XlethEffectBase::SmoothedHandle::peekAfter(int numSamples) const
+{
+    return entry_ ? entry_->peekAfter(numSamples) : 1.0f;
+}
+
+inline void XlethEffectBase::SmoothedHandle::skip(int numSamples)
+{
+    if (entry_) entry_->skip(numSamples);
+}

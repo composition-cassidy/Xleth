@@ -56,6 +56,14 @@ public:
         vizSampleClock_ = 0;
         vizAccum_.reset();
 
+        // Handle-based smoother access (Phase 4 CPU pass): resolved once
+        // here instead of hashing a std::string per sample per param.
+        hAttack_      = resolveSmoothed("attack");
+        hSustain_     = resolveSmoothed("sustain");
+        hAttackSpeed_ = resolveSmoothed("attack_speed");
+        hThreshold_   = resolveSmoothed("threshold");
+        hMix_         = resolveSmoothed("mix");
+
 #ifdef XLETH_DEBUG
         const bool midiMode = midiDetectPtr_
             && midiDetectPtr_->load(std::memory_order_relaxed) > 0.5f;
@@ -144,11 +152,11 @@ public:
 
         for (int s = 0; s < numSamples; ++s)
         {
-            const float attackPct = getNextSmoothedValue("attack");
-            const float sustainPct = getNextSmoothedValue("sustain");
-            const float attackSpeedMs = getNextSmoothedValue("attack_speed");
-            const float thresholdDb = getNextSmoothedValue("threshold");
-            const float mixPct = getNextSmoothedValue("mix");
+            const float attackPct = hAttack_.next();
+            const float sustainPct = hSustain_.next();
+            const float attackSpeedMs = hAttackSpeed_.next();
+            const float thresholdDb = hThreshold_.next();
+            const float mixPct = hMix_.next();
 
             const float dryL = buffer.getSample(0, s);
             const float dryR = numCh > 1 ? buffer.getSample(1, s) : dryL;
@@ -375,6 +383,9 @@ private:
         vizActive_{nullptr};
     xleth::viz::TransientBucketAccumulator vizAccum_;
     std::uint64_t vizSampleClock_ = 0;
+
+    // ── Handle-based smoother access (Phase 4 CPU pass) ──────────────────────
+    SmoothedHandle hAttack_, hSustain_, hAttackSpeed_, hThreshold_, hMix_;
 };
 
 inline void XlethTransientProcEffect::setVisualizationEnabled(bool enabled)

@@ -65,6 +65,19 @@ public:
     {
         sampleRate_ = sampleRate;
         stagesPtr_  = apvts_.getRawParameterValue("stages");
+
+        // Handle-based smoother access (Phase 4 CPU pass): resolved once
+        // here instead of hashing a std::string per sample per param.
+        hRate_      = resolveSmoothed("rate");
+        hDepth_     = resolveSmoothed("depth");
+        hFeedback_  = resolveSmoothed("feedback");
+        hResonance_ = resolveSmoothed("resonance");
+        hWidth_     = resolveSmoothed("width");
+        hMix_       = resolveSmoothed("mix");
+        hFreqLow_   = resolveSmoothed("freq_low");
+        hFreqHigh_  = resolveSmoothed("freq_high");
+        hSpread_    = resolveSmoothed("spread");
+
         resetEffect();
 
 #ifdef XLETH_DEBUG
@@ -102,15 +115,15 @@ public:
         for (int s = 0; s < numSamples; ++s)
         {
             // ── 1. Advance smoothers ─────────────────────────────────────────
-            const float rate      = getNextSmoothedValue("rate");
-            const float depth     = getNextSmoothedValue("depth");
-            const float feedback  = getNextSmoothedValue("feedback");
-            const float resonance = getNextSmoothedValue("resonance");
-            const float width     = getNextSmoothedValue("width");
-            const float mixPct    = getNextSmoothedValue("mix");
-            const float freqLow   = getNextSmoothedValue("freq_low");
-            const float freqHigh  = getNextSmoothedValue("freq_high");
-            const float spread    = getNextSmoothedValue("spread");
+            const float rate      = hRate_.next();
+            const float depth     = hDepth_.next();
+            const float feedback  = hFeedback_.next();
+            const float resonance = hResonance_.next();
+            const float width     = hWidth_.next();
+            const float mixPct    = hMix_.next();
+            const float freqLow   = hFreqLow_.next();
+            const float freqHigh  = hFreqHigh_.next();
+            const float spread    = hSpread_.next();
 
             // ── 2. Stereo phase offset ───────────────────────────────────────
             const float phaseOffsetLR = (width / 100.0f) * pi;
@@ -296,4 +309,8 @@ private:
     std::atomic<float>* stagesPtr_ = nullptr;
     double             sampleRate_ = 44100.0;
     int                debugThrottle_ = 0;
+
+    // ── Handle-based smoother access (Phase 4 CPU pass) ──────────────────────
+    SmoothedHandle hRate_, hDepth_, hFeedback_, hResonance_, hWidth_,
+                   hMix_, hFreqLow_, hFreqHigh_, hSpread_;
 };

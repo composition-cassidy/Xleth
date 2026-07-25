@@ -214,6 +214,33 @@ static constexpr int kNumReverbStyles = 4;
 
 namespace {
 
+// ── Fast sine approximation for FDN/tank LFOs (Phase 4 CPU pass) ───────────
+// Replaces std::sin in every non-legacy per-sample modulator (processBlock
+// Legacy keeps std::sin — bit-frozen). Parabolic approximation + one
+// Chebyshev-style cleanup pass (the well-known "quick and dirty" trick from
+// the musicdsp "Fast sin() approximation" family): measured max abs error vs
+// std::sin over the full [-pi, pi] domain is ~1.1e-3 — for a modulation
+// depth of a few samples that is far below the audible/measurable floor
+// (worst case, an 8-sample-deep FDN modulator sees < 0.01 sample of extra
+// jitter). `x` must already be wrapped to [-pi, pi]; fastSinPhase() below
+// does that wrap for the [0,1)-range modPhase state used throughout this file.
+inline float fastSin(float x) noexcept
+{
+    constexpr float kB = 4.0f / juce::MathConstants<float>::pi;
+    constexpr float kC = -4.0f / (juce::MathConstants<float>::pi * juce::MathConstants<float>::pi);
+    const float y = kB * x + kC * x * std::abs(x);
+    constexpr float kP = 0.225f;
+    return kP * (y * std::abs(y) - y) + y;
+}
+
+// sin(2*pi*phase) for phase in [0,1), via fastSin(). Maps [0,0.5) -> [0,pi)
+// and [0.5,1) -> [-pi,0) (the same angle modulo 2*pi, same sin() value).
+inline float fastSinPhase(float phaseZeroToOne) noexcept
+{
+    const float wrapped = phaseZeroToOne < 0.5f ? phaseZeroToOne : phaseZeroToOne - 1.0f;
+    return fastSin(2.0f * juce::MathConstants<float>::pi * wrapped);
+}
+
 // ── Generic tuning (LEGACY-FROZEN constants) ──────────────────────────────
 //
 // These constants define the legacy Generic sound.  They are also consumed
@@ -1162,6 +1189,26 @@ public:
         hicutStateL_ = 0.0f;  hicutStateR_ = 0.0f;
         locutStateL_ = 0.0f;  locutStateR_ = 0.0f;
         smoothHfStateL_ = 0.0f;  smoothHfStateR_ = 0.0f;
+
+        // Handle-based smoother access (Phase 4 CPU pass): resolved once
+        // here (after registerSmoothedParam() in the constructor has
+        // populated the map and prepareToPlay's initSmoothers() has resolved
+        // every entry's atomic pointer), so processBlockEnhanced/Hall/Plate
+        // never pay a string hash+lookup per sample. processBlockLegacy is
+        // bit-frozen and stays on the string API (getNextSmoothedValue)
+        // forever — see its header comment.
+        hDecay_      = resolveSmoothed("decay");
+        hSize_       = resolveSmoothed("size");
+        hDamping_    = resolveSmoothed("damping");
+        hModRate_    = resolveSmoothed("mod_rate");
+        hModDepth_   = resolveSmoothed("mod_depth");
+        hErLevel_    = resolveSmoothed("er_level");
+        hErLate_     = resolveSmoothed("er_late");
+        hHicut_      = resolveSmoothed("hicut");
+        hLocut_      = resolveSmoothed("locut");
+        hMix_        = resolveSmoothed("mix");
+        hSmoothness_ = resolveSmoothed("smoothness");
+        hPredelay_   = resolveSmoothed("predelay");
     }
 
     // ── resetEffect ──────────────────────────────────────────────────────────
@@ -1509,25 +1556,70 @@ private:
         const float sr         = static_cast<float>(sampleRate_);
 
         const FdnTuning* const t = tuning_;
+        const float srScale = sr / 48000.0f;
+
+        // ── Block-rate hoisted coefficients (Phase 4 CPU pass) ────────────────
+        // decay/hicut/locut's only per-sample use in this backend is a
+        // transcendental coefficient (RT60 gain / one-pole filter coeff), so
+        // rather than advance them every sample and recompute std::pow /
+        // std::exp per sample, peek the block-start value and the projected
+        // block-end value (2 endpoints instead of numSamples), derive the
+        // coefficient at each, and linearly interpolate the *coefficient*
+        // per sample below — no per-sample transcendental, no discontinuity
+        // at the next block's start (its block-start value is exactly this
+        // block's peeked end value, applied for real via skip() below).
+        // `size` also feeds the RT60 gain (via each line's runtime delay
+        // length) but stays advanced every sample — it feeds the FDN tap
+        // position directly too, not just this coefficient.
+        const float decayStart = hDecay_.current();
+        const float decayEnd   = hDecay_.peekAfter(numSamples);
+        hDecay_.skip(numSamples);
+
+        const float hicutStart = hHicut_.current();
+        const float hicutEnd   = hHicut_.peekAfter(numSamples);
+        hHicut_.skip(numSamples);
+
+        const float locutStart = hLocut_.current();
+        const float locutEnd   = hLocut_.peekAfter(numSamples);
+        hLocut_.skip(numSamples);
+
+        const float sizeScaleStart = (hSize_.current()             / 100.0f) * 0.5f + 0.75f;
+        const float sizeScaleEnd   = (hSize_.peekAfter(numSamples) / 100.0f) * 0.5f + 0.75f;
+        const float safeDecayStart = std::max(decayStart, 0.1f) * t->decayScale;
+        const float safeDecayEnd   = std::max(decayEnd,   0.1f) * t->decayScale;
+
+        float gStart[8], gEnd[8];
+        for (int i = 0; i < 8; ++i)
+        {
+            const float dsStart = (t->baseDelays[i] * sizeScaleStart * srScale) / sr;
+            const float dsEnd   = (t->baseDelays[i] * sizeScaleEnd   * srScale) / sr;
+            gStart[i] = std::pow(10.0f, -3.0f * dsStart / safeDecayStart);
+            gEnd[i]   = std::pow(10.0f, -3.0f * dsEnd   / safeDecayEnd);
+        }
+
+        const float hcCoeffStart = std::exp(-2.0f * juce::MathConstants<float>::pi * hicutStart / sr);
+        const float hcCoeffEnd   = std::exp(-2.0f * juce::MathConstants<float>::pi * hicutEnd   / sr);
+        const float lcCoeffStart = std::exp(-2.0f * juce::MathConstants<float>::pi * locutStart / sr);
+        const float lcCoeffEnd   = std::exp(-2.0f * juce::MathConstants<float>::pi * locutEnd   / sr);
+
+        const float invNumSamples = numSamples > 0 ? 1.0f / static_cast<float>(numSamples) : 0.0f;
 
         for (int s = 0; s < numSamples; ++s)
         {
-            const float decay    = getNextSmoothedValue("decay");
-            const float size     = getNextSmoothedValue("size");
-            const float damping  = getNextSmoothedValue("damping");
-            const float modRate  = getNextSmoothedValue("mod_rate");
-            const float modDepth = getNextSmoothedValue("mod_depth");
-            const float erLevel  = getNextSmoothedValue("er_level");
-            const float erLate   = getNextSmoothedValue("er_late");
-            const float hicut    = getNextSmoothedValue("hicut");
-            const float locut    = getNextSmoothedValue("locut");
-            const float mixPct   = getNextSmoothedValue("mix");
-            const float smoothPct= getNextSmoothedValue("smoothness");
+            const float blockFrac = static_cast<float>(s) * invNumSamples;
+            const float size     = hSize_.next();
+            const float damping  = hDamping_.next();
+            const float modRate  = hModRate_.next();
+            const float modDepth = hModDepth_.next();
+            const float erLevel  = hErLevel_.next();
+            const float erLate   = hErLate_.next();
+            const float mixPct   = hMix_.next();
+            const float smoothPct= hSmoothness_.next();
             // Phase 3: predelay is now sample-smoothed (30 ms Linear) and read
             // through an interpolated delay line, so dragging it live no
             // longer zipper-clicks (contrast processBlockLegacy above, which
             // stays on the raw unsmoothed/uninterpolated read).
-            const float predelayMs = getNextSmoothedValue("predelay");
+            const float predelayMs = hPredelay_.next();
             const float predelaySamples = std::clamp(
                 predelayMs * 0.001f * sr, 0.0f, maxPredelaySamplesF_);
 
@@ -1572,13 +1664,11 @@ private:
             }
 
             // Late FDN
-            const float srScale = sr / 48000.0f;
             const float dampG   = std::clamp(
                 damping / 100.0f + t->dampingOffset
                                  + smoothFrac * 0.20f,
                 0.0f, 0.95f);
             const float modAmt    = (modDepth / 100.0f) * 3.0f * t->modDepthScale;
-            const float safeDecay = std::max(decay, 0.1f) * t->decayScale;
             const float modRateFrac = modRate / 100.0f;
 
             float fdnOut[8];
@@ -1586,8 +1676,9 @@ private:
             {
                 const float baseDelay = t->baseDelays[i] * sizeScale * srScale;
 
-                const float lfoVal = std::sin(
-                    2.0f * juce::MathConstants<float>::pi * fdnLate_.modPhase[i]);
+                // Phasor + parabolic-approx sine (Phase 4 CPU pass) replaces
+                // std::sin; see fastSin()'s comment for the error bound.
+                const float lfoVal = fastSinPhase(fdnLate_.modPhase[i]);
                 fdnLate_.modPhase[i] += t->modRates[i] * modRateFrac / sr;
                 if (fdnLate_.modPhase[i] >= 1.0f) fdnLate_.modPhase[i] -= 1.0f;
 
@@ -1606,10 +1697,9 @@ private:
                 fdnLate_.dampState[i] =
                     (1.0f - dampG) * h[i] + dampG * fdnLate_.dampState[i];
 
-                const float delaySeconds =
-                    (t->baseDelays[i] * sizeScale * srScale) / sr;
-                const float g = std::pow(10.0f,
-                    -3.0f * delaySeconds / safeDecay);
+                // RT60 gain — hoisted to block rate + linearly interpolated
+                // (Phase 4 CPU pass); see the setup above the sample loop.
+                const float g = gStart[i] + (gEnd[i] - gStart[i]) * blockFrac;
 
                 const float fbSample = fdnLate_.dampState[i] * g;
 
@@ -1663,14 +1753,13 @@ private:
             wetL += (smoothHfStateL_ - wetL) * shelfBlend;
             wetR += (smoothHfStateR_ - wetR) * shelfBlend;
 
-            // Output tone shaping
-            const float hcCoeff = std::exp(
-                -2.0f * juce::MathConstants<float>::pi * hicut / sr);
+            // Output tone shaping (hcCoeff/lcCoeff hoisted to block rate +
+            // linearly interpolated — see the setup above the sample loop).
+            const float hcCoeff = hcCoeffStart + (hcCoeffEnd - hcCoeffStart) * blockFrac;
             hicutStateL_ = hcCoeff * hicutStateL_ + (1.0f - hcCoeff) * wetL;
             hicutStateR_ = hcCoeff * hicutStateR_ + (1.0f - hcCoeff) * wetR;
 
-            const float lcCoeff = std::exp(
-                -2.0f * juce::MathConstants<float>::pi * locut / sr);
+            const float lcCoeff = lcCoeffStart + (lcCoeffEnd - lcCoeffStart) * blockFrac;
             locutStateL_ += (1.0f - lcCoeff) * (hicutStateL_ - locutStateL_);
             locutStateR_ += (1.0f - lcCoeff) * (hicutStateR_ - locutStateR_);
             wetL = hicutStateL_ - locutStateL_;
@@ -1714,20 +1803,56 @@ private:
         const float sr         = static_cast<float>(sampleRate_);
         const float srScale    = sr / 48000.0f;
 
+        // ── Block-rate hoisted coefficients (Phase 4 CPU pass) ────────────────
+        // Same rationale as processBlockEnhanced above: decay/hicut/locut's
+        // only per-sample use here is a transcendental coefficient, so they're
+        // advanced in one skip() and their coefficients linearly interpolated
+        // from block-start/end endpoints instead of recomputed per sample.
+        const float decayStart = hDecay_.current();
+        const float decayEnd   = hDecay_.peekAfter(numSamples);
+        hDecay_.skip(numSamples);
+
+        const float hicutStart = hHicut_.current();
+        const float hicutEnd   = hHicut_.peekAfter(numSamples);
+        hHicut_.skip(numSamples);
+
+        const float locutStart = hLocut_.current();
+        const float locutEnd   = hLocut_.peekAfter(numSamples);
+        hLocut_.skip(numSamples);
+
+        const float sizeScaleStart = (hSize_.current()             / 100.0f) * 0.5f + 0.75f;
+        const float sizeScaleEnd   = (hSize_.peekAfter(numSamples) / 100.0f) * 0.5f + 0.75f;
+        const float safeDecayStart = std::max(decayStart, 0.1f) * kHallEnh16DecayScale;
+        const float safeDecayEnd   = std::max(decayEnd,   0.1f) * kHallEnh16DecayScale;
+
+        float gStart[kHallNumLines], gEnd[kHallNumLines];
+        for (int i = 0; i < kHallNumLines; ++i)
+        {
+            const float dsStart = (kHallBaseDelays16[i] * sizeScaleStart * srScale) / sr;
+            const float dsEnd   = (kHallBaseDelays16[i] * sizeScaleEnd   * srScale) / sr;
+            gStart[i] = std::pow(10.0f, -3.0f * dsStart / safeDecayStart);
+            gEnd[i]   = std::pow(10.0f, -3.0f * dsEnd   / safeDecayEnd);
+        }
+
+        const float hcCoeffStart = std::exp(-2.0f * juce::MathConstants<float>::pi * hicutStart / sr);
+        const float hcCoeffEnd   = std::exp(-2.0f * juce::MathConstants<float>::pi * hicutEnd   / sr);
+        const float lcCoeffStart = std::exp(-2.0f * juce::MathConstants<float>::pi * locutStart / sr);
+        const float lcCoeffEnd   = std::exp(-2.0f * juce::MathConstants<float>::pi * locutEnd   / sr);
+
+        const float invNumSamples = numSamples > 0 ? 1.0f / static_cast<float>(numSamples) : 0.0f;
+
         for (int s = 0; s < numSamples; ++s)
         {
-            const float decay    = getNextSmoothedValue("decay");
-            const float size     = getNextSmoothedValue("size");
-            const float damping  = getNextSmoothedValue("damping");
-            const float modRate  = getNextSmoothedValue("mod_rate");
-            const float modDepth = getNextSmoothedValue("mod_depth");
-            const float erLevel  = getNextSmoothedValue("er_level");
-            const float erLate   = getNextSmoothedValue("er_late");
-            const float hicut    = getNextSmoothedValue("hicut");
-            const float locut    = getNextSmoothedValue("locut");
-            const float mixPct   = getNextSmoothedValue("mix");
-            const float smoothPct= getNextSmoothedValue("smoothness");
-            const float predelayMs = getNextSmoothedValue("predelay");   // Phase 3
+            const float blockFrac = static_cast<float>(s) * invNumSamples;
+            const float size     = hSize_.next();
+            const float damping  = hDamping_.next();
+            const float modRate  = hModRate_.next();
+            const float modDepth = hModDepth_.next();
+            const float erLevel  = hErLevel_.next();
+            const float erLate   = hErLate_.next();
+            const float mixPct   = hMix_.next();
+            const float smoothPct= hSmoothness_.next();
+            const float predelayMs = hPredelay_.next();   // Phase 3
             const float predelaySamples = std::clamp(
                 predelayMs * 0.001f * sr, 0.0f, maxPredelaySamplesF_);
 
@@ -1787,7 +1912,6 @@ private:
             const float offsetScale   = 1.0f + smoothFrac * 0.5f;
             const float modAmt        = (modDepth / 100.0f) * 3.0f
                                         * kHallEnh16ModDepthScale;
-            const float safeDecay     = std::max(decay, 0.1f) * kHallEnh16DecayScale;
             const float modRateFrac   = modRate / 100.0f;
             constexpr float kHfTilt   = kHallEnh16HfTiltCoeff;
 
@@ -1820,8 +1944,7 @@ private:
                 fdnR += hallLate_.fdnLines[i].popSample(0, tapDelayR, false)
                         * kHallOutTapGainR[i];
 
-                const float lfoVal = std::sin(
-                    2.0f * juce::MathConstants<float>::pi * hallLate_.modPhase[i]);
+                const float lfoVal = fastSinPhase(hallLate_.modPhase[i]);
                 hallLate_.modPhase[i] += kHallModRates16[i] * modRateFrac / sr;
                 if (hallLate_.modPhase[i] >= 1.0f) hallLate_.modPhase[i] -= 1.0f;
 
@@ -1855,11 +1978,10 @@ private:
                     (1.0f - kHfTilt) * hallLate_.dampStateA[i]
                     + kHfTilt * hallLate_.dampStateB[i];
 
-                // RT60 decay gain (per-line — uses the line's actual delay).
-                const float delaySeconds =
-                    (kHallBaseDelays16[i] * sizeScale * srScale) / sr;
-                const float g = std::pow(10.0f,
-                    -3.0f * delaySeconds / safeDecay);
+                // RT60 decay gain (per-line — uses the line's actual delay),
+                // hoisted to block rate + linearly interpolated (Phase 4 CPU
+                // pass); see the setup above the sample loop.
+                const float g = gStart[i] + (gEnd[i] - gStart[i]) * blockFrac;
 
                 const float fbSample = hallLate_.dampStateB[i] * g;
 
@@ -1905,14 +2027,13 @@ private:
             wetL += (smoothHfStateL_ - wetL) * shelfBlend;
             wetR += (smoothHfStateR_ - wetR) * shelfBlend;
 
-            // Output tone shaping.
-            const float hcCoeff = std::exp(
-                -2.0f * juce::MathConstants<float>::pi * hicut / sr);
+            // Output tone shaping (hcCoeff/lcCoeff hoisted to block rate +
+            // linearly interpolated — see the setup above the sample loop).
+            const float hcCoeff = hcCoeffStart + (hcCoeffEnd - hcCoeffStart) * blockFrac;
             hicutStateL_ = hcCoeff * hicutStateL_ + (1.0f - hcCoeff) * wetL;
             hicutStateR_ = hcCoeff * hicutStateR_ + (1.0f - hcCoeff) * wetR;
 
-            const float lcCoeff = std::exp(
-                -2.0f * juce::MathConstants<float>::pi * locut / sr);
+            const float lcCoeff = lcCoeffStart + (lcCoeffEnd - lcCoeffStart) * blockFrac;
             locutStateL_ += (1.0f - lcCoeff) * (hicutStateL_ - locutStateL_);
             locutStateR_ += (1.0f - lcCoeff) * (hicutStateR_ - locutStateR_);
             wetL = hicutStateL_ - locutStateL_;
@@ -1993,20 +2114,69 @@ private:
         // Every tapRead below (updateReadPointer=false) is therefore issued
         // BEFORE that line's single main read, or it would be off by one sample.
 
+        // ── Block-rate hoisted coefficients (Phase 4 CPU pass) ────────────────
+        // Same rationale as the FDN backends above: decay/hicut/locut's only
+        // per-sample use here is a transcendental coefficient (per-arm RT60
+        // gain / one-pole filter coeff), so they're advanced in one skip()
+        // and their coefficients linearly interpolated from block-start/end
+        // endpoints. `size` still advances every sample (it feeds the tank's
+        // actual tap-read positions directly), but also meaningfully
+        // interacts with the RT60 gain here — each arm's traversal time
+        // tau_arm is affine in sizeScale (delay1/delay2 are size-scaled, the
+        // mod-allpass and AP2 lengths are not) — so gA/gB are computed at
+        // both the block-start and block-end sizeScale too.
+        const float decayStart = hDecay_.current();
+        const float decayEnd   = hDecay_.peekAfter(numSamples);
+        hDecay_.skip(numSamples);
+
+        const float hicutStart = hHicut_.current();
+        const float hicutEnd   = hHicut_.peekAfter(numSamples);
+        hHicut_.skip(numSamples);
+
+        const float locutStart = hLocut_.current();
+        const float locutEnd   = hLocut_.peekAfter(numSamples);
+        hLocut_.skip(numSamples);
+
+        const float safeDecayStart = std::max(decayStart, 0.1f);
+        const float safeDecayEnd   = std::max(decayEnd,   0.1f);
+
+        auto plateArmGains = [&](float sizeScaleN, float safeDecayN, float& gAOut, float& gBOut)
+        {
+            const float l1A = std::clamp(P.delay1BaseA * sizeScaleN, 1.0f, P.delay1MaxF_A);
+            const float l2A = std::clamp(P.delay2BaseA * sizeScaleN, 1.0f, P.delay2MaxF_A);
+            const float l1B = std::clamp(P.delay1BaseB * sizeScaleN, 1.0f, P.delay1MaxF_B);
+            const float l2B = std::clamp(P.delay2BaseB * sizeScaleN, 1.0f, P.delay2MaxF_B);
+            const float tA  = (P.modApBaseA + l1A + P.ap2LenA + l2A) / sr;
+            const float tB  = (P.modApBaseB + l1B + P.ap2LenB + l2B) / sr;
+            gAOut = std::clamp(std::pow(10.0f, -3.0f * tA / safeDecayN), 0.0f, kPlateDecayCeiling);
+            gBOut = std::clamp(std::pow(10.0f, -3.0f * tB / safeDecayN), 0.0f, kPlateDecayCeiling);
+        };
+
+        const float sizeScaleStart = (hSize_.current()             / 100.0f) * 0.5f + 0.75f;
+        const float sizeScaleEnd   = (hSize_.peekAfter(numSamples) / 100.0f) * 0.5f + 0.75f;
+        float gAStart, gBStart, gAEnd, gBEnd;
+        plateArmGains(sizeScaleStart, safeDecayStart, gAStart, gBStart);
+        plateArmGains(sizeScaleEnd,   safeDecayEnd,   gAEnd,   gBEnd);
+
+        const float hcCoeffStart = std::exp(-2.0f * juce::MathConstants<float>::pi * hicutStart / sr);
+        const float hcCoeffEnd   = std::exp(-2.0f * juce::MathConstants<float>::pi * hicutEnd   / sr);
+        const float lcCoeffStart = std::exp(-2.0f * juce::MathConstants<float>::pi * locutStart / sr);
+        const float lcCoeffEnd   = std::exp(-2.0f * juce::MathConstants<float>::pi * locutEnd   / sr);
+
+        const float invNumSamples = numSamples > 0 ? 1.0f / static_cast<float>(numSamples) : 0.0f;
+
         for (int s = 0; s < numSamples; ++s)
         {
-            const float decay    = getNextSmoothedValue("decay");
-            const float size     = getNextSmoothedValue("size");
-            const float damping  = getNextSmoothedValue("damping");
-            const float modRate  = getNextSmoothedValue("mod_rate");
-            const float modDepth = getNextSmoothedValue("mod_depth");
-            const float erLevel  = getNextSmoothedValue("er_level");   // input bloom amount
-            const float erLate   = getNextSmoothedValue("er_late");    // tank tail level
-            const float hicut    = getNextSmoothedValue("hicut");
-            const float locut    = getNextSmoothedValue("locut");
-            const float mixPct   = getNextSmoothedValue("mix");
-            const float smoothPct= getNextSmoothedValue("smoothness");
-            const float predelayMs = getNextSmoothedValue("predelay");   // Phase 3
+            const float blockFrac = static_cast<float>(s) * invNumSamples;
+            const float size     = hSize_.next();
+            const float damping  = hDamping_.next();
+            const float modRate  = hModRate_.next();
+            const float modDepth = hModDepth_.next();
+            const float erLevel  = hErLevel_.next();   // input bloom amount
+            const float erLate   = hErLate_.next();    // tank tail level
+            const float mixPct   = hMix_.next();
+            const float smoothPct= hSmoothness_.next();
+            const float predelayMs = hPredelay_.next();   // Phase 3
             const float predelaySamples = std::clamp(
                 predelayMs * 0.001f * sr, 0.0f, maxPredelaySamplesF_);
 
@@ -2046,13 +2216,10 @@ private:
 
             // Honest per-arm decay gains. τ_arm = actual traversal time (mod-AP
             // + delay1 + AP2 + delay2) at the runtime SR; g = 10^(-3·τ/T60).
-            const float tauA = (P.modApBaseA + len1A + P.ap2LenA + len2A) / sr;
-            const float tauB = (P.modApBaseB + len1B + P.ap2LenB + len2B) / sr;
-            const float safeDecay = std::max(decay, 0.1f);
-            const float gA = std::clamp(
-                std::pow(10.0f, -3.0f * tauA / safeDecay), 0.0f, kPlateDecayCeiling);
-            const float gB = std::clamp(
-                std::pow(10.0f, -3.0f * tauB / safeDecay), 0.0f, kPlateDecayCeiling);
+            // Hoisted to block rate + linearly interpolated (Phase 4 CPU
+            // pass); see the setup above the sample loop.
+            const float gA = gAStart + (gAEnd - gAStart) * blockFrac;
+            const float gB = gBStart + (gBEnd - gBStart) * blockFrac;
 
             // Tank modulation excursion (samples @ runtime SR) + LFO rate frac.
             const float modAmt      = (modDepth / 100.0f) * kPlateModDepthSamples * srScale;
@@ -2072,9 +2239,9 @@ private:
             P.dampStateA = (1.0f - dampG) * armA_in + dampG * P.dampStateA;
             const float xA = P.dampStateA;
 
-            // Modulated allpass A (decay-diffusion-1).
-            const float lfoA = std::sin(
-                2.0f * juce::MathConstants<float>::pi * P.modPhaseA);
+            // Modulated allpass A (decay-diffusion-1). Phasor + parabolic-
+            // approx sine (Phase 4 CPU pass) replaces std::sin.
+            const float lfoA = fastSinPhase(P.modPhaseA);
             P.modPhaseA += kPlateModRateA_Hz * modRateFrac / sr;
             if (P.modPhaseA >= 1.0f) P.modPhaseA -= 1.0f;
             const float modDelayA = std::clamp(
@@ -2113,8 +2280,7 @@ private:
             P.dampStateB = (1.0f - dampG) * armB_in + dampG * P.dampStateB;
             const float xB = P.dampStateB;
 
-            const float lfoB = std::sin(
-                2.0f * juce::MathConstants<float>::pi * P.modPhaseB);
+            const float lfoB = fastSinPhase(P.modPhaseB);
             P.modPhaseB += kPlateModRateB_Hz * modRateFrac / sr;
             if (P.modPhaseB >= 1.0f) P.modPhaseB -= 1.0f;
             const float modDelayB = std::clamp(
@@ -2205,14 +2371,13 @@ private:
             wetL += (smoothHfStateL_ - wetL) * shelfBlend;
             wetR += (smoothHfStateR_ - wetR) * shelfBlend;
 
-            // Output tone shaping (shared hicut/locut).
-            const float hcCoeff = std::exp(
-                -2.0f * juce::MathConstants<float>::pi * hicut / sr);
+            // Output tone shaping (shared hicut/locut, hoisted to block rate
+            // + linearly interpolated — see the setup above the sample loop).
+            const float hcCoeff = hcCoeffStart + (hcCoeffEnd - hcCoeffStart) * blockFrac;
             hicutStateL_ = hcCoeff * hicutStateL_ + (1.0f - hcCoeff) * wetL;
             hicutStateR_ = hcCoeff * hicutStateR_ + (1.0f - hcCoeff) * wetR;
 
-            const float lcCoeff = std::exp(
-                -2.0f * juce::MathConstants<float>::pi * locut / sr);
+            const float lcCoeff = lcCoeffStart + (lcCoeffEnd - lcCoeffStart) * blockFrac;
             locutStateL_ += (1.0f - lcCoeff) * (hicutStateL_ - locutStateL_);
             locutStateR_ += (1.0f - lcCoeff) * (hicutStateR_ - locutStateR_);
             wetL = hicutStateL_ - locutStateL_;
@@ -2393,4 +2558,11 @@ private:
 
     // ── State ─────────────────────────────────────────────────────────────────
     double sampleRate_ = 44100.0;
+
+    // ── Handle-based smoother access (Phase 4 CPU pass) ──────────────────────
+    // Resolved once in prepareEffect(); used by processBlockEnhanced/Hall/
+    // Plate only. processBlockLegacy stays on the string API (bit-frozen).
+    SmoothedHandle hDecay_, hSize_, hDamping_, hModRate_, hModDepth_,
+                   hErLevel_, hErLate_, hHicut_, hLocut_, hMix_,
+                   hSmoothness_, hPredelay_;
 };

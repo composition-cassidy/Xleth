@@ -82,6 +82,16 @@ public:
         vizSampleClock_ = 0;
         vizAccum_.reset();
 
+        // Handle-based smoother access (Phase 4 CPU pass): resolved once
+        // here instead of hashing a std::string per sample per param.
+        hDepth_     = resolveSmoothed("depth");
+        hTime_      = resolveSmoothed("time");
+        hXoverLow_  = resolveSmoothed("xover_low");
+        hXoverHigh_ = resolveSmoothed("xover_high");
+        hGainLow_   = resolveSmoothed("gain_low");
+        hGainMid_   = resolveSmoothed("gain_mid");
+        hGainHigh_  = resolveSmoothed("gain_high");
+
 #ifdef XLETH_DEBUG
         const float timePct = getSmoothedValue("time");
         const float tScale  = std::max(timePct / 50.0f, 0.002f);
@@ -156,13 +166,13 @@ public:
         for (int s = 0; s < numSamples; ++s)
         {
             // Advance all smoothed parameters
-            const float depth   = getNextSmoothedValue("depth");
-            const float timePct = getNextSmoothedValue("time");
-            const float xLoSm   = getNextSmoothedValue("xover_low");
-            const float xHiSm   = getNextSmoothedValue("xover_high");
-            const float gLow    = getNextSmoothedValue("gain_low");
-            const float gMid    = getNextSmoothedValue("gain_mid");
-            const float gHigh   = getNextSmoothedValue("gain_high");
+            const float depth   = hDepth_.next();
+            const float timePct = hTime_.next();
+            const float xLoSm   = hXoverLow_.next();
+            const float xHiSm   = hXoverHigh_.next();
+            const float gLow    = hGainLow_.next();
+            const float gMid    = hGainMid_.next();
+            const float gHigh   = hGainHigh_.next();
 
             // Time scaling: at 50% = 1x base values, 0% = near-zero, 100% = 2x
             const float timeScale = std::max(timePct / 50.0f, 0.002f);
@@ -409,6 +419,10 @@ private:
         vizActive_{nullptr};
     xleth::viz::MultibandBucketAccumulator vizAccum_;
     std::uint64_t vizSampleClock_ = 0;
+
+    // ── Handle-based smoother access (Phase 4 CPU pass) ──────────────────────
+    SmoothedHandle hDepth_, hTime_, hXoverLow_, hXoverHigh_,
+                   hGainLow_, hGainMid_, hGainHigh_;
 };
 
 // ── setVisualizationEnabled ─────────────────────────────────────────────────

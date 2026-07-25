@@ -103,6 +103,25 @@ public:
         }
         overallMeanSq_ = 0.0f;
 
+        // Handle-based smoother access (Phase 4 CPU pass): resolved once
+        // here instead of hashing a std::string per sample per param (×4
+        // bands, this was the worst per-sample lookup count in the file —
+        // 16 hashed unordered_map lookups/sample before this change).
+        hAmount_   = resolveSmoothed("amount");
+        hPreserve_ = resolveSmoothed("preserve");
+        hResponse_ = resolveSmoothed("response");
+        hMix_      = resolveSmoothed("mix");
+
+        static const std::string kTargetIds[4]  = { "target_sub", "target_lomid", "target_upmid", "target_air" };
+        static const std::string kBandAmtIds[4] = { "bandamt_sub", "bandamt_lomid", "bandamt_upmid", "bandamt_air" };
+        static const std::string kFloorIds[4]   = { "floor_sub", "floor_lomid", "floor_upmid", "floor_air" };
+        for (int b = 0; b < 4; ++b)
+        {
+            hTarget_[b]  = resolveSmoothed(kTargetIds[b]);
+            hBandAmt_[b] = resolveSmoothed(kBandAmtIds[b]);
+            hFloor_[b]   = resolveSmoothed(kFloorIds[b]);
+        }
+
 #ifdef XLETH_DEBUG
         DBG("[SmartBal] prepareToPlay sr=" + juce::String(sampleRate)
             + " blockSize=" + juce::String(maxBlockSize));
@@ -152,11 +171,6 @@ public:
 
         const float rmsCoeff[4] = { rmsCoeffSub, rmsCoeffStd, rmsCoeffStd, rmsCoeffStd };
 
-        // Band parameter IDs for indexed access
-        static const std::string kTargetIds[4]  = { "target_sub", "target_lomid", "target_upmid", "target_air" };
-        static const std::string kBandAmtIds[4] = { "bandamt_sub", "bandamt_lomid", "bandamt_upmid", "bandamt_air" };
-        static const std::string kFloorIds[4]   = { "floor_sub", "floor_lomid", "floor_upmid", "floor_air" };
-
 #ifdef XLETH_DEBUG
         static int blockCount_ = 0;
         ++blockCount_;
@@ -166,17 +180,17 @@ public:
         for (int s = 0; s < numSamples; ++s)
         {
             // ── Advance all smoothed parameters (once per sample) ────────
-            const float amount   = getNextSmoothedValue("amount");
-            const float preserve = getNextSmoothedValue("preserve");
-            /*response*/ getNextSmoothedValue("response");
-            const float mix      = getNextSmoothedValue("mix");
+            const float amount   = hAmount_.next();
+            const float preserve = hPreserve_.next();
+            /*response*/ hResponse_.next();
+            const float mix      = hMix_.next();
 
             float target[4], bandamt[4], floorDb[4];
             for (int b = 0; b < 4; ++b)
             {
-                target[b]  = getNextSmoothedValue(kTargetIds[b]);
-                bandamt[b] = getNextSmoothedValue(kBandAmtIds[b]);
-                floorDb[b] = getNextSmoothedValue(kFloorIds[b]);
+                target[b]  = hTarget_[b].next();
+                bandamt[b] = hBandAmt_[b].next();
+                floorDb[b] = hFloor_[b].next();
             }
 
             // ── Read input ───────────────────────────────────────────────
@@ -344,7 +358,7 @@ public:
         {
             juce::String gated;
             for (int b = 0; b < 4; ++b)
-                if (debugDryRms_[b].load(std::memory_order_relaxed) < getSmoothedValue(kFloorIds[b]))
+                if (debugDryRms_[b].load(std::memory_order_relaxed) < hFloor_[b].current())
                     gated += juce::String(b) + " ";
 
             DBG("[SmartBal] RMS: "
@@ -449,6 +463,10 @@ private:
 
     // Mode parameter (discrete, not smoothed)
     std::atomic<float>* modeParam_ = nullptr;
+
+    // ── Handle-based smoother access (Phase 4 CPU pass) ──────────────────────
+    SmoothedHandle hAmount_, hPreserve_, hResponse_, hMix_;
+    SmoothedHandle hTarget_[4], hBandAmt_[4], hFloor_[4];
 
 public:
     // Debug atomics — read by the N-API bridge at ~30 fps (relaxed loads only).

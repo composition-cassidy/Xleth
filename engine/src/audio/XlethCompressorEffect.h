@@ -209,6 +209,18 @@ public:
 
         refreshLatencySamples();
 
+        // Handle-based smoother access (Phase 4 CPU pass): resolved once
+        // here instead of hashing a std::string per sample per param.
+        hThreshold_ = resolveSmoothed("threshold");
+        hRatio_     = resolveSmoothed("ratio");
+        hAttack_    = resolveSmoothed("attack");
+        hRelease_   = resolveSmoothed("release");
+        hKnee_      = resolveSmoothed("knee");
+        hMakeup_    = resolveSmoothed("makeup");
+        hMix_       = resolveSmoothed("mix");
+        hDry_       = resolveSmoothed("dry");
+        hWet_       = resolveSmoothed("wet");
+
 #ifdef XLETH_DEBUG
         DBG("[Compressor] prepareEffect sr=" + juce::String(sampleRate)
             + " blockSize=" + juce::String(maxBlockSize)
@@ -311,15 +323,15 @@ public:
         for (int s = 0; s < numSamples; ++s)
         {
             // Smoothed continuous params (one advance per sample)
-            const float threshold = getNextSmoothedValue("threshold");
-            const float ratio     = getNextSmoothedValue("ratio");
-            const float attackMs  = getNextSmoothedValue("attack");
-            const float releaseMs = getNextSmoothedValue("release");
-            const float knee      = getNextSmoothedValue("knee");
-            const float makeup    = getNextSmoothedValue("makeup");
-            const float mixPct    = getNextSmoothedValue("mix");
-            const float dryPct    = getNextSmoothedValue("dry");
-            const float wetPct    = getNextSmoothedValue("wet");
+            const float threshold = hThreshold_.next();
+            const float ratio     = hRatio_.next();
+            const float attackMs  = hAttack_.next();
+            const float releaseMs = hRelease_.next();
+            const float knee      = hKnee_.next();
+            const float makeup    = hMakeup_.next();
+            const float mixPct    = hMix_.next();
+            const float dryPct    = hDry_.next();
+            const float wetPct    = hWet_.next();
 
             // Attack / release coefficients
             // coeff = exp(-1 / (timeInSeconds * sampleRate))
@@ -535,4 +547,8 @@ private:
 
     xleth::viz::CompressorBucketAccumulator vizAccum_;
     std::uint64_t vizSampleClock_ = 0; // monotonic per-instance sample index
+
+    // ── Handle-based smoother access (Phase 4 CPU pass) ──────────────────────
+    SmoothedHandle hThreshold_, hRatio_, hAttack_, hRelease_, hKnee_,
+                   hMakeup_, hMix_, hDry_, hWet_;
 };

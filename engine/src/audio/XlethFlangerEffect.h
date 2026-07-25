@@ -95,6 +95,14 @@ public:
 
         lfoPhase_ = 0.0f;
 
+        // Handle-based smoother access (Phase 4 CPU pass): resolved once
+        // here instead of hashing a std::string per sample per param.
+        hRate_     = resolveSmoothed("rate");
+        hDepth_    = resolveSmoothed("depth");
+        hFeedback_ = resolveSmoothed("feedback");
+        hWidth_    = resolveSmoothed("width");
+        hMix_      = resolveSmoothed("mix");
+
 #ifdef XLETH_DEBUG
         DBG("[Flanger] prepareEffect sr=" + juce::String(sampleRate)
             + " blockSize=" + juce::String(maxBlockSize)
@@ -134,11 +142,11 @@ public:
         for (int s = 0; s < numSamples; ++s)
         {
             // ── 1. Advance base-class smoothers ────────────────────────────────
-            const float rate     = getNextSmoothedValue("rate");
-            const float depth    = getNextSmoothedValue("depth");
-            const float feedback = getNextSmoothedValue("feedback");
-            const float width    = getNextSmoothedValue("width");
-            const float mixPct   = getNextSmoothedValue("mix");
+            const float rate     = hRate_.next();
+            const float depth    = hDepth_.next();
+            const float feedback = hFeedback_.next();
+            const float width    = hWidth_.next();
+            const float mixPct   = hMix_.next();
 
             // ── 2. One-pole delay time smoothing (50 ms) ───────────────────────
             smoothDelay_ += smoothDelayCoeff_ * (targetDelay - smoothDelay_);
@@ -252,4 +260,7 @@ private:
     float lfoPhase_ = 0.0f;
 
     double sampleRate_ = 44100.0;
+
+    // ── Handle-based smoother access (Phase 4 CPU pass) ──────────────────────
+    SmoothedHandle hRate_, hDepth_, hFeedback_, hWidth_, hMix_;
 };
