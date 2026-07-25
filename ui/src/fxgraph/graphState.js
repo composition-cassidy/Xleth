@@ -64,6 +64,26 @@ export const GRAPH_PARAMETER_CURVE_LINEAR = 'linear'
 // A malformed bezier (wrong point count, non-finite coords) repairs to linear.
 export const GRAPH_PARAMETER_CURVE_BEZIER = 'bezier'
 
+// EVC-R4 — parameter-mapping kinds. A parameter edge's `mapping` object is one of two
+// closed shapes, discriminated by `mapping.kind`:
+//
+//   absent / 'range'    — the FXG.4-e/f absolute RANGE mapping used by Macro edges. The
+//                         source's 0..1 position is remapped onto targetMin..targetMax and
+//                         REPLACES the parameter value. Correct for a macro: the knob's
+//                         position IS the parameter's authored position.
+//   'modulation'        — the EVC-R4 base + signed-depth MODULATION mapping used by
+//                         Envelope edges: value = clamp(base + depth * env). Correct for a
+//                         modulator: the parameter keeps its own authored value (`base`)
+//                         and the envelope offsets it. env == 0 yields exactly `base`, so a
+//                         silent/stopped envelope is inert instead of destructive.
+//
+// `kind` is only written on modulation mappings; a mapping without `kind` is a range
+// mapping (that is what every pre-EVC-R4 project file contains). The discriminant lives in
+// the persisted shape on purpose so engine-side evaluation never has to infer semantics
+// from the source node's type.
+export const GRAPH_PARAMETER_MAPPING_RANGE = 'range'
+export const GRAPH_PARAMETER_MAPPING_MODULATION = 'modulation'
+
 const NODE_TYPES = new Set([
   'trackInput',
   'trackOutput',
@@ -190,6 +210,13 @@ function clampUnitValue(value, fallback) {
   return Math.min(1, Math.max(0, value))
 }
 
+// EVC-R4 — modulation depth is BIPOLAR: -1 fully inverts the envelope, +1 applies it at
+// full travel, 0 disconnects it audibly without removing the edge.
+function clampSignedUnitValue(value, fallback) {
+  if (!Number.isFinite(value)) return fallback
+  return Math.min(1, Math.max(-1, value))
+}
+
 function normalizeBezierPoints(rawPoints) {
   if (!Array.isArray(rawPoints) || rawPoints.length !== 4) return null
   const pts = []
@@ -207,28 +234,134 @@ function normalizeBezierPoints(rawPoints) {
   return pts
 }
 
-export function normalizeParameterMapping(rawMapping) {
-  const raw = isPlainObject(rawMapping) ? rawMapping : {}
-  const rawCurve = isPlainObject(raw.curve) ? raw.curve : {}
-
-  let curve
+function normalizeMappingCurve(rawCurveInput) {
+  const rawCurve = isPlainObject(rawCurveInput) ? rawCurveInput : {}
   if (rawCurve.type === GRAPH_PARAMETER_CURVE_BEZIER) {
     const points = normalizeBezierPoints(rawCurve.points)
-    curve = points
-      ? { type: GRAPH_PARAMETER_CURVE_BEZIER, points }
-      : { type: GRAPH_PARAMETER_CURVE_LINEAR }
-  } else {
-    curve = { type: GRAPH_PARAMETER_CURVE_LINEAR }
+    if (points) return { type: GRAPH_PARAMETER_CURVE_BEZIER, points }
   }
+  return { type: GRAPH_PARAMETER_CURVE_LINEAR }
+}
 
+// FXG.4-e/f — the absolute RANGE mapping (Macro edges). Unchanged shape: no `kind` field
+// is written, so every existing project file round-trips byte-identically.
+function normalizeRangeParameterMapping(raw) {
   return {
     enabled: raw.enabled !== false,
     sourceMin: clampUnitValue(raw.sourceMin, 0),
     sourceMax: clampUnitValue(raw.sourceMax, 1),
     targetMin: clampUnitValue(raw.targetMin, 0),
     targetMax: clampUnitValue(raw.targetMax, 1),
-    curve,
+    curve: normalizeMappingCurve(raw.curve),
   }
+}
+
+// EVC-R4 — defaults for the base + signed-depth MODULATION mapping.
+//   base  — the parameter's own authored value, i.e. what it reads with no envelope
+//           connected. The value at env == 0. Callers that know the live parameter value
+//           (connectEnvelopeToParameterForTrack) capture it here so linking an envelope
+//           never moves the parameter; 0 is only the repair fallback.
+//   depth — signed travel added at env == 1. Default +1 (full upward travel).
+export const PARAMETER_MODULATION_DEFAULTS = Object.freeze({
+  base: 0,
+  depth: 1,
+})
+
+// EVC-R4 — the base + signed-depth MODULATION mapping (Envelope edges). Closed shape:
+// targetMin/targetMax are deliberately absent, because the whole point of the model is
+// that the edge no longer owns the parameter's value — only its offset. sourceMin/sourceMax
+// survive: they window the INPUT (which part of the envelope's 0..1 travel is used) rather
+// than scaling the OUTPUT, so they are not redundant with `depth`.
+function normalizeModulationParameterMapping(raw) {
+  return {
+    kind: GRAPH_PARAMETER_MAPPING_MODULATION,
+    enabled: raw.enabled !== false,
+    base: clampUnitValue(raw.base, PARAMETER_MODULATION_DEFAULTS.base),
+    depth: clampSignedUnitValue(raw.depth, PARAMETER_MODULATION_DEFAULTS.depth),
+    sourceMin: clampUnitValue(raw.sourceMin, 0),
+    sourceMax: clampUnitValue(raw.sourceMax, 1),
+    curve: normalizeMappingCurve(raw.curve),
+  }
+}
+
+// Normalizes a parameter edge's mapping, dispatching on the persisted `kind`
+// discriminant. A mapping that already declares kind: 'modulation' stays a modulation
+// mapping; anything else normalizes to the legacy absolute range mapping. Envelope-sourced
+// edges are converted to the modulation shape on load by normalizeEdge (see
+// migrateRangeMappingToModulation) — this function never guesses from node types.
+export function normalizeParameterMapping(rawMapping) {
+  const raw = isPlainObject(rawMapping) ? rawMapping : {}
+  if (raw.kind === GRAPH_PARAMETER_MAPPING_MODULATION) {
+    return normalizeModulationParameterMapping(raw)
+  }
+  return normalizeRangeParameterMapping(raw)
+}
+
+// EVC-R4 load-path upgrade (the EVC-R2-r3 closed-schema normalization precedent).
+//
+// Converts a pre-EVC-R4 envelope edge's absolute range mapping into the equivalent
+// base + depth modulation mapping, and folds in the envelope node's retired `amount`
+// master scale (see normalizeEnvelopeNodeData) so the two scales collapse into one:
+//
+//   base  = targetMin                                  (the old value at env == 0)
+//   depth = (targetMax - targetMin) * legacyAmount      (signed: an inverted old range
+//                                                       targetMin > targetMax becomes a
+//                                                       negative depth automatically)
+//
+// Exactness: for the common case (linear curve, default 0..1 source window) the conversion
+// is EXACT for every legacyAmount, because the old evaluation was
+// `targetMin + (adsr * amount) * (targetMax - targetMin)`, which is algebraically identical
+// to `base + depth * adsr`. It is an approximation only when legacyAmount != 1 AND the edge
+// also uses a bezier curve or a narrowed source window, because the old code scaled by
+// amount BEFORE the non-linear stage and the new model scales after it. `exact` reports
+// which case applied so the caller can log it honestly.
+//
+// Returns { mapping, exact, from } — `from` is the legacy field set, for logging.
+export function migrateRangeMappingToModulation(rawMapping, legacyAmount = 1) {
+  const raw = isPlainObject(rawMapping) ? rawMapping : {}
+  const range = normalizeRangeParameterMapping(raw)
+  const amount = clampUnitValue(legacyAmount, 1)
+
+  const mapping = normalizeModulationParameterMapping({
+    enabled: range.enabled,
+    base: range.targetMin,
+    depth: (range.targetMax - range.targetMin) * amount,
+    sourceMin: range.sourceMin,
+    sourceMax: range.sourceMax,
+    curve: range.curve,
+  })
+
+  const nonLinearStage =
+    range.curve.type === GRAPH_PARAMETER_CURVE_BEZIER ||
+    range.sourceMin !== 0 ||
+    range.sourceMax !== 1
+
+  return {
+    mapping,
+    exact: amount === 1 || !nonLinearStage,
+    from: {
+      targetMin: range.targetMin,
+      targetMax: range.targetMax,
+      sourceMin: range.sourceMin,
+      sourceMax: range.sourceMax,
+      curve: range.curve.type,
+      legacyAmount: amount,
+    },
+  }
+}
+
+// True for an already-migrated modulation mapping.
+export function isModulationParameterMapping(mapping) {
+  return isPlainObject(mapping) && mapping.kind === GRAPH_PARAMETER_MAPPING_MODULATION
+}
+
+// Resolves a mapping's kind, normalizing the "absent kind means range" rule into an
+// explicit value. UI and engine-facing readers should use this rather than testing the raw
+// field, so the implicit legacy case lives in exactly one place.
+export function readParameterMappingKind(mapping) {
+  return isModulationParameterMapping(mapping)
+    ? GRAPH_PARAMETER_MAPPING_MODULATION
+    : GRAPH_PARAMETER_MAPPING_RANGE
 }
 
 // FXG.4-g — returns the default bezier curve: a gentle S-shape with both
@@ -299,6 +432,9 @@ export function defaultParameterMapping() {
 // steps to targetMin below the threshold and targetMax at/above it.
 export function evaluateLinearParameterMapping(rawMapping, macroValue) {
   const mapping = normalizeParameterMapping(rawMapping)
+  // A modulation mapping has no target range to interpolate; defer to the kind-aware
+  // evaluator so this legacy helper can never mis-read the newer shape.
+  if (isModulationParameterMapping(mapping)) return evaluateParameterMapping(mapping, macroValue)
   if (!mapping.enabled) return { enabled: false, value: null }
 
   const value = clampUnitValue(macroValue, 0)
@@ -314,16 +450,24 @@ export function evaluateLinearParameterMapping(rawMapping, macroValue) {
   return { enabled: true, value: Math.min(1, Math.max(0, mapped)) }
 }
 
-// FXG.4-g — evaluates any parameter mapping (linear or bezier) against a macro value.
-// For linear curves, produces identical results to evaluateLinearParameterMapping.
-// For bezier curves, applies Bezier shaping after source-range normalization and
-// before target-range interpolation. Inverted target ranges (targetMin > targetMax)
-// are preserved correctly. Disabled mappings return { enabled: false, value: null }.
-export function evaluateParameterMapping(rawMapping, macroValue) {
+// FXG.4-g / EVC-R4 — evaluates any parameter mapping against a source value in 0..1.
+// Both kinds share the input stage (source-window normalization, then optional Bezier
+// shaping); only the output stage differs:
+//
+//   range (Macro)         value = clamp(targetMin + shaped * (targetMax - targetMin))
+//                         Inverted target ranges (targetMin > targetMax) are preserved.
+//   modulation (Envelope) value = clamp(base + depth * shaped)
+//                         `depth` is signed, so a negative depth inverts the modulation.
+//                         shaped == 0 returns EXACTLY `base` (no clamping artefact, no
+//                         dependence on depth) — that is the property that makes a stopped
+//                         or silent envelope inert rather than destructive.
+//
+// Disabled mappings return { enabled: false, value: null } for both kinds.
+export function evaluateParameterMapping(rawMapping, sourceValue) {
   const mapping = normalizeParameterMapping(rawMapping)
   if (!mapping.enabled) return { enabled: false, value: null }
 
-  const value = clampUnitValue(macroValue, 0)
+  const value = clampUnitValue(sourceValue, 0)
   const span = mapping.sourceMax - mapping.sourceMin
   let t
   if (span <= 0) {
@@ -336,7 +480,9 @@ export function evaluateParameterMapping(rawMapping, macroValue) {
     ? evaluateBezierCurve(mapping.curve, t)
     : t
 
-  const mapped = mapping.targetMin + shapedT * (mapping.targetMax - mapping.targetMin)
+  const mapped = isModulationParameterMapping(mapping)
+    ? mapping.base + mapping.depth * shapedT
+    : mapping.targetMin + shapedT * (mapping.targetMax - mapping.targetMin)
   return { enabled: true, value: Math.min(1, Math.max(0, mapped)) }
 }
 
@@ -400,16 +546,32 @@ export const ENVELOPE_NODE_DEFAULTS = Object.freeze({
   attackTension: 0,
   decayTension: 0,
   releaseTension: 0,
-  amount: 1,
   includeSlideNotes: false,
 })
+
+// EVC-R4 — the retired node-level `amount` master scale. It duplicated the per-edge output
+// scale (old targetMin/targetMax, now `depth`) with no indication of which one to reach for,
+// and it multiplied a second time into every target. The Envelope node now emits the raw
+// 0..1 AHDSR shape and `depth` is the single, signed, per-target scale. Old saved values are
+// folded into each outgoing edge's depth exactly once, on load (see
+// migrateRangeMappingToModulation); this default applies when a legacy node omitted it.
+export const LEGACY_ENVELOPE_AMOUNT_DEFAULT = 1
+
+// Reads a legacy envelope node's retired `amount` for edge migration. Only meaningful on a
+// RAW (un-normalized) node — normalizeEnvelopeNodeData drops the field, which is exactly
+// what makes the fold idempotent: a second normalization pass finds no amount and so
+// defaults to 1 instead of scaling depth again.
+export function readLegacyEnvelopeAmount(rawNode) {
+  const raw = isPlainObject(rawNode?.data) ? rawNode.data : {}
+  return clampUnitValue(raw.amount, LEGACY_ENVELOPE_AMOUNT_DEFAULT)
+}
 
 // ms fields must be finite numbers >= 0; anything else repairs to the default.
 function clampEnvelopeMs(value, fallback) {
   return Number.isFinite(value) && value >= 0 ? value : fallback
 }
 
-// sustain/amount clamp to 0..1.
+// sustain clamps to 0..1.
 function clampEnvelopeUnit(value, fallback) {
   if (!Number.isFinite(value)) return fallback
   return Math.min(1, Math.max(0, value))
@@ -443,6 +605,8 @@ function normalizeEnvelopeLabel(value) {
 //   - the retired per-voice fields voiceMode / maxVoices / monophonic
 //   - the retired `target: { kind: "voiceGain" }`
 //   - a redundant parentTrackId (parent ownership stays graphState.trackId)
+//   - EVC-R4: the retired `amount` master scale, folded into each outgoing edge's signed
+//     `depth` on load (see LEGACY_ENVELOPE_AMOUNT_DEFAULT / readLegacyEnvelopeAmount)
 // The only trigger-related field that persists is `includeSlideNotes` (default false).
 export function normalizeEnvelopeNodeData(rawData) {
   const raw = isPlainObject(rawData) ? rawData : {}
@@ -459,8 +623,6 @@ export function normalizeEnvelopeNodeData(rawData) {
     attackTension: clampEnvelopeTension(raw.attackTension, ENVELOPE_NODE_DEFAULTS.attackTension),
     decayTension: clampEnvelopeTension(raw.decayTension, ENVELOPE_NODE_DEFAULTS.decayTension),
     releaseTension: clampEnvelopeTension(raw.releaseTension, ENVELOPE_NODE_DEFAULTS.releaseTension),
-
-    amount: clampEnvelopeUnit(raw.amount, ENVELOPE_NODE_DEFAULTS.amount),
 
     // EVC-R2-r3 — slide notes are ignored at runtime unless this opt-in is true.
     includeSlideNotes: normalizeEnvelopeIncludeSlideNotes(raw.includeSlideNotes),
@@ -825,7 +987,10 @@ function normalizeNode(node, trackId, warnings, fallbackPosition, rawGraphState)
   }
 }
 
-function normalizeEdge(edge, nodeIds, nodeById, trackId, warnings) {
+// `nodeById` holds NORMALIZED nodes (types + repaired data). `rawNodeById` holds the
+// un-normalized source nodes and exists solely so the EVC-R4 envelope-mapping migration can
+// still read retired node fields (`amount`) that node normalization has already dropped.
+function normalizeEdge(edge, nodeIds, nodeById, trackId, warnings, rawNodeById) {
   if (!isPlainObject(edge)) return { ok: false, reason: 'invalid_edge' }
   if (typeof edge.id !== 'string' || edge.id.length === 0) {
     return { ok: false, reason: 'invalid_edge_id' }
@@ -943,7 +1108,34 @@ function normalizeEdge(edge, nodeIds, nodeById, trackId, warnings) {
     // FXG.4-e/f — every parameter edge carries a clamped/repaired mapping object so
     // runtime drive always has well-formed defaults. Malformed mappings repair to
     // the default linear mapping rather than dropping the edge.
-    normalizedEdge.mapping = normalizeParameterMapping(edge.mapping)
+    //
+    // EVC-R4 — envelope-sourced parameter edges use the base + signed-depth MODULATION
+    // mapping. A pre-EVC-R4 file stores the old absolute range mapping here, so upgrade it
+    // on the load path and log each conversion. Macro-sourced edges are untouched: their
+    // range mapping is the correct model for an absolute controller.
+    if (sourceNodeType === GRAPH_ENVELOPE_NODE_TYPE && !isModulationParameterMapping(edge.mapping)) {
+      const migration = migrateRangeMappingToModulation(
+        edge.mapping,
+        readLegacyEnvelopeAmount(rawNodeById?.get(edge.sourceNodeId)),
+      )
+      normalizedEdge.mapping = migration.mapping
+      warnings.push(makeWarning(
+        'migratedEnvelopeParameterMappingToModulation',
+        trackId,
+        migration.exact
+          ? 'envelope parameter edge mapping migrated to base+depth modulation'
+          : 'envelope parameter edge mapping migrated to base+depth modulation (approximate: legacy amount applied before a non-linear stage)',
+        {
+          edgeId: edge.id,
+          sourceNodeId: edge.sourceNodeId,
+          exact: migration.exact,
+          from: migration.from,
+          to: { base: migration.mapping.base, depth: migration.mapping.depth },
+        },
+      ))
+    } else {
+      normalizedEdge.mapping = normalizeParameterMapping(edge.mapping)
+    }
   }
 
   return { ok: true, edge: normalizedEdge }
@@ -1027,8 +1219,14 @@ function validateVersionOneGraphState(raw, expectedTrackId, options) {
   const edges = []
   const edgeIds = new Set()
   const nodeById = new Map(nodes.map((node) => [node.id, node]))
+  // EVC-R4 — raw (pre-normalization) nodes, keyed by id, for the envelope mapping migration.
+  const rawNodeById = new Map()
+  for (const rawNode of raw.nodes) {
+    const id = rawNode?.id
+    if (typeof id === 'string' && id.length > 0) rawNodeById.set(id, rawNode)
+  }
   for (const edge of raw.edges) {
-    const normalized = normalizeEdge(edge, nodeIds, nodeById, trackId, warnings)
+    const normalized = normalizeEdge(edge, nodeIds, nodeById, trackId, warnings, rawNodeById)
     if (!normalized.ok && normalized.drop) continue
     if (!normalized.ok) return invalid(normalized.reason, warnings)
     if (edgeIds.has(normalized.edge.id)) {
@@ -1839,8 +2037,14 @@ export function collectMacroParameterWrites(graphState, macroNodeId, macroValue)
 //
 // An Envelope node is a control source like Macro: its `controlOut` port links to
 // an exposed parameter input port on an effect node through a `parameter` edge. The
-// edge shape is identical to a Macro -> Parameter edge (GraphParameterTarget + a
-// per-link mapping); only the source node type differs. These helpers deliberately
+// edge shape mirrors a Macro -> Parameter edge (GraphParameterTarget + a per-link
+// mapping) with ONE deliberate difference introduced by EVC-R4: an envelope edge's
+// mapping is a MODULATION mapping (kind: 'modulation', base + signed depth) rather than
+// the absolute range mapping a Macro uses. A Macro is a controller — its knob position IS
+// the parameter's position, so replacing the value is correct. An Envelope is a modulator —
+// the parameter keeps its own authored value (`base`) and the envelope offsets it by
+// `depth * env`, so env == 0 (silent, stopped, or between notes) leaves the authored value
+// untouched instead of erasing it. These helpers deliberately
 // mirror canConnectMacroToParameter / connectMacroToParameter / collectMacroParameterWrites
 // rather than generalizing them, so the established Macro path is never disturbed.
 // Disconnect reuses disconnectParameterEdge (source-agnostic). Runtime drive is
@@ -1942,7 +2146,14 @@ export function connectEnvelopeToParameter(graphState, connectionDraft, options 
     targetPort: check.targetPort,
     type: 'parameter',
     targetParameter: check.target,
-    mapping: normalizeParameterMapping(connectionDraft.mapping),
+    // EVC-R4 — an envelope edge is a MODULATION mapping: value = clamp(base + depth * env).
+    // `kind` is forced here (never taken from the draft) so an envelope edge can only ever
+    // be created in the modulation shape. The caller supplies `base` = the parameter's live
+    // authored value, so linking an envelope leaves the parameter exactly where it was.
+    mapping: normalizeParameterMapping({
+      ...(isPlainObject(connectionDraft.mapping) ? connectionDraft.mapping : {}),
+      kind: GRAPH_PARAMETER_MAPPING_MODULATION,
+    }),
   }
 
   return {
@@ -1959,7 +2170,12 @@ export function connectEnvelopeToParameter(graphState, connectionDraft, options 
 // a normalized envelope output value (0..1), returns the parameter writes its enabled
 // outgoing parameter edges produce, mapped through each edge's mapping. Mirrors
 // collectMacroParameterWrites; reports disabled/invalid/unresolved/read-only edges
-// under `skipped` instead of throwing. EVC-R1 never calls this from a drive path.
+// under `skipped` instead of throwing.
+//
+// EVC-R4 — because envelope edges carry a modulation mapping, envelopeValue == 0 makes every
+// produced write exactly the edge's `base`. That is the whole stop/idle story: there is no
+// separate "flush" concept and no value the runtime can write that discards the user's
+// authored setting.
 export function collectEnvelopeParameterWrites(graphState, envelopeNodeId, envelopeValue) {
   const writes = []
   const skipped = []
@@ -2016,12 +2232,17 @@ export function collectEnvelopeParameterWrites(graphState, envelopeNodeId, envel
   return { writes, skipped }
 }
 
-// FXG.4-g — update a parameter edge's mapping in place.
-// Merges mappingPatch into the edge's current mapping and renormalizes. The patch
-// may include any subset of { enabled, sourceMin, sourceMax, targetMin, targetMax, curve }.
-// Setting curve to { type: 'linear' } resets the curve to linear; setting curve to
-// { type: 'bezier', points: [...] } switches to bezier. Malformed bezier patches fall
-// back to linear rather than dropping the edge. Returns { ok, graphState } or
+// FXG.4-g / EVC-R4 — update a parameter edge's mapping in place.
+// Merges mappingPatch into the edge's current mapping and renormalizes. The accepted patch
+// keys depend on the edge's mapping kind:
+//   range mapping (Macro)          { enabled, sourceMin, sourceMax, targetMin, targetMax, curve }
+//   modulation mapping (Envelope)  { enabled, sourceMin, sourceMax, base, depth, curve }
+// The kind is never changed by a patch: it is carried over from the stored mapping, and an
+// envelope-sourced edge whose stored mapping is still legacy is migrated here as well (the
+// same conversion the load path applies), so the editor can never write a range mapping back
+// onto an envelope edge. Setting curve to { type: 'linear' } resets the curve to linear;
+// setting curve to { type: 'bezier', points: [...] } switches to bezier. Malformed bezier
+// patches fall back to linear rather than dropping the edge. Returns { ok, graphState } or
 // { ok: false, reason }.
 export function updateParameterEdgeMapping(graphState, edgeId, mappingPatch) {
   const editCheck = validateGraphStateForEditing(graphState)
@@ -2038,8 +2259,16 @@ export function updateParameterEdgeMapping(graphState, edgeId, mappingPatch) {
   if (!edge) return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_EDGE }
   if (edge.type !== 'parameter') return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_PARAMETER_EDGE }
 
-  const currentMapping = isPlainObject(edge.mapping) ? edge.mapping : {}
-  const mergedMapping = { ...currentMapping, ...mappingPatch }
+  let currentMapping = isPlainObject(edge.mapping) ? edge.mapping : {}
+
+  // EVC-R4 — an envelope edge is always a modulation mapping. Migrate a legacy stored range
+  // mapping before merging so a patch can never resurrect targetMin/targetMax on it.
+  const sourceNode = graphState.nodes.find((n) => n.id === edge.sourceNodeId)
+  if (sourceNode?.type === GRAPH_ENVELOPE_NODE_TYPE && !isModulationParameterMapping(currentMapping)) {
+    currentMapping = migrateRangeMappingToModulation(currentMapping).mapping
+  }
+
+  const mergedMapping = { ...currentMapping, ...mappingPatch, kind: currentMapping.kind }
   const normalizedMapping = normalizeParameterMapping(mergedMapping)
 
   return {

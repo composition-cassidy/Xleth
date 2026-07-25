@@ -17,7 +17,8 @@ export interface EnvelopeNodeData {
   attackTension: number;
   decayTension: number;
   releaseTension: number;
-  amount: number;
+  // EVC-R4 — no `amount`: the Envelope emits the raw 0..1 AHDSR shape and the per-connection
+  // signed `depth` on each Envelope → Parameter edge is the only modulation scale.
   // EVC-R2-r3 — the trigger source (notes vs clips) is inferred from the parent track's
   // content at runtime, and the Envelope is always restart-only, so neither is stored
   // here. The only trigger-related field is the slide-note opt-in (default false).
@@ -477,7 +478,8 @@ export function EnvelopeNodeSummary({
         {data.includeSlideNotes && (
           <span className="xleth-graph-state-preview__envelope-pill">Slide</span>
         )}
-        <span className="xleth-graph-state-preview__envelope-pill">Amt {formatUnitPercent(data.amount)}</span>
+        {/* EVC-R4 — no "Amt" pill: the retired node-level amount scale is gone (per-edge
+            depth replaces it), so the summary shows only the connection count. */}
         <span className="xleth-graph-state-preview__envelope-pill">{formatEnvelopeParameterCount(parameterCount)}</span>
       </span>
       <span className="xleth-graph-state-preview__envelope-ahdsr" aria-label="AHDSR summary">
@@ -648,19 +650,11 @@ export function EnvelopeEditor({
           ariaLabel="Sustain level"
           onChange={onChange}
         />
-        <EnvelopeRangeControl
-          label="Amount"
-          fieldKey="amount"
-          value={data.amount}
-          min={0}
-          max={1}
-          step={0.01}
-          rangeMin={0}
-          rangeMax={1}
-          displayValue={formatUnitPercent(data.amount)}
-          ariaLabel="Amount"
-          onChange={onChange}
-        />
+        {/* EVC-R4 — the node-level "Amount" master scale was removed. It duplicated the
+            per-connection output scale (now the signed `depth` on each Envelope → Parameter
+            edge) and multiplied into it a second time, so two controls set "how much" with
+            no indication of which one to use. Depth, edited per connection in the mapping
+            editor, is now the only modulation scale. */}
       </div>
       <div className="xleth-graph-state-preview__envelope-grid xleth-graph-state-preview__envelope-grid--modes">
         <IncludeSlideNotesControl data={data} onChange={onChange} />
@@ -701,7 +695,7 @@ export function EnvelopeNodeBody({
 
   return (
     <span className="xleth-graph-state-preview__envelope-body">
-      <EnvelopeAhdsrGraph data={data} editable={editable && expanded} onChange={onChange} />
+      {!expanded && <EnvelopeAhdsrGraph data={data} editable={false} />}
       <EnvelopeNodeSummary data={data} parameterCount={parameterCount} />
       {editable && (
         <button

@@ -384,7 +384,11 @@ describe('startEnvelopePlayback', () => {
     expect(apply).toHaveBeenCalledTimes(2) // B was never written
   })
 
-  it('flushes connected parameters to 0 exactly once on stop, after any in-flight drive', async () => {
+  // EVC-R4 — renamed from "flushes connected parameters to 0". The stop pass is a normal
+  // no-gate drive now, so what it writes is decided by each edge's modulation mapping
+  // (env == 0 -> exactly base), not by this controller. What this controller still owes is
+  // ordering: exactly one stop pass, and it lands after any in-flight drive.
+  it('releases connected parameters exactly once on stop, after any in-flight drive', async () => {
     const resolvers = []
     const apply = vi.fn(() => new Promise((res) => { resolvers.push(res) }))
     const reset = vi.fn()
@@ -396,20 +400,20 @@ describe('startEnvelopePlayback', () => {
     h.frame(500, 120) // drive A (in flight)
     expect(apply).toHaveBeenCalledTimes(1)
 
-    // Stop arrives mid-flight: the flush is deferred behind the in-flight non-zero write.
+    // Stop arrives mid-flight: the release is deferred behind the in-flight modulated write.
     h.setPlaying(false)
     h.transport({ positionMs: 500, bpm: 120, isPlaying: false })
     expect(apply).toHaveBeenCalledTimes(1) // not yet — waiting for in-flight to resolve
 
     resolvers[0]({ ok: true })
     await flush()
-    // Now the flush lands last, with empty gates -> writes 0.
+    // Now the release lands last, with empty gates -> env 0 -> each edge's base.
     expect(apply).toHaveBeenCalledTimes(2)
     expect(apply.mock.calls[1][1].trackEvents).toEqual({})
-    expect(reset).toHaveBeenCalledTimes(2) // play transition + stop flush
+    expect(reset).toHaveBeenCalledTimes(2) // play transition + stop release
   })
 
-  it('does not write stale non-zero values from a late onFrame after the stop flush', async () => {
+  it('does not write stale modulated values from a late onFrame after the stop release', async () => {
     const h = makeHarness()
     h.setPlaying(true)
     h.transport({ positionMs: 0, bpm: 120, isPlaying: true })
@@ -418,11 +422,11 @@ describe('startEnvelopePlayback', () => {
     await flush()
 
     h.setPlaying(false)
-    h.transport({ positionMs: 500, bpm: 120, isPlaying: false }) // stop flush (writes 0)
+    h.transport({ positionMs: 500, bpm: 120, isPlaying: false }) // stop release (env 0 -> base)
     await flush()
     const callsAfterFlush = h.store.applyEnvelopeModulationAtTick.mock.calls.length
     const lastCall = h.store.applyEnvelopeModulationAtTick.mock.calls[callsAfterFlush - 1]
-    expect(lastCall[1].trackEvents).toEqual({}) // last write is the flush
+    expect(lastCall[1].trackEvents).toEqual({}) // last write is the release
 
     // A trailing onFrame fires after stop -> guarded, no further write.
     h.advance(ENVELOPE_DRIVE_INTERVAL_MS)

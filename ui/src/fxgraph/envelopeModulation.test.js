@@ -39,7 +39,7 @@ describe('computeMsPerTick', () => {
 describe('normalizeEnvelopeRuntimeSettings', () => {
   it('converts ms stages to ticks and repairs invalid input', () => {
     const s = normalizeEnvelopeRuntimeSettings(
-      { attackMs: 10, holdMs: 5, decayMs: 120, sustain: 0.7, releaseMs: 200, amount: 0.5 },
+      { attackMs: 10, holdMs: 5, decayMs: 120, sustain: 0.7, releaseMs: 200 },
       { msPerTick: 1 },
     )
     expect(s.attackTicks).toBe(10)
@@ -47,7 +47,9 @@ describe('normalizeEnvelopeRuntimeSettings', () => {
     expect(s.decayTicks).toBe(120)
     expect(s.releaseTicks).toBe(200)
     expect(s.sustain).toBe(0.7)
-    expect(s.amount).toBe(0.5)
+    // EVC-R4 — the node-level amount master scale is retired; the per-edge signed `depth`
+    // is the only modulation scale, so it never reaches runtime settings.
+    expect(s).not.toHaveProperty('amount')
     // EVC-R2-r3 — no retrigger mode / trigger-source selector survives into settings.
     expect(s).not.toHaveProperty('retriggerMode')
     expect(s).not.toHaveProperty('triggerEvents')
@@ -61,9 +63,9 @@ describe('normalizeEnvelopeRuntimeSettings', () => {
     ).toBe(true)
   })
 
-  it('repairs negative / non-finite stages and amount to safe defaults', () => {
+  it('repairs negative / non-finite stages to safe defaults', () => {
     const s = normalizeEnvelopeRuntimeSettings(
-      { attackMs: -5, decayMs: Number.NaN, sustain: 5, amount: -1 },
+      { attackMs: -5, decayMs: Number.NaN, sustain: 5 },
       { msPerTick: 1 },
     )
     // attackMs default 10, decayMs default 120 (graphState normalization defaults).
@@ -71,7 +73,14 @@ describe('normalizeEnvelopeRuntimeSettings', () => {
     expect(s.decayTicks).toBe(120)
     expect(s.sustain).toBeLessThanOrEqual(1)
     expect(s.sustain).toBeGreaterThanOrEqual(0)
-    expect(s.amount).toBe(0) // clamped from -1
+  })
+
+  // EVC-R4 — a legacy node's retired `amount` is folded into each outgoing edge's depth by
+  // the graphState load path, never re-applied here. Runtime settings must ignore it
+  // entirely, otherwise a migrated project would be scaled twice.
+  it('ignores a legacy amount field instead of scaling by it', () => {
+    const s = normalizeEnvelopeRuntimeSettings({ amount: 0.25 }, { msPerTick: 1 })
+    expect(s).not.toHaveProperty('amount')
   })
 })
 
@@ -218,12 +227,15 @@ describe('resolveActiveGate — gate regions, chords, restart-only (EVC-R2-r3)',
 })
 
 describe('evaluateEnvelopeOutput — one value per envelope node', () => {
-  it('amount scales the output once', () => {
-    const full = settings({ attackMs: 10, decayMs: 120, sustain: 0.7, releaseMs: 200, amount: 1 })
-    const half = settings({ attackMs: 10, decayMs: 120, sustain: 0.7, releaseMs: 200, amount: 0.5 })
+  // EVC-R4 — the node emits the RAW 0..1 AHDSR shape. A legacy `amount` on the node data
+  // must NOT scale it: the value reaching each edge is the unscaled sustain level, and the
+  // per-edge signed `depth` applies the only scale.
+  it('emits the raw AHDSR shape, unscaled by any legacy amount', () => {
+    const plain = settings({ attackMs: 10, decayMs: 120, sustain: 0.7, releaseMs: 200 })
+    const withLegacyAmount = settings({ attackMs: 10, decayMs: 120, sustain: 0.7, releaseMs: 200, amount: 0.5 })
     const events = [note(0, 5000)]
-    expect(evaluateEnvelopeOutput(full, events, 2000).value).toBeCloseTo(0.7)
-    expect(evaluateEnvelopeOutput(half, events, 2000).value).toBeCloseTo(0.35)
+    expect(evaluateEnvelopeOutput(plain, events, 2000).value).toBeCloseTo(0.7)
+    expect(evaluateEnvelopeOutput(withLegacyAmount, events, 2000).value).toBeCloseTo(0.7)
   })
 
   it('outputs 0 before the trigger and off after release', () => {

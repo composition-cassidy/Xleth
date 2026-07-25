@@ -8,6 +8,12 @@ import {
   GRAPH_MUTATION_REJECTION,
   GRAPH_PARAMETER_CURVE_BEZIER,
   GRAPH_PARAMETER_CURVE_LINEAR,
+  // EVC-R4 — base + signed-depth modulation mapping.
+  GRAPH_PARAMETER_MAPPING_MODULATION,
+  PARAMETER_MODULATION_DEFAULTS,
+  isModulationParameterMapping,
+  migrateRangeMappingToModulation,
+  readLegacyEnvelopeAmount,
   ENVELOPE_NODE_DEFAULTS,
   PROTECTED_NODE_TYPES,
   addGraphEffectNode,
@@ -2705,9 +2711,16 @@ describe('EVC-R1 envelope node data normalization (parameter modulator)', () => 
       attackTension: 0,
       decayTension: 0,
       releaseTension: 0,
-      amount: 1,
       includeSlideNotes: false,
     })
+  })
+
+  // EVC-R4 — the node-level `amount` master scale is retired. It is dropped by the closed
+  // schema (like every other retired field) after being folded into each outgoing edge's
+  // signed `depth` on load.
+  it('EVC-R4 drops the retired amount master scale', () => {
+    expect(normalizeEnvelopeNodeData({ amount: 0.5 })).not.toHaveProperty('amount')
+    expect(ENVELOPE_NODE_DEFAULTS).not.toHaveProperty('amount')
   })
 
   it('EVC-R2-r3 defaults includeSlideNotes to false', () => {
@@ -2761,7 +2774,6 @@ describe('EVC-R1 envelope node data normalization (parameter modulator)', () => 
     expect(data.decayMs).toBe(ENVELOPE_NODE_DEFAULTS.decayMs)
     expect(data.sustain).toBe(ENVELOPE_NODE_DEFAULTS.sustain)
     expect(data.releaseMs).toBe(ENVELOPE_NODE_DEFAULTS.releaseMs)
-    expect(data.amount).toBe(ENVELOPE_NODE_DEFAULTS.amount)
     expect(data.includeSlideNotes).toBe(ENVELOPE_NODE_DEFAULTS.includeSlideNotes)
     expect(data.includeSlideNotes).toBe(false)
   })
@@ -2794,7 +2806,6 @@ describe('EVC-R1 envelope node data normalization (parameter modulator)', () => 
       attackTension: 2,
       decayTension: -3,
       releaseTension: Number.NaN,
-      amount: -0.5,
       includeSlideNotes: 'yes',
       triggerSource: { kind: 'somethingElse', events: 'bogus' },
       retriggerMode: 'glide',
@@ -2809,7 +2820,6 @@ describe('EVC-R1 envelope node data normalization (parameter modulator)', () => 
     expect(data.attackTension).toBe(1) // clamped to -1..1
     expect(data.decayTension).toBe(-1)
     expect(data.releaseTension).toBe(0)
-    expect(data.amount).toBe(0)
     expect(data.includeSlideNotes).toBe(false) // non-boolean → false
     expect(data).not.toHaveProperty('triggerSource') // dropped
     expect(data).not.toHaveProperty('retriggerMode') // dropped
@@ -2856,7 +2866,6 @@ describe('EVC.2 envelope node loadGraphState integration', () => {
       attackTension: 0,
       decayTension: 0,
       releaseTension: 0,
-      amount: 1,
       includeSlideNotes: true,
     })
   })
@@ -3000,7 +3009,7 @@ describe('EVC.2 envelope node mutation helpers', () => {
   it('updateGraphEnvelopeNodeData preserves unrelated nodes and graphState fields', () => {
     const added = addGraphEnvelopeNode(makeGuardGraphState(), { idFactory: () => 'env-a' })
     const before = added.graphState
-    const result = updateGraphEnvelopeNodeData(before, 'env-a', { amount: 0.5 })
+    const result = updateGraphEnvelopeNodeData(before, 'env-a', { sustain: 0.5 })
 
     expect(result.ok).toBe(true)
     expect(result.graphState.customField).toBe('preserved')
@@ -3010,16 +3019,16 @@ describe('EVC.2 envelope node mutation helpers', () => {
     )
     expect(result.graphState.edges).toEqual(before.edges)
     // Input graphState not mutated.
-    expect(before.nodes.find((n) => n.id === 'env-a').data.amount).toBe(1)
+    expect(before.nodes.find((n) => n.id === 'env-a').data.sustain).toBe(ENVELOPE_NODE_DEFAULTS.sustain)
   })
 
   it('updateGraphEnvelopeNodeData rejects non-envelope and missing nodes', () => {
     const added = addGraphEnvelopeNode(makeGuardGraphState(), { idFactory: () => 'env-a' })
-    expect(updateGraphEnvelopeNodeData(added.graphState, 'fx-a', { amount: 0.5 })).toEqual({
+    expect(updateGraphEnvelopeNodeData(added.graphState, 'fx-a', { sustain: 0.5 })).toEqual({
       ok: false,
       reason: GRAPH_MUTATION_REJECTION.UNKNOWN_NODE_TYPE,
     })
-    expect(updateGraphEnvelopeNodeData(added.graphState, 'missing', { amount: 0.5 })).toEqual({
+    expect(updateGraphEnvelopeNodeData(added.graphState, 'missing', { sustain: 0.5 })).toEqual({
       ok: false,
       reason: GRAPH_MUTATION_REJECTION.MISSING_NODE,
     })
@@ -3212,7 +3221,19 @@ describe('EVC-R1 envelope → parameter links', () => {
       type: 'parameter',
     })
     expect(edge.targetParameter.kind).toBe('graph-parameter')
-    expect(edge.mapping).toMatchObject({ enabled: true, sourceMin: 0, sourceMax: 1, targetMin: 0, targetMax: 1 })
+    // EVC-R4 — an envelope edge is created as a base + signed-depth MODULATION mapping, never
+    // the absolute range mapping a Macro edge uses.
+    expect(edge.mapping).toEqual({
+      kind: GRAPH_PARAMETER_MAPPING_MODULATION,
+      enabled: true,
+      base: 0,
+      depth: 1,
+      sourceMin: 0,
+      sourceMax: 1,
+      curve: { type: 'linear' },
+    })
+    expect(edge.mapping).not.toHaveProperty('targetMin')
+    expect(edge.mapping).not.toHaveProperty('targetMax')
     // Never persists a raw engine node id.
     expect(JSON.stringify(result.graphState.edges)).not.toContain('engineNodeId')
   })
@@ -3246,7 +3267,7 @@ describe('EVC-R1 envelope → parameter links', () => {
     expect(writes[0]).toMatchObject({
       effectInstanceId: 'effect-1',
       parameterId: 'mix',
-      value: 0.75, // default linear identity mapping
+      value: 0.75, // default modulation mapping: base 0 + depth 1 * env 0.75
     })
     // A non-envelope source id yields nothing.
     expect(collectEnvelopeParameterWrites(linked, 'macro-a', 0.5).writes).toHaveLength(0)
@@ -3363,6 +3384,453 @@ describe('FXG-SC.6B sidechain input node normalization', () => {
     }))).toBe(false)
     expect(isSidechainCapableEffectNode(makeCompressorEffectNode('fx', { missing: true }))).toBe(false)
     expect(isSidechainCapableEffectNode(makeCompressorEffectNode('fx', { effectInstanceId: '' }))).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// EVC-R4 — base + signed-depth modulation for Envelope -> Parameter edges
+// ---------------------------------------------------------------------------
+
+describe('EVC-R4 modulation mapping normalization', () => {
+  it('normalizeParameterMapping keeps a modulation mapping and closes its shape', () => {
+    const mapping = normalizeParameterMapping({
+      kind: GRAPH_PARAMETER_MAPPING_MODULATION,
+      base: 0.4,
+      depth: -0.75,
+      // targetMin/targetMax are NOT part of the modulation shape and must not survive:
+      // the whole point of the model is that the edge owns an offset, not the value.
+      targetMin: 0.1,
+      targetMax: 0.9,
+    })
+    expect(mapping).toEqual({
+      kind: GRAPH_PARAMETER_MAPPING_MODULATION,
+      enabled: true,
+      base: 0.4,
+      depth: -0.75,
+      sourceMin: 0,
+      sourceMax: 1,
+      curve: { type: GRAPH_PARAMETER_CURVE_LINEAR },
+    })
+    expect(isModulationParameterMapping(mapping)).toBe(true)
+  })
+
+  it('a mapping with no kind stays an absolute range mapping (Macro edges are untouched)', () => {
+    const mapping = normalizeParameterMapping({ targetMin: 0.2, targetMax: 0.8 })
+    expect(mapping).not.toHaveProperty('kind')
+    expect(mapping).not.toHaveProperty('base')
+    expect(mapping).not.toHaveProperty('depth')
+    expect(mapping.targetMin).toBe(0.2)
+    expect(mapping.targetMax).toBe(0.8)
+    expect(isModulationParameterMapping(mapping)).toBe(false)
+  })
+
+  it('base clamps to 0..1 and depth clamps to -1..1 (bipolar), repairing junk to defaults', () => {
+    const clamped = normalizeParameterMapping({
+      kind: GRAPH_PARAMETER_MAPPING_MODULATION, base: 5, depth: -9,
+    })
+    expect(clamped.base).toBe(1)
+    expect(clamped.depth).toBe(-1)
+
+    const repaired = normalizeParameterMapping({
+      kind: GRAPH_PARAMETER_MAPPING_MODULATION, base: 'nope', depth: Number.NaN,
+    })
+    expect(repaired.base).toBe(PARAMETER_MODULATION_DEFAULTS.base)
+    expect(repaired.depth).toBe(PARAMETER_MODULATION_DEFAULTS.depth)
+  })
+})
+
+describe('EVC-R4 evaluateParameterMapping — base + depth', () => {
+  const mod = (overrides = {}) => ({
+    kind: GRAPH_PARAMETER_MAPPING_MODULATION,
+    base: 0.5,
+    depth: 0.25,
+    ...overrides,
+  })
+
+  // The property the whole model rests on: an idle/silent/stopped envelope leaves the
+  // parameter at exactly the value the user authored. Not "close to", exactly.
+  it('env = 0 returns EXACTLY base, for any depth (including negative and zero)', () => {
+    for (const depth of [1, 0.5, 0, -0.5, -1]) {
+      for (const base of [0, 0.3, 0.7, 1]) {
+        expect(evaluateParameterMapping(mod({ base, depth }), 0).value).toBe(base)
+      }
+    }
+  })
+
+  it('env = 0 returns exactly base through a bezier curve too', () => {
+    const withBezier = mod({ base: 0.42, depth: 0.5, curve: createDefaultBezierCurve() })
+    expect(evaluateParameterMapping(withBezier, 0).value).toBe(0.42)
+  })
+
+  it('positive depth offsets upward from base', () => {
+    const mapping = mod({ base: 0.5, depth: 0.25 })
+    expect(evaluateParameterMapping(mapping, 0).value).toBeCloseTo(0.5)
+    expect(evaluateParameterMapping(mapping, 0.5).value).toBeCloseTo(0.625)
+    expect(evaluateParameterMapping(mapping, 1).value).toBeCloseTo(0.75)
+  })
+
+  it('negative depth INVERTS the modulation (offsets downward from base)', () => {
+    const mapping = mod({ base: 0.8, depth: -0.6 })
+    expect(evaluateParameterMapping(mapping, 0).value).toBe(0.8)
+    expect(evaluateParameterMapping(mapping, 0.5).value).toBeCloseTo(0.5)
+    expect(evaluateParameterMapping(mapping, 1).value).toBeCloseTo(0.2)
+  })
+
+  it('clamps at the TOP end without disturbing base', () => {
+    const mapping = mod({ base: 0.9, depth: 1 })
+    expect(evaluateParameterMapping(mapping, 0).value).toBe(0.9)
+    expect(evaluateParameterMapping(mapping, 0.5).value).toBeCloseTo(1) // 1.4 -> clamped
+    expect(evaluateParameterMapping(mapping, 1).value).toBe(1)
+  })
+
+  it('clamps at the BOTTOM end without disturbing base', () => {
+    const mapping = mod({ base: 0.1, depth: -1 })
+    expect(evaluateParameterMapping(mapping, 0).value).toBe(0.1)
+    expect(evaluateParameterMapping(mapping, 0.5).value).toBe(0) // -0.4 -> clamped
+    expect(evaluateParameterMapping(mapping, 1).value).toBe(0)
+  })
+
+  it('depth 0 pins the parameter at base across the whole envelope travel', () => {
+    const mapping = mod({ base: 0.33, depth: 0 })
+    for (const env of [0, 0.25, 0.5, 0.75, 1]) {
+      expect(evaluateParameterMapping(mapping, env).value).toBe(0.33)
+    }
+  })
+
+  it('a disabled modulation mapping produces no value at all (never a destructive write)', () => {
+    expect(evaluateParameterMapping(mod({ enabled: false }), 1)).toEqual({ enabled: false, value: null })
+  })
+
+  it('applies the bezier curve to the envelope input, then the depth offset', () => {
+    // Bezier is symmetric about 0.5, so the midpoint is unchanged; the endpoints pin.
+    const mapping = mod({ base: 0.2, depth: 0.6, curve: createDefaultBezierCurve() })
+    expect(evaluateParameterMapping(mapping, 0).value).toBe(0.2)
+    expect(evaluateParameterMapping(mapping, 0.5).value).toBeCloseTo(0.5)
+    expect(evaluateParameterMapping(mapping, 1).value).toBeCloseTo(0.8)
+  })
+
+  it('the source window still gates the envelope input', () => {
+    const mapping = mod({ base: 0, depth: 1, sourceMin: 0.5, sourceMax: 1 })
+    expect(evaluateParameterMapping(mapping, 0.25).value).toBe(0)
+    expect(evaluateParameterMapping(mapping, 0.5).value).toBeCloseTo(0)
+    expect(evaluateParameterMapping(mapping, 0.75).value).toBeCloseTo(0.5)
+    expect(evaluateParameterMapping(mapping, 1).value).toBeCloseTo(1)
+  })
+
+  it('evaluateLinearParameterMapping defers to the kind-aware evaluator for modulation', () => {
+    const mapping = mod({ base: 0.5, depth: 0.25 })
+    expect(evaluateLinearParameterMapping(mapping, 1).value).toBeCloseTo(0.75)
+  })
+
+  it('range mappings evaluate exactly as before (no macro regression)', () => {
+    const range = { targetMin: 0.2, targetMax: 0.8 }
+    expect(evaluateParameterMapping(range, 0).value).toBeCloseTo(0.2)
+    expect(evaluateParameterMapping(range, 0.5).value).toBeCloseTo(0.5)
+    expect(evaluateParameterMapping(range, 1).value).toBeCloseTo(0.8)
+  })
+})
+
+describe('EVC-R4 migrateRangeMappingToModulation', () => {
+  it('maps targetMin -> base and the target span -> depth', () => {
+    const { mapping, exact } = migrateRangeMappingToModulation({ targetMin: 0.2, targetMax: 0.8 })
+    expect(mapping.base).toBeCloseTo(0.2)
+    expect(mapping.depth).toBeCloseTo(0.6)
+    expect(exact).toBe(true)
+  })
+
+  it('an INVERTED legacy range becomes a negative depth', () => {
+    const { mapping } = migrateRangeMappingToModulation({ targetMin: 0.9, targetMax: 0.1 })
+    expect(mapping.base).toBeCloseTo(0.9)
+    expect(mapping.depth).toBeCloseTo(-0.8)
+  })
+
+  it('folds the retired node-level amount into depth exactly once', () => {
+    const { mapping, exact, from } = migrateRangeMappingToModulation({ targetMin: 0, targetMax: 1 }, 0.5)
+    expect(mapping.depth).toBeCloseTo(0.5)
+    expect(from.legacyAmount).toBe(0.5)
+    // Linear curve + default source window: the fold is algebraically exact.
+    expect(exact).toBe(true)
+  })
+
+  it('preserves the curve and source window, and drops targetMin/targetMax', () => {
+    const { mapping } = migrateRangeMappingToModulation({
+      targetMin: 0.1, targetMax: 0.9, sourceMin: 0.25, sourceMax: 0.75, curve: createDefaultBezierCurve(),
+    })
+    expect(mapping.sourceMin).toBe(0.25)
+    expect(mapping.sourceMax).toBe(0.75)
+    expect(mapping.curve.type).toBe(GRAPH_PARAMETER_CURVE_BEZIER)
+    expect(mapping).not.toHaveProperty('targetMin')
+    expect(mapping).not.toHaveProperty('targetMax')
+  })
+
+  it('reports exact: false when a legacy amount met a non-linear stage', () => {
+    // The old code scaled by amount BEFORE the bezier/source-window stage; the new model
+    // scales after it, so those two cases cannot be reproduced bit-for-bit.
+    expect(migrateRangeMappingToModulation({ curve: createDefaultBezierCurve() }, 0.5).exact).toBe(false)
+    expect(migrateRangeMappingToModulation({ sourceMin: 0.2, sourceMax: 0.9 }, 0.5).exact).toBe(false)
+    // amount === 1 is always exact, non-linear stage or not.
+    expect(migrateRangeMappingToModulation({ curve: createDefaultBezierCurve() }, 1).exact).toBe(true)
+  })
+
+  it('carries `enabled: false` across the migration', () => {
+    expect(migrateRangeMappingToModulation({ enabled: false }).mapping.enabled).toBe(false)
+  })
+
+  // The exactness claim, measured rather than asserted: for a linear curve with the default
+  // source window, the migrated mapping reproduces the OLD evaluation for every env value.
+  it('reproduces the pre-change audible behavior for the linear / default-window case', () => {
+    const legacy = { targetMin: 0.25, targetMax: 0.85 }
+    const legacyAmount = 0.4
+    const { mapping } = migrateRangeMappingToModulation(legacy, legacyAmount)
+    for (const adsr of [0, 0.1, 0.25, 0.5, 0.75, 0.9, 1]) {
+      // Old model: the envelope output was amount-scaled BEFORE the range mapping.
+      const before = evaluateParameterMapping(legacy, adsr * legacyAmount).value
+      const after = evaluateParameterMapping(mapping, adsr).value
+      expect(after).toBeCloseTo(before, 10)
+    }
+  })
+
+  it('readLegacyEnvelopeAmount reads a raw node and defaults to 1', () => {
+    expect(readLegacyEnvelopeAmount({ data: { amount: 0.25 } })).toBe(0.25)
+    expect(readLegacyEnvelopeAmount({ data: {} })).toBe(1)
+    expect(readLegacyEnvelopeAmount(undefined)).toBe(1)
+    // A normalized node has already had `amount` dropped -> 1, which is what makes the
+    // fold idempotent across repeated load/save cycles.
+    expect(readLegacyEnvelopeAmount({ data: normalizeEnvelopeNodeData({ amount: 0.25 }) })).toBe(1)
+  })
+})
+
+describe('EVC-R4 load-path migration of a pre-change graphState fixture', () => {
+  // A verbatim pre-EVC-R4 serialized graphState: the envelope node still carries the retired
+  // `amount` master scale, and both parameter edges carry the old absolute range mapping
+  // (targetMin/targetMax, no `kind`). This is what an existing project file on disk contains.
+  const LEGACY_GRAPH_STATE = Object.freeze({
+    schemaVersion: GRAPH_STATE_SCHEMA_VERSION,
+    trackId: '7',
+    nodes: [
+      { id: 'input', type: 'trackInput', position: { x: 0, y: 0 }, data: {} },
+      {
+        id: 'fx-1',
+        type: 'effect',
+        position: { x: 200, y: 0 },
+        data: {
+          effectInstanceId: 'effect-1',
+          pluginId: 'stock:filter',
+          displayName: 'Filter',
+          bypass: false,
+          missing: false,
+          crashed: false,
+          sourceChainSlotIndex: 0,
+          exposedParameterPorts: [
+            {
+              parameterId: 'cutoff',
+              parameterIndexFallback: 0,
+              nameSnapshot: 'Cutoff',
+              labelSnapshot: 'Hz',
+              parameterIdIsFallback: false,
+              automatable: true,
+              readOnly: false,
+            },
+          ],
+        },
+      },
+      {
+        id: 'macro-a',
+        type: GRAPH_MACRO_NODE_TYPE,
+        position: { x: 80, y: 120 },
+        data: { label: 'Macro 1', normalizedValue: 0.5 },
+      },
+      {
+        id: 'env-1',
+        type: GRAPH_ENVELOPE_NODE_TYPE,
+        position: { x: 80, y: 240 },
+        data: {
+          label: 'Filter Env',
+          attackMs: 5,
+          holdMs: 0,
+          decayMs: 90,
+          sustain: 0.6,
+          releaseMs: 180,
+          attackTension: 0,
+          decayTension: 0,
+          releaseTension: 0,
+          amount: 0.5,
+          includeSlideNotes: false,
+        },
+      },
+      { id: 'output', type: 'trackOutput', position: { x: 400, y: 0 }, data: {} },
+    ],
+    edges: [
+      { id: 'a-1', sourceNodeId: 'input', sourcePort: 'out', targetNodeId: 'fx-1', targetPort: 'in', type: 'audio' },
+      { id: 'a-2', sourceNodeId: 'fx-1', sourcePort: 'out', targetNodeId: 'output', targetPort: 'in', type: 'audio' },
+      {
+        id: 'p-env-cutoff',
+        sourceNodeId: 'env-1',
+        sourcePort: GRAPH_ENVELOPE_OUTPUT_PORT,
+        targetNodeId: 'fx-1',
+        targetPort: 'gpp:fx-1:cutoff',
+        type: 'parameter',
+        targetParameter: {
+          kind: 'graph-parameter',
+          graphNodeId: 'fx-1',
+          effectInstanceId: 'effect-1',
+          parameterId: 'cutoff',
+          parameterIndexFallback: 0,
+          parameterIdIsFallback: false,
+          nameSnapshot: 'Cutoff',
+          labelSnapshot: 'Hz',
+        },
+        mapping: { enabled: true, sourceMin: 0, sourceMax: 1, targetMin: 0.2, targetMax: 1, curve: { type: 'linear' } },
+      },
+      {
+        id: 'p-macro-cutoff',
+        sourceNodeId: 'macro-a',
+        sourcePort: GRAPH_MACRO_OUTPUT_PORT,
+        targetNodeId: 'fx-1',
+        targetPort: 'gpp:fx-1:cutoff',
+        type: 'parameter',
+        targetParameter: {
+          kind: 'graph-parameter',
+          graphNodeId: 'fx-1',
+          effectInstanceId: 'effect-1',
+          parameterId: 'cutoff',
+          parameterIndexFallback: 0,
+          parameterIdIsFallback: false,
+          nameSnapshot: 'Cutoff',
+          labelSnapshot: 'Hz',
+        },
+        mapping: { enabled: true, sourceMin: 0, sourceMax: 1, targetMin: 0.1, targetMax: 0.9, curve: { type: 'linear' } },
+      },
+    ],
+  })
+
+  const cloneLegacy = () => JSON.parse(JSON.stringify(LEGACY_GRAPH_STATE))
+  const loadLegacy = () => validateGraphState(cloneLegacy(), '7')
+
+  it('loads without data loss: every node and edge survives', () => {
+    const result = loadLegacy()
+    expect(result.status).toBe('valid')
+    expect(result.graphState.nodes.map((n) => n.id)).toEqual(['input', 'fx-1', 'macro-a', 'env-1', 'output'])
+    expect(result.graphState.edges.map((e) => e.id)).toEqual(['a-1', 'a-2', 'p-env-cutoff', 'p-macro-cutoff'])
+  })
+
+  it('upgrades the envelope edge to a base + depth modulation mapping', () => {
+    const edge = loadLegacy().graphState.edges.find((e) => e.id === 'p-env-cutoff')
+    expect(edge.mapping).toEqual({
+      kind: GRAPH_PARAMETER_MAPPING_MODULATION,
+      enabled: true,
+      // base = old targetMin; depth = old span (1 - 0.2 = 0.8) * node amount (0.5) = 0.4.
+      base: 0.2,
+      depth: 0.4,
+      sourceMin: 0,
+      sourceMax: 1,
+      curve: { type: GRAPH_PARAMETER_CURVE_LINEAR },
+    })
+  })
+
+  it('preserves the migrated envelope edge behavior: it reproduces the old evaluation', () => {
+    const edge = loadLegacy().graphState.edges.find((e) => e.id === 'p-env-cutoff')
+    const legacyMapping = LEGACY_GRAPH_STATE.edges.find((e) => e.id === 'p-env-cutoff').mapping
+    const legacyAmount = 0.5
+    for (const adsr of [0, 0.2, 0.5, 0.8, 1]) {
+      const before = evaluateParameterMapping(legacyMapping, adsr * legacyAmount).value
+      const after = evaluateParameterMapping(edge.mapping, adsr).value
+      expect(after).toBeCloseTo(before, 10)
+    }
+  })
+
+  it('leaves the MACRO edge on its original absolute range mapping', () => {
+    const edge = loadLegacy().graphState.edges.find((e) => e.id === 'p-macro-cutoff')
+    expect(edge.mapping).toEqual({
+      enabled: true,
+      sourceMin: 0,
+      sourceMax: 1,
+      targetMin: 0.1,
+      targetMax: 0.9,
+      curve: { type: GRAPH_PARAMETER_CURVE_LINEAR },
+    })
+    expect(edge.mapping).not.toHaveProperty('kind')
+  })
+
+  it('drops the retired amount from the envelope node while keeping its AHDSR', () => {
+    const node = loadLegacy().graphState.nodes.find((n) => n.id === 'env-1')
+    expect(node.data).not.toHaveProperty('amount')
+    expect(node.data.label).toBe('Filter Env')
+    expect(node.data.attackMs).toBe(5)
+    expect(node.data.decayMs).toBe(90)
+    expect(node.data.sustain).toBe(0.6)
+    expect(node.data.releaseMs).toBe(180)
+  })
+
+  it('logs each migration with the before/after values', () => {
+    const result = loadLegacy()
+    const logged = result.warnings.filter(
+      (w) => w.code === 'migratedEnvelopeParameterMappingToModulation',
+    )
+    expect(logged).toHaveLength(1)
+    expect(logged[0]).toMatchObject({
+      trackId: '7',
+      edgeId: 'p-env-cutoff',
+      sourceNodeId: 'env-1',
+      exact: true,
+    })
+    expect(logged[0].from).toMatchObject({ targetMin: 0.2, targetMax: 1, legacyAmount: 0.5 })
+    expect(logged[0].to).toEqual({ base: 0.2, depth: 0.4 })
+  })
+
+  // The critical round-trip property: load -> save -> load must not fold `amount` a second
+  // time. A migration that is not idempotent silently halves depth on every project open.
+  it('is idempotent across a save/load round trip (amount is never folded twice)', () => {
+    const first = loadLegacy().graphState
+    const roundTripped = JSON.parse(JSON.stringify(saveGraphState(first)))
+    const second = validateGraphState(roundTripped, '7')
+
+    expect(second.status).toBe('valid')
+    const firstEdge = first.edges.find((e) => e.id === 'p-env-cutoff')
+    const secondEdge = second.graphState.edges.find((e) => e.id === 'p-env-cutoff')
+    expect(secondEdge.mapping).toEqual(firstEdge.mapping)
+    expect(secondEdge.mapping.depth).toBe(0.4) // NOT 0.2
+    // Already-migrated edges are not re-logged.
+    expect(
+      second.warnings.filter((w) => w.code === 'migratedEnvelopeParameterMappingToModulation'),
+    ).toHaveLength(0)
+  })
+
+  it('collectEnvelopeParameterWrites on the migrated graph writes exactly base at env 0', () => {
+    const graphState = loadLegacy().graphState
+    const { writes } = collectEnvelopeParameterWrites(graphState, 'env-1', 0)
+    expect(writes).toHaveLength(1)
+    expect(writes[0]).toMatchObject({ effectInstanceId: 'effect-1', parameterId: 'cutoff', value: 0.2 })
+  })
+
+  it('updateParameterEdgeMapping cannot put a range mapping back on a migrated envelope edge', () => {
+    const graphState = loadLegacy().graphState
+    const updated = updateParameterEdgeMapping(graphState, 'p-env-cutoff', { targetMin: 0, targetMax: 1 })
+    expect(updated.ok).toBe(true)
+    const edge = updated.graphState.edges.find((e) => e.id === 'p-env-cutoff')
+    expect(edge.mapping.kind).toBe(GRAPH_PARAMETER_MAPPING_MODULATION)
+    expect(edge.mapping).not.toHaveProperty('targetMin')
+    expect(edge.mapping.base).toBe(0.2) // unchanged by the ignored patch keys
+  })
+
+  it('updateParameterEdgeMapping edits base and depth on an envelope edge', () => {
+    const graphState = loadLegacy().graphState
+    const updated = updateParameterEdgeMapping(graphState, 'p-env-cutoff', { base: 0.7, depth: -0.5 })
+    expect(updated.ok).toBe(true)
+    const edge = updated.graphState.edges.find((e) => e.id === 'p-env-cutoff')
+    expect(edge.mapping.base).toBe(0.7)
+    expect(edge.mapping.depth).toBe(-0.5)
+    expect(edge.mapping.kind).toBe(GRAPH_PARAMETER_MAPPING_MODULATION)
+  })
+
+  it('an envelope edge stored WITHOUT any mapping still migrates to the modulation shape', () => {
+    const raw = cloneLegacy()
+    delete raw.edges.find((e) => e.id === 'p-env-cutoff').mapping
+    const edge = validateGraphState(raw, '7').graphState.edges.find((e) => e.id === 'p-env-cutoff')
+    // A missing mapping repaired to the old full-range default (0..1), folded with amount 0.5.
+    expect(edge.mapping.kind).toBe(GRAPH_PARAMETER_MAPPING_MODULATION)
+    expect(edge.mapping.base).toBe(0)
+    expect(edge.mapping.depth).toBe(0.5)
   })
 })
 

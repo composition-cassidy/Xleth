@@ -10,6 +10,7 @@ import {
   evaluateParameterMapping,
   createDefaultBezierCurve,
   GRAPH_PARAMETER_CURVE_BEZIER,
+  readParameterMappingKind,
 } from '../../../fxgraph/graphState.js';
 import {
   clampGraphZoom,
@@ -25,16 +26,24 @@ import {
 
 // FXG.4-g — Bezier mapping editor types.
 type BezierPoint = { x: number; y: number };
+// EVC-R4 — a parameter edge's mapping is one of two closed shapes, discriminated by `kind`
+// (see GRAPH_PARAMETER_MAPPING_MODULATION in graphState.js). The editor renders a different
+// output section for each: an absolute Min/Max output range for a Macro edge, and a
+// Base + signed Depth pair for an Envelope edge.
 interface ParsedMapping {
+  kind: 'range' | 'modulation';
   enabled: boolean;
   sourceMin: number;
   sourceMax: number;
   targetMin: number;
   targetMax: number;
+  base: number;
+  depth: number;
   curve: { type: 'linear' } | { type: 'bezier'; points: BezierPoint[] };
 }
 
 function clampUnit(v: number) { return Math.min(1, Math.max(0, v)); }
+function clampSignedUnit(v: number) { return Math.min(1, Math.max(-1, v)); }
 
 function parseMappingFromEdge(raw: unknown): ParsedMapping {
   const m = raw !== null && typeof raw === 'object' && !Array.isArray(raw)
@@ -46,6 +55,8 @@ function parseMappingFromEdge(raw: unknown): ParsedMapping {
 
   const num = (v: unknown, fallback: number) =>
     typeof v === 'number' && Number.isFinite(v) ? clampUnit(v) : fallback;
+  const signedNum = (v: unknown, fallback: number) =>
+    typeof v === 'number' && Number.isFinite(v) ? clampSignedUnit(v) : fallback;
 
   let curve: ParsedMapping['curve'];
   if (rawCurve.type === GRAPH_PARAMETER_CURVE_BEZIER && Array.isArray(rawCurve.points) && rawCurve.points.length === 4) {
@@ -55,11 +66,14 @@ function parseMappingFromEdge(raw: unknown): ParsedMapping {
   }
 
   return {
+    kind: readParameterMappingKind(m) as ParsedMapping['kind'],
     enabled: m.enabled !== false,
     sourceMin: num(m.sourceMin, 0),
     sourceMax: num(m.sourceMax, 1),
     targetMin: num(m.targetMin, 0),
     targetMax: num(m.targetMax, 1),
+    base: num(m.base, 0),
+    depth: signedNum(m.depth, 1),
     curve,
   };
 }
@@ -1409,6 +1423,7 @@ export function ParameterEdgeMappingEditor({
   onClose: () => void;
 }) {
   const mapping = parseMappingFromEdge(edge.mapping);
+  const isModulation = mapping.kind === 'modulation';
   const isBezier = mapping.curve.type === 'bezier';
   const bezierPoints = isBezier
     ? (mapping.curve as { type: 'bezier'; points: BezierPoint[] }).points
@@ -1510,39 +1525,83 @@ export function ParameterEdgeMappingEditor({
         Enabled
       </label>
 
-      <div className="xleth-graph-state-preview__mapping-editor-section">
-        <div className="xleth-graph-state-preview__mapping-editor-section-title">Output Range</div>
-        <div className="xleth-graph-state-preview__mapping-editor-range-row">
-          <span className="xleth-graph-state-preview__mapping-editor-range-label">Min</span>
-          <input
-            className="xleth-graph-state-preview__mapping-editor-range-slider"
-            type="range" min="0" max="1" step="0.01" defaultValue={mapping.targetMin}
-            aria-label="Target min"
-            onPointerUp={(e) => onUpdate(edgeId, { targetMin: parseFloat((e.target as HTMLInputElement).value) })}
-          />
-          <input
-            className="xleth-graph-state-preview__mapping-editor-range-num"
-            type="number" min="0" max="1" step="0.01" defaultValue={mapping.targetMin}
-            aria-label="Target min value"
-            onBlur={(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) onUpdate(edgeId, { targetMin: clampUnit(v) }); }}
-          />
+      {/* EVC-R4 — the output section depends on the mapping kind. A modulation edge
+          (Envelope) edits Base + signed Depth; a range edge (Macro) keeps the absolute
+          Min/Max output range. There is deliberately no second, unlabelled scale on the
+          Envelope node any more: Depth is the only one. */}
+      {isModulation ? (
+        <div className="xleth-graph-state-preview__mapping-editor-section">
+          <div className="xleth-graph-state-preview__mapping-editor-section-title">Modulation</div>
+          <div className="xleth-graph-state-preview__mapping-editor-hint">
+            Value = Base + Depth × envelope. Base is the parameter&apos;s own setting; the
+            envelope only offsets it.
+          </div>
+          <div className="xleth-graph-state-preview__mapping-editor-range-row xleth-graph-state-preview__mapping-editor-range-row--modulation">
+            <span className="xleth-graph-state-preview__mapping-editor-range-label">Base</span>
+            <input
+              className="xleth-graph-state-preview__mapping-editor-range-slider"
+              type="range" min="0" max="1" step="0.01" defaultValue={mapping.base}
+              aria-label="Modulation base"
+              onPointerUp={(e) => onUpdate(edgeId, { base: parseFloat((e.target as HTMLInputElement).value) })}
+            />
+            <input
+              className="xleth-graph-state-preview__mapping-editor-range-num"
+              type="number" min="0" max="1" step="0.01" defaultValue={mapping.base}
+              aria-label="Modulation base value"
+              onBlur={(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) onUpdate(edgeId, { base: clampUnit(v) }); }}
+            />
+          </div>
+          <div className="xleth-graph-state-preview__mapping-editor-range-row xleth-graph-state-preview__mapping-editor-range-row--modulation">
+            <span className="xleth-graph-state-preview__mapping-editor-range-label">Depth</span>
+            <input
+              className="xleth-graph-state-preview__mapping-editor-range-slider"
+              type="range" min="-1" max="1" step="0.01" defaultValue={mapping.depth}
+              aria-label="Modulation depth"
+              onPointerUp={(e) => onUpdate(edgeId, { depth: parseFloat((e.target as HTMLInputElement).value) })}
+            />
+            <input
+              className="xleth-graph-state-preview__mapping-editor-range-num"
+              type="number" min="-1" max="1" step="0.01" defaultValue={mapping.depth}
+              aria-label="Modulation depth value"
+              onBlur={(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) onUpdate(edgeId, { depth: clampSignedUnit(v) }); }}
+            />
+          </div>
         </div>
-        <div className="xleth-graph-state-preview__mapping-editor-range-row">
-          <span className="xleth-graph-state-preview__mapping-editor-range-label">Max</span>
-          <input
-            className="xleth-graph-state-preview__mapping-editor-range-slider"
-            type="range" min="0" max="1" step="0.01" defaultValue={mapping.targetMax}
-            aria-label="Target max"
-            onPointerUp={(e) => onUpdate(edgeId, { targetMax: parseFloat((e.target as HTMLInputElement).value) })}
-          />
-          <input
-            className="xleth-graph-state-preview__mapping-editor-range-num"
-            type="number" min="0" max="1" step="0.01" defaultValue={mapping.targetMax}
-            aria-label="Target max value"
-            onBlur={(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) onUpdate(edgeId, { targetMax: clampUnit(v) }); }}
-          />
+      ) : (
+        <div className="xleth-graph-state-preview__mapping-editor-section">
+          <div className="xleth-graph-state-preview__mapping-editor-section-title">Output Range</div>
+          <div className="xleth-graph-state-preview__mapping-editor-range-row">
+            <span className="xleth-graph-state-preview__mapping-editor-range-label">Min</span>
+            <input
+              className="xleth-graph-state-preview__mapping-editor-range-slider"
+              type="range" min="0" max="1" step="0.01" defaultValue={mapping.targetMin}
+              aria-label="Target min"
+              onPointerUp={(e) => onUpdate(edgeId, { targetMin: parseFloat((e.target as HTMLInputElement).value) })}
+            />
+            <input
+              className="xleth-graph-state-preview__mapping-editor-range-num"
+              type="number" min="0" max="1" step="0.01" defaultValue={mapping.targetMin}
+              aria-label="Target min value"
+              onBlur={(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) onUpdate(edgeId, { targetMin: clampUnit(v) }); }}
+            />
+          </div>
+          <div className="xleth-graph-state-preview__mapping-editor-range-row">
+            <span className="xleth-graph-state-preview__mapping-editor-range-label">Max</span>
+            <input
+              className="xleth-graph-state-preview__mapping-editor-range-slider"
+              type="range" min="0" max="1" step="0.01" defaultValue={mapping.targetMax}
+              aria-label="Target max"
+              onPointerUp={(e) => onUpdate(edgeId, { targetMax: parseFloat((e.target as HTMLInputElement).value) })}
+            />
+            <input
+              className="xleth-graph-state-preview__mapping-editor-range-num"
+              type="number" min="0" max="1" step="0.01" defaultValue={mapping.targetMax}
+              aria-label="Target max value"
+              onBlur={(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) onUpdate(edgeId, { targetMax: clampUnit(v) }); }}
+            />
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="xleth-graph-state-preview__mapping-editor-section">
         <div className="xleth-graph-state-preview__mapping-editor-section-title">Curve</div>
@@ -1608,7 +1667,12 @@ export function ParameterEdgeMappingEditor({
         </svg>
       </div>
 
-      <div className="xleth-graph-state-preview__mapping-editor-preview" aria-label="Mapping preview">
+      {/* Resulting parameter value at three source positions. For a modulation edge the 0%
+          row IS the base value, which is the clearest possible statement of "idle = base". */}
+      <div
+        className="xleth-graph-state-preview__mapping-editor-preview"
+        aria-label={isModulation ? 'Modulation preview' : 'Mapping preview'}
+      >
         <span className="xleth-graph-state-preview__mapping-editor-preview-item">
           <span className="xleth-graph-state-preview__mapping-editor-preview-label">0%:</span>
           {fmtPct(preview0.value)}

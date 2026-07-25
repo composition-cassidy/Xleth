@@ -4,7 +4,8 @@
 // Correct model (see docs/dev/fxgraph-envelope-controller-architecture-audit.md):
 //   parent-track note/clip triggers
 //     -> a single normalized 0..1 ADSR control value per Envelope node
-//     -> existing Envelope-to-Parameter edges apply per-link mapping (FXG.4-e/f/g)
+//     -> each Envelope-to-Parameter edge applies its per-link MODULATION mapping,
+//        value = clamp(base + depth * env) (EVC-R4; curve/source-window from FXG.4-e/f/g)
 //     -> setGraphEffectParameterNormalized writes the stock/VST parameter (FXG.4-a)
 //
 // This module is PURE. It never reads transport state, the store, effectChains, audio
@@ -65,7 +66,12 @@ export function computeMsPerTick(bpm, ppq = PPQ) {
 // Normalizes an Envelope node's persisted data into the runtime settings used by ADSR
 // evaluation. AHDSR stage durations are converted from milliseconds to ticks using the
 // context's msPerTick (or bpm). Negative/non-finite values are repaired via the
-// graphState envelope normalization defaults; amount/sustain stay in 0..1.
+// graphState envelope normalization defaults; sustain stays in 0..1.
+//
+// EVC-R4 — there is no `amount` here any more. The node emits the RAW 0..1 AHDSR shape and
+// the per-edge signed `depth` is the only scale (see GRAPH_PARAMETER_MAPPING_MODULATION in
+// graphState.js). The old node-level amount duplicated that scale, multiplied into it a
+// second time, and gave no indication of which control to reach for.
 //
 // context: { msPerTick?, bpm?, ppq? }
 export function normalizeEnvelopeRuntimeSettings(envelopeNodeData, context = {}) {
@@ -86,7 +92,6 @@ export function normalizeEnvelopeRuntimeSettings(envelopeNodeData, context = {})
     decayTicks: msToTicks(data.decayMs),
     releaseTicks: msToTicks(data.releaseMs),
     sustain: clamp01(data.sustain, 0),
-    amount: clamp01(data.amount, 0),
     // EVC-R2-r3 — no retrigger mode (always restart) and no trigger-source selector
     // (notes vs clips is inferred from the parent track's content at evaluation time).
     // The only trigger-related setting is the slide-note opt-in.
@@ -281,15 +286,16 @@ export function resolveActiveGate(intervals, queryTick) {
 }
 
 // High-level pure output used by the store's runtime drive. Given runtime settings, the
-// parent-track trigger-event list, and a query tick, returns the single amount-scaled
-// 0..1 output plus the resolved gate + phase. One value per Envelope node.
+// parent-track trigger-event list, and a query tick, returns the single RAW 0..1 AHDSR
+// output (EVC-R4: unscaled — per-edge `depth` is the only scale) plus the resolved gate +
+// phase. One value per Envelope node. No gate ⇒ 0, which each modulation edge maps to
+// exactly its `base`.
 export function evaluateEnvelopeOutput(settings, triggerEvents, queryTick) {
   const intervals = collectGateIntervals(triggerEvents, { includeSlideNotes: settings.includeSlideNotes })
   const gate = resolveActiveGate(intervals, queryTick)
   const gateStartTick = gate ? gate.gateStartTick : null
   const gateEndTick = gate ? gate.gateEndTick : null
-  const raw = evaluateEnvelopeAdsrAtTime(settings, gateStartTick, gateEndTick, queryTick)
-  const value = clamp01(raw * settings.amount)
+  const value = clamp01(evaluateEnvelopeAdsrAtTime(settings, gateStartTick, gateEndTick, queryTick))
   const phase = gate ? resolvePhase(settings, gateStartTick, gateEndTick, queryTick) : ENVELOPE_PHASE.OFF
   return { value, phase, gateStartTick, gateEndTick }
 }
@@ -327,15 +333,15 @@ export function updateEnvelopeRuntimeState(runtimeState, triggerEvents, queryTic
   }
 }
 
-// Reads the amount-scaled 0..1 output implied by a runtime state's resolved gate at
-// queryTick. Pairs with updateEnvelopeRuntimeState for callers that hold state.
+// Reads the raw 0..1 output implied by a runtime state's resolved gate at queryTick
+// (EVC-R4: unscaled, like evaluateEnvelopeOutput). Pairs with updateEnvelopeRuntimeState
+// for callers that hold state.
 export function evaluateEnvelopeLevel(settings, runtimeState, queryTick) {
   if (!runtimeState) return 0
-  const raw = evaluateEnvelopeAdsrAtTime(
+  return clamp01(evaluateEnvelopeAdsrAtTime(
     settings,
     runtimeState.gateStartTick ?? null,
     runtimeState.gateEndTick ?? null,
     queryTick,
-  )
-  return clamp01(raw * settings.amount)
+  ))
 }

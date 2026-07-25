@@ -2601,11 +2601,24 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   color: var(--theme-text-muted);
 }
 
+/* EVC-R4 — one-line explanation of the base + depth modulation model, shown only on an
+   Envelope -> Parameter edge (a Macro edge's absolute Min/Max range needs no gloss). */
+.xleth-graph-state-preview__mapping-editor-hint {
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--theme-text-muted);
+}
+
 .xleth-graph-state-preview__mapping-editor-range-row {
   display: grid;
   grid-template-columns: 28px 1fr 48px;
   align-items: center;
   gap: 5px;
+}
+
+/* "Base"/"Depth" need more room than "Min"/"Max" in the label column. */
+.xleth-graph-state-preview__mapping-editor-range-row--modulation {
+  grid-template-columns: 38px 1fr 48px;
 }
 
 .xleth-graph-state-preview__mapping-editor-range-label {

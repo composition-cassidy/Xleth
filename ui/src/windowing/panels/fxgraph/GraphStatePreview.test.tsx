@@ -1711,7 +1711,12 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
     expect(html).toContain('Sustain handle');
     expect(html).toContain('Release handle');
     expect(html).toContain('aria-label="Attack ms slider"');
-    expect(html).toContain('aria-label="Amount slider"');
+    expect(html).toContain('aria-label="Sustain level slider"');
+    // EVC-R4 — the node-level Amount master scale was removed: modulation depth is now a
+    // per-connection control on the Envelope -> Parameter edge, so there is no second
+    // "how much" slider on the node.
+    expect(html).not.toContain('aria-label="Amount slider"');
+    expect(html).not.toContain('>Amount<');
   });
 
   it('read-only/no-callback mode does not expose editing controls even if expanded is requested', () => {
@@ -1756,14 +1761,13 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
     expect(onChange).toHaveBeenCalledWith({ attackMs: 25 });
   });
 
-  it('slider controls commit attack, hold, decay, sustain, release, and amount on release, not per tick', () => {
+  it('slider controls commit attack, hold, decay, sustain, and release on release, not per tick', () => {
     const cases = [
       ['Attack', 'attackMs', 10, 250, 'Attack ms slider'],
       ['Hold', 'holdMs', 0, 125, 'Hold ms slider'],
       ['Decay', 'decayMs', 120, 300, 'Decay ms slider'],
       ['Sustain', 'sustain', 0.7, 0.4, 'Sustain level slider'],
       ['Release', 'releaseMs', 200, 450, 'Release ms slider'],
-      ['Amount', 'amount', 1, 0.65, 'Amount slider'],
     ] as const;
     for (const [label, fieldKey, value, next, ariaLabel] of cases) {
       const onChange = vi.fn();
@@ -1832,12 +1836,13 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
     expect(onChange).toHaveBeenCalledWith({ decayMs: 15.5 });
   });
 
-  it('clamps Sustain and Amount through the shared normalization path', () => {
+  it('clamps Sustain through the shared normalization path', () => {
     // The editor commits raw values; clamping happens in normalizeEnvelopeNodeData,
     // the same helper the store update action uses.
     expect(normalizeEnvelopeNodeData({ sustain: 1.8 }).sustain).toBe(1);
     expect(normalizeEnvelopeNodeData({ sustain: -0.4 }).sustain).toBe(0);
-    expect(normalizeEnvelopeNodeData({ amount: 5 }).amount).toBe(1);
+    // EVC-R4 — `amount` is retired and dropped by the closed schema rather than clamped.
+    expect(normalizeEnvelopeNodeData({ amount: 5 })).not.toHaveProperty('amount');
   });
 
   it('EVC-R2-r3 — the Trigger Source and Retrigger Mode selectors no longer render', () => {
@@ -2014,6 +2019,95 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
 // ---------------------------------------------------------------------------
 // FXG-VP.1 — Viewport Zoom and Pan
 // ---------------------------------------------------------------------------
+
+// EVC-R4 — the mapping editor is kind-aware: an Envelope edge's modulation mapping gets a
+// Base + signed Depth pair, a Macro edge's range mapping keeps the absolute Min/Max output
+// range, and the two never appear together (that was the "two unlabelled controls doing the
+// same thing" problem).
+describe('EVC-R4 ParameterEdgeMappingEditor — modulation vs range', () => {
+  const makeModulationEdge = (mapping?: Record<string, unknown>) =>
+    makeParameterEdge({
+      kind: 'modulation',
+      enabled: true,
+      base: 0.4,
+      depth: 0.5,
+      sourceMin: 0,
+      sourceMax: 1,
+      curve: { type: 'linear' },
+      ...mapping,
+    });
+
+  const render = (edge: GraphStateEdge, onUpdate = vi.fn()) =>
+    renderToStaticMarkup(
+      <ParameterEdgeMappingEditor
+        edgeId="p-edge"
+        edge={edge}
+        sourceLabel="Filter Env"
+        targetLabel="Filter / Cutoff"
+        x={0}
+        y={0}
+        onUpdate={onUpdate}
+        onClose={vi.fn()}
+      />,
+    );
+
+  it('renders Base and Depth controls for a modulation edge, and no target range', () => {
+    const html = render(makeModulationEdge());
+    expect(html).toContain('aria-label="Modulation base"');
+    expect(html).toContain('aria-label="Modulation depth"');
+    expect(html).toContain('>Base<');
+    expect(html).toContain('>Depth<');
+    expect(html).not.toContain('aria-label="Target min"');
+    expect(html).not.toContain('aria-label="Target max"');
+    expect(html).not.toContain('Output Range');
+  });
+
+  it('renders the target range for a range (Macro) edge, and no base/depth', () => {
+    const html = render(makeParameterEdge());
+    expect(html).toContain('aria-label="Target min"');
+    expect(html).toContain('aria-label="Target max"');
+    expect(html).toContain('Output Range');
+    expect(html).not.toContain('aria-label="Modulation base"');
+    expect(html).not.toContain('aria-label="Modulation depth"');
+  });
+
+  it('gives the Depth slider a BIPOLAR -1..1 range so inversion is reachable', () => {
+    const html = render(makeModulationEdge({ depth: -0.5 }));
+    expect(html).toMatch(/aria-label="Modulation depth"[^>]*/);
+    // The depth slider/number inputs are the only ones with min="-1".
+    expect(html).toContain('min="-1"');
+    // Base stays unipolar.
+    expect(html).toMatch(/type="range" min="0" max="1"[^>]*aria-label="Modulation base"/);
+  });
+
+  it('explains the model in the editor instead of leaving two bare scales', () => {
+    expect(render(makeModulationEdge())).toContain('mapping-editor-hint');
+    expect(render(makeParameterEdge())).not.toContain('mapping-editor-hint');
+  });
+
+  it("the preview's 0% row is the base value — idle means base, visibly", () => {
+    // base 0.4, depth 0.5 -> 40% / 65% / 90%.
+    const html = render(makeModulationEdge());
+    expect(html).toContain('40%');
+    expect(html).toContain('65%');
+    expect(html).toContain('90%');
+  });
+
+  it('shows a negative depth sweeping downward from base', () => {
+    // base 0.8, depth -0.6 -> 80% / 50% / 20%.
+    const html = render(makeModulationEdge({ base: 0.8, depth: -0.6 }));
+    expect(html).toContain('80%');
+    expect(html).toContain('50%');
+    expect(html).toContain('20%');
+  });
+
+  // The editor's commit contract (patch shape, clamping, kind preservation) is proven at the
+  // graphState layer by the EVC-R4 updateParameterEdgeMapping tests: this component renders
+  // uncontrolled inputs and forwards { base } / { depth } patches to that helper. Interaction
+  // is not simulated here because this suite runs in a node environment with
+  // renderToStaticMarkup (no DOM, and the editor holds hooks), matching the FXG.4-g tests
+  // above.
+});
 
 describe('FXG-VP.1 viewport zoom and pan', () => {
   // ── Zoom controls rendering ────────────────────────────────────────────────

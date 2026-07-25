@@ -5,8 +5,15 @@
 //
 //   A. Transport lifecycle (the shared 200 ms transport poller). Used ONLY to detect
 //      play/stop transitions, reset the session runtime cache on a transition, and run a
-//      single stop flush that drives connected parameters to 0. It does NOT do per-tick
-//      parameter drive — at 200 ms granularity a short ADSR would stair-step.
+//      single stop pass that releases connected parameters back to their authored base
+//      values. It does NOT do per-tick parameter drive — at 200 ms granularity a short ADSR
+//      would stair-step.
+//
+//      EVC-R4 — that stop pass used to write 0 into every target, permanently destroying the
+//      user's authored parameter value with no restore and no undo. It is now a normal drive
+//      pass at env == 0, which each edge's modulation mapping maps to exactly its `base`
+//      (see GRAPH_PARAMETER_MAPPING_MODULATION in graphState.js). Modulation ceases; the
+//      authored value stands. There is no destructive value left for it to write.
 //
 //   B. High-rate drive (PlayheadClock.onFrame, ~60 fps interpolated playback position).
 //      While playing, this converts the interpolated positionMs to a tick and drives the
@@ -211,17 +218,19 @@ export function startEnvelopePlayback(deps = {}) {
   let inFlight = false           // a drive pass is awaiting its IPC writes
   let latest = null              // newest { tick, msPerTick, bpm } not yet driven
   let lastDriveTime = -Infinity  // last accepted frame time (throttle anchor)
-  let stopFlush = null           // a transport snapshot whose stop flush is deferred behind an in-flight pass
+  let stopRelease = null         // a transport snapshot whose stop release is deferred behind an in-flight pass
 
-  const driveStopFlush = (transport) => {
+  // EVC-R4 — stop RELEASE (formerly the destructive "stop flush"). One no-gate pass at
+  // env == 0, which every modulation edge maps to exactly its authored `base`: modulation
+  // stops, the user's parameter setting survives. Invoked synchronously so the call is
+  // observable immediately; its promise is guarded against unhandled rejection.
+  const driveStopRelease = (transport) => {
     const store = getStore()
     if (!store) return
     store.resetEnvelopeModulationRuntime?.()
     invalidateTriggerCache()
     const tick = positionMsToTick(transport.positionMs, transport.bpm)
     const msPerTick = computeMsPerTick(transport.bpm)
-    // One no-gate flush pass drives every connected parameter to 0. Invoked synchronously so
-    // the call is observable immediately; its promise is guarded against unhandled rejection.
     const p = store.applyEnvelopeModulationAtTick?.(
       tick, { ...options, trackEvents: {}, msPerTick, bpm: transport.bpm })
     if (p && typeof p.catch === 'function') p.catch(() => {})
@@ -257,12 +266,12 @@ export function startEnvelopePlayback(deps = {}) {
       .catch((e) => { warn?.('[FXG] envelope drive pass failed', e?.message ?? e) })
       .finally(() => {
         inFlight = false
-        if (stopFlush) {
-          // A stop arrived mid-flight. The in-flight (non-zero) write has now completed, so the
-          // flush to 0 lands last — it is the final write on stop, as required.
-          const t = stopFlush
-          stopFlush = null
-          driveStopFlush(t)
+        if (stopRelease) {
+          // A stop arrived mid-flight. The in-flight (modulated) write has now completed, so
+          // the release to base lands last — it is the final write on stop, as required.
+          const t = stopRelease
+          stopRelease = null
+          driveStopRelease(t)
           return
         }
         // Latest-wins: if a newer frame arrived while we were in flight and we are still
@@ -304,14 +313,14 @@ export function startEnvelopePlayback(deps = {}) {
       return
     }
 
-    // Stop transition. Drop any pending frame so no stale non-zero value is driven, then flush
-    // to 0 exactly once. If a drive is still in flight, defer the flush until it resolves so the
-    // 0 write is guaranteed to land last.
+    // Stop transition. Drop any pending frame so no stale modulated value is driven, then
+    // release to base exactly once. If a drive is still in flight, defer the release until it
+    // resolves so the base write is guaranteed to land last.
     latest = null
     if (inFlight) {
-      stopFlush = transport
+      stopRelease = transport
     } else {
-      driveStopFlush(transport)
+      driveStopRelease(transport)
     }
   }
 

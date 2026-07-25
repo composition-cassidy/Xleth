@@ -1752,20 +1752,61 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(mixCalls).toHaveLength(1)
   })
 
-  it('resets the runtime cache so a stop flush can drive parameters to 0', async () => {
+  it('resets the runtime cache so a stop release pass re-drives every envelope', async () => {
     const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
     seedGraphMode(useEffectChainStore, makeLinkedEnvelopeGraphState('7'))
 
-    // Held note drives the parameter to 1.
+    // Held note drives the parameter to base 0 + depth 1 = 1.
     await useEffectChainStore.getState().applyEnvelopeModulationAtTick(500, { trackEvents: heldNote('7'), msPerTick: 1 })
     expect(audio.setGraphEffectParameterNormalized).toHaveBeenLastCalledWith(7, 'effect-1', 'mix', 1)
 
-    // Reset + a no-gate flush pass (what the playback controller does on stop) -> writes 0.
-    // EVC-R2-r1: the runtime cache is now a non-reactive module-level holder, so reset behavior
-    // is asserted through the resulting engine write (0) rather than store state.
+    // Reset + a no-gate release pass (what the playback controller does on stop). EVC-R2-r1:
+    // the runtime cache is a non-reactive module-level holder, so reset behavior is asserted
+    // through the resulting engine write rather than store state. With base 0 that write is 0
+    // — see the regression test below for the case that actually mattered.
     useEffectChainStore.getState().resetEnvelopeModulationRuntime()
     await useEffectChainStore.getState().applyEnvelopeModulationAtTick(500, { trackEvents: {}, msPerTick: 1 })
     expect(audio.setGraphEffectParameterNormalized).toHaveBeenLastCalledWith(7, 'effect-1', 'mix', 0)
+  })
+
+  // ── EVC-R4 regression: stop no longer destroys the authored parameter value ──
+  //
+  // Before EVC-R4 the stop pass wrote 0 into every envelope target, permanently discarding
+  // whatever the user had set the parameter to, with no restore and no undo. The parameter's
+  // authored value now lives on the edge as `base`, so a no-gate pass writes base back.
+  it('EVC-R4 — a stop release pass restores the authored base value instead of writing 0', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    // The user had set Mix to 0.65; the envelope adds up to +0.3 on top of it.
+    seedGraphMode(useEffectChainStore, makeLinkedEnvelopeGraphState('7', { base: 0.65, depth: 0.3 }))
+
+    // Mid-note the parameter is modulated above its authored value.
+    await useEffectChainStore.getState().applyEnvelopeModulationAtTick(500, { trackEvents: heldNote('7'), msPerTick: 1 })
+    const modulated = audio.setGraphEffectParameterNormalized.mock.calls.at(-1)
+    expect(modulated[3]).toBeCloseTo(0.95)
+
+    // Stop: no gates. The final write is EXACTLY the authored value, not 0.
+    useEffectChainStore.getState().resetEnvelopeModulationRuntime()
+    await useEffectChainStore.getState().applyEnvelopeModulationAtTick(500, { trackEvents: {}, msPerTick: 1 })
+    const released = audio.setGraphEffectParameterNormalized.mock.calls.at(-1)
+    expect(released[3]).toBe(0.65)
+    expect(released[3]).not.toBe(0)
+
+    // And repeating the release pass is idempotent — it can never walk the value down.
+    useEffectChainStore.getState().resetEnvelopeModulationRuntime()
+    await useEffectChainStore.getState().applyEnvelopeModulationAtTick(900, { trackEvents: {}, msPerTick: 1 })
+    expect(audio.setGraphEffectParameterNormalized.mock.calls.at(-1)[3]).toBe(0.65)
+  })
+
+  it('EVC-R4 — a negative depth modulates DOWN from base and still releases to base', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, makeLinkedEnvelopeGraphState('7', { base: 0.8, depth: -0.5 }))
+
+    await useEffectChainStore.getState().applyEnvelopeModulationAtTick(500, { trackEvents: heldNote('7'), msPerTick: 1 })
+    expect(audio.setGraphEffectParameterNormalized.mock.calls.at(-1)[3]).toBeCloseTo(0.3)
+
+    useEffectChainStore.getState().resetEnvelopeModulationRuntime()
+    await useEffectChainStore.getState().applyEnvelopeModulationAtTick(500, { trackEvents: {}, msPerTick: 1 })
+    expect(audio.setGraphEffectParameterNormalized.mock.calls.at(-1)[3]).toBe(0.8)
   })
 
   it('removing a parameter edge is one undo step and does not sync audio topology', async () => {
@@ -2887,7 +2928,19 @@ describe('effectChainStore FX mode safety gate', () => {
         type: 'parameter',
       })
       expect(edge.targetParameter.kind).toBe('graph-parameter')
-      expect(edge.mapping).toMatchObject({ enabled: true, sourceMin: 0, sourceMax: 1, targetMin: 0, targetMax: 1 })
+      // EVC-R4 — the edge carries a base + signed-depth MODULATION mapping, and `base` is
+      // captured from the parameter's LIVE authored value (0.5 in the engine mock) so linking
+      // the envelope leaves the parameter exactly where the user set it.
+      expect(edge.mapping).toEqual({
+        kind: 'modulation',
+        enabled: true,
+        base: 0.5,
+        depth: 1,
+        sourceMin: 0,
+        sourceMax: 1,
+        curve: { type: 'linear' },
+      })
+      expect(audio.getGraphEffectParameterValue).toHaveBeenCalledWith(7, 'effect-1', 'mix')
       expect(JSON.stringify(next.edges)).not.toContain('engineNodeId')
       // Persisted, undoable, no audio sync, chains untouched.
       expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next)

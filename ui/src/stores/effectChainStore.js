@@ -1043,6 +1043,49 @@ async function driveAllMacroParameterEdges(get, key, graphState, options = {}) {
   return drives
 }
 
+// EVC-R4 — reads the LIVE authored value of the parameter an envelope is about to be linked
+// to, for use as the modulation mapping's `base`. Returns a 0..1 number, or null when the
+// value cannot be read (engine unavailable, plugin missing, parameter not found) so the
+// caller can fall back to the schema default instead of failing the link.
+//
+// The base is SNAPSHOTTED, never re-read during drive: the drive writes into the very
+// parameter slot it would read from, so a live read would feed its own output back in.
+async function captureEnvelopeModulationBase(get, key, graphState, connectionDraft, options = {}) {
+  const parameterId = typeof connectionDraft?.parameterId === 'string'
+    ? connectionDraft.parameterId.trim()
+    : ''
+  if (!parameterId) return null
+
+  const targetNode = Array.isArray(graphState?.nodes)
+    ? graphState.nodes.find((node) => node?.id === connectionDraft?.targetNodeId)
+    : null
+  const effectInstanceId = typeof targetNode?.data?.effectInstanceId === 'string'
+    ? targetNode.data.effectInstanceId
+    : ''
+  if (!effectInstanceId) return null
+
+  try {
+    const result = await get().getGraphEffectParameterValue(
+      Number(key),
+      effectInstanceId,
+      parameterId,
+      options,
+    )
+    if (result?.ok !== true) return null
+    const raw = result.normalizedValue
+    if (!Number.isFinite(raw)) return null
+    return Math.min(1, Math.max(0, raw))
+  } catch (e) {
+    ;(options.warn ?? console.warn)?.('[FXG] envelope modulation base capture failed', {
+      trackId: key,
+      effectInstanceId,
+      parameterId,
+      error: e?.message ?? e,
+    })
+    return null
+  }
+}
+
 // EVC-R2 — Envelope runtime drive. Mirrors driveMacroParameterEdges: given an Envelope
 // node id and its evaluated normalized 0..1 output, push each enabled outgoing parameter
 // edge's mapped value through the FXG.4-a setGraphEffectParameterNormalized store action.
@@ -2242,20 +2285,35 @@ const useEffectChainStore = create((set, get) => ({
     return { ...applied, edge: mutation.edge, drive }
   },
 
-  // EVC-R1 — link an Envelope controlOut to an exposed parameter input port. The
-  // parameter edge persists the GraphParameterTarget + a default linear mapping,
-  // exactly like a Macro -> Parameter link. It is NOT an audio edge, so it never
-  // syncs audio topology and never touches effectChains. Unlike the Macro action it
-  // does NOT drive the parameter after linking: the Envelope has no static output —
-  // its value is produced by triggered ADSR runtime which is deferred to EVC-R2.
-  // So this action is runtime-inert (no setGraphEffectParameterNormalized call).
+  // EVC-R1 / EVC-R4 — link an Envelope controlOut to an exposed parameter input port. The
+  // parameter edge persists the GraphParameterTarget + a per-link MODULATION mapping
+  // (kind: 'modulation', value = clamp(base + depth * env)) rather than the absolute range
+  // mapping a Macro -> Parameter link uses. It is NOT an audio edge, so it never syncs audio
+  // topology and never touches effectChains. Like the EVC-R1 version it is runtime-inert (no
+  // setGraphEffectParameterNormalized call): the Envelope has no static output, and at
+  // env == 0 the new mapping evaluates to exactly `base`, so there is nothing to write.
+  //
+  // EVC-R4 — `base` is captured here from the parameter's LIVE authored value, because this
+  // is the only layer that can read it. That is what makes connecting an envelope inert:
+  // with base = the current setting, the parameter does not move until the envelope fires,
+  // and it returns to that same setting whenever the envelope is idle. A failed/unavailable
+  // read falls back to the schema default (0) rather than blocking the link.
   connectEnvelopeToParameterForTrack: async (trackId, connectionDraft, options = {}) => {
     const access = readGraphStateForMutation(get(), trackId)
     if (!access.ok) return access
 
-    const mutation = connectEnvelopeToParameter(access.graphState, connectionDraft, {
-      idFactory: options.idFactory,
-    })
+    const draft = connectionDraft != null && typeof connectionDraft === 'object' ? connectionDraft : {}
+    const draftMapping = draft.mapping != null && typeof draft.mapping === 'object' ? draft.mapping : {}
+    let capturedBase = null
+    if (!Number.isFinite(draftMapping.base)) {
+      capturedBase = await captureEnvelopeModulationBase(get, access.key, access.graphState, draft, options)
+    }
+
+    const mutation = connectEnvelopeToParameter(
+      access.graphState,
+      capturedBase == null ? draft : { ...draft, mapping: { ...draftMapping, base: capturedBase } },
+      { idFactory: options.idFactory },
+    )
     if (!mutation.ok) return mutation
 
     const applied = await applyGraphStateMutation(
@@ -2597,7 +2655,13 @@ const useEffectChainStore = create((set, get) => ({
   // owns Envelope nodes, evaluate each Envelope's triggered ADSR at the given global tick
   // from the parent track's trigger events (passed in via options.trackEvents, keyed by
   // String(trackId)) and drive its connected parameter edges with the single normalized
-  // output value via the existing Envelope -> Parameter path. The persisted graphState and
+  // output value via the existing Envelope -> Parameter path.
+  //
+  // EVC-R4 — each edge maps that output through its MODULATION mapping,
+  // clamp(base + depth * env), so an envelope with no active gate writes exactly the
+  // parameter's authored `base`. A drive pass can no longer overwrite the user's setting with
+  // a value they never chose; passing an empty trackEvents map is a non-destructive release
+  // to base (that is how the playback controller's stop pass works). The persisted graphState and
   // node data are NOT mutated — runtime drive only, so playback never dirties the project.
   // Redundant writes are suppressed via the session envelopeAutomationLastValues cache.
   // Master and chain-mode tracks are skipped. One Envelope node yields one output value;
@@ -2644,7 +2708,7 @@ const useEffectChainStore = create((set, get) => ({
   // envelope (used on transport stop/seek/project-load). The cache is the non-reactive
   // module-level holder (EVC-R2-r1), so this clears it without a store notification. Does
   // not change any value itself; the playback controller follows a stop reset with one
-  // no-gate flush pass to drive 0.
+  // no-gate pass, which EVC-R4 makes a release to each edge's authored base (not a write of 0).
   resetEnvelopeModulationRuntime: () => { clearEnvelopeRuntimeCache() },
 
   // ── FXG.4-a graph-owned effect parameter descriptors ──────────────────────
