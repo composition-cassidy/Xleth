@@ -280,6 +280,23 @@ struct SampleRegion {
     double      proxyStartTime = 0.0;
     double      proxyEndTime   = 0.0;
 
+    // ── Swapped video (per-region, mirrors swappedAudioPath) ─────────────────
+    // Set by video_swapRegionVideo: the region's VIDEO stream is rebound to this
+    // file (copied into the project's swapped/ dir) while audioFilePath/
+    // swappedAudioPath are left completely untouched. The replacement is run
+    // through the normal proxy transcode path (see maybeEnqueueRegionProxy in
+    // XlethEngineService.cpp) exactly like a freshly-imported source.
+    // getDuration() (the clip's timeline duration) is NEVER changed by a swap —
+    // if the replacement's own duration differs from getDuration() by more than
+    // one frame, playback is clamped to the ORIGINAL duration and
+    // swappedVideoDurationMismatch is set so the UI can warn the user.
+    std::string swappedVideoPath;
+    bool        hasSwappedVideo             = false;
+    double      swappedVideoDurationSec     = 0.0;   // probed duration of the replacement file
+    bool        swappedVideoDurationMismatch = false;
+    int         swappedVideoWidth  = 0;   // probed dimensions of the replacement file
+    int         swappedVideoHeight = 0;   // (proxy target size is derived from these, not src->width/height)
+
     double getDuration()  const { return endTime - startTime; }
     int    getFrameCount() const { return endFrame - startFrame + 1; }
     bool   isQuote()       const { return label == SampleLabel::Quote; }

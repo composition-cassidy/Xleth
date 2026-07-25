@@ -339,6 +339,11 @@ window.xleth = ({
     // Get JPEG frame — pass sourceId (number) for native path, filePath (string) for legacy
     getFrameAtTime: (idOrPath, t, maxW, maxH) =>
         invoke('xleth:video:getFrameAtTime', idOrPath, t, maxW, maxH),
+    // ── Sample Video Export / Swap (mirrors window.xleth.audio above) ───────
+    exportRegion:        (regionId)                  => invoke('xleth:video:exportRegion', regionId),
+    openSwapVideoDialog: ()                           => invoke('xleth:dialog:swapVideo'),
+    swapRegionVideo:     (regionId, replacementPath)  => invoke('xleth:video:swapRegionVideo', regionId, replacementPath),
+    revertRegionVideo:   (regionId)                   => invoke('xleth:video:revertRegionVideo', regionId),
   },
 
   // ── Video Export ──────────────────────────────────────────────────────────

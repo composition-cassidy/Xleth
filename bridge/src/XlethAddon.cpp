@@ -512,6 +512,21 @@ Napi::Value Audio_RevertRegionAudio(const Napi::CallbackInfo& info)
     return dispatchToService(info, "audio_revertRegionAudio");
 }
 
+Napi::Value Video_ExportRegion(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "video_exportRegion");
+}
+
+Napi::Value Video_SwapRegionVideo(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "video_swapRegionVideo");
+}
+
+Napi::Value Video_RevertRegionVideo(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "video_revertRegionVideo");
+}
+
 Napi::Value Audio_SetEffectVisualizationEnabled(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "audio_setEffectVisualizationEnabled");
@@ -808,6 +823,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("audio_loadRegionAudio",    Napi::Function::New(env, Audio_LoadRegionAudio));
     exports.Set("audio_probeAudioDuration", Napi::Function::New(env, Audio_ProbeAudioDuration));
     exports.Set("audio_revertRegionAudio", Napi::Function::New(env, Audio_RevertRegionAudio));
+    exports.Set("video_exportRegion",       Napi::Function::New(env, Video_ExportRegion));
+    exports.Set("video_swapRegionVideo",    Napi::Function::New(env, Video_SwapRegionVideo));
+    exports.Set("video_revertRegionVideo",  Napi::Function::New(env, Video_RevertRegionVideo));
 
     // ── P3 — Effect visualization (dynamics; binary payload) ────────────────
     // The rest of the effect chain / EQ / Waveshaper / SmartBalance surface is

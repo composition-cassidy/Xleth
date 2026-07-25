@@ -1409,6 +1409,22 @@ export default function TimelineView({
     return () => timelineEvents.removeEventListener('timeline-waveform-invalidate', handler)
   }, [fetchRegions])
 
+  // ── Video cache invalidation (after swap/revert video) ─────────────────────
+  // The engine already clears its own GPU frame cache on swap/revert (the
+  // regenerated proxy reuses the same on-disk path, so stale decoded frames
+  // could otherwise linger). Here we just refetch region state so the UI
+  // picks up the new hasSwappedVideo/proxy metadata and any already-open
+  // preview decoder for this region's proxy gets reopened against the fresh file.
+  useEffect(() => {
+    const handler = (e) => {
+      const regionId = e.detail?.regionId
+      if (regionId == null) return
+      fetchRegions()
+    }
+    timelineEvents.addEventListener('timeline-video-invalidate', handler)
+    return () => timelineEvents.removeEventListener('timeline-video-invalidate', handler)
+  }, [fetchRegions])
+
   // ── Viewport-aware hi-res waveform fetch (for waveform-line & sample regimes) ─
   // Runs on scroll/zoom changes. Computes which clips are visible, determines the
   // zoom regime, and fetches viewport-appropriate data.  The visible time window

@@ -401,6 +401,89 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
           }
         },
       }] : []),
+      // ── Video (only for regions whose source actually has a video stream) ──
+      ...(src?.hasVideo ? [
+        { type: 'separator' },
+        // Export Video
+        {
+          label: 'Export Video',
+          icon: Download,
+          onClick: async () => {
+            try {
+              const result = await window.xleth?.video?.exportRegion(region.id)
+              if (result?.error) console.error('[SampleSelector] Export video failed:', result.error)
+            } catch (e) {
+              console.error('[SampleSelector] Export video failed:', e)
+            }
+          },
+        },
+        // Swap Video
+        {
+          label: 'Swap Video',
+          icon: ArrowLeftRight,
+          onClick: async () => {
+            try {
+              const picked = await openFilePicker({
+                mode: 'openFile',
+                title: 'Select Replacement Video',
+                subtitle: 'Choose the replacement video for this sample. Audio is unaffected.',
+                actionLabel: 'Select Video',
+                filters: [{ name: 'Video Files', extensions: ['mp4', 'avi', 'mov', 'mkv'] }],
+                legacyPicker: () => window.xleth?.video?.openSwapVideoDialog(),
+              })
+              const filePath = getPickerPath(picked)
+              if (!filePath) return
+              const result = await window.xleth?.video?.swapRegionVideo(region.id, filePath)
+              if (result?.success) {
+                setRegions(prev => prev.map(r => r.id === region.id
+                  ? {
+                      ...r,
+                      hasSwappedVideo: true,
+                      swappedVideoPath: result.swappedPath,
+                      swappedVideoDurationMismatch: !!result.durationMismatch,
+                    }
+                  : r))
+                // The proxy is being regenerated in the background — clear any
+                // cached preview frames for this region's source so playback
+                // doesn't show stale frames from the previous video.
+                timelineEvents.dispatchEvent(new CustomEvent('timeline-video-invalidate',
+                  { detail: { regionId: region.id, sourceId: region.sourceId } }))
+                if (result.durationMismatch) {
+                  window.alert(
+                    `The replacement video is ${result.replacementDurationSec?.toFixed(2)}s long, `
+                    + `but this sample is ${result.originalDurationSec?.toFixed(2)}s. `
+                    + `Playback has been clamped to the original duration — the video is not stretched.`)
+                }
+              } else if (result?.error) {
+                console.error('[SampleSelector] Swap video failed:', result.error)
+              }
+            } catch (e) {
+              console.error('[SampleSelector] Swap video error:', e)
+            }
+          },
+        },
+        // Revert Video (only shown when region has swapped video)
+        ...(region.hasSwappedVideo ? [{
+          label: 'Revert Video',
+          icon: RotateCcw,
+          onClick: async () => {
+            try {
+              const result = await window.xleth?.video?.revertRegionVideo(region.id)
+              if (result?.success) {
+                setRegions(prev => prev.map(r => r.id === region.id
+                  ? { ...r, hasSwappedVideo: false, swappedVideoPath: '' }
+                  : r))
+                timelineEvents.dispatchEvent(new CustomEvent('timeline-video-invalidate',
+                  { detail: { regionId: region.id, sourceId: region.sourceId } }))
+              } else if (result?.error) {
+                console.error('[SampleSelector] Revert video failed:', result.error)
+              }
+            } catch (e) {
+              console.error('[SampleSelector] Revert video error:', e)
+            }
+          },
+        }] : []),
+      ] : []),
       { type: 'separator' },
       // Delete
       {

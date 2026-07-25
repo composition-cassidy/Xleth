@@ -80,7 +80,13 @@ void to_json(nlohmann::json& j, const SampleRegion& r) {
         {"proxyPath",        r.proxyPath},
         {"proxyReady",       r.proxyReady},
         {"proxyStartTime",   r.proxyStartTime},
-        {"proxyEndTime",     r.proxyEndTime}
+        {"proxyEndTime",     r.proxyEndTime},
+        {"swappedVideoPath",             r.swappedVideoPath},
+        {"hasSwappedVideo",              r.hasSwappedVideo},
+        {"swappedVideoDurationSec",      r.swappedVideoDurationSec},
+        {"swappedVideoDurationMismatch", r.swappedVideoDurationMismatch},
+        {"swappedVideoWidth",            r.swappedVideoWidth},
+        {"swappedVideoHeight",           r.swappedVideoHeight}
     };
     // LFO waveform arrays (serialised separately since nlohmann::json
     // doesn't know about LfoBreakpoint).
@@ -231,4 +237,18 @@ void from_json(const nlohmann::json& j, SampleRegion& r) {
     if (j.contains("proxyReady"))     j.at("proxyReady").get_to(r.proxyReady);
     if (j.contains("proxyStartTime")) j.at("proxyStartTime").get_to(r.proxyStartTime);
     if (j.contains("proxyEndTime"))   j.at("proxyEndTime").get_to(r.proxyEndTime);
+    // Swapped video fields (added for video swap/export feature). Defaults on
+    // legacy projects mean "no video swap" — region plays its original source video.
+    if (j.contains("swappedVideoPath"))
+        j.at("swappedVideoPath").get_to(r.swappedVideoPath);
+    if (j.contains("hasSwappedVideo"))
+        j.at("hasSwappedVideo").get_to(r.hasSwappedVideo);
+    if (j.contains("swappedVideoDurationSec"))
+        j.at("swappedVideoDurationSec").get_to(r.swappedVideoDurationSec);
+    if (j.contains("swappedVideoDurationMismatch"))
+        j.at("swappedVideoDurationMismatch").get_to(r.swappedVideoDurationMismatch);
+    if (j.contains("swappedVideoWidth"))
+        j.at("swappedVideoWidth").get_to(r.swappedVideoWidth);
+    if (j.contains("swappedVideoHeight"))
+        j.at("swappedVideoHeight").get_to(r.swappedVideoHeight);
 }

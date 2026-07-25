@@ -20,7 +20,8 @@ inline std::string sanitizeFilename(const std::string& value)
 inline std::string buildExportFilename(const std::string& sourceStem,
                                        const std::string& label,
                                        const std::string& regionName,
-                                       const std::string& format)
+                                       const std::string& format,
+                                       const std::string& extension = "wav")
 {
     const std::string source = sanitizeFilename(sourceStem);
     const std::string category = sanitizeFilename(label);
@@ -41,12 +42,12 @@ inline std::string buildExportFilename(const std::string& sourceStem,
         parts.push_back(name);
     }
 
-    if (parts.empty()) return "export.wav";
+    if (parts.empty()) return "export." + extension;
 
     std::string stem;
     for (std::size_t i = 0; i < parts.size(); ++i) {
         if (i > 0) stem += '_';
         stem += parts[i];
     }
-    return stem + ".wav";
+    return stem + "." + extension;
 }

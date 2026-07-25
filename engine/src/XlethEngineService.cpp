@@ -1543,23 +1543,45 @@ static void maybeEnqueueRegionProxy(int regionId, int trackId) {
 
     const SourceMedia* src = g_timeline->getSource(r->sourceId);
     if (!src || !src->hasVideo) return;
-    if (src->width <= 0 || src->height <= 0) return;
 
-    if ((src->width & 1) || (src->height & 1)) {
+    // Swapped-video regions transcode from the SWAPPED file, not the original
+    // source, and use its own probed dimensions (the replacement may not match
+    // the original source's resolution). [inputStart, inputEnd) below are
+    // offsets into that INPUT file (0-based for the swap file), which is a
+    // different coordinate space from proxyStartTime/proxyEndTime — see the
+    // install step in drainProxyResults for how the two are reconciled.
+    const bool useSwap = r->hasSwappedVideo && !r->swappedVideoPath.empty();
+    const std::string& inputPath = useSwap ? r->swappedVideoPath : src->filePath;
+    const int inputW = useSwap ? r->swappedVideoWidth  : src->width;
+    const int inputH = useSwap ? r->swappedVideoHeight : src->height;
+    if (inputW <= 0 || inputH <= 0) return;
+
+    double inputStart = r->startTime;
+    double inputEnd   = r->endTime;
+    if (useSwap) {
+        inputStart = 0.0;
+        // Duration rule: clamp to the ORIGINAL region duration when the
+        // replacement's own duration differs by more than one frame.
+        inputEnd = r->swappedVideoDurationMismatch
+                 ? r->getDuration()
+                 : r->swappedVideoDurationSec;
+    }
+
+    if ((inputW & 1) || (inputH & 1)) {
         std::cerr << "[Proxy] WARNING: source " << src->id
-                  << " has odd dimensions " << src->width << "x" << src->height
+                  << " has odd dimensions " << inputW << "x" << inputH
                   << " — forcing even target size\n";
     }
 
     ProxyManager::Request req;
     req.regionId   = regionId;
-    req.inputPath  = src->filePath;
+    req.inputPath  = inputPath;
     req.outputPath = (std::filesystem::path(g_projectManager->getProxiesDir())
                      / (std::to_string(regionId) + ".mxf")).string();
-    req.startTime  = r->startTime;
-    req.endTime    = r->endTime;
-    req.targetW    = (src->width  / 2) & ~1;   // even dims required by yuv422p
-    req.targetH    = (src->height / 2) & ~1;
+    req.startTime  = inputStart;
+    req.endTime    = inputEnd;
+    req.targetW    = (inputW / 2) & ~1;   // even dims required by yuv422p
+    req.targetH    = (inputH / 2) & ~1;
     g_proxyManager->enqueue(req);
 }
 
@@ -1650,8 +1672,19 @@ static void drainProxyResults() {
 
         region->proxyPath      = r.outputPath;
         region->proxyReady     = true;
-        region->proxyStartTime = r.startTime;
-        region->proxyEndTime   = r.endTime;
+        if (region->hasSwappedVideo && !region->swappedVideoPath.empty()) {
+            // r.startTime/r.endTime are 0-based offsets into the SWAPPED file
+            // (the transcode's input-file coordinate space). Seek math
+            // elsewhere (FrameCollector/SyncManager) compares proxyStartTime/
+            // proxyEndTime against sourceTime in the region's ORIGINAL-source
+            // coordinate space (region->startTime..endTime), so re-anchor:
+            // proxy-file time 0 == region->startTime in that space.
+            region->proxyStartTime = region->startTime;
+            region->proxyEndTime   = region->startTime + (r.endTime - r.startTime);
+        } else {
+            region->proxyStartTime = r.startTime;
+            region->proxyEndTime   = r.endTime;
+        }
         noteGenSuccess(region->sourceId);       // reset the failure streak
 
         VideoDecoder* raw = r.dec.get();
@@ -2750,6 +2783,10 @@ static JsonApi::Object regionToJs(JsonApi::Env env, const SampleRegion& r) {
     o.Set("swappedAudioPath",        JsonApi::String::New(env, r.swappedAudioPath));
     o.Set("hasSwappedAudio",         JsonApi::Boolean::New(env, r.hasSwappedAudio));
     o.Set("swappedAudioDurationSec", JsonApi::Number::New(env, r.swappedAudioDurationSec));
+    o.Set("swappedVideoPath",             JsonApi::String::New(env, r.swappedVideoPath));
+    o.Set("hasSwappedVideo",              JsonApi::Boolean::New(env, r.hasSwappedVideo));
+    o.Set("swappedVideoDurationSec",      JsonApi::Number::New(env, r.swappedVideoDurationSec));
+    o.Set("swappedVideoDurationMismatch", JsonApi::Boolean::New(env, r.swappedVideoDurationMismatch));
     o.Set("rootNote",         JsonApi::Number::New(env, r.rootNote));
     o.Set("attackMs",         JsonApi::Number::New(env, r.attackMs));
     o.Set("decayMs",          JsonApi::Number::New(env, r.decayMs));
@@ -14685,6 +14722,246 @@ JsonApi::Value Audio_ProbeAudioDuration(const JsonApi::CallbackInfo& info)
     return JsonApi::Number::New(env, probeAudioInfo(path).duration);
 }
 
+// ─── Sample Video Export / Swap ─────────────────────────────────────────────
+// Mirrors the Sample Audio Export/Swap feature above, but for the VIDEO stream
+// only — the region's audio (audioFilePath / swappedAudioPath) is never
+// touched by any of these three functions.
+
+// Find a clip referencing regionId on a non-fullscreen track and (re)schedule
+// its proxy transcode. Same clip-selection logic as timeline_modifyRegion's
+// trim-change branch (XlethEngineService.cpp, Timeline_ModifyRegion) — kept as
+// a private helper here since both Swap and Revert Video need it.
+static void reenqueueRegionProxy(int regionId) {
+    if (!g_timeline) return;
+    const GridLayout& gl = g_timeline->getGridLayout();
+    std::unordered_set<int> fullscreenTracks;
+    for (const auto& fl : gl.fullscreenLayers) {
+        if (fl.trackId >= 0) fullscreenTracks.insert(fl.trackId);
+    }
+    for (const Clip* c : g_timeline->getAllClips()) {
+        if (!c || c->regionId != regionId) continue;
+        if (fullscreenTracks.count(c->trackId)) continue;
+        maybeEnqueueRegionProxy(regionId, c->trackId);
+        break;  // dedup in ProxyManager; one trigger is enough
+    }
+}
+
+// video_exportRegion(regionId) → { success, path }
+// Copies the region's ORIGINAL source video file (never the DNxHR proxy) to
+// exports/{SourceName}_{Label}_{RegionName}.<ext>, preserving the source's
+// own container extension. Pure file copy — no transcode, no decode.
+JsonApi::Value Video_ExportRegion(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    auto fail = [&](const char* msg) -> JsonApi::Value {
+        JsonApi::Object o = JsonApi::Object::New(env);
+        o.Set("success", JsonApi::Boolean::New(env, false));
+        o.Set("error",   JsonApi::String::New(env, msg));
+        return o;
+    };
+
+    if (!isInitialised() || !g_timeline || !g_projectManager)
+        return fail("Engine not initialised.");
+    if (info.Length() < 1 || !info[0].IsNumber())
+        return fail("video_exportRegion(regionId: number)");
+    if (!g_projectManager->hasProjectDir())
+        return fail("No project directory — save project first.");
+
+    const int regionId = info[0].As<JsonApi::Number>().Int32Value();
+    BridgeCallLog log("video.exportRegion");
+
+    const SampleRegion* region = g_timeline->getRegion(regionId);
+    if (!region) return fail("Region not found.");
+
+    const SourceMedia* source = g_timeline->getSource(region->sourceId);
+    if (!source) return fail("Source not found for region.");
+    if (!source->hasVideo) return fail("Region's source has no video stream.");
+
+    auto srcFile = juce::File(juce::String(source->filePath));
+    if (!srcFile.existsAsFile()) return fail("Original source video not found.");
+
+    const std::string format = (info.Length() >= 2 && info[1].IsString())
+        ? info[1].As<JsonApi::String>().Utf8Value()
+        : "sampleNameOnly";
+    const std::string srcStem = srcFile.getFileNameWithoutExtension().toStdString();
+    const std::string ext = srcFile.getFileExtension().toStdString(); // includes leading '.'
+    const std::string labelStr = sampleLabelToString(region->label);
+    std::string filename = buildExportFilename(
+        srcStem, labelStr, region->name, format,
+        ext.empty() ? "mp4" : ext.substr(1));
+
+    const std::string outputPath = g_projectManager->getExportsDir() + "/" + filename;
+    auto destFile = juce::File(juce::String(outputPath));
+    if (destFile.existsAsFile()) destFile.deleteFile();
+    if (!srcFile.copyFileTo(destFile)) return fail("File copy failed.");
+
+    log.done(filename);
+
+    JsonApi::Object result = JsonApi::Object::New(env);
+    result.Set("success", JsonApi::Boolean::New(env, true));
+    result.Set("path",    JsonApi::String::New(env, outputPath));
+    return result;
+}
+
+// video_swapRegionVideo(regionId, replacementFilePath) → { success, swappedPath, durationMismatch }
+// Copies the replacement file to swapped/, probes its duration via VideoDecoder,
+// then rebinds the region's VIDEO stream ONLY through a single ModifyRegionCommand
+// (undoable — mirrors the trim-edit path in Timeline_ModifyRegion). The
+// replacement is transcoded through the same on-demand proxy path a normal
+// import uses (maybeEnqueueRegionProxy → ProxyTranscoder::transcodeRange), so
+// there is no separate/duplicated transcode code. audioFilePath and
+// swappedAudioPath are never read or written.
+JsonApi::Value Video_SwapRegionVideo(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    auto fail = [&](const char* msg) -> JsonApi::Value {
+        JsonApi::Object o = JsonApi::Object::New(env);
+        o.Set("success", JsonApi::Boolean::New(env, false));
+        o.Set("error",   JsonApi::String::New(env, msg));
+        return o;
+    };
+
+    if (!isInitialised() || !g_timeline || !g_undoManager || !g_projectManager)
+        return fail("Engine not initialised.");
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsString())
+        return fail("video_swapRegionVideo(regionId: number, replacementFilePath: string)");
+    if (!g_projectManager->hasProjectDir())
+        return fail("No project directory — save project first.");
+
+    const int regionId = info[0].As<JsonApi::Number>().Int32Value();
+    const std::string srcPath = info[1].As<JsonApi::String>().Utf8Value();
+    BridgeCallLog log("video.swapRegionVideo");
+
+    const SampleRegion* region = g_timeline->getRegion(regionId);
+    if (!region) return fail("Region not found.");
+
+    auto srcFile = juce::File(juce::String(srcPath));
+    if (!srcFile.existsAsFile()) return fail("Replacement file not found.");
+
+    // Probe the replacement BEFORE copying so a non-video file is rejected
+    // without touching disk state.
+    VideoDecoder probe;
+    if (!probe.open(srcPath) || probe.getWidth() <= 0 || probe.getHeight() <= 0) {
+        probe.close();
+        return fail("Replacement file has no readable video stream.");
+    }
+    const double replacementDuration = probe.getDuration();
+    const double replacementFps      = probe.getFPS();
+    const int    replacementWidth    = probe.getWidth();
+    const int    replacementHeight   = probe.getHeight();
+    probe.close();
+
+    // Copy into swapped/, prefixed so it never collides with a swapped-audio
+    // file of the same basename (they share the project's swapped/ dir).
+    const std::string destPath = g_projectManager->getSwappedDir() + "/video_"
+                                 + std::to_string(regionId) + "_"
+                                 + srcFile.getFileName().toStdString();
+    auto destFile = juce::File(juce::String(destPath));
+    if (destFile.existsAsFile()) destFile.deleteFile();
+    if (!srcFile.copyFileTo(destFile)) return fail("File copy to swapped/ failed.");
+
+    // Duration rule: never time-stretch, never resize the clip. If the
+    // replacement's own duration differs from the region's timeline duration
+    // by more than one frame, clamp playback to the ORIGINAL duration and
+    // report the mismatch so the caller can warn the user.
+    const double originalDuration = region->getDuration();
+    const double fps = replacementFps > 0.0 ? replacementFps
+                      : 30.0; // fallback if probe couldn't determine fps
+    const double frameSeconds = 1.0 / fps;
+    const bool mismatch = std::abs(replacementDuration - originalDuration) > frameSeconds;
+
+    // Snapshot the FULL current region, mutate only the video-swap fields, and
+    // commit through UndoManager as one operation — a single undo restores the
+    // previous video binding (proxy fields included), nothing else changes.
+    SampleRegion newState = *region;
+    newState.swappedVideoPath             = destPath;
+    newState.hasSwappedVideo              = true;
+    newState.swappedVideoDurationSec      = replacementDuration;
+    newState.swappedVideoDurationMismatch = mismatch;
+    newState.swappedVideoWidth            = replacementWidth;
+    newState.swappedVideoHeight           = replacementHeight;
+
+    g_undoManager->execute(
+        std::make_unique<ModifyRegionCommand>(regionId, newState, *g_timeline),
+        *g_timeline);
+
+    // The old proxy (if any) was transcoded from the OLD video source — drop it
+    // and schedule a fresh one from the swapped file via the normal on-demand
+    // proxy pipeline (maybeEnqueueRegionProxy reads region->swappedVideoPath
+    // when hasSwappedVideo is set).
+    invalidateRegionProxy(regionId);
+    reenqueueRegionProxy(regionId);
+
+    // The regenerated proxy reuses the SAME on-disk path (<proxiesDir>/<regionId>.mxf,
+    // keyed by regionId, not content), so the live-preview GPU frame cache
+    // (keyed on path+frameIndex) could otherwise keep serving decoded frames
+    // from the video we just replaced. A full clear is cheap (frames are
+    // re-decoded lazily on next preview tick) and guarantees no stale frames.
+    {
+        std::lock_guard<std::mutex> lock(g_previewCompositorMutex);
+        if (g_previewRenderCache) g_previewRenderCache->clear();
+    }
+
+    log.done(destFile.getFileName().toStdString());
+
+    JsonApi::Object result = JsonApi::Object::New(env);
+    result.Set("success",          JsonApi::Boolean::New(env, true));
+    result.Set("swappedPath",      JsonApi::String::New(env, destPath));
+    result.Set("durationMismatch", JsonApi::Boolean::New(env, mismatch));
+    result.Set("replacementDurationSec", JsonApi::Number::New(env, replacementDuration));
+    result.Set("originalDurationSec",    JsonApi::Number::New(env, originalDuration));
+    return result;
+}
+
+// video_revertRegionVideo(regionId) → { success }
+// Clears the video swap and returns the region to streaming its original
+// source video, through the same single-command UndoManager path as swap.
+JsonApi::Value Video_RevertRegionVideo(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    auto fail = [&](const char* msg) -> JsonApi::Value {
+        JsonApi::Object o = JsonApi::Object::New(env);
+        o.Set("success", JsonApi::Boolean::New(env, false));
+        o.Set("error",   JsonApi::String::New(env, msg));
+        return o;
+    };
+
+    if (!isInitialised() || !g_timeline || !g_undoManager)
+        return fail("Engine not initialised.");
+    if (info.Length() < 1 || !info[0].IsNumber())
+        return fail("video_revertRegionVideo(regionId: number)");
+
+    const int regionId = info[0].As<JsonApi::Number>().Int32Value();
+    BridgeCallLog log("video.revertRegionVideo");
+
+    const SampleRegion* region = g_timeline->getRegion(regionId);
+    if (!region) return fail("Region not found.");
+
+    SampleRegion newState = *region;
+    newState.swappedVideoPath             = "";
+    newState.hasSwappedVideo              = false;
+    newState.swappedVideoDurationSec      = 0.0;
+    newState.swappedVideoDurationMismatch = false;
+
+    g_undoManager->execute(
+        std::make_unique<ModifyRegionCommand>(regionId, newState, *g_timeline),
+        *g_timeline);
+
+    invalidateRegionProxy(regionId);
+    reenqueueRegionProxy(regionId);
+
+    {
+        std::lock_guard<std::mutex> lock(g_previewCompositorMutex);
+        if (g_previewRenderCache) g_previewRenderCache->clear();
+    }
+
+    log.done(region->name);
+
+    JsonApi::Object result = JsonApi::Object::New(env);
+    result.Set("success", JsonApi::Boolean::New(env, true));
+    return result;
+}
+
 // ── Phase 1B — SourcePlayer (Sample Picker preview) ─────────────────────────
 
 // source_loadSource(filePath) → { success, duration }
@@ -16502,6 +16779,9 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     if (method == "audio_loadRegionAudio") return Audio_LoadRegionAudio(info).raw();
     if (method == "audio_probeAudioDuration") return Audio_ProbeAudioDuration(info).raw();
     if (method == "audio_revertRegionAudio") return Audio_RevertRegionAudio(info).raw();
+    if (method == "video_exportRegion") return Video_ExportRegion(info).raw();
+    if (method == "video_swapRegionVideo") return Video_SwapRegionVideo(info).raw();
+    if (method == "video_revertRegionVideo") return Video_RevertRegionVideo(info).raw();
     if (method == "audio_setEffectVisualizationEnabled") return Audio_SetEffectVisualizationEnabled(info).raw();
     if (method == "audio_drainEffectVizFrames") return Audio_DrainEffectVizFrames(info).raw();
     // Graph-mode routing (wires + graph-owned effects FXG.3-b / params FXG.4-a /

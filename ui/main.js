@@ -1280,6 +1280,43 @@ ipcMain.handle('xleth:audio:probeAudioDuration',
   safeHandler((_, filePath) =>
     callWorker('audio_probeAudioDuration', [filePath])));
 
+// ── Sample Video Export / Swap (mirrors Sample Audio Export/Swap above) ──────
+
+// Dialog: open a video file to swap in as the replacement video stream
+ipcMain.handle('xleth:dialog:swapVideo', async () => {
+  let defaultPath = undefined;
+  try {
+    const info = await callWorker('project_getInfo');
+    if (info && typeof info.exportsDir === 'string' && info.exportsDir) defaultPath = info.exportsDir;
+  } catch {}
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+    title: 'Select Replacement Video',
+    defaultPath,
+    filters: [{ name: 'Video Files', extensions: ['mp4', 'avi', 'mov', 'mkv'] }],
+    properties: ['openFile'],
+  });
+  return canceled || !filePaths.length ? null : filePaths[0];
+});
+
+// Export region's original source video to exports/, then reveal in Explorer
+ipcMain.handle('xleth:video:exportRegion',
+  safeHandler(async (_, regionId) => {
+    const VALID_NAMING_FORMATS = ['sampleNameOnly', 'categoryAndName', 'sourceAndName', 'fullLegacy'];
+    const saved = loadSettings().sampleNamingFormat;
+    const format = VALID_NAMING_FORMATS.includes(saved) ? saved : 'sampleNameOnly';
+    const result = await callWorker('video_exportRegion', [regionId, format]);
+    if (result?.success && result.path) shell.showItemInFolder(result.path);
+    return result;
+  }));
+
+ipcMain.handle('xleth:video:swapRegionVideo',
+  safeHandler((_, regionId, replacementFilePath) =>
+    callWorker('video_swapRegionVideo', [regionId, replacementFilePath])));
+
+ipcMain.handle('xleth:video:revertRegionVideo',
+  safeHandler((_, regionId) =>
+    callWorker('video_revertRegionVideo', [regionId])));
+
 // ── Phase 1B — SourcePlayer (Sample Picker audio preview via engine) ────────
 
 ipcMain.handle('xleth:audio:loadSource',
