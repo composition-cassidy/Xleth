@@ -184,3 +184,69 @@ Dependency order: 0 → 1 → 2; 3 and 4 independent after 2; 5 last. Phase 1 is
 - **Measured post-fix baseline (replaces §2b/§2c's fictional 1.48×/7.4×/2.2×):** per-round-trip loop gain **0.81** (stable) at 44.1 k and 48 k; sustained-sine worst-case steady-state wet gain **3.72× (+11.4 dB) at 392 Hz**, single off-mode tone **0.28×** → residual **modal magnification ≈ 13×** (the comb the Phase 1 rewrite must tame); live-sweep worst peak **1.88×**; impulse-tail autocorrelation at the loop period **0.098** (weak; tail now decays +2.07 dB/period).
 
 - **Known-remaining, OUT OF SCOPE for this stabilization:** (a) the plate is now ~16% of Generic's level (uncalibrated) — equal-loudness matching is **Phase 2**; (b) plate L/R correlation 0.968 (still non-mono) and the ~13× modal magnification — **Phase 1 topology rewrite**; (c) `AllpassDiffuser::process()` retains the sign bug for Hall's feed-forward diffusion (harmless to stability but not a true allpass) — fold the correct allpass into Hall when Hall is re-tuned; (d) `test_reverb`'s `testHallStereoDecorrelation` (Hall |L/R corr| 0.94 > 0.9) was **already failing at HEAD**, unrelated to the plate, left untouched.
+
+---
+
+## 8. Program closeout (2026-07-25)
+
+All six phases of §6 have landed on `feat/loop-lab`. This section is the final status; §§1–7 above are left as-written (a point-in-time investigation record, not a living doc) except where superseded by the §7 errata.
+
+### 8.1 Phase-by-phase final status
+
+| Phase | Commit | Status | Summary |
+|---|---|---|---|
+| 0 — Reproduce/measure/lock | `80f58e9` | Landed | Root-caused the Plate runaway to the Schroeder allpass sign error (not the feedback ceiling); added `processAllpass()`, restored `kPlateInputGain` 0.20→0.60. Superseded §2b/§2c of this doc (see §7 errata). |
+| 1 — Plate rewrite (true Dattorro) | `a11fa84` | Landed | Cross-coupled figure-8, four long tank delays (725 ms round trip @ size 50, 5.4× the old 134 ms comb), decay gain inside each arm, honest T60, 7 interleaved output taps, tank modulation on each arm's first allpass. Isolated to `processBlockPlate` + `PlateLate` + the plate constants block; zero APVTS/bridge/UI change. |
+| 2 — Level calibration + knob honesty | `e0fa66d` | Landed | Equal-loudness wet trims for Generic-enhanced (ref)/Room/Hall/Plate; equal-power (√-law) mix crossfade for all non-legacy backends; `getTailLengthSeconds()` reports effective RT60; `StockParameterCatalog.cpp` `mod_rate` mislabel fixed and per-style `er_level`/`er_late` semantics documented (that documentation is now migrated into `XlethReverbEffect.h` — see §8.4). |
+| 3 — Room/Generic diffusion + ER polish | `d58d41c` | Landed | Room 2-stage input diffusion (onset crest 14.32→9.27), ER-bus decorrelation allpass (Room ER crest 18.71→13.12, Hall 35.02→22.57), predelay Linear-smoothed + interpolated read (Enhanced/Hall/Plate only; Legacy untouched), click-free style-switch crossfade. |
+| 3B — Hall re-tune | `c625beb` | Landed | Migrated Hall's 2-stage input diffusion off the defective `process()` pairing onto `processAllpass()` (kills the metallic ping) with a 3rd added stage to hold tail density; re-derived stereo via temporal tap interleaving (|L/R corr| 0.94→0.46, `testHallStereoDecorrelation` red→green); wet trim recalibrated 0.9007→2.2649. |
+| 4 — Base-class CPU pass | `8a17d08` | Landed | `SmoothedHandle` API replaces per-sample string/hash smoother lookups; hicut/locut + RT60 decay coefficients hoisted to block-rate linear interpolation; phasor+parabolic-sine LFO replaces `std::sin`. Reverb (Enhanced/Hall/Plate) + 7 more stock effects migrated; `processBlockLegacy` untouched/bit-exact. CPU: Enhanced −51%, Hall −34%, Plate −48% (Release, 512-sample blocks). |
+| 5 — Cleanup | *(this session)* | Landed | Deleted dead `ReverbEffect.h` stub and dead `StockParameterCatalog.cpp` (migrating its only living content — the `mod_rate`/`er_level`/`er_late` per-style semantics — into `XlethReverbEffect.h` comments at the parameter definitions); deleted `AllpassDiffuser::process()` (the Phase 0 sign-error method, zero remaining callers since the Phase 3B Hall migration); synced the Plate/Hall section-header comments to the landed topology with commit pointers. Deletions/comments only — zero DSP change (see §8.5 for verification). |
+
+### 8.2 Measured final numbers (Plate, Phase 1 baseline — unchanged by Phases 2–5)
+
+- Per-round-trip loop gain: **0.699** (< 1, proven across a 48-point decay×size×damping×mod grid including the pathological corner)
+- Stereo L/R correlation: **0.968 → 0.001**
+- RT60 vs. decay knob: dead above 6.4 s (old clamp) → **monotonic 0.43–20.1 s, no dead zone**
+- Modal magnification: **13× → 8.55× (mod off) / 2.49× (mod on, real use)**
+- Sustained-sine steady-state gain (mod on): **3.72× → 2.74×** pre-Phase-2 calibration; Phase 2's wet-trim increase (~3.98×, to reach equal loudness) proportionally re-baselined this corner to **10.9×** — expected, since calibration targets musical settings, not the pathological worst-case corner, and is documented inline at the re-baselined test thresholds
+- Periodicity autocorrelation at the loop period: **0.205** (unguarded spec, was the failing-by-design Phase 0 test)
+- Hall tail crest factor: **24.03**, ceiling `testHallTailCrestFactorBounded` **25.0** → **0.97 dB-equivalent headroom** (the honest de-resonanced FDN character; confirmed measured again in this session's clean rebuild, unchanged)
+- CPU (Phase 4, Release, 512-sample blocks, `RealtimeTimingContext`): Enhanced **−51%**, Hall **−34%**, Plate **−48%**; Legacy control unchanged (confirms measurement stability)
+
+### 8.3 Standing known-issues
+
+- **3 pre-existing `test_effects` failures**, exact list from this session's fresh run:
+  1. `[3655] EQ should have 210 APVTS params`
+  2. `[3884] Dynamic EQ GR should be noticeably negative with signal above threshold`
+  3. `[3897] GR should release (get closer to 0) after silence`
+
+  Confirmed **reproducing, unmodified** (`574 passed, 3 failed`), in this session's clean rebuild — `8a17d08`'s own verification note already recorded "test_effects 574/577 (3 failures pre-existing/unrelated, in EQ)", and this session's from-source rebuild reproduces the identical split with zero reverb/effects-base code touched. Unrelated to reverb — no action taken.
+- **Hall tail crest 24.03 vs. 25.0 ceiling** — 0.97 headroom, stable across rebuilds; documented in §8.2 as the honest post-Phase-3B character, not treated as a defect.
+- `AllpassDiffuser::process()` — **removed** in this session's Phase 5 cleanup (was the last standing known-issue from §7d; now moot).
+
+### 8.4 Phase 4 test-count reconciliation
+
+The `8a17d08` commit message and prior memory record cite "test_reverb 282/282 ... incl. new RMS/crest regression tests" without stating how many were added. Reconciled by diffing the commit and running the suite fresh:
+
+- **3 new named test functions**: `testEnhancedBackendRmsCrestPreserved`, `testHallBackendRmsCrestPreserved`, `testPlateBackendRmsCrestPreserved` — one per non-legacy backend family.
+- Each calls a shared helper (`checkBackendRmsCrestPreserved`, 2 new `CHECK_NEAR` call-sites added to the source) that asserts RMS and crest factor over a 5 s pink-noise program stay within 1%/2% of pre-Phase-4 reference measurements.
+- Net runtime effect: **2 call-sites × 3 callers = 6 new passing assertions**, taking the suite's total assertion count from **276 → 282** (confirmed by a fresh from-source run in this session: `Results: 282 passed, 0 failed`).
+- The "3 new" in the commit message refers to the 3 test *functions*; the "282 total" is the assertion count. Both are correct, just counting different things — this is not a discrepancy.
+
+### 8.5 This session's verification (deletions/comments only, zero DSP change)
+
+Fresh rebuild via `cmake --build engine/build` (test targets, VS2022-bundled cmake) and `cmake --build bridge/build` (native addon, VS18/2026-bundled cmake — the documented cmake-misdetection workaround):
+
+- `test_reverb`: **282/282**, including `testLegacyGenericRegressionSignature` byte-exact (legacy tailEarly=4.34409, tailLate=0.309633 — unchanged) and the Phase 4 RMS/crest regression tests (§8.4) all green.
+- `test_mix`: **289/289**
+- `test_pdc_stage1`: **584/584**
+- `test_effects`: **574 passed, 3 failed** — the pre-existing EQ/GR cluster (§8.3), unmodified
+- `test_sidechain_runtime`: 28/28, `test_stock_compressor_sidechain`: 22/22, `test_vst_sidechain`: 86/86, `test_fxgraph_sidechain_input`: 13/13 — all green
+- Fresh `xleth_native.node` (Release) built and loads cleanly (321 exported symbols) via a direct addon-load smoke script; a full Electron/CDP app-launch smoke (as done in Phases 0/2/4) was not additionally re-run this session, since this phase changed zero DSP and the full C++ suite already exercises all four reverb styles end-to-end (`testStyleAllValuesSettable`, `testHallDiffersFromGeneric`, `testPlateBackendIsDistinct`, `testRoomDiffersFromHall`, etc.)
+- Every deletion in §8.1 Phase 5 was grep-proven callerless/registrationless before removal (see this session's commit for the grep evidence)
+
+### 8.6 Deferred items
+
+- **Owner A/B decision on the new Hall** (Phase 3B re-tune): the metallic ping is gone and stereo decorrelation is fixed, but this is a deliberate, audible character change (crest 11.9→24.0) that a human should sign off on before it's considered final — A/B WAV renders are in `docs/plans/hall_ab_renders/` (gitignored).
+- **Merge strategy for `feat/loop-lab`**: this branch carries the full reverb program (Phases 0–5) plus unrelated owner WIP (per prior session memory, the branch has heavy owner-authored in-flight work alongside these commits). Whether the reverb commits merge to `main` as a squashed set, cherry-picked individually, or ride along with the rest of the branch's work is an owner decision, not made here.

@@ -79,11 +79,14 @@
 struct ReverbERTap { float delayMs; float gainL; float gainR; };
 
 // ── AllpassDiffuser ──────────────────────────────────────────────────────────
-// Single-section Schroeder allpass: H(z) = (z^-D − g) / (1 + g·z^-D).
-// Implemented with one delay line and a transposed Direct-Form II topology so
-// only one circular buffer is needed. Stable for |g| < 1; unity magnitude
-// response. Used to smooth attack transients before the FDN feed for Hall,
-// turning a clicky impulse into a dispersed cluster without coloring tone.
+// Single-section Schroeder allpass: H(z) = (z^-D − g) / (1 − g·z^-D) via
+// processAllpass() below. Implemented with one delay line and a transposed
+// Direct-Form II topology so only one circular buffer is needed. Stable for
+// |g| < 1; unity magnitude response. Used to smooth attack transients before
+// the FDN feed (Hall, Room input diffusion) and, inside the Plate tank, as a
+// unity-gain element that keeps the recirculating loop gain bounded (§7
+// errata) — turning a clicky impulse into a dispersed cluster without
+// coloring tone.
 struct AllpassDiffuser
 {
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None>
@@ -110,26 +113,14 @@ struct AllpassDiffuser
 
     void reset() { line.reset(); }
 
-    // DEPRECATED — DO NOT USE IN NEW CODE. Computes v = x - g·delayed, giving
-    // H(z) = (z^-D - g)/(1 + g·z^-D), which is NOT a unity-gain allpass — it
-    // resonates with peak (1+g)/(1-g) at the frequencies where cos(ωD) = -1
-    // (the sign error root-caused in commit 80f58e9; see docs/plans/reverb-
-    // audit-and-redesign.md §7 errata). As of the Phase 3B Hall re-tune this
-    // method has NO remaining callers: Hall's input diffusion — its last user,
-    // which had relied on the resonant coloration — was migrated to the
-    // correct processAllpass() below. It is retained (not deleted) only so the
-    // change set stays minimal and any out-of-tree/experimental code that still
-    // links it keeps compiling; deleting it is a later cleanup-phase decision.
-    // Every diffuser in this file (Room input, Hall input, Plate tank, ER bus)
-    // now uses processAllpass().
-    inline float process(float x)
-    {
-        const float delayed = line.popSample(0,
-            static_cast<float>(delaySamples), true);
-        const float v = x - coeff * delayed;
-        line.pushSample(0, v);
-        return -coeff * v + delayed;
-    }
+    // NOTE: an earlier process() here computed v = x - g·delayed, giving
+    // H(z) = (z^-D - g)/(1 + g·z^-D) — NOT a unity-gain allpass. It resonated
+    // with peak (1+g)/(1-g) at the frequencies where cos(ωD) = -1, and was
+    // the sign error root-caused in commit 80f58e9 (the Plate runaway; see
+    // docs/plans/reverb-audit-and-redesign.md §7 errata). Removed in the
+    // Phase 5 cleanup once every diffuser in this file (Room input, Hall
+    // input, Plate tank, ER bus) had migrated to processAllpass() below —
+    // do not reintroduce the `x - coeff * delayed` form.
 
     // Correct unity-gain Schroeder allpass: v = x + g·delayed →
     // H(z) = (z^-D - g)/(1 - g·z^-D), |H| = 1 at every frequency. Required for
@@ -529,7 +520,7 @@ constexpr float kHallInputGains16[kHallNumLines] = {
     -0.95f, +1.02f, -1.06f, +0.97f, -0.93f, +1.05f, -0.99f, +1.01f
 };
 
-// ── Stereo output taps (Phase 3B stereo re-derivation) ─────────────────────
+// ── Stereo output taps (Phase 3B stereo re-derivation, commit c625beb) ─────
 // The old design summed the SAME 16 line outputs into L and R with two
 // near-anti-parallel gain vectors (kHallOutputGainsL16/R16, dot product
 // ≈ -0.977). Because those vectors were essentially -1×permutations of each
@@ -607,7 +598,7 @@ constexpr float kHallEnh16HfTiltCoeff    = 0.30f;   // stage-B fixed LPF (gentle
 // Phase 2 equal-loudness calibration: measured pink-noise wet RMS at the
 // calibration setting was 0.137012 vs the Generic-enhanced reference's
 // 0.123408 (+0.91 dB), giving the Phase 2 trim 0.9007.
-// Phase 3B RECALIBRATION: the Hall re-tune (defective process() → true
+// Phase 3B RECALIBRATION (commit c625beb): the Hall re-tune (defective process() → true
 // processAllpass() input diffusion) removed the old pairing's resonant
 // amplification (|H| peaked at up to ~5.7× at its resonances), which had been
 // inflating Hall's wet level. Wet RMS at the calibration setting fell to
@@ -624,8 +615,8 @@ constexpr int kHallNumErTaps = 10;
 
 // ─── Plate backend constants — true Dattorro (JAES 1997) plate ───────────
 //
-// Phase 1 rewrite (see docs/plans/reverb-audit-and-redesign.md §6 Phase 1
-// and §7 errata). The tank is Dattorro's cross-coupled figure-8 plate:
+// Phase 1 rewrite, commit a11fa84 (see docs/plans/reverb-audit-and-redesign.md
+// §6 Phase 1 and §7 errata). The tank is Dattorro's cross-coupled figure-8 plate:
 // two arms, four long tank delays, decay applied INSIDE each arm, tank
 // modulation on the first allpass of each arm, and 7 interleaved output
 // taps per channel spanning all four delays. Topology per arm:
@@ -2411,10 +2402,31 @@ private:
                 Nar{0.0f,    100.0f,   0.0f, 1.0f  }, 50.0f,    "%"),
             std::make_unique<Apf>(Pid{"damping",   1}, "Damping",
                 Nar{0.0f,    100.0f,   0.0f, 1.0f  }, 50.0f,    "%"),
+            // mod_rate is a 0–100% SCALAR that scales each backend's per-line
+            // LFO-rate TABLE (kGenericModRates / kHallModRates / kHallModRates16
+            // / kPlateModRateA_Hz+kPlateModRateB_Hz, all in Hz) — it is NOT
+            // itself a Hz value, unlike delay/chorus/flanger's mod_rate. (Display
+            // metadata for this param used to live in the now-deleted
+            // StockParameterCatalog.cpp, which mislabeled the unit "Hz"/log; the
+            // APVTS range here has always been the authority: 0–100% linear.)
             std::make_unique<Apf>(Pid{"mod_rate",  1}, "Mod Rate",
                 Nar{0.0f,    100.0f,   0.0f, 1.0f  }, 30.0f,    "%"),
             std::make_unique<Apf>(Pid{"mod_depth", 1}, "Mod Depth",
                 Nar{0.0f,    100.0f,   0.0f, 1.0f  }, 20.0f,    "%"),
+            // er_level / er_late keep the same APVTS ids and range on every
+            // style (no save/load or bridge/UI break) but change MEANING per
+            // style:
+            //   • Generic / Room / Hall (FDN backends) — er_level scales the
+            //     early-reflection tap bus, er_late scales the FDN late-tail
+            //     bus: literally "ER level" / "(ER routed to) late level".
+            //   • Plate (processBlockPlate) — there are no discrete ER taps.
+            //     er_level instead blends the 4-stage input-diffusion cascade
+            //     against the raw pre-delay signal ("bloom blend": how much
+            //     front-end diffusion smears the attack); er_late scales the
+            //     7-tap tank output level ("tank level"). See the per-style
+            //     mapping comment above processBlockPlate(). ReverbPanel.jsx
+            //     relabels these two knobs per style using this same mapping
+            //     (UI text only, no engine/bridge surface change).
             std::make_unique<Apf>(Pid{"er_level",  1}, "ER Level",
                 Nar{0.0f,    100.0f,   0.0f, 1.0f  }, 50.0f,    "%"),
             std::make_unique<Apf>(Pid{"er_late",   1}, "Late Level",

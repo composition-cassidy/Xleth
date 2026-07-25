@@ -24,9 +24,9 @@ const KNOBS_ROW2 = [
 ]
 
 // er_level / er_late keep the same APVTS ids on every style (no engine/bridge
-// change) but change MEANING on Plate — engine/src/audio/StockParameterCatalog.cpp
-// documents this per-style semantics table; engine/src/audio/XlethReverbEffect.h
-// has the full mapping comment above processBlockPlate(). On the FDN styles
+// change) but change MEANING on Plate — engine/src/audio/XlethReverbEffect.h
+// documents this per-style semantics table (parameter layout + the mapping
+// comment above processBlockPlate()). On the FDN styles
 // (Generic/Room/Hall) these are literally the early-reflection tap level and
 // the ER-bus-routed-to-late-tail level. On Plate there are no discrete ER
 // taps: er_level instead blends the 4-stage input-diffusion cascade against
