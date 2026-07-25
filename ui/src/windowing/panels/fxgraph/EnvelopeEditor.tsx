@@ -47,6 +47,15 @@ const PREVIEW_W = 196;
 const PREVIEW_H = 54;
 const SLIDER_MS_MAX = 5000;
 const SUSTAIN_VISUAL_FRACTION = 0.28;
+// Extra fraction of the timeline reserved past the release point so the release
+// handle is never pinned to the right edge of the graph — without this, a drag
+// could only ever shrink releaseMs (there was no room to drag further right).
+const RELEASE_HEADROOM_FRACTION = 0.25;
+// Minimum on-screen x gap enforced between adjacent handle affordances (hit-test
+// only — never applied to the drawn curve). With holdMs: 0 the attack and hold
+// handles land on the exact same point and the later-painted one wins every
+// pointer event, making the other permanently unreachable.
+const MIN_HANDLE_GAP_PX = 10;
 
 // Normalizes arbitrary node data into the closed envelope schema. Delegates to the
 // pure graph model so the UI never invents a parallel normalization path.
@@ -115,7 +124,11 @@ export function buildEnvelopeGraphModel(
 
   const active = attack + hold + decay + release;
   const sustainSpan = active > 0 ? active * SUSTAIN_VISUAL_FRACTION : 1;
-  const total = attack + hold + decay + sustainSpan + release || 1;
+  const contentTotal = attack + hold + decay + sustainSpan + release || 1;
+  // The mapping basis (both for drawing and for the inverse drag mapping) is
+  // padded past the release point so there is always draggable room to grow
+  // releaseMs, not just shrink it.
+  const total = contentTotal * (1 + RELEASE_HEADROOM_FRACTION);
   const safeWidth = Math.max(1, finiteOr(width, PREVIEW_W));
   const safeHeight = Math.max(1, finiteOr(height, PREVIEW_H));
 
@@ -136,17 +149,29 @@ export function buildEnvelopeGraphModel(
   const releasePoint = { x: toX(t), y: toY(0) };
 
   const points = [start, attackPoint, holdPoint, decayPoint, sustainPoint, releasePoint];
-  return {
-    points,
-    handles: [
-      { ...attackPoint, handle: 'attack', ariaLabel: 'Attack handle' },
-      { ...holdPoint, handle: 'hold', ariaLabel: 'Hold handle' },
-      { ...decayPoint, handle: 'decay', ariaLabel: 'Decay handle' },
-      { ...sustainPoint, handle: 'sustain', ariaLabel: 'Sustain handle' },
-      { ...releasePoint, handle: 'release', ariaLabel: 'Release handle' },
-    ],
-    totalMs: total,
-  };
+  const handles = withMinimumHandleSeparation([
+    { ...attackPoint, handle: 'attack' as const, ariaLabel: 'Attack handle' },
+    { ...holdPoint, handle: 'hold' as const, ariaLabel: 'Hold handle' },
+    { ...decayPoint, handle: 'decay' as const, ariaLabel: 'Decay handle' },
+    { ...sustainPoint, handle: 'sustain' as const, ariaLabel: 'Sustain handle' },
+    { ...releasePoint, handle: 'release' as const, ariaLabel: 'Release handle' },
+  ]);
+  return { points, handles, totalMs: total };
+}
+
+// Nudges handle hit-targets apart when the underlying values put two or more at
+// the same x (e.g. attack/hold both at 0). This only changes where the circle
+// affordance is drawn/hit-tested — the curve itself (`points`) is untouched, so
+// it never distorts the model being edited.
+function withMinimumHandleSeparation(
+  handles: EnvelopeGraphHandlePoint[],
+): EnvelopeGraphHandlePoint[] {
+  const result = handles.map((handle) => ({ ...handle }));
+  for (let i = 1; i < result.length; i++) {
+    const minX = result[i - 1].x + MIN_HANDLE_GAP_PX;
+    if (result[i].x < minX) result[i].x = round2(minX);
+  }
+  return result;
 }
 
 export function buildEnvelopePreviewPoints(
@@ -161,6 +186,12 @@ export function envelopePreviewPolyline(points: PreviewPoint[]): string {
   return points.map((point) => `${point.x},${point.y}`).join(' ');
 }
 
+// `data` must be a snapshot frozen for the whole gesture (captured once at
+// pointerdown), not the live value being edited. buildEnvelopeGraphModel derives
+// totalMs from these same fields, so if `data` moves as the dragged field
+// changes, the x/time axis rescales under the cursor mid-gesture and the
+// mapping never converges. Passing a frozen snapshot makes the map a pure
+// function of cursor position alone.
 export function mapEnvelopeGraphDragToPatch(
   data: Pick<EnvelopeNodeData, 'attackMs' | 'holdMs' | 'decayMs' | 'sustain' | 'releaseMs'>,
   handle: EnvelopeGraphHandle,
@@ -266,6 +297,15 @@ export function EnvelopeRangeControl({
   onChange,
 }: EnvelopeRangeControlProps) {
   const sliderValue = Math.min(rangeMax, Math.max(rangeMin, finiteOr(value, rangeMin)));
+  // Uncontrolled (defaultValue): the browser renders the live thumb position as the
+  // user drags, but we only read the value and commit once — on release (pointerup),
+  // on blur, or after a keyboard step (keyup) — mirroring the macro-value slider's
+  // commit-on-release pattern elsewhere in this file. This keeps every intermediate
+  // tick out of the store entirely instead of pushing an update (and an undo
+  // transaction, and an IPC persist) per pointermove.
+  const commitSlider = (event: React.SyntheticEvent<HTMLInputElement>) => {
+    commitNumber(onChange, fieldKey, event.currentTarget.value);
+  };
   return (
     <label className="xleth-graph-state-preview__envelope-range">
       <span className="xleth-graph-state-preview__envelope-range-header">
@@ -279,16 +319,14 @@ export function EnvelopeRangeControl({
           min={rangeMin}
           max={rangeMax}
           step={step}
-          value={sliderValue}
+          defaultValue={sliderValue}
           aria-label={`${ariaLabel} slider`}
           onPointerDown={(event) => event.stopPropagation()}
-          onChange={(event) => {
-            const next = Number(event.currentTarget.value);
-            if (Number.isFinite(next)) onChange({ [fieldKey]: next });
-          }}
+          onPointerUp={commitSlider}
+          onBlur={commitSlider}
+          onKeyUp={commitSlider}
         />
         <input
-          key={`${fieldKey}-${value}`}
           className="xleth-graph-state-preview__envelope-input xleth-graph-state-preview__envelope-input--compact"
           type="number"
           min={min}
@@ -317,19 +355,24 @@ export function EnvelopeAhdsrGraph({
   onChange?: ((patch: EnvelopeNodePatch) => void) | null;
 }) {
   const svgRef = React.useRef<SVGSVGElement | null>(null);
-  const dragRef = React.useRef<{ handle: EnvelopeGraphHandle; pointerId: number } | null>(null);
-  const model = buildEnvelopeGraphModel(data, PREVIEW_W, PREVIEW_H);
+  // The basis is a snapshot of the AHDSR fields frozen at pointerdown. Every
+  // pointermove for this gesture maps against that same basis, so the mapping is
+  // a pure function of cursor position — dragging attackMs can't feed back into
+  // the totalMs the cursor position is measured against.
+  type DragBasis = Pick<EnvelopeNodeData, 'attackMs' | 'holdMs' | 'decayMs' | 'sustain' | 'releaseMs'>;
+  const dragRef = React.useRef<{ handle: EnvelopeGraphHandle; pointerId: number; basis: DragBasis } | null>(null);
+  // Local-only preview of the in-flight drag; never written to the store. Commit
+  // happens exactly once, on pointerup, so no IPC/undo transaction fires per move.
+  const [dragPatch, setDragPatch] = React.useState<EnvelopeNodePatch | null>(null);
+
+  const previewData = dragPatch ? { ...data, ...dragPatch } : data;
+  const model = buildEnvelopeGraphModel(previewData, PREVIEW_W, PREVIEW_H);
   const polyline = envelopePreviewPolyline(model.points);
 
-  const applyDrag = React.useCallback((handle: EnvelopeGraphHandle, event: React.PointerEvent<SVGElement>) => {
-    if (!svgRef.current || !onChange) return;
-    const rect = svgRef.current.getBoundingClientRect();
-    const point = {
-      x: event.clientX - rect.left,
-      y: event.clientY - rect.top,
-    };
-    onChange(mapEnvelopeGraphDragToPatch(data, handle, point, rect.width || PREVIEW_W, rect.height || PREVIEW_H));
-  }, [data, onChange]);
+  const pointFromEvent = (event: React.PointerEvent<SVGElement>) => {
+    const rect = svgRef.current?.getBoundingClientRect();
+    return { x: event.clientX - (rect?.left ?? 0), y: event.clientY - (rect?.top ?? 0) };
+  };
 
   return (
     <svg
@@ -351,7 +394,14 @@ export function EnvelopeAhdsrGraph({
         if (!drag || drag.pointerId !== event.pointerId) return;
         event.preventDefault();
         event.stopPropagation();
-        applyDrag(drag.handle, event);
+        const rect = svgRef.current?.getBoundingClientRect();
+        setDragPatch(mapEnvelopeGraphDragToPatch(
+          drag.basis,
+          drag.handle,
+          pointFromEvent(event),
+          rect?.width || PREVIEW_W,
+          rect?.height || PREVIEW_H,
+        ));
       }}
       onPointerUp={(event) => {
         const drag = dragRef.current;
@@ -360,9 +410,16 @@ export function EnvelopeAhdsrGraph({
         event.stopPropagation();
         dragRef.current = null;
         svgRef.current?.releasePointerCapture?.(event.pointerId);
+        // Only commit if the pointer actually moved — a plain click must not
+        // persist the whole graph over IPC and push an undo entry for nothing.
+        if (dragPatch && onChange) onChange(dragPatch);
+        setDragPatch(null);
       }}
       onPointerCancel={(event) => {
-        if (dragRef.current?.pointerId === event.pointerId) dragRef.current = null;
+        if (dragRef.current?.pointerId === event.pointerId) {
+          dragRef.current = null;
+          setDragPatch(null);
+        }
       }}
     >
       <line
@@ -388,11 +445,11 @@ export function EnvelopeAhdsrGraph({
           role="slider"
           aria-label={handle.ariaLabel}
           onPointerDown={(event) => {
+            if (!onChange) return;
             event.preventDefault();
             event.stopPropagation();
-            dragRef.current = { handle: handle.handle, pointerId: event.pointerId };
+            dragRef.current = { handle: handle.handle, pointerId: event.pointerId, basis: data };
             svgRef.current?.setPointerCapture?.(event.pointerId);
-            applyDrag(handle.handle, event);
           }}
         />
       ))}

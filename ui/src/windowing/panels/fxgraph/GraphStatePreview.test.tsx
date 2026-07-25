@@ -1756,7 +1756,7 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
     expect(onChange).toHaveBeenCalledWith({ attackMs: 25 });
   });
 
-  it('slider controls update attack, hold, decay, sustain, release, and amount', () => {
+  it('slider controls commit attack, hold, decay, sustain, release, and amount on release, not per tick', () => {
     const cases = [
       ['Attack', 'attackMs', 10, 250, 'Attack ms slider'],
       ['Hold', 'holdMs', 0, 125, 'Hold ms slider'],
@@ -1781,7 +1781,11 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
         onChange,
       });
       const slider = findElementByAriaLabel(element, ariaLabel)!;
-      slider.props.onChange({ currentTarget: { value: String(next) } });
+      // The slider is uncontrolled — no onChange fires per tick, so nothing is
+      // committed until the gesture ends (pointerup / blur / keyup).
+      expect(slider.props.onChange).toBeUndefined();
+      slider.props.onPointerUp({ currentTarget: { value: String(next) } });
+      expect(onChange).toHaveBeenCalledTimes(1);
       expect(onChange).toHaveBeenCalledWith({ [fieldKey]: next });
     }
   });
@@ -1802,7 +1806,7 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
     });
     const slider = findElementByAriaLabel(element, 'Attack ms slider')!;
     const input = findElementByAriaLabel(element, 'Attack ms')!;
-    expect(slider.props.value).toBe(5000);
+    expect(slider.props.defaultValue).toBe(5000);
     expect(input.props.defaultValue).toBe(9000);
   });
 
@@ -1946,7 +1950,11 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
     const before = JSON.stringify(data);
     const model = buildEnvelopeGraphModel(data, 196, 54);
     expect(model.totalMs).toBeGreaterThan(0);
-    expect(model.points[5].x).toBe(196);
+    // The release point sits short of the right edge (headroom is reserved past
+    // it) so a drag can grow releaseMs, not just shrink it — it must never be
+    // pinned to the width, which would make growth impossible.
+    expect(model.points[5].x).toBeLessThan(196);
+    expect(model.points[5].x).toBeGreaterThan(0);
     expect(JSON.stringify(data)).toBe(before);
   });
 
