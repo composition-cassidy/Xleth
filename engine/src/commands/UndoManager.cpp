@@ -3,10 +3,23 @@
 
 UndoManager::UndoManager(int maxHistory) : maxHistory_(maxHistory) {}
 
+void UndoManager::setPostMutationHook(std::function<void()> hook) {
+    postMutationHook_ = std::move(hook);
+}
+
+void UndoManager::firePostMutationHook() const {
+    if (postMutationHook_) postMutationHook_();
+}
+
 void UndoManager::execute(std::unique_ptr<Command> cmd, Timeline& timeline) {
     const std::string desc = cmd->describe();
     cmd->execute(timeline);
-    if (!cmd->shouldRecordInUndoHistory()) return;
+    // A command that opts out of undo history has still mutated the timeline, so
+    // the hook must fire on this path too.
+    if (!cmd->shouldRecordInUndoHistory()) {
+        firePostMutationHook();
+        return;
+    }
 
     // Branch detection (pre-push): if the savepoint lies in the redo history
     // we're about to discard, the savepoint command is being destroyed.
@@ -42,6 +55,8 @@ void UndoManager::execute(std::unique_ptr<Command> cmd, Timeline& timeline) {
     std::cout << "[Undo] Execute '" << desc << "'"
               << " | undo=" << undoStack_.size()
               << " redo=" << redoStack_.size() << "\n";
+
+    firePostMutationHook();
 }
 
 bool UndoManager::undo(Timeline& timeline) {
@@ -59,6 +74,8 @@ bool UndoManager::undo(Timeline& timeline) {
     std::cout << "[Undo] Undo '" << desc << "'"
               << " | undo=" << undoStack_.size()
               << " redo=" << redoStack_.size() << "\n";
+
+    firePostMutationHook();
     return true;
 }
 
@@ -71,13 +88,18 @@ bool UndoManager::redo(Timeline& timeline) {
     auto& cmd = redoStack_.back();
     const std::string desc = cmd->describe();
     cmd->execute(timeline);
-    if (!cmd->shouldRecordInUndoHistory()) return false;
+    if (!cmd->shouldRecordInUndoHistory()) {
+        firePostMutationHook();
+        return false;
+    }
     undoStack_.push_back(std::move(cmd));
     redoStack_.pop_back();
 
     std::cout << "[Undo] Redo '" << desc << "'"
               << " | undo=" << undoStack_.size()
               << " redo=" << redoStack_.size() << "\n";
+
+    firePostMutationHook();
     return true;
 }
 

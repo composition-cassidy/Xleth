@@ -2047,9 +2047,15 @@ export function collectMacroParameterWrites(graphState, macroNodeId, macroValue)
 // untouched instead of erasing it. These helpers deliberately
 // mirror canConnectMacroToParameter / connectMacroToParameter / collectMacroParameterWrites
 // rather than generalizing them, so the established Macro path is never disturbed.
-// Disconnect reuses disconnectParameterEdge (source-agnostic). Runtime drive is
-// deferred to EVC-R2 — collectEnvelopeParameterWrites exists for that phase + tests
-// but is never called from a renderer drive path in EVC-R1.
+// Disconnect reuses disconnectParameterEdge (source-agnostic).
+//
+// RUNTIME LIVES IN THE ENGINE. The Envelope is evaluated on the audio thread against
+// the authoritative transport position — see engine/src/model/EnvelopeParameterModulation.h
+// and MixEngine::refreshEnvelopeDefinitions. The renderer's only runtime role is to
+// persist the definition in graphState, which the engine already reads. There is
+// deliberately no renderer drive path any more: the one that existed evaluated the
+// ADSR against a wall-clock estimate of the transport and pushed one scalar per edge
+// per frame over four IPC layers.
 // ---------------------------------------------------------------------------
 
 export function canConnectEnvelopeToParameter(graphState, connectionDraft) {
@@ -2166,11 +2172,17 @@ export function connectEnvelopeToParameter(graphState, connectionDraft, options 
   }
 }
 
-// Pure resolver for EVC-R2 runtime drive (and tests). Given an envelope node id and
-// a normalized envelope output value (0..1), returns the parameter writes its enabled
-// outgoing parameter edges produce, mapped through each edge's mapping. Mirrors
-// collectMacroParameterWrites; reports disabled/invalid/unresolved/read-only edges
-// under `skipped` instead of throwing.
+// Pure resolver: given an envelope node id and a normalized envelope output value
+// (0..1), returns the parameter writes its enabled outgoing parameter edges produce,
+// mapped through each edge's mapping. Mirrors collectMacroParameterWrites; reports
+// disabled/invalid/unresolved/read-only edges under `skipped` instead of throwing.
+//
+// This is NOT a runtime drive path and must not become one — the engine evaluates and
+// applies envelope modulation now. It is kept as the renderer-side executable
+// specification of the edge skip semantics (disabled / invalid_target / missing_node /
+// missing_effect_instance / missing_exposed_port / read_only) and the base+depth
+// mapping, which xleth::envmod::parseGraphStateEnvelopes mirrors on the engine side.
+// Its tests are the parity reference for that port.
 //
 // EVC-R4 — because envelope edges carry a modulation mapping, envelopeValue == 0 makes every
 // produced write exactly the edge's `base`. That is the whole stop/idle story: there is no

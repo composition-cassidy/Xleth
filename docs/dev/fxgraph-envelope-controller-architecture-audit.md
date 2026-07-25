@@ -87,6 +87,53 @@
 > package-lock changes; no per-voice branch revival; Macro runtime untouched.** See the "EVC-R2-r3"
 > section in [`fxgraph-architecture.md`](fxgraph-architecture.md).
 >
+> **EVC-E (done) — evaluation moved into the engine, and the renderer evaluator deleted.**
+> The RUNTIME half of EVC-R2/-r1/-r2/-r3 above is now **superseded**. Everything those
+> sections describe about *where* and *when* the envelope is evaluated is history; the
+> persisted schema (EVC-R1/EVC-R4) and the node UI (EVC-R3) are unchanged and still current.
+>
+> The renderer drive was structurally unable to be correct: it evaluated the ADSR against a
+> **wall-clock estimate** of the transport (`PlayheadClock`, re-anchored by a 250 ms poll with
+> a ±30 ms deadband) and pushed one scalar per edge per frame across four IPC layers. Measured
+> consequences: a ~250 ms dead zone after every Play, over-run of up to ~217 ms on every loop
+> wrap, a permanent ±30 ms phase error, ~38 Hz effective drive degrading with each added link,
+> and a renderer note reconstruction that disagreed with the engine on held-over notes,
+> slide notes, mute/solo, and — a real behavior bug — the **block-end note-off clamp**
+> (`absNoteOff = min(onset + duration, blockEnd)`), which the renderer omitted, so a gate
+> could ring past the note the engine had already released.
+>
+> Evaluation now happens in the engine against `Transport::getRenderPositionSamples()`, with
+> gates derived using `MixEngine::triggerPatternNotes`' own arithmetic and mute/solo taken from
+> the same `xleth::buildRoutePlan` closure the mixer applies. Definitions are parsed off-thread
+> from the already-persisted opaque `TrackInfo::graphState` (**no new bridge surface**) and
+> published as an immutable snapshot via an epoch-based RCU; the audio thread only reads it and
+> writes lock-free mailboxes. Because evaluation is a pure function of position, play-start,
+> loop wrap, seek and stop are correct by construction rather than by correction.
+>
+> **This is NOT a revival of the EVC-R0 per-voice branch, and the revert reason still stands.**
+> EVC-R0 retired the per-voice `voiceGain` **target**, not engine-side **evaluation** — the
+> audit's own §1 argues for the latter. No retired file returns; there is no per-voice state,
+> no `maxVoices`, no steal policy, no Sampler involvement. One Envelope node still yields ONE
+> value, with overlapping notes/clips collapsed into gate regions, driving an exposed effect
+> parameter through `GraphParameterTarget`. Note that §7's "Why renderer-only global-parameter
+> writing is rejected" and §8's EVC.4–EVC.6 phase table describe the retired per-voice design
+> and are historical; the engine-side hookup that actually shipped is described in the report.
+>
+> Deleted in this phase: `ui/src/fxgraph/envelopePlayback.js`,
+> `ui/src/fxgraph/envelopeModulation.js` (and both test files), and the
+> `applyEnvelopeModulationAtTick` / `driveEnvelopeParameterEdges` /
+> `resetEnvelopeModulationRuntime` store actions with their runtime cache — so exactly one
+> evaluator exists and two can never disagree. New: `engine/src/model/EnvelopeParameterModulation.{h,cpp}`,
+> `MixEngine::refreshEnvelopeDefinitions()`, `UndoManager::setPostMutationHook()`, and a
+> value-only graph-parameter write path that skips the per-write latency/PDC recompute unless
+> the chain's latency epoch actually changed. Tests:
+> `engine/test/test_envelope_parameter_modulation.cpp` and
+> `engine/test/test_envelope_modulation_engine.cpp`. Full write-up:
+> [`fxgraph-envelope-engine-evaluation-report.md`](fxgraph-envelope-engine-evaluation-report.md).
+>
+> Stage durations remain **milliseconds** (tempo is not an evaluator input); the single hook
+> point for a future tempo-synced option is `envelopeShapeToSamples()`.
+>
 > **Future work** is the sibling control sources (LFO, Peak Follower) and further modulation UX
 > ergonomics, not a return to per-voice `voiceGain`. See the corrected Envelope Controller
 > sections for EVC-R1, EVC-R2, EVC-R2-r1, EVC-R2-r2, EVC-R2-r3, and EVC-R3 in

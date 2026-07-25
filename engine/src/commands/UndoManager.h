@@ -1,5 +1,6 @@
 #pragma once
 #include "Command.h"
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -50,7 +51,25 @@ public:
     void markSavepoint();
     bool isDirty() const;
 
+    // ─── Post-mutation hook ───────────────────────────────────────────────────
+    // Invoked once after every execute / undo / redo that actually changed the
+    // timeline. Exists so engine-side derived state that depends on timeline
+    // CONTENT (not just on chains or routing) has a single, complete refresh
+    // point instead of a call bolted onto every mutation handler.
+    //
+    // Every timeline mutation goes through this class by project invariant, so a
+    // hook here cannot be bypassed by a new command type — which is exactly the
+    // property per-handler wiring lacks.
+    //
+    // Main/message thread only. The hook must not throw and must not mutate the
+    // timeline (it runs while the command stacks are consistent but unlocked).
+    void setPostMutationHook(std::function<void()> hook);
+
 private:
+    void firePostMutationHook() const;
+
+    std::function<void()> postMutationHook_;
+
     std::vector<std::unique_ptr<Command>> undoStack_;
     std::vector<std::unique_ptr<Command>> redoStack_;
     int maxHistory_;

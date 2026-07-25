@@ -24,7 +24,6 @@ import { labelHexColor } from '../constants/labels.js'
 import { normalizeTrackCustomColor } from './timeline/trackColorResolver.js'
 import { subscribe } from '../transportStore.js'
 import { startMacroAutomationPlayback } from '../fxgraph/macroAutomationPlayback.js'
-import { startEnvelopePlayback } from '../fxgraph/envelopePlayback.js'
 import useEffectChainStore from '../stores/effectChainStore.js'
 import { playheadClock } from '../services/PlayheadClock.js'
 import { editCursor } from '../services/EditCursor.js'
@@ -779,11 +778,6 @@ export default function TimelineView({
   const [patternBlocks, setPatternBlocks] = useState([])
   const [patterns, setPatterns] = useState({})        // { [id]: pattern }
   const [selectedBlockIds, setSelectedBlockIds] = useState(new Set())
-  // EVC-R2 — live snapshot of the timeline data the Envelope modulation playback
-  // controller reads to reconstruct per-track note/clip triggers. Updated each render so
-  // the once-mounted controller (see useEffect below) always sees current data.
-  const envelopeTriggerDataRef = useRef({ clips: [], patternBlocks: [], patterns: {} })
-  envelopeTriggerDataRef.current = { clips: clipsRef.current, patternBlocks, patterns }
 
   // ── Transport state ────────────────────────────────────────────────────────
   const [isPlaying, setIsPlaying] = useState(false)
@@ -1582,12 +1576,13 @@ export default function TimelineView({
   // parameter edges. Mounted once for the app session; no audio-thread work.
   useEffect(() => startMacroAutomationPlayback(), [])
 
-  // EVC-R2 — drive Envelope-to-parameter modulation at control rate. Reuses the same
-  // transport poller as macro automation; while playing it reconstructs each graph-mode
-  // track's note/clip triggers from the live timeline snapshot and drives each Envelope
-  // node's ADSR output through its connected parameter edges. Mounted once; on stop it
-  // flushes connected parameters to 0. No audio-thread work, no graphState mutation.
-  useEffect(() => startEnvelopePlayback({ getTriggerData: () => envelopeTriggerDataRef.current }), [])
+  // Envelope-to-parameter modulation has NO renderer drive. The Envelope Controller
+  // is evaluated in the engine, on the audio thread, against the authoritative
+  // transport position — see engine/src/model/EnvelopeParameterModulation.h and
+  // MixEngine::refreshEnvelopeDefinitions. The renderer's only remaining job is to
+  // persist the definition in graphState, which timeline.setTrackGraphState already
+  // does. Do not add a second evaluator here: two evaluators can disagree, and the
+  // renderer's could only ever be an estimate of the clock the engine owns.
 
   // ── PlayheadClock 60fps auto-scroll ─────────────────────────────────────────
   // Playhead drawing is handled by TimelineCanvas and TimelineRuler directly.

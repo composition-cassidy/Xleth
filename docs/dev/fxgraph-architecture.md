@@ -1067,6 +1067,75 @@ does not actually have, so both are **removed** as active behavior.
   `effectChains`/Mixer-Chain mutation, no graph-to-chain return, no React Flow, no
   `NodeEditor.jsx`/`nodeGraphStore.js`.
 
+### EVC-E — envelope evaluation moved into the engine (renderer evaluator deleted)
+
+> **This supersedes the RUNTIME of EVC-R2 / EVC-R2-r1 / EVC-R2-r2 / EVC-R2-r3 above.** Those
+> sections' descriptions of *where* and *when* the envelope is evaluated — the `PlayheadClock`
+> 60 Hz drive, the latest-wins in-flight guard, the non-reactive last-value cache, the stop
+> pass, the renderer trigger reconstruction — are now **history**. The persisted schema
+> (EVC-R1/EVC-R4) and the node UI (EVC-R3, incl. the Include-slide-notes control) are unchanged
+> and still current.
+
+- **Why.** The renderer drive could not be correct in principle: it evaluated the ADSR against a
+  **wall-clock estimate** of the transport (`PlayheadClock`, re-anchored by a 250 ms poll with a
+  ±30 ms deadband) and pushed one scalar per edge per frame across four IPC layers. Measured:
+  ~250 ms dead zone after every Play, up to ~217 ms over-run on every loop wrap, permanent ±30 ms
+  phase error, ~38 Hz effective drive degrading with each added link, and a note reconstruction
+  that disagreed with the engine on held-over notes, slide notes, mute/solo, and the
+  **block-end note-off clamp** (`absNoteOff = min(onset + duration, blockEnd)`) — a real behavior
+  bug, since the renderer's gate could ring past a note the engine had already released.
+- **Where it lives now.** `engine/src/model/EnvelopeParameterModulation.{h,cpp}` (pure: schema
+  parse, gate merge, closed-form ADSR, base+depth mapping, gate derivation from the Timeline,
+  snapshot build) plus `MixEngine::refreshEnvelopeDefinitions()` /
+  `MixEngine::evaluateEnvelopeModulation()` / `MixEngine::applyPendingEnvelopeModulation()`.
+- **Definition transport: no new bridge surface.** The engine parses the copy of `graphState` it
+  was *already* storing opaquely in `TrackInfo::graphState`. Refresh is triggered by a new
+  `UndoManager::setPostMutationHook()` (complete by construction — every timeline mutation goes
+  through UndoManager, so notes/blocks/clips/mute/solo and undo/redo are all covered) plus explicit
+  calls from the two non-undo-tracked setters `timeline_setTrackGraphState` and
+  `timeline_setTrackFxMode`. **Never per-block.**
+- **Audio-thread safety.** Definitions are published as an immutable snapshot through an
+  epoch-based RCU: the audio thread bumps an epoch before loading the pointer once per block, and
+  the message thread frees a retired snapshot only once the epoch has moved past publication (or
+  no thread is inside the evaluator). Mailboxes live inside the snapshot, so their lifetime is the
+  snapshot's. The audio thread performs **no allocation, no locks, no logging, and no frees**.
+- **Correct by construction.** Evaluation is a pure function of `Transport::getRenderPositionSamples()`,
+  so play-start is right on the first rendered sample, a loop wrap cannot over-run, and a seek
+  lands at the right phase — none of it by correction after the fact. Gates use
+  `MixEngine::triggerPatternNotes`' own arithmetic; mute/solo uses the same `xleth::buildRoutePlan`
+  closure the mixer applies.
+- **Still one value per Envelope node.** Overlapping notes/clips collapse into gate regions;
+  nothing is summed, averaged, or maxed. **No per-voice state, no `maxVoices`, no steal policy, no
+  Sampler involvement** — this is emphatically not a revival of the retired EVC.4–EVC.6 branch.
+  EVC-R0 retired the per-voice `voiceGain` *target*, not engine-side *evaluation*.
+- **Application hop.** The audio thread publishes into a lock-free mailbox; an engine-owned applier
+  thread performs the parameter write, because the write path
+  (`setValueNotifyingHost`, `XlethEffectBase::setParameterValue` — documented main-thread only,
+  SEH-guarded VST3 calls, a possible `rebuildImmediate()`) is not realtime-safe. So evaluation is
+  sample-accurate; the parameter *reaches* the effect at applier rate. Shortening that last hop for
+  smoother-backed stock effects is possible future work and needs a per-effect
+  `onParameterValueChanged` audit; VST3 targets cannot take that path.
+- **Value-only writes.** `MixEngine::setGraphEffectParameterNormalizedValueOnly()` skips the
+  per-write `refreshLivePresentationLatency()` / `pendingLatencyCompensationReset_` that the
+  user-driven RPC does, requesting a PDC reset only when the chain's **latency epoch** actually
+  changed. The RPC path is unchanged.
+- **Units.** Stage durations stay **milliseconds**; tempo is not an evaluator input, so a tempo
+  change never rescales an envelope. A future tempo-synced option hooks into
+  `envelopeShapeToSamples()` — the single place the unit domain is interpreted. Not built.
+- **Deleted (renderer).** `ui/src/fxgraph/envelopePlayback.js` and
+  `ui/src/fxgraph/envelopeModulation.js` with both test files; the
+  `applyEnvelopeModulationAtTick` / `driveEnvelopeParameterEdges` /
+  `resetEnvelopeModulationRuntime` store actions and their module-level runtime cache; the
+  `startEnvelopePlayback` mount and `envelopeTriggerDataRef` in `TimelineView.jsx`. There is now
+  exactly **one** evaluator, so two can never disagree. `collectEnvelopeParameterWrites` survives
+  with no runtime consumer as the renderer-side executable spec of the edge skip semantics that
+  `parseGraphStateEnvelopes` mirrors.
+- **Tests.** `engine/test/test_envelope_parameter_modulation.cpp` (pure evaluator, mapping, skip
+  semantics, legacy migration) and `engine/test/test_envelope_modulation_engine.cpp` (gates from a
+  real Timeline, snapshot construction, play-start / loop wrap / seek / stop through `processBlock`,
+  concurrent snapshot swaps). Full write-up:
+  [`fxgraph-envelope-engine-evaluation-report.md`](fxgraph-envelope-engine-evaluation-report.md).
+
 ### EVC.2 — envelope node graphState schema (inert) — reworked by EVC-R1
 
 > The EVC.2 renderer-side schema was **reworked by EVC-R1** from a per-voice `voiceGain` target

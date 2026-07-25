@@ -388,6 +388,10 @@ MixEngine::MixEngine()
 
 MixEngine::~MixEngine()
 {
+    // Stop the envelope applier before anything else tears down: it writes to
+    // effect chains, so it must not be running while they are destroyed.
+    stopEnvelopeApplierThread();
+
     // Stop and join the reaper thread first. The loop drains any queued
     // coordinators before exiting (reaperStop_ && empty → return).
     {
@@ -1937,6 +1941,11 @@ void MixEngine::prepare(double sampleRate, int maxBlockSize)
 
     // Phase C: clear any per-clip vibrato readhead state on device prepare.
     clipModReader_.resetAllStates();
+
+    // The envelope applier is the non-realtime last hop of the modulation path.
+    // Starting it here (rather than in the constructor) keeps it off in
+    // model-only tests that never prepare an audio device.
+    startEnvelopeApplierThread();
 }
 
 void MixEngine::setDiagnosticTapSink(DiagnosticTapSink* sink)
@@ -2283,6 +2292,11 @@ void MixEngine::syncTrackSlotsFromTimeline(bool snapVolumeSmoothers)
         if (snapVolumeSmoothers)
             volumeSmoothed_[i].setCurrentAndTargetValue(t->volume);
     }
+
+    // Envelope gates are muted/soloed with the track they follow, so the snapshot
+    // has to be rebuilt whenever the slot params are resynced (which is what every
+    // mute/solo/volume mutation already calls).
+    refreshEnvelopeDefinitions();
 }
 
 void MixEngine::syncSidechainTargetBuses()
@@ -3160,6 +3174,229 @@ std::string MixEngine::setGraphEffectParameterNormalized(int trackId, const std:
     if (out.value("ok", false))
         pendingLatencyCompensationReset_.store(true, std::memory_order_release);
     return out.dump();
+}
+
+bool MixEngine::setGraphEffectParameterNormalizedValueOnly(int trackId,
+                                                          const std::string& effectInstanceId,
+                                                          const std::string& parameterId,
+                                                          double normalizedValue)
+{
+    if (trackId < 0) return false;
+
+    bool ok = false;
+    bool latencyChanged = false;
+    {
+        std::lock_guard<std::mutex> lock(chainsMutex_);
+        auto it = effectChains_.find(trackId);
+        if (it == effectChains_.end() || !it->second) return false;
+
+        // Compare the chain's latency epoch across the write: a value-only write
+        // that did not move the effect's reported latency needs no PDC recompute.
+        const std::uint64_t epochBefore = it->second->getLatencyEpoch();
+        nlohmann::json out = it->second->setGraphEffectParameterNormalized(
+            effectInstanceId, parameterId, static_cast<float>(normalizedValue));
+        ok = out.value("ok", false);
+        latencyChanged = it->second->getLatencyEpoch() != epochBefore;
+    }
+
+    if (ok && latencyChanged)
+        pendingLatencyCompensationReset_.store(true, std::memory_order_release);
+    return ok;
+}
+
+// ── FX Graph Envelope Controller → parameter modulation ──────────────────────
+
+void MixEngine::refreshEnvelopeDefinitions()
+{
+    if (timeline_ == nullptr) {
+        std::lock_guard<std::mutex> lock(envelopeSnapshotMutex_);
+        envelopeSnapshotLive_.store(nullptr, std::memory_order_release);
+        if (envelopeSnapshotOwner_) {
+            envelopeSnapshotRetired_.emplace_back(
+                std::move(envelopeSnapshotOwner_),
+                envelopeAudioEpoch_.load(std::memory_order_acquire));
+        }
+        return;
+    }
+
+    // Parse + gate derivation happens entirely here, on the message thread.
+    auto next = xleth::envmod::buildEnvelopeModulationSnapshot(*timeline_);
+
+    std::lock_guard<std::mutex> lock(envelopeSnapshotMutex_);
+
+    // Publish, then retire the previous snapshot with the epoch observed NOW.
+    // Ordering matters: the store must be the release, so an audio thread that
+    // sees the new pointer also sees a fully constructed snapshot.
+    auto previous = std::move(envelopeSnapshotOwner_);
+    envelopeSnapshotOwner_ = next;
+    envelopeSnapshotLive_.store(next.get(), std::memory_order_release);
+
+    const std::uint64_t epochAtPublish = envelopeAudioEpoch_.load(std::memory_order_acquire);
+    if (previous)
+        envelopeSnapshotRetired_.emplace_back(std::move(previous), epochAtPublish);
+
+    // Deferred destruction. A retired snapshot is unreachable from the audio
+    // thread once EITHER holds:
+    //   * the audio epoch has moved past the publication epoch — the audio thread
+    //     has begun a block that started after the new pointer was stored, so it
+    //     cannot still be holding the old one; or
+    //   * no audio thread is inside the evaluator at all — a thread entering from
+    //     now on can only load the new pointer, because the store above already
+    //     happened.
+    const std::uint64_t epochNow = envelopeAudioEpoch_.load(std::memory_order_acquire);
+    const bool inBlock = envelopeAudioInBlock_.load(std::memory_order_acquire);
+    envelopeSnapshotRetired_.erase(
+        std::remove_if(envelopeSnapshotRetired_.begin(), envelopeSnapshotRetired_.end(),
+                       [epochNow, inBlock](const auto& entry) {
+                           return epochNow > entry.second || !inBlock;
+                       }),
+        envelopeSnapshotRetired_.end());
+}
+
+std::shared_ptr<const xleth::envmod::EnvelopeModulationSnapshot>
+MixEngine::getEnvelopeModulationSnapshotForTesting() const
+{
+    std::lock_guard<std::mutex> lock(envelopeSnapshotMutex_);
+    return envelopeSnapshotOwner_;
+}
+
+void MixEngine::evaluateEnvelopeModulation(int64_t positionSamples,
+                                           double  bpm,
+                                           double  sampleRate,
+                                           bool    atRest) noexcept
+{
+    // Bump the epoch BEFORE loading the pointer, and hold the in-block flag for
+    // exactly as long as the snapshot pointer is live in this frame. Everything
+    // below is a read of immutable memory plus relaxed atomic stores: no
+    // allocation, no locks, no logging, no system calls.
+    envelopeAudioEpoch_.fetch_add(1, std::memory_order_acq_rel);
+
+    struct InBlockScope
+    {
+        std::atomic<bool>& flag;
+        explicit InBlockScope(std::atomic<bool>& f) : flag(f)
+        {
+            flag.store(true, std::memory_order_release);
+        }
+        ~InBlockScope() { flag.store(false, std::memory_order_release); }
+    } inBlockScope{envelopeAudioInBlock_};
+
+    const auto* snapshot = envelopeSnapshotLive_.load(std::memory_order_acquire);
+    if (snapshot == nullptr) return;
+    if (snapshot->mailboxes == nullptr || snapshot->mailboxCount <= 0) return;
+    if (!(bpm > 0.0) || !(sampleRate > 0.0)) return;
+
+    const int edgeCount = static_cast<int>(snapshot->edges.size());
+
+    for (const auto& envelope : snapshot->envelopes)
+    {
+        const auto shape = xleth::envmod::envelopeShapeToSamples(envelope.shape, sampleRate);
+
+        // atRest is the stop release: publish env == 0, which every modulation
+        // mapping turns into exactly its authored `base`. There is no value this
+        // path can write that discards the user's parameter setting.
+        double env = 0.0;
+        if (!atRest) {
+            const auto gates = xleth::envmod::makeGateView(envelope.gates);
+            env = xleth::envmod::evaluateEnvelopeAtSample(
+                shape, gates, positionSamples, bpm, sampleRate);
+        }
+
+        for (int i = 0; i < envelope.edgeCount; ++i)
+        {
+            const int edgeIndex = envelope.edgeOffset + i;
+            if (edgeIndex < 0 || edgeIndex >= edgeCount) break;
+
+            const auto& edge = snapshot->edges[edgeIndex];
+            if (edge.mailboxIndex < 0 || edge.mailboxIndex >= snapshot->mailboxCount) continue;
+
+            const double value = xleth::envmod::evaluateModulationMapping(edge.mapping, env);
+
+            auto& mailbox = snapshot->mailboxes[edge.mailboxIndex];
+            mailbox.value.store(static_cast<float>(value), std::memory_order_relaxed);
+            mailbox.seq.fetch_add(1, std::memory_order_release);
+        }
+    }
+}
+
+int MixEngine::applyPendingEnvelopeModulation()
+{
+    std::shared_ptr<const xleth::envmod::EnvelopeModulationSnapshot> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(envelopeSnapshotMutex_);
+        snapshot = envelopeSnapshotOwner_;
+    }
+    if (!snapshot || snapshot->mailboxCount <= 0 || snapshot->mailboxes == nullptr)
+        return 0;
+
+    // A new snapshot resets the per-mailbox seq tracking (indices are only
+    // meaningful within one snapshot). The value dedupe is keyed by target
+    // identity, so it survives the rebuild and an unchanged parameter is not
+    // rewritten just because the graph was edited elsewhere.
+    if (envelopeDrainedSnapshot_ != snapshot) {
+        envelopeDrainedSnapshot_ = snapshot;
+        envelopeDrainedSeqs_.assign(static_cast<std::size_t>(snapshot->mailboxCount), 0u);
+    }
+
+    int written = 0;
+    for (int i = 0; i < snapshot->mailboxCount; ++i)
+    {
+        const std::uint32_t seq = snapshot->mailboxes[i].seq.load(std::memory_order_acquire);
+        // seq == 0 means the audio thread has never evaluated this mailbox (the
+        // transport has not run since publication), so there is nothing to apply
+        // and the parameter keeps its authored value.
+        if (seq == 0) continue;
+        if (seq == envelopeDrainedSeqs_[static_cast<std::size_t>(i)]) continue;
+        envelopeDrainedSeqs_[static_cast<std::size_t>(i)] = seq;
+
+        const float value = snapshot->mailboxes[i].value.load(std::memory_order_relaxed);
+        const auto& target = snapshot->mailboxTargets[static_cast<std::size_t>(i)];
+
+        EnvelopeApplierKey key;
+        key.trackId          = target.trackId;
+        key.effectInstanceId = target.effectInstanceId;
+        key.parameterId      = target.parameterId;
+
+        auto it = envelopeAppliedValues_.find(key);
+        if (it != envelopeAppliedValues_.end() && std::fabs(it->second - value) <= 1.0e-5f)
+            continue;
+
+        if (setGraphEffectParameterNormalizedValueOnly(
+                target.trackId, target.effectInstanceId, target.parameterId, value)) {
+            envelopeAppliedValues_[key] = value;
+            ++written;
+        }
+    }
+
+    return written;
+}
+
+void MixEngine::startEnvelopeApplierThread()
+{
+    if (envelopeApplierRunning_.exchange(true)) return;
+
+    envelopeApplierThread_ = std::thread([this] {
+        // The applier is the last hop only. Evaluation already happened on the
+        // audio thread at sample accuracy; this thread exists solely because the
+        // parameter write path (juce parameter setters, SEH-guarded plugin calls,
+        // a possible graph rebuild) is not realtime-safe and must not run inside
+        // the audio callback.
+        while (envelopeApplierRunning_.load(std::memory_order_acquire))
+        {
+            const int written = applyPendingEnvelopeModulation();
+            // Back off when idle so a stopped transport costs almost nothing,
+            // and stay tight while modulation is actually moving.
+            std::this_thread::sleep_for(written > 0 ? std::chrono::milliseconds(1)
+                                                   : std::chrono::milliseconds(10));
+        }
+    });
+}
+
+void MixEngine::stopEnvelopeApplierThread()
+{
+    if (!envelopeApplierRunning_.exchange(false)) return;
+    if (envelopeApplierThread_.joinable())
+        envelopeApplierThread_.join();
 }
 
 std::string MixEngine::getEffectParameters(int trackId, int nodeId) const
@@ -4102,6 +4339,15 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         std::fill(std::begin(tailEndSamples_), std::end(tailEndSamples_), int64_t(0));
         std::fill(std::begin(tailBelowThreshRun_), std::end(tailBelowThreshRun_), int64_t(0));
         clipModReader_.resetAllStates();
+
+        // Envelope stop RELEASE. Publish the at-rest (env == 0) value for every
+        // modulated parameter, which each edge's modulation mapping maps to exactly
+        // its authored `base`. Modulation ceases and the user's parameter setting
+        // stands — there is no destructive value this path can write.
+        evaluateEnvelopeModulation(transport.getRenderPositionSamples(),
+                                   transport.getBPM(),
+                                   transport.getSampleRate(),
+                                   /*atRest=*/true);
     }
     wasPlaying_ = isPlaying;
 
@@ -4160,6 +4406,18 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     const int64_t position  = transport.getRenderPositionSamples();
     const int64_t bufStart  = position;
     const int64_t bufEnd    = position + numSamples;
+
+    // Envelope Controller → parameter modulation, evaluated on the authoritative
+    // clock. Placed here, before any track or effect processing, so the values
+    // published for this block belong to this block's transport position.
+    //
+    // Everything that made the retired renderer drive wrong is structurally absent:
+    // the position is the real render position (not a wall-clock estimate re-anchored
+    // by a poll), the gates are the engine's own note math, and evaluation is a pure
+    // function of position — so the first rendered sample after Play is already
+    // correct, a loop wrap cannot over-run, and a seek lands at the right phase.
+    evaluateEnvelopeModulation(bufStart, bpm, sampleRate, /*atRest=*/false);
+
     auto* diagnosticTapSink = diagnosticTapSink_;
     const uint64_t diagnosticBlockIndex =
         diagnosticTapSink != nullptr ? diagnosticTapBlockIndex_++ : 0;

@@ -6,6 +6,7 @@
 
 #include "model/TimelineTypes.h"
 #include "model/Timeline.h"
+#include "model/EnvelopeParameterModulation.h"
 #include "SampleBank.h"
 #include "Transport.h"
 #include "Sampler.h"
@@ -618,6 +619,60 @@ public:
                                                   const std::string& parameterId,
                                                   double normalizedValue);
 
+    // VALUE-ONLY graph parameter write. Same effect on the parameter as
+    // setGraphEffectParameterNormalized, but it does NOT unconditionally request a
+    // latency-compensation reset. The user-driven RPC path can afford that reset on
+    // every write; a continuous modulation source cannot — it would re-run
+    // syncSidechainTargetBuses() and the whole PDC recompute at the modulation rate
+    // (the MixEngine.cpp / XlethEngineService.cpp cost this path exists to avoid).
+    //
+    // Correctness is preserved rather than traded away: the chain's latency EPOCH is
+    // compared across the write, and the reset is requested only when the parameter
+    // actually moved the effect's reported latency. A value-only write that changes
+    // no latency needs no PDC work, so skipping it is not an optimization with a
+    // caveat — it is the accurate amount of work.
+    //
+    // Returns true when the parameter was written. Main/applier thread only —
+    // takes chainsMutex_, so NEVER call from the audio thread.
+    bool setGraphEffectParameterNormalizedValueOnly(int trackId,
+                                                   const std::string& effectInstanceId,
+                                                   const std::string& parameterId,
+                                                   double normalizedValue);
+
+    // ── FX Graph Envelope Controller → parameter modulation ─────────────
+    //
+    // Ownership split (docs/dev/fxgraph-envelope-controller-architecture-audit.md §1):
+    // the Envelope's DEFINITION is renderer-owned and rides the already-persisted
+    // opaque TrackInfo::graphState — no new bridge surface exists or is needed —
+    // while its EVALUATION happens here, against the authoritative transport clock
+    // and the same note gates MixEngine::triggerPatternNotes acts on.
+    //
+    // Three threads, strictly separated:
+    //   message  refreshEnvelopeDefinitions() parses graphState + derives gates and
+    //            publishes an immutable snapshot.
+    //   audio    processBlock() reads the snapshot and writes mailbox atomics.
+    //   applier  applyPendingEnvelopeModulation() drains mailboxes into parameters.
+
+    // Rebuild and publish the envelope snapshot from the current Timeline. Call
+    // after any mutation that can change an envelope definition or its gates:
+    // graphState set, fxMode change, project load, undo/redo, and pattern / note /
+    // block / clip / mute / solo edits. Cheap and idempotent when nothing changed.
+    // NEVER call from processBlock (audio thread) — it allocates.
+    void refreshEnvelopeDefinitions();
+
+    // Drain every mailbox whose value the audio thread has updated since the last
+    // drain, and write it to its graph-owned effect parameter through the
+    // value-only path above. Returns the number of parameters written.
+    //
+    // Public so tests can drive the applier deterministically instead of racing a
+    // background thread; the applier thread calls exactly this.
+    // Main/applier thread only.
+    int applyPendingEnvelopeModulation();
+
+    // Test/diagnostic read of the live snapshot. Never call from the audio thread.
+    std::shared_ptr<const xleth::envmod::EnvelopeModulationSnapshot>
+    getEnvelopeModulationSnapshotForTesting() const;
+
     // ── Effect parameter / meter access (main thread only) ──────────────
     // Per-track: returns "[]" / false / "[0,0,0,0]" if chain/node not found.
     std::string getEffectParameters(int trackId, int nodeId) const;
@@ -777,6 +832,89 @@ private:
     std::uint64_t cachedMasterLatencyEpoch_ = 0;
     std::atomic<bool> pendingLatencyCompensationReset_{false};
     mutable xleth::audio::AudioPerformanceTelemetry audioPerformanceTelemetry_;
+
+    // ── Envelope Controller → parameter modulation state ────────────────
+    //
+    // Publication is an epoch-based RCU, not a lock and not a "probably long
+    // enough" buffer ring:
+    //
+    //   * envelopeSnapshotLive_ is the ONLY thing the audio thread reads. It loads
+    //     the pointer once per block into a local, so it can never observe a
+    //     half-published snapshot.
+    //   * envelopeAudioEpoch_ is bumped by the audio thread at the START of every
+    //     block, before it loads the pointer.
+    //   * The message thread publishes a new pointer, then retires the old one
+    //     TOGETHER WITH the epoch observed at publication time. A retired snapshot
+    //     is destroyed only once the audio epoch has moved past that value, which
+    //     proves the audio thread has entered a block that cannot have loaded it.
+    //
+    // The audio thread therefore never allocates, never frees, never locks, and
+    // never blocks the message thread. Freeing always happens on the message
+    // thread, on the next refresh.
+    std::atomic<const xleth::envmod::EnvelopeModulationSnapshot*> envelopeSnapshotLive_{nullptr};
+    std::atomic<std::uint64_t> envelopeAudioEpoch_{0};
+    // True only while the audio thread is inside evaluateEnvelopeModulation. Lets a
+    // retired snapshot be freed immediately when no audio thread is running at all
+    // (offline tests, no audio device), instead of piling up until the next block.
+    // Sound because the live pointer is stored BEFORE this is read: a thread that
+    // enters afterwards can only load the new snapshot.
+    std::atomic<bool> envelopeAudioInBlock_{false};
+    // Message-thread-owned strong references. envelopeSnapshotOwner_ keeps the
+    // live snapshot alive; envelopeSnapshotRetired_ defers destruction of the
+    // previous ones until the audio thread has provably moved on.
+    std::shared_ptr<const xleth::envmod::EnvelopeModulationSnapshot> envelopeSnapshotOwner_;
+    std::vector<std::pair<std::shared_ptr<const xleth::envmod::EnvelopeModulationSnapshot>,
+                          std::uint64_t>> envelopeSnapshotRetired_;
+    mutable std::mutex envelopeSnapshotMutex_;   // message/applier threads only
+
+    // Applier-side last-written value, keyed by target identity (NOT by mailbox
+    // index) so a snapshot rebuild does not resend every parameter, and a target
+    // that keeps its identity across an unrelated graph edit stays de-duplicated.
+    struct EnvelopeApplierKey
+    {
+        int         trackId = -1;
+        std::string effectInstanceId;
+        std::string parameterId;
+        bool operator==(const EnvelopeApplierKey& o) const
+        {
+            return trackId == o.trackId
+                && effectInstanceId == o.effectInstanceId
+                && parameterId == o.parameterId;
+        }
+    };
+    struct EnvelopeApplierKeyHash
+    {
+        std::size_t operator()(const EnvelopeApplierKey& k) const
+        {
+            std::size_t h = std::hash<int>{}(k.trackId);
+            h ^= std::hash<std::string>{}(k.effectInstanceId) + 0x9e3779b9 + (h << 6) + (h >> 2);
+            h ^= std::hash<std::string>{}(k.parameterId) + 0x9e3779b9 + (h << 6) + (h >> 2);
+            return h;
+        }
+    };
+    std::unordered_map<EnvelopeApplierKey, float, EnvelopeApplierKeyHash> envelopeAppliedValues_;
+    // Per-mailbox seq last drained, so an unchanged value is never rewritten. Mailbox
+    // INDICES are only meaningful within one snapshot, so the seq table is reset whenever
+    // the snapshot changes. The identity is held as a strong reference, not a raw pointer:
+    // a raw pointer could be compared equal to a freshly allocated snapshot that happened
+    // to reuse the freed address, which would skip the reset and then index a stale,
+    // possibly shorter, seq table.
+    std::vector<std::uint32_t> envelopeDrainedSeqs_;
+    std::shared_ptr<const xleth::envmod::EnvelopeModulationSnapshot> envelopeDrainedSnapshot_;
+
+    std::thread             envelopeApplierThread_;
+    std::atomic<bool>       envelopeApplierRunning_{false};
+
+    // AUDIO THREAD. Evaluate every published envelope at this block's transport
+    // position and publish the mapped values. `atRest` publishes the env == 0
+    // values instead (each edge's authored base) — the stop release.
+    void evaluateEnvelopeModulation(int64_t positionSamples,
+                                    double  bpm,
+                                    double  sampleRate,
+                                    bool    atRest) noexcept;
+
+    void startEnvelopeApplierThread();
+    void stopEnvelopeApplierThread();
 
     struct RealtimeDiagnosticsState
     {

@@ -212,6 +212,7 @@ add_library(XlethEngineModel STATIC
     src/model/PatternBlock.cpp
     src/model/Timeline.cpp
     src/model/VideoFlipResolver.cpp
+    src/model/EnvelopeParameterModulation.cpp
     src/model/ClipModulationEvaluator.cpp
     src/model/ClipCompanionFxBuilder.cpp
     src/import/FscScoreParser.cpp
@@ -517,6 +518,19 @@ target_link_libraries(test_video_flip_resolver PRIVATE
     XlethEngineModel
 )
 
+# ── test_envelope_parameter_modulation ────────────────────────────────────────
+# Pure evaluator for the FX Graph Envelope Controller as a graph-owned parameter
+# modulation source: graphState parse, gate-region merge, closed-form ADSR, and
+# the base + signed-depth mapping. Model-only — links solely against
+# XlethEngineModel. The MixEngine integration is covered by test_mix.
+add_executable(test_envelope_parameter_modulation
+    test/test_envelope_parameter_modulation.cpp
+)
+
+target_link_libraries(test_envelope_parameter_modulation PRIVATE
+    XlethEngineModel
+)
+
 # ── test_canvas_fit ───────────────────────────────────────────────────────────
 # Pure geometry for crop/stretch/letterbox of the project canvas into an export
 # of a different aspect ratio (render/CanvasFit.h). Header-only, no GPU — links
@@ -777,6 +791,39 @@ target_compile_definitions(test_mix PRIVATE
 # MixEngine pulls in heavier JUCE + audio headers than the lighter test targets.
 # 8 MB stack prevents STATUS_STACK_OVERFLOW during JUCE static initialisation.
 target_link_options(test_mix PRIVATE /STACK:8388608)
+
+# ── test_envelope_modulation_engine ──────────────────────────────────────────
+# MixEngine-level tests for the FX Graph Envelope Controller → parameter
+# modulation path: authoritative gate derivation from the Timeline, snapshot
+# construction (graph mode / mute / solo), and the audio-thread published values
+# across play-start, loop wrap, seek and stop. Same link/stack shape as test_mix.
+add_executable(test_envelope_modulation_engine
+    test/test_envelope_modulation_engine.cpp
+)
+
+target_link_libraries(test_envelope_modulation_engine PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_envelope_modulation_engine PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+target_link_options(test_envelope_modulation_engine PRIVATE /STACK:8388608)
 
 # ── test_mixer_bus_routing ───────────────────────────────────────────────────
 # Prompt 2B: audible output-route bus summing in MixEngine::processBlock.
@@ -1953,6 +2000,8 @@ set(XLETH_ENGINE_TESTS
     test_render_scope
     test_tail_render
     test_video_flip_resolver
+    test_envelope_parameter_modulation
+    test_envelope_modulation_engine
     test_canvas_fit
     test_video_flip_applier
     test_flip_determinism

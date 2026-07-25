@@ -4111,6 +4111,21 @@ JsonApi::Value Initialize(const JsonApi::CallbackInfo& info)
         });
     }
 
+    // Rebuild the FX Graph Envelope Controller snapshot after every timeline
+    // mutation. Envelope gates are derived from notes, pattern blocks, clips and
+    // mute/solo, so ANY timeline edit — including undo/redo — can change them.
+    // Hooking UndoManager rather than each mutation handler makes that complete
+    // by construction: every timeline mutation goes through UndoManager by project
+    // invariant, so a future command type is covered without touching this wiring.
+    // The two direct (non-undo-tracked) Timeline setters that also matter,
+    // setTrackGraphState and setTrackFxMode, call the refresh themselves.
+    {
+        auto* ae = audioEngine.get();
+        g_undoManager->setPostMutationHook([ae] {
+            if (ae) ae->getMixEngine().refreshEnvelopeDefinitions();
+        });
+    }
+
     // Sync transport BPM from timeline default
     audioEngine->getTransport().setBPM(g_timeline->getBPM());
 
@@ -7035,6 +7050,10 @@ JsonApi::Value Timeline_SetTrackFxMode(const JsonApi::CallbackInfo& info)
     BridgeCallLog log("timeline.setTrackFxMode");
 
     const bool ok = g_timeline->setTrackFxMode(trackId, mode);
+    // Envelope modulation is active only for graph-mode tracks, so switching mode
+    // arms or disarms this track's envelopes.
+    if (ok && audioEngine)
+        audioEngine->getMixEngine().refreshEnvelopeDefinitions();
     log.done(ok ? trackFxModeToString(mode) : "track-not-found");
     return JsonApi::Boolean::New(env, ok);
 }
@@ -7059,6 +7078,12 @@ JsonApi::Value Timeline_SetTrackGraphState(const JsonApi::CallbackInfo& info)
     BridgeCallLog log("timeline.setTrackGraphState");
 
     const bool ok = g_timeline->setTrackGraphState(trackId, graphState);
+    // The engine still stores graphState opaquely — it is never interpreted here.
+    // But the Envelope Controller's DEFINITION lives inside it, so the engine-side
+    // envelope snapshot has to be rebuilt whenever it changes. This is the whole
+    // renderer→engine channel the feature needs: no new bridge surface.
+    if (ok && audioEngine)
+        audioEngine->getMixEngine().refreshEnvelopeDefinitions();
     log.done(ok ? "stored" : "track-not-found");
     return JsonApi::Boolean::New(env, ok);
 }
