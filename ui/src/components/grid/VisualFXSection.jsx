@@ -13,7 +13,7 @@ const NC_ITEMS = [
 
 const CHAIN_NAMES = {
   0: 'Desaturation', 1: 'Tint', 2: 'Brightness & Contrast',
-  3: 'TV Simulator', 4: 'Zoom/Pan/Rot (per-cell)',
+  3: 'TV Simulator', 4: 'Zoom/Pan/Rot (per-cell)', 5: 'Chroma Key',
 }
 
 export default function VisualFXSection({ track, fetchTracks }) {
@@ -180,7 +180,8 @@ export default function VisualFXSection({ track, fetchTracks }) {
             onToggle={() => handleToggleChain(fxIdx)}
             onRemove={() => handleRemoveChain(fxIdx)}
           >
-            <ChainableEffectParams fx={fx} trackId={track.id} fxIdx={fxIdx} fetchTracks={fetchTracks} />
+            <ChainableEffectParams fx={fx} trackId={track.id} fxIdx={fxIdx}
+              chain={chain} fetchTracks={fetchTracks} />
           </EffectRow>
         ))}
       </div>

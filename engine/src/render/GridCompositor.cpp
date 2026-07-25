@@ -18,6 +18,7 @@
 #include "shaders/FX_ZoomPanRotationPS.h"
 #include "shaders/FX_VibratoSwirlPS.h"
 #include "shaders/FX_ScratchWaveSmearPS.h"
+#include "shaders/FX_ChromaKeyPS.h"
 #include "shaders/SnapshotTransitionPS.h"
 
 #include "model/TimelineTypes.h"  // VisualEffect
@@ -408,6 +409,21 @@ bool GridCompositor::createPipelineState()
         return false;
     }
 
+    // Straight overwrite (blending disabled) for the offscreen effect-chain
+    // passes. Rationale in processEffectChain — in short, blending a pass that
+    // emits alpha < 1 against a cleared target premultiplies its RGB, while
+    // every downstream reader treats the render target as straight alpha.
+    D3D11_BLEND_DESC opaqueDesc = {};
+    opaqueDesc.RenderTarget[0].BlendEnable          = FALSE;
+    opaqueDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+
+    hr = device_->CreateBlendState(&opaqueDesc, &opaqueBlendState_);
+    if (FAILED(hr)) {
+        std::fprintf(stderr, "[Compositor] Failed to create opaque blend state, HR=0x%08X\n",
+                     static_cast<unsigned int>(hr));
+        return false;
+    }
+
     // Linear sampler with clamp
     D3D11_SAMPLER_DESC samplerDesc = {};
     samplerDesc.Filter         = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
@@ -662,10 +678,14 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
         // passes use orientation=0 (identity).
         ID3D11ShaderResourceView* cellSRV = entry->srv.Get();
 
-        // Visual effect chain — skipped entirely when effectsBypass_ is set
-        // (fast preview mode). Gap, bounce, corner-radius and opacity are
-        // handled outside this block and are never bypassed.
-        if (!effectsBypass_ && !req.visualChain.empty()) {
+        // Visual effect chain. effectsBypass_ (fast preview mode) is honoured
+        // per-effect INSIDE processEffectChain rather than by skipping the call
+        // outright, so bypass-exempt effects — Chroma Key — still run. Chains
+        // with nothing exempt still cost zero: processEffectChain's fast path
+        // returns sourceSRV before acquiring a render target. Gap, bounce,
+        // corner-radius and opacity are handled outside this block and are
+        // never bypassed.
+        if (!req.visualChain.empty()) {
             // Compute cell pixel dimensions from UV rect and output resolution
             int cellPixelW = std::max(1, static_cast<int>(rw * width_));
             int cellPixelH = std::max(1, static_cast<int>(rh * height_));
@@ -772,9 +792,22 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
                             deviceCtx_->Unmap(constantBuffer_.Get(), 0);
                         }
                     }
+                    // Straight overwrite for the primary blit so a keyed cell's
+                    // alpha survives verbatim (see processEffectChain). The
+                    // secondary blit below deliberately restores alpha blending
+                    // — that blend IS the crossfade.
+                    const float ppBlendFactor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+                    deviceCtx_->OMSetBlendState(opaqueBlendState_.Get(), ppBlendFactor, 0xFFFFFFFF);
                     drawEffectPass(cellSRV);
+                    deviceCtx_->OMSetBlendState(blendState_.Get(), ppBlendFactor, 0xFFFFFFFF);
 
-                    // Blit secondary frame at blend opacity on top (alpha blending overlays it)
+                    // Blit secondary frame at blend opacity on top (alpha blending overlays it).
+                    // KNOWN v1 LIMITATION: the secondary frame is the raw
+                    // decoded frame, never routed through the effect chain, so
+                    // on a track running both Ping-Pong Loop and Chroma Key the
+                    // crossfade mixes an UNKEYED frame over the keyed one for
+                    // the duration of the blend. Keying the secondary frame
+                    // needs its own chain pass and is out of scope here.
                     {
                         D3D11_MAPPED_SUBRESOURCE mapped{};
                         if (SUCCEEDED(deviceCtx_->Map(constantBuffer_.Get(), 0,
@@ -1485,6 +1518,13 @@ bool EffectShaderCache::init(ID3D11Device* device)
         return false;
     }
 
+    hr = device->CreatePixelShader(g_FX_ChromaKeyPS, sizeof(g_FX_ChromaKeyPS),
+                                   nullptr, &chromaKeyPS);
+    if (FAILED(hr)) {
+        std::fprintf(stderr, "[EffectShaders] Failed: ChromaKey PS\n");
+        return false;
+    }
+
     hr = device->CreatePixelShader(g_SnapshotTransitionPS, sizeof(g_SnapshotTransitionPS),
                                    nullptr, &transitionPS);
     if (FAILED(hr)) {
@@ -1500,11 +1540,13 @@ bool EffectShaderCache::init(ID3D11Device* device)
     if (!createEffectCB(device, 16, zoomPanRotCB,  "ZoomPanRotation")) return false;
     if (!createEffectCB(device, 32, vibratoSwirlCB, "VibratoSwirl"))   return false;
     if (!createEffectCB(device, 32, scratchWaveSmearCB, "ScratchWaveSmear")) return false;
+    // 32 bytes = params[0..7]: keyRGB + tolerance | softness, spill, choke, edgeBlur.
+    if (!createEffectCB(device, 32, chromaKeyCB,   "ChromaKey"))         return false;
     if (!createEffectCB(device, sizeof(TransitionConstants), transitionCB,
                         "SnapshotTransition")) return false;
 
     initialized = true;
-    std::fprintf(stderr, "[EffectShaders] All 8 effect shaders + CBs created\n");
+    std::fprintf(stderr, "[EffectShaders] All 9 effect shaders + CBs created\n");
     return true;
 }
 
@@ -1517,6 +1559,7 @@ void EffectShaderCache::shutdown()
     zoomPanRotPS.Reset();
     vibratoSwirlPS.Reset();
     scratchWaveSmearPS.Reset();
+    chromaKeyPS.Reset();
     transitionPS.Reset();
     desatCB.Reset();
     tintCB.Reset();
@@ -1525,6 +1568,7 @@ void EffectShaderCache::shutdown()
     zoomPanRotCB.Reset();
     vibratoSwirlCB.Reset();
     scratchWaveSmearCB.Reset();
+    chromaKeyCB.Reset();
     transitionCB.Reset();
     initialized = false;
 }
@@ -1597,6 +1641,13 @@ ID3D11ShaderResourceView* GridCompositor::processCompanionFx(
     cellVP.MinDepth = 0.0f;
     cellVP.MaxDepth = 1.0f;
     deviceCtx_->RSSetViewports(1, &cellVP);
+
+    // Straight-alpha discipline, same as processEffectChain (see the long
+    // comment there). Companion FX can run downstream of a Chroma Key pass, so
+    // blending its offscreen passes against a cleared target would premultiply
+    // an already-keyed cell and darken the matte edge. Restored before return.
+    const float companionBlendFactor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    deviceCtx_->OMSetBlendState(opaqueBlendState_.Get(), companionBlendFactor, 0xFFFFFFFF);
 
     // Blit the current cell texture into RT_A. Intermediate companion passes
     // use identity orientation; final orientation is still applied by drawCell().
@@ -1687,12 +1738,29 @@ ID3D11ShaderResourceView* GridCompositor::processCompanionFx(
     deviceCtx_->PSSetShaderResources(0, 1, &nullSRV);
     deviceCtx_->OMSetRenderTargets(1, &nullRTV, nullptr);
 
+    // Restore the caller's alpha-blend state for the final composite.
+    deviceCtx_->OMSetBlendState(blendState_.Get(), companionBlendFactor, 0xFFFFFFFF);
+
     return currentSrc;
 }
 
 // ===========================================================================
 // processEffectChain — apply visual effect chain via ping-pong RTs
 // ===========================================================================
+
+// True for effects that must keep running under setEffectsBypass(true).
+//
+// The bypass is a preview-SPEED optimisation and every other chainable effect
+// is cosmetic — dropping it makes the preview plainer, which is the intended
+// trade. Chroma Key is categorically different: it decides which pixels EXIST.
+// Skipping it does not render the cell plainly, it renders the green screen the
+// user is keying out, which also hides whatever layer sits behind the cell. The
+// composite would be structurally wrong rather than merely less pretty, so the
+// keyer stays on and fast preview keeps matching the export.
+static bool isChainEffectBypassExempt(VisualEffect::Type type)
+{
+    return type == VisualEffect::Type::ChromaKey;
+}
 
 ID3D11ShaderResourceView* GridCompositor::processEffectChain(
     ID3D11ShaderResourceView* sourceSRV,
@@ -1704,10 +1772,16 @@ ID3D11ShaderResourceView* GridCompositor::processEffectChain(
 {
     if (!initialized_ || !effectShaders_.initialized) return sourceSRV;
 
-    // Fast path: empty chain or all bypassed → zero GPU cost
+    // Fast path: empty chain, all per-effect-bypassed, or (under the global
+    // preview bypass) nothing left that is exempt → zero GPU cost, no RT
+    // acquired. `effectsBypass_` is a uniform for the whole frame, so this
+    // keeps fast-preview cost at exactly zero for chains without a keyer.
     bool anyActive = false;
     for (const auto& fx : chain) {
-        if (!fx.bypassed) { anyActive = true; break; }
+        if (fx.bypassed) continue;
+        if (effectsBypass_ && !isChainEffectBypassExempt(fx.type)) continue;
+        anyActive = true;
+        break;
     }
     if (!anyActive) return sourceSRV;
 
@@ -1732,6 +1806,26 @@ ID3D11ShaderResourceView* GridCompositor::processEffectChain(
     cellVP.MinDepth = 0.0f;
     cellVP.MaxDepth = 1.0f;
     deviceCtx_->RSSetViewports(1, &cellVP);
+
+    // ── Alpha convention: offscreen passes must NOT blend ────────────────────
+    // compositeFrame binds blendState_ (SRC_ALPHA / INV_SRC_ALPHA) for the whole
+    // cell loop. Left bound here, every pass below would blend against a target
+    // cleared to (0,0,0,0), so a pass emitting alpha `a` would store
+    //     rt.rgb = src.rgb*a + 0*(1-a) = src.rgb*a   ← premultiplied
+    //     rt.a   = 1*a       + 0*(1-a) = a
+    // while the next pass and the final drawCell() both read the target as
+    // STRAIGHT alpha and multiply by `a` a second time. With opaque sources
+    // (a == 1) that double-multiply is the identity, which is why it went
+    // unnoticed — but Chroma Key emits a < 1 along every soft matte edge, where
+    // it would show up as a dark fringe exactly where softness and edge blur are
+    // supposed to look their best.
+    //
+    // Binding a straight-overwrite state makes each pass store its output
+    // verbatim, keeping the whole chain in straight alpha. The single
+    // SRC_ALPHA composite in drawCell() then remains the one and only place
+    // alpha is multiplied into RGB. Restored to blendState_ before returning.
+    const float chainBlendFactor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    deviceCtx_->OMSetBlendState(opaqueBlendState_.Get(), chainBlendFactor, 0xFFFFFFFF);
 
     // Step 1: Blit sourceSRV into RT_A (plain copy — flip is applied at final drawCell)
     const float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -1775,6 +1869,8 @@ ID3D11ShaderResourceView* GridCompositor::processEffectChain(
 
     for (const auto& fx : chain) {
         if (fx.bypassed) continue;
+        // Global preview bypass skips every pass except the exempt ones.
+        if (effectsBypass_ && !isChainEffectBypassExempt(fx.type)) continue;
 
         // Select the effect's pixel shader and CB
         ID3D11PixelShader* fxPS = nullptr;
@@ -1796,6 +1892,12 @@ ID3D11ShaderResourceView* GridCompositor::processEffectChain(
             case VisualEffect::Type::TVSimulator:
                 fxPS = effectShaders_.tvSimulatorPS.Get();
                 fxCB = effectShaders_.tvSimCB.Get();
+                break;
+            case VisualEffect::Type::ChromaKey:
+                // params[0..7] land in the 32-byte CB via the generic memcpy
+                // below; see the canonical layout on VisualEffect.
+                fxPS = effectShaders_.chromaKeyPS.Get();
+                fxCB = effectShaders_.chromaKeyCB.Get();
                 break;
             case VisualEffect::Type::ZoomPanRotation: {
                 // Upload animated values from req (or static params[] fallback).
@@ -1907,6 +2009,10 @@ ID3D11ShaderResourceView* GridCompositor::processEffectChain(
     ID3D11ShaderResourceView* nullSRV = nullptr;
     deviceCtx_->PSSetShaderResources(0, 1, &nullSRV);
     deviceCtx_->OMSetRenderTargets(1, &nullRTV, nullptr);
+
+    // Restore the alpha-blend state the caller's cell loop expects, so the
+    // final drawCell() composites this chain's straight-alpha output normally.
+    deviceCtx_->OMSetBlendState(blendState_.Get(), chainBlendFactor, 0xFFFFFFFF);
 
     // currentSrc now points to the SRV of whichever RT has the final output
     return currentSrc;

@@ -996,6 +996,22 @@ int Timeline::addVisualEffect(int trackId, VisualEffect::Type type)
             fx.params[11] = 1.0f;       // rotEasing
             fx.params[12] = 1.70158f;   // overshoot
             break;
+        case VisualEffect::Type::ChromaKey:
+            // Standard digital chroma-key green (#00B140). Picked so that
+            // adding the effect to a track whose video is NOT a green screen is
+            // very close to a no-op: with an all-zero params[] the key colour
+            // would default to black, whose CbCr sits at the origin, and a
+            // tolerance of 0 would then key out every desaturated pixel —
+            // greys, whites and blacks would punch holes in ordinary footage.
+            fx.params[0] = 0.0f;    // keyR
+            fx.params[1] = 0.694f;  // keyG
+            fx.params[2] = 0.251f;  // keyB
+            fx.params[3] = 0.10f;   // tolerance (core)
+            fx.params[4] = 0.22f;   // softness  (edge; must stay > tolerance)
+            fx.params[5] = 0.50f;   // spill suppression
+            fx.params[6] = 0.0f;    // matte choke  (output px, off)
+            fx.params[7] = 0.0f;    // edge blur    (output px, off)
+            break;
         default:
             break;
     }

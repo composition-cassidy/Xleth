@@ -10408,8 +10408,11 @@ JsonApi::Value Timeline_AddVisualEffect(const JsonApi::CallbackInfo& info)
     }
     int trackId    = info[0].As<JsonApi::Number>().Int32Value();
     int effectType = info[1].As<JsonApi::Number>().Int32Value();
-    if (effectType < 0 || effectType > 4) {
-        JsonApi::RangeError::New(env, "effectType must be 0-4").ThrowAsJavaScriptException();
+    // Keep this upper bound in lockstep with VisualEffect::Type (TimelineTypes.h).
+    // A stale bound here fails as a RangeError that the UI's optional-chaining
+    // bridge swallows silently, so the effect just never appears.
+    if (effectType < 0 || effectType > 5) {
+        JsonApi::RangeError::New(env, "effectType must be 0-5").ThrowAsJavaScriptException();
         return env.Undefined();
     }
     BridgeCallLog log("timeline.addVisualEffect");

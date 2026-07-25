@@ -102,6 +102,7 @@ std::string visualEffectTypeToString(VisualEffect::Type t) {
         case VisualEffect::Type::BrightnessContrast: return "BrightnessContrast";
         case VisualEffect::Type::TVSimulator:        return "TVSimulator";
         case VisualEffect::Type::ZoomPanRotation:    return "ZoomPanRotation";
+        case VisualEffect::Type::ChromaKey:          return "ChromaKey";
     }
     return "Desaturation";
 }
@@ -111,6 +112,7 @@ VisualEffect::Type stringToVisualEffectType(const std::string& s) {
     if (s == "BrightnessContrast") return VisualEffect::Type::BrightnessContrast;
     if (s == "TVSimulator")        return VisualEffect::Type::TVSimulator;
     if (s == "ZoomPanRotation")    return VisualEffect::Type::ZoomPanRotation;
+    if (s == "ChromaKey")          return VisualEffect::Type::ChromaKey;
     return VisualEffect::Type::Desaturation;
 }
 
@@ -156,6 +158,16 @@ nlohmann::json visualEffectParamsToNamedJson(VisualEffect::Type type,
             j["panEasing"]      = p[10];
             j["rotEasing"]      = p[11];
             j["overshoot"]      = p[12];
+            break;
+        case VisualEffect::Type::ChromaKey:
+            j["keyR"]       = p[0];
+            j["keyG"]       = p[1];
+            j["keyB"]       = p[2];
+            j["tolerance"]  = p[3];
+            j["softness"]   = p[4];
+            j["spill"]      = p[5];
+            j["choke"]      = p[6];
+            j["edgeBlur"]   = p[7];
             break;
     }
     return j;
@@ -208,6 +220,20 @@ void visualEffectParamsFromNamedJson(VisualEffect::Type type,
             p[10] = j.value("panEasing",      1.0f);
             p[11] = j.value("rotEasing",      1.0f);
             p[12] = j.value("overshoot",      1.70158f);
+            break;
+        case VisualEffect::Type::ChromaKey:
+            // Defaults mirror Timeline::addVisualEffect so a project written by
+            // an older build (no ChromaKey block) still loads as a safe key
+            // rather than an all-zero one, which would treat black as the key
+            // colour and punch holes through every desaturated pixel.
+            p[0] = j.value("keyR",      0.0f);
+            p[1] = j.value("keyG",      0.694f);
+            p[2] = j.value("keyB",      0.251f);
+            p[3] = j.value("tolerance", 0.10f);
+            p[4] = j.value("softness",  0.22f);
+            p[5] = j.value("spill",     0.50f);
+            p[6] = j.value("choke",     0.0f);
+            p[7] = j.value("edgeBlur",  0.0f);
             break;
     }
 }

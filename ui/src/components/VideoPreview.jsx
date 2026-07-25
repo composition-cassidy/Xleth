@@ -8,6 +8,7 @@ import { usePanelVisibility } from '../windowing/contexts/PanelVisibilityContext
 import { uiCanvasFont } from '../styles/typography.js'
 import { getPickerPath, openFilePicker } from './filePicker/filePickerService.js'
 import { VIDEO_EXTENSIONS } from './filePicker/filePickerHelpers.js'
+import { subscribe, completePick, cancelPick } from './grid/chromaKeyEyedropper.js'
 
 // ── WebGL shaders ────────────────────────────────────────────────────────────
 const VERT_SRC = `
@@ -121,6 +122,9 @@ export default function VideoPreview() {
   // Holds the current canvas aspect so the ResizeObserver closure always
   // reads the latest value without being recreated on every outputDims change.
   const canvasAspectRef = useRef(16 / 9)
+  // Populated by the shm effect below; reads one RGBA pixel out of the shared
+  // frame at normalized (0..1) coordinates. Null until shm is open.
+  const pickPixelRef = useRef(null)
   const [videoFile, setVideoFile] = useState(null)
   const [importing, setImporting] = useState(false)
   const [fps, setFps] = useState(0)
@@ -311,6 +315,27 @@ export default function VideoPreview() {
       setMode('shm-error')
       diag.mode = 'shm-error'
       diag.shm.error = String(e?.message || e)
+    }
+
+    // ── Eyedropper pixel read ────────────────────────────────────────────
+    // Samples the shared-memory frame directly. This is the ONLY correct
+    // source: the WebGL context uses preserveDrawingBuffer:false, so reading
+    // the canvas outside its draw call yields garbage. Syncs the freshest
+    // frame rather than reusing the tick's copy so a paused preview still
+    // picks the pixel currently on screen.
+    if (shm) {
+      pickPixelRef.current = (nx, ny) => {
+        const px = Math.min(sabWidth  - 1, Math.max(0, Math.round(nx * (sabWidth  - 1))))
+        const py = Math.min(sabHeight - 1, Math.max(0, Math.round(ny * (sabHeight - 1))))
+        const idx = shm.readIndex()
+        shm.syncFrame(idx)
+        const frame = (idx === 0) ? bufA : bufB
+        if (!frame) return null
+        const o = (py * sabWidth + px) * 4
+        if (o + 2 >= frame.length) return null
+        // shm frames are RGBA (see the pixel-diag labelling above).
+        return { r: frame[o] / 255, g: frame[o + 1] / 255, b: frame[o + 2] / 255 }
+      }
     }
 
     // ── Set up WebGL (fallback: Canvas2D) ────────────────────────────────
@@ -539,6 +564,7 @@ export default function VideoPreview() {
     return () => {
       runningRef.current = false
       tickRef.current = null
+      pickPixelRef.current = null
       window.removeEventListener('xleth-theme-changed', handleThemeChange)
       canvas.removeEventListener('webglcontextlost', onContextLost)
       canvas.removeEventListener('webglcontextrestored', onContextRestored)
@@ -645,6 +671,50 @@ export default function VideoPreview() {
   const posterLoadPct = posterLoad.total > 0
     ? Math.round((posterLoad.completed / posterLoad.total) * 100)
     : 0
+
+  // ── Chroma Key eyedropper ──────────────────────────────────────────────────
+  // While a pick is in flight the canvas takes a crosshair and the next click
+  // resolves the pick with that pixel, read from shared memory (see
+  // pickPixelRef). Escape or a right-click cancels.
+  const [eyedropperActive, setEyedropperActive] = useState(false)
+
+  useEffect(() => subscribe((s) => setEyedropperActive(s.active)), [])
+
+  useEffect(() => {
+    if (!eyedropperActive) return
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const onClick = (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      const rect = canvas.getBoundingClientRect()
+      if (rect.width <= 0 || rect.height <= 0) { cancelPick(); return }
+      // The shm frame is drawn stretched across the whole canvas, so display
+      // coordinates normalize straight onto frame coordinates.
+      const nx = (e.clientX - rect.left) / rect.width
+      const ny = (e.clientY - rect.top)  / rect.height
+      const rgb = pickPixelRef.current?.(nx, ny)
+      if (rgb) completePick(rgb)
+      else cancelPick()
+    }
+    const onKey     = (e) => { if (e.key === 'Escape') cancelPick() }
+    const onContext = (e) => { e.preventDefault(); cancelPick() }
+
+    const prevCursor = canvas.style.cursor
+    canvas.style.cursor = 'crosshair'
+    // Capture phase so the grid-editor overlay cannot swallow the pick click.
+    canvas.addEventListener('click', onClick, true)
+    canvas.addEventListener('contextmenu', onContext, true)
+    window.addEventListener('keydown', onKey)
+
+    return () => {
+      canvas.style.cursor = prevCursor
+      canvas.removeEventListener('click', onClick, true)
+      canvas.removeEventListener('contextmenu', onContext, true)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [eyedropperActive])
 
   return (
     <div className={`video-preview ${videoFile ? 'has-video' : 'is-empty'}`} ref={containerRef}>

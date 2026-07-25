@@ -877,7 +877,8 @@ struct VisualEffect {
         Tint               = 1,
         BrightnessContrast = 2,
         TVSimulator        = 3,
-        ZoomPanRotation    = 4
+        ZoomPanRotation    = 4,
+        ChromaKey          = 5
     };
     Type type   = Type::Desaturation;
     bool bypassed = false;
@@ -891,6 +892,22 @@ struct VisualEffect {
     // ZoomPanRotation:    [0]=startZoom [1]=targetZoom [2]=startPanX [3]=startPanY
     //                     [4]=targetPanX [5]=targetPanY [6]=startRotation [7]=targetRotation
     //                     [8]=durationMs [9]=zoomEasing [10]=panEasing [11]=rotEasing [12]=overshoot
+    // ChromaKey:          [0]=keyR [1]=keyG [2]=keyB   (key colour, linear 0..1)
+    //                     [3]=tolerance      core threshold — CbCr distance fully keyed OUT below this
+    //                     [4]=softness       edge threshold — fully keyed IN above this (must be > [3])
+    //                     [5]=spill          spill suppression amount 0..1 (pulls surviving chroma off the key hue)
+    //                     [6]=choke          matte erode radius, in OUTPUT pixels (see note)
+    //                     [7]=edgeBlur       matte feather radius, in OUTPUT pixels (see note)
+    //   ^ THIS IS THE CANONICAL ChromaKey PARAM LAYOUT. It is hand-duplicated in
+    //     three other places that must be kept in sync — there is no registry:
+    //       1. engine/src/render/shaders/FX_ChromaKey.hlsl  (cbuffer ChromaKeyConstants, b2)
+    //       2. engine/src/render/GridCompositor.cpp         (processEffectChain switch + chromaKeyCB size)
+    //       3. ui/src/components/grid/ChainableEffectParams.jsx (fx.type === 5 param panel)
+    //     v1 NOTE on [6]/[7]: the radii are interpreted in OUTPUT pixels because
+    //     GlobalConstants (b1) carries the output dimensions, not the cell
+    //     dimensions, and plumbing cell dims through is out of scope for v1.
+    //     A cell smaller than the full output therefore erodes/feathers by
+    //     proportionally fewer of its own texels than the slider label implies.
     float params[16] = {};
 };
 

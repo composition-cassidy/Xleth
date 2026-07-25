@@ -12,6 +12,7 @@ const C_ITEMS = [
   { typeId: 2, label: 'Brightness & Contrast'   },
   { typeId: 3, label: 'TV Simulator'            },
   { typeId: 4, label: 'Zoom/Pan/Rot (per-cell)' },
+  { typeId: 5, label: 'Chroma Key'              },
 ]
 
 export default function VisualFXAddDropdown({

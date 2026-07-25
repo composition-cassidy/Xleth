@@ -134,6 +134,7 @@ struct EffectShaderCache {
     Microsoft::WRL::ComPtr<ID3D11PixelShader> zoomPanRotPS;
     Microsoft::WRL::ComPtr<ID3D11PixelShader> vibratoSwirlPS;
     Microsoft::WRL::ComPtr<ID3D11PixelShader> scratchWaveSmearPS;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> chromaKeyPS;
     Microsoft::WRL::ComPtr<ID3D11PixelShader> transitionPS;
 
     // Per-effect constant buffers at b2 (small, updated per draw)
@@ -144,6 +145,7 @@ struct EffectShaderCache {
     Microsoft::WRL::ComPtr<ID3D11Buffer> zoomPanRotCB;  // 16 bytes
     Microsoft::WRL::ComPtr<ID3D11Buffer> vibratoSwirlCB;     // 32 bytes
     Microsoft::WRL::ComPtr<ID3D11Buffer> scratchWaveSmearCB; // 32 bytes
+    Microsoft::WRL::ComPtr<ID3D11Buffer> chromaKeyCB;        // 32 bytes (params[0..7])
     // [Safety audit: No per-frame allocation] Created once in init() and reused.
     Microsoft::WRL::ComPtr<ID3D11Buffer> transitionCB;       // 16 bytes
 
@@ -276,7 +278,13 @@ public:
 
     /** Skip all chainable RT effect passes (desaturation, tint, B&C, TV-sim, ZPR,
      *  ping-pong crossfade) for faster preview. Gap, bounce, corner-radius and opacity
-     *  are still applied — they are cheap single-pass or CPU-side operations. */
+     *  are still applied — they are cheap single-pass or CPU-side operations.
+     *
+     *  NOT a blanket skip: bypass-EXEMPT effects still run. Chroma Key is
+     *  exempt because it decides which pixels exist rather than how they look —
+     *  skipping it would render the green screen the user is keying out and
+     *  hide the layer behind the cell. See isChainEffectBypassExempt() in
+     *  GridCompositor.cpp (VisualEffect is incomplete in this header). */
     void setEffectsBypass(bool bypass) { effectsBypass_ = bypass; }
 
     /** Set the canvas-fit viewport: where the project authoring canvas maps in
@@ -403,6 +411,11 @@ private:
 
     // ── Pipeline state ─────────────────────────────────────────────────────
     Microsoft::WRL::ComPtr<ID3D11BlendState>        blendState_;
+    // Blend DISABLED — a straight overwrite. Bound for the duration of the
+    // offscreen effect-chain passes so a pass emitting alpha < 1 writes its
+    // RGB verbatim instead of being premultiplied against a cleared target.
+    // See the long comment in processEffectChain for why this matters.
+    Microsoft::WRL::ComPtr<ID3D11BlendState>        opaqueBlendState_;
     Microsoft::WRL::ComPtr<ID3D11SamplerState>      samplerState_;
     Microsoft::WRL::ComPtr<ID3D11Buffer>             constantBuffer_;
     Microsoft::WRL::ComPtr<ID3D11Buffer>             globalConstantBuffer_;
