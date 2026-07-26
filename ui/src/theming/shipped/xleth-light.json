@@ -92,6 +92,8 @@
     "--theme-timeline-clip-waveform-bg":      "rgba(0, 0, 0, 0.18)",
     "--theme-timeline-fade-curve-fill":       "rgba(0, 0, 0, 0.20)",
     "--theme-timeline-loop-brace":            "rgba(180, 140, 0, 0.8)",
+    "--theme-timeline-hold-zone-fill":        "rgba(0, 0, 0, 0.06)",
+    "--theme-timeline-hold-zone-edge":        "rgba(0, 0, 0, 0.32)",
     "--theme-timeline-pattern-lane-tint":     "rgba(0, 40, 120, 0.04)",
     "--theme-timeline-well-top-shadow":       "rgba(0, 0, 0, 0.10)",
     "--theme-timeline-lane-bg":               "#CACAC6",

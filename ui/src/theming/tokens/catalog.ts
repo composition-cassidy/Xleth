@@ -639,6 +639,10 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   explicit('--theme-timeline-track-stripe-top-height', '2px',     'solid', 'Workspace panels', 'timeline', 'dimension'),
   explicit('--theme-timeline-playhead-cap-size', '8px',           'solid', 'Workspace panels', 'timeline', 'dimension'),
   explicit('--theme-timeline-loop-brace', 'rgba(255, 217, 61, 0.6)', 'solid', 'Workspace panels', 'timeline'),
+  // Hold Last Frame chrome (video timeline). Informational, not content — the
+  // fill sits just above the lane background and the expiry tick just reads.
+  explicit('--theme-timeline-hold-zone-fill', 'rgba(255, 255, 255, 0.06)', 'any', 'Workspace panels', 'timeline'),
+  explicit('--theme-timeline-hold-zone-edge', 'rgba(255, 255, 255, 0.28)', 'any', 'Workspace panels', 'timeline'),
   derivedFormula('--theme-timeline-selection-rect', 'any', 'Workspace panels', 'timeline'),
   explicit('--theme-timeline-pattern-lane-tint','rgba(106, 169, 255, 0.07)','any','Workspace panels', 'timeline'),
   ref('--theme-timeline-section-marker',  '--theme-accent',       'solid', 'Workspace panels', 'timeline'),

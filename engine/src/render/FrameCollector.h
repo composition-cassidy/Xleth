@@ -285,6 +285,12 @@ private:
         int64_t     lastFrame       = -1;
         std::string lastPath;
         int         lastOrientation = 0;
+        // End position (in beats) of the clip that produced lastFrame. The
+        // hold-expiry threshold is measured from here, NOT from when the gap
+        // was first noticed, so the cut lands at the same musical position
+        // whatever the frame rate or seek history — preview, export and
+        // snapshot transitions all agree.
+        double      lastClipEndBeat = 0.0;
     };
     std::unordered_map<int, FullscreenHoldState> fullscreenHoldByTrack_;
 

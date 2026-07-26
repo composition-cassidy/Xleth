@@ -460,11 +460,27 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
             s.lastFrame       = r.sourceFrameIndex;
             s.lastPath        = r.sourcePath;
             s.lastOrientation = r.orientation;
+            s.lastClipEndBeat = ev->startBeat + ev->durationBeats;
         } else {
             auto it = fullscreenHoldByTrack_.find(fl.trackId);
             const TrackInfo* trk = timeline.getTrack(fl.trackId);
+
+            // Hold-expiry threshold. The stored value is already in BEATS and
+            // beatPos is in beats, so this is a direct comparison — no PPQ
+            // round-trip and no tempo lookup. Negative threshold = unlimited,
+            // which short-circuits to the pre-threshold behavior untouched.
+            //
+            // Only reached once the clip has actually ended, so the hold still
+            // fills a gap shorter than the threshold exactly as it did before.
+            bool holdExpired = false;
+            if (it != fullscreenHoldByTrack_.end() && trk
+                && trk->videoHoldLastFrameThresholdBeats >= 0.0) {
+                holdExpired = (beatPos - it->second.lastClipEndBeat)
+                            > trk->videoHoldLastFrameThresholdBeats;
+            }
             if (it != fullscreenHoldByTrack_.end() && it->second.lastFrame >= 0
-                && trk && trk->videoHoldLastFrame) {
+                && trk && trk->videoHoldLastFrame
+                && !holdExpired) {
                 std::fprintf(stderr, "[FrameCollector] FS-behind gap (track %d): hold=ON frame=%lld\n",
                              fl.trackId, (long long)it->second.lastFrame);
                 CellFrameRequest req;

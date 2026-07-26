@@ -259,7 +259,8 @@ void to_json(nlohmann::json& j, const TrackInfo& t) {
         {"videoZOrder",       t.videoZOrder},
         {"type",              trackTypeToString(t.type)},
         {"fxMode",            trackFxModeToString(t.fxMode)},
-        {"videoHoldLastFrame", t.videoHoldLastFrame}
+        {"videoHoldLastFrame", t.videoHoldLastFrame},
+        {"videoHoldLastFrameThresholdBeats", t.videoHoldLastFrameThresholdBeats}
     };
     // videoFlipConfig is a nested object — append after the flat initializer.
     j["videoFlipConfig"] = videoFlipConfigToJson(t.videoFlipConfig);
@@ -436,6 +437,11 @@ void from_json(const nlohmann::json& j, TrackInfo& t) {
     (void)j.value("assignedRegionId",  -1);
     (void)j.value("assignedPatternId", -1);
     t.videoHoldLastFrame = j.value("videoHoldLastFrame", false);
+    // Absent in every pre-threshold project file: default to unlimited so old
+    // saves keep the exact hold-until-next-clip behavior they were authored with.
+    t.videoHoldLastFrameThresholdBeats = j.value(
+        "videoHoldLastFrameThresholdBeats",
+        TrackInfo::kHoldLastFrameThresholdUnlimited);
 
     // ── VideoFlipConfig migration (spec §3.5) ─────────────────────────────
     // v2+ projects carry "videoFlipConfig"; v1 projects carry "videoFlipMode".

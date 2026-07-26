@@ -5804,6 +5804,39 @@ html[data-xleth-backdrop="video"] .app-body {
   font-size: 11px;
 }
 
+/* ── Hold Last Frame threshold ─────────────────────────────────────────────
+   Indented under the Hold Last Frame checkbox it qualifies. */
+.tvp-hold-threshold {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  padding-left: 22px;
+}
+
+.tvp-hold-threshold-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--theme-text);
+}
+
+.tvp-hold-threshold-input {
+  width: 68px;
+  background: var(--theme-bg-elevated);
+  color: var(--theme-text);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  font-size: 12px;
+}
+
+.tvp-hold-threshold-input:focus {
+  outline: none;
+  border-color: var(--theme-border-focus);
+}
+
 .tvp-back-inline {
   margin-left: 8px;
   background: var(--theme-bg-elevated);

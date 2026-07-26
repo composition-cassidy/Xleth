@@ -1059,6 +1059,24 @@ private:
     bool newHold_;
 };
 
+// ─── SetTrackVideoHoldLastFrameThresholdCommand ───────────────────────────────
+// Per-track cap (in beats) on how long Hold Last Frame may re-serve a held
+// frame. Negative = unlimited (the legacy behavior). Undo restores the exact
+// prior value, including the unlimited sentinel.
+
+class SetTrackVideoHoldLastFrameThresholdCommand : public Command {
+public:
+    SetTrackVideoHoldLastFrameThresholdCommand(int trackId, double newThresholdBeats,
+                                               const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int    trackId_;
+    double oldThresholdBeats_;
+    double newThresholdBeats_;
+};
+
 // ─── SetTrackCornerRadiusCommand ──────────────────────────────────────────────
 
 class SetTrackCornerRadiusCommand : public Command {

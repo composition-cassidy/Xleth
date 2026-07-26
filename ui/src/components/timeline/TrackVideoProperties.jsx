@@ -7,6 +7,7 @@ import CustomGapControl from '../grid/CustomGapControl.jsx'
 import VisualFXSection from '../grid/VisualFXSection.jsx'
 import SlideNoteEffectSection from '../grid/SlideNoteEffectSection.jsx'
 import { getTrackPlacement, placementBadgeLabel, setFullscreenPlacementMode } from './trackPlacement.js'
+import { HOLD_THRESHOLD_UNLIMITED, formatHoldThreshold } from './holdLastFrame.js'
 
 const notify     = () => timelineEvents.dispatchEvent(new Event('timeline-tracks-changed'))
 const notifyGrid = () => timelineEvents.dispatchEvent(new Event('timeline-grid-changed'))
@@ -90,6 +91,41 @@ export default function TrackVideoProperties({ trackId, onBack }) {
       console.error('[TrackVideoProperties] setVideoHoldLastFrame failed:', err)
     }
   }, [trackId, fetchTracks])
+
+  // ── Hold threshold (beats) ─────────────────────────────────────────────────
+  // Negative engine value = unlimited. The beats box keeps a local draft so
+  // typing doesn't fire one IPC per keystroke; it commits on blur/Enter only.
+  const thresholdBeats = Number(
+    track?.videoHoldLastFrameThresholdBeats ?? HOLD_THRESHOLD_UNLIMITED)
+  const thresholdIsUnlimited = !(thresholdBeats >= 0)
+
+  const [thresholdDraft, setThresholdDraft] = useState('')
+  useEffect(() => {
+    setThresholdDraft(thresholdIsUnlimited ? '' : String(thresholdBeats))
+  }, [thresholdBeats, thresholdIsUnlimited])
+
+  const commitThreshold = useCallback(async (beats) => {
+    try {
+      await window.xleth?.timeline?.setVideoHoldLastFrameThreshold(trackId, beats)
+      console.log(
+        `[TrackVideoProperties] track ${trackId} videoHoldLastFrameThresholdBeats → ${
+          beats < 0 ? 'unlimited' : beats}`)
+      fetchTracks()
+    } catch (err) {
+      console.error('[TrackVideoProperties] setVideoHoldLastFrameThreshold failed:', err)
+    }
+  }, [trackId, fetchTracks])
+
+  const commitThresholdDraft = useCallback(() => {
+    const parsed = Number(thresholdDraft)
+    // Blank or garbage reverts to the last committed value rather than
+    // silently reinterpreting it as 0 (which would cut instantly).
+    if (thresholdDraft.trim() === '' || !Number.isFinite(parsed) || parsed < 0) {
+      setThresholdDraft(thresholdIsUnlimited ? '' : String(thresholdBeats))
+      return
+    }
+    if (parsed !== thresholdBeats) commitThreshold(parsed)
+  }, [thresholdDraft, thresholdBeats, thresholdIsUnlimited, commitThreshold])
 
   // ── Fullscreen opacity (relocated here from the old Fullscreen Layers list) ─
   // Shown only when the track's current placement is Fullscreen (Behind/Front).
@@ -210,7 +246,7 @@ export default function TrackVideoProperties({ trackId, onBack }) {
         </span>
         <span className={`tvp-summary-chip${hold ? ' active' : ''}`}>
           <span className="tvp-summary-label">Hold</span>
-          <span>{hold ? 'On' : 'Off'}</span>
+          <span>{hold ? formatHoldThreshold(thresholdBeats) : 'Off'}</span>
         </span>
         <span className={`tvp-summary-chip${visualFxCount > 0 ? ' active' : ''}`}>
           <span className="tvp-summary-label">FX</span>
@@ -239,6 +275,41 @@ export default function TrackVideoProperties({ trackId, onBack }) {
           <span>Hold Last Frame</span>
           <span className="tvp-hint">(freeze the final frame after the clip ends)</span>
         </label>
+
+        {/* Threshold — only meaningful while the hold itself is on. */}
+        {hold && (
+          <div className="tvp-hold-threshold" role="group" aria-label="Hold Last Frame threshold">
+            <label className="tvp-checkbox-row tvp-hold-threshold-unlimited">
+              <input
+                className="tvp-checkbox"
+                type="checkbox"
+                checked={thresholdIsUnlimited}
+                onChange={(e) => commitThreshold(
+                  e.target.checked ? HOLD_THRESHOLD_UNLIMITED : 4)}
+              />
+              <span>Unlimited</span>
+              <span className="tvp-hint">(hold until the next clip)</span>
+            </label>
+
+            {!thresholdIsUnlimited && (
+              <label className="tvp-hold-threshold-field">
+                <span>Hold for</span>
+                <input
+                  className="tvp-hold-threshold-input"
+                  type="number"
+                  min="0"
+                  step="0.25"
+                  value={thresholdDraft}
+                  aria-label="Hold Last Frame threshold in beats"
+                  onChange={(e) => setThresholdDraft(e.target.value)}
+                  onBlur={commitThresholdDraft}
+                  onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
+                />
+                <span>beats, then cut</span>
+              </label>
+            )}
+          </div>
+        )}
       </div>
 
       {/* ── Fullscreen opacity — fullscreen-placed tracks only ──────────── */}

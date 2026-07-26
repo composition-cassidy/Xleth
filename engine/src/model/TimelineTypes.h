@@ -1083,6 +1083,21 @@ struct TrackInfo {
     // assigned as the chorus track.
     bool videoHoldLastFrame = false;
 
+    // Upper bound on how long videoHoldLastFrame may keep re-serving a held
+    // frame, measured in BEATS after the end of the clip that produced it.
+    // Tempo-relative by construction, so the hold scales with the project BPM.
+    //
+    // kHoldLastFrameThresholdUnlimited (-1) = hold indefinitely until the next
+    // clip appears — the pre-threshold behavior, and the value old project
+    // files load as, so existing projects behave exactly as before.
+    //
+    // Any value >= 0 is finite: once (currentBeat - clipEndBeat) exceeds it the
+    // cell is treated as a plain gap (fully invisible — no dim, no fade), i.e.
+    // exactly what a hold-disabled track already does there. Only consulted
+    // when videoHoldLastFrame is true.
+    static constexpr double kHoldLastFrameThresholdUnlimited = -1.0;
+    double videoHoldLastFrameThresholdBeats = kHoldLastFrameThresholdUnlimited;
+
     // ── Visual compositor effect settings ────────────────────────────────
     float                           gapScaleOverride = -1.0f; // -1 = use global, >=0 = override
     float                           cornerRadius     = 0.0f;  // 0.0–1.0

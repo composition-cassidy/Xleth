@@ -2,7 +2,7 @@ import {
   useEffect, useRef, useState, useCallback, useImperativeHandle, forwardRef,
 } from 'react'
 import {
-  drawGrid, drawClips, drawPatternBlocks, resolveTimelinePalette, withAlpha,
+  drawGrid, drawClips, drawPatternBlocks, drawHoldZones, resolveTimelinePalette, withAlpha,
 } from './timelineDrawing.js'
 import { buildResolvedTrackColorMap } from './trackColorResolver.js'
 import {
@@ -536,6 +536,15 @@ const VideoMirrorCanvas = forwardRef(function VideoMirrorCanvas(
       clipsRef.current, tidx, regionsRef.current,
       EMPTY_SELECTION, {}, {}, {}, bpmRef?.current,
       mutedTrackIds, palette, MIRROR_DISPLAY_SETTINGS, trackColorById, null,
+    )
+    // After drawClips — it owns the clearRect for this canvas, so anything
+    // drawn before it is wiped. Hold zones only ever occupy the gap between a
+    // clip's end and the next clip's start, so they never cover clip pixels.
+    drawHoldZones(
+      ctx, w, h - CUE_LANE_HEIGHT,
+      scrollOffsetRef.current, pixelsPerBeatRef.current,
+      clipsRef.current, tidx, tracksRef.current,
+      palette, null,
     )
     drawPatternBlocks(
       ctx, w, h - CUE_LANE_HEIGHT,

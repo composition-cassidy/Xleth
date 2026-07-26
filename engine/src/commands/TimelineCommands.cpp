@@ -2189,6 +2189,33 @@ std::string SetTrackVideoHoldLastFrameCommand::describe() const {
          + " Hold Last Frame (track=" + std::to_string(trackId_) + ")";
 }
 
+// ─── SetTrackVideoHoldLastFrameThresholdCommand ───────────────────────────────
+
+SetTrackVideoHoldLastFrameThresholdCommand::SetTrackVideoHoldLastFrameThresholdCommand(
+    int trackId, double newThresholdBeats, const Timeline& timeline)
+    : trackId_(trackId), newThresholdBeats_(newThresholdBeats)
+{
+    const TrackInfo* t = timeline.getTrack(trackId);
+    oldThresholdBeats_ = t ? t->videoHoldLastFrameThresholdBeats
+                           : TrackInfo::kHoldLastFrameThresholdUnlimited;
+}
+
+void SetTrackVideoHoldLastFrameThresholdCommand::execute(Timeline& timeline) {
+    timeline.setTrackVideoHoldLastFrameThresholdBeats(trackId_, newThresholdBeats_);
+}
+
+void SetTrackVideoHoldLastFrameThresholdCommand::undo(Timeline& timeline) {
+    timeline.setTrackVideoHoldLastFrameThresholdBeats(trackId_, oldThresholdBeats_);
+}
+
+std::string SetTrackVideoHoldLastFrameThresholdCommand::describe() const {
+    std::string value = newThresholdBeats_ < 0.0
+                      ? "unlimited"
+                      : std::to_string(newThresholdBeats_) + " beats";
+    return "Set Hold Last Frame threshold to " + value
+         + " (track=" + std::to_string(trackId_) + ")";
+}
+
 // ─── SetTrackCornerRadiusCommand ──────────────────────────────────────────────
 
 SetTrackCornerRadiusCommand::SetTrackCornerRadiusCommand(

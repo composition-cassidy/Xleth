@@ -230,6 +230,8 @@ public:
     bool convertToClipTrack(int trackId);
     bool setTrackVideoFlipConfig(int trackId, const VideoFlipConfig& config);
     bool setTrackVideoHoldLastFrame(int trackId, bool hold);
+    // thresholdBeats < 0 is normalized to kHoldLastFrameThresholdUnlimited.
+    bool setTrackVideoHoldLastFrameThresholdBeats(int trackId, double thresholdBeats);
     bool setTrackFxMode(int trackId, TrackFxMode mode);
     bool setTrackGraphState(int trackId, const nlohmann::json& graphState);
     bool setTrackCornerRadius(int trackId, float radius);

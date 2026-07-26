@@ -528,6 +528,14 @@ const METHODS = [
     binary: null,
   },
   {
+    method: 'timeline_setVideoHoldLastFrameThreshold',
+    channels: ['xleth:timeline:setVideoHoldLastFrameThreshold'],
+    api: { 'timeline.setVideoHoldLastFrameThreshold': 'xleth:timeline:setVideoHoldLastFrameThreshold' },
+    handler: 'Timeline_SetVideoHoldLastFrameThreshold',
+    returns: 'void',
+    binary: null,
+  },
+  {
     method: 'timeline_setTrackCornerRadius',
     channels: ['xleth:timeline:setTrackCornerRadius'],
     api: { 'timeline.setTrackCornerRadius': 'xleth:timeline:setTrackCornerRadius' },

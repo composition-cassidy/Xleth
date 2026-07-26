@@ -229,6 +229,114 @@ int main()
         std::fprintf(stderr, "[TEST:FrameCollector] Test 1: PASSED\n");
     }
 
+    // ── Test 1h: per-track hold-last-frame THRESHOLD (beats) ─────────────────
+    // A hold-enabled track may re-serve its held frame for at most
+    // videoHoldLastFrameThresholdBeats after the producing clip ends; past that
+    // the cell must behave exactly like a gap. Unlimited (< 0) must be
+    // identical to the pre-threshold behavior.
+    //
+    // Exercised through collectRequests — the ONE path preview, offline export
+    // and snapshot transitions all share — so passing here means all three cut
+    // at the same musical position.
+    {
+        std::fprintf(stderr, "\n[TEST:FrameCollector] --- Test 1h: hold threshold ---\n");
+
+        // Release-safe check: this suite builds with NDEBUG, so a bare assert()
+        // compiles away and would silently pass.
+        auto requireHold = [](bool condition, const char* message) {
+            if (condition) return;
+            std::fprintf(stderr, "[TEST:FrameCollector] Hold-threshold assertion failed: %s\n", message);
+            std::abort();
+        };
+
+        TrackInfo* chorus = timeline.getTrackMutable(chorusTrackId);
+        requireHold(chorus != nullptr, "hold-threshold track exists");
+        chorus->videoHoldLastFrame = true;
+
+        // Clip spans beats [0, 1). This timeline is 140bpm and the test renders
+        // at 30fps, so one beat is 90/7 frames: beat(frame) = frame * 7/90. The
+        // frame numbers below come off that mapping (no integer frame lands
+        // exactly on beat 1.0).
+        //   frame  7 -> beat 0.544 (in clip)   frame 25 -> beat 1.944 (+0.944)
+        //   frame 13 -> beat 1.011 (+0.011)    frame 26 -> beat 2.022 (+1.022)
+        //   frame 24 -> beat 1.867 (+0.867)    frame 45 -> beat 3.500 (+2.500)
+        std::vector<VideoEvent> holdEv{
+            makeEvent(chorusTrackId, srcAId, 0.0, 1.0, 2.0, 1.0f, 0)};
+        const AVRational holdFps = {30, 1};
+
+        auto servesHold = [&](FrameCollector& c, int64_t frame) {
+            auto reqs = c.collectRequests(frame, timeline, 48000, holdFps, holdEv);
+            for (const auto& r : reqs) if (r.trackId == chorusTrackId) return true;
+            return false;
+        };
+
+        // Each sub-case gets a fresh collector, then primes the hold state by
+        // collecting an in-clip frame first — the held frame only exists once
+        // the clip has actually been served.
+
+        // (a) Unlimited: holds arbitrarily far past the clip end.
+        {
+            FrameCollector c;
+            chorus->videoHoldLastFrameThresholdBeats =
+                TrackInfo::kHoldLastFrameThresholdUnlimited;
+            requireHold(servesHold(c, 7),  "unlimited: clip active mid-clip");
+            requireHold(servesHold(c, 13), "unlimited: holds just past clip end");
+            requireHold(servesHold(c, 45), "unlimited: still holds at +2.5 beats");
+        }
+
+        // (b) Finite 1-beat threshold: holds up to +1 beat, cuts after.
+        {
+            FrameCollector c;
+            chorus->videoHoldLastFrameThresholdBeats = 1.0;
+            requireHold(servesHold(c, 7),  "threshold=1: clip active mid-clip");
+            requireHold(servesHold(c, 13), "threshold=1: holds at +0.011 beats");
+            requireHold(servesHold(c, 24), "threshold=1: holds at +0.867 beats");
+            requireHold(servesHold(c, 25), "threshold=1: holds at +0.944 beats");
+            requireHold(!servesHold(c, 26), "threshold=1: CUT at +1.022 beats");
+            requireHold(!servesHold(c, 45), "threshold=1: still cut at +2.5 beats");
+        }
+
+        // (c) Zero threshold: any elapsed time past the clip end is a gap.
+        {
+            FrameCollector c;
+            chorus->videoHoldLastFrameThresholdBeats = 0.0;
+            requireHold(servesHold(c, 7),   "threshold=0: clip active mid-clip");
+            requireHold(!servesHold(c, 13), "threshold=0: cuts immediately past clip end");
+        }
+
+        // (d) A next clip arriving before the threshold expires fills the gap
+        // exactly as before — the threshold must not cut inside a covered span.
+        {
+            FrameCollector c;
+            chorus->videoHoldLastFrameThresholdBeats = 1.0;
+            std::vector<VideoEvent> two{
+                makeEvent(chorusTrackId, srcAId, 0.0, 1.0, 2.0, 1.0f, 0),
+                makeEvent(chorusTrackId, srcAId, 1.5, 2.0, 2.0, 1.0f, 1)};
+            auto serves2 = [&](int64_t frame) {
+                auto reqs = c.collectRequests(frame, timeline, 48000, holdFps, two);
+                for (const auto& r : reqs) if (r.trackId == chorusTrackId) return true;
+                return false;
+            };
+            requireHold(serves2(7),  "gap-filled: clip A active");
+            requireHold(serves2(15), "gap-filled: hold covers the 0.5-beat gap");
+            requireHold(serves2(30), "gap-filled: clip B active");
+        }
+
+        // (e) Threshold must be inert while hold is OFF — the untouched path.
+        {
+            FrameCollector c;
+            chorus->videoHoldLastFrame = false;
+            chorus->videoHoldLastFrameThresholdBeats = 8.0;
+            requireHold(servesHold(c, 7),   "hold off: clip active mid-clip");
+            requireHold(!servesHold(c, 13), "hold off: gap at clip end regardless of threshold");
+        }
+
+        chorus->videoHoldLastFrame = false;
+        chorus->videoHoldLastFrameThresholdBeats =
+            TrackInfo::kHoldLastFrameThresholdUnlimited;
+        std::fprintf(stderr, "[TEST:FrameCollector] Test 1h: PASSED\n");
+    }
+
     // ── Test 1z-i: unified zOrder — fullscreen layer interleaved between cells ──
     // A fullscreen layer whose zOrder sits between two grid cells' zOrders must
     // come out of collectRequests globally sorted BETWEEN them — the whole point

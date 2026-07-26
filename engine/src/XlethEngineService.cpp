@@ -2577,6 +2577,10 @@ static JsonApi::Object trackToJs(JsonApi::Env env, const TrackInfo& t) {
         o.Set("videoFlipConfig", fc);
     }
     o.Set("videoHoldLastFrame", JsonApi::Boolean::New(env, t.videoHoldLastFrame));
+    // Negative = unlimited. Emitted as a plain number so the renderer can test
+    // `< 0` without a second "isUnlimited" flag to keep in sync.
+    o.Set("videoHoldLastFrameThresholdBeats",
+          JsonApi::Number::New(env, t.videoHoldLastFrameThresholdBeats));
     o.Set("cornerRadius",      JsonApi::Number::New(env, t.cornerRadius));
     o.Set("gapScaleOverride",  JsonApi::Number::New(env, t.gapScaleOverride));
     o.Set("subdivisionFactor", JsonApi::Number::New(env, t.subdivisionFactor));
@@ -2917,6 +2921,14 @@ static TrackInfo jsToTrack(const JsonApi::Object& o) {
         t.order  = o.Get("order").As<JsonApi::Number>().Int32Value();
     if (o.Has("videoHoldLastFrame") && o.Get("videoHoldLastFrame").IsBoolean())
         t.videoHoldLastFrame = o.Get("videoHoldLastFrame").As<JsonApi::Boolean>().Value();
+    if (o.Has("videoHoldLastFrameThresholdBeats")
+        && o.Get("videoHoldLastFrameThresholdBeats").IsNumber()) {
+        const double th = o.Get("videoHoldLastFrameThresholdBeats")
+                            .As<JsonApi::Number>().DoubleValue();
+        t.videoHoldLastFrameThresholdBeats =
+            (std::isfinite(th) && th >= 0.0)
+                ? th : TrackInfo::kHoldLastFrameThresholdUnlimited;
+    }
     if (o.Has("graphState")) {
         t.hasGraphState = true;
         t.graphState = valueToJson(o.Get("graphState"));
@@ -9861,6 +9873,32 @@ void Timeline_SetVideoHoldLastFrame(const JsonApi::CallbackInfo& info)
     BridgeCallLog log("timeline.setVideoHoldLastFrame");
     g_undoManager->execute(
         std::make_unique<SetTrackVideoHoldLastFrameCommand>(trackId, hold, *g_timeline),
+        *g_timeline);
+    log.done();
+}
+
+// timeline_setVideoHoldLastFrameThreshold(trackId, thresholdBeats)
+// thresholdBeats < 0 (or non-finite) means "unlimited" — hold until the next
+// clip, which is the pre-threshold behavior and the default for old projects.
+void Timeline_SetVideoHoldLastFrameThreshold(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return;
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
+        JsonApi::TypeError::New(env,
+            "timeline_setVideoHoldLastFrameThreshold(trackId: number, thresholdBeats: number)")
+            .ThrowAsJavaScriptException();
+        return;
+    }
+    int    trackId        = info[0].As<JsonApi::Number>().Int32Value();
+    double thresholdBeats = info[1].As<JsonApi::Number>().DoubleValue();
+    BridgeCallLog log("timeline.setVideoHoldLastFrameThreshold");
+    g_undoManager->execute(
+        std::make_unique<SetTrackVideoHoldLastFrameThresholdCommand>(
+            trackId, thresholdBeats, *g_timeline),
         *g_timeline);
     log.done();
 }

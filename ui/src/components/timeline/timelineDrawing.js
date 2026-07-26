@@ -16,6 +16,7 @@ import { uiCanvasFont } from '../../styles/typography.js'
 import { normalizeTrackPalette, TRACK_PALETTE_FALLBACK } from './trackColorResolver.js'
 import { getRegionPlaybackDurationSec } from './regionDuration.js'
 import { getSyllableDisplayNumber } from '../SyllableSplitter/syllableModel.js'
+import { getHoldThresholdTicks } from './holdLastFrame.js'
 
 // Default engine sample rate (used for spp computation when no per-region rate is known)
 const DEFAULT_SR = 48000
@@ -75,6 +76,9 @@ export function resolveTimelinePalette() {
     patternLabel:      tokenValue('--theme-timeline-clip-title-fg'),
     patternGlyphBg:    tokenValue('--theme-timeline-fade-curve-fill'),
     selectionHighlight:tokenValue('--theme-border-focus'),
+    // Hold Last Frame chrome (video timeline only)
+    holdZoneFill:      tokenValue('--theme-timeline-hold-zone-fill'),
+    holdZoneEdge:      tokenValue('--theme-timeline-hold-zone-edge'),
     // Tool overlays
     loopBrace:         tokenValue('--theme-timeline-loop-brace'),
     accent:            tokenValue('--theme-accent'),
@@ -569,6 +573,114 @@ function getTimelineBodyMaterial({
     fillStyle,
     borderStyle: hexToRgba(baseHex, _clampAlpha(borderAlpha)),
     borderWidth,
+  }
+}
+
+// ── Hold Last Frame zones (video timeline only) ─────────────────────────────
+// Informational chrome showing, per clip on a hold-enabled track, how far past
+// the clip's end the held frame stays on screen. Drawn on the same content
+// canvas as the clips (never a DOM overlay — the timeline scrolls and zooms by
+// redrawing this canvas, so an overlay would drift and corrupt hit-testing).
+//
+// Deliberately NOT wired into drawClips: the audio timeline shares that
+// function and must keep rendering exactly as before. Only VideoMirrorCanvas
+// calls this.
+//
+// Cost: pure arithmetic over the clip array already in the store. No engine
+// queries, no per-frame IPC. Returns immediately when no track holds.
+
+const HOLD_ZONE_INSET   = 4  // vertical inset from the clip band, keeps it chrome-like
+const HOLD_MARKER_W     = 1  // expiry tick width
+const HOLD_MIN_ZONE_PX  = 2  // below this the zone is noise; skip the fill
+
+export function drawHoldZones(
+  ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, tracks,
+  palette = null, trackLayout = null,
+) {
+  if (!clips || clips.length === 0 || !tracks || tracks.length === 0) return
+
+  // Index only the hold-enabled tracks; bail before allocating anything else
+  // when none of them hold (the overwhelmingly common case).
+  let holdTracks = null
+  for (let i = 0; i < tracks.length; i++) {
+    const t = tracks[i]
+    if (!t?.videoHoldLastFrame) continue
+    if (!holdTracks) holdTracks = new Map()
+    holdTracks.set(t.id, t)
+  }
+  if (!holdTracks) return
+
+  const p = palette ?? resolveTimelinePalette()
+
+  // Group the hold-enabled tracks' clips and sort each by start tick, so the
+  // "next clip" that ends a hold is just the following entry.
+  const byTrack = new Map()
+  for (let i = 0; i < clips.length; i++) {
+    const clip = clips[i]
+    if (!holdTracks.has(clip.trackId)) continue
+    let list = byTrack.get(clip.trackId)
+    if (!list) { list = []; byTrack.set(clip.trackId, list) }
+    list.push(clip)
+  }
+  if (byTrack.size === 0) return
+
+  const zoneH = Math.max(1, TRACK_HEIGHT - CLIP_PAD * 2 - HOLD_ZONE_INSET * 2)
+
+  for (const [trackId, list] of byTrack) {
+    const trackIdx = trackIdToIndex[trackId]
+    if (trackIdx == null) continue
+
+    list.sort((a, b) => a.positionTicks - b.positionTicks)
+
+    const track = holdTracks.get(trackId)
+    const thresholdTicks = getHoldThresholdTicks(track)   // null when unlimited
+    const y = _trackTop(trackIdx, trackLayout) + CLIP_PAD + HOLD_ZONE_INSET
+
+    for (let i = 0; i < list.length; i++) {
+      const clip = list[i]
+      const clipEndTicks = clip.positionTicks + clip.durationTicks
+
+      // A hold ends the instant the next clip on the track starts. Clips can
+      // overlap, so clamp to the clip's own end rather than going backwards.
+      const next = list[i + 1]
+      const nextStartTicks = next
+        ? Math.max(clipEndTicks, next.positionTicks)
+        : Number.POSITIVE_INFINITY
+
+      // Unlimited holds run to the next clip; with no next clip they run
+      // forever, so they're clipped to the viewport's right edge below.
+      const expiryTicks = thresholdTicks == null
+        ? Number.POSITIVE_INFINITY
+        : clipEndTicks + thresholdTicks
+      const zoneEndTicks = Math.min(expiryTicks, nextStartTicks)
+
+      const x0 = beatToPixel(clipEndTicks / PPQ, scrollOffset, ppb)
+      const x1 = Number.isFinite(zoneEndTicks)
+        ? beatToPixel(zoneEndTicks / PPQ, scrollOffset, ppb)
+        : w
+      if (x1 < 0 || x0 > w) continue          // cull off-screen
+
+      // Clamp to the viewport so an unlimited/very long zone stays a bounded fill.
+      const drawX0 = Math.max(0, x0)
+      const drawX1 = Math.min(w, x1)
+      const zoneW = drawX1 - drawX0
+
+      if (zoneW >= HOLD_MIN_ZONE_PX) {
+        ctx.fillStyle = p.holdZoneFill
+        ctx.fillRect(drawX0, y, zoneW, zoneH)
+      }
+
+      // Expiry tick — drawn only when the hold actually runs out before the
+      // next clip. An unlimited hold, or one the next clip cuts short, has no
+      // expiry point to mark.
+      if (Number.isFinite(expiryTicks) && expiryTicks < nextStartTicks) {
+        const mx = beatToPixel(expiryTicks / PPQ, scrollOffset, ppb)
+        if (mx >= 0 && mx <= w) {
+          ctx.fillStyle = p.holdZoneEdge
+          ctx.fillRect(Math.round(mx), y, HOLD_MARKER_W, zoneH)
+        }
+      }
+    }
   }
 }
 

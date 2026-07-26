@@ -9,6 +9,11 @@ import {
   placementBadgeLabel,
   commitReorder,
 } from './trackPlacement.js'
+import {
+  HOLD_THRESHOLD_PRESETS,
+  getHoldThresholdBeats,
+  formatHoldThreshold,
+} from './holdLastFrame.js'
 
 const notifyTracks = () => timelineEvents.dispatchEvent(new Event('timeline-tracks-changed'))
 
@@ -102,6 +107,17 @@ export default function VideoTrackList({ tracks = [], layout }) {
     }
   }, [])
 
+  const handleSetHoldThreshold = useCallback(async (track, beats) => {
+    try {
+      await window.xleth?.timeline?.setVideoHoldLastFrameThreshold(track.id, beats)
+      console.log(`[VideoTabList] track ${track.id} videoHoldLastFrameThresholdBeats → ${
+        beats < 0 ? 'unlimited' : beats}`)
+      notifyTracks()
+    } catch (err) {
+      console.error('[VideoTabList] setVideoHoldLastFrameThreshold failed:', err)
+    }
+  }, [])
+
   const handleDeleteTrack = useCallback(async (track) => {
     try {
       await window.xleth?.timeline?.removeTrack(track.id)
@@ -126,12 +142,22 @@ export default function VideoTrackList({ tracks = [], layout }) {
         checked: !!track.videoHoldLastFrame,
         onClick: () => handleToggleHold(track),
       },
+      {
+        // Only the duration of an *enabled* hold; meaningless while it's off.
+        label: `Hold Threshold: ${formatHoldThreshold(getHoldThresholdBeats(track))}`,
+        disabled: !track.videoHoldLastFrame,
+        submenu: HOLD_THRESHOLD_PRESETS.map(({ beats, label }) => ({
+          label,
+          checked: getHoldThresholdBeats(track) === beats,
+          onClick: () => handleSetHoldThreshold(track, beats),
+        })),
+      },
       { type: 'separator' },
       ...buildPlacementMenuItems(track, layout),
       { type: 'separator' },
       { label: 'Delete Track', danger: true, onClick: () => handleDeleteTrack(track) },
     ]
-  }, [menu, layout, openTrackVideoProperties, handleToggleHold, handleDeleteTrack])
+  }, [menu, layout, openTrackVideoProperties, handleToggleHold, handleSetHoldThreshold, handleDeleteTrack])
 
   const renderRow = (track, placement, draggable, dragIdx) => {
     return (

@@ -790,6 +790,26 @@ bool Timeline::setTrackVideoHoldLastFrame(int trackId, bool hold) {
     return true;
 }
 
+bool Timeline::setTrackVideoHoldLastFrameThresholdBeats(int trackId, double thresholdBeats) {
+    auto it = m_tracks.find(trackId);
+    if (it == m_tracks.end()) {
+        std::cout << "[Timeline] ERROR setTrackVideoHoldLastFrameThresholdBeats: trackId="
+                  << trackId << " not found\n";
+        return false;
+    }
+    // Any negative (or non-finite) input collapses to the single canonical
+    // "unlimited" sentinel so the render path only ever tests `< 0`.
+    const double normalized = (std::isfinite(thresholdBeats) && thresholdBeats >= 0.0)
+                            ? thresholdBeats
+                            : TrackInfo::kHoldLastFrameThresholdUnlimited;
+    it->second.videoHoldLastFrameThresholdBeats = normalized;
+    std::cout << "[Timeline] Set track id=" << trackId
+              << " videoHoldLastFrameThresholdBeats=";
+    if (normalized < 0.0) std::cout << "unlimited\n";
+    else                  std::cout << normalized << "\n";
+    return true;
+}
+
 bool Timeline::setTrackFxMode(int trackId, TrackFxMode mode) {
     auto it = m_tracks.find(trackId);
     if (it == m_tracks.end()) {
