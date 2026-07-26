@@ -1501,8 +1501,24 @@ static void invalidateRegionProxy(int regionId) {
         r->proxyEndTime   = 0.0;
     }
     if (!oldPath.empty()) {
+        // The live-preview decoder caches an open context per path and may still
+        // hold this proxy open. On Windows that makes the remove below FAIL, and
+        // a proxy file that survives invalidation is silently reused forever:
+        // ProxyManager::enqueue short-circuits on fs::exists(outputPath), so the
+        // re-transcode never runs and the region keeps rendering its pre-swap
+        // video. Release the handle first, then delete.
+        {
+            std::lock_guard<std::mutex> compLock(g_previewCompositorMutex);
+            if (g_previewRenderDecoder) g_previewRenderDecoder->closeSource(oldPath);
+        }
         std::error_code ec;
         std::filesystem::remove(oldPath, ec);
+        // Never swallow this: a surviving file means the next enqueue silently
+        // serves stale pixels, which is invisible without a log line.
+        if (ec || std::filesystem::exists(oldPath)) {
+            std::cerr << "[Proxy] WARNING: could not delete stale proxy '" << oldPath
+                      << "' (" << ec.message() << ") — forcing a re-transcode\n";
+        }
     }
 }
 
@@ -1518,7 +1534,11 @@ static void noteGenSuccess(int sourceId);
 //   • a usable proxy file is already on disk
 // Does NOT take syncEventsMutex — reads region data lock-free and delegates
 // the actual enqueue to ProxyManager (which has its own internal mutex).
-static void maybeEnqueueRegionProxy(int regionId, int trackId) {
+// forceRetranscode: set when the region's INPUT video changed (swap/revert) so
+// an existing <regionId>.mxf — which then holds the PREVIOUS video — is
+// re-transcoded instead of being accepted as an already-good proxy.
+static void maybeEnqueueRegionProxy(int regionId, int trackId,
+                                    bool forceRetranscode = false) {
     if (!g_proxyManager || !g_timeline || !g_projectManager) return;
 
     const GridLayout& gl = g_timeline->getGridLayout();
@@ -1583,6 +1603,7 @@ static void maybeEnqueueRegionProxy(int regionId, int trackId) {
     req.endTime    = inputEnd;
     req.targetW    = (inputW / 2) & ~1;   // even dims required by yuv422p
     req.targetH    = (inputH / 2) & ~1;
+    req.force      = forceRetranscode;
     g_proxyManager->enqueue(req);
 }
 
@@ -14772,7 +14793,7 @@ JsonApi::Value Audio_ProbeAudioDuration(const JsonApi::CallbackInfo& info)
 // its proxy transcode. Same clip-selection logic as timeline_modifyRegion's
 // trim-change branch (XlethEngineService.cpp, Timeline_ModifyRegion) — kept as
 // a private helper here since both Swap and Revert Video need it.
-static void reenqueueRegionProxy(int regionId) {
+static void reenqueueRegionProxy(int regionId, bool forceRetranscode = false) {
     if (!g_timeline) return;
     const GridLayout& gl = g_timeline->getGridLayout();
     std::unordered_set<int> fullscreenTracks;
@@ -14782,7 +14803,7 @@ static void reenqueueRegionProxy(int regionId) {
     for (const Clip* c : g_timeline->getAllClips()) {
         if (!c || c->regionId != regionId) continue;
         if (fullscreenTracks.count(c->trackId)) continue;
-        maybeEnqueueRegionProxy(regionId, c->trackId);
+        maybeEnqueueRegionProxy(regionId, c->trackId, forceRetranscode);
         break;  // dedup in ProxyManager; one trigger is enough
     }
 }
@@ -15161,7 +15182,7 @@ JsonApi::Value Video_SwapRegionVideo(const JsonApi::CallbackInfo& info)
     // proxy pipeline (maybeEnqueueRegionProxy reads region->swappedVideoPath
     // when hasSwappedVideo is set).
     invalidateRegionProxy(regionId);
-    reenqueueRegionProxy(regionId);
+    reenqueueRegionProxy(regionId, /*forceRetranscode=*/true);
 
     // The regenerated proxy reuses the SAME on-disk path (<proxiesDir>/<regionId>.mxf,
     // keyed by regionId, not content), so the live-preview GPU frame cache
@@ -15219,7 +15240,7 @@ JsonApi::Value Video_RevertRegionVideo(const JsonApi::CallbackInfo& info)
         *g_timeline);
 
     invalidateRegionProxy(regionId);
-    reenqueueRegionProxy(regionId);
+    reenqueueRegionProxy(regionId, /*forceRetranscode=*/true);
 
     {
         std::lock_guard<std::mutex> lock(g_previewCompositorMutex);

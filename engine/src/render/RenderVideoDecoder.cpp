@@ -56,6 +56,17 @@ void RenderVideoDecoder::closeAll()
     lruOrder_.clear();
 }
 
+bool RenderVideoDecoder::closeSource(const std::string& sourcePath)
+{
+    auto it = contexts_.find(sourcePath);
+    if (it == contexts_.end()) return false;
+
+    it->second.ctx.close();
+    contexts_.erase(it);
+    lruOrder_.remove(sourcePath);
+    return true;
+}
+
 // ===========================================================================
 // D3D11VA hardware device context
 // ===========================================================================

@@ -61,6 +61,15 @@ static const CellFrameRequest* findGridRequestForTrack(
     return nullptr;
 }
 
+// Release-safe check (this suite builds with NDEBUG, so bare assert() vanishes —
+// anything that must actually hold has to abort explicitly like this).
+static void requireSwapTest(bool condition, const char* message)
+{
+    if (condition) return;
+    std::fprintf(stderr, "[TEST:FrameCollector] Swap assertion failed: %s\n", message);
+    std::abort();
+}
+
 int main()
 {
     std::fprintf(stderr, "\n[TEST:FrameCollector] Starting collector tests...\n");
@@ -1002,6 +1011,155 @@ int main()
         assert(rUnmuted && !rUnmuted->visualChain.empty());
 
         std::fprintf(stderr, "[TEST:FrameCollector] Test 7: PASSED\n");
+    }
+
+    // ── Test 8: a swapped-video region renders the REPLACEMENT ───────────────
+    // Regression guard for the Swap Video no-op: swapping a sample's video
+    // changed the data model but the preview kept showing the ORIGINAL, because
+    // the whole-source preview proxy (a proxy OF src->filePath) unconditionally
+    // superseded the per-region proxy — the only thing carrying the replacement's
+    // pixels. The failure was completely silent: the swap "succeeded" at every
+    // layer and only the rendered picture was wrong. Assert on the decoded path
+    // FrameCollector actually picks, which is the value the compositor keys its
+    // frame cache on.
+    {
+        std::fprintf(stderr,
+            "\n[TEST:FrameCollector] --- Test 8: swapped-video region ---\n");
+
+        Timeline tl(140.0, 48000.0);
+
+        // A source in the normal steady state: its whole-source preview proxy
+        // has been built and engaged. This is what made the bug reproduce.
+        SourceMedia src;
+        src.filePath          = "original.mp4";
+        src.hasVideo          = true;
+        src.fps               = 30.0;
+        src.duration          = 10.0;
+        src.totalFrames       = 300;
+        src.width = 640; src.height = 360;
+        src.previewProxyReady  = true;
+        src.previewProxyPath   = "proxies/original.preview.360p.mov";
+        src.previewProxyHeight = 360;
+        const int srcId = tl.addSource(src);
+
+        // Region 1: video swapped to a replacement, with its region proxy ready.
+        SampleRegion swapped;
+        swapped.sourceId          = srcId;
+        swapped.startTime         = 0.0;
+        swapped.endTime           = 10.0;
+        swapped.hasSwappedVideo   = true;
+        swapped.swappedVideoPath  = "swapped/video_1_replacement.mp4";
+        swapped.swappedVideoWidth = 640;
+        swapped.swappedVideoHeight = 360;
+        swapped.swappedVideoDurationSec = 10.0;
+        swapped.proxyReady        = true;
+        swapped.proxyPath         = "proxies/1.mxf";
+        swapped.proxyStartTime    = 0.0;
+        swapped.proxyEndTime      = 10.0;
+        const int swappedRegionId = tl.addRegion(swapped);
+
+        // Region 2: identical but NOT swapped — the control. It must still get
+        // the whole-source preview proxy, so a "fix" that simply disables that
+        // substitution everywhere fails this test.
+        SampleRegion plain;
+        plain.sourceId       = srcId;
+        plain.startTime      = 0.0;
+        plain.endTime        = 10.0;
+        plain.proxyReady     = true;
+        plain.proxyPath      = "proxies/2.mxf";
+        plain.proxyStartTime = 0.0;
+        plain.proxyEndTime   = 10.0;
+        const int plainRegionId = tl.addRegion(plain);
+
+        TrackInfo tSwapped; tSwapped.name = "Swapped";
+        tSwapped.type = TrackInfo::Type::Pattern;
+        const int swappedTrackId = tl.addTrack(tSwapped);
+
+        TrackInfo tPlain; tPlain.name = "Plain";
+        tPlain.type = TrackInfo::Type::Pattern;
+        const int plainTrackId = tl.addTrack(tPlain);
+
+        GridLayout gl;
+        gl.columns = 2;
+        gl.rows    = 1;
+        gl.slots.push_back({swappedTrackId, 0, 0,
+                            kGridSubUnitsPerColumn, kGridSubUnitsPerRow, 1.0f, 0});
+        gl.slots.push_back({plainTrackId, kGridSubUnitsPerColumn, 0,
+                            kGridSubUnitsPerColumn, kGridSubUnitsPerRow, 1.0f, 1});
+        tl.setGridLayout(gl);
+
+        std::vector<VideoEvent> evs;
+        VideoEvent evSwapped = makeEvent(swappedTrackId, srcId, 0.0, 4.0, 1.0, 1.0f, 0);
+        evSwapped.regionId        = swappedRegionId;
+        evSwapped.sourceEndTime   = 10.0;
+        evs.push_back(evSwapped);
+
+        VideoEvent evPlain = makeEvent(plainTrackId, srcId, 0.0, 4.0, 1.0, 1.0f, 0);
+        evPlain.regionId        = plainRegionId;
+        evPlain.sourceEndTime   = 10.0;
+        evs.push_back(evPlain);
+
+        FrameCollector collector;
+        AVRational fps = {30, 1};
+        auto requests = collector.collectRequests(
+            0, tl, 48000, fps, evs, /*allowProxy=*/true,
+            /*projectStartSample=*/0, /*posterMode=*/false,
+            /*renderProxyBySource=*/nullptr, /*layoutOverride=*/nullptr,
+            /*applyPreviewEffectMute=*/false);
+
+        const CellFrameRequest* rSwapped =
+            findGridRequestForTrack(requests, swappedTrackId);
+        requireSwapTest(rSwapped != nullptr,
+                        "swapped region produced no grid request");
+
+        // The core guard: never the original, never a proxy OF the original.
+        requireSwapTest(rSwapped->sourcePath != src.filePath,
+                        "swapped region decoded the ORIGINAL source file");
+        requireSwapTest(rSwapped->sourcePath != src.previewProxyPath,
+                        "swapped region decoded the whole-source preview proxy "
+                        "(a proxy of the PRE-SWAP video)");
+        requireSwapTest(rSwapped->sourcePath == swapped.proxyPath,
+                        "swapped region should decode its own region proxy");
+        std::fprintf(stderr,
+            "[TEST:FrameCollector] swapped region -> '%s': PASSED\n",
+            rSwapped->sourcePath.c_str());
+
+        // Control: an ordinary region still uses the whole-source preview proxy.
+        const CellFrameRequest* rPlain =
+            findGridRequestForTrack(requests, plainTrackId);
+        requireSwapTest(rPlain != nullptr, "plain region produced no grid request");
+        requireSwapTest(rPlain->sourcePath == src.previewProxyPath,
+                        "non-swapped region must still use the whole-source "
+                        "preview proxy (perf path must not regress)");
+        std::fprintf(stderr,
+            "[TEST:FrameCollector] non-swapped control -> '%s': PASSED\n",
+            rPlain->sourcePath.c_str());
+
+        // With no region proxy yet (mid-transcode, or transcode failed) the
+        // swapped region must fall back to the REPLACEMENT file, never to the
+        // original — otherwise the swap silently disappears again in that window.
+        SampleRegion* mutSwapped = tl.getRegionMutable(swappedRegionId);
+        requireSwapTest(mutSwapped != nullptr, "swapped region vanished");
+        mutSwapped->proxyReady = false;
+        mutSwapped->proxyPath.clear();
+
+        auto noProxy = collector.collectRequests(
+            0, tl, 48000, fps, evs, /*allowProxy=*/true,
+            /*projectStartSample=*/0, /*posterMode=*/false,
+            /*renderProxyBySource=*/nullptr, /*layoutOverride=*/nullptr,
+            /*applyPreviewEffectMute=*/false);
+        const CellFrameRequest* rNoProxy =
+            findGridRequestForTrack(noProxy, swappedTrackId);
+        requireSwapTest(rNoProxy != nullptr,
+                        "swapped region produced no grid request without a proxy");
+        requireSwapTest(rNoProxy->sourcePath == swapped.swappedVideoPath,
+                        "without a region proxy the swapped region must decode "
+                        "the replacement file, not the original");
+        std::fprintf(stderr,
+            "[TEST:FrameCollector] swapped region without proxy -> '%s': PASSED\n",
+            rNoProxy->sourcePath.c_str());
+
+        std::fprintf(stderr, "[TEST:FrameCollector] Test 8: PASSED\n");
     }
 
     std::fprintf(stderr, "\n[TEST:FrameCollector] ALL TESTS PASSED\n");

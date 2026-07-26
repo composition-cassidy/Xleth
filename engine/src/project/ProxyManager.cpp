@@ -171,8 +171,10 @@ void ProxyManager::enqueue(const Request& req)
 
     // Idempotent restart: if the target file is already present, assume a
     // prior session produced it and short-circuit to a synthetic success so
-    // the caller registers the region decoder.
-    if (!req.outputPath.empty() && fs::exists(req.outputPath))
+    // the caller registers the region decoder. `force` opts out: the region's
+    // INPUT changed (video swap/revert), so an existing file at outputPath is
+    // the PREVIOUS video's pixels, not a reusable result.
+    if (!req.force && !req.outputPath.empty() && fs::exists(req.outputPath))
     {
         Result r;
         r.regionId   = req.regionId;

@@ -206,8 +206,31 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
         // caller passes allowProxy=false so the encoder receives original-
         // source pixels — anything less makes CRF/bitrate settings operate on
         // already-degraded input and the user cannot recover quality.
-        std::string pickedPath  = src->filePath;
-        int64_t     pickedFrame = srcFrame;
+        // ── Swapped-video regions ────────────────────────────────────────────
+        // A region whose video stream was rebound by video_swapRegionVideo
+        // renders its REPLACEMENT file — src->filePath is no longer the pixels
+        // this cell should show. Every substitute below that is derived from the
+        // source (whole-source preview proxy, legacy source-wide proxy, poster /
+        // per-cell thumbnails, render-plan proxy) is a proxy OF THE ORIGINAL and
+        // is therefore invalid for such a region: engaging one silently renders
+        // the pre-swap video. Only the per-region proxy carries the replacement's
+        // pixels, so for a swapped region it is the ONLY legal substitution.
+        //
+        // The replacement file itself is the base pick (not src->filePath) so a
+        // region whose proxy has not landed yet — or whose proxy failed — still
+        // shows the right video instead of silently falling back to the original.
+        // Its time base matches the region proxy's: file time 0 == the region's
+        // startTime (see the swapped-video re-anchor in drainProxyResults).
+        const SampleRegion* pickRegion =
+            ev->regionId > 0 ? timeline.getRegion(ev->regionId) : nullptr;
+        const bool regionSwapped = pickRegion && pickRegion->hasSwappedVideo
+                                   && !pickRegion->swappedVideoPath.empty();
+
+        std::string pickedPath  = regionSwapped ? pickRegion->swappedVideoPath
+                                                : src->filePath;
+        int64_t     pickedFrame = regionSwapped
+            ? computeSourceFrameFromTime(sourceTime - pickRegion->startTime, src->fps)
+            : srcFrame;
 
         // ── RENDER PATH: resolution-aware proxy plan (authoritative) ──────────
         // When a render plan is supplied it fully owns the source-vs-proxy choice
@@ -218,8 +241,10 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
         // by allowProxy so the full-quality override (allowProxy=false) still
         // delivers bit-exact original pixels to the encoder.
         if (renderProxyBySource) {
-            // Authoritative render plan — no preview substitution.
-            if (allowProxy) {
+            // Authoritative render plan — no preview substitution. The plan is
+            // keyed by sourceId, so its proxy is a proxy of the ORIGINAL file and
+            // must not be engaged for a swapped-video region (see above).
+            if (allowProxy && !regionSwapped) {
                 auto it = renderProxyBySource->find(ev->sourceId);
                 if (it != renderProxyBySource->end() && !it->second.empty()) {
                     pickedPath  = it->second;
@@ -230,7 +255,7 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
         } else {
             // ── PREVIEW PATH substitution ladder ──────────────────────────────
             if (allowProxy && ev->regionId > 0 && !isFullscreen) {
-                const SampleRegion* r = timeline.getRegion(ev->regionId);
+                const SampleRegion* r = pickRegion;
                 if (r && r->proxyReady && !r->proxyPath.empty()) {
                     if (sourceTime >= r->proxyStartTime &&
                         sourceTime <  r->proxyEndTime) {
@@ -276,8 +301,12 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
             // `previewProxyEngaged` yield to `posterEngaged` restores the intended
             // static-frame behaviour. The proxy remains the live fallback ONLY while
             // neither this cell's thumbnail nor the base poster is ready yet.
+            // Posters and per-cell thumbnails are extracted from the ORIGINAL
+            // source, so a swapped region must not bind one — it would show the
+            // pre-swap frame. Such a cell stays on its region proxy / the
+            // replacement file, which is live but always the correct video.
             std::string posterPick;
-            if (posterMode) {
+            if (posterMode && !regionSwapped) {
                 const int bucket = static_cast<int>(
                     std::floor(std::max(0.0, ev->sourceStartTime)));
                 auto it = src->thumbnailPaths.find(bucket);
@@ -288,8 +317,13 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
             }
             const bool posterEngaged = !posterPick.empty();
 
+            // The whole-source preview proxy is a proxy of src->filePath. It
+            // supersedes the region proxy for ordinary regions (both hold the
+            // same pixels, and the intra proxy scrubs faster) — but for a
+            // swapped region it holds the PRE-SWAP video, so it must yield to
+            // the region proxy exactly as it already yields to posterEngaged.
             const bool previewProxyEngaged =
-                allowProxy && !posterEngaged
+                allowProxy && !posterEngaged && !regionSwapped
                 && src->previewProxyReady && !src->previewProxyPath.empty();
             if (previewProxyEngaged) {
                 pickedPath  = src->previewProxyPath;

@@ -120,6 +120,14 @@ public:
     /** Close all open decoder contexts. Call on project load / shutdown. */
     void closeAll();
 
+    /** Close the cached decoder context for ONE path, if open, releasing the
+     *  file handle. Required before deleting/overwriting a file this decoder
+     *  may have open: on Windows an open FFmpeg handle makes the delete fail,
+     *  and a proxy that cannot be deleted is silently reused (see
+     *  invalidateRegionProxy). Returns true if a context was actually closed.
+     *  Caller must hold the compositor mutex — this mutates contexts_. */
+    bool closeSource(const std::string& sourcePath);
+
     /** Full shutdown: close all contexts and release the hw device context.
      *  Call before destroying the D3D11 device (GpuDeviceManager). */
     void shutdown();

@@ -34,6 +34,11 @@ public:
         double      endTime    = 0.0;
         int         targetW    = 0;
         int         targetH    = 0;
+        // Skip the "output already on disk → synthetic success" short-circuit.
+        // Set by callers re-transcoding a region whose INPUT changed (a video
+        // swap/revert), where an existing file at outputPath holds the old
+        // video's pixels rather than a usable result from a prior session.
+        bool        force      = false;
     };
 
     struct Result {
