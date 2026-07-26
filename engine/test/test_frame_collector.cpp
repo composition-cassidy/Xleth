@@ -945,6 +945,65 @@ int main()
         std::fprintf(stderr, "[TEST:FrameCollector] Test 6: PASSED\n");
     }
 
+    // ── Test 7: applyPreviewEffectMute cannot leak into an export-shaped call ──
+    // Export (OfflineRenderer) and the snapshot-transition renderer never pass
+    // applyPreviewEffectMute=true — only the live preview tick does. Prove the
+    // converse holds even with an active Timeline::setVisualEffectChainPreviewMuted
+    // flag: an export-shaped collectRequests() call (applyPreviewEffectMute=false,
+    // the default) must see the chain regardless, while a preview-shaped call
+    // (=true) must not.
+    {
+        std::fprintf(stderr,
+            "\n[TEST:FrameCollector] --- Test 7: preview-mute export-immunity ---\n");
+
+        timeline.addVisualEffect(trackIds[0], VisualEffect::Type::Desaturation);
+
+        FrameCollector collector;
+        AVRational fps = {30, 1};
+
+        // Not muted yet: chain present under both call shapes (sanity baseline).
+        auto before = collector.collectRequests(0, timeline, 48000, fps, events);
+        const CellFrameRequest* r0 = findGridRequestForTrack(before, trackIds[0]);
+        assert(r0 && !r0->visualChain.empty());
+
+        timeline.setVisualEffectChainPreviewMuted(trackIds[0], true);
+
+        // Export-shaped call (applyPreviewEffectMute defaults to false): the mute
+        // must NOT be visible here, exactly as OfflineRenderer's calls behave.
+        auto exportShaped = collector.collectRequests(
+            0, timeline, 48000, fps, events, /*allowProxy=*/true,
+            /*projectStartSample=*/0, /*posterMode=*/false,
+            /*renderProxyBySource=*/nullptr, /*layoutOverride=*/nullptr,
+            /*applyPreviewEffectMute=*/false);
+        const CellFrameRequest* rExport = findGridRequestForTrack(exportShaped, trackIds[0]);
+        assert(rExport && !rExport->visualChain.empty());
+        std::fprintf(stderr,
+            "[TEST:FrameCollector] export-shaped call ignores an active preview mute: PASSED\n");
+
+        // Preview-shaped call (applyPreviewEffectMute=true): the mute IS visible.
+        auto previewShaped = collector.collectRequests(
+            0, timeline, 48000, fps, events, /*allowProxy=*/true,
+            /*projectStartSample=*/0, /*posterMode=*/false,
+            /*renderProxyBySource=*/nullptr, /*layoutOverride=*/nullptr,
+            /*applyPreviewEffectMute=*/true);
+        const CellFrameRequest* rPreview = findGridRequestForTrack(previewShaped, trackIds[0]);
+        assert(rPreview && rPreview->visualChain.empty());
+        std::fprintf(stderr,
+            "[TEST:FrameCollector] preview-shaped call honours the mute: PASSED\n");
+
+        // Clearing the mute restores the chain for preview-shaped calls too.
+        timeline.setVisualEffectChainPreviewMuted(trackIds[0], false);
+        auto afterUnmute = collector.collectRequests(
+            0, timeline, 48000, fps, events, /*allowProxy=*/true,
+            /*projectStartSample=*/0, /*posterMode=*/false,
+            /*renderProxyBySource=*/nullptr, /*layoutOverride=*/nullptr,
+            /*applyPreviewEffectMute=*/true);
+        const CellFrameRequest* rUnmuted = findGridRequestForTrack(afterUnmute, trackIds[0]);
+        assert(rUnmuted && !rUnmuted->visualChain.empty());
+
+        std::fprintf(stderr, "[TEST:FrameCollector] Test 7: PASSED\n");
+    }
+
     std::fprintf(stderr, "\n[TEST:FrameCollector] ALL TESTS PASSED\n");
     return 0;
 }

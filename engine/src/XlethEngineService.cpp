@@ -3352,7 +3352,9 @@ static void videoThreadBody()
                     auto requests = g_previewCollector->collectRequests(
                         collectorOutputFrame, *g_timeline, sampleRate, fpsRat,
                         events, true, collectorProjectStartSample,
-                        g_previewPosterMode);
+                        g_previewPosterMode, /*renderProxyBySource=*/nullptr,
+                        /*layoutOverride=*/nullptr,
+                        /*applyPreviewEffectMute=*/true);
                     s_collectTimer.record(
                         tickUsBetween(tTickStart, TickClock::now()),
                         g_previewDiag.lastCollectUs, g_previewDiag.avgCollectUs,
@@ -10583,6 +10585,41 @@ void Timeline_SetVisualEffectBypassed(const JsonApi::CallbackInfo& info)
             std::make_unique<SetVisualEffectBypassedCommand>(trackId, effectIndex,
                                                             bypassed, *g_timeline),
             *g_timeline);
+    }
+    g_previewDirty = true;
+    log.done();
+}
+
+// timeline_setVisualEffectChainPreviewMuted(trackId, muted)
+// Preview-only whole-chain mute for the chroma-key eyedropper. Deliberately
+// bypasses UndoManager (no undo entry) and Timeline's serialized chain state
+// (no save/load effect, no export effect — see Timeline::
+// setVisualEffectChainPreviewMuted and FrameCollector's applyPreviewEffectMute).
+// Replaces the eyedropper's old per-effect setVisualEffectBypassed loop, which
+// left an undoable mute/unmute pair in the stack for every effect on every pick.
+void Timeline_SetVisualEffectChainPreviewMuted(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return;
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsBoolean()) {
+        JsonApi::TypeError::New(env,
+            "timeline_setVisualEffectChainPreviewMuted(trackId, muted)")
+            .ThrowAsJavaScriptException();
+        return;
+    }
+    int  trackId = info[0].As<JsonApi::Number>().Int32Value();
+    bool muted   = info[1].As<JsonApi::Boolean>().Value();
+    BridgeCallLog log("timeline.setVisualEffectChainPreviewMuted");
+    {
+        // Same locking discipline as every other visual-effect-chain mutator:
+        // see Timeline_AddVisualEffect above and the FrameCollector.h note on
+        // CellFrameRequest::visualChain — collectRequests reads chain state
+        // (and now this flag) under this same lock in the preview tick loop.
+        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        g_timeline->setVisualEffectChainPreviewMuted(trackId, muted);
     }
     g_previewDirty = true;
     log.done();

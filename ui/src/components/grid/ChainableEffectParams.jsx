@@ -43,7 +43,7 @@ function rgbToHex(r, g, b) {
   return `#${h(r)}${h(g)}${h(b)}`
 }
 
-export default function ChainableEffectParams({ fx, trackId, fxIdx, chain, fetchTracks }) {
+export default function ChainableEffectParams({ fx, trackId, fxIdx, fetchTracks }) {
   const set = async (paramIdx, v) => {
     await window.xleth?.timeline?.setVisualEffectParam(trackId, fxIdx, paramIdx, v)
     fetchTracks()
@@ -57,24 +57,14 @@ export default function ChainableEffectParams({ fx, trackId, fxIdx, chain, fetch
   // the chain live a pick would return the POST-effect colour — and for a
   // working keyer that is the layer showing THROUGH the hole, not the green we
   // want to sample. So mute this track's whole chain for the duration of the
-  // pick and restore it afterwards.
+  // pick and restore it afterwards, via the preview-only mute RPC (no undo
+  // entry, not persisted, not seen by export — see
+  // Timeline::setVisualEffectChainPreviewMuted).
   const pickKeyColor = async () => {
     if (picking) return
     setPicking(true)
-    // Only touch effects that are actually live. Every toggle is an undoable
-    // command, so skipping the already-bypassed ones keeps the undo stack as
-    // quiet as this can be without a preview-only mute RPC.
-    const list = Array.isArray(chain) ? chain : []
-    const toMute = list
-      .map((e, i) => ({ i, bypassed: !!e?.bypassed }))
-      .filter(({ bypassed }) => !bypassed)
-      .map(({ i }) => i)
-    const muted = []
     try {
-      for (const i of toMute) {
-        await window.xleth?.timeline?.setVisualEffectBypassed(trackId, i, true)
-        muted.push(i)
-      }
+      await window.xleth?.timeline?.setVisualEffectChainPreviewMuted(trackId, true)
       const rgb = await beginPick(trackId)
       if (rgb) {
         await set(0, rgb.r)
@@ -82,11 +72,9 @@ export default function ChainableEffectParams({ fx, trackId, fxIdx, chain, fetch
         await set(2, rgb.b)
       }
     } finally {
-      // Restore in reverse so the chain ends up exactly as it started even if
-      // a mid-loop call above threw.
-      for (const i of muted.reverse()) {
-        try { await window.xleth?.timeline?.setVisualEffectBypassed(trackId, i, false) } catch { /* no-op */ }
-      }
+      // Runs on cancel (Escape / superseding pick) too, not just a successful
+      // pick — beginPick's promise always resolves, never rejects.
+      try { await window.xleth?.timeline?.setVisualEffectChainPreviewMuted(trackId, false) } catch { /* no-op */ }
       setPicking(false)
       fetchTracks()
     }

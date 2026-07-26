@@ -181,7 +181,7 @@ export default function VisualFXSection({ track, fetchTracks }) {
             onRemove={() => handleRemoveChain(fxIdx)}
           >
             <ChainableEffectParams fx={fx} trackId={track.id} fxIdx={fxIdx}
-              chain={chain} fetchTracks={fetchTracks} />
+              fetchTracks={fetchTracks} />
           </EffectRow>
         ))}
       </div>

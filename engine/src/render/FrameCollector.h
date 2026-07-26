@@ -186,6 +186,17 @@ public:
      *                          outgoing A or incoming B) at a given frame. The caller
      *                          owns the layout by value; the pointer is not retained
      *                          past this call. Default (nullptr) is unchanged.
+     * @param applyPreviewEffectMute  PREVIEW-ONLY. When true, a track with an
+     *                          active Timeline::setVisualEffectChainPreviewMuted
+     *                          flag gets an empty CellFrameRequest::visualChain
+     *                          for this call, as if it had no chain at all (used
+     *                          by the chroma-key eyedropper so it samples raw,
+     *                          unprocessed pixels without an undoable per-effect
+     *                          bypass). Defaults to false — the render/export
+     *                          path and the snapshot-transition renderer MUST
+     *                          leave this false so an in-flight preview mute can
+     *                          never affect an export; only the live preview
+     *                          tick opts in.
      */
     std::vector<CellFrameRequest> collectRequests(
         int64_t                        outputFrameIndex,
@@ -197,7 +208,8 @@ public:
         int64_t                        projectStartSample = 0,
         bool                           posterMode = false,
         const std::unordered_map<int, std::string>* renderProxyBySource = nullptr,
-        const GridLayout*              layoutOverride = nullptr);
+        const GridLayout*              layoutOverride = nullptr,
+        bool                           applyPreviewEffectMute = false);
 
     // ── Step 2: Deduplicate ─────────────────────────────────────────────────
 

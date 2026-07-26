@@ -1104,6 +1104,19 @@ const std::vector<VisualEffect>* Timeline::getVisualEffectChain(int trackId) con
     return &it->second.visualEffectChain;
 }
 
+bool Timeline::setVisualEffectChainPreviewMuted(int trackId, bool muted)
+{
+    if (m_tracks.find(trackId) == m_tracks.end()) return false;
+    if (muted) m_previewMutedChainTrackIds.insert(trackId);
+    else       m_previewMutedChainTrackIds.erase(trackId);
+    return true;
+}
+
+bool Timeline::isVisualEffectChainPreviewMuted(int trackId) const
+{
+    return m_previewMutedChainTrackIds.count(trackId) != 0;
+}
+
 // ─── Transport ────────────────────────────────────────────────────────────────
 
 void Timeline::setBPM(double bpm) {

@@ -8,6 +8,7 @@
 #include "audio/TrackRouting.h"
 #include <functional>
 #include <map>
+#include <unordered_set>
 #include <vector>
 #include <nlohmann/json.hpp>
 
@@ -285,6 +286,17 @@ public:
     bool setTrackVisualEffectChainOrder(int trackId, const std::vector<int>& newOrder);
     const std::vector<VisualEffect>* getVisualEffectChain(int trackId) const;
 
+    // Preview-only whole-chain mute for the chroma-key eyedropper. Deliberately
+    // NOT a chain member (see m_previewMutedChainTrackIds below): it must never
+    // enter TrackInfo's serialized fields, so Track.cpp's hand-maintained
+    // to_json/from_json cannot pick it up even by accident, and project save/
+    // load can never observe it. FrameCollector only consults it when a caller
+    // opts in via collectRequests' applyPreviewEffectMute (the live preview
+    // tick does; export and the snapshot-transition renderer do not), so an
+    // active mute cannot leak into a render.
+    bool setVisualEffectChainPreviewMuted(int trackId, bool muted);
+    bool isVisualEffectChainPreviewMuted(int trackId) const;
+
     // ── Restore (undo/redo) ───────────────────────────────────────────────────
     // Insert with the original ID, skipping auto-increment. Used by commands to
     // re-insert previously removed entities during undo/redo without ID drift.
@@ -343,6 +355,8 @@ private:
     std::map<int, SourceMedia>  m_sources;
     std::map<int, SampleRegion> m_regions;
     std::map<int, TrackInfo>    m_tracks;
+    // Preview-only, not persisted — see setVisualEffectChainPreviewMuted above.
+    std::unordered_set<int>     m_previewMutedChainTrackIds;
     std::map<int, Clip>         m_clips;
     std::map<int, Pattern>      m_patterns;
     std::map<int, PatternBlock> m_patternBlocks;

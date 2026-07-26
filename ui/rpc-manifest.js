@@ -664,6 +664,18 @@ const METHODS = [
     binary: null,
   },
   {
+    // Preview-only, non-undoable whole-chain mute for the chroma-key eyedropper
+    // (ChainableEffectParams.jsx). Not persisted, not seen by export — see
+    // Timeline::setVisualEffectChainPreviewMuted / FrameCollector's
+    // applyPreviewEffectMute. Do not route this through UndoManager.
+    method: 'timeline_setVisualEffectChainPreviewMuted',
+    channels: ['xleth:timeline:setVisualEffectChainPreviewMuted'],
+    api: { 'timeline.setVisualEffectChainPreviewMuted': 'xleth:timeline:setVisualEffectChainPreviewMuted' },
+    handler: 'Timeline_SetVisualEffectChainPreviewMuted',
+    returns: 'void',
+    binary: null,
+  },
+  {
     method: 'timeline_setTrackVisualEffectChainOrder',
     channels: ['xleth:timeline:setTrackVisualEffectChainOrder'],
     api: { 'timeline.setTrackVisualEffectChainOrder': 'xleth:timeline:setTrackVisualEffectChainOrder' },

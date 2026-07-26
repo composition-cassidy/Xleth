@@ -98,7 +98,8 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
     int64_t                        projectStartSample,
     bool                           posterMode,
     const std::unordered_map<int, std::string>* renderProxyBySource,
-    const GridLayout*              layoutOverride)
+    const GridLayout*              layoutOverride,
+    bool                           applyPreviewEffectMute)
 {
     const double bpm = timeline.getBPM();
 
@@ -314,7 +315,12 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
             if (trk) {
                 req.cornerRadius     = trk->cornerRadius;
                 req.gapScaleOverride = trk->gapScaleOverride;
-                if (!trk->visualEffectChain.empty()) {
+                // Preview-only eyedropper mute (see applyPreviewEffectMute doc):
+                // export/transition callers never pass true, so this can never
+                // suppress the chain during a render.
+                const bool previewMuted = applyPreviewEffectMute
+                    && timeline.isVisualEffectChainPreviewMuted(trk->id);
+                if (!previewMuted && !trk->visualEffectChain.empty()) {
                     // Copy, not address-of — see the comment on
                     // CellFrameRequest::visualChain in FrameCollector.h
                     // (Bug 1 fix). Safe here specifically because this
