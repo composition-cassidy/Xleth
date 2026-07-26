@@ -595,6 +595,7 @@ std::string AddTrackCommand::describe() const {
 // ─── RemoveTrackCommand ───────────────────────────────────────────────────────
 
 RemoveTrackCommand::RemoveTrackCommand(int trackId, const Timeline& timeline) {
+    oldTrackLayout_ = timeline.getTrackLayout();
     const TrackInfo* t = timeline.getTrack(trackId);
     if (t) {
         track_ = *t;
@@ -646,6 +647,7 @@ void RemoveTrackCommand::execute(Timeline& timeline) {
 void RemoveTrackCommand::undo(Timeline& timeline) {
     // Restore track before clips/blocks (they logically belong to the track)
     timeline.restoreTrack(track_);
+    timeline.setTrackLayout(oldTrackLayout_);
     for (const auto& c : clips_)
         timeline.restoreClip(c);
     for (const auto& b : patternBlocks_)
@@ -925,27 +927,99 @@ std::string SetTrackSoloCommand::describe() const {
 // ─── SetTrackOrderCommand ─────────────────────────────────────────────────────
 
 SetTrackOrderCommand::SetTrackOrderCommand(std::vector<int> trackIdsInOrder, const Timeline& timeline)
-    : trackIdsInOrder_(std::move(trackIdsInOrder))
-{
-    for (const TrackInfo* t : timeline.getAllTracks()) {
-        if (t)
-            oldOrdersByTrackId_[t->id] = t->order;
-    }
-}
+    : trackIdsInOrder_(std::move(trackIdsInOrder)), oldTrackLayout_(timeline.getTrackLayout()) {}
 
 void SetTrackOrderCommand::execute(Timeline& timeline) {
     timeline.setTrackOrder(trackIdsInOrder_);
 }
 
 void SetTrackOrderCommand::undo(Timeline& timeline) {
-    for (const auto& [trackId, order] : oldOrdersByTrackId_) {
-        if (TrackInfo* t = timeline.getTrackMutable(trackId))
-            t->order = order;
-    }
+    timeline.setTrackLayout(oldTrackLayout_);
 }
 
 std::string SetTrackOrderCommand::describe() const {
     return "Reorder Tracks";
+}
+
+SetTrackLayoutCommand::SetTrackLayoutCommand(TrackLayout newLayout, const Timeline& timeline,
+                                             std::string description)
+    : oldLayout_(timeline.getTrackLayout()), newLayout_(std::move(newLayout)),
+      description_(std::move(description)) {}
+
+void SetTrackLayoutCommand::execute(Timeline& timeline) { timeline.setTrackLayout(newLayout_); }
+void SetTrackLayoutCommand::undo(Timeline& timeline) { timeline.setTrackLayout(oldLayout_); }
+std::string SetTrackLayoutCommand::describe() const { return description_; }
+
+CreateTrackFolderCommand::CreateTrackFolderCommand(std::string name,
+                                                   std::vector<int> trackIds,
+                                                   int rootIndex,
+                                                   const Timeline& timeline)
+    : name_(std::move(name)), trackIds_(std::move(trackIds)), rootIndex_(rootIndex),
+      oldLayout_(timeline.getTrackLayout()) {}
+
+void CreateTrackFolderCommand::execute(Timeline& timeline) {
+    if (firstExecute_) {
+        folderId_ = timeline.createTrackFolder(name_, trackIds_, rootIndex_);
+        createdLayout_ = timeline.getTrackLayout();
+        firstExecute_ = false;
+    } else {
+        timeline.restoreTrackLayout(createdLayout_);
+    }
+}
+
+void CreateTrackFolderCommand::undo(Timeline& timeline) { timeline.restoreTrackLayout(oldLayout_); }
+std::string CreateTrackFolderCommand::describe() const { return "Create Track Folder '" + name_ + "'"; }
+
+RenameTrackFolderCommand::RenameTrackFolderCommand(int folderId, std::string name,
+                                                   const Timeline& timeline)
+    : folderId_(folderId), newName_(std::move(name)) {
+    for (const auto& folder : timeline.getTrackLayout().folders)
+        if (folder.id == folderId_) oldName_ = folder.name;
+}
+
+void RenameTrackFolderCommand::execute(Timeline& timeline) {
+    timeline.setTrackFolderName(folderId_, newName_);
+}
+void RenameTrackFolderCommand::undo(Timeline& timeline) {
+    timeline.setTrackFolderName(folderId_, oldName_);
+}
+std::string RenameTrackFolderCommand::describe() const { return "Rename Track Folder"; }
+
+SetTrackFolderCollapsedCommand::SetTrackFolderCollapsedCommand(
+    int folderId, bool collapsed, const Timeline& timeline)
+    : folderId_(folderId), oldCollapsed_(false), newCollapsed_(collapsed) {
+    for (const auto& folder : timeline.getTrackLayout().folders)
+        if (folder.id == folderId_) oldCollapsed_ = folder.collapsed;
+}
+
+void SetTrackFolderCollapsedCommand::execute(Timeline& timeline) {
+    timeline.setTrackFolderCollapsed(folderId_, newCollapsed_);
+}
+void SetTrackFolderCollapsedCommand::undo(Timeline& timeline) {
+    timeline.setTrackFolderCollapsed(folderId_, oldCollapsed_);
+}
+std::string SetTrackFolderCollapsedCommand::describe() const {
+    return newCollapsed_ ? "Collapse Track Folder" : "Expand Track Folder";
+}
+
+RemoveTrackFolderCommand::RemoveTrackFolderCommand(int folderId, const Timeline& timeline)
+    : folderId_(folderId), oldLayout_(timeline.getTrackLayout()) {
+    for (const auto& folder : oldLayout_.folders)
+        if (folder.id == folderId_) folderName_ = folder.name;
+}
+
+void RemoveTrackFolderCommand::execute(Timeline& timeline) {
+    if (firstExecute_) {
+        timeline.removeTrackFolder(folderId_);
+        ungroupedLayout_ = timeline.getTrackLayout();
+        firstExecute_ = false;
+    } else {
+        timeline.restoreTrackLayout(ungroupedLayout_);
+    }
+}
+void RemoveTrackFolderCommand::undo(Timeline& timeline) { timeline.restoreTrackLayout(oldLayout_); }
+std::string RemoveTrackFolderCommand::describe() const {
+    return "Delete Track Folder '" + folderName_ + "' (Keep Tracks)";
 }
 
 // ─── SetTrackOutputRouteCommand ───────────────────────────────────────────────
@@ -2395,10 +2469,21 @@ void ReorderVisualEffectCommand::execute(Timeline& timeline) {
 }
 
 void ReorderVisualEffectCommand::undo(Timeline& timeline) {
-    // Reverse: move from toIndex back to fromIndex
-    // After execute, the item is at an adjusted position; use reverse move
-    int insertAt = (toIndex_ > fromIndex_) ? toIndex_ - 1 : toIndex_;
-    timeline.reorderVisualEffect(trackId_, insertAt, fromIndex_);
+    // NOT a second reorderVisualEffect() call: that function's `toIndex` is an
+    // original-array-space index (see its erase-then-insert-adjusted body), so
+    // a naive from/to swap re-derives the same erase adjustment execute() already
+    // applied and cancels out to a no-op for forward moves, and is off-by-one for
+    // backward moves. It also can never express "reinsert at the end" (toIndex
+    // must be < size), which a backward move off the last slot needs.
+    // Instead, mirror RemoveVisualEffectCommand::undo: locate the effect at its
+    // post-execute position and move it back with the two index-exact primitives.
+    int postExecuteIndex = (toIndex_ > fromIndex_) ? toIndex_ - 1 : toIndex_;
+    const auto* chain = timeline.getVisualEffectChain(trackId_);
+    if (!chain || postExecuteIndex < 0 || postExecuteIndex >= static_cast<int>(chain->size()))
+        return;
+    VisualEffect moved = (*chain)[postExecuteIndex];
+    timeline.removeVisualEffect(trackId_, postExecuteIndex);
+    timeline.insertVisualEffectAt(trackId_, fromIndex_, moved);
 }
 
 std::string ReorderVisualEffectCommand::describe() const {

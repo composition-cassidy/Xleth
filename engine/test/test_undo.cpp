@@ -414,6 +414,69 @@ static void test10_addNotesBatchUndoRedo() {
     CHECK(idsMatch, "redo restored notes keep their assigned IDs");
 }
 
+static void test12_trackFolderUndoRedo() {
+    std::cout << "\n[12] Track folder undo/redo preserves exact placement\n";
+
+    Timeline timeline;
+    UndoManager history;
+    TrackInfo seed;
+    seed.name = "One";
+    const int one = timeline.addTrack(seed);
+    seed.name = "Two";
+    const int two = timeline.addTrack(seed);
+    seed.name = "Three";
+    const int three = timeline.addTrack(seed);
+
+    auto create = std::make_unique<CreateTrackFolderCommand>(
+        "Group", std::vector<int>{one, two}, 0, timeline);
+    auto* createPtr = create.get();
+    history.execute(std::move(create), timeline);
+    const int folderId = createPtr->folderId();
+    CHECK(folderId > 0 && timeline.getTrackLayout().folders.size() == 1,
+          "create command groups selected tracks");
+    history.undo(timeline);
+    CHECK(timeline.getTrackLayout().folders.empty()
+          && timeline.getTrackLayout().rootOrder.size() == 3,
+          "undo create restores flat placement");
+    history.redo(timeline);
+    CHECK(timeline.getTrackLayout().folders.size() == 1
+          && timeline.getTrackLayout().folders[0].id == folderId,
+          "redo create restores the same folder identity");
+
+    history.execute(std::make_unique<RenameTrackFolderCommand>(
+        folderId, "Renamed", timeline), timeline);
+    history.execute(std::make_unique<SetTrackFolderCollapsedCommand>(
+        folderId, true, timeline), timeline);
+    CHECK(timeline.getTrackLayout().folders[0].name == "Renamed"
+          && timeline.getTrackLayout().folders[0].collapsed,
+          "rename and collapse are command-tracked");
+    history.undo(timeline);
+    history.undo(timeline);
+    CHECK(timeline.getTrackLayout().folders[0].name == "Group"
+          && !timeline.getTrackLayout().folders[0].collapsed,
+          "rename and collapse undo exactly");
+
+    history.execute(std::make_unique<RemoveTrackCommand>(two, timeline), timeline);
+    CHECK(timeline.getTrackLayout().folders[0].trackIds == std::vector<int>({one}),
+          "deleting a member removes only that member");
+    history.undo(timeline);
+    CHECK(timeline.getTrackLayout().folders[0].trackIds == std::vector<int>({one, two}),
+          "undo member deletion restores exact folder placement");
+
+    history.execute(std::make_unique<RemoveTrackFolderCommand>(folderId, timeline), timeline);
+    TrackLayout ungrouped = timeline.getTrackLayout();
+    CHECK(ungrouped.folders.empty() && ungrouped.rootOrder.size() == 3
+          && ungrouped.rootOrder[0].id == one && ungrouped.rootOrder[1].id == two
+          && ungrouped.rootOrder[2].id == three,
+          "delete folder keeps member tracks in place");
+    history.undo(timeline);
+    CHECK(timeline.getTrackLayout().folders.size() == 1
+          && timeline.getTrackLayout().folders[0].id == folderId,
+          "undo folder deletion restores folder and membership");
+    history.redo(timeline);
+    CHECK(timeline.getTrackLayout().folders.empty(), "redo folder deletion ungroups again");
+}
+
 static void test11_visualEffectParamFailureDoesNotRecordHistory() {
     std::cout << "\n[11] SetVisualEffectParamCommand rejects stale indices without history\n";
 
@@ -439,6 +502,91 @@ static void test11_visualEffectParamFailureDoesNotRecordHistory() {
           "undo restores the previous visual-effect parameter value");
 }
 
+static void test13_reorderVisualEffectUndoRedoExact() {
+    std::cout << "\n[13] ReorderVisualEffectCommand undo/redo restores exact chain (+ save/load)\n";
+
+    Timeline    tl3;
+    UndoManager um3;
+
+    TrackInfo track;
+    track.name = "ReorderTrack";
+    const int trackId = tl3.addTrack(track);
+
+    tl3.addVisualEffect(trackId, VisualEffect::Type::Desaturation);
+    tl3.addVisualEffect(trackId, VisualEffect::Type::Tint);
+
+    auto typesOf = [&](Timeline& t) {
+        std::vector<VisualEffect::Type> types;
+        for (const auto& fx : *t.getVisualEffectChain(trackId)) types.push_back(fx.type);
+        return types;
+    };
+
+    const auto original = typesOf(tl3);
+    CHECK((original == std::vector<VisualEffect::Type>{
+              VisualEffect::Type::Desaturation, VisualEffect::Type::Tint}),
+          "fixture chain starts Desaturation, Tint");
+
+    // Minimal repro from the bug report: a 2-effect chain swap.
+    um3.execute(std::make_unique<ReorderVisualEffectCommand>(trackId, 1, 0), tl3);
+    CHECK((typesOf(tl3) == std::vector<VisualEffect::Type>{
+              VisualEffect::Type::Tint, VisualEffect::Type::Desaturation}),
+          "reorder(1,0) moves Tint to front");
+
+    CHECK(um3.undo(tl3), "reorder undo reports success");
+    CHECK(typesOf(tl3) == original, "undo restores exact original chain order");
+
+    CHECK(um3.redo(tl3), "reorder redo reports success");
+    CHECK((typesOf(tl3) == std::vector<VisualEffect::Type>{
+              VisualEffect::Type::Tint, VisualEffect::Type::Desaturation}),
+          "redo re-applies the reorder exactly");
+
+    CHECK(um3.undo(tl3), "second undo reports success");
+    CHECK(typesOf(tl3) == original, "chain is back to fixture order for the next case");
+
+    // Backward move off the LAST slot: reorderVisualEffect's toIndex can't target
+    // "append" (must be < size), so an undo that tried to invert via a second
+    // reorderVisualEffect() call could never restore this case even if the
+    // erase-adjustment arithmetic were otherwise fixed.
+    tl3.addVisualEffect(trackId, VisualEffect::Type::BrightnessContrast);
+    const auto original3 = typesOf(tl3);
+    CHECK((original3 == std::vector<VisualEffect::Type>{
+              VisualEffect::Type::Desaturation, VisualEffect::Type::Tint,
+              VisualEffect::Type::BrightnessContrast}),
+          "3-effect fixture starts Desaturation, Tint, BrightnessContrast");
+
+    um3.execute(std::make_unique<ReorderVisualEffectCommand>(trackId, 2, 0), tl3);
+    CHECK((typesOf(tl3) == std::vector<VisualEffect::Type>{
+              VisualEffect::Type::BrightnessContrast, VisualEffect::Type::Desaturation,
+              VisualEffect::Type::Tint}),
+          "reorder(2,0) moves the last effect to the front");
+
+    CHECK(um3.undo(tl3), "backward-move-off-last-slot undo reports success");
+    CHECK(typesOf(tl3) == original3, "undo restores the exact 3-effect chain, including the last slot");
+
+    CHECK(um3.redo(tl3), "backward-move-off-last-slot redo reports success");
+    CHECK((typesOf(tl3) == std::vector<VisualEffect::Type>{
+              VisualEffect::Type::BrightnessContrast, VisualEffect::Type::Desaturation,
+              VisualEffect::Type::Tint}),
+          "redo re-applies the last-slot move exactly");
+
+    // Persisted save/load must preserve chain order too (Track.cpp's hand-maintained
+    // to_json/from_json pair is a separate place this can silently regress even if
+    // in-memory undo/redo is correct).
+    nlohmann::json j;
+    to_json(j, *tl3.getTrack(trackId));
+    TrackInfo loaded;
+    from_json(j, loaded);
+    std::vector<VisualEffect::Type> loadedTypes;
+    for (const auto& fx : loaded.visualEffectChain) loadedTypes.push_back(fx.type);
+    CHECK((loadedTypes == std::vector<VisualEffect::Type>{
+              VisualEffect::Type::BrightnessContrast, VisualEffect::Type::Desaturation,
+              VisualEffect::Type::Tint}),
+          "save/load preserves reordered chain order exactly");
+
+    CHECK(um3.undo(tl3), "undo after save/load round trip still works on the live timeline");
+    CHECK(typesOf(tl3) == original3, "post-round-trip undo still restores the exact chain");
+}
+
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
 int main() {
@@ -453,6 +601,8 @@ int main() {
     test9_clipModulationJsonRoundTrip();
     test10_addNotesBatchUndoRedo();
     test11_visualEffectParamFailureDoesNotRecordHistory();
+    test12_trackFolderUndoRedo();
+    test13_reorderVisualEffectUndoRedoExact();
 
     std::cout << "\n";
     if (g_failed == 0) {
