@@ -734,7 +734,8 @@ static bool transcodeImpl(const std::string& inputPath,
                           int targetW, int targetH,
                           std::function<void(float)> progressCb,
                           int swsFlags = SWS_BILINEAR,
-                          bool highBitDepth = false)
+                          bool highBitDepth = false,
+                          bool uncappedNative = false)
 {
     std::error_code ec;
     if (!fs::exists(utf8ToPath(inputPath), ec)) {
@@ -784,7 +785,13 @@ static bool transcodeImpl(const std::string& inputPath,
     // legitimately exceed 1080). Both-given (region) and both-zero (legacy
     // whole-file) callers keep the historical <=1080p cap.
     int tw, th;
-    if (targetW <= 0 && targetH > 0 && s.height > 0) {
+    if (uncappedNative) {
+        // Full-quality section export (transcodeSectionHQX): the whole point is
+        // to preserve source resolution exactly, even above 1080p/4K — never
+        // apply the preview-proxy resolution cap below.
+        tw = evenClamp(s.width);
+        th = evenClamp(s.height);
+    } else if (targetW <= 0 && targetH > 0 && s.height > 0) {
         th = std::min(targetH, s.height);
         tw = static_cast<int>(std::lround(static_cast<double>(s.width) * th / s.height));
         tw = evenClamp(tw);
@@ -1106,6 +1113,53 @@ bool ProxyTranscoder::transcodeRange(
     double elapsed = std::chrono::duration<double>(t1 - t0).count();
     double proxyMB = static_cast<double>(fs::file_size(utf8ToPath(outputPath), ec)) / (1024.0 * 1024.0);
     std::printf("[ProxyTranscoder] Range proxy done in %.1f s — %.1f MB\n", elapsed, proxyMB);
+    return true;
+}
+
+// ── transcodeSectionHQX (full-quality section export, NOT a preview artifact) ─
+
+bool ProxyTranscoder::transcodeSectionHQX(
+    const std::string& inputPath,
+    const std::string& outputPath,
+    double             startTimeSec,
+    double             endTimeSec,
+    std::function<void(float progress)> progressCallback)
+{
+    std::error_code ec;
+    if (!fs::exists(utf8ToPath(inputPath), ec)) {
+        std::cerr << "[ProxyTranscoder] Source not found: " << inputPath << "\n";
+        return false;
+    }
+    if (endTimeSec <= startTimeSec) {
+        std::cerr << "[ProxyTranscoder] Invalid section range: start=" << startTimeSec
+                  << " end=" << endTimeSec << "\n";
+        return false;
+    }
+
+    std::cout << "[ProxyTranscoder] Section export (in-process, native resolution)\n"
+              << "[ProxyTranscoder] Section Input : " << inputPath  << "\n"
+              << "[ProxyTranscoder] Section Output: " << outputPath << "\n"
+              << "[ProxyTranscoder] Section Range: [" << startTimeSec << ", " << endTimeSec
+              << ") (" << (endTimeSec - startTimeSec) << " s)\n";
+
+    auto t0 = std::chrono::high_resolution_clock::now();
+    if (progressCallback) progressCallback(0.0f);
+
+    // targetW/targetH are ignored when uncappedNative=true (source dims used
+    // directly); highBitDepth=true puts DNxHR HQX first in the encoder ladder.
+    bool ok = transcodeImpl(inputPath, outputPath,
+                            startTimeSec, endTimeSec,
+                            0, 0, progressCallback,
+                            SWS_BILINEAR, /*highBitDepth=*/true, /*uncappedNative=*/true);
+    if (!ok) {
+        std::cerr << "[ProxyTranscoder] Section export FAILED\n";
+        return false;
+    }
+
+    auto t1 = std::chrono::high_resolution_clock::now();
+    double elapsed = std::chrono::duration<double>(t1 - t0).count();
+    double outMB = static_cast<double>(fs::file_size(utf8ToPath(outputPath), ec)) / (1024.0 * 1024.0);
+    std::printf("[ProxyTranscoder] Section export done in %.1f s — %.1f MB\n", elapsed, outMB);
     return true;
 }
 

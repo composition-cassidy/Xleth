@@ -115,6 +115,7 @@ extern "C" {
 #include <libavutil/log.h>
 #include <libswscale/swscale.h>
 #include <libavutil/pixfmt.h>
+#include <libavutil/channel_layout.h>
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -14786,10 +14787,185 @@ static void reenqueueRegionProxy(int regionId) {
     }
 }
 
-// video_exportRegion(regionId) → { success, path }
-// Copies the region's ORIGINAL source video file (never the DNxHR proxy) to
-// exports/{SourceName}_{Label}_{RegionName}.<ext>, preserving the source's
-// own container extension. Pure file copy — no transcode, no decode.
+// Mux a VIDEO-ONLY file (already fully encoded, e.g. by
+// ProxyTranscoder::transcodeSectionHQX) together with a separately-decoded PCM
+// audio buffer into one output .mov. The video stream is STREAM-COPIED — it is
+// already final-quality DNxHR, so re-decoding/re-encoding it here would only
+// cost time and generation loss for nothing. The audio buffer is freshly
+// encoded to PCM_S16LE: lossless, and needs no swr resampling since the caller
+// decodes the buffer at exactly `audioSampleRate` already. audioBuffer may be
+// nullptr/empty (source had no decodable audio) — the output is then a valid,
+// playable video-only .mov.
+static bool muxVideoSectionWithAudio(const std::string& videoOnlyPath,
+                                     const juce::AudioBuffer<float>* audioBuffer,
+                                     double audioSampleRate,
+                                     const std::string& outputPath)
+{
+    AVFormatContext* inFmt          = nullptr;
+    AVFormatContext* outFmt         = nullptr;
+    AVCodecContext*  audEnc         = nullptr;
+    AVFrame*         audFrame       = nullptr;
+    AVPacket*        pkt            = av_packet_alloc();
+    bool             headerWritten  = false;
+    int              inVideoIdx     = -1;
+    AVStream*        outVideoStream = nullptr;
+    AVStream*        outAudioStream = nullptr;
+
+    auto cleanup = [&]() {
+        if (headerWritten && outFmt) av_write_trailer(outFmt);
+        if (pkt)      av_packet_free(&pkt);
+        if (audFrame) av_frame_free(&audFrame);
+        if (audEnc)   avcodec_free_context(&audEnc);
+        if (outFmt) {
+            if (!(outFmt->oformat->flags & AVFMT_NOFILE) && outFmt->pb)
+                avio_closep(&outFmt->pb);
+            avformat_free_context(outFmt);
+        }
+        if (inFmt) avformat_close_input(&inFmt);
+    };
+
+    if (avformat_open_input(&inFmt, videoOnlyPath.c_str(), nullptr, nullptr) < 0) {
+        std::cerr << "[Video Export] Failed to reopen encoded video for muxing: "
+                  << videoOnlyPath << "\n";
+        cleanup(); return false;
+    }
+    if (avformat_find_stream_info(inFmt, nullptr) < 0) { cleanup(); return false; }
+    inVideoIdx = av_find_best_stream(inFmt, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    if (inVideoIdx < 0) {
+        std::cerr << "[Video Export] No video stream in encoded section\n";
+        cleanup(); return false;
+    }
+    AVStream* inVideoStream = inFmt->streams[inVideoIdx];
+
+    if (avformat_alloc_output_context2(&outFmt, nullptr, "mov", outputPath.c_str()) < 0 || !outFmt) {
+        cleanup(); return false;
+    }
+
+    outVideoStream = avformat_new_stream(outFmt, nullptr);
+    if (!outVideoStream ||
+        avcodec_parameters_copy(outVideoStream->codecpar, inVideoStream->codecpar) < 0) {
+        cleanup(); return false;
+    }
+    outVideoStream->codecpar->codec_tag = 0;   // let the mov muxer pick its own fourcc
+    outVideoStream->time_base = inVideoStream->time_base;
+
+    // Open + validate the PCM encoder BEFORE calling avformat_new_stream for it —
+    // once a stream is added to outFmt there is no API to remove it, so on the
+    // (unlikely) chance avcodec_open2 fails we must not have created the stream
+    // yet, or avformat_write_header would choke on a stream with no codecpar.
+    const bool wantAudio = audioBuffer && audioBuffer->getNumSamples() > 0 && audioSampleRate > 0.0;
+    if (wantAudio) {
+        const AVCodec* audCodec = avcodec_find_encoder(AV_CODEC_ID_PCM_S16LE);
+        if (!audCodec) {
+            std::cerr << "[Video Export] PCM_S16LE encoder unavailable — exporting video-only\n";
+        } else {
+            AVCodecContext* trialEnc = avcodec_alloc_context3(audCodec);
+            trialEnc->sample_fmt  = AV_SAMPLE_FMT_S16;
+            trialEnc->sample_rate = static_cast<int>(audioSampleRate);
+            trialEnc->time_base   = AVRational{ 1, trialEnc->sample_rate };
+            av_channel_layout_default(&trialEnc->ch_layout, audioBuffer->getNumChannels());
+            if (outFmt->oformat->flags & AVFMT_GLOBALHEADER)
+                trialEnc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+
+            if (avcodec_open2(trialEnc, audCodec, nullptr) < 0) {
+                std::cerr << "[Video Export] PCM encoder open failed — exporting video-only\n";
+                avcodec_free_context(&trialEnc);
+            } else {
+                outAudioStream = avformat_new_stream(outFmt, nullptr);
+                if (outAudioStream &&
+                    avcodec_parameters_from_context(outAudioStream->codecpar, trialEnc) >= 0) {
+                    audEnc = trialEnc;   // ownership transferred
+                    outAudioStream->time_base = audEnc->time_base;
+                } else {
+                    outAudioStream = nullptr;
+                    avcodec_free_context(&trialEnc);
+                }
+            }
+        }
+    }
+
+    if (!(outFmt->oformat->flags & AVFMT_NOFILE) &&
+        avio_open(&outFmt->pb, outputPath.c_str(), AVIO_FLAG_WRITE) < 0) {
+        cleanup(); return false;
+    }
+    if (avformat_write_header(outFmt, nullptr) < 0) { cleanup(); return false; }
+    headerWritten = true;
+
+    // ── Stream-copy every video packet ────────────────────────────────────
+    {
+        AVPacket* vpkt = av_packet_alloc();
+        while (vpkt && av_read_frame(inFmt, vpkt) >= 0) {
+            if (vpkt->stream_index == inVideoIdx) {
+                vpkt->stream_index = outVideoStream->index;
+                av_packet_rescale_ts(vpkt, inVideoStream->time_base, outVideoStream->time_base);
+                av_interleaved_write_frame(outFmt, vpkt);
+            }
+            av_packet_unref(vpkt);
+        }
+        if (vpkt) av_packet_free(&vpkt);
+    }
+
+    // ── Encode + write the PCM audio (if any) ─────────────────────────────
+    if (outAudioStream && audEnc) {
+        audFrame = av_frame_alloc();
+        const int channels     = audioBuffer->getNumChannels();
+        const int totalSamples = audioBuffer->getNumSamples();
+        constexpr int kChunk   = 4096;
+        std::vector<int16_t> interleaved(static_cast<size_t>(kChunk) * channels);
+        int64_t samplePos = 0;
+
+        auto drainAudioPackets = [&]() {
+            while (true) {
+                int rc = avcodec_receive_packet(audEnc, pkt);
+                if (rc == AVERROR(EAGAIN) || rc == AVERROR_EOF) break;
+                if (rc < 0) break;
+                pkt->stream_index = outAudioStream->index;
+                av_packet_rescale_ts(pkt, audEnc->time_base, outAudioStream->time_base);
+                av_interleaved_write_frame(outFmt, pkt);
+                av_packet_unref(pkt);
+            }
+        };
+
+        for (int offset = 0; offset < totalSamples && audFrame; offset += kChunk) {
+            const int n = std::min(kChunk, totalSamples - offset);
+            for (int ch = 0; ch < channels; ++ch) {
+                const float* src = audioBuffer->getReadPointer(ch, offset);
+                for (int i = 0; i < n; ++i) {
+                    const float s = std::clamp(src[i], -1.0f, 1.0f);
+                    interleaved[static_cast<size_t>(i) * channels + ch] =
+                        static_cast<int16_t>(std::lround(s * 32767.0f));
+                }
+            }
+            av_frame_unref(audFrame);
+            audFrame->nb_samples  = n;
+            audFrame->format      = AV_SAMPLE_FMT_S16;
+            audFrame->sample_rate = audEnc->sample_rate;
+            av_channel_layout_copy(&audFrame->ch_layout, &audEnc->ch_layout);
+            if (av_frame_get_buffer(audFrame, 0) < 0) break;
+            if (av_frame_make_writable(audFrame) < 0) break;
+            std::memcpy(audFrame->data[0], interleaved.data(),
+                        static_cast<size_t>(n) * channels * sizeof(int16_t));
+            audFrame->pts = samplePos;
+            samplePos += n;
+
+            if (avcodec_send_frame(audEnc, audFrame) < 0) break;
+            drainAudioPackets();
+        }
+        avcodec_send_frame(audEnc, nullptr);   // flush
+        drainAudioPackets();
+    }
+
+    cleanup();
+    return true;
+}
+
+// video_exportRegion(regionId) → { success, path, duration }
+// Re-encodes the region's TRIMMED section — decoded from the ORIGINAL source
+// (never the DNxHR proxy) — to a DNxHR HQX .mov at exports/
+// {SourceName}_{Label}_{RegionName}.mov, at source resolution/frame rate,
+// including the section's audio. A frame-accurate cut needs a real re-encode:
+// the original is almost always inter-frame (H.264 YouTube rips etc.), so a
+// stream/file copy can only land on GOP boundaries, not the user's exact trim.
 JsonApi::Value Video_ExportRegion(const JsonApi::CallbackInfo& info)
 {
     JsonApi::Env env = info.Env();
@@ -14800,7 +14976,7 @@ JsonApi::Value Video_ExportRegion(const JsonApi::CallbackInfo& info)
         return o;
     };
 
-    if (!isInitialised() || !g_timeline || !g_projectManager)
+    if (!isInitialised() || !g_timeline || !sampleBank || !g_projectManager)
         return fail("Engine not initialised.");
     if (info.Length() < 1 || !info[0].IsNumber())
         return fail("video_exportRegion(regionId: number)");
@@ -14820,26 +14996,81 @@ JsonApi::Value Video_ExportRegion(const JsonApi::CallbackInfo& info)
     auto srcFile = juce::File(juce::String(source->filePath));
     if (!srcFile.existsAsFile()) return fail("Original source video not found.");
 
+    // ── Trim → absolute source-time cut range ─────────────────────────────
+    // region->startTime/endTime bound the region's decode buffer in SOURCE-
+    // FILE seconds. Within that buffer, smpStart/smpLength are a FINER trim
+    // (Sampler panel drag handles) expressed in ENGINE-BUFFER SAMPLES — i.e.
+    // samples of the buffer decoded at the engine's OWN sample rate, which is
+    // whatever the audio device negotiated, NOT a fixed 44.1/48 kHz (that
+    // exact assumption has shipped a pitch bug in this codebase before — see
+    // srFactor in the clip export path). We therefore MEASURE the engine rate
+    // at call time and convert smpStart/smpLength → seconds using it:
+    //     offsetSec   = smpStart  / engineRate
+    //     lengthSec   = smpLength / engineRate     (smpLength == 0 ⇒ to the end)
+    //     cutInSec    = region->startTime + offsetSec
+    //     cutOutSec   = smpLength > 0 ? cutInSec + lengthSec : region->endTime
+    const double engineRate = g_timeline->getSampleRate();
+    double cutInSec  = region->startTime;
+    double cutOutSec = region->endTime;
+    if (engineRate > 0.0) {
+        cutInSec = region->startTime + static_cast<double>(region->smpStart) / engineRate;
+        if (region->smpLength > 0) {
+            cutOutSec = cutInSec
+                      + static_cast<double>(region->smpLength) / engineRate;
+        }
+    }
+    cutInSec  = std::clamp(cutInSec,  region->startTime, region->endTime);
+    cutOutSec = std::clamp(cutOutSec, cutInSec,           region->endTime);
+    if (cutOutSec <= cutInSec) return fail("Trimmed section is empty.");
+
+    std::cout << "[Video Export] region=" << regionId
+              << " engineRate=" << engineRate << "Hz"
+              << " smpStart=" << region->smpStart << " smpLength=" << region->smpLength
+              << " -> cut [" << cutInSec << ", " << cutOutSec << ") of "
+              << source->filePath << "\n";
+
     const std::string format = (info.Length() >= 2 && info[1].IsString())
         ? info[1].As<JsonApi::String>().Utf8Value()
         : "sampleNameOnly";
     const std::string srcStem = srcFile.getFileNameWithoutExtension().toStdString();
-    const std::string ext = srcFile.getFileExtension().toStdString(); // includes leading '.'
     const std::string labelStr = sampleLabelToString(region->label);
-    std::string filename = buildExportFilename(
-        srcStem, labelStr, region->name, format,
-        ext.empty() ? "mp4" : ext.substr(1));
+    std::string filename = buildExportFilename(srcStem, labelStr, region->name, format, "mov");
 
     const std::string outputPath = g_projectManager->getExportsDir() + "/" + filename;
+    const std::string tempVideoPath = outputPath + ".video.tmp.mov";
+    juce::File(juce::String(tempVideoPath)).deleteFile();   // stale leftover from a crashed run
+
+    // ── Video: re-encode the exact section, native resolution, DNxHR HQX ──
+    if (!ProxyTranscoder::transcodeSectionHQX(source->filePath, tempVideoPath, cutInSec, cutOutSec)) {
+        juce::File(juce::String(tempVideoPath)).deleteFile();
+        return fail("Video section encode failed.");
+    }
+
+    // ── Audio: decode the same section at the source's native rate ────────
+    // (mirrors Audio_ExportRegion — native rate, no resampling artifacts)
+    const int nativeRate = probeAudioInfo(source->filePath).sampleRate;
+    const juce::AudioBuffer<float>* audioBuf = nullptr;
+    const int audioSampleId = sampleBank->loadSampleFromSource(
+        source->filePath, cutInSec, cutOutSec, static_cast<double>(nativeRate));
+    if (audioSampleId >= 0) audioBuf = sampleBank->getSample(audioSampleId);
+    if (!audioBuf || audioBuf->getNumSamples() == 0)
+        std::cerr << "[Video Export] No audio decoded for section — exporting video-only.\n";
+
+    // ── Mux video (stream-copy) + audio (fresh PCM encode) into one .mov ──
     auto destFile = juce::File(juce::String(outputPath));
     if (destFile.existsAsFile()) destFile.deleteFile();
-    if (!srcFile.copyFileTo(destFile)) return fail("File copy failed.");
+    const bool muxOk = muxVideoSectionWithAudio(
+        tempVideoPath, audioBuf, static_cast<double>(nativeRate), outputPath);
+    juce::File(juce::String(tempVideoPath)).deleteFile();
+    if (!muxOk) return fail("Mux failed.");
 
+    const double duration = cutOutSec - cutInSec;
     log.done(filename);
 
     JsonApi::Object result = JsonApi::Object::New(env);
-    result.Set("success", JsonApi::Boolean::New(env, true));
-    result.Set("path",    JsonApi::String::New(env, outputPath));
+    result.Set("success",  JsonApi::Boolean::New(env, true));
+    result.Set("path",     JsonApi::String::New(env, outputPath));
+    result.Set("duration", JsonApi::Number::New(env, duration));
     return result;
 }
 

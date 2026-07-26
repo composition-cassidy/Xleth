@@ -50,6 +50,26 @@ public:
         std::function<void(float progress)> progressCallback = nullptr
     );
 
+    // ── Full-quality section export (NOT a preview artifact) ─────────────────
+    // Transcode a time range [startTimeSec, endTimeSec) of inputPath to
+    // outputPath as a VIDEO-ONLY DNxHR HQX 10-bit .mov at the source's NATIVE
+    // resolution — unlike transcode()/transcodeRange() above, this never
+    // downscales or caps to 1080p. Used by the sample "Export Video" feature to
+    // produce a re-encoded, frame-accurate section a user can mask externally
+    // (e.g. green-screen rotoscope) and swap back in. Falls back to DNxHR LB /
+    // MJPEG if HQX isn't compiled in (same ladder as the highBitDepth preview
+    // proxy). Callers that also need the section's audio must mux it in
+    // separately (see XlethEngineService.cpp's Video_ExportRegion, which reuses
+    // SampleBank for the audio decode). BLOCKING, in-process. Returns true on
+    // success.
+    static bool transcodeSectionHQX(
+        const std::string& inputPath,
+        const std::string& outputPath,
+        double             startTimeSec,
+        double             endTimeSec,
+        std::function<void(float progress)> progressCallback = nullptr
+    );
+
     // ── Whole-source preview proxy (preview-only, all cells) ─────────────────
     // Transcode the ENTIRE source to ONE small all-intra preview proxy at
     // `targetHeight` (aspect-preserved, even dims, HIGH-QUALITY lanczos scaling).
