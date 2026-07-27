@@ -62,6 +62,8 @@ const GRAPH_MUTATION_MESSAGES: Record<string, string> = {
   missing_effect_instance: 'Effect is not active yet.',
   parameter_not_exposed: 'Expose that parameter on the effect first.',
   parameter_read_only: 'Read-only parameter cannot be driven.',
+  parameter_already_driven:
+    'That parameter is already driven. Disconnect the existing modulator first.',
   master_track: 'Master track stays in Mixer Chain mode.',
   no_track: 'Select a mixer track first.',
   not_graph_mode: 'Switch this track to FX Graph mode first.',

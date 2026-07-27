@@ -1234,6 +1234,32 @@ function validateVersionOneGraphState(raw, expectedTrackId, options) {
       return invalid('duplicate_edge_id', warnings)
     }
     edgeIds.add(normalized.edge.id)
+    // One driver per parameter port. Graphs saved before this rule could hold
+    // several sources on one port; they race at drive time and lose a value on
+    // every reload (see findExistingParameterPortDriver). Repair on load by
+    // keeping the first driver — dropping later ones is safe because a losing
+    // driver was never audible anyway, and the user data kept is the one whose
+    // value the parameter would settle on least arbitrarily.
+    if (normalized.edge.type === 'parameter') {
+      const existingDriver = findExistingParameterPortDriver(
+        { edges },
+        normalized.edge.targetNodeId,
+        normalized.edge.targetPort,
+      )
+      if (existingDriver) {
+        warnings.push(makeWarning(
+          'parameterPortAlreadyDriven',
+          trackId,
+          'dropped a second modulation source on an already-driven parameter port',
+          {
+            edgeId: normalized.edge.id,
+            targetPort: normalized.edge.targetPort,
+            keptEdgeId: existingDriver.id,
+          },
+        ))
+        continue
+      }
+    }
     edges.push(normalized.edge)
   }
 
@@ -1412,6 +1438,9 @@ export const GRAPH_MUTATION_REJECTION = Object.freeze({
   MISSING_EFFECT_INSTANCE: 'missing_effect_instance',
   PARAMETER_NOT_EXPOSED: 'parameter_not_exposed',
   PARAMETER_READ_ONLY: 'parameter_read_only',
+  // One parameter port takes exactly ONE modulation source. See
+  // findExistingParameterPortDriver() for why a second driver is rejected.
+  PARAMETER_ALREADY_DRIVEN: 'parameter_already_driven',
   // FXG.4-g — mapping editor mutation validation
   INVALID_PARAMETER_EDGE: 'invalid_parameter_edge',
   // FXG-SC.6B — Sidechain Input node + sidechain edge validation
@@ -1837,6 +1866,33 @@ function readEffectInstanceId(node) {
   return typeof value === 'string' && value.length > 0 ? value : ''
 }
 
+// A parameter port accepts exactly ONE modulation source, whatever its kind.
+//
+// Nothing downstream arbitrates between two drivers of the same port: the renderer
+// writes each Macro's value in `graphState.nodes` order (driveAllMacroParameterEdges),
+// and the engine allocates one mailbox per envelope edge with no target dedupe
+// (buildEnvelopeModulationSnapshot). Two drivers therefore race, and which one wins is
+// an artifact of array order the user never sees — a losing Macro still shows its own
+// knob position while the parameter sits somewhere else. Project-load hydration replays
+// that race, so the loser's value is silently lost on reload.
+//
+// Macro and Envelope are additionally incompatible on one target by design: a Macro
+// REPLACES the value (the knob position IS the parameter) while an Envelope is
+// clamp(base + depth * env) around an authored `base` the Macro would be overwriting.
+//
+// Returns the offending edge, or null when the port is free. `exceptEdgeId` lets a
+// caller re-validate an edge against itself.
+export function findExistingParameterPortDriver(graphState, targetNodeId, targetPort, exceptEdgeId = null) {
+  if (!Array.isArray(graphState?.edges) || !targetPort) return null
+  return graphState.edges.find(
+    (edge) =>
+      edge?.type === 'parameter' &&
+      edge.id !== exceptEdgeId &&
+      edge.targetNodeId === targetNodeId &&
+      edge.targetPort === targetPort,
+  ) ?? null
+}
+
 export function canConnectMacroToParameter(graphState, connectionDraft) {
   const editCheck = validateGraphStateForEditing(graphState)
   if (!editCheck.ok) return editCheck
@@ -1902,16 +1958,18 @@ export function canConnectMacroToParameter(graphState, connectionDraft) {
     return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_PARAMETER_TARGET }
   }
 
-  // Dedupe: one Macro may only drive a given parameter on a given node once.
-  const duplicate = graphState.edges.some(
-    (edge) =>
-      edge.type === 'parameter' &&
-      edge.sourceNodeId === sourceNodeId &&
-      edge.targetNodeId === targetNodeId &&
-      edge.targetPort === targetPort,
-  )
-  if (duplicate) {
-    return { ok: false, reason: GRAPH_MUTATION_REJECTION.DUPLICATE_EDGE }
+  // One driver per parameter port. Re-linking the SAME macro reports the familiar
+  // duplicate_edge; a DIFFERENT source reports parameter_already_driven so the panel
+  // can tell the user to disconnect the existing modulator first.
+  const existingDriver = findExistingParameterPortDriver(graphState, targetNodeId, targetPort)
+  if (existingDriver) {
+    return {
+      ok: false,
+      reason: existingDriver.sourceNodeId === sourceNodeId
+        ? GRAPH_MUTATION_REJECTION.DUPLICATE_EDGE
+        : GRAPH_MUTATION_REJECTION.PARAMETER_ALREADY_DRIVEN,
+      existingEdgeId: existingDriver.id,
+    }
   }
 
   return { ok: true, target, targetPort, exposedPort }
@@ -2125,16 +2183,17 @@ export function canConnectEnvelopeToParameter(graphState, connectionDraft) {
     return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_PARAMETER_TARGET }
   }
 
-  // Dedupe: one Envelope may only drive a given parameter on a given node once.
-  const duplicate = graphState.edges.some(
-    (edge) =>
-      edge.type === 'parameter' &&
-      edge.sourceNodeId === sourceNodeId &&
-      edge.targetNodeId === targetNodeId &&
-      edge.targetPort === targetPort,
-  )
-  if (duplicate) {
-    return { ok: false, reason: GRAPH_MUTATION_REJECTION.DUPLICATE_EDGE }
+  // One driver per parameter port — same rule as the Macro path, including a Macro
+  // already driving this port (see findExistingParameterPortDriver).
+  const existingDriver = findExistingParameterPortDriver(graphState, targetNodeId, targetPort)
+  if (existingDriver) {
+    return {
+      ok: false,
+      reason: existingDriver.sourceNodeId === sourceNodeId
+        ? GRAPH_MUTATION_REJECTION.DUPLICATE_EDGE
+        : GRAPH_MUTATION_REJECTION.PARAMETER_ALREADY_DRIVEN,
+      existingEdgeId: existingDriver.id,
+    }
   }
 
   return { ok: true, target, targetPort, exposedPort }

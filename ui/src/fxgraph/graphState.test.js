@@ -2183,6 +2183,109 @@ describe('FXG.4-e/f parameter link mapping', () => {
       }, { idFactory: () => 'p-2' })
       expect(second).toMatchObject({ ok: false, reason: GRAPH_MUTATION_REJECTION.DUPLICATE_EDGE })
     })
+
+    it('rejects a SECOND macro driving an already-driven parameter port', () => {
+      const base = makeMacroParamGraphState()
+      const gs = {
+        ...base,
+        nodes: [
+          ...base.nodes,
+          { id: 'macro-b', type: GRAPH_MACRO_NODE_TYPE, position: { x: 80, y: 320 }, data: { label: 'Macro 2', normalizedValue: 0 } },
+        ],
+      }
+      const first = connectMacroToParameter(gs, {
+        sourceNodeId: 'macro-a',
+        targetNodeId: 'fx-a',
+        parameterId: 'mix',
+      }, { idFactory: () => 'p-1' })
+      expect(first.ok).toBe(true)
+
+      expect(connectMacroToParameter(first.graphState, {
+        sourceNodeId: 'macro-b',
+        targetNodeId: 'fx-a',
+        parameterId: 'mix',
+      }, { idFactory: () => 'p-2' })).toMatchObject({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.PARAMETER_ALREADY_DRIVEN,
+        existingEdgeId: 'p-1',
+      })
+
+      // A DIFFERENT exposed port on the same effect is still free.
+      const other = { ...first.graphState }
+      other.nodes = other.nodes.map((n) => (n.id !== 'fx-a' ? n : {
+        ...n,
+        data: {
+          ...n.data,
+          exposedParameterPorts: n.data.exposedParameterPorts.map((p) => (
+            p.parameterId === 'size' ? { ...p, readOnly: false } : p
+          )),
+        },
+      }))
+      expect(connectMacroToParameter(other, {
+        sourceNodeId: 'macro-b',
+        targetNodeId: 'fx-a',
+        parameterId: 'size',
+      }, { idFactory: () => 'p-3' }).ok).toBe(true)
+    })
+
+    it('rejects an Envelope driving a port a Macro already drives, and vice versa', () => {
+      const base = makeMacroParamGraphState()
+      const gs = {
+        ...base,
+        nodes: [
+          ...base.nodes,
+          { id: 'env-a', type: GRAPH_ENVELOPE_NODE_TYPE, position: { x: 80, y: 400 }, data: {} },
+        ],
+      }
+      const macroFirst = connectMacroToParameter(gs, {
+        sourceNodeId: 'macro-a',
+        targetNodeId: 'fx-a',
+        parameterId: 'mix',
+      }, { idFactory: () => 'p-1' })
+      expect(connectEnvelopeToParameter(macroFirst.graphState, {
+        sourceNodeId: 'env-a',
+        targetNodeId: 'fx-a',
+        parameterId: 'mix',
+      }, { idFactory: () => 'p-2' })).toMatchObject({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.PARAMETER_ALREADY_DRIVEN,
+      })
+
+      const envFirst = connectEnvelopeToParameter(gs, {
+        sourceNodeId: 'env-a',
+        targetNodeId: 'fx-a',
+        parameterId: 'mix',
+      }, { idFactory: () => 'p-1' })
+      expect(connectMacroToParameter(envFirst.graphState, {
+        sourceNodeId: 'macro-a',
+        targetNodeId: 'fx-a',
+        parameterId: 'mix',
+      }, { idFactory: () => 'p-2' })).toMatchObject({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.PARAMETER_ALREADY_DRIVEN,
+      })
+    })
+
+    it('drops extra drivers of one parameter port on load, keeping the first', () => {
+      const base = makeMacroParamGraphState()
+      const gs = {
+        ...base,
+        nodes: [
+          ...base.nodes,
+          { id: 'macro-b', type: GRAPH_MACRO_NODE_TYPE, position: { x: 80, y: 320 }, data: { label: 'Macro 2', normalizedValue: 0 } },
+        ],
+        edges: [
+          ...base.edges,
+          { id: 'p-1', sourceNodeId: 'macro-a', sourcePort: GRAPH_MACRO_OUTPUT_PORT, targetNodeId: 'fx-a', targetPort: 'gpp:fx-a:mix', type: 'parameter' },
+          { id: 'p-2', sourceNodeId: 'macro-b', sourcePort: GRAPH_MACRO_OUTPUT_PORT, targetNodeId: 'fx-a', targetPort: 'gpp:fx-a:mix', type: 'parameter' },
+        ],
+      }
+      const result = validateGraphState(gs, '9')
+      expect(result.status).toBe('valid')
+      const paramEdges = result.graphState.edges.filter((e) => e.type === 'parameter')
+      expect(paramEdges.map((e) => e.id)).toEqual(['p-1'])
+      expect(result.warnings.some((w) => w.code === 'parameterPortAlreadyDriven')).toBe(true)
+    })
   })
 
   describe('isParameterEdge / disconnectParameterEdge', () => {
@@ -3250,7 +3353,7 @@ describe('EVC-R1 envelope → parameter links', () => {
       sourceNodeId: 'env-1',
       targetNodeId: 'fx-1',
       parameterId: 'mix',
-    })).toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.DUPLICATE_EDGE })
+    })).toMatchObject({ ok: false, reason: GRAPH_MUTATION_REJECTION.DUPLICATE_EDGE })
   })
 
   it('collectEnvelopeParameterWrites maps the envelope value through the edge mapping', () => {
@@ -3631,6 +3734,15 @@ describe('EVC-R4 load-path migration of a pre-change graphState fixture', () => 
               automatable: true,
               readOnly: false,
             },
+            {
+              parameterId: 'resonance',
+              parameterIndexFallback: 1,
+              nameSnapshot: 'Resonance',
+              labelSnapshot: null,
+              parameterIdIsFallback: false,
+              automatable: true,
+              readOnly: false,
+            },
           ],
         },
       },
@@ -3682,22 +3794,23 @@ describe('EVC-R4 load-path migration of a pre-change graphState fixture', () => 
         },
         mapping: { enabled: true, sourceMin: 0, sourceMax: 1, targetMin: 0.2, targetMax: 1, curve: { type: 'linear' } },
       },
+      // Drives a DIFFERENT port from the envelope edge above: one driver per port.
       {
-        id: 'p-macro-cutoff',
+        id: 'p-macro-resonance',
         sourceNodeId: 'macro-a',
         sourcePort: GRAPH_MACRO_OUTPUT_PORT,
         targetNodeId: 'fx-1',
-        targetPort: 'gpp:fx-1:cutoff',
+        targetPort: 'gpp:fx-1:resonance',
         type: 'parameter',
         targetParameter: {
           kind: 'graph-parameter',
           graphNodeId: 'fx-1',
           effectInstanceId: 'effect-1',
-          parameterId: 'cutoff',
-          parameterIndexFallback: 0,
+          parameterId: 'resonance',
+          parameterIndexFallback: 1,
           parameterIdIsFallback: false,
-          nameSnapshot: 'Cutoff',
-          labelSnapshot: 'Hz',
+          nameSnapshot: 'Resonance',
+          labelSnapshot: null,
         },
         mapping: { enabled: true, sourceMin: 0, sourceMax: 1, targetMin: 0.1, targetMax: 0.9, curve: { type: 'linear' } },
       },
@@ -3711,7 +3824,7 @@ describe('EVC-R4 load-path migration of a pre-change graphState fixture', () => 
     const result = loadLegacy()
     expect(result.status).toBe('valid')
     expect(result.graphState.nodes.map((n) => n.id)).toEqual(['input', 'fx-1', 'macro-a', 'env-1', 'output'])
-    expect(result.graphState.edges.map((e) => e.id)).toEqual(['a-1', 'a-2', 'p-env-cutoff', 'p-macro-cutoff'])
+    expect(result.graphState.edges.map((e) => e.id)).toEqual(['a-1', 'a-2', 'p-env-cutoff', 'p-macro-resonance'])
   })
 
   it('upgrades the envelope edge to a base + depth modulation mapping', () => {
@@ -3740,7 +3853,7 @@ describe('EVC-R4 load-path migration of a pre-change graphState fixture', () => 
   })
 
   it('leaves the MACRO edge on its original absolute range mapping', () => {
-    const edge = loadLegacy().graphState.edges.find((e) => e.id === 'p-macro-cutoff')
+    const edge = loadLegacy().graphState.edges.find((e) => e.id === 'p-macro-resonance')
     expect(edge.mapping).toEqual({
       enabled: true,
       sourceMin: 0,

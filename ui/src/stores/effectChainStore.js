@@ -921,6 +921,33 @@ async function applyGraphHistoryTransition(set, get, key, targetGraphState, opti
   }
 }
 
+// Warning codes emitted by loadGraphState for repairs that DROP data the engine
+// would otherwise still act on. Purely cosmetic normalizations (viewport defaults,
+// mapping back-fill, position repair) are deliberately excluded: writing back for
+// those would dirty every project the moment it opened.
+const STRUCTURAL_GRAPH_REPAIR_WARNINGS = new Set(['parameterPortAlreadyDriven'])
+
+async function persistRepairedGraphStateForTrack(get, key, graphState, options = {}) {
+  const warnings = get().graphStateStatuses?.[key]?.warnings
+  if (!Array.isArray(warnings)) return false
+  if (!warnings.some((w) => STRUCTURAL_GRAPH_REPAIR_WARNINGS.has(w?.code))) return false
+
+  const timeline = defaultTimelineApi()
+  const persistGraphState = options.persistGraphState ?? timeline.setTrackGraphState
+  if (typeof persistGraphState !== 'function') return false
+
+  try {
+    await persistGraphState(Number(key), stripRuntimeGraphStateMetadata(graphState))
+    return true
+  } catch (e) {
+    ;(options.warn ?? console.warn)?.('[FXG] repaired graphState write-back failed', {
+      trackId: key,
+      error: e?.message ?? e,
+    })
+    return false
+  }
+}
+
 async function hydrateGraphEngineNodesForTrack(key, graphState, options = {}) {
   const warn = options.warn ?? console.warn
   const payload = buildGraphEffectNodeHydrationPayload(graphState)
@@ -1413,6 +1440,14 @@ const useEffectChainStore = create((set, get) => ({
       if (key === 'master') continue
       if (resolveFxMode(state.fxModes, key) !== 'graph') continue
       if (!graphState || !Array.isArray(graphState.nodes) || !Array.isArray(graphState.edges)) continue
+
+      // A load-time repair only lands in the renderer's validated copy; the engine
+      // still holds the raw graphState it loaded from the project and keeps acting
+      // on it (MixEngine parses TrackInfo::graphState for envelope modulation). Push
+      // the repaired graph back so both sides agree. Only structural repairs that the
+      // engine acts on trigger a write — benign normalizations must not dirty the
+      // project on every load.
+      await persistRepairedGraphStateForTrack(get, key, graphState, options)
 
       const result = await hydrateGraphEngineNodesForTrack(key, graphState, options)
       results[key] = result
