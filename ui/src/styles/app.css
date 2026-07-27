@@ -1,4 +1,4 @@
-﻿/* ── Structural constants (migrated from theme.css) ──────────────────────── */
+/* ── Structural constants (migrated from theme.css) ──────────────────────── */
 /* These are layout/timing primitives. Not user-theme tokens.                 */
 
 @font-face {
@@ -5213,21 +5213,86 @@ html[data-xleth-backdrop="video"] .app-body {
 }
 
 .grid-editor-overlay {
-  /* Match the canvas's object-fit: contain rendering area.
-     --xleth-canvas-aspect is set by VideoPreview from the engine's output
-     dimensions (sabWidth / sabHeight); falls back to 16/9 for legacy state.
+  /* Match the canvas's object-fit: contain rendering area. The explicit
+     fitted bounds come from VideoPreview, which measures the canvas area.
+     This keeps the overlay inside the actual preview when it is letterboxed.
      Empty cells AND assigned slots are absolutely positioned off the same
      fine-grid coordinate space, so we run with no gap/padding here. */
   position: absolute;
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  aspect-ratio: var(--xleth-canvas-aspect, 16 / 9);
-  height: 100%;
-  max-width: 100%;
+  width: var(--xleth-canvas-content-width, 100%);
+  height: var(--xleth-canvas-content-height, 100%);
   pointer-events: auto;
   z-index: 10;
 }
+
+.track-folder-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 0 7px;
+  border-bottom: 1px solid var(--theme-border-subtle);
+  background: color-mix(in srgb, var(--theme-bg-surface) 82%, var(--theme-accent) 8%);
+  color: var(--theme-text);
+  user-select: none;
+  cursor: grab;
+}
+.track-folder-header:active { cursor: grabbing; }
+.track-folder-members {
+  min-width: 0;
+  margin-left: 12px;
+  border-left: 1px solid color-mix(in srgb, var(--theme-accent) 30%, var(--theme-border-subtle));
+}
+.track-folder-toggle,
+.track-folder-delete {
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--theme-text-muted);
+  cursor: pointer;
+}
+.track-folder-toggle:hover,
+.track-folder-delete:hover { color: var(--theme-text); background: var(--theme-bg-hover); }
+.track-folder-delete { margin-left: auto; opacity: 0; }
+.track-folder-header:hover .track-folder-delete { opacity: 0.75; }
+.track-folder-delete:hover { color: var(--theme-danger); opacity: 1; }
+.track-folder-icon { flex: 0 0 auto; color: var(--theme-accent); }
+.track-folder-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 650;
+}
+.track-folder-name-input {
+  min-width: 0;
+  flex: 1;
+  height: 22px;
+  padding: 1px 5px;
+  border: 1px solid var(--theme-accent);
+  background: var(--theme-bg-inset);
+  color: var(--theme-text);
+  font: 600 11px inherit;
+  outline: none;
+}
+.track-folder-count {
+  flex: 0 0 auto;
+  min-width: 18px;
+  color: var(--theme-text-subtle);
+  font-size: 10px;
+  text-align: center;
+}
+.timeline-root-drop-zone { min-height: 6px; }
 
 .grid-editor-cell {
   position: absolute;
@@ -7381,6 +7446,17 @@ html[data-xleth-backdrop="video"] .app-body {
   cursor: pointer;
 }
 
+/* ── Outline / Drop Shadow: full-width footnote under the param rows ───────── */
+/* Spans all three columns, so it must NOT be a bare grid child of one column. */
+.fx-param-note {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--theme-text-muted);
+  opacity: 0.8;
+}
+
 /* ── Chroma Key: colour swatch + eyedropper share the middle grid column ──── */
 .fx-chroma-key-row {
   display: flex;
@@ -9193,6 +9269,102 @@ html.fx-drag-active * {
   scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: var(--mx-bd2) var(--mx-s1);
+}
+
+.mixer-folder-spacer,
+.mixer-folder-header {
+  height: 28px;
+  min-height: 28px;
+  flex-shrink: 0;
+}
+
+.mixer-folder-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 9px;
+  overflow: hidden;
+  border-right: 1px solid var(--mx-bd2);
+  border-bottom: 1px solid var(--mx-bd2);
+  color: var(--mx-t1);
+  background: color-mix(in srgb, var(--mx-ac) 16%, var(--mx-s2));
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.mixer-folder-header > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mixer-folder-count {
+  flex-shrink: 0;
+  color: var(--mx-t3);
+  font-size: 9px;
+  font-weight: 500;
+}
+
+.mixer-folder-group,
+.mixer-channel-column,
+.mixer-offset-column {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.mixer-folder-group {
+  flex: 0 0 auto;
+  width: max-content;
+  margin: 0;
+  padding: 0;
+}
+
+.mixer-folder-strips {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+}
+
+.mixer-channel-column {
+  width: 142px;
+  min-width: 142px;
+  flex: 0 0 142px;
+}
+
+.mixer-offset-column--rack {
+  width: 142px;
+  min-width: 142px;
+  flex: 0 0 142px;
+}
+
+.mixer-offset-column--master {
+  width: 158px;
+  min-width: 158px;
+  flex: 0 0 158px;
+}
+
+.mixer-offset-column > .selected-effect-rack,
+.mixer-offset-column > .mixer-strip,
+.mixer-channel-column > .mixer-strip,
+.mixer-folder-strips > .mixer-strip {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+}
+
+.mixer-offset-column > .selected-effect-rack {
+  width: 100%;
+  min-width: 0;
+}
+
+.mixer-offset-column--master > .mixer-strip--master {
+  width: 100%;
+  min-width: 0;
 }
 
 .selected-effect-rack {
@@ -12475,8 +12647,8 @@ html.fx-drag-active * {
 
 .compressor-panel {
   position: fixed;
-  /* Warm-pink accent for all PluginUIKitKnobs inside this panel. */
-  --theme-border-focus: #F0A3D0;
+  /* No local accent override — every accent-derived value in this panel
+     resolves from the active theme so the whole window shares one hue. */
   background: var(--theme-bg-primary);
   border: 1px solid var(--theme-border-subtle);
   border-radius: var(--radius-md);
@@ -12804,70 +12976,21 @@ html.fx-drag-active * {
   margin: 0 4px;
 }
 
-.limiter-panel [data-pluginui-id="viz-row"] {
-  padding-bottom: 6px !important;
-}
-
 .limiter-panel [data-pluginui-id="limiter-viz"] {
   border: 3px solid color-mix(in srgb, var(--theme-bg-inset) 80%, #000);
   background: var(--theme-bg-inset);
   overflow: hidden;
 }
 
-.limiter-panel [data-pluginui-id="body"] {
-  align-items: flex-start;
-}
-
-.limiter-panel [data-pluginui-id="s-gain"],
-.limiter-panel [data-pluginui-id="s-ceiling"],
-.limiter-panel [data-pluginui-id="s-release"] {
-  margin: 0 4px;
-}
-
-.limiter-panel [data-pluginui-id="divider-ceiling-release"],
-.limiter-panel [data-pluginui-id="divider-release-meter"] {
-  position: relative;
-  flex: 0 0 18px !important;
-  align-self: flex-start;
-  width: 18px !important;
-  height: 122px !important;
-  margin: 0;
-  background: transparent;
-}
-
-.limiter-panel [data-pluginui-id="divider-ceiling-release"]::before,
-.limiter-panel [data-pluginui-id="divider-release-meter"]::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  bottom: 2px;
-  left: 50%;
-  width: 1px;
-  transform: translateX(-0.5px);
-  background: color-mix(in srgb, var(--theme-text) 38%, transparent);
-}
-
-.limiter-panel [data-pluginui-id="gr-meter"] {
-  flex: 0 0 48px;
-  align-self: flex-start;
-  height: 122px !important;
-}
-
-.limiter-panel [data-pluginui-id="gr-meter"] .pluginui-meter-track {
-  width: 34px;
-  height: 104px;
-  min-height: 104px;
-  border: 3px solid color-mix(in srgb, var(--theme-text) 82%, transparent);
-  border-radius: 0;
-  background: transparent;
-}
-
-.limiter-panel [data-pluginui-id="gr-meter"] .pluginui-meter-fill {
-  background: var(--theme-accent);
-}
-
+/* Limiter redesign — the style selector is a pill centered above the
+   display; same treatment as the compressor's Peak | RMS toggle. */
 .limiter-panel [data-pluginui-id="style-row"] {
-  border-top: 1px solid var(--theme-border-subtle);
+  border-radius: 999px;
+}
+
+.limiter-panel [data-pluginui-id="style-row"] > .pluginui-toggle-btn {
+  padding: 5px 18px;
+  font-size: 10px;
 }
 
 /* â”€â”€ Distortion Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
@@ -14490,7 +14613,7 @@ html.fx-drag-active * {
   display: flex;
   flex-direction: column;
   z-index: 200;
-  width: 420px;
+  width: 540px;
   box-shadow: var(--theme-fx-plugin-shadow-top);
   user-select: none;
 }
@@ -14498,6 +14621,7 @@ html.fx-drag-active * {
 .transientproc-panel-header {
   display: flex;
   align-items: center;
+  gap: 10px;
   padding: 6px 10px;
   border-bottom: 1px solid var(--theme-border-subtle);
   cursor: grab;
@@ -14512,6 +14636,38 @@ html.fx-drag-active * {
   font-weight: 600;
   color: var(--theme-text);
   flex: 1;
+}
+
+.transientproc-mode-toggle {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--theme-bg-secondary);
+}
+
+.transientproc-mode-toggle-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  color: var(--theme-text-muted, var(--theme-text-subtle));
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.transientproc-mode-toggle-btn:hover {
+  color: var(--theme-text);
+  background: var(--theme-fx-surface-tint-subtle, rgba(255, 255, 255, 0.04));
+}
+
+.transientproc-mode-toggle-btn.active {
+  background: var(--theme-accent);
+  color: var(--theme-fg-inverse);
 }
 
 .transientproc-panel-close {
@@ -14536,27 +14692,22 @@ html.fx-drag-active * {
 
 .resonancesuppressor-panel {
   position: fixed;
-  background:
-    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--theme-accent) 14%, transparent), transparent 30%),
-    linear-gradient(180deg, #151a24 0%, #0a0f18 100%);
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  border-radius: 18px;
+  background: var(--theme-bg-primary);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-md);
   display: flex;
   flex-direction: column;
   z-index: 200;
   width: min(760px, calc(100vw - 36px));
-  box-shadow: 0 22px 58px rgba(0, 0, 0, 0.52);
+  box-shadow: var(--theme-fx-plugin-shadow-top);
   user-select: none;
-  overflow: hidden;
 }
 
 .resonancesuppressor-panel-header {
   display: flex;
   align-items: center;
-  min-height: 26px;
-  padding: 8px 14px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
-  background: rgba(2, 6, 23, 0.22);
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--theme-border-subtle);
   cursor: grab;
 }
 
@@ -14567,7 +14718,7 @@ html.fx-drag-active * {
 .resonancesuppressor-panel-title {
   font-size: 11px;
   font-weight: 600;
-  color: rgba(226, 241, 255, 0.88);
+  color: var(--theme-text);
   flex: 1;
 }
 
@@ -14576,7 +14727,7 @@ html.fx-drag-active * {
   height: 20px;
   border: none;
   background: none;
-  color: rgba(226, 241, 255, 0.52);
+  color: var(--theme-text-subtle);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -14585,33 +14736,38 @@ html.fx-drag-active * {
 }
 
 .resonancesuppressor-panel-close:hover {
-  color: #e9fbff;
-  background: color-mix(in srgb, var(--theme-accent) 14%, transparent);
+  color: var(--theme-text);
+  background: var(--theme-fx-surface-tint-subtle);
 }
 
 .resonancesuppressor-panel-edit-ui {
   margin-right: 8px;
-  padding: 3px 9px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  border-radius: 999px;
-  background: rgba(15, 23, 42, 0.78);
-  color: rgba(203, 213, 225, 0.8);
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 600;
+  padding: 3px 9px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--theme-bg-secondary);
+  color: var(--theme-text-subtle);
   cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 
-.resonancesuppressor-panel-edit-ui:hover,
+.resonancesuppressor-panel-edit-ui:hover {
+  color: var(--theme-text-muted);
+  border-color: var(--theme-accent);
+}
+
 .resonancesuppressor-panel-edit-ui--active {
-  border-color: color-mix(in srgb, var(--theme-accent) 55%, transparent);
-  background: color-mix(in srgb, var(--theme-accent) 16%, transparent);
-  color: #e9fbff;
+  background: var(--theme-accent);
+  color: var(--theme-fg-inverse);
+  border-color: var(--theme-accent);
 }
 
 .resonancesuppressor-panel-hq-warning {
-  border-bottom: 1px solid rgba(224, 184, 79, 0.22);
-  background: rgba(224, 184, 79, 0.08);
-  color: rgba(255, 232, 168, 0.92);
+  border-bottom: 1px solid var(--theme-semantic-warning-border);
+  background: var(--theme-semantic-warning-bg-subtle);
+  color: var(--theme-semantic-warning-text);
   font-size: 11px;
   font-weight: 650;
   line-height: 1.35;
@@ -17377,6 +17533,12 @@ html, body, #root {
   opacity: 0.9;
 }
 
+/* Mirrors the Mixer Pan/Width knobs — the rotary-arrow ring draws its own
+   body, so the preset only needs the same drop shadow the raised presets use. */
+.pluginui-knob--mixer-ring {
+  filter: drop-shadow(0 1px 3px var(--theme-overlay-subtle));
+}
+
 .pluginui-knob--label-left {
   align-items: center;
 }
@@ -17562,7 +17724,7 @@ html, body, #root {
 }
 
 .pluginui-resonance-overlay__zero {
-  stroke: rgba(148, 214, 230, 0.4);
+  stroke: var(--theme-border-subtle);
   stroke-width: 1;
   stroke-dasharray: 3 7;
   opacity: 0.65;
@@ -17570,7 +17732,7 @@ html, body, #root {
 }
 
 .pluginui-resonance-handle__rail {
-  stroke: rgba(185, 242, 255, 0.46);
+  stroke: var(--theme-border-subtle);
   stroke-width: 1;
   stroke-dasharray: 4 6;
   opacity: 0.45;
@@ -17595,28 +17757,30 @@ html, body, #root {
 .pluginui-resonance-handle__glyph {
   pointer-events: auto;
   cursor: grab;
-  fill: #111827;
-  stroke: var(--res-band-color, #52e5ff);
+  fill: var(--theme-bg-inset);
+  stroke: var(--res-band-color, var(--theme-accent));
   stroke-width: 1.8;
-  transition: stroke-width 0.12s ease, filter 0.12s ease, fill 0.12s ease;
+  transition: stroke-width 0.12s ease, fill 0.12s ease;
 }
 
+/* All 8 focus bands share the theme accent — bands are told apart by their
+   numbered label, glyph shape, and position on the curve, not by hue. */
 .pluginui-resonance-handle--band-1,
-.pluginui-resonance-band-token--b1 { --res-band-color: #52e5ff; }
 .pluginui-resonance-handle--band-2,
-.pluginui-resonance-band-token--b2 { --res-band-color: #38bdf8; }
 .pluginui-resonance-handle--band-3,
-.pluginui-resonance-band-token--b3 { --res-band-color: #fbbf24; }
 .pluginui-resonance-handle--band-4,
-.pluginui-resonance-band-token--b4 { --res-band-color: #a78bfa; }
 .pluginui-resonance-handle--band-5,
-.pluginui-resonance-band-token--b5 { --res-band-color: #2dd4bf; }
 .pluginui-resonance-handle--band-6,
-.pluginui-resonance-band-token--b6 { --res-band-color: #94a3b8; }
 .pluginui-resonance-handle--band-7,
-.pluginui-resonance-band-token--b7 { --res-band-color: #60a5fa; }
 .pluginui-resonance-handle--band-8,
-.pluginui-resonance-band-token--b8 { --res-band-color: #fb7185; }
+.pluginui-resonance-band-token--b1,
+.pluginui-resonance-band-token--b2,
+.pluginui-resonance-band-token--b3,
+.pluginui-resonance-band-token--b4,
+.pluginui-resonance-band-token--b5,
+.pluginui-resonance-band-token--b6,
+.pluginui-resonance-band-token--b7,
+.pluginui-resonance-band-token--b8 { --res-band-color: var(--theme-accent); }
 
 .pluginui-resonance-handle__hit {
   pointer-events: auto;
@@ -17628,74 +17792,69 @@ html, body, #root {
 .pluginui-resonance-handle__rect:hover,
 .pluginui-resonance-handle--band:hover .pluginui-resonance-handle__glyph {
   stroke-width: 2.2;
-  filter: drop-shadow(0 0 6px var(--res-band-color, #52e5ff));
 }
 
 .pluginui-resonance-handle__rect:focus-visible,
 .pluginui-resonance-handle__hit:focus-visible {
   outline: none;
   stroke-width: 2.4;
-  filter: drop-shadow(0 0 7px var(--res-band-color, #52e5ff));
 }
 
 .pluginui-resonance-handle.is-active .pluginui-resonance-handle__rect,
 .pluginui-resonance-handle.is-active .pluginui-resonance-handle__glyph {
   cursor: grabbing;
-  fill: var(--res-band-color, #52e5ff);
-  stroke: var(--res-band-color, #52e5ff);
-  filter: drop-shadow(0 0 8px var(--res-band-color, #52e5ff));
+  fill: var(--res-band-color, var(--theme-accent));
+  stroke: var(--res-band-color, var(--theme-accent));
 }
 
 .pluginui-resonance-handle.is-selected .pluginui-resonance-handle__glyph {
   stroke-width: 2.6;
-  filter: drop-shadow(0 0 12px var(--res-band-color, #52e5ff));
 }
 
 .pluginui-resonance-handle--band.is-selected .pluginui-resonance-handle__glyph {
-  fill: var(--res-band-color, #52e5ff);
+  fill: var(--res-band-color, var(--theme-accent));
 }
 
 .pluginui-resonance-handle--band.is-neutral:not(.is-selected) .pluginui-resonance-handle__glyph {
-  fill: #07111c;
+  fill: var(--theme-bg-inset);
   opacity: 0.48;
 }
 
 .pluginui-resonance-handle__selection-ring {
   pointer-events: none;
   fill: transparent;
-  stroke: var(--res-band-color, #52e5ff);
+  stroke: var(--res-band-color, var(--theme-accent));
   stroke-width: 2;
   opacity: 0.95;
-  filter: drop-shadow(0 0 10px var(--res-band-color, #52e5ff));
 }
 
 .pluginui-resonance-handle__label {
   font-size: 9px;
   font-weight: 600;
   letter-spacing: 0;
-  fill: #e9fbff;
+  fill: var(--theme-text);
   pointer-events: none;
 }
 
 .pluginui-resonance-handle__label--band,
 .pluginui-resonance-handle__label--bell {
   font-size: 10px;
-  fill: #e9fbff;
+  fill: var(--theme-text);
 }
 
 .pluginui-resonance-handle.is-active .pluginui-resonance-handle__label--band,
 .pluginui-resonance-handle.is-selected .pluginui-resonance-handle__label--band {
-  fill: #061019;
+  fill: var(--theme-fg-inverse);
 }
 
-/* Boundary handles use a slightly different accent so they read as distinct
-   from band handles even on small screens. */
+/* Boundary handles use a neutral (non-accent) stroke so they read as
+   structural rather than interactive-band, even on small screens. */
 .pluginui-resonance-handle--boundary .pluginui-resonance-handle__rect {
-  stroke: rgba(226, 241, 255, 0.72);
-  fill: #111827;
+  stroke: var(--theme-text-muted);
+  fill: var(--theme-bg-inset);
 }
 .pluginui-resonance-handle--boundary .pluginui-resonance-handle__rail {
-  stroke: rgba(226, 241, 255, 0.38);
+  stroke: var(--theme-text-muted);
 }
 
 /* Docked selected-band editor. */
@@ -17713,18 +17872,11 @@ html, body, #root {
   align-items: stretch;
   min-height: 62px;
   padding: 9px 10px;
-  background: linear-gradient(
-    180deg,
-    rgba(8, 15, 27, 0.96) 0%,
-    rgba(3, 8, 16, 0.96) 100%
-  );
-  border: 1px solid rgba(148, 214, 230, 0.18);
-  border-radius: 8px;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    0 12px 30px rgba(0, 0, 0, 0.26);
+  background: var(--theme-bg-secondary);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-lg);
   font-size: 10px;
-  color: #e9fbff;
+  color: var(--theme-text);
   z-index: 2;
   user-select: none;
   touch-action: auto;
@@ -17744,7 +17896,7 @@ html, body, #root {
   gap: 6px;
   flex: 1 1 96px;
   min-width: 0;
-  color: #e9fbff;
+  color: var(--theme-text);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0;
@@ -17755,8 +17907,7 @@ html, body, #root {
   width: 9px;
   height: 9px;
   border-radius: 50%;
-  background: var(--res-band-color, #52e5ff);
-  box-shadow: 0 0 8px var(--res-band-color, transparent);
+  background: var(--res-band-color, var(--theme-accent));
   flex: 0 0 auto;
 }
 
@@ -17770,7 +17921,7 @@ html, body, #root {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  color: rgba(203, 225, 241, 0.76);
+  color: var(--theme-text-subtle);
   font-size: 9px;
   letter-spacing: 0;
   text-transform: uppercase;
@@ -17790,18 +17941,18 @@ html, body, #root {
   letter-spacing: 0;
   min-height: 22px;
   padding: 3px 8px;
-  border: 1px solid rgba(148, 214, 230, 0.18);
-  border-radius: 999px;
-  background: rgba(15, 23, 42, 0.74);
-  color: #e9fbff;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--theme-bg-secondary);
+  color: var(--theme-text);
   cursor: pointer;
   white-space: nowrap;
   transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
 }
 
 .pluginui-resonance-band-editor__button:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--theme-accent) 68%, transparent);
-  background: color-mix(in srgb, var(--theme-accent) 16%, transparent);
+  border-color: var(--theme-accent);
+  background: var(--theme-fx-surface-tint-subtle);
 }
 
 .pluginui-resonance-band-editor__button:disabled {
@@ -17810,13 +17961,13 @@ html, body, #root {
 }
 
 .pluginui-resonance-band-editor__button--remove:hover:not(:disabled) {
-  border-color: rgba(251, 113, 133, 0.75);
-  color: #fecdd3;
-  background: rgba(251, 113, 133, 0.1);
+  border-color: var(--theme-semantic-danger-text);
+  color: var(--theme-semantic-danger-text);
+  background: var(--theme-semantic-danger-bg-subtle);
 }
 
 .pluginui-resonance-band-editor__count {
-  color: rgba(148, 184, 204, 0.7);
+  color: var(--theme-text-subtle);
   font-size: 9px;
   font-variant-numeric: tabular-nums;
   justify-self: start;
@@ -17837,10 +17988,10 @@ html, body, #root {
 .pluginui-resonance-band-editor__type {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  border: 1px solid rgba(148, 214, 230, 0.16);
-  border-radius: 8px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm);
   overflow: hidden;
-  background: rgba(15, 23, 42, 0.76);
+  background: var(--theme-bg-secondary);
   min-width: 0;
 }
 
@@ -17851,9 +18002,9 @@ html, body, #root {
   min-width: 0;
   padding: 6px 3px;
   border: none;
-  border-right: 1px solid rgba(148, 214, 230, 0.14);
+  border-right: 1px solid var(--theme-border-subtle);
   background: transparent;
-  color: rgba(203, 225, 241, 0.72);
+  color: var(--theme-text-subtle);
   cursor: pointer;
 }
 
@@ -17862,8 +18013,8 @@ html, body, #root {
 }
 
 .pluginui-resonance-band-editor__type-btn:hover:not(:disabled) {
-  color: #e9fbff;
-  background: color-mix(in srgb, var(--theme-accent) 12%, transparent);
+  color: var(--theme-text);
+  background: var(--theme-fx-surface-tint-subtle);
 }
 
 .pluginui-resonance-band-editor__type-btn.is-selected {
@@ -17883,10 +18034,10 @@ html, body, #root {
   align-items: center;
   min-width: 0;
   padding: 6px 7px;
-  border: 1px solid rgba(148, 214, 230, 0.12);
-  border-radius: 8px;
-  background: rgba(15, 23, 42, 0.54);
-  color: rgba(203, 225, 241, 0.74);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--theme-bg-secondary);
+  color: var(--theme-text-subtle);
   font-size: 9px;
   letter-spacing: 0;
   text-transform: uppercase;
@@ -17900,7 +18051,7 @@ html, body, #root {
 }
 
 .pluginui-resonance-band-editor__control output {
-  color: #e9fbff;
+  color: var(--theme-text);
   text-align: right;
   font-variant-numeric: tabular-nums;
   text-transform: none;
@@ -17926,11 +18077,72 @@ html, body, #root {
   width: 100%;
 }
 
-/* -- Compressor curve editor and block sliders ----------------------------- */
+/* -- Overdone band stack (gain knobs beside the band lanes) ----------------- */
 
-[data-pluginui-id="knob-grid"] {
-  display: none !important;
+.pluginui-overdone-bandstack {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
 }
+
+.pluginui-overdone-bandstack-gains {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+}
+
+/* Fixed height so the knob cells below line up with the canvas lanes; the viz
+   column uses an empty copy of the same label as a spacer. */
+.pluginui-overdone-bandstack-label {
+  height: 16px;
+  line-height: 16px;
+  font-size: 10px;
+  letter-spacing: 0.4px;
+  color: var(--theme-text-muted);
+  text-align: center;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.pluginui-overdone-bandstack-gain-cells {
+  display: flex;
+  flex-direction: column;
+}
+
+.pluginui-overdone-bandstack-gain-cell {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pluginui-overdone-bandstack-viz {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* -- Overdone crossover display (filter curves, drag-to-move crossovers) ---- */
+
+.pluginui-overdone-xover {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--theme-border-subtle);
+  background: var(--theme-bg-inset);
+  overflow: hidden;
+}
+
+.pluginui-overdone-xover-canvas {
+  display: block;
+  width: 100%;
+  touch-action: none;
+}
+
+/* -- Compressor curve editor and block sliders ----------------------------- */
 
 .pluginui-compressor-curve {
   width: 100%;
@@ -17965,6 +18177,31 @@ html, body, #root {
 [data-pluginui-id="body"] > .pluginui-compressor-drywet,
 [data-pluginui-id="body"] > .pluginui-compressor-lookahead {
   margin: 0 4px;
+}
+
+/* Compressor redesign — dotted rule between the shape/time knob groups. */
+[data-pluginui-id="body-divider"] {
+  position: relative;
+  flex: 0 0 1px !important;
+  align-self: flex-start;
+  margin: 4px 2px 0;
+  background: transparent;
+  border-left: 1px dotted var(--theme-text-subtle);
+}
+
+/* The rails sit hard against the right edge of the body row. */
+[data-pluginui-id="level-rails"] {
+  min-width: 0;
+}
+
+/* Peak | RMS — a pill, no "Detect:" caption; the two names carry it. */
+[data-pluginui-id="detect-row"] {
+  border-radius: 999px;
+}
+
+[data-pluginui-id="detect-row"] > .pluginui-toggle-btn {
+  padding: 5px 20px;
+  font-size: 10px;
 }
 
 [data-pluginui-id="divider-release-makeup"],
@@ -18016,6 +18253,45 @@ html, body, #root {
   min-height: 2px;
   background: var(--theme-accent);
   opacity: 0.95;
+}
+
+/* Rail variant — thin track with a wide flat thumb, per the Compressor
+   redesign. Opt-in via props.variant: "rail" so the boxed sliders used by the
+   other stock plugins are untouched. */
+.pluginui-compressor-slider--rail .pluginui-compressor-slider-track {
+  position: relative;
+  width: 26px;
+  height: 118px;
+  border: none;
+  background: transparent;
+  display: block;
+}
+
+.pluginui-compressor-slider--rail .pluginui-compressor-slider-track::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-1px);
+  background: color-mix(in srgb, var(--theme-text) 34%, transparent);
+}
+
+.pluginui-compressor-slider-thumb {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 9px;
+  margin-bottom: -4.5px;
+  background: var(--theme-accent);
+  box-shadow: 0 1px 3px var(--theme-overlay-medium);
+  pointer-events: none;
+}
+
+.pluginui-compressor-slider--rail .pluginui-compressor-slider-label {
+  color: var(--theme-text-muted);
+  letter-spacing: 0.4px;
 }
 
 .pluginui-compressor-slider-label {
@@ -18241,35 +18517,15 @@ html, body, #root {
   border-color: transparent;
 }
 
-/* ── Resonance Suppressor — blue/teal mockup skin ─────────────────────────
-   Scoped via the layout's stable root id so other plugins are unaffected. */
+/* ── Resonance Suppressor — layout-specific overrides ─────────────────────
+   Scoped via the layout's stable root id so other plugins are unaffected.
+   Colors resolve from the global theme tokens exactly like every other
+   stock plugin (Compressor/Limiter/Overdone) — no local token overrides,
+   no gradients/glows, no per-band rainbow hues. */
 
 [data-pluginui-id="resonance-root"] {
-  --theme-bg-primary: #090f18;
-  --theme-bg-secondary: #111927;
-  --theme-bg-tertiary: #172235;
-  --theme-bg-surface: #152033;
-  --theme-bg-elevated: #1b293d;
-  --theme-bg-inset: #050a12;
-  --theme-bg-hover: var(--theme-accent-bg-medium, rgba(255, 255, 255, 0.08));
-  --theme-bg-active: var(--theme-accent-bg-subtle, rgba(255, 255, 255, 0.12));
-  /* Accent intentionally inherits from the global theme so the plugin follows
-     the user's settings accent color (no hardcoded cyan skin). */
-  --theme-border-subtle: rgba(148, 163, 184, 0.16);
-  --theme-text: #e9fbff;
-  --theme-text-muted: #aac4df;
-  --theme-text-subtle: #7088a6;
-  --theme-fg-inverse: #061019;
-  --theme-success: #2dd4bf;
-  --theme-warning: #fbbf24;
-  --theme-danger: #fb7185;
-  background:
-    radial-gradient(circle at 32% 0%, rgba(21, 184, 166, 0.12), transparent 26%),
-    linear-gradient(180deg, #111927 0%, #080d16 100%);
-  color: var(--theme-text);
   min-width: 0;
   min-height: 0;
-  border-radius: 0 0 18px 18px;
   overflow: visible;
 }
 
@@ -18278,30 +18534,17 @@ html, body, #root {
 }
 
 [data-pluginui-id="resonance-root"] [data-pluginui-id="header"] {
-  border-bottom: 1px solid rgba(148, 214, 230, 0.16);
-  background: linear-gradient(180deg, rgba(17, 25, 39, 0.95), rgba(11, 16, 27, 0.95));
-}
-
-[data-pluginui-id="resonance-root"] [data-pluginui-id="workspace"] {
-  background:
-    linear-gradient(90deg, color-mix(in srgb, var(--theme-accent) 6%, transparent), transparent 44%),
-    #070c14;
+  border-bottom: 1px solid var(--theme-border-subtle);
 }
 
 [data-pluginui-id="resonance-root"] [data-pluginui-id="graph-card"],
 [data-pluginui-id="resonance-root"] [data-pluginui-id="detection-card"],
 [data-pluginui-id="resonance-root"] [data-pluginui-id="output-card"],
-[data-pluginui-id="resonance-root"] [data-pluginui-id="stereo-card"],
-[data-pluginui-id="resonance-root"] [data-pluginui-id="focus-card"] {
+[data-pluginui-id="resonance-root"] [data-pluginui-id="stereo-card"] {
   position: relative;
-  border: 1px solid rgba(148, 214, 230, 0.14);
-  border-radius: 8px;
-  background:
-    linear-gradient(180deg, rgba(17, 25, 39, 0.92), rgba(11, 16, 27, 0.94)),
-    #0b101b;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.04),
-    0 16px 36px rgba(0, 0, 0, 0.22);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--theme-bg-secondary);
   overflow: visible;
 }
 
@@ -18309,122 +18552,23 @@ html, body, #root {
   min-height: 396px;
 }
 
-[data-pluginui-id="resonance-root"] [data-pluginui-id="graph-title-row"] {
-  min-height: 20px;
-}
-
-[data-pluginui-id="resonance-root"] [data-pluginui-id="graph-title"],
-[data-pluginui-id="resonance-root"] [data-pluginui-id="graph-subtitle"],
 [data-pluginui-id="resonance-root"] [data-pluginui-id="detection-title"],
 [data-pluginui-id="resonance-root"] [data-pluginui-id="output-title"],
-[data-pluginui-id="resonance-root"] [data-pluginui-id="stereo-title"],
-[data-pluginui-id="resonance-root"] [data-pluginui-id="focus-title"] {
-  font-size: 12px;
-  font-weight: 800;
+[data-pluginui-id="resonance-root"] [data-pluginui-id="stereo-title"] {
+  font-weight: 700;
   letter-spacing: 0;
-  color: #dff9ff;
   text-transform: uppercase;
 }
 
-[data-pluginui-id="resonance-root"] [data-pluginui-id="graph-subtitle"] {
-  color: rgba(170, 196, 223, 0.62);
-  font-size: 10px;
-}
-
-[data-pluginui-id="resonance-root"] [data-pluginui-id="graph-view-tabs"] {
-  overflow: visible;
-}
-
-[data-pluginui-id="resonance-root"] [data-pluginui-id="graph-view-tabs"] .pluginui-tabgroup-headers {
-  align-self: flex-start;
-  gap: 6px;
-  padding: 0 0 9px 0;
-  border-bottom: none;
-}
-
-[data-pluginui-id="resonance-root"] [data-pluginui-id="graph-view-tabs"] .pluginui-tabgroup-tab {
-  min-height: 26px;
-  padding: 5px 12px;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  background: rgba(31, 41, 55, 0.72);
-  color: #c7ddf4;
-  font-size: 11px;
-  font-weight: 750;
-  letter-spacing: 0;
-}
-
-[data-pluginui-id="resonance-root"] [data-pluginui-id="graph-view-tabs"] .pluginui-tabgroup-tab:hover {
-  border-color: color-mix(in srgb, var(--theme-accent) 30%, transparent);
-  color: #f5fdff;
-}
-
-[data-pluginui-id="resonance-root"] [data-pluginui-id="graph-view-tabs"] .pluginui-tabgroup-tab.active {
-  border-color: color-mix(in srgb, var(--theme-accent) 55%, transparent);
-  background: var(--theme-accent);
-  color: var(--theme-fg-inverse);
-}
-
-[data-pluginui-id="resonance-root"] [data-pluginui-id="graph-view-tabs"] .pluginui-tabgroup-body {
-  overflow: visible;
-}
-
 [data-pluginui-id="resonance-root"] [data-pluginui-id^="resonance-viz"] {
-  border: 1px solid rgba(148, 214, 230, 0.14);
-  border-radius: 8px;
-  background:
-    radial-gradient(circle at 50% 18%, rgba(14, 165, 233, 0.12), transparent 38%),
-    #050a12;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--theme-bg-inset);
   overflow: visible;
 }
 
 [data-pluginui-id="resonance-root"] .pluginui-visualizer-canvas {
-  border-radius: 8px;
-}
-
-[data-pluginui-id="resonance-root"] [data-pluginui-id="macro-knobs"] {
-  align-items: start;
-}
-
-[data-pluginui-id="resonance-root"] .pluginui-knob-cell {
-  min-width: 0;
-}
-
-[data-pluginui-id="resonance-root"] .pluginui-knob {
-  filter: drop-shadow(0 5px 12px rgba(0, 0, 0, 0.24));
-}
-
-[data-pluginui-id="resonance-root"] .pluginui-row--segmented {
-  border: 1px solid rgba(148, 214, 230, 0.16);
-  border-radius: 999px;
-  background: rgba(31, 41, 55, 0.76);
-  padding: 3px;
-  gap: 2px;
-}
-
-[data-pluginui-id="resonance-root"] .pluginui-row--segmented > .pluginui-toggle-btn {
-  min-height: 28px;
-  min-width: 58px;
-  border: none;
-  border-radius: 999px;
-  padding: 5px 12px;
-  background: transparent;
-  color: #c7ddf4;
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0;
-  text-transform: none;
-}
-
-[data-pluginui-id="resonance-root"] .pluginui-row--segmented > .pluginui-toggle-btn:hover {
-  color: #f5fdff;
-  background: color-mix(in srgb, var(--theme-accent) 12%, transparent);
-}
-
-[data-pluginui-id="resonance-root"] .pluginui-row--segmented > .pluginui-toggle-btn.active {
-  background: var(--theme-accent);
-  color: var(--theme-fg-inverse);
+  border-radius: var(--radius-lg);
 }
 
 [data-pluginui-id="resonance-root"] [data-pluginui-id="quality-segmented"] > .pluginui-toggle-btn {
@@ -18434,19 +18578,6 @@ html, body, #root {
 [data-pluginui-id="resonance-root"] [data-pluginui-id="output-actions"] .pluginui-toggle-btn {
   width: 100%;
   min-height: 30px;
-  border: 1px solid rgba(148, 214, 230, 0.14);
-  border-radius: 999px;
-  background: rgba(31, 41, 55, 0.78);
-  color: #dff9ff;
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0;
-}
-
-[data-pluginui-id="resonance-root"] [data-pluginui-id="output-actions"] .pluginui-toggle-btn.active {
-  background: var(--theme-accent);
-  border-color: var(--theme-accent);
-  color: var(--theme-fg-inverse);
 }
 
 [data-pluginui-id="resonance-root"] [data-pluginui-id="stereo-main-row"] {
@@ -18462,38 +18593,6 @@ html, body, #root {
   flex: 1 1 0;
   padding-left: 10px;
   padding-right: 10px;
-}
-
-[data-pluginui-id="resonance-root"] [data-pluginui-id="meter-row"] {
-  align-items: stretch;
-  justify-content: center;
-  padding: 8px 7px 7px 7px;
-  border: 1px solid rgba(148, 214, 230, 0.12);
-  border-radius: 8px;
-  background: rgba(2, 6, 23, 0.38);
-}
-
-[data-pluginui-id="resonance-root"] .pluginui-meter--vertical .pluginui-meter-track {
-  width: 100%;
-  min-height: 42px;
-  border-color: rgba(148, 214, 230, 0.12);
-  border-radius: 999px;
-  background: rgba(15, 23, 42, 0.9);
-}
-
-[data-pluginui-id="resonance-root"] .pluginui-meter-label {
-  color: rgba(170, 196, 223, 0.68);
-  font-size: 10px;
-  letter-spacing: 0;
-}
-
-[data-pluginui-id="resonance-root"] [data-pluginui-id="in-meter-l"] .pluginui-meter-fill,
-[data-pluginui-id="resonance-root"] [data-pluginui-id="in-meter-r"] .pluginui-meter-fill {
-  background: linear-gradient(to top, #1e3a8a 0%, #38bdf8 100%);
-}
-
-[data-pluginui-id="resonance-root"] [data-pluginui-id="gr-meter"] .pluginui-meter-fill {
-  background: linear-gradient(to top, #2dd4bf 0%, #a78bfa 100%);
 }
 
 /* ── Dev-mode unknown/invalid node placeholders ────────────────────────────── */
@@ -24027,6 +24126,317 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   }
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   Track Video Properties — intentional redesign pass (Loop Lab)
+   Centered content column, card-contained sections, one field grammar, one
+   header pattern, value-pill readouts, accent-fill sliders. Everything below
+   is scoped under .tvp-root so it can never leak into the compact per-track
+   list on the Grid Settings tab (TrackCard.jsx), which reuses several of the
+   same shared components/classes at a different, non-card scale. Tokens only
+   — no hardcoded colors; accent stays reserved to the same handful of spots
+   the rest of the app uses it for (checked state, active tab, primary CTA).
+   ═════════════════════════════════════════════════════════════════════════ */
+
+.tvp-root {
+  align-items: center;
+  background: var(--xleth-flat-well);
+}
+
+.tvp-content {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+  max-width: 640px;
+}
+
+/* ── Compact summary chip row (was: full-width 4-col spread) ────────────── */
+.tvp-root .tvp-summary-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  border-bottom: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.tvp-root .tvp-summary-chip {
+  flex: 0 0 auto;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--xleth-flat-border);
+  background: var(--xleth-flat-panel);
+}
+
+/* ── Card container (was: full-bleed strip + hairline separator) ────────── */
+.tvp-root .tvp-section {
+  gap: 0;
+  padding: 0;
+  border: 0;
+  background: var(--xleth-flat-panel);
+}
+
+/* ── One header-row pattern for every card ───────────────────────────────
+   Small-caps title on the left; count badge / actions (where present) on
+   the right. Shared verbatim by tvp-section-title (Video Flip, Hold Last
+   Frame, Fullscreen Layer, Layout) and — via the bleed-to-edge technique
+   below — by the Visual FX and Slide Note Effect headers, which live one
+   level deeper inside their own self-contained components. */
+.tvp-root .tvp-section-title {
+  min-height: 34px;
+  padding: 0 16px;
+  gap: 6px;
+  background: var(--xleth-flat-section);
+  border-bottom: 1px solid var(--xleth-flat-border);
+  color: var(--xleth-flat-text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+}
+
+.tvp-root .tvp-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+}
+
+/* Rows that used to self-pad against a full-bleed card now sit inside a
+   padded body wrapper — drop their own inset so it isn't applied twice. */
+.tvp-root .tvp-section-body .tvp-checkbox-row {
+  min-height: auto;
+  padding: 0;
+}
+
+.tvp-root .tvp-section-body .tvp-placement-toggle,
+.tvp-root .tvp-section-body .tvp-opacity-row {
+  margin: 0;
+  padding: 0;
+}
+
+/* Visual FX + Slide Note Effect bring their own header as the first child
+   of a component that's also their card body — bleed it back out to the
+   card edges so it reads as the same header strip as tvp-section-title. */
+.tvp-root .fx-section,
+.tvp-root .grid-tab-track-slide {
+  padding: 16px;
+  margin-top: 0;
+  gap: 10px;
+}
+
+.tvp-root .track-flip-section {
+  padding: 16px;
+}
+
+.tvp-root .grid-tab-track-sliders {
+  padding: 16px;
+  gap: 12px;
+  border-bottom: 0;
+}
+
+.tvp-root .fx-section-header {
+  margin: -16px -16px 0;
+  padding: 12px 16px;
+  min-height: 34px;
+  background: var(--xleth-flat-section);
+  border-bottom: 1px solid var(--xleth-flat-border);
+}
+
+.tvp-root .grid-tab-slide-header {
+  margin: -16px -16px 12px;
+  padding: 0 16px;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  background: var(--xleth-flat-section);
+  border-bottom: 1px solid var(--xleth-flat-border);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+}
+
+/* "+ add effect" reads as the primary action; CLEAR ALL is a quiet ghost
+   button — red stays reserved for the moment you're actually about to
+   destroy something (hover/focus), not for its resting state. */
+.tvp-root .fx-add-btn {
+  background: var(--xleth-flat-accent);
+  color: var(--xleth-flat-accent-text);
+  border-color: var(--xleth-flat-accent);
+}
+
+.tvp-root .fx-add-btn:hover,
+.tvp-root .fx-add-btn:focus-visible {
+  background: color-mix(in srgb, var(--xleth-flat-accent) 88%, var(--xleth-flat-panel));
+}
+
+.tvp-root .fx-clear-all {
+  color: var(--xleth-flat-text-muted);
+}
+
+.tvp-root .fx-clear-all:hover,
+.tvp-root .fx-clear-all:focus-visible {
+  color: var(--xleth-flat-danger);
+}
+
+/* Helper text — one contrast step up from the flat pass's default muted. */
+.tvp-root .tvp-hint,
+.tvp-root .track-flip-hint {
+  color: var(--xleth-flat-text-secondary);
+}
+
+/* ── Video Flip: two-column layout (controls left, live preview right) ──── */
+.tvp-root .track-flip-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 200px;
+  align-items: start;
+  gap: 20px;
+}
+
+.tvp-root .track-flip-col-preview .track-flip-label {
+  margin-top: 0;
+}
+
+.tvp-root .track-flip-col-preview .track-flip-preview {
+  flex-wrap: wrap;
+  align-content: flex-start;
+  overflow-x: hidden;
+  max-height: 100%;
+}
+
+@media (max-width: 560px) {
+  .tvp-root .track-flip-columns {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── Field grammar: one consistent width for every dropdown/plain input ──
+   Sliders are handled separately below (label-left row + value pill). */
+.tvp-root .track-flip-select,
+.tvp-root .grid-tab-slide-type-select {
+  width: 200px;
+}
+
+.tvp-root .fx-params-grid,
+.tvp-root .grid-tab-slide-params {
+  grid-template-columns: minmax(64px, auto) minmax(0, 1fr) minmax(40px, auto);
+  column-gap: 12px;
+  row-gap: 10px;
+}
+
+/* Dropdown / plain-number fields: label takes the full row, the field
+   starts fresh below it at the shared fixed width (not stretched). */
+.tvp-root .fx-params-grid label:has(+ input[type="number"]),
+.tvp-root .fx-params-grid label:has(+ .fx-param-select),
+.tvp-root .grid-tab-slide-params label:has(+ .grid-tab-slide-param-select),
+.tvp-root .grid-tab-slide-params label:has(+ input[type="number"]) {
+  grid-column: 1 / -1;
+  padding-top: 6px;
+}
+
+.tvp-root .fx-params-grid input[type="number"],
+.tvp-root .fx-params-grid .fx-param-select,
+.tvp-root .grid-tab-slide-params .grid-tab-slide-param-select,
+.tvp-root .grid-tab-slide-params input[type="number"] {
+  grid-column: 1 / span 2;
+  justify-self: start;
+  width: 200px;
+  max-width: 100%;
+}
+
+/* ── Sliders: accent-colored fill up to the current value + bigger handle ──
+   The fill reads the --val custom property set inline per-slider (see
+   rangeFillStyle in utils/sliderHelpers.js); pseudo-elements inherit it from
+   their host element, so the gradient can live on ::-webkit-slider-runnable-
+   track directly and still track a value CSS alone cannot read. */
+.tvp-root .tvp-content input[type="range"] {
+  height: 4px;
+}
+
+.tvp-root .tvp-content input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--xleth-flat-accent) 45%, var(--xleth-flat-border)) 0%,
+    color-mix(in srgb, var(--xleth-flat-accent) 45%, var(--xleth-flat-border)) var(--val, 0%),
+    var(--xleth-flat-border) var(--val, 0%),
+    var(--xleth-flat-border) 100%
+  );
+}
+
+.tvp-root .tvp-content input[type="range"]::-webkit-slider-thumb {
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--xleth-flat-accent);
+  box-shadow: none;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.tvp-root .tvp-content input[type="range"]::-moz-range-track {
+  height: 4px;
+  background: var(--xleth-flat-border);
+}
+
+.tvp-root .tvp-content input[type="range"]::-moz-range-progress {
+  height: 4px;
+  background: color-mix(in srgb, var(--xleth-flat-accent) 45%, var(--xleth-flat-border));
+}
+
+.tvp-root .tvp-content input[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--xleth-flat-accent);
+}
+
+/* Custom Gap: reflow into one label-left row (checkbox-label · slider ·
+   value pill) instead of a label/readout row stacked over a full-width bar. */
+.tvp-root .grid-tab-gap-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.tvp-root .grid-tab-gap-label {
+  order: 1;
+  flex: 0 0 auto;
+}
+
+.tvp-root .grid-tab-gap-slider,
+.tvp-root .grid-tab-gap-hint {
+  order: 2;
+  flex: 1 1 auto;
+}
+
+.tvp-root .grid-tab-gap-readout {
+  order: 3;
+  flex: 0 0 auto;
+}
+
+/* ── Value-pill readouts: small monospaced chip at the row's right end ──── */
+.tvp-root .fx-params-grid span:not(:empty),
+.tvp-root .grid-tab-slide-params span:not(:empty),
+.tvp-root .grid-tab-gap-readout,
+.tvp-root .grid-tab-corner-radius-readout,
+.tvp-root .tvp-opacity-val {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  justify-self: end;
+  min-width: 40px;
+  padding: 2px 6px;
+  background: var(--xleth-flat-well);
+  border: 1px solid var(--xleth-flat-border);
+  color: var(--xleth-flat-text-secondary);
+  font-family: "SF Mono", Consolas, "Courier New", monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+}
+
 /* -- XLETH file picker ----------------------------------------------------- */
 
 .xleth-file-picker-backdrop {
@@ -24546,6 +24956,30 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   overflow: hidden;
 }
 
+.vmt-folder-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 7px;
+  border-bottom: 1px solid var(--theme-border-subtle);
+  box-sizing: border-box;
+  overflow: hidden;
+  color: var(--theme-accent, var(--theme-text));
+  background: color-mix(in srgb, var(--theme-accent, #7c8cff) 10%, var(--theme-bg-secondary));
+}
+
+.vmt-folder-header .vmt-track-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+}
+
+.vmt-folder-count {
+  flex-shrink: 0;
+  color: var(--theme-text-muted);
+  font-size: 9px;
+}
+
 .vmt-track-swatch {
   flex-shrink: 0;
   width: 9px;
@@ -24604,7 +25038,7 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
 }
 
 .vmt-add-cue,
-.vmt-delete-cue {
+.vmt-cue-action {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -24623,7 +25057,7 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
 }
 
 .vmt-add-cue:hover:not(:disabled),
-.vmt-delete-cue:hover {
+.vmt-close-cue-editor:hover {
   color: var(--theme-text-on-accent, #fff);
   border-color: var(--theme-accent);
   background: var(--theme-accent);
@@ -24732,7 +25166,9 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
 
 .vmt-cue-editor {
   position: absolute;
-  top: 3px;
+  /* Keep the editor's hit area out of the cue lane so both transition handles
+     remain directly reachable while the editor is open. */
+  top: calc(100% + 4px);
   left: 8px;
   display: flex;
   flex-direction: column;
@@ -24796,6 +25232,322 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   font-size: 10px;
   background: var(--theme-bg-secondary, var(--theme-bg-primary));
 }
+.track-header--selected {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-accent) 55%, transparent);
+  background-color: color-mix(in srgb, var(--theme-accent) 9%, transparent);
+}
+
+.vmt-transition-parameter {
+  display: grid;
+  grid-template-columns: 68px minmax(52px, 1fr) 32px;
+  align-items: center;
+  gap: 5px;
+  min-height: 22px;
+  color: var(--theme-text-muted);
+  font-size: 9px;
+}
+
+.vmt-transition-parameter input[type='range'] {
+  width: 100%;
+  min-width: 0;
+  accent-color: var(--theme-accent);
+}
+
+.vmt-transition-parameter output {
+  color: var(--theme-text);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.xleth-select-group-label {
+  padding: 7px 9px 3px;
+  color: var(--theme-text-subtle);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+.vmt-line-sweep-direction {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  align-items: center;
+  column-gap: 7px;
+  row-gap: 2px;
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, var(--theme-accent) 24%, var(--theme-border-subtle));
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--theme-bg-primary) 84%, transparent);
+}
+
+.vmt-line-sweep-direction-heading {
+  grid-column: 2;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 5px;
+  color: var(--theme-text-muted);
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.vmt-line-sweep-direction-readout {
+  color: var(--theme-text);
+  font-variant-numeric: tabular-nums;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.vmt-line-sweep-compass {
+  grid-row: 1 / span 2;
+  width: 50px;
+  height: 50px;
+  overflow: visible;
+  cursor: crosshair;
+  touch-action: none;
+  outline: none;
+}
+
+.vmt-line-sweep-compass-ring {
+  fill: var(--theme-bg-secondary, var(--theme-bg-primary));
+  stroke: var(--theme-border-subtle);
+  stroke-width: 2;
+}
+
+.vmt-line-sweep-compass-axis {
+  fill: none;
+  stroke: color-mix(in srgb, var(--theme-text-muted) 45%, transparent);
+  stroke-width: 1;
+}
+
+.vmt-line-sweep-compass-tick {
+  fill: var(--theme-text-muted);
+}
+
+.vmt-line-sweep-compass-needle {
+  stroke: var(--theme-accent);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+
+.vmt-line-sweep-compass-handle {
+  fill: var(--theme-accent);
+  stroke: var(--theme-bg-primary);
+  stroke-width: 2;
+}
+
+.vmt-line-sweep-compass-center {
+  fill: var(--theme-text-muted);
+}
+
+.vmt-line-sweep-compass:hover .vmt-line-sweep-compass-ring,
+.vmt-line-sweep-compass:focus .vmt-line-sweep-compass-ring {
+  stroke: var(--theme-accent);
+}
+
+.vmt-line-sweep-compass:focus-visible .vmt-line-sweep-compass-ring {
+  stroke-width: 3;
+}
+
+.vmt-line-sweep-direction-hint {
+  grid-column: 2;
+  color: var(--theme-text-muted);
+  font-size: 9px;
+  line-height: 1.25;
+}
+
+.vmt-easing-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-top: 4px;
+  border-top: 1px solid color-mix(in srgb, var(--theme-accent) 18%, transparent);
+}
+
+.vmt-easing-summary {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 25px;
+  padding: 2px 5px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 3px;
+  color: var(--theme-text-muted);
+  background: color-mix(in srgb, var(--theme-bg-secondary, var(--theme-bg-primary)) 86%, transparent);
+  font-size: 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.vmt-easing-summary:hover {
+  color: var(--theme-text);
+  border-color: color-mix(in srgb, var(--theme-accent) 55%, var(--theme-border-subtle));
+}
+
+.vmt-easing-summary > svg:last-child {
+  transition: transform 120ms ease;
+}
+
+.vmt-easing-editor.is-expanded .vmt-easing-summary > svg:last-child {
+  transform: rotate(180deg);
+}
+
+.vmt-easing-mini {
+  width: 62px;
+  height: 20px;
+  justify-self: end;
+  overflow: visible;
+}
+
+.vmt-easing-mini path {
+  fill: none;
+  stroke: var(--theme-accent);
+  stroke-width: 5;
+  stroke-linecap: round;
+}
+
+.vmt-easing-expanded {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.vmt-easing-graph {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 176 / 96;
+  box-sizing: border-box;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 3px;
+  background: var(--theme-bg-primary);
+  touch-action: none;
+}
+
+.vmt-easing-grid {
+  stroke: color-mix(in srgb, var(--theme-border-subtle) 75%, transparent);
+  stroke-width: 0.75;
+}
+
+.vmt-easing-linear {
+  stroke: color-mix(in srgb, var(--theme-text-muted) 32%, transparent);
+  stroke-width: 0.8;
+  stroke-dasharray: 3 3;
+}
+
+.vmt-easing-path {
+  fill: none;
+  stroke: var(--theme-accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.vmt-easing-guide {
+  stroke: color-mix(in srgb, var(--theme-text-muted) 58%, transparent);
+  stroke-width: 0.9;
+  stroke-dasharray: 3 2;
+  pointer-events: none;
+}
+
+.vmt-easing-control {
+  fill: var(--theme-accent);
+  stroke: var(--theme-bg-primary);
+  stroke-width: 1.5;
+  cursor: grab;
+  outline: none;
+}
+
+.vmt-easing-control:active {
+  cursor: grabbing;
+}
+
+/* Linear defaults place the two middle handles on the same pin. An outer ring
+   and inner disc keep both pointer targets independently reachable. */
+.vmt-easing-control.is-pin-outer {
+  fill: var(--theme-bg-primary);
+  stroke: var(--theme-accent);
+  stroke-width: 2;
+}
+
+.vmt-easing-control.is-pin-inner {
+  stroke-width: 1;
+}
+
+.vmt-easing-control:focus {
+  stroke: var(--theme-text);
+  stroke-width: 2.5;
+}
+
+.vmt-easing-anchor {
+  fill: var(--theme-text-muted);
+  pointer-events: none;
+}
+
+.vmt-easing-anchor.is-pin {
+  fill: var(--theme-accent);
+  stroke: var(--theme-bg-primary);
+  stroke-width: 1;
+}
+
+.vmt-easing-label {
+  fill: var(--theme-text-muted);
+  font-size: 7px;
+  pointer-events: none;
+}
+
+.vmt-easing-presets {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.vmt-easing-presets > label {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+  color: var(--theme-text-muted);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.vmt-easing-preset-select {
+  width: 100%;
+  min-width: 0;
+  height: 21px;
+  padding-top: 1px;
+  padding-bottom: 1px;
+  font-size: 9px;
+  background: var(--theme-bg-secondary, var(--theme-bg-primary));
+}
+
+.vmt-easing-reset {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  min-height: 22px;
+  padding: 2px 5px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 3px;
+  color: var(--theme-text-muted);
+  background: transparent;
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.vmt-easing-reset:hover {
+  color: var(--theme-text);
+  border-color: var(--theme-accent);
+  background: color-mix(in srgb, var(--theme-accent) 12%, transparent);
+}
 
 /* The window band + Start/End handles live in the cue lane around the fixed pin.
    The band visualizes; the handles (selected cue only) author the offsets. */
@@ -24838,11 +25590,22 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   background: var(--theme-bg-secondary, var(--theme-bg-primary));
 }
 
-.vmt-delete-cue {
+.vmt-cue-action {
   width: 22px;
   height: 22px;
-  padding: 0 0 2px;
+  padding: 0;
   border-radius: 3px;
-  font-size: 15px;
   line-height: 1;
+}
+
+.vmt-delete-cue {
+  color: var(--theme-danger, #ef4444);
+  border-color: var(--theme-danger, #ef4444);
+  background: transparent;
+}
+
+.vmt-delete-cue:hover {
+  color: var(--theme-text-on-accent, #fff);
+  border-color: var(--theme-danger, #ef4444);
+  background: var(--theme-danger, #ef4444);
 }
