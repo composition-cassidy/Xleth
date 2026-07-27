@@ -18548,13 +18548,8 @@ html, body, #root {
   overflow: visible;
 }
 
-[data-pluginui-id="resonance-root"] [data-pluginui-id="graph-card"] {
-  min-height: 396px;
-}
-
 [data-pluginui-id="resonance-root"] [data-pluginui-id="detection-title"],
-[data-pluginui-id="resonance-root"] [data-pluginui-id="output-title"],
-[data-pluginui-id="resonance-root"] [data-pluginui-id="stereo-title"] {
+[data-pluginui-id="resonance-root"] [data-pluginui-id="output-title"] {
   font-weight: 700;
   letter-spacing: 0;
   text-transform: uppercase;
@@ -18591,8 +18586,9 @@ html, body, #root {
 [data-pluginui-id="resonance-root"] [data-pluginui-id="stereo-mode-segmented"] > .pluginui-toggle-btn {
   min-width: 0;
   flex: 1 1 0;
-  padding-left: 10px;
-  padding-right: 10px;
+  padding-left: 1px;
+  padding-right: 1px;
+  letter-spacing: 0;
 }
 
 /* ── Dev-mode unknown/invalid node placeholders ────────────────────────────── */

@@ -211,12 +211,14 @@ describe('Resonance Suppressor shipped layout', () => {
     expect(json).not.toContain('"resonance.combined"')
     expect(json).not.toContain('"resonance.spectrum"')
     expect(json).not.toContain('"resonance.weighting"')
-    // Macro detection controls are vertical faders (compressorSlider),
-    // matching the polished XLETH plugin style (e.g. the Transient Processor).
-    for (const id of ['s-depth', 's-sharpness', 's-selectivity', 's-attack', 's-release']) {
+    // Macro detection controls are rotary knobs, matching the Compressor's
+    // knob-based presentation (polish pass replacing the earlier vertical
+    // faders).
+    for (const id of ['k-depth', 'k-sharpness', 'k-selectivity', 'k-attack', 'k-release']) {
       expect(json).toContain(`"${id}"`)
     }
-    expect(json).toContain('"compressorSlider"')
+    expect(json).toContain('"knob"')
+    expect(json).toContain('"mixer-ring"')
     // Output controls including the Δ Listen toggle (boolParam). MIX is a
     // fader; TRIM is a horizontal slider in the compact layout.
     expect(json).toContain('"s-mix"')
