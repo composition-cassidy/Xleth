@@ -701,21 +701,32 @@ function capGraphHistoryStack(stack) {
     : stack
 }
 
-function createGraphEditTransaction(type, key, beforeGraphState, afterGraphState) {
-  return {
+function createGraphEditTransaction(type, key, beforeGraphState, afterGraphState, undoParameterWrites) {
+  const transaction = {
     type,
     label: type,
     trackId: key,
     beforeGraphState: cloneJson(beforeGraphState),
     afterGraphState: cloneJson(afterGraphState),
   }
+  // Session-only side effect: parameter values this edit overwrote, replayed when
+  // the edge is undone. graphState deliberately never persists normalized values
+  // (the GraphParameterTarget contract), so the pre-link value has nowhere else to
+  // live — without this, undoing a macro link leaves the parameter at the macro's
+  // position instead of the value the user had authored.
+  if (Array.isArray(undoParameterWrites) && undoParameterWrites.length > 0) {
+    transaction.undoParameterWrites = undoParameterWrites.map((write) => ({ ...write }))
+  }
+  return transaction
 }
 
-function recordGraphEditTransaction(set, key, type, beforeGraphState, afterGraphState) {
+function recordGraphEditTransaction(set, key, type, beforeGraphState, afterGraphState, undoParameterWrites) {
   if (!beforeGraphState || !afterGraphState) return
   if (JSON.stringify(beforeGraphState) === JSON.stringify(afterGraphState)) return
 
-  const transaction = createGraphEditTransaction(type, key, beforeGraphState, afterGraphState)
+  const transaction = createGraphEditTransaction(
+    type, key, beforeGraphState, afterGraphState, undoParameterWrites,
+  )
   set((state) => {
     const history = normalizeGraphHistory(state.graphHistories?.[key])
     return {
@@ -1057,6 +1068,70 @@ async function driveMacroParameterEdges(get, key, graphState, macroNodeId, value
     }
   }
   return { ok: true, writes, skipped, results }
+}
+
+// Replays the parameter values an edit overwrote, when that edit is undone.
+// Used only for targets whose driving edge no longer exists in the restored graph —
+// F1 guarantees one driver per port, so these never fight a live macro re-drive.
+async function applyUndoParameterWrites(get, key, writes, options = {}) {
+  if (!Array.isArray(writes) || writes.length === 0) return { ok: true, results: [] }
+  const setParameter = options.driveSetGraphEffectParameterNormalized
+    ?? get().setGraphEffectParameterNormalized
+  const warn = options.warn ?? console.warn
+  const results = []
+  for (const write of writes) {
+    try {
+      results.push({
+        ...write,
+        result: await setParameter(Number(key), write.effectInstanceId, write.parameterId, write.value, options),
+      })
+    } catch (e) {
+      warn?.('[FXG] graph history parameter restore failed', {
+        trackId: key,
+        effectInstanceId: write.effectInstanceId,
+        parameterId: write.parameterId,
+        error: e?.message ?? e,
+      })
+      results.push({ ...write, result: { ok: false, reason: 'engine_error' } })
+    }
+  }
+  return { ok: true, results }
+}
+
+// Reads a parameter's live normalized value so an edit that is about to overwrite it
+// can put it back on undo. Returns null when it cannot be read; the caller then
+// records no restore rather than writing a guessed value.
+async function captureParameterValueForUndo(get, key, graphState, connectionDraft, options = {}) {
+  const parameterId = typeof connectionDraft?.parameterId === 'string'
+    ? connectionDraft.parameterId.trim()
+    : ''
+  if (!parameterId) return null
+
+  const targetNode = Array.isArray(graphState?.nodes)
+    ? graphState.nodes.find((node) => node?.id === connectionDraft?.targetNodeId)
+    : null
+  const effectInstanceId = typeof targetNode?.data?.effectInstanceId === 'string'
+    ? targetNode.data.effectInstanceId
+    : ''
+  if (!effectInstanceId) return null
+
+  try {
+    const result = await get().getGraphEffectParameterValue(Number(key), effectInstanceId, parameterId, options)
+    if (result?.ok !== true || !Number.isFinite(result.normalizedValue)) return null
+    return {
+      effectInstanceId,
+      parameterId,
+      value: Math.min(1, Math.max(0, result.normalizedValue)),
+    }
+  } catch (e) {
+    ;(options.warn ?? console.warn)?.('[FXG] parameter value capture for undo failed', {
+      trackId: key,
+      effectInstanceId,
+      parameterId,
+      error: e?.message ?? e,
+    })
+    return null
+  }
 }
 
 // FXG.4-f — after project-load hydration, apply each macro's current value to its
@@ -1879,6 +1954,12 @@ const useEffectChainStore = create((set, get) => ({
     )
     if (!applied.ok) return applied
 
+    // Restore the driven state the restored graph implies, then replay any values
+    // this edit overwrote. Re-driving first keeps a still-linked macro authoritative;
+    // the restores only ever target ports whose driving edge is now gone.
+    await driveAllMacroParameterEdges(get, access.key, applied.graphState, options)
+    await applyUndoParameterWrites(get, access.key, transaction.undoParameterWrites, options)
+
     set((state) => {
       const currentHistory = normalizeGraphHistory(state.graphHistories?.[access.key])
       const undoStack = [...currentHistory.undoStack]
@@ -1922,6 +2003,11 @@ const useEffectChainStore = create((set, get) => ({
       options,
     )
     if (!applied.ok) return applied
+
+    // Re-driving is the redo of the drive the original edit performed. Without it a
+    // redone macro link would sit on a live edge that has not written anything, so
+    // the parameter would keep the restored value until the macro next moved.
+    await driveAllMacroParameterEdges(get, access.key, applied.graphState, options)
 
     set((state) => {
       const currentHistory = normalizeGraphHistory(state.graphHistories?.[access.key])
@@ -2304,6 +2390,13 @@ const useEffectChainStore = create((set, get) => ({
     })
     if (!mutation.ok) return mutation
 
+    // A Macro REPLACES the parameter's value, so linking one overwrites whatever the
+    // user had authored. Capture that value BEFORE the drive below so undoing the link
+    // puts it back instead of leaving the parameter at the macro's position.
+    const overwritten = await captureParameterValueForUndo(
+      get, access.key, access.graphState, connectionDraft, options,
+    )
+
     const applied = await applyGraphStateMutation(
       set,
       access.key,
@@ -2318,6 +2411,7 @@ const useEffectChainStore = create((set, get) => ({
       'connect_macro_to_parameter',
       access.graphState,
       applied.graphState,
+      overwritten ? [overwritten] : null,
     )
 
     const macroNode = applied.graphState.nodes.find(

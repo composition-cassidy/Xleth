@@ -1451,6 +1451,52 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(audio.setGraphEffectParameterNormalized).toHaveBeenCalledWith(7, 'effect-1', 'mix', 0.5)
   })
 
+  // F3 — a Macro REPLACES the parameter's value, so linking one overwrites whatever
+  // the user authored. Undo has to put that value back, not just drop the edge.
+  it('restores the parameter value a Macro link overwrote, and re-drives on redo', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const graphState = makeMacroLinkGraphState('7')
+    // Authored value the link is about to overwrite.
+    audio.getGraphEffectParameterValue.mockResolvedValueOnce(JSON.stringify({
+      ok: true, trackId: 7, effectInstanceId: 'effect-1', parameterId: 'mix',
+      parameterIndex: 0, normalizedValue: 0.8, displayValue: '80%',
+    }))
+    seedGraphMode(useEffectChainStore, graphState)
+
+    // Macro sits at 0.5, so linking drives 'mix' from 0.8 down to 0.5.
+    await useEffectChainStore.getState().connectMacroToParameterForTrack('7', {
+      sourceNodeId: 'macro-a', targetNodeId: 'fx-1', parameterId: 'mix',
+    }, { idFactory: () => 'p-1' })
+    expect(audio.setGraphEffectParameterNormalized).toHaveBeenLastCalledWith(7, 'effect-1', 'mix', 0.5)
+    expect(useEffectChainStore.getState().graphHistories['7'].undoStack.at(-1))
+      .toMatchObject({ undoParameterWrites: [{ effectInstanceId: 'effect-1', parameterId: 'mix', value: 0.8 }] })
+
+    await useEffectChainStore.getState().undoGraphEditForTrack('7')
+    expect(useEffectChainStore.getState().graphStates['7'].edges.some((e) => e.type === 'parameter')).toBe(false)
+    // The authored value is back — not left at the macro's position.
+    expect(audio.setGraphEffectParameterNormalized).toHaveBeenLastCalledWith(7, 'effect-1', 'mix', 0.8)
+
+    await useEffectChainStore.getState().redoGraphEditForTrack('7')
+    expect(useEffectChainStore.getState().graphStates['7'].edges.some((e) => e.type === 'parameter')).toBe(true)
+    // Redo re-drives, so the live edge is not left holding a stale value.
+    expect(audio.setGraphEffectParameterNormalized).toHaveBeenLastCalledWith(7, 'effect-1', 'mix', 0.5)
+  })
+
+  it('records no parameter restore when the live value cannot be read', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    audio.getGraphEffectParameterValue.mockResolvedValueOnce(JSON.stringify({ ok: false, reason: 'effect_not_active' }))
+    seedGraphMode(useEffectChainStore, makeMacroLinkGraphState('7'))
+
+    const result = await useEffectChainStore.getState().connectMacroToParameterForTrack('7', {
+      sourceNodeId: 'macro-a', targetNodeId: 'fx-1', parameterId: 'mix',
+    }, { idFactory: () => 'p-1' })
+
+    // The link still succeeds — a guessed restore value would be worse than none.
+    expect(result.ok).toBe(true)
+    expect(useEffectChainStore.getState().graphHistories['7'].undoStack.at(-1))
+      .not.toHaveProperty('undoParameterWrites')
+  })
+
   it('rejects invalid Macro -> Parameter links without corrupting graphState', async () => {
     const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
     const graphState = makeMacroLinkGraphState('7', { readOnly: true })
