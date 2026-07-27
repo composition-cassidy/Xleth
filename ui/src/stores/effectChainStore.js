@@ -946,6 +946,22 @@ async function applyGraphHistoryTransition(set, get, key, targetGraphState, opti
 // those would dirty every project the moment it opened.
 const STRUCTURAL_GRAPH_REPAIR_WARNINGS = new Set(['parameterPortAlreadyDriven'])
 
+// Key-order-insensitive JSON for comparing a renderer graphState against the copy
+// the engine hands back. nlohmann::json emits object keys alphabetically while the
+// renderer builds them in insertion order, so a plain JSON.stringify compare of two
+// IDENTICAL graphs never matches — which would make the resync below fire on every
+// track fetch, clearing FX Graph edit history and re-reconciling the engine for
+// nothing.
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (value !== null && typeof value === 'object') {
+    return `{${Object.keys(value).sort()
+      .map((k) => `${JSON.stringify(k)}:${canonicalJson(value[k])}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(value) ?? 'null'
+}
+
 async function persistRepairedGraphStateForTrack(get, key, graphState, options = {}) {
   const warnings = get().graphStateStatuses?.[key]?.warnings
   if (!Array.isArray(warnings)) return false
@@ -1599,8 +1615,7 @@ const useEffectChainStore = create((set, get) => ({
       // hydration owns that path, and stepping on it here would race it.
       const current = get().graphStates[key]
       if (!current) continue
-      if (JSON.stringify(stripRuntimeGraphStateMetadata(current)) ===
-          JSON.stringify(engineGraphState)) {
+      if (canonicalJson(stripRuntimeGraphStateMetadata(current)) === canonicalJson(engineGraphState)) {
         continue
       }
 

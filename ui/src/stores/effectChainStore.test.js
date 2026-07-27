@@ -1828,6 +1828,31 @@ describe('effectChainStore FX mode safety gate', () => {
       expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
     })
 
+    it('treats a key-reordered engine copy as unchanged and keeps graph edit history', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      const graphState = graphWithTwoEffects('7')
+      seedGraphMode(useEffectChainStore, graphState)
+      useEffectChainStore.setState({
+        graphHistories: { 7: { undoStack: [{ type: 'connect_graph_nodes' }], redoStack: [] } },
+      })
+      timeline.setTrackGraphState.mockClear()
+
+      // nlohmann::json hands object keys back alphabetically; the renderer builds
+      // them in insertion order. Same graph, different key order.
+      const sortKeys = (v) => (Array.isArray(v) ? v.map(sortKeys)
+        : v && typeof v === 'object'
+          ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sortKeys(v[k])]))
+          : v)
+
+      const result = await useEffectChainStore.getState()
+        .resyncGraphStatesFromTracks([{ id: 7, fxMode: 'graph', graphState: sortKeys(graphState) }])
+
+      expect(result).toEqual({ ok: true, changed: [] })
+      expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+      // A spurious resync would have wiped the panel's undo stack.
+      expect(useEffectChainStore.getState().graphHistories['7'].undoStack).toHaveLength(1)
+    })
+
     it('follows an fxMode revert back to chain without touching graph runtime', async () => {
       const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
       seedGraphMode(useEffectChainStore, graphWithTwoEffects('7'))
