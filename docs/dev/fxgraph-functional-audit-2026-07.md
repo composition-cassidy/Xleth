@@ -170,10 +170,17 @@ would leave the engine in the graph's fail-closed connection state with the chai
 
 ---
 
-## Fix order
+## Fix order and status
 
-1. **F1** — reject multiple drivers per parameter port (data corruption, reproduced).
-2. **F2** — route graph state changes through `UndoManager` (destroys unrelated work).
-3. **F3** — restore the overwritten parameter value on modulation-link undo.
+| # | Fix | Commit | Runtime verification |
+|---|---|---|---|
+| F1 | One modulation driver per parameter port; existing corrupt graphs repaired on load and the repair written back to the engine | `8a44e7b` | Second Macro and Envelope both refused with "That parameter is already driven."; corrupt project loads with one edge on **both** sides; `drive` survives save/reload at 0.75 where it previously came back 0. |
+| F2 | `timeline_setTrackGraphState` / `setTrackFxMode` undo-tracked; `undoable` opt-out for camera and repair writes; renderer resync after a global undo | `31c0656` | Undo description becomes "Edit FX Graph (Track 2)"; trusted Ctrl+Z removes the macro on both sides (engine 9→8 nodes, panel 9→8) and leaves the unrelated track alone; Ctrl+Y restores it; Fit View / Reset View add no undo entries. |
+| F2a | Canonical (key-order-insensitive) graph comparison in the resync | `573733b` | Found while verifying F3: nlohmann sorts object keys, so the resync fired on every track fetch and wiped graph history. After the fix, the panel Undo still reverts an Envelope add across three forced track fetches. |
+| F3 | Modulation-link undo restores the value it overwrote; undo/redo re-drive live macro edges | `81c035f` | Authored 0.80 → link macro at 0.75 → 0.75 → Undo → 0.80 with the edge removed → Redo → 0.75 with the edge back. |
 
 F4 and F5 are recorded, not fixed, in this pass.
+
+Consolidated regression pass on the final build (all in the running app): reorder still drives
+engine order (`in→distortion→chorus→out`), cycles still rejected, one-driver-per-port enforced with
+the tokenized notice, global undo description still reflects the graph edit.

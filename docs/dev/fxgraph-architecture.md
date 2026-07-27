@@ -127,9 +127,40 @@ cache and syncs runtime topology only when graph nodes or edges changed. Layout 
 graphState but do not resync runtime.
 
 Graph history is scoped to normal tracks in `fxMode === "graph"`. Master tracks, chain-mode tracks,
-`effectChains`, native undo IPC, and Mixer Chain history are intentionally separate. The FX Graph
+`effectChains`, and Mixer Chain history are intentionally separate. The FX Graph
 panel exposes compact Undo/Redo controls only while graph mode is active and registers
 `Ctrl+Z`/`Ctrl+Y`/`Ctrl+Shift+Z` through `KeyboardManager` with `scope: "panel:fxGraph"`.
+
+### Global UndoManager participation (2026-07 functional audit, F2)
+
+> Supersedes "native undo IPC … intentionally separate" above.
+
+A graph edit is a timeline mutation and is now recorded on the **global** undo stack as well.
+`timeline_setTrackGraphState` / `timeline_setTrackFxMode` run through `UndoManager` via
+`SetTrackGraphStateCommand` / `SetTrackFxModeCommand`. While they did not, the top of the global
+stack stayed stale after a graph edit, so a global Ctrl+Z reverted whatever unrelated edit came
+before it while leaving the graph edit in place.
+
+- `timeline_setTrackGraphState(trackId, graphState, undoable = true)`. Pass `false` for writes that
+  are **not** user edits: viewport pan/zoom, the load-time repair write-back, the failed-conversion
+  rollback, and the resync below. Both commands also decline an undo step for an unknown track or a
+  write that changes nothing.
+- `effectChainStore.resyncGraphStatesFromTracks(tracks)` pulls the renderer back in line when a
+  global undo/redo reverts `TrackInfo::graphState` underneath it — otherwise the panel would render
+  the pre-undo graph, audio would stay on the pre-undo topology, and the next save would write the
+  stale graph back. It runs from `TimelineView.fetchTracks` (the choke point every undo path already
+  hits), reuses `applyGraphHistoryTransition` for full processor + topology reconciliation, persists
+  non-undoably, and clears that track's snapshot history (which now describes a graph the engine no
+  longer holds).
+- The engine/renderer comparison must be **key-order insensitive** (`canonicalJson`): nlohmann emits
+  object keys alphabetically, the renderer builds them in insertion order, so a plain
+  `JSON.stringify` compare of two identical graphs never matches and the resync fires on every track
+  fetch.
+- The `UndoManager` post-mutation hook now covers both setters, so `refreshEnvelopeDefinitions` is
+  called explicitly only on the non-undoable `setTrackGraphState` path.
+
+The per-track snapshot history remains as the panel's own Undo/Redo. It is still session-only and
+is still the mechanism that reconciles graph-owned processors; the two stacks are not unified.
 
 ## Graph-owned effect instances (FXG.3-b / FXG.3-c-a)
 
@@ -533,6 +564,19 @@ get a mapping field.
   source is a macro; target is an effect (Track I/O and macros rejected); the parameter is exposed,
   writable, and the target carries an `effectInstanceId`; and the link is not a self-link or
   duplicate.
+- `findExistingParameterPortDriver(graphState, targetNodeId, targetPort, exceptEdgeId?)` — **one
+  driver per parameter port** (2026-07 audit, F1). Both connect validators reject a second source on
+  an already-driven port with `parameter_already_driven` (a re-link from the *same* source still
+  reports `duplicate_edge`), and `loadGraphState` drops extra drivers on load — keeping the first —
+  with a `parameterPortAlreadyDriven` warning. Nothing downstream arbitrates between two drivers:
+  the renderer writes each Macro in `graphState.nodes` order and the engine allocates one mailbox
+  per envelope edge with no target dedupe, so they race on array order, and project-load hydration
+  replays that race — which was observed destroying a saved parameter value. Macro and Envelope are
+  additionally incompatible on one target by design (a Macro *replaces* the value; an Envelope is
+  `clamp(base + depth*env)` around an authored `base` the Macro would be overwriting). The load
+  repair is written back to the engine, because `MixEngine` parses its own
+  `TrackInfo::graphState` copy for envelope modulation and would otherwise keep acting on the
+  unrepaired graph.
 - `connectMacroToParameter(...)` — builds the parameter edge with `controlOut` source, a
   `gpp:` target port, the built `GraphParameterTarget`, and a default linear mapping.
 - `disconnectParameterEdge(graphState, edgeId)` / `isParameterEdge(graphState, edgeId)` — parameter-
@@ -549,7 +593,14 @@ get a mapping field.
 - `connectMacroToParameterForTrack(trackId, { sourceNodeId, targetNodeId, parameterId })` — graph-mode
   gated, persists via `timeline.setTrackGraphState`, records one undo step
   (`connect_macro_to_parameter`), skips audio runtime sync, then drives the new link from the macro's
-  current value.
+  current value. Because that drive **overwrites the parameter's authored value**, the action first
+  reads the target's live normalized value and stores it on the transaction as
+  `undoParameterWrites`; undo replays it (2026-07 audit, F3). `graphState` deliberately never
+  persists normalized values, so the transaction is the only place the pre-link value can live. A
+  failed read records no restore rather than writing a guessed value. Undo and redo both re-drive
+  the macro edges present in the resulting graph before applying any restores — that is also what
+  makes redo correct, since a redone link would otherwise sit on a live edge that has written
+  nothing.
 - `updateGraphMacroValueForTrack` — after committing the macro value it calls
   `driveMacroParameterEdges`, which turns each `collectMacroParameterWrites` entry into a FXG.4-a
   `setGraphEffectParameterNormalized(trackId, effectInstanceId, parameterId, value)` call. One failed
@@ -1091,9 +1142,11 @@ does not actually have, so both are **removed** as active behavior.
 - **Definition transport: no new bridge surface.** The engine parses the copy of `graphState` it
   was *already* storing opaquely in `TrackInfo::graphState`. Refresh is triggered by a new
   `UndoManager::setPostMutationHook()` (complete by construction — every timeline mutation goes
-  through UndoManager, so notes/blocks/clips/mute/solo and undo/redo are all covered) plus explicit
-  calls from the two non-undo-tracked setters `timeline_setTrackGraphState` and
-  `timeline_setTrackFxMode`. **Never per-block.**
+  through UndoManager, so notes/blocks/clips/mute/solo and undo/redo are all covered). Since the
+  2026-07 audit (F2) `timeline_setTrackGraphState` / `timeline_setTrackFxMode` are undo-tracked too,
+  so the hook covers them as well; only `setTrackGraphState`'s explicit **non-undoable** path
+  (viewport writes, load-time repair write-back) still calls the refresh itself.
+  **Never per-block.**
 - **Audio-thread safety.** Definitions are published as an immutable snapshot through an
   epoch-based RCU: the audio thread bumps an epoch before loading the pointer once per block, and
   the message thread frees a retired snapshot only once the epoch has moved past publication (or
