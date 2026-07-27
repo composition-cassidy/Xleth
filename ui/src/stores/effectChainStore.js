@@ -608,7 +608,15 @@ async function commitValidatedGraphState(set, key, validation, options = {}) {
   const persistGraphState = options.persistGraphState ?? timeline.setTrackGraphState
   if (typeof persistGraphState === 'function') {
     try {
-      const ok = await persistGraphState(Number(key), stripRuntimeGraphStateMetadata(validation.graphState))
+      // Third arg is the engine's undoable flag: a structural graph edit is a
+      // timeline mutation and belongs on the global undo stack. Callers that are
+      // NOT user edits (camera writes, load-time repair write-back, re-syncing the
+      // store FROM the engine after a global undo) pass undoable: false.
+      const ok = await persistGraphState(
+        Number(key),
+        stripRuntimeGraphStateMetadata(validation.graphState),
+        options.undoable !== false,
+      )
       if (ok === false) {
         warn?.('[FXG] graphState mutation persistence returned false', { trackId: key })
       }
@@ -937,7 +945,9 @@ async function persistRepairedGraphStateForTrack(get, key, graphState, options =
   if (typeof persistGraphState !== 'function') return false
 
   try {
-    await persistGraphState(Number(key), stripRuntimeGraphStateMetadata(graphState))
+    // Not a user edit — repairing what was already on disk must not become an
+    // undo step the user can "undo" back into the corrupt shape.
+    await persistGraphState(Number(key), stripRuntimeGraphStateMetadata(graphState), false)
     return true
   } catch (e) {
     ;(options.warn ?? console.warn)?.('[FXG] repaired graphState write-back failed', {
@@ -1476,6 +1486,63 @@ const useEffectChainStore = create((set, get) => ({
     return { ok, results }
   },
 
+  // Re-sync graph state FROM the engine's Timeline after a global undo/redo.
+  //
+  // graphState edits are undo-tracked in the engine now, so a global Ctrl+Z can
+  // revert TrackInfo::graphState underneath the renderer. Without this the panel
+  // would keep showing the pre-undo graph while the engine held the reverted one,
+  // the audio routing would stay on the pre-undo topology, and the next save would
+  // write the stale graph back — a worse desync than the bug being fixed.
+  //
+  // Reuses applyGraphHistoryTransition, which already does the full reconciliation
+  // a graph swap needs: validate, create/destroy graph-owned processors to match,
+  // commit, refresh the effectInstanceId -> engineNodeId map, and re-sync audio
+  // topology only when it actually changed. Persistence is non-undoable — we are
+  // following the engine, not editing it.
+  resyncGraphStatesFromTracks: async (tracks, options = {}) => {
+    if (!Array.isArray(tracks)) return { ok: true, changed: [] }
+    const changed = []
+
+    for (const track of tracks) {
+      if (track?.id == null) continue
+      const key = String(track.id)
+      if (key === 'master') continue
+
+      const state = get()
+      const engineMode = track.fxMode === 'graph' ? 'graph' : DEFAULT_FX_MODE
+      if (resolveFxMode(state.fxModes, key) !== engineMode) {
+        set((current) => ({ fxModes: { ...current.fxModes, [key]: engineMode } }))
+      }
+      if (engineMode !== 'graph') continue
+
+      const engineGraphState = Object.prototype.hasOwnProperty.call(track, 'graphState')
+        ? track.graphState
+        : undefined
+      if (engineGraphState == null) continue
+
+      // No store copy yet means this track has not been hydrated — project-load
+      // hydration owns that path, and stepping on it here would race it.
+      const current = get().graphStates[key]
+      if (!current) continue
+      if (JSON.stringify(stripRuntimeGraphStateMetadata(current)) ===
+          JSON.stringify(engineGraphState)) {
+        continue
+      }
+
+      const applied = await applyGraphHistoryTransition(set, get, key, engineGraphState, {
+        ...options,
+        undoable: false,
+      })
+      changed.push({ trackId: key, ok: applied.ok === true, reason: applied.reason })
+      if (applied.ok) {
+        // Snapshot history describes a graph the engine no longer holds.
+        clearGraphHistoryForTrack(set, key)
+      }
+    }
+
+    return { ok: changed.every((c) => c.ok), changed }
+  },
+
   setFxMode: (key, mode) => {
     // FX ownership transfer undo/redo is intentionally deferred to FXG.2.
     const nextMode = key !== 'master' && mode === 'graph' ? 'graph' : DEFAULT_FX_MODE
@@ -1541,7 +1608,8 @@ const useEffectChainStore = create((set, get) => ({
       if (typeof persistGraphState !== 'function') {
         throw new Error('timeline.setTrackGraphState unavailable')
       }
-      const graphOk = await persistGraphState(Number(key), stripRuntimeGraphStateMetadata(validation.graphState))
+      // Taking FX ownership is a user edit — undoable, paired with the fxMode write.
+      const graphOk = await persistGraphState(Number(key), stripRuntimeGraphStateMetadata(validation.graphState), true)
       if (graphOk === false) {
         throw new Error('timeline.setTrackGraphState returned false')
       }
@@ -1557,7 +1625,9 @@ const useEffectChainStore = create((set, get) => ({
     } catch (e) {
       if (graphStatePersisted && typeof persistGraphState === 'function') {
         try {
-          await persistGraphState(Number(key), stripRuntimeGraphStateMetadata(previousGraphState))
+          // Error recovery, not a user edit — undoing the failed conversion is
+          // what the already-recorded graphState entry does. Don't add a second.
+          await persistGraphState(Number(key), stripRuntimeGraphStateMetadata(previousGraphState), false)
         } catch (rollbackError) {
           warnFxgConversion(warn, key, 'graphState rollback failed', {
             error: rollbackError?.message ?? rollbackError,
@@ -1674,7 +1744,9 @@ const useEffectChainStore = create((set, get) => ({
     }
 
     try {
-      const ok = await persistGraphState(Number(key), stripRuntimeGraphStateMetadata(validation.graphState))
+      // A node move is a real edit (it already records a move_graph_node graph
+      // transaction), so it belongs on the global stack too — unlike a camera move.
+      const ok = await persistGraphState(Number(key), stripRuntimeGraphStateMetadata(validation.graphState), true)
       if (ok === false) {
         warn?.('[FXG] graphState node position persistence returned false', {
           trackId: key,
@@ -1750,7 +1822,13 @@ const useEffectChainStore = create((set, get) => ({
     if (typeof persistGraphState !== 'function') return true
 
     try {
-      const ok = await persistGraphState(Number(key), stripRuntimeGraphStateMetadata(validation.graphState))
+      // Camera only. Panning or zooming the workspace is not an edit, so it must
+      // never push an entry onto the global undo stack.
+      const ok = await persistGraphState(
+        Number(key),
+        stripRuntimeGraphStateMetadata(validation.graphState),
+        false,
+      )
       if (ok === false) {
         warn?.('[FXG] graphState viewport persistence returned false', {
           trackId: key,

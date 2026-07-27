@@ -649,7 +649,7 @@ describe('effectChainStore FX mode safety gate', () => {
     })
     expect(state.graphStates['7'].nodes.filter((node) => node.type === 'effect')).toHaveLength(2)
     expect(state.chains['7']).toEqual(baseChain)
-    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, state.graphStates['7'])
+    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, state.graphStates['7'], true)
     expect(timeline.setTrackFxMode).toHaveBeenCalledWith(7, 'graph')
     expect(timeline.setTrackGraphState.mock.invocationCallOrder[0])
       .toBeLessThan(timeline.setTrackFxMode.mock.invocationCallOrder[0])
@@ -707,7 +707,7 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(nextGraphState.viewport).toEqual(graphState.viewport)
     expect(nextGraphState.trackId).toBe('7')
     expect(state.chains['7']).toBe(baseChain)
-    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, nextGraphState)
+    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, nextGraphState, true)
     expect(timeline.setTrackFxMode).not.toHaveBeenCalled()
     expect(audio.moveEffect).not.toHaveBeenCalled()
     expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
@@ -744,7 +744,7 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(nextGraphState.edges).toEqual(graphState.edges)
     expect(nextGraphState.viewport).toEqual(graphState.viewport)
     expect(state.chains['7']).toBe(baseChain)
-    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, nextGraphState)
+    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, nextGraphState, true)
     expect(audio.moveEffect).not.toHaveBeenCalled()
     expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
   })
@@ -799,7 +799,7 @@ describe('effectChainStore FX mode safety gate', () => {
       .toEqual(graphState.nodes.map((node) => ({ id: node.id, position: node.position })))
     expect(nextGraphState.edges).toEqual(graphState.edges)
     expect(state.chains['7']).toBe(baseChain)
-    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, nextGraphState)
+    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, nextGraphState, false)
     expect(timeline.setTrackFxMode).not.toHaveBeenCalled()
     expect(audio.moveEffect).not.toHaveBeenCalled()
     expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
@@ -832,7 +832,7 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(nextGraphState.nodes).toEqual(makePositionedGraphState('7').nodes)
     expect(nextGraphState.edges).toEqual(graphState.edges)
     expect(state.chains['7']).toBe(baseChain)
-    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, nextGraphState)
+    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, nextGraphState, false)
     expect(audio.moveEffect).not.toHaveBeenCalled()
     expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
   })
@@ -938,7 +938,7 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(state.graphStates['7']).toBe(existingGraphState)
     expect(state.graphStateStatuses['7'].status).toBe('valid')
     expect(timeline.setTrackGraphState).toHaveBeenCalledTimes(2)
-    expect(timeline.setTrackGraphState).toHaveBeenNthCalledWith(2, 7, existingGraphState)
+    expect(timeline.setTrackGraphState).toHaveBeenNthCalledWith(2, 7, existingGraphState, false)
   })
 
   it('does not commit a partial renderer state when graphState persistence fails', async () => {
@@ -1243,7 +1243,7 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(next.viewport).toEqual({ x: 0, y: 0, zoom: 1 })
     // effectChains untouched.
     expect(useEffectChainStore.getState().chains['7']).toBe(baseChain)
-    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next)
+    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next, true)
     expect(timeline.setTrackFxMode).not.toHaveBeenCalled()
     expect(audio.addEffect).not.toHaveBeenCalled()
     expect(audio.syncLinearGraphTopology).toHaveBeenCalledWith(7, expect.objectContaining({
@@ -1345,7 +1345,7 @@ describe('effectChainStore FX mode safety gate', () => {
     })
     expect(Number.isFinite(macro.position.x) && Number.isFinite(macro.position.y)).toBe(true)
     expect(state.chains['7']).toBe(baseChain)
-    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next)
+    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next, true)
     expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
     expect(audio.addGraphEffectNode).not.toHaveBeenCalled()
     expect(audio.setGraphEffectParameterNormalized).not.toHaveBeenCalled()
@@ -1443,7 +1443,7 @@ describe('effectChainStore FX mode safety gate', () => {
     // Parameter edges never persist a raw engine node id.
     expect(JSON.stringify(next.edges)).not.toContain('engineNodeId')
     // Persisted, undoable, no audio sync, chains untouched.
-    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next)
+    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next, true)
     expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
     expect(state.chains['7']).toBe(baseChain)
     expect(state.graphHistories['7'].undoStack.at(-1)).toMatchObject({ label: 'connect_macro_to_parameter' })
@@ -1635,7 +1635,7 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(next.edges).toEqual([])
     expect(next.viewport).toEqual({ x: 0, y: 0, zoom: 1 })
     expect(useEffectChainStore.getState().chains['7']).toBe(baseChain)
-    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next)
+    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next, true)
     expect(audio.syncLinearGraphTopology).toHaveBeenCalledWith(7, expect.objectContaining({
       phase: 'FXG.3-c-b',
       nodes: expect.arrayContaining([
@@ -1686,7 +1686,7 @@ describe('effectChainStore FX mode safety gate', () => {
       type: 'audio',
     })
     expect(useEffectChainStore.getState().chains['7']).toBe(baseChain)
-    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next)
+    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next, true)
     expect(audio.syncLinearGraphTopology).toHaveBeenCalledWith(7, expect.objectContaining({
       phase: 'FXG.3-c-b',
       edges: expect.arrayContaining([
@@ -1727,6 +1727,74 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
   })
 
+  // F2 — graphState edits are undo-tracked in the engine, so a global undo/redo can
+  // revert TrackInfo::graphState underneath the renderer. resyncGraphStatesFromTracks
+  // pulls the renderer back in line (and must not write an undo step doing it).
+  describe('resyncGraphStatesFromTracks', () => {
+    it('adopts the engine graph after a global undo and re-syncs audio routing', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      seedGraphMode(useEffectChainStore, graphWithTwoEffects('7'))
+      // Both effects are live graph-owned processors in this session.
+      useEffectChainStore.setState({
+        graphEngineNodeIds: { 7: { 'effect-1': 201, 'effect-2': 202 } },
+      })
+      timeline.setTrackGraphState.mockClear()
+      audio.syncLinearGraphTopology.mockClear()
+
+      // The engine now holds a graph with fx-2 (and its cable) removed.
+      const reverted = {
+        ...graphWithTwoEffects('7'),
+        nodes: graphWithTwoEffects('7').nodes.filter((n) => n.id !== 'fx-2'),
+        edges: [],
+      }
+      const result = await useEffectChainStore.getState()
+        .resyncGraphStatesFromTracks([{ id: 7, fxMode: 'graph', graphState: reverted }])
+
+      expect(result.ok).toBe(true)
+      const next = useEffectChainStore.getState().graphStates['7']
+      expect(next.nodes.map((n) => n.id)).toEqual(['input', 'fx-1', 'output'])
+      // The processor the engine no longer references is torn down, and routing resyncs.
+      expect(audio.removeGraphEffectNode).toHaveBeenCalledWith(7, 'effect-2')
+      expect(audio.syncLinearGraphTopology).toHaveBeenCalled()
+      // Following the engine is not an edit: every write-back is non-undoable.
+      for (const call of timeline.setTrackGraphState.mock.calls) {
+        expect(call[2]).toBe(false)
+      }
+      // Snapshot history described a graph the engine no longer holds.
+      expect(useEffectChainStore.getState().graphHistories['7']).toBeUndefined()
+    })
+
+    it('no-ops when the engine graph already matches, and skips unhydrated tracks', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      const graphState = graphWithTwoEffects('7')
+      seedGraphMode(useEffectChainStore, graphState)
+      timeline.setTrackGraphState.mockClear()
+      audio.syncLinearGraphTopology.mockClear()
+
+      const result = await useEffectChainStore.getState().resyncGraphStatesFromTracks([
+        { id: 7, fxMode: 'graph', graphState },
+        // Not hydrated into the store yet — project-load hydration owns this one.
+        { id: 9, fxMode: 'graph', graphState: graphWithTwoEffects('9') },
+      ])
+
+      expect(result).toEqual({ ok: true, changed: [] })
+      expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+      expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+    })
+
+    it('follows an fxMode revert back to chain without touching graph runtime', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      seedGraphMode(useEffectChainStore, graphWithTwoEffects('7'))
+      timeline.setTrackGraphState.mockClear()
+
+      await useEffectChainStore.getState()
+        .resyncGraphStatesFromTracks([{ id: 7, fxMode: 'chain', graphState: graphWithTwoEffects('7') }])
+
+      expect(useEffectChainStore.getState().fxModes['7']).toBe('chain')
+      expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+    })
+  })
+
   it('disconnects an existing edge and rejects a missing edge', async () => {
     const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
     const baseChain = seedGraphMode(useEffectChainStore, makePositionedGraphState('7'))
@@ -1736,7 +1804,7 @@ describe('effectChainStore FX mode safety gate', () => {
     const next = useEffectChainStore.getState().graphStates['7']
     expect(next.edges.map((edge) => edge.id)).toEqual(['edge-2'])
     expect(useEffectChainStore.getState().chains['7']).toBe(baseChain)
-    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next)
+    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next, true)
     expect(audio.syncLinearGraphTopology).toHaveBeenCalledTimes(1)
     expect(audio.syncLinearGraphTopology).toHaveBeenCalledWith(7, expect.objectContaining({
       phase: 'FXG.3-c-b',
@@ -1826,7 +1894,7 @@ describe('effectChainStore FX mode safety gate', () => {
       },
     ])
     expect(state.chains['7']).toBe(baseChain)
-    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, state.graphStates['7'])
+    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, state.graphStates['7'], true)
     expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
     expect(audio.addEffect).not.toHaveBeenCalled()
     expect(state.graphHistories['7'].undoStack).toHaveLength(1)
@@ -1843,7 +1911,7 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(unexpose.exposed).toBe(false)
     expect(state.graphStates['7'].nodes.find((node) => node.id === 'fx-1').data.exposedParameterPorts)
       .toEqual([])
-    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, state.graphStates['7'])
+    expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, state.graphStates['7'], true)
     expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
     expect(state.chains['7']).toBe(baseChain)
   })
@@ -2520,7 +2588,7 @@ describe('effectChainStore FX mode safety gate', () => {
       expect(env.data).not.toHaveProperty('target')
       expect(Number.isFinite(env.position.x) && Number.isFinite(env.position.y)).toBe(true)
       // Persisted via setTrackGraphState; no audio sync; chains/effect APIs untouched.
-      expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next)
+      expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next, true)
       expect(state.chains['7']).toBe(baseChain)
       expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
       expect(audio.addGraphEffectNode).not.toHaveBeenCalled()
@@ -2580,7 +2648,7 @@ describe('effectChainStore FX mode safety gate', () => {
       let state = useEffectChainStore.getState()
       let env = state.graphStates['7'].nodes.find((n) => n.id === 'env-a')
       expect(env.data).toMatchObject({ attackMs: 33, sustain: 0.42, includeSlideNotes: true })
-      expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, state.graphStates['7'])
+      expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, state.graphStates['7'], true)
       expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
       expect(audio.setGraphEffectParameterNormalized).not.toHaveBeenCalled()
       expect(state.chains['7']).toBe(baseChain)
@@ -2701,7 +2769,7 @@ describe('effectChainStore FX mode safety gate', () => {
       expect(audio.getGraphEffectParameterValue).toHaveBeenCalledWith(7, 'effect-1', 'mix')
       expect(JSON.stringify(next.edges)).not.toContain('engineNodeId')
       // Persisted, undoable, no audio sync, chains untouched.
-      expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next)
+      expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, next, true)
       expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
       expect(state.chains['7']).toBe(baseChain)
       expect(state.graphHistories['7'].undoStack.at(-1)).toMatchObject({ label: 'connect_envelope_to_parameter' })
@@ -2741,7 +2809,7 @@ describe('effectChainStore FX mode safety gate', () => {
       const lane = state.graphStates['7'].macroAutomationLanes[0]
       expect(lane.macroNodeId).toBe('macro-a')
       expect(lane.clips[0].startTick).toBe(0)
-      expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, state.graphStates['7'])
+      expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, state.graphStates['7'], true)
       expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
       expect(state.graphHistories['7'].undoStack.at(-1)).toMatchObject({ label: 'create_macro_automation_clip' })
     })

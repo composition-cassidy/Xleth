@@ -964,6 +964,11 @@ export default function TimelineView({
         setTracks(t)
         // Keep mixer in sync without an extra IPC round-trip
         useMixerStore.getState().syncFromTimeline(t)
+        // FX Graph edits are undo-tracked in the engine, so a global undo/redo can
+        // revert a track's graphState underneath the renderer. This is the single
+        // choke point every undo path already goes through; the resync no-ops
+        // unless the engine's graph actually differs from the store's.
+        void useEffectChainStore.getState().resyncGraphStatesFromTracks?.(t)
         console.log(`[Timeline] Tracks loaded: ${t.length}`)
       }
     } catch { /* engine not ready */ }

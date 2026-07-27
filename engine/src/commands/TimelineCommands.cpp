@@ -848,6 +848,67 @@ std::string SetLoopRegionCommand::describe() const {
 
 // ─── SetTrackMutedCommand ─────────────────────────────────────────────────────
 
+// ─── SetTrackGraphStateCommand ────────────────────────────────────────────────
+
+SetTrackGraphStateCommand::SetTrackGraphStateCommand(int trackId,
+                                                     nlohmann::json newGraphState,
+                                                     const Timeline& timeline)
+    : trackId_(trackId), newGraphState_(std::move(newGraphState))
+{
+    newHasGraphState_ = !newGraphState_.is_null();
+
+    const TrackInfo* t = timeline.getTrack(trackId);
+    if (!t) {
+        record_ = false;
+        return;
+    }
+    oldHasGraphState_ = t->hasGraphState;
+    oldGraphState_    = t->graphState;
+
+    // The renderer re-persists graphState on paths that may not have changed it
+    // (re-validation, hydration write-back). An identical blob is not an edit.
+    record_ = (oldHasGraphState_ != newHasGraphState_) || (oldGraphState_ != newGraphState_);
+}
+
+void SetTrackGraphStateCommand::execute(Timeline& timeline) {
+    timeline.setTrackGraphState(trackId_, newHasGraphState_ ? newGraphState_ : nlohmann::json());
+}
+
+void SetTrackGraphStateCommand::undo(Timeline& timeline) {
+    timeline.setTrackGraphState(trackId_, oldHasGraphState_ ? oldGraphState_ : nlohmann::json());
+}
+
+std::string SetTrackGraphStateCommand::describe() const {
+    return "Edit FX Graph (Track " + std::to_string(trackId_) + ")";
+}
+
+// ─── SetTrackFxModeCommand ────────────────────────────────────────────────────
+
+SetTrackFxModeCommand::SetTrackFxModeCommand(int trackId, TrackFxMode newMode, const Timeline& timeline)
+    : trackId_(trackId), newMode_(newMode)
+{
+    const TrackInfo* t = timeline.getTrack(trackId);
+    if (!t) {
+        record_ = false;
+        return;
+    }
+    oldMode_ = t->fxMode;
+    record_  = (oldMode_ != newMode_);
+}
+
+void SetTrackFxModeCommand::execute(Timeline& timeline) {
+    timeline.setTrackFxMode(trackId_, newMode_);
+}
+
+void SetTrackFxModeCommand::undo(Timeline& timeline) {
+    timeline.setTrackFxMode(trackId_, oldMode_);
+}
+
+std::string SetTrackFxModeCommand::describe() const {
+    return std::string(newMode_ == TrackFxMode::Graph ? "Use FX Graph" : "Use Mixer Chain")
+         + " (Track " + std::to_string(trackId_) + ")";
+}
+
 SetTrackMutedCommand::SetTrackMutedCommand(int trackId, bool newMuted, const Timeline& timeline)
     : trackId_(trackId), newMuted_(newMuted)
 {

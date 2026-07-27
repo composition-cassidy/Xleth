@@ -690,10 +690,11 @@ describe('PanelFrame render paths', () => {
       (globalThis as any).window = previousWindow;
     }
 
+    // Third arg is the engine's undoable flag — taking FX ownership is a user edit.
     expect(setTrackGraphState).toHaveBeenCalledWith(7, expect.objectContaining({
       schemaVersion: 1,
       trackId: '7',
-    }));
+    }), true);
     expect(setTrackFxMode).toHaveBeenCalledWith(7, 'graph');
     expect(useEffectChainStore.getState().fxModes['7']).toBe('graph');
     expect(useEffectChainStore.getState().graphStateStatuses['7'].status).toBe('valid');

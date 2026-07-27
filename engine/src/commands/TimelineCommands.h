@@ -396,6 +396,54 @@ private:
     int64_t    minLengthTicks_;
 };
 
+// ─── SetTrackGraphStateCommand ────────────────────────────────────────────────
+// The FX Graph workspace persists every structural edit (node add/remove, cable
+// connect/disconnect, node move, macro/envelope edits) by writing the whole
+// graphState blob for a track. That is a timeline mutation like any other and
+// belongs on the undo stack: while it was untracked, the top of the global stack
+// stayed stale after a graph edit, so a global Ctrl+Z silently reverted whatever
+// unrelated edit came before it.
+//
+// The engine still treats graphState as opaque — this command only swaps blobs.
+// Camera-only writes (viewport pan/zoom) pass undoable=false at the RPC boundary
+// and never reach this command; they must not become undo steps.
+
+class SetTrackGraphStateCommand : public Command {
+public:
+    SetTrackGraphStateCommand(int trackId, nlohmann::json newGraphState, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+    bool shouldRecordInUndoHistory() const override { return record_; }
+private:
+    int            trackId_;
+    bool           oldHasGraphState_ = false;
+    nlohmann::json oldGraphState_;
+    bool           newHasGraphState_ = false;
+    nlohmann::json newGraphState_;
+    // False for an unknown track or a write that changes nothing — the mutation
+    // still runs, it just does not earn an undo step.
+    bool           record_ = true;
+};
+
+// ─── SetTrackFxModeCommand ────────────────────────────────────────────────────
+// FX ownership transfer (Mixer Chain <-> FX Graph). Undoable for the same reason
+// as SetTrackGraphStateCommand.
+
+class SetTrackFxModeCommand : public Command {
+public:
+    SetTrackFxModeCommand(int trackId, TrackFxMode newMode, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+    bool shouldRecordInUndoHistory() const override { return record_; }
+private:
+    int         trackId_;
+    TrackFxMode oldMode_ = TrackFxMode::Chain;
+    TrackFxMode newMode_ = TrackFxMode::Chain;
+    bool        record_  = true;
+};
+
 // ─── SetTrackMutedCommand ─────────────────────────────────────────────────────
 
 class SetTrackMutedCommand : public Command {

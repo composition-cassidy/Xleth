@@ -4190,8 +4190,9 @@ JsonApi::Value Initialize(const JsonApi::CallbackInfo& info)
     // Hooking UndoManager rather than each mutation handler makes that complete
     // by construction: every timeline mutation goes through UndoManager by project
     // invariant, so a future command type is covered without touching this wiring.
-    // The two direct (non-undo-tracked) Timeline setters that also matter,
-    // setTrackGraphState and setTrackFxMode, call the refresh themselves.
+    // setTrackGraphState and setTrackFxMode are undo-tracked too, so they are
+    // covered here; only setTrackGraphState's explicit non-undoable path (camera
+    // writes, load-time repair write-back) still calls the refresh itself.
     {
         auto* ae = audioEngine.get();
         g_undoManager->setPostMutationHook([ae] {
@@ -7103,11 +7104,11 @@ void Timeline_SetTrackName(const JsonApi::CallbackInfo& info)
 }
 
 // timeline_setTrackFxMode(trackId, mode) -> true on success, false for unknown track.
-// Undo/redo for FX ownership transfer is intentionally deferred to FXG.2.
+// Undo-tracked: FX ownership transfer is a timeline mutation like any other.
 JsonApi::Value Timeline_SetTrackFxMode(const JsonApi::CallbackInfo& info)
 {
     JsonApi::Env env = info.Env();
-    if (!isInitialised() || !g_timeline) {
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
         JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
         return env.Undefined();
     }
@@ -7122,42 +7123,63 @@ JsonApi::Value Timeline_SetTrackFxMode(const JsonApi::CallbackInfo& info)
     const TrackFxMode mode = stringToTrackFxMode(modeString);
     BridgeCallLog log("timeline.setTrackFxMode");
 
-    const bool ok = g_timeline->setTrackFxMode(trackId, mode);
+    const bool ok = g_timeline->getTrack(trackId) != nullptr;
+    if (ok) {
+        g_undoManager->execute(
+            std::make_unique<SetTrackFxModeCommand>(trackId, mode, *g_timeline),
+            *g_timeline);
+    }
     // Envelope modulation is active only for graph-mode tracks, so switching mode
-    // arms or disarms this track's envelopes.
-    if (ok && audioEngine)
-        audioEngine->getMixEngine().refreshEnvelopeDefinitions();
+    // arms or disarms this track's envelopes. The UndoManager post-mutation hook
+    // already refreshes on execute/undo/redo — no explicit call needed here.
     log.done(ok ? trackFxModeToString(mode) : "track-not-found");
     return JsonApi::Boolean::New(env, ok);
 }
 
-// timeline_setTrackGraphState(trackId, graphState) -> true on success.
+// timeline_setTrackGraphState(trackId, graphState, undoable?) -> true on success.
 // Renderer owns graphState semantics; the engine stores this JSON opaquely.
+//
+// Undo-tracked by default: an FX Graph structural edit is a timeline mutation, and
+// leaving it off the stack made a global Ctrl+Z revert whatever unrelated edit came
+// before it. Pass undoable === false for writes that are not user edits — camera
+// pan/zoom, and the load-time repair write-back — so they never become undo steps.
 JsonApi::Value Timeline_SetTrackGraphState(const JsonApi::CallbackInfo& info)
 {
     JsonApi::Env env = info.Env();
-    if (!isInitialised() || !g_timeline) {
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
         JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
         return env.Undefined();
     }
     if (info.Length() < 2 || !info[0].IsNumber()) {
-        JsonApi::TypeError::New(env, "timeline_setTrackGraphState(trackId: number, graphState: any)")
+        JsonApi::TypeError::New(env, "timeline_setTrackGraphState(trackId: number, graphState: any, undoable?: boolean)")
             .ThrowAsJavaScriptException();
         return env.Undefined();
     }
 
     const int trackId = info[0].As<JsonApi::Number>().Int32Value();
     const nlohmann::json graphState = valueToJson(info[1]);
+    const bool undoable = !(info.Length() >= 3 && info[2].IsBoolean()
+                            && !info[2].As<JsonApi::Boolean>().Value());
     BridgeCallLog log("timeline.setTrackGraphState");
 
-    const bool ok = g_timeline->setTrackGraphState(trackId, graphState);
-    // The engine still stores graphState opaquely — it is never interpreted here.
-    // But the Envelope Controller's DEFINITION lives inside it, so the engine-side
-    // envelope snapshot has to be rebuilt whenever it changes. This is the whole
-    // renderer→engine channel the feature needs: no new bridge surface.
-    if (ok && audioEngine)
-        audioEngine->getMixEngine().refreshEnvelopeDefinitions();
-    log.done(ok ? "stored" : "track-not-found");
+    bool ok = false;
+    if (undoable) {
+        ok = g_timeline->getTrack(trackId) != nullptr;
+        if (ok) {
+            g_undoManager->execute(
+                std::make_unique<SetTrackGraphStateCommand>(trackId, graphState, *g_timeline),
+                *g_timeline);
+        }
+    } else {
+        ok = g_timeline->setTrackGraphState(trackId, graphState);
+        // The engine still stores graphState opaquely — it is never interpreted here.
+        // But the Envelope Controller's DEFINITION lives inside it, so the engine-side
+        // envelope snapshot has to be rebuilt whenever it changes. On the undoable path
+        // the UndoManager post-mutation hook does this for execute/undo/redo alike.
+        if (ok && audioEngine)
+            audioEngine->getMixEngine().refreshEnvelopeDefinitions();
+    }
+    log.done(ok ? (undoable ? "stored" : "stored(no-undo)") : "track-not-found");
     return JsonApi::Boolean::New(env, ok);
 }
 
