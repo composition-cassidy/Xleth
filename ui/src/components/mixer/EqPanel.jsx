@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, memo } from 'react'
-import { Power } from 'lucide-react'
-import useEqStore, { BAND_TYPES, BAND_MODES, BAND_COLORS } from '../../stores/eqStore.js'
+import useEqStore, { BAND_TYPES, BAND_COLORS } from '../../stores/eqStore.js'
 import {
   SVG_W, SVG_H, PAD_L, PAD_R, PAD_T, PAD_B, PLOT_W, PLOT_H,
   FREQ_MIN, FREQ_MAX, ANA_DB_MIN, ANA_DB_MAX, RESPONSE_SIZE,
@@ -14,7 +13,7 @@ import {
   SPEED_DECAY, RESOLUTION_BARS,
   loadAnalyzerSettings, saveAnalyzerSettings,
 } from './eqAnalyzerSettings.js'
-import SelectedBandInspector from './SelectedBandInspector.jsx'
+import EqBandPopup from './EqBandPopup.jsx'
 import EqOutputMeter from './EqOutputMeter.jsx'
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -22,11 +21,6 @@ import EqOutputMeter from './EqOutputMeter.jsx'
 const FREQ_GRID = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
 const FREQ_LABELS = ['20', '50', '100', '200', '500', '1k', '2k', '5k', '10k', '20k']
 const ANA_DB_LINES = [-80, -60, -40, -20, 0]
-
-// B8: which types show gain / Q
-const TYPE_SHOW_GAIN = [true, true, true, false, false, false, true]  // LP/HP/Notch hide gain
-const TYPE_SHOW_Q    = [true, true, true, true,  true,  true,  false] // Tilt hides Q
-const TYPE_SHORT     = { 3: 'LP', 4: 'HP', 5: 'Notch' }
 
 // Coordinate helpers are imported from ./eqGeometry.js
 
@@ -90,38 +84,17 @@ function responseToPath(data, dbZoom) {
   return parts.join(' ')
 }
 
-// ── Band dot (B7 — redesigned) ───────────────────────────────────────────────
+// ── Band dot — minimal glowing orb ───────────────────────────────────────────
+// No Q ring, no GR ring, no mode badge, no label: a plain filled orb in the
+// band's color with a soft per-band-colored glow (drop-shadow filter) that
+// brightens when the band is selected. Everything else about a band (type,
+// mode, Q, dynamics/spectral fields) now lives in the floating EqBandPopup.
 
-function BandDot({ band, index, onDragStart, grValue, dbZoom, isSelected }) {
+function BandDot({ band, index, onDragStart, dbZoom, isSelected }) {
   const color = BAND_COLORS[index % BAND_COLORS.length]
   const cx = freqToX(band.freq)
   const cy = dbToY_response(band.gain, dbZoom)
   const opacity = band.enabled ? 1 : 0.3
-
-  // B7.1 — Q ring: wider ring = lower Q = broader bandwidth
-  const ringRadius = clamp(30 / Math.sqrt(Math.max(0.1, band.q)), 8, 48)
-
-  // B7.4 — GR ring with signed semantics
-  const grMagnitude = Math.abs(grValue || 0)
-  const showGr = band.mode === 1 && grMagnitude > 0.3
-  const grRadius = showGr ? Math.min(20, grMagnitude * 1.8) : 0
-  const grColor = (grValue || 0) >= 0 ? 'var(--xleth-eq-gr-boost)' : 'var(--xleth-eq-gr-cut)'
-
-  // Mode color for Q ring
-  const modeColor = band.mode === 0
-    ? 'var(--xleth-eq-mode-static)'
-    : band.mode === 1 ? 'var(--xleth-eq-mode-dynamic)'
-    : 'var(--xleth-eq-mode-spectral)'
-
-  // B7.5 — Label text
-  const freqStr = band.freq >= 1000
-    ? `${(band.freq / 1000).toFixed(1)} kHz`
-    : `${Math.round(band.freq)} Hz`
-  const noGain = [3, 4, 5].includes(band.type)
-  const gainStr = noGain ? '' : ` · ${band.gain >= 0 ? '+' : ''}${band.gain.toFixed(1)}`
-  const modeSuffix = band.mode === 1 ? ' · dyn' : band.mode === 2 ? ' · spec' : ''
-  const typeSuffix = noGain ? ` · ${TYPE_SHORT[band.type]}` : ''
-  const labelText = `${freqStr}${gainStr}${typeSuffix}${modeSuffix}`
 
   const handleMouseDown = (e) => {
     e.preventDefault()
@@ -131,191 +104,20 @@ function BandDot({ band, index, onDragStart, grValue, dbZoom, isSelected }) {
 
   return (
     <g className={`eq-band-dot${isSelected ? ' selected' : ''}`} opacity={opacity}>
-      {/* GR indicator ring (B7.4) */}
-      {grRadius > 0 && (
-        <circle cx={cx} cy={cy} r={6 + grRadius} fill="none"
-          stroke={grColor} strokeWidth={1.5} opacity={0.65} pointerEvents="none" />
-      )}
-      {/* Q ring — shown on hover/selected via CSS (B7.1) */}
-      <circle className="eq-q-ring" cx={cx} cy={cy} r={ringRadius} fill="none"
-        stroke={modeColor} strokeDasharray="2 3" strokeWidth={0.5}
-        opacity={0} pointerEvents="none" />
-      {/* Selection ring (B7.3) */}
-      {isSelected && (
-        <circle cx={cx} cy={cy} r={9} fill="none"
-          stroke="var(--xleth-eq-accent)" strokeWidth={2} opacity={0.9} pointerEvents="none" />
-      )}
-      {/* Visible dot */}
-      <circle cx={cx} cy={cy} r={6} fill={color} stroke="var(--xleth-eq-bg-plot)" strokeWidth={1.5}
-        pointerEvents="none" />
-      {/* Mode badge (B7.2) — Dynamic: diamond, Spectral: rotated square */}
-      {band.mode === 1 && (
-        <polygon
-          points={`${cx+5},${cy-9} ${cx+9},${cy-5} ${cx+5},${cy-1} ${cx+1},${cy-5}`}
-          fill="var(--xleth-eq-mode-dynamic)" opacity={0.9} pointerEvents="none" />
-      )}
-      {band.mode === 2 && (
-        <rect x={cx+2} y={cy-9} width={6} height={6}
-          transform={`rotate(45,${cx+5},${cy-6})`}
-          fill="var(--xleth-eq-mode-spectral)" opacity={0.9} pointerEvents="none" />
-      )}
+      {/* Visible orb — glow color comes from the band's own accent color */}
+      <circle
+        className="eq-band-orb"
+        cx={cx} cy={cy} r={6}
+        fill={color}
+        stroke="var(--xleth-eq-bg-plot)"
+        strokeWidth={1.5}
+        style={{ '--eq-orb-glow': color }}
+        pointerEvents="none"
+      />
       {/* Hit area */}
       <circle cx={cx} cy={cy} r={12} fill="transparent" style={{ cursor: 'grab' }}
         onMouseDown={handleMouseDown} />
-      {/* Label — below handle, muted unless selected */}
-      <text x={cx} y={cy + 22} className="eq-dot-label"
-        fill={isSelected ? 'var(--xleth-eq-accent)' : color}>
-        {labelText}
-      </text>
     </g>
-  )
-}
-
-// ── Band list row (EQ-C: compact — dynamic/spectral moved to SelectedBandInspector) ──
-
-export function BandRow({ band, index, linPhase, oversample, isSelected, onSelect }) {
-  const setBandParam  = useEqStore(s => s.setBandParam)
-  const removeBand    = useEqStore(s => s.removeBand)
-  const duplicateBand = useEqStore(s => s.duplicateBand)
-  const color = BAND_COLORS[index % BAND_COLORS.length]
-
-  // B5 — overflow menu state
-  const [menuOpen, setMenuOpen] = useState(false)
-  const [confirmDelete, setConfirmDelete] = useState(false)
-  const menuRef = useRef(null)
-  const confirmTimerRef = useRef(null)
-
-  // Close on outside click
-  useEffect(() => {
-    if (!menuOpen) return
-    const handle = (e) => {
-      if (menuRef.current && !menuRef.current.contains(e.target)) {
-        setMenuOpen(false)
-        setConfirmDelete(false)
-        clearTimeout(confirmTimerRef.current)
-      }
-    }
-    document.addEventListener('mousedown', handle)
-    return () => document.removeEventListener('mousedown', handle)
-  }, [menuOpen])
-
-  const handleOverflow = (e) => {
-    e.stopPropagation()
-    if (!menuOpen) { setConfirmDelete(false); clearTimeout(confirmTimerRef.current) }
-    setMenuOpen(v => !v)
-  }
-
-  const handleDuplicate = () => { duplicateBand(index); setMenuOpen(false) }
-
-  const handleReset = () => {
-    setBandParam(index, 'freq',    1000)
-    setBandParam(index, 'gain',    0)
-    setBandParam(index, 'q',       0.707)
-    setBandParam(index, 'type',    0)
-    setBandParam(index, 'enabled', 1)
-    setMenuOpen(false)
-  }
-
-  const handleDeleteRequest = () => {
-    setConfirmDelete(true)
-    clearTimeout(confirmTimerRef.current)
-    confirmTimerRef.current = setTimeout(() => setConfirmDelete(false), 2000)
-  }
-
-  const handleDeleteConfirm = () => {
-    clearTimeout(confirmTimerRef.current)
-    removeBand(index)
-    setMenuOpen(false)
-    setConfirmDelete(false)
-  }
-
-  // B8 — field visibility
-  const showGain = TYPE_SHOW_GAIN[band.type] ?? true
-  const showQ    = TYPE_SHOW_Q[band.type]    ?? true
-
-  return (
-    <div
-      className={`eq-band-row${isSelected ? ' eq-band-row--selected' : ''}`}
-      onClick={() => onSelect?.()}
-    >
-      <div className="eq-band-color" style={{ background: color }} />
-
-      <select className="eq-band-mode" value={band.mode || 0}
-        onChange={e => setBandParam(index, 'mode', Number(e.target.value))}>
-        {BAND_MODES.map((label, i) => (
-          <option key={i} value={i}
-            disabled={(i === 1 && linPhase) || (i === 2 && (linPhase || oversample > 0))}
-          >{label}</option>
-        ))}
-      </select>
-
-      <select className="eq-band-type" value={band.type}
-        onChange={e => setBandParam(index, 'type', Number(e.target.value))}>
-        {BAND_TYPES.map((label, i) => (
-          <option key={i} value={i}>{label}</option>
-        ))}
-      </select>
-
-      {/* Hz — always shown */}
-      <label className="eq-band-field">
-        <span>Hz</span>
-        <input type="number" className="eq-band-input" value={Math.round(band.freq)}
-          min={20} max={20000} step={1}
-          onChange={e => setBandParam(index, 'freq', clamp(Number(e.target.value), 20, 20000))} />
-      </label>
-
-      {/* dB — hidden for LP / HP / Notch (B8) */}
-      <label className={`eq-band-field${showGain ? '' : ' na'}`}>
-        <span>dB</span>
-        {showGain
-          ? <input type="number" className="eq-band-input" value={band.gain.toFixed(1)}
-              min={-30} max={30} step={0.1}
-              onChange={e => setBandParam(index, 'gain', clamp(Number(e.target.value), -30, 30))} />
-          : <input type="text" className="eq-band-input" value="—" readOnly />
-        }
-      </label>
-
-      {/* Q — hidden for Tilt (B8) */}
-      <label className={`eq-band-field${showQ ? '' : ' na'}`}>
-        <span>Q</span>
-        {showQ
-          ? <input type="number" className="eq-band-input" value={band.q.toFixed(2)}
-              min={0.1} max={30} step={0.01}
-              onChange={e => setBandParam(index, 'q', clamp(Number(e.target.value), 0.1, 30))} />
-          : <input type="text" className="eq-band-input" value="—" readOnly />
-        }
-      </label>
-
-      <button className={`eq-band-enable${band.enabled ? ' active' : ''}`}
-        title={band.enabled ? 'Disable' : 'Enable'}
-        onClick={() => setBandParam(index, 'enabled', band.enabled ? 0 : 1)}>
-        <Power size={10} />
-      </button>
-
-      {/* ⋯ overflow menu (B5) */}
-      <div style={{ position: 'relative' }} ref={menuRef}>
-        <button className="eq-band-overflow-btn" title="Band options" onClick={handleOverflow}>
-          ···
-        </button>
-        {menuOpen && (
-          <div className="eq-band-overflow-menu">
-            {confirmDelete ? (
-              <div className="eq-band-overflow-confirm">
-                <span>Delete?</span>
-                <button onClick={handleDeleteConfirm}>Y</button>
-                <button onClick={() => { clearTimeout(confirmTimerRef.current); setConfirmDelete(false) }}>N</button>
-              </div>
-            ) : (
-              <>
-                <button onClick={handleDuplicate}>Duplicate</button>
-                <button onClick={handleReset}>Reset</button>
-                <button className="danger" onClick={handleDeleteRequest}>Delete</button>
-              </>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
   )
 }
 
@@ -324,14 +126,25 @@ export function BandRow({ band, index, linPhase, oversample, isSelected, onSelec
 export default function EqPanel() {
   const target = useEqStore(s => s.target)
   const bands = useEqStore(s => s.bands)
-  const linPhase = useEqStore(s => s.linPhase)
-  const oversample = useEqStore(s => s.oversample)
   const addBandAt = useEqStore(s => s.addBandAt)
   const setBandParam = useEqStore(s => s.setBandParam)
+  const removeBand = useEqStore(s => s.removeBand)
+  const duplicateBand = useEqStore(s => s.duplicateBand)
+  // linPhase/oversample/preSpectrum + their setters are engine-synced global
+  // params (linear-phase mode, oversampling factor, pre-EQ spectrum capture).
+  // Their header toggle buttons were removed in this design pass, but the
+  // state/actions stay wired so the owner can re-expose a control later
+  // without re-deriving any of this. linPhase/oversample still gate the
+  // Dynamic/Spectral mode options in the band popup; preSpectrum still
+  // selects which spectrum trace the hover readout reads from below.
+  const linPhase = useEqStore(s => s.linPhase)
+  const oversample = useEqStore(s => s.oversample)
   const setLinPhase = useEqStore(s => s.setLinPhase)
   const setOversample = useEqStore(s => s.setOversample)
   const preSpectrum = useEqStore(s => s.preSpectrum)
   const setPreSpectrum = useEqStore(s => s.setPreSpectrum)
+  // dbZoom (response-curve vertical zoom) — same story: cycle button removed,
+  // state/action retained (see cycleDbZoom below).
   const dbZoom = useEqStore(s => s.dbZoom)
   const setDbZoom = useEqStore(s => s.setDbZoom)
   const fetchResponseCurve = useEqStore(s => s.fetchResponseCurve)
@@ -341,10 +154,10 @@ export default function EqPanel() {
   const close = useEqStore(s => s.close)
   const selectedBandIndex = useEqStore(s => s.selectedBandIndex)
   const setSelectedBand = useEqStore(s => s.setSelectedBand)
+  // Font/theme popover was removed too; keep applying whatever was already
+  // saved (localStorage) so existing customizations don't silently reset.
   const themeFont = useEqStore(s => s.themeFont)
   const themeFontScale = useEqStore(s => s.themeFontScale)
-  const setThemeFont = useEqStore(s => s.setThemeFont)
-  const setThemeFontScale = useEqStore(s => s.setThemeFontScale)
 
   const [analyzerSettings, setAnalyzerSettings] = useState(() => loadAnalyzerSettings())
   const [panelPos, setPanelPos] = useState(() => ({
@@ -370,11 +183,6 @@ export default function EqPanel() {
   const cursorRef = useRef({ svgX: null, inPlot: false })
   const lastReadoutRef = useRef(null)
 
-  // B4 — theme popover
-  const [themeOpen, setThemeOpen] = useState(false)
-  const [fontHint, setFontHint] = useState('')
-  const themePopoverRef = useRef(null)
-
   // Refs so polling closure sees current values without restarting the effect
   const analyzerRef = useRef(analyzerSettings)
   useEffect(() => { analyzerRef.current = analyzerSettings }, [analyzerSettings])
@@ -383,8 +191,6 @@ export default function EqPanel() {
 
   // Band drag state
   const dragRef = useRef(null)
-
-  const hasSpectralBand = bands.some(b => b.mode === 2 && b.enabled)
 
   // dB-zoom cycle
   const cycleDbZoom = useCallback(() => {
@@ -408,30 +214,6 @@ export default function EqPanel() {
       setResponsePath(responseToPath(responseCurveRef.current, dbZoom))
     }
   }, [dbZoom])
-
-  // B4 — font availability check
-  useEffect(() => {
-    if (!themeFont) { setFontHint(''); return }
-    const t = setTimeout(() => {
-      try {
-        const ok = document.fonts.check(`12px "${themeFont}"`)
-        setFontHint(ok ? '' : 'Not installed — using fallback')
-      } catch { setFontHint('') }
-    }, 200)
-    return () => clearTimeout(t)
-  }, [themeFont])
-
-  // B4 — theme popover outside-click close
-  useEffect(() => {
-    if (!themeOpen) return
-    const handle = (e) => {
-      if (themePopoverRef.current && !themePopoverRef.current.contains(e.target)) {
-        setThemeOpen(false)
-      }
-    }
-    document.addEventListener('mousedown', handle)
-    return () => document.removeEventListener('mousedown', handle)
-  }, [themeOpen])
 
   // Panel drag
   const handlePanelDragStart = useCallback((e) => {
@@ -704,7 +486,8 @@ export default function EqPanel() {
 
   if (!target) return null
 
-  // B4 — panel root style applies font CSS vars
+  // Panel root style applies font CSS vars (font/theme popover UI is gone,
+  // but whatever was already saved still applies — see hook comments above).
   const panelStyle = {
     left: panelPos.x,
     top: panelPos.y,
@@ -712,97 +495,30 @@ export default function EqPanel() {
     ...(themeFont && { '--xleth-eq-font-family': themeFont }),
   }
 
+  // Floating band popup's anchor — the selected orb's live screen position,
+  // derived the same way the drag/hover handlers map SVG space to the page.
+  const selectedBand = selectedBandIndex >= 0 ? (bands[selectedBandIndex] ?? null) : null
+  let popupAnchor = null
+  if (selectedBand && svgRef.current) {
+    const rect = svgRef.current.getBoundingClientRect()
+    const scaleX = rect.width / SVG_W
+    const scaleY = rect.height / SVG_H
+    popupAnchor = {
+      x: rect.left + freqToX(selectedBand.freq) * scaleX,
+      y: rect.top + dbToY_response(selectedBand.gain, dbZoom) * scaleY,
+    }
+  }
+
   return (
     <div className="eq-panel" style={panelStyle}>
-      {/* Header */}
+      {/* Header — stripped to title + close only. The removed global controls
+          (dB zoom / analyzer tilt / range / speed / resolution / LinPhase /
+          oversample / pre-spectrum / font popover) still exist in state
+          above; only their button affordances were removed here. */}
       <div className="eq-panel-header" onMouseDown={handlePanelDragStart}>
         <span className="eq-panel-title">Parametric EQ</span>
-        <div className="eq-panel-global">
-          <button className="eq-global-btn" onClick={cycleDbZoom}
-            title="Response curve dB zoom — cycle 6/12/24/48">
-            ±{dbZoom}
-          </button>
-          <button
-            className={`eq-global-btn${analyzerSettings.tiltDbPerOct > 0 ? ' active' : ''}`}
-            onClick={() => cycleAnalyzer('tiltDbPerOct', TILT_OPTIONS)}
-            title="Pink-noise tilt — cycle 0 / +3 / +4.5 / +6 dB/oct">
-            {analyzerSettings.tiltDbPerOct === 0 ? 'Tilt: 0' : `Tilt: +${analyzerSettings.tiltDbPerOct}`}
-          </button>
-          <button
-            className="eq-global-btn"
-            onClick={() => cycleAnalyzer('rangeDb', RANGE_OPTIONS)}
-            title="Analyzer vertical range — 60 / 90 / 120 dB">
-            {analyzerSettings.rangeDb} dB
-          </button>
-          <button
-            className="eq-global-btn"
-            onClick={() => cycleAnalyzer('speed', SPEED_OPTIONS)}
-            title="Max-hold decay — Slow / Med / Fast">
-            {analyzerSettings.speed === 'slow' ? 'Slow' : analyzerSettings.speed === 'fast' ? 'Fast' : 'Med'}
-          </button>
-          <button
-            className="eq-global-btn"
-            onClick={() => cycleAnalyzer('resolution', RESOLUTION_OPTIONS)}
-            title="Analyzer bar density — Low=12 / Med=18 / High=24 / Max=36 bars/oct">
-            {analyzerSettings.resolution === 'maximum' ? 'Max'
-              : analyzerSettings.resolution === 'low' ? 'Low'
-              : analyzerSettings.resolution === 'medium' ? 'Med'
-              : 'High'}
-          </button>
-          <button className={`eq-global-btn${linPhase ? ' active' : ''}`}
-            onClick={() => setLinPhase(!linPhase)}
-            title="Linear Phase mode — zero-phase FIR convolution">
-            LinPhase
-          </button>
-          <button className={`eq-global-btn${oversample > 0 ? ' active' : ''}`}
-            onClick={() => setOversample((oversample + 1) % 3)}
-            disabled={hasSpectralBand}
-            title={hasSpectralBand ? 'Disabled: spectral band active' : 'Cycle oversampling: Off → 2x → 4x'}>
-            {oversample === 0 ? 'OS: Off' : `OS: ${oversample === 1 ? '2' : '4'}x`}
-          </button>
-          <button className={`eq-global-btn${preSpectrum ? ' active' : ''}`}
-            onClick={() => setPreSpectrum(!preSpectrum)}
-            title="Show pre-EQ input spectrum">
-            <Power size={8} style={{ display: 'inline', verticalAlign: 'middle', marginRight: 3 }} />Pre
-          </button>
-        </div>
-        {/* B4 — gear button */}
-        <button className="eq-theme-btn" title="Font settings"
-          onClick={() => setThemeOpen(v => !v)}>
-          ⚙
-        </button>
         <button className="eq-panel-close" onClick={close} title="Close">&times;</button>
       </div>
-
-      {/* B4 — font / theme popover */}
-      {themeOpen && (
-        <div className="eq-theme-popover" ref={themePopoverRef}>
-          <div className="eq-theme-popover-row">
-            <span className="eq-theme-label">Font family</span>
-            <input className="eq-theme-input" type="text"
-              value={themeFont}
-              placeholder="Inter"
-              title="Any font installed on your system. Falls back to Inter if not found."
-              onChange={e => setThemeFont(e.target.value)} />
-            {fontHint && <span className="eq-theme-hint">{fontHint}</span>}
-          </div>
-          <div className="eq-theme-popover-row">
-            <span className="eq-theme-label">Font size scale</span>
-            <div className="eq-theme-slider-row">
-              <input className="eq-theme-slider" type="range"
-                min={0.7} max={1.4} step={0.05}
-                value={themeFontScale}
-                onChange={e => setThemeFontScale(Number(e.target.value))} />
-              <span className="eq-theme-slider-val">{themeFontScale.toFixed(2)}×</span>
-            </div>
-          </div>
-          <button className="eq-theme-reset-btn" onClick={() => {
-            setThemeFont('')
-            setThemeFontScale(1)
-            setFontHint('')
-          }}>Reset to defaults</button>
-        </div>
-      )}
 
       {/* SVG + right-side output meter */}
       <div className="eq-graph-row">
@@ -857,8 +573,7 @@ export default function EqPanel() {
 
           {bands.map((band, i) => (
             <BandDot key={i} band={band} index={i} onDragStart={handleDragStart}
-              grValue={bandGR ? bandGR[i] : 0} dbZoom={dbZoom}
-              isSelected={i === selectedBandIndex} />
+              dbZoom={dbZoom} isSelected={i === selectedBandIndex} />
           ))}
         </svg>
 
@@ -870,23 +585,25 @@ export default function EqPanel() {
         <EqOutputMeter peaksRef={meterPeaksRef} active={!!target} />
       </div>
 
-      {/* Band list */}
-      <div className="eq-band-list">
-        {bands.map((band, i) => (
-          <BandRow key={i} band={band} index={i}
-            linPhase={linPhase} oversample={oversample}
-            isSelected={i === selectedBandIndex}
-            onSelect={() => setSelectedBand(i)} />
-        ))}
-      </div>
-
-      {/* EQ-C: mode-specific controls for the selected band */}
-      <SelectedBandInspector
-        band={selectedBandIndex >= 0 ? bands[selectedBandIndex] : null}
-        bandIndex={selectedBandIndex}
-        setBandParam={setBandParam}
-        grValue={selectedBandIndex >= 0 && bandGR ? bandGR[selectedBandIndex] : null}
-      />
+      {/* Floating per-band popup — replaces the old bottom band table +
+          selected-band footer. Portaled to document.body so it can overflow
+          this panel's own bounds; anchored to the selected orb's live
+          on-screen position. */}
+      {selectedBand && popupAnchor && (
+        <EqBandPopup
+          key={selectedBandIndex}
+          band={selectedBand}
+          bandIndex={selectedBandIndex}
+          anchor={popupAnchor}
+          linPhase={linPhase}
+          oversample={oversample}
+          grValue={bandGR ? bandGR[selectedBandIndex] : null}
+          setBandParam={setBandParam}
+          removeBand={removeBand}
+          duplicateBand={duplicateBand}
+          onClose={() => setSelectedBand(-1)}
+        />
+      )}
     </div>
   )
 }

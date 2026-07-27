@@ -11561,42 +11561,6 @@ html.fx-drag-active * {
   flex: 1;
 }
 
-.eq-panel-global {
-  display: flex;
-  gap: 4px;
-}
-
-.eq-global-btn {
-  font-size: 9px;
-  font-weight: 600;
-  padding: 2px 8px;
-  border: 1px solid var(--xleth-eq-border);
-  border-radius: var(--xleth-eq-radius-sm);
-  background: var(--xleth-eq-bg-plot);
-  color: var(--xleth-eq-text-tertiary);
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-}
-
-.eq-global-btn:hover:not(:disabled) {
-  color: var(--xleth-eq-text-secondary);
-  border-color: var(--xleth-eq-accent);
-}
-
-.eq-global-btn:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
-.eq-global-btn.active {
-  background: var(--xleth-eq-accent);
-  color: var(--theme-fg-inverse);
-  border-color: var(--xleth-eq-accent);
-}
-
 .eq-panel-close {
   width: 20px;
   height: 20px;
@@ -11800,307 +11764,27 @@ html.fx-drag-active * {
   cursor: grabbing;
 }
 
-.eq-dot-label {
-  font-size: 8px;
-  text-anchor: middle;
-  dominant-baseline: auto;
-  font-family: var(--xleth-eq-font-mono);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.1s;
+/* Orb glow — soft drop-shadow halo in the band's own color (per-band color
+   is a deliberate exception to the flat/no-glow design-system rule; the glow
+   intensifies on hover/selected). --eq-orb-glow is set inline per band. */
+.eq-band-orb {
+  filter:
+    drop-shadow(0 0 2px var(--eq-orb-glow))
+    drop-shadow(0 0 5px var(--eq-orb-glow));
+  transition: filter 0.15s ease;
 }
 
-.eq-band-dot:hover .eq-dot-label,
-.eq-band-dot.selected .eq-dot-label {
-  opacity: 1;
+.eq-band-dot:hover .eq-band-orb {
+  filter:
+    drop-shadow(0 0 3px var(--eq-orb-glow))
+    drop-shadow(0 0 8px var(--eq-orb-glow));
 }
 
-/* B7 â€” Q ring: show on hover or when band is selected */
-.eq-band-dot:hover .eq-q-ring,
-.eq-band-dot.selected .eq-q-ring {
-  opacity: 0.5;
-}
-
-/* Band list */
-.eq-band-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 6px 8px;
-  max-height: 120px;
-  overflow-y: auto;
-  border-top: 1px solid var(--xleth-eq-border);
-}
-
-.eq-band-list::-webkit-scrollbar {
-  width: 8px;
-}
-.eq-band-list::-webkit-scrollbar-thumb {
-  background: var(--theme-border-default);
-  border-radius: 4px;
-}
-.eq-band-list::-webkit-scrollbar-track {
-  background: var(--theme-bg-secondary);
-}
-
-.eq-band-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 22px;
-  flex-wrap: nowrap;
-  position: relative;
-  padding: 1px 3px;
-  border-radius: var(--xleth-eq-radius-sm);
-  cursor: default;
-}
-
-/* EQ-C: selected band highlight */
-.eq-band-row--selected {
-  background: var(--xleth-eq-bg-row-alt);
-  outline: 1px solid var(--xleth-eq-accent);
-  outline-offset: -1px;
-}
-
-.eq-band-color {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.eq-band-type {
-  width: 72px;
-  height: 18px;
-  font-size: 9px;
-  background: var(--xleth-eq-bg-row-alt);
-  color: var(--xleth-eq-text-secondary);
-  border: 1px solid var(--xleth-eq-border);
-  border-radius: var(--xleth-eq-radius-sm);
-  padding: 0 2px;
-  cursor: pointer;
-}
-
-.eq-band-type:focus {
-  border-color: var(--xleth-eq-accent);
-  outline: none;
-}
-
-.eq-band-field {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-
-.eq-band-field span {
-  font-size: 8px;
-  color: var(--xleth-eq-text-tertiary);
-  width: 14px;
-  text-align: right;
-}
-
-/* N/A field state â€” layout-stable, non-interactive */
-.eq-band-field.na {
-  opacity: 0.25;
-  pointer-events: none;
-}
-
-.eq-band-input {
-  width: 52px;
-  height: 18px;
-  font-size: 9px;
-  background: var(--xleth-eq-bg-row-alt);
-  color: var(--xleth-eq-text-secondary);
-  border: 1px solid var(--xleth-eq-border);
-  border-radius: var(--xleth-eq-radius-sm);
-  padding: 0 4px;
-  text-align: right;
-  font-family: var(--xleth-eq-font-family);
-}
-
-.eq-band-input:focus {
-  border-color: var(--xleth-eq-accent);
-  color: var(--xleth-eq-text-primary);
-  outline: none;
-}
-
-/* Remove spinner arrows */
-.eq-band-input::-webkit-inner-spin-button,
-.eq-band-input::-webkit-outer-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
-
-.eq-band-enable {
-  width: 18px;
-  height: 18px;
-  border: none;
-  background: none;
-  color: var(--xleth-eq-text-tertiary);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--xleth-eq-radius-sm);
-  flex-shrink: 0;
-}
-
-.eq-band-enable.active {
-  color: var(--xleth-eq-accent);
-}
-
-.eq-band-enable:hover {
-  background: var(--theme-fx-surface-tint-subtle);
-}
-
-/* Overflow (â‹¯) button replacing Trash */
-.eq-band-overflow-btn {
-  width: 18px;
-  height: 18px;
-  border: none;
-  background: none;
-  color: var(--xleth-eq-text-tertiary);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--xleth-eq-radius-sm);
-  flex-shrink: 0;
-  font-size: 13px;
-  letter-spacing: -1px;
-  line-height: 1;
-}
-
-.eq-band-overflow-btn:hover {
-  color: var(--xleth-eq-text-secondary);
-  background: var(--theme-fx-surface-tint-subtle);
-}
-
-.eq-band-overflow-menu {
-  position: absolute;
-  right: 0;
-  top: 20px;
-  background: var(--xleth-eq-bg-header);
-  border: 1px solid var(--xleth-eq-border-strong);
-  border-radius: var(--xleth-eq-radius-md);
-  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
-  z-index: 300;
-  min-width: 120px;
-  overflow: hidden;
-}
-
-.eq-band-overflow-menu button {
-  display: block;
-  width: 100%;
-  padding: 5px 10px;
-  font-size: 9px;
-  font-weight: 500;
-  color: var(--xleth-eq-text-secondary);
-  background: none;
-  border: none;
-  text-align: left;
-  cursor: pointer;
-  transition: background 0.1s, color 0.1s;
-  font-family: var(--xleth-eq-font-family);
-}
-
-.eq-band-overflow-menu button:hover {
-  background: var(--theme-fx-surface-tint-subtle);
-  color: var(--xleth-eq-text-primary);
-}
-
-.eq-band-overflow-menu button.danger {
-  color: var(--xleth-eq-gr-cut);
-}
-
-.eq-band-overflow-menu button.danger:hover {
-  background: rgba(240,163,208,0.1);
-}
-
-.eq-band-overflow-confirm {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  font-size: 9px;
-  color: var(--xleth-eq-gr-cut);
-  font-family: var(--xleth-eq-font-family);
-}
-
-.eq-band-overflow-confirm button {
-  padding: 1px 6px !important;
-  font-size: 8px !important;
-  border-radius: var(--xleth-eq-radius-sm) !important;
-  border: 1px solid var(--xleth-eq-border) !important;
-  background: none !important;
-  color: var(--xleth-eq-text-secondary) !important;
-  cursor: pointer;
-}
-
-.eq-band-overflow-confirm button:hover {
-  border-color: var(--xleth-eq-accent) !important;
-  color: var(--xleth-eq-accent) !important;
-}
-
-.eq-add-band-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  width: 100%;
-  height: 22px;
-  font-size: 9px;
-  font-weight: 500;
-  color: var(--xleth-eq-text-tertiary);
-  background: none;
-  border: 1px dashed var(--xleth-eq-border);
-  border-radius: var(--xleth-eq-radius-sm);
-  cursor: pointer;
-  margin-top: 2px;
-}
-
-.eq-add-band-btn:hover {
-  color: var(--xleth-eq-accent);
-  border-color: var(--xleth-eq-accent);
-}
-
-/* Band mode selector */
-.eq-band-mode {
-  width: 58px;
-  height: 18px;
-  font-size: 9px;
-  background: var(--xleth-eq-bg-row-alt);
-  color: var(--xleth-eq-text-secondary);
-  border: 1px solid var(--xleth-eq-border);
-  border-radius: var(--xleth-eq-radius-sm);
-  padding: 0 2px;
-  cursor: pointer;
-}
-
-.eq-band-mode:focus {
-  border-color: var(--xleth-eq-accent);
-  outline: none;
-}
-
-/* Mode-specific expansion strips */
-.eq-band-dyn-fields {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 2px 0 2px 10px;
-  border-left: 2px solid var(--xleth-eq-mode-dynamic);
-  margin-left: 6px;
-}
-
-.eq-band-spec-fields {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 2px 0 2px 10px;
-  border-left: 2px solid var(--xleth-eq-mode-spectral);
-  margin-left: 6px;
+.eq-band-dot.selected .eq-band-orb {
+  filter:
+    drop-shadow(0 0 3px var(--eq-orb-glow))
+    drop-shadow(0 0 9px var(--eq-orb-glow))
+    drop-shadow(0 0 16px var(--eq-orb-glow));
 }
 
 /* GR bar indicator for Dynamic bands */
@@ -12240,14 +11924,50 @@ html.fx-drag-active * {
   padding-left: 8px;
 }
 
-/* Gear / theme font popover */
-.eq-theme-btn {
-  width: 20px;
-  height: 20px;
+/* â”€â”€ EQ-D: floating band popup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* Chrome (background/border/radius/shadow) comes from the shared flat-surface
+   popover rule below (grouped with .fx-dropdown/.ws-edit-popover/
+   .track-color-popover/etc.) — this block is layout only. */
+
+.eq-band-popup {
+  position: fixed;
+  z-index: 400;
+  min-width: 168px;
+  padding: 8px 10px 10px;
+  font-family: var(--xleth-eq-font-family);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.eq-band-popup-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.eq-band-popup-color {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.eq-band-popup-title {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--xleth-eq-text-primary);
+  flex: 1;
+}
+
+.eq-band-popup-close {
+  width: 16px;
+  height: 16px;
   border: none;
   background: none;
   color: var(--xleth-eq-text-tertiary);
-  font-size: 13px;
+  font-size: 14px;
+  line-height: 1;
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -12256,106 +11976,149 @@ html.fx-drag-active * {
   flex-shrink: 0;
 }
 
-.eq-theme-btn:hover {
-  color: var(--xleth-eq-text-secondary);
+.eq-band-popup-close:hover {
+  color: var(--xleth-eq-text-primary);
   background: var(--theme-fx-surface-tint-subtle);
 }
 
-.eq-theme-popover {
-  position: absolute;
-  top: 34px;
-  right: 24px;
-  background: var(--xleth-eq-bg-panel);
-  border: 1px solid var(--xleth-eq-border-strong);
-  border-radius: var(--xleth-eq-radius-md);
-  box-shadow: 0 6px 20px rgba(0,0,0,0.55);
-  z-index: 300;
-  padding: 10px 12px;
-  min-width: 220px;
+.eq-band-popup-controls {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
 }
 
-.eq-theme-popover-row {
+.eq-band-popup-primary {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  margin-bottom: 10px;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
 }
 
-.eq-theme-label {
-  font-size: 8px;
-  font-weight: 600;
+.eq-band-popup-power {
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--xleth-eq-border);
+  background: none;
   color: var(--xleth-eq-text-tertiary);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--xleth-eq-radius-sm);
 }
 
-.eq-theme-input {
+.eq-band-popup-power.active {
+  color: var(--xleth-eq-accent);
+  border-color: var(--xleth-eq-accent);
+}
+
+.eq-band-popup-power:hover {
+  background: var(--theme-fx-surface-tint-subtle);
+}
+
+.eq-band-popup-selects {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+}
+
+.eq-band-popup-select {
+  width: 100%;
   height: 20px;
   font-size: 9px;
   background: var(--xleth-eq-bg-row-alt);
   color: var(--xleth-eq-text-secondary);
   border: 1px solid var(--xleth-eq-border);
   border-radius: var(--xleth-eq-radius-sm);
-  padding: 0 6px;
-  font-family: var(--xleth-eq-font-mono);
-  width: 100%;
-  box-sizing: border-box;
+  padding: 0 4px;
+  cursor: pointer;
+  font-family: var(--xleth-eq-font-family);
 }
 
-.eq-theme-input:focus {
+.eq-band-popup-select:focus {
   border-color: var(--xleth-eq-accent);
   outline: none;
-  color: var(--xleth-eq-text-primary);
 }
 
-.eq-theme-hint {
-  font-size: 8px;
-  color: var(--xleth-eq-text-muted);
-  font-style: italic;
-  min-height: 10px;
+.eq-band-popup-extend {
+  border-top: 1px solid var(--xleth-eq-border);
+  padding-top: 8px;
 }
 
-.eq-theme-slider-row {
+/* The extension's own SelectedBandInspector adds its own left accent/padding
+   for the dynamic/spectral modifier classes — no border-top double-up. */
+.eq-band-popup-extend .eq-selected-band-inspector {
+  border-top: none;
+  padding: 0;
+}
+
+.eq-band-popup-footer {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 5px;
+  border-top: 1px solid var(--xleth-eq-border);
+  padding-top: 8px;
 }
 
-.eq-theme-slider {
+.eq-band-popup-footer button {
   flex: 1;
-  height: 3px;
-  accent-color: var(--xleth-eq-accent);
-  cursor: pointer;
-}
-
-.eq-theme-slider-val {
-  font-size: 9px;
-  font-family: var(--xleth-eq-font-mono);
-  color: var(--xleth-eq-text-secondary);
-  width: 28px;
-  text-align: right;
-}
-
-.eq-theme-reset-btn {
-  width: 100%;
   height: 20px;
   font-size: 9px;
   font-weight: 500;
+  color: var(--xleth-eq-text-secondary);
   background: none;
   border: 1px solid var(--xleth-eq-border);
   border-radius: var(--xleth-eq-radius-sm);
-  color: var(--xleth-eq-text-tertiary);
   cursor: pointer;
   font-family: var(--xleth-eq-font-family);
-  margin-top: 2px;
 }
 
-.eq-theme-reset-btn:hover {
+.eq-band-popup-footer button:hover {
   border-color: var(--xleth-eq-accent);
   color: var(--xleth-eq-accent);
 }
 
-/* â”€â”€ Node Editor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+.eq-band-popup-footer button.danger {
+  color: var(--xleth-eq-gr-cut);
+}
+
+.eq-band-popup-footer button.danger:hover {
+  border-color: var(--xleth-eq-gr-cut);
+}
+
+.eq-band-popup-confirm {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  font-size: 9px;
+  color: var(--xleth-eq-gr-cut);
+}
+
+.eq-band-popup-confirm span {
+  flex: 1;
+}
+
+.eq-band-popup-confirm button {
+  height: 18px;
+  padding: 0 8px;
+  font-size: 8px;
+  border: 1px solid var(--xleth-eq-border);
+  border-radius: var(--xleth-eq-radius-sm);
+  background: none;
+  color: var(--xleth-eq-text-secondary);
+  cursor: pointer;
+}
+
+.eq-band-popup-confirm button:hover {
+  border-color: var(--xleth-eq-accent);
+  color: var(--xleth-eq-accent);
+}
+
+/* â”€â”€ Node Editor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .ne-container {
   width: 100%;
@@ -20980,8 +20743,7 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
 }
 
 .fx-dropdown,
-.eq-band-overflow-menu,
-.eq-theme-popover,
+.eq-band-popup,
 .ws-edit-popover,
 .track-color-popover,
 .tl-display-popover {
@@ -21030,14 +20792,6 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   margin: 5px 0;
 }
 
-.eq-band-overflow-menu {
-  min-width: 128px;
-  padding: 5px;
-  overflow: visible;
-}
-
-.eq-band-overflow-menu button,
-.eq-theme-popover button,
 .ws-edit-popover button {
   min-height: 25px;
   border: 1px solid transparent;
@@ -21051,30 +20805,14 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
     color 90ms ease-out;
 }
 
-.eq-band-overflow-menu button:hover,
-.eq-theme-popover button:hover,
 .ws-edit-popover button:hover {
   border-color: var(--xleth-flat-border-strong);
   background: var(--xleth-flat-chrome);
   color: var(--xleth-flat-text);
 }
 
-.eq-band-overflow-menu button.danger {
-  color: var(--xleth-flat-danger);
-}
-
-.eq-band-overflow-menu button.danger:hover {
-  background: color-mix(in srgb, var(--xleth-flat-danger) 13%, var(--xleth-flat-chrome));
-  color: #d96b6b;
-}
-
-.eq-theme-popover,
 .ws-edit-popover {
   padding: 8px;
-}
-
-.eq-theme-popover-row {
-  color: var(--xleth-flat-text-secondary);
 }
 
 .track-color-popover {

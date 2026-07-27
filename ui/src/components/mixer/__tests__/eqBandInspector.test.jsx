@@ -286,64 +286,9 @@ describe('SelectedBandInspector — setBandParam key contract', () => {
   })
 })
 
-// ── BandRow no longer renders dyn/spec controls ───────────────────────────────
-
-describe('BandRow — compact row (no inline dyn/spec controls)', () => {
-  // BandRow uses useEqStore hooks, so we render it via the store's initial state.
-  // Zustand works with renderToStaticMarkup since it uses useSyncExternalStore.
-  it('a dynamic band row does not contain dyn_thresh input', async () => {
-    // Import BandRow (exported for testability in EQ-C).
-    const { BandRow } = await import('../EqPanel.jsx')
-    const dynamicBand = makeDynamicBand()
-    const html = render(
-      <BandRow
-        band={dynamicBand}
-        index={0}
-        linPhase={false}
-        oversample={0}
-        isSelected={false}
-        onSelect={noop}
-      />
-    )
-    // Dynamic controls must NOT be in the row — they live in SelectedBandInspector.
-    expect(html).not.toContain('data-key="dyn_thresh"')
-    expect(html).not.toContain('data-key="dyn_ratio"')
-    expect(html).not.toContain('data-key="dyn_attack"')
-    expect(html).not.toContain('data-key="dyn_release"')
-  })
-
-  it('a spectral band row does not contain spec_sens input', async () => {
-    const { BandRow } = await import('../EqPanel.jsx')
-    const spectralBand = makeSpectralBand()
-    const html = render(
-      <BandRow
-        band={spectralBand}
-        index={0}
-        linPhase={false}
-        oversample={0}
-        isSelected={false}
-        onSelect={noop}
-      />
-    )
-    expect(html).not.toContain('data-key="spec_sens"')
-    expect(html).not.toContain('data-key="spec_depth"')
-  })
-
-  it('selected row gets eq-band-row--selected class', async () => {
-    const { BandRow } = await import('../EqPanel.jsx')
-    const band = makeStaticBand()
-    const html = render(
-      <BandRow band={band} index={0} linPhase={false} oversample={0} isSelected={true} onSelect={noop} />
-    )
-    expect(html).toContain('eq-band-row--selected')
-  })
-
-  it('unselected row does NOT get eq-band-row--selected class', async () => {
-    const { BandRow } = await import('../EqPanel.jsx')
-    const band = makeStaticBand()
-    const html = render(
-      <BandRow band={band} index={0} linPhase={false} oversample={0} isSelected={false} onSelect={noop} />
-    )
-    expect(html).not.toContain('eq-band-row--selected')
-  })
-})
+// ── Old bottom band table (BandRow) is gone ────────────────────────────────────
+// The band table + its per-row dyn/spec controls were removed entirely in the
+// minimal-header/orb/popup redesign: EqPanel.jsx no longer exports BandRow.
+// Band-level controls (type, mode, Q, dynamics/spectral fields, delete) now
+// live in EqBandPopup.jsx, which reuses SelectedBandInspector directly — see
+// eqBandPopup.test.jsx for coverage of that component.

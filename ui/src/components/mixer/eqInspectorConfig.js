@@ -24,6 +24,10 @@ export const SPEC_FIELDS = [
   { key: 'spec_release', label: 'Rel',   min: 1,   max: 1000, step: 1,    def: 100,  decimals: 0 },
 ]
 
+// Always-present per-band field (any mode) — driven by the same knob control
+// as DYN_FIELDS/SPEC_FIELDS so the band popup doesn't need a bespoke input.
+export const Q_FIELD = { key: 'q', label: 'Q', min: 0.1, max: 30, step: 0.01, def: 0.707, decimals: 2 }
+
 export function getInspectorFields(mode) {
   if (mode === 1) return DYN_FIELDS
   if (mode === 2) return SPEC_FIELDS
