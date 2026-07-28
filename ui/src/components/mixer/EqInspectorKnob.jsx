@@ -1,6 +1,8 @@
 import React from 'react'
-import Knob from '../sampler/Knob.jsx'
+import PluginUIKitKnob from '../../plugin-ui/runtime/components/PluginUIKitKnob.jsx'
 import { clamp } from './eqGeometry.js'
+
+const MIXER_RING_APPEARANCE = { preset: 'mixer-ring', sizePreset: 'inherit', labelPlacement: 'hidden' }
 
 const UNIT_BY_KEY = {
   dyn_thresh: 'dB',
@@ -56,7 +58,6 @@ export default function EqInspectorKnob({
   value,
   onChange,
   isBipolar = false,
-  accentCssVar = '--xleth-eq-accent',
 }) {
   const knobProps = buildInspectorKnobProps(field, value, onChange)
   const display = formatInspectorValue(field, knobProps.value)
@@ -68,25 +69,12 @@ export default function EqInspectorKnob({
       data-control="knob"
     >
       <span className="eq-inspector-knob-label">{field.label}</span>
-      <Knob
+      <PluginUIKitKnob
         {...knobProps}
         label=""
         size={38}
         dragRange={field.key.endsWith('_release') ? 220 : 170}
-        appearancePreset="eq-inspector"
-        capStyle="soft-disk"
-        ringStyle={isBipolar ? 'split-track' : 'metered-arc'}
-        pointerStyle="needle"
-        tickStyle="sparse"
-        tickDensity="sparse"
-        valueReadout="hidden"
-        labelPlacement="hidden"
-        depth="sunken"
-        appearanceTokens={{
-          accentCssVar,
-          surfaceCssVar: '--xleth-eq-bg-row-alt',
-          textCssVar: '--xleth-eq-text-secondary',
-        }}
+        appearance={MIXER_RING_APPEARANCE}
       />
       <span className="eq-inspector-knob-value" aria-label={`${field.label} value`}>
         {display}

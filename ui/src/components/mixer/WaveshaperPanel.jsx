@@ -2,7 +2,9 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { X, ChevronDown } from 'lucide-react'
 import useWaveshaperStore from '../../stores/waveshaperStore.js'
 import { deduplicatePoints } from '../../stores/waveshaperStore.js'
-import Knob from '../sampler/Knob.jsx'
+import PluginUIKitKnob from '../../plugin-ui/runtime/components/PluginUIKitKnob.jsx'
+
+const MIXER_RING_APPEARANCE = { preset: 'mixer-ring', sizePreset: 'inherit' }
 
 // ── Parameter definitions ────────────────────────────────────────────────────
 
@@ -476,7 +478,7 @@ export default function WaveshaperPanel() {
             <div className="ws-knob-stack">
               {KNOBS.map(k => (
                 <div key={k.id} className="ws-knob-cell">
-                  <Knob
+                  <PluginUIKitKnob
                     value={params[k.id]}
                     min={k.min}
                     max={k.max}
@@ -487,7 +489,7 @@ export default function WaveshaperPanel() {
                     onCommit={v => setParam(k.id, v)}
                     size={k.size}
                     dragRange={150}
-                    color="#F0A3D0"
+                    appearance={MIXER_RING_APPEARANCE}
                   />
                 </div>
               ))}

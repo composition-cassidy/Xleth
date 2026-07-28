@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { X } from 'lucide-react'
 import useChorusStore from '../../stores/chorusStore.js'
-import Knob from '../sampler/Knob.jsx'
+import PluginUIKitKnob from '../../plugin-ui/runtime/components/PluginUIKitKnob.jsx'
 import ChorusOrbitVisualizer from './ChorusOrbitVisualizer.jsx'
+
+const MIXER_RING_APPEARANCE = { preset: 'mixer-ring', sizePreset: 'inherit' }
 
 // ── Parameter definitions ────────────────────────────────────────────────────
 
@@ -110,7 +112,7 @@ export default function ChorusPanel() {
       <div className="chorus-knob-grid">
         {KNOBS.map(k => (
           <div key={k.id} className="chorus-knob-cell">
-            <Knob
+            <PluginUIKitKnob
               value={params[k.id]}
               min={k.min}
               max={k.max}
@@ -121,6 +123,7 @@ export default function ChorusPanel() {
               onCommit={v => setParam(k.id, v)}
               size={52}
               dragRange={150}
+              appearance={MIXER_RING_APPEARANCE}
             />
           </div>
         ))}

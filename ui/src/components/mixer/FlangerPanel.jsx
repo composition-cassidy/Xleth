@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { X } from 'lucide-react'
 import useFlangerStore from '../../stores/flangerStore.js'
-import Knob from '../sampler/Knob.jsx'
+import PluginUIKitKnob from '../../plugin-ui/runtime/components/PluginUIKitKnob.jsx'
 import FlangerVisualizerCanvas from './FlangerVisualizerCanvas.jsx'
+
+const MIXER_RING_APPEARANCE = { preset: 'mixer-ring', sizePreset: 'inherit' }
 
 // ── Parameter definitions ────────────────────────────────────────────────────
 
@@ -109,7 +111,7 @@ export default function FlangerPanel() {
       <div className="flanger-knob-grid">
         {KNOBS.map(k => (
           <div key={k.id} className="flanger-knob-cell">
-            <Knob
+            <PluginUIKitKnob
               value={params[k.id]}
               min={k.min}
               max={k.max}
@@ -120,6 +122,7 @@ export default function FlangerPanel() {
               onCommit={v => setParam(k.id, v)}
               size={52}
               dragRange={150}
+              appearance={MIXER_RING_APPEARANCE}
             />
           </div>
         ))}

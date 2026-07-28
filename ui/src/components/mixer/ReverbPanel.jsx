@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { X } from 'lucide-react'
 import useReverbStore from '../../stores/reverbStore.js'
-import Knob from '../sampler/Knob.jsx'
+import PluginUIKitKnob from '../../plugin-ui/runtime/components/PluginUIKitKnob.jsx'
 import ReverbVisualizerCanvas from './ReverbVisualizerCanvas.jsx'
+
+const MIXER_RING_APPEARANCE = { preset: 'mixer-ring', sizePreset: 'inherit' }
 
 // ── Parameter definitions ────────────────────────────────────────────────────
 
@@ -156,7 +158,7 @@ export default function ReverbPanel() {
     <div className="reverb-knob-row">
       {knobs.map(k => (
         <div key={k.id} className="reverb-knob-cell">
-          <Knob
+          <PluginUIKitKnob
             value={params[k.id]}
             min={k.min}
             max={k.max}
@@ -167,6 +169,7 @@ export default function ReverbPanel() {
             onCommit={v => setParam(k.id, v)}
             size={52}
             dragRange={150}
+            appearance={MIXER_RING_APPEARANCE}
           />
         </div>
       ))}
@@ -220,7 +223,7 @@ export default function ReverbPanel() {
 
       {/* Large Mix knob */}
       <div className="reverb-mix-row">
-        <Knob
+        <PluginUIKitKnob
           value={params[MIX_KNOB.id]}
           min={MIX_KNOB.min}
           max={MIX_KNOB.max}
@@ -231,6 +234,7 @@ export default function ReverbPanel() {
           onCommit={v => setParam(MIX_KNOB.id, v)}
           size={64}
           dragRange={150}
+          appearance={MIXER_RING_APPEARANCE}
         />
       </div>
     </div>

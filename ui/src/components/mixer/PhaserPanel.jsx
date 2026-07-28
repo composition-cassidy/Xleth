@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { X } from 'lucide-react'
 import usePhaserStore from '../../stores/phaserStore.js'
-import Knob from '../sampler/Knob.jsx'
+import PluginUIKitKnob from '../../plugin-ui/runtime/components/PluginUIKitKnob.jsx'
 import PhaserVisualizerCanvas from './PhaserVisualizerCanvas.jsx'
+
+const MIXER_RING_APPEARANCE = { preset: 'mixer-ring', sizePreset: 'inherit' }
 
 // ── Parameter definitions ────────────────────────────────────────────────────
 
@@ -116,7 +118,7 @@ export default function PhaserPanel() {
       <div className="phaser-knob-grid">
         {/* Rate knob */}
         <div className="phaser-knob-cell">
-          <Knob
+          <PluginUIKitKnob
             value={params.rate}
             min={0.05}
             max={5}
@@ -127,12 +129,13 @@ export default function PhaserPanel() {
             onCommit={v => setParam('rate', v)}
             size={52}
             dragRange={150}
+            appearance={MIXER_RING_APPEARANCE}
           />
         </div>
 
         {/* Depth knob */}
         <div className="phaser-knob-cell">
-          <Knob
+          <PluginUIKitKnob
             value={params.depth}
             min={0}
             max={100}
@@ -143,6 +146,7 @@ export default function PhaserPanel() {
             onCommit={v => setParam('depth', v)}
             size={52}
             dragRange={150}
+            appearance={MIXER_RING_APPEARANCE}
           />
         </div>
 
@@ -162,7 +166,7 @@ export default function PhaserPanel() {
 
         {/* Freq Low knob */}
         <div className="phaser-knob-cell">
-          <Knob
+          <PluginUIKitKnob
             value={params.freq_low}
             min={20}
             max={2000}
@@ -173,12 +177,13 @@ export default function PhaserPanel() {
             onCommit={v => setParam('freq_low', v)}
             size={52}
             dragRange={150}
+            appearance={MIXER_RING_APPEARANCE}
           />
         </div>
 
         {/* Freq High knob */}
         <div className="phaser-knob-cell">
-          <Knob
+          <PluginUIKitKnob
             value={params.freq_high}
             min={200}
             max={16000}
@@ -189,12 +194,13 @@ export default function PhaserPanel() {
             onCommit={v => setParam('freq_high', v)}
             size={52}
             dragRange={150}
+            appearance={MIXER_RING_APPEARANCE}
           />
         </div>
 
         {/* Feedback knob */}
         <div className="phaser-knob-cell">
-          <Knob
+          <PluginUIKitKnob
             value={params.feedback}
             min={-95}
             max={95}
@@ -205,12 +211,13 @@ export default function PhaserPanel() {
             onCommit={v => setParam('feedback', v)}
             size={52}
             dragRange={150}
+            appearance={MIXER_RING_APPEARANCE}
           />
         </div>
 
         {/* Width knob */}
         <div className="phaser-knob-cell">
-          <Knob
+          <PluginUIKitKnob
             value={params.width}
             min={0}
             max={100}
@@ -221,12 +228,13 @@ export default function PhaserPanel() {
             onCommit={v => setParam('width', v)}
             size={52}
             dragRange={150}
+            appearance={MIXER_RING_APPEARANCE}
           />
         </div>
 
         {/* Mix knob */}
         <div className="phaser-knob-cell">
-          <Knob
+          <PluginUIKitKnob
             value={params.mix}
             min={0}
             max={100}
@@ -237,6 +245,7 @@ export default function PhaserPanel() {
             onCommit={v => setParam('mix', v)}
             size={52}
             dragRange={150}
+            appearance={MIXER_RING_APPEARANCE}
           />
         </div>
       </div>

@@ -36,7 +36,6 @@ export default function SelectedBandInspector({ band, bandIndex, setBandParam, g
   }
 
   const modeSlug = band.mode === 1 ? 'dynamic' : 'spectral'
-  const accentCssVar = band.mode === 1 ? '--xleth-eq-mode-dynamic' : '--xleth-eq-mode-spectral'
 
   return (
     <div className={`eq-selected-band-inspector eq-selected-band-inspector--${modeSlug}`}>
@@ -49,7 +48,6 @@ export default function SelectedBandInspector({ band, bandIndex, setBandParam, g
             value={band[field.key] ?? field.def}
             onChange={handleChange}
             isBipolar={field.key === 'spec_depth'}
-            accentCssVar={accentCssVar}
           />
         ))}
         {showGR && grMag > 0.1 && (

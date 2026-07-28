@@ -46,9 +46,9 @@
         "type": "row",
         "style": { "paddingPx": [8, 12, 8, 12], "gapPx": 16, "justify": "center" },
         "children": [
-          { "id": "drive-knob", "type": "knob", "props": { "param": "drive", "label": "DRIVE", "size": 64, "format": "dB1" } },
-          { "id": "tone-knob",  "type": "knob", "props": { "param": "tone",  "label": "TONE",  "size": 52, "format": "hz0" } },
-          { "id": "mix-knob",   "type": "knob", "props": { "param": "mix",   "label": "MIX",   "size": 52, "format": "pct0" } }
+          { "id": "drive-knob", "type": "knob", "props": { "param": "drive", "label": "DRIVE", "size": 64, "format": "dB1", "appearance": { "preset": "mixer-ring", "sizePreset": "inherit" } } },
+          { "id": "tone-knob",  "type": "knob", "props": { "param": "tone",  "label": "TONE",  "size": 52, "format": "hz0", "appearance": { "preset": "mixer-ring", "sizePreset": "inherit" } } },
+          { "id": "mix-knob",   "type": "knob", "props": { "param": "mix",   "label": "MIX",   "size": 52, "format": "pct0", "appearance": { "preset": "mixer-ring", "sizePreset": "inherit" } } }
         ]
       },
       {

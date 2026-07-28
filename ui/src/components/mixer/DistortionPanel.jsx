@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback, Component, Suspense, lazy } from 'react'
 import { X } from 'lucide-react'
 import useDistortionStore from '../../stores/distortionStore.js'
-import Knob from '../sampler/Knob.jsx'
+import PluginUIKitKnob from '../../plugin-ui/runtime/components/PluginUIKitKnob.jsx'
 import StockPluginRuntimeRenderer from '../../plugin-ui/runtime/StockPluginRuntimeRenderer.jsx'
 import { DESIGNER_ENABLED } from '../../plugin-ui/designer/featureFlag.js'
+
+const MIXER_RING_APPEARANCE = { preset: 'mixer-ring', sizePreset: 'inherit' }
 
 const PluginUIDesigner = DESIGNER_ENABLED
   ? lazy(() => import('../../plugin-ui/designer/PluginUIDesigner.jsx'))
@@ -91,7 +93,7 @@ function LegacyDistortionBody({ target }) {
       <div className="distortion-knob-row">
         {LEGACY_KNOBS.map(k => (
           <div key={k.id} className="distortion-knob-cell">
-            <Knob
+            <PluginUIKitKnob
               value={params[k.id]}
               min={k.min}
               max={k.max}
@@ -102,6 +104,7 @@ function LegacyDistortionBody({ target }) {
               onCommit={v => setParam(k.id, v)}
               size={k.size}
               dragRange={150}
+              appearance={MIXER_RING_APPEARANCE}
             />
           </div>
         ))}

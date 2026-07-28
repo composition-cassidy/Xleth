@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { X } from 'lucide-react'
 import useDelayStore from '../../stores/delayStore.js'
-import Knob from '../sampler/Knob.jsx'
+import PluginUIKitKnob from '../../plugin-ui/runtime/components/PluginUIKitKnob.jsx'
 import DelayTapeheadVisualizer from './DelayTapeheadVisualizer.jsx'
+
+const MIXER_RING_APPEARANCE = { preset: 'mixer-ring', sizePreset: 'inherit' }
 
 // ── Parameter definitions ────────────────────────────────────────────────────
 
@@ -264,7 +266,7 @@ export default function DelayPanel() {
           const dimmed = synced && (k.id === 'time_l' || k.id === 'time_r')
           return (
             <div key={k.id} className="delay-knob-cell" style={dimmed ? { opacity: 0.4, pointerEvents: 'none' } : undefined}>
-              <Knob
+              <PluginUIKitKnob
                 value={params[k.id]}
                 min={k.min}
                 max={k.max}
@@ -275,6 +277,7 @@ export default function DelayPanel() {
                 onCommit={v => setParam(k.id, v)}
                 size={52}
                 dragRange={150}
+                appearance={MIXER_RING_APPEARANCE}
               />
             </div>
           )
