@@ -13753,7 +13753,7 @@ html.fx-drag-active * {
 .uniflange-panel {
   position: fixed;
   z-index: 200;
-  width: 620px;
+  width: 552px;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--xleth-flat-border);
@@ -13815,89 +13815,104 @@ html.fx-drag-active * {
   background: var(--xleth-flat-section);
 }
 
-/* ── Strip: one flat control row, no titles ──────────────────────────────── */
-/* 1px gaps double as divider hairlines between the five groups (voice /
-   modulation / imaging / mix / mode) — same trick the Chorus/Delay panels use. */
-.uniflange-strip {
-  display: flex;
-  align-items: stretch;
-  gap: 1px;
-  background: var(--xleth-flat-border);
-}
+/* ── Fader row: single Flangus-order strip, one column per parameter ──────── */
 
-.uniflange-strip > * {
-  background: var(--xleth-flat-panel);
-}
-
-.uniflange-group {
+.uniflange-fader-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
-  gap: 18px;
-  padding: 14px 16px;
-  flex-shrink: 0;
+  gap: 10px;
+  padding: 18px 20px 16px;
 }
 
-.uniflange-group-voice {
-  gap: 22px;
-  padding: 14px 20px;
-}
-
-.uniflange-group-mode {
-  padding: 14px 18px;
-}
-
-.uniflange-knob-cell {
+.uniflange-fader-cell {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
+  gap: 6px;
   flex-shrink: 0;
 }
 
-.uniflange-knob-value {
+.uniflange-fader-track,
+.uniflange-order-track {
+  position: relative;
+  width: 30px;
+  background: var(--xleth-flat-well);
+  border: 1px solid var(--xleth-flat-border-strong);
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.uniflange-fader-groove {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  overflow: hidden;
+}
+
+.uniflange-fader-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  background: var(--xleth-flat-accent);
+  opacity: 0.75;
+}
+
+.uniflange-fader-center {
+  position: absolute;
+  left: -4px;
+  right: -4px;
+  height: 1px;
+  background: var(--xleth-flat-border-strong);
+}
+
+.uniflange-fader-thumb {
+  position: absolute;
+  left: -3px;
+  right: -3px;
+  height: 10px;
+  transform: translateY(-50%);
+  background: var(--xleth-flat-section);
+  border-top: 1px solid var(--xleth-flat-text-muted);
+  border-bottom: 1px solid var(--xleth-flat-border);
+}
+
+.uniflange-fader-track:hover .uniflange-fader-thumb {
+  border-top-color: var(--xleth-flat-accent);
+}
+
+/* ── ORD stepper: 8 stacked detents, current step lit ────────────────────── */
+
+.uniflange-order-track {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 3px;
+}
+
+.uniflange-order-step {
+  flex: 1;
+  background: var(--xleth-flat-border);
+}
+
+.uniflange-order-step.active {
+  background: var(--xleth-flat-accent);
+}
+
+.uniflange-fader-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--xleth-flat-text-muted);
+}
+
+.uniflange-fader-value {
   font-size: 9px;
   font-weight: 600;
   color: var(--xleth-flat-text-secondary);
   font-variant-numeric: tabular-nums;
 }
 
-/* ── Mode toggle: discrete LEGACY / HQ interpolation select ──────────────── */
-
-.uniflange-mode-toggle {
-  display: inline-flex;
-  align-items: stretch;
-  border: 1px solid var(--xleth-flat-border-strong);
-}
-
-.uniflange-mode-toggle-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 26px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: 0;
-  background: var(--xleth-flat-well);
-  color: var(--xleth-flat-text-muted);
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  cursor: pointer;
-}
-
-.uniflange-mode-toggle-btn + .uniflange-mode-toggle-btn {
-  border-left: 1px solid var(--xleth-flat-border-strong);
-}
-
-.uniflange-mode-toggle-btn:hover {
-  color: var(--xleth-flat-text);
-}
-
-.uniflange-mode-toggle-btn.active {
-  background: var(--xleth-flat-accent);
-  color: var(--xleth-flat-panel);
-}
 
 /* â”€â”€ Flanger Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 

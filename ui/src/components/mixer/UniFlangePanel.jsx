@@ -1,78 +1,233 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { X } from 'lucide-react'
 import useUniFlangeStore from '../../stores/uniFlangeStore.js'
-import PluginUIKitKnob from '../../plugin-ui/runtime/components/PluginUIKitKnob.jsx'
-
-const MIXER_RING_APPEARANCE = { preset: 'mixer-ring', sizePreset: 'inherit' }
 
 const clamp = (v, min, max) => Math.min(max, Math.max(min, v))
 
-// ── Parameter definitions ────────────────────────────────────────────────────
+// ── Fader definitions ────────────────────────────────────────────────────────
 // Every id here is an existing engine parameter (UniFlangeEffect.h createLayout).
-// Ranges and ids mirror that file's NormalisableRange bounds exactly.
+// Ranges and ids mirror that file's NormalisableRange bounds exactly. Labels and
+// column order mirror Fruity Flangus (ORD DEPTH SPD DEL SPRD CROSS DRY WET) —
+// only the presentation changed, the param ids underneath did not.
 //
 // NOTE on defaults: createLayout() declares speed=50, cross=0, dry=0 — not the
 // 75/-25/100 figures floated when this panel was speced. The engine's APVTS
 // defaults are the source of truth, so this panel mirrors what
 // getEffectParameters actually returns rather than the speced numbers.
+//
+// `mode` (LEGACY/HQ delay-tap interpolation) has no control here by design —
+// the panel never reads or writes it, so the engine stays on its LEGACY default.
 
-const VOICE_KNOBS = [
-  { id: 'order',  label: 'ORDER',  min: 1, max: 8,   default: 4,  fmt: v => `${Math.round(v)}`,      quantize: v => Math.round(clamp(v, 1, 8)) },
-  { id: 'delay',  label: 'DELAY',  min: 0, max: 100, default: 0,  fmt: v => `${v.toFixed(0)} %` },
-  { id: 'spread', label: 'SPREAD', min: 0, max: 100, default: 100, fmt: v => `${v.toFixed(0)} %` },
+const pct = v => `${v.toFixed(0)} %`
+
+const FADERS = [
+  { id: 'order',  label: 'ORD',   kind: 'stepped', min: 1,    max: 8,   default: 4,   fmt: v => `${Math.round(v)}` },
+  { id: 'depth',  label: 'DEPTH', kind: 'uni',     min: 0,    max: 100, default: 50,  fmt: pct },
+  { id: 'speed',  label: 'SPD',   kind: 'uni',     min: 0,    max: 100, default: 50,  fmt: pct },
+  { id: 'delay',  label: 'DEL',   kind: 'uni',     min: 0,    max: 100, default: 0,   fmt: pct },
+  { id: 'spread', label: 'SPRD',  kind: 'uni',     min: 0,    max: 100, default: 100, fmt: pct },
+  { id: 'cross',  label: 'CROSS', kind: 'bi',      min: -100, max: 100, default: 0,   fmt: pct },
+  { id: 'dry',    label: 'DRY',   kind: 'bi',      min: -100, max: 100, default: 0,   fmt: pct },
+  { id: 'wet',    label: 'WET',   kind: 'bi',      min: -100, max: 100, default: 100, fmt: pct },
 ]
 
-const MOD_KNOBS = [
-  { id: 'depth', label: 'DEPTH', min: 0, max: 100, default: 50, fmt: v => `${v.toFixed(0)} %` },
-  { id: 'speed', label: 'SPEED', min: 0, max: 100, default: 50, fmt: v => `${v.toFixed(0)} %` },
-]
+const DEFAULT_PARAMS = Object.fromEntries(FADERS.map(f => [f.id, f.default]))
 
-const IMAGE_KNOBS = [
-  { id: 'cross', label: 'CROSS', min: -100, max: 100, default: 0, fmt: v => `${v.toFixed(0)} %` },
-]
+const TRACK_H = 150
+const THUMB_H = 10
+const GROOVE_H = TRACK_H - THUMB_H
 
-const MIX_KNOBS = [
-  { id: 'dry', label: 'DRY', min: -100, max: 100, default: 0,   fmt: v => `${v.toFixed(0)} %` },
-  { id: 'wet', label: 'WET', min: -100, max: 100, default: 100, fmt: v => `${v.toFixed(0)} %` },
-]
-
-const ALL_KNOBS = [...VOICE_KNOBS, ...MOD_KNOBS, ...IMAGE_KNOBS, ...MIX_KNOBS]
-
-const MODE_LEGACY = 0
-const MODE_HQ = 1
-
-const DEFAULT_PARAMS = {
-  ...Object.fromEntries(ALL_KNOBS.map(k => [k.id, k.default])),
-  mode: MODE_LEGACY,
+const posFromValue = (min, max, v) => {
+  const span = max - min
+  return span > 0 ? (clamp(v, min, max) - min) / span : 0
 }
+const valueFromPos = (min, max, p) => min + (max - min) * clamp(p, 0, 1)
 
-function quantizeFor(k, v) {
-  return k.quantize ? k.quantize(v) : v
-}
+// ── Vertical fader — DEPTH / SPD / DEL / SPRD (unipolar) and CROSS / DRY / WET
+// (bipolar, center detent at 0). Pointer-captured relative drag mirrors the
+// mixer-ring knob/VolumeFader interaction: grab anywhere on the track, drag up
+// to increase. Shift = fine. Double-click = reset to default. Arrow keys / Home
+// / End drive it from the keyboard once focused.
 
-// ── Mode toggle ──────────────────────────────────────────────────────────────
-// mode is a discrete {0=LEGACY, 1=HQ} engine param (delay-tap interpolation
-// quality) — a two-button segmented control, not a knob or dropdown.
+function UniFlangeFader({ label, min, max, defaultValue, bipolar, value, fmt, onLiveChange, onCommit }) {
+  const dragRef = useRef(null)
+  const liveRef = useRef(value)
+  useEffect(() => { liveRef.current = value }, [value])
 
-function UniFlangeModeToggle({ mode, onChange }) {
+  const pos = posFromValue(min, max, value)
+  const centerPos = bipolar ? posFromValue(min, max, 0) : 0
+  const thumbTop = (1 - pos) * GROOVE_H
+
+  const handlePointerDown = useCallback((e) => {
+    e.preventDefault()
+    try { e.currentTarget.setPointerCapture(e.pointerId) } catch (_) {}
+    dragRef.current = { startY: e.clientY, startPos: pos, fine: e.shiftKey }
+  }, [pos])
+
+  const handlePointerMove = useCallback((e) => {
+    const d = dragRef.current
+    if (!d) return
+    const dy = d.startY - e.clientY
+    const sensitivity = (e.shiftKey || d.fine) ? 8 : 1
+    const nextPos = clamp(d.startPos + (dy / GROOVE_H) / sensitivity, 0, 1)
+    const next = valueFromPos(min, max, nextPos)
+    liveRef.current = next
+    onLiveChange(next)
+  }, [min, max, onLiveChange])
+
+  const handlePointerUp = useCallback(() => {
+    if (!dragRef.current) return
+    dragRef.current = null
+    onCommit(liveRef.current)
+  }, [onCommit])
+
+  const handleWheel = useCallback((e) => {
+    e.preventDefault()
+    const sensitivity = e.shiftKey ? 500 : 100
+    const next = valueFromPos(min, max, pos - (e.deltaY / sensitivity) / 20)
+    onLiveChange(next)
+    onCommit(next)
+  }, [min, max, pos, onLiveChange, onCommit])
+
+  const handleDoubleClick = useCallback(() => {
+    onCommit(defaultValue)
+  }, [defaultValue, onCommit])
+
+  const handleKeyDown = useCallback((e) => {
+    const span = max - min
+    const step = (e.shiftKey ? 0.1 : 0.01) * span
+    let next = null
+    if (e.key === 'ArrowUp' || e.key === 'ArrowRight') next = clamp(value + step, min, max)
+    else if (e.key === 'ArrowDown' || e.key === 'ArrowLeft') next = clamp(value - step, min, max)
+    else if (e.key === 'Home') next = min
+    else if (e.key === 'End') next = max
+    if (next === null) return
+    e.preventDefault()
+    onCommit(next)
+  }, [value, min, max, onCommit])
+
+  const fillStyle = bipolar
+    ? { bottom: `${Math.min(pos, centerPos) * 100}%`, height: `${Math.abs(pos - centerPos) * 100}%` }
+    : { bottom: 0, height: `${pos * 100}%` }
+
   return (
-    <div className="uniflange-mode-toggle" role="group" aria-label="Interpolation mode">
-      <button
-        type="button"
-        className={`uniflange-mode-toggle-btn${mode === MODE_LEGACY ? ' active' : ''}`}
-        onClick={() => onChange(MODE_LEGACY)}
-        aria-pressed={mode === MODE_LEGACY}
+    <div className="uniflange-fader-cell">
+      <div
+        className="uniflange-fader-track"
+        style={{ height: TRACK_H }}
+        role="slider"
+        tabIndex={0}
+        aria-label={label}
+        aria-valuemin={min}
+        aria-valuemax={max}
+        aria-valuenow={Math.round(value)}
+        aria-orientation="vertical"
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        onWheel={handleWheel}
+        onDoubleClick={handleDoubleClick}
+        onKeyDown={handleKeyDown}
+        title={`${label} · Drag vertical · Shift = fine · Double-click = reset`}
       >
-        LEGACY
-      </button>
-      <button
-        type="button"
-        className={`uniflange-mode-toggle-btn${mode === MODE_HQ ? ' active' : ''}`}
-        onClick={() => onChange(MODE_HQ)}
-        aria-pressed={mode === MODE_HQ}
+        <div className="uniflange-fader-groove" style={{ top: THUMB_H / 2, bottom: THUMB_H / 2 }}>
+          <div className="uniflange-fader-fill" style={fillStyle} />
+          {bipolar && <div className="uniflange-fader-center" style={{ bottom: `${centerPos * 100}%` }} />}
+        </div>
+        <div className="uniflange-fader-thumb" style={{ top: thumbTop + THUMB_H / 2 }} />
+      </div>
+      <div className="uniflange-fader-label">{label}</div>
+      <div className="uniflange-fader-value">{fmt(value)}</div>
+    </div>
+  )
+}
+
+// ── ORD — 8-position stepped ladder ─────────────────────────────────────────
+// Flangus renders ORD as discrete detents rather than a smooth fader; this
+// reproduces that with 8 stacked steps (top = max, bottom = min). Click/drag a
+// step to jump straight to it — there's no meaningful "relative drag" for a
+// small discrete range.
+
+function UniFlangeOrderStepper({ label, min, max, defaultValue, value, fmt, onLiveChange, onCommit }) {
+  const trackRef = useRef(null)
+  const draggingRef = useRef(false)
+  const steps = max - min + 1
+
+  const stepFromClientY = useCallback((clientY) => {
+    const el = trackRef.current
+    if (!el) return value
+    const rect = el.getBoundingClientRect()
+    const t = clamp((clientY - rect.top) / rect.height, 0, 1)
+    return clamp(Math.round(max - t * (steps - 1)), min, max)
+  }, [min, max, steps, value])
+
+  const handlePointerDown = useCallback((e) => {
+    e.preventDefault()
+    try { e.currentTarget.setPointerCapture(e.pointerId) } catch (_) {}
+    draggingRef.current = true
+    onLiveChange(stepFromClientY(e.clientY))
+  }, [stepFromClientY, onLiveChange])
+
+  const handlePointerMove = useCallback((e) => {
+    if (!draggingRef.current) return
+    onLiveChange(stepFromClientY(e.clientY))
+  }, [stepFromClientY, onLiveChange])
+
+  const handlePointerUp = useCallback((e) => {
+    if (!draggingRef.current) return
+    draggingRef.current = false
+    onCommit(stepFromClientY(e.clientY))
+  }, [stepFromClientY, onCommit])
+
+  const handleDoubleClick = useCallback(() => {
+    onCommit(defaultValue)
+  }, [defaultValue, onCommit])
+
+  const handleKeyDown = useCallback((e) => {
+    let next = null
+    if (e.key === 'ArrowUp' || e.key === 'ArrowRight') next = clamp(value + 1, min, max)
+    else if (e.key === 'ArrowDown' || e.key === 'ArrowLeft') next = clamp(value - 1, min, max)
+    else if (e.key === 'Home') next = min
+    else if (e.key === 'End') next = max
+    if (next === null) return
+    e.preventDefault()
+    onCommit(next)
+  }, [value, min, max, onCommit])
+
+  return (
+    <div className="uniflange-fader-cell">
+      <div
+        ref={trackRef}
+        className="uniflange-order-track"
+        style={{ height: TRACK_H }}
+        role="slider"
+        tabIndex={0}
+        aria-label={label}
+        aria-valuemin={min}
+        aria-valuemax={max}
+        aria-valuenow={value}
+        aria-orientation="vertical"
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        onDoubleClick={handleDoubleClick}
+        onKeyDown={handleKeyDown}
+        title={`${label} · Click/drag a step · Double-click = reset`}
       >
-        HQ
-      </button>
+        {Array.from({ length: steps }).map((_, row) => {
+          const stepValue = max - row
+          return (
+            <div
+              key={stepValue}
+              className={`uniflange-order-step${stepValue === value ? ' active' : ''}`}
+            />
+          )
+        })}
+      </div>
+      <div className="uniflange-fader-label">{label}</div>
+      <div className="uniflange-fader-value">{fmt(value)}</div>
     </div>
   )
 }
@@ -171,7 +326,7 @@ export default function UniFlangePanel() {
   /**
    * Drag-time write: updates local state immediately so readouts track the
    * pointer at 60 fps, and coalesces the engine write to at most one per
-   * animation frame per parameter. Without the coalescing a knob sweep is a
+   * animation frame per parameter. Without the coalescing a fader sweep is a
    * per-pointermove IPC storm on the JUCE message thread.
    */
   const previewParam = useCallback((id, value) => {
@@ -193,34 +348,7 @@ export default function UniFlangePanel() {
     pendingRef.current = null
   }, [])
 
-  const handleModeChange = useCallback((value) => {
-    commitParam('mode', value)
-  }, [commitParam])
-
   if (!target) return null
-
-  const renderKnobGroup = (knobs, sizeKnob) => (
-    knobs.map(k => (
-      <div key={k.id} className={`uniflange-knob-cell${sizeKnob < 72 ? ' uniflange-knob-cell--sm' : ''}`}>
-        <PluginUIKitKnob
-          value={params[k.id]}
-          min={k.min}
-          max={k.max}
-          defaultValue={k.default}
-          label={k.label}
-          formatValue={k.fmt}
-          onLiveChange={v => previewParam(k.id, quantizeFor(k, v))}
-          onCommit={v => commitParam(k.id, quantizeFor(k, v))}
-          size={sizeKnob}
-          dragRange={150}
-          appearance={MIXER_RING_APPEARANCE}
-        />
-        {/* The mixer-ring preset hides its own readout; the value is rendered
-            here instead so every control is legible at rest. */}
-        <div className="uniflange-knob-value">{k.fmt(params[k.id])}</div>
-      </div>
-    ))
-  )
 
   return (
     <div className="uniflange-panel" style={{ left: panelPos.x, top: panelPos.y }}>
@@ -232,27 +360,36 @@ export default function UniFlangePanel() {
         </button>
       </div>
 
-      {/* Strip — one flat control row, no titles */}
-      <div className="uniflange-strip">
-        <div className="uniflange-group uniflange-group-voice">
-          {renderKnobGroup(VOICE_KNOBS, 72)}
-        </div>
-
-        <div className="uniflange-group uniflange-group-mod">
-          {renderKnobGroup(MOD_KNOBS, 52)}
-        </div>
-
-        <div className="uniflange-group uniflange-group-image">
-          {renderKnobGroup(IMAGE_KNOBS, 52)}
-        </div>
-
-        <div className="uniflange-group uniflange-group-mix">
-          {renderKnobGroup(MIX_KNOBS, 52)}
-        </div>
-
-        <div className="uniflange-group uniflange-group-mode">
-          <UniFlangeModeToggle mode={params.mode} onChange={handleModeChange} />
-        </div>
+      {/* Strip — one row of Flangus-order faders */}
+      <div className="uniflange-fader-row">
+        {FADERS.map(f => (
+          f.kind === 'stepped' ? (
+            <UniFlangeOrderStepper
+              key={f.id}
+              label={f.label}
+              min={f.min}
+              max={f.max}
+              defaultValue={f.default}
+              value={params[f.id]}
+              fmt={f.fmt}
+              onLiveChange={v => previewParam(f.id, v)}
+              onCommit={v => commitParam(f.id, v)}
+            />
+          ) : (
+            <UniFlangeFader
+              key={f.id}
+              label={f.label}
+              min={f.min}
+              max={f.max}
+              defaultValue={f.default}
+              bipolar={f.kind === 'bi'}
+              value={params[f.id]}
+              fmt={f.fmt}
+              onLiveChange={v => previewParam(f.id, v)}
+              onCommit={v => commitParam(f.id, v)}
+            />
+          )
+        ))}
       </div>
     </div>
   )
