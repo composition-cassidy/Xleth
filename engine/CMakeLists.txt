@@ -1611,6 +1611,75 @@ target_compile_definitions(test_reverb PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_uniflange ───────────────────────────────────────────────────────────
+# Structural DSP tests for UniFlangeEffect (Fruity-Flangus-style unison/
+# ensemble generator). Verifies: cross-matrix exactness, LEGACY-mode
+# interpolator identity, no-feedback flatness in time, pan invariance vs
+# DEPTH/SPEED, and delay-line bounds safety across sample rates/extremes.
+# See uniflange/UNIFLANGE_HANDOFF.md §10 — structural correctness only, no
+# null test against real Flangus renders (the parameter maps are unfitted
+# placeholders pending round-3 renders).
+add_executable(test_uniflange
+    test/test_uniflange.cpp
+)
+
+target_link_libraries(test_uniflange PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_uniflange PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_limiter ─────────────────────────────────────────────────────────────
+# Gain-computer tests for XlethLimiterEffect (two-stage transient + release).
+# Verifies: parameter/meter surface unchanged, brickwall ceiling under hard
+# drive for all three styles, no per-cycle amplitude modulation of low tones
+# (the crackle regression), corner-free release curve, hold floor surviving a
+# 10 ms release request, per-style lookahead latency reporting, and the
+# MovingMinimum / soft-clip primitives.
+add_executable(test_limiter
+    test/test_limiter.cpp
+)
+
+target_link_libraries(test_limiter PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_limiter PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── hall_measure (reverb re-tune measurement + A/B render tool) ──────────────
 # Not a ctest test — a diagnostic/render tool for the ongoing stock-reverb
 # redesign (docs/plans/reverb-audit-and-redesign.md). Prints a backend's
@@ -2037,6 +2106,8 @@ set(XLETH_ENGINE_TESTS
     test_pdc_stage1
     test_distortion
     test_reverb
+    test_uniflange
+    test_limiter
     test_graph_effect_parameters
     test_frame_cache
     test_frame_collector
