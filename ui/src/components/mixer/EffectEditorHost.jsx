@@ -31,6 +31,7 @@ import LimiterPanel from './LimiterPanel.jsx'
 import DistortionPanel from './DistortionPanel.jsx'
 import WaveshaperPanel from './WaveshaperPanel.jsx'
 import DelayPanel from './DelayPanel.jsx'
+import UniFlangePanel from './UniFlangePanel.jsx'
 import ChorusPanel from './ChorusPanel.jsx'
 import FlangerPanel from './FlangerPanel.jsx'
 import PhaserPanel from './PhaserPanel.jsx'
@@ -49,6 +50,7 @@ export default function EffectEditorHost() {
       <DistortionPanel />
       <WaveshaperPanel />
       <DelayPanel />
+      <UniFlangePanel />
       <ChorusPanel />
       <FlangerPanel />
       <PhaserPanel />

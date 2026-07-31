@@ -73,8 +73,8 @@ describe('EffectEditorHost ownership contract', () => {
     expect(tree.props.className).toBe('effect-editor-host')
 
     const owned = collectOwnedComponents(tree.props.children)
-    // 14 stock editors, all real function components, hosted globally.
-    expect(owned).toHaveLength(14)
+    // 15 stock editors, all real function components, hosted globally.
+    expect(owned).toHaveLength(15)
     expect(owned.every((type) => typeof type === 'function')).toBe(true)
     expect(owned).toContain(EqPanel)
     expect(owned).toContain(CompressorPanel)
@@ -93,6 +93,7 @@ describe('EffectEditorHost ownership contract', () => {
       'DistortionPanel',
       'WaveshaperPanel',
       'DelayPanel',
+      'UniFlangePanel',
       'ChorusPanel',
       'FlangerPanel',
       'PhaserPanel',

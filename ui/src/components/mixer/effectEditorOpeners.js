@@ -16,6 +16,7 @@ import useLimiterStore from '../../stores/limiterStore.js'
 import useDistortionStore from '../../stores/distortionStore.js'
 import useWaveshaperStore from '../../stores/waveshaperStore.js'
 import useDelayStore from '../../stores/delayStore.js'
+import useUniFlangeStore from '../../stores/uniFlangeStore.js'
 import useChorusStore from '../../stores/chorusStore.js'
 import useFlangerStore from '../../stores/flangerStore.js'
 import usePhaserStore from '../../stores/phaserStore.js'
@@ -42,6 +43,9 @@ export const EFFECT_EDITORS = {
   },
   delay: (trackId, nodeId, storeKey) => {
     useDelayStore.getState().open(trackId, nodeId, storeKey)
+  },
+  uniflange: (trackId, nodeId, storeKey) => {
+    useUniFlangeStore.getState().open(trackId, nodeId, storeKey)
   },
   chorus: (trackId, nodeId, storeKey) => {
     useChorusStore.getState().open(trackId, nodeId, storeKey)

@@ -13748,6 +13748,157 @@ html.fx-drag-active * {
   height: 100%;
 }
 
+/* ── UniFlange Panel ──────────────────────────────────────────────────────── */
+
+.uniflange-panel {
+  position: fixed;
+  z-index: 200;
+  width: 620px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--xleth-flat-border);
+  border-radius: 0;
+  background: var(--xleth-flat-panel);
+  box-shadow: var(--theme-depth-hard-shadow);
+  color: var(--xleth-flat-text);
+  font-family: var(--xleth-global-font-family);
+  user-select: none;
+}
+
+.uniflange-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 34px;
+  padding: 0 6px 0 12px;
+  background: var(--xleth-flat-chrome);
+  border-bottom: 1px solid var(--xleth-flat-border);
+  cursor: grab;
+}
+
+.uniflange-panel-header::before {
+  content: '';
+  width: 3px;
+  height: 14px;
+  background: var(--xleth-flat-accent);
+  flex-shrink: 0;
+}
+
+.uniflange-panel-header:active {
+  cursor: grabbing;
+}
+
+.uniflange-panel-title {
+  flex: 1;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--xleth-flat-text);
+}
+
+.uniflange-panel-close {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--xleth-flat-text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.uniflange-panel-close:hover {
+  color: var(--xleth-flat-text);
+  background: var(--xleth-flat-section);
+}
+
+/* ── Strip: one flat control row, no titles ──────────────────────────────── */
+/* 1px gaps double as divider hairlines between the five groups (voice /
+   modulation / imaging / mix / mode) — same trick the Chorus/Delay panels use. */
+.uniflange-strip {
+  display: flex;
+  align-items: stretch;
+  gap: 1px;
+  background: var(--xleth-flat-border);
+}
+
+.uniflange-strip > * {
+  background: var(--xleth-flat-panel);
+}
+
+.uniflange-group {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 14px 16px;
+  flex-shrink: 0;
+}
+
+.uniflange-group-voice {
+  gap: 22px;
+  padding: 14px 20px;
+}
+
+.uniflange-group-mode {
+  padding: 14px 18px;
+}
+
+.uniflange-knob-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.uniflange-knob-value {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--xleth-flat-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Mode toggle: discrete LEGACY / HQ interpolation select ──────────────── */
+
+.uniflange-mode-toggle {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--xleth-flat-border-strong);
+}
+
+.uniflange-mode-toggle-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 0;
+  background: var(--xleth-flat-well);
+  color: var(--xleth-flat-text-muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+
+.uniflange-mode-toggle-btn + .uniflange-mode-toggle-btn {
+  border-left: 1px solid var(--xleth-flat-border-strong);
+}
+
+.uniflange-mode-toggle-btn:hover {
+  color: var(--xleth-flat-text);
+}
+
+.uniflange-mode-toggle-btn.active {
+  background: var(--xleth-flat-accent);
+  color: var(--xleth-flat-panel);
+}
+
 /* â”€â”€ Flanger Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .flanger-panel {
