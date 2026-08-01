@@ -406,6 +406,85 @@ static void testBoundsFuzz()
     }
 }
 
+// ─── 6. Dry/Wet zero -> silence (regression probe) ───────────────────────────
+// Reported bug: dry=0/wet=0 still passes the dry signal at full level. Drive a
+// nonzero, non-impulse signal (a sine, so every sample in the measured window
+// is nonzero) through the effect at dry=0/wet=0 and require digital silence;
+// then at dry=100/wet=0 require bit-transparent passthrough.
+static void testDryWetZeroSilence()
+{
+    std::cout << "  [dry/wet zero -> silence]\n";
+    constexpr double kSR = 44100.0;
+    constexpr int    kBS = 512;
+
+    {
+        UniFlangeEffect fx;
+        fx.setParameterValue("order",  4.0f);
+        fx.setParameterValue("depth",  50.0f);
+        fx.setParameterValue("speed",  50.0f);
+        fx.setParameterValue("delay",  0.0f);
+        fx.setParameterValue("spread", 100.0f);
+        fx.setParameterValue("cross",  0.0f);
+        fx.setParameterValue("dry",    0.0f);
+        fx.setParameterValue("wet",    0.0f);
+        fx.setParameterValue("mode",   0.0f);
+        fx.prepareToPlay(kSR, kBS);
+
+        juce::MidiBuffer midi;
+        double phase = 0.0;
+        float maxAbs = 0.0f;
+        // Several blocks so the presence envelope and smoothers are well past
+        // their initial ramp -- a leaking dry signal must show up here.
+        for (int block = 0; block < 20; ++block)
+        {
+            juce::AudioBuffer<float> buf(2, kBS);
+            fillSine(buf, 500.0, 0.5, kSR, phase);
+            fx.processBlock(buf, midi);
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                const float* p = buf.getReadPointer(ch);
+                for (int s = 0; s < kBS; ++s)
+                    maxAbs = std::max(maxAbs, std::abs(p[s]));
+            }
+        }
+        CHECK(maxAbs < 1.0e-6f, "dry=0/wet=0 must produce digital silence, got peak " + std::to_string(maxAbs));
+    }
+
+    {
+        UniFlangeEffect fx;
+        fx.setParameterValue("order",  4.0f);
+        fx.setParameterValue("depth",  50.0f);
+        fx.setParameterValue("speed",  50.0f);
+        fx.setParameterValue("delay",  0.0f);
+        fx.setParameterValue("spread", 100.0f);
+        fx.setParameterValue("cross",  0.0f);
+        fx.setParameterValue("dry",    100.0f);
+        fx.setParameterValue("wet",    0.0f);
+        fx.setParameterValue("mode",   0.0f);
+        fx.prepareToPlay(kSR, kBS);
+
+        juce::MidiBuffer midi;
+        double phase = 0.0;
+        double maxDiff = 0.0;
+        for (int block = 0; block < 20; ++block)
+        {
+            juce::AudioBuffer<float> input(2, kBS);
+            fillSine(input, 500.0, 0.5, kSR, phase);
+            juce::AudioBuffer<float> buf;
+            buf.makeCopyOf(input);
+            fx.processBlock(buf, midi);
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                const float* in  = input.getReadPointer(ch);
+                const float* out = buf.getReadPointer(ch);
+                for (int s = 0; s < kBS; ++s)
+                    maxDiff = std::max(maxDiff, static_cast<double>(std::abs(out[s] - in[s])));
+            }
+        }
+        CHECK(maxDiff < 1.0e-5, "dry=100/wet=0 must be bit-transparent passthrough, max diff " + std::to_string(maxDiff));
+    }
+}
+
 // ─── Bonus: parameter layout sanity ──────────────────────────────────────────
 // Not one of the five spec'd tests, but a cheap regression guard matching the
 // convention in test_reverb.cpp's testReverbLayout().
@@ -439,6 +518,7 @@ int main()
     testNoFeedbackFlatness();
     testPanInvariance();
     testBoundsFuzz();
+    testDryWetZeroSilence();
 
     std::cout << "\nResults: " << g_passed << " passed, " << g_failed << " failed\n";
     if (g_failed > 0)

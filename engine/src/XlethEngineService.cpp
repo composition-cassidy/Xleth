@@ -650,6 +650,15 @@ ExportProgressSnapshot       g_exportProgress;
 std::atomic<bool>            g_exportCancel{false};
 std::atomic<bool>            g_exportRunning{false};
 std::unique_ptr<std::thread> g_exportThread;
+// Set by the export thread when it finishes; consumed on the MESSAGE thread by
+// Audio_ExportGetProgress. The export re-prepares every effect chain at the
+// export sample rate / 4096-sample blocks, and only a message-thread
+// prepareToPlay() rebuilds AudioProcessorGraph's render sequence synchronously
+// (see Audio_ExportStart). Restoring the live device settings from the export
+// thread would leave that rebuild pending forever, so JUCE clears every track
+// buffer that owns an effect chain — the track goes silent until some other
+// message-thread rebuild (e.g. re-adding an effect) happens to fix it.
+std::atomic<bool>            g_exportPendingRealtimeRestore{false};
 
 // ── Video export (offline A/V render via OfflineRenderer) ───────────────
 std::unique_ptr<OfflineRenderer> g_videoRenderer;
@@ -14140,9 +14149,15 @@ JsonApi::Value Audio_ExportStart(const JsonApi::CallbackInfo& info)
             ok = false;
         }
 
-        // Restore MixEngine state and resume audio device callback
+        // Restore MixEngine state and resume audio device callback. resumeCallback()
+        // re-runs audioDeviceAboutToStart -> MixEngine::prepare() with the LIVE
+        // device settings, but it runs here on the EXPORT thread, so each effect
+        // chain's AudioProcessorGraph only gets a *deferred* render-sequence
+        // rebuild. Flag the restore so the message thread re-prepares for real;
+        // resuming here regardless keeps the device running either way.
         mixer.setNonRealtime(false);
         audioEngine->resumeCallback();
+        g_exportPendingRealtimeRestore.store(true, std::memory_order_release);
 
         {
             std::lock_guard<std::mutex> lk(g_exportStateMutex);
@@ -14163,6 +14178,21 @@ JsonApi::Value Audio_ExportStart(const JsonApi::CallbackInfo& info)
 JsonApi::Value Audio_ExportGetProgress(const JsonApi::CallbackInfo& info)
 {
     JsonApi::Env env = info.Env();
+
+    // Message-thread half of the export teardown. The export thread sets the
+    // flag before it clears `running`, so any poll that observes a finished
+    // export also observes the flag. Re-preparing here (on the message thread)
+    // rebuilds each effect chain's render sequence synchronously, which is what
+    // the export thread's own resumeCallback() could not do.
+    if (g_exportPendingRealtimeRestore.load(std::memory_order_acquire)
+        && !g_exportRunning.load()
+        && g_exportPendingRealtimeRestore.exchange(false, std::memory_order_acq_rel)
+        && audioEngine != nullptr)
+    {
+        audioEngine->getMixEngine().prepare(audioEngine->getSampleRate(),
+                                            audioEngine->getBufferSize());
+    }
+
     JsonApi::Object o = JsonApi::Object::New(env);
     std::lock_guard<std::mutex> lk(g_exportStateMutex);
     o.Set("running",    JsonApi::Boolean::New(env, g_exportProgress.running));
