@@ -1,5 +1,6 @@
 #include "FrameCollector.h"
 #include "AnimationManager.h"
+#include "FrameRateMath.h"
 
 #include "model/Timeline.h"
 #include "model/ClipVideoModulationTiming.h"
@@ -147,13 +148,23 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
         const SourceMedia* src = timeline.getSource(ev->sourceId);
         if (!src || !src->hasVideo || src->filePath.empty()) return false;
 
+        // The source's EXACT frame rate — the single authority for every
+        // time → frame conversion below. RenderVideoDecoder converts the frame
+        // indices we produce back into stream timestamps with this same
+        // rational, so the round trip is symmetric. Projects saved before
+        // fpsNum/fpsDen existed fall back to reconstructing it from the legacy
+        // double. See engine/src/render/FrameRateMath.h.
+        const AVRational srcRate = xleth::frametiming::rateFromSource(
+            src->fpsNum, src->fpsDen, src->fps);
+        const double srcFps = av_q2d(srcRate);
+
         const auto timingCtx = makeVideoTimingContext(
-            *ev, beatPos, bpm, sampleRate, src->fps);
+            *ev, beatPos, bpm, sampleRate, srcFps);
         const auto timing = xleth::clipmod::evaluateVideoClipModulationTiming(
             ev->modulation, timingCtx, isVideoModulationCompatible(*ev));
 
         double sourceTime = timing.sourceTimeSeconds;
-        int64_t srcFrame = computeSourceFrameFromTime(sourceTime, src->fps);
+        int64_t srcFrame = computeSourceFrameFromTime(sourceTime, srcRate);
 
         // Fetch TrackInfo early — needed to check pingPong.enabled before the clamp.
         const TrackInfo* trk = timeline.getTrack(trackId);
@@ -167,7 +178,7 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
         if (trk && trk->pingPong.enabled && !isFullscreen) {
             int64_t secondaryFrame = -1;
             float   blendFactor    = 0.0f;
-            srcFrame = computePingPongFrame(*ev, beatPos, bpm, sampleRate, src->fps,
+            srcFrame = computePingPongFrame(*ev, beatPos, bpm, sampleRate, srcRate,
                                             trk->pingPong, secondaryFrame, blendFactor);
             req.pingPongSecondaryFrame = secondaryFrame;
             req.pingPongBlendFactor    = blendFactor;
@@ -177,7 +188,7 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
             // always clamp to the last frame so active notes never go black.
             if (ev->sourceEndTime > 0.0) {
                 if (sourceTime >= ev->sourceEndTime) {
-                    srcFrame = computeSourceFrameFromTime(sourceTime, src->fps);
+                    srcFrame = computeSourceFrameFromTime(sourceTime, srcRate);
                     std::fprintf(stderr, "[FrameCollector] Track %d: frame clamped to last frame %lld "
                                  "(source time %.3fs >= trim end %.3fs)\n",
                                  trackId, (long long)srcFrame, sourceTime, ev->sourceEndTime);
@@ -229,7 +240,7 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
         std::string pickedPath  = regionSwapped ? pickRegion->swappedVideoPath
                                                 : src->filePath;
         int64_t     pickedFrame = regionSwapped
-            ? computeSourceFrameFromTime(sourceTime - pickRegion->startTime, src->fps)
+            ? computeSourceFrameFromTime(sourceTime - pickRegion->startTime, srcRate)
             : srcFrame;
 
         // ── RENDER PATH: resolution-aware proxy plan (authoritative) ──────────
@@ -261,7 +272,7 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
                         sourceTime <  r->proxyEndTime) {
                         pickedPath  = r->proxyPath;
                         pickedFrame = computeSourceFrameFromTime(
-                                          sourceTime - r->proxyStartTime, src->fps);
+                                          sourceTime - r->proxyStartTime, srcRate);
                     }
                 }
             }
@@ -678,11 +689,11 @@ int64_t FrameCollector::computeSourceFrame(
     double            beatPos,
     double            bpm,
     int               sampleRate,
-    double            sourceFps)
+    AVRational        sourceRate)
 {
     return computeSourceFrameFromTime(
-        computeSourceTime(ev, beatPos, bpm, sampleRate, sourceFps),
-        sourceFps);
+        computeSourceTime(ev, beatPos, bpm, sampleRate, av_q2d(sourceRate)),
+        sourceRate);
 }
 
 double FrameCollector::computeSourceTime(
@@ -699,22 +710,29 @@ double FrameCollector::computeSourceTime(
     return timing.sourceTimeSeconds;
 }
 
-int64_t FrameCollector::computeSourceFrameFromTime(double sourceTimeSec, double sourceFps)
+int64_t FrameCollector::computeSourceFrameFromTime(double sourceTimeSec, AVRational sourceRate)
 {
-    // Convert source time to frame index using integer arithmetic via av_rescale.
-    // sourceTime (seconds) → frame index = floor(sourceTime * fps)
-    // We use av_rescale to stay in the integer domain:
-    //   frame = av_rescale(sourceTimeUs, fps_num, fps_den * 1000000)
-    // where sourceTimeUs = round(sourceTime * 1000000)
-    const int64_t sourceTimeUs = static_cast<int64_t>(std::round(sourceTimeSec * 1000000.0));
-    const int64_t fpsNum = static_cast<int64_t>(std::round(sourceFps * 1000.0));
-    const int64_t fpsDen = 1000;
-
-    // frame = sourceTimeUs * fpsNum / (fpsDen * 1000000)
-    int64_t frame = av_rescale(sourceTimeUs, fpsNum, fpsDen * 1000000LL);
-    if (frame < 0) frame = 0;
-
-    return frame;
+    // Source time (seconds) → source frame index, FLOOR semantics: frame N is the
+    // frame whose interval [N/fps, (N+1)/fps) contains t.
+    //
+    // Two things were wrong here before:
+    //
+    //  1. The rate was reconstructed as round(fps*1000)/1000, so 24000/1001
+    //     became 23976/1000 — close, but not the same rate RenderVideoDecoder
+    //     converts back with, which is exactly what makes a round trip drift.
+    //     It now takes the source's exact rational, the same one the decoder
+    //     uses, so both directions are bit-identical.
+    //
+    //  2. av_rescale defaults to AV_ROUND_NEAR_INF, i.e. round-to-nearest, so
+    //     any time past the midpoint of a frame returned the NEXT frame. The
+    //     region picker in the UI is a Chromium <video> element and uses floor
+    //     semantics, so the engine disagreed with the picker by one frame for
+    //     roughly half of all pick positions. Concretely, at t = 916.7734480660205
+    //     in a 24000/1001 source the picker shows frame 21980 and this function
+    //     used to request 21981.
+    //
+    // See engine/src/render/FrameRateMath.h. Negative times clamp to 0.
+    return xleth::frametiming::timeToFrameFloor(sourceTimeSec, sourceRate);
 }
 
 // ===========================================================================
@@ -726,7 +744,7 @@ int64_t FrameCollector::computePingPongFrame(
     double                  beatPos,
     double                  bpm,
     int                     sampleRate,
-    double                  sourceFps,
+    AVRational              sourceRate,
     const PingPongSettings& pp,
     int64_t&                outSecondaryFrame,
     float&                  outBlendFactor)
@@ -734,20 +752,25 @@ int64_t FrameCollector::computePingPongFrame(
     outSecondaryFrame = -1;
     outBlendFactor    = 0.0f;
 
+    // Frame-index conversion below goes through sourceRate (exact); the plain
+    // double is only used for the sub-frame crossfade/clamp arithmetic, where a
+    // rational buys nothing.
+    const double sourceFps = av_q2d(sourceRate);
+
     double sourceTime = computeSourceTime(ev, beatPos, bpm, sampleRate, sourceFps);
 
     const double clipLen = ev.sourceEndTime - ev.sourceStartTime;
     if (clipLen <= 0.0)
-        return computeSourceFrameFromTime(sourceTime, sourceFps);
+        return computeSourceFrameFromTime(sourceTime, sourceRate);
 
     const double regionStart = ev.sourceStartTime + clipLen * pp.regionStartPct;
     const double regionLen   = clipLen * (pp.regionEndPct - pp.regionStartPct);
     if (regionLen <= 0.0)
-        return computeSourceFrameFromTime(sourceTime, sourceFps);
+        return computeSourceFrameFromTime(sourceTime, sourceRate);
 
     // Before bounce region: play forward normally
     if (sourceTime < regionStart)
-        return computeSourceFrameFromTime(sourceTime, sourceFps);
+        return computeSourceFrameFromTime(sourceTime, sourceRate);
 
     double posInRegion = sourceTime - regionStart;
 
@@ -761,7 +784,7 @@ int64_t FrameCollector::computePingPongFrame(
     if (pp.maxLoops > 0 && loopCount >= pp.maxLoops) {
         bool   holdAtEnd = ((pp.maxLoops % 2) == 0);
         double holdTime  = holdAtEnd ? (regionStart + regionLen) : regionStart;
-        return computeSourceFrameFromTime(holdTime, sourceFps);
+        return computeSourceFrameFromTime(holdTime, sourceRate);
     }
 
     double posInCycle = std::fmod(posInRegion, cycleLen);
@@ -799,10 +822,10 @@ int64_t FrameCollector::computePingPongFrame(
                 secondaryTime = primaryTime + (cfSec - distNearest) * 2.0;
             }
             secondaryTime = std::clamp(secondaryTime, clampLo, clampHi);
-            outSecondaryFrame = computeSourceFrameFromTime(secondaryTime, sourceFps);
+            outSecondaryFrame = computeSourceFrameFromTime(secondaryTime, sourceRate);
             outBlendFactor    = 1.0f - blend; // 1=full secondary at boundary, 0=full primary away
         }
     }
 
-    return computeSourceFrameFromTime(primaryTime, sourceFps);
+    return computeSourceFrameFromTime(primaryTime, sourceRate);
 }

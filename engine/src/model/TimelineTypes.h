@@ -93,6 +93,19 @@ struct SourceMedia {
     int         width       = 0;
     int         height      = 0;
     double      fps         = 0.0;
+
+    // â”€â”€ Exact frame rate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // fps above is a lossy view of this. 23.976 fps is really 24000/1001, and a
+    // double cannot survive the time â†’ frame â†’ PTS round trip without drifting:
+    // deriving a frame duration from the double is what produced the
+    // depth-proportional video desync (see engine/src/render/FrameRateMath.h).
+    // Populated from the stream's r_frame_rate at import. Zero for projects
+    // written before this field existed and for audio-only sources â€” callers
+    // must go through xleth::frametiming::rateFromSource(), which reconstructs
+    // the rational from the legacy double in that case.
+    int         fpsNum      = 0;
+    int         fpsDen      = 0;
+
     double      duration    = 0.0;
     int         totalFrames = 0;
     bool        hasVideo    = false;

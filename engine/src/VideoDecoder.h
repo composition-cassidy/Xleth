@@ -41,6 +41,12 @@ public:
     int    getWidth()       const;
     int    getHeight()      const;
     double getFPS()         const;
+
+    /** The source's EXACT frame rate. Prefer this over getFPS(): 23.976 fps is
+     *  24000/1001 and no double survives the round trip through a frame index
+     *  without drifting. See render/FrameRateMath.h. */
+    AVRational getFrameRateRational() const;
+
     double getDuration()    const;
     int    getTotalFrames() const;
 
@@ -57,7 +63,8 @@ private:
     SwsContext*      swsCtx_    = nullptr;  // pixel-format conversion
     int              videoStreamIdx_ = -1;
 
-    double fps_      = 30.0;
+    double     fps_       = 30.0;          // av_q2d(frameRate_), kept for existing callers
+    AVRational frameRate_  = {30, 1};       // the authority
     double duration_ = 0.0;
     int    width_    = 0;
     int    height_   = 0;

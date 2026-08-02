@@ -730,6 +730,11 @@ int ProjectManager::importSource(Timeline& timeline,
     media.width       = decoder.getWidth();
     media.height      = decoder.getHeight();
     media.fps         = decoder.getFPS();
+    // Persist the EXACT rate alongside the float. Everything downstream that
+    // converts time <-> frame <-> PTS reads the rational; the float is kept only
+    // for backward compatibility. See engine/src/render/FrameRateMath.h.
+    media.fpsNum      = decoder.getFrameRateRational().num;
+    media.fpsDen      = decoder.getFrameRateRational().den;
     media.duration    = decoder.getDuration();
     media.totalFrames = decoder.getTotalFrames();
     media.hasVideo    = (media.width > 0 && media.height > 0);

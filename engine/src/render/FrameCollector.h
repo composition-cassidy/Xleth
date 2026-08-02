@@ -251,7 +251,7 @@ private:
         double            beatPos,
         double            bpm,
         int               sampleRate,
-        double            sourceFps);
+        AVRational        sourceRate);
 
     static double computeSourceTime(
         const VideoEvent& ev,
@@ -262,7 +262,13 @@ private:
 
     // Compute source frame index from an absolute source time (seconds).
     // Used for hold-last-frame clamping when the note sustains past trim end.
-    static int64_t computeSourceFrameFromTime(double sourceTimeSec, double sourceFps);
+    //
+    // Takes the source's EXACT rational rate â€” not a double â€” because
+    // RenderVideoDecoder converts the resulting frame index back to a PTS with
+    // that same rational, and the two directions must agree bit for bit.
+    // Uses FLOOR semantics to match the UI's Chromium <video> region picker.
+    // See engine/src/render/FrameRateMath.h.
+    static int64_t computeSourceFrameFromTime(double sourceTimeSec, AVRational sourceRate);
 
     // Compute ping-pong frame index (and optional secondary crossfade frame).
     // Returns primary frame; sets outSecondaryFrame / outBlendFactor if crossfading.
@@ -271,7 +277,7 @@ private:
         double                  beatPos,
         double                  bpm,
         int                     sampleRate,
-        double                  sourceFps,
+        AVRational              sourceRate,
         const PingPongSettings& pp,
         int64_t&                outSecondaryFrame,
         float&                  outBlendFactor);

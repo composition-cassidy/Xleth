@@ -1,5 +1,9 @@
 #include "VideoDecoder.h"
 
+#include "render/FrameRateMath.h"
+
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 
@@ -15,6 +19,7 @@ VideoDecoder::~VideoDecoder()
 bool VideoDecoder::open(const std::string& filePath)
 {
     close();
+
 
     // 1. Open the file
     if (avformat_open_input(&formatCtx_, filePath.c_str(), nullptr, nullptr) < 0)
@@ -71,10 +76,13 @@ bool VideoDecoder::open(const std::string& filePath)
     width_  = codecCtx_->width;
     height_ = codecCtx_->height;
 
-    if (stream->r_frame_rate.den > 0)
-        fps_ = av_q2d(stream->r_frame_rate);
-    else
-        fps_ = 30.0;
+    // Frame rate authority — keep the EXACT rational, not just its double. This
+    // is what gets persisted into project.json and what FrameCollector and
+    // RenderVideoDecoder both convert with, so every stage of the time → frame →
+    // PTS chain uses bit-identical arithmetic. See render/FrameRateMath.h.
+    frameRate_ = xleth::frametiming::chooseFrameRate(
+        stream->r_frame_rate, stream->avg_frame_rate);
+    fps_ = av_q2d(frameRate_);
 
     duration_ = (formatCtx_->duration != AV_NOPTS_VALUE)
                     ? static_cast<double>(formatCtx_->duration) / AV_TIME_BASE
@@ -139,6 +147,7 @@ void VideoDecoder::close()
 
     videoStreamIdx_ = -1;
     fps_            = 30.0;
+    frameRate_      = AVRational{30, 1};
     duration_       = 0.0;
     width_          = 0;
     height_         = 0;
@@ -315,6 +324,7 @@ void VideoDecoder::copyFrameToOutput(AVFrame* src, DecodedFrame& outFrame)
 int    VideoDecoder::getWidth()    const { return width_;  }
 int    VideoDecoder::getHeight()   const { return height_; }
 double VideoDecoder::getFPS()      const { return fps_;    }
+AVRational VideoDecoder::getFrameRateRational() const { return frameRate_; }
 double VideoDecoder::getDuration() const { return duration_; }
 
 int VideoDecoder::getTotalFrames() const

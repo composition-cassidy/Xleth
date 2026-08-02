@@ -1,8 +1,11 @@
 #include "RenderVideoDecoder.h"
 
+#include "FrameRateMath.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 // ===========================================================================
@@ -20,7 +23,7 @@ void DecoderContext::close()
     videoStreamIdx   = -1;
     width            = 0;
     height           = 0;
-    fps              = 30.0;
+    frameRate        = AVRational{30, 1};
     lastDecodedFrame = -1;
     sequentialHint   = false;
     isIntraOnly      = false;
@@ -328,10 +331,45 @@ bool RenderVideoDecoder::openSource(DecoderContext& ctx, const std::string& sour
     // 7. Cache metadata
     ctx.width  = ctx.codecCtx->width;
     ctx.height = ctx.codecCtx->height;
-    if (stream->r_frame_rate.den > 0)
-        ctx.fps = av_q2d(stream->r_frame_rate);
-    else
-        ctx.fps = 30.0;
+
+    // Frame rate authority: r_frame_rate, falling back to avg_frame_rate, then
+    // 30/1. Kept as an exact rational — see render/FrameRateMath.h for why the
+    // old `double` + std::round() form produced depth-proportional desync.
+    {
+        bool usedFallback = false;
+        bool vfrSuspect   = false;
+        ctx.frameRate = xleth::frametiming::chooseFrameRate(
+            stream->r_frame_rate, stream->avg_frame_rate, &usedFallback, &vfrSuspect);
+
+        if (usedFallback) {
+            std::fprintf(stderr,
+                "[RenderDecoder] WARNING: '%s' declares no usable r_frame_rate "
+                "(r=%d/%d avg=%d/%d); falling back to %d/%d. Frame timing may be "
+                "approximate.\n",
+                sourcePath.c_str(),
+                stream->r_frame_rate.num, stream->r_frame_rate.den,
+                stream->avg_frame_rate.num, stream->avg_frame_rate.den,
+                ctx.frameRate.num, ctx.frameRate.den);
+        }
+        if (vfrSuspect) {
+            // Small r/avg divergence is normal container rounding (avg is
+            // frames/duration and is contaminated by the trailing partial frame).
+            // More than ~0.5% means the stream is genuinely variable-frame-rate,
+            // which a constant-rate model cannot represent — frames will be wrong
+            // regardless of which rate we pick. Fixing that needs a demuxed PTS
+            // index; this warning is the signal that it is required.
+            std::fprintf(stderr,
+                "[RenderDecoder] WARNING: '%s' looks VARIABLE frame rate "
+                "(r_frame_rate=%d/%d = %.6f vs avg_frame_rate=%d/%d = %.6f, "
+                ">0.5%% apart). Constant-rate frame mapping will be inaccurate for "
+                "this source.\n",
+                sourcePath.c_str(),
+                stream->r_frame_rate.num, stream->r_frame_rate.den,
+                av_q2d(stream->r_frame_rate),
+                stream->avg_frame_rate.num, stream->avg_frame_rate.den,
+                av_q2d(stream->avg_frame_rate));
+        }
+    }
 
     // 8. Allocate reusable frame + packet
     ctx.frame  = av_frame_alloc();
@@ -341,8 +379,9 @@ bool RenderVideoDecoder::openSource(DecoderContext& ctx, const std::string& sour
         return false;
     }
 
-    std::fprintf(stderr, "[RenderDecoder] Opened '%s': %dx%d @ %.2f fps, codec=%s, hw=%s, intra=%s\n",
-                 sourcePath.c_str(), ctx.width, ctx.height, ctx.fps,
+    std::fprintf(stderr, "[RenderDecoder] Opened '%s': %dx%d @ %d/%d fps (%.5f), codec=%s, hw=%s, intra=%s\n",
+                 sourcePath.c_str(), ctx.width, ctx.height,
+                 ctx.frameRate.num, ctx.frameRate.den, av_q2d(ctx.frameRate),
                  codec->name,
                  ctx.isHwAccel ? "D3D11VA" : "SW",
                  ctx.isIntraOnly ? "yes" : "no");
@@ -353,6 +392,14 @@ bool RenderVideoDecoder::openSource(DecoderContext& ctx, const std::string& sour
 // ===========================================================================
 // Seek + decode
 // ===========================================================================
+
+int64_t RenderVideoDecoder::targetPtsForFrame(const DecoderContext& ctx,
+                                              int64_t               frameIndex)
+{
+    const AVStream* stream = ctx.formatCtx->streams[ctx.videoStreamIdx];
+    return xleth::frametiming::frameToPts(
+        frameIndex, ctx.frameRate, stream->time_base, stream->start_time);
+}
 
 bool RenderVideoDecoder::seekToFrame(DecoderContext& ctx, int64_t frameIndex)
 {
@@ -400,13 +447,10 @@ bool RenderVideoDecoder::seekToFrame(DecoderContext& ctx, int64_t frameIndex)
     // For intra-only codecs, we can seek directly — every frame is a keyframe
     AVStream* stream = ctx.formatCtx->streams[ctx.videoStreamIdx];
 
-    // Convert frame index to stream PTS
-    // PTS = frameIndex * time_base_den / (time_base_num * fps)
-    // Using av_rescale_q for precision:
-    //   frame N at fps F → timestamp = N / F seconds
-    //   → PTS = N / F / time_base = N * time_base.den / (F * time_base.num)
-    AVRational frameDur = {1, static_cast<int>(std::round(ctx.fps))};
-    int64_t targetPTS = av_rescale_q(frameIndex, frameDur, stream->time_base);
+    // Frame index → stream PTS, at the source's EXACT rational frame rate and
+    // including stream->start_time. Shared with decodeFrame() via one helper so
+    // the seek target and the decode target cannot disagree.
+    int64_t targetPTS = targetPtsForFrame(ctx, frameIndex);
 
     int flags = AVSEEK_FLAG_BACKWARD;
     // Intra-only codecs: we can seek to any frame, but BACKWARD still works
@@ -426,9 +470,20 @@ bool RenderVideoDecoder::decodeFrame(DecoderContext& ctx, int64_t frameIndex)
 {
     AVStream* stream = ctx.formatCtx->streams[ctx.videoStreamIdx];
 
-    // Target PTS for the frame we want
-    AVRational frameDur = {1, static_cast<int>(std::round(ctx.fps))};
-    int64_t targetPTS = av_rescale_q(frameIndex, frameDur, stream->time_base);
+    // Target PTS for the frame we want — same helper seekToFrame() used, so we
+    // are hunting for exactly the timestamp we seeked to.
+    const int64_t targetPTS = targetPtsForFrame(ctx, frameIndex);
+
+    // Acceptance tolerance. A frame counts as "the one we asked for" once its
+    // pts reaches within half a frame of the target. The exact-equality form
+    // (pts >= targetPTS) assumes the muxer laid frame timestamps on the same
+    // rounding of the ideal grid that frameToPts uses; a muxer that rounds the
+    // other way would place the real frame one tick BELOW the target and this
+    // loop would sail past it and deliver N+1. Half a frame can never reach back
+    // to frame N-1 (it sits a full frame duration below the target), so the
+    // tolerance is safe in both directions — proven in test_frame_timing.cpp.
+    const int64_t acceptPTS =
+        targetPTS - xleth::frametiming::halfFramePts(ctx.frameRate, stream->time_base);
 
     // Read packets and decode until we get a frame at or past targetPTS
     bool gotFrame = false;
@@ -486,7 +541,7 @@ bool RenderVideoDecoder::decodeFrame(DecoderContext& ctx, int64_t frameIndex)
                               : ctx.frame->best_effort_timestamp;
 
             // For intra-only codecs, the first decoded frame after seek IS the target
-            if (ctx.isIntraOnly || pts >= targetPTS) {
+            if (ctx.isIntraOnly || pts >= acceptPTS) {
                 gotFrame = true;
                 break;
             }
@@ -498,7 +553,26 @@ bool RenderVideoDecoder::decodeFrame(DecoderContext& ctx, int64_t frameIndex)
     }
 
     if (gotFrame) {
-        ctx.lastDecodedFrame = frameIndex;
+        // Record the frame we ACTUALLY decoded, derived from its own timestamp —
+        // never the frame that was requested. The sequential fast path in
+        // seekToFrame() trusts this value to decide it can skip the seek, so
+        // storing the request here made any single bad seek permanent: the
+        // decoder streamed forward from the wrong position and nothing ever
+        // compared decoded PTS against expected PTS again. Deriving it from the
+        // delivered PTS means a wrong landing self-corrects on the next request,
+        // because frameIndex != lastDecodedFrame + 1 then forces a real seek.
+        const int64_t decodedPts = (ctx.frame->pts != AV_NOPTS_VALUE)
+                                       ? ctx.frame->pts
+                                       : ctx.frame->best_effort_timestamp;
+        if (decodedPts != AV_NOPTS_VALUE) {
+            ctx.lastDecodedFrame = xleth::frametiming::ptsToFrame(
+                decodedPts, ctx.frameRate, stream->time_base, stream->start_time);
+        } else {
+            // No usable timestamp (rare: some raw/image demuxers). Fall back to
+            // the request — no worse than the old behaviour, and single-frame
+            // image sources never take the sequential path anyway.
+            ctx.lastDecodedFrame = frameIndex;
+        }
     }
 
     return gotFrame;

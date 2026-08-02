@@ -31,6 +31,8 @@ static void sourceToJson(nlohmann::json& j, const SourceMedia& s) {
         {"width",       s.width},
         {"height",      s.height},
         {"fps",         s.fps},
+        {"fpsNum",      s.fpsNum},
+        {"fpsDen",      s.fpsDen},
         {"duration",    s.duration},
         {"totalFrames", s.totalFrames},
         {"hasVideo",    s.hasVideo},
@@ -51,6 +53,12 @@ static void sourceFromJson(const nlohmann::json& j, SourceMedia& s) {
     j.at("width").get_to(s.width);
     j.at("height").get_to(s.height);
     j.at("fps").get_to(s.fps);
+    // Exact frame rate â€” ADDITIVE to the legacy float, which is still written so
+    // older builds can read projects written by this one. Absent in projects
+    // saved before the field existed; rateFromSource() reconstructs the rational
+    // from the float in that case, so a zero here is not an error.
+    s.fpsNum = j.value("fpsNum", 0);
+    s.fpsDen = j.value("fpsDen", 0);
     j.at("duration").get_to(s.duration);
     j.at("totalFrames").get_to(s.totalFrames);
     j.at("hasVideo").get_to(s.hasVideo);

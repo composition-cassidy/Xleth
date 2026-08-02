@@ -59,7 +59,15 @@ struct DecoderContext {
 
     int              width        = 0;
     int              height       = 0;
-    double           fps          = 30.0;
+
+    // Frame rate as an EXACT rational — never a double, and never rounded to an
+    // integer. This used to be `double fps`, and the frame→PTS conversion built
+    // its frame duration as AVRational{1, (int)round(fps)}, which snapped every
+    // NTSC-fractional rate to an integer (23.976→24, 29.97→30, 59.94→60). The
+    // resulting 1000/1001 error made the delivered frame drift earlier in
+    // proportion to depth into the source. See render/FrameRateMath.h.
+    AVRational       frameRate    = {30, 1};
+
     int64_t          lastDecodedFrame = -1;     // drives the auto sequential fast path
     bool             sequentialHint   = false;  // VESTIGIAL: never wired up; seekToFrame
                                                 // now auto-detects via lastDecodedFrame
@@ -184,6 +192,16 @@ private:
     bool openSource(DecoderContext& ctx, const std::string& sourcePath);
 
     // ── Decode paths ───────────────────────────────────────────────────────
+
+    /**
+     * Stream PTS to target for a given source frame index — the SINGLE place
+     * that conversion happens. seekToFrame() and decodeFrame() both call this
+     * so their targets cannot silently diverge (they previously each open-coded
+     * the same buggy expression, and fixing one without the other would have
+     * left the decoder hunting for a frame it never seeked to).
+     * Delegates to xleth::frametiming::frameToPts.
+     */
+    static int64_t targetPtsForFrame(const DecoderContext& ctx, int64_t frameIndex);
 
     /** Seek to frame (or skip if sequential). Returns true on success. */
     bool seekToFrame(DecoderContext& ctx, int64_t frameIndex);
