@@ -2,6 +2,7 @@
 
 #include "model/Timeline.h"
 #include "model/TimelineTypes.h"
+#include "model/ClipSourceAnchor.h"
 #include "Transport.h"
 #include "audio/MixEngine.h"
 #include "render/GpuDeviceManager.h"
@@ -321,8 +322,24 @@ std::vector<VideoEvent> OfflineRenderer::buildVideoEvents(
         ev.sourceId        = region->sourceId;
         ev.trackId         = clip->trackId;
         ev.regionId        = clip->regionId;
-        // regionOffset: how many beats into the source to start playback
-        ev.sourceStartTime = clip->regionOffset.toBeats() * (60.0 / bpm) + region->startTime;
+        // Source anchor = region start + syllable offset + clip trim, via the ONE
+        // shared helper (model/ClipSourceAnchor.h). Syllable times are
+        // REGION-RELATIVE seconds (0 == region->startTime), matching the audio
+        // readhead (MixEngine::findActiveClips / enqueueClipRender both do
+        // `syl.startTime + regionOffset`) and the realtime preview's event build
+        // (XlethEngineService rebuildVideoEvents). This expression used to be
+        // duplicated in both video builders; omitting the syllable term here
+        // pinned every syllable clip's video to the region head while its audio
+        // played the correct syllable — a render-only A/V desync that grew with
+        // the syllable's distance into the region. Sharing the helper is what
+        // stops the two builders drifting apart again.
+        const double syllableStart =
+            (clip->syllableIndex >= 0
+             && clip->syllableIndex < static_cast<int>(region->syllables.size()))
+                ? region->syllables[clip->syllableIndex].startTime
+                : 0.0;
+        ev.sourceStartTime = xleth::anchoring::clipSourceAnchorSeconds(
+            region->startTime, clip->regionOffset.ticks, bpm, syllableStart);
         ev.sourceEndTime   = region->endTime;
         ev.sourceClampStartTime = region->startTime;
         ev.clipId          = clip->id;

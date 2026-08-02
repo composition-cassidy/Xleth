@@ -35,6 +35,7 @@
 #include "midi/MidiImporter.h"
 #include "model/Timeline.h"
 #include "model/TimelineTypes.h"
+#include "model/ClipSourceAnchor.h"
 #include "audio/TrackRouting.h"
 #include "util/StartLatencyTrace.h"  // TEMP/DIAGNOSTIC — start-latency probe
 #include "commands/ImportMidiCommand.h"
@@ -1266,21 +1267,20 @@ static void rebuildVideoEventsFromClips() {
             // region->startTime/endTime are seconds in the source.
             const double startBeat     = clip->position.toBeats();
             const double durationBeats = clip->duration.toBeats();
-            const double offsetSec     = clip->regionOffset.toSeconds(bpm);
 
-            // For syllable clips, anchor the source playhead to the syllable's
-            // startTime. Syllable times are REGION-RELATIVE seconds (0 = start of
-            // region) — this matches how MixEngine treats them at
-            // MixEngine.cpp:133-150 (srcBuf is the region-only audio loaded via
-            // SampleBank::loadSampleFromSource, so sample 0 == region->startTime).
-            // Frames are derived from time inside the decoder — no separate frame
-            // storage on Syllable.
-            double sourceTime = region->startTime + offsetSec;
-            if (clip->syllableIndex >= 0
-                && clip->syllableIndex < static_cast<int>(region->syllables.size())) {
-                const auto& syl = region->syllables[clip->syllableIndex];
-                sourceTime = region->startTime + syl.startTime + offsetSec;
-            }
+            // Source anchor = region start + syllable offset + clip trim, via the
+            // ONE shared helper that MixEngine's readhead and OfflineRenderer's
+            // event build also agree with (model/ClipSourceAnchor.h). This used to
+            // be open-coded here and again in OfflineRenderer, and the copies
+            // drifted: the offline one dropped the syllable term and desynced
+            // every syllable clip's video on export only.
+            const double syllableStart =
+                (clip->syllableIndex >= 0
+                 && clip->syllableIndex < static_cast<int>(region->syllables.size()))
+                    ? region->syllables[clip->syllableIndex].startTime
+                    : 0.0;
+            const double sourceTime = xleth::anchoring::clipSourceAnchorSeconds(
+                region->startTime, clip->regionOffset.ticks, bpm, syllableStart);
 
             VideoEvent ev;
             ev.startBeat       = startBeat;

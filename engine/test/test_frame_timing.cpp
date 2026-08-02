@@ -12,6 +12,7 @@
 // trap). Every check below runs unconditionally and drives the exit code.
 
 #include "render/FrameRateMath.h"
+#include "model/ClipSourceAnchor.h"
 
 #include <cstdio>
 #include <cstdint>
@@ -277,6 +278,82 @@ int main()
                 if (timeToFrameFloor(t, c.rate) != n) { firstBadT = n; break; }
             }
             checkEq(firstBadT, -1, (std::string("boundary floor: ") + c.name).c_str());
+        }
+    }
+
+    // ── Clip source anchoring (model/ClipSourceAnchor.h) ─────────────────────
+    // Where a clip's playhead starts in the source. The two VideoEvent builders
+    // (realtime preview in XlethEngineService, export in OfflineRenderer) and
+    // MixEngine's audio readhead must all agree, so the expression lives in one
+    // place and is pinned here.
+    {
+        using xleth::anchoring::clipSourceAnchorSeconds;
+        using xleth::anchoring::ticksToSeconds;
+
+        // The reference case that prompted this: region 2 of the EAT project.
+        // Its clips carry regionOffsetTicks = 53, a leading-silence trim written
+        // by AutoTrimClipCommand — NOT a rounding artifact and NOT related to the
+        // region's audio swap (the same region also has clips at 293 ticks, and
+        // swappedAudioDurationSec is a per-REGION field that cannot vary per clip).
+        const double kRegion2Start = 916.7734480660205;
+        const double kBpm = 140.0;
+
+        // An UNTRIMMED clip must anchor exactly at the region start — bit for
+        // bit, no epsilon. This is the invariant that makes picker and render
+        // agree, and it is what region 40 (regionOffsetTicks = 0) exercises.
+        checkTrue(clipSourceAnchorSeconds(kRegion2Start, 0, kBpm) == kRegion2Start,
+                  "anchor: regionOffset 0 returns region start exactly");
+        checkTrue(clipSourceAnchorSeconds(83.7298124630748, 0, kBpm) == 83.7298124630748,
+                  "anchor: region 40 (offset 0) anchors exactly at its start");
+        checkEq(timeToFrameFloor(clipSourceAnchorSeconds(83.7298124630748, 0, kBpm), kRate),
+                2007, "anchor: region 40 untrimmed -> frame 2007 (== picker)");
+
+        // 53 ticks at 140 BPM is 0.0236607142857 s. Reproduces the measured
+        // VideoEvent anchor 916.7971087803062 and the frame it renders.
+        const double trimmed = clipSourceAnchorSeconds(kRegion2Start, 53, kBpm);
+        checkTrue(std::fabs(trimmed - 916.7971087803062) < 1e-12,
+                  "anchor: region 2 + 53 ticks == 916.7971087803062");
+        checkEq(timeToFrameFloor(kRegion2Start, kRate), 21980,
+                "anchor: region 2 HEAD floors to 21980 (what the picker shows)");
+        checkEq(timeToFrameFloor(trimmed, kRate), 21981,
+                "anchor: region 2 trimmed clip floors to 21981 (what the timeline renders)");
+        // The one-frame gap between those two is the TRIM, not an off-by-one:
+        // 53 ticks is 0.567 of a frame at 23.976 fps and the region head sits
+        // 0.582 of a frame past 21980's boundary, so the sum crosses into 21981.
+        checkTrue(timeToFrameFloor(trimmed, kRate) - timeToFrameFloor(kRegion2Start, kRate) == 1,
+                  "anchor: picker/render differ by exactly the trim, not a rounding bug");
+
+        // Syllable term stacks on top of the trim, and the ordering does not
+        // matter — this is the term OfflineRenderer used to drop.
+        checkTrue(std::fabs(clipSourceAnchorSeconds(kRegion2Start, 53, kBpm, 0.25)
+                            - (trimmed + 0.25)) < 1e-12,
+                  "anchor: syllable offset stacks on the trim");
+        checkTrue(clipSourceAnchorSeconds(100.0, 0, kBpm, 0.0) == 100.0,
+                  "anchor: no syllable, no trim is a pure passthrough");
+
+        // Tick conversion matches TickTime::toSeconds(bpm) by construction, and
+        // is tempo-dependent BY DESIGN so video tracks MixEngine's audio readhead
+        // (which converts the same ticks at the same tempo) at any tempo.
+        checkTrue(std::fabs(ticksToSeconds(960, 120.0) - 0.5) < 1e-15,
+                  "anchor: 960 ticks @120bpm == 0.5 s");
+        checkTrue(std::fabs(ticksToSeconds(53, 140.0) - 0.023660714285714285) < 1e-15,
+                  "anchor: 53 ticks @140bpm == 0.0236607142857 s");
+        checkTrue(clipSourceAnchorSeconds(500.0, 53, 70.0)
+                  > clipSourceAnchorSeconds(500.0, 53, 140.0),
+                  "anchor: halving the tempo doubles the trim in seconds");
+        // Degenerate tempo must not produce NaN/inf into the frame conversion.
+        checkTrue(clipSourceAnchorSeconds(500.0, 53, 0.0) == 500.0,
+                  "anchor: bpm 0 degrades to the region start, not NaN");
+
+        // A trim landing EXACTLY on a frame boundary must select that frame, not
+        // the one before — the anchoring path feeding timeToFrameFloor's boundary
+        // handling. 1001/24000 s is exactly one frame at 24000/1001.
+        const double frameDurSec = 1001.0 / 24000.0;
+        for (int n = 1; n <= 5; ++n) {
+            const double base = 0.0;
+            const double t = clipSourceAnchorSeconds(base, 0, kBpm, frameDurSec * n);
+            checkEq(timeToFrameFloor(t, kRate), n,
+                    "anchor: exact frame-boundary offset selects that frame");
         }
     }
 
